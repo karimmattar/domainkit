@@ -19,7 +19,7 @@ from domainkit.ddd import ValueObject
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import InvalidCursor, decode_cursor, encode_cursor
 from domainkit.http.middleware import host_allowed
-from domainkit.http.ratelimit import MemoryBackend
+from domainkit.http.ratelimit import Decision, MemoryBackend
 from domainkit.utils.rates import PERIODS, parse_rate
 from domainkit.utils.text import camel_case, snake_case
 
@@ -133,6 +133,30 @@ def test_rate_limits_are_never_exceeded(
         for last in range(first, len(allowed_at)):
             elapsed = allowed_at[last] - allowed_at[first]
             assert last - first + 1 <= limit + elapsed / interval + 1e-6
+
+
+@given(
+    start=st.floats(min_value=0, max_value=1e7),
+    limit=st.integers(min_value=1, max_value=20),
+    period=st.integers(min_value=1, max_value=3600),
+    hits=st.integers(min_value=1, max_value=25),
+)
+def test_rate_limits_admit_new_callers_at_any_clock_reading(
+    start: float, limit: int, period: int, hits: int
+) -> None:
+    """A caller's first request passes; every refusal says how long to wait.
+
+    The clock starts anywhere: ``time.monotonic()`` counts from boot, and
+    rounding depends on its magnitude.
+    """
+    backend = MemoryBackend(clock=lambda: start)
+
+    async def decide() -> list[Decision]:
+        return [await backend.hit("caller", limit, period) for _ in range(hits)]
+
+    decisions = asyncio.run(decide())
+    assert decisions[0].allowed
+    assert all(d.retry_after > 0 for d in decisions if not d.allowed)
 
 
 @given(st.text(max_size=20))

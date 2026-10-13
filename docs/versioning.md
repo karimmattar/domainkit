@@ -82,9 +82,10 @@ One-time setup, before the first release:
   `v*` tags.
 - Add a tag ruleset for `v*`, so only maintainers can create, move, or
   delete release tags.
-- Protect `main` with a branch ruleset: changes through pull requests, the
-  CI jobs passing, and code owner review. GitHub does not let authors
-  approve their own pull requests, so a sole maintainer merges through the
-  ruleset's admin bypass.
+- Protect `main` with a branch ruleset: changes through pull requests, with
+  the `lint`, `test (3.13, false)`, `build`, and `audit` checks passing.
+  Require code owner review once there is a second maintainer: GitHub does
+  not let authors approve their own pull requests, so a sole maintainer
+  would bypass the ruleset on every merge, skipping the checks too.
 - Turn on private vulnerability reporting, which `SECURITY.md` asks
   reporters to use.

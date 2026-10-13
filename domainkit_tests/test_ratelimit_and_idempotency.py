@@ -72,6 +72,23 @@ def test_gcra_decisions_report_exact_waits() -> None:
     )
 
 
+@pytest.mark.parametrize("now", [0.02, 127.99, 511.96, 4095.94, 524287.84])
+def test_gcra_admits_new_callers_whatever_the_clock_reads(now: float) -> None:
+    """At these readings now + 60 - 60 rounds above now; a new caller still passes.
+
+    ``time.monotonic()`` counts from boot, so a freshly started CI runner sits
+    in these windows for a good part of its first minutes.
+    """
+    backend = MemoryBackend(clock=lambda: now)
+
+    first = asyncio.run(backend.hit("k", 1, 60))
+    refused = asyncio.run(backend.hit("k", 1, 60))
+
+    assert (first.allowed, first.remaining) == (True, 0)
+    assert refused.allowed is False
+    assert refused.retry_after == pytest.approx(60)
+
+
 def test_memory_backend_purges_idle_callers() -> None:
     """Callers whose quota has refilled are forgotten once the map outgrows max_keys."""
     clock = [0.0]
