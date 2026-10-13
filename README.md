@@ -137,7 +137,7 @@ CI (`.github/workflows/ci.yml`) runs the same checks on every push and pull
 request:
 
 - lint and strict typing
-- the tests on Python 3.13, and on 3.14 as an experimental job
+- the tests on Python 3.13 and 3.14
 - a wheel build, installed and imported in a clean environment
 - pip-audit, and a gitleaks scan of the whole history
 
