@@ -67,22 +67,26 @@ class MemoryBackend:
         """Apply GCRA: allow if the theoretical arrival time is within the burst."""
         now = self.clock()
         interval = period / limit
+        tolerance = period - interval
         arrival = max(self._arrival.get(key, now), now)
-        allowed_at = arrival + interval - period
-        if now < allowed_at:
+        # Compare the time already spent, not now with now + interval - period:
+        # that sum rounds up whenever now + interval crosses a power of two,
+        # which refused new callers at a limit of 1.
+        debt = arrival - now
+        if debt > tolerance:
             return Decision(
                 allowed=False,
                 remaining=0,
-                reset_after=arrival - now,
-                retry_after=allowed_at - now,
+                reset_after=debt,
+                retry_after=debt - tolerance,
             )
         self._arrival[key] = arrival + interval
         if len(self._arrival) > self.max_keys:
             self._purge(now)
         return Decision(
             allowed=True,
-            remaining=math.floor((period - (arrival + interval - now)) / interval),
-            reset_after=arrival + interval - now,
+            remaining=math.floor((tolerance - debt) / interval),
+            reset_after=debt + interval,
             retry_after=0.0,
         )
 

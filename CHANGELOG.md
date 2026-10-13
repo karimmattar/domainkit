@@ -45,3 +45,6 @@ First version, extracted from a production service template.
   policy.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
+
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/karimmattar/domainkit/releases/tag/v0.1.0

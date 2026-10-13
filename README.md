@@ -13,12 +13,12 @@ pip install "domainkit[postgres]"     # extras: postgres, sqlite, metrics, traci
 
 ## Documentation
 
-- [docs/reference.md](docs/reference.md): settings, middleware, errors,
+- [docs/reference.md](https://github.com/karimmattar/domainkit/blob/main/docs/reference.md): settings, middleware, errors,
   observability, testing, commands, and extension points
-- [docs/contrib.md](docs/contrib.md): messaging, audit, and idempotency
-- [docs/versioning.md](docs/versioning.md): compatibility, deprecations, and releases
-- [docs/adr/](docs/adr/): the decisions behind the design
-- [CHANGELOG.md](CHANGELOG.md) and [SECURITY.md](SECURITY.md)
+- [docs/contrib.md](https://github.com/karimmattar/domainkit/blob/main/docs/contrib.md): messaging, audit, and idempotency
+- [docs/versioning.md](https://github.com/karimmattar/domainkit/blob/main/docs/versioning.md): compatibility, deprecations, and releases
+- [docs/adr/](https://github.com/karimmattar/domainkit/tree/main/docs/adr): the decisions behind the design
+- [CHANGELOG.md](https://github.com/karimmattar/domainkit/blob/main/CHANGELOG.md) and [SECURITY.md](https://github.com/karimmattar/domainkit/blob/main/SECURITY.md)
 
 ## Quick start
 
@@ -142,8 +142,8 @@ request:
 - pip-audit, and a gitleaks scan of the whole history
 
 A full mutation testing run happens weekly. Releases are published to PyPI
-from a version tag; see [docs/versioning.md](docs/versioning.md).
+from a version tag; see [docs/versioning.md](https://github.com/karimmattar/domainkit/blob/main/docs/versioning.md).
 
 ## License
 
-MIT; see [LICENSE](LICENSE).
+MIT; see [LICENSE](https://github.com/karimmattar/domainkit/blob/main/LICENSE).
