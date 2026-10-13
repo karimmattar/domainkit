@@ -101,8 +101,10 @@ def test_violation_messages() -> None:
 
 def test_unknown_packages_are_rejected() -> None:
     """Only importable packages can be checked."""
+    # A module of our own: the standard library's "string" became a package
+    # in Python 3.14.
     with pytest.raises(ValueError, match="not an importable package"):
-        check_domain("string")
+        check_domain("domainkit_tests.settings")
     with pytest.raises(ValueError, match="not an importable package"):
         check_domain("no_such_package")
     with pytest.raises(ModuleNotFoundError):
