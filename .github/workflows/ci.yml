@@ -42,18 +42,15 @@ jobs:
       - run: poetry run mypy
 
   test:
+    # The main branch ruleset requires these check names; rename them there
+    # in the same change.
+    name: test (${{ matrix.python }})
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.13"]
-        experimental: [false]
-        include:
-          # Allowed by requires-python but not yet a release gate.
-          - python: "3.14"
-            experimental: true
-    continue-on-error: ${{ matrix.experimental }}
+        python: ["3.13", "3.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
