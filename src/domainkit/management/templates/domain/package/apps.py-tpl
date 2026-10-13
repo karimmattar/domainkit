@@ -1,0 +1,22 @@
+"""Installation hooks for the {{ domain }} domain (Django's ``AppConfig``)."""
+
+from domainkit.apps import DomainConfig
+from domainkit.ddd import event_bus
+from {{ package }}.application.handlers import log_{{ aggregate }}_created
+from {{ package }}.domain.events import {{ Aggregate }}Created
+from {{ package }}.infrastructure.orm import start_mappers
+from {{ package }}.settings import {{ Domain }}Settings
+
+
+class {{ Domain }}Config(DomainConfig):
+    """Map the {{ domain }} tables and subscribe its event handlers."""
+
+    settings_class = {{ Domain }}Settings
+
+    def ready(self) -> None:
+        """Connect the layers once settings are loaded."""
+        start_mappers()
+        # Durable: stored with the commit, run (and retried) by the worker.
+        event_bus.subscribe(
+            {{ Aggregate }}Created, log_{{ aggregate }}_created, durable=True
+        )

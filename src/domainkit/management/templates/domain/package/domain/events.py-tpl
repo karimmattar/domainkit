@@ -1,0 +1,28 @@
+"""Facts the {{ domain }} model records; other domains may subscribe to them.
+
+Events carry plain values, so they stay valid messages as the model evolves.
+"""
+
+from uuid import UUID
+
+from domainkit.ddd import DomainEvent
+
+
+class {{ Aggregate }}Created(DomainEvent):
+    """A {{ aggregate }} was created."""
+
+    {{ aggregate }}_id: UUID
+    name: str
+
+
+class {{ Aggregate }}Renamed(DomainEvent):
+    """A {{ aggregate }} got a new name."""
+
+    {{ aggregate }}_id: UUID
+    name: str
+
+
+class {{ Aggregate }}Archived(DomainEvent):
+    """A {{ aggregate }} was archived and became read-only."""
+
+    {{ aggregate }}_id: UUID

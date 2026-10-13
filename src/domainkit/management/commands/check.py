@@ -1,0 +1,37 @@
+"""``check``: validate the project without starting a server."""
+
+from domainkit.apps import registry
+from domainkit.architecture import check_domains
+from domainkit.conf import settings
+from domainkit.db import migrations
+from domainkit.http import get_asgi_application
+from domainkit.management.base import BaseCommand, CommandError
+
+
+class Command(BaseCommand):
+    """Load settings, domains, routes, and middleware; enforce layer rules."""
+
+    help = (
+        "Validate settings, installed domains, routes, middleware, the "
+        "dependency rules between domain layers, and the migration history."
+    )
+
+    def handle(self, **options: object) -> None:
+        """Fail with every problem found, or report success."""
+        get_asgi_application()
+        problems = [
+            f"Architecture: {violation}"
+            for violation in check_domains(settings.INSTALLED_DOMAINS)
+        ]
+        if settings.DATABASES and len(heads := migrations.heads()) > 1:
+            problems.append(
+                f"Migrations have {len(heads)} heads ({', '.join(sorted(heads))}); "
+                "run 'manage.py makemigrations --merge'."
+            )
+        if problems:
+            raise CommandError(
+                "System check found problems:\n"
+                + "\n".join(f"  {problem}" for problem in problems)
+            )
+        labels = ", ".join(config.label for config in registry) or "none"
+        self.write(f"System check identified no issues. Domains: {labels}.")

@@ -1,0 +1,104 @@
+"""HTTP tests through the whole stack, with the migrated test database.
+
+They need the domain installed (INSTALLED_DOMAINS) and mounted (config/urls.py).
+"""
+
+import io
+import logging
+from uuid import uuid4
+
+import pytest
+
+from fastapi.testclient import TestClient
+
+from domainkit.conf import override_settings
+from domainkit.http import encode_cursor
+from domainkit.management import call_command
+
+URL = "/api/v1/{{ domain }}/{{ aggregates }}"
+
+
+def test_lifecycle(client: TestClient) -> None:
+    """Create, read, rename, and archive one {{ aggregate }}."""
+    created = client.post(URL, json={"name": "  First  "})
+    assert created.status_code == 201
+    body = created.json()
+    assert (body["name"], body["archived"], body["version"]) == ("First", False, 1)
+    item = f"{URL}/{body['id']}"
+
+    assert client.get(item).json() == body
+    renamed = client.post(f"{item}/rename", json={"name": "Second"})
+    assert (renamed.json()["name"], renamed.json()["version"]) == ("Second", 2)
+    archived = client.post(f"{item}/archive")
+    assert (archived.json()["archived"], archived.json()["version"]) == (True, 3)
+
+
+def test_business_rules_map_to_http_errors(client: TestClient) -> None:
+    """Domain errors become 404/422 responses with a machine-readable code."""
+    missing = client.get(f"{URL}/{uuid4()}")
+    assert missing.status_code == 404
+    assert missing.json()["code"] == "{{ aggregate }}_not_found"
+
+    blank = client.post(URL, json={"name": "   "})
+    assert blank.status_code == 422
+    assert blank.json()["code"] == "invalid_{{ aggregate }}_name"
+
+    item = f"{URL}/{client.post(URL, json={'name': 'Frozen'}).json()['id']}"
+    client.post(f"{item}/archive")
+    refused = client.post(f"{item}/rename", json={"name": "Thawed"})
+    assert refused.status_code == 422
+    assert refused.json()["code"] == "{{ aggregate }}_is_archived"
+
+
+def test_cursor_pagination_walks_every_page(client: TestClient) -> None:
+    """``next_cursor`` leads through all {{ aggregates_title }} in name order."""
+    created = [client.post(URL, json={"name": f"walk-{n}"}).json() for n in "cab"]
+    seen: list[str] = []
+    params: dict[str, str | int] = {"limit": 2}
+    while True:
+        page = client.get(URL, params=params).json()
+        seen += [item["name"] for item in page["items"]]
+        if page["next_cursor"] is None:
+            break
+        params["cursor"] = page["next_cursor"]
+
+    walked = [name for name in seen if name.startswith("walk-")]
+    assert walked == sorted(item["name"] for item in created)
+
+
+def test_page_size_and_cursor_validation(client: TestClient) -> None:
+    """Limits follow the settings; forged cursors are rejected with a code."""
+    for name in ("size-a", "size-b", "size-c"):
+        client.post(URL, json={"name": name})
+
+    with override_settings({{ DOMAIN }}={"PAGE_SIZE": 2, "MAX_PAGE_SIZE": 2}):
+        assert len(client.get(URL).json()["items"]) == 2
+        assert len(client.get(URL, params={"limit": 50}).json()["items"]) == 2
+
+    malformed = client.get(URL, params={"cursor": "not base64!"})
+    assert (malformed.status_code, malformed.json()["code"]) == (422, "validation_error")
+    for cursor in ("bm90LWpzb24", encode_cursor(["name", "not-a-uuid"])):
+        forged = client.get(URL, params={"cursor": cursor})
+        assert (forged.status_code, forged.json()["code"]) == (422, "invalid_cursor")
+
+
+def test_management_command_lists_{{ aggregates }}(client: TestClient) -> None:
+    """The domain's ``{{ aggregates }}`` command prints stored {{ aggregates_title }}."""
+    client.post(URL, json={"name": "Listed"})
+    output = io.StringIO()
+
+    call_command("{{ aggregates }}", "--limit", "500", stdout=output)
+
+    assert "Listed" in output.getvalue()
+
+
+def test_durable_handler_runs_in_the_worker(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Creating a {{ aggregate }} queues the durable handler; the worker runs it."""
+    created = client.post(URL, json={"name": "Queued"}).json()
+    caplog.set_level(logging.INFO, logger="{{ package }}.application.handlers")
+
+    call_command("runworker", "--once", stdout=io.StringIO())
+
+    assert f"{{ Aggregate }} {created['id']} created" in caplog.text

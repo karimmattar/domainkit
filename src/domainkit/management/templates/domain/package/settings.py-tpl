@@ -1,0 +1,30 @@
+"""Settings of the {{ domain }} domain: ``{{ DOMAIN }} = {...}`` in the settings module."""
+
+from typing import Self
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from domainkit.apps import registry
+
+
+class {{ Domain }}Settings(BaseModel):
+    """Validated ``{{ DOMAIN }}`` values; every key is optional."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    PAGE_SIZE: int = Field(default=50, ge=1)
+    """Items a list endpoint returns when the client sends no ``limit``."""
+    MAX_PAGE_SIZE: int = Field(default=200, ge=1)
+    """Largest ``limit`` a client may ask for."""
+
+    @model_validator(mode="after")
+    def check_page_sizes(self) -> Self:
+        """Keep the default page within the maximum."""
+        if self.PAGE_SIZE > self.MAX_PAGE_SIZE:
+            raise ValueError("PAGE_SIZE must not exceed MAX_PAGE_SIZE")
+        return self
+
+
+def get_settings() -> {{ Domain }}Settings:
+    """Return the current {{ domain }} settings."""
+    return registry.settings({{ Domain }}Settings)

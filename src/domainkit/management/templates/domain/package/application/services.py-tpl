@@ -1,0 +1,63 @@
+"""Use cases: open a unit of work, change one aggregate, commit.
+
+Committing publishes the events the aggregate recorded.
+"""
+
+from uuid import UUID
+
+from domainkit.ddd import Page
+from {{ package }}.application.commands import (
+    Archive{{ Aggregate }},
+    Create{{ Aggregate }},
+    Rename{{ Aggregate }},
+)
+from {{ package }}.application.unit_of_work import {{ Domain }}UnitOfWork
+from {{ package }}.domain.model import {{ Aggregate }}, {{ Aggregate }}Id, {{ Aggregate }}Name
+
+
+async def create_{{ aggregate }}(command: Create{{ Aggregate }}, uow: {{ Domain }}UnitOfWork) -> {{ Aggregate }}:
+    """Create and store a {{ aggregate }}."""
+    async with uow:
+        {{ aggregate }} = {{ Aggregate }}.create({{ Aggregate }}Name(command.name))
+        await uow.{{ aggregates }}.add({{ aggregate }})
+        await uow.commit()
+    return {{ aggregate }}
+
+
+async def rename_{{ aggregate }}(command: Rename{{ Aggregate }}, uow: {{ Domain }}UnitOfWork) -> {{ Aggregate }}:
+    """Rename an existing {{ aggregate }}."""
+    async with uow:
+        {{ aggregate }} = await uow.{{ aggregates }}.get({{ Aggregate }}Id(command.{{ aggregate }}_id))
+        {{ aggregate }}.rename({{ Aggregate }}Name(command.name))
+        await uow.commit()
+    return {{ aggregate }}
+
+
+async def archive_{{ aggregate }}(command: Archive{{ Aggregate }}, uow: {{ Domain }}UnitOfWork) -> {{ Aggregate }}:
+    """Archive an existing {{ aggregate }}."""
+    async with uow:
+        {{ aggregate }} = await uow.{{ aggregates }}.get({{ Aggregate }}Id(command.{{ aggregate }}_id))
+        {{ aggregate }}.archive()
+        await uow.commit()
+    return {{ aggregate }}
+
+
+async def get_{{ aggregate }}(uow: {{ Domain }}UnitOfWork, {{ aggregate }}_id: UUID) -> {{ Aggregate }}:
+    """Return one {{ aggregate }}."""
+    async with uow:
+        return await uow.{{ aggregates }}.get({{ Aggregate }}Id({{ aggregate }}_id))
+
+
+async def list_{{ aggregates }}(
+    uow: {{ Domain }}UnitOfWork,
+    *,
+    limit: int,
+    after: tuple[str, UUID] | None = None,
+) -> Page[{{ Aggregate }}]:
+    """Return up to ``limit`` {{ aggregates_title }} after the (name, id) ``after``."""
+    position = None
+    if after is not None:
+        position = ({{ Aggregate }}Name(after[0]), {{ Aggregate }}Id(after[1]))
+    async with uow:
+        found = await uow.{{ aggregates }}.page(limit=limit + 1, after=position)
+    return Page.from_items(found, limit)

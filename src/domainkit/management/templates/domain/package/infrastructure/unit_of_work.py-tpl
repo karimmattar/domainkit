@@ -1,0 +1,15 @@
+"""SQLAlchemy adapter for ``{{ Domain }}UnitOfWork``."""
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from domainkit.db import SqlAlchemyUnitOfWork
+from {{ package }}.application.unit_of_work import {{ Domain }}UnitOfWork
+from {{ package }}.infrastructure.repositories import SqlAlchemy{{ Aggregate }}Repository
+
+
+class SqlAlchemy{{ Domain }}UnitOfWork(SqlAlchemyUnitOfWork, {{ Domain }}UnitOfWork):
+    """One database transaction over the {{ domain }} repositories."""
+
+    def create_repositories(self, session: AsyncSession) -> None:
+        """Bind the repositories to ``session``."""
+        self.{{ aggregates }} = SqlAlchemy{{ Aggregate }}Repository(session)

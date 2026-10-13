@@ -1,0 +1,118 @@
+[project]
+name = "domainkit"
+version = "0.1.0"
+description = "A Django-style framework for domain-driven FastAPI services."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.13,<4"
+authors = [
+    {name = "karim magdy", email = "karimhady111@gmail.com"},
+]
+keywords = ["ddd", "domain-driven-design", "fastapi", "sqlalchemy", "outbox", "framework"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Typing :: Typed",
+]
+# Everything domainkit imports. Database drivers are extras: projects pick.
+dependencies = [
+    "fastapi (>=0.141.1,<0.142.0)",
+    "uvicorn[standard] (>=0.54.0,<0.55.0)",
+    "pydantic (>=2.14.1,<3.0.0)",
+    "sqlalchemy[asyncio] (>=2.0.54,<2.1)",
+    "alembic (>=1.20.0,<2.0.0)",
+    "python-dotenv (>=1.2.4,<2.0.0)",
+]
+
+[project.optional-dependencies]
+postgres = ["asyncpg (>=0.31.0,<0.32.0)"]
+sqlite = ["aiosqlite (>=0.22.1,<0.23.0)"]
+metrics = ["prometheus-client (>=0.26.0,<0.27.0)"]
+tracing = ["opentelemetry-api (>=1.45.1,<2.0.0)"]
+
+[build-system]
+# 2.2.1 is the version verified to write PEP 639 license metadata.
+requires = ["poetry-core>=2.2.1,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+packages = [{ include = "domainkit", from = "src" }]
+
+# poetry install --all-extras: the tests exercise every driver and integration.
+[dependency-groups]
+dev = [
+    "pytest (>=9.1.1,<10.0.0)",
+    "pytest-cov (>=7.1.0,<8.0.0)",
+    "ruff (>=0.16.8,<0.17.0)",
+    "mypy (>=2.3.1,<3.0.0)",
+    "pip-audit (>=2.9.0,<3.0.0)",
+    # Starlette's TestClient (it deprecates plain httpx).
+    "httpx2 (>=2.13.0,<3.0.0)",
+    # In-memory span exporter for the tracing tests.
+    "opentelemetry-sdk (>=1.45.1,<2.0.0)",
+    # Random test order, property-based tests, mutation testing.
+    "pytest-randomly (>=5.0.0,<6.0.0)",
+    "hypothesis (>=6.169.0,<7.0.0)",
+    "mutmut (>=3.8.0,<4.0.0)",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 88
+src = ["src", "."]
+extend-exclude = ["src/domainkit/management/templates", "**/mutants"]
+
+[tool.ruff.lint]
+# S: security (bandit), ASYNC: blocking calls in async code, BLE: blind except,
+# G/LOG: logging misuse, DTZ: naive datetimes, T20: stray prints.
+select = [
+    "E", "F", "I", "UP", "B", "SIM", "D", "ANN", "RUF",
+    "S", "ASYNC", "BLE", "G", "LOG", "DTZ", "T20",
+    "PT", "C4", "RET", "PIE", "PERF", "PTH", "ERA", "ISC",
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert, and use throwaway credentials and server-side identifiers.
+"domainkit_tests/**" = ["S101", "S105", "S106"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+plugins = ["pydantic.mypy"]
+mypy_path = "src:."
+files = ["src", "domainkit_tests"]
+exclude = ["/management/templates/", "/mutants/"]
+
+[tool.pytest.ini_options]
+testpaths = ["domainkit_tests"]
+pythonpath = ["."]
+# pytester: the testing plugin is checked by running a pytest session in a test.
+addopts = "-ra --strict-markers --strict-config -p pytester"
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+branch = true
+concurrency = ["thread", "greenlet"]
+source = ["src"]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+fail_under = 98
+precision = 2
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError"]
+
+# Mutation testing: "mutmut run 'domainkit.utils*'" (one area at a time; a
+# full run takes a while), then "mutmut results".
+[tool.mutmut]
+source_paths = ["src"]
+also_copy = ["domainkit_tests/", "docs/"]
+pytest_add_cli_args_test_selection = ["domainkit_tests/", "-p", "no:randomly"]

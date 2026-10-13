@@ -1,0 +1,71 @@
+"""Use-case tests against in-memory adapters."""
+
+from uuid import uuid4
+
+import pytest
+
+from domainkit.ddd import DomainEvent, EventBus
+from {{ package }}.application import services
+from {{ package }}.application.commands import (
+    Archive{{ Aggregate }},
+    Create{{ Aggregate }},
+    Rename{{ Aggregate }},
+)
+from {{ package }}.domain.events import {{ Aggregate }}Created
+from {{ package }}.domain.exceptions import {{ Aggregate }}NotFound
+
+from .fakes import Fake{{ Domain }}UnitOfWork
+
+pytestmark = pytest.mark.anyio
+
+
+async def test_create_commits_and_publishes() -> None:
+    """Creating stores the {{ aggregate }}, commits once, then publishes its event."""
+    published: list[DomainEvent] = []
+    bus = EventBus()
+
+    async def collect(event: {{ Aggregate }}Created) -> None:
+        published.append(event)
+
+    bus.subscribe({{ Aggregate }}Created, collect)
+    uow = Fake{{ Domain }}UnitOfWork(bus)
+
+    {{ aggregate }} = await services.create_{{ aggregate }}(Create{{ Aggregate }}(name="First"), uow)
+
+    assert uow.commits == 1
+    assert uow.{{ aggregates }}.items == { {{ aggregate }}.id: {{ aggregate }} }
+    assert [type(event) for event in published] == [{{ Aggregate }}Created]
+
+
+async def test_rename_and_archive() -> None:
+    """Changes go through the aggregate and are committed."""
+    uow = Fake{{ Domain }}UnitOfWork()
+    {{ aggregate }} = await services.create_{{ aggregate }}(Create{{ Aggregate }}(name="Old"), uow)
+
+    await services.rename_{{ aggregate }}(Rename{{ Aggregate }}({{ aggregate }}_id={{ aggregate }}.id, name="New"), uow)
+    archived = await services.archive_{{ aggregate }}(Archive{{ Aggregate }}({{ aggregate }}_id={{ aggregate }}.id), uow)
+
+    assert (archived.name.value, archived.archived) == ("New", True)
+    assert uow.commits == 3
+
+
+async def test_missing_{{ aggregate }}_raises_not_found() -> None:
+    """Unknown ids raise the domain's NotFound error."""
+    with pytest.raises({{ Aggregate }}NotFound):
+        await services.get_{{ aggregate }}(Fake{{ Domain }}UnitOfWork(), uuid4())
+
+
+async def test_list_pages_by_name() -> None:
+    """Listing is ordered by name and continues after the last position."""
+    uow = Fake{{ Domain }}UnitOfWork()
+    for name in ("c", "a", "b"):
+        await services.create_{{ aggregate }}(Create{{ Aggregate }}(name=name), uow)
+
+    first = await services.list_{{ aggregates }}(uow, limit=2)
+    last = first.items[-1]
+    second = await services.list_{{ aggregates }}(uow, limit=2, after=(last.name.value, last.id))
+
+    assert [item.name.value for item in first.items] == ["a", "b"]
+    assert first.has_more is True
+    assert [item.name.value for item in second.items] == ["c"]
+    assert second.has_more is False

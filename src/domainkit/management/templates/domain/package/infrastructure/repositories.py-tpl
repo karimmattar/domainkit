@@ -1,0 +1,26 @@
+"""SQLAlchemy adapter for ``{{ Aggregate }}Repository``."""
+
+from sqlalchemy import select, tuple_
+
+from domainkit.db import SqlAlchemyRepository
+from {{ package }}.domain.model import {{ Aggregate }}, {{ Aggregate }}Id
+from {{ package }}.domain.repositories import {{ Aggregate }}Position, {{ Aggregate }}Repository
+from {{ package }}.infrastructure.orm import {{ aggregates }}
+
+
+class SqlAlchemy{{ Aggregate }}Repository(
+    SqlAlchemyRepository[{{ Aggregate }}, {{ Aggregate }}Id], {{ Aggregate }}Repository
+):
+    """{{ Aggregate }} storage in the ``{{ table }}`` table."""
+
+    model = {{ Aggregate }}
+
+    async def _page(
+        self, *, limit: int, after: {{ Aggregate }}Position | None
+    ) -> list[{{ Aggregate }}]:
+        """Seek past ``after`` on the (name, id) index; deep pages stay fast."""
+        name, id_ = {{ aggregates }}.c.name, {{ aggregates }}.c.id
+        statement = select({{ Aggregate }}).order_by(name, id_).limit(limit)
+        if after is not None:
+            statement = statement.where(tuple_(name, id_) > after)
+        return list(await self.session.scalars(statement))

@@ -1,0 +1,74 @@
+"""HTTP routes of the {{ domain }} domain.
+
+Changes are task-based commands (``/rename``, ``/archive``) rather than
+generic updates, so each request maps to one use case.
+"""
+
+from typing import Any, Final
+from uuid import UUID
+
+from fastapi import APIRouter, status
+
+from domainkit.http import ErrorResponse
+from {{ package }}.api.dependencies import PageSizeDep, PositionDep, UnitOfWorkDep
+from {{ package }}.api.schemas import (
+    {{ Aggregate }}In,
+    {{ Aggregate }}Out,
+    {{ Aggregate }}Page,
+    Rename{{ Aggregate }}In,
+)
+from {{ package }}.application import services
+from {{ package }}.application.commands import (
+    Archive{{ Aggregate }},
+    Create{{ Aggregate }},
+    Rename{{ Aggregate }},
+)
+
+# 422 is documented for every route by the application.
+NOT_FOUND: Final[dict[int | str, dict[str, Any]]] = {
+    status.HTTP_404_NOT_FOUND: {"model": ErrorResponse},
+}
+CHANGE_ERRORS: Final[dict[int | str, dict[str, Any]]] = {
+    **NOT_FOUND,
+    status.HTTP_409_CONFLICT: {"model": ErrorResponse},
+}
+
+router = APIRouter(prefix="/{{ aggregates }}", tags=["{{ domain }}"])
+
+
+@router.post("", status_code=status.HTTP_201_CREATED)
+async def create_{{ aggregate }}(body: {{ Aggregate }}In, uow: UnitOfWorkDep) -> {{ Aggregate }}Out:
+    """Create a {{ aggregate }}."""
+    {{ aggregate }} = await services.create_{{ aggregate }}(Create{{ Aggregate }}(name=body.name), uow)
+    return {{ Aggregate }}Out.from_domain({{ aggregate }})
+
+
+@router.get("")
+async def list_{{ aggregates }}(
+    uow: UnitOfWorkDep, limit: PageSizeDep, after: PositionDep
+) -> {{ Aggregate }}Page:
+    """List {{ aggregates_title }} by name; pass ``next_cursor`` as ``cursor`` for more."""
+    page = await services.list_{{ aggregates }}(uow, limit=limit, after=after)
+    return {{ Aggregate }}Page.from_domain(page)
+
+
+@router.get("/{{{ aggregate }}_id}", responses=NOT_FOUND)
+async def get_{{ aggregate }}({{ aggregate }}_id: UUID, uow: UnitOfWorkDep) -> {{ Aggregate }}Out:
+    """Return one {{ aggregate }}."""
+    return {{ Aggregate }}Out.from_domain(await services.get_{{ aggregate }}(uow, {{ aggregate }}_id))
+
+
+@router.post("/{{{ aggregate }}_id}/rename", responses=CHANGE_ERRORS)
+async def rename_{{ aggregate }}(
+    {{ aggregate }}_id: UUID, body: Rename{{ Aggregate }}In, uow: UnitOfWorkDep
+) -> {{ Aggregate }}Out:
+    """Rename a {{ aggregate }}."""
+    command = Rename{{ Aggregate }}({{ aggregate }}_id={{ aggregate }}_id, name=body.name)
+    return {{ Aggregate }}Out.from_domain(await services.rename_{{ aggregate }}(command, uow))
+
+
+@router.post("/{{{ aggregate }}_id}/archive", responses=CHANGE_ERRORS)
+async def archive_{{ aggregate }}({{ aggregate }}_id: UUID, uow: UnitOfWorkDep) -> {{ Aggregate }}Out:
+    """Archive a {{ aggregate }}; it becomes read-only."""
+    command = Archive{{ Aggregate }}({{ aggregate }}_id={{ aggregate }}_id)
+    return {{ Aggregate }}Out.from_domain(await services.archive_{{ aggregate }}(command, uow))

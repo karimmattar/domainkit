@@ -1,0 +1,48 @@
+"""Business errors raised by domain and application code.
+
+The domain never mentions HTTP: ``domainkit.http.errors`` maps each base class
+below to a status code. Subclass the closest one, for example
+``class ProductNotFound(NotFound)``. Each class gets a machine-readable
+``code`` (``product_not_found``) unless it sets its own.
+"""
+
+from typing import ClassVar
+
+from domainkit.utils.text import snake_case
+
+
+class DomainError(Exception):
+    """A business rule refused the operation; the message is safe to show."""
+
+    code: ClassVar[str] = "domain_error"
+
+    def __init_subclass__(cls) -> None:
+        """Derive ``code`` from the class name unless the class sets one."""
+        super().__init_subclass__()
+        if "code" not in cls.__dict__:
+            cls.code = snake_case(cls.__name__)
+
+    def __init__(self, message: str) -> None:
+        """Store the user-facing ``message``."""
+        super().__init__(message)
+        self.message = message
+
+
+class NotFound(DomainError):
+    """The requested aggregate does not exist."""
+
+
+class Conflict(DomainError):
+    """The operation clashes with the current state, such as a duplicate."""
+
+
+class ConcurrentUpdate(Conflict):
+    """Someone else changed the aggregate first; reload it and try again."""
+
+
+class BusinessRuleViolation(DomainError):
+    """The request is well-formed but breaks an invariant of the model."""
+
+
+class PermissionDenied(DomainError):
+    """The actor may not perform the operation."""

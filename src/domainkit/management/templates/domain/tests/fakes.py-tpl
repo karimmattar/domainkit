@@ -1,0 +1,47 @@
+"""In-memory adapters: test the domain and use cases without a database."""
+
+from domainkit.ddd import EventBus, InMemoryRepository
+
+from {{ package }}.application.unit_of_work import {{ Domain }}UnitOfWork
+from {{ package }}.domain.model import {{ Aggregate }}, {{ Aggregate }}Id
+from {{ package }}.domain.repositories import {{ Aggregate }}Position, {{ Aggregate }}Repository
+
+
+def _sort_key({{ aggregate }}: {{ Aggregate }}) -> tuple[str, str]:
+    """Order like the SQL adapter: name, then id (as stored hex)."""
+    return {{ aggregate }}.name.value, {{ aggregate }}.id.hex
+
+
+class InMemory{{ Aggregate }}Repository(
+    InMemoryRepository[{{ Aggregate }}, {{ Aggregate }}Id], {{ Aggregate }}Repository
+):
+    """Dictionary-backed ``{{ Aggregate }}Repository``."""
+
+    async def _page(
+        self, *, limit: int, after: {{ Aggregate }}Position | None
+    ) -> list[{{ Aggregate }}]:
+        """Seek past ``after`` in the SQL adapter's order."""
+        ordered = sorted(self.items.values(), key=_sort_key)
+        if after is not None:
+            start = (after[0].value, after[1].hex)
+            ordered = [item for item in ordered if _sort_key(item) > start]
+        return ordered[:limit]
+
+
+class Fake{{ Domain }}UnitOfWork({{ Domain }}UnitOfWork):
+    """Unit of work that records commits instead of writing anywhere."""
+
+    {{ aggregates }}: InMemory{{ Aggregate }}Repository
+
+    def __init__(self, events: EventBus | None = None) -> None:
+        """Start empty; publish to ``events`` (a private bus in tests)."""
+        super().__init__(events=events or EventBus())
+        self.{{ aggregates }} = InMemory{{ Aggregate }}Repository()
+        self.commits = 0
+
+    async def _commit(self) -> None:
+        """Count the commit."""
+        self.commits += 1
+
+    async def _rollback(self) -> None:
+        """Nothing to undo: the repository is the state."""

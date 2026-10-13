@@ -1,0 +1,1 @@
+"""Subpackages are not commands."""

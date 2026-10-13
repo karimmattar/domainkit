@@ -1,0 +1,26 @@
+# Environments and caches
+.venv/
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+
+# Coverage, builds, mutation testing
+.coverage
+.coverage.*
+coverage.xml
+junit.xml
+htmlcov/
+dist/
+mutants/
+
+# Local files
+.env
+*.sqlite3
+.DS_Store
+
+# Personal Claude Code context (private names and history)
+CLAUDE.md
+CLAUDE.local.md

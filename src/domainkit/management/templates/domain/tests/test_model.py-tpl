@@ -1,0 +1,67 @@
+"""Unit tests of the {{ Aggregate }} aggregate: no I/O, no framework."""
+
+import pytest
+
+from {{ package }}.domain.events import (
+    {{ Aggregate }}Archived,
+    {{ Aggregate }}Created,
+    {{ Aggregate }}Renamed,
+)
+from {{ package }}.domain.exceptions import Invalid{{ Aggregate }}Name, {{ Aggregate }}IsArchived
+from {{ package }}.domain.model import {{ Aggregate }}, {{ Aggregate }}Name
+
+
+def test_create_records_event() -> None:
+    """A new {{ aggregate }} records {{ Aggregate }}Created with its id and name."""
+    {{ aggregate }} = {{ Aggregate }}.create({{ Aggregate }}Name("First"))
+
+    (event,) = {{ aggregate }}.pull_events()
+    assert isinstance(event, {{ Aggregate }}Created)
+    assert (event.{{ aggregate }}_id, event.name) == ({{ aggregate }}.id, "First")
+    assert {{ aggregate }}.pull_events() == []
+
+
+@pytest.mark.parametrize("raw", ["", "   ", "x" * ({{ Aggregate }}Name.MAX_LENGTH + 1)])
+def test_invalid_names_are_rejected(raw: str) -> None:
+    """Blank and overlong names cannot exist."""
+    with pytest.raises(Invalid{{ Aggregate }}Name):
+        {{ Aggregate }}Name(raw)
+
+
+def test_names_are_trimmed_and_compared_by_value() -> None:
+    """Value objects normalize their input and compare by value."""
+    assert {{ Aggregate }}Name("  Spaced  ") == {{ Aggregate }}Name("Spaced")
+
+
+def test_rename_records_event_only_on_change() -> None:
+    """Renaming to the current name records nothing."""
+    {{ aggregate }} = {{ Aggregate }}.create({{ Aggregate }}Name("Old"))
+    {{ aggregate }}.pull_events()
+
+    {{ aggregate }}.rename({{ Aggregate }}Name("Old"))
+    {{ aggregate }}.rename({{ Aggregate }}Name("New"))
+
+    (event,) = {{ aggregate }}.pull_events()
+    assert isinstance(event, {{ Aggregate }}Renamed)
+    assert {{ aggregate }}.name == {{ Aggregate }}Name("New")
+
+
+def test_archived_{{ aggregates }}_are_read_only() -> None:
+    """Archiving records an event; later changes are refused."""
+    {{ aggregate }} = {{ Aggregate }}.create({{ Aggregate }}Name("Done"))
+    {{ aggregate }}.archive()
+
+    assert isinstance({{ aggregate }}.pull_events()[-1], {{ Aggregate }}Archived)
+    with pytest.raises({{ Aggregate }}IsArchived):
+        {{ aggregate }}.rename({{ Aggregate }}Name("Again"))
+    with pytest.raises({{ Aggregate }}IsArchived):
+        {{ aggregate }}.archive()
+
+
+def test_identity_defines_equality() -> None:
+    """Two {{ aggregates_title }} are equal only when their ids match."""
+    first = {{ Aggregate }}.create({{ Aggregate }}Name("Same"))
+    second = {{ Aggregate }}.create({{ Aggregate }}Name("Same"))
+
+    assert first != second
+    assert first == {{ Aggregate }}(id=first.id, name={{ Aggregate }}Name("Other"))

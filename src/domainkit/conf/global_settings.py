@@ -1,0 +1,205 @@
+"""Framework settings and their defaults (Django's ``global_settings``).
+
+Every UPPERCASE name in the selected settings module is validated here. A name
+the framework does not declare must belong to an installed domain (see
+``DomainConfig.settings_class``) or to the project's own ``SETTINGS_CLASS``,
+so a misspelled setting fails at startup instead of being silently ignored.
+"""
+
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any, Final, Literal, Self
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    IPvAnyNetwork,
+    SecretStr,
+    model_validator,
+)
+
+from domainkit.conf.env import project_root
+from domainkit.utils.rates import parse_rate
+
+DEFAULT_DB_ALIAS: Final = "default"
+
+Environment = Literal["local", "test", "staging", "production"]
+DEPLOYED_ENVIRONMENTS: Final = frozenset({"staging", "production"})
+"""Environments held to the deployment checks in ``Settings``."""
+
+DEFAULT_MIDDLEWARE: Final = (
+    "domainkit.http.middleware.ProxyHeadersMiddleware",
+    "domainkit.http.middleware.SecurityHeadersMiddleware",
+    "domainkit.http.middleware.RequestContextMiddleware",
+    "domainkit.http.middleware.AllowedHostsMiddleware",
+    "domainkit.http.middleware.RequestBodyLimitMiddleware",
+)
+
+
+def _minimal_logging() -> dict[str, Any]:
+    """Leave existing logging untouched when a module does not define LOGGING."""
+    return {"version": 1, "disable_existing_loggers": False}
+
+
+SSLMode = Literal["disable", "require", "verify-ca", "verify-full"]
+"""libpq TLS modes, minus ``allow`` and ``prefer`` (they fall back to plaintext)."""
+
+
+def is_network_database(url: str) -> bool:
+    """Report whether ``url`` reaches a server over the network (not SQLite)."""
+    return not url.split(":", 1)[0].split("+", 1)[0].startswith("sqlite")
+
+
+class DatabaseConfig(BaseModel):
+    """One ``DATABASES`` entry: an SQLAlchemy async URL plus connection options."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    URL: SecretStr
+    """``dialect+driver://user:password@host/name``; hidden in reprs and errors."""
+    MIGRATION_URL: SecretStr | None = None
+    """Schema-owner credentials used by ``migrate``; defaults to ``URL``."""
+    ECHO: bool = False
+    """Log every statement (development only)."""
+    LOG_PARAMETERS: bool = False
+    """Show bound values in SQL logs and error messages; they may hold secrets."""
+
+    SSLMODE: SSLMode | None = None
+    """TLS mode; None keeps the driver default. Deployments need ``verify-full``."""
+    SSLROOTCERT: Path | None = None
+    """CA bundle that signed the server certificate; None uses the system CAs."""
+    SSLCERT: Path | None = None
+    """Client certificate for mutual TLS; requires ``SSLKEY``."""
+    SSLKEY: Path | None = None
+
+    STATEMENT_TIMEOUT: float | None = Field(default=30.0, gt=0)
+    """Seconds before PostgreSQL cancels a statement; migrations are exempt."""
+    LOCK_TIMEOUT: float | None = Field(default=10.0, gt=0)
+    """Seconds a statement may wait for a lock."""
+    IDLE_IN_TRANSACTION_TIMEOUT: float | None = Field(default=60.0, gt=0)
+    """Seconds an open transaction may sit idle before the server ends it."""
+
+    POOL_SIZE: int | None = Field(default=None, ge=1)
+    MAX_OVERFLOW: int | None = Field(default=None, ge=0)
+    POOL_TIMEOUT: float | None = Field(default=None, gt=0)
+    POOL_RECYCLE: int | None = Field(default=None, gt=0)
+    POOL_PRE_PING: bool = True
+    CONNECT_ARGS: dict[str, Any] = Field(default_factory=dict)
+    """Extra driver arguments; they override the ones derived from the settings."""
+
+    @model_validator(mode="after")
+    def check_client_certificate(self) -> Self:
+        """Keep the client certificate and key paired."""
+        if (self.SSLCERT is None) != (self.SSLKEY is None):
+            raise ValueError("SSLCERT and SSLKEY must be set together")
+        return self
+
+
+class Settings(BaseModel):
+    """Validated, read-only settings; extra names are checked at ``setup()``."""
+
+    model_config = ConfigDict(frozen=True, extra="allow")
+
+    SETTINGS_MODULE: str = ""
+    """Set by the loader to the module that produced these settings."""
+    BASE_DIR: Path = Field(default_factory=project_root)
+    ENVIRONMENT: Environment = "local"
+    """Staging and production get the deployment checks below."""
+    DEBUG: bool = False
+    PROJECT_NAME: str = "API"
+    VERSION: str = "0.1.0"
+
+    INSTALLED_DOMAINS: tuple[str, ...] = ()
+    """Domain packages, started in order and stopped in reverse order."""
+    MIDDLEWARE: tuple[str, ...] = DEFAULT_MIDDLEWARE
+    """ASGI middleware classes by dotted path; the first one is outermost."""
+    ROOT_ROUTER: str | None = None
+    """Dotted path to the ``APIRouter`` that mounts every route (``ROOT_URLCONF``)."""
+    ASGI_APPLICATION: str | None = None
+    """``module:attribute`` that ``runserver`` serves."""
+
+    DATABASES: dict[str, DatabaseConfig] = Field(default_factory=dict)
+    MIGRATIONS_DIR: Path = Field(default_factory=lambda: project_root() / "migrations")
+    """Where ``makemigrations`` writes revision files."""
+    LOGGING: dict[str, Any] = Field(default_factory=_minimal_logging)
+    """``logging.config.dictConfig`` mapping applied by ``setup()``."""
+
+    ALLOWED_HOSTS: tuple[str, ...] = ("localhost", "127.0.0.1", "[::1]")
+    """Accepted ``Host`` header values; ``*.example.com`` matches subdomains."""
+    API_DOCS: bool = True
+    """Serve ``/docs``, ``/redoc``, and ``/openapi.json``."""
+    MAX_REQUEST_BODY_SIZE: int = Field(default=1_048_576, ge=1)
+    """Largest accepted request body in bytes; larger requests get 413."""
+    READINESS_TIMEOUT: float = Field(default=5.0, gt=0)
+    """Seconds each readiness check may take before it counts as failed."""
+    READINESS_CACHE_SECONDS: float = Field(default=1.0, ge=0)
+    """Reuse a readiness result this long, so probe floods cannot load the database."""
+    READINESS_DETAILS: bool = False
+    """Name failing components in ``/ready`` responses; they are always logged."""
+    ACCESS_LOG_QUIET_PATHS: tuple[str, ...] = ("/health", "/ready")
+    """Successful requests to these paths are logged at DEBUG, not INFO."""
+    TRUSTED_PROXIES: tuple[IPvAnyNetwork, ...] = ()
+    """Load balancers whose ``X-Forwarded-For``/``-Proto`` headers are believed."""
+    RATE_LIMIT: str | None = None
+    """Requests per caller, e.g. ``"300/minute"``; None disables the limit."""
+    RATE_LIMIT_EXEMPT_PATHS: tuple[str, ...] = ("/health", "/ready", "/metrics")
+    """Exact paths never counted, so probes and scrapers are not refused."""
+    RATE_LIMIT_BACKEND: str = "domainkit.http.ratelimit.MemoryBackend"
+    """Dotted path to a ``Backend`` class; the default counts per process."""
+    METRICS_TOKEN: SecretStr | None = None
+    """Bearer token for ``/metrics``; without it staging and production refuse."""
+    ERROR_REPORTERS: tuple[str, ...] = ()
+    """Callables ``(exc, context) -> None`` by dotted path, e.g. a Sentry adapter."""
+
+    SECURE_HSTS_SECONDS: int = Field(default=0, ge=0)
+    """``Strict-Transport-Security`` max-age; 0 omits the header."""
+    SECURE_HSTS_INCLUDE_SUBDOMAINS: bool = False
+    SECURE_CONTENT_TYPE_NOSNIFF: bool = True
+    SECURE_REFERRER_POLICY: str | None = "no-referrer"
+    X_FRAME_OPTIONS: Literal["DENY", "SAMEORIGIN"] = "DENY"
+
+    CORS_ALLOWED_ORIGINS: tuple[str, ...] = ()
+    CORS_ALLOWED_METHODS: tuple[str, ...] = ("GET", "POST", "PUT", "PATCH", "DELETE")
+    CORS_ALLOWED_HEADERS: tuple[str, ...] = (
+        "Authorization",
+        "Content-Type",
+        "X-Request-ID",
+    )
+    CORS_ALLOW_CREDENTIALS: bool = False
+
+    @model_validator(mode="after")
+    def check_consistency(self) -> Self:
+        """Reject combinations that are unsafe or would fail later at runtime."""
+        if self.DATABASES and DEFAULT_DB_ALIAS not in self.DATABASES:
+            raise ValueError(f"DATABASES must define the {DEFAULT_DB_ALIAS!r} alias")
+        if len(set(self.INSTALLED_DOMAINS)) != len(self.INSTALLED_DOMAINS):
+            raise ValueError("INSTALLED_DOMAINS contains duplicates")
+        if self.CORS_ALLOW_CREDENTIALS and "*" in self.CORS_ALLOWED_ORIGINS:
+            raise ValueError("CORS_ALLOW_CREDENTIALS cannot be used with origin '*'")
+        if self.RATE_LIMIT is not None:
+            parse_rate(self.RATE_LIMIT)
+        if self.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
+            self._check_deployment()
+        return self
+
+    def _check_deployment(self) -> None:
+        """Enforce the security baseline for staging and production."""
+        where = f"in {self.ENVIRONMENT}"
+        if self.DEBUG:
+            raise ValueError(f"DEBUG must be False {where}")
+        if "*" in self.ALLOWED_HOSTS:
+            raise ValueError(f"ALLOWED_HOSTS must list real host names {where}")
+        rules: dict[str, Callable[[DatabaseConfig], bool]] = {
+            "ECHO logs every statement; disable it": lambda db: db.ECHO,
+            "LOG_PARAMETERS exposes bound values; disable it": lambda db: (
+                db.LOG_PARAMETERS
+            ),
+            "SSLMODE must be 'verify-full'": lambda db: (
+                is_network_database(db.URL.get_secret_value())
+                and db.SSLMODE != "verify-full"
+            ),
+        }
+        for message, violates in rules.items():
+            if aliases := sorted(a for a, db in self.DATABASES.items() if violates(db)):
+                raise ValueError(f"{message} {where} for {aliases}")

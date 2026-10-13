@@ -1,0 +1,44 @@
+"""Tables of the {{ domain }} domain, mapped imperatively onto the domain model.
+
+Imperative mapping keeps ``domain.model`` free of SQLAlchemy imports.
+"""
+
+from sqlalchemy import Boolean, Column, Index, Integer, String, Table, Uuid
+from sqlalchemy.engine import Dialect
+from sqlalchemy.types import TypeDecorator
+
+from domainkit.db import map_imperatively, metadata
+from {{ package }}.domain.model import {{ Aggregate }}, {{ Aggregate }}Name
+
+
+class {{ Aggregate }}NameType(TypeDecorator[{{ Aggregate }}Name]):
+    """Store ``{{ Aggregate }}Name`` as plain text."""
+
+    impl = String({{ Aggregate }}Name.MAX_LENGTH)
+    cache_ok = True
+
+    def process_bind_param(self, value: {{ Aggregate }}Name | None, dialect: Dialect) -> str | None:
+        """Unwrap the value object."""
+        return None if value is None else value.value
+
+    def process_result_value(self, value: str | None, dialect: Dialect) -> {{ Aggregate }}Name | None:
+        """Wrap stored text in the value object."""
+        return None if value is None else {{ Aggregate }}Name(value)
+
+
+{{ aggregates }} = Table(
+    "{{ table }}",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("name", {{ Aggregate }}NameType, nullable=False),
+    Column("archived", Boolean, nullable=False, default=False),
+    # Optimistic locking: every UPDATE checks and bumps it (see map_imperatively).
+    Column("version", Integer, nullable=False),
+    # Serves the keyset pagination order.
+    Index("ix_{{ table }}_name_id", "name", "id"),
+)
+
+
+def start_mappers() -> None:
+    """Map the aggregate onto its table (idempotent)."""
+    map_imperatively({{ Aggregate }}, {{ aggregates }})

@@ -1,0 +1,71 @@
+"""The ``{{ Aggregate }}`` aggregate and its value objects."""
+
+from typing import ClassVar, NewType, Self
+from uuid import UUID, uuid4
+
+from domainkit.ddd import AggregateRoot, ValueObject
+from {{ package }}.domain.events import (
+    {{ Aggregate }}Archived,
+    {{ Aggregate }}Created,
+    {{ Aggregate }}Renamed,
+)
+from {{ package }}.domain.exceptions import Invalid{{ Aggregate }}Name, {{ Aggregate }}IsArchived
+
+{{ Aggregate }}Id = NewType("{{ Aggregate }}Id", UUID)
+
+
+def new_{{ aggregate }}_id() -> {{ Aggregate }}Id:
+    """Create an identity in the domain, before anything is stored."""
+    return {{ Aggregate }}Id(uuid4())
+
+
+class {{ Aggregate }}Name(ValueObject):
+    """A display name: trimmed, not blank, at most ``MAX_LENGTH`` characters."""
+
+    MAX_LENGTH: ClassVar[int] = 200
+
+    value: str
+
+    def __post_init__(self) -> None:
+        """Normalize the name, or reject it."""
+        value = self.value.strip()
+        if not value:
+            raise Invalid{{ Aggregate }}Name("The name must not be blank.")
+        if len(value) > self.MAX_LENGTH:
+            raise Invalid{{ Aggregate }}Name(
+                f"The name must be at most {self.MAX_LENGTH} characters."
+            )
+        object.__setattr__(self, "value", value)
+
+
+class {{ Aggregate }}(AggregateRoot[{{ Aggregate }}Id]):
+    """Consistency boundary for one {{ aggregate }}; change it only through methods."""
+
+    name: {{ Aggregate }}Name
+    archived: bool = False
+
+    @classmethod
+    def create(cls, name: {{ Aggregate }}Name) -> Self:
+        """Start a new {{ aggregate }} and record that it was created."""
+        {{ aggregate }} = cls(id=new_{{ aggregate }}_id(), name=name)
+        {{ aggregate }}.record({{ Aggregate }}Created({{ aggregate }}_id={{ aggregate }}.id, name=name.value))
+        return {{ aggregate }}
+
+    def rename(self, name: {{ Aggregate }}Name) -> None:
+        """Change the name; renaming to the current name changes nothing."""
+        self._ensure_active()
+        if name == self.name:
+            return
+        self.name = name
+        self.record({{ Aggregate }}Renamed({{ aggregate }}_id=self.id, name=name.value))
+
+    def archive(self) -> None:
+        """Make the {{ aggregate }} read-only."""
+        self._ensure_active()
+        self.archived = True
+        self.record({{ Aggregate }}Archived({{ aggregate }}_id=self.id))
+
+    def _ensure_active(self) -> None:
+        """Refuse changes to an archived {{ aggregate }}."""
+        if self.archived:
+            raise {{ Aggregate }}IsArchived(f"{{ Aggregate }} {self.id} is archived.")

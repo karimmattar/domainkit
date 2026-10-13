@@ -1,0 +1,31 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "schedule": ["before 9am on monday"],
+  "minimumReleaseAge": "14 days",
+  "internalChecksFilter": "strict",
+  "labels": ["dependencies"],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 9am on monday"]
+  },
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "minimumReleaseAge": null,
+    "schedule": ["at any time"],
+    "labels": ["dependencies", "security"]
+  },
+  "packageRules": [
+    {
+      "description": "A library widens its supported ranges instead of moving them, so projects keep their choice.",
+      "matchDepTypes": ["dependencies", "optional-dependencies"],
+      "rangeStrategy": "widen"
+    },
+    {
+      "description": "Dev tools and actions: one grouped pull request for patches and digests.",
+      "matchDepTypes": ["dev", "action"],
+      "matchUpdateTypes": ["patch", "digest", "pinDigest"],
+      "groupName": "tooling patches"
+    }
+  ]
+}

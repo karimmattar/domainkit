@@ -1,0 +1,11 @@
+"""{{ domain_title }} bounded context.
+
+Layers, innermost first (``python manage.py check`` enforces the direction):
+
+- ``domain``: the model (aggregates, value objects, events). Pure Python.
+- ``application``: use cases that change aggregates through a unit of work.
+- ``infrastructure``: adapters, such as SQLAlchemy tables and repositories.
+- ``api``: the HTTP interface (FastAPI router and schemas).
+
+``apps.py`` wires the layers together when the domain is installed.
+"""

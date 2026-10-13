@@ -1,0 +1,18 @@
+"""Reactions to domain events; ``apps.py`` subscribes them.
+
+Durable handlers run in the worker, at least once: make them idempotent.
+
+Replace the example with real reactions: projections, notifications, or
+integration events for other bounded contexts.
+"""
+
+import logging
+
+from {{ package }}.domain.events import {{ Aggregate }}Created
+
+logger = logging.getLogger(__name__)
+
+
+async def log_{{ aggregate }}_created(event: {{ Aggregate }}Created) -> None:
+    """Log each new {{ aggregate }}."""
+    logger.info("{{ Aggregate }} %s created", event.{{ aggregate }}_id)
