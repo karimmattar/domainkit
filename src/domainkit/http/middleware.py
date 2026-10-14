@@ -358,6 +358,7 @@ class RequestBodyLimitMiddleware:
                 )(scope, receive, send)
                 return
         received = 0
+        started = False
 
         async def limited_receive() -> Message:
             nonlocal received
@@ -369,7 +370,21 @@ class RequestBodyLimitMiddleware:
                     raise RequestBodyTooLarge
             return message
 
-        await self.app(scope, limited_receive, send)
+        async def send_tracked(message: Message) -> None:
+            nonlocal started
+            started = started or message["type"] == "http.response.start"
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, send_tracked)
+        except RequestBodyTooLarge:
+            # Middleware that reads the body itself (IdempotencyMiddleware)
+            # raises outside FastAPI's error handling: answer for it.
+            if started:
+                raise
+            await error_response(
+                413, "Request body too large.", code="content_too_large"
+            )(scope, receive, send)
 
     def _reject(self, size: int) -> None:
         """Log an oversized request as a security event."""

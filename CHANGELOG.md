@@ -6,6 +6,13 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A streamed body over `MAX_REQUEST_BODY_SIZE` sent with an
+  `Idempotency-Key` got a 500 and was reported as an unhandled error;
+  `RequestBodyLimitMiddleware` now answers 413 for middleware that reads
+  bodies outside FastAPI.
+
 ## [0.5.0] - 2026-10-14
 
 ### Added

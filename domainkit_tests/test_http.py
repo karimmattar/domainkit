@@ -14,6 +14,7 @@ from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.http.middleware import (
     RequestBodyLimitMiddleware,
+    RequestBodyTooLarge,
     host_allowed,
     security_headers,
 )
@@ -337,6 +338,53 @@ async def test_body_limit_ignores_other_messages() -> None:
     await middleware({"type": "http", "headers": []}, receive, send)
 
     assert received == [{"type": "http.disconnect"}]
+
+
+@pytest.mark.anyio
+async def test_body_limit_answers_for_middleware_that_reads_bodies() -> None:
+    """Middleware reading an oversized body outside FastAPI still gets a 413."""
+    sent: list[Message] = []
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        while (await receive()).get("more_body"):
+            pass
+
+    async def receive() -> Message:
+        return {"type": "http.request", "body": b"x" * 6, "more_body": True}
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    with override_settings(MAX_REQUEST_BODY_SIZE=10):
+        middleware = RequestBodyLimitMiddleware(app)
+    await middleware({"type": "http", "headers": []}, receive, send)
+
+    assert sent[0]["status"] == 413
+    assert b'"content_too_large"' in sent[1]["body"]
+
+
+@pytest.mark.anyio
+async def test_body_limit_reraises_once_a_response_started() -> None:
+    """After the response has started, the limit cannot send its own."""
+    sent: list[Message] = []
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        while (await receive()).get("more_body"):
+            pass
+
+    async def receive() -> Message:
+        return {"type": "http.request", "body": b"x" * 6, "more_body": True}
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    with override_settings(MAX_REQUEST_BODY_SIZE=10):
+        middleware = RequestBodyLimitMiddleware(app)
+    with pytest.raises(RequestBodyTooLarge):
+        await middleware({"type": "http", "headers": []}, receive, send)
+
+    assert [message["type"] for message in sent] == ["http.response.start"]
 
 
 @pytest.mark.anyio

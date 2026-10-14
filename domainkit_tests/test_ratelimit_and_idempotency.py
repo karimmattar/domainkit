@@ -284,6 +284,23 @@ def test_key_misuse_is_refused(idempotent: TestClient) -> None:
     assert read.status_code == 200
 
 
+def test_oversized_streamed_bodies_get_413(idempotent: TestClient) -> None:
+    """A streamed body over the limit is a 413 with a key too, not a 500."""
+
+    def chunks() -> Iterator[bytes]:
+        for _ in range(3):
+            yield b"x" * 600_000
+
+    response = idempotent.post(
+        "/counter", content=chunks(), headers={"Idempotency-Key": "big"}
+    )
+
+    assert (response.status_code, response.json()["code"]) == (
+        413,
+        "content_too_large",
+    )
+
+
 def test_failures_and_large_responses_are_not_stored(idempotent: TestClient) -> None:
     """Server errors and oversized bodies release the key for a retry."""
     for path in ("/unavailable", "/crash", "/large"):
