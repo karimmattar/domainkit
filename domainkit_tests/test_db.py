@@ -88,11 +88,10 @@ class NotesUnitOfWork(SqlAlchemyUnitOfWork):
 
 
 @pytest.fixture
-def database(tmp_path: Path) -> Iterator[str]:
-    """A file database holding the test table."""
-    url = f"sqlite+aiosqlite:///{tmp_path / 'notes.sqlite3'}"
-    with override_settings(DATABASES={"default": {"URL": url}}):
-        yield url
+def database(database_url: str) -> Iterator[str]:
+    """An empty database, selected in the settings."""
+    with override_settings(DATABASES={"default": {"URL": database_url}}):
+        yield database_url
 
 
 @pytest.fixture

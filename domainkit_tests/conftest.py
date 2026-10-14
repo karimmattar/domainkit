@@ -1,13 +1,20 @@
 """Fixtures for framework tests: isolated settings, registry, and packages."""
 
+import asyncio
 import importlib
 import logging
+import os
 import sys
 import textwrap
+import uuid
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Final
 
 import pytest
+from sqlalchemy import make_url
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from domainkit.apps import registry
 from domainkit.conf import use_settings
@@ -23,6 +30,9 @@ from domainkit.http import metrics
 from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
 
 type MakePackage = Callable[[str, dict[str, str]], Path]
+
+POSTGRES_VARIABLE: Final = "DOMAINKIT_TEST_POSTGRES_URL"
+"""A PostgreSQL server URL; when set, database tests run there (see database_url)."""
 
 
 @pytest.fixture(autouse=True)
@@ -100,6 +110,44 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     yield tmp_path
     project_root.cache_clear()
     project_prefix.cache_clear()
+
+
+@pytest.fixture
+def database_url(tmp_path: Path) -> Iterator[str]:
+    """An empty database for one test: a SQLite file, or a new PostgreSQL database.
+
+    Set ``DOMAINKIT_TEST_POSTGRES_URL`` to a server (CI does) to run the
+    database tests there. Each test then gets a database of its own, dropped
+    afterwards; nothing else on that server is touched.
+    """
+    server = os.environ.get(POSTGRES_VARIABLE)
+    if not server:
+        yield f"sqlite+aiosqlite:///{tmp_path / 'test.sqlite3'}"
+        return
+    name = f"domainkit_test_{uuid.uuid4().hex}"
+    on_server(server, f'CREATE DATABASE "{name}"')
+    try:
+        yield make_url(server).set(database=name).render_as_string(hide_password=False)
+    finally:
+        on_server(server, f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+
+
+def on_server(url: str, statement: str) -> None:
+    """Run one statement outside a transaction, in a thread with its own loop.
+
+    Sync fixtures and tests call it, so it must not need the caller's loop.
+    """
+
+    async def run() -> None:
+        engine = create_async_engine(url, isolation_level="AUTOCOMMIT")
+        try:
+            async with engine.connect() as connection:
+                await connection.exec_driver_sql(statement)
+        finally:
+            await engine.dispose()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(asyncio.run, run()).result()
 
 
 @pytest.fixture
