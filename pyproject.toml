@@ -70,6 +70,8 @@ dev = [
     "pip-audit (>=2.9.0,<3.0.0)",
     # Starlette's TestClient (it deprecates plain httpx).
     "httpx2 (>=2.13.0,<3.0.0)",
+    # An in-memory Redis, with Lua, so the Redis tests also run without a server.
+    "fakeredis[lua] (>=2.38.0,<3.0.0)",
     # In-memory span exporter for the tracing tests.
     "opentelemetry-sdk (>=1.45.1,<2.0.0)",
     # Random test order, property-based tests, mutation testing.
@@ -128,6 +130,8 @@ source = ["src"]
 [tool.coverage.report]
 show_missing = true
 skip_empty = true
+# Every run, with or without servers; CI's coverage job also requires 100%
+# of all runs combined.
 fail_under = 98
 precision = 2
 exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError"]

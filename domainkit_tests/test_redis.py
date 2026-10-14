@@ -1,29 +1,35 @@
-"""Redis and Valkey themselves: the store, TLS, a least-privilege user, rate limits.
+"""Redis and Valkey: the store, TLS, a least-privilege user, rate limits.
 
-Set ``DOMAINKIT_TEST_REDIS_URL`` (``redis://host:6379/0``),
+Every test runs on fakeredis, an in-memory Redis with Lua, so they all run
+without a server. Set ``DOMAINKIT_TEST_REDIS_URL`` (``redis://host:6379/0``),
 ``DOMAINKIT_TEST_VALKEY_URL``, and ``DOMAINKIT_TEST_REDIS_TLS_URL`` with
-``DOMAINKIT_TEST_REDIS_CA`` (the CA of a ``rediss://`` server) to run these,
-as CI does. Each test uses its own key prefix, so tests can share servers.
+``DOMAINKIT_TEST_REDIS_CA`` (the CA of a ``rediss://`` server) to run them on
+real servers too, as CI does; the TLS and ACL tests need a real server. Each
+test uses its own key prefix, so tests can share servers.
 """
 
 import asyncio
 import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
-from typing import Final
+from typing import Any, Final
 
 import pytest
+from fakeredis import FakeAsyncRedis, FakeServer
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
 from domainkit.cache import Cache, CacheError, CacheUnavailable, cached, caches
+from domainkit.cache import redis as redis_cache
 from domainkit.cache.core import split
 from domainkit.cache.redis import RedisStore
 from domainkit.conf import CacheConfig, override_settings
 from domainkit.http import get_asgi_application
 from domainkit.http.ratelimit import RedisBackend
 
+FAKE: Final = "redis://fakeredis:6379/0"
 SERVERS: Final = {
+    "fake": FAKE,
     "redis": os.environ.get("DOMAINKIT_TEST_REDIS_URL", ""),
     "valkey": os.environ.get("DOMAINKIT_TEST_VALKEY_URL", ""),
     "redis-tls": os.environ.get("DOMAINKIT_TEST_REDIS_TLS_URL", ""),
@@ -60,16 +66,56 @@ class Invoice(BaseModel):
     total: int
 
 
-@pytest.fixture(params=list(SERVERS))
-def server(request: pytest.FixtureRequest) -> dict[str, object]:
-    """Cache settings for one test server, with a key prefix of the test's own."""
-    url = SERVERS[request.param]
+class FakeRedis(FakeAsyncRedis):
+    """fakeredis, keeping SCAN's promise while keys are deleted mid-scan.
+
+    Redis returns every key that exists for the whole scan, whatever else is
+    deleted meanwhile (``clear`` relies on it). fakeredis's cursor is a
+    position in its key list, so deletions would make it skip keys.
+    """
+
+    async def scan_iter(  # type: ignore[override]  # Typed as the sync client's.
+        self,
+        match: str | None = None,
+        count: int | None = None,
+        _type: str | None = None,
+        **kwargs: Any,  # noqa: ANN401 - redis-py's options.
+    ) -> AsyncIterator[Any]:
+        """Finish the scan, then hand out its keys."""
+        scan = super().scan_iter(match, count, _type, **kwargs)
+        keys = [key async for key in scan]
+        for key in keys:
+            yield key
+
+
+def options_for(name: str) -> dict[str, object]:
+    """Cache settings for server ``name``, with a key prefix of the test's own."""
+    url = SERVERS[name]
     if not url:
-        pytest.skip(f"set DOMAINKIT_TEST_{request.param.upper().replace('-', '_')}_URL")
+        pytest.skip(f"set DOMAINKIT_TEST_{name.upper().replace('-', '_')}_URL")
     options: dict[str, object] = {"URL": url, "KEY_PREFIX": f"t{uuid.uuid4().hex}"}
     if url.startswith("rediss://"):
         options["TLS_CA"] = CA
     return options
+
+
+@pytest.fixture(params=list(SERVERS))
+def server(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, object]:
+    """Settings for each server: fakeredis always, real ones when configured."""
+    if request.param == "fake":
+        fake = FakeServer()
+        monkeypatch.setattr(
+            redis_cache, "create_client", lambda config: FakeRedis(server=fake)
+        )
+    return options_for(request.param)
+
+
+@pytest.fixture(params=[name for name in SERVERS if name != "fake"])
+def real_server(request: pytest.FixtureRequest) -> dict[str, object]:
+    """Settings for each real server (TLS and users need one)."""
+    return options_for(request.param)
 
 
 @pytest.fixture
@@ -189,8 +235,11 @@ async def test_tls_needs_a_trusted_certificate() -> None:
         await cache.close()
 
 
-async def test_a_least_privilege_user_is_enough(server: dict[str, object]) -> None:
+async def test_a_least_privilege_user_is_enough(
+    real_server: dict[str, object],
+) -> None:
     """The ACL in docs/cache.md covers every operation, the rate limiter too."""
+    server = real_server
     admin = CacheConfig.model_validate(server)
     admin_client = RedisStore.from_config(admin).client
     user, password = f"u{uuid.uuid4().hex[:12]}", uuid.uuid4().hex
