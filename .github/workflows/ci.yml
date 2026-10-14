@@ -191,8 +191,11 @@ jobs:
             -e RABBITMQ_DEFAULT_USER=domainkit -e RABBITMQ_DEFAULT_PASS=domainkit \
             -v "$PWD:/certs:ro" -v "$PWD/20-tls.conf:/etc/rabbitmq/conf.d/20-tls.conf:ro" \
             rabbitmq:4.3.5-management-alpine@sha256:b3b8b7f95f5382a19f9ea33540e604f30aad081d37ad9aba72255135765373a1
+          # Wait on the log, not "docker exec rabbitmq-diagnostics": an early
+          # exec runs as root and writes the Erlang cookie the server (another
+          # user) must create, so RabbitMQ fails to start.
           for _ in $(seq 1 90); do
-            if docker exec rabbitmq rabbitmq-diagnostics -q check_port_connectivity >/dev/null 2>&1; then
+            if docker logs rabbitmq 2>&1 | grep -q "Server startup complete"; then
               exit 0
             fi
             sleep 1
