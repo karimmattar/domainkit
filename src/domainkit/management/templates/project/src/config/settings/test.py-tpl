@@ -1,0 +1,7 @@
+"""Settings for the tests (domainkit_settings in pyproject.toml)."""
+
+from config.settings.base import *
+
+ENVIRONMENT = "test"
+ALLOWED_HOSTS = ["testserver"]
+DATABASES = {"default": {"URL": "sqlite+aiosqlite:///:memory:"}}

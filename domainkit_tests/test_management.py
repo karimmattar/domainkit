@@ -29,6 +29,7 @@ from domainkit_tests.test_db import test_metadata
 
 BUILTINS = {
     "check",
+    "init",
     "makemigrations",
     "migrate",
     "runserver",

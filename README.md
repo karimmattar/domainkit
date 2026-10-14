@@ -22,109 +22,36 @@ pip install "domainkit[postgres]"     # extras: postgres, sqlite, metrics, traci
 
 ## Quick start
 
-A project is a `pyproject.toml`, a `manage.py`, a `config` package, and a
-`domains` package for its bounded contexts. The project's name sets the
-environment variable prefix: `billingAPI` reads `BILLING_API_*`.
-
-```text
-billing/
-  pyproject.toml
-  manage.py
-  src/config/__init__.py
-  src/config/settings/__init__.py
-  src/config/settings/local.py
-  src/config/settings/test.py
-  src/config/urls.py
-  src/config/asgi.py
-  src/domains/__init__.py
-```
-
-```toml
-# pyproject.toml
-[project]
-name = "billingAPI"
-version = "0.1.0"
-requires-python = ">=3.13"
-dependencies = ["domainkit[sqlite]"]
-
-[dependency-groups]
-dev = ["domainkit[testing]"]                # pytest and httpx2, for the fixtures
-
-[tool.pytest.ini_options]
-pythonpath = ["src"]
-addopts = "-p domainkit.testing"           # the database and client fixtures
-domainkit_settings = "config.settings.test"
-```
-
-```python
-# manage.py
-import sys
-from pathlib import Path
-
-if __name__ == "__main__":
-    sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
-    from domainkit.management import execute_from_command_line
-
-    execute_from_command_line(sys.argv)
-```
-
-```python
-# src/config/settings/local.py
-from pathlib import Path
-
-from domainkit.conf.env import Env
-
-env = Env()
-BASE_DIR = Path(__file__).resolve().parents[3]
-
-DEBUG = True
-INSTALLED_DOMAINS = ["domainkit.contrib.messaging"]
-ROOT_ROUTER = "config.urls.router"
-ASGI_APPLICATION = "config.asgi:application"
-DATABASES = {
-    "default": {
-        "URL": env.str("DATABASE_URL", f"sqlite+aiosqlite:///{BASE_DIR / 'db.sqlite3'}")
-    },
-}
-```
-
-```python
-# src/config/settings/test.py
-from config.settings.local import *
-
-DEBUG = False
-ALLOWED_HOSTS = ["testserver"]
-DATABASES = {"default": {"URL": "sqlite+aiosqlite:///:memory:"}}
-```
-
-```python
-# src/config/urls.py
-from fastapi import APIRouter
-
-from domainkit.http.health import router as health_router
-
-router = APIRouter()
-router.include_router(health_router)
-```
-
-```python
-# src/config/asgi.py
-from domainkit.http import get_asgi_application
-
-application = get_asgi_application()
-```
-
-Then:
-
 ```bash
-pip install "domainkit[sqlite,testing]"                    # in a virtual environment
-export BILLING_API_SETTINGS_MODULE=config.settings.local   # or put it in .env
+python3.13 -m venv .venv && . .venv/bin/activate
+pip install "domainkit[postgres,sqlite,testing]"
+domainkit init billingAPI billing     # the name sets the variable prefix: BILLING_API_*
+cd billing
 python manage.py check
 python manage.py startdomain invoices --aggregate Invoice   # prints how to install it
 python manage.py makemigrations -m "create invoices" && python manage.py migrate
-pytest                                                      # the generated tests
-python manage.py runserver                                  # http://127.0.0.1:8000/docs
+pytest
+python manage.py runserver            # http://127.0.0.1:8000/docs
 ```
+
+`domainkit init` creates a project that passes `check` and its tests as it is:
+
+```text
+billing/
+  pyproject.toml          the name, dependencies, and the pytest plugin
+  manage.py
+  .env                    selects config.settings.local on this machine
+  .gitignore
+  src/config/settings/    base, local, test, and production settings
+  src/config/urls.py      the root router: mount each domain's router here
+  src/config/asgi.py      the application, for uvicorn
+  src/domains/            the bounded contexts
+  tests/test_health.py
+```
+
+The production settings read `BILLING_API_ALLOWED_HOSTS` and
+`BILLING_API_DATABASE_URL` from the environment, and the deployment checks
+refuse to start without them, or without verified TLS to the database.
 
 ## Developing domainkit
 

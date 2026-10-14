@@ -190,12 +190,13 @@ at a database you want to keep.
 
 ## Commands
 
-Run as `python manage.py <command>`. Domains add their own in
-`management/commands/<name>.py` with a `Command(BaseCommand)` class; `handle`
-may be `async`.
+Run as `python manage.py <command>`; `init` runs before a project exists, as
+`domainkit init`. Domains add their own in `management/commands/<name>.py`
+with a `Command(BaseCommand)` class; `handle` may be `async`.
 
 | Command | Options | Purpose |
 | --- | --- | --- |
+| `init` | `name`, `[directory]` | Create a project: base, local, test, and production settings, routes, `manage.py`, `.env`, and a first test. The name sets the environment prefix; the directory (default `./<name>`) must be empty or missing. |
 | `check` | | Settings, domains, routes, middleware, layer rules, and a single migration head. |
 | `startdomain` | `name`, `--aggregate`, `--plural`, `--parent`, `--tests-dir` | Generate a bounded context and its tests. |
 | `makemigrations` | `-m/--message`, `--check`, `--merge`, `--database` | Write a revision; `--check` fails if one is missing; `--merge` joins two heads. |
