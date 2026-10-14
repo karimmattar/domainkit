@@ -27,6 +27,8 @@ def layered(make_package: MakePackage) -> str:
             """,
             "application/services.py": """
                 from fastapi import status
+                import redis.asyncio
+                from domainkit.cache import cached
                 from arch.billing.domain.model import Invoice
                 from ..infrastructure import repo
                 from arch.shipping.application import services
@@ -81,6 +83,7 @@ def test_violations_name_the_rule(layered: str) -> None:
         ("domain.model", "arch.billing.api.routes"),
         ("application.services", "fastapi"),
         ("application.services", "fastapi.status"),
+        ("application.services", "redis.asyncio"),
         ("application.services", "arch.billing.infrastructure"),
         ("application.services", "arch.billing.infrastructure.repo"),
         ("application.services", "arch.shipping.domain.model"),

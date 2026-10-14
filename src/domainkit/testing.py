@@ -16,6 +16,9 @@ The ``.env`` file is never read during tests. The fixtures:
 ``client``
     A ``TestClient`` for the project's application, lifespan included, on
     the migrated database. The tests ``startdomain`` generates use it.
+
+Memory caches (``memory://``) are emptied before every test, so no test
+sees what another one cached. Redis caches are left alone.
 """
 
 import io
@@ -29,6 +32,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
+from domainkit.cache import caches
 from domainkit.conf import DEFAULT_DB_ALIAS, DatabaseConfig, override_settings, settings
 from domainkit.conf.env import project_prefix
 from domainkit.http import get_asgi_application
@@ -71,6 +75,12 @@ def migrated_database(scratch: Path) -> Iterator[str]:
         call_command("migrate", "base", downgrade=True, stdout=output)
         call_command("migrate", stdout=output)
         yield settings.DATABASES[DEFAULT_DB_ALIAS].URL.get_secret_value()
+
+
+@pytest.fixture(autouse=True)
+def empty_memory_caches() -> None:
+    """Start every test with empty memory caches."""
+    caches.reset()
 
 
 @pytest.fixture(scope="session")

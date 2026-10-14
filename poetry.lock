@@ -3037,6 +3037,27 @@ files = [
 ]
 
 [[package]]
+name = "redis"
+version = "8.1.0"
+description = "Python client for Redis database and key-value store"
+optional = true
+python-versions = ">=3.10"
+groups = ["main"]
+markers = "extra == \"redis\""
+files = [
+    {file = "redis-8.1.0-py3-none-any.whl", hash = "sha256:a4fe1aac3d3b3cc791d4b3d5931c5a956045dc951ee74d1c913ee3ac4d2ee9fb"},
+    {file = "redis-8.1.0.tar.gz", hash = "sha256:6e1a19beef9225c83efd689c7e6b7da2d5215b1f42cd13b7fc3714d0a09c7b25"},
+]
+
+[package.extras]
+circuit-breaker = ["pybreaker (>=1.4.0)"]
+hiredis = ["hiredis (>=3.2.0)"]
+jwt = ["pyjwt (>=2.13.0)"]
+ocsp = ["cryptography (>=36.0.1)", "pyopenssl (>=20.0.1)", "requests (>=2.31.0)"]
+otel = ["opentelemetry-api (>=1.39.1)", "opentelemetry-exporter-otlp-proto-http (>=1.39.1)", "opentelemetry-sdk (>=1.39.1)"]
+xxhash = ["xxhash (>=3.6.0,<3.7.0)"]
+
+[[package]]
 name = "requests"
 version = "2.34.2"
 description = "Python HTTP for Humans."
@@ -3867,6 +3888,7 @@ files = [
 immudb = ["immudb-py"]
 metrics = ["prometheus-client"]
 postgres = ["asyncpg"]
+redis = ["redis"]
 sqlite = ["aiosqlite"]
 testing = ["httpx2", "pytest"]
 tracing = ["opentelemetry-api"]
@@ -3874,4 +3896,4 @@ tracing = ["opentelemetry-api"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13,<4"
-content-hash = "7f7013a96aeee8035785e8ae96065b74fb88e740058a2bb4723ea492143b0c31"
+content-hash = "792b85b1082aff90621955abe3c8405ac7956d766666d7097c3c5b701b6cbcde"

@@ -81,9 +81,11 @@ jobs:
           retention-days: 1
 
   # The suite again against real servers: PostgreSQL (row locks, the audit
-  # triggers, timeouts, partitions, migrations) and immudb with TLS and a
-  # signing key (verified ledgers, evidence). Tests that need a server are
-  # skipped elsewhere, so a skip here means a server went unused: fail.
+  # triggers, timeouts, partitions, migrations), immudb with TLS and a
+  # signing key (verified ledgers, evidence), and Redis (plain and TLS) and
+  # Valkey (caches, shared rate limits, a least-privilege user). Tests that
+  # need a server are skipped elsewhere, so a skip here means a server went
+  # unused: fail.
   integration:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -105,6 +107,10 @@ jobs:
       DOMAINKIT_TEST_IMMUDB_URL: immudb://immudb:immudb@localhost:3322/defaultdb
       DOMAINKIT_TEST_IMMUDB_CA: .ci/immudb/server.crt
       DOMAINKIT_TEST_IMMUDB_SIGNING_KEY: .ci/immudb/signing.pub
+      DOMAINKIT_TEST_REDIS_URL: redis://localhost:6379/0
+      DOMAINKIT_TEST_REDIS_TLS_URL: rediss://localhost:6380/0
+      DOMAINKIT_TEST_REDIS_CA: .ci/redis/server.crt
+      DOMAINKIT_TEST_VALKEY_URL: redis://localhost:6381/0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -133,6 +139,33 @@ jobs:
             sleep 1
           done
           docker logs immudb
+          exit 1
+      # Redis serves plaintext on 6379 and TLS on 6380, with a certificate
+      # made here; Valkey (6381) checks that the same client works with it.
+      - name: Start Redis (plain and TLS) and Valkey
+        run: |
+          mkdir -p .ci/redis
+          cd .ci/redis
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=localhost" \
+            -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" \
+            -keyout server.key -out server.crt 2>/dev/null
+          chmod 644 server.key
+          docker run -d --name redis -p 6379:6379 -p 6380:6380 -v "$PWD:/certs:ro" \
+            redis:8.8.3-alpine@sha256:0b2b77d3ea5078274795e3177cdbdada8b96316684a38911d528534ed679b5ec \
+            redis-server --port 6379 --tls-port 6380 \
+            --tls-cert-file /certs/server.crt --tls-key-file /certs/server.key \
+            --tls-ca-cert-file /certs/server.crt --tls-auth-clients no
+          docker run -d --name valkey -p 6381:6379 \
+            valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
+          for _ in $(seq 1 30); do
+            if docker exec redis redis-cli ping 2>/dev/null | grep -q PONG &&
+              docker exec valkey valkey-cli ping 2>/dev/null | grep -q PONG; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs redis
+          docker logs valkey
           exit 1
       - run: pipx install "poetry==${POETRY_VERSION}"
       - run: poetry sync --all-extras --with dev
@@ -190,7 +223,7 @@ jobs:
       - run: |
           python -m venv /tmp/clean
           /tmp/clean/bin/pip install "$(ls dist/*.whl)[postgres]"
-          /tmp/clean/bin/python -c "import domainkit, domainkit.contrib.messaging; print(domainkit.__version__)"
+          /tmp/clean/bin/python -c "import domainkit, domainkit.cache, domainkit.contrib.messaging; print(domainkit.__version__)"
           /tmp/clean/bin/domainkit init smokeAPI /tmp/smoke
           test -f /tmp/smoke/.env && test -f /tmp/smoke/manage.py
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

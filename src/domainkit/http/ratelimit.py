@@ -10,10 +10,11 @@ Responses carry ``RateLimit-Limit``, ``RateLimit-Remaining``, and
 ``RateLimit-Reset``; refused ones get 429 with ``Retry-After``.
 
 The default backend lives in process memory, so each replica counts on its
-own. Behind several replicas, enforce limits at the gateway or point
-``RATE_LIMIT_BACKEND`` at a shared store (Redis) implementing ``Backend``.
+own. Behind several replicas, use ``RedisBackend``: one count per caller in
+the Redis cache ``RATE_LIMIT_CACHE``, shared by every replica (ADR 0013).
 """
 
+import logging
 import math
 import time
 from collections.abc import Callable
@@ -24,12 +25,16 @@ from fastapi import status
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from domainkit.cache import CacheUnavailable, caches
 from domainkit.conf import settings
+from domainkit.conf.global_settings import REDIS_SCHEMES
 from domainkit.context import current_request
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import error_response
 from domainkit.utils.module_loading import import_string
 from domainkit.utils.rates import parse_rate
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +98,59 @@ class MemoryBackend:
     def _purge(self, now: float) -> None:
         """Forget callers whose quota is already full again."""
         self._arrival = {k: v for k, v in self._arrival.items() if v > now}
+
+
+class RedisBackend:
+    """GCRA in Redis or Valkey, shared by every replica (``RATE_LIMIT_CACHE``).
+
+    One Lua script reads and updates the caller's state on the server's
+    clock, so replicas never race and their clocks do not matter. Keys live
+    in the cache's namespace (``<KEY_PREFIX>:ratelimit:<caller>``) only until
+    the caller's quota is full again. If Redis fails, requests are let
+    through: the limit protects the service, and its outage must not stop
+    it. The cache is then skipped for ``FAILURE_COOLDOWN`` seconds.
+    """
+
+    def __init__(self, cache: str | None = None) -> None:
+        """Count in ``cache`` (default: ``RATE_LIMIT_CACHE``), a Redis cache."""
+        self.cache = cache or settings.RATE_LIMIT_CACHE
+        if caches.config(self.cache).scheme not in REDIS_SCHEMES:
+            raise ImproperlyConfigured(
+                f"RedisBackend needs a redis:// or rediss:// cache; "
+                f"CACHES[{self.cache!r}] is not one."
+            )
+
+    async def hit(self, key: str, limit: int, period: float) -> Decision:
+        """Apply GCRA in Redis; let the request through if Redis fails."""
+        from domainkit.cache.redis import RedisStore
+
+        cache = caches[self.cache]
+        store = cache.store
+        if not isinstance(store, RedisStore):  # Settings changed since __init__.
+            raise ImproperlyConfigured(f"CACHES[{self.cache!r}] is not Redis.")
+        interval = period * 1_000_000 / limit
+        tolerance = period * 1_000_000 - interval
+        try:
+            allowed, debt = await cache.call(
+                store.gcra, f"{cache.namespace}ratelimit:{key}", interval, tolerance
+            )
+        except CacheUnavailable:
+            return Decision(
+                allowed=True, remaining=limit - 1, reset_after=0.0, retry_after=0.0
+            )
+        if not allowed:
+            return Decision(
+                allowed=False,
+                remaining=0,
+                reset_after=debt / 1_000_000,
+                retry_after=(debt - tolerance) / 1_000_000,
+            )
+        return Decision(
+            allowed=True,
+            remaining=math.floor((tolerance - debt) / interval),
+            reset_after=(debt + interval) / 1_000_000,
+            retry_after=0.0,
+        )
 
 
 class RateLimitMiddleware:

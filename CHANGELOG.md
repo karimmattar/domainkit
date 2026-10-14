@@ -6,6 +6,38 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-14
+
+### Added
+
+- Caches (ADR 0012): `CACHES` by alias, with `memory://` (per process,
+  least recently used first out), `redis://` and `rediss://` (Redis or
+  Valkey, through the new `redis` extra), and `dummy://`. `default` is a
+  memory cache unless set.
+- `domainkit.cache.caches[alias]`: `get` and `set` with typed reads, `add`,
+  `get_many`, `set_many`, `delete_many`, `incr`, `touch`, `clear` (its own
+  namespace only), and `get_or_set`. Values are JSON, never pickled; an
+  entry that no longer fits its type reads as a miss.
+- `get_or_set` and `@cached` share one computation among concurrent misses,
+  refresh hot entries early (XFetch, `EARLY_RECOMPUTE`), and compute values
+  when the cache fails. A failed cache is skipped for `FAILURE_COOLDOWN`.
+- `invalidate_on(Event, keys)` deletes entries when a domain event is
+  published after commit.
+- `domainkit.http.ratelimit.RedisBackend` (ADR 0013): rate limits shared by
+  every replica, run as GCRA in Redis on the server's clock, in the cache
+  named by the new `RATE_LIMIT_CACHE`. Requests pass if Redis fails.
+- The `cache` command: `check` pings caches, `clear` empties them.
+- Deployment checks: a Redis cache on another host needs `rediss://`,
+  certificate checks, and a password or client certificate.
+- `/ready` checks caches whose `READINESS` is on; metrics
+  `cache_lookups_total` and `cache_errors_total`.
+- The testing plugin empties memory caches before every test.
+
+### Changed
+
+- The layer rules forbid `redis` in the application layer, as they forbid
+  the other database libraries. Use `domainkit.cache` there.
+
 ## [0.3.0] - 2026-10-14
 
 ### Added
@@ -109,7 +141,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/karimmattar/domainkit/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/karimmattar/domainkit/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/karimmattar/domainkit/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/karimmattar/domainkit/compare/v0.1.0...v0.1.1

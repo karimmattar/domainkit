@@ -12,6 +12,7 @@ from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
 
 from domainkit.apps import registry
+from domainkit.cache import caches
 from domainkit.conf import settings
 from domainkit.db.connections import connections
 from domainkit.ledger import ledgers
@@ -49,6 +50,7 @@ async def _failing_checks(request: Request) -> list[str]:
         *await registry.check(seconds),
         *await connections.check_all(seconds),
         *await ledgers.check_all(seconds),
+        *await caches.check_all(seconds),
     ]
     state.readiness = (now, failing)
     return failing

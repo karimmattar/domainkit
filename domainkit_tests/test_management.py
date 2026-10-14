@@ -28,6 +28,7 @@ from domainkit_tests.conftest import MakePackage
 from domainkit_tests.test_db import test_metadata
 
 BUILTINS = {
+    "cache",
     "check",
     "init",
     "makemigrations",

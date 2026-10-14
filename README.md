@@ -7,11 +7,13 @@ A Django-style framework for domain-driven FastAPI services. It provides:
 - DDD building blocks, with the layer rules between them enforced
 - several databases: domains routed to their own, sharding by key,
   PostgreSQL range partitioning, and immudb ledgers for evidence
+- caches in memory or in Redis and Valkey, with stampede protection, and
+  rate limits shared by every replica
 - optional apps for reliable messaging, audit trails, idempotent requests,
   and tamper-evident evidence
 
 ```bash
-pip install "domainkit[postgres]"     # extras: postgres, sqlite, immudb, metrics, tracing, testing
+pip install "domainkit[postgres]"     # extras: postgres, sqlite, immudb, redis, metrics, tracing, testing
 ```
 
 ## Documentation
@@ -20,6 +22,8 @@ pip install "domainkit[postgres]"     # extras: postgres, sqlite, immudb, metric
   observability, testing, commands, and extension points
 - [docs/databases.md](https://github.com/karimmattar/domainkit/blob/main/docs/databases.md): several databases, routing,
   sharding, partitioning, and ledgers
+- [docs/cache.md](https://github.com/karimmattar/domainkit/blob/main/docs/cache.md): caches in memory, Redis, and Valkey,
+  and shared rate limits
 - [docs/contrib.md](https://github.com/karimmattar/domainkit/blob/main/docs/contrib.md): messaging, audit, idempotency, and evidence
 - [docs/versioning.md](https://github.com/karimmattar/domainkit/blob/main/docs/versioning.md): compatibility, deprecations, and releases
 - [docs/adr/](https://github.com/karimmattar/domainkit/tree/main/docs/adr): the decisions behind the design

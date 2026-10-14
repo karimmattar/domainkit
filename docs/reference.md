@@ -1,8 +1,9 @@
 # domainkit reference
 
 Settings, middleware, and commands. For the optional apps (messaging, audit,
-idempotency) see [contrib.md](contrib.md); for releases and deprecations see
-[versioning.md](versioning.md).
+idempotency) see [contrib.md](contrib.md); for databases, shards, and ledgers
+see [databases.md](databases.md); for caches see [cache.md](cache.md); for
+releases and deprecations see [versioning.md](versioning.md).
 
 `domainkit_tests/test_docs.py` fails when a setting or a command is missing
 from this page.
@@ -85,6 +86,33 @@ Each `SHARDS` group:
 | `RANGES` | equal ranges | Inclusive bucket ranges per alias, such as `{"accounts_0": [[0, 2047]], "accounts_1": [[2048, 4095]]}`; they must cover every bucket once. |
 | `PINNED` | `{}` | Shard keys (as text) that always go to one alias, such as a large tenant. |
 
+### Caches
+
+See [cache.md](cache.md) for how to use them.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `CACHES` | `{"default": {}}` | Caches by alias (below). `default` is required; unless set, it is a `memory://` cache. |
+
+Each `CACHES` entry:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `URL` | `memory://` | `memory://` (this process), `redis://` or `rediss://` (Redis or Valkey, through redis-py; the `redis` extra), or `dummy://` (keeps nothing). redis-py URL options (`?socket_keepalive=true`) apply. Kept secret. |
+| `TTL` | `300.0` | Seconds an entry lives unless a call passes `ttl`; `None` keeps entries until evicted. |
+| `KEY_PREFIX` | the alias | Namespace of every key (`[A-Za-z0-9_.-]`, up to 64). Required for Redis: unique among the services sharing a server. |
+| `VERSION` | `1` | Part of every key. Raise it to drop every entry at once, as after changing a cached type. |
+| `MAX_ENTRIES` | `10000` | `memory://` only: least recently used entries are evicted beyond it. |
+| `SOCKET_TIMEOUT` | `1.0` | Seconds one Redis command may take. |
+| `CONNECT_TIMEOUT` | `1.0` | Seconds to connect, or to wait for a free pooled connection. |
+| `RETRIES` | `1` | Quick retries of a command after a connection error or timeout. |
+| `MAX_CONNECTIONS` | `50` | Redis connections per process and event loop. |
+| `FAILURE_COOLDOWN` | `5.0` | Seconds a failed cache is skipped, so requests do not each wait for timeouts. `0` retries at once. |
+| `EARLY_RECOMPUTE` | `1.0` | How early `get_or_set` refreshes hot entries before they expire (XFetch's beta); `0` turns it off. |
+| `TLS_CA` | system CAs | CA bundle that signed the server's certificate (`rediss://` only). |
+| `TLS_CERT`, `TLS_KEY` | `None` | Client certificate and key for mutual TLS (`rediss://` only). |
+| `READINESS` | `False` | Fail `/ready` while this cache is unreachable. Leave it off for caches the service can run without, or an outage takes every replica out of rotation. |
+
 ### HTTP
 
 | Setting | Default | Meaning |
@@ -99,7 +127,8 @@ Each `SHARDS` group:
 | `TRUSTED_PROXIES` | `()` | Networks (`10.0.0.0/8`) whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed. Empty: the socket peer is the client. |
 | `RATE_LIMIT` | `None` | Requests per caller, such as `"300/minute"` (`second`, `minute`, `hour`, `day`). `None` disables it. |
 | `RATE_LIMIT_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths never counted. |
-| `RATE_LIMIT_BACKEND` | `domainkit.http.ratelimit.MemoryBackend` | Where counts live. The default is per process: behind several replicas, limit at the gateway or plug in a shared store implementing `Backend`. |
+| `RATE_LIMIT_BACKEND` | `domainkit.http.ratelimit.MemoryBackend` | Where counts live. The default is per process. Behind several replicas, use `domainkit.http.ratelimit.RedisBackend`: one count per caller in Redis, on the server's clock. If Redis fails, requests are let through. |
+| `RATE_LIMIT_CACHE` | `"default"` | The Redis cache `RedisBackend` counts in; keys are `<KEY_PREFIX>:ratelimit:<caller>`. |
 | `METRICS_TOKEN` | `None` | Bearer token for `/metrics`. Without it, `/metrics` answers 403 in staging and production. |
 | `SECURE_HSTS_SECONDS` | `0` | `Strict-Transport-Security` max-age; 0 omits the header. |
 | `SECURE_HSTS_INCLUDE_SUBDOMAINS` | `False` | Adds `includeSubDomains`. |
@@ -121,6 +150,9 @@ With `ENVIRONMENT` set to `staging` or `production`, startup fails on:
 - a network database without `SSLMODE = "verify-full"`
 - a `memory://` ledger, or an immudb ledger without `TLS_CA` or
   `SERVER_SIGNING_KEY`
+- a Redis cache on another host without `rediss://`, or without a password
+  or a client certificate, and any cache URL that weakens certificate checks
+  (`ssl_cert_reqs=none` or `optional`, `ssl_check_hostname=false`)
 
 `migrate --downgrade` also needs `--allow-data-loss` there.
 
@@ -178,6 +210,8 @@ when a span is active. Query strings and bound SQL values are never logged.
 | `messaging_messages_total` | `kind`, `outcome` |
 | `messaging_message_duration_seconds` | `kind` |
 | `messaging_outbox_messages` | `status` |
+| `cache_lookups_total` | `cache`, `result` (`hit`, `miss`, `invalid`, `early`) |
+| `cache_errors_total` | `cache` |
 
 **Traces** (`domainkit[tracing]`): unit-of-work commits and worker messages
 get spans. domainkit only uses the OpenTelemetry API; configure the SDK and
@@ -209,6 +243,10 @@ It selects the test settings, never reads `.env`, and provides two fixtures:
 | `database` | session | The test database's URL, after migrating it up, down to base, and up again. That proves every revision is reversible and empties a reused database. In-memory SQLite becomes a temporary file. |
 | `client` | test | A `TestClient` for the project's application, with its lifespan, on that database. The tests `startdomain` generates use it. |
 
+Memory caches are emptied before every test, so no test sees what another
+cached. Redis caches are left alone: give the test settings their own
+`KEY_PREFIX`.
+
 Point the test settings at PostgreSQL (for example from a
 `TEST_DATABASE_URL` variable) to run the same suite there. Never point them
 at a database you want to keep.
@@ -223,6 +261,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | --- | --- | --- |
 | `init` | `name`, `[directory]` | Create a project: base, local, test, and production settings, routes, `manage.py`, `.env`, and a first test. The name sets the environment prefix; the directory (default `./<name>`) must be empty or missing. |
 | `check` | | Settings, domains, routes, middleware, layer rules, and a single migration head. |
+| `cache` | `check\|clear`, `[ALIAS ...]`, `--all` | Ping caches (all by default), or delete every key of the named caches, all versions, in their namespace only. Clearing needs aliases or `--all`. |
 | `startdomain` | `name`, `--aggregate`, `--plural`, `--parent`, `--tests-dir` | Generate a bounded context and its tests. |
 | `makemigrations` | `-m/--message`, `--check`, `--merge`, `--database` | Write a revision per target with changes; `--check` fails if one is missing; `--merge` joins two heads. Without `--database`, every target. |
 | `migrate` | `[revision]`, `--downgrade`, `--allow-data-loss`, `--database` | Apply revisions (or revert down to one) on every database of every target, then create partitions. A revision id needs `--database` when there are several targets. |
@@ -247,5 +286,5 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | Work staged with each commit | `async DomainConfig.stage(uow, events, tasks)` | (called by the unit of work) |
 | Middleware | an ASGI class taking `app` | `MIDDLEWARE` |
 | An error tracker | `(exc, context) -> None` | `ERROR_REPORTERS` |
-| A shared rate-limit store | `ratelimit.Backend` | `RATE_LIMIT_BACKEND` |
+| A rate-limit store other than memory or Redis | `ratelimit.Backend` | `RATE_LIMIT_BACKEND` |
 | A command | `BaseCommand` | `management/commands/<name>.py` |
