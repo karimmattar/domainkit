@@ -6,6 +6,8 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-14
+
 ### Added
 
 - `domainkit init <name> [directory]` creates a project that passes `check`
@@ -61,6 +63,7 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/karimmattar/domainkit/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/karimmattar/domainkit/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/karimmattar/domainkit/releases/tag/v0.1.0
