@@ -17,6 +17,7 @@ from sqlalchemy import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from domainkit.apps import registry
+from domainkit.cache import caches
 from domainkit.conf import use_settings
 from domainkit.conf.env import (
     ENV_PREFIX_VARIABLE,
@@ -51,8 +52,10 @@ def isolated_registries() -> Iterator[None]:
     """Restore process-wide registries (tasks, subscriptions, metrics) per test.
 
     Apps register tasks and handlers when they are installed; a test that
-    installs one must not leak them into the next test.
+    installs one must not leak them into the next test. Memory caches start
+    empty, too.
     """
+    caches.reset()
     tasks = dict(task_registry._tasks)
     subscriptions = {key: list(value) for key, value in event_bus._handlers.items()}
     refreshers = list(metrics._refreshers)

@@ -27,8 +27,9 @@ See [docs/versioning.md](docs/versioning.md).
 
 domainkit ships secure defaults: validated settings, deployment checks for
 staging and production, hidden SQL parameters, an error format that never
-echoes input, trusted-proxy handling, rate limiting, and an append-only audit
-trail. It does not authenticate requests yet; projects must not expose an
+echoes input, trusted-proxy handling, rate limiting, an append-only audit
+trail, and caches that store JSON only (never pickle) and require TLS and
+credentials for network Redis. It does not authenticate requests yet; projects must not expose an
 API publicly until they add authentication. The settings reference
 ([docs/reference.md](docs/reference.md)) lists every control.
 

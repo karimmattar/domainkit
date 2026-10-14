@@ -35,6 +35,7 @@ FORBIDDEN_LIBRARIES: Final = {
         "starlette",
         "sqlalchemy",
         "alembic",
+        "redis",
         "domainkit.db",
         "domainkit.http",
     ),

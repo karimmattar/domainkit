@@ -81,3 +81,31 @@ def test_a_named_database_keeps_its_url_and_options(tmp_path: Path) -> None:
     ):
         assert used == url
         assert settings.DATABASES["default"].STATEMENT_TIMEOUT == 5
+
+
+def test_memory_caches_start_empty_in_every_test(
+    pytester: pytest.Pytester, prefix: str
+) -> None:
+    """The plugin empties memory caches before each test, whatever ran before."""
+    pytester.makepyfile(
+        test_caches="""
+        import asyncio
+        from domainkit.cache import caches
+
+        def test_writes():
+            async def write():
+                await caches["default"].set("k", 1)
+            asyncio.run(write())
+
+        def test_reads():
+            async def read():
+                return await caches["default"].get("k")
+            assert asyncio.run(read()) is None
+        """
+    )
+
+    result = pytester.runpytest_inprocess(
+        "-p", "domainkit.testing", "-p", "no:randomly", "-p", "no:cov"
+    )
+
+    result.assert_outcomes(passed=2)

@@ -9,7 +9,7 @@ so a misspelled setting fails at startup instead of being silently ignored.
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Final, Literal, Self
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from pydantic import (
     BaseModel,
@@ -204,6 +204,105 @@ class ShardConfig(BaseModel):
         }
 
 
+DEFAULT_CACHE_ALIAS: Final = "default"
+CACHE_SCHEMES: Final = frozenset({"memory", "dummy", "redis", "rediss"})
+"""URL schemes of caches (``CACHES``)."""
+REDIS_SCHEMES: Final = frozenset({"redis", "rediss"})
+LOCAL_HOSTS: Final = frozenset({"localhost", "127.0.0.1", "::1"})
+_UNVERIFIED_TLS: Final = {
+    "ssl_cert_reqs": frozenset({"none", "optional"}),
+    "ssl_check_hostname": frozenset({"false", "0", "no", "off", "n", "f"}),
+}
+"""redis-py URL options that weaken certificate checks, with the weak values."""
+
+
+class CacheConfig(BaseModel):
+    """One ``CACHES`` entry: where cached values live, and for how long.
+
+    Values are JSON. A cache is an optimization: when Redis is unreachable,
+    ``get_or_set`` and ``@cached`` compute values instead (see ADR 0012).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    URL: SecretStr = SecretStr("memory://")
+    """``memory://`` (this process), ``redis://``/``rediss://`` (Redis, Valkey), ``dummy://``."""
+    TTL: float | None = Field(default=300.0, gt=0)
+    """Seconds an entry lives unless a call says otherwise; None keeps entries."""
+    KEY_PREFIX: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]{1,64}$")
+    """Namespace of every key (default: the alias). Redis caches must set one."""
+    VERSION: int = Field(default=1, ge=1)
+    """Part of every key: raise it to drop every entry, as after changing a type."""
+    MAX_ENTRIES: int = Field(default=10_000, ge=1)
+    """``memory://``: the least recently used entries are evicted beyond it."""
+    SOCKET_TIMEOUT: float = Field(default=1.0, gt=0)
+    """Seconds one Redis command may take."""
+    CONNECT_TIMEOUT: float = Field(default=1.0, gt=0)
+    """Seconds to connect, or to wait for a free connection from the pool."""
+    RETRIES: int = Field(default=1, ge=0)
+    """Retries of a command after a connection error or timeout."""
+    MAX_CONNECTIONS: int = Field(default=50, ge=1)
+    """Redis connections per process and event loop."""
+    FAILURE_COOLDOWN: float = Field(default=5.0, ge=0)
+    """Seconds the cache is skipped after it fails, so requests do not each wait."""
+    EARLY_RECOMPUTE: float = Field(default=1.0, ge=0)
+    """How early ``get_or_set`` refreshes hot entries (XFetch's beta); 0 disables."""
+    TLS_CA: Path | None = None
+    """CA bundle for ``rediss://``; default: the system's."""
+    TLS_CERT: Path | None = None
+    """Client certificate for ``rediss://`` (with ``TLS_KEY``)."""
+    TLS_KEY: Path | None = None
+    READINESS: bool = False
+    """Fail ``/ready`` while this cache is unreachable (off: the service copes)."""
+
+    @model_validator(mode="after")
+    def check_url(self) -> Self:
+        """Accept cache URLs; Redis needs a host and a key prefix of its own."""
+        parts = urlsplit(self.URL.get_secret_value())
+        if parts.scheme not in CACHE_SCHEMES:
+            raise ValueError(
+                "a cache URL starts with memory://, redis://, rediss://, or dummy://"
+            )
+        if parts.scheme in REDIS_SCHEMES:
+            if not parts.hostname:
+                raise ValueError("a Redis URL needs a host: redis://host:6379/0")
+            if self.KEY_PREFIX is None:
+                raise ValueError(
+                    "Redis caches need a KEY_PREFIX, unique among the services "
+                    "that share the server"
+                )
+        tls = (self.TLS_CA, self.TLS_CERT, self.TLS_KEY)
+        if parts.scheme != "rediss" and any(tls):
+            raise ValueError("TLS_CA, TLS_CERT and TLS_KEY need a rediss:// URL")
+        if (self.TLS_CERT is None) != (self.TLS_KEY is None):
+            raise ValueError("TLS_CERT and TLS_KEY go together")
+        return self
+
+    @property
+    def scheme(self) -> str:
+        """``memory``, ``dummy``, ``redis``, or ``rediss``."""
+        return urlsplit(self.URL.get_secret_value()).scheme
+
+    def is_network(self) -> bool:
+        """Report whether this cache is a Redis server on another host."""
+        host = urlsplit(self.URL.get_secret_value()).hostname
+        return self.scheme in REDIS_SCHEMES and host not in LOCAL_HOSTS
+
+    def verifies_tls(self) -> bool:
+        """Report whether the URL leaves redis-py's certificate checks on."""
+        options = parse_qs(urlsplit(self.URL.get_secret_value()).query)
+        return not any(
+            value.lower() in weak
+            for name, weak in _UNVERIFIED_TLS.items()
+            for value in options.get(name, ())
+        )
+
+    def has_credentials(self) -> bool:
+        """Report whether the cache authenticates: a password or a certificate."""
+        parts = urlsplit(self.URL.get_secret_value())
+        return bool(parts.password) or self.TLS_CERT is not None
+
+
 class Settings(BaseModel):
     """Validated, read-only settings; extra names are checked at ``setup()``."""
 
@@ -237,6 +336,10 @@ class Settings(BaseModel):
     """Domain label to target: a SQL alias or a shard group; others use default."""
     MIGRATIONS_DIR: Path = Field(default_factory=lambda: project_root() / "migrations")
     """Revisions of ``default``; any other target uses ``MIGRATIONS_DIR/<target>``."""
+    CACHES: dict[str, CacheConfig] = Field(
+        default_factory=lambda: {DEFAULT_CACHE_ALIAS: CacheConfig()}
+    )
+    """Caches by alias; ``default`` is required (``memory://`` unless set)."""
     LOGGING: dict[str, Any] = Field(default_factory=_minimal_logging)
     """``logging.config.dictConfig`` mapping applied by ``setup()``."""
 
@@ -262,6 +365,8 @@ class Settings(BaseModel):
     """Exact paths never counted, so probes and scrapers are not refused."""
     RATE_LIMIT_BACKEND: str = "domainkit.http.ratelimit.MemoryBackend"
     """Dotted path to a ``Backend`` class; the default counts per process."""
+    RATE_LIMIT_CACHE: str = DEFAULT_CACHE_ALIAS
+    """The Redis cache ``RedisBackend`` keeps counts in, shared by every replica."""
     METRICS_TOKEN: SecretStr | None = None
     """Bearer token for ``/metrics``; without it staging and production refuse."""
     ERROR_REPORTERS: tuple[str, ...] = ()
@@ -287,6 +392,8 @@ class Settings(BaseModel):
     def check_consistency(self) -> Self:
         """Reject combinations that are unsafe or would fail later at runtime."""
         self._check_databases()
+        if DEFAULT_CACHE_ALIAS not in self.CACHES:
+            raise ValueError("CACHES must define the 'default' alias")
         if len(set(self.INSTALLED_DOMAINS)) != len(self.INSTALLED_DOMAINS):
             raise ValueError("INSTALLED_DOMAINS contains duplicates")
         if self.CORS_ALLOW_CREDENTIALS and "*" in self.CORS_ALLOWED_ORIGINS:
@@ -358,3 +465,18 @@ class Settings(BaseModel):
             ledgers = self.LEDGERS.items()
             if aliases := sorted(a for a, db in ledgers if violates_ledger(db)):
                 raise ValueError(f"{message} {where} for LEDGERS {aliases}")
+        cache_rules: dict[str, Callable[[CacheConfig], bool]] = {
+            "network caches need rediss:// (TLS)": lambda cache: (
+                cache.is_network() and cache.scheme != "rediss"
+            ),
+            "caches must verify the server certificate": lambda cache: (
+                not cache.verifies_tls()
+            ),
+            "network caches need a password or a client certificate": lambda cache: (
+                cache.is_network() and not cache.has_credentials()
+            ),
+        }
+        for message, violates_cache in cache_rules.items():
+            caches = self.CACHES.items()
+            if aliases := sorted(a for a, cache in caches if violates_cache(cache)):
+                raise ValueError(f"{message} {where} for CACHES {aliases}")

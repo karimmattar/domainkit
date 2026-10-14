@@ -7,11 +7,13 @@ A Django-style framework for domain-driven FastAPI services. It provides:
 - DDD building blocks, with the layer rules between them enforced
 - several databases: domains routed to their own, sharding by key,
   PostgreSQL range partitioning, and immudb ledgers for evidence
+- caches in memory or in Redis and Valkey, with stampede protection, and
+  rate limits shared by every replica
 - optional apps for reliable messaging, audit trails, idempotent requests,
   and tamper-evident evidence
 
 ```bash
-pip install "domainkit[postgres]"     # extras: postgres, sqlite, immudb, metrics, tracing, testing
+pip install "domainkit[postgres]"     # extras: postgres, sqlite, immudb, redis, metrics, tracing, testing
 ```
 
 ## Documentation
@@ -20,6 +22,8 @@ pip install "domainkit[postgres]"     # extras: postgres, sqlite, immudb, metric
   observability, testing, commands, and extension points
 - [docs/databases.md](https://github.com/karimmattar/domainkit/blob/main/docs/databases.md): several databases, routing,
   sharding, partitioning, and ledgers
+- [docs/cache.md](https://github.com/karimmattar/domainkit/blob/main/docs/cache.md): caches in memory, Redis, and Valkey,
+  and shared rate limits
 - [docs/contrib.md](https://github.com/karimmattar/domainkit/blob/main/docs/contrib.md): messaging, audit, idempotency, and evidence
 - [docs/versioning.md](https://github.com/karimmattar/domainkit/blob/main/docs/versioning.md): compatibility, deprecations, and releases
 - [docs/adr/](https://github.com/karimmattar/domainkit/tree/main/docs/adr): the decisions behind the design
@@ -69,24 +73,34 @@ poetry run pytest --cov                # random order; coverage gate in pyprojec
 poetry run mutmut run "domainkit.http*" && poetry run mutmut results
 ```
 
-The database tests use SQLite unless `DOMAINKIT_TEST_POSTGRES_URL` names a
-PostgreSQL server; each test then creates a database there and drops it.
-Use a throwaway server:
+Without servers, the database tests use SQLite, the Redis tests use an
+in-memory fake (fakeredis), and the tests that need PostgreSQL, immudb, or
+a real Redis or Valkey are skipped. Point them at throwaway servers to run
+them; each test cleans up after itself:
 
 ```bash
 docker run -d --rm --name domainkit-postgres -e POSTGRES_PASSWORD=postgres \
   -p 127.0.0.1:55432:5432 postgres:18-alpine
+docker run -d --rm --name domainkit-redis -p 127.0.0.1:56379:6379 redis:8-alpine
 DOMAINKIT_TEST_POSTGRES_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:55432/postgres \
+DOMAINKIT_TEST_REDIS_URL=redis://127.0.0.1:56379/0 \
   poetry run pytest
 ```
 
-CI (`.github/workflows/ci.yml`) runs the same checks on every push and pull
-request:
+The other variables (immudb, Redis over TLS, Valkey) are listed at the top
+of `domainkit_tests/test_immudb.py` and `test_redis.py`. Each run must cover
+98%; CI also combines the runs with and without servers, which must cover
+100%. To check that locally, run `pytest --cov` once without and once with
+the servers, each with its own `COVERAGE_FILE`, then `coverage combine` and
+`coverage report --fail-under=100`.
+
+CI (`.github/workflows/ci.yml`) runs on every push and pull request:
 
 - lint and strict typing
 - the tests on Python 3.13 and 3.14
-- the tests again with PostgreSQL 18, including row locking, the audit
-  triggers, and server-side timeouts
+- the tests again against PostgreSQL 18, immudb with TLS and a signing key,
+  Redis 8 (plain and TLS), and Valkey 9; no test may be skipped there
+- coverage of both runs combined, which must be 100%
 - a wheel build, installed and imported in a clean environment
 - pip-audit, and a gitleaks scan of the whole history
 
