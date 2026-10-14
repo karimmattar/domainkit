@@ -5,6 +5,7 @@ from the database. Events and task arguments travel as JSON, validated
 against the event class or the task signature on the way back.
 """
 
+import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import timedelta
@@ -15,8 +16,11 @@ from pydantic import TypeAdapter, validate_call
 from pydantic_core import to_jsonable_python
 
 from domainkit.apps import registry
+from domainkit.conf.global_settings import NAME_PATTERN
 from domainkit.ddd import DomainEvent, EventBus
 from domainkit.exceptions import ImproperlyConfigured
+
+from .tables import DEFAULT_QUEUE
 
 type Task = Callable[..., Awaitable[None]]
 
@@ -30,6 +34,8 @@ class TaskSpec:
     max_attempts: int | None = None
     every: timedelta | None = None
     """Set for periodic tasks."""
+    queue: str = DEFAULT_QUEUE
+    """The queue whose workers run it (``runworker --queue``)."""
 
 
 _tasks: dict[str, TaskSpec] = {}
@@ -38,6 +44,17 @@ _tasks: dict[str, TaskSpec] = {}
 def qualified_name(obj: object) -> str:
     """Return ``module.QualName``, the stable key of a function or class."""
     return f"{getattr(obj, '__module__', '?')}.{getattr(obj, '__qualname__', obj)}"
+
+
+def checked_queue(queue: str | None) -> str:
+    """Return ``queue`` (default: ``default``) if it is a valid queue name."""
+    if queue is None:
+        return DEFAULT_QUEUE
+    if not re.fullmatch(NAME_PATTERN, queue):
+        raise ImproperlyConfigured(
+            f"Queue names have 1 to 64 letters, digits, '_', '.', or '-': {queue!r}"
+        )
+    return queue
 
 
 def _register(spec: TaskSpec) -> None:
@@ -54,7 +71,10 @@ def task(function: Task, /) -> Task: ...
 
 @overload
 def task(
-    *, name: str | None = None, max_attempts: int | None = None
+    *,
+    name: str | None = None,
+    max_attempts: int | None = None,
+    queue: str | None = None,
 ) -> Callable[[Task], Task]: ...
 
 
@@ -64,32 +84,47 @@ def task(
     *,
     name: str | None = None,
     max_attempts: int | None = None,
+    queue: str | None = None,
 ) -> Task | Callable[[Task], Task]:
     """Register an async function as a background task (``uow.defer(task)``).
 
     Arguments must be JSON-friendly or Pydantic-validatable (UUIDs, dates,
     models); they are checked against the signature when the task runs.
+    ``queue`` (default: ``default``) picks the workers that run it.
     """
+    checked = checked_queue(queue)
 
     def register(func: Task) -> Task:
-        _register(TaskSpec(name or qualified_name(func), func, max_attempts))
+        key = name or qualified_name(func)
+        _register(TaskSpec(key, func, max_attempts, queue=checked))
         return func
 
     return register(function) if function is not None else register
 
 
 def periodic(
-    every: timedelta, *, name: str | None = None, max_attempts: int | None = None
+    every: timedelta,
+    *,
+    name: str | None = None,
+    max_attempts: int | None = None,
+    queue: str | None = None,
 ) -> Callable[[Task], Task]:
     """Register an argument-free task that runs once per ``every``, cluster-wide."""
     if every <= timedelta(0):
         raise ImproperlyConfigured("Periodic tasks need a positive interval.")
+    checked = checked_queue(queue)
 
     def register(func: Task) -> Task:
-        _register(TaskSpec(name or qualified_name(func), func, max_attempts, every))
+        key = name or qualified_name(func)
+        _register(TaskSpec(key, func, max_attempts, every, checked))
         return func
 
     return register
+
+
+def queues() -> frozenset[str]:
+    """Every queue this process knows: ``default`` and the tasks' queues."""
+    return frozenset({DEFAULT_QUEUE, *(spec.queue for spec in _tasks.values())})
 
 
 def get_task(key: str) -> TaskSpec | None:

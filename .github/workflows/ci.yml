@@ -82,8 +82,9 @@ jobs:
 
   # The suite again against real servers: PostgreSQL (row locks, the audit
   # triggers, timeouts, partitions, migrations), immudb with TLS and a
-  # signing key (verified ledgers, evidence), and Redis (plain and TLS) and
-  # Valkey (caches, shared rate limits, a least-privilege user). Tests that
+  # signing key (verified ledgers, evidence), Redis (plain and TLS) and
+  # Valkey (caches, shared rate limits, a least-privilege user), and RabbitMQ
+  # (plain and TLS: brokered workers, a least-privilege user). Tests that
   # need a server are skipped elsewhere, so a skip here means a server went
   # unused: fail.
   integration:
@@ -111,6 +112,10 @@ jobs:
       DOMAINKIT_TEST_REDIS_TLS_URL: rediss://localhost:6380/0
       DOMAINKIT_TEST_REDIS_CA: .ci/redis/server.crt
       DOMAINKIT_TEST_VALKEY_URL: redis://localhost:6381/0
+      DOMAINKIT_TEST_RABBITMQ_URL: amqp://domainkit:domainkit@localhost:5672/
+      DOMAINKIT_TEST_RABBITMQ_TLS_URL: amqps://domainkit:domainkit@localhost:5671/
+      DOMAINKIT_TEST_RABBITMQ_CA: .ci/rabbitmq/server.crt
+      DOMAINKIT_TEST_RABBITMQ_MANAGEMENT_URL: http://domainkit:domainkit@localhost:15672
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -166,6 +171,36 @@ jobs:
           done
           docker logs redis
           docker logs valkey
+          exit 1
+      # RabbitMQ serves AMQP on 5672, AMQP over TLS on 5671 (a certificate
+      # made here), and its management API on 15672 (the ACL test uses it).
+      - name: Start RabbitMQ (plain and TLS)
+        run: |
+          mkdir -p .ci/rabbitmq
+          cd .ci/rabbitmq
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=localhost" \
+            -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" \
+            -keyout server.key -out server.crt 2>/dev/null
+          printf '%s\n' 'listeners.ssl.default = 5671' \
+            'ssl_options.cacertfile = /certs/server.crt' \
+            'ssl_options.certfile = /certs/server.crt' \
+            'ssl_options.keyfile = /certs/server.key' \
+            'ssl_options.verify = verify_none' > 20-tls.conf
+          chmod 644 server.key 20-tls.conf
+          docker run -d --name rabbitmq -p 5672:5672 -p 5671:5671 -p 15672:15672 \
+            -e RABBITMQ_DEFAULT_USER=domainkit -e RABBITMQ_DEFAULT_PASS=domainkit \
+            -v "$PWD:/certs:ro" -v "$PWD/20-tls.conf:/etc/rabbitmq/conf.d/20-tls.conf:ro" \
+            rabbitmq:4.3.5-management-alpine@sha256:b3b8b7f95f5382a19f9ea33540e604f30aad081d37ad9aba72255135765373a1
+          # Wait on the log, not "docker exec rabbitmq-diagnostics": an early
+          # exec runs as root and writes the Erlang cookie the server (another
+          # user) must create, so RabbitMQ fails to start.
+          for _ in $(seq 1 90); do
+            if docker logs rabbitmq 2>&1 | grep -q "Server startup complete"; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs rabbitmq
           exit 1
       - run: pipx install "poetry==${POETRY_VERSION}"
       - run: poetry sync --all-extras --with dev
@@ -223,7 +258,7 @@ jobs:
       - run: |
           python -m venv /tmp/clean
           /tmp/clean/bin/pip install "$(ls dist/*.whl)[postgres]"
-          /tmp/clean/bin/python -c "import domainkit, domainkit.cache, domainkit.contrib.messaging; print(domainkit.__version__)"
+          /tmp/clean/bin/python -c "import domainkit, domainkit.broker, domainkit.cache, domainkit.contrib.messaging; print(domainkit.__version__)"
           /tmp/clean/bin/domainkit init smokeAPI /tmp/smoke
           test -f /tmp/smoke/.env && test -f /tmp/smoke/manage.py
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

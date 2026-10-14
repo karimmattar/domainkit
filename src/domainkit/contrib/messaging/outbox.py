@@ -23,7 +23,7 @@ from .registry import (
     spec_for,
 )
 from .settings import MessagingSettings
-from .tables import PENDING, messages
+from .tables import DEFAULT_QUEUE, PENDING, messages
 
 
 def _now() -> datetime:
@@ -48,6 +48,7 @@ def message_row(
     payload: Mapping[str, Any],
     headers: Mapping[str, Any],
     max_attempts: int,
+    queue: str = DEFAULT_QUEUE,
     delay: timedelta | None = None,
     dedupe_key: str | None = None,
     available_at: datetime | None = None,
@@ -58,6 +59,7 @@ def message_row(
         "id": uuid.uuid4(),
         "kind": kind,
         "target": target,
+        "queue": queue,
         "payload": dict(payload),
         "headers": dict(headers),
         "status": PENDING,
@@ -96,6 +98,7 @@ def rows_for(
                 payload=dump_arguments(deferred.kwargs),
                 headers=_headers(),
                 max_attempts=spec.max_attempts or config.MAX_ATTEMPTS,
+                queue=spec.queue,
                 delay=deferred.delay,
                 dedupe_key=deferred.dedupe_key,
             )
@@ -148,8 +151,11 @@ async def enqueue(
     Inside a use case prefer ``uow.defer``: the task is then stored only if
     the business change commits.
     """
+    from .dispatch import publish_committed  # Imports this module.
+
     config = registry.settings(MessagingSettings)
     task = DeferredTask(function, kwargs, delay, dedupe_key)
     rows = rows_for((), [task], EventBus(), config)
     async with connections.engine(config.DATABASE).begin() as connection:
         await write(connection, connection.dialect.name, rows)
+    await publish_committed(config, config.DATABASE, [row["id"] for row in rows])

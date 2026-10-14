@@ -9,11 +9,13 @@ A Django-style framework for domain-driven FastAPI services. It provides:
   PostgreSQL range partitioning, and immudb ledgers for evidence
 - caches in memory or in Redis and Valkey, with stampede protection, and
   rate limits shared by every replica
+- background work through a transactional outbox, run by polling workers or
+  through RabbitMQ, with queues for separate worker pools
 - optional apps for reliable messaging, audit trails, idempotent requests,
   and tamper-evident evidence
 
 ```bash
-pip install "domainkit[postgres]"     # extras: postgres, sqlite, immudb, redis, metrics, tracing, testing
+pip install "domainkit[postgres]"     # extras: postgres, sqlite, immudb, redis, rabbitmq, metrics, tracing, testing
 ```
 
 ## Documentation
@@ -24,7 +26,8 @@ pip install "domainkit[postgres]"     # extras: postgres, sqlite, immudb, redis,
   sharding, partitioning, and ledgers
 - [docs/cache.md](https://github.com/karimmattar/domainkit/blob/main/docs/cache.md): caches in memory, Redis, and Valkey,
   and shared rate limits
-- [docs/contrib.md](https://github.com/karimmattar/domainkit/blob/main/docs/contrib.md): messaging, audit, idempotency, and evidence
+- [docs/contrib.md](https://github.com/karimmattar/domainkit/blob/main/docs/contrib.md): messaging (and workers on RabbitMQ),
+  audit, idempotency, and evidence
 - [docs/versioning.md](https://github.com/karimmattar/domainkit/blob/main/docs/versioning.md): compatibility, deprecations, and releases
 - [docs/adr/](https://github.com/karimmattar/domainkit/tree/main/docs/adr): the decisions behind the design
 - [CHANGELOG.md](https://github.com/karimmattar/domainkit/blob/main/CHANGELOG.md) and [SECURITY.md](https://github.com/karimmattar/domainkit/blob/main/SECURITY.md)
@@ -73,9 +76,9 @@ poetry run pytest --cov                # random order; coverage gate in pyprojec
 poetry run mutmut run "domainkit.http*" && poetry run mutmut results
 ```
 
-Without servers, the database tests use SQLite, the Redis tests use an
-in-memory fake (fakeredis), and the tests that need PostgreSQL, immudb, or
-a real Redis or Valkey are skipped. Point them at throwaway servers to run
+Without servers, the database tests use SQLite, the Redis and RabbitMQ
+tests use in-memory fakes, and the tests that need PostgreSQL, immudb, or a
+real Redis, Valkey, or RabbitMQ are skipped. Point them at throwaway servers to run
 them; each test cleans up after itself:
 
 ```bash
@@ -87,8 +90,9 @@ DOMAINKIT_TEST_REDIS_URL=redis://127.0.0.1:56379/0 \
   poetry run pytest
 ```
 
-The other variables (immudb, Redis over TLS, Valkey) are listed at the top
-of `domainkit_tests/test_immudb.py` and `test_redis.py`. Each run must cover
+The other variables (immudb, Redis over TLS, Valkey, RabbitMQ) are listed
+at the top of `domainkit_tests/test_immudb.py`, `test_redis.py`, and
+`test_rabbitmq.py`. Each run must cover
 98%; CI also combines the runs with and without servers, which must cover
 100%. To check that locally, run `pytest --cov` once without and once with
 the servers, each with its own `COVERAGE_FILE`, then `coverage combine` and
@@ -99,7 +103,8 @@ CI (`.github/workflows/ci.yml`) runs on every push and pull request:
 - lint and strict typing
 - the tests on Python 3.13 and 3.14
 - the tests again against PostgreSQL 18, immudb with TLS and a signing key,
-  Redis 8 (plain and TLS), and Valkey 9; no test may be skipped there
+  Redis 8 (plain and TLS), Valkey 9, and RabbitMQ 4 (plain and TLS); no test
+  may be skipped there
 - coverage of both runs combined, which must be 100%
 - a wheel build, installed and imported in a clean environment
 - pip-audit, and a gitleaks scan of the whole history

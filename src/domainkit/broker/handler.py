@@ -1,0 +1,81 @@
+"""Brokers per ``BROKERS`` alias (the broker counterpart of ``caches``).
+
+AMQP connections, and the in-memory broker's queues, belong to the event
+loop that opened them, so each running loop gets its own brokers.
+"""
+
+import asyncio
+from collections.abc import Callable
+from typing import Final
+from weakref import WeakKeyDictionary
+
+from domainkit.broker.base import Broker
+from domainkit.broker.memory import MemoryBroker
+from domainkit.conf import BrokerConfig, settings
+from domainkit.exceptions import ImproperlyConfigured
+
+type BrokerFactory = Callable[[BrokerConfig], Broker]
+
+
+def rabbitmq_broker(config: BrokerConfig) -> Broker:
+    """Connect to RabbitMQ; needs ``domainkit[rabbitmq]``."""
+    try:
+        from domainkit.broker.rabbitmq import RabbitMQBroker
+    except ImportError as exc:  # pragma: no cover - only without the [rabbitmq] extra.
+        raise ImproperlyConfigured(
+            "RabbitMQ brokers need the rabbitmq extra: "
+            "pip install 'domainkit[rabbitmq]'."
+        ) from exc
+    return RabbitMQBroker(config)
+
+
+class BrokerHandler:
+    """Create each configured broker on first use, per event loop."""
+
+    def __init__(self, connect: BrokerFactory = rabbitmq_broker) -> None:
+        """Use ``connect`` to build RabbitMQ brokers (tests may replace it)."""
+        self._connect = connect
+        self._brokers: WeakKeyDictionary[
+            asyncio.AbstractEventLoop, dict[str, tuple[BrokerConfig, Broker]]
+        ] = WeakKeyDictionary()
+        self._replaced: WeakKeyDictionary[asyncio.AbstractEventLoop, list[Broker]] = (
+            WeakKeyDictionary()
+        )
+
+    def config(self, alias: str) -> BrokerConfig:
+        """Return the ``BROKERS`` entry of ``alias``."""
+        try:
+            return settings.BROKERS[alias]
+        except KeyError:
+            raise ImproperlyConfigured(f"BROKERS has no {alias!r} alias.") from None
+
+    def __getitem__(self, alias: str) -> Broker:
+        """The running loop's broker for ``alias``; new if its settings changed."""
+        config = self.config(alias)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            raise RuntimeError(
+                f"brokers[{alias!r}] needs a running event loop: connections "
+                "belong to one, so look brokers up inside async code."
+            ) from None
+        brokers = self._brokers.setdefault(loop, {})
+        current = brokers.get(alias)
+        if current is not None and current[0] == config:
+            return current[1]
+        if current is not None:  # override_settings changed it; close it later.
+            self._replaced.setdefault(loop, []).append(current[1])
+        broker = MemoryBroker() if config.scheme == "memory" else self._connect(config)
+        brokers[alias] = (config, broker)
+        return broker
+
+    async def close_all(self) -> None:
+        """Close the running loop's brokers; the next use opens new ones."""
+        loop = asyncio.get_running_loop()
+        current = [broker for _, broker in self._brokers.pop(loop, {}).values()]
+        for broker in [*current, *self._replaced.pop(loop, [])]:
+            await broker.close()
+
+
+brokers: Final = BrokerHandler()
+"""The process-wide brokers: ``brokers["default"]``."""

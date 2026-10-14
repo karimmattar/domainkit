@@ -1,7 +1,7 @@
 # domainkit reference
 
-Settings, middleware, and commands. For the optional apps (messaging, audit,
-idempotency) see [contrib.md](contrib.md); for databases, shards, and ledgers
+Settings, middleware, and commands. For the optional apps (messaging and
+its broker, audit, idempotency) see [contrib.md](contrib.md); for databases, shards, and ledgers
 see [databases.md](databases.md); for caches see [cache.md](cache.md); for
 releases and deprecations see [versioning.md](versioning.md).
 
@@ -113,6 +113,26 @@ Each `CACHES` entry:
 | `TLS_CERT`, `TLS_KEY` | `None` | Client certificate and key for mutual TLS (`rediss://` only). |
 | `READINESS` | `False` | Fail `/ready` while this cache is unreachable. Leave it off for caches the service can run without, or an outage takes every replica out of rotation. |
 
+### Brokers
+
+Message brokers carry the worker's work when `MESSAGING.BROKER` names one;
+see [contrib.md](contrib.md#workers-on-rabbitmq).
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `BROKERS` | `{}` | Message brokers by alias (below). |
+
+Each `BROKERS` entry:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `URL` | required | `amqps://user:password@host:5671/vhost` or `amqp://...` (RabbitMQ, through aio-pika; the `rabbitmq` extra), or `memory://` (one process, for tests and development). aiormq URL options (`?heartbeat=30`) apply. Kept secret. |
+| `PREFIX` | required for RabbitMQ | Starts every exchange and queue name (`[A-Za-z0-9_.-]`, up to 64): `<PREFIX>.work`, `<PREFIX>.<queue>`. Unique among the services sharing a virtual host. |
+| `TLS_CA` | system CAs | CA bundle that signed the server's certificate (`amqps://` only). |
+| `TLS_CERT`, `TLS_KEY` | `None` | Client certificate and key for mutual TLS (`amqps://` only). |
+| `CONNECT_TIMEOUT` | `10.0` | Seconds to connect. |
+| `PUBLISH_TIMEOUT` | `10.0` | Seconds to wait for the broker to confirm a published message. |
+
 ### HTTP
 
 | Setting | Default | Meaning |
@@ -150,6 +170,9 @@ With `ENVIRONMENT` set to `staging` or `production`, startup fails on:
 - a network database without `SSLMODE = "verify-full"`
 - a `memory://` ledger, or an immudb ledger without `TLS_CA` or
   `SERVER_SIGNING_KEY`
+- a `memory://` broker, a broker on another host without `amqps://`, a
+  broker URL that turns certificate checks off (`no_verify_ssl`), and a
+  broker without a user of its own (none, or `guest`)
 - a Redis cache on another host without `rediss://`, or without a password
   or a client certificate, and any cache URL that weakens certificate checks
   (`ssl_cert_reqs=none` or `optional`, `ssl_check_hostname=false`)
@@ -210,6 +233,8 @@ when a span is active. Query strings and bound SQL values are never logged.
 | `messaging_messages_total` | `kind`, `outcome` |
 | `messaging_message_duration_seconds` | `kind` |
 | `messaging_outbox_messages` | `status` |
+| `messaging_relayed_total` | `outcome` (`published`, `failed`) |
+| `messaging_deliveries_skipped_total` | |
 | `cache_lookups_total` | `cache`, `result` (`hit`, `miss`, `invalid`, `early`) |
 | `cache_errors_total` | `cache` |
 
@@ -261,6 +286,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | --- | --- | --- |
 | `init` | `name`, `[directory]` | Create a project: base, local, test, and production settings, routes, `manage.py`, `.env`, and a first test. The name sets the environment prefix; the directory (default `./<name>`) must be empty or missing. |
 | `check` | | Settings, domains, routes, middleware, layer rules, and a single migration head. |
+| `broker` | `check\|declare`, `[ALIAS ...]` | Connect to brokers (all by default), or declare the exchange and every queue the worker's tasks use on `MESSAGING.BROKER`. |
 | `cache` | `check\|clear`, `[ALIAS ...]`, `--all` | Ping caches (all by default), or delete every key of the named caches, all versions, in their namespace only. Clearing needs aliases or `--all`. |
 | `startdomain` | `name`, `--aggregate`, `--plural`, `--parent`, `--tests-dir` | Generate a bounded context and its tests. |
 | `makemigrations` | `-m/--message`, `--check`, `--merge`, `--database` | Write a revision per target with changes; `--check` fails if one is missing; `--merge` joins two heads. Without `--database`, every target. |
@@ -269,7 +295,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `partitions` | `--database`, `--prune`, `--dry-run` | Create the current and upcoming partitions of partitioned tables; `--prune` drops those past `retain`. |
 | `runserver` | `[addr:port]`, `--noreload` | Development server. Production runs uvicorn directly. |
 | `shell` | | Python console with settings, the registry, and connections loaded. |
-| `runworker` | `--once`, `--metrics-port`, `--metrics-address`, `--database` | Run outbox messages (messaging): one worker per outbox, every hosting database by default. |
+| `runworker` | `--once`, `--metrics-port`, `--metrics-address`, `--database`, `--queue`, `--no-relay` | Run outbox messages (messaging): one worker per outbox, every hosting database by default; `--queue` (repeatable) limits them to some queues. With `MESSAGING.BROKER`, relay to the broker and run what it delivers; `--no-relay` only consumes. `--once` always works from the outbox. |
 | `messages` | `--dead`, `--limit`, `--retry ID\|all`, `--database` | Inspect an outbox, and requeue dead letters (messaging). |
 | `auditlog` | `--actor`, `--action`, `--limit`, `--database` | Read the audit trail (audit). |
 | `evidence` | `--subject`, `--verify KEY`, `--limit` | List a subject's evidence, or verify one record (evidence). |
@@ -284,6 +310,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | Process resources (clients, pools) | `async DomainConfig.startup()` / `shutdown()` | (called by the app lifespan) |
 | A readiness check | `async DomainConfig.check()` | (called by `/ready`) |
 | Work staged with each commit | `async DomainConfig.stage(uow, events, tasks)` | (called by the unit of work) |
+| Work after each commit | `async DomainConfig.committed(uow)` | (called by the unit of work; failures are reported, never raised) |
 | Middleware | an ASGI class taking `app` | `MIDDLEWARE` |
 | An error tracker | `(exc, context) -> None` | `ERROR_REPORTERS` |
 | A rate-limit store other than memory or Redis | `ratelimit.Backend` | `RATE_LIMIT_BACKEND` |

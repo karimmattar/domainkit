@@ -6,6 +6,8 @@ from sqlalchemy import JSON, Column, Index, Integer, String, Table, Text, Uuid
 
 from domainkit.db import UTCDateTime, metadata
 
+DEFAULT_QUEUE: Final = "default"
+"""Where durable handlers, and tasks that name no queue, go."""
 PENDING: Final = "pending"
 DONE: Final = "done"
 DEAD: Final = "dead"
@@ -16,6 +18,7 @@ messages = Table(
     Column("id", Uuid, primary_key=True),
     Column("kind", String(16), nullable=False),
     Column("target", String(255), nullable=False),
+    Column("queue", String(64), nullable=False, server_default=DEFAULT_QUEUE),
     Column("payload", JSON, nullable=False),
     Column("headers", JSON, nullable=False),
     Column("status", String(16), nullable=False),
@@ -31,4 +34,7 @@ messages = Table(
     Index("ix_domainkit_messages_ready", "status", "available_at"),
     info={"domain": "messaging"},
 )
-"""``kind`` is ``event`` (a durable handler) or ``task``; ``target`` names it."""
+"""``kind`` is ``event`` (a durable handler) or ``task``; ``target`` names it.
+
+``queue`` picks the workers that run it (``runworker --queue``).
+"""

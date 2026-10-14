@@ -20,6 +20,7 @@ from domainkit.conf.env import Env
 from domainkit.conf.global_settings import (
     DEFAULT_CACHE_ALIAS,
     DEFAULT_DB_ALIAS,
+    BrokerConfig,
     CacheConfig,
     DatabaseConfig,
     LedgerConfig,
@@ -50,6 +51,7 @@ __all__ = [
     "DEFAULT_DB_ALIAS",
     "SETTINGS_MODULE_VARIABLE",
     "UNSET",
+    "BrokerConfig",
     "CacheConfig",
     "DatabaseConfig",
     "LedgerConfig",

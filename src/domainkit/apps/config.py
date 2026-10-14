@@ -101,6 +101,13 @@ class DomainConfig:
     ) -> None:
         """Add rows to a committing SQL unit of work (outbox, audit trail)."""
 
+    async def committed(self, uow: "UnitOfWork") -> None:
+        """Follow up after a SQL unit of work committed (publish its messages).
+
+        The data is already committed: a failure here is logged and reported,
+        and the unit of work carries on.
+        """
+
     def databases(self, router: "DatabaseRouter") -> frozenset[str]:
         """The targets that hold this domain's tables (see ``DATABASE_ROUTING``).
 

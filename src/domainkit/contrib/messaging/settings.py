@@ -30,6 +30,12 @@ class MessagingSettings(BaseModel):
     RETENTION_SECONDS: float = Field(default=7 * 24 * 3600.0, gt=0)
     """How long finished messages are kept; dead ones are kept until retried."""
     CLEANUP_INTERVAL: float = Field(default=3600.0, gt=0)
+    BROKER: str | None = None
+    """Alias in ``BROKERS``: workers take their work from it instead of polling."""
+    REPUBLISH_AFTER: float = Field(default=3600.0, gt=0)
+    """With a broker: seconds a published message may wait before it goes again."""
+    PUBLISH_ON_COMMIT: bool = True
+    """With a broker: publish a commit's messages right after it, not on a poll."""
 
     @model_validator(mode="after")
     def check_timeouts(self) -> Self:
