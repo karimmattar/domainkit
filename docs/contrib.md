@@ -26,7 +26,7 @@ change**. A worker process (`python manage.py runworker`) runs it.
 from domainkit.contrib.messaging import periodic, task
 
 
-@task  # or @task(name=..., max_attempts=...)
+@task  # or @task(name=..., max_attempts=..., queue="emails")
 async def send_welcome(user_id: UUID) -> None: ...
 
 
@@ -57,7 +57,8 @@ not guaranteed.
 **Failures** are retried with exponential backoff and jitter, up to
 `max_attempts`. Then the message is dead-lettered and sent to
 `ERROR_REPORTERS`. A message naming an unknown task or handler is
-dead-lettered at once. `python manage.py messages --dead` lists dead
+dead-lettered at once. So is a message whose worker died (a crash, or a
+kill) during its last attempt: it is not run again after `max_attempts`. `python manage.py messages --dead` lists dead
 letters, and `--retry ID` (or `all`) queues them again after a fix.
 
 A unit of work that defers tasks or publishes events with durable handlers,
@@ -84,9 +85,110 @@ inspects any outbox.
 | `CONCURRENCY` | `10` | Messages one worker runs at the same time. |
 | `RETENTION_SECONDS` | `604800.0` | Finished messages are deleted after this (7 days). |
 | `CLEANUP_INTERVAL` | `3600.0` | Seconds between those deletions. |
+| `BROKER` | `None` | An alias in `BROKERS`: workers take their work from that broker instead of polling the outbox (below). |
+| `REPUBLISH_AFTER` | `3600.0` | With a broker: seconds a published message may wait for a worker before the relay publishes it again, as lost. |
+| `PUBLISH_ON_COMMIT` | `True` | With a broker: the committing process publishes the commit's due messages right away, instead of leaving them to the relays' next poll. |
 
 Run `runworker --metrics-port 9100` to expose the worker's metrics. Scale by
 running more workers; `SIGTERM` lets running messages finish first.
+
+### Queues
+
+Every message belongs to a queue: `default`, or the one its task names
+(`@task(queue="emails")`, `@periodic(..., queue="reports")`). Durable event
+handlers use `default`. `runworker --queue emails` runs only that queue's
+messages (repeat `--queue` for several), so slow or bulky work gets workers
+of its own and cannot hold up the rest. Without `--queue`, a worker runs
+every queue. Each queue needs at least one worker, or its messages wait.
+
+### Workers on RabbitMQ
+
+By default, workers poll the outbox table every `POLL_INTERVAL`, so a
+message waits up to that long, and every worker queries the database even
+when idle. With a broker, the process that commits a message hands it to
+the broker right away, workers receive it at once, and most workers never
+poll the database. The outbox stays the record of every message (see
+[ADR 0014](adr/0014-outbox-as-record-broker-for-dispatch.md)):
+
+```python
+BROKERS = {
+    "default": {
+        "URL": env.str("BROKER_URL"),  # amqps://billing:pw@mq.internal:5671/billing
+        "PREFIX": "billing",
+    },
+}
+MESSAGING = {"BROKER": "default"}
+```
+
+Install the `rabbitmq` extra (`domainkit[rabbitmq]`, which brings
+aio-pika). Then `runworker` works like this:
+
+- **Publish on commit.** Right after a unit of work commits (and after
+  `enqueue()`), its process locks the messages it wrote for
+  `REPUBLISH_AFTER` and publishes a small pointer to each: its id, its
+  database, and the lock. RabbitMQ confirms every publication. This adds a
+  database update and a broker round trip to each request that writes
+  messages; set `PUBLISH_ON_COMMIT` to `False` to leave publishing to the
+  relays. Delayed tasks wait for the relay.
+- **Relay.** Workers also claim due messages of their outbox, as a polling
+  worker would, and publish them the same way: delayed tasks when they fall
+  due, retries, and anything a commit could not publish (the broker was
+  down, the process died). A publication that fails is unlocked and tried
+  again on the next round.
+- **Consume.** Workers consume their queues with a prefetch of
+  `CONCURRENCY`. For each delivery, a worker takes the message over by id,
+  which works only for the pointer of the current publication (or one whose
+  lock has expired), runs it, records the outcome, and only then
+  acknowledges the delivery. A duplicate, or a delivery of a message that
+  already ran, is acknowledged and skipped.
+- **Retries and dead letters** stay in the outbox. A failed message goes
+  back with its backoff delay, and the relay publishes it again when it is
+  due, so RabbitMQ needs no delayed-message plugin. `messages --dead` and
+  `--retry` work as before.
+- **Losses** cost time, never messages. A worker that dies mid-message
+  leaves it to come back after `VISIBILITY_TIMEOUT`; a message RabbitMQ
+  lost is published again after `REPUBLISH_AFTER`.
+
+On RabbitMQ, the worker uses one durable direct exchange, `<PREFIX>.work`,
+and a quorum queue per queue, `<PREFIX>.<queue>`, bound by the queue's name.
+Messages are persistent and `mandatory`. Give the workers a user of their
+own, limited to the prefix on the virtual host (CI checks that these
+permissions are enough):
+
+```text
+rabbitmqctl add_user billing-worker '<long random password>'
+rabbitmqctl set_permissions -p billing billing-worker '^billing\.' '^billing\.' '^billing\.'
+```
+
+Relaying workers also schedule periodic tasks and clean up. A few are
+enough: run the rest with `runworker --no-relay`, so they only consume and
+never query the database until a message arrives.
+
+On a laptop, with PostgreSQL 18 and RabbitMQ 4.3 in Docker and one worker
+process (`CONCURRENCY` 50), a brokered message ran about 35 ms after its
+commit, against about 870 ms when polling every second. `enqueue()` took
+5 ms instead of 1.4 ms (RabbitMQ confirmed in 0.6 ms), and a full outbox
+drained at 950 tasks per second instead of 470.
+
+`python manage.py broker declare` creates the exchange and the queues ahead
+of the workers; run it with an account that may configure the virtual host
+if the workers' account may not. `broker check` tells whether each broker
+answers. In staging and production, brokers must use `amqps://` with
+certificate checks, and a user other than `guest`; `memory://`, an
+in-process broker for tests and development, is refused there.
+
+Keep `TASK_TIMEOUT` well under RabbitMQ's `consumer_timeout` (30 minutes by
+default), which closes the channel of a consumer that holds a message
+longer. Keep `REPUBLISH_AFTER` above the longest a message may wait in a
+queue behind others: the relay takes an older message for a lost one and
+publishes it again. Nothing runs twice, since the first copy is skipped,
+but the queue grows. Add workers before a backlog gets that long. Quorum queues dead-letter or drop a message delivered more than
+their delivery limit (20 by default); for the worker that is harmless, as
+the relay publishes such a message again after `REPUBLISH_AFTER`.
+
+**Upgrading to 0.5.** The outbox gained a `queue` column (default
+`default`). Run `python manage.py makemigrations` and `migrate` in each
+project that installs messaging.
 
 ## Audit: who did what, when, from where
 

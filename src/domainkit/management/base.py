@@ -79,6 +79,7 @@ class BaseCommand:
 
 async def _run_async(awaitable: Awaitable[None]) -> None:
     """Await an async ``handle``, then close connections opened in this loop."""
+    from domainkit.broker import brokers
     from domainkit.cache import caches
     from domainkit.db.connections import connections
 
@@ -87,3 +88,4 @@ async def _run_async(awaitable: Awaitable[None]) -> None:
     finally:
         await connections.close_all()
         await caches.close_all()
+        await brokers.close_all()

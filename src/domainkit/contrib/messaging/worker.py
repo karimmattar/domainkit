@@ -9,18 +9,22 @@ workers can share one outbox. There is no ordering guarantee between messages.
 """
 
 import asyncio
+import json
 import logging
 import secrets
 import time
 import uuid
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Final
+from weakref import WeakKeyDictionary
 
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from domainkit.apps import registry
+from domainkit.broker import Broker, BrokerError
 from domainkit.context import RequestContext, bind_request
 from domainkit.db import connections
 from domainkit.ddd import DomainEvent, EventBus, event_bus
@@ -40,10 +44,13 @@ from .settings import MessagingSettings
 from .tables import DEAD, DONE, PENDING, messages
 
 try:
-    from .metrics import observe
+    from .metrics import observe, observe_relay
 except ImportError:  # pragma: no cover - only without the [metrics] extra.
 
     def observe(kind: str, outcome: str, seconds: float) -> None:
+        """Record nothing: ``prometheus_client`` is not installed."""
+
+    def observe_relay(outcome: str, count: int = 1) -> None:
         """Record nothing: ``prometheus_client`` is not installed."""
 
 
@@ -54,6 +61,10 @@ _ERROR_LENGTH = 2000
 
 class UnknownTarget(LookupError):
     """The message names a handler or task this process does not have."""
+
+
+class AttemptsExhausted(RuntimeError):
+    """The worker stopped (crashed, killed) during the message's last attempt."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +79,18 @@ class Claimed:
     attempts: int
     max_attempts: int
     lock_id: uuid.UUID
+
+
+_CLAIMED: Final = (
+    messages.c.id,
+    messages.c.kind,
+    messages.c.target,
+    messages.c.payload,
+    messages.c.headers,
+    messages.c.attempts,
+    messages.c.max_attempts,
+)
+"""The columns a claim returns (``Claimed`` without its lock)."""
 
 
 def _now() -> datetime:
@@ -101,17 +124,21 @@ class Worker:
         *,
         database: str | None = None,
         bus: EventBus | None = None,
+        queues: Iterable[str] | None = None,
     ) -> None:
         """Run the outbox of alias ``database`` (default: ``MESSAGING.DATABASE``).
 
         Every database that hosts domains has its own outbox; only the worker
-        of ``MESSAGING.DATABASE`` schedules periodic tasks.
+        of ``MESSAGING.DATABASE`` schedules periodic tasks. ``queues`` limits
+        the messages it claims (default: every queue).
         """
         self.config = config or registry.settings(MessagingSettings)
         self.database = database or self.config.DATABASE
         self.bus = bus or event_bus
+        self.queues = None if queues is None else frozenset(queues)
         self._scheduled: dict[str, int] = {}
         self._last_cleanup = float("-inf")
+        self._declared: WeakKeyDictionary[Broker, set[str]] = WeakKeyDictionary()
 
     @property
     def engine(self) -> AsyncEngine:
@@ -130,7 +157,7 @@ class Worker:
         try:
             while not stop.is_set():
                 await self.schedule_periodic()
-                await self._cleanup_when_due()
+                await self.run_cleanup_when_due()
                 free = min(
                     self.config.CONCURRENCY - len(running), self.config.BATCH_SIZE
                 )
@@ -161,10 +188,10 @@ class Worker:
             processed += len(claimed)
         return processed
 
-    async def claim(self, limit: int) -> list[Claimed]:
-        """Lock up to ``limit`` due messages for this worker."""
-        now = _now()
-        lock_id = uuid.uuid4()
+    def _due(
+        self, now: datetime, limit: int | None, ids: Sequence[uuid.UUID] = ()
+    ) -> Any:  # noqa: ANN401 - a subquery.
+        """Select due, unlocked messages of this worker's queues (of ``ids``)."""
         due = (
             select(messages.c.id)
             .where(
@@ -176,27 +203,145 @@ class Worker:
             .limit(limit)
             .with_for_update(skip_locked=True)
         )
+        if ids:
+            due = due.where(messages.c.id.in_(ids))
+        if self.queues is not None:
+            due = due.where(messages.c.queue.in_(self.queues))
+        return due.scalar_subquery()
+
+    async def claim(self, limit: int) -> list[Claimed]:
+        """Lock up to ``limit`` due messages for this worker."""
+        now = _now()
+        lock_id = uuid.uuid4()
         statement = (
             update(messages)
-            .where(messages.c.id.in_(due.scalar_subquery()))
+            .where(messages.c.id.in_(self._due(now, limit)))
             .values(
                 locked_until=now + timedelta(seconds=self.config.VISIBILITY_TIMEOUT),
                 lock_id=lock_id,
                 attempts=messages.c.attempts + 1,
             )
-            .returning(
-                messages.c.id,
-                messages.c.kind,
-                messages.c.target,
-                messages.c.payload,
-                messages.c.headers,
-                messages.c.attempts,
-                messages.c.max_attempts,
-            )
+            .returning(*_CLAIMED)
         )
         async with self.engine.begin() as connection:
             rows = (await connection.execute(statement)).all()
         return [Claimed(**row._mapping, lock_id=lock_id) for row in rows]
+
+    async def relay(self, broker: Broker, limit: int) -> int:
+        """Publish up to ``limit`` due messages to ``broker``; return how many went.
+
+        Each message is locked for ``REPUBLISH_AFTER`` and published as a
+        pointer: its id, this database, and the lock. Failed publications are
+        unlocked, so the next round tries them again.
+        """
+        now = _now()
+        return await self._relay(broker, now, self._due(now, limit))
+
+    async def relay_ids(self, broker: Broker, ids: Sequence[uuid.UUID]) -> int:
+        """Publish just-committed messages now, those due and not yet taken."""
+        if not ids:
+            return 0
+        now = _now()
+        return await self._relay(broker, now, self._due(now, None, ids))
+
+    async def _relay(self, broker: Broker, now: datetime, due: Any) -> int:  # noqa: ANN401
+        """Lock the ``due`` messages, publish their pointers, unlock failures."""
+        lock_id = uuid.uuid4()
+        statement = (
+            update(messages)
+            .where(messages.c.id.in_(due))
+            .values(
+                locked_until=now + timedelta(seconds=self.config.REPUBLISH_AFTER),
+                lock_id=lock_id,
+            )
+            .returning(messages.c.id, messages.c.queue)
+        )
+        async with self.engine.begin() as connection:
+            rows = (await connection.execute(statement)).all()
+        if not rows:
+            return 0
+        declared = self._declared.setdefault(broker, set())
+        if new := {row.queue for row in rows} - declared:
+            try:
+                await broker.declare(new)
+            except BrokerError as exc:
+                await self._unlock([row.id for row in rows], lock_id, exc)
+                return 0
+            declared |= new
+        sent = await asyncio.gather(
+            *(self._publish(broker, row.id, row.queue, lock_id) for row in rows)
+        )
+        failed = [row for row, ok in zip(rows, sent, strict=True) if not ok]
+        if failed:
+            # Declare again next time: the queue may be gone (deleted, purged).
+            declared.difference_update(row.queue for row in failed)
+            await self._unlock([row.id for row in failed], lock_id, None)
+        observe_relay("published", len(rows) - len(failed))
+        return len(rows) - len(failed)
+
+    async def _publish(
+        self, broker: Broker, message_id: uuid.UUID, queue: str, lock_id: uuid.UUID
+    ) -> bool:
+        """Publish one pointer; report whether the broker took it."""
+        pointer = {
+            "id": str(message_id),
+            "database": self.database,
+            "lock": str(lock_id),
+        }
+        try:
+            await broker.publish(
+                queue, json.dumps(pointer).encode(), message_id=str(message_id)
+            )
+        except BrokerError as exc:
+            logger.warning(
+                "Could not publish %s to queue %r: %s", message_id, queue, exc
+            )
+            return False
+        return True
+
+    async def _unlock(
+        self, ids: list[uuid.UUID], lock_id: uuid.UUID, exc: BrokerError | None
+    ) -> None:
+        """Release messages that did not reach the broker."""
+        if exc is not None:
+            logger.warning("Could not declare queues: %s", exc)
+        observe_relay("failed", len(ids))
+        statement = (
+            update(messages)
+            .where(messages.c.id.in_(ids), messages.c.lock_id == lock_id)
+            .values(locked_until=None, lock_id=None)
+        )
+        async with self.engine.begin() as connection:
+            await connection.execute(statement)
+
+    async def take_over(
+        self, message_id: uuid.UUID, relay_lock: uuid.UUID
+    ) -> Claimed | None:
+        """Claim a delivered message, unless it ran, moved on, or is running.
+
+        The delivery must carry the lock the relay published it under, or
+        that lock must have expired; anything else is a stale duplicate.
+        """
+        now = _now()
+        lock_id = uuid.uuid4()
+        statement = (
+            update(messages)
+            .where(
+                messages.c.id == message_id,
+                messages.c.status == PENDING,
+                messages.c.available_at <= now,
+                or_(messages.c.lock_id == relay_lock, messages.c.locked_until < now),
+            )
+            .values(
+                locked_until=now + timedelta(seconds=self.config.VISIBILITY_TIMEOUT),
+                lock_id=lock_id,
+                attempts=messages.c.attempts + 1,
+            )
+            .returning(*_CLAIMED)
+        )
+        async with self.engine.begin() as connection:
+            row = (await connection.execute(statement)).first()
+        return None if row is None else Claimed(**row._mapping, lock_id=lock_id)
 
     async def process(self, message: Claimed) -> None:
         """Run one message under its original request id and actor; never raises."""
@@ -213,9 +358,14 @@ class Worker:
             span("message.process", kind=message.kind, target=message.target),
         ):
             try:
+                if message.attempts > message.max_attempts:
+                    raise AttemptsExhausted(
+                        "The worker stopped during the last attempt (a crash, "
+                        "or a kill before TASK_TIMEOUT)."
+                    )
                 async with asyncio.timeout(self.config.TASK_TIMEOUT):
                     await self._execute(message)
-            except UnknownTarget as exc:
+            except (UnknownTarget, AttemptsExhausted) as exc:
                 outcome = await self._failed(message, exc, permanent=True)
             except Exception as exc:  # noqa: BLE001 - logged and retried by _failed.
                 outcome = await self._failed(message, exc, permanent=False)
@@ -311,6 +461,7 @@ class Worker:
                     payload={},
                     headers={"request_id": None, "actor": None},
                     max_attempts=spec.max_attempts or self.config.MAX_ATTEMPTS,
+                    queue=spec.queue,
                     dedupe_key=f"periodic:{spec.key}:{slot}",
                     available_at=datetime.fromtimestamp(slot * seconds, UTC),
                 )
@@ -329,7 +480,7 @@ class Worker:
             result = await connection.execute(statement)
         return int(result.rowcount)
 
-    async def _cleanup_when_due(self) -> None:
+    async def run_cleanup_when_due(self) -> None:
         """Run ``cleanup`` every ``CLEANUP_INTERVAL`` seconds."""
         if time.monotonic() - self._last_cleanup >= self.config.CLEANUP_INTERVAL:
             self._last_cleanup = time.monotonic()

@@ -303,6 +303,79 @@ class CacheConfig(BaseModel):
         return bool(parts.password) or self.TLS_CERT is not None
 
 
+BROKER_SCHEMES: Final = frozenset({"amqp", "amqps", "memory"})
+"""URL schemes of message brokers (``BROKERS``)."""
+NAME_PATTERN: Final = r"^[A-Za-z0-9_.-]{1,64}$"
+"""Queue names and broker prefixes: safe in AMQP names and routing keys."""
+
+
+class BrokerConfig(BaseModel):
+    """One ``BROKERS`` entry: a message broker the worker takes its work from.
+
+    The outbox stays the record of every message; the broker only hands due
+    messages to workers, so a broker that loses messages delays them but
+    never drops them (see ADR 0014).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    URL: SecretStr
+    """``amqps://user:password@host:5671/vhost`` (RabbitMQ), or ``memory://``."""
+    PREFIX: str | None = Field(default=None, pattern=NAME_PATTERN)
+    """Starts every exchange and queue name; RabbitMQ brokers must set one."""
+    TLS_CA: Path | None = None
+    """CA bundle for ``amqps://``; default: the system's."""
+    TLS_CERT: Path | None = None
+    """Client certificate for ``amqps://`` (with ``TLS_KEY``)."""
+    TLS_KEY: Path | None = None
+    CONNECT_TIMEOUT: float = Field(default=10.0, gt=0)
+    """Seconds to connect before the attempt counts as failed."""
+    PUBLISH_TIMEOUT: float = Field(default=10.0, gt=0)
+    """Seconds to wait for the broker to confirm a published message."""
+
+    @model_validator(mode="after")
+    def check_url(self) -> Self:
+        """Accept AMQP URLs with a host and a prefix, or the in-memory broker."""
+        parts = urlsplit(self.URL.get_secret_value())
+        if parts.scheme not in BROKER_SCHEMES:
+            raise ValueError("a broker URL starts with amqp://, amqps://, or memory://")
+        if parts.scheme != "memory":
+            if not parts.hostname:
+                raise ValueError("an AMQP URL needs a host: amqps://user:pw@host/vhost")
+            if self.PREFIX is None:
+                raise ValueError(
+                    "RabbitMQ brokers need a PREFIX, unique among the services "
+                    "that share the virtual host"
+                )
+        tls = (self.TLS_CA, self.TLS_CERT, self.TLS_KEY)
+        if parts.scheme != "amqps" and any(tls):
+            raise ValueError("TLS_CA, TLS_CERT and TLS_KEY need an amqps:// URL")
+        if (self.TLS_CERT is None) != (self.TLS_KEY is None):
+            raise ValueError("TLS_CERT and TLS_KEY go together")
+        return self
+
+    @property
+    def scheme(self) -> str:
+        """``amqp``, ``amqps``, or ``memory``."""
+        return urlsplit(self.URL.get_secret_value()).scheme
+
+    def is_network(self) -> bool:
+        """Report whether the broker is a server on another host."""
+        host = urlsplit(self.URL.get_secret_value()).hostname
+        return self.scheme != "memory" and host not in LOCAL_HOSTS
+
+    def verifies_tls(self) -> bool:
+        """Report whether certificate checks stay on (no ``no_verify_ssl``)."""
+        options = parse_qs(urlsplit(self.URL.get_secret_value()).query)
+        return all(value == "0" for value in options.get("no_verify_ssl", ()))
+
+    def has_credentials(self) -> bool:
+        """Report whether the broker logs in as a real user, not RabbitMQ's guest."""
+        parts = urlsplit(self.URL.get_secret_value())
+        user = parts.username or ("" if self.TLS_CERT is None else "certificate")
+        return user not in {"", "guest"}
+
+
 class Settings(BaseModel):
     """Validated, read-only settings; extra names are checked at ``setup()``."""
 
@@ -340,6 +413,8 @@ class Settings(BaseModel):
         default_factory=lambda: {DEFAULT_CACHE_ALIAS: CacheConfig()}
     )
     """Caches by alias; ``default`` is required (``memory://`` unless set)."""
+    BROKERS: dict[str, BrokerConfig] = Field(default_factory=dict)
+    """Message brokers by alias; ``MESSAGING.BROKER`` names the worker's."""
     LOGGING: dict[str, Any] = Field(default_factory=_minimal_logging)
     """``logging.config.dictConfig`` mapping applied by ``setup()``."""
 
@@ -480,3 +555,21 @@ class Settings(BaseModel):
             caches = self.CACHES.items()
             if aliases := sorted(a for a, cache in caches if violates_cache(cache)):
                 raise ValueError(f"{message} {where} for CACHES {aliases}")
+        broker_rules: dict[str, Callable[[BrokerConfig], bool]] = {
+            "memory:// brokers serve one process; use RabbitMQ": lambda broker: (
+                broker.scheme == "memory"
+            ),
+            "network brokers need amqps:// (TLS)": lambda broker: (
+                broker.is_network() and broker.scheme != "amqps"
+            ),
+            "brokers must verify the server certificate": lambda broker: (
+                not broker.verifies_tls()
+            ),
+            "brokers need a user of their own, not guest": lambda broker: (
+                broker.scheme != "memory" and not broker.has_credentials()
+            ),
+        }
+        for message, violates_broker in broker_rules.items():
+            brokers = self.BROKERS.items()
+            if aliases := sorted(a for a, b in brokers if violates_broker(b)):
+                raise ValueError(f"{message} {where} for BROKERS {aliases}")

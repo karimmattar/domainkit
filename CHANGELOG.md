@@ -6,6 +6,39 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-14
+
+### Added
+
+- Workers on RabbitMQ (ADR 0014): `BROKERS` by alias (`amqp://`,
+  `amqps://`, or `memory://`, through the new `rabbitmq` extra) and
+  `MESSAGING.BROKER`. Commits publish their messages at once
+  (`PUBLISH_ON_COMMIT`), workers relay the rest and run what the broker
+  delivers, and `runworker --no-relay` workers only consume. The outbox
+  stays the record of every message, so retries, delays, dead letters, and
+  `messages` work as before.
+- `DomainConfig.committed(uow)`: a hook that runs after each SQL unit of
+  work commits; its failures are reported and never fail the commit.
+- Queues: `@task(queue=...)` and `@periodic(..., queue=...)`, and
+  `runworker --queue` to run only some queues, with or without a broker.
+- `domainkit.broker`: the `Broker` port, `MemoryBroker`, and the RabbitMQ
+  adapter (durable direct exchange, quorum queues, persistent mandatory
+  messages, publisher confirms).
+- The `broker` command: `check` connects, `declare` creates the queues.
+- `MESSAGING.REPUBLISH_AFTER`, deployment checks for brokers (TLS,
+  certificate checks, a user other than `guest`, no `memory://`), and the
+  metrics `messaging_relayed_total` and `messaging_deliveries_skipped_total`.
+
+### Changed
+
+- The outbox has a `queue` column. Run `makemigrations` and `migrate` in
+  projects that install messaging.
+
+### Fixed
+
+- A message whose worker died during its last attempt was claimed again
+  forever; it is now dead-lettered after `max_attempts`.
+
 ## [0.4.0] - 2026-10-14
 
 ### Added
@@ -141,7 +174,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/karimmattar/domainkit/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/karimmattar/domainkit/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/karimmattar/domainkit/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/karimmattar/domainkit/compare/v0.1.1...v0.2.0

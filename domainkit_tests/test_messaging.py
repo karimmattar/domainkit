@@ -2,6 +2,8 @@
 
 import asyncio
 import io
+import json
+import logging
 import uuid
 from collections.abc import AsyncIterator, Iterator, Mapping
 from datetime import UTC, datetime, timedelta
@@ -9,21 +11,32 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from prometheus_client import REGISTRY
 from sqlalchemy import select, update
 
 from domainkit import setup
 from domainkit.apps import registry
-from domainkit.conf import override_settings
+from domainkit.broker import (
+    BrokerHandler,
+    BrokerRefused,
+    BrokerUnavailable,
+    Delivery,
+    MemoryBroker,
+    brokers,
+)
+from domainkit.conf import UNSET, override_settings
 from domainkit.context import RequestContext, bind_request, current_request
 from domainkit.contrib.messaging import (
     MessagingSettings,
     Worker,
+    dispatch,
     enqueue,
     periodic,
     task,
 )
 from domainkit.contrib.messaging import registry as tasks
 from domainkit.contrib.messaging import worker as worker_module
+from domainkit.contrib.messaging.dispatch import BrokerWorkers
 from domainkit.contrib.messaging.outbox import insert_statements, message_row
 from domainkit.contrib.messaging.tables import DEAD, DONE, PENDING, messages
 from domainkit.contrib.messaging.worker import Claimed, backoff
@@ -72,6 +85,12 @@ async def fails_once(key: str) -> None:
         ran.append(key)
         raise RuntimeError("first run fails")
     ran.append(f"{key}:ok")
+
+
+@task(queue="emails")
+async def send_email(to: str) -> None:
+    """A task on its own queue."""
+    ran.append(("email", to))
 
 
 @task(max_attempts=1)
@@ -581,3 +600,552 @@ def test_contrib_periodic_tasks_follow_their_app(messaging: None) -> None:
         setup()
         keys = [spec.key for spec, _ in tasks.periodic_tasks()]
     assert "tests.contrib_purge" in keys
+
+
+# Queues and brokers ---------------------------------------------------------------
+
+BROKERED = {**FAST, "BROKER": "work"}
+
+
+@pytest.fixture
+def brokered(database_url: str) -> Iterator[None]:
+    """Messaging on an empty database, with an in-memory broker."""
+    ran.clear()
+    reported.clear()
+    registry.clear()
+    with override_settings(
+        INSTALLED_DOMAINS=[MESSAGING, ALPHA],
+        DATABASES={"default": {"URL": database_url}},
+        BROKERS={"work": {"URL": "memory://"}},
+        MESSAGING=BROKERED,
+        ERROR_REPORTERS=["domainkit_tests.test_messaging.reporter"],
+    ):
+        setup()
+        yield
+    registry.clear()
+
+
+@pytest.fixture
+async def broker_tables(brokered: None) -> AsyncIterator[MemoryBroker]:
+    """The outbox and notes tables, and this loop's in-memory broker."""
+    async with connections.engine().begin() as connection:
+        await connection.run_sync(messages.create)
+        await connection.run_sync(notes.create)
+    broker = brokers["work"]
+    assert isinstance(broker, MemoryBroker)
+    yield broker
+    await brokers.close_all()
+    await connections.close_all()
+
+
+async def settled(count: int) -> list[dict[str, object]]:
+    """Wait until ``count`` messages are done or dead; return every row."""
+    for _ in range(500):
+        rows = await outbox()
+        if sum(row["status"] in {DONE, DEAD} for row in rows) >= count:
+            return rows
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"Not settled: {rows}")
+
+
+def delivery(body: object, *, answers: list[str]) -> Delivery:
+    """A delivery that records how it was answered."""
+
+    async def ack() -> None:
+        answers.append("ack")
+
+    async def requeue() -> None:
+        answers.append("requeue")
+
+    raw = body if isinstance(body, bytes) else json.dumps(body).encode()
+    return Delivery("default", raw, "m", ack, requeue)
+
+
+async def test_tasks_go_to_their_queues(tables: None) -> None:
+    """A task's queue is stored with each message; workers can pick queues."""
+    await enqueue(send_email, to="ada@example.com")
+    await enqueue(remember, value=uuid.uuid4())
+
+    assert [row["queue"] for row in await outbox()] == ["emails", "default"]
+    assert {"default", "emails"} <= tasks.queues()
+    with pytest.raises(ImproperlyConfigured, match="Queue names have 1 to 64"):
+        task(queue="bad queue")
+    with pytest.raises(ImproperlyConfigured, match="Queue names have 1 to 64"):
+        periodic(timedelta(hours=1), queue="")
+
+    assert await Worker(queues=["emails"]).run_once() == 1
+    assert ran == [("email", "ada@example.com")]
+    assert await Worker().run_once() == 1
+
+
+async def test_periodic_tasks_keep_their_queue(tables: None) -> None:
+    """Scheduled runs of a periodic task go to its queue."""
+
+    @periodic(timedelta(hours=1), name="tests.hourly_report", queue="reports")
+    async def hourly_report() -> None: ...
+
+    await Worker().schedule_periodic()
+
+    rows = [row for row in await outbox() if row["target"] == "tests.hourly_report"]
+    assert [row["queue"] for row in rows] == ["reports"]
+
+
+async def test_a_message_that_kills_its_worker_is_dead_lettered(
+    tables: None,
+) -> None:
+    """A crash during the last attempt leaves attempts used up: dead, not retried."""
+    await enqueue(remember, value=uuid.uuid4())
+    async with connections.engine().begin() as connection:
+        # The worker died while running the last attempt (attempts was raised).
+        await connection.execute(update(messages).values(attempts=10, max_attempts=10))
+
+    assert await Worker().run_once() == 1
+
+    (row,) = await outbox()
+    assert (row["status"], row["attempts"]) == (DEAD, 11)
+    assert "AttemptsExhausted: The worker stopped during the last attempt" in str(
+        row["last_error"]
+    )
+    assert ran == []
+
+
+async def test_the_relay_publishes_pointers_once(broker_tables: MemoryBroker) -> None:
+    """Due messages go out once, locked for REPUBLISH_AFTER; lost ones go again."""
+    with override_settings(MESSAGING={**BROKERED, "PUBLISH_ON_COMMIT": False}):
+        await relay_scenario(broker_tables)
+
+
+async def test_commits_publish_their_messages_at_once(
+    broker_tables: MemoryBroker,
+) -> None:
+    """With a broker, each commit hands its due messages over right away."""
+    async with NotesUnitOfWork() as uow:
+        await uow.notes.add(Note(id=NoteId(uuid.uuid4()), text="t"))
+        uow.defer(send_email, to="ada@example.com")
+        uow.defer(remember, value=uuid.uuid4(), delay=timedelta(hours=1))
+        await uow.commit()
+    await enqueue(remember, value=uuid.uuid4())
+
+    assert (broker_tables.pending("emails"), broker_tables.pending("default")) == (1, 1)
+    email, delayed, enqueued = await outbox()
+    assert email["lock_id"] is not None
+    assert delayed["lock_id"] is None  # Not due: the relay sends it later.
+    assert enqueued["lock_id"] is not None
+
+    with override_settings(MESSAGING={**BROKERED, "PUBLISH_ON_COMMIT": False}):
+        await enqueue(remember, value=uuid.uuid4())  # Due, not published.
+    # No ids means nothing to publish, not "everything that is due".
+    assert await Worker().relay_ids(broker_tables, []) == 0
+    assert await Worker().relay(broker_tables, 10) == 1
+
+
+async def test_failed_commit_publications_leave_work_to_the_relay(
+    broker_tables: MemoryBroker,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The commit stands whatever happens next; the relay publishes later."""
+
+    async def database_down(self: Worker, broker: object, ids: object) -> int:
+        raise ConnectionError("database down")
+
+    with caplog.at_level(logging.WARNING):
+        down = Unreachable(declare=False)
+        monkeypatch.setattr(BrokerHandler, "__getitem__", lambda self, alias: down)
+        await enqueue(remember, value=uuid.uuid4())
+        monkeypatch.undo()
+        monkeypatch.setattr(Worker, "relay_ids", database_down)
+        await enqueue(remember, value=uuid.uuid4())
+
+    first, second = await outbox()
+    assert (first["lock_id"], second["lock_id"]) == (None, None)
+    assert "Could not publish committed messages; the relay will" in caplog.messages
+    assert broker_tables.pending("default") == 0
+
+
+async def test_after_commit_failures_are_reported(
+    broker_tables: MemoryBroker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A domain's after-commit hook failing does not fail the unit of work."""
+    from domainkit.contrib.messaging.apps import MessagingConfig
+
+    async def broken(self: MessagingConfig, uow: object) -> None:
+        raise RuntimeError("hook broke")
+
+    monkeypatch.setattr(MessagingConfig, "committed", broken)
+    async with NotesUnitOfWork() as uow:
+        await uow.notes.add(Note(id=NoteId(uuid.uuid4()), text="t"))
+        uow.defer(remember, value=uuid.uuid4())
+        await uow.commit()
+
+    assert len(await outbox()) == 1
+    assert reported == [("hook broke", {"domain": "messaging"})]
+
+
+async def relay_scenario(broker_tables: MemoryBroker) -> None:
+    """Relay three messages, one of them delayed, then a lost one again."""
+    await enqueue(send_email, to="ada@example.com")
+    await enqueue(remember, value=uuid.uuid4())
+    await enqueue(remember, value=uuid.uuid4(), delay=timedelta(hours=1))
+    worker = Worker()
+
+    assert await worker.relay(broker_tables, 10) == 2
+    assert await worker.relay(broker_tables, 10) == 0
+    assert (broker_tables.pending("emails"), broker_tables.pending("default")) == (1, 1)
+    email, *_ = await outbox()
+    assert email["attempts"] == 0
+    assert email["locked_until"] is not None
+
+    async with connections.engine().begin() as connection:
+        past = datetime.now(UTC) - timedelta(seconds=1)
+        await connection.execute(
+            update(messages)
+            .where(messages.c.id == email["id"])
+            .values(locked_until=past)
+        )
+    assert await worker.relay(broker_tables, 10) == 1  # Lost: published again.
+    assert broker_tables.pending("emails") == 2
+
+
+class Unreachable(MemoryBroker):
+    """A broker that is down: declaring or publishing fails."""
+
+    def __init__(self, *, declare: bool) -> None:
+        """Fail at ``declare`` (or at publishing)."""
+        super().__init__()
+        self.fail_declare = declare
+
+    async def declare(self, queues: object) -> None:
+        """Fail, or declare."""
+        if self.fail_declare:
+            raise BrokerUnavailable("down")
+        await super().declare(queues)  # type: ignore[arg-type]
+
+    async def publish(self, queue: str, body: bytes, *, message_id: str) -> None:
+        """Fail."""
+        raise BrokerUnavailable("down")
+
+
+async def test_unpublished_messages_are_unlocked(
+    tables: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A broker that is down leaves the messages due for the next round."""
+    await enqueue(remember, value=uuid.uuid4())
+    worker = Worker()
+    with caplog.at_level(logging.WARNING, "domainkit.contrib.messaging.worker"):
+        await worker.relay(Unreachable(declare=True), 10)
+    assert caplog.messages == ["Could not declare queues: down"]
+
+    for broken in (Unreachable(declare=True), Unreachable(declare=False)):
+        assert await worker.relay(broken, 10) == 0
+        (row,) = await outbox()
+        assert (row["lock_id"], row["locked_until"]) == (None, None)
+    assert await worker.relay(MemoryBroker(), 10) == 1  # Due again, and sent.
+
+
+async def test_take_over_needs_the_published_lock(tables: None) -> None:
+    """Only the current publication runs; stale and finished ones are skipped."""
+    await enqueue(remember, value=uuid.uuid4())
+    broker = MemoryBroker()
+    worker = Worker()
+    await worker.relay(broker, 10)
+    (row,) = await outbox()
+    message_id, lock = row["id"], row["lock_id"]
+    assert isinstance(message_id, uuid.UUID)
+    assert isinstance(lock, uuid.UUID)
+
+    assert await worker.take_over(message_id, uuid.uuid4()) is None
+    claimed = await worker.take_over(message_id, lock)
+    assert claimed is not None
+    assert claimed.attempts == 1
+    assert await worker.take_over(message_id, lock) is None  # Now running.
+    await worker.process(claimed)
+    assert await worker.take_over(message_id, lock) is None  # Done.
+    (row,) = await outbox()
+    assert (row["status"], row["lock_id"]) == (DONE, None)
+
+
+async def test_an_expired_publication_can_still_run(tables: None) -> None:
+    """A delivery whose lock expired takes the message over with a fresh lock."""
+    await enqueue(remember, value=uuid.uuid4())
+    worker = Worker()
+    await worker.relay(MemoryBroker(), 10)
+    (row,) = await outbox()
+    async with connections.engine().begin() as connection:
+        past = datetime.now(UTC) - timedelta(seconds=1)
+        await connection.execute(update(messages).values(locked_until=past))
+
+    claimed = await worker.take_over(row["id"], uuid.uuid4())  # type: ignore[arg-type]
+
+    assert claimed is not None
+    (taken,) = await outbox()
+    assert taken["lock_id"] == claimed.lock_id
+    assert taken["locked_until"] > datetime.now(UTC)  # type: ignore[operator]
+    await worker.process(claimed)
+    (done,) = await outbox()
+    assert done["status"] == DONE
+
+
+class Recording(MemoryBroker):
+    """An in-memory broker that counts declarations and refuses some queues."""
+
+    def __init__(self, refuse: frozenset[str] = frozenset()) -> None:
+        """Refuse publications to ``refuse``."""
+        super().__init__()
+        self.refuse = refuse
+        self.declarations: list[list[str]] = []
+
+    async def declare(self, queues: object) -> None:
+        """Record, then declare."""
+        names = sorted(queues)  # type: ignore[call-overload]
+        self.declarations.append(names)
+        await super().declare(names)
+
+    async def publish(self, queue: str, body: bytes, *, message_id: str) -> None:
+        """Refuse, or publish."""
+        if queue in self.refuse:
+            raise BrokerRefused(f"no {queue}")
+        await super().publish(queue, body, message_id=message_id)
+
+    def drain(self, queue: str) -> list[tuple[bytes, str]]:
+        """Take every waiting message of ``queue``."""
+        waiting = []
+        while self.pending(queue):
+            waiting.append(self._queues[queue].get_nowait())
+        return waiting
+
+
+async def test_the_relay_works_in_batches_and_counts(
+    tables: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A batch has a limit; only failed publications are unlocked and redeclared."""
+    await enqueue(send_email, to="ada@example.com")
+    for _ in range(3):
+        await enqueue(remember, value=uuid.uuid4())
+    broker = Recording(refuse=frozenset({"emails"}))
+    worker = Worker()
+    labels = {"outcome": "published"}
+    published = REGISTRY.get_sample_value("messaging_relayed_total", labels) or 0
+    failed = (
+        REGISTRY.get_sample_value("messaging_relayed_total", {"outcome": "failed"}) or 0
+    )
+
+    with caplog.at_level(logging.WARNING, "domainkit.contrib.messaging.worker"):
+        assert await worker.relay(broker, 2) == 1
+    email, first, *rest = await outbox()
+    ((body, message_id),) = broker.drain("default")
+
+    assert (email["lock_id"], email["locked_until"]) == (None, None)
+    assert first["lock_id"] is not None
+    assert all(row["lock_id"] is None for row in rest)  # Beyond the batch.
+    assert json.loads(body) == {
+        "id": str(first["id"]),
+        "database": "default",
+        "lock": str(first["lock_id"]),
+    }
+    assert message_id == str(first["id"])
+    assert caplog.messages == [
+        f"Could not publish {email['id']} to queue 'emails': no emails"
+    ]
+    assert REGISTRY.get_sample_value("messaging_relayed_total", labels) == published + 1
+    assert (
+        REGISTRY.get_sample_value("messaging_relayed_total", {"outcome": "failed"})
+        == failed + 1
+    )
+
+    assert await worker.relay(broker, 10) == 2
+    # "default" stays declared; "emails" failed, so it is declared again.
+    assert broker.declarations == [["default", "emails"], ["emails"]]
+    assert REGISTRY.get_sample_value("messaging_relayed_total", labels) == published + 3
+    assert (
+        REGISTRY.get_sample_value("messaging_relayed_total", {"outcome": "failed"})
+        == failed + 2
+    )
+
+
+async def test_brokered_workers_run_retry_and_dead_letter(
+    broker_tables: MemoryBroker,
+) -> None:
+    """Through the broker: tasks run, failures retry via the outbox, then die."""
+    await enqueue(send_email, to="ada@example.com")
+    await enqueue(fails_once, key="k")
+    await enqueue(always_fails)
+    stop = asyncio.Event()
+    # A batch of one: a full batch makes the relay go again without waiting.
+    config = registry.settings(MessagingSettings).model_copy(update={"BATCH_SIZE": 1})
+    runner = BrokerWorkers([Worker(config)], ["default", "emails"], config)
+    running = asyncio.create_task(runner.run(stop))
+
+    rows = await settled(3)
+    stop.set()
+    await running
+
+    by_target = {row["target"]: row for row in rows}
+    assert by_target["tests.always_fails"]["status"] == DEAD
+    assert by_target["tests.always_fails"]["attempts"] == 3
+    fails_once_row = next(
+        row for row in rows if str(row["target"]).endswith("fails_once")
+    )
+    assert (fails_once_row["status"], fails_once_row["attempts"]) == (DONE, 2)
+    assert ("email", "ada@example.com") in ran
+    assert "k:ok" in ran
+
+
+async def test_deliveries_that_cannot_run_are_settled(
+    broker_tables: MemoryBroker,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Garbage and foreign messages are dropped; a database hiccup requeues."""
+    runner = BrokerWorkers([], ["default"], registry.settings(MessagingSettings))
+    answers: list[str] = []
+    missing = uuid.uuid4()
+    pointer = {"id": str(missing), "lock": str(uuid.uuid4()), "database": "elsewhere"}
+
+    with caplog.at_level(logging.DEBUG, "domainkit.contrib.messaging.dispatch"):
+        await runner.deliver(delivery(b"not json", answers=answers))
+        await runner.deliver(delivery({"id": "x"}, answers=answers))
+        await runner.deliver(delivery(pointer, answers=answers))
+        pointer["database"] = "default"
+        await runner.deliver(delivery(pointer, answers=answers))  # Nothing to run.
+
+    assert answers == ["ack", "ack", "ack", "ack"]
+    assert caplog.messages == [
+        "Dropped an unreadable message from queue 'default'",
+        "Dropped an unreadable message from queue 'default'",
+        f"Dropped message {missing}: 'elsewhere' hosts no outbox here",
+        f"Skipped message {missing}: done, running, or moved on",
+    ]
+    assert runner.outbox("default") is runner.outbox("default")
+    monkeypatch.setattr(dispatch, "_hosting_aliases", lambda: {"default", "other"})
+    other = runner.outbox("other")
+    assert other is not None
+    assert other.database == "other"
+
+    async def broken(self: Worker, message_id: uuid.UUID, lock: uuid.UUID) -> None:
+        raise ConnectionError("database down")
+
+    monkeypatch.setattr(Worker, "take_over", broken)
+    caplog.clear()
+    await runner.deliver(delivery(pointer, answers=answers))
+    assert answers[-1] == "requeue"
+    assert caplog.messages == [f"Could not take over message {missing}; requeued"]
+
+    with pytest.raises(ValueError, match=r"needs MESSAGING\.BROKER"):
+        BrokerWorkers([], [], MessagingSettings())
+
+
+gates: dict[str, asyncio.Event] = {}
+
+
+@task
+async def wait_at_gate(name: str) -> None:
+    """Start, then wait until the test opens this task's gate."""
+    ran.append(f"{name}:started")
+    await gates[name].wait()
+    ran.append(f"{name}:done")
+
+
+async def test_stopping_waits_for_every_running_delivery(
+    broker_tables: MemoryBroker,
+) -> None:
+    """Deliveries running when the worker stops all finish before it returns."""
+    gates.update(a=asyncio.Event(), b=asyncio.Event())
+    await enqueue(wait_at_gate, name="a")
+    await enqueue(wait_at_gate, name="b")
+    stop = asyncio.Event()
+    config = registry.settings(MessagingSettings)
+    running = asyncio.create_task(
+        BrokerWorkers([Worker()], ["default"], config).run(stop)
+    )
+    for _ in range(500):
+        if {"a:started", "b:started"} <= set(ran):
+            break
+        await asyncio.sleep(0.01)
+
+    stop.set()
+    gates["a"].set()
+    for _ in range(500):
+        if "a:done" in ran:
+            break
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.02)
+    assert not running.done()  # "b" still runs, so the worker waits.
+    gates["b"].set()
+    await running
+
+    assert {"a:done", "b:done"} <= set(ran)
+    assert [row["status"] for row in await outbox()] == [DONE, DONE]
+
+
+async def test_a_broker_must_be_configured(database_url: str) -> None:
+    """MESSAGING.BROKER names a BROKERS alias, checked at startup."""
+    registry.clear()
+    with (
+        override_settings(
+            INSTALLED_DOMAINS=[MESSAGING],
+            DATABASES={"default": {"URL": database_url}},
+            MESSAGING={"BROKER": "missing"},
+            ALPHA=UNSET,
+        ),
+        pytest.raises(ImproperlyConfigured, match="BROKERS has no 'missing'"),
+    ):
+        setup()
+    registry.clear()
+
+
+def test_consume_only_workers_and_their_flag(
+    brokered: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--no-relay consumes without polling; it needs a broker."""
+    seen: list[bool] = []
+
+    async def stopped_at_once(self: BrokerWorkers, stop: asyncio.Event) -> None:
+        seen.append(self.relays)
+
+    monkeypatch.setattr(BrokerWorkers, "run", stopped_at_once)
+    run("runworker", "--no-relay")
+    assert seen == [False]
+    with (
+        override_settings(MESSAGING=FAST),
+        pytest.raises(CommandError, match=r"--no-relay needs MESSAGING\.BROKER"),
+    ):
+        run("runworker", "--no-relay")
+
+
+async def test_consume_only_workers_never_relay(broker_tables: MemoryBroker) -> None:
+    """A consume-only worker runs what arrives and leaves the outbox alone."""
+    with override_settings(MESSAGING={**BROKERED, "PUBLISH_ON_COMMIT": False}):
+        await enqueue(remember, value=uuid.uuid4())
+        stop = asyncio.Event()
+        config = registry.settings(MessagingSettings)
+        consumer = BrokerWorkers([Worker(config)], ["default"], config, relay=False)
+        running = asyncio.create_task(consumer.run(stop))
+        await asyncio.sleep(0.05)
+        (row,) = await outbox()
+        assert row["lock_id"] is None  # Nobody relayed it.
+        await Worker(config).relay(broker_tables, 10)
+        rows = await settled(1)
+        stop.set()
+        await running
+
+    assert rows[0]["status"] == DONE
+
+
+def test_runworker_on_a_broker(brokered: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The worker command picks the broker and its queues; --queue narrows them."""
+    seen: list[list[str]] = []
+
+    async def stopped_at_once(self: BrokerWorkers, stop: asyncio.Event) -> None:
+        seen.append(self.queues)
+
+    monkeypatch.setattr(BrokerWorkers, "run", stopped_at_once)
+    assert run("runworker", "--queue", "emails") == (
+        "Worker started on broker 'work' (queues: emails); press Ctrl+C to stop.\n"
+        "Worker stopped.\n"
+    )
+    run("runworker")
+    assert seen[0] == ["emails"]
+    assert {"default", "emails"} <= set(seen[1])
+    with pytest.raises(CommandError, match="Queue names have 1 to 64"):
+        run("runworker", "--queue", "bad queue")

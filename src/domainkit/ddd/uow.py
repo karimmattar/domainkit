@@ -79,6 +79,7 @@ class UnitOfWork(ABC):
         deferred, self._deferred = self._deferred, []
         await self._stage(events, deferred)
         await self._commit()
+        await self._committed()
         await self.events.publish_all(events)
 
     async def rollback(self) -> None:
@@ -91,6 +92,9 @@ class UnitOfWork(ABC):
     ) -> None:
         """Persist durable work in the transaction; in memory, keep the tasks."""
         self.queued_tasks.extend(tasks)
+
+    async def _committed(self) -> None:  # noqa: B027 - optional, for subclasses.
+        """Run follow-up work after the commit; it must not fail the commit."""
 
     def collect_new_events(self) -> list[DomainEvent]:
         """Take the pending events from every aggregate the repositories saw."""

@@ -6,6 +6,7 @@ outbox (durable handlers, deferred tasks), ``domainkit.contrib.audit`` the
 audit trail. They commit, or roll back, together with the business change.
 """
 
+import logging
 from abc import abstractmethod
 from collections.abc import Sequence
 from types import TracebackType
@@ -25,9 +26,11 @@ from domainkit.ddd import (
     UnitOfWork,
 )
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.reporting import report_error
 from domainkit.tracing import span
 
 MESSAGING: Final = "domainkit.contrib.messaging"
+logger = logging.getLogger(__name__)
 
 
 class SqlAlchemyUnitOfWork(UnitOfWork):
@@ -103,6 +106,15 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
             )
         for config in registry:
             await config.stage(self, events, tasks)
+
+    async def _committed(self) -> None:
+        """Let installed domains follow up; a failure is reported, never raised."""
+        for config in registry:
+            try:
+                await config.committed(self)
+            except Exception as exc:  # The data is committed: report, carry on.
+                logger.exception("After-commit work of %r failed", config.label)
+                report_error(exc, domain=config.label)
 
     async def _commit(self) -> None:
         """Commit, turning a lost optimistic-locking race into ``ConcurrentUpdate``."""

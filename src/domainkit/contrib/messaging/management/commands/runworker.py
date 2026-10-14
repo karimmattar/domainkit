@@ -4,8 +4,13 @@ import asyncio
 import signal
 from argparse import ArgumentParser
 
+from domainkit.apps import registry
+from domainkit.contrib.messaging import registry as tasks
+from domainkit.contrib.messaging.dispatch import BrokerWorkers
+from domainkit.contrib.messaging.settings import MessagingSettings
 from domainkit.contrib.messaging.worker import Worker
 from domainkit.db.routing import router
+from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import BaseCommand, CommandError
 
 
@@ -13,7 +18,9 @@ class Command(BaseCommand):
     """Process durable handlers and tasks; SIGTERM finishes running work first.
 
     One worker runs per outbox (each database that hosts domains has one),
-    all in this process unless ``--database`` picks one target.
+    all in this process unless ``--database`` picks one target. With
+    ``MESSAGING.BROKER``, they relay their outboxes to the broker and run
+    what it delivers; ``--once`` always works from the outbox directly.
     """
 
     help = "Run the messaging worker (durable event handlers, background tasks)."
@@ -40,6 +47,19 @@ class Command(BaseCommand):
             help="a target (SQL alias or shard group) or an alias whose outboxes "
             "to run; default: every database that hosts domains",
         )
+        parser.add_argument(
+            "--queue",
+            action="append",
+            dest="queues",
+            metavar="QUEUE",
+            help="run only this queue's messages (repeatable); default: every queue",
+        )
+        parser.add_argument(
+            "--no-relay",
+            dest="relay",
+            action="store_false",
+            help="with a broker: only consume, never poll the outbox",
+        )
 
     async def handle(
         self,
@@ -48,6 +68,8 @@ class Command(BaseCommand):
         metrics_port: int | None,
         metrics_address: str,
         database: str | None,
+        queues: list[str] | None,
+        relay: bool,
         **options: object,
     ) -> None:
         """Run until a signal arrives, or once."""
@@ -61,7 +83,12 @@ class Command(BaseCommand):
         aliases = dict.fromkeys(
             alias for target in targets for alias in router.aliases_of(target)
         )
-        workers = [Worker(database=alias) for alias in aliases]
+        try:
+            for queue in queues or ():
+                tasks.checked_queue(queue)
+        except ImproperlyConfigured as exc:
+            raise CommandError(str(exc)) from None
+        workers = [Worker(database=alias, queues=queues) for alias in aliases]
         if once:
             counts = await asyncio.gather(*(worker.run_once() for worker in workers))
             self.write(f"Processed {sum(counts)} message(s).")
@@ -70,6 +97,17 @@ class Command(BaseCommand):
         loop = asyncio.get_running_loop()
         for signal_number in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(signal_number, stop.set)
-        self.write("Worker started; press Ctrl+C to stop.")
-        await asyncio.gather(*(worker.run(stop) for worker in workers))
+        config = registry.settings(MessagingSettings)
+        if config.BROKER is None and not relay:
+            raise CommandError("--no-relay needs MESSAGING.BROKER.")
+        if config.BROKER is None:
+            self.write("Worker started; press Ctrl+C to stop.")
+            await asyncio.gather(*(worker.run(stop) for worker in workers))
+        else:
+            selected = sorted(queues or tasks.queues())
+            self.write(
+                f"Worker started on broker {config.BROKER!r} "
+                f"(queues: {', '.join(selected)}); press Ctrl+C to stop."
+            )
+            await BrokerWorkers(workers, selected, config, relay=relay).run(stop)
         self.write("Worker stopped.")

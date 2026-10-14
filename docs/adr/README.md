@@ -20,3 +20,4 @@ accepted record: supersede it with a new one and link both ways.
 | [0011](0011-immudb-ledger-for-evidence.md) | Keep evidence in an immudb ledger, verified by the client | Accepted |
 | [0012](0012-caches-json-values-fail-open.md) | Caches with JSON values that fail open | Accepted |
 | [0013](0013-shared-rate-limits-in-redis.md) | Share rate limits through Redis, with GCRA on the server's clock | Accepted |
+| [0014](0014-outbox-as-record-broker-for-dispatch.md) | Keep the outbox as the record; use the broker to dispatch | Accepted |

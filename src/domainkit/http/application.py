@@ -8,6 +8,7 @@ from fastapi import APIRouter, FastAPI
 
 from domainkit import setup
 from domainkit.apps import registry
+from domainkit.broker import brokers
 from domainkit.cache import caches
 from domainkit.conf import settings
 from domainkit.db.connections import connections
@@ -27,7 +28,7 @@ FRAMEWORK_ERRORS: Final = {
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Start the domains, then stop them and close databases, ledgers, caches."""
+    """Start the domains, then stop them and close what they opened."""
     try:
         async with registry.lifespan():
             yield
@@ -35,6 +36,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await connections.close_all()
         await ledgers.close_all()
         await caches.close_all()
+        await brokers.close_all()
 
 
 def get_asgi_application() -> FastAPI:
