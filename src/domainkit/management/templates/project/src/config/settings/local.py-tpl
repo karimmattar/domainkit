@@ -1,0 +1,11 @@
+"""Settings for development on this machine (selected by .env)."""
+
+from config.settings.base import *
+from config.settings.base import BASE_DIR, env
+
+DEBUG = True
+DATABASES = {
+    "default": {
+        "URL": env.str("DATABASE_URL", f"sqlite+aiosqlite:///{BASE_DIR / 'db.sqlite3'}")
+    },
+}

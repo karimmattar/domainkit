@@ -18,9 +18,10 @@ def format_python(paths: Iterable[Path]) -> bool:
         return False
     targets = [str(path) for path in paths]
     ruff = [sys.executable, "-m", "ruff"]
+    # No cache: it would land in a project that was just generated.
     for arguments in (
-        ["check", "--fix", "--select", "I", "--quiet", *targets],
-        ["format", "--quiet", *targets],
+        ["check", "--fix", "--select", "I", "--quiet", "--no-cache", *targets],
+        ["format", "--quiet", "--no-cache", *targets],
     ):
         subprocess.run([*ruff, *arguments], check=False)  # noqa: S603 - fixed program, generated paths.
     return True

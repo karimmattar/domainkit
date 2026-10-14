@@ -123,11 +123,15 @@ jobs:
           python-version: "3.13"
       - run: pipx install "poetry==${POETRY_VERSION}"
       - run: poetry build
-      - run: python -m zipfile -l dist/*.whl | grep -q "management/templates/domain"
+      - run: |
+          python -m zipfile -l dist/*.whl | grep -q "management/templates/domain"
+          python -m zipfile -l dist/*.whl | grep -q "management/templates/project/dot-env-tpl"
       - run: |
           python -m venv /tmp/clean
           /tmp/clean/bin/pip install "$(ls dist/*.whl)[postgres]"
           /tmp/clean/bin/python -c "import domainkit, domainkit.contrib.messaging; print(domainkit.__version__)"
+          /tmp/clean/bin/domainkit init smokeAPI /tmp/smoke
+          test -f /tmp/smoke/.env && test -f /tmp/smoke/manage.py
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist

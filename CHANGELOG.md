@@ -6,6 +6,13 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `domainkit init <name> [directory]` creates a project that passes `check`
+  and its tests as it is: base, local, test, and production settings, the
+  root router, the ASGI application, `manage.py`, `.env`, and a first test.
+  The package now installs a `domainkit` command to run it.
+
 ## [0.1.1] - 2026-10-14
 
 ### Fixed

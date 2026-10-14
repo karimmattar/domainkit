@@ -1,0 +1,3 @@
+# This machine's settings. Never commit or deploy this file: deployments set
+# {{ prefix }}SETTINGS_MODULE themselves.
+{{ prefix }}SETTINGS_MODULE=config.settings.local

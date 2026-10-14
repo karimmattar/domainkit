@@ -1,0 +1,8 @@
+"""The application starts and answers its liveness probe."""
+
+from fastapi.testclient import TestClient
+
+
+def test_health(client: TestClient) -> None:
+    """GET /health answers 200."""
+    assert client.get("/health").status_code == 200

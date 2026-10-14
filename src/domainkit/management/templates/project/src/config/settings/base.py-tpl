@@ -1,0 +1,13 @@
+"""Settings shared by every environment."""
+
+from pathlib import Path
+
+from domainkit.conf.env import Env
+
+env = Env()
+BASE_DIR = Path(__file__).resolve().parents[3]
+
+PROJECT_NAME = "{{ project }}"
+INSTALLED_DOMAINS = ["domainkit.contrib.messaging"]
+ROOT_ROUTER = "config.urls.router"
+ASGI_APPLICATION = "config.asgi:application"
