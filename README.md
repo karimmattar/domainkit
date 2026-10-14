@@ -137,11 +137,24 @@ poetry run pytest --cov                # random order; coverage gate in pyprojec
 poetry run mutmut run "domainkit.http*" && poetry run mutmut results
 ```
 
+The database tests use SQLite unless `DOMAINKIT_TEST_POSTGRES_URL` names a
+PostgreSQL server; each test then creates a database there and drops it.
+Use a throwaway server:
+
+```bash
+docker run -d --rm --name domainkit-postgres -e POSTGRES_PASSWORD=postgres \
+  -p 127.0.0.1:55432:5432 postgres:18-alpine
+DOMAINKIT_TEST_POSTGRES_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:55432/postgres \
+  poetry run pytest
+```
+
 CI (`.github/workflows/ci.yml`) runs the same checks on every push and pull
 request:
 
 - lint and strict typing
 - the tests on Python 3.13 and 3.14
+- the tests again with PostgreSQL 18, including row locking, the audit
+  triggers, and server-side timeouts
 - a wheel build, installed and imported in a clean environment
 - pip-audit, and a gitleaks scan of the whole history
 

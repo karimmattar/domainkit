@@ -173,10 +173,10 @@ def test_callers_are_actors_or_addresses() -> None:
 
 
 @pytest.fixture
-def idempotent(tmp_path: Path) -> Iterator[TestClient]:
-    """An app with the idempotency app and middleware on a SQLite file."""
+def idempotent(database_url: str) -> Iterator[TestClient]:
+    """An app with the idempotency app and middleware on an empty database."""
     sample_routes.created.clear()
-    url = f"sqlite+aiosqlite:///{tmp_path / 'keys.sqlite3'}"
+    url = database_url
     registry.clear()
     with override_settings(
         INSTALLED_DOMAINS=[

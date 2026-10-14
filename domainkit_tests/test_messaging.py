@@ -93,15 +93,14 @@ def immediate_retries(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def messaging(tmp_path: Path) -> Iterator[None]:
-    """Install messaging on a fresh SQLite file."""
+def messaging(database_url: str) -> Iterator[None]:
+    """Install messaging on an empty database."""
     ran.clear()
     reported.clear()
-    url = f"sqlite+aiosqlite:///{tmp_path / 'outbox.sqlite3'}"
     registry.clear()
     with override_settings(
         INSTALLED_DOMAINS=[MESSAGING, ALPHA],
-        DATABASES={"default": {"URL": url}},
+        DATABASES={"default": {"URL": database_url}},
         MESSAGING=FAST,
         ERROR_REPORTERS=["domainkit_tests.test_messaging.reporter"],
     ):

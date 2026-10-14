@@ -2,8 +2,9 @@
 
 Revoking ``UPDATE`` and ``DELETE`` from the application's role is undone by
 the next broad ``GRANT``. These triggers refuse updates, deletes, and
-truncation for every role but the table owner, who alone can drop them (for
-example, to apply a retention policy). Call them from a project revision::
+truncation for every role, the table owner included; only the owner can drop
+them (for example, to apply a retention policy). Call them from a project
+revision::
 
     from domainkit.contrib.audit.protection import protect, unprotect
 

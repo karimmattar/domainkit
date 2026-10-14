@@ -83,8 +83,8 @@ One-time setup, before the first release:
 - Add a tag ruleset for `v*`, so only maintainers can create, move, or
   delete release tags.
 - Protect `main` with a branch ruleset: changes through pull requests, with
-  the `lint`, `test (3.13)`, `test (3.14)`, `build`, and `audit` checks
-  passing.
+  the `lint`, `test (3.13)`, `test (3.14)`, `postgres`, `build`, and `audit`
+  checks passing.
   Require code owner review once there is a second maintainer: GitHub does
   not let authors approve their own pull requests, so a sole maintainer
   would bypass the ruleset on every merge, skipping the checks too.

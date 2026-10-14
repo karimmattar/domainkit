@@ -30,9 +30,9 @@ AUDIT = "domainkit.contrib.audit"
 
 
 @pytest.fixture
-def audited(tmp_path: Path) -> Iterator[str]:
-    """Install the audit app on a fresh SQLite file."""
-    url = f"sqlite+aiosqlite:///{tmp_path / 'audit.sqlite3'}"
+def audited(database_url: str) -> Iterator[str]:
+    """Install the audit app on an empty database."""
+    url = database_url
     registry.clear()
     with override_settings(
         INSTALLED_DOMAINS=[AUDIT, ALPHA], DATABASES={"default": {"URL": url}}

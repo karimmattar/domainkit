@@ -196,14 +196,13 @@ def test_shell_exposes_the_project(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def migration_project(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, database_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[Path]:
-    """Temporary database and revision directory for the test table."""
+    """An empty database and revision directory for the test table."""
     monkeypatch.setattr(migrations_module, "metadata", test_metadata)
     versions = tmp_path / "migrations"
-    url = f"sqlite+aiosqlite:///{tmp_path / 'm.sqlite3'}"
     with override_settings(
-        MIGRATIONS_DIR=versions, DATABASES={"default": {"URL": url}}
+        MIGRATIONS_DIR=versions, DATABASES={"default": {"URL": database_url}}
     ):
         yield versions
 
@@ -388,17 +387,22 @@ def test_branches_must_be_merged(migration_project: Path) -> None:
     assert "Notes." in applied[0]
 
 
-def test_downgrades_need_consent_in_deployments(migration_project: Path) -> None:
+def test_downgrades_need_consent_in_deployments(
+    migration_project: Path, tmp_path: Path
+) -> None:
     """Staging and production refuse a downgrade without --allow-data-loss."""
-    run("makemigrations", "-m", "notes")
-    run("migrate")
+    # Always SQLite: staging also demands TLS from network databases.
+    local = {"default": {"URL": f"sqlite+aiosqlite:///{tmp_path / 'deployed.db'}"}}
+    with override_settings(DATABASES=local):
+        run("makemigrations", "-m", "notes")
+        run("migrate")
 
-    with override_settings(ENVIRONMENT="staging"):
-        with pytest.raises(CommandError, match="--allow-data-loss"):
-            run("migrate", "base", downgrade=True)
-        assert run("migrate", "base", downgrade=True, allow_data_loss=True) == (
-            "Database 'default' is at base.\n"
-        )
+        with override_settings(ENVIRONMENT="staging"):
+            with pytest.raises(CommandError, match="--allow-data-loss"):
+                run("migrate", "base", downgrade=True)
+            assert run("migrate", "base", downgrade=True, allow_data_loss=True) == (
+                "Database 'default' is at base.\n"
+            )
 
 
 @pytest.mark.anyio

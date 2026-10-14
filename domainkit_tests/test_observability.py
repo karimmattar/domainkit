@@ -6,7 +6,6 @@ import json
 import logging
 import uuid
 from collections.abc import Iterator
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -83,15 +82,15 @@ def test_tracing_is_optional(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def database(tmp_path: Path) -> Iterator[None]:
-    """Messaging installed on a SQLite file with the outbox and notes tables."""
+def database(database_url: str) -> Iterator[None]:
+    """Messaging installed on an empty database with the outbox and notes tables."""
     registry.clear()
     with override_settings(
         INSTALLED_DOMAINS=[
             "domainkit.contrib.messaging",
             "domainkit_tests.sample_domains.alpha",
         ],
-        DATABASES={"default": {"URL": f"sqlite+aiosqlite:///{tmp_path / 'o.sqlite3'}"}},
+        DATABASES={"default": {"URL": database_url}},
     ):
         setup()
 
