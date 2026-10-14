@@ -6,6 +6,14 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-14
+
+### Fixed
+
+- `domainkit.testing` needed pytest and httpx2 without declaring them, so
+  the quick start's `pytest` step failed on a fresh install. They now come
+  with the new `testing` extra: `pip install "domainkit[testing]"`.
+
 ## [0.1.0] - 2026-10-14
 
 First version, extracted from a production service template.
@@ -46,5 +54,6 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/karimmattar/domainkit/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/karimmattar/domainkit/releases/tag/v0.1.0

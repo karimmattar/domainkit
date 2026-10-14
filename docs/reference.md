@@ -160,8 +160,16 @@ exporter in the deployment, or run under `opentelemetry-instrument`.
 
 ## Testing
 
-`domainkit.testing` is a pytest plugin, like pytest-django. Enable it in the
-project's `pyproject.toml`:
+`domainkit.testing` is a pytest plugin, like pytest-django. Install it with
+the `testing` extra, which brings pytest and httpx2 (Starlette's `TestClient`
+needs it), as a development dependency:
+
+```toml
+[dependency-groups]
+dev = ["domainkit[testing]"]
+```
+
+Then enable it in the project's `pyproject.toml`:
 
 ```toml
 [tool.pytest.ini_options]
