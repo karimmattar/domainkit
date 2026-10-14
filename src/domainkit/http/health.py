@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from domainkit.apps import registry
 from domainkit.conf import settings
 from domainkit.db.connections import connections
+from domainkit.ledger import ledgers
 
 router = APIRouter(tags=["health"])
 
@@ -47,6 +48,7 @@ async def _failing_checks(request: Request) -> list[str]:
     failing = [
         *await registry.check(seconds),
         *await connections.check_all(seconds),
+        *await ledgers.check_all(seconds),
     ]
     state.readiness = (now, failing)
     return failing

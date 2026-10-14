@@ -9,6 +9,7 @@ so a misspelled setting fails at startup instead of being silently ignored.
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Final, Literal, Self
+from urllib.parse import urlsplit
 
 from pydantic import (
     BaseModel,
@@ -49,6 +50,11 @@ SSLMode = Literal["disable", "require", "verify-ca", "verify-full"]
 def is_network_database(url: str) -> bool:
     """Report whether ``url`` reaches a server over the network (not SQLite)."""
     return not url.split(":", 1)[0].split("+", 1)[0].startswith("sqlite")
+
+
+LEDGER_SCHEMES: Final = frozenset({"immudb", "memory"})
+"""URL schemes of ledgers (``LEDGERS``); ``DATABASES`` refuses them."""
+IMMUDB_PORT: Final = 3322
 
 
 class DatabaseConfig(BaseModel):
@@ -95,6 +101,108 @@ class DatabaseConfig(BaseModel):
             raise ValueError("SSLCERT and SSLKEY must be set together")
         return self
 
+    @model_validator(mode="after")
+    def check_not_a_ledger(self) -> Self:
+        """Point ledger URLs to ``LEDGERS``, where they belong."""
+        scheme = urlsplit(self.URL.get_secret_value()).scheme.split("+", 1)[0]
+        if scheme in LEDGER_SCHEMES:
+            raise ValueError(f"{scheme}:// is a ledger; configure it in LEDGERS")
+        return self
+
+
+class LedgerConfig(BaseModel):
+    """One ``LEDGERS`` entry: write once, read many, verified on the client.
+
+    Ledgers hold evidence (see ``domainkit.contrib.evidence``). They are never
+    migrated and never take part in a unit of work.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    URL: SecretStr
+    """``immudb://user:password@host:3322/database``, or ``memory://`` for tests."""
+    TLS_CA: Path | None = None
+    """CA certificate that signed the server's; setting it enables TLS."""
+    SERVER_SIGNING_KEY: Path | None = None
+    """Public key the server signs its states with (immudb ``--signingKey``)."""
+    TIMEOUT: float = Field(default=10.0, gt=0)
+    """Seconds each ledger call may take."""
+
+    @model_validator(mode="after")
+    def check_url(self) -> Self:
+        """Accept immudb URLs with a host, or the in-memory ledger."""
+        parts = urlsplit(self.URL.get_secret_value())
+        if parts.scheme not in LEDGER_SCHEMES:
+            raise ValueError("a ledger URL starts with immudb:// or memory://")
+        if parts.scheme == "immudb" and not parts.hostname:
+            raise ValueError("an immudb URL needs a host: immudb://user:pw@host/db")
+        return self
+
+    @property
+    def scheme(self) -> str:
+        """``immudb`` or ``memory``."""
+        return urlsplit(self.URL.get_secret_value()).scheme
+
+
+class ShardConfig(BaseModel):
+    """One ``SHARDS`` group: SQL databases that share a schema, split by key.
+
+    A shard key hashes to one of ``BUCKETS`` buckets, and each bucket belongs
+    to one database. Moving buckets between databases is how a group grows.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    DATABASES: tuple[str, ...] = Field(min_length=1)
+    """The group's SQL aliases; ``makemigrations`` compares against the first."""
+    BUCKETS: int = Field(default=4096, ge=1, le=1_048_576)
+    """Number of hash buckets. Never change it once the group holds data."""
+    RANGES: dict[str, tuple[tuple[int, int], ...]] = Field(default_factory=dict)
+    """Inclusive bucket ranges per alias; default: equal ranges in list order."""
+    PINNED: dict[str, str] = Field(default_factory=dict)
+    """Shard keys (as text) always routed to an alias, such as a large tenant."""
+
+    @model_validator(mode="after")
+    def check_layout(self) -> Self:
+        """Every bucket has exactly one owner, and pins stay inside the group."""
+        if len(set(self.DATABASES)) != len(self.DATABASES):
+            raise ValueError("a shard group lists an alias twice")
+        if len(self.DATABASES) > self.BUCKETS:
+            raise ValueError("BUCKETS must be at least the number of DATABASES")
+        if outside := sorted(set(self.PINNED.values()) - set(self.DATABASES)):
+            raise ValueError(f"PINNED names aliases outside the group: {outside}")
+        if not self.RANGES:
+            return self
+        if set(self.RANGES) != set(self.DATABASES):
+            raise ValueError("RANGES must give ranges for exactly the group's aliases")
+        owned = sorted(
+            (low, high) for ranges in self.RANGES.values() for low, high in ranges
+        )
+        expected = 0
+        for low, high in owned:
+            if low != expected or high < low:
+                raise ValueError(
+                    f"RANGES must cover buckets 0-{self.BUCKETS - 1} once each; "
+                    f"bucket {expected} is missing or overlapped"
+                )
+            expected = high + 1
+        if expected != self.BUCKETS:
+            raise ValueError(
+                f"RANGES must cover buckets 0-{self.BUCKETS - 1} once each; "
+                f"they end at {expected - 1}"
+            )
+        return self
+
+    def ranges(self) -> dict[str, tuple[tuple[int, int], ...]]:
+        """Bucket ranges per alias: ``RANGES``, or equal contiguous ranges."""
+        if self.RANGES:
+            return dict(self.RANGES)
+        count, buckets = len(self.DATABASES), self.BUCKETS
+        return {
+            alias: ((index * buckets // count, (index + 1) * buckets // count - 1),)
+            for index, alias in enumerate(self.DATABASES)
+        }
+
 
 class Settings(BaseModel):
     """Validated, read-only settings; extra names are checked at ``setup()``."""
@@ -120,8 +228,15 @@ class Settings(BaseModel):
     """``module:attribute`` that ``runserver`` serves."""
 
     DATABASES: dict[str, DatabaseConfig] = Field(default_factory=dict)
+    """SQL databases by alias; if any are set, ``default`` is required."""
+    LEDGERS: dict[str, LedgerConfig] = Field(default_factory=dict)
+    """Ledgers by alias: write once, read many (``immudb://``, ``memory://``)."""
+    SHARDS: dict[str, ShardConfig] = Field(default_factory=dict)
+    """Shard groups by name; route a domain to one in ``DATABASE_ROUTING``."""
+    DATABASE_ROUTING: dict[str, str] = Field(default_factory=dict)
+    """Domain label to target: a SQL alias or a shard group; others use default."""
     MIGRATIONS_DIR: Path = Field(default_factory=lambda: project_root() / "migrations")
-    """Where ``makemigrations`` writes revision files."""
+    """Revisions of ``default``; any other target uses ``MIGRATIONS_DIR/<target>``."""
     LOGGING: dict[str, Any] = Field(default_factory=_minimal_logging)
     """``logging.config.dictConfig`` mapping applied by ``setup()``."""
 
@@ -171,8 +286,7 @@ class Settings(BaseModel):
     @model_validator(mode="after")
     def check_consistency(self) -> Self:
         """Reject combinations that are unsafe or would fail later at runtime."""
-        if self.DATABASES and DEFAULT_DB_ALIAS not in self.DATABASES:
-            raise ValueError(f"DATABASES must define the {DEFAULT_DB_ALIAS!r} alias")
+        self._check_databases()
         if len(set(self.INSTALLED_DOMAINS)) != len(self.INSTALLED_DOMAINS):
             raise ValueError("INSTALLED_DOMAINS contains duplicates")
         if self.CORS_ALLOW_CREDENTIALS and "*" in self.CORS_ALLOWED_ORIGINS:
@@ -182,6 +296,34 @@ class Settings(BaseModel):
         if self.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
             self._check_deployment()
         return self
+
+    def _check_databases(self) -> None:
+        """Validate aliases, shard groups, and routing targets together."""
+        sql = self.DATABASES
+        if sql and DEFAULT_DB_ALIAS not in sql:
+            raise ValueError(f"DATABASES must define the {DEFAULT_DB_ALIAS!r} alias")
+        sharded: dict[str, str] = {}
+        for group, shards in self.SHARDS.items():
+            if group in self.DATABASES:
+                raise ValueError(f"shard group {group!r} has the name of an alias")
+            for alias in shards.DATABASES:
+                if alias not in sql or alias == DEFAULT_DB_ALIAS:
+                    raise ValueError(
+                        f"shard group {group!r}: {alias!r} must be a SQL alias "
+                        f"other than {DEFAULT_DB_ALIAS!r}"
+                    )
+                if alias in sharded:
+                    raise ValueError(
+                        f"{alias!r} is in shard groups {sharded[alias]!r} and {group!r}"
+                    )
+                sharded[alias] = group
+        for label, target in self.DATABASE_ROUTING.items():
+            if target in self.SHARDS or (target in sql and target not in sharded):
+                continue
+            raise ValueError(
+                f"DATABASE_ROUTING[{label!r}] = {target!r} must name a shard group "
+                "or a SQL alias outside the shard groups"
+            )
 
     def _check_deployment(self) -> None:
         """Enforce the security baseline for staging and production."""
@@ -203,3 +345,16 @@ class Settings(BaseModel):
         for message, violates in rules.items():
             if aliases := sorted(a for a, db in self.DATABASES.items() if violates(db)):
                 raise ValueError(f"{message} {where} for {aliases}")
+        ledger_rules: dict[str, Callable[[LedgerConfig], bool]] = {
+            "memory:// ledgers are for tests; use immudb": lambda ledger: (
+                ledger.scheme == "memory"
+            ),
+            "ledgers need TLS_CA (TLS)": lambda ledger: ledger.TLS_CA is None,
+            "ledgers need SERVER_SIGNING_KEY (signed states)": lambda ledger: (
+                ledger.SERVER_SIGNING_KEY is None
+            ),
+        }
+        for message, violates_ledger in ledger_rules.items():
+            ledgers = self.LEDGERS.items()
+            if aliases := sorted(a for a, db in ledgers if violates_ledger(db)):
+                raise ValueError(f"{message} {where} for LEDGERS {aliases}")

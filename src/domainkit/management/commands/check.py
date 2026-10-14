@@ -23,11 +23,12 @@ class Command(BaseCommand):
             f"Architecture: {violation}"
             for violation in check_domains(settings.INSTALLED_DOMAINS)
         ]
-        if settings.DATABASES and len(heads := migrations.heads()) > 1:
-            problems.append(
-                f"Migrations have {len(heads)} heads ({', '.join(sorted(heads))}); "
-                "run 'manage.py makemigrations --merge'."
-            )
+        problems.extend(
+            f"Migrations of {target!r} have {len(heads)} heads "
+            f"({', '.join(sorted(heads))}); run 'manage.py makemigrations --merge'."
+            for target in migrations.migration_targets()
+            if len(heads := migrations.heads(target)) > 1
+        )
         if problems:
             raise CommandError(
                 "System check found problems:\n"

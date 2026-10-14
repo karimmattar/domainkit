@@ -24,3 +24,6 @@ mutants/
 # Personal Claude Code context (private names and history)
 CLAUDE.md
 CLAUDE.local.md
+
+# Certificates and keys CI generates for its test servers
+.ci/

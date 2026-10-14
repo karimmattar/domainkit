@@ -29,7 +29,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
-from domainkit.conf import DEFAULT_DB_ALIAS, override_settings, settings
+from domainkit.conf import DEFAULT_DB_ALIAS, DatabaseConfig, override_settings, settings
 from domainkit.conf.env import project_prefix
 from domainkit.http import get_asgi_application
 from domainkit.management import call_command
@@ -53,20 +53,24 @@ def pytest_configure(config: pytest.Config) -> None:
 
 @contextmanager
 def migrated_database(scratch: Path) -> Iterator[str]:
-    """Migrate the default database up, down, and up; yield its URL."""
-    url = settings.DATABASES[DEFAULT_DB_ALIAS].URL.get_secret_value()
-    if url == IN_MEMORY:
-        url = f"sqlite+aiosqlite:///{scratch / 'test.sqlite3'}"
-    databases = {**settings.DATABASES}
-    databases[DEFAULT_DB_ALIAS] = databases[DEFAULT_DB_ALIAS].model_copy(
-        update={"URL": SecretStr(url)}
-    )
+    """Migrate every target up, down, and up; yield the default database's URL.
+
+    Each in-memory SQLite database becomes a file in ``scratch``
+    (``test.sqlite3`` for ``default``, ``test_<alias>.sqlite3`` for others).
+    """
+    databases: dict[str, DatabaseConfig] = {}
+    for alias, config in settings.DATABASES.items():
+        databases[alias] = config
+        if config.URL.get_secret_value() == IN_MEMORY:
+            name = "test" if alias == DEFAULT_DB_ALIAS else f"test_{alias}"
+            url = SecretStr(f"sqlite+aiosqlite:///{scratch / name}.sqlite3")
+            databases[alias] = config.model_copy(update={"URL": url})
     output = io.StringIO()
     with override_settings(DATABASES=databases):
         call_command("migrate", stdout=output)
         call_command("migrate", "base", downgrade=True, stdout=output)
         call_command("migrate", stdout=output)
-        yield url
+        yield settings.DATABASES[DEFAULT_DB_ALIAS].URL.get_secret_value()
 
 
 @pytest.fixture(scope="session")

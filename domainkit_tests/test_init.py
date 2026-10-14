@@ -2,6 +2,7 @@
 
 import io
 import os
+import sqlite3
 import subprocess
 import sys
 from importlib.metadata import entry_points
@@ -181,3 +182,80 @@ def test_the_domainkit_program_runs_init(
     assert script.load() is execute_from_command_line
     assert (tmp_path / "b" / "manage.py").is_file()
     assert "    init\n" in capsys.readouterr().out
+
+
+ROUTED_BASE = '''"""Settings shared by every environment."""
+
+from pathlib import Path
+
+from domainkit.conf.env import Env
+
+env = Env()
+BASE_DIR = Path(__file__).resolve().parents[3]
+
+INSTALLED_DOMAINS = ["domainkit.contrib.messaging", "domains.invoices"]
+ROOT_ROUTER = "config.urls.router"
+DATABASE_ROUTING = {"invoices": "billing"}
+'''
+ROUTED_LOCAL = """from config.settings.base import *
+from config.settings.base import BASE_DIR
+
+DATABASES = {
+    "default": {"URL": f"sqlite+aiosqlite:///{BASE_DIR / 'db.sqlite3'}"},
+    "billing": {"URL": f"sqlite+aiosqlite:///{BASE_DIR / 'billing.sqlite3'}"},
+}
+"""
+ROUTED_TEST = """from config.settings.base import *
+
+ENVIRONMENT = "test"
+ALLOWED_HOSTS = ["testserver"]
+DATABASES = {
+    "default": {"URL": "sqlite+aiosqlite:///:memory:"},
+    "billing": {"URL": "sqlite+aiosqlite:///:memory:"},
+}
+"""
+ROUTES = """
+from domains.invoices.api.routes import router as invoices_router
+
+router.include_router(invoices_router, prefix="/api/v1/invoices")
+"""
+
+
+def test_a_generated_domain_can_live_in_its_own_database(tmp_path: Path) -> None:
+    """Route a generated domain: its table and its sessions both move there."""
+    project = tmp_path / "billing"
+    init("billingAPI", str(project))
+    started = run(
+        project, "manage.py", "startdomain", "invoices", "--aggregate", "Invoice"
+    )
+    assert started.returncode == 0, started.stderr
+    settings_dir = project / "src" / "config" / "settings"
+    (settings_dir / "base.py").write_text(ROUTED_BASE, encoding="utf-8")
+    (settings_dir / "local.py").write_text(ROUTED_LOCAL, encoding="utf-8")
+    (settings_dir / "test.py").write_text(ROUTED_TEST, encoding="utf-8")
+    with (project / "src" / "config" / "urls.py").open("a", encoding="utf-8") as urls:
+        urls.write(ROUTES)
+
+    created = run(project, "manage.py", "makemigrations", "-m", "create invoices")
+    migrated = run(project, "manage.py", "migrate")
+    tested = run(project, "-m", "pytest", "-q", "-p", "no:cacheprovider")
+
+    assert created.returncode == 0, created.stderr
+    assert (project / "migrations" / "billing").is_dir()
+    assert migrated.stdout == (
+        "Database 'default' is at head.\nDatabase 'billing' is at head.\n"
+    )
+    billing = sqlite3.connect(project / "billing.sqlite3")
+    default = sqlite3.connect(project / "db.sqlite3")
+    try:
+        billing_tables = {row[0] for row in billing.execute(TABLES)}
+        default_tables = {row[0] for row in default.execute(TABLES)}
+    finally:
+        billing.close()
+        default.close()
+    assert "invoices_invoices" in billing_tables
+    assert "invoices_invoices" not in default_tables
+    assert tested.returncode == 0, tested.stdout + tested.stderr
+
+
+TABLES = "SELECT name FROM sqlite_master WHERE type = 'table'"

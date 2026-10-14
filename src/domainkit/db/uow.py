@@ -15,9 +15,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.exc import StaleDataError
 
 from domainkit.apps import registry
-from domainkit.conf import DEFAULT_DB_ALIAS
 from domainkit.db.connections import connections
-from domainkit.ddd import ConcurrentUpdate, DeferredTask, DomainEvent, UnitOfWork
+from domainkit.db.routing import ShardKey, router
+from domainkit.ddd import (
+    ConcurrentUpdate,
+    DeferredTask,
+    DomainEvent,
+    EventBus,
+    UnitOfWork,
+)
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.tracing import span
 
@@ -27,16 +33,38 @@ MESSAGING: Final = "domainkit.contrib.messaging"
 class SqlAlchemyUnitOfWork(UnitOfWork):
     """Open a session on enter, commit on ``commit()``, close on exit.
 
-    Subclasses create their repositories in ``create_repositories``.
+    Subclasses create their repositories in ``create_repositories``. The
+    session opens on the routing target of the domain that defines the
+    subclass (``DATABASE_ROUTING``), unless ``database`` names one. On a shard
+    group, ``shard_key`` picks the database::
+
+        async with AccountsUnitOfWork(shard_key=tenant_id) as uow: ...
     """
 
-    database: str = DEFAULT_DB_ALIAS
-    """``DATABASES`` alias this unit of work uses."""
+    database: str | None = None
+    """Target (a SQL alias or a shard group); None follows ``DATABASE_ROUTING``."""
+    alias: str
+    """The one SQL alias this unit of work uses, resolved from the target."""
     session: AsyncSession
+
+    def __init__(
+        self,
+        *,
+        shard_key: ShardKey | None = None,
+        database: str | None = None,
+        events: EventBus | None = None,
+    ) -> None:
+        """Resolve the database now, so a missing shard key fails before any work."""
+        super().__init__(events=events)
+        self.database = (
+            database or self.database or router.target_for_module(type(self).__module__)
+        )
+        self.alias = router.alias_for(self.database, shard_key)
+        self.shard_key = shard_key
 
     async def __aenter__(self) -> Self:
         """Open a session and the repositories that share it."""
-        self.session = connections.session(self.database)
+        self.session = connections.session(self.alias)
         self.create_repositories(self.session)
         return await super().__aenter__()
 
@@ -60,7 +88,7 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
 
     async def commit(self) -> None:
         """Commit inside a ``uow.commit`` span (see ``domainkit.tracing``)."""
-        with span("uow.commit", database=self.database):
+        with span("uow.commit", database=self.alias):
             await super().commit()
 
     async def _stage(

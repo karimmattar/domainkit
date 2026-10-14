@@ -456,7 +456,7 @@ async def test_stopping_lets_running_work_finish(tables: None) -> None:
 
 
 async def test_configuration_guards(tables: None) -> None:
-    """Unregistered tasks, other databases, and missing messaging are refused."""
+    """Unregistered tasks and unsupported dialects are refused."""
 
     async def not_a_task() -> None: ...
 
@@ -464,20 +464,6 @@ async def test_configuration_guards(tables: None) -> None:
         uow.defer(not_a_task)
         with pytest.raises(ImproperlyConfigured, match="decorate it with @task"):
             await uow.commit()
-
-    class ReportsUnitOfWork(NotesUnitOfWork):
-        database = "reports"
-
-    with override_settings(
-        DATABASES={
-            "default": {"URL": "sqlite+aiosqlite:///:memory:"},
-            "reports": {"URL": "sqlite+aiosqlite:///:memory:"},
-        }
-    ):
-        async with ReportsUnitOfWork() as uow:
-            uow.defer(remember, value=uuid.uuid4())
-            with pytest.raises(ImproperlyConfigured, match="lives in 'default'"):
-                await uow.commit()
 
     with pytest.raises(ImproperlyConfigured, match="PostgreSQL or SQLite"):
         insert_statements(

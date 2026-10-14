@@ -112,24 +112,39 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     project_prefix.cache_clear()
 
 
+type MakeDatabase = Callable[[str], str]
+
+
 @pytest.fixture
-def database_url(tmp_path: Path) -> Iterator[str]:
-    """An empty database for one test: a SQLite file, or a new PostgreSQL database.
+def make_database(tmp_path: Path) -> Iterator[MakeDatabase]:
+    """Create empty databases by name: SQLite files, or new PostgreSQL databases.
 
     Set ``DOMAINKIT_TEST_POSTGRES_URL`` to a server (CI does) to run the
-    database tests there. Each test then gets a database of its own, dropped
-    afterwards; nothing else on that server is touched.
+    database tests there. Each database is new, and dropped afterwards;
+    nothing else on that server is touched.
     """
     server = os.environ.get(POSTGRES_VARIABLE)
-    if not server:
-        yield f"sqlite+aiosqlite:///{tmp_path / 'test.sqlite3'}"
-        return
-    name = f"domainkit_test_{uuid.uuid4().hex}"
-    on_server(server, f'CREATE DATABASE "{name}"')
-    try:
-        yield make_url(server).set(database=name).render_as_string(hide_password=False)
-    finally:
-        on_server(server, f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+    created: list[str] = []
+
+    def make(name: str) -> str:
+        if not server:
+            return f"sqlite+aiosqlite:///{tmp_path / name}.sqlite3"
+        database = f"domainkit_test_{uuid.uuid4().hex}"
+        on_server(server, f'CREATE DATABASE "{database}"')
+        created.append(database)
+        url = make_url(server).set(database=database)
+        return url.render_as_string(hide_password=False)
+
+    yield make
+    for database in created:
+        assert server is not None
+        on_server(server, f'DROP DATABASE IF EXISTS "{database}" WITH (FORCE)')
+
+
+@pytest.fixture
+def database_url(make_database: MakeDatabase) -> str:
+    """An empty database for one test (see ``make_database``)."""
+    return make_database("test")
 
 
 def on_server(url: str, statement: str) -> None:

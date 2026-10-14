@@ -96,18 +96,32 @@ class Worker:
     """Run outbox messages of one database."""
 
     def __init__(
-        self, config: MessagingSettings | None = None, *, bus: EventBus | None = None
+        self,
+        config: MessagingSettings | None = None,
+        *,
+        database: str | None = None,
+        bus: EventBus | None = None,
     ) -> None:
-        """Use ``config`` (default: the ``MESSAGING`` settings) and ``bus``."""
+        """Run the outbox of alias ``database`` (default: ``MESSAGING.DATABASE``).
+
+        Every database that hosts domains has its own outbox; only the worker
+        of ``MESSAGING.DATABASE`` schedules periodic tasks.
+        """
         self.config = config or registry.settings(MessagingSettings)
+        self.database = database or self.config.DATABASE
         self.bus = bus or event_bus
         self._scheduled: dict[str, int] = {}
         self._last_cleanup = float("-inf")
 
     @property
     def engine(self) -> AsyncEngine:
-        """The running event loop's engine for the outbox database."""
-        return connections.engine(self.config.DATABASE)
+        """The running event loop's engine for this worker's outbox."""
+        return connections.engine(self.database)
+
+    @property
+    def schedules(self) -> bool:
+        """Whether this worker queues periodic tasks (the home outbox's does)."""
+        return self.database == self.config.DATABASE
 
     async def run(self, stop: asyncio.Event) -> None:
         """Process messages until ``stop`` is set, then finish the running ones."""
@@ -280,6 +294,8 @@ class Worker:
 
     async def schedule_periodic(self) -> None:
         """Queue each periodic task once per interval, across all workers."""
+        if not self.schedules:
+            return
         now = _now()
         rows = []
         for spec, every in periodic_tasks():

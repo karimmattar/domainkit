@@ -20,7 +20,9 @@ from domainkit.conf.env import Env
 from domainkit.conf.global_settings import (
     DEFAULT_DB_ALIAS,
     DatabaseConfig,
+    LedgerConfig,
     Settings,
+    ShardConfig,
 )
 from domainkit.conf.lazy import (
     SETTINGS_MODULE_VARIABLE,
@@ -46,7 +48,9 @@ __all__ = [
     "SETTINGS_MODULE_VARIABLE",
     "UNSET",
     "DatabaseConfig",
+    "LedgerConfig",
     "Settings",
+    "ShardConfig",
     "configure",
     "describe_errors",
     "load_settings",

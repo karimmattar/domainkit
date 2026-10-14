@@ -5,6 +5,7 @@ from typing import cast
 
 from domainkit.apps import DomainConfig, registry
 from domainkit.db import SqlAlchemyUnitOfWork
+from domainkit.db.routing import DatabaseRouter, router
 from domainkit.ddd import DeferredTask, DomainEvent, UnitOfWork
 
 from .recorder import event_rows, write
@@ -18,6 +19,11 @@ class AuditConfig(DomainConfig):
     verbose_name = "Audit trail"
     settings_class = AuditSettings
 
+    def ready(self) -> None:
+        """Check where explicit records go."""
+        config = registry.settings(AuditSettings)
+        router.require_standalone(config.DATABASE, "AUDIT.DATABASE")
+
     async def stage(
         self,
         uow: UnitOfWork,
@@ -26,7 +32,11 @@ class AuditConfig(DomainConfig):
     ) -> None:
         """Add one audit row per committed event (unless excluded)."""
         config = registry.settings(AuditSettings)
-        sql_uow = cast(SqlAlchemyUnitOfWork, uow)
-        if not config.EVENTS or sql_uow.database != config.DATABASE:
+        if not config.EVENTS:
             return
+        sql_uow = cast(SqlAlchemyUnitOfWork, uow)
         await write(sql_uow.session, event_rows(events, config))
+
+    def databases(self, router: DatabaseRouter) -> frozenset[str]:
+        """Every hosting target: events are audited where they commit."""
+        return frozenset(router.hosting_targets())

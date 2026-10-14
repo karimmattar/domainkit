@@ -97,8 +97,10 @@ async def test_anonymous_and_excluded(tables: None) -> None:
     assert [entry["actor"] for entry in await entries()] == ["anonymous"]
 
 
-async def test_other_databases_are_not_audited(tables: None, tmp_path: Path) -> None:
-    """Units of work on another alias leave the audit trail alone."""
+async def test_events_are_audited_where_they_commit(
+    tables: None, tmp_path: Path
+) -> None:
+    """A unit of work on another alias writes its audit rows in that database."""
 
     class ElsewhereUnitOfWork(NotesUnitOfWork):
         database = "elsewhere"
@@ -108,13 +110,17 @@ async def test_other_databases_are_not_audited(tables: None, tmp_path: Path) -> 
     with override_settings(DATABASES=databases):
         async with connections.engine("elsewhere").begin() as connection:
             await connection.run_sync(notes.create)
+            await connection.run_sync(audit_log.create)
         note = Note(id=NoteId(uuid.uuid4()), text="x")
         note.record(NoteWritten(note_id=note.id))
         async with ElsewhereUnitOfWork() as uow:
             await uow.notes.add(note)
             await uow.commit()
+        async with connections.engine("elsewhere").connect() as connection:
+            audited = (await connection.execute(select(audit_log.c.action))).all()
 
     assert await entries() == []
+    assert [row.action for row in audited] == ["domainkit_tests.note_written"]
 
 
 async def test_explicit_records(tables: None) -> None:

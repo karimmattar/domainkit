@@ -1,26 +1,34 @@
-"""``migrate``: bring a database schema to a revision."""
+"""``migrate``: bring database schemas to a revision, target by target."""
 
 from argparse import ArgumentParser
+from typing import Final
 
 from alembic.util.exc import CommandError as AlembicError
 
-from domainkit.conf import DEFAULT_DB_ALIAS, settings
+from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db import migrations
+from domainkit.db.routing import router
 from domainkit.management.base import BaseCommand, CommandError
+
+SYMBOLIC: Final = frozenset({"head", "heads", "base"})
+"""Revisions that mean the same thing in every target's history."""
 
 
 class Command(BaseCommand):
     """Upgrade to ``head`` (or a revision); ``--downgrade`` moves down instead."""
 
-    help = "Apply migrations to a database (uses MIGRATION_URL when set)."
+    help = "Apply migrations to every target's databases (uses MIGRATION_URL when set)."
 
     def add_arguments(self, parser: ArgumentParser) -> None:
-        """Accept a target revision, a database alias, and a direction."""
+        """Accept a revision, a target, and a direction."""
         parser.add_argument(
             "target", nargs="?", default="head", help="revision (default: head)"
         )
-        parser.add_argument("--database", default=DEFAULT_DB_ALIAS)
+        parser.add_argument(
+            "--database",
+            help="a target (SQL alias or shard group) or an alias; default: all",
+        )
         parser.add_argument(
             "--downgrade",
             action="store_true",
@@ -36,12 +44,12 @@ class Command(BaseCommand):
         self,
         *,
         target: str,
-        database: str,
+        database: str | None,
         downgrade: bool,
         allow_data_loss: bool,
         **options: object,
     ) -> None:
-        """Apply or revert revisions, then report the target."""
+        """Apply or revert revisions on each database, then report it."""
         if (
             downgrade
             and settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS
@@ -51,14 +59,27 @@ class Command(BaseCommand):
                 f"Downgrading in {settings.ENVIRONMENT} can drop data; repeat with "
                 "--allow-data-loss after taking a backup."
             )
+        targets = (database,) if database else migrations.migration_targets()
+        if len(targets) > 1 and target not in SYMBOLIC:
+            raise CommandError(
+                f"Revision {target!r} belongs to one target's history; name the "
+                "target with --database."
+            )
+        for alias in (alias for name in targets for alias in router.aliases_of(name)):
+            self._migrate(alias, target, downgrade=downgrade)
+
+    def _migrate(self, alias: str, target: str, *, downgrade: bool) -> None:
+        """Move one database, then create its partitions when upgrading."""
         try:
             if downgrade:
-                migrations.downgrade(target, database)
+                migrations.downgrade(target, alias)
             else:
-                migrations.upgrade(target, database)
+                migrations.upgrade(target, alias)
         except AlembicError as exc:
             hint = ""
             if "Multiple head" in str(exc):
                 hint = " Run 'manage.py makemigrations --merge' first."
             raise CommandError(f"{exc}{hint}") from exc
-        self.write(f"Database {database!r} is at {target}.")
+        self.write(f"Database {alias!r} is at {target}.")
+        if not downgrade and (created := migrations.create_partitions(alias)):
+            self.write(f"Created {len(created)} partition(s) in {alias!r}.")

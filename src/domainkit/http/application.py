@@ -12,6 +12,7 @@ from domainkit.conf import settings
 from domainkit.db.connections import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import ErrorResponse, install_exception_handlers
+from domainkit.ledger import ledgers
 from domainkit.utils.module_loading import import_string
 
 FRAMEWORK_ERRORS: Final = {
@@ -25,12 +26,13 @@ FRAMEWORK_ERRORS: Final = {
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Start the domains, then stop them and close database connections."""
+    """Start the domains, then stop them and close databases and ledgers."""
     try:
         async with registry.lifespan():
             yield
     finally:
         await connections.close_all()
+        await ledgers.close_all()
 
 
 def get_asgi_application() -> FastAPI:

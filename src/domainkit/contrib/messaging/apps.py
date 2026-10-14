@@ -7,8 +7,8 @@ from typing import cast
 
 from domainkit.apps import DomainConfig, registry
 from domainkit.db import SqlAlchemyUnitOfWork
+from domainkit.db.routing import DatabaseRouter, router
 from domainkit.ddd import DeferredTask, DomainEvent, UnitOfWork
-from domainkit.exceptions import ImproperlyConfigured
 
 from .outbox import rows_for, write
 from .settings import MessagingSettings
@@ -22,7 +22,8 @@ class MessagingConfig(DomainConfig):
     settings_class = MessagingSettings
 
     def ready(self) -> None:
-        """Expose outbox gauges on ``/metrics`` when Prometheus is installed."""
+        """Check the home outbox; expose its gauges when Prometheus is installed."""
+        router.require_standalone(self.get_settings().DATABASE, "MESSAGING.DATABASE")
         if find_spec("prometheus_client") is not None:
             import_module(f"{self.name}.metrics")
 
@@ -34,18 +35,16 @@ class MessagingConfig(DomainConfig):
     ) -> None:
         """Add outbox rows to the committing transaction."""
         sql_uow = cast(SqlAlchemyUnitOfWork, uow)
-        config = self.get_settings()
-        rows = rows_for(events, tasks, uow.events, config)
+        rows = rows_for(events, tasks, uow.events, self.get_settings())
         if not rows:
             return
-        if sql_uow.database != config.DATABASE:
-            raise ImproperlyConfigured(
-                f"The outbox lives in {config.DATABASE!r}; a unit of work on "
-                f"{sql_uow.database!r} cannot queue durable work atomically."
-            )
         session = sql_uow.session
         dialect = session.get_bind().dialect.name
         await write(session, dialect, rows)
+
+    def databases(self, router: DatabaseRouter) -> frozenset[str]:
+        """Every hosting target: the outbox commits with each domain's data."""
+        return frozenset(router.hosting_targets())
 
     def get_settings(self) -> MessagingSettings:
         """Return the validated ``MESSAGING`` settings."""

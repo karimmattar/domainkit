@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.pool import NullPool
 
 from domainkit.conf import DEFAULT_DB_ALIAS, DatabaseConfig, settings
 from domainkit.db.drivers import connect_args
@@ -46,6 +47,21 @@ def create_engine(config: DatabaseConfig) -> AsyncEngine:
     )
 
 
+def create_owner_engine(config: DatabaseConfig) -> AsyncEngine:
+    """An unpooled engine for the schema owner (``MIGRATION_URL``), without timeouts.
+
+    Migrations and partition maintenance change the schema, which may take
+    longer than requests are allowed to, and needs the owner's privileges.
+    """
+    url = (config.MIGRATION_URL or config.URL).get_secret_value()
+    return create_async_engine(
+        url,
+        poolclass=NullPool,
+        hide_parameters=not config.LOG_PARAMETERS,
+        connect_args=connect_args(config, url, timeouts=False),
+    )
+
+
 class ConnectionHandler:
     """Lazily created engines and session factories per alias and event loop."""
 
@@ -60,7 +76,14 @@ class ConnectionHandler:
         try:
             return settings.DATABASES[alias]
         except KeyError:
-            raise ImproperlyConfigured(f"DATABASES has no {alias!r} alias.") from None
+            hint = (
+                "; it is a ledger: use domainkit.ledger.ledgers"
+                if alias in settings.LEDGERS
+                else ""
+            )
+            raise ImproperlyConfigured(
+                f"DATABASES has no {alias!r} alias{hint}."
+            ) from None
 
     def engine(self, alias: str = DEFAULT_DB_ALIAS) -> AsyncEngine:
         """Return this event loop's engine for ``alias``, creating it on first use."""

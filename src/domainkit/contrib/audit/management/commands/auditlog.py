@@ -21,9 +21,20 @@ class Command(BaseCommand):
         parser.add_argument("--actor")
         parser.add_argument("--action")
         parser.add_argument("--limit", type=int, default=50)
+        parser.add_argument(
+            "--database",
+            help="the alias to read (default: AUDIT.DATABASE); events are audited "
+            "in the database where they commit",
+        )
 
     async def handle(
-        self, *, actor: str | None, action: str | None, limit: int, **options: object
+        self,
+        *,
+        actor: str | None,
+        action: str | None,
+        limit: int,
+        database: str | None,
+        **options: object,
     ) -> None:
         """Print one line per entry."""
         config = registry.settings(AuditSettings)
@@ -32,7 +43,8 @@ class Command(BaseCommand):
             statement = statement.where(audit_log.c.actor == actor)
         if action:
             statement = statement.where(audit_log.c.action == action)
-        async with connections.engine(config.DATABASE).connect() as connection:
+        alias = database or config.DATABASE
+        async with connections.engine(alias).connect() as connection:
             rows = (await connection.execute(statement.limit(limit))).all()
         for row in rows:
             self.write(
