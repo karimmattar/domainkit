@@ -8,7 +8,7 @@ A Django-style framework for domain-driven FastAPI services. It provides:
 - optional apps for reliable messaging, audit trails, and idempotent requests
 
 ```bash
-pip install "domainkit[postgres]"     # extras: postgres, sqlite, metrics, tracing
+pip install "domainkit[postgres]"     # extras: postgres, sqlite, metrics, tracing, testing
 ```
 
 ## Documentation
@@ -46,6 +46,9 @@ name = "billingAPI"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = ["domainkit[sqlite]"]
+
+[dependency-groups]
+dev = ["domainkit[testing]"]                # pytest and httpx2, for the fixtures
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
@@ -114,6 +117,7 @@ application = get_asgi_application()
 Then:
 
 ```bash
+pip install "domainkit[sqlite,testing]"                    # in a virtual environment
 export BILLING_API_SETTINGS_MODULE=config.settings.local   # or put it in .env
 python manage.py check
 python manage.py startdomain invoices --aggregate Invoice   # prints how to install it
