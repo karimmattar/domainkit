@@ -5,11 +5,16 @@ import signal
 from argparse import ArgumentParser
 
 from domainkit.contrib.messaging.worker import Worker
+from domainkit.db.routing import router
 from domainkit.management import BaseCommand, CommandError
 
 
 class Command(BaseCommand):
-    """Process durable handlers and tasks; SIGTERM finishes running work first."""
+    """Process durable handlers and tasks; SIGTERM finishes running work first.
+
+    One worker runs per outbox (each database that hosts domains has one),
+    all in this process unless ``--database`` picks one target.
+    """
 
     help = "Run the messaging worker (durable event handlers, background tasks)."
 
@@ -30,6 +35,11 @@ class Command(BaseCommand):
             default="127.0.0.1",
             help="address for --metrics-port (default: %(default)s)",
         )
+        parser.add_argument(
+            "--database",
+            help="a target (SQL alias or shard group) or an alias whose outboxes "
+            "to run; default: every database that hosts domains",
+        )
 
     async def handle(
         self,
@@ -37,6 +47,7 @@ class Command(BaseCommand):
         once: bool,
         metrics_port: int | None,
         metrics_address: str,
+        database: str | None,
         **options: object,
     ) -> None:
         """Run until a signal arrives, or once."""
@@ -46,14 +57,19 @@ class Command(BaseCommand):
             except ImportError as exc:  # pragma: no cover - needs the extra absent.
                 raise CommandError("--metrics-port needs domainkit[metrics].") from exc
             start_http_server(metrics_port, addr=metrics_address)
-        worker = Worker()
+        targets = (database,) if database else router.hosting_targets()
+        aliases = dict.fromkeys(
+            alias for target in targets for alias in router.aliases_of(target)
+        )
+        workers = [Worker(database=alias) for alias in aliases]
         if once:
-            self.write(f"Processed {await worker.run_once()} message(s).")
+            counts = await asyncio.gather(*(worker.run_once() for worker in workers))
+            self.write(f"Processed {sum(counts)} message(s).")
             return
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
         for signal_number in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(signal_number, stop.set)
         self.write("Worker started; press Ctrl+C to stop.")
-        await worker.run(stop)
+        await asyncio.gather(*(worker.run(stop) for worker in workers))
         self.write("Worker stopped.")

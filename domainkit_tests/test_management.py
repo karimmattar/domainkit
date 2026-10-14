@@ -32,6 +32,7 @@ BUILTINS = {
     "init",
     "makemigrations",
     "migrate",
+    "partitions",
     "runserver",
     "shell",
     "showmigrations",

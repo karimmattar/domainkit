@@ -1,6 +1,6 @@
 [project]
 name = "domainkit"
-version = "0.2.0"
+version = "0.3.0"
 description = "A Django-style framework for domain-driven FastAPI services."
 readme = "README.md"
 license = "MIT"
@@ -35,6 +35,8 @@ postgres = ["asyncpg (>=0.31.0,<0.32.0)"]
 sqlite = ["aiosqlite (>=0.22.1,<0.23.0)"]
 metrics = ["prometheus-client (>=0.26.0,<0.27.0)"]
 tracing = ["opentelemetry-api (>=1.45.1,<2.0.0)"]
+# Ledgers for evidence (WORM): immudb's SDK, with its verified operations.
+immudb = ["immudb-py (>=1.5.0,<1.6.0)"]
 # The domainkit.testing pytest plugin; Starlette's TestClient needs httpx2.
 testing = ["pytest (>=9.1.1,<10.0.0)", "httpx2 (>=2.13.0,<3.0.0)"]
 
@@ -103,6 +105,11 @@ plugins = ["pydantic.mypy"]
 mypy_path = "src:."
 files = ["src", "domainkit_tests"]
 exclude = ["/management/templates/", "/mutants/"]
+
+# immudb-py and grpcio ship no type information.
+[[tool.mypy.overrides]]
+module = ["immudb", "immudb.*", "grpc", "grpc.*", "ecdsa", "ecdsa.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["domainkit_tests"]

@@ -6,6 +6,52 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-14
+
+### Added
+
+- Several databases of two kinds (ADR 0008): SQL databases in `DATABASES`
+  (PostgreSQL, SQLite), and ledgers in the new `LEDGERS` setting
+  (`immudb://`, `memory://`).
+- `DATABASE_ROUTING` sends each domain's tables and units of work to a
+  target. Each target keeps its own migration history in
+  `MIGRATIONS_DIR/<target>`, and `makemigrations`, `migrate`, and `check`
+  cover every target (`--database` picks one).
+- Sharding (ADR 0009): `SHARDS` groups of SQL databases sharing a schema,
+  split by shard key over fixed hash buckets, with optional bucket `RANGES`
+  and `PINNED` keys. `SqlAlchemyUnitOfWork(shard_key=...)`,
+  `domainkit.db.routing.router`, `bucket_for`, and `for_each_shard`.
+- PostgreSQL range partitioning (ADR 0010):
+  `domainkit.db.partitioning.partition_by_range`, partitions created by
+  `migrate` and by the new `partitions` command (`--prune` drops old ones),
+  and ignored by `makemigrations`.
+- Ledgers (ADR 0011): the `domainkit.ledger` port with `ImmudbLedger`
+  (verified operations, TLS, signed states; the new `immudb` extra) and
+  `MemoryLedger`. `/ready` checks ledgers.
+- `domainkit.contrib.evidence`: canonical, receipted evidence records on a
+  ledger, idempotent by id, with tampering detection, durable recording
+  through the outbox (`defer_evidence`), and the `evidence` command.
+- `runworker --database`, `messages --database`, and `auditlog --database`.
+- `DomainConfig.databases(router)`: where an app keeps its tables.
+
+### Changed
+
+- The outbox and the audit trail are created in every database that hosts a
+  domain. Units of work on any database can defer tasks, and their events are
+  audited there; before, other databases were refused (messaging) or skipped
+  (audit).
+- `runworker` runs one worker per outbox, every hosting database by default.
+- `startdomain` tags generated tables with `info={"domain": ...}`, so
+  routing moves them with their domain.
+- `SqlAlchemyUnitOfWork.database` defaults to `None`: follow
+  `DATABASE_ROUTING` for the domain that defines the subclass. The resolved
+  alias is `uow.alias`.
+
+### Fixed
+
+- The audit protection docstring said the table owner was exempt from the
+  triggers; they refuse every role, as `docs/contrib.md` says.
+
 ## [0.2.0] - 2026-10-14
 
 ### Added
@@ -63,7 +109,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/karimmattar/domainkit/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/karimmattar/domainkit/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/karimmattar/domainkit/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/karimmattar/domainkit/releases/tag/v0.1.0

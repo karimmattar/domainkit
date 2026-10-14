@@ -42,8 +42,13 @@ files.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `DATABASES` | `{}` | Aliases to connection options (below). If any are set, `default` is required. |
-| `MIGRATIONS_DIR` | `<BASE_DIR>/migrations` | Where `makemigrations` writes revisions. |
+| `DATABASES` | `{}` | SQL databases by alias (below). If any are set, `default` is required. A ledger URL here is refused with a pointer to `LEDGERS`. |
+| `LEDGERS` | `{}` | Ledgers by alias (below): write once, read many, verified. They hold evidence and are never migrated. |
+| `SHARDS` | `{}` | Shard groups by name (below): SQL aliases that share a schema, split by a shard key. |
+| `DATABASE_ROUTING` | `{}` | Domain label to target: a SQL alias or a shard group. Domains not listed use `default`. Their tables and units of work both go there. |
+| `MIGRATIONS_DIR` | `<BASE_DIR>/migrations` | Revisions of `default`; every other target keeps its own history in `MIGRATIONS_DIR/<target>`. |
+
+See [databases.md](databases.md) for routing, sharding, partitioning, and ledgers.
 
 Each `DATABASES` entry:
 
@@ -61,6 +66,24 @@ Each `DATABASES` entry:
 | `POOL_SIZE`, `MAX_OVERFLOW`, `POOL_TIMEOUT`, `POOL_RECYCLE` | SQLAlchemy's | Connection pool sizing. |
 | `POOL_PRE_PING` | `True` | Test connections before use, so database restarts are survived. |
 | `CONNECT_ARGS` | `{}` | Driver arguments; they override the options above. |
+
+Each `LEDGERS` entry:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `URL` | required | `immudb://user:password@host:3322/database`, or `memory://` for tests and development. Kept secret. |
+| `TLS_CA` | `None` | CA certificate that signed the immudb server's; enables TLS. Required in staging and production. |
+| `SERVER_SIGNING_KEY` | `None` | Public key of the server's `--signingKey`; every state is then checked. Required in staging and production. |
+| `TIMEOUT` | `10.0` | Seconds each ledger call may take. |
+
+Each `SHARDS` group:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `DATABASES` | required | The group's SQL aliases (not `default`); `makemigrations` compares against the first. |
+| `BUCKETS` | `4096` | Hash buckets keys spread over. Never change it once the group holds data. |
+| `RANGES` | equal ranges | Inclusive bucket ranges per alias, such as `{"accounts_0": [[0, 2047]], "accounts_1": [[2048, 4095]]}`; they must cover every bucket once. |
+| `PINNED` | `{}` | Shard keys (as text) that always go to one alias, such as a large tenant. |
 
 ### HTTP
 
@@ -96,6 +119,8 @@ With `ENVIRONMENT` set to `staging` or `production`, startup fails on:
 - `*` in `ALLOWED_HOSTS`
 - `ECHO` or `LOG_PARAMETERS` on any database
 - a network database without `SSLMODE = "verify-full"`
+- a `memory://` ledger, or an immudb ledger without `TLS_CA` or
+  `SERVER_SIGNING_KEY`
 
 `migrate --downgrade` also needs `--allow-data-loss` there.
 
@@ -199,14 +224,16 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `init` | `name`, `[directory]` | Create a project: base, local, test, and production settings, routes, `manage.py`, `.env`, and a first test. The name sets the environment prefix; the directory (default `./<name>`) must be empty or missing. |
 | `check` | | Settings, domains, routes, middleware, layer rules, and a single migration head. |
 | `startdomain` | `name`, `--aggregate`, `--plural`, `--parent`, `--tests-dir` | Generate a bounded context and its tests. |
-| `makemigrations` | `-m/--message`, `--check`, `--merge`, `--database` | Write a revision; `--check` fails if one is missing; `--merge` joins two heads. |
-| `migrate` | `[target]`, `--downgrade`, `--allow-data-loss`, `--database` | Apply revisions, or revert down to a target. |
-| `showmigrations` | `--database` | Applied and pending revisions. |
+| `makemigrations` | `-m/--message`, `--check`, `--merge`, `--database` | Write a revision per target with changes; `--check` fails if one is missing; `--merge` joins two heads. Without `--database`, every target. |
+| `migrate` | `[revision]`, `--downgrade`, `--allow-data-loss`, `--database` | Apply revisions (or revert down to one) on every database of every target, then create partitions. A revision id needs `--database` when there are several targets. |
+| `showmigrations` | `--database` | Applied and pending revisions; a shard group lists each database. |
+| `partitions` | `--database`, `--prune`, `--dry-run` | Create the current and upcoming partitions of partitioned tables; `--prune` drops those past `retain`. |
 | `runserver` | `[addr:port]`, `--noreload` | Development server. Production runs uvicorn directly. |
 | `shell` | | Python console with settings, the registry, and connections loaded. |
-| `runworker` | `--once`, `--metrics-port`, `--metrics-address` | Run outbox messages (messaging). |
-| `messages` | `--dead`, `--limit`, `--retry ID\|all` | Inspect the outbox, and requeue dead letters (messaging). |
-| `auditlog` | `--actor`, `--action`, `--limit` | Read the audit trail (audit). |
+| `runworker` | `--once`, `--metrics-port`, `--metrics-address`, `--database` | Run outbox messages (messaging): one worker per outbox, every hosting database by default. |
+| `messages` | `--dead`, `--limit`, `--retry ID\|all`, `--database` | Inspect an outbox, and requeue dead letters (messaging). |
+| `auditlog` | `--actor`, `--action`, `--limit`, `--database` | Read the audit trail (audit). |
+| `evidence` | `--subject`, `--verify KEY`, `--limit` | List a subject's evidence, or verify one record (evidence). |
 
 ## Extension points
 

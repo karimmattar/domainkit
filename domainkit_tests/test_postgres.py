@@ -14,7 +14,18 @@ from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from sqlalchemy import Column, Connection, MetaData, Table, delete, select, text, update
+from sqlalchemy import (
+    Column,
+    Connection,
+    Date,
+    Integer,
+    MetaData,
+    Table,
+    delete,
+    select,
+    text,
+    update,
+)
 from sqlalchemy.exc import DBAPIError
 
 from domainkit import setup
@@ -27,7 +38,10 @@ from domainkit.contrib.messaging import Worker
 from domainkit.contrib.messaging.outbox import message_row, write
 from domainkit.contrib.messaging.tables import messages
 from domainkit.db import UTCDateTime, connections
+from domainkit.db import migrations as migrations_module
+from domainkit.db import partitioning as partitioning_module
 from domainkit.db.connections import create_engine
+from domainkit.db.partitioning import existing_partitions, maintain, partition_by_range
 from domainkit.management import call_command
 from domainkit_tests.conftest import POSTGRES_VARIABLE
 
@@ -224,3 +238,191 @@ async def test_timestamps_keep_their_instant_and_come_back_in_utc(
     assert stored == noon_at_plus_three
     assert stored.tzinfo == UTC
     assert column_type == "timestamp with time zone"
+
+
+# Partitioning --------------------------------------------------------------------
+
+NOW = datetime(2026, 10, 14, 9, 30, tzinfo=UTC)
+
+
+@pytest.fixture
+def partitioned(
+    database_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[Table]:
+    """A daily-partitioned table, the only table migrations and maintenance see."""
+    schema = MetaData()
+    readings = Table(
+        "readings",
+        schema,
+        Column("id", Integer, primary_key=True),
+        Column("taken_at", UTCDateTime, primary_key=True),
+    )
+    partition_by_range(readings, "taken_at", "day", premake=3, retain=2)
+    monkeypatch.setattr(migrations_module, "metadata", schema)
+    monkeypatch.setattr(partitioning_module, "metadata", schema)
+    with override_settings(
+        DATABASES={"default": {"URL": database_url}},
+        MIGRATIONS_DIR=tmp_path / "migrations",
+        ALPHA=UNSET,
+        INSTALLED_DOMAINS=[],
+    ):
+        yield readings
+
+
+async def _partition_names(table: str) -> list[str]:
+    """The partitions PostgreSQL reports for ``table``, sorted."""
+    async with connections.engine().connect() as connection:
+        rows = await connection.execute(
+            text(
+                "SELECT inhrelid::regclass::text FROM pg_inherits "
+                "WHERE inhparent = to_regclass(:name) ORDER BY 1"
+            ),
+            {"name": table},
+        )
+        return list(rows.scalars())
+
+
+def test_revisions_create_partitioned_tables_and_ignore_partitions(
+    partitioned: Table,
+) -> None:
+    """Autogenerate emits PARTITION BY; partitions never appear as changes."""
+    output = io.StringIO()
+    call_command("makemigrations", "-m", "readings", stdout=output)
+    revision = Path(output.getvalue().split()[1].rstrip("."))
+    migrated = io.StringIO()
+    call_command("migrate", stdout=migrated)
+    checked = io.StringIO()
+    call_command("makemigrations", "--check", stdout=checked)
+
+    source = revision.read_text(encoding="utf-8")
+    assert "postgresql_partition_by" in source
+    assert "RANGE (taken_at)" in source
+    assert migrated.getvalue().splitlines() == [
+        "Database 'default' is at head.",
+        "Created 4 partition(s) in 'default'.",
+    ]
+    assert checked.getvalue() == "No changes detected.\n"
+
+
+async def test_maintenance_creates_and_prunes_partitions(partitioned: Table) -> None:
+    """Upcoming partitions appear; with --prune, old ones go; rows find theirs."""
+    async with connections.engine().begin() as connection:
+        await connection.run_sync(partitioned.create)
+
+    created = await maintain("default", now=NOW)
+    again = await maintain("default", now=NOW)
+    async with connections.engine().begin() as connection:
+        await connection.execute(partitioned.insert().values(id=1, taken_at=NOW))
+    later = NOW + timedelta(days=6)
+    planned = await maintain("default", now=later, prune=True, dry_run=True)
+    names_before_prune = await _partition_names("readings")
+    pruned = await maintain("default", now=later, prune=True)
+
+    assert len(created) == 4
+    assert again == []
+    assert names_before_prune == [
+        "readings_p20261014",
+        "readings_p20261015",
+        "readings_p20261016",
+        "readings_p20261017",
+    ]
+    assert planned == pruned
+    assert await _partition_names("readings") == [
+        "readings_p20261020",
+        "readings_p20261021",
+        "readings_p20261022",
+        "readings_p20261023",
+    ]
+    with pytest.raises(DBAPIError, match="no partition of relation"):
+        async with connections.engine().begin() as connection:
+            await connection.execute(
+                partitioned.insert().values(id=2, taken_at=NOW + timedelta(days=60))
+            )
+    await connections.close_all()
+
+
+async def test_date_keys_and_the_partition_list(
+    database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Date-keyed tables get date bounds; existing_partitions sees partitions."""
+    schema = MetaData()
+    days = Table("ledger_days", schema, Column("day", Date, primary_key=True))
+    partition_by_range(days, "day", "month", premake=1)
+    monkeypatch.setattr(partitioning_module, "metadata", schema)
+    with override_settings(
+        DATABASES={"default": {"URL": database_url}}, ALPHA=UNSET, INSTALLED_DOMAINS=[]
+    ):
+        async with connections.engine().begin() as connection:
+            await connection.run_sync(schema.create_all)
+        statements = await maintain("default", now=NOW)
+        async with connections.engine().connect() as connection:
+            found = await connection.run_sync(existing_partitions)
+        await connections.close_all()
+
+    assert "FROM ('2026-10-01') TO ('2026-11-01')" in statements[0]
+    assert found == {"ledger_days_p20261001", "ledger_days_p20261101"}
+
+
+def test_the_partitions_command_on_postgresql(partitioned: Table) -> None:
+    """Dry runs print SQL; real runs report changes, then that all is current."""
+
+    async def create_table() -> None:
+        async with connections.engine().begin() as connection:
+            await connection.run_sync(partitioned.create)
+        await connections.close_all()
+
+    asyncio.run(create_table())
+    reports = []
+    for arguments in (("--dry-run",), (), ("--prune",)):
+        output = io.StringIO()
+        call_command("partitions", *arguments, stdout=output)
+        reports.append(output.getvalue())
+
+    planned = reports[0].splitlines()
+    assert len(planned) == 4
+    assert all(
+        line.startswith("CREATE TABLE IF NOT EXISTS readings_p") for line in planned
+    )
+    assert reports[1:] == [
+        "Partitions of 'default': 4 change(s).\n",
+        "Partitions of 'default' are up to date.\n",
+    ]
+
+
+async def test_partitions_follow_schemas_and_case(
+    database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Quoted names and schemas resolve; a second run changes nothing."""
+    schema = MetaData()
+    table = Table(
+        "MeterReadings",
+        schema,
+        Column("id", Integer, primary_key=True),
+        Column("taken_at", UTCDateTime, primary_key=True),
+        schema="metering",
+    )
+    partition_by_range(table, "taken_at", "day", premake=1)
+    monkeypatch.setattr(partitioning_module, "metadata", schema)
+    with override_settings(
+        DATABASES={"default": {"URL": database_url}}, ALPHA=UNSET, INSTALLED_DOMAINS=[]
+    ):
+        async with connections.engine().begin() as connection:
+            await connection.execute(text("CREATE SCHEMA metering"))
+            await connection.run_sync(schema.create_all)
+        created = await maintain("default", now=NOW)
+        again = await maintain("default", now=NOW)
+        async with connections.engine().connect() as connection:
+            rows = await connection.execute(
+                text(
+                    "SELECT inhrelid::regclass::text FROM pg_inherits WHERE "
+                    """inhparent = to_regclass('metering."MeterReadings"') ORDER BY 1"""
+                )
+            )
+            names = list(rows.scalars())
+        await connections.close_all()
+
+    assert (len(created), again) == (2, [])
+    assert names == [
+        'metering."MeterReadings_p20261014"',
+        'metering."MeterReadings_p20261015"',
+    ]

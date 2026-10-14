@@ -123,6 +123,13 @@ class DomainRegistry:
                 + ", ".join(_describe_unknown(name, known) for name in unknown)
                 + ". Declare them in a domain's settings_class or SETTINGS_CLASS."
             )
+        labels = list(self._configs)
+        if unrouted := sorted(set(current.DATABASE_ROUTING) - set(labels)):
+            raise ImproperlyConfigured(
+                "DATABASE_ROUTING names domains that are not installed: "
+                + ", ".join(_describe_unknown(label, labels) for label in unrouted)
+                + "."
+            )
 
 
 def _describe_unknown(name: str, known: list[str]) -> str:

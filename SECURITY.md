@@ -32,6 +32,12 @@ trail. It does not authenticate requests yet; projects must not expose an
 API publicly until they add authentication. The settings reference
 ([docs/reference.md](docs/reference.md)) lists every control.
 
+## Known exceptions
+
+| Advisory | Package | Why it does not apply |
+| --- | --- | --- |
+| PYSEC-2026-1325 (CVE-2024-23342) | `ecdsa`, through the `immudb` extra | A timing attack on signing, key generation, and ECDH. immudb's SDK uses `ecdsa` only to verify the server's state signatures with its public key, which the advisory states is unaffected. No fix is planned upstream. CI's pip-audit ignores this one advisory. |
+
 ## How this repository stays secure
 
 | Control | Where |

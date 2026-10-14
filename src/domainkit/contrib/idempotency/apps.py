@@ -3,6 +3,7 @@
 from importlib import import_module
 
 from domainkit.apps import DomainConfig, registry
+from domainkit.db.routing import DatabaseRouter, router
 
 from .settings import IdempotencySettings
 
@@ -17,6 +18,12 @@ class IdempotencyConfig(DomainConfig):
     settings_class = IdempotencySettings
 
     def ready(self) -> None:
-        """Schedule the hourly purge when messaging is installed."""
+        """Check the keys' database; schedule the hourly purge with messaging."""
+        config = registry.settings(IdempotencySettings)
+        router.require_standalone(config.DATABASE, "IDEMPOTENCY.DATABASE")
         if registry.is_installed(MESSAGING):
             import_module(f"{self.name}.tasks")
+
+    def databases(self, router: DatabaseRouter) -> frozenset[str]:
+        """Only ``IDEMPOTENCY.DATABASE``: keys are stored apart from business data."""
+        return frozenset({registry.settings(IdempotencySettings).DATABASE})

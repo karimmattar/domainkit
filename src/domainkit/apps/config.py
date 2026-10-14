@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from domainkit.exceptions import ImproperlyConfigured
 
 if TYPE_CHECKING:
+    from domainkit.db.routing import DatabaseRouter
     from domainkit.ddd import DeferredTask, DomainEvent, UnitOfWork
 
 CONFIG_MODULE = "apps"
@@ -99,6 +100,15 @@ class DomainConfig:
         tasks: Sequence["DeferredTask"],
     ) -> None:
         """Add rows to a committing SQL unit of work (outbox, audit trail)."""
+
+    def databases(self, router: "DatabaseRouter") -> frozenset[str]:
+        """The targets that hold this domain's tables (see ``DATABASE_ROUTING``).
+
+        By default, the domain's routing target. Apps whose rows must commit
+        with every domain's data (the outbox, the audit trail) return every
+        hosting target; apps without tables return none.
+        """
+        return frozenset({router.target_for(self.label)})
 
 
 def _import_domain(name: str) -> ModuleType:

@@ -5,17 +5,22 @@ A Django-style framework for domain-driven FastAPI services. It provides:
 - settings modules and installed domains
 - `manage.py` commands and migrations
 - DDD building blocks, with the layer rules between them enforced
-- optional apps for reliable messaging, audit trails, and idempotent requests
+- several databases: domains routed to their own, sharding by key,
+  PostgreSQL range partitioning, and immudb ledgers for evidence
+- optional apps for reliable messaging, audit trails, idempotent requests,
+  and tamper-evident evidence
 
 ```bash
-pip install "domainkit[postgres]"     # extras: postgres, sqlite, metrics, tracing, testing
+pip install "domainkit[postgres]"     # extras: postgres, sqlite, immudb, metrics, tracing, testing
 ```
 
 ## Documentation
 
 - [docs/reference.md](https://github.com/karimmattar/domainkit/blob/main/docs/reference.md): settings, middleware, errors,
   observability, testing, commands, and extension points
-- [docs/contrib.md](https://github.com/karimmattar/domainkit/blob/main/docs/contrib.md): messaging, audit, and idempotency
+- [docs/databases.md](https://github.com/karimmattar/domainkit/blob/main/docs/databases.md): several databases, routing,
+  sharding, partitioning, and ledgers
+- [docs/contrib.md](https://github.com/karimmattar/domainkit/blob/main/docs/contrib.md): messaging, audit, idempotency, and evidence
 - [docs/versioning.md](https://github.com/karimmattar/domainkit/blob/main/docs/versioning.md): compatibility, deprecations, and releases
 - [docs/adr/](https://github.com/karimmattar/domainkit/tree/main/docs/adr): the decisions behind the design
 - [CHANGELOG.md](https://github.com/karimmattar/domainkit/blob/main/CHANGELOG.md) and [SECURITY.md](https://github.com/karimmattar/domainkit/blob/main/SECURITY.md)

@@ -36,6 +36,8 @@ class {{ Aggregate }}NameType(TypeDecorator[{{ Aggregate }}Name]):
     Column("version", Integer, nullable=False),
     # Serves the keyset pagination order.
     Index("ix_{{ table }}_name_id", "name", "id"),
+    # Migrations create the table where DATABASE_ROUTING sends this domain.
+    info={"domain": "{{ domain }}"},
 )
 
 

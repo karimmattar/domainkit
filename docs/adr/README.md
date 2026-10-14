@@ -14,3 +14,7 @@ accepted record: supersede it with a new one and link both ways.
 | [0005](0005-transactional-outbox.md) | A transactional outbox instead of a broker | Accepted |
 | [0006](0006-environment-prefix-from-project-name.md) | Environment variable prefix from the project name | Accepted |
 | [0007](0007-own-repository-released-to-pypi.md) | Its own repository, released to PyPI | Accepted |
+| [0008](0008-multiple-databases-and-routing.md) | Several databases: two kinds, routed by domain | Accepted |
+| [0009](0009-sharding-with-hash-buckets.md) | Shard by key over fixed hash buckets | Accepted |
+| [0010](0010-postgresql-range-partitioning.md) | Range-partition large tables in PostgreSQL | Accepted |
+| [0011](0011-immudb-ledger-for-evidence.md) | Keep evidence in an immudb ledger, verified by the client | Accepted |
