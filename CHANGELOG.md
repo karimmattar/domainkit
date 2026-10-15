@@ -6,6 +6,26 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `domainkit.contrib.auth` and `domainkit.contrib.contenttypes`, Django's
+  users, groups, and permissions for REST APIs (ADR 0015, `docs/auth.md`):
+  permissions per content type (`<domain>.<action>_<model>`, and those a
+  class declares in `Meta`) created by `migrate`; groups; superusers;
+  backends with object permissions; a swappable user model
+  (`AUTH.USER_MODEL`, `AUTH.USER_TABLE`), including users who log in with
+  their email; and the `createsuperuser` and `changepassword` commands.
+- Password hashing with Django's hashers and formats (PBKDF2 by default,
+  scrypt, and Argon2 through the new `argon2` extra), re-hashed on login
+  when settings change and run off the event loop, and Django's four
+  password validators, with its list of 20,000 common passwords.
+- `DomainConfig.migrated(connection, database)`, a hook `migrate` calls
+  after upgrading each database (Django's `post_migrate`), and
+  `DomainConfig.holds_table(table)`, which keeps tables a domain no longer
+  uses out of migrations.
+- `domainkit.management.base.run_async`, for sync commands that reach the
+  database between prompts.
+
 ### Fixed
 
 - A streamed body over `MAX_REQUEST_BODY_SIZE` sent with an

@@ -11,6 +11,9 @@ from pydantic import BaseModel
 from domainkit.exceptions import ImproperlyConfigured
 
 if TYPE_CHECKING:
+    from sqlalchemy import Table
+    from sqlalchemy.ext.asyncio import AsyncConnection
+
     from domainkit.db.routing import DatabaseRouter
     from domainkit.ddd import DeferredTask, DomainEvent, UnitOfWork
 
@@ -107,6 +110,22 @@ class DomainConfig:
         The data is already committed: a failure here is logged and reported,
         and the unit of work carries on.
         """
+
+    async def migrated(self, connection: "AsyncConnection", database: str) -> None:
+        """Fill alias ``database`` after ``migrate`` upgraded it (``post_migrate``).
+
+        Runs for every installed domain, in order, in one transaction on the
+        schema owner's ``connection``; check ``database`` before writing.
+        Content types and permissions are created this way.
+        """
+
+    def holds_table(self, table: "Table") -> bool:
+        """Whether ``table``, tagged with this domain, is in use now.
+
+        A table that is not is neither migrated nor given a content type,
+        such as the default user table while ``AUTH.USER_MODEL`` swaps it.
+        """
+        return True
 
     def databases(self, router: "DatabaseRouter") -> frozenset[str]:
         """The targets that hold this domain's tables (see ``DATABASE_ROUTING``).

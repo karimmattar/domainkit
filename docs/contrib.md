@@ -10,6 +10,8 @@ configured by one setting, a dictionary whose keys are all optional.
 | `domainkit.contrib.audit` | `AUDIT` | `domainkit_audit_log` |
 | `domainkit.contrib.idempotency` | `IDEMPOTENCY` | `domainkit_idempotency_keys` |
 | `domainkit.contrib.evidence` | `EVIDENCE` | none: records live on a ledger |
+| `domainkit.contrib.contenttypes` | none | `domainkit_content_types` |
+| `domainkit.contrib.auth` | `AUTH` | users, groups, permissions; see [auth.md](auth.md) |
 
 With several databases ([databases.md](databases.md)), the outbox and the
 audit trail commit with business data, so their tables are created in every

@@ -1,0 +1,239 @@
+"""Tables of users, groups, and permissions, mapped onto the domain model.
+
+A custom user (``AUTH.USER_MODEL``) needs its own table, named in
+``AUTH.USER_TABLE``: start it with ``abstract_user_columns()`` (or
+``abstract_base_user_columns()``) and add the model's own fields::
+
+    users = Table(
+        "accounts_users",
+        metadata,
+        *abstract_user_columns(),
+        Column("phone", String(32), nullable=False, default=""),
+        info={"domain": "accounts"},
+    )
+
+Its links to groups and permissions get tables of their own, named after
+it (``accounts_users_groups``, ``accounts_users_permissions``).
+"""
+
+from typing import Any
+
+from sqlalchemy import (
+    Boolean,
+    Column,
+    ForeignKey,
+    Integer,
+    String,
+    Table,
+    UniqueConstraint,
+    Uuid,
+)
+from sqlalchemy.engine import Dialect
+from sqlalchemy.orm import relationship
+from sqlalchemy.types import TypeDecorator
+
+from domainkit.contrib.contenttypes.models import ContentType
+from domainkit.contrib.contenttypes.tables import content_types
+from domainkit.contrib.contenttypes.tables import start_mappers as start_content_types
+from domainkit.db import UTCDateTime, map_imperatively, metadata
+
+from .models import (
+    GROUP_NAME_MAX_LENGTH,
+    USERNAME_MAX_LENGTH,
+    AbstractBaseUser,
+    Group,
+    PasswordHash,
+    Permission,
+)
+
+
+class PasswordHashType(TypeDecorator[PasswordHash]):
+    """Store a ``PasswordHash`` as text."""
+
+    impl = String(255)
+    cache_ok = True
+
+    def process_bind_param(
+        self, value: PasswordHash | None, dialect: Dialect
+    ) -> str | None:
+        """Unwrap the value object."""
+        return None if value is None else value.value
+
+    def process_result_value(
+        self, value: str | None, dialect: Dialect
+    ) -> PasswordHash | None:
+        """Wrap the stored text."""
+        return None if value is None else PasswordHash(value)
+
+
+def abstract_base_user_columns() -> list[Column[Any]]:
+    """New columns for the fields of ``AbstractBaseUser``."""
+    return [
+        Column("id", Uuid, primary_key=True),
+        Column("password", PasswordHashType, nullable=False),
+        Column("last_login", UTCDateTime),
+        Column("is_active", Boolean, nullable=False),
+        Column("is_superuser", Boolean, nullable=False),
+        # Optimistic locking: every UPDATE checks and bumps it.
+        Column("version", Integer, nullable=False),
+    ]
+
+
+def abstract_user_columns() -> list[Column[Any]]:
+    """New columns for the fields of ``AbstractUser``."""
+    return [
+        *abstract_base_user_columns(),
+        Column("username", String(USERNAME_MAX_LENGTH), nullable=False, unique=True),
+        Column("email", String(254), nullable=False),
+        Column("first_name", String(150), nullable=False),
+        Column("last_name", String(150), nullable=False),
+        Column("is_staff", Boolean, nullable=False),
+        Column("date_joined", UTCDateTime, nullable=False),
+    ]
+
+
+users = Table(
+    "domainkit_users",
+    metadata,
+    *abstract_user_columns(),
+    info={"domain": "auth"},
+)
+"""The default user's table; unused while ``AUTH.USER_TABLE`` names another."""
+
+groups = Table(
+    "domainkit_groups",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("name", String(GROUP_NAME_MAX_LENGTH), nullable=False, unique=True),
+    Column("version", Integer, nullable=False),
+    info={"domain": "auth"},
+)
+
+permissions = Table(
+    "domainkit_permissions",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column(
+        "content_type_id",
+        Integer,
+        ForeignKey(content_types.c.id, ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("codename", String(100), nullable=False),
+    Column("name", String(255), nullable=False),
+    UniqueConstraint("content_type_id", "codename"),
+    info={"domain": "auth"},
+)
+
+group_permissions = Table(
+    "domainkit_group_permissions",
+    metadata,
+    Column(
+        "group_id",
+        Uuid,
+        ForeignKey(groups.c.id, ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "permission_id",
+        Integer,
+        ForeignKey(permissions.c.id, ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    info={"domain": "auth"},
+)
+
+
+def user_link_tables(user_table: Table) -> tuple[Table, Table]:
+    """The tables linking ``user_table`` to groups and to permissions.
+
+    They are named after it (``<users>_groups``, ``<users>_permissions``),
+    belong to its domain (``info["domain"]``) and metadata, and are created
+    once.
+    """
+    groups_name = f"{user_table.name}_groups"
+    permissions_name = f"{user_table.name}_permissions"
+    tables = user_table.metadata.tables
+    if groups_name in tables:
+        return tables[groups_name], tables[permissions_name]
+    info = {"domain": user_table.info["domain"]}
+    # Each column takes its type from the column its foreign key names.
+    user_groups = Table(
+        groups_name,
+        user_table.metadata,
+        Column(
+            "user_id",
+            ForeignKey(user_table.c.id, ondelete="CASCADE"),
+            primary_key=True,
+        ),
+        Column(
+            "group_id",
+            ForeignKey(groups.c.id, ondelete="CASCADE"),
+            primary_key=True,
+        ),
+        info=info,
+    )
+    user_permissions = Table(
+        permissions_name,
+        user_table.metadata,
+        Column(
+            "user_id",
+            ForeignKey(user_table.c.id, ondelete="CASCADE"),
+            primary_key=True,
+        ),
+        Column(
+            "permission_id",
+            ForeignKey(permissions.c.id, ondelete="CASCADE"),
+            primary_key=True,
+        ),
+        info=info,
+    )
+    return user_groups, user_permissions
+
+
+DEFAULT_USER_TABLES = (users, *user_link_tables(users))
+"""The tables the default user needs; a swapped user leaves them unused."""
+
+
+def start_mappers(user_model: type[AbstractBaseUser], user_table: Table) -> None:
+    """Map permissions, groups, and the user model (idempotent).
+
+    Groups and permissions load with their user in the same session
+    (``selectin``), so permission checks never query lazily.
+    """
+    start_content_types()
+    map_imperatively(
+        Permission,
+        permissions,
+        properties={
+            "content_type": relationship(ContentType, lazy="joined", innerjoin=True)
+        },
+    )
+    map_imperatively(
+        Group,
+        groups,
+        properties={
+            "permissions": relationship(
+                Permission,
+                secondary=group_permissions,
+                lazy="selectin",
+                collection_class=set,
+            )
+        },
+    )
+    user_groups, user_permissions = user_link_tables(user_table)
+    map_imperatively(
+        user_model,
+        user_table,
+        properties={
+            "groups": relationship(
+                Group, secondary=user_groups, lazy="selectin", collection_class=set
+            ),
+            "user_permissions": relationship(
+                Permission,
+                secondary=user_permissions,
+                lazy="selectin",
+                collection_class=set,
+            ),
+        },
+    )

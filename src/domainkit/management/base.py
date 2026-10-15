@@ -62,7 +62,7 @@ class BaseCommand:
             setup()
         result = self.handle(**options)
         if inspect.isawaitable(result):
-            asyncio.run(_run_async(result))
+            run_async(result)
 
     def handle(
         self,
@@ -77,14 +77,23 @@ class BaseCommand:
         self.stdout.write(f"{message}\n")
 
 
-async def _run_async(awaitable: Awaitable[None]) -> None:
-    """Await an async ``handle``, then close connections opened in this loop."""
+def run_async[T](awaitable: Awaitable[T]) -> T:
+    """Run ``awaitable`` in a new event loop, then close what it connected.
+
+    ``execute`` runs an async ``handle`` this way; a sync ``handle`` that
+    asks questions can reach the database between them with it.
+    """
+    return asyncio.run(_run_async(awaitable))
+
+
+async def _run_async[T](awaitable: Awaitable[T]) -> T:
+    """Await ``awaitable``, then close connections opened in this loop."""
     from domainkit.broker import brokers
     from domainkit.cache import caches
     from domainkit.db.connections import connections
 
     try:
-        await awaitable
+        return await awaitable
     finally:
         await connections.close_all()
         await caches.close_all()

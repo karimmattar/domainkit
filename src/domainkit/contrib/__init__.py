@@ -4,4 +4,7 @@
   handlers, background and periodic tasks, and the ``runworker`` command.
 - ``domainkit.contrib.audit``: an append-only audit trail of committed events.
 - ``domainkit.contrib.idempotency``: replay-safe ``Idempotency-Key`` requests.
+- ``domainkit.contrib.evidence``: tamper-evident records on a ledger.
+- ``domainkit.contrib.contenttypes``: one row per kind of stored object.
+- ``domainkit.contrib.auth``: users, groups, permissions, and passwords.
 """

@@ -2,6 +2,7 @@
 
 import asyncio
 import importlib
+import io
 import logging
 import os
 import sys
@@ -9,6 +10,7 @@ import textwrap
 import uuid
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Final
 
@@ -16,9 +18,10 @@ import pytest
 from sqlalchemy import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from domainkit import setup
 from domainkit.apps import registry
 from domainkit.cache import caches
-from domainkit.conf import use_settings
+from domainkit.conf import override_settings, use_settings
 from domainkit.conf.env import (
     ENV_PREFIX_VARIABLE,
     PROJECT_ROOT_VARIABLE,
@@ -28,6 +31,7 @@ from domainkit.conf.env import (
 from domainkit.contrib.messaging import registry as task_registry
 from domainkit.ddd import event_bus
 from domainkit.http import metrics
+from domainkit.management import call_command
 from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
 
 type MakePackage = Callable[[str, dict[str, str]], Path]
@@ -176,3 +180,63 @@ def restore_logging() -> Iterator[None]:
     yield
     root.handlers[:] = handlers
     root.setLevel(level)
+
+
+CONTENTTYPES: Final = "domainkit.contrib.contenttypes"
+AUTH: Final = "domainkit.contrib.auth"
+SHOP: Final = "domainkit_tests.sample_domains.shop"
+ALPHA: Final = "domainkit_tests.sample_domains.alpha"
+FAST_HASHER: Final = "domainkit.contrib.auth.hashers.FastPBKDF2PasswordHasher"
+
+
+@pytest.fixture
+def auth_project(database_url: str, tmp_path: Path) -> Iterator[str]:
+    """Content types, auth, and the shop domain, migrated into an empty database.
+
+    Revisions are generated and applied the way a project does it, so
+    ``migrate`` also creates the content types and permissions. Passwords
+    use the fast test hasher.
+    """
+    registry.clear()
+    with override_settings(
+        INSTALLED_DOMAINS=[CONTENTTYPES, AUTH, SHOP, ALPHA],
+        DATABASES={"default": {"URL": database_url}},
+        MIGRATIONS_DIR=tmp_path / "migrations",
+        AUTH={"PASSWORD_HASHERS": [FAST_HASHER]},
+    ):
+        setup()
+        call_command("makemigrations", "-m", "auth", stdout=io.StringIO())
+        call_command("migrate", stdout=io.StringIO())
+        yield database_url
+    registry.clear()
+
+
+type UseAuth = Callable[..., None]
+
+
+@pytest.fixture
+def use_auth() -> Iterator[UseAuth]:
+    """Install content types and auth with ``AUTH`` options, without a database.
+
+    ``use_auth(PASSWORD_HASHERS=[...])``; other keyword arguments named in
+    ``settings`` (upper case) override settings.
+    """
+    with ExitStack() as stack:
+
+        def install(
+            *, settings: dict[str, object] | None = None, **auth: object
+        ) -> None:
+            registry.clear()
+            stack.enter_context(
+                override_settings(
+                    **{
+                        "INSTALLED_DOMAINS": [CONTENTTYPES, AUTH, ALPHA],
+                        "AUTH": {"PASSWORD_HASHERS": [FAST_HASHER], **auth},
+                        **(settings or {}),
+                    }
+                )
+            )
+            setup()
+
+        yield install
+    registry.clear()
