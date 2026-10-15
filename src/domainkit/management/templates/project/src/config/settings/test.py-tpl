@@ -5,3 +5,5 @@ from config.settings.base import *
 ENVIRONMENT = "test"
 ALLOWED_HOSTS = ["testserver"]
 DATABASES = {"default": {"URL": "sqlite+aiosqlite:///:memory:"}}
+# One hash iteration: fast tests. Staging and production refuse it.
+AUTH = {"PASSWORD_HASHERS": ["domainkit.contrib.auth.hashers.FastPBKDF2PasswordHasher"]}

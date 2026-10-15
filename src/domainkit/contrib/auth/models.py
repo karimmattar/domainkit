@@ -8,6 +8,7 @@ Swap the user for one of your own by subclassing ``AbstractUser`` (or
 ``AbstractBaseUser``) and naming it in ``AUTH.USER_MODEL``.
 """
 
+import dataclasses
 import re
 import secrets
 import unicodedata
@@ -22,18 +23,21 @@ from domainkit.ddd import AggregateRoot, Entity, ValueObject
 
 from .events import (
     GroupCreated,
+    GroupDeleted,
     GroupPermissionGranted,
     GroupPermissionRevoked,
     GroupRenamed,
     PasswordChanged,
     UserCreated,
+    UserDeleted,
     UserJoinedGroup,
     UserLeftGroup,
     UserPermissionGranted,
     UserPermissionRevoked,
     UserStatusChanged,
+    UserUpdated,
 )
-from .exceptions import InvalidGroupName, InvalidUsername
+from .exceptions import InvalidGroupName, InvalidUsername, UnknownUserField
 
 UserId = NewType("UserId", UUID)
 GroupId = NewType("GroupId", UUID)
@@ -149,6 +153,10 @@ class Group(AggregateRoot[GroupId]):
         """The keys of the group's permissions."""
         return frozenset(permission.key for permission in self.permissions)
 
+    def delete(self) -> None:
+        """Record ``GroupDeleted``; the repository removes the group."""
+        self.record(GroupDeleted(group_id=self.id, name=self.name))
+
     def __str__(self) -> str:
         """The group's name."""
         return self.name
@@ -165,6 +173,21 @@ class AbstractBaseUser(AggregateRoot[UserId]):
     USERNAME_FIELD: ClassVar[str]
     EMAIL_FIELD: ClassVar[str | None] = None
     REQUIRED_FIELDS: ClassVar[tuple[str, ...]] = ()
+    PROTECTED_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "id",
+            "version",
+            "password",
+            "last_login",
+            "date_joined",
+            "is_active",
+            "is_staff",
+            "is_superuser",
+            "groups",
+            "user_permissions",
+        }
+    )
+    """Fields that change through their own methods, never ``update``."""
     is_authenticated: ClassVar[bool] = True
     is_anonymous: ClassVar[bool] = False
 
@@ -302,6 +325,48 @@ class AbstractBaseUser(AggregateRoot[UserId]):
             setattr(self, name, value)
             self.record(UserStatusChanged(user_id=self.id, field=name, value=value))
 
+    @classmethod
+    def editable_fields(cls) -> frozenset[str]:
+        """Fields ``update`` may change: not the username, credentials, or grants."""
+        names = {each.name for each in dataclasses.fields(cls)}
+        return frozenset(names - cls.PROTECTED_FIELDS - {cls.USERNAME_FIELD})
+
+    @classmethod
+    def check_editable(cls, names: Iterable[str]) -> None:
+        """Refuse names outside ``editable_fields()``.
+
+        Raises:
+            UnknownUserField: Names the error lists.
+        """
+        if unknown := sorted(set(names) - cls.editable_fields()):
+            raise UnknownUserField(
+                f"These user fields cannot be changed here: {', '.join(unknown)}."
+            )
+
+    def update(self, **fields: object) -> None:
+        """Change editable fields; record ``UserUpdated`` with their names.
+
+        Raises:
+            UnknownUserField: A field is not one of ``editable_fields()``.
+        """
+        self.check_editable(fields)
+        changed = []
+        for name, value in sorted(fields.items()):
+            cleaned = self.clean_field(name, value)
+            if getattr(self, name) != cleaned:
+                setattr(self, name, cleaned)
+                changed.append(name)
+        if changed:
+            self.record(UserUpdated(user_id=self.id, fields=tuple(changed)))
+
+    def clean_field(self, name: str, value: object) -> object:
+        """Tidy a value ``update`` stores; subclasses normalize their fields."""
+        return value
+
+    def delete(self) -> None:
+        """Record ``UserDeleted``; the repository removes the user."""
+        self.record(UserDeleted(user_id=self.id, username=self.get_username()))
+
     def __str__(self) -> str:
         """The username."""
         return self.get_username()
@@ -337,6 +402,10 @@ class AbstractUser(AbstractBaseUser):
     def set_staff(self, value: bool) -> None:
         """Let the user into the admin API (or stop it)."""
         self._set_status("is_staff", value)
+
+    def clean_field(self, name: str, value: object) -> object:
+        """Lower-case the email's domain, as on creation."""
+        return normalize_email(str(value)) if name == "email" else value
 
     def get_full_name(self) -> str:
         """First and last name, separated by a space."""

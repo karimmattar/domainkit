@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from domainkit.exceptions import ImproperlyConfigured
 
 if TYPE_CHECKING:
+    from fastapi import FastAPI
     from sqlalchemy import Table
     from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -118,6 +119,14 @@ class DomainConfig:
         schema owner's ``connection``; check ``database`` before writing.
         Content types and permissions are created this way.
         """
+
+    def check_application(self, app: "FastAPI") -> list[str]:
+        """Problems with the built application, such as routes no rule guards.
+
+        ``check`` reports them, and staging and production refuse to start
+        with any; elsewhere the application starts and logs them.
+        """
+        return []
 
     def holds_table(self, table: "Table") -> bool:
         """Whether ``table``, tagged with this domain, is in use now.

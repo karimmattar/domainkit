@@ -17,6 +17,7 @@ from domainkit.management import (
 )
 from domainkit.management.commands.init import requirement
 
+CHECKED = "System check identified no issues. Domains: messaging, contenttypes, auth.\n"
 PROJECT_FILES = {
     ".env",
     ".gitignore",
@@ -70,7 +71,18 @@ def test_init_creates_a_project_that_passes_check_and_its_tests(
 
     output = init("billingAPI", str(project))
 
-    assert output.startswith(f"Created billingAPI in {project}.\n")
+    assert output == (
+        f"Created billingAPI in {project}.\n"
+        "Next steps:\n"
+        f"  cd {project.relative_to(Path.cwd(), walk_up=True)}\n"
+        '  pip install "domainkit[postgres,sqlite,testing]"   # or: uv sync\n'
+        "  python manage.py check\n"
+        '  python manage.py makemigrations -m "auth"\n'
+        "  python manage.py migrate\n"
+        "  python manage.py createsuperuser\n"
+        "  python manage.py startdomain <name>\n"
+        "  pytest\n"
+    )
     files = {
         path.relative_to(project).as_posix()
         for path in project.rglob("*")
@@ -89,10 +101,10 @@ def test_init_creates_a_project_that_passes_check_and_its_tests(
 
     # From outside the project: manage.py finds its own pyproject.toml and .env.
     checked = run(tmp_path, str(project / "manage.py"), "check")
-    assert checked.stdout == "System check identified no issues. Domains: messaging.\n"
+    assert checked.stdout == CHECKED
     tested = run(project, "-m", "pytest", "-q", "-p", "no:cacheprovider")
     assert tested.returncode == 0, tested.stdout + tested.stderr
-    assert "1 passed" in tested.stdout
+    assert "2 passed" in tested.stdout
 
 
 def test_production_settings_come_from_the_environment(tmp_path: Path) -> None:
@@ -110,7 +122,7 @@ def test_production_settings_come_from_the_environment(tmp_path: Path) -> None:
 
     assert missing.returncode == 1
     assert "Set the BILLING_API_DATABASE_URL environment variable." in missing.stderr
-    assert ready.stdout == "System check identified no issues. Domains: messaging.\n"
+    assert ready.stdout == CHECKED
 
 
 @pytest.mark.parametrize(
@@ -193,8 +205,17 @@ from domainkit.conf.env import Env
 env = Env()
 BASE_DIR = Path(__file__).resolve().parents[3]
 
-INSTALLED_DOMAINS = ["domainkit.contrib.messaging", "domains.invoices"]
+INSTALLED_DOMAINS = [
+    "domainkit.contrib.messaging",
+    "domainkit.contrib.contenttypes",
+    "domainkit.contrib.auth",
+    "domains.invoices",
+]
 ROOT_ROUTER = "config.urls.router"
+MIDDLEWARE = [
+    "domainkit.http.middleware.RequestContextMiddleware",
+    "domainkit.contrib.auth.middleware.AuthenticationMiddleware",
+]
 DATABASE_ROUTING = {"invoices": "billing"}
 '''
 ROUTED_LOCAL = """from config.settings.base import *
@@ -213,6 +234,7 @@ DATABASES = {
     "default": {"URL": "sqlite+aiosqlite:///:memory:"},
     "billing": {"URL": "sqlite+aiosqlite:///:memory:"},
 }
+AUTH = {"PASSWORD_HASHERS": ["domainkit.contrib.auth.hashers.FastPBKDF2PasswordHasher"]}
 """
 ROUTES = """
 from domains.invoices.api.routes import router as invoices_router

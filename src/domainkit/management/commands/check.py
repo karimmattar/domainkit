@@ -5,6 +5,7 @@ from domainkit.architecture import check_domains
 from domainkit.conf import settings
 from domainkit.db import migrations
 from domainkit.http import get_asgi_application
+from domainkit.http.application import application_problems
 from domainkit.management.base import BaseCommand, CommandError
 
 
@@ -12,17 +13,19 @@ class Command(BaseCommand):
     """Load settings, domains, routes, and middleware; enforce layer rules."""
 
     help = (
-        "Validate settings, installed domains, routes, middleware, the "
-        "dependency rules between domain layers, and the migration history."
+        "Validate settings, installed domains, routes and their access rules, "
+        "middleware, the dependency rules between domain layers, and the "
+        "migration history."
     )
 
     def handle(self, **options: object) -> None:
         """Fail with every problem found, or report success."""
-        get_asgi_application()
-        problems = [
+        app = get_asgi_application()
+        problems = [f"Application: {problem}" for problem in application_problems(app)]
+        problems.extend(
             f"Architecture: {violation}"
             for violation in check_domains(settings.INSTALLED_DOMAINS)
-        ]
+        )
         problems.extend(
             f"Migrations of {target!r} have {len(heads)} heads "
             f"({', '.join(sorted(heads))}); run 'manage.py makemigrations --merge'."

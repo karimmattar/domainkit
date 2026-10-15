@@ -104,6 +104,8 @@ class AuthSettings(BaseModel):
     """How requests prove who sent them, tried in order; the first logs in."""
     AUTHENTICATION_EXEMPT_PATHS: tuple[str, ...] = ("/health", "/ready", "/metrics")
     """Paths served without looking at credentials (probes, ``METRICS_TOKEN``)."""
+    REQUIRE_ROUTE_RULES: bool = True
+    """Every route must say who may call it (``Require``, or ``Public``)."""
     TOKEN_TTL: timedelta | None = Field(default=timedelta(days=14), gt=timedelta(0))
     """How long a token from logging in works (``TokenAuthentication``)."""
     TOKEN_PREFIX: str = Field(default="dkt_", pattern=r"^[A-Za-z][A-Za-z0-9]{1,15}_$")

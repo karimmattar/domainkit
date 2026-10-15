@@ -290,13 +290,33 @@ def test_api_docs_can_be_disabled(make_client: MakeClient) -> None:
     assert make_client(API_DOCS=False).get("/openapi.json").status_code == 404
 
 
+def test_the_application_describes_the_project() -> None:
+    """Title, version, and debug come from settings; so do the docs routes."""
+    with override_settings(PROJECT_NAME="billing", VERSION="1.2.3", DEBUG=True):
+        app = get_asgi_application()
+    with override_settings(API_DOCS=False):
+        hidden = get_asgi_application()
+
+    assert (app.title, app.version, app.debug) == ("billing", "1.2.3", True)
+    assert (app.docs_url, app.redoc_url) == ("/docs", "/redoc")
+    assert (hidden.docs_url, hidden.redoc_url, hidden.openapi_url) == (None,) * 3
+    responses = app.openapi()["paths"]["/ok"]["get"]["responses"]
+    assert responses["413"]["description"] == "Request body too large"
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
-        ({"ROOT_ROUTER": "domainkit_tests.sample_routes.missing"}, "ROOT_ROUTER"),
-        ({"ROOT_ROUTER": "domainkit_tests.sample_routes.NOT_A_ROUTER"}, "APIRouter"),
-        ({"MIDDLEWARE": ["domainkit.http.middleware.Nope"]}, "MIDDLEWARE"),
-        ({"MIDDLEWARE": ["domainkit.http.middleware.REQUEST_ID_HEADER"]}, "type"),
+        ({"ROOT_ROUTER": "domainkit_tests.sample_routes.missing"}, "^ROOT_ROUTER: "),
+        (
+            {"ROOT_ROUTER": "domainkit_tests.sample_routes.NOT_A_ROUTER"},
+            r"^ROOT_ROUTER: .* is not a APIRouter\.$",
+        ),
+        ({"MIDDLEWARE": ["domainkit.http.middleware.Nope"]}, "^MIDDLEWARE: "),
+        (
+            {"MIDDLEWARE": ["domainkit.http.middleware.REQUEST_ID_HEADER"]},
+            r"^MIDDLEWARE: .* is not a type\.$",
+        ),
     ],
 )
 def test_invalid_application_settings(

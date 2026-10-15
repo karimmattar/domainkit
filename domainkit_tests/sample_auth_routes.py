@@ -17,16 +17,19 @@ from domainkit.contrib.auth import (
     IsAuthenticatedOrReadOnly,
     IsSuperuser,
     ModelPermissions,
+    Public,
     Require,
     check_object_permissions,
     current_user,
 )
+from domainkit.contrib.auth.admin import router as admin_router
 from domainkit.contrib.auth.api import router as auth_router
 from domainkit.http.health import router as health_router
 from domainkit_tests.sample_domains.shop.models import Product
 
 router = APIRouter()
 router.include_router(auth_router, prefix="/auth")
+router.include_router(admin_router, prefix="/admin/auth")
 router.include_router(health_router)
 counted: list[str] = []
 
@@ -134,14 +137,14 @@ async def product(owner: str, request: Request, user: CurrentUser) -> dict[str, 
     return {"owner": owner}
 
 
-@router.post("/count")
+@router.post("/count", dependencies=[Public])
 async def count(request: Request) -> dict[str, int]:
     """Count calls, for idempotency keys."""
     counted.append(current_user(request).get_username())
     return {"count": len(counted)}
 
 
-@router.websocket("/socket")
+@router.websocket("/socket", dependencies=[Public])
 async def socket(websocket: WebSocket) -> None:
     """Greet the user over a WebSocket."""
     await websocket.accept()

@@ -33,7 +33,7 @@ from domainkit.http.ratelimit import Backend
 from domainkit.utils.module_loading import import_string
 from domainkit.utils.rates import parse_rate
 
-from .access import AuthenticatedUser
+from .access import AuthenticatedUser, Public
 from .authentication import Credentials, IssuedTokens, get_authenticators
 from .backends import authenticate, get_all_permissions
 from .events import UserLoggedOut
@@ -115,6 +115,7 @@ def _errors(*codes: int) -> dict[int | str, dict[str, object]]:
 
 @router.post(
     "/login",
+    dependencies=[Public],
     response_model_exclude_none=True,
     responses=_errors(status.HTTP_401_UNAUTHORIZED, status.HTTP_429_TOO_MANY_REQUESTS),
 )
@@ -140,6 +141,7 @@ async def login(body: LoginIn, request: Request) -> TokenOut:
 
 @router.post(
     "/refresh",
+    dependencies=[Public],
     response_model_exclude_none=True,
     responses=_errors(status.HTTP_400_BAD_REQUEST, status.HTTP_401_UNAUTHORIZED),
 )

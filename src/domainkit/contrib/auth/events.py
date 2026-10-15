@@ -41,6 +41,20 @@ class TokenCreated(DomainEvent):
     name: str
 
 
+class UserUpdated(DomainEvent):
+    """Fields of a user changed (names only: values may be personal data)."""
+
+    user_id: UUID
+    fields: tuple[str, ...]
+
+
+class UserDeleted(DomainEvent):
+    """A user was deleted."""
+
+    user_id: UUID
+    username: str
+
+
 class UserStatusChanged(DomainEvent):
     """``is_active``, ``is_staff``, or ``is_superuser`` changed."""
 
@@ -81,6 +95,13 @@ class UserPermissionRevoked(DomainEvent):
 
 class GroupCreated(DomainEvent):
     """A group was created."""
+
+    group_id: UUID
+    name: str
+
+
+class GroupDeleted(DomainEvent):
+    """A group was deleted; its members lost its permissions."""
 
     group_id: UUID
     name: str

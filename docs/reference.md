@@ -262,12 +262,14 @@ addopts = "-p domainkit.testing"
 domainkit_settings = "config.settings.test"
 ```
 
-It selects the test settings, never reads `.env`, and provides two fixtures:
+It selects the test settings, never reads `.env`, and provides these fixtures:
 
 | Fixture | Scope | Gives |
 | --- | --- | --- |
 | `database` | session | The test database's URL, after migrating it up, down to base, and up again. That proves every revision is reversible and empties a reused database. In-memory SQLite becomes a temporary file. |
-| `client` | test | A `TestClient` for the project's application, with its lifespan, on that database. The tests `startdomain` generates use it. |
+| `client` | test | A `TestClient` for the project's application, with its lifespan, on that database. It sends no credentials. |
+| `client_for` | test | `client_for("billing.view_invoice", ...)`: a client of the same application that authenticates as a new user granted those permissions. Keyword arguments set the user's fields (`is_staff=True`, `username="carol"`); the username is unique otherwise. Needs `domainkit.contrib.auth`. |
+| `admin_client` | test | A client that authenticates as a new superuser. The tests `startdomain` generates use it. |
 
 Memory caches are emptied before every test, so no test sees what another
 cached. Redis caches are left alone: give the test settings their own
@@ -286,7 +288,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | Command | Options | Purpose |
 | --- | --- | --- |
 | `init` | `name`, `[directory]` | Create a project: base, local, test, and production settings, routes, `manage.py`, `.env`, and a first test. The name sets the environment prefix; the directory (default `./<name>`) must be empty or missing. |
-| `check` | | Settings, domains, routes, middleware, layer rules, and a single migration head. |
+| `check` | | Settings, domains, routes and their access rules, middleware, layer rules, and a single migration head. |
 | `broker` | `check\|declare`, `[ALIAS ...]` | Connect to brokers (all by default), or declare the exchange and every queue the worker's tasks use on `MESSAGING.BROKER`. |
 | `cache` | `check\|clear`, `[ALIAS ...]`, `--all` | Ping caches (all by default), or delete every key of the named caches, all versions, in their namespace only. Clearing needs aliases or `--all`. |
 | `startdomain` | `name`, `--aggregate`, `--plural`, `--parent`, `--tests-dir` | Generate a bounded context and its tests. |
@@ -314,6 +316,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | Startup wiring | `DomainConfig.ready()` | (called by `setup()`) |
 | Process resources (clients, pools) | `async DomainConfig.startup()` / `shutdown()` | (called by the app lifespan) |
 | A readiness check | `async DomainConfig.check()` | (called by `/ready`) |
+| A check of the built application (routes, middleware) | `DomainConfig.check_application(app)`, returning problems | (called when the app is built and by `check`; staging and production refuse to start with any) |
 | Work staged with each commit | `async DomainConfig.stage(uow, events, tasks)` | (called by the unit of work) |
 | Work after each commit | `async DomainConfig.committed(uow)` | (called by the unit of work; failures are reported, never raised) |
 | Rows after each `migrate` (`post_migrate`) | `async DomainConfig.migrated(connection, database)` | (called by `migrate` for each database it upgraded, in one transaction as the schema owner) |
@@ -321,7 +324,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | A user model | a subclass of `AbstractUser` or `AbstractBaseUser`, and its table | `AUTH.USER_MODEL`, `AUTH.USER_TABLE` |
 | An authentication or permission backend | `auth.backends.BaseBackend` | `AUTH.BACKENDS` |
 | A way requests prove who sent them | `auth.authentication.BaseAuthentication` | `AUTH.AUTHENTICATION_CLASSES` |
-| A rule for who may call a route | `auth.access.BasePermission` | `Depends(Require(rule))` on the route |
+| A rule for who may call a route | `auth.access.BasePermission` | `Depends(Require(rule))` on the route, or `Public` for anyone |
 | A password hasher | `auth.hashers.PasswordHasher` | `AUTH.PASSWORD_HASHERS` |
 | A password rule | a class with `validate(password, user)` and `help_text()` | `AUTH.PASSWORD_VALIDATORS` |
 | Middleware | an ASGI class taking `app` | `MIDDLEWARE` |

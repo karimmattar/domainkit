@@ -1,17 +1,22 @@
 """The auth domain model: users, groups, permissions, and password hashes."""
 
 from dataclasses import fields
+from typing import ClassVar
+from uuid import uuid4
 
 import pytest
 
 from domainkit.contrib.auth import (
+    AbstractBaseUser,
     AnonymousUser,
     Group,
     InvalidGroupName,
     InvalidUsername,
     PasswordHash,
     Permission,
+    UnknownUserField,
     User,
+    UserId,
 )
 from domainkit.contrib.auth.events import (
     UserJoinedGroup,
@@ -256,3 +261,56 @@ def test_anonymous_users_have_nothing() -> None:
     assert anonymous.get_all_permissions() == frozenset()
     assert anonymous.get_user_permissions() == frozenset()
     assert anonymous.get_group_permissions() == frozenset()
+
+
+class Badge(AbstractBaseUser):
+    """A user named by a badge code, with a nickname of their own."""
+
+    USERNAME_FIELD: ClassVar[str] = "code"
+
+    code: str
+    nickname: str = ""
+
+
+def test_users_update_their_editable_fields() -> None:
+    """Only fields outside ``PROTECTED_FIELDS`` and the username change."""
+    user = new_user(email="a@example.com")
+
+    assert User.editable_fields() == {"email", "first_name", "last_name"}
+    user.update(email="Alice@EXAMPLE.com", first_name="Al@EXAMPLE", last_name="")
+    assert (user.email, user.first_name) == ("Alice@example.com", "Al@EXAMPLE")
+    user.update(email="Alice@example.com")
+    with pytest.raises(UnknownUserField) as refused:
+        user.update(username="bob", is_staff=True, last_name="B")
+    assert str(refused.value) == (
+        "These user fields cannot be changed here: is_staff, username."
+    )
+    assert user.last_name == ""
+    assert facts(user.pull_events()) == [
+        ("UserUpdated", {"user_id": user.id, "fields": ("email", "first_name")})
+    ]
+
+    badge = Badge(id=UserId(uuid4()), password=HASH, code="B-7")
+    assert Badge.editable_fields() == {"nickname"}
+    badge.update(nickname=" Seven ")
+    assert badge.nickname == " Seven "
+    assert facts(badge.pull_events()) == [
+        ("UserUpdated", {"user_id": badge.id, "fields": ("nickname",)})
+    ]
+
+
+def test_deleting_records_who_went() -> None:
+    """Users and groups record their deletion; repositories remove them."""
+    user = new_user()
+    group = Group.create("crew")
+    group.pull_events()
+
+    user.delete()
+    group.delete()
+
+    assert facts(user.pull_events()) == [
+        ("UserDeleted", {"user_id": user.id, "username": "alice"})
+    ]
+    assert facts(group.pull_events()) == [
+        ("GroupDeleted", {"group_id": group.id, "name": "crew"})
+    ]

@@ -33,9 +33,11 @@ credentials for network Redis, and message brokers that require TLS and a
 user of their own. `domainkit.contrib.auth` ([docs/auth.md](docs/auth.md))
 adds users, groups, permissions, password hashing, and token
 authentication that makes rate limits, idempotency keys, and the audit
-trail per user. Routes are open unless they declare rules (`Require`):
-projects must check that every route that should need a login has one
-before exposing an API. The settings reference
+trail per user. With auth installed, which new projects have, every route
+must say who may call it (`Require`, or `Public` for anyone): `check` lists
+routes that do not, and staging and production refuse to start with any.
+Staff using the admin API can grant only the permissions they hold. The
+settings reference
 ([docs/reference.md](docs/reference.md)) lists every control.
 
 ## Known exceptions
