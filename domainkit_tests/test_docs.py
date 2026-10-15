@@ -16,6 +16,7 @@ from domainkit.conf.global_settings import (
     ShardConfig,
 )
 from domainkit.contrib.audit.settings import AuditSettings
+from domainkit.contrib.auth.settings import AuthSettings
 from domainkit.contrib.evidence.settings import EvidenceSettings
 from domainkit.contrib.idempotency.settings import IdempotencySettings
 from domainkit.contrib.messaging.settings import MessagingSettings
@@ -26,6 +27,7 @@ CONTRIB_COMMANDS = (
     "domainkit.contrib.messaging.management.commands",
     "domainkit.contrib.audit.management.commands",
     "domainkit.contrib.evidence.management.commands",
+    "domainkit.contrib.auth.management.commands",
 )
 
 
@@ -48,6 +50,7 @@ def documented(page: str) -> set[str]:
         (AuditSettings, "contrib.md"),
         (IdempotencySettings, "contrib.md"),
         (EvidenceSettings, "contrib.md"),
+        (AuthSettings, "auth.md"),
     ],
 )
 def test_every_setting_is_documented(model: type[BaseModel], page: str) -> None:

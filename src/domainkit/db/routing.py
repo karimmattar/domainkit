@@ -23,6 +23,8 @@ from domainkit.conf import DEFAULT_DB_ALIAS, ShardConfig, settings
 from domainkit.exceptions import ImproperlyConfigured
 
 if TYPE_CHECKING:
+    from sqlalchemy import Table
+
     from domainkit.apps import DomainConfig
 
 type ShardKey = str | int | uuid.UUID
@@ -192,6 +194,13 @@ class DatabaseRouter:
         except LookupError:
             return False
         return target in config.databases(self)
+
+    def holds_table(self, table: "Table", target: str) -> bool:
+        """Whether ``table`` belongs in ``target`` and its domain uses it now."""
+        label = table.info.get("domain")
+        if not self.holds_tables(label, target):
+            return False
+        return label is None or registry.get_domain_config(label).holds_table(table)
 
 
 def _unique(items: Iterable[str]) -> tuple[str, ...]:

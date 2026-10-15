@@ -299,6 +299,8 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `messages` | `--dead`, `--limit`, `--retry ID\|all`, `--database` | Inspect an outbox, and requeue dead letters (messaging). |
 | `auditlog` | `--actor`, `--action`, `--limit`, `--database` | Read the audit trail (audit). |
 | `evidence` | `--subject`, `--verify KEY`, `--limit` | List a subject's evidence, or verify one record (evidence). |
+| `createsuperuser` | `--<USERNAME_FIELD>`, `--<field>` per `REQUIRED_FIELDS`, `--noinput` | Create a superuser, asking for what the options leave out; `--noinput` reads `<PREFIX>SUPERUSER_<FIELD>` (auth; see [auth.md](auth.md)). |
+| `changepassword` | `[username]` | Set a user's password, asked twice and validated (auth). |
 
 ## Extension points
 
@@ -311,6 +313,12 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | A readiness check | `async DomainConfig.check()` | (called by `/ready`) |
 | Work staged with each commit | `async DomainConfig.stage(uow, events, tasks)` | (called by the unit of work) |
 | Work after each commit | `async DomainConfig.committed(uow)` | (called by the unit of work; failures are reported, never raised) |
+| Rows after each `migrate` (`post_migrate`) | `async DomainConfig.migrated(connection, database)` | (called by `migrate` for each database it upgraded, in one transaction as the schema owner) |
+| Tables a domain stops using | `DomainConfig.holds_table(table)` | (asked by migrations and content types; a swapped user table answers no) |
+| A user model | a subclass of `AbstractUser` or `AbstractBaseUser`, and its table | `AUTH.USER_MODEL`, `AUTH.USER_TABLE` |
+| An authentication or permission backend | `auth.backends.BaseBackend` | `AUTH.BACKENDS` |
+| A password hasher | `auth.hashers.PasswordHasher` | `AUTH.PASSWORD_HASHERS` |
+| A password rule | a class with `validate(password, user)` and `help_text()` | `AUTH.PASSWORD_VALIDATORS` |
 | Middleware | an ASGI class taking `app` | `MIDDLEWARE` |
 | An error tracker | `(exc, context) -> None` | `ERROR_REPORTERS` |
 | A rate-limit store other than memory or Redis | `ratelimit.Backend` | `RATE_LIMIT_BACKEND` |

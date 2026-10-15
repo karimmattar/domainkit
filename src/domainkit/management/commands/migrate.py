@@ -81,5 +81,8 @@ class Command(BaseCommand):
                 hint = " Run 'manage.py makemigrations --merge' first."
             raise CommandError(f"{exc}{hint}") from exc
         self.write(f"Database {alias!r} is at {target}.")
-        if not downgrade and (created := migrations.create_partitions(alias)):
+        if downgrade:
+            return
+        if created := migrations.create_partitions(alias):
             self.write(f"Created {len(created)} partition(s) in {alias!r}.")
+        migrations.run_migrated_hooks(alias)

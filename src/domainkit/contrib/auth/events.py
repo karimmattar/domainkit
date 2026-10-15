@@ -1,0 +1,87 @@
+"""What happens to users and groups; the audit trail records each one.
+
+Events carry ids, names, and permission keys, never passwords or hashes.
+"""
+
+from uuid import UUID
+
+from domainkit.ddd import DomainEvent
+
+
+class UserCreated(DomainEvent):
+    """A user was created."""
+
+    user_id: UUID
+    username: str
+
+
+class PasswordChanged(DomainEvent):
+    """A user's password was set, changed, or made unusable."""
+
+    user_id: UUID
+
+
+class UserStatusChanged(DomainEvent):
+    """``is_active``, ``is_staff``, or ``is_superuser`` changed."""
+
+    user_id: UUID
+    field: str
+    value: bool
+
+
+class UserJoinedGroup(DomainEvent):
+    """A user became a member of a group."""
+
+    user_id: UUID
+    group_id: UUID
+    group: str
+
+
+class UserLeftGroup(DomainEvent):
+    """A user stopped being a member of a group."""
+
+    user_id: UUID
+    group_id: UUID
+    group: str
+
+
+class UserPermissionGranted(DomainEvent):
+    """A permission was given to a user directly."""
+
+    user_id: UUID
+    permission: str
+
+
+class UserPermissionRevoked(DomainEvent):
+    """A permission given to a user directly was taken back."""
+
+    user_id: UUID
+    permission: str
+
+
+class GroupCreated(DomainEvent):
+    """A group was created."""
+
+    group_id: UUID
+    name: str
+
+
+class GroupRenamed(DomainEvent):
+    """A group got a new name."""
+
+    group_id: UUID
+    name: str
+
+
+class GroupPermissionGranted(DomainEvent):
+    """A permission was given to a group (and so to its members)."""
+
+    group_id: UUID
+    permission: str
+
+
+class GroupPermissionRevoked(DomainEvent):
+    """A permission was taken back from a group."""
+
+    group_id: UUID
+    permission: str

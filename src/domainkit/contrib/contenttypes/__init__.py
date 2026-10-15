@@ -1,0 +1,28 @@
+"""Content types: one row per kind of stored object (Django's ``contenttypes``).
+
+Every class mapped onto a table of an installed domain (an aggregate, or any
+other mapped entity) is a content type, named ``<domain label>.<model>``,
+where the model is the class name in lower case: ``billing.invoice``.
+``migrate`` creates the rows, and ``domainkit.contrib.auth`` attaches
+permissions to them. A class describes itself in a nested ``Meta``::
+
+    class Invoice(AggregateRoot[InvoiceId]):
+        class Meta:
+            verbose_name = "invoice"
+            permissions = (("approve_invoice", "Can approve invoice"),)
+"""
+
+from .models import DEFAULT_PERMISSIONS, ContentType, ModelOptions, model_options
+from .registry import InstalledModel, content_type_key, installed_models
+from .sync import sync_content_types
+
+__all__ = [
+    "DEFAULT_PERMISSIONS",
+    "ContentType",
+    "InstalledModel",
+    "ModelOptions",
+    "content_type_key",
+    "installed_models",
+    "model_options",
+    "sync_content_types",
+]

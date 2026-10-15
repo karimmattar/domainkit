@@ -1,0 +1,258 @@
+"""The auth domain model: users, groups, permissions, and password hashes."""
+
+from dataclasses import fields
+
+import pytest
+
+from domainkit.contrib.auth import (
+    AnonymousUser,
+    Group,
+    InvalidGroupName,
+    InvalidUsername,
+    PasswordHash,
+    Permission,
+    User,
+)
+from domainkit.contrib.auth.events import (
+    UserJoinedGroup,
+    UserLeftGroup,
+    UserPermissionGranted,
+    UserPermissionRevoked,
+    UserStatusChanged,
+)
+from domainkit.contrib.auth.models import normalize_email
+from domainkit.contrib.contenttypes import ContentType
+from domainkit.ddd import DomainEvent
+
+HASH = PasswordHash("pbkdf2_sha256$1$salt$aGFzaA==")
+
+
+def permission(key: str, number: int) -> Permission:
+    """A permission ``<domain>.<codename>`` with its content type."""
+    domain, codename = key.split(".")
+    content_type = ContentType(id=number, domain=domain, model=codename.split("_")[-1])
+    return Permission(id=number, codename=codename, name=key, content_type=content_type)
+
+
+def new_user(**fields: object) -> User:
+    """A user created as code does, with its creation event taken."""
+    user = User.create(password=HASH, **{"username": "alice", **fields})
+    user.pull_events()
+    return user
+
+
+def kinds(events: list[DomainEvent]) -> list[type[DomainEvent]]:
+    """The classes of ``events``."""
+    return [type(event) for event in events]
+
+
+def facts(events: list[DomainEvent]) -> list[tuple[str, dict[str, object]]]:
+    """Each event's class and own fields (not its id or time)."""
+    common = {"event_id", "occurred_at"}
+    return [
+        (
+            type(event).__name__,
+            {
+                each.name: getattr(event, each.name)
+                for each in fields(event)
+                if each.name not in common
+            },
+        )
+        for event in events
+    ]
+
+
+def test_password_hashes_refuse_raw_passwords() -> None:
+    """Only hasher output or unusable markers, and never shown in reprs."""
+    for raw in ("hunter2", "Pa$$word", ""):
+        with pytest.raises(ValueError, match="never a raw password") as refused:
+            PasswordHash(raw)
+        assert str(refused.value) == (
+            "A PasswordHash holds hashers.make_password output, never a raw password."
+        )
+    assert repr(HASH) == "PasswordHash(...)"
+    assert HASH.usable
+    unusable = PasswordHash.unusable()
+    assert unusable.value.startswith("!")
+    assert len(unusable.value) == 41  # As Django's: "!" and 40 random characters.
+    assert not unusable.usable
+    assert unusable != PasswordHash.unusable()
+
+
+def test_creating_users_checks_and_tidies_names() -> None:
+    """NFKC usernames (full-width letters too), lower-case email domains."""
+    user = User.create(
+        password=HASH,
+        username="\uff41\uff4c\uff49\uff43\uff45",
+        email=" Al@Example.COM ",
+    )
+
+    assert (user.username, user.email) == ("alice", "Al@example.com")
+    assert str(user) == user.get_username() == "alice"
+    assert facts(user.pull_events()) == [
+        ("UserCreated", {"user_id": user.id, "username": "alice"})
+    ]
+    for bad in ("", "has space", "x" * 151, "semi;colon"):
+        with pytest.raises(InvalidUsername) as refused:
+            User.create(password=HASH, username=bad)
+        assert refused.value.message == (
+            "A username has 1 to 150 letters, digits, and @ . + - _ characters."
+        )
+    with pytest.raises(InvalidUsername):
+        User.create(password=HASH)
+    assert User.create(password=HASH, username="x" * 150).email == ""
+    assert normalize_email("not-an-email ") == "not-an-email"
+    assert normalize_email("Q@Q@EXAMPLE.COM") == "Q@Q@example.com"
+
+
+def test_passwords_and_logins() -> None:
+    """Setting or disabling a password is recorded; re-hashing is not."""
+    user = new_user()
+    user.set_password(HASH)
+    user.set_unusable_password()
+    assert not user.has_usable_password()
+    user.rehash_password(HASH)
+    assert user.has_usable_password()
+    assert facts(user.pull_events()) == [("PasswordChanged", {"user_id": user.id})] * 2
+
+    user.record_login()
+    assert user.last_login is not None
+    earlier = user.last_login.replace(year=2020)
+    user.record_login(earlier)
+    assert user.last_login == earlier
+
+
+def test_status_changes_are_recorded_once() -> None:
+    """Activation, staff, and superuser flags each record a change."""
+    user = new_user()
+    user.set_active(False)
+    user.set_active(False)
+    user.set_staff(True)
+    user.set_superuser(True)
+
+    assert facts(user.pull_events()) == [
+        ("UserStatusChanged", {"user_id": user.id, "field": field, "value": value})
+        for field, value in (
+            ("is_active", False),
+            ("is_staff", True),
+            ("is_superuser", True),
+        )
+    ]
+
+
+def test_permissions_from_users_and_groups() -> None:
+    """Direct and group grants add up; inactive users have none."""
+    add, publish, view = (
+        permission("shop.add_product", 1),
+        permission("shop.publish_product", 2),
+        permission("billing.view_invoice", 3),
+    )
+    editors = Group.create("editors")
+    editors.grant(publish, publish)
+    user = new_user()
+    user.grant(add, add)
+    user.join(editors)
+    user.join(editors)
+
+    assert user.get_user_permissions() == {"shop.add_product"}
+    assert user.get_group_permissions() == {"shop.publish_product"}
+    assert user.has_perm("shop.publish_product")
+    assert not user.has_perm(view.key)
+    assert user.has_perms(["shop.add_product", "shop.publish_product"])
+    assert not user.has_perms(["shop.add_product", view.key])
+    assert user.has_domain_perms("shop")
+    assert not user.has_domain_perms("billing")
+
+    user.set_active(False)
+    assert user.get_all_permissions() == frozenset()
+    assert not user.has_perm("shop.add_product")
+    assert not user.has_domain_perms("shop")
+
+    user.set_active(True)
+    user.revoke(add, add)
+    user.leave(editors)
+    user.leave(editors)
+    assert user.get_all_permissions() == frozenset()
+    member = {"user_id": user.id, "group_id": editors.id, "group": "editors"}
+    assert kinds(user.pull_events()) == [
+        UserPermissionGranted,
+        UserJoinedGroup,
+        UserStatusChanged,
+        UserStatusChanged,
+        UserPermissionRevoked,
+        UserLeftGroup,
+    ]
+    user.grant(add)
+    user.join(editors)
+    user.revoke(add)
+    user.leave(editors)
+    assert facts(user.pull_events()) == [
+        ("UserPermissionGranted", {"user_id": user.id, "permission": add.key}),
+        ("UserJoinedGroup", member),
+        ("UserPermissionRevoked", {"user_id": user.id, "permission": add.key}),
+        ("UserLeftGroup", member),
+    ]
+
+
+def test_superusers_have_every_permission() -> None:
+    """Without a single grant, while active."""
+    user = new_user(is_superuser=True)
+
+    assert user.has_perm("anything.at_all")
+    assert user.has_domain_perms("anything")
+    assert user.get_all_permissions() == frozenset()
+
+
+def test_groups() -> None:
+    """Names are trimmed and checked; changes are recorded once."""
+    group = Group.create("  editors ")
+    assert str(group) == group.name == "editors"
+    group.rename("editors ")
+    group.rename(" writers")
+    assert group.name == "writers"
+    publish = permission("shop.publish_product", 1)
+    group.grant(publish)
+    group.revoke(publish, publish)
+    assert group.permission_keys() == frozenset()
+    granted = {"group_id": group.id, "permission": "shop.publish_product"}
+    assert facts(group.pull_events()) == [
+        ("GroupCreated", {"group_id": group.id, "name": "editors"}),
+        ("GroupRenamed", {"group_id": group.id, "name": "writers"}),
+        ("GroupPermissionGranted", granted),
+        ("GroupPermissionRevoked", granted),
+    ]
+    for bad in ("", "   ", "x" * 151):
+        with pytest.raises(InvalidGroupName) as refused:
+            Group.create(bad)
+        assert refused.value.message == "A group name has 1 to 150 characters."
+    with pytest.raises(InvalidGroupName):
+        group.rename(" ")
+    assert [Group.create(name).name for name in ("x", "y" * 150)] == ["x", "y" * 150]
+
+
+def test_users_have_names_and_permissions_keys() -> None:
+    """Full and short names; permissions and content types print as keys."""
+    user = new_user(first_name="Alice", last_name="Liddell")
+    publish = permission("shop.publish_product", 1)
+
+    assert (user.get_full_name(), user.get_short_name()) == ("Alice Liddell", "Alice")
+    assert str(publish) == publish.key == "shop.publish_product"
+    assert str(publish.content_type) == "shop.product"
+
+
+def test_anonymous_users_have_nothing() -> None:
+    """No name, no permissions, all alike."""
+    anonymous = AnonymousUser()
+
+    assert anonymous == AnonymousUser()
+    assert anonymous != new_user()
+    assert hash(anonymous) == hash(AnonymousUser())
+    assert str(anonymous) == "AnonymousUser"
+    assert anonymous.get_username() == ""
+    assert (anonymous.is_authenticated, anonymous.is_anonymous) == (False, True)
+    assert not anonymous.has_perm("x.y")
+    assert not anonymous.has_perms(["x.y"])
+    assert not anonymous.has_domain_perms("x")
+    assert anonymous.get_all_permissions() == frozenset()
+    assert anonymous.get_user_permissions() == frozenset()
+    assert anonymous.get_group_permissions() == frozenset()
