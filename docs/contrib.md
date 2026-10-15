@@ -256,8 +256,10 @@ the same request gets the stored response, with `Idempotent-Replayed: true`.
 | Key not 1 to 255 printable ASCII characters | 400 `invalid_idempotency_key` |
 | First response was a 5xx, or larger than `MAX_RESPONSE_BYTES` | Not stored: the retry runs again |
 
-Keys are scoped to the actor, or to the client address for anonymous
-callers, so one caller cannot replay another's response. Add
+Keys are scoped to the actor, which `AuthenticationMiddleware` sets (list
+it first), so one user cannot replay another's response. Without an
+actor, keys are scoped to the client address and a hash of the request's
+`Authorization` and `Cookie` headers. Add
 `IdempotencyMiddleware` last in `MIDDLEWARE`: it reads whole bodies, which
 `RequestBodyLimitMiddleware` has already bounded. With messaging installed,
 expired keys are purged hourly.

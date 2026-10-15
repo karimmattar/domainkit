@@ -6,8 +6,12 @@ same request gets the stored response with ``Idempotent-Replayed: true``. The
 same key with a different request is a 422, and a retry while the first is
 still running is a 409. Server errors are not stored, so they can be retried.
 
-Keys are scoped to the authenticated actor, or to the client address for
-anonymous callers. List the middleware after ``RequestContextMiddleware`` and
+Keys are scoped to the authenticated actor (set by
+``AuthenticationMiddleware``, which must come first). Without an actor,
+they are scoped to the client address and the request's credentials
+(``Authorization`` and ``Cookie``, hashed), so callers behind one address
+never share keys even where the project authenticates on its own. List the
+middleware after ``RequestContextMiddleware`` and
 ``RequestBodyLimitMiddleware`` (it reads the whole body).
 """
 
@@ -207,12 +211,14 @@ def _release(key_hash: str) -> Delete:
 
 
 def _caller(scope: Scope) -> str:
-    """Scope keys to the actor, or to the client address for anonymous callers."""
+    """Scope keys to the actor, or else to the address and the credentials."""
     request = current_request()
     if request is not None and request.actor:
         return f"actor:{request.actor}"
     client = scope.get("client")
-    return f"anonymous:{client[0] if client else 'unknown'}"
+    headers = Headers(scope=scope)
+    credentials = _hash(headers.get("authorization", ""), headers.get("cookie", ""))
+    return f"anonymous:{client[0] if client else 'unknown'}:{credentials}"
 
 
 async def _read_body(receive: Receive) -> tuple[bytes, Receive]:

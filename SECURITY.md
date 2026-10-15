@@ -30,10 +30,12 @@ staging and production, hidden SQL parameters, an error format that never
 echoes input, trusted-proxy handling, rate limiting, an append-only audit
 trail, caches that store JSON only (never pickle) and require TLS and
 credentials for network Redis, and message brokers that require TLS and a
-user of their own. It has users, groups, permissions, and password hashing
-(`domainkit.contrib.auth`, see [docs/auth.md](docs/auth.md)), but does not
-authenticate requests yet: projects must not expose an API publicly until
-their routes check credentials and permissions. The settings reference
+user of their own. `domainkit.contrib.auth` ([docs/auth.md](docs/auth.md))
+adds users, groups, permissions, password hashing, and token
+authentication that makes rate limits, idempotency keys, and the audit
+trail per user. Routes are open unless they declare rules (`Require`):
+projects must check that every route that should need a login has one
+before exposing an API. The settings reference
 ([docs/reference.md](docs/reference.md)) lists every control.
 
 ## Known exceptions

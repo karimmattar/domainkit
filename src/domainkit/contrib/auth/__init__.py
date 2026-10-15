@@ -23,8 +23,37 @@ then ``makemigrations``, ``migrate`` (which creates the permissions), and
         await uow.commit()
 
 ``AUTH.USER_MODEL`` swaps the user for a project's own (see ``tables``).
+
+Requests: ``AuthenticationMiddleware`` finds the user from a token
+(``authentication``), ``access`` decides what routes allow, and ``api``
+has the endpoints to log in and out.
 """
 
+from .access import (
+    AllowAny,
+    AuthenticatedUser,
+    BasePermission,
+    CurrentUser,
+    HasObjectPermissions,
+    HasPermissions,
+    IsAdminUser,
+    IsAuthenticated,
+    IsAuthenticatedOrReadOnly,
+    IsSuperuser,
+    ModelPermissions,
+    NotAuthenticated,
+    Require,
+    check_object_permissions,
+    current_user,
+)
+from .authentication import (
+    AuthenticationFailed,
+    BaseAuthentication,
+    Credentials,
+    IssuedTokens,
+    JWTAuthentication,
+    TokenAuthentication,
+)
 from .backends import (
     BaseBackend,
     ModelBackend,
@@ -61,7 +90,8 @@ from .models import (
     User,
     UserId,
 )
-from .settings import AuthSettings
+from .settings import AuthSettings, JWTSettings
+from .tokens import AuthToken, TokenKind
 from .uow import AuthUnitOfWork
 from .users import get_user_model
 from .validators import password_help_texts, validate_password
@@ -69,20 +99,42 @@ from .validators import password_help_texts, validate_password
 __all__ = [
     "AbstractBaseUser",
     "AbstractUser",
+    "AllowAny",
     "AnonymousUser",
     "AnyUser",
     "AuthSettings",
+    "AuthToken",
     "AuthUnitOfWork",
+    "AuthenticatedUser",
+    "AuthenticationFailed",
+    "BaseAuthentication",
     "BaseBackend",
+    "BasePermission",
+    "Credentials",
+    "CurrentUser",
     "Group",
     "GroupId",
     "GroupNameTaken",
+    "HasObjectPermissions",
+    "HasPermissions",
     "InvalidGroupName",
     "InvalidPassword",
     "InvalidUsername",
+    "IsAdminUser",
+    "IsAuthenticated",
+    "IsAuthenticatedOrReadOnly",
+    "IsSuperuser",
+    "IssuedTokens",
+    "JWTAuthentication",
+    "JWTSettings",
     "ModelBackend",
+    "ModelPermissions",
+    "NotAuthenticated",
     "PasswordHash",
     "Permission",
+    "Require",
+    "TokenAuthentication",
+    "TokenKind",
     "UnknownPermission",
     "User",
     "UserId",
@@ -90,7 +142,9 @@ __all__ = [
     "acheck_password",
     "amake_password",
     "authenticate",
+    "check_object_permissions",
     "check_password",
+    "current_user",
     "get_all_permissions",
     "get_backends",
     "get_user",

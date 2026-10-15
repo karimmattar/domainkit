@@ -168,8 +168,15 @@ def test_callers_are_actors_or_addresses() -> None:
     with bind_request(RequestContext("r", None, "GET", "/", actor="alice")):
         assert _caller(scope) == "actor:alice"
         assert idempotency._caller(scope) == "actor:alice"
-    assert idempotency._caller(scope) == "anonymous:203.0.113.4"
-    assert idempotency._caller({}) == "anonymous:unknown"
+    anonymous = idempotency._caller({"type": "http", "headers": [], **scope})
+    assert anonymous.startswith("anonymous:203.0.113.4:")
+    assert idempotency._caller({"type": "http", "headers": []}).startswith(
+        "anonymous:unknown:"
+    )
+    # Without an actor, different credentials never share keys.
+    for name in (b"authorization", b"cookie"):
+        credentialed = {"type": "http", "headers": [(name, b"x")], **scope}
+        assert idempotency._caller(credentialed) != anonymous
 
 
 @pytest.fixture
@@ -265,7 +272,9 @@ def test_key_misuse_is_refused(idempotent: TestClient) -> None:
         async with connections.engine().begin() as connection:
             await connection.execute(
                 insert(idempotency_keys).values(
-                    key_hash=idempotency._hash("anonymous:testclient", "busy"),
+                    key_hash=idempotency._hash(
+                        f"anonymous:testclient:{idempotency._hash('', '')}", "busy"
+                    ),
                     fingerprint=idempotency._hash("POST", "/counter", b"", b'{"a":1}'),
                     created_at=now,
                     expires_at=now + timedelta(hours=1),

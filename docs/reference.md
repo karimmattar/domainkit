@@ -192,6 +192,7 @@ first:
 | `domainkit.http.middleware.CORSMiddleware` | Answers preflights before any work. |
 | `domainkit.http.middleware.RequestContextMiddleware` | Request id (`X-Request-ID`), access log, the context that logs and audit rows read. |
 | `domainkit.http.middleware.AllowedHostsMiddleware` | Refuses unknown `Host` headers with 400. |
+| `domainkit.contrib.auth.middleware.AuthenticationMiddleware` | Finds the user from the request's token and makes it the actor, so what follows counts users (auth; see [auth.md](auth.md)). |
 | `domainkit.http.ratelimit.RateLimitMiddleware` | Counts per actor, or per client address. |
 | `domainkit.http.middleware.RequestBodyLimitMiddleware` | Refuses bodies over `MAX_REQUEST_BODY_SIZE` with 413. |
 | `domainkit.contrib.idempotency.middleware.IdempotencyMiddleware` | Last: reads whole bodies, which the limit above has already bounded. |
@@ -300,7 +301,9 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `auditlog` | `--actor`, `--action`, `--limit`, `--database` | Read the audit trail (audit). |
 | `evidence` | `--subject`, `--verify KEY`, `--limit` | List a subject's evidence, or verify one record (evidence). |
 | `createsuperuser` | `--<USERNAME_FIELD>`, `--<field>` per `REQUIRED_FIELDS`, `--noinput` | Create a superuser, asking for what the options leave out; `--noinput` reads `<PREFIX>SUPERUSER_<FIELD>` (auth; see [auth.md](auth.md)). |
-| `changepassword` | `[username]` | Set a user's password, asked twice and validated (auth). |
+| `changepassword` | `[username]` | Set a user's password, asked twice and validated; the user's tokens end (auth). |
+| `createtoken` | `username`, `--name`, `--days`, `--no-expiry` | Print a new token for a user's scripts, shown once (auth). |
+| `cleartokens` | `--user` | Delete expired tokens, or every token of one user (auth). |
 
 ## Extension points
 
@@ -317,6 +320,8 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | Tables a domain stops using | `DomainConfig.holds_table(table)` | (asked by migrations and content types; a swapped user table answers no) |
 | A user model | a subclass of `AbstractUser` or `AbstractBaseUser`, and its table | `AUTH.USER_MODEL`, `AUTH.USER_TABLE` |
 | An authentication or permission backend | `auth.backends.BaseBackend` | `AUTH.BACKENDS` |
+| A way requests prove who sent them | `auth.authentication.BaseAuthentication` | `AUTH.AUTHENTICATION_CLASSES` |
+| A rule for who may call a route | `auth.access.BasePermission` | `Depends(Require(rule))` on the route |
 | A password hasher | `auth.hashers.PasswordHasher` | `AUTH.PASSWORD_HASHERS` |
 | A password rule | a class with `validate(password, user)` and `help_text()` | `AUTH.PASSWORD_VALIDATORS` |
 | Middleware | an ASGI class taking `app` | `MIDDLEWARE` |

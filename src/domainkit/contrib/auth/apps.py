@@ -1,6 +1,7 @@
 """Install ``domainkit.contrib.auth`` (after ``domainkit.contrib.contenttypes``)."""
 
 import dataclasses
+from importlib import import_module
 
 from sqlalchemy import Table
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -14,6 +15,7 @@ from domainkit.db.routing import router
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.utils.module_loading import import_string
 
+from .authentication import get_authenticators
 from .backends import get_backends
 from .hashers import insecure_hashers
 from .models import AbstractBaseUser, AbstractUser, User
@@ -23,6 +25,15 @@ from .tables import DEFAULT_USER_TABLES, permissions, start_mappers, users
 from .validators import get_password_validators
 
 CONTENTTYPES = "domainkit.contrib.contenttypes"
+MESSAGING = "domainkit.contrib.messaging"
+AUTHENTICATION_MIDDLEWARE = "domainkit.contrib.auth.middleware.AuthenticationMiddleware"
+OUTSIDE_AUTHENTICATION = ("domainkit.http.middleware.RequestContextMiddleware",)
+"""Middleware that must run before ``AuthenticationMiddleware``."""
+INSIDE_AUTHENTICATION = (
+    "domainkit.http.ratelimit.RateLimitMiddleware",
+    "domainkit.contrib.idempotency.middleware.IdempotencyMiddleware",
+)
+"""Middleware that must run after it, to count users rather than addresses."""
 RELATIONSHIPS = frozenset({"groups", "user_permissions"})
 """User fields stored in link tables, not in the user's own table."""
 
@@ -62,10 +73,14 @@ class AuthConfig(DomainConfig):
         self.user_table = _user_table(config, self.user_model)
         self._check_routing()
         self._check_hashers(config)
+        _check_middleware()
         get_backends()
+        get_authenticators()
         get_password_validators()
         start_mappers(self.user_model, self.user_table)
         declared_permissions()
+        if registry.is_installed(MESSAGING):
+            import_module(f"{self.name}.tasks")
 
     def holds_table(self, table: Table) -> bool:
         """The default user's tables, unless a custom user replaces them."""
@@ -103,6 +118,25 @@ class AuthConfig(DomainConfig):
             raise ImproperlyConfigured(
                 f"AUTH.PASSWORD_HASHERS {insecure} are for tests; remove them in "
                 f"{settings.ENVIRONMENT}."
+            )
+
+
+def _check_middleware() -> None:
+    """``AuthenticationMiddleware`` sets the actor others read: order matters."""
+    order = list(settings.MIDDLEWARE)
+    if AUTHENTICATION_MIDDLEWARE not in order:
+        return
+    position = order.index(AUTHENTICATION_MIDDLEWARE)
+    for path in OUTSIDE_AUTHENTICATION:
+        if path in order and order.index(path) > position:
+            raise ImproperlyConfigured(
+                f"MIDDLEWARE: list {path} before {AUTHENTICATION_MIDDLEWARE}."
+            )
+    for path in INSIDE_AUTHENTICATION:
+        if path in order and order.index(path) < position:
+            raise ImproperlyConfigured(
+                f"MIDDLEWARE: list {AUTHENTICATION_MIDDLEWARE} before {path}, so it "
+                "counts users rather than client addresses."
             )
 
 

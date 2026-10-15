@@ -22,3 +22,4 @@ accepted record: supersede it with a new one and link both ways.
 | [0013](0013-shared-rate-limits-in-redis.md) | Share rate limits through Redis, with GCRA on the server's clock | Accepted |
 | [0014](0014-outbox-as-record-broker-for-dispatch.md) | Keep the outbox as the record; use the broker to dispatch | Accepted |
 | [0015](0015-auth-and-content-types.md) | Users, groups, and permissions modelled on Django's | Accepted |
+| [0016](0016-authenticating-requests.md) | Authenticate requests with tokens; rules decide who may call routes | Accepted |

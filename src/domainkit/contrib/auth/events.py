@@ -21,6 +21,26 @@ class PasswordChanged(DomainEvent):
     user_id: UUID
 
 
+class UserLoggedIn(DomainEvent):
+    """A user logged in and got tokens."""
+
+    user_id: UUID
+
+
+class UserLoggedOut(DomainEvent):
+    """A user logged out: of this session, or ``everywhere``."""
+
+    user_id: UUID
+    everywhere: bool
+
+
+class TokenCreated(DomainEvent):
+    """A long-lived token was made for a user (``createtoken``)."""
+
+    user_id: UUID
+    name: str
+
+
 class UserStatusChanged(DomainEvent):
     """``is_active``, ``is_staff``, or ``is_superuser`` changed."""
 

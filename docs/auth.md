@@ -3,14 +3,12 @@
 `domainkit.contrib.auth` and `domainkit.contrib.contenttypes` are Django's
 `contrib.auth` and `contrib.contenttypes`, for REST APIs: users, groups,
 permissions per content type, password hashing and validation, pluggable
-backends, object permissions, a swappable user model, and the
-`createsuperuser` and `changepassword` commands. The design is in
-[ADR 0015](adr/0015-auth-and-content-types.md).
-
-Authenticating requests (tokens, the middleware that sets the request's
-actor, FastAPI dependencies such as `RequirePermissions`) and the admin API
-come in the next releases; until then a project checks credentials with
-`authenticate` and permissions with `has_perm` in its own dependencies.
+backends, object permissions, and a swappable user model. Requests prove
+who sent them with tokens, opaque by default or JSON Web Tokens, and
+routes say who may call them with rules modelled on Django REST
+framework's permission classes. The design is in
+[ADR 0015](adr/0015-auth-and-content-types.md) and
+[ADR 0016](adr/0016-authenticating-requests.md).
 
 ## Install
 
@@ -22,6 +20,30 @@ INSTALLED_DOMAINS = [
 ]
 ```
 
+To authenticate requests, add the middleware after
+`RequestContextMiddleware` and before `RateLimitMiddleware` and
+`IdempotencyMiddleware` (startup refuses another order), and mount the
+endpoints that log in and out:
+
+```python
+MIDDLEWARE = [
+    "domainkit.http.middleware.ProxyHeadersMiddleware",
+    "domainkit.http.middleware.SecurityHeadersMiddleware",
+    "domainkit.http.middleware.RequestContextMiddleware",
+    "domainkit.http.middleware.AllowedHostsMiddleware",
+    "domainkit.contrib.auth.middleware.AuthenticationMiddleware",
+    "domainkit.http.ratelimit.RateLimitMiddleware",
+    "domainkit.http.middleware.RequestBodyLimitMiddleware",
+]
+```
+
+```python
+# config/urls.py
+from domainkit.contrib.auth.api import router as auth_router
+
+router.include_router(auth_router, prefix="/auth")
+```
+
 ```bash
 python manage.py makemigrations -m "auth"
 python manage.py migrate            # also creates content types and permissions
@@ -31,7 +53,7 @@ python manage.py createsuperuser
 | App | Tables |
 | --- | --- |
 | `domainkit.contrib.contenttypes` | `domainkit_content_types` |
-| `domainkit.contrib.auth` | `domainkit_users`, `domainkit_groups`, `domainkit_permissions`, `domainkit_group_permissions`, `domainkit_users_groups`, `domainkit_users_permissions` |
+| `domainkit.contrib.auth` | `domainkit_users`, `domainkit_groups`, `domainkit_permissions`, `domainkit_group_permissions`, `domainkit_users_groups`, `domainkit_users_permissions`, `domainkit_tokens` |
 
 Users, groups, permissions, and content types are joined by foreign keys,
 so they must live in one database: route `auth`, `contenttypes`, and a
@@ -263,6 +285,177 @@ In tests, hash with `FastPBKDF2PasswordHasher`:
 AUTH = {"PASSWORD_HASHERS": ["domainkit.contrib.auth.hashers.FastPBKDF2PasswordHasher"]}
 ```
 
+## Authenticating requests
+
+`AuthenticationMiddleware` finds who sent each request, before anything
+counts or records it. It tries `AUTH.AUTHENTICATION_CLASSES` in order:
+
+- the user becomes `request.user` (`AnonymousUser` without credentials),
+  and the `Credentials` used become `request.auth`;
+- the user's id becomes the request's actor, so rate limits, idempotency
+  keys, logs, and the audit trail are per user, not per address;
+- credentials a class recognizes but that do not hold (an unknown,
+  expired, or revoked token; an inactive user) get a 401 with
+  `WWW-Authenticate: Bearer realm="api", error="invalid_token"`, even on
+  public routes, so a client never mistakes a bad token for anonymity.
+  Credentials no class recognizes are left to the route (`/metrics` has its
+  own token). `AUTHENTICATION_EXEMPT_PATHS` (the probes and `/metrics`) are
+  served without looking at credentials at all.
+
+Clients send `Authorization: Bearer <token>`. WebSocket handshakes are
+authenticated the same way, and refused with close code 1008.
+
+### Opaque tokens
+
+`TokenAuthentication`, the default, accepts tokens such as
+`dkt_6R2v...`: `AUTH.TOKEN_PREFIX` and 256 random bits. Only a token's
+SHA-256 is stored, so the table never holds a working token, and every
+request looks its token up: logging out, a password change, or
+`cleartokens --user` ends it at once. A login's token works for
+`AUTH.TOKEN_TTL` (14 days); `createtoken` makes longer-lived ones for
+scripts and other services. The prefix lets secret scanners and people
+recognize a leaked token.
+
+### JSON Web Tokens
+
+`JWTAuthentication` (the `jwt` extra: `pip install "domainkit[jwt]"`)
+issues short-lived signed access tokens and opaque refresh tokens:
+
+```python
+AUTH = {
+    "AUTHENTICATION_CLASSES": [
+        "domainkit.contrib.auth.authentication.JWTAuthentication",
+        "domainkit.contrib.auth.authentication.TokenAuthentication",  # createtoken
+    ],
+    "JWT": {"SIGNING_KEY": env.str("JWT_SIGNING_KEY")},
+}
+```
+
+- An access token carries `sub` (the user id), `sid` (the login), `iat`,
+  `exp`, `jti`, and `iss` and `aud` when set. It is checked with
+  `ALGORITHM` only, whatever its own header says, and works for
+  `ACCESS_TOKEN_TTL` (5 minutes), while its login lasts: logging out ends
+  it at once.
+- A refresh token works once, at `/auth/refresh`, for a new pair; the new
+  refresh token expires with the login (`REFRESH_TOKEN_TTL`, 14 days), so a
+  user logs in again at least that often. A used refresh token that comes
+  back means someone else may hold its family: the whole login ends.
+- HMAC keys (`HS256`, `HS384`, `HS512`) must be at least as long as the
+  hash (32, 48, 64 bytes). For `RS*`, `PS*`, `ES*`, and `EdDSA`, set
+  `SIGNING_KEY` to the private key and `VERIFYING_KEY` to the public key,
+  in PEM; other services can then check access tokens with the public key
+  alone. Startup signs and verifies a token, so wrong keys fail early.
+
+### Other credentials
+
+A class of your own subclasses `BaseAuthentication`, returns `Credentials`
+for its own credentials, None for others, and raises
+`AuthenticationFailed` when its own do not hold:
+
+```python
+from domainkit.contrib.auth import AuthUnitOfWork, BaseAuthentication, Credentials
+from domainkit.contrib.auth.authentication import active_user
+
+
+class GatewayAuthentication(BaseAuthentication):
+    """Users named by the gateway in front of the API (trust it alone)."""
+
+    async def authenticate(self, connection):
+        user_id = connection.headers.get("x-gateway-user")
+        if user_id is None:
+            return None
+        async with AuthUnitOfWork() as uow:
+            return Credentials(await active_user(uow, UUID(user_id)), scheme="gateway")
+```
+
+`active_user` raises `AuthenticationFailed` for unknown and inactive
+users. The first class in the list also issues the tokens logins return
+(`issue`) and refreshes them (`refresh`).
+
+## Logging in and out
+
+`domainkit.contrib.auth.api.router` has the endpoints; errors use the usual
+error body.
+
+| Endpoint | Body | Answer |
+| --- | --- | --- |
+| `POST /login` | `{"username", "password"}` | `200` with tokens; `401 invalid_credentials`; `429 login_throttled`. |
+| `POST /refresh` | `{"refresh_token"}` | `200` with new tokens; `401` for a used, expired, or unknown refresh token; `400 refresh_not_supported` with opaque tokens. |
+| `POST /logout` | optional `{"everywhere": true}` | `204`: this session's tokens end, or every token of the user. |
+| `GET /me` | | The user: `id`, `username`, `email`, `is_staff`, `is_superuser`, `last_login`, `groups`, and `permissions`. |
+| `POST /password` | `{"old_password", "new_password"}` | `204`: every other session of the user ends; `400 wrong_password`; `422` if a validator refuses the new password. |
+
+`username` is the user model's `USERNAME_FIELD` (the email, for `Member`).
+Tokens come as OAuth 2's token response:
+
+```json
+{"access_token": "dkt_6R2v...", "token_type": "Bearer", "expires_in": 1209600}
+{"access_token": "eyJhbGciOi...", "token_type": "Bearer", "expires_in": 300, "refresh_token": "dkt_q9Xc..."}
+```
+
+Logins are limited to `AUTH.LOGIN_RATE` (10 a minute) per client address
+and per username, with the `RATE_LIMIT_BACKEND` (use `RedisBackend` behind
+several replicas), and so are password changes. Unknown users, wrong
+passwords, and inactive users get the same answer in the same time. With
+`domainkit.contrib.audit` installed, refused and throttled logins are
+audited as `auth.login` (outcome `denied`, without the username, which may
+be a password typed in the wrong field), and logins and logouts as
+`auth.user_logged_in` and `auth.user_logged_out`, attributed to the user.
+
+## Protecting routes
+
+Rules decide who may call a route. `Require(*rules)` makes them a FastAPI
+dependency that returns the user, and documents the bearer token in
+OpenAPI; without rules it requires a user. A refused anonymous caller gets
+`401 not_authenticated`, so it knows to log in; a refused user gets `403`.
+
+```python
+from domainkit.contrib.auth import (
+    AuthenticatedUser, CurrentUser, HasPermissions, ModelPermissions, Require,
+)
+
+@router.post("/invoices", dependencies=[Depends(Require(HasPermissions("billing.add_invoice")))])
+async def create_invoice(...): ...
+
+@router.api_route("/products", methods=["GET", "POST"])
+async def products(user: Annotated[AnyUser, Depends(Require(ModelPermissions(Product)))]): ...
+
+@router.get("/me/invoices")
+async def my_invoices(user: AuthenticatedUser): ...      # 401 for anonymous callers
+
+@router.get("/greeting")
+async def greeting(user: CurrentUser): ...               # anyone; AnonymousUser if so
+```
+
+| Rule | Allows |
+| --- | --- |
+| `AllowAny` | Anyone. |
+| `IsAuthenticated` | Users who logged in. |
+| `IsAuthenticatedOrReadOnly` | Anyone for `GET`, `HEAD`, `OPTIONS`; users otherwise. |
+| `IsAdminUser` | Staff users (`is_staff`). |
+| `IsSuperuser` | Active superusers. |
+| `HasPermissions(*keys)` | Users granted every permission (by any backend). |
+| `ModelPermissions(model)` | Django's model permissions by method: `GET`/`HEAD` need `view`, `POST` `add`, `PUT`/`PATCH` `change`, `DELETE` `delete`; `OPTIONS` needs a user. `model` is a mapped class or `"<domain>.<model>"`. |
+| `HasObjectPermissions(*keys)` | Users granted every permission on the object, by a backend with object permissions. |
+
+Combine rule instances with `&`, `|`, and `~`:
+`Require(IsAdminUser() | HasPermissions("billing.view_invoice"))`. A rule of
+your own subclasses `BasePermission`, overrides `has_permission(request,
+user)` or `has_object_permission(request, user, obj)` (both async), and may
+set `message`. Where a route loads one object, check it:
+
+```python
+class IsOwner(BasePermission):
+    message = "Only the owner may change an invoice."
+
+    async def has_object_permission(self, request, user, obj):
+        return obj.owner_id == user.id
+
+
+invoice = await uow.invoices.get(invoice_id)
+await check_object_permissions(request, invoice, IsOwner())
+```
+
 ## Settings
 
 | `AUTH` key | Default | Meaning |
@@ -272,10 +465,41 @@ AUTH = {"PASSWORD_HASHERS": ["domainkit.contrib.auth.hashers.FastPBKDF2PasswordH
 | `PASSWORD_HASHERS` | PBKDF2, PBKDF2-SHA1, Argon2, scrypt | Hasher classes; the first hashes new passwords. |
 | `PASSWORD_VALIDATORS` | the four above | Rules for new passwords; `[]` checks nothing. |
 | `BACKENDS` | `["domainkit.contrib.auth.backends.ModelBackend"]` | Authentication and permission backends, in order. |
+| `AUTHENTICATION_CLASSES` | `["domainkit.contrib.auth.authentication.TokenAuthentication"]` | How requests prove who sent them, in order; the first issues login tokens. |
+| `AUTHENTICATION_EXEMPT_PATHS` | `["/health", "/ready", "/metrics"]` | Paths served without looking at credentials. |
+| `TOKEN_TTL` | 14 days | How long a login's opaque token works; `None` until revoked. |
+| `TOKEN_PREFIX` | `"dkt_"` | Starts every opaque token; changing it invalidates existing tokens. |
+| `LOGIN_RATE` | `"10/minute"` | Login and password-change attempts per client address and per username; `None` for no limit. |
+| `JWT` | see below | JSON Web Tokens, for `JWTAuthentication`. |
+
+| `AUTH["JWT"]` key | Default | Meaning |
+| --- | --- | --- |
+| `SIGNING_KEY` | `None` (required) | The HMAC secret, or the private key in PEM. |
+| `VERIFYING_KEY` | `None` | The public key in PEM, for asymmetric algorithms. |
+| `ALGORITHM` | `"HS256"` | The one algorithm accepted: `HS*`, `RS*`, `PS*`, `ES*`, or `EdDSA`. |
+| `ACCESS_TOKEN_TTL` | 5 minutes | How long an access token works. |
+| `REFRESH_TOKEN_TTL` | 14 days | How long a login can be refreshed. |
+| `ISSUER` | `None` | `iss`, set and then required. |
+| `AUDIENCE` | `None` | `aud`, set and then required. |
+| `LEEWAY` | 0 | Clock difference tolerated on `exp` and `iat`. |
 
 ## Commands
 
 | Command | Options | Purpose |
 | --- | --- | --- |
 | `createsuperuser` | `--<USERNAME_FIELD>`, `--<field>` per `REQUIRED_FIELDS`, `--noinput` | Create a superuser (and staff), asking for what the options leave out. With `--noinput`, values come from `<PREFIX>SUPERUSER_<FIELD>` (or a `_FILE`), and the password from `<PREFIX>SUPERUSER_PASSWORD`, which must pass the validators; without one the password is unusable. |
-| `changepassword` | `[username]` | Ask twice for a new password that passes the validators; three tries. The default user is your login name. |
+| `changepassword` | `[username]` | Ask twice for a new password that passes the validators; three tries. The default user is your login name. Every token of the user ends. |
+| `createtoken` | `username`, `--name`, `--days` (90), `--no-expiry` | Print a new opaque token for the user's scripts; it is shown once. |
+| `cleartokens` | `--user` | Delete expired tokens (hourly with `domainkit.contrib.messaging`), or every token of one user. |
+
+Code that sets passwords itself ends the user's sessions with
+`await uow.tokens.revoke_user(user.id)`.
+
+In tests, log in through the API, or issue a token directly:
+
+```python
+async with AuthUnitOfWork() as uow:
+    token = await uow.tokens.issue(user.id, ttl=None)
+    await uow.commit()
+client.get("/invoices", headers={"Authorization": f"Bearer {token}"})
+```

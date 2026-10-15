@@ -22,6 +22,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     ForeignKey,
+    Index,
     Integer,
     String,
     Table,
@@ -45,6 +46,7 @@ from .models import (
     PasswordHash,
     Permission,
 )
+from .tokens import AuthToken
 
 
 class PasswordHashType(TypeDecorator[PasswordHash]):
@@ -144,6 +146,28 @@ group_permissions = Table(
 )
 
 
+tokens = Table(
+    "domainkit_tokens",
+    metadata,
+    # The SHA-256 of the token: the table never holds a working token.
+    Column("id", String(64), primary_key=True),
+    # No foreign key, so a swapped user model keeps this table: tokens of a
+    # deleted user name no one and fail.
+    Column("user_id", Uuid, nullable=False),
+    Column("kind", String(16), nullable=False),
+    Column("name", String(100), nullable=False),
+    Column("family", Uuid),
+    Column("created_at", UTCDateTime, nullable=False),
+    Column("expires_at", UTCDateTime),
+    Column("used_at", UTCDateTime),
+    Index("ix_domainkit_tokens_user_id", "user_id"),
+    Index("ix_domainkit_tokens_family", "family"),
+    Index("ix_domainkit_tokens_expires_at", "expires_at"),
+    info={"domain": "auth"},
+)
+"""Opaque access tokens and refresh tokens, by digest."""
+
+
 def user_link_tables(user_table: Table) -> tuple[Table, Table]:
     """The tables linking ``user_table`` to groups and to permissions.
 
@@ -221,6 +245,7 @@ def start_mappers(user_model: type[AbstractBaseUser], user_table: Table) -> None
             )
         },
     )
+    map_imperatively(AuthToken, tokens)
     user_groups, user_permissions = user_link_tables(user_table)
     map_imperatively(
         user_model,
