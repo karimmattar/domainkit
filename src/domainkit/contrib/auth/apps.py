@@ -3,6 +3,7 @@
 import dataclasses
 from importlib import import_module
 
+from fastapi import FastAPI
 from sqlalchemy import Table
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -15,6 +16,7 @@ from domainkit.db.routing import router
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.utils.module_loading import import_string
 
+from .access import open_routes, routes_need_users
 from .authentication import get_authenticators
 from .backends import get_backends
 from .hashers import insecure_hashers
@@ -81,6 +83,23 @@ class AuthConfig(DomainConfig):
         declared_permissions()
         if registry.is_installed(MESSAGING):
             import_module(f"{self.name}.tasks")
+
+    def check_application(self, app: FastAPI) -> list[str]:
+        """Routes that declare no rule, and rules no middleware can answer."""
+        problems = []
+        if AUTHENTICATION_MIDDLEWARE not in settings.MIDDLEWARE and routes_need_users(
+            app
+        ):
+            problems.append(
+                f"Routes check users, but MIDDLEWARE lacks {AUTHENTICATION_MIDDLEWARE}."
+            )
+        if auth_settings().REQUIRE_ROUTE_RULES:
+            problems.extend(
+                f"{route} declares no access rule: add Depends(Require(...)), or "
+                "dependencies=[Public] if anyone may call it."
+                for route in open_routes(app)
+            )
+        return problems
 
     def holds_table(self, table: Table) -> bool:
         """The default user's tables, unless a custom user replaces them."""

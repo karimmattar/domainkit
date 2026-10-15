@@ -15,7 +15,16 @@ The ``.env`` file is never read during tests. The fixtures:
     sees the same tables. Yields the URL.
 ``client``
     A ``TestClient`` for the project's application, lifespan included, on
-    the migrated database. The tests ``startdomain`` generates use it.
+    the migrated database. Requests send no credentials.
+``client_for``
+    ``client_for("shop.view_product", ...)``: a client of the same
+    application that authenticates as a new user granted those
+    permissions. Keyword arguments set the user's fields
+    (``is_staff=True``); the username is unique unless given. Needs
+    ``domainkit.contrib.auth``.
+``admin_client``
+    A client that authenticates as a new superuser. The tests
+    ``startdomain`` generates use it.
 
 Memory caches (``memory://``) are emptied before every test, so no test
 sees what another one cached. Redis caches are left alone.
@@ -23,10 +32,11 @@ sees what another one cached. Redis caches are left alone.
 
 import io
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -37,6 +47,7 @@ from domainkit.conf import DEFAULT_DB_ALIAS, DatabaseConfig, override_settings, 
 from domainkit.conf.env import project_prefix
 from domainkit.http import get_asgi_application
 from domainkit.management import call_command
+from domainkit.management.base import run_async
 
 IN_MEMORY: Final = "sqlite+aiosqlite:///:memory:"
 SETTINGS_INI: Final = "domainkit_settings"
@@ -95,3 +106,44 @@ def client(database: str) -> Iterator[TestClient]:
     """Serve the project's application on the test database."""
     with TestClient(get_asgi_application()) as test_client:
         yield test_client
+
+
+type ClientFor = Callable[..., TestClient]
+
+
+@pytest.fixture
+def client_for(client: TestClient) -> ClientFor:
+    """Make clients that authenticate as new users with permissions."""
+
+    def make(
+        *permissions: str,
+        **fields: Any,  # noqa: ANN401 - the user model's fields.
+    ) -> TestClient:
+        token = run_async(_user_token(permissions, fields))
+        return TestClient(client.app, headers={"Authorization": f"Bearer {token}"})
+
+    return make
+
+
+@pytest.fixture
+def admin_client(client_for: ClientFor) -> TestClient:
+    """A client that authenticates as a new superuser."""
+    return client_for(is_superuser=True)
+
+
+async def _user_token(permissions: tuple[str, ...], fields: dict[str, Any]) -> str:
+    """Store a user with ``permissions``; return an access token for them.
+
+    The token comes from the first ``AUTH.AUTHENTICATION_CLASSES`` class,
+    as a login's would.
+    """
+    from domainkit.contrib.auth import AuthUnitOfWork, get_user_model
+    from domainkit.contrib.auth.authentication import get_authenticators
+
+    username = fields.pop(get_user_model().USERNAME_FIELD, f"user-{uuid4().hex}")
+    async with AuthUnitOfWork() as uow:
+        user = await uow.users.create_user(username, **fields)
+        user.grant(*await uow.permissions.get_many(permissions))
+        issued = await get_authenticators()[0].issue(uow, user)
+        await uow.commit()
+    return issued.access_token

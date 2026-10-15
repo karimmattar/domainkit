@@ -25,6 +25,26 @@ class UnknownPermission(NotFound):
     """No permission has that key (``<domain>.<codename>``)."""
 
 
+class UserNotFound(NotFound):
+    """No user has that id."""
+
+
+class GroupNotFound(NotFound):
+    """No group has that id."""
+
+
+class UnknownGroup(NotFound):
+    """No group has that name."""
+
+
+class UnknownUserField(BusinessRuleViolation):
+    """The user model has no such field, or it changes another way."""
+
+
+class InvalidUserField(BusinessRuleViolation):
+    """A value does not fit the type of the user field it is for."""
+
+
 class InvalidPassword(BusinessRuleViolation):
     """The password breaks the configured rules (``PASSWORD_VALIDATORS``)."""
 

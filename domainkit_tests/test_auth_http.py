@@ -1,9 +1,7 @@
 """Authenticating requests: logins, tokens, JWT, access rules, and the actor."""
 
 import io
-from collections.abc import Callable, Iterator
 from datetime import timedelta
-from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -13,8 +11,6 @@ from sqlalchemy import select, update
 from starlette.requests import HTTPConnection
 from starlette.websockets import WebSocketDisconnect
 
-from domainkit import setup
-from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.contrib.audit.tables import audit_log
 from domainkit.contrib.auth import (
@@ -36,14 +32,7 @@ from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.management import call_command
 from domainkit.management.base import run_async
-from domainkit_tests.conftest import (
-    ALPHA,
-    AUTH,
-    CONTENTTYPES,
-    FAST_HASHER,
-    SHOP,
-    UseAuth,
-)
+from domainkit_tests.conftest import AUTH, MIDDLEWARE, Api, UseAuth
 from domainkit_tests.sample_domains.shop.models import Product
 
 PASSWORD = "vy3!Tq-pX9#mR2"
@@ -55,16 +44,7 @@ JWT: dict[str, Any] = {
     ],
     "JWT": {"SIGNING_KEY": "k" * 32},
 }
-MIDDLEWARE = [
-    "domainkit.http.middleware.RequestContextMiddleware",
-    "domainkit.http.middleware.RequestBodyLimitMiddleware",
-    "domainkit.contrib.auth.middleware.AuthenticationMiddleware",
-    "domainkit.http.ratelimit.RateLimitMiddleware",
-    "domainkit.contrib.idempotency.middleware.IdempotencyMiddleware",
-]
 INVALID = 'Bearer realm="api", error="invalid_token"'
-
-type Api = Callable[..., TestClient]
 
 
 class OwnerBackend(BaseBackend):
@@ -77,73 +57,6 @@ class OwnerBackend(BaseBackend):
         if isinstance(obj, Product) and obj.name == user.get_username():
             return frozenset({"shop.change_product"})
         return frozenset()
-
-
-@pytest.fixture
-def api(database_url: str, tmp_path: Path) -> Iterator[Api]:
-    """A migrated project with auth, audit, and idempotency; ``api(**AUTH)``."""
-    registry.clear()
-    auth: dict[str, Any] = {"PASSWORD_HASHERS": [FAST_HASHER]}
-    with override_settings(
-        INSTALLED_DOMAINS=[
-            CONTENTTYPES,
-            AUTH,
-            "domainkit.contrib.audit",
-            "domainkit.contrib.idempotency",
-            SHOP,
-            ALPHA,
-        ],
-        DATABASES={"default": {"URL": database_url}},
-        MIGRATIONS_DIR=tmp_path / "migrations",
-        ROOT_ROUTER="domainkit_tests.sample_auth_routes.router",
-        MIDDLEWARE=MIDDLEWARE,
-        AUTH=auth,
-    ):
-        setup()
-        call_command("makemigrations", "-m", "auth", stdout=io.StringIO())
-        call_command("migrate", stdout=io.StringIO())
-        with ExitStackClients() as clients:
-
-            def make(
-                *,
-                client: tuple[str, int] = ("testclient", 50000),
-                **options: Any,  # noqa: ANN401 - AUTH keys.
-            ) -> TestClient:
-                if options:
-                    clients.enter(override_settings(AUTH={**auth, **options}))
-                return clients.client(client)
-
-            yield make
-    registry.clear()
-
-
-class ExitStackClients:
-    """Open clients and settings, closed in reverse order."""
-
-    def __init__(self) -> None:
-        """Start empty."""
-        self._exits: list[Callable[[], object]] = []
-
-    def __enter__(self) -> "ExitStackClients":
-        """Nothing to start."""
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        """Close what was opened, newest first."""
-        while self._exits:
-            self._exits.pop()()
-
-    def enter(self, manager: Any) -> None:  # noqa: ANN401 - a context manager.
-        """Enter ``manager`` until the end of the test."""
-        manager.__enter__()
-        self._exits.append(lambda: manager.__exit__(None, None, None))
-
-    def client(self, address: tuple[str, int]) -> TestClient:
-        """A client of a fresh application, from ``address``."""
-        client = TestClient(get_asgi_application(), client=address)
-        client.__enter__()
-        self._exits.append(lambda: client.__exit__(None, None, None))
-        return client
 
 
 def create_user(

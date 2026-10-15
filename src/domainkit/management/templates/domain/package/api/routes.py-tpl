@@ -1,14 +1,17 @@
 """HTTP routes of the {{ domain }} domain.
 
 Changes are task-based commands (``/rename``, ``/archive``) rather than
-generic updates, so each request maps to one use case.
+generic updates, so each request maps to one use case. Each route names
+the permission it needs (``{{ domain }}.view_{{ model }}`` and the others);
+grant them to users or groups.
 """
 
 from typing import Any, Final
 from uuid import UUID
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Depends, status
 
+from domainkit.contrib.auth import HasPermissions, Require
 from domainkit.http import ErrorResponse
 from {{ package }}.api.dependencies import PageSizeDep, PositionDep, UnitOfWorkDep
 from {{ package }}.api.schemas import (
@@ -25,7 +28,12 @@ from {{ package }}.application.commands import (
 )
 
 # 422 is documented for every route by the application.
+REFUSED: Final[dict[int | str, dict[str, Any]]] = {
+    status.HTTP_401_UNAUTHORIZED: {"model": ErrorResponse},
+    status.HTTP_403_FORBIDDEN: {"model": ErrorResponse},
+}
 NOT_FOUND: Final[dict[int | str, dict[str, Any]]] = {
+    **REFUSED,
     status.HTTP_404_NOT_FOUND: {"model": ErrorResponse},
 }
 CHANGE_ERRORS: Final[dict[int | str, dict[str, Any]]] = {
@@ -36,14 +44,24 @@ CHANGE_ERRORS: Final[dict[int | str, dict[str, Any]]] = {
 router = APIRouter(prefix="/{{ aggregates }}", tags=["{{ domain }}"])
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
+def allowed(action: str) -> Any:  # noqa: ANN401 - a FastAPI dependency.
+    """Users granted ``{{ domain }}.<action>_{{ model }}`` (superusers have it)."""
+    return Depends(Require(HasPermissions(f"{{ domain }}.{action}_{{ model }}")))
+
+
+@router.post(
+    "",
+    status_code=status.HTTP_201_CREATED,
+    responses=REFUSED,
+    dependencies=[allowed("add")],
+)
 async def create_{{ aggregate }}(body: {{ Aggregate }}In, uow: UnitOfWorkDep) -> {{ Aggregate }}Out:
     """Create a {{ aggregate }}."""
     {{ aggregate }} = await services.create_{{ aggregate }}(Create{{ Aggregate }}(name=body.name), uow)
     return {{ Aggregate }}Out.from_domain({{ aggregate }})
 
 
-@router.get("")
+@router.get("", responses=REFUSED, dependencies=[allowed("view")])
 async def list_{{ aggregates }}(
     uow: UnitOfWorkDep, limit: PageSizeDep, after: PositionDep
 ) -> {{ Aggregate }}Page:
@@ -52,13 +70,19 @@ async def list_{{ aggregates }}(
     return {{ Aggregate }}Page.from_domain(page)
 
 
-@router.get("/{{{ aggregate }}_id}", responses=NOT_FOUND)
+@router.get(
+    "/{{{ aggregate }}_id}", responses=NOT_FOUND, dependencies=[allowed("view")]
+)
 async def get_{{ aggregate }}({{ aggregate }}_id: UUID, uow: UnitOfWorkDep) -> {{ Aggregate }}Out:
     """Return one {{ aggregate }}."""
     return {{ Aggregate }}Out.from_domain(await services.get_{{ aggregate }}(uow, {{ aggregate }}_id))
 
 
-@router.post("/{{{ aggregate }}_id}/rename", responses=CHANGE_ERRORS)
+@router.post(
+    "/{{{ aggregate }}_id}/rename",
+    responses=CHANGE_ERRORS,
+    dependencies=[allowed("change")],
+)
 async def rename_{{ aggregate }}(
     {{ aggregate }}_id: UUID, body: Rename{{ Aggregate }}In, uow: UnitOfWorkDep
 ) -> {{ Aggregate }}Out:
@@ -67,7 +91,11 @@ async def rename_{{ aggregate }}(
     return {{ Aggregate }}Out.from_domain(await services.rename_{{ aggregate }}(command, uow))
 
 
-@router.post("/{{{ aggregate }}_id}/archive", responses=CHANGE_ERRORS)
+@router.post(
+    "/{{{ aggregate }}_id}/archive",
+    responses=CHANGE_ERRORS,
+    dependencies=[allowed("change")],
+)
 async def archive_{{ aggregate }}({{ aggregate }}_id: UUID, uow: UnitOfWorkDep) -> {{ Aggregate }}Out:
     """Archive a {{ aggregate }}; it becomes read-only."""
     command = Archive{{ Aggregate }}({{ aggregate }}_id={{ aggregate }}_id)

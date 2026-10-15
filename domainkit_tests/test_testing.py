@@ -5,12 +5,15 @@ from pathlib import Path
 
 import pytest
 
-# pytester's in-process runs unload the modules first imported inside them;
-# Alembic keeps global state in its context module, so load it beforehand.
+# The pytester fixture unloads the modules first imported while it is in use.
+# Alembic keeps global state in its context module, and the routes the inner
+# tests serve define the shop's tables: load both beforehand.
 import domainkit.db.migrations  # noqa: F401
+import domainkit_tests.sample_auth_routes  # noqa: F401
 from domainkit.conf import override_settings, settings
 from domainkit.conf.env import project_prefix
 from domainkit.testing import IN_MEMORY, migrated_database
+from domainkit_tests.conftest import MIDDLEWARE
 
 
 @pytest.fixture
@@ -52,6 +55,18 @@ def test_projects_get_a_database_and_a_client(
     result.assert_outcomes(passed=1)
     assert os.environ[f"{prefix}SETTINGS_MODULE"] == "project.settings.test"
     assert os.environ[f"{prefix}ENV_FILE"] == ""
+
+
+def test_the_ini_option_is_described(pytester: pytest.Pytester) -> None:
+    """``pytest --help`` explains ``domainkit_settings``."""
+    result = pytester.runpytest_inprocess("-p", "domainkit.testing", "--help")
+
+    result.stdout.fnmatch_lines(
+        [
+            "  domainkit_settings (string):",
+            "* Settings module for the tests (config.settings.test)",
+        ]
+    )
 
 
 def test_without_the_ini_option_the_settings_are_left_alone(
@@ -109,3 +124,40 @@ def test_memory_caches_start_empty_in_every_test(
     )
 
     result.assert_outcomes(passed=2)
+
+
+def test_clients_for_users_and_superusers(
+    auth_project: str, prefix: str, pytester: pytest.Pytester
+) -> None:
+    """``client_for`` and ``admin_client`` authenticate as new users.
+
+    ``auth_project`` comes first: it loads the database driver and writes the
+    migrations before pytester takes its snapshot of the loaded modules.
+    """
+    pytester.makepyfile(
+        test_users="""
+        def test_clients(client, client_for, admin_client):
+            assert client.get("/private").status_code == 401
+            viewer = client_for("shop.view_product")
+            assert viewer.get("/products").json()["user"].startswith("user-")
+            assert viewer.post("/products").status_code == 403
+            other = client_for("shop.view_product")
+            assert other.get("/private").json() != viewer.get("/private").json()
+            staff = client_for(username="carol", is_staff=True)
+            assert staff.get("/staff").status_code == 200
+            assert staff.get("/products").status_code == 403
+            me = admin_client.get("/auth/me").json()
+            assert (me["is_superuser"], me["is_staff"]) == (True, False)
+            assert admin_client.get("/admin/auth/users").status_code == 200
+        """
+    )
+    with override_settings(
+        DATABASES={"default": {"URL": IN_MEMORY}},
+        ROOT_ROUTER="domainkit_tests.sample_auth_routes.router",
+        MIDDLEWARE=MIDDLEWARE[:3],
+    ):
+        result = pytester.runpytest_inprocess(
+            "-p", "domainkit.testing", "-p", "no:randomly", "-p", "no:cov"
+        )
+
+    result.assert_outcomes(passed=1)

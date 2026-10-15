@@ -7,8 +7,9 @@ backends, object permissions, and a swappable user model. Requests prove
 who sent them with tokens, opaque by default or JSON Web Tokens, and
 routes say who may call them with rules modelled on Django REST
 framework's permission classes. The design is in
-[ADR 0015](adr/0015-auth-and-content-types.md) and
-[ADR 0016](adr/0016-authenticating-requests.md).
+[ADR 0015](adr/0015-auth-and-content-types.md),
+[ADR 0016](adr/0016-authenticating-requests.md), and
+[ADR 0017](adr/0017-deny-by-default-and-admin-api.md).
 
 ## Install
 
@@ -456,6 +457,97 @@ invoice = await uow.invoices.get(invoice_id)
 await check_object_permissions(request, invoice, IsOwner())
 ```
 
+### Deny by default
+
+Every route must say who may call it: a `Require(...)` dependency, a
+`CurrentUser` or `AuthenticatedUser` parameter, or `Public` for a route
+anyone may call. Each can sit on the route, on a dependency it uses, or on
+a router it is included through. Routes that say nothing are listed by
+`manage.py check`, logged when the application starts in development and
+tests, and refused in staging and production, where the application does
+not start:
+
+```text
+The application has problems:
+  GET /reports declares no access rule: add Depends(Require(...)), or dependencies=[Public] if anyone may call it.
+```
+
+```python
+from domainkit.contrib.auth import Public
+
+
+@router.get("/catalog", dependencies=[Public])  # anyone, on purpose
+async def catalog(): ...
+
+
+public_router = APIRouter(dependencies=[Public])  # every route in it
+```
+
+The framework's own routes (`/health`, `/ready`, `/metrics`) and the login
+and refresh endpoints are covered already. `AUTH.REQUIRE_ROUTE_RULES =
+False` turns the rule off; routes that read the user still need
+`AuthenticationMiddleware`, and startup reports them while it is missing.
+`open_routes(app)` returns the list, for a test of your own.
+
+## The admin API
+
+`domainkit.contrib.auth.admin.router` is Django's admin for users, groups,
+and permissions, over REST. Mount it where staff tools live:
+
+```python
+from domainkit.contrib.auth.admin import router as admin_router
+
+router.include_router(admin_router, prefix="/admin/auth")
+```
+
+Every endpoint needs a staff user (`is_staff`) or a superuser, and the
+model permission of its action: `view`, `add`, `change`, or `delete` on
+the user model (`auth.change_user`, or `accounts.change_account` for a
+custom user), `auth.*_group`, or `auth.view_permission`.
+
+| Endpoint | Body | Answer |
+| --- | --- | --- |
+| `GET /users` | `?limit=50&cursor=&search=` | A page of users by username; `search` matches part of it, in any case. |
+| `POST /users` | `{"username", "password", "is_active", "is_staff", "is_superuser", "fields"}` | `201` and the user. The password is validated; without one, it is unusable. |
+| `GET /users/{id}` | | The user. |
+| `PATCH /users/{id}` | `{"is_active", "is_staff", "is_superuser", "fields"}` | The user; what is left out stays. |
+| `DELETE /users/{id}` | | `204`; the user's tokens go too. |
+| `POST /users/{id}/password` | `{"password"}` | `204`; `null` makes it unusable. Every session of the user ends. |
+| `POST /users/{id}/logout` | | `204`: every session of the user ends. |
+| `PUT /users/{id}/groups` | `{"groups": [names]}` | The user, in exactly those groups. |
+| `PUT /users/{id}/permissions` | `{"permissions": [keys]}` | The user, granted exactly those permissions directly. |
+| `GET /groups` | `?limit=50&cursor=` | A page of groups by name. |
+| `POST /groups` | `{"name", "permissions"}` | `201` and the group. |
+| `GET /groups/{id}` | | The group. |
+| `PATCH /groups/{id}` | `{"name"}` | The renamed group. |
+| `PUT /groups/{id}/permissions` | `{"permissions": [keys]}` | The group, granting exactly those permissions. |
+| `DELETE /groups/{id}` | | `204`; its members lose its permissions. |
+| `GET /permissions` | | Every permission: `key`, `name`, and `content_type`. |
+
+A user is shown with `id`, `username`, `is_active`, `is_staff`,
+`is_superuser`, `last_login`, `groups`, the `permissions` granted directly,
+and `fields`: the model's other fields (`email`, `first_name`, `last_name`,
+`date_joined`, and those of a custom user). `fields` in a request changes
+them; credentials, flags, grants, `date_joined`, and the username are not
+among them (`AbstractBaseUser.PROTECTED_FIELDS`, `editable_fields()`), and
+naming one answers `422 unknown_user_field`. Values are checked against the
+field's type annotation (`422 invalid_user_field`), and `clean_field(name,
+value)`, which a custom user may override, tidies what is stored.
+
+Staff hand out only what they have:
+
+- Only superusers make, unmake, or change superusers.
+- Other staff cannot grant a permission they lack, directly or through a
+  group (`403`).
+- Nor can they change a user or a group that holds such a permission:
+  setting a user's password is as good as becoming them. Inactive users
+  count with every grant they keep.
+
+Changes are recorded as events (`UserUpdated`, `UserDeleted`,
+`UserStatusChanged`, `UserJoinedGroup`, `GroupDeleted`, and the others),
+so with `domainkit.contrib.audit` installed the audit trail names who
+changed what.
+
 ## Settings
 
 | `AUTH` key | Default | Meaning |
@@ -470,6 +562,7 @@ await check_object_permissions(request, invoice, IsOwner())
 | `TOKEN_TTL` | 14 days | How long a login's opaque token works; `None` until revoked. |
 | `TOKEN_PREFIX` | `"dkt_"` | Starts every opaque token; changing it invalidates existing tokens. |
 | `LOGIN_RATE` | `"10/minute"` | Login and password-change attempts per client address and per username; `None` for no limit. |
+| `REQUIRE_ROUTE_RULES` | `True` | Every route must say who may call it (`Require`, a user parameter, or `Public`); see "Deny by default". |
 | `JWT` | see below | JSON Web Tokens, for `JWTAuthentication`. |
 
 | `AUTH["JWT"]` key | Default | Meaning |

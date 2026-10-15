@@ -45,6 +45,7 @@ def template_context(
         "package": f"{parent}.{name}",
         "Aggregate": aggregate,
         "aggregate": aggregate_snake,
+        "model": aggregate.lower(),
         "aggregates": aggregates,
         "aggregates_title": aggregates.replace("_", " "),
         "table": f"{name}_{aggregates}",
@@ -161,5 +162,9 @@ def _next_steps(context: dict[str, str], package_dir: Path, tests_dir: Path) -> 
             ),
             f'  3. python manage.py makemigrations -m "create {domain}"',
             "  4. python manage.py migrate",
+            (
+                f"  5. Grant {domain}.view_{context['model']} (and add_, change_) "
+                "to the users or groups that need them; superusers have them."
+            ),
         ]
     )

@@ -238,23 +238,33 @@ def test_migration_commands(migration_project: Path) -> None:
 def test_template_context_validates_names() -> None:
     """Names must be valid snake_case packages and CamelCase classes."""
     context = startdomain.template_context("order_lines", "domains", None, None)
-    assert (context["Aggregate"], context["aggregates"]) == (
-        "OrderLines",
-        "order_lineses",
-    )
+    assert context == {
+        "domain": "order_lines",
+        "Domain": "OrderLines",
+        "DOMAIN": "ORDER_LINES",
+        "domain_title": "Order Lines",
+        "package": "domains.order_lines",
+        "Aggregate": "OrderLines",
+        "aggregate": "order_lines",
+        "model": "orderlines",
+        "aggregates": "order_lineses",
+        "aggregates_title": "order lineses",
+        "table": "order_lines_order_lineses",
+    }
     assert (
         startdomain.template_context("shop", "d", "Box", None)["aggregates"] == "boxes"
     )
 
-    for name, aggregate, plural in [
-        ("Shop", None, None),
-        ("class", None, None),
-        ("shop", "box", None),
-        ("shop", "Box", "box"),
-        ("shop", "Box", "Bad-Plural"),
+    for name, aggregate, plural, message in [
+        ("Shop", None, None, "'Shop' is not a valid snake_case package name."),
+        ("class", None, None, "'class' is not a valid snake_case package name."),
+        ("shop", "box", None, "'box' is not a valid CamelCase class name."),
+        ("shop", "Box", "box", "'box' is not a valid snake_case plural."),
+        ("shop", "Box", "Bad-Plural", "'Bad-Plural' is not a valid snake_case plural."),
     ]:
-        with pytest.raises(CommandError):
+        with pytest.raises(CommandError) as refused:
             startdomain.template_context(name, "domains", aggregate, plural)
+        assert str(refused.value) == message
 
 
 def test_startdomain_refuses_bad_targets(
@@ -286,7 +296,17 @@ def test_startdomain_generates_a_working_domain(
     )
 
     package = tmp_path / "generated" / "shop"
-    assert "Add 'generated.shop' to INSTALLED_DOMAINS" in output
+    assert output.endswith(
+        "Next steps:\n"
+        "  1. Add 'generated.shop' to INSTALLED_DOMAINS in your settings.\n"
+        "  2. Mount its router in your ROOT_ROUTER module:\n"
+        "       from generated.shop.api.routes import router as shop_router\n"
+        '       router.include_router(shop_router, prefix="/api/v1/shop")\n'
+        '  3. python manage.py makemigrations -m "create shop"\n'
+        "  4. python manage.py migrate\n"
+        "  5. Grant shop.view_orderline (and add_, change_) to the users or "
+        "groups that need them; superusers have them.\n"
+    )
     assert (package / "management" / "commands" / "order_lines.py").is_file()
     generated = [*package.rglob("*.py"), *(tests_dir / "shop").rglob("*.py")]
     assert not [path for path in generated if "{{" in path.read_text(encoding="utf-8")]
@@ -371,7 +391,7 @@ def test_branches_must_be_merged(migration_project: Path) -> None:
     _branch("0002_aaaa", first, "branch a")
     _branch("0002_bbbb", first, "branch b")
 
-    with pytest.raises(CommandError, match="2 heads"):
+    with pytest.raises(CommandError, match=r"2 heads \(0002_aaaa, 0002_bbbb\)"):
         run("check")
     with pytest.raises(CommandError, match="makemigrations --merge"):
         run("migrate")

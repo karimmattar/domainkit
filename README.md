@@ -33,7 +33,7 @@ pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, i
 - [docs/contrib.md](https://github.com/karimmattar/domainkit/blob/main/docs/contrib.md): messaging (and workers on RabbitMQ),
   audit, idempotency, and evidence
 - [docs/auth.md](https://github.com/karimmattar/domainkit/blob/main/docs/auth.md): users, groups, permissions, content
-  types, passwords, backends, tokens, and route rules
+  types, passwords, backends, tokens, route rules, and the admin API
 - [docs/versioning.md](https://github.com/karimmattar/domainkit/blob/main/docs/versioning.md): compatibility, deprecations, and releases
 - [docs/adr/](https://github.com/karimmattar/domainkit/tree/main/docs/adr): the decisions behind the design
 - [CHANGELOG.md](https://github.com/karimmattar/domainkit/blob/main/CHANGELOG.md) and [SECURITY.md](https://github.com/karimmattar/domainkit/blob/main/SECURITY.md)
@@ -48,11 +48,17 @@ cd billing
 python manage.py check
 python manage.py startdomain invoices --aggregate Invoice   # prints how to install it
 python manage.py makemigrations -m "create invoices" && python manage.py migrate
+python manage.py createsuperuser
 pytest
 python manage.py runserver            # http://127.0.0.1:8000/docs
 ```
 
-`domainkit init` creates a project that passes `check` and its tests as it is:
+`domainkit init` creates a project that passes `check` and its tests as it is.
+Users, groups, and permissions are installed, requests are authenticated,
+and every route must say who may call it: generated domains need their
+model permissions, and `/auth` and `/admin/auth` log users in and manage
+them ([docs/auth.md](https://github.com/karimmattar/domainkit/blob/main/docs/auth.md)).
+
 
 ```text
 billing/

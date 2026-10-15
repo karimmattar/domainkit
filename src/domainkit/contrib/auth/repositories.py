@@ -10,15 +10,16 @@ from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete, exists, select, update
+from sqlalchemy import delete, exists, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
 from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.db import SqlAlchemyRepository
+from domainkit.ddd import Page
 
 from .events import UserLoggedIn
-from .exceptions import GroupNameTaken, UnknownPermission, UsernameTaken
+from .exceptions import GroupNameTaken, UnknownGroup, UnknownPermission, UsernameTaken
 from .hashers import amake_password
 from .models import AbstractBaseUser, Group, GroupId, PasswordHash, Permission, UserId
 from .settings import auth_settings
@@ -91,6 +92,26 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         else:
             user.set_password(PasswordHash(await amake_password(password)))
 
+    async def page(
+        self, *, limit: int, after: str | None = None, search: str | None = None
+    ) -> Page[AbstractBaseUser]:
+        """Users by username, after the username ``after``; ``search`` filters names.
+
+        Usernames are unique, so one keeps the place between pages.
+        """
+        name = get_user_table().c[self.model.USERNAME_FIELD]
+        statement = select(self.model).order_by(name).limit(limit + 1)
+        if after is not None:
+            statement = statement.where(name > after)
+        if search:
+            statement = statement.where(
+                func.lower(name).contains(search.lower(), autoescape=True)
+            )
+        users = list(await self.session.scalars(statement))
+        for user in users:
+            self._track(user)
+        return Page.from_items(users, limit)
+
     async def record_login(self, user: AbstractBaseUser) -> None:
         """Store the login time and record ``UserLoggedIn``.
 
@@ -118,6 +139,43 @@ class GroupRepository(SqlAlchemyRepository[Group, GroupId]):
         if group is not None:
             self._track(group)
         return group
+
+    async def page(self, *, limit: int, after: str | None = None) -> Page[Group]:
+        """Groups by name (unique), after the name ``after``."""
+        statement = select(Group).order_by(groups.c.name).limit(limit + 1)
+        if after is not None:
+            statement = statement.where(groups.c.name > after)
+        found = list(await self.session.scalars(statement))
+        for group in found:
+            self._track(group)
+        return Page.from_items(found, limit)
+
+    async def get_many_by_name(self, names: Iterable[str]) -> list[Group]:
+        """The groups ``names`` name, in that order.
+
+        Raises:
+            UnknownGroup: One of the names names no group.
+        """
+        wanted = list(dict.fromkeys(names))
+        statement = select(Group).where(groups.c.name.in_(wanted))
+        found = {group.name: group for group in await self.session.scalars(statement)}
+        if missing := [name for name in wanted if name not in found]:
+            raise UnknownGroup(f"No such group: {', '.join(missing)}.")
+        for group in found.values():
+            self._track(group)
+        return [found[name] for name in wanted]
+
+    async def rename(self, group: Group, name: str) -> None:
+        """Give ``group`` a new name.
+
+        Raises:
+            GroupNameTaken: Another group has the name.
+        """
+        group.rename(name)
+        with self.session.no_autoflush:
+            same = await self.get_by_name(group.name)
+        if same is not None and same is not group:
+            raise GroupNameTaken(f"A group called {group.name!r} exists.")
 
     async def create(self, name: str) -> Group:
         """Add a group with no permissions.

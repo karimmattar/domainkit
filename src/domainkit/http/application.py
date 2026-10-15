@@ -1,5 +1,6 @@
 """Build the FastAPI application from settings (Django's ``get_asgi_application``)."""
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, Final
@@ -11,11 +12,14 @@ from domainkit.apps import registry
 from domainkit.broker import brokers
 from domainkit.cache import caches
 from domainkit.conf import settings
+from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db.connections import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import ErrorResponse, install_exception_handlers
 from domainkit.ledger import ledgers
 from domainkit.utils.module_loading import import_string
+
+logger = logging.getLogger(__name__)
 
 FRAMEWORK_ERRORS: Final = {
     400: "Malformed request",
@@ -65,7 +69,17 @@ def get_asgi_application() -> FastAPI:
     for path in reversed(settings.MIDDLEWARE):
         middleware: Any = _load(path, type, "MIDDLEWARE")
         app.add_middleware(middleware)
+    if problems := application_problems(app):
+        listed = "\n".join(f"  {problem}" for problem in problems)
+        if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
+            raise ImproperlyConfigured(f"The application has problems:\n{listed}")
+        logger.warning("The application has problems:\n%s", listed)
     return app
+
+
+def application_problems(app: FastAPI) -> list[str]:
+    """What the installed domains find wrong with ``app`` (``check_application``)."""
+    return [problem for config in registry for problem in config.check_application(app)]
 
 
 def _load[T](path: str, expected: type[T], setting: str) -> T:

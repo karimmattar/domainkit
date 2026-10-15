@@ -1,4 +1,4 @@
-"""The application starts and answers its liveness probe."""
+"""The application starts, answers its probes, and knows who calls it."""
 
 from fastapi.testclient import TestClient
 
@@ -6,3 +6,9 @@ from fastapi.testclient import TestClient
 def test_health(client: TestClient) -> None:
     """GET /health answers 200."""
     assert client.get("/health").status_code == 200
+
+
+def test_callers_must_log_in(client: TestClient) -> None:
+    """Without a token, the caller is anonymous."""
+    response = client.get("/auth/me")
+    assert (response.status_code, response.json()["code"]) == (401, "not_authenticated")

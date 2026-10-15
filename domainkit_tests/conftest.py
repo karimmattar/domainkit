@@ -12,9 +12,10 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -30,7 +31,7 @@ from domainkit.conf.env import (
 )
 from domainkit.contrib.messaging import registry as task_registry
 from domainkit.ddd import event_bus
-from domainkit.http import metrics
+from domainkit.http import get_asgi_application, metrics
 from domainkit.management import call_command
 from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
 
@@ -240,3 +241,81 @@ def use_auth() -> Iterator[UseAuth]:
 
         yield install
     registry.clear()
+
+
+MIDDLEWARE = [
+    "domainkit.http.middleware.RequestContextMiddleware",
+    "domainkit.http.middleware.RequestBodyLimitMiddleware",
+    "domainkit.contrib.auth.middleware.AuthenticationMiddleware",
+    "domainkit.http.ratelimit.RateLimitMiddleware",
+    "domainkit.contrib.idempotency.middleware.IdempotencyMiddleware",
+]
+
+type Api = Callable[..., TestClient]
+
+
+@pytest.fixture
+def api(database_url: str, tmp_path: Path) -> Iterator[Api]:
+    """A migrated project with auth, audit, and idempotency; ``api(**AUTH)``."""
+    registry.clear()
+    auth: dict[str, Any] = {"PASSWORD_HASHERS": [FAST_HASHER]}
+    with override_settings(
+        INSTALLED_DOMAINS=[
+            CONTENTTYPES,
+            AUTH,
+            "domainkit.contrib.audit",
+            "domainkit.contrib.idempotency",
+            SHOP,
+            ALPHA,
+        ],
+        DATABASES={"default": {"URL": database_url}},
+        MIGRATIONS_DIR=tmp_path / "migrations",
+        ROOT_ROUTER="domainkit_tests.sample_auth_routes.router",
+        MIDDLEWARE=MIDDLEWARE,
+        AUTH=auth,
+    ):
+        setup()
+        call_command("makemigrations", "-m", "auth", stdout=io.StringIO())
+        call_command("migrate", stdout=io.StringIO())
+        with ExitStackClients() as clients:
+
+            def make(
+                *,
+                client: tuple[str, int] = ("testclient", 50000),
+                **options: Any,  # noqa: ANN401 - AUTH keys.
+            ) -> TestClient:
+                if options:
+                    clients.enter(override_settings(AUTH={**auth, **options}))
+                return clients.client(client)
+
+            yield make
+    registry.clear()
+
+
+class ExitStackClients:
+    """Open clients and settings, closed in reverse order."""
+
+    def __init__(self) -> None:
+        """Start empty."""
+        self._exits: list[Callable[[], object]] = []
+
+    def __enter__(self) -> "ExitStackClients":
+        """Nothing to start."""
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        """Close what was opened, newest first."""
+        while self._exits:
+            self._exits.pop()()
+
+    def enter(self, manager: Any) -> None:  # noqa: ANN401 - a context manager.
+        """Enter ``manager`` until the end of the test."""
+        manager.__enter__()
+        self._exits.append(lambda: manager.__exit__(None, None, None))
+
+    def client(self, address: tuple[str, int]) -> TestClient:
+        """A client of a fresh application, from ``address``."""
+        client = TestClient(get_asgi_application(), client=address)
+        client.__enter__()
+        self._exits.append(lambda: client.__exit__(None, None, None))
+        return client

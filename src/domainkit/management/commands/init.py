@@ -102,6 +102,9 @@ def _next_steps(name: str, target: Path) -> str:
             f"  cd {target.relative_to(Path.cwd(), walk_up=True)}",
             '  pip install "domainkit[postgres,sqlite,testing]"   # or: uv sync',
             "  python manage.py check",
+            '  python manage.py makemigrations -m "auth"',
+            "  python manage.py migrate",
+            "  python manage.py createsuperuser",
             "  python manage.py startdomain <name>",
             "  pytest",
         ]

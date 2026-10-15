@@ -28,7 +28,9 @@ gets 403. ``AuthenticationMiddleware`` must be installed.
 from collections.abc import Sequence
 from typing import Annotated, Any, ClassVar, Final
 
-from fastapi import Depends, Request, status
+from fastapi import Depends, FastAPI, Request, status
+from fastapi.dependencies.models import Dependant
+from fastapi.routing import APIRoute, APIWebSocketRoute, iter_route_contexts
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.requests import HTTPConnection
 
@@ -41,6 +43,8 @@ from .backends import has_perms
 from .models import AbstractBaseUser, AnyUser
 
 SAFE_METHODS: Final = frozenset({"GET", "HEAD", "OPTIONS"})
+FRAMEWORK_ROUTES: Final = "domainkit.http."
+"""Modules whose routes (probes, metrics) guard themselves."""
 MODEL_ACTIONS: Final = {
     "GET": "view",
     "HEAD": "view",
@@ -356,6 +360,66 @@ CurrentUser = Annotated[AnyUser, Depends(current_user)]
 """The request's user, or ``AnonymousUser``."""
 AuthenticatedUser = Annotated[AbstractBaseUser, Depends(authenticated_user)]
 """The request's user; anonymous callers get 401."""
+
+
+async def public() -> None:
+    """Mark a route public on purpose: anyone may call it, without a token."""
+
+
+Public = Depends(public)
+"""``dependencies=[Public]``: the route needs no rule (``REQUIRE_ROUTE_RULES``)."""
+USER_GUARDS: Final[tuple[object, ...]] = (current_user, authenticated_user)
+"""Dependencies that read the user, besides ``Require``."""
+
+
+def open_routes(app: FastAPI) -> list[str]:
+    """``METHOD /path`` of every route that declares no access rule.
+
+    A route declares one with ``Require``, ``CurrentUser``,
+    ``AuthenticatedUser``, or ``Public``, on itself or its router. The
+    framework's own routes (``/health``, ``/ready``, ``/metrics``) guard
+    themselves.
+    """
+    guards = (public, *USER_GUARDS)
+    return [name for name, dependant in _routes(app) if not _uses(dependant, guards)]
+
+
+def routes_need_users(app: FastAPI) -> bool:
+    """Whether some route of ``app`` reads the user or checks rules."""
+    return any(_uses(dependant, USER_GUARDS) for _, dependant in _routes(app))
+
+
+def _routes(app: FastAPI) -> list[tuple[str, Dependant]]:
+    """``METHOD /path`` and dependencies of each route, but the framework's own.
+
+    Routers are walked as OpenAPI walks them, so the prefixes and
+    dependencies of the routers a route is included through count.
+    """
+    found = []
+    for context in iter_route_contexts(app.routes):
+        route = context.original_route
+        if isinstance(route, APIWebSocketRoute):
+            # Included WebSockets keep their full path and dependencies here.
+            effective = getattr(context, "starlette_route", None)
+            if isinstance(effective, APIWebSocketRoute):
+                route = effective
+            name, dependant = f"WEBSOCKET {route.path}", route.dependant
+        elif isinstance(route, APIRoute):
+            name = f"{' '.join(sorted(route.methods or ()))} {context.path}"
+            dependant = context.dependant
+        else:
+            continue
+        if not route.endpoint.__module__.startswith(FRAMEWORK_ROUTES):
+            found.append((name, dependant))
+    return found
+
+
+def _uses(dependant: Dependant, guards: tuple[object, ...]) -> bool:
+    """Whether ``dependant`` depends, at any depth, on ``Require`` or ``guards``."""
+    call = dependant.call
+    if isinstance(call, Require) or any(call is guard for guard in guards):
+        return True
+    return any(_uses(dependency, guards) for dependency in dependant.dependencies)
 
 
 def _rule(rule: Rule) -> BasePermission:

@@ -8,6 +8,19 @@ env = Env()
 BASE_DIR = Path(__file__).resolve().parents[3]
 
 PROJECT_NAME = "{{ project }}"
-INSTALLED_DOMAINS = ["domainkit.contrib.messaging"]
+INSTALLED_DOMAINS = [
+    "domainkit.contrib.messaging",
+    "domainkit.contrib.contenttypes",
+    "domainkit.contrib.auth",
+]
 ROOT_ROUTER = "config.urls.router"
+# Every request is authenticated; routes say who may call them (docs/auth.md).
+MIDDLEWARE = [
+    "domainkit.http.middleware.ProxyHeadersMiddleware",
+    "domainkit.http.middleware.SecurityHeadersMiddleware",
+    "domainkit.http.middleware.RequestContextMiddleware",
+    "domainkit.http.middleware.AllowedHostsMiddleware",
+    "domainkit.contrib.auth.middleware.AuthenticationMiddleware",
+    "domainkit.http.middleware.RequestBodyLimitMiddleware",
+]
 ASGI_APPLICATION = "config.asgi:application"
