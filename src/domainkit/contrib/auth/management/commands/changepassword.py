@@ -60,10 +60,11 @@ class Command(BaseCommand):
             return await uow.users.get_by_natural_key(username)
 
     async def _save(self, username: str, password: str) -> None:
-        """Hash and store the password."""
+        """Hash and store the password; the user's tokens stop working."""
         async with AuthUnitOfWork() as uow:
             user = await uow.users.get_by_natural_key(username)
             if user is None:
                 raise CommandError(f"User {username!r} does not exist.")
             await uow.users.set_password(user, password)
+            await uow.tokens.revoke_user(user.id)
             await uow.commit()

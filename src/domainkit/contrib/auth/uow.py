@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from domainkit.db import SqlAlchemyUnitOfWork
 
-from .repositories import GroupRepository, PermissionStore, UserRepository
+from .repositories import GroupRepository, PermissionStore, TokenStore, UserRepository
 
 
 class AuthUnitOfWork(SqlAlchemyUnitOfWork):
@@ -21,9 +21,11 @@ class AuthUnitOfWork(SqlAlchemyUnitOfWork):
     users: UserRepository
     groups: GroupRepository
     permissions: PermissionStore
+    tokens: TokenStore
 
     def create_repositories(self, session: AsyncSession) -> None:
         """Bind the repositories to the session."""
         self.users = UserRepository(session)
         self.groups = GroupRepository(session)
         self.permissions = PermissionStore(session)
+        self.tokens = TokenStore(session)

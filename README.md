@@ -13,12 +13,13 @@ A Django-style framework for domain-driven FastAPI services. It provides:
   through RabbitMQ, with queues for separate worker pools
 - users, groups, and permissions per content type, as in Django's
   `contrib.auth`: password hashing and rules, backends, object permissions,
-  and a swappable user model
+  and a swappable user model; token or JWT authentication, and route rules
+  as in Django REST framework
 - optional apps for reliable messaging, audit trails, idempotent requests,
   and tamper-evident evidence
 
 ```bash
-pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, immudb, redis, rabbitmq, metrics, tracing, testing
+pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, immudb, redis, rabbitmq, metrics, tracing, testing
 ```
 
 ## Documentation
@@ -32,7 +33,7 @@ pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, immudb
 - [docs/contrib.md](https://github.com/karimmattar/domainkit/blob/main/docs/contrib.md): messaging (and workers on RabbitMQ),
   audit, idempotency, and evidence
 - [docs/auth.md](https://github.com/karimmattar/domainkit/blob/main/docs/auth.md): users, groups, permissions, content
-  types, passwords, and backends
+  types, passwords, backends, tokens, and route rules
 - [docs/versioning.md](https://github.com/karimmattar/domainkit/blob/main/docs/versioning.md): compatibility, deprecations, and releases
 - [docs/adr/](https://github.com/karimmattar/domainkit/tree/main/docs/adr): the decisions behind the design
 - [CHANGELOG.md](https://github.com/karimmattar/domainkit/blob/main/CHANGELOG.md) and [SECURITY.md](https://github.com/karimmattar/domainkit/blob/main/SECURITY.md)

@@ -8,6 +8,22 @@ All notable changes to domainkit. The format follows
 
 ### Added
 
+- Requests are authenticated (ADR 0016, `docs/auth.md`):
+  `AuthenticationMiddleware` sets `request.user` and makes the user the
+  request's actor, so rate limits, idempotency keys, logs, and the audit
+  trail are per user. Authentication classes (`AUTH.AUTHENTICATION_CLASSES`):
+  opaque tokens by default, stored as digests and revocable at once, and
+  JSON Web Tokens with rotating refresh tokens through the new `jwt` extra.
+- `domainkit.contrib.auth.api.router`: log in (throttled by `AUTH.LOGIN_RATE`,
+  refusals audited), refresh, log out (here or everywhere), `/me`, and
+  password changes that end the user's other sessions.
+- Route rules modelled on Django REST framework's permission classes:
+  `IsAuthenticated`, `IsAdminUser`, `HasPermissions`, `ModelPermissions`,
+  `HasObjectPermissions`, and more, combined with `&`, `|`, `~`, and checked
+  by the FastAPI dependency `Require`; `CurrentUser` and `AuthenticatedUser`.
+- The `createtoken` and `cleartokens` commands, and an hourly purge of
+  expired tokens with messaging.
+
 - `domainkit.contrib.auth` and `domainkit.contrib.contenttypes`, Django's
   users, groups, and permissions for REST APIs (ADR 0015, `docs/auth.md`):
   permissions per content type (`<domain>.<action>_<model>`, and those a
@@ -26,8 +42,19 @@ All notable changes to domainkit. The format follows
 - `domainkit.management.base.run_async`, for sync commands that reach the
   database between prompts.
 
+### Changed
+
+- `changepassword` ends every token of the user.
+- Run `makemigrations` and `migrate` in projects that install auth: tokens
+  have a table, `domainkit_tokens`.
+
 ### Fixed
 
+- Rate limits and idempotency keys were per client address even for
+  logged-in users, so users behind one address shared a limit, and one could
+  be replayed another's response (M3). With `AuthenticationMiddleware` they
+  are per user; without an actor, idempotency keys are also scoped by a hash
+  of the request's `Authorization` and `Cookie` headers.
 - A streamed body over `MAX_REQUEST_BODY_SIZE` sent with an
   `Idempotency-Key` got a 500 and was reported as an unhandled error;
   `RequestBodyLimitMiddleware` now answers 413 for middleware that reads

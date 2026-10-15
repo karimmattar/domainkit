@@ -6,19 +6,25 @@ caller commits (see ``AuthUnitOfWork``).
 
 import dataclasses
 from collections.abc import Iterable
+from datetime import datetime, timedelta
 from typing import Any
+from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, exists, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.db import SqlAlchemyRepository
 
+from .events import UserLoggedIn
 from .exceptions import GroupNameTaken, UnknownPermission, UsernameTaken
 from .hashers import amake_password
 from .models import AbstractBaseUser, Group, GroupId, PasswordHash, Permission, UserId
-from .tables import groups, permissions
-from .users import get_user_model
+from .settings import auth_settings
+from .tables import groups, permissions, tokens
+from .tokens import AuthToken, TokenKind, new_token, token_digest, utc_now
+from .users import get_user_model, get_user_table
 
 
 class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
@@ -84,6 +90,21 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
             user.set_unusable_password()
         else:
             user.set_password(PasswordHash(await amake_password(password)))
+
+    async def record_login(self, user: AbstractBaseUser) -> None:
+        """Store the login time and record ``UserLoggedIn``.
+
+        The time is written on its own, without bumping the user's
+        ``version``, so two logins at once never conflict.
+        """
+        when = utc_now()
+        table = get_user_table()
+        await self.session.execute(
+            update(table).where(table.c.id == user.id).values(last_login=when)
+        )
+        set_committed_value(user, "last_login", when)
+        self._track(user)
+        user.record(UserLoggedIn(user_id=user.id))
 
 
 class GroupRepository(SqlAlchemyRepository[Group, GroupId]):
@@ -153,3 +174,98 @@ class PermissionStore:
     async def keys(self) -> frozenset[str]:
         """The key of every permission."""
         return frozenset(permission.key for permission in await self.all())
+
+
+class TokenStore:
+    """Opaque tokens, found by their digest; the raw token is never stored."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Work in ``session``."""
+        self.session = session
+
+    async def issue(
+        self,
+        user_id: UUID,
+        *,
+        kind: TokenKind = TokenKind.ACCESS,
+        ttl: timedelta | None,
+        name: str = "",
+        family: UUID | None = None,
+        now: datetime | None = None,
+    ) -> str:
+        """Store a new token for ``user_id`` and return it (shown only now).
+
+        It works for ``ttl`` from ``now`` (default: the current time).
+        """
+        raw = new_token(auth_settings().TOKEN_PREFIX)
+        now = now or utc_now()
+        self.session.add(
+            AuthToken(
+                id=token_digest(raw),
+                user_id=user_id,
+                kind=kind,
+                name=name,
+                family=family,
+                created_at=now,
+                expires_at=None if ttl is None else now + ttl,
+            )
+        )
+        return raw
+
+    async def find(self, raw: str) -> AuthToken | None:
+        """The stored token ``raw`` is, expired or not."""
+        return await self.session.get(AuthToken, token_digest(raw))
+
+    async def family_active(self, family: UUID, now: datetime | None = None) -> bool:
+        """Whether the login ``family`` still has an unexpired token."""
+        moment = now or utc_now()
+        statement = select(
+            exists().where(
+                tokens.c.family == family,
+                tokens.c.expires_at.is_(None) | (tokens.c.expires_at > moment),
+            )
+        )
+        return bool(await self.session.scalar(statement))
+
+    async def mark_used(self, token: AuthToken) -> bool:
+        """Mark a refresh token used, unless a concurrent request did first."""
+        when = utc_now()
+        result = await self.session.execute(
+            update(tokens)
+            .where(tokens.c.id == token.id, tokens.c.used_at.is_(None))
+            .values(used_at=when)
+        )
+        set_committed_value(token, "used_at", when)
+        return _count(result) == 1
+
+    async def revoke(self, token_id: str) -> int:
+        """Delete the token with digest ``token_id``."""
+        return await self._delete(tokens.c.id == token_id)
+
+    async def revoke_family(self, family: UUID) -> int:
+        """Delete every token one login led to."""
+        return await self._delete(tokens.c.family == family)
+
+    async def revoke_user(
+        self, user_id: UUID, *, keep: str | None = None, keep_family: UUID | None = None
+    ) -> int:
+        """Delete every token of ``user_id``, except one token or one family."""
+        condition = tokens.c.user_id == user_id
+        if keep is not None:
+            condition &= tokens.c.id != keep
+        if keep_family is not None:
+            condition &= (tokens.c.family != keep_family) | tokens.c.family.is_(None)
+        return await self._delete(condition)
+
+    async def clear_expired(self, now: datetime | None = None) -> int:
+        """Delete tokens whose lifetime is over."""
+        return await self._delete(tokens.c.expires_at <= (now or utc_now()))
+
+    async def _delete(self, condition: Any) -> int:  # noqa: ANN401 - a SQL clause.
+        """Delete matching tokens; return how many."""
+        return _count(await self.session.execute(delete(tokens).where(condition)))
+
+
+def _count(result: Any) -> int:  # noqa: ANN401 - a CursorResult.
+    """Rows a statement changed."""
+    return int(result.rowcount)
