@@ -250,6 +250,18 @@ def test_logins_are_throttled_per_address_and_per_username(api: Api) -> None:
         == 401
     )
 
+    nearby = [
+        TestClient(client.app, client=(address, 1))
+        .post("/auth/login", json={**wrong, "username": name})
+        .status_code
+        for address, name in (
+            ("2001:db8::1", "dan"),
+            ("2001:db8::2", "erin"),
+            ("2001:db8::3", "finn"),
+        )
+    ]
+    assert nearby == [401, 401, 429]
+
     unlimited = api(LOGIN_RATE=None)
     assert {
         unlimited.post("/auth/login", json=wrong).status_code for _ in range(4)

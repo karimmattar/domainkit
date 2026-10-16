@@ -442,6 +442,8 @@ class Settings(BaseModel):
     """Dotted path to a ``Backend`` class; the default counts per process."""
     RATE_LIMIT_CACHE: str = DEFAULT_CACHE_ALIAS
     """The Redis cache ``RedisBackend`` keeps counts in, shared by every replica."""
+    RATE_LIMIT_IPV6_PREFIX: int = Field(default=64, ge=1, le=128)
+    """IPv6 clients are counted per network of this prefix length (one customer's)."""
     METRICS_TOKEN: SecretStr | None = None
     """Bearer token for ``/metrics``; without it staging and production refuse."""
     ERROR_REPORTERS: tuple[str, ...] = ()
