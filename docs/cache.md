@@ -215,7 +215,10 @@ That is the worst case, not one recomputation per request.
 ## Shared rate limits
 
 `RATE_LIMIT` counts per process by default, so ten replicas allow ten times
-the limit. Keep the counts in Redis to share them:
+the limit. The memory backend keeps the 100,000 most recently seen callers,
+so its memory and the cost of a request stay bounded; a caller seen longer
+ago starts afresh. Keep the counts in Redis to share them, and to count
+every caller:
 
 ```python
 RATE_LIMIT = "300/minute"

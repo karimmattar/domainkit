@@ -29,7 +29,7 @@ from domainkit.apps import registry
 from domainkit.conf import settings
 from domainkit.context import bind_request, current_request
 from domainkit.http.errors import APIError, ErrorResponse
-from domainkit.http.ratelimit import Backend
+from domainkit.http.ratelimit import Backend, client_group
 from domainkit.utils.module_loading import import_string
 from domainkit.utils.rates import parse_rate
 
@@ -234,7 +234,7 @@ async def _throttle(request: Request, username: str) -> None:
         return
     limit, period = parse_rate(rate)
     limiter = _limiter(request)
-    client = request.client.host if request.client else "unknown"
+    client = client_group(request.client.host) if request.client else "unknown"
     user_key = hashlib.sha256(username.casefold().encode()).hexdigest()
     for key in (f"login:ip:{client}", f"login:user:{user_key}"):
         decision = await limiter.hit(key, limit, period)

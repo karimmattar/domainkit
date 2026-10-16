@@ -79,6 +79,13 @@ All notable changes to domainkit. The format follows
 
 ### Fixed
 
+- The in-memory rate limiter could slow every request and grow without
+  bound (M4): past 100,000 callers it rescanned them all on each request,
+  about 11 ms each, and kept those still counting. It now keeps callers in
+  the order they were last seen, forgets idle ones as it goes, and keeps at
+  most 100,000: about 0.01 ms per request. IPv6 clients are counted per /64
+  (`RATE_LIMIT_IPV6_PREFIX`), by the rate limit and the login throttle, so
+  changing address within one customer's network no longer escapes them.
 - Rate limits and idempotency keys were per client address even for
   logged-in users, so users behind one address shared a limit, and one could
   be replayed another's response (M3). With `AuthenticationMiddleware` they

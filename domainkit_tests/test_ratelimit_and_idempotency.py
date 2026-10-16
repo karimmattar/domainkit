@@ -19,7 +19,7 @@ from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
-from domainkit.http.ratelimit import Decision, MemoryBackend, _caller
+from domainkit.http.ratelimit import Decision, MemoryBackend, _caller, client_group
 from domainkit.utils.rates import parse_rate
 from domainkit_tests import sample_routes
 
@@ -89,17 +89,69 @@ def test_gcra_admits_new_callers_whatever_the_clock_reads(now: float) -> None:
     assert refused.retry_after == pytest.approx(60)
 
 
-def test_memory_backend_purges_idle_callers() -> None:
-    """Callers whose quota has refilled are forgotten once the map outgrows max_keys."""
+def test_memory_backend_forgets_idle_callers() -> None:
+    """Callers whose quota is full again are forgotten, longest-unseen first."""
     clock = [0.0]
-    backend = MemoryBackend(max_keys=2, clock=lambda: clock[0])
-    asyncio.run(backend.hit("a", 1, 1))
-    clock[0] += 10
-    asyncio.run(backend.hit("b", 1, 1))
-    assert set(backend._arrival) == {"a", "b"}
+    backend = MemoryBackend(clock=lambda: clock[0])
 
-    asyncio.run(backend.hit("c", 1, 1))
-    assert set(backend._arrival) == {"b", "c"}
+    def hit(key: str, limit: int, period: float) -> Decision:
+        return asyncio.run(backend.hit(key, limit, period))
+
+    hit("a", 1, 1)
+    hit("b", 1, 100)
+    clock[0] = 0.5
+    hit("c", 1, 1)
+    clock[0] = 2
+    hit("d", 1, 1)
+    # "a" is full again and goes; "b" is not, so "c" waits behind it.
+    assert list(backend._arrival) == ["b", "c", "d"]
+    assert hit("b", 1, 100).allowed is False
+    clock[0] = 200
+    hit("e", 1, 1)
+    assert list(backend._arrival) == ["e"]
+    clock[0] = 201
+    hit("f", 1, 1)
+    # "e" refilled at this very moment: forgotten too.
+    assert list(backend._arrival) == ["f"]
+
+
+def test_memory_backend_keeps_at_most_max_keys_callers() -> None:
+    """Past ``max_keys``, the longest-unseen caller is forgotten and starts afresh."""
+    assert MemoryBackend().max_keys == 100_000
+    backend = MemoryBackend(max_keys=2, clock=lambda: 0.0)
+
+    def hit(key: str) -> Decision:
+        return asyncio.run(backend.hit(key, 1, 60))
+
+    assert [hit(key).allowed for key in ("a", "b", "a", "c")] == [
+        True,
+        True,
+        False,
+        True,
+    ]
+    # The refusal counted as seeing "a", so "b" was the one forgotten.
+    assert list(backend._arrival) == ["a", "c"]
+    assert hit("a").allowed is False
+    assert hit("b").allowed is True
+    assert list(backend._arrival) == ["a", "b"]
+
+
+def test_ipv6_clients_are_counted_per_network() -> None:
+    """IPv4 as is; IPv6 by its /64 (``RATE_LIMIT_IPV6_PREFIX``)."""
+    assert client_group("203.0.113.7") == "203.0.113.7"
+    assert client_group("2001:db8:1:2:aaaa::1") == "2001:db8:1:2::/64"
+    assert client_group("2001:DB8:1:2::9") == "2001:db8:1:2::/64"
+    assert client_group("fe80::1%eth0") == "fe80::/64"
+    assert client_group("::ffff:203.0.113.7") == "203.0.113.7"
+    assert client_group("testclient") == "testclient"
+    with override_settings(RATE_LIMIT_IPV6_PREFIX=56):
+        assert client_group("2001:db8:1:2ff::1") == "2001:db8:1:200::/56"
+    with override_settings(RATE_LIMIT_IPV6_PREFIX=128):
+        assert client_group("2001:db8::1") == "2001:db8::1/128"
+    for prefix in (0, 129):
+        with pytest.raises(ValueError, match="RATE_LIMIT_IPV6_PREFIX"):
+            Settings.model_validate({"RATE_LIMIT_IPV6_PREFIX": prefix})
+    assert Settings.model_validate({"RATE_LIMIT_IPV6_PREFIX": 1})
 
 
 def test_rate_limit_middleware() -> None:
@@ -140,6 +192,25 @@ def test_rate_limits_count_http_requests_per_caller() -> None:
     assert (echoed.status_code, echoed.json()) == (200, {"size": 4})
     assert echoed.headers["RateLimit-Remaining"] == "0"
     assert (refused.status_code, other.status_code) == (429, 200)
+
+
+def test_rate_limits_count_ipv6_clients_per_network() -> None:
+    """Changing address within a /64 does not escape the limit."""
+    with override_settings(
+        RATE_LIMIT="1/minute",
+        MIDDLEWARE=[*BASE_MIDDLEWARE, "domainkit.http.ratelimit.RateLimitMiddleware"],
+    ):
+        app = get_asgi_application()
+
+        def status_from(address: str) -> int:
+            return TestClient(app, client=(address, 1)).get("/ok").status_code
+
+        statuses = [
+            status_from(address)
+            for address in ("2001:db8::1", "2001:db8::ffff:2", "2001:db8:0:1::1")
+        ]
+
+    assert statuses == [200, 429, 200]
 
 
 def test_rate_limit_disabled_and_misconfigured() -> None:

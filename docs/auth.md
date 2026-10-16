@@ -395,7 +395,7 @@ Tokens come as OAuth 2's token response:
 ```
 
 Logins are limited to `AUTH.LOGIN_RATE` (10 a minute) per client address
-and per username, with the `RATE_LIMIT_BACKEND` (use `RedisBackend` behind
+(IPv6 per network, `RATE_LIMIT_IPV6_PREFIX`) and per username, with the `RATE_LIMIT_BACKEND` (use `RedisBackend` behind
 several replicas), and so are password changes. Unknown users, wrong
 passwords, and inactive users get the same answer in the same time. With
 `domainkit.contrib.audit` installed, refused and throttled logins are

@@ -9,14 +9,20 @@ one period can see up to about twice ``limit`` after an idle stretch.
 Responses carry ``RateLimit-Limit``, ``RateLimit-Remaining``, and
 ``RateLimit-Reset``; refused ones get 429 with ``Retry-After``.
 
+Callers without an actor are counted by client address, IPv6 ones by their
+network (``RATE_LIMIT_IPV6_PREFIX``, a /64): one customer usually holds a
+whole /64, and could otherwise change address to escape the limit.
+
 The default backend lives in process memory, so each replica counts on its
 own. Behind several replicas, use ``RedisBackend``: one count per caller in
 the Redis cache ``RATE_LIMIT_CACHE``, shared by every replica (ADR 0013).
 """
 
+import ipaddress
 import logging
 import math
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
@@ -58,19 +64,27 @@ class Backend(Protocol):
 
 
 class MemoryBackend:
-    """GCRA state in this process; stale callers are purged as it grows."""
+    """GCRA state in this process, for at most ``max_keys`` callers.
+
+    Callers are kept in the order they were last seen. Each request forgets
+    the longest-unseen callers whose quota is full again, which changes no
+    decision. Past ``max_keys``, the longest-unseen caller is forgotten
+    anyway and starts afresh. Memory and the cost of a request stay bounded
+    however many callers there are.
+    """
 
     def __init__(
         self, max_keys: int = 100_000, clock: Callable[[], float] = time.monotonic
     ) -> None:
-        """Keep at most about ``max_keys`` callers; ``clock`` reads seconds."""
+        """Keep at most ``max_keys`` callers; ``clock`` reads seconds."""
         self.max_keys = max_keys
         self.clock = clock
-        self._arrival: dict[str, float] = {}
+        self._arrival: OrderedDict[str, float] = OrderedDict()
 
     async def hit(self, key: str, limit: int, period: float) -> Decision:
         """Apply GCRA: allow if the theoretical arrival time is within the burst."""
         now = self.clock()
+        self._forget_idle(now)
         interval = period / limit
         tolerance = period - interval
         arrival = max(self._arrival.get(key, now), now)
@@ -79,6 +93,7 @@ class MemoryBackend:
         # which refused new callers at a limit of 1.
         debt = arrival - now
         if debt > tolerance:
+            self._arrival.move_to_end(key)
             return Decision(
                 allowed=False,
                 remaining=0,
@@ -86,8 +101,9 @@ class MemoryBackend:
                 retry_after=debt - tolerance,
             )
         self._arrival[key] = arrival + interval
+        self._arrival.move_to_end(key)
         if len(self._arrival) > self.max_keys:
-            self._purge(now)
+            del self._arrival[next(iter(self._arrival))]  # The longest unseen.
         return Decision(
             allowed=True,
             remaining=math.floor((tolerance - debt) / interval),
@@ -95,9 +111,13 @@ class MemoryBackend:
             retry_after=0.0,
         )
 
-    def _purge(self, now: float) -> None:
-        """Forget callers whose quota is already full again."""
-        self._arrival = {k: v for k, v in self._arrival.items() if v > now}
+    def _forget_idle(self, now: float) -> None:
+        """Forget the longest-unseen callers while their quota is full again."""
+        while self._arrival:
+            key, arrival = next(iter(self._arrival.items()))
+            if arrival > now:
+                return
+            del self._arrival[key]
 
 
 class RedisBackend:
@@ -205,4 +225,22 @@ def _caller(scope: Scope) -> str:
     if request is not None and request.actor:
         return f"actor:{request.actor}"
     client = scope.get("client")
-    return f"ip:{client[0] if client else 'unknown'}"
+    return f"ip:{client_group(client[0]) if client else 'unknown'}"
+
+
+def client_group(host: str) -> str:
+    """The address a client is counted by: IPv4 as is, IPv6 by its network.
+
+    IPv4-mapped IPv6 addresses count as their IPv4 address. Hosts that are
+    not addresses (a test client's name) are returned unchanged.
+    """
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return host
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.ipv4_mapped is not None:
+            return str(address.ipv4_mapped)
+        prefix = settings.RATE_LIMIT_IPV6_PREFIX
+        return str(ipaddress.IPv6Interface((address, prefix)).network)
+    return str(address)
