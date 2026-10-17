@@ -53,5 +53,5 @@ settings reference
 | Lint with bandit rules (ruff `S`), strict typing (mypy) | `pyproject.toml`, CI |
 | Dependency audit (pip-audit) and secret scan (gitleaks) on every push | `.github/workflows/ci.yml` |
 | Actions pinned to commit SHAs; dependencies updated by Renovate after 14 days, security fixes at once | `.github/workflows/`, `renovate.json` |
-| Releases built in CI and published to PyPI with trusted publishing (no API tokens) and attestations | `.github/workflows/release.yml` |
+| Releases only from commits on `main` that pass the whole CI workflow, built in CI, approved in the `pypi` environment, and published to PyPI with trusted publishing (no API tokens) and attestations | `.github/workflows/release.yml` |
 | Property-based and mutation tests, random test order | `domainkit_tests/` |

@@ -79,6 +79,13 @@ All notable changes to domainkit. The format follows
 
 ### Fixed
 
+- A release could be published from any `v*` tag after only the unit tests
+  (L3). `release.yml` now refuses tags on commits that are not on `main`,
+  runs the whole CI workflow on the tagged commit (lint, types,
+  integration, coverage, build, pip-audit, gitleaks), and publishes the
+  wheel and sdist that CI built and smoke-tested. The `pypi` environment's
+  reviewer and the `v*` tag ruleset remain GitHub settings; see
+  `docs/versioning.md`.
 - The production settings made by `init` published the API docs, sent no
   HSTS header, and had no rate limit (L2). They now turn the docs off
   (`API_DOCS`), send HSTS for a year (`SECURE_HSTS_SECONDS`), and allow each
