@@ -15,7 +15,7 @@ class Command(BaseCommand):
     help = (
         "Validate settings, installed domains, routes and their access rules, "
         "middleware, the dependency rules between domain layers, and the "
-        "migration history."
+        "migration history; warn about weak choices in staging and production."
     )
 
     def handle(self, **options: object) -> None:
@@ -38,4 +38,9 @@ class Command(BaseCommand):
                 + "\n".join(f"  {problem}" for problem in problems)
             )
         labels = ", ".join(config.label for config in registry) or "none"
-        self.write(f"System check identified no issues. Domains: {labels}.")
+        warnings = settings.deployment_warnings()
+        plural = "s" if len(warnings) > 1 else ""
+        found = f" and {len(warnings)} warning{plural}" if warnings else ""
+        self.write(f"System check identified no issues{found}. Domains: {labels}.")
+        for warning in warnings:
+            self.write(f"  Warning: {warning}")

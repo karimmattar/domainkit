@@ -29,6 +29,7 @@ Environment = Literal["local", "test", "staging", "production"]
 DEPLOYED_ENVIRONMENTS: Final = frozenset({"staging", "production"})
 """Environments held to the deployment checks in ``Settings``."""
 
+RATE_LIMIT_MIDDLEWARE: Final = "domainkit.http.ratelimit.RateLimitMiddleware"
 DEFAULT_MIDDLEWARE: Final = (
     "domainkit.http.middleware.ProxyHeadersMiddleware",
     "domainkit.http.middleware.SecurityHeadersMiddleware",
@@ -508,6 +509,32 @@ class Settings(BaseModel):
                 f"DATABASE_ROUTING[{label!r}] = {target!r} must name a shard group "
                 "or a SQL alias outside the shard groups"
             )
+
+    def deployment_warnings(self) -> list[str]:
+        """Weak but valid choices in staging and production; ``check`` lists them.
+
+        Unlike the deployment checks, they do not stop the application: an
+        API may publish its documentation on purpose, for example.
+        """
+        if self.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
+            return []
+        warnings = []
+        if self.API_DOCS:
+            warnings.append(
+                "API_DOCS publishes /docs, /redoc, and /openapi.json to anyone; "
+                "set it to False unless the API is public."
+            )
+        if not self.SECURE_HSTS_SECONDS:
+            warnings.append(
+                "SECURE_HSTS_SECONDS is 0, so browsers may still use plain HTTP; "
+                "set it (31536000 is a year) once HTTPS works everywhere."
+            )
+        if self.RATE_LIMIT is None or RATE_LIMIT_MIDDLEWARE not in self.MIDDLEWARE:
+            warnings.append(
+                f"Requests are not rate limited; set RATE_LIMIT and list "
+                f"{RATE_LIMIT_MIDDLEWARE} in MIDDLEWARE."
+            )
+        return warnings
 
     def _check_deployment(self) -> None:
         """Enforce the security baseline for staging and production."""
