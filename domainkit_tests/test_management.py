@@ -153,9 +153,13 @@ def test_check_lists_weak_deployment_choices() -> None:
             "  Warning: Requests are not rate limited; set RATE_LIMIT and list "
             "domainkit.http.ratelimit.RateLimitMiddleware in MIDDLEWARE.\n"
         )
+    with_hsts = {**production, "SECURE_HSTS_SECONDS": 1}
+    with override_settings(**with_hsts):
+        assert run("check").startswith(
+            "System check identified no issues and 2 warnings. Domains: alpha.\n"
+        )
     hardened = {
-        **production,
-        "SECURE_HSTS_SECONDS": 1,
+        **with_hsts,
         "RATE_LIMIT": "10/second",
         "MIDDLEWARE": [*DEFAULT_MIDDLEWARE, RATE_LIMIT_MIDDLEWARE],
     }
