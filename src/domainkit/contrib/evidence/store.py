@@ -66,7 +66,9 @@ def subject_digest(subject: str, key: bytes | None) -> str:
     plain SHA-256, as format 1 records were keyed.
     """
     data = subject.encode()
-    digest = hashlib.sha256(data) if key is None else hmac.new(key, data, "sha256")
+    digest = (
+        hashlib.sha256(data) if key is None else hmac.new(key, data, hashlib.sha256)
+    )
     return digest.hexdigest()[:_SUBJECT_DIGEST_LENGTH]
 
 

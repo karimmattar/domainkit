@@ -6,9 +6,10 @@ import hmac
 import io
 import json
 import re
+import time
 import uuid
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -31,6 +32,7 @@ from domainkit.contrib.evidence import (
     sha256,
     subject_digest,
 )
+from domainkit.contrib.evidence import apps as evidence_apps
 from domainkit.contrib.evidence.settings import (
     DEVELOPMENT_SUBJECT_KEY,
     EvidenceSettings,
@@ -123,19 +125,43 @@ def test_canonical_records_never_change() -> None:
 @pytest.mark.parametrize(
     ("changes", "message"),
     [
-        ({"kind": "KYC.Done"}, "dotted lowercase"),
-        ({"kind": "a" * 101}, "dotted lowercase"),
-        ({"subject": ""}, "1 to 255 characters"),
-        ({"subject": "s" * 256}, "1 to 255 characters"),
-        ({"artifacts": {"scan": "md5:abc"}}, "sha256:<hex>"),
-        ({"recorded_at": datetime(2026, 1, 1)}, "timezone-aware"),  # noqa: DTZ001 - the error.
+        (
+            {"kind": "KYC.Done"},
+            "Evidence kind 'KYC.Done' must be a dotted lowercase name.",
+        ),
+        (
+            {"kind": "a" * 101},
+            f"Evidence kind '{'a' * 101}' must be a dotted lowercase name.",
+        ),
+        ({"subject": ""}, "Evidence subject must be 1 to 255 characters."),
+        ({"subject": "s" * 256}, "Evidence subject must be 1 to 255 characters."),
+        (
+            {"artifacts": {"scan": "md5:abc"}},
+            "Artifact 'scan' must be a sha256:<hex> digest.",
+        ),
+        (
+            {"recorded_at": datetime(2026, 1, 1)},  # noqa: DTZ001 - the error.
+            "Evidence recorded_at must be timezone-aware.",
+        ),
     ],
 )
 def test_evidence_is_validated(changes: dict[str, Any], message: str) -> None:
     """Records that could not be stored or checked later are refused."""
     values = {"kind": "kyc.checked", "subject": "customer:1", **changes}
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
         Evidence(**values)
+
+
+def test_records_keep_time_in_utc(monkeypatch: pytest.MonkeyPatch) -> None:
+    """recorded_at is written in UTC, whatever zone it has or the host uses."""
+    cairo = datetime(2026, 10, 14, 11, 30, tzinfo=timezone(timedelta(hours=2)))
+    with monkeypatch.context() as patch:
+        patch.setenv("TZ", "Asia/Tokyo")
+        time.tzset()
+        body = dataclasses.replace(FIXED, recorded_at=cairo).canonical()
+    time.tzset()
+
+    assert b'"recorded_at":"2026-10-14T09:30:00.000000+00:00"' in body
 
 
 SUBJECT_REFUSED = (
@@ -290,7 +316,11 @@ async def test_records_may_be_exactly_the_limit() -> None:
     under = store(namespace="e", max_bytes=len(body) - 1)
 
     await at_limit.record(FIXED)
-    with pytest.raises(ValueError, match="the limit is"):
+    message = (
+        f"Evidence record is {len(body)} bytes; the limit is {len(body) - 1}. "
+        "Store documents elsewhere and record their sha256 digests."
+    )
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
         await under.record(FIXED)
 
 
@@ -379,6 +409,25 @@ async def test_evidence_is_listed_by_subject() -> None:
     assert len(await evidence_store_.for_subject("customer:1", limit=2)) == 2
 
 
+async def test_subjects_are_listed_a_hundred_records_at_a_time() -> None:
+    """Each prefix scan asks for the limit (100 by default), not for everything."""
+
+    class Counting(MemoryLedger):
+        def __init__(self) -> None:
+            super().__init__()
+            self.limits: list[int] = []
+
+        async def keys(self, prefix: bytes, *, limit: int) -> list[bytes]:
+            self.limits.append(limit)
+            return await super().keys(prefix, limit=limit)
+
+    ledger = Counting()
+    await store(ledger).for_subject("customer:1")
+    await store(ledger).for_subject("customer:1", limit=7)
+
+    assert ledger.limits == [100, 100, 7, 7]
+
+
 # The app -------------------------------------------------------------------------
 
 
@@ -460,6 +509,26 @@ def test_deployments_need_a_subject_key(environment: str) -> None:
         f"EVIDENCE.SUBJECT_KEY is required in {environment}: a random secret of "
         "32 characters or more, kept for as long as the evidence."
     )
+
+
+def test_durable_recording_is_registered_with_messaging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ready() imports the recording task only when messaging is installed."""
+    imported: list[str] = []
+    monkeypatch.setattr(evidence_apps, "import_module", imported.append)
+    for domains in ([EVIDENCE], [MESSAGING, EVIDENCE]):
+        registry.clear()
+        with override_settings(
+            INSTALLED_DOMAINS=domains,
+            DATABASES={"default": {"URL": "sqlite+aiosqlite:///:memory:"}},
+            LEDGERS={"evidence": {"URL": "memory://"}},
+            ALPHA=UNSET,
+        ):
+            setup()
+    registry.clear()
+
+    assert imported == ["domainkit.contrib.evidence.tasks"]
 
 
 def test_evidence_works_without_messaging() -> None:

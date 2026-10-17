@@ -32,6 +32,10 @@ SUBJECT: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]*")
 """Internal ids such as ``customer:42``: no ``@``, spaces, or ``+``."""
 _KIND_LENGTH: Final = 100
 _SUBJECT_LENGTH: Final = 255
+_CANONICAL_JSON: Final = json.JSONEncoder(
+    sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+)
+"""Sorted keys, no spaces, UTF-8 text, and no NaN: one form per value."""
 
 
 class EvidenceNotFound(NotFound):
@@ -128,13 +132,7 @@ class Evidence:
             "request_id": self.request_id,
         }
         try:
-            text = json.dumps(
-                document,
-                sort_keys=True,
-                separators=(",", ":"),
-                ensure_ascii=False,
-                allow_nan=False,
-            )
+            text = _CANONICAL_JSON.encode(document)
         except (TypeError, ValueError) as exc:
             raise ValueError(
                 f"Evidence facts must be plain JSON values: {exc}"
