@@ -19,6 +19,7 @@ from domainkit import setup, tracing
 from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.contrib.messaging import Worker, enqueue
+from domainkit.contrib.messaging.registry import qualified_name
 from domainkit.contrib.messaging.tables import messages
 from domainkit.db import connections
 from domainkit.http import get_asgi_application
@@ -119,8 +120,12 @@ def test_commits_and_messages_are_traced(database: None) -> None:
 
     asyncio.run(scenario())
 
-    names = [span.name for span in EXPORTER.get_finished_spans()]
-    assert names == ["uow.commit", "message.process"]
+    spans = EXPORTER.get_finished_spans()
+    assert [span.name for span in spans] == ["uow.commit", "message.process"]
+    assert dict(spans[-1].attributes or {}) == {
+        "kind": "task",
+        "target": qualified_name(remember),
+    }
     assert sample("messaging_messages_total", kind="task", outcome="done") == before + 1
 
 

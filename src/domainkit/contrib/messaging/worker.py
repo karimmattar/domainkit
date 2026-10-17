@@ -6,6 +6,10 @@ be idempotent. Failures are retried with exponential backoff and jitter;
 after ``max_attempts`` the message is dead-lettered and reported. Messages
 are claimed with ``FOR UPDATE SKIP LOCKED`` on PostgreSQL, so any number of
 workers can share one outbox. There is no ordering guarantee between messages.
+
+A worker outlives database outages: it logs each failure, waits longer each
+time (up to ``OUTAGE_MAX_PAUSE``), and carries on. A message whose outcome
+could not be written runs again once its lock expires.
 """
 
 import asyncio
@@ -15,6 +19,7 @@ import secrets
 import time
 import uuid
 from collections.abc import Iterable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
@@ -57,6 +62,10 @@ except ImportError:  # pragma: no cover - only without the [metrics] extra.
 logger = logging.getLogger(__name__)
 _random = secrets.SystemRandom()
 _ERROR_LENGTH = 2000
+OUTAGE_MAX_PAUSE: Final = 60.0
+"""Longest wait between attempts while an outbox's database fails."""
+UNRECORDED: Final = "unrecorded"
+"""The outcome of a message that ran but whose outcome could not be written."""
 
 
 class UnknownTarget(LookupError):
@@ -106,6 +115,47 @@ def backoff(attempts: int, config: MessagingSettings) -> float:
     return ceiling * _random.uniform(0.5, 1.0)
 
 
+class Outage:
+    """Failures in a row to reach one outbox, and the pause before trying again."""
+
+    def __init__(self, database: str, poll_interval: float) -> None:
+        """Pause ``poll_interval`` after the first failure, doubling after each."""
+        self.database = database
+        self.poll_interval = poll_interval
+        self.failures = 0
+
+    def pause(self) -> float:
+        """Seconds to wait after ``failures`` failures in a row."""
+        return min(self.poll_interval * 2.0 ** (self.failures - 1), OUTAGE_MAX_PAUSE)
+
+    async def failed(self, exc: Exception, stop: asyncio.Event) -> None:
+        """Log the failure, then wait (less, if ``stop`` is set meanwhile)."""
+        self.failures += 1
+        pause = self.pause()
+        logger.error(
+            "Could not reach the outbox of %r (%d failure%s in a row); "
+            "trying again in %gs",
+            self.database,
+            self.failures,
+            "" if self.failures == 1 else "s",
+            pause,
+            exc_info=exc,
+        )
+        with suppress(TimeoutError):
+            async with asyncio.timeout(pause):
+                await stop.wait()
+
+    def recovered(self) -> None:
+        """Log the end of an outage, if one was going on."""
+        if self.failures:
+            logger.warning(
+                "The outbox of %r answers again after %d failures",
+                self.database,
+                self.failures,
+            )
+            self.failures = 0
+
+
 def _event_classes(base: type[DomainEvent] = DomainEvent) -> dict[str, type[Any]]:
     """Map every loaded event class to its qualified name."""
     found: dict[str, type[Any]] = {}
@@ -150,18 +200,29 @@ class Worker:
         """Whether this worker queues periodic tasks (the home outbox's does)."""
         return self.database == self.config.DATABASE
 
+    def outage(self) -> Outage:
+        """A new outage tracker for this worker's outbox."""
+        return Outage(self.database, self.config.POLL_INTERVAL)
+
     async def run(self, stop: asyncio.Event) -> None:
         """Process messages until ``stop`` is set, then finish the running ones."""
         running: set[asyncio.Task[None]] = set()
         stopping = asyncio.create_task(stop.wait())
+        outage = self.outage()
         try:
             while not stop.is_set():
-                await self.schedule_periodic()
-                await self.run_cleanup_when_due()
                 free = min(
                     self.config.CONCURRENCY - len(running), self.config.BATCH_SIZE
                 )
-                claimed = await self.claim(free) if free > 0 else []
+                try:
+                    await self.schedule_periodic()
+                    await self.run_cleanup_when_due()
+                    # A full worker waits for a free slot, so free is at least 1.
+                    claimed = await self.claim(free)
+                except Exception as exc:  # noqa: BLE001 - logged; the loop waits.
+                    await outage.failed(exc, stop)
+                    continue
+                outage.recovered()
                 for message in claimed:
                     task = asyncio.create_task(self.process(message))
                     running.add(task)
@@ -344,7 +405,11 @@ class Worker:
         return None if row is None else Claimed(**row._mapping, lock_id=lock_id)
 
     async def process(self, message: Claimed) -> None:
-        """Run one message under its original request id and actor; never raises."""
+        """Run one message under its original request id and actor; never raises.
+
+        If its outcome cannot be written, the message runs again once its
+        lock expires (``VISIBILITY_TIMEOUT``).
+        """
         context = RequestContext(
             request_id=message.headers.get("request_id") or message.id.hex,
             client_ip=None,
@@ -358,27 +423,39 @@ class Worker:
             span("message.process", kind=message.kind, target=message.target),
         ):
             try:
-                if message.attempts > message.max_attempts:
-                    raise AttemptsExhausted(
-                        "The worker stopped during the last attempt (a crash, "
-                        "or a kill before TASK_TIMEOUT)."
-                    )
-                async with asyncio.timeout(self.config.TASK_TIMEOUT):
-                    await self._execute(message)
-            except (UnknownTarget, AttemptsExhausted) as exc:
-                outcome = await self._failed(message, exc, permanent=True)
-            except Exception as exc:  # noqa: BLE001 - logged and retried by _failed.
-                outcome = await self._failed(message, exc, permanent=False)
-            else:
-                await self._release(message, status=DONE, finished_at=_now())
-                outcome = DONE
-                logger.debug(
-                    "Ran %s %s in %.1fms",
+                outcome = await self._run(message, started)
+            except Exception as exc:  # The lock runs the message again later.
+                logger.error(
+                    "Could not record the outcome of %s %s; it runs again once "
+                    "its lock expires",
                     message.kind,
                     message.target,
-                    (time.perf_counter() - started) * 1000,
+                    exc_info=exc,
                 )
+                outcome = UNRECORDED
         observe(message.kind, outcome, time.perf_counter() - started)
+
+    async def _run(self, message: Claimed, started: float) -> str:
+        """Run ``message`` and record its outcome; return the outcome."""
+        try:
+            if message.attempts > message.max_attempts:
+                raise AttemptsExhausted(
+                    "The worker stopped during the last attempt (a crash, "
+                    "or a kill before TASK_TIMEOUT)."
+                )
+            async with asyncio.timeout(self.config.TASK_TIMEOUT):
+                await self._execute(message)
+        except Exception as exc:  # noqa: BLE001 - logged and retried by _failed.
+            permanent = isinstance(exc, UnknownTarget | AttemptsExhausted)
+            return await self._failed(message, exc, permanent=permanent)
+        await self._release(message, status=DONE, finished_at=_now())
+        logger.debug(
+            "Ran %s %s in %.1fms",
+            message.kind,
+            message.target,
+            (time.perf_counter() - started) * 1000,
+        )
+        return DONE
 
     async def _execute(self, message: Claimed) -> None:
         """Call the handler or task ``message`` names."""
@@ -448,18 +525,19 @@ class Worker:
             return
         now = _now()
         rows = []
+        slots = {}
         for spec, every in periodic_tasks():
             seconds = every.total_seconds()
-            slot = int(now.timestamp() // seconds)
+            slot = int(now.timestamp() / seconds)
             if self._scheduled.get(spec.key) == slot:
                 continue
-            self._scheduled[spec.key] = slot
+            slots[spec.key] = slot
             rows.append(
                 message_row(
                     kind="task",
                     target=spec.key,
                     payload={},
-                    headers={"request_id": None, "actor": None},
+                    headers={},  # No request or actor caused it.
                     max_attempts=spec.max_attempts or self.config.MAX_ATTEMPTS,
                     queue=spec.queue,
                     dedupe_key=f"periodic:{spec.key}:{slot}",
@@ -469,6 +547,8 @@ class Worker:
         if rows:
             async with self.engine.begin() as connection:
                 await write(connection, connection.dialect.name, rows)
+            # Only now: a failed write is tried again on the next round.
+            self._scheduled.update(slots)
 
     async def cleanup(self) -> int:
         """Delete finished messages older than ``RETENTION_SECONDS``."""

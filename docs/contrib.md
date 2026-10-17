@@ -63,6 +63,14 @@ dead-lettered at once. So is a message whose worker died (a crash, or a
 kill) during its last attempt: it is not run again after `max_attempts`. `python manage.py messages --dead` lists dead
 letters, and `--retry ID` (or `all`) queues them again after a fix.
 
+**Database outages** do not stop a worker. When its outbox cannot be
+reached (a restart, a network drop, a failover), it logs the error, waits
+`POLL_INTERVAL`, doubling the wait after each failure in a row up to a
+minute, and carries on; it logs again when the outbox answers. A message
+that ran but whose outcome could not be written runs again once its lock
+expires (`VISIBILITY_TIMEOUT`), as after a crash. A periodic task whose
+queueing failed is queued on the next try.
+
 A unit of work that defers tasks or publishes events with durable handlers,
 without messaging installed, fails instead of losing the work.
 
@@ -147,6 +155,11 @@ aio-pika). Then `runworker` works like this:
   back with its backoff delay, and the relay publishes it again when it is
   due, so RabbitMQ needs no delayed-message plugin. `messages --dead` and
   `--retry` work as before.
+- **Every delivery is answered**, so a failure never holds one of the
+  consumer's `CONCURRENCY` slots. A delivery whose outbox cannot be reached
+  is requeued after `POLL_INTERVAL`; any other is acknowledged once its
+  outcome is recorded, or once it is clear it cannot run here. The relay
+  waits out database outages as the polling worker does.
 - **Losses** cost time, never messages. A worker that dies mid-message
   leaves it to come back after `VISIBILITY_TIMEOUT`; a message RabbitMQ
   lost is published again after `REPUBLISH_AFTER`.

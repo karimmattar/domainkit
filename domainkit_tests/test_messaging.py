@@ -5,9 +5,10 @@ import io
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterator, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -34,6 +35,7 @@ from domainkit.contrib.messaging import (
     periodic,
     task,
 )
+from domainkit.contrib.messaging import outbox as outbox_module
 from domainkit.contrib.messaging import registry as tasks
 from domainkit.contrib.messaging import worker as worker_module
 from domainkit.contrib.messaging.dispatch import BrokerWorkers
@@ -658,7 +660,8 @@ def delivery(body: object, *, answers: list[str]) -> Delivery:
         answers.append("requeue")
 
     raw = body if isinstance(body, bytes) else json.dumps(body).encode()
-    return Delivery("default", raw, "m", ack, requeue)
+    message_id = body.get("id", "m") if isinstance(body, dict) else "m"
+    return Delivery("default", raw, message_id, ack, requeue)
 
 
 async def test_tasks_go_to_their_queues(tables: None) -> None:
@@ -703,8 +706,9 @@ async def test_a_message_that_kills_its_worker_is_dead_lettered(
 
     (row,) = await outbox()
     assert (row["status"], row["attempts"]) == (DEAD, 11)
-    assert "AttemptsExhausted: The worker stopped during the last attempt" in str(
-        row["last_error"]
+    assert row["last_error"] == (
+        "AttemptsExhausted: The worker stopped during the last attempt (a crash, "
+        "or a kill before TASK_TIMEOUT)."
     )
     assert ran == []
 
@@ -1029,7 +1033,9 @@ async def test_deliveries_that_cannot_run_are_settled(
     caplog.clear()
     await runner.deliver(delivery(pointer, answers=answers))
     assert answers[-1] == "requeue"
-    assert caplog.messages == [f"Could not take over message {missing}; requeued"]
+    assert caplog.messages == [
+        f"Could not run message {missing} from queue 'default'; requeued"
+    ]
 
     with pytest.raises(ValueError, match=r"needs MESSAGING\.BROKER"):
         BrokerWorkers([], [], MessagingSettings())
@@ -1149,3 +1155,330 @@ def test_runworker_on_a_broker(brokered: None, monkeypatch: pytest.MonkeyPatch) 
     assert {"default", "emails"} <= set(seen[1])
     with pytest.raises(CommandError, match="Queue names have 1 to 64"):
         run("runworker", "--queue", "bad queue")
+
+
+async def until(condition: Callable[[], bool]) -> None:
+    """Wait up to five seconds for ``condition`` to hold."""
+    for _ in range(500):
+        if condition():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("Timed out waiting")
+
+
+class Flaky:
+    """Fail the first ``times`` calls of a worker method, then call through."""
+
+    def __init__(self, original: Any, times: int = 1) -> None:  # noqa: ANN401 - a method.
+        """Wrap ``original``."""
+        self.original = original
+        self.left = times
+        self.calls = 0
+        self.args: list[tuple[Any, ...]] = []
+
+    async def __call__(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        """Raise while failures are left; then behave."""
+        self.calls += 1
+        self.args.append(args)
+        if self.left:
+            self.left -= 1
+            raise ConnectionError("database down")
+        return await self.original(*args, **kwargs)
+
+
+async def test_the_worker_outlives_database_outages(
+    tables: None, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Polling, claiming, and cleaning up fail for a while; the worker waits."""
+    await enqueue(remember, value=uuid.uuid4())
+    worker = Worker(MessagingSettings(**{**FAST, "POLL_INTERVAL": 0.01}))
+    claim = Flaky(worker.claim, times=2)
+    monkeypatch.setattr(worker, "claim", claim)
+    stop = asyncio.Event()
+    original = worker.process
+
+    async def process_then_stop(message: Claimed) -> None:
+        await original(message)
+        stop.set()
+
+    monkeypatch.setattr(worker, "process", process_then_stop)
+    with caplog.at_level(logging.INFO, "domainkit.contrib.messaging.worker"):
+        async with asyncio.timeout(5):
+            await worker.run(stop)
+
+    assert len(ran) == 1
+    assert claim.calls == 3
+    assert caplog.messages == [
+        (
+            "Could not reach the outbox of 'default' (1 failure in a row); "
+            "trying again in 0.01s"
+        ),
+        (
+            "Could not reach the outbox of 'default' (2 failures in a row); "
+            "trying again in 0.02s"
+        ),
+        "The outbox of 'default' answers again after 2 failures",
+    ]
+    assert all(record.exc_info for record in caplog.records[:2])
+
+
+async def test_outages_back_off_up_to_a_minute(tables: None) -> None:
+    """Each failure in a row doubles the pause, from POLL_INTERVAL to 60s."""
+    outage = worker_module.Outage("default", 0.5)
+    waits = []
+    for _ in range(9):
+        outage.failures += 1
+        waits.append(outage.pause())
+    assert waits == [0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0]
+    outage.recovered()
+    assert outage.failures == 0
+
+
+async def test_a_stop_ends_an_outage_pause_at_once(
+    tables: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker waiting out an outage stops when asked, without the full pause."""
+    worker = Worker(MessagingSettings(**{**FAST, "POLL_INTERVAL": 30}))
+    monkeypatch.setattr(worker, "claim", Flaky(worker.claim, times=99))
+    stop = asyncio.Event()
+    running = asyncio.create_task(worker.run(stop))
+    await asyncio.sleep(0.05)
+    stop.set()
+    async with asyncio.timeout(1):
+        await running
+
+
+async def test_unrecorded_outcomes_run_again_later(
+    tables: None, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A lost write of the outcome is logged; the message runs again after its lock."""
+    await enqueue(remember, value=uuid.uuid4())
+    worker = Worker(MessagingSettings(**FAST))
+    (claimed,) = await worker.claim(10)
+    monkeypatch.setattr(worker, "_release", Flaky(worker._release))
+    before = REGISTRY.get_sample_value(
+        "messaging_messages_total", {"kind": "task", "outcome": "unrecorded"}
+    )
+
+    with caplog.at_level(logging.ERROR, "domainkit.contrib.messaging.worker"):
+        await worker.process(claimed)
+
+    assert len(ran) == 1
+    assert caplog.messages == [
+        (
+            f"Could not record the outcome of task {claimed.target}; it runs "
+            "again once its lock expires"
+        )
+    ]
+    assert caplog.records[0].exc_info
+    assert (
+        REGISTRY.get_sample_value(
+            "messaging_messages_total", {"kind": "task", "outcome": "unrecorded"}
+        )
+        == (before or 0) + 1
+    )
+    (row,) = await outbox()
+    assert (row["status"], row["lock_id"]) == (PENDING, claimed.lock_id)
+    async with connections.engine().begin() as connection:
+        await connection.execute(
+            update(messages).values(locked_until=datetime.now(UTC) - timedelta(1))
+        )
+    assert await worker.run_once() == 1
+    assert len(ran) == 2
+
+
+async def test_periodic_slots_survive_a_failed_write(
+    tables: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A slot counts as queued only once its row is written."""
+
+    @periodic(every=timedelta(hours=1), name="tests.hourly_outage")
+    async def hourly() -> None: ...
+
+    worker = Worker(MessagingSettings(**FAST))
+    write = Flaky(outbox_module.write)
+    monkeypatch.setattr(worker_module, "write", write)
+    with pytest.raises(ConnectionError):
+        await worker.schedule_periodic()
+    assert await outbox() == []
+    await worker.schedule_periodic()
+    await worker.schedule_periodic()
+    assert [row["target"] for row in await outbox()] == ["tests.hourly_outage"]
+    assert write.calls == 2
+
+
+async def test_the_relay_outlives_database_outages(
+    broker_tables: MemoryBroker,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Relaying fails for a while; the relay waits, and its work still runs."""
+    with override_settings(MESSAGING={**BROKERED, "PUBLISH_ON_COMMIT": False}):
+        await enqueue(remember, value=uuid.uuid4())
+    assert broker_tables.pending("default") == 0
+    config = registry.settings(MessagingSettings).model_copy(
+        update={"POLL_INTERVAL": 0.01}
+    )
+    worker = Worker(config)
+    monkeypatch.setattr(worker, "relay", Flaky(worker.relay, times=2))
+    stop = asyncio.Event()
+    with caplog.at_level(logging.INFO, "domainkit.contrib.messaging.worker"):
+        running = asyncio.create_task(
+            BrokerWorkers([worker], ["default"], config).run(stop)
+        )
+        await settled(1)
+        stop.set()
+        async with asyncio.timeout(5):
+            await running
+
+    assert len(ran) == 1
+    assert (
+        caplog.messages[-1] == "The outbox of 'default' answers again after 2 failures"
+    )
+    assert all(record.exc_info for record in caplog.records[:-1])
+    relay = worker.relay
+    assert {args[1] for args in relay.args} == {config.BATCH_SIZE}  # type: ignore[attr-defined]
+
+
+async def test_every_delivery_is_settled(
+    broker_tables: MemoryBroker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A delivery whose outcome cannot be recorded still frees its slot."""
+    first, second = uuid.uuid4(), uuid.uuid4()
+    await enqueue(remember, value=first)
+    await enqueue(remember, value=second)
+    config = registry.settings(MessagingSettings).model_copy(
+        update={"CONCURRENCY": 1, "BATCH_SIZE": 1}
+    )
+    worker = Worker(config)
+    monkeypatch.setattr(worker, "_release", Flaky(worker._release))
+    stop = asyncio.Event()
+    running = asyncio.create_task(
+        BrokerWorkers([worker], ["default"], config).run(stop)
+    )
+    try:
+        for _ in range(500):
+            if len(ran) == 2:
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        stop.set()
+        async with asyncio.timeout(5):
+            await running
+
+    assert {value for value, _, _ in ran} == {first, second}
+
+
+async def test_unsettled_answers_are_logged(
+    broker_tables: MemoryBroker, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A broker that cannot take the answer is logged; RabbitMQ redelivers."""
+    runner = BrokerWorkers([], ["default"], registry.settings(MessagingSettings))
+
+    async def lost() -> None:
+        raise BrokerUnavailable("connection closed")
+
+    with caplog.at_level(logging.WARNING, "domainkit.contrib.messaging.dispatch"):
+        await runner.deliver(Delivery("default", b"junk", "m1", lost, lost))
+
+    assert caplog.messages[-1] == (
+        "Could not answer message m1 from queue 'default': connection closed"
+    )
+
+
+async def test_workers_claim_only_what_they_can_run(
+    tables: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """At most CONCURRENCY run at once; a freed slot claims exactly one more."""
+    gates.update(c0=asyncio.Event(), c1=asyncio.Event(), c2=asyncio.Event())
+    for name in ("c0", "c1", "c2"):
+        await enqueue(wait_at_gate, name=name)
+    worker = Worker(
+        MessagingSettings(
+            **{**FAST, "POLL_INTERVAL": 0.01, "CONCURRENCY": 2, "BATCH_SIZE": 10}
+        )
+    )
+    claim = Flaky(worker.claim, times=0)
+    monkeypatch.setattr(worker, "claim", claim)
+    stop = asyncio.Event()
+    running = asyncio.create_task(worker.run(stop))
+
+    def started() -> list[str]:
+        return [entry for entry in ran if entry.endswith(":started")]
+
+    try:
+        await until(lambda: len(started()) == 2)
+        await asyncio.sleep(0.1)  # Several polls' time: nothing more is claimed.
+        assert len(started()) == 2
+        assert [args[0] for args in claim.args] == [2]
+        gates[started()[0].removesuffix(":started")].set()
+        await until(lambda: len(started()) == 3)
+        assert [args[0] for args in claim.args][:2] == [2, 1]
+    finally:
+        for gate in gates.values():
+            gate.set()
+        stop.set()
+        async with asyncio.timeout(5):
+            await running
+    assert 0 not in [args[0] for args in claim.args]
+
+
+async def test_an_idle_worker_polls_for_new_work(tables: None) -> None:
+    """With nothing due, the worker checks again every POLL_INTERVAL."""
+    worker = Worker(MessagingSettings(**{**FAST, "POLL_INTERVAL": 0.01}))
+    stop = asyncio.Event()
+    running = asyncio.create_task(worker.run(stop))
+    try:
+        await asyncio.sleep(0.05)
+        await enqueue(remember, value=uuid.uuid4())
+        await until(lambda: len(ran) == 1)
+    finally:
+        stop.set()
+        async with asyncio.timeout(5):
+            await running
+
+
+async def test_a_full_batch_is_relayed_again_at_once(
+    broker_tables: MemoryBroker,
+) -> None:
+    """The relay goes again without waiting while batches come back full."""
+    with override_settings(MESSAGING={**BROKERED, "PUBLISH_ON_COMMIT": False}):
+        for _ in range(3):
+            await enqueue(remember, value=uuid.uuid4())
+    config = registry.settings(MessagingSettings).model_copy(
+        update={"POLL_INTERVAL": 30, "BATCH_SIZE": 1}
+    )
+    stop = asyncio.Event()
+    running = asyncio.create_task(
+        BrokerWorkers([Worker(config)], ["default"], config).run(stop)
+    )
+    try:
+        await until(lambda: len(ran) == 3)
+    finally:
+        stop.set()
+        async with asyncio.timeout(5):
+            await running
+
+
+async def test_runs_are_timed_and_logged(
+    tables: None, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The debug log and the duration metric time the run; the context names it."""
+    await enqueue(remember, value=uuid.uuid4())
+    worker = Worker(MessagingSettings(**FAST))
+    (claimed,) = await worker.claim(1)
+    readings = iter([100.0, 100.5, 101.0])
+    clock = SimpleNamespace(perf_counter=lambda: next(readings))
+    monkeypatch.setattr(worker_module, "time", clock)
+    seconds = "messaging_message_duration_seconds_sum"
+    before = REGISTRY.get_sample_value(seconds, {"kind": "task"}) or 0
+
+    with caplog.at_level(logging.DEBUG, "domainkit.contrib.messaging.worker"):
+        await worker.process(claimed)
+
+    assert caplog.messages == [f"Ran task {claimed.target} in 500.0ms"]
+    assert REGISTRY.get_sample_value(seconds, {"kind": "task"}) == pytest.approx(
+        before + 1.0
+    )
+    ((_, _, request),) = ran
+    assert (request.method, request.path) == ("TASK", claimed.target)

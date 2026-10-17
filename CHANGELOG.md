@@ -79,6 +79,15 @@ All notable changes to domainkit. The format follows
 
 ### Fixed
 
+- A short database outage stopped `runworker`, and could leave broker
+  messages stuck (M5). The polling worker and the relay ended on the first
+  failed query, cancelling the work in hand; with RabbitMQ, a delivery whose
+  outcome could not be written was never answered and kept a consumer slot,
+  so after `CONCURRENCY` such errors the consumer took no more work. Workers
+  now log outages, wait longer after each failure in a row (up to a minute),
+  and carry on; every delivery is acknowledged or requeued; and a message
+  whose outcome could not be written runs again once its lock expires. A
+  periodic task whose queueing failed is no longer skipped for its interval.
 - The in-memory rate limiter could slow every request and grow without
   bound (M4): past 100,000 callers it rescanned them all on each request,
   about 11 ms each, and kept those still counting. It now keeps callers in

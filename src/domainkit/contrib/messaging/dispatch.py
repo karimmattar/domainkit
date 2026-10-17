@@ -7,6 +7,10 @@ takes the row over by id, which only works for a delivery that carries the
 current lock (or one whose lock expired), runs it as the polling worker
 would, and acknowledges it after the outcome is recorded. Retries go back
 to the outbox with their delay, and the relay publishes them when due.
+
+Every delivery is answered, so a failure never holds a consumer's slot: it
+is requeued when its outbox cannot be reached, and acknowledged otherwise.
+A relay waits out database outages as the polling worker does.
 """
 
 import asyncio
@@ -15,7 +19,7 @@ import logging
 import uuid
 from collections.abc import Iterable, Sequence
 
-from domainkit.broker import Broker, Delivery, brokers
+from domainkit.broker import Broker, BrokerError, Delivery, brokers
 from domainkit.db.routing import router
 
 from .settings import MessagingSettings
@@ -103,10 +107,17 @@ class BrokerWorkers:
     ) -> None:
         """Schedule, clean up, and relay until ``stop``; poll when nothing is due."""
         batch = self.config.BATCH_SIZE
+        outage = worker.outage()
         while not stop.is_set():
-            await worker.schedule_periodic()
-            await worker.run_cleanup_when_due()
-            if await worker.relay(broker, batch) < batch:
+            try:
+                await worker.schedule_periodic()
+                await worker.run_cleanup_when_due()
+                relayed = await worker.relay(broker, batch)
+            except Exception as exc:  # noqa: BLE001 - logged; the relay waits.
+                await outage.failed(exc, stop)
+                continue
+            outage.recovered()
+            if relayed < batch:
                 try:
                     async with asyncio.timeout(self.config.POLL_INTERVAL):
                         await stop.wait()
@@ -114,7 +125,36 @@ class BrokerWorkers:
                     pass
 
     async def deliver(self, delivery: Delivery) -> None:
-        """Run one delivered message; acknowledge it once the outcome is recorded."""
+        """Run one delivered message, then answer it; every delivery is answered.
+
+        It is acknowledged once its outcome is recorded, or when it cannot
+        run here. It is requeued, after ``POLL_INTERVAL``, when its outbox
+        cannot be reached.
+        """
+        try:
+            await self._run(delivery)
+        except Exception:
+            logger.exception(
+                "Could not run message %s from queue %r; requeued",
+                delivery.message_id,
+                delivery.queue,
+            )
+            await asyncio.sleep(self.config.POLL_INTERVAL)
+            answer = delivery.requeue
+        else:
+            answer = delivery.ack
+        try:
+            await answer()
+        except BrokerError as exc:  # The broker hands it out again.
+            logger.warning(
+                "Could not answer message %s from queue %r: %s",
+                delivery.message_id,
+                delivery.queue,
+                exc,
+            )
+
+    async def _run(self, delivery: Delivery) -> None:
+        """Run the message ``delivery`` points to, unless it cannot run here."""
         try:
             pointer = json.loads(delivery.body)
             message_id = uuid.UUID(pointer["id"])
@@ -122,28 +162,19 @@ class BrokerWorkers:
             database = str(pointer["database"])
         except (ValueError, KeyError, TypeError):
             logger.error("Dropped an unreadable message from queue %r", delivery.queue)
-            await delivery.ack()
             return
         worker = self.outbox(database)
         if worker is None:
             logger.error(
                 "Dropped message %s: %r hosts no outbox here", message_id, database
             )
-            await delivery.ack()
             return
-        try:
-            claimed = await worker.take_over(message_id, relay_lock)
-        except Exception:
-            logger.exception("Could not take over message %s; requeued", message_id)
-            await asyncio.sleep(self.config.POLL_INTERVAL)
-            await delivery.requeue()
-            return
+        claimed = await worker.take_over(message_id, relay_lock)
         if claimed is None:
             observe_skipped()
             logger.debug("Skipped message %s: done, running, or moved on", message_id)
         else:
             await worker.process(claimed)
-        await delivery.ack()
 
 
 async def publish_committed(
