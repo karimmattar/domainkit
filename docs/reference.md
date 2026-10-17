@@ -137,7 +137,7 @@ Each `BROKERS` entry:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `ALLOWED_HOSTS` | `localhost`, `127.0.0.1`, `[::1]` | Accepted `Host` values; `*.example.com` matches subdomains. A wildcard `*` is refused in staging and production. |
+| `ALLOWED_HOSTS` | `localhost`, `127.0.0.1`, `[::1]` | Accepted `Host` values; `*.example.com` matches subdomains. A `Host` that is not a name, an IPv4 address, or a bracketed IPv6 address (with an optional port) is refused before matching. A wildcard `*` is refused in staging and production. |
 | `API_DOCS` | `True` | Serve `/docs`, `/redoc`, and `/openapi.json`. |
 | `MAX_REQUEST_BODY_SIZE` | `1048576` | Bytes; larger bodies get 413, whether declared or streamed. |
 | `READINESS_TIMEOUT` | `5.0` | Seconds each readiness check may take. |

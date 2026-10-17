@@ -1,5 +1,6 @@
 """HTTP integration: application factory, middleware, errors, and health."""
 
+import asyncio
 import logging
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack
@@ -13,11 +14,13 @@ from domainkit.conf import override_settings
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.http.middleware import (
+    AllowedHostsMiddleware,
     RequestBodyLimitMiddleware,
     RequestBodyTooLarge,
     host_allowed,
     security_headers,
 )
+from domainkit.log import SECURITY_LOGGER
 from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
 
 type MakeClient = Callable[..., TestClient]
@@ -90,10 +93,33 @@ def test_security_headers_follow_settings() -> None:
         ("[::1", ["[::1]"], False),
         ("", ["*"], False),
         ("evil.com", ["api.example.com"], False),
+        ("203.0.113.9:80", ["203.0.113.9"], True),
+        ("[2001:DB8::1]", ["[2001:db8::1]"], True),
+        ("api-1.example.com", ["*.example.com"], True),
+        # Not hosts at all: refused even by "*", so no pattern matches a tail.
+        ("evil.com/.example.com", ["*.example.com"], False),
+        ("evil.com?.example.com", ["*.example.com"], False),
+        ("evil.com#.example.com", ["*.example.com"], False),
+        ("evil.com@api.example.com", ["*.example.com"], False),
+        ("evil.com\\.example.com", ["*.example.com"], False),
+        ("api example.com", ["*"], False),
+        ("api.example.com\n", ["api.example.com"], False),
+        (" api.example.com", ["api.example.com"], False),
+        ("api.example.com:port", ["*"], False),
+        ("api.example.com:80:1", ["*"], False),
+        ("api.example.com:", ["*"], False),
+        ("::1", ["*"], False),
+        ("[::1]x", ["*"], False),
+        ("[fe80::1%eth0]", ["*"], False),
+        ("bücher.example.com", ["*"], False),
     ],
 )
 def test_host_matching(host: str, allowed: list[str], expected: bool) -> None:
-    """Host patterns match exact names, subdomain wildcards, and any host."""
+    """Host patterns match exact names, subdomain wildcards, and any host.
+
+    Values that are not a name, an IPv4 address, or a bracketed IPv6 address
+    (with an optional port) are refused first, as Django does.
+    """
     assert host_allowed(host, allowed) is expected
 
 
@@ -141,12 +167,49 @@ def test_untrusted_hosts_are_rejected(
     response = client.get("/ok", headers={"Host": "evil.example"})
 
     assert (response.status_code, response.json()["code"]) == (400, "invalid_host")
-    assert "Rejected untrusted Host header 'evil.example'" in caplog.text
+    assert response.json()["detail"] == "Invalid host header."
+    client.get("/ok", headers={"Host": "x" * 300})
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == SECURITY_LOGGER
+    ] == [
+        "Rejected untrusted Host header 'evil.example'",
+        f"Rejected untrusted Host header {'x' * 255!r}",
+    ]
+    with override_settings(ALLOWED_HOSTS=["*.example.com"]):
+        wildcard = TestClient(get_asgi_application())
+        sneaky = wildcard.get("/ok", headers={"Host": "evil.com/.example.com"})
+        fine = wildcard.get("/ok", headers={"Host": "api.example.com"})
+    assert (sneaky.status_code, sneaky.json()["code"]) == (400, "invalid_host")
+    assert fine.status_code == 200
     with (
-        pytest.raises(WebSocketDisconnect),
+        pytest.raises(WebSocketDisconnect) as closed,
         client.websocket_connect("/ws", headers={"Host": "evil.example"}),
     ):
         pass
+    assert closed.value.code == 1008
+
+
+def test_requests_without_a_host_are_rejected() -> None:
+    """No Host header at all is refused, even where any host is allowed."""
+    sent: list[Message] = []
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        raise AssertionError("The request reached the application.")
+
+    async def receive() -> Message:
+        return {"type": "http.request", "body": b""}
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        middleware = AllowedHostsMiddleware(app)
+    scope = {"type": "http", "method": "GET", "path": "/", "headers": []}
+    asyncio.run(middleware(scope, receive, send))
+
+    assert sent[0]["status"] == 400
 
 
 def test_websockets_pass_through_http_middleware(client: TestClient) -> None:

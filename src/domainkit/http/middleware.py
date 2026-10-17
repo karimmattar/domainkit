@@ -37,6 +37,8 @@ from domainkit.reporting import report_error
 REQUEST_ID_HEADER: Final = "X-Request-ID"
 # Accept caller-supplied ids only in a safe, bounded format; otherwise mint one.
 _REQUEST_ID: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+_HOST: Final = re.compile(r"([a-z0-9.-]+|\[[a-f0-9]*:[a-f0-9.:]+\])(?::[0-9]+)?")
+"""A valid Host header (lowercased): the host, then an optional port."""
 
 access_logger = logging.getLogger(ACCESS_LOGGER)
 security_logger = logging.getLogger(SECURITY_LOGGER)
@@ -264,14 +266,15 @@ class RequestContextMiddleware:
 
 
 def _hostname(host_header: str) -> str:
-    """Extract the lowercase host name, without port, from a Host header."""
-    host = host_header.strip().lower()
-    if host.startswith("["):
-        end = host.find("]")
-        return host[: end + 1] if end != -1 else ""
-    if host.count(":") == 1:
-        host = host.rsplit(":", 1)[0]
-    return host.rstrip(".")
+    """The lowercase host name of a Host header, without its port; "" if malformed.
+
+    As in Django, a host is a name (letters, digits, dots, hyphens), an IPv4
+    address, or a bracketed IPv6 address, with an optional numeric port.
+    Anything else, such as ``evil.com/.example.com``, is no host at all, so
+    a wildcard pattern cannot be matched by what follows a path or query.
+    """
+    match = _HOST.fullmatch(host_header.lower())
+    return "" if match is None else match[1].removesuffix(".")
 
 
 def host_allowed(host_header: str, allowed: Sequence[str]) -> bool:
