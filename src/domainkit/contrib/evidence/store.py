@@ -1,6 +1,7 @@
 """The evidence store port, and its implementation on a ledger."""
 
 import hashlib
+import hmac
 from abc import ABC, abstractmethod
 from typing import Final
 
@@ -57,24 +58,38 @@ class EvidenceStore(ABC):
         return recorded
 
 
-def subject_digest(subject: str) -> str:
-    """The key part for ``subject``: a digest, so keys never show personal data."""
-    return hashlib.sha256(subject.encode()).hexdigest()[:_SUBJECT_DIGEST_LENGTH]
+def subject_digest(subject: str, key: bytes | None) -> str:
+    """The key part for ``subject``, so keys never show it.
+
+    HMAC-SHA-256 under ``key`` (``EVIDENCE.SUBJECT_KEY``), so nobody without
+    the key can find a subject's records by hashing guesses. With ``None``,
+    plain SHA-256, as format 1 records were keyed.
+    """
+    data = subject.encode()
+    digest = hashlib.sha256(data) if key is None else hmac.new(key, data, "sha256")
+    return digest.hexdigest()[:_SUBJECT_DIGEST_LENGTH]
 
 
-def evidence_key(namespace: str, evidence: Evidence) -> str:
-    """``<namespace>/<subject digest>/<evidence id>``."""
-    return f"{namespace}/{subject_digest(evidence.subject)}/{evidence.id}"
+def evidence_key(namespace: str, evidence: Evidence, subject_key: bytes) -> str:
+    """``<namespace>/<subject digest>/<evidence id>``; format 1 keeps plain digests."""
+    key = None if evidence.format == 1 else subject_key
+    return f"{namespace}/{subject_digest(evidence.subject, key)}/{evidence.id}"
 
 
 class LedgerEvidenceStore(EvidenceStore):
     """Evidence on a ``Ledger``: immudb in deployments, ``MemoryLedger`` in tests."""
 
-    def __init__(self, ledger: Ledger, *, namespace: str, max_bytes: int) -> None:
-        """Keep records under ``namespace``, refusing ones over ``max_bytes``."""
+    def __init__(
+        self, ledger: Ledger, *, namespace: str, max_bytes: int, subject_key: bytes
+    ) -> None:
+        """Keep records under ``namespace``, refusing ones over ``max_bytes``.
+
+        ``subject_key`` is the secret the subject digests in keys use.
+        """
         self.ledger = ledger
         self.namespace = namespace
         self.max_bytes = max_bytes
+        self.subject_key = subject_key
 
     async def record(self, evidence: Evidence) -> EvidenceReceipt:
         """Write the canonical record once; a retry of the same record is a no-op."""
@@ -84,7 +99,7 @@ class LedgerEvidenceStore(EvidenceStore):
                 f"Evidence record is {len(body)} bytes; the limit is {self.max_bytes}. "
                 "Store documents elsewhere and record their sha256 digests."
             )
-        key = evidence_key(self.namespace, evidence)
+        key = evidence_key(self.namespace, evidence, self.subject_key)
         try:
             existing = await self.ledger.read(key.encode(), revision=1)
         except LedgerKeyNotFound:
@@ -125,7 +140,13 @@ class LedgerEvidenceStore(EvidenceStore):
     async def for_subject(
         self, subject: str, *, limit: int = 100
     ) -> list[RecordedEvidence]:
-        """Scan the subject's key prefix and read each record."""
-        prefix = f"{self.namespace}/{subject_digest(subject)}/".encode()
-        keys = await self.ledger.keys(prefix, limit=limit)
+        """Scan the subject's key prefixes, then format 1's, and read each record."""
+        scans = [
+            await self.ledger.keys(
+                f"{self.namespace}/{subject_digest(subject, key)}/".encode(),
+                limit=limit,
+            )
+            for key in (self.subject_key, None)
+        ]
+        keys = [*scans[0], *scans[1]][:limit]
         return [await self.get(key.decode()) for key in keys]

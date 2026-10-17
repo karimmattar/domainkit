@@ -20,8 +20,16 @@ KIND: Final = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*")
 """Dotted lowercase names, such as ``kyc.document_verified``."""
 DIGEST: Final = re.compile(r"sha256:[0-9a-f]{64}")
 """How artifacts and records are referenced: ``sha256:<64 hex digits>``."""
-FORMAT: Final = 1
-"""Version of the record layout, stored in every record."""
+FORMAT: Final = 2
+"""Version of the record layout, stored in every record.
+
+Format 2 takes subjects that are internal ids only, and keys records by a
+keyed digest of the subject. Format 1 records are read back as they are.
+"""
+FORMATS: Final = frozenset({1, FORMAT})
+"""Formats that can be read back."""
+SUBJECT: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]*")
+"""Internal ids such as ``customer:42``: no ``@``, spaces, or ``+``."""
 _KIND_LENGTH: Final = 100
 _SUBJECT_LENGTH: Final = 255
 
@@ -59,15 +67,17 @@ def sha256(data: bytes) -> str:
 class Evidence:
     """What happened, about whom, and the digests that back it up.
 
-    Keep personal data out of ``facts``: a ledger never forgets. Store
-    references or digests, or encrypt personal fields with keys you can
-    destroy. The current request's actor and id are captured when created.
+    Keep personal data out of ``subject`` and ``facts``: a ledger never
+    forgets. The subject is an internal id, never an email address, name, or
+    phone number. In facts, store references or digests, or encrypt personal
+    fields with keys you can destroy. The current request's actor and id are
+    captured when created.
     """
 
     kind: str
     """Dotted lowercase name, such as ``kyc.document_verified``."""
     subject: str
-    """What the evidence is about, such as ``customer:42``; keys use its digest."""
+    """The internal id of what the evidence is about, such as ``customer:42``."""
     facts: Mapping[str, Any] = field(default_factory=dict)
     """JSON values: results, scores, versions, references."""
     artifacts: Mapping[str, str] = field(default_factory=dict)
@@ -76,15 +86,26 @@ class Evidence:
     recorded_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     actor: str | None = field(default_factory=_actor)
     request_id: str | None = field(default_factory=_request_id)
+    format: int = FORMAT
+    """The record layout; only records read back have an earlier one."""
 
     def __post_init__(self) -> None:
         """Refuse records that could not be stored or verified later."""
+        if self.format not in FORMATS:
+            raise ValueError(f"Unknown evidence format {self.format!r}.")
         if len(self.kind) > _KIND_LENGTH or not KIND.fullmatch(self.kind):
             raise ValueError(
                 f"Evidence kind {self.kind!r} must be a dotted lowercase name."
             )
         if not 0 < len(self.subject) <= _SUBJECT_LENGTH:
             raise ValueError("Evidence subject must be 1 to 255 characters.")
+        # The subject is not echoed: it may be the personal data refused here.
+        if self.format > 1 and not SUBJECT.fullmatch(self.subject):
+            raise ValueError(
+                "Evidence subject must be an internal id such as 'customer:42' "
+                "(letters, digits, and _ . : / -), never personal data such as "
+                "an email address, a name, or a phone number."
+            )
         for name, digest in self.artifacts.items():
             if not DIGEST.fullmatch(digest):
                 raise ValueError(f"Artifact {name!r} must be a sha256:<hex> digest.")
@@ -94,7 +115,7 @@ class Evidence:
     def canonical(self) -> bytes:
         """The stored form: canonical JSON, the same bytes every time."""
         document = {
-            "format": FORMAT,
+            "format": self.format,
             "id": str(self.id),
             "kind": self.kind,
             "subject": self.subject,
@@ -124,8 +145,9 @@ class Evidence:
     def from_canonical(cls, data: bytes) -> "Evidence":
         """Rebuild the evidence a canonical record describes."""
         document = json.loads(data)
-        if document.get("format") != FORMAT:
-            raise ValueError(f"Unknown evidence format {document.get('format')!r}.")
+        layout = document.get("format")
+        if layout not in FORMATS:
+            raise ValueError(f"Unknown evidence format {layout!r}.")
         return cls(
             kind=document["kind"],
             subject=document["subject"],
@@ -135,6 +157,7 @@ class Evidence:
             recorded_at=datetime.fromisoformat(document["recorded_at"]),
             actor=document["actor"],
             request_id=document["request_id"],
+            format=layout,
         )
 
 

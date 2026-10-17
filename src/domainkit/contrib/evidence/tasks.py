@@ -29,4 +29,5 @@ def defer_evidence(uow: UnitOfWork, evidence: Evidence) -> str:
         record=evidence.canonical().decode(),
         dedupe_key=f"evidence:{evidence.id}",
     )
-    return evidence_key(registry.settings(EvidenceSettings).NAMESPACE, evidence)
+    config = registry.settings(EvidenceSettings)
+    return evidence_key(config.NAMESPACE, evidence, config.subject_key)

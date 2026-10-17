@@ -1,12 +1,18 @@
 """Evidence: canonical records, the ledger store, durable recording, the command."""
 
+import dataclasses
+import hashlib
+import hmac
 import io
+import json
+import re
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from domainkit import setup
@@ -25,13 +31,21 @@ from domainkit.contrib.evidence import (
     sha256,
     subject_digest,
 )
-from domainkit.contrib.evidence.tasks import RECORD_TASK, defer_evidence
+from domainkit.contrib.evidence.settings import (
+    DEVELOPMENT_SUBJECT_KEY,
+    EvidenceSettings,
+)
+from domainkit.contrib.evidence.tasks import (
+    RECORD_TASK,
+    defer_evidence,
+    record_evidence,
+)
 from domainkit.contrib.messaging import Worker
 from domainkit.contrib.messaging.tables import messages
 from domainkit.db import connections
 from domainkit.db.routing import router
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.ledger import LedgerEntry, LedgerTampered, MemoryLedger, ledgers
+from domainkit.ledger import Ledger, LedgerEntry, LedgerTampered, MemoryLedger, ledgers
 from domainkit.management import CommandError
 from domainkit_tests.conftest import MakeDatabase
 from domainkit_tests.test_db import NotesUnitOfWork, notes
@@ -52,9 +66,19 @@ FIXED = Evidence(
 )
 
 
-def store() -> LedgerEvidenceStore:
-    """A store on a fresh in-memory ledger."""
-    return LedgerEvidenceStore(MemoryLedger(), namespace="evidence", max_bytes=4096)
+SUBJECT_KEY = b"subject-key-for-the-evidence-tests"
+
+
+def store(
+    ledger: Ledger | None = None, *, namespace: str = "evidence", max_bytes: int = 4096
+) -> LedgerEvidenceStore:
+    """A store on ``ledger``, or on a fresh in-memory ledger."""
+    return LedgerEvidenceStore(
+        ledger or MemoryLedger(),
+        namespace=namespace,
+        max_bytes=max_bytes,
+        subject_key=SUBJECT_KEY,
+    )
 
 
 @pytest.fixture
@@ -81,13 +105,19 @@ async def installed(make_database: MakeDatabase) -> AsyncIterator[None]:
 
 
 def test_canonical_records_never_change() -> None:
-    """Frozen digest: changing the format would break every receipt issued."""
+    """Frozen digests: changing a layout would break every receipt issued."""
     body = FIXED.canonical()
+    format_1 = dataclasses.replace(FIXED, format=1)
 
     assert sha256(body) == (
-        "sha256:318fd5a72c0f55200492f4ea5f4f2a6d0a4207e2e8fd2f933800641e26dd8f0a"
+        "sha256:ef9623c6f3abdac9316665dbbbd7ca5acb743bc2e042dd6851926b5590f3587d"
     )
     assert Evidence.from_canonical(body) == FIXED
+    # Format 1 records read back give the same bytes, so retries still match.
+    assert sha256(format_1.canonical()) == (
+        "sha256:318fd5a72c0f55200492f4ea5f4f2a6d0a4207e2e8fd2f933800641e26dd8f0a"
+    )
+    assert Evidence.from_canonical(format_1.canonical()) == format_1
 
 
 @pytest.mark.parametrize(
@@ -106,6 +136,49 @@ def test_evidence_is_validated(changes: dict[str, Any], message: str) -> None:
     values = {"kind": "kyc.checked", "subject": "customer:1", **changes}
     with pytest.raises(ValueError, match=message):
         Evidence(**values)
+
+
+SUBJECT_REFUSED = (
+    "Evidence subject must be an internal id such as 'customer:42' "
+    "(letters, digits, and _ . : / -), never personal data such as an email "
+    "address, a name, or a phone number."
+)
+
+
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "jane@example.com",
+        "customer:jane@example.com",
+        "Jane Smith",
+        "+201001234567",
+        "customer:\u0639\u0645\u064a\u0644",
+        "-customer:1",
+        "customer:1\n",
+    ],
+)
+def test_subjects_must_be_internal_ids(subject: str) -> None:
+    """Email addresses, names, and phone numbers are refused, and not echoed."""
+    with pytest.raises(ValueError, match=re.escape(SUBJECT_REFUSED)) as refused:
+        Evidence(kind="kyc.checked", subject=subject)
+
+    assert str(refused.value) == SUBJECT_REFUSED
+
+
+@pytest.mark.parametrize(
+    "subject",
+    ["customer:42", str(uuid.UUID(int=1)), "tenant/7:invoice:2026-001", "A_b.c", "7"],
+)
+def test_internal_ids_are_subjects(subject: str) -> None:
+    """Letters, digits, and _ . : / - make an id."""
+    assert Evidence(kind="kyc.checked", subject=subject).subject == subject
+
+
+def test_format_1_records_keep_their_subjects() -> None:
+    """Records from before subjects were checked are still read back."""
+    format_1 = Evidence(kind="kyc.checked", subject="jane@example.com", format=1)
+
+    assert Evidence.from_canonical(format_1.canonical()) == format_1
 
 
 def test_the_longest_kind_and_subject_are_accepted() -> None:
@@ -129,10 +202,16 @@ def test_facts_must_be_plain_json() -> None:
             Evidence(kind="k", subject="s", facts=facts).canonical()
 
 
-def test_unknown_record_formats_are_refused() -> None:
-    """A record from a future layout is not misread."""
-    with pytest.raises(ValueError, match="Unknown evidence format 2"):
-        Evidence.from_canonical(b'{"format": 2}')
+@pytest.mark.parametrize(("layout", "shown"), [(0, "0"), (3, "3"), (None, "None")])
+def test_unknown_record_formats_are_refused(layout: int | None, shown: str) -> None:
+    """A record from a future layout, or none, is not misread."""
+    record = json.dumps({"format": layout} if layout is not None else {}).encode()
+
+    with pytest.raises(ValueError, match=rf"^Unknown evidence format {shown}\.$"):
+        Evidence.from_canonical(record)
+    if layout is not None:
+        with pytest.raises(ValueError, match=rf"^Unknown evidence format {shown}\.$"):
+            Evidence(kind="kyc.checked", subject="customer:1", format=layout)
 
 
 def test_evidence_remembers_who_and_which_request() -> None:
@@ -156,17 +235,48 @@ async def test_records_are_written_once_and_read_verified() -> None:
     recorded = await evidence_store_.verify(receipt)
 
     assert receipt == retried
-    assert receipt.key == f"evidence/{subject_digest('customer:42')}/{FIXED.id}"
-    assert receipt.key == evidence_key("evidence", FIXED)
+    keyed = subject_digest("customer:42", SUBJECT_KEY)
+    assert receipt.key == f"evidence/{keyed}/{FIXED.id}"
+    assert receipt.key == evidence_key("evidence", FIXED, SUBJECT_KEY)
     assert receipt.digest == sha256(FIXED.canonical())
     assert (recorded.evidence, recorded.revisions, recorded.intact) == (FIXED, 1, True)
     assert "customer" not in receipt.key
 
 
+def test_keys_use_a_keyed_digest_of_the_subject() -> None:
+    """Format 2 keys use HMAC-SHA-256 under the subject key; format 1 plain SHA-256."""
+    keyed = hmac.new(SUBJECT_KEY, b"customer:42", hashlib.sha256).hexdigest()[:32]
+    plain = hashlib.sha256(b"customer:42").hexdigest()[:32]
+    format_1 = dataclasses.replace(FIXED, format=1)
+
+    assert subject_digest("customer:42", SUBJECT_KEY) == keyed
+    assert subject_digest("customer:42", None) == plain
+    assert subject_digest("customer:42", b"another-key") != keyed
+    assert evidence_key("e", FIXED, SUBJECT_KEY) == f"e/{keyed}/{FIXED.id}"
+    assert evidence_key("e", format_1, SUBJECT_KEY) == f"e/{plain}/{FIXED.id}"
+
+
+async def test_format_1_records_keep_their_keys_and_are_listed() -> None:
+    """A format 1 record (a retry from the outbox) keeps its plain-digest key."""
+    evidence_store_ = store()
+    format_1 = dataclasses.replace(FIXED, format=1, id=uuid.UUID(int=8))
+    old = await evidence_store_.record(format_1)
+    new = await evidence_store_.record(FIXED)
+
+    listed = await evidence_store_.for_subject("customer:42")
+    first = await evidence_store_.for_subject("customer:42", limit=1)
+
+    plain = subject_digest("customer:42", None)
+    assert old.key == f"evidence/{plain}/{format_1.id}"
+    assert [recorded.receipt for recorded in listed] == [new, old]
+    assert [recorded.evidence for recorded in listed] == [FIXED, format_1]
+    assert [recorded.receipt for recorded in first] == [new]
+
+
 async def test_retries_compare_with_the_original_record() -> None:
     """After a rewrite, recording the same evidence still matches revision 1."""
     ledger = MemoryLedger()
-    evidence_store_ = LedgerEvidenceStore(ledger, namespace="evidence", max_bytes=4096)
+    evidence_store_ = store(ledger)
     receipt = await evidence_store_.record(FIXED)
     await ledger.append(receipt.key.encode(), b'{"forged": true}')
 
@@ -176,8 +286,8 @@ async def test_retries_compare_with_the_original_record() -> None:
 async def test_records_may_be_exactly_the_limit() -> None:
     """MAX_BYTES itself is allowed; one byte more is not."""
     body = FIXED.canonical()
-    at_limit = LedgerEvidenceStore(MemoryLedger(), namespace="e", max_bytes=len(body))
-    under = LedgerEvidenceStore(MemoryLedger(), namespace="e", max_bytes=len(body) - 1)
+    at_limit = store(namespace="e", max_bytes=len(body))
+    under = store(namespace="e", max_bytes=len(body) - 1)
 
     await at_limit.record(FIXED)
     with pytest.raises(ValueError, match="the limit is"):
@@ -204,7 +314,7 @@ async def test_a_different_record_cannot_reuse_an_id() -> None:
 async def test_writing_a_key_again_is_detected() -> None:
     """Revision 1 stays the evidence; a second revision fails verification."""
     ledger = MemoryLedger()
-    evidence_store_ = LedgerEvidenceStore(ledger, namespace="evidence", max_bytes=4096)
+    evidence_store_ = store(ledger)
     receipt = await evidence_store_.record(FIXED)
     await ledger.append(receipt.key.encode(), b'{"forged": true}')
 
@@ -225,7 +335,7 @@ async def test_ledger_verification_failures_surface_as_tampering() -> None:
         async def read(self, key: bytes, revision: int | None = None) -> LedgerEntry:
             raise LedgerTampered("proof failed")
 
-    evidence_store_ = LedgerEvidenceStore(Corrupt(), namespace="e", max_bytes=4096)
+    evidence_store_ = store(Corrupt(), namespace="e")
 
     with pytest.raises(EvidenceTampered, match="failed verification"):
         await evidence_store_.record(FIXED)
@@ -236,7 +346,7 @@ async def test_ledger_verification_failures_surface_as_tampering() -> None:
 async def test_records_that_are_not_evidence_are_tampering() -> None:
     """Revision 1 under an evidence key must parse as a record."""
     ledger = MemoryLedger()
-    evidence_store_ = LedgerEvidenceStore(ledger, namespace="evidence", max_bytes=4096)
+    evidence_store_ = store(ledger)
     await ledger.append(b"evidence/x/y", b"not json")
     await ledger.append(b"evidence/x/z", b'{"format": 1}')
 
@@ -303,6 +413,55 @@ def test_the_evidence_ledger_must_be_in_ledgers() -> None:
     registry.clear()
 
 
+def test_the_subject_key_is_a_long_secret() -> None:
+    """32 characters or more; the public development key when unset."""
+    assert EvidenceSettings().subject_key == DEVELOPMENT_SUBJECT_KEY
+    assert EvidenceSettings(SUBJECT_KEY="s" * 32).subject_key == b"s" * 32
+    with pytest.raises(ValidationError, match="at least 32"):
+        EvidenceSettings(SUBJECT_KEY="s" * 31)
+
+
+DEPLOYED = {
+    "ALLOWED_HOSTS": ["api.example.com"],
+    "DATABASES": {
+        "default": {"URL": "postgresql+asyncpg://db/app", "SSLMODE": "verify-full"}
+    },
+    "LEDGERS": {
+        "evidence": {
+            "URL": "immudb://writer:pw@ledger.internal:3322/evidence",
+            "TLS_CA": "/ca.pem",
+            "SERVER_SIGNING_KEY": "/k.pub",
+        }
+    },
+}
+
+
+@pytest.mark.parametrize("environment", ["staging", "production"])
+def test_deployments_need_a_subject_key(environment: str) -> None:
+    """The development key is public, so staging and production refuse it."""
+    registry.clear()
+    deployed = {**DEPLOYED, "ENVIRONMENT": environment}
+    with (
+        override_settings(INSTALLED_DOMAINS=[EVIDENCE], ALPHA=UNSET, **deployed),
+        pytest.raises(ImproperlyConfigured) as refused,
+    ):
+        setup()
+    registry.clear()
+    with override_settings(
+        INSTALLED_DOMAINS=[EVIDENCE],
+        ALPHA=UNSET,
+        EVIDENCE={"SUBJECT_KEY": "s" * 32},
+        **deployed,
+    ):
+        setup()
+    registry.clear()
+
+    assert str(refused.value) == (
+        f"EVIDENCE.SUBJECT_KEY is required in {environment}: a random secret of "
+        "32 characters or more, kept for as long as the evidence."
+    )
+
+
 def test_evidence_works_without_messaging() -> None:
     """Direct recording needs no outbox; only defer_evidence does."""
     registry.clear()
@@ -335,6 +494,35 @@ async def test_deferred_evidence_is_recorded_after_commit(installed: None) -> No
     assert [row.target for row in queued] == [RECORD_TASK]
     assert processed == 1
     assert (recorded.evidence, recorded.intact) == (evidence, True)
+
+
+async def test_deferred_keys_use_the_configured_subject_key(installed: None) -> None:
+    """defer_evidence returns the key the worker writes, under SUBJECT_KEY."""
+    evidence = Evidence(kind="invoice.issued", subject="invoice:3")
+    subject_key = "k" * 32
+
+    with override_settings(EVIDENCE={"SUBJECT_KEY": subject_key}):
+        async with NotesUnitOfWork() as uow:
+            key = defer_evidence(uow, evidence)
+            await uow.commit()
+        await Worker().run_once()
+        recorded = await evidence_store().get(key)
+
+    keyed = subject_digest("invoice:3", subject_key.encode())
+    assert key == f"evidence/{keyed}/{evidence.id}"
+    assert recorded.evidence == evidence
+
+
+async def test_queued_format_1_records_keep_their_keys(installed: None) -> None:
+    """A record queued before the upgrade lands where defer_evidence said."""
+    format_1 = dataclasses.replace(FIXED, format=1)
+
+    await record_evidence(format_1.canonical().decode())
+    recorded = await evidence_store().get(
+        f"evidence/{subject_digest('customer:42', None)}/{FIXED.id}"
+    )
+
+    assert recorded.evidence == format_1
 
 
 async def test_rolled_back_work_records_no_evidence(installed: None) -> None:

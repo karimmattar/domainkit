@@ -76,9 +76,20 @@ All notable changes to domainkit. The format follows
 - `changepassword` ends every token of the user.
 - Run `makemigrations` and `migrate` in projects that install auth: tokens
   have a table, `domainkit_tokens`.
+- Evidence records are format 2 (ADR 0018). Staging and production need
+  the new `EVIDENCE.SUBJECT_KEY`, a secret of 32 characters or more kept
+  for as long as the evidence. `subject_digest`, `evidence_key`, and
+  `LedgerEvidenceStore` take the subject key. Format 1 records are read,
+  verified, and listed as before, and keep their keys.
 
 ### Fixed
 
+- Evidence could keep personal data forever (L4): any subject was stored
+  as written, and keys used a plain SHA-256 of it, so a guessed email
+  address found its records. Subjects must now be internal ids (letters,
+  digits, and `_ . : / -`), which refuses email addresses, names, and
+  phone numbers with a `+`. Keys use an HMAC-SHA-256 of the subject under
+  `EVIDENCE.SUBJECT_KEY`.
 - A release could be published from any `v*` tag after only the unit tests
   (L3). `release.yml` now refuses tags on commits that are not on `main`,
   runs the whole CI workflow on the tagged commit (lint, types,

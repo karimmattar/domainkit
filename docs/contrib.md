@@ -305,11 +305,19 @@ receipt = await evidence_store().record(evidence)  # keep it with your data
 recorded = await evidence_store().verify(receipt)  # raises EvidenceTampered
 ```
 
-- A record is canonical JSON (sorted keys, no spaces, UTF-8) with the id,
-  kind, subject, facts, artifact digests, time, actor, and request id. The
-  receipt holds its key, its SHA-256 digest, and the ledger transaction.
-- Keys are `<NAMESPACE>/<subject digest>/<evidence id>`: no personal data
-  in keys, and `for_subject("customer:42")` is a prefix scan.
+- A record is canonical JSON (sorted keys, no spaces, UTF-8) with the
+  layout's format number, the id, kind, subject, facts, artifact digests,
+  time, actor, and request id. The receipt holds its key, its SHA-256
+  digest, and the ledger transaction.
+- The subject is an internal id, such as `customer:42` or a UUID: letters,
+  digits, and `_ . : / -`. Email addresses, names, and phone numbers with a
+  `+` are refused (`ValueError`, without echoing the value). A check cannot
+  tell a bare phone number from a numeric id, so use ids with a type, such
+  as `customer:42`.
+- Keys are `<NAMESPACE>/<subject digest>/<evidence id>`. The digest is an
+  HMAC-SHA-256 of the subject under `SUBJECT_KEY`, so keys show no subject
+  and nobody without the key can find a subject's records by hashing
+  guesses. `for_subject("customer:42")` is a prefix scan.
 - Recording is idempotent by evidence id: a retry returns the same receipt,
   and another record with that id is an `EvidenceConflict` (409).
 - Reads return revision 1, the original. If anything wrote the key again,
@@ -324,8 +332,14 @@ recorded = await evidence_store().verify(receipt)  # raises EvidenceTampered
   through the outbox once the change commits (messaging must be
   installed). Store the key with the change.
 
-**Never put personal data in facts**: a ledger cannot forget. Store
-references or digests, or encrypt personal fields with keys you can destroy.
+**Never put personal data in the subject or facts**: a ledger cannot
+forget, so an erasure request could not be met. Store references or
+digests, or encrypt personal fields with keys you can destroy.
+
+Records written by domainkit 0.5 and earlier are format 1. They read back and
+verify as before, keep their keys (a plain SHA-256 of the subject), and
+`for_subject` still lists them. Format 1 records still in the outbox are
+written under the keys `defer_evidence` returned for them.
 
 `python manage.py evidence --subject customer:42` lists a subject's records;
 `evidence --verify <key>` proves one.
@@ -335,3 +349,4 @@ references or digests, or encrypt personal fields with keys you can destroy.
 | `LEDGER` | `"evidence"` | Alias in `LEDGERS` (`immudb://`; `memory://` in tests). |
 | `NAMESPACE` | `"evidence"` | Key prefix, so projects or environments can share one ledger. |
 | `MAX_BYTES` | `262144` | Largest record; keep documents elsewhere and record their digests. |
+| `SUBJECT_KEY` | `None` | Secret for the subject digests in keys, 32 characters or more. Required in staging and production; elsewhere a public development key is used. Keep it for as long as the evidence: a new key hides earlier records from `for_subject`, though the keys in their receipts still work. |

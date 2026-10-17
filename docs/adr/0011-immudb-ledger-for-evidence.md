@@ -1,6 +1,6 @@
 # 0011. Keep evidence in an immudb ledger, verified by the client
 
-- Status: Accepted
+- Status: Accepted; keys and subjects amended by [0018](0018-evidence-subjects-are-internal-ids.md)
 - Date: 2026-10-14
 
 ## Context
