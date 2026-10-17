@@ -122,7 +122,35 @@ def test_production_settings_come_from_the_environment(tmp_path: Path) -> None:
 
     assert missing.returncode == 1
     assert "Set the BILLING_API_DATABASE_URL environment variable." in missing.stderr
+    # Docs are off, HSTS is on, and callers are rate limited: nothing to warn about.
     assert ready.stdout == CHECKED
+
+
+def test_production_hardening_can_be_relaxed_from_the_environment(
+    tmp_path: Path,
+) -> None:
+    """Docs and HSTS are switched by variables, and check warns when they are."""
+    project = tmp_path / "billing"
+    init("billingAPI", str(project))
+    relaxed = {
+        "BILLING_API_SETTINGS_MODULE": "config.settings.production",
+        "BILLING_API_ALLOWED_HOSTS": "api.example.com",
+        "BILLING_API_DATABASE_URL": "postgresql+asyncpg://app@db/billing",
+        "BILLING_API_API_DOCS": "true",
+        "BILLING_API_SECURE_HSTS_SECONDS": "0",
+    }
+
+    checked = run(project, "manage.py", "check", env=relaxed)
+
+    summary, *warnings = checked.stdout.splitlines()
+    assert summary == (
+        "System check identified no issues and 2 warnings. "
+        "Domains: messaging, contenttypes, auth."
+    )
+    assert [warning.split()[1] for warning in warnings] == [
+        "API_DOCS",
+        "SECURE_HSTS_SECONDS",
+    ]
 
 
 @pytest.mark.parametrize(

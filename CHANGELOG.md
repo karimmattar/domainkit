@@ -79,6 +79,13 @@ All notable changes to domainkit. The format follows
 
 ### Fixed
 
+- The production settings made by `init` published the API docs, sent no
+  HSTS header, and had no rate limit (L2). They now turn the docs off
+  (`API_DOCS`), send HSTS for a year (`SECURE_HSTS_SECONDS`), and allow each
+  caller 300 requests a minute (`RATE_LIMIT`), each changed by an environment
+  variable; the base settings list `RateLimitMiddleware`, which does nothing
+  until `RATE_LIMIT` is set. In staging and production, `check` now warns
+  about each of the three when it is weak.
 - `ALLOWED_HOSTS` wildcards accepted malformed `Host` values (L1): with
   `*.example.com`, `evil.com/.example.com` (or with `?`, `#`, `@`) passed,
   because only the end of the value was compared. As in Django, a `Host`

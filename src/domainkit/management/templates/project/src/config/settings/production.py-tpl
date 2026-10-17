@@ -3,7 +3,9 @@
 Set {{ prefix }}SETTINGS_MODULE=config.settings.production,
 {{ prefix }}ALLOWED_HOSTS (comma-separated), and {{ prefix }}DATABASE_URL.
 Startup fails when one is missing, and the deployment checks refuse DEBUG,
-wildcard hosts, and network databases without verified TLS.
+wildcard hosts, and network databases without verified TLS. The API docs
+are off, browsers are told to use HTTPS only, and callers are rate limited;
+{{ prefix }}API_DOCS, {{ prefix }}SECURE_HSTS_SECONDS, and {{ prefix }}RATE_LIMIT change that.
 """
 
 from config.settings.base import *
@@ -14,3 +16,8 @@ ALLOWED_HOSTS = env.list("ALLOWED_HOSTS")
 DATABASES = {
     "default": {"URL": env.str("DATABASE_URL"), "SSLMODE": "verify-full"},
 }
+API_DOCS = env.bool("API_DOCS", False)
+SECURE_HSTS_SECONDS = env.int("SECURE_HSTS_SECONDS", 31_536_000)  # A year.
+# Counted per process; behind several replicas, count in Redis:
+# RATE_LIMIT_BACKEND = "domainkit.http.ratelimit.RedisBackend"
+RATE_LIMIT = env.str("RATE_LIMIT", "300/minute")

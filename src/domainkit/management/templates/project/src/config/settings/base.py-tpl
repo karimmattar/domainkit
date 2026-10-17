@@ -21,6 +21,7 @@ MIDDLEWARE = [
     "domainkit.http.middleware.RequestContextMiddleware",
     "domainkit.http.middleware.AllowedHostsMiddleware",
     "domainkit.contrib.auth.middleware.AuthenticationMiddleware",
+    "domainkit.http.ratelimit.RateLimitMiddleware",  # Off until RATE_LIMIT is set.
     "domainkit.http.middleware.RequestBodyLimitMiddleware",
 ]
 ASGI_APPLICATION = "config.asgi:application"

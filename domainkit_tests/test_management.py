@@ -14,6 +14,7 @@ from domainkit.apps import registry
 from domainkit.architecture import check_domain
 from domainkit.conf import UNSET, override_settings, settings, use_settings
 from domainkit.conf.env import project_prefix
+from domainkit.conf.global_settings import DEFAULT_MIDDLEWARE, RATE_LIMIT_MIDDLEWARE
 from domainkit.db import migrations as migrations_module
 from domainkit.management import (
     BaseCommand,
@@ -137,6 +138,37 @@ def test_check_reports_success_and_violations(make_package: MakePackage) -> None
         ),
     ):
         run("check")
+
+
+def test_check_lists_weak_deployment_choices() -> None:
+    """In staging and production, weak choices are warnings, not failures."""
+    production = {"ENVIRONMENT": "production", "SECURE_HSTS_SECONDS": 0}
+    with override_settings(**production):
+        assert run("check") == (
+            "System check identified no issues and 3 warnings. Domains: alpha.\n"
+            "  Warning: API_DOCS publishes /docs, /redoc, and /openapi.json to "
+            "anyone; set it to False unless the API is public.\n"
+            "  Warning: SECURE_HSTS_SECONDS is 0, so browsers may still use plain "
+            "HTTP; set it (31536000 is a year) once HTTPS works everywhere.\n"
+            "  Warning: Requests are not rate limited; set RATE_LIMIT and list "
+            "domainkit.http.ratelimit.RateLimitMiddleware in MIDDLEWARE.\n"
+        )
+    with_hsts = {**production, "SECURE_HSTS_SECONDS": 1}
+    with override_settings(**with_hsts):
+        assert run("check").startswith(
+            "System check identified no issues and 2 warnings. Domains: alpha.\n"
+        )
+    hardened = {
+        **with_hsts,
+        "RATE_LIMIT": "10/second",
+        "MIDDLEWARE": [*DEFAULT_MIDDLEWARE, RATE_LIMIT_MIDDLEWARE],
+    }
+    with override_settings(**hardened):
+        assert run("check") == (
+            "System check identified no issues and 1 warning. Domains: alpha.\n"
+            "  Warning: API_DOCS publishes /docs, /redoc, and /openapi.json to "
+            "anyone; set it to False unless the API is public.\n"
+        )
 
 
 def test_check_without_domains() -> None:

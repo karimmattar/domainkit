@@ -138,7 +138,7 @@ Each `BROKERS` entry:
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `ALLOWED_HOSTS` | `localhost`, `127.0.0.1`, `[::1]` | Accepted `Host` values; `*.example.com` matches subdomains. A `Host` that is not a name, an IPv4 address, or a bracketed IPv6 address (with an optional port) is refused before matching. A wildcard `*` is refused in staging and production. |
-| `API_DOCS` | `True` | Serve `/docs`, `/redoc`, and `/openapi.json`. |
+| `API_DOCS` | `True` | Serve `/docs`, `/redoc`, and `/openapi.json`. `check` warns when it is on in staging and production. |
 | `MAX_REQUEST_BODY_SIZE` | `1048576` | Bytes; larger bodies get 413, whether declared or streamed. |
 | `READINESS_TIMEOUT` | `5.0` | Seconds each readiness check may take. |
 | `READINESS_CACHE_SECONDS` | `1.0` | How long a `/ready` result is reused, so probe floods cannot load the database. |
@@ -179,6 +179,15 @@ With `ENVIRONMENT` set to `staging` or `production`, startup fails on:
   (`ssl_cert_reqs=none` or `optional`, `ssl_check_hostname=false`)
 
 `migrate --downgrade` also needs `--allow-data-loss` there.
+
+`check` also warns about choices that are valid but weak there. It still
+passes, so an API that is public on purpose can keep them:
+
+- `API_DOCS = True`: anyone can read `/docs`, `/redoc`, and `/openapi.json`
+- `SECURE_HSTS_SECONDS = 0`: browsers are not told to keep to HTTPS
+- no `RATE_LIMIT`, or `RateLimitMiddleware` missing from `MIDDLEWARE`
+
+The production settings that `init` creates avoid all three.
 
 ## Middleware
 
@@ -289,7 +298,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | Command | Options | Purpose |
 | --- | --- | --- |
 | `init` | `name`, `[directory]` | Create a project: base, local, test, and production settings, routes, `manage.py`, `.env`, and a first test. The name sets the environment prefix; the directory (default `./<name>`) must be empty or missing. |
-| `check` | | Settings, domains, routes and their access rules, middleware, layer rules, and a single migration head. |
+| `check` | | Settings, domains, routes and their access rules, middleware, layer rules, and a single migration head. In staging and production it also lists [weak choices](#deployment-checks) as warnings. |
 | `broker` | `check\|declare`, `[ALIAS ...]` | Connect to brokers (all by default), or declare the exchange and every queue the worker's tasks use on `MESSAGING.BROKER`. |
 | `cache` | `check\|clear`, `[ALIAS ...]`, `--all` | Ping caches (all by default), or delete every key of the named caches, all versions, in their namespace only. Clearing needs aliases or `--all`. |
 | `startdomain` | `name`, `--aggregate`, `--plural`, `--parent`, `--tests-dir` | Generate a bounded context and its tests. |
