@@ -1,4 +1,7 @@
-# Push a tag "vX.Y.Z" matching pyproject.toml's version to publish it to PyPI.
+# Push a tag "vX.Y.Z" on a commit of main, matching pyproject.toml's
+# version, to publish it to PyPI. The tagged commit must pass the whole CI
+# workflow here (lint, types, tests, integration, coverage, build, audit),
+# and the package published is the one CI built and smoke-tested.
 # Publishing uses trusted publishing (OIDC): no API token is stored anywhere.
 # One-time setup is in docs/versioning.md.
 name: Release
@@ -12,17 +15,16 @@ permissions:
 
 env:
   POETRY_VERSION: "2.2.1"
-  POETRY_VIRTUALENVS_IN_PROJECT: "true"
-  POETRY_NO_INTERACTION: "1"
 
 jobs:
-  build:
+  tag:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
@@ -36,17 +38,23 @@ jobs:
             echo "Tag $TAG does not match version $version in pyproject.toml" >&2
             exit 1
           fi
-      - run: poetry sync --all-extras --with dev
-      - run: poetry run pytest --cov -q
-      - run: poetry build
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: dist
-          path: dist/
-          retention-days: 90
+      # Commits reach main only through reviewed pull requests, so a tag on
+      # any other commit is refused.
+      - name: Check that the tagged commit is on main
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "Tag $TAG is not on a commit of main" >&2
+            exit 1
+          fi
+
+  ci:
+    needs: tag
+    uses: ./.github/workflows/ci.yml
 
   publish:
-    needs: build
+    needs: ci
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment:
@@ -55,6 +63,8 @@ jobs:
     permissions:
       id-token: write
     steps:
+      # The wheel and sdist from CI's build job, which installed the wheel
+      # in a clean environment first.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: dist

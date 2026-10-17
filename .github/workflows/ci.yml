@@ -1,5 +1,6 @@
-# Every push and pull request: lint, tests, build, audits. Weekly (and on
-# demand): a full mutation testing run. Actions are pinned to commit SHAs;
+# Every push and pull request: lint, tests, build, audits. release.yml runs
+# it on each release tag and publishes what its build job built. Weekly (and
+# on demand): a full mutation testing run. Actions are pinned to commit SHAs;
 # Renovate updates them.
 name: CI
 
@@ -7,6 +8,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
   schedule:
     - cron: "0 3 * * 1"
   workflow_dispatch:

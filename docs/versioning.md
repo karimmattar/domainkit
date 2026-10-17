@@ -70,8 +70,14 @@ a minor-release change and appears in the changelog.
 2. Update `version` in `pyproject.toml`.
 3. Merge to `main` once CI passes.
 4. Tag that commit `vX.Y.Z` and push the tag. `.github/workflows/release.yml`
-   checks that the tag matches the version, runs the tests, builds the
-   wheel and sdist, and publishes them to PyPI with attestations.
+   then:
+   - checks that the tag matches the version and is on a commit of `main`,
+     so only reviewed changes are released;
+   - runs the whole CI workflow on that commit: lint, types, tests on every
+     Python, integration against real servers, coverage, the wheel's smoke
+     test, pip-audit, and gitleaks;
+   - waits for a reviewer to approve the `pypi` environment;
+   - publishes the wheel and sdist that CI built to PyPI, with attestations.
 
 One-time setup, before the first release:
 
@@ -79,7 +85,8 @@ One-time setup, before the first release:
   repository, workflow `release.yml`, environment `pypi`.
 - On GitHub, create the `pypi` environment and require a reviewer for it,
   so a pushed tag cannot publish without approval. Limit its deployments to
-  `v*` tags.
+  `v*` tags. The workflow cannot check these settings: without them, a tag
+  that passes CI publishes at once.
 - Add a tag ruleset for `v*`, so only maintainers can create, move, or
   delete release tags.
 - Protect `main` with a branch ruleset: changes through pull requests, with
