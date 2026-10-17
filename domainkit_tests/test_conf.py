@@ -23,6 +23,7 @@ from domainkit.conf.env import (
     project_prefix,
     project_root,
 )
+from domainkit.conf.global_settings import DEFAULT_MIDDLEWARE, RATE_LIMIT_MIDDLEWARE
 from domainkit.conf.lazy import LazySettings
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit_tests.conftest import MakePackage
@@ -368,6 +369,65 @@ def test_production_baseline_passes() -> None:
     )
 
     assert production.DEBUG is False
+
+
+HARDENED = {
+    "ENVIRONMENT": "production",
+    "ALLOWED_HOSTS": ["api.example.com"],
+    "API_DOCS": False,
+    "SECURE_HSTS_SECONDS": 1,
+    "RATE_LIMIT": "300/minute",
+    "MIDDLEWARE": [*DEFAULT_MIDDLEWARE, RATE_LIMIT_MIDDLEWARE],
+}
+DOCS_WARNING = (
+    "API_DOCS publishes /docs, /redoc, and /openapi.json to anyone; "
+    "set it to False unless the API is public."
+)
+HSTS_WARNING = (
+    "SECURE_HSTS_SECONDS is 0, so browsers may still use plain HTTP; "
+    "set it (31536000 is a year) once HTTPS works everywhere."
+)
+RATE_WARNING = (
+    "Requests are not rate limited; set RATE_LIMIT and list "
+    "domainkit.http.ratelimit.RateLimitMiddleware in MIDDLEWARE."
+)
+
+
+@pytest.mark.parametrize(
+    ("change", "warnings"),
+    [
+        ({}, []),
+        ({"ENVIRONMENT": "staging"}, []),
+        ({"API_DOCS": True}, [DOCS_WARNING]),
+        ({"SECURE_HSTS_SECONDS": 0}, [HSTS_WARNING]),
+        ({"RATE_LIMIT": None}, [RATE_WARNING]),
+        ({"MIDDLEWARE": DEFAULT_MIDDLEWARE}, [RATE_WARNING]),
+        (
+            {
+                "ENVIRONMENT": "staging",
+                "API_DOCS": True,
+                "SECURE_HSTS_SECONDS": 0,
+                "MIDDLEWARE": DEFAULT_MIDDLEWARE,
+            },
+            [DOCS_WARNING, HSTS_WARNING, RATE_WARNING],
+        ),
+    ],
+)
+def test_deployments_are_warned_about_weak_choices(
+    change: dict[str, object], warnings: list[str]
+) -> None:
+    """Public docs, no HSTS, and no rate limit are valid but named in deployments."""
+    values = {**HARDENED, **change}
+
+    assert Settings.model_validate(values).deployment_warnings() == warnings
+
+
+@pytest.mark.parametrize("environment", ["local", "test"])
+def test_only_deployments_are_warned(environment: str) -> None:
+    """Development keeps its docs and plain HTTP without being warned."""
+    values = {"ENVIRONMENT": environment, "API_DOCS": True, "SECURE_HSTS_SECONDS": 0}
+
+    assert Settings.model_validate(values).deployment_warnings() == []
 
 
 def test_lazy_settings_are_read_only() -> None:
