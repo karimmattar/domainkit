@@ -79,6 +79,11 @@ All notable changes to domainkit. The format follows
 
 ### Fixed
 
+- `ALLOWED_HOSTS` wildcards accepted malformed `Host` values (L1): with
+  `*.example.com`, `evil.com/.example.com` (or with `?`, `#`, `@`) passed,
+  because only the end of the value was compared. As in Django, a `Host`
+  must now be a name, an IPv4 address, or a bracketed IPv6 address, with an
+  optional numeric port; anything else is refused with `400 invalid_host`.
 - A short database outage stopped `runworker`, and could leave broker
   messages stuck (M5). The polling worker and the relay ended on the first
   failed query, cancelling the work in hand; with RabbitMQ, a delivery whose
