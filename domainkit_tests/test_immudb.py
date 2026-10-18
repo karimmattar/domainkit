@@ -7,6 +7,7 @@ the public half of its ``--signingKey``. Keys are unique per test, so tests
 can share one immudb database.
 """
 
+import asyncio
 import os
 import uuid
 from collections.abc import AsyncIterator
@@ -18,7 +19,12 @@ from ecdsa import NIST256p, SigningKey
 
 from domainkit.conf import LedgerConfig
 from domainkit.contrib.evidence import Evidence, EvidenceTampered, LedgerEvidenceStore
-from domainkit.ledger import LedgerKeyNotFound, LedgerTampered, LedgerUnavailable
+from domainkit.ledger import (
+    LedgerKeyExists,
+    LedgerKeyNotFound,
+    LedgerTampered,
+    LedgerUnavailable,
+)
 from domainkit.ledger.immudb import ImmudbLedger
 
 URL: Final = os.environ.get("DOMAINKIT_TEST_IMMUDB_URL", "")
@@ -93,6 +99,46 @@ async def test_missing_keys_and_revisions(ledger: ImmudbLedger, prefix: bytes) -
         await ledger.read(prefix + b"none")
     with pytest.raises(LedgerKeyNotFound):
         await ledger.read(prefix + b"k", revision=9)
+
+
+async def test_create_writes_only_new_keys(ledger: ImmudbLedger, prefix: bytes) -> None:
+    """The server refuses a second create; the first value stays alone."""
+    key = prefix + b"k"
+
+    created = await ledger.create(key, b"one")
+    with pytest.raises(LedgerKeyExists, match="already has this key"):
+        await ledger.create(key, b"two")
+    entry = await ledger.read(key)
+
+    assert (entry.value, entry.revision, entry.transaction) == (
+        b"one",
+        1,
+        created.transaction,
+    )
+    assert await ledger.revision_count(key, limit=5) == 1
+    # The refused write leaves the client's trusted state usable.
+    assert (await ledger.create(prefix + b"next", b"v")).transaction > (
+        created.transaction
+    )
+
+
+async def test_racing_evidence_writers_leave_one_revision(
+    ledger: ImmudbLedger,
+) -> None:
+    """Concurrent records of one evidence share one revision and its receipt."""
+    store = LedgerEvidenceStore(
+        ledger,
+        namespace=f"t{uuid.uuid4().hex[:8]}",
+        max_bytes=4096,
+        subject_key=b"subject-key-for-the-immudb-tests",
+    )
+    evidence = Evidence(kind="kyc.checked", subject="customer:2", facts={"ok": True})
+
+    receipts = await asyncio.gather(*(store.record(evidence) for _ in range(5)))
+
+    assert len(set(receipts)) == 1
+    assert (await store.verify(receipts[0])).intact
+    assert await ledger.revision_count(receipts[0].key.encode(), limit=5) == 1
 
 
 async def test_closed_ledgers_reconnect(ledger: ImmudbLedger, prefix: bytes) -> None:

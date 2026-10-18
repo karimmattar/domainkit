@@ -347,7 +347,9 @@ recorded = await evidence_store().verify(receipt)  # raises EvidenceTampered
   and nobody without the key can find a subject's records by hashing
   guesses. `for_subject("customer:42")` is a prefix scan.
 - Recording is idempotent by evidence id: a retry returns the same receipt,
-  and another record with that id is an `EvidenceConflict` (409).
+  and another record with that id is an `EvidenceConflict` (409). The ledger
+  writes a key only if it is new, so writers racing to record the same
+  evidence leave one revision and all get its receipt.
 - Reads return revision 1, the original. If anything wrote the key again,
   `RecordedEvidence.intact` is false and `verify()` raises
   `EvidenceTampered`. With immudb, every read and write is also checked

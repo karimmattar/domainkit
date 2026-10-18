@@ -219,7 +219,11 @@ from domainkit.ledger import ledgers
 
 written = await ledgers["evidence"].append(b"key", b"value")
 entry = await ledgers["evidence"].read(b"key", revision=1)
+first = await ledgers["evidence"].create(b"new", b"value")  # LedgerKeyExists if written
 ```
+
+`append` adds a revision; `create` writes only a new key, in one step in
+the ledger, so of several writers racing for a key exactly one succeeds.
 
 Tests use `LEDGERS = {"evidence": {"URL": "memory://"}}`: the same port, in
 memory, without proofs.

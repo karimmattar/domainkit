@@ -14,7 +14,7 @@ from domainkit.contrib.evidence.model import (
     RecordedEvidence,
     sha256,
 )
-from domainkit.ledger import Ledger, LedgerKeyNotFound, LedgerTampered
+from domainkit.ledger import Ledger, LedgerKeyExists, LedgerKeyNotFound, LedgerTampered
 
 _SUBJECT_DIGEST_LENGTH: Final = 32
 _TAMPER_CHECK_LIMIT: Final = 2
@@ -89,7 +89,11 @@ class LedgerEvidenceStore(EvidenceStore):
         self.subject_key = subject_key
 
     async def record(self, evidence: Evidence) -> EvidenceReceipt:
-        """Write the canonical record once; a retry of the same record is a no-op."""
+        """Write the canonical record once; a retry of the same record is a no-op.
+
+        The ledger creates the key only if it is new, so writers racing to
+        record the same evidence leave one revision, and all get its receipt.
+        """
         body = evidence.canonical()
         if len(body) > self.max_bytes:
             raise ValueError(
@@ -98,10 +102,21 @@ class LedgerEvidenceStore(EvidenceStore):
             )
         key = evidence_key(self.namespace, evidence, self.subject_key)
         try:
+            written = await self.ledger.create(key.encode(), body)
+        except LedgerKeyExists:
+            return await self._recorded(evidence, key, body)
+        except LedgerTampered as exc:
+            raise EvidenceTampered(
+                f"The ledger failed verification writing {key}."
+            ) from exc
+        return EvidenceReceipt(evidence.id, key, sha256(body), written.transaction)
+
+    async def _recorded(
+        self, evidence: Evidence, key: str, body: bytes
+    ) -> EvidenceReceipt:
+        """The receipt of ``body``, already under ``key``; another body conflicts."""
+        try:
             existing = await self.ledger.read(key.encode(), revision=1)
-        except LedgerKeyNotFound:
-            written = await self.ledger.append(key.encode(), body)
-            return EvidenceReceipt(evidence.id, key, sha256(body), written.transaction)
         except LedgerTampered as exc:
             raise EvidenceTampered(
                 f"The ledger failed verification reading {key}."

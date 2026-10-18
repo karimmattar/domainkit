@@ -15,6 +15,7 @@ from domainkit.exceptions import ImproperlyConfigured
 from domainkit.ledger import (
     LedgerEntry,
     LedgerHandler,
+    LedgerKeyExists,
     LedgerKeyNotFound,
     LedgerTampered,
     LedgerUnavailable,
@@ -92,6 +93,16 @@ class FakeClient:
         """Append a revision; the id is the revision count."""
         self._call("set")
         self.values.setdefault(key, []).append(value)
+        return SimpleNamespace(
+            id=sum(len(v) for v in self.values.values()), verified=True
+        )
+
+    def verifiedCreate(self, key: bytes, value: bytes) -> Any:  # noqa: ANN401 - SDK API.
+        """Write a new key; refuse a written one with immudb's words."""
+        self._call("create")
+        if key in self.values:
+            raise RpcError("precondition failed: KeyMustNotExist")
+        self.values[key] = [value]
         return SimpleNamespace(
             id=sum(len(v) for v in self.values.values()), verified=True
         )
@@ -180,6 +191,18 @@ async def test_memory_ledgers_keep_every_revision() -> None:
             await ledger.read(key, revision=revision)
 
 
+async def test_memory_ledgers_create_only_new_keys() -> None:
+    """A create writes revision 1 of a new key and refuses a written one."""
+    ledger = MemoryLedger()
+
+    created = await ledger.create(b"k", b"one")
+    with pytest.raises(LedgerKeyExists, match="already written"):
+        await ledger.create(b"k", b"two")
+
+    assert created == LedgerWrite(b"k", 1)
+    assert await ledger.read(b"k") == LedgerEntry(b"k", b"one", 1, 1)
+
+
 # ImmudbLedger on a fake client -------------------------------------------------
 
 
@@ -219,6 +242,21 @@ async def test_immudb_ledgers_call_the_sdk_on_their_own_thread() -> None:
     assert client.closed
 
 
+async def test_immudb_creates_are_conditional_sets() -> None:
+    """A create is the conditional set; immudb's refusal is LedgerKeyExists."""
+    client = FakeClient()
+    ledger, _ = ledger_on(client)
+
+    created = await ledger.create(b"k", b"one")
+    with pytest.raises(LedgerKeyExists, match="already has this key"):
+        await ledger.create(b"k", b"two")
+    await ledger.close()
+
+    assert created == LedgerWrite(b"k", 1)
+    assert client.calls == ["create", "create"]
+    assert client.values == {b"k": [b"one"]}
+
+
 async def test_calls_never_overlap() -> None:
     """The SDK keeps its trusted state in the client: one call at a time."""
     client = FakeClient()
@@ -250,6 +288,7 @@ async def test_counts_stop_at_the_limit() -> None:
         (BadSignatureError("Signature verification failed"), LedgerTampered),
         (RpcError("tbtree: key not found"), LedgerKeyNotFound),
         (RpcError("invalid key revision number"), LedgerKeyNotFound),
+        (RpcError("precondition failed: KeyMustNotExist"), LedgerKeyExists),
         (ErrKeyNotFound(), LedgerKeyNotFound),
         (RuntimeError("tbtree: key not found"), LedgerKeyNotFound),
         (RpcError("connection refused"), LedgerUnavailable),

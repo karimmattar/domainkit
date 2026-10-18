@@ -12,6 +12,7 @@ import asyncio
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Final, Protocol, cast
 from urllib.parse import unquote, urlsplit
 
@@ -22,6 +23,7 @@ from domainkit.ledger.base import (
     Ledger,
     LedgerEntry,
     LedgerError,
+    LedgerKeyExists,
     LedgerKeyNotFound,
     LedgerTampered,
     LedgerUnavailable,
@@ -33,6 +35,8 @@ SCAN_LIMIT: Final = 1000
 """immudb returns at most this many keys per scan."""
 _MISSING: Final = ("not found", "invalid key revision")
 """How immudb 1.11 words a missing key, and a revision past the last one."""
+_EXISTS: Final = "precondition failed"
+"""How immudb 1.11 words a ``create`` of a key that is already written."""
 
 
 class Client(Protocol):
@@ -44,6 +48,10 @@ class Client(Protocol):
 
     def verifiedSet(self, key: bytes, value: bytes) -> Any:  # noqa: ANN401 - SDK API.
         """Write ``key`` and verify the write."""
+        ...
+
+    def verifiedCreate(self, key: bytes, value: bytes) -> Any:  # noqa: ANN401 - SDK API.
+        """Write ``key`` only if it is new, and verify the write (``connect``)."""
         ...
 
     def verifiedGet(self, key: bytes, atRevision: int | None = None) -> Any:  # noqa: ANN401 - SDK API.
@@ -120,7 +128,31 @@ def connect(config: LedgerConfig) -> Client:
         # immudb-py 1.5 builds its stub from ``channel``; rebuild it on TLS.
         client._resetStub()
     client.login(address.user, address.password, database=address.database.encode())
+    client.verifiedCreate = partial(verified_create, client)
     return cast("Client", client)
+
+
+def verified_create(client: Any, key: bytes, value: bytes) -> Any:  # noqa: ANN401 - SDK types.
+    """The SDK's ``verifiedSet``, refused by immudb if ``key`` is already written.
+
+    immudb-py 1.5 cannot send preconditions, so this runs its verified set
+    through a stub that adds ``keyMustNotExist`` to the request.
+    """
+    from immudb.grpc import schema_pb2
+    from immudb.handler import verifiedSet
+
+    class MustNotExist:
+        """The client's stub, making each verified set conditional."""
+
+        def VerifiableSet(self, request: Any) -> Any:  # noqa: ANN401 - gRPC API.
+            request.setRequest.preconditions.add(
+                keyMustNotExist=schema_pb2.Precondition.KeyMustNotExistPrecondition(
+                    key=key
+                )
+            )
+            return client._stub.VerifiableSet(request)
+
+    return verifiedSet.call(MustNotExist(), client._rs, key, value, client._vk)
 
 
 class ImmudbLedger(Ledger):
@@ -138,6 +170,11 @@ class ImmudbLedger(Ledger):
     async def append(self, key: bytes, value: bytes) -> LedgerWrite:
         """Write a new revision and verify it against the trusted state."""
         response = await self._call(lambda client: client.verifiedSet(key, value))
+        return LedgerWrite(key, int(response.id))
+
+    async def create(self, key: bytes, value: bytes) -> LedgerWrite:
+        """Write the first revision, refused by immudb if the key exists."""
+        response = await self._call(lambda client: client.verifiedCreate(key, value))
         return LedgerWrite(key, int(response.id))
 
     async def read(self, key: bytes, revision: int | None = None) -> LedgerEntry:
@@ -230,4 +267,6 @@ def translate(exc: Exception) -> LedgerError:
     text = (details() if callable(details) else str(exc)) or ""
     if any(phrase in text for phrase in _MISSING):
         return LedgerKeyNotFound("The ledger has no such key or revision.")
+    if _EXISTS in text:
+        return LedgerKeyExists("The ledger already has this key.")
     return LedgerUnavailable(f"The ledger call failed ({type(exc).__name__}).")
