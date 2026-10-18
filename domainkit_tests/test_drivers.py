@@ -83,8 +83,9 @@ def test_tls_files(client_certificate: tuple[Path, Path], tmp_path: Path) -> Non
     )
     assert context is not None
 
-    with pytest.raises(ImproperlyConfigured, match="Cannot load TLS files"):
+    with pytest.raises(ImproperlyConfigured) as missing:
         client_ssl_context(config(SSLMODE="verify-ca", SSLROOTCERT=tmp_path / "x"))
+    assert str(missing.value) == "Cannot load TLS files (No such file or directory)."
     with pytest.raises(ValueError, match="SSLCERT and SSLKEY"):
         config(SSLCERT=cert)
 
@@ -129,6 +130,7 @@ def test_psycopg_arguments(client_certificate: tuple[Path, Path]) -> None:
 
     assert args["sslmode"] == "verify-full"
     assert args["sslrootcert"] == str(cert)
+    assert args["sslcert"] == str(cert)
     assert args["sslkey"] == str(key)
     assert args["options"] == (
         "-c statement_timeout=30000 -c lock_timeout=10000 "
@@ -145,8 +147,9 @@ def test_psycopg_arguments(client_certificate: tuple[Path, Path]) -> None:
 
 
 def test_other_drivers() -> None:
-    """SQLite takes no TLS, and no timeouts."""
+    """SQLite takes no TLS, and no timeouts; disabling TLS is no error."""
     assert connect_args(config("sqlite+aiosqlite:///x.db")) == {}
+    assert connect_args(config("sqlite+aiosqlite:///x.db", SSLMODE="disable")) == {}
     with pytest.raises(ImproperlyConfigured, match="not supported by the 'aiosqlite'"):
         connect_args(config("sqlite+aiosqlite:///x.db", SSLMODE="require"))
     assert connect_args(config(), "sqlite+aiosqlite:///other.db") == {}
