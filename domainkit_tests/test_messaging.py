@@ -5,11 +5,18 @@ import io
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping
+from collections.abc import (
+    AsyncIterator,
+    Callable,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from prometheus_client import REGISTRY
@@ -808,6 +815,7 @@ async def test_commits_never_wait_on_the_broker(
     await published()
 
     assert stalled.pending("default") == 1
+    assert commit_publisher(registry.settings(MessagingSettings)).backlog == 0
 
 
 async def test_commits_declare_their_queues_once(
@@ -871,6 +879,94 @@ async def test_shutdown_waits_for_the_publisher_then_stops_it(
     assert "Left 1 committed messages to the relay at shutdown" in caplog.messages
     assert commit_publisher(config) is not publisher
     await commit_publisher(config).flush()  # A fresh one has nothing to send.
+
+
+class RecordingWorker:
+    """Stands in for ``Worker``: records what it is built for and asked."""
+
+    made: ClassVar[list[tuple[MessagingSettings, str]]] = []
+    relayed: ClassVar[list[tuple[str, object, list[uuid.UUID]]]] = []
+
+    def __init__(self, config: MessagingSettings, *, database: str) -> None:
+        """Remember the config and the outbox."""
+        self.database = database
+        self.made.append((config, database))
+
+    async def relay_ids(self, broker: object, ids: Sequence[uuid.UUID]) -> int:
+        """Remember the broker and the ids."""
+        self.relayed.append((self.database, broker, list(ids)))
+        return len(ids)
+
+
+async def test_publishers_relay_each_outbox_through_its_own_worker(
+    broker_tables: MemoryBroker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ids go to their database's worker, built once, with the broker of BROKER."""
+    RecordingWorker.made.clear()
+    RecordingWorker.relayed.clear()
+    monkeypatch.setattr(dispatch, "Worker", RecordingWorker)
+    config = registry.settings(MessagingSettings)
+    publisher = dispatch.CommitPublisher(config)
+    first, second = uuid.uuid4(), uuid.uuid4()
+
+    publisher.submit("other", [first])
+    assert publisher.unpublished == {"other": [first]}
+    await publisher.flush()
+    publisher.submit("other", [second])
+    await publisher.flush()
+    await publisher.close()
+
+    assert RecordingWorker.made == [(config, "other")]
+    assert RecordingWorker.relayed == [
+        ("other", broker_tables, [first]),
+        ("other", broker_tables, [second]),
+    ]
+    assert publisher.backlog == 0
+
+
+async def test_closed_publishers_start_again_when_used(
+    broker_tables: MemoryBroker,
+) -> None:
+    """After close(), a submit starts the task again."""
+    publisher = commit_publisher(registry.settings(MessagingSettings))
+    await publisher.close()
+
+    await enqueue(remember, value=uuid.uuid4())
+    async with asyncio.timeout(1):
+        await publisher.flush()
+
+    assert broker_tables.pending("default") == 1
+
+
+def test_publishers_need_a_broker() -> None:
+    """Without MESSAGING.BROKER there is nothing to publish to."""
+    with pytest.raises(ValueError, match=r"CommitPublisher needs MESSAGING\.BROKER\."):
+        dispatch.CommitPublisher(MessagingSettings())
+
+
+async def test_commits_hand_over_their_outbox_and_ids(
+    broker_tables: MemoryBroker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The publisher gets the unit of work's database and the ids it wrote."""
+    submitted: list[tuple[str, list[uuid.UUID]]] = []
+
+    def record(
+        self: dispatch.CommitPublisher, database: str, ids: Sequence[uuid.UUID]
+    ) -> None:
+        submitted.append((database, list(ids)))
+
+    monkeypatch.setattr(dispatch.CommitPublisher, "submit", record)
+    async with NotesUnitOfWork() as uow:
+        await uow.notes.add(Note(id=NoteId(uuid.uuid4()), text="t"))
+        uow.defer(remember, value=uuid.uuid4())
+        await uow.commit()
+    async with NotesUnitOfWork() as uow:  # Nothing to publish, nothing reported.
+        await uow.notes.add(Note(id=NoteId(uuid.uuid4()), text="u"))
+        await uow.commit()
+
+    [row] = await outbox()
+    assert submitted == [("default", [row["id"]])]
+    assert reported == []
 
 
 async def test_the_messaging_app_closes_the_publishers_at_shutdown(

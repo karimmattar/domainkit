@@ -7,6 +7,7 @@ aio-pika's API; ``test_rabbitmq.py`` runs it on real servers too.
 import asyncio
 import datetime as dt
 import io
+import ssl
 from pathlib import Path
 from typing import Any, Final, cast
 
@@ -74,6 +75,24 @@ async def test_racing_first_uses_share_one_connection() -> None:
     await broker.close()
 
     assert (len(server.connections), len(channels)) == (1, 1)
+    [channel] = channels
+    # Publishes wait for RabbitMQ's confirmation; unroutable ones raise.
+    assert (channel.publisher_confirms, channel.on_return_raises) == (True, True)  # type: ignore[attr-defined]
+
+
+async def test_amqps_connections_trust_the_configured_ca(tmp_path: Path) -> None:
+    """The TLS context ssl_context() builds is the one the connection uses."""
+    server = FakeAMQP()
+    cert, _ = certificate(tmp_path)
+    url = "amqps://billing:pw@mq.internal/billing"
+    broker = rabbit(server, URL=url, TLS_CA=str(cert))
+
+    await broker.check()
+    await broker.close()
+
+    [(_, options)] = server.connections
+    assert isinstance(options["ssl_context"], ssl.SSLContext)
+    assert options["ssl_context"].verify_mode == ssl.CERT_REQUIRED
 
 
 class Inbox:

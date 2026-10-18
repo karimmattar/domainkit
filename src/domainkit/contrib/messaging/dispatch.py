@@ -201,7 +201,10 @@ class CommitPublisher:
 
     def __init__(self, config: MessagingSettings) -> None:
         """Publish to ``config.BROKER``; start the task on the first submit."""
+        if config.BROKER is None:
+            raise ValueError("CommitPublisher needs MESSAGING.BROKER.")
         self.config = config
+        self.alias = config.BROKER
         self.unpublished: dict[str, list[uuid.UUID]] = {}
         self.backlog = 0
         """Messages submitted and not yet offered to the broker."""
@@ -254,9 +257,7 @@ class CommitPublisher:
             batch, self.unpublished = self.unpublished, {}
             for database, ids in batch.items():
                 try:
-                    await self._worker(database).relay_ids(
-                        brokers[self.config.BROKER or ""], ids
-                    )
+                    await self._worker(database).relay_ids(brokers[self.alias], ids)
                 except Exception:  # The relay publishes them on its next round.
                     logger.exception(
                         "Could not publish committed messages; the relay will"
