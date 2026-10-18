@@ -45,12 +45,17 @@ def clear_reports() -> None:
 
 
 async def through_proxy(
-    scope_type: str, peer: str, headers: dict[str, str], trusted: list[str]
+    scope_type: str,
+    peer: str,
+    headers: dict[str, str] | list[tuple[str, str]],
+    trusted: list[str],
+    scheme: str | None = None,
 ) -> tuple[object, object]:
     """Return the ``client`` and ``scheme`` the wrapped app sees."""
     seen: list[tuple[object, object]] = []
 
     async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        assert await receive() == {"type": "http.disconnect"}
         seen.append((scope.get("client"), scope.get("scheme")))
 
     async def receive() -> Message:
@@ -64,8 +69,11 @@ async def through_proxy(
     scope = {
         "type": scope_type,
         "client": (peer, 1234),
-        "scheme": "ws" if scope_type == "websocket" else "http",
-        "headers": [(k.encode(), v.encode()) for k, v in headers.items()],
+        "scheme": scheme or ("ws" if scope_type == "websocket" else "http"),
+        "headers": [
+            (k.encode(), v.encode())
+            for k, v in (headers.items() if isinstance(headers, dict) else headers)
+        ],
     }
     await middleware(scope, receive, send)
     return seen[0]
@@ -108,6 +116,96 @@ async def test_forwarded_headers_only_from_trusted_proxies(
 ) -> None:
     """Spoofed hops and untrusted peers never change the client address."""
     assert await through_proxy("http", peer, headers, ["10.0.0.0/8"]) == expected
+
+
+@pytest.mark.parametrize(
+    ("peer", "headers", "expected"),
+    [
+        (  # A proxy that adds a line: the client's own line comes first.
+            "10.0.0.5",
+            [
+                ("x-forwarded-for", "198.51.100.7"),
+                ("x-forwarded-for", "203.0.113.9"),
+            ],
+            (("203.0.113.9", 0), "http"),
+        ),
+        (
+            "10.0.0.5",
+            {"x-forwarded-for": "203.0.113.9:4711, 10.0.0.7:80"},
+            (("203.0.113.9", 0), "http"),
+        ),
+        (
+            "10.0.0.5",
+            {"x-forwarded-for": "[2001:db8::1]:443, [2001:db8::2]:8"},
+            (("2001:db8::2", 0), "http"),
+        ),
+        *(
+            ("10.0.0.5", {"x-forwarded-for": malformed}, (("10.0.0.5", 1234), "http"))
+            for malformed in (
+                "[2001:db8::1",
+                "[2001:db8::1]443",
+                "[2001:db8::1]:",
+                "[2001:db8::1]:https",
+                "203.0.113.9:",
+                "203.0.113.9:-1",
+            )
+        ),
+        (
+            "::ffff:10.0.0.5",
+            {"x-forwarded-for": "::ffff:203.0.113.9, ::ffff:10.0.0.7"},
+            (("203.0.113.9", 0), "http"),
+        ),
+        (  # The client's scheme: at its place from the right.
+            "10.0.0.5",
+            {
+                "x-forwarded-for": "203.0.113.9, 10.0.0.7",
+                "x-forwarded-proto": "http, HTTPS, http",
+            },
+            (("203.0.113.9", 0), "https"),
+        ),
+        (
+            "10.0.0.5",
+            [
+                ("x-forwarded-for", "203.0.113.9"),
+                ("x-forwarded-proto", "https"),
+                ("x-forwarded-proto", "http"),
+            ],
+            (("203.0.113.9", 0), "http"),
+        ),
+        (  # Every hop trusted: the left-most is the client, two places in.
+            "10.0.0.5",
+            {
+                "x-forwarded-for": "10.0.0.8, 10.0.0.9",
+                "x-forwarded-proto": "https, http",
+            },
+            (("10.0.0.8", 0), "https"),
+        ),
+        (
+            "10.0.0.5",
+            {"x-forwarded-proto": "https, http"},
+            (("10.0.0.5", 1234), "http"),
+        ),
+    ],
+)
+async def test_every_forwarded_line_and_hop_counts(
+    peer: str,
+    headers: dict[str, str] | list[tuple[str, str]],
+    expected: tuple[object, object],
+) -> None:
+    """A client's own line or value never wins over a proxy's."""
+    assert await through_proxy("http", peer, headers, ["10.0.0.0/8"]) == expected
+
+
+async def test_a_proxy_on_plain_http_makes_the_scheme_http() -> None:
+    """The connection from the proxy may be TLS; the client's was not."""
+    plain = {"x-forwarded-proto": "http"}
+
+    assert await through_proxy(
+        "http", "10.0.0.5", plain, ["10.0.0.0/8"], scheme="https"
+    ) == (("10.0.0.5", 1234), "http")
+    assert await through_proxy(
+        "websocket", "10.0.0.5", plain, ["10.0.0.0/8"], scheme="wss"
+    ) == (("10.0.0.5", 1234), "ws")
 
 
 async def test_proxy_scheme_for_websockets_and_no_proxies() -> None:
