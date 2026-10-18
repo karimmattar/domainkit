@@ -169,6 +169,59 @@ async def test_other_integrity_errors_are_left_alone(engine: AsyncEngine) -> Non
     assert duplicate_value(error, metadata) is None
 
 
+class AdapterError(Exception):
+    """Stands in for the error SQLAlchemy's asyncpg adapter raises."""
+
+    def __init__(self, sqlstate: str, cause: BaseException | None) -> None:
+        """Carry ``sqlstate``, raised from ``cause`` (asyncpg's error)."""
+        super().__init__("duplicate key value violates unique constraint")
+        self.sqlstate = sqlstate
+        self.__cause__ = cause
+
+
+class UniqueViolationError(Exception):
+    """Stands in for asyncpg's error, which names the constraint."""
+
+    def __init__(self, constraint_name: str) -> None:
+        """Name the violated constraint."""
+        super().__init__("duplicate key value violates unique constraint")
+        self.constraint_name = constraint_name
+
+
+def raised(driver_error: object) -> IntegrityError:
+    """The IntegrityError SQLAlchemy wraps around ``driver_error``."""
+    return IntegrityError("INSERT", {}, driver_error)  # type: ignore[arg-type]
+
+
+def test_asyncpg_errors_name_their_constraint_on_their_cause() -> None:
+    """The adapter's error has the SQLSTATE; asyncpg's, its cause, the name."""
+    tenant = UniqueViolationError("uq_framework_test_accounts_tenant")
+    known = duplicate_value(raised(AdapterError("23505", tenant)), metadata)
+    elsewhere = UniqueViolationError("elsewhere_pkey")
+    unknown = duplicate_value(raised(AdapterError("23505", elsewhere)), metadata)
+    nameless = duplicate_value(raised(AdapterError("23505", None)), metadata)
+
+    assert type(known) is HandleTaken
+    assert known.fields == ("tenant", "handle")
+    assert type(unknown) is DuplicateValue  # A table outside the metadata.
+    assert (unknown.constraint, unknown.fields, unknown.message) == (
+        "elsewhere_pkey",
+        (),
+        "This value is already taken.",
+    )
+    assert nameless is not None
+    assert (nameless.constraint, nameless.fields) == (None, ())
+
+
+def test_other_driver_errors_are_left_alone() -> None:
+    """Other SQLSTATEs, and errors with neither SQLSTATE nor SQLite name."""
+    not_null = raised(AdapterError("23502", None))
+    unknown = raised(RuntimeError("connection reset"))
+
+    assert duplicate_value(not_null, metadata) is None
+    assert duplicate_value(unknown, metadata) is None
+
+
 async def test_psycopg_errors_name_their_constraint() -> None:
     """With psycopg, the constraint is in ``diag``, not on a cause."""
     psycopg_error = SimpleNamespace(
