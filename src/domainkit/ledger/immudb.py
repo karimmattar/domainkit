@@ -13,7 +13,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Final, Protocol, cast
+from typing import Any, Final, Protocol
 from urllib.parse import unquote, urlsplit
 
 from domainkit.conf import LedgerConfig
@@ -108,13 +108,13 @@ def connect(config: LedgerConfig) -> Client:
     try:
         import grpc
         from immudb import ImmudbClient
-    except ImportError as exc:  # pragma: no cover - needs the extra absent.
+    except ImportError as exc:
         raise ImproperlyConfigured(
             "immudb ledgers need the immudb extra: pip install 'domainkit[immudb]'."
         ) from exc
     address = address_of(config)
     key = config.SERVER_SIGNING_KEY
-    client = ImmudbClient(
+    sdk = ImmudbClient(
         address.target,
         publicKeyFile=str(key) if key is not None else None,
         timeout=config.TIMEOUT,
@@ -123,13 +123,14 @@ def connect(config: LedgerConfig) -> Client:
         credentials = grpc.ssl_channel_credentials(
             root_certificates=config.TLS_CA.read_bytes()
         )
-        client.channel.close()
-        client.channel = grpc.secure_channel(address.target, credentials)
+        sdk.channel.close()
+        sdk.channel = grpc.secure_channel(address.target, credentials)
         # immudb-py 1.5 builds its stub from ``channel``; rebuild it on TLS.
-        client._resetStub()
-    client.login(address.user, address.password, database=address.database.encode())
-    client.verifiedCreate = partial(verified_create, client)
-    return cast("Client", client)
+        sdk._resetStub()
+    sdk.login(address.user, address.password, database=address.database.encode())
+    sdk.verifiedCreate = partial(verified_create, sdk)
+    client: Client = sdk
+    return client
 
 
 def verified_create(client: Any, key: bytes, value: bytes) -> Any:  # noqa: ANN401 - SDK types.
@@ -264,7 +265,7 @@ def translate(exc: Exception) -> LedgerError:
             "A ledger proof or server signature did not verify; do not trust it."
         )
     details = getattr(exc, "details", None)
-    text = (details() if callable(details) else str(exc)) or ""
+    text = str(details() if callable(details) else exc)
     if any(phrase in text for phrase in _MISSING):
         return LedgerKeyNotFound("The ledger has no such key or revision.")
     if _EXISTS in text:

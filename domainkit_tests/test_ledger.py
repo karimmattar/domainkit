@@ -1,11 +1,14 @@
 """Ledgers: the memory adapter, the immudb adapter on a fake client, the handler."""
 
 import asyncio
+import sys
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import immudb
 import pytest
 from ecdsa.keys import BadSignatureError
 from immudb.exceptions import ErrCorruptedData, ErrKeyNotFound
@@ -28,7 +31,9 @@ from domainkit.ledger.immudb import (
     Address,
     ImmudbLedger,
     address_of,
+    connect,
     translate,
+    verified_create,
 )
 
 pytestmark = pytest.mark.anyio
@@ -71,6 +76,7 @@ class FakeClient:
         self.closed = False
         self.fail_with: Exception | None = None
         self.scans: list[tuple[bytes, bytes, bool, int]] = []
+        self.histories: list[tuple[int, int, bool]] = []
         self.shutdown_threads: list[str] = []
         self._active = 0
         self.peak = 0
@@ -123,6 +129,7 @@ class FakeClient:
     ) -> list[Any]:
         """Revisions from ``offset``, at most ``limit``."""
         self._call("history")
+        self.histories.append((offset, limit, sortorder))
         if key not in self.values:
             raise RpcError("key not found")
         window = self.values[key][offset : offset + limit]
@@ -186,9 +193,10 @@ async def test_memory_ledgers_keep_every_revision() -> None:
     assert await ledger.keys(b"", limit=1) == [b"a/1"]
     await ledger.check()
     await ledger.close()
-    for key, revision in ((b"none", None), (b"a/1", 3), (b"a/1", 0)):
-        with pytest.raises(LedgerKeyNotFound):
+    for key, revision, number in ((b"none", None, 0), (b"a/1", 3, 3), (b"a/1", 0, 0)):
+        with pytest.raises(LedgerKeyNotFound) as missing:
             await ledger.read(key, revision=revision)
+        assert str(missing.value) == f"No revision {number} of {key!r}."
 
 
 async def test_memory_ledgers_create_only_new_keys() -> None:
@@ -257,6 +265,48 @@ async def test_immudb_creates_are_conditional_sets() -> None:
     assert client.values == {b"k": [b"one"]}
 
 
+def test_connect_hands_the_sdk_its_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The SDK client gets the target, signing key, and timeout, then logs in."""
+    made: list[Any] = []
+
+    class Sdk:
+        def __init__(
+            self, target: str, publicKeyFile: str | None, timeout: float
+        ) -> None:
+            made.append((target, publicKeyFile, timeout))
+            self.logins: list[tuple[str, str, bytes]] = []
+
+        def login(self, username: str, password: str, database: bytes) -> None:
+            self.logins.append((username, password, database))
+
+    monkeypatch.setattr(immudb, "ImmudbClient", Sdk)
+    signing = tmp_path / "signing.pub"
+    plain = connect(immudb_config(TIMEOUT=7))
+    connect(immudb_config(SERVER_SIGNING_KEY=signing))
+
+    assert made == [
+        ("ledger.internal:3323", None, 7.0),
+        ("ledger.internal:3323", str(signing), 10.0),
+    ]
+    assert plain.logins == [("writer", "p@ss", b"evidence")]  # type: ignore[attr-defined]
+    create = plain.verifiedCreate
+    assert (create.func, create.args) == (verified_create, (plain,))  # type: ignore[attr-defined]
+
+
+def test_connect_names_the_missing_extra(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without immudb-py installed, the error says which extra to install."""
+    monkeypatch.setitem(sys.modules, "immudb", None)
+
+    with pytest.raises(ImproperlyConfigured) as missing:
+        connect(immudb_config())
+
+    assert str(missing.value) == (
+        "immudb ledgers need the immudb extra: pip install 'domainkit[immudb]'."
+    )
+
+
 async def test_calls_never_overlap() -> None:
     """The SDK keeps its trusted state in the client: one call at a time."""
     client = FakeClient()
@@ -279,30 +329,56 @@ async def test_counts_stop_at_the_limit() -> None:
     await ledger.close()
 
     assert counts == [1, 2, 3]
+    # Oldest first, from the first revision.
+    assert client.histories == [(0, 1, False), (0, 2, False), (0, 5, False)]
+
+
+class SilentRpcError(Exception):
+    """A gRPC error whose ``details()`` is empty."""
+
+    def details(self) -> None:
+        """Nothing to explain."""
+
+
+NOT_FOUND = "The ledger has no such key or revision."
+TAMPERED = "A ledger proof or server signature did not verify; do not trust it."
 
 
 @pytest.mark.parametrize(
-    ("error", "raised"),
+    ("error", "raised", "message"),
     [
-        (ErrCorruptedData(), LedgerTampered),
-        (BadSignatureError("Signature verification failed"), LedgerTampered),
-        (RpcError("tbtree: key not found"), LedgerKeyNotFound),
-        (RpcError("invalid key revision number"), LedgerKeyNotFound),
-        (RpcError("precondition failed: KeyMustNotExist"), LedgerKeyExists),
-        (ErrKeyNotFound(), LedgerKeyNotFound),
-        (RuntimeError("tbtree: key not found"), LedgerKeyNotFound),
-        (RpcError("connection refused"), LedgerUnavailable),
-        (OSError("no route"), LedgerUnavailable),
+        (ErrCorruptedData(), LedgerTampered, TAMPERED),
+        (BadSignatureError("Signature verification failed"), LedgerTampered, TAMPERED),
+        (RpcError("tbtree: key not found"), LedgerKeyNotFound, NOT_FOUND),
+        (RpcError("invalid key revision number"), LedgerKeyNotFound, NOT_FOUND),
+        (
+            RpcError("precondition failed: KeyMustNotExist"),
+            LedgerKeyExists,
+            "The ledger already has this key.",
+        ),
+        (ErrKeyNotFound(), LedgerKeyNotFound, NOT_FOUND),
+        (RuntimeError("tbtree: key not found"), LedgerKeyNotFound, NOT_FOUND),
+        (
+            RpcError("connection refused"),
+            LedgerUnavailable,
+            "The ledger call failed (RpcError).",
+        ),
+        (OSError("no route"), LedgerUnavailable, "The ledger call failed (OSError)."),
+        (
+            SilentRpcError(),
+            LedgerUnavailable,
+            "The ledger call failed (SilentRpcError).",
+        ),
     ],
 )
 def test_sdk_errors_become_ledger_errors(
-    error: Exception, raised: type[Exception]
+    error: Exception, raised: type[Exception], message: str
 ) -> None:
     """Proof and signature failures are tampering; the rest say what failed."""
     translated = translate(error)
 
     assert isinstance(translated, raised)
-    assert "p@ss" not in str(translated)
+    assert str(translated) == message
 
 
 async def test_failed_calls_reconnect_and_keep_ledger_errors() -> None:
@@ -377,15 +453,12 @@ async def test_ledgers_come_from_databases_by_alias() -> None:
         first = handler["evidence"]
         again = handler["evidence"]
         assert await handler.check_all(1.0) == []
-        with pytest.raises(
-            ImproperlyConfigured,
-            match="LEDGERS has no 'default' alias; it is a SQL database",
-        ):
+        with pytest.raises(ImproperlyConfigured) as sql:
             handler["default"]
-        with pytest.raises(
-            ImproperlyConfigured, match="LEDGERS has no 'nowhere' alias"
-        ):
+        with pytest.raises(ImproperlyConfigured) as unknown:
             handler["nowhere"]
+        assert str(sql.value) == "LEDGERS has no 'default' alias; it is a SQL database."
+        assert str(unknown.value) == "LEDGERS has no 'nowhere' alias."
     with override_settings(
         DATABASES={"default": SQLITE},
         LEDGERS={"evidence": {"URL": "memory://", "TIMEOUT": 1}},

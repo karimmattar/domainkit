@@ -163,6 +163,19 @@ async def test_a_wrong_signing_key_is_tampering(tmp_path: Path, prefix: bytes) -
 
 
 @secured
+async def test_creates_check_the_signing_key_too(tmp_path: Path, prefix: bytes) -> None:
+    """A conditional write is verified like any other: a wrong key is tampering."""
+    other = tmp_path / "other.pub"
+    other.write_bytes(SigningKey.generate(curve=NIST256p).get_verifying_key().to_pem())
+    impostor = ImmudbLedger(config(SERVER_SIGNING_KEY=other))
+    try:
+        with pytest.raises(LedgerTampered, match="did not verify"):
+            await impostor.create(prefix + b"k", b"v")
+    finally:
+        await impostor.close()
+
+
+@secured
 async def test_plain_text_is_refused_by_a_tls_server(prefix: bytes) -> None:
     """Without TLS_CA the client speaks plain text, which the server refuses."""
     plain = ImmudbLedger(config(TLS_CA=None, TIMEOUT=5))
