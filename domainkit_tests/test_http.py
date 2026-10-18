@@ -218,6 +218,81 @@ def test_websockets_pass_through_http_middleware(client: TestClient) -> None:
         assert websocket.receive_text() == "hi"
 
 
+def test_websockets_run_in_a_request_context(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Method WS, the path, and a request id, echoed when accepting."""
+    caplog.set_level(logging.DEBUG, logger="domainkit.access")
+    with client.websocket_connect("/ws/context") as socket:
+        context = socket.receive_json()
+        headers: dict[bytes, bytes] = dict(socket.extra_headers or [])
+    with client.websocket_connect(
+        "/ws/context", headers={"X-Request-ID": "abc-123"}
+    ) as socket:
+        supplied = socket.receive_json()["request_id"]
+
+    assert {key: context[key] for key in ("method", "path", "client_ip")} == {
+        "method": "WS",
+        "path": "/ws/context",
+        "client_ip": "testclient",
+    }
+    assert len(context["request_id"]) == 32
+    assert headers[b"x-request-id"] == context["request_id"].encode()
+    assert supplied == "abc-123"
+    (line, _) = [
+        (record.getMessage(), record.levelno)
+        for record in caplog.records
+        if record.name == "domainkit.access"
+    ]
+    assert line[0].startswith("WS /ws/context 101 ")
+    assert line[1] == logging.INFO
+
+
+def test_refused_and_failing_websockets_are_logged(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A close before accepting logs 403; an error closes with 1011, logged once."""
+    caplog.set_level(logging.DEBUG)
+    with (
+        pytest.raises(WebSocketDisconnect) as refused,
+        client.websocket_connect("/ws/refused"),
+    ):
+        pass
+    with (
+        pytest.raises(WebSocketDisconnect) as crashed,
+        client.websocket_connect("/ws/crash"),
+    ):
+        pass
+
+    assert (refused.value.code, crashed.value.code) == (1000, 1011)
+    access = [
+        (record.getMessage().split()[:3], record.levelno)
+        for record in caplog.records
+        if record.name == "domainkit.access"
+    ]
+    assert access == [
+        (["WS", "/ws/refused", "403"], logging.WARNING),
+        (["WS", "/ws/crash", "-"], logging.ERROR),
+    ]
+    errors = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "domainkit.http.middleware"
+    ]
+    assert errors == ["Unhandled error in WS /ws/crash"]
+
+
+def test_failing_websockets_are_raised_in_debug_mode(make_client: MakeClient) -> None:
+    """Debug mode lets the error reach the server, as for HTTP."""
+    client = make_client(DEBUG=True)
+
+    with (
+        pytest.raises(RuntimeError, match=r"^socket crashed$"),
+        client.websocket_connect("/ws/crash"),
+    ):
+        pass
+
+
 def test_request_body_limits(make_client: MakeClient) -> None:
     """Declared and streamed bodies over the limit get 413; bad lengths 400."""
     client = make_client(MAX_REQUEST_BODY_SIZE=10)

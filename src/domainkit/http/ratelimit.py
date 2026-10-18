@@ -25,7 +25,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Final, Protocol
 
 from fastapi import status
 from starlette.datastructures import MutableHeaders
@@ -173,8 +173,19 @@ class RedisBackend:
         )
 
 
+TRY_AGAIN_LATER: Final = 1013
+"""WebSocket close code for a handshake refused because of the rate limit."""
+_DENIAL: Final = "websocket.http.response"
+"""The ASGI extension that lets a WebSocket handshake be refused with a 429."""
+
+
 class RateLimitMiddleware:
-    """Refuse callers over ``RATE_LIMIT``; place it after RequestContextMiddleware."""
+    """Refuse callers over ``RATE_LIMIT``; place it after RequestContextMiddleware.
+
+    A WebSocket handshake counts as one request. Over the limit, it is refused
+    with the same 429 where the server supports denial responses, and closed
+    with 1013 (try again later) where it does not.
+    """
 
     def __init__(self, app: ASGIApp) -> None:
         """Read the rate, the exempt paths, and the backend from settings."""
@@ -189,7 +200,11 @@ class RateLimitMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Count the request; answer 429 or add the quota headers."""
-        if self.rate is None or scope["type"] != "http" or scope["path"] in self.exempt:
+        if (
+            self.rate is None
+            or scope["type"] not in {"http", "websocket"}
+            or scope["path"] in self.exempt
+        ):
             await self.app(scope, receive, send)
             return
         limit, period = self.rate
@@ -200,6 +215,11 @@ class RateLimitMiddleware:
             "RateLimit-Reset": str(math.ceil(decision.reset_after)),
         }
         if not decision.allowed:
+            if scope["type"] == "websocket" and _DENIAL not in scope.get(
+                "extensions", {}
+            ):
+                await send({"type": "websocket.close", "code": TRY_AGAIN_LATER})
+                return
             response = error_response(
                 status.HTTP_429_TOO_MANY_REQUESTS,
                 "Too many requests; slow down.",
@@ -212,7 +232,8 @@ class RateLimitMiddleware:
             return
 
         async def send_with_headers(message: Message) -> None:
-            if message["type"] == "http.response.start":
+            if message["type"] in {"http.response.start", "websocket.accept"}:
+                message.setdefault("headers", [])
                 MutableHeaders(scope=message).update(headers)
             await send(message)
 

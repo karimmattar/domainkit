@@ -88,6 +88,16 @@ All notable changes to domainkit. The format follows
 
 ### Fixed
 
+- Work done over a WebSocket was audited as `"system"`: request context was
+  bound for HTTP only, so the authenticated user never became the actor of
+  the audit trail, logs, or outbox headers, and connections had no request
+  id or access log line. WebSocket connections now run in a request context
+  (method `WS`), the request id is sent with the accept, and each connection
+  is logged when it ends. An error before the accept closes it with 1011
+  rather than reaching the server. WebSocket handshakes were not rate
+  limited either: each now counts as a request, and one over the limit gets
+  the 429 as a denial response, or a 1013 close where the server cannot
+  send one.
 - Evidence refused `Decimal` amounts and accepted floats, the wrong way
   round for money: `facts={"amount": Decimal("10.00")}` raised, while
   `{"amount": 1e21}` was hashed into the receipt as `1e+21`. A `Decimal` is
