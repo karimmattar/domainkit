@@ -152,14 +152,19 @@ async def large() -> Response:
 
 
 @router.post("/respond")
-async def respond(status_code: int = 200, size: int = 0, parts: int = 1) -> Response:
+async def respond(
+    status_code: int = 200, size: int = 0, parts: int = 1, cache: str | None = None
+) -> Response:
     """Answer with ``status_code`` and ``parts`` body chunks of ``size`` bytes."""
 
     async def body() -> AsyncIterator[bytes]:
         for _ in range(parts):
             yield b"x" * size
 
-    return StreamingResponse(body(), status_code=status_code, media_type="text/plain")
+    headers = {"Cache-Control": cache} if cache else None
+    return StreamingResponse(
+        body(), status_code=status_code, media_type="text/plain", headers=headers
+    )
 
 
 payments_metadata = MetaData()
@@ -222,6 +227,12 @@ async def pay(outcome: str = "ok", database: str = "default") -> Response:
         raise RuntimeError("crashed after the commit")
     if outcome == "unavailable":
         raise HTTPException(503, "Try later.")
+    if outcome == "declined":
+        return Response(b"declined", status_code=402)
+    if outcome == "secret":
+        return Response(
+            b"token", status_code=201, headers={"Cache-Control": "no-store"}
+        )
     return Response(b"x" * 2048 if outcome == "large" else b"paid", status_code=201)
 
 

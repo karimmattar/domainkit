@@ -29,6 +29,7 @@ from domainkit.contrib.auth import (
 )
 from domainkit.contrib.auth.hashers import HashingPool
 from domainkit.contrib.auth.tables import tokens
+from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
@@ -287,6 +288,35 @@ def test_logins_are_throttled_per_address_and_per_username(api: Api) -> None:
     assert {
         unlimited.post("/auth/login", json=wrong).status_code for _ in range(4)
     } == {401}
+
+
+def test_tokens_are_never_cached_or_kept_for_replay(api: Api) -> None:
+    """Login answers ``no-store``, so idempotency keeps no working token."""
+    create_user("alice")
+    client = api()
+    keyed = {"Idempotency-Key": "login-1"}
+    body = {"username": "alice", "password": PASSWORD}
+
+    first = client.post("/auth/login", json=body, headers=keyed)
+    retry = client.post("/auth/login", json=body, headers=keyed)
+
+    assert first.status_code == 200
+    assert first.headers["Cache-Control"] == "no-store"
+    assert first.headers["Pragma"] == "no-cache"
+    assert (retry.status_code, retry.json()["code"]) == (
+        409,
+        "idempotency_response_unavailable",
+    )
+    stored = run_async(_stored_bodies())
+    assert stored == [None]
+    assert first.json()["access_token"].encode() not in repr(stored).encode()
+
+
+async def _stored_bodies() -> list[bytes | None]:
+    """The bodies the idempotency table holds."""
+    async with connections.engine().connect() as connection:
+        rows = await connection.execute(select(idempotency_keys.c.body))
+        return [row.body for row in rows]
 
 
 def test_bad_tokens_are_refused_even_on_public_routes(

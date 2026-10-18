@@ -6,6 +6,26 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Idempotency kept working tokens: a login or refresh sent with an
+  `Idempotency-Key` stored its response, tokens and all, in
+  `domainkit_idempotency_keys` for a day (for good without messaging),
+  against "the table never holds a working token". `/auth/login` and
+  `/auth/refresh` now answer `Cache-Control: no-store` (as OAuth 2 asks),
+  and such responses are never stored: a retry gets 409
+  `idempotency_response_unavailable`.
+- Callers without an actor who authenticate with another header than
+  `Authorization` or `Cookie` (an `X-API-Key`) shared keys behind one
+  address, so one could be replayed another's response. Their keys are
+  apart now, by the new `IDEMPOTENCY.CREDENTIAL_HEADERS`. Keys sent
+  without an actor before the upgrade are not found after it.
+- A refusal (a 4xx) that committed nothing is no longer stored, so a retry
+  runs again once the caller has logged in or the conflict is gone, and
+  keyed requests to paths that do not exist store nothing. Without
+  messaging, which purges expired keys hourly, each new key now deletes up
+  to 100 expired ones; they used to stay until their key came back.
+
 ## [0.6.0] - 2026-10-18
 
 ### Added
