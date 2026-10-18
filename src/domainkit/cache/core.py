@@ -7,8 +7,9 @@ longer fits its type counts as a miss.
 
 A cache is an optimization. When its store fails, the cache is skipped for
 ``FAILURE_COOLDOWN`` seconds, and ``get_or_set`` (and ``@cached``) compute
-values instead of failing. The plain operations raise ``CacheUnavailable``,
-so callers that need the cache can tell.
+values instead of failing, still once per key for concurrent callers. The
+plain operations raise ``CacheUnavailable``, so callers that need the cache
+can tell.
 """
 
 import asyncio
@@ -240,16 +241,18 @@ class Cache:
         entries are recomputed shortly before they expire, by one caller
         while the others still get the old value (XFetch); if that early
         refresh fails, the cached value is served until it expires. If the
-        cache fails, ``factory`` is called and the value is returned anyway.
-        Every caller gets its own copy, decoded from JSON, so hits and misses
-        look alike and no two requests share a mutable object.
+        cache fails, ``factory`` is called, still once for concurrent callers,
+        and the value is returned anyway. Every caller gets its own copy,
+        decoded from JSON, so hits and misses look alike and no two requests
+        share a mutable object.
         """
         full, milliseconds = self.make_key(key), self._milliseconds(ttl)
         try:
             (raw,) = await self.call(self.store.get_many, [full])
         except CacheError as exc:
             self._worked_around("read", exc)
-            return decode(encode(await factory()), type)
+            payload = await self._compute_once(full, factory, milliseconds, write=False)
+            return decode(payload, type)
         value, refresh = self._load(raw, type, early=True)
         if value is _MISS:
             return decode(await self._compute_once(full, factory, milliseconds), type)
@@ -272,7 +275,15 @@ class Cache:
         await self.store.check()
 
     async def close(self) -> None:
-        """Close the store."""
+        """Cancel the computations still running, then close the store.
+
+        Callers still waiting for a cancelled computation compute their own
+        value, as when the cache fails.
+        """
+        computing = list(self._computing.values())
+        for task in computing:
+            task.cancel()
+        await asyncio.gather(*computing, return_exceptions=True)
         await self.store.close()
 
     async def call[**P, R](
@@ -364,19 +375,31 @@ class Cache:
         full: str,
         factory: Callable[[], Awaitable[Any]],
         milliseconds: int | None,
+        *,
+        write: bool = True,
     ) -> bytes:
-        """Share one computation of ``full`` among concurrent callers; its JSON."""
+        """Share one computation of ``full`` among concurrent callers; its JSON.
+
+        The first caller decides whether the result is written to the store.
+        """
         task = self._computing.get(full)
         if task is None:
-            task = asyncio.ensure_future(self._compute(full, factory, milliseconds))
+            computation = self._compute(full, factory, milliseconds, write=write)
+            task = asyncio.ensure_future(computation)
             self._computing[full] = task
             task.add_done_callback(lambda done: self._forget(full, done))
-        return await asyncio.shield(task)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            caller = asyncio.current_task()
+            if not task.cancelled() or caller is None or caller.cancelling():
+                raise
+            return encode(await factory())  # close() stopped the computation.
 
     def _forget(self, full: str, task: asyncio.Task[bytes]) -> None:
         """Drop a finished computation; its error reaches whoever awaited it."""
         del self._computing[full]
-        if not task.cancelled():  # Cancelled only when its event loop closes.
+        if not task.cancelled():  # Cancelled by close(), or when its loop closes.
             task.exception()
 
     async def _compute(
@@ -384,10 +407,17 @@ class Cache:
         full: str,
         factory: Callable[[], Awaitable[Any]],
         milliseconds: int | None,
+        *,
+        write: bool,
     ) -> bytes:
-        """Call ``factory``, store its JSON with its expiry and cost, return it."""
+        """Call ``factory``, store its JSON with its expiry and cost, return it.
+
+        Without ``write``, the cache just failed a read, so nothing is stored.
+        """
         started = time.perf_counter()
         payload = encode(await factory())
+        if not write:
+            return payload
         delta = time.perf_counter() - started
         entry = payload
         if milliseconds is not None:

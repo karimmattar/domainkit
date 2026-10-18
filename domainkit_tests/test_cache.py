@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
 from pydantic import BaseModel, ValidationError
 
+from domainkit.broker import brokers
 from domainkit.cache import (
     Cache,
     CacheError,
@@ -36,12 +37,14 @@ from domainkit.cache import (
 from domainkit.cache.core import split
 from domainkit.cache.redis import RedisStore, create_client
 from domainkit.conf import CacheConfig, Settings, override_settings
+from domainkit.db.connections import connections
 from domainkit.ddd import DomainEvent, EventBus
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.http.ratelimit import RedisBackend
+from domainkit.ledger import ledgers
 from domainkit.management import call_command
-from domainkit.management.base import CommandError
+from domainkit.management.base import CommandError, run_async
 
 pytestmark = pytest.mark.anyio
 
@@ -103,6 +106,28 @@ class FlakyStore(MemoryStore):
         """Fail, or write."""
         self._fail(write=True)
         await super().set_many(items, ttl)
+
+
+class Stuck:
+    """A factory whose first call waits until cancelled; later calls return 7."""
+
+    def __init__(self, on_cancel: Callable[[], object] = lambda: None) -> None:
+        """Call ``on_cancel`` when the first call is cancelled."""
+        self.on_cancel = on_cancel
+        self.calls = 0
+        self.started = asyncio.Event()
+
+    async def __call__(self) -> int:
+        """Wait forever the first time; return 7 after."""
+        self.calls += 1
+        if self.calls == 1:
+            self.started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.on_cancel()
+                raise
+        return 7
 
 
 def make_cache(
@@ -591,6 +616,39 @@ async def test_a_failing_cache_is_skipped_for_a_cooldown(
     assert await cache.get("k") == [1]
 
 
+@pytest.mark.parametrize(
+    "error",
+    [CacheUnavailable("connection refused"), CacheError("NOPERM")],
+    ids=["unavailable", "refused"],
+)
+async def test_an_outage_still_shares_one_computation(error: CacheError) -> None:
+    """While the cache fails, concurrent misses wait for one factory call."""
+    store = FlakyStore()
+    store.error = error
+    cache = make_cache(store)
+    release = asyncio.Event()
+    calls = []
+
+    async def slow() -> list[Line]:
+        calls.append(1)
+        await release.wait()
+        return [Line("a", 1)]
+
+    waiting = [
+        asyncio.create_task(cache.get_or_set("k", slow, list[Line])) for _ in range(5)
+    ]
+    await asyncio.sleep(0)
+    release.set()
+    first, *others = await asyncio.gather(*waiting)
+
+    assert first == [Line("a", 1)]
+    assert all(other == first and other is not first for other in others)
+    assert len(calls) == 1
+    # Each refused read reaches the store; an unavailable one starts the
+    # cooldown, which skips the rest. The value is not written either way.
+    assert store.calls == (1 if isinstance(error, CacheUnavailable) else 5)
+
+
 async def test_refused_operations_are_worked_around(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -865,6 +923,70 @@ def test_handler_gives_each_loop_its_caches() -> None:
         handler.config("nope")
     with pytest.raises(RuntimeError, match="needs a running event loop"):
         handler["default"]
+
+
+async def test_closing_a_cache_stops_its_computations_first() -> None:
+    """close() cancels what is still computing, then closes the store.
+
+    Callers still waiting compute their own value, as when the cache fails.
+    """
+    events: list[str] = []
+    cache = make_cache(RecordingStore(events, "store"))
+    factory = Stuck(on_cancel=lambda: events.append("computation"))
+    waiting = asyncio.create_task(cache.get_or_set("k", factory, int))
+    await factory.started.wait()
+
+    async with asyncio.timeout(5):
+        await cache.close()
+
+    assert events == ["computation", "store"]
+    assert cache._computing == {}
+    await asyncio.wait([waiting], timeout=5)
+    assert waiting.result() == 7
+    assert factory.calls == 2
+
+
+async def test_a_caller_cancelled_while_its_cache_closes_stays_cancelled() -> None:
+    """Only callers that still want the value compute it after close()."""
+    cache = make_cache(DummyStore())
+    waiting: asyncio.Task[int]
+    factory = Stuck(on_cancel=lambda: waiting.cancel())
+    waiting = asyncio.create_task(cache.get_or_set("k", factory, int))
+    await factory.started.wait()
+
+    async with asyncio.timeout(5):
+        await cache.close()
+
+    await asyncio.wait([waiting], timeout=5)
+    assert waiting.cancelled()
+    assert factory.calls == 1
+
+
+def test_caches_close_before_what_their_computations_use(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At shutdown, cache computations stop before databases and brokers close."""
+    closed: list[str] = []
+    handlers = {
+        "caches": caches,
+        "connections": connections,
+        "ledgers": ledgers,
+        "brokers": brokers,
+    }
+    for name, handler in handlers.items():
+
+        async def close_all(name: str = name) -> None:
+            closed.append(name)
+
+        monkeypatch.setattr(handler, "close_all", close_all)
+
+    with TestClient(get_asgi_application()):
+        pass
+    assert closed == ["caches", "connections", "ledgers", "brokers"]
+
+    closed.clear()
+    run_async(asyncio.sleep(0))  # Management commands.
+    assert closed == ["caches", "connections", "brokers"]
 
 
 def test_readiness_checks_only_caches_that_ask_for_it() -> None:

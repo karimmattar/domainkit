@@ -88,6 +88,15 @@ All notable changes to domainkit. The format follows
 
 ### Fixed
 
+- A cache outage multiplied the load on the database: while a cache failed,
+  `get_or_set` and `@cached` called the factory once per caller, so a
+  stampede on a hot key ran the query once for every request. Concurrent
+  callers now share one computation while the cache fails too, and its
+  value is not written back after a failed read.
+- Closing a cache left its computations running, writing to a closed store
+  after shutdown. `close()` now cancels them before closing the store, and
+  callers still waiting compute their own value. Caches also close before
+  databases, ledgers, and brokers, which their computations use.
 - With a broker, every write waited on it: publishing a commit's messages
   ran inside the request, after the commit, so a slow or stopped RabbitMQ
   added up to its connect and publish timeouts to each write. Each commit

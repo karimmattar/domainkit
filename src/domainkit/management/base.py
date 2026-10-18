@@ -95,6 +95,6 @@ async def _run_async[T](awaitable: Awaitable[T]) -> T:
     try:
         return await awaitable
     finally:
+        await caches.close_all()  # First: their computations use the others.
         await connections.close_all()
-        await caches.close_all()
         await brokers.close_all()

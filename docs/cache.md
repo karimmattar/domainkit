@@ -178,10 +178,11 @@ it at once, and the database takes the whole load. `get_or_set` (and so
 `@cached`) prevents that in two ways:
 
 - **One computation per key per process.** Concurrent misses on the same
-  key wait for the first caller's result. Each caller still gets its own
-  copy, so no two requests share a mutable object. If the first caller is
-  cancelled, the computation goes on for the others. Errors reach every
-  waiting caller and are never cached.
+  key wait for the first caller's result, also while the cache fails, when
+  every call is a miss. Each caller still gets its own copy, so no two
+  requests share a mutable object. If the first caller is cancelled, the
+  computation goes on for the others. Errors reach every waiting caller and
+  are never cached.
 - **Early refresh (XFetch).** Each entry records how long it took to
   compute. As its expiry nears, a read may decide, at random, to recompute
   it while everyone else still gets the old value. The chance rises as
@@ -193,13 +194,18 @@ it at once, and the database takes the whole load. `get_or_set` (and so
 With several replicas, each replica may still recompute a hot key once.
 That is the worst case, not one recomputation per request.
 
+Computations belong to their cache. At shutdown, caches close before
+databases, ledgers, and brokers, and closing one cancels the computations
+still running, so none outlives the connections it uses.
+
 ## When the cache fails
 
 - A connection error or timeout skips the cache for `FAILURE_COOLDOWN`
   seconds (5 by default), logged once. Requests do not each wait for a
   timeout during an outage.
-- `get_or_set` and `@cached` compute the value and return it. They also
-  carry on when Redis refuses a write (for example, out of memory).
+- `get_or_set` and `@cached` compute the value and return it, once per key
+  for concurrent callers, and do not write it back. They also carry on
+  when Redis refuses a write (for example, out of memory).
 - The plain operations (`get`, `set`, `delete`, ...) raise
   `CacheUnavailable`, or `CacheError` when Redis refuses a command, so code
   that depends on the cache can tell.
