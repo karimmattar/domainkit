@@ -11,6 +11,10 @@ to the outbox with their delay, and the relay publishes them when due.
 Every delivery is answered, so a failure never holds a consumer's slot: it
 is requeued when its outbox cannot be reached, and acknowledged otherwise.
 A relay waits out database outages as the polling worker does.
+
+With ``PUBLISH_ON_COMMIT``, a commit hands its message ids to the loop's
+``CommitPublisher``, which publishes them in the background: the commit
+never waits on the broker.
 """
 
 import asyncio
@@ -18,6 +22,9 @@ import json
 import logging
 import uuid
 from collections.abc import Iterable, Sequence
+from contextlib import suppress
+from typing import Final
+from weakref import WeakKeyDictionary
 
 from domainkit.broker import Broker, BrokerError, Delivery, brokers
 from domainkit.db.routing import router
@@ -34,6 +41,11 @@ except ImportError:  # pragma: no cover - only without the [metrics] extra.
 
 
 logger = logging.getLogger(__name__)
+
+MAX_UNPUBLISHED: Final = 10_000
+"""Committed messages waiting to be published; past it, the relay sends them."""
+CLOSE_TIMEOUT: Final = 5.0
+"""Seconds shutdown waits for committed messages to reach the broker."""
 
 
 class BrokerWorkers:
@@ -177,21 +189,121 @@ class BrokerWorkers:
             await worker.process(claimed)
 
 
-async def publish_committed(
+class CommitPublisher:
+    """Publishes committed messages in the background, so commits never wait.
+
+    One task per event loop offers the submitted ids to the broker, a
+    database at a time, with one worker per database, so queues are declared
+    once. A slow or failing broker delays only this task, never a commit;
+    the backlog stops at ``MAX_UNPUBLISHED``, past which messages wait for
+    the relay, as after a crash. The outbox holds them either way.
+    """
+
+    def __init__(self, config: MessagingSettings) -> None:
+        """Publish to ``config.BROKER``; start the task on the first submit."""
+        if config.BROKER is None:
+            raise ValueError("CommitPublisher needs MESSAGING.BROKER.")
+        self.config = config
+        self.alias = config.BROKER
+        self.unpublished: dict[str, list[uuid.UUID]] = {}
+        self.backlog = 0
+        """Messages submitted and not yet offered to the broker."""
+        self._workers: dict[str, Worker] = {}
+        self._wake = asyncio.Event()
+        self._idle = asyncio.Event()
+        self._idle.set()
+        self._task: asyncio.Task[None] | None = None
+
+    def submit(self, database: str, ids: Sequence[uuid.UUID]) -> None:
+        """Queue ``ids``, committed to ``database``'s outbox, for publishing."""
+        if self.backlog + len(ids) > MAX_UNPUBLISHED:
+            logger.warning(
+                "Left %d committed messages to the relay: %d are already waiting",
+                len(ids),
+                self.backlog,
+            )
+            return
+        self.unpublished.setdefault(database, []).extend(ids)
+        self.backlog += len(ids)
+        self._idle.clear()
+        self._wake.set()
+        if self._task is None:
+            self._task = asyncio.get_running_loop().create_task(self._run())
+
+    async def flush(self) -> None:
+        """Wait until every message submitted so far was offered to the broker."""
+        await self._idle.wait()
+
+    async def close(self) -> None:
+        """Flush for up to ``CLOSE_TIMEOUT``, then stop; the relay sends the rest."""
+        try:
+            async with asyncio.timeout(CLOSE_TIMEOUT):
+                await self.flush()
+        except TimeoutError:
+            logger.warning(
+                "Left %d committed messages to the relay at shutdown", self.backlog
+            )
+        if self._task is not None:
+            self._task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._task
+            self._task = None
+
+    async def _run(self) -> None:
+        """Publish what was submitted, round after round."""
+        while True:
+            await self._wake.wait()
+            self._wake.clear()
+            batch, self.unpublished = self.unpublished, {}
+            for database, ids in batch.items():
+                try:
+                    await self._worker(database).relay_ids(brokers[self.alias], ids)
+                except Exception:  # The relay publishes them on its next round.
+                    logger.exception(
+                        "Could not publish committed messages; the relay will"
+                    )
+                self.backlog -= len(ids)
+            if not self.unpublished:
+                self._idle.set()
+
+    def _worker(self, database: str) -> Worker:
+        """The worker of ``database``'s outbox, kept so it declares queues once."""
+        if database not in self._workers:
+            self._workers[database] = Worker(self.config, database=database)
+        return self._workers[database]
+
+
+_publishers: WeakKeyDictionary[
+    asyncio.AbstractEventLoop, dict[MessagingSettings, CommitPublisher]
+] = WeakKeyDictionary()
+
+
+def commit_publisher(config: MessagingSettings) -> CommitPublisher:
+    """The running loop's publisher for ``config``."""
+    loop = asyncio.get_running_loop()
+    publishers = _publishers.setdefault(loop, {})
+    if config not in publishers:
+        publishers[config] = CommitPublisher(config)
+    return publishers[config]
+
+
+async def close_publishers() -> None:
+    """Flush and stop the running loop's publishers (at shutdown)."""
+    for publisher in _publishers.pop(asyncio.get_running_loop(), {}).values():
+        await publisher.close()
+
+
+def publish_committed(
     config: MessagingSettings, database: str, ids: Sequence[uuid.UUID]
 ) -> None:
-    """Hand just-committed messages to the broker; the relay catches what fails.
+    """Hand just-committed messages to the background publisher.
 
-    Runs in the committing process, after the commit, when ``BROKER`` and
-    ``PUBLISH_ON_COMMIT`` are set. It never raises: the messages are safe
-    in the outbox either way.
+    Runs after the commit, when ``BROKER`` and ``PUBLISH_ON_COMMIT`` are set,
+    and returns at once: the commit never waits on the broker.
     """
     if config.BROKER is None or not config.PUBLISH_ON_COMMIT or not ids:
         return
-    try:
-        await Worker(config, database=database).relay_ids(brokers[config.BROKER], ids)
-    except Exception:  # The relay publishes them on its next round.
-        logger.exception("Could not publish committed messages; the relay will")
+    commit_publisher(config).submit(database, ids)
 
 
 def _hosting_aliases() -> frozenset[str]:

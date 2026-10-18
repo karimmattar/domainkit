@@ -7,6 +7,7 @@ aio-pika's API; ``test_rabbitmq.py`` runs it on real servers too.
 import asyncio
 import datetime as dt
 import io
+import ssl
 from pathlib import Path
 from typing import Any, Final, cast
 
@@ -46,6 +47,52 @@ def rabbit(server: FakeAMQP, **options: object) -> RabbitMQBroker:
     """A RabbitMQ broker on the fake ``server``."""
     config = BrokerConfig.model_validate({**RABBIT, **options})
     return RabbitMQBroker(config, connect=cast(Any, server.connect))
+
+
+async def test_racing_first_uses_share_one_connection() -> None:
+    """Callers racing to open the broker get one connection and one channel."""
+    server = FakeAMQP()
+    channels: list[object] = []
+
+    async def slow_connect(url: str, **options: Any) -> object:  # noqa: ANN401
+        await asyncio.sleep(0)  # A real connect yields while it handshakes.
+        connection = await server.connect(url, **options)
+        opened = connection.channel
+
+        async def channel(**options: Any) -> object:  # noqa: ANN401
+            await asyncio.sleep(0)
+            made = await opened(**options)
+            channels.append(made)
+            return made
+
+        connection.channel = channel  # type: ignore[method-assign,assignment]
+        return connection
+
+    config = BrokerConfig.model_validate(RABBIT)
+    broker = RabbitMQBroker(config, connect=cast(Any, slow_connect))
+
+    await asyncio.gather(*(broker.check() for _ in range(5)))
+    await broker.close()
+
+    assert (len(server.connections), len(channels)) == (1, 1)
+    [channel] = channels
+    # Publishes wait for RabbitMQ's confirmation; unroutable ones raise.
+    assert (channel.publisher_confirms, channel.on_return_raises) == (True, True)  # type: ignore[attr-defined]
+
+
+async def test_amqps_connections_trust_the_configured_ca(tmp_path: Path) -> None:
+    """The TLS context ssl_context() builds is the one the connection uses."""
+    server = FakeAMQP()
+    cert, _ = certificate(tmp_path)
+    url = "amqps://billing:pw@mq.internal/billing"
+    broker = rabbit(server, URL=url, TLS_CA=str(cert))
+
+    await broker.check()
+    await broker.close()
+
+    [(_, options)] = server.connections
+    assert isinstance(options["ssl_context"], ssl.SSLContext)
+    assert options["ssl_context"].verify_mode == ssl.CERT_REQUIRED
 
 
 class Inbox:

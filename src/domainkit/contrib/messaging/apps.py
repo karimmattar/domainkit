@@ -13,7 +13,7 @@ from domainkit.db import SqlAlchemyUnitOfWork
 from domainkit.db.routing import DatabaseRouter, router
 from domainkit.ddd import DeferredTask, DomainEvent, UnitOfWork
 
-from .dispatch import publish_committed
+from .dispatch import close_publishers, publish_committed
 from .outbox import rows_for, write
 from .settings import MessagingSettings
 
@@ -54,10 +54,14 @@ class MessagingConfig(DomainConfig):
         _committing.setdefault(uow, []).extend(row["id"] for row in rows)
 
     async def committed(self, uow: UnitOfWork) -> None:
-        """Publish the messages the unit of work wrote, with a broker."""
+        """Hand the messages the unit of work wrote to the background publisher."""
         ids = _committing.pop(uow, [])
         sql_uow = cast(SqlAlchemyUnitOfWork, uow)
-        await publish_committed(self.get_settings(), sql_uow.alias, ids)
+        publish_committed(self.get_settings(), sql_uow.alias, ids)
+
+    async def shutdown(self) -> None:
+        """Let the background publisher finish, for a few seconds at most."""
+        await close_publishers()
 
     def databases(self, router: DatabaseRouter) -> frozenset[str]:
         """Every hosting target: the outbox commits with each domain's data."""
