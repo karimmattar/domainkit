@@ -319,12 +319,14 @@ def test_errors_without_a_detail_are_left_as_they_are() -> None:
 
     plain = ValueError("a message\nDETAIL:  kept, not a database's")
     numbered = OSError(5, "I/O error")
-    for error in (plain, numbered):
+    several = ValueError("first\nDETAIL:  dropped", "second", "third")
+    for error in (plain, numbered, several):
         context = SimpleNamespace(sqlalchemy_exception=None, original_exception=error)
         _drop_detail(context)  # type: ignore[arg-type]
 
     assert plain.args == ("a message",)  # Read as a driver's, it loses its DETAIL.
     assert numbered.args == (5, "I/O error")
+    assert several.args == ("first", "second", "third")
 
 
 def test_network_databases_wait_briefly_for_a_connection(tmp_path: Path) -> None:
@@ -334,6 +336,7 @@ def test_network_databases_wait_briefly_for_a_connection(tmp_path: Path) -> None
 
     def timeout(**config: object) -> float:
         engine = create_engine(DatabaseConfig.model_validate(config))
+        assert engine.sync_engine.pool._pre_ping is True  # Restarts are survived.
         return engine.sync_engine.pool.timeout()  # type: ignore[attr-defined,no-any-return]
 
     network = "postgresql+asyncpg://app@db/app"

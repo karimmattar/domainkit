@@ -101,6 +101,10 @@ def test_database_errors_that_are_not_bugs_answer_as_such(
         assert response.json()["detail"] == "The database is busy; try again shortly."
     else:
         assert "Retry-After" not in response.headers
+        assert response.json()["detail"] == (
+            "A value cannot be stored: it is too long, out of range, or holds a "
+            "character the database refuses."
+        )
 
 
 @pytest.mark.parametrize(("failure", "close_code"), [("pool", 1013), ("22021", 1007)])
