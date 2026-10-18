@@ -10,7 +10,8 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta, timezone
-from typing import Any
+from decimal import Decimal
+from typing import Any, Final
 
 import pytest
 from pydantic import ValidationError
@@ -40,6 +41,7 @@ from domainkit.contrib.evidence.settings import (
 from domainkit.contrib.evidence.tasks import (
     RECORD_TASK,
     defer_evidence,
+    record_evidence,
 )
 from domainkit.contrib.messaging import Worker
 from domainkit.contrib.messaging.tables import messages
@@ -65,13 +67,21 @@ MESSAGING = "domainkit.contrib.messaging"
 FIXED = Evidence(
     kind="kyc.document_verified",
     subject="customer:42",
-    facts={"result": "match", "score": 0.97},
+    facts={"result": "match", "score": "0.97"},
     artifacts={"passport": "sha256:" + "0" * 64},
     id=uuid.UUID(int=7),
     recorded_at=datetime(2026, 10, 14, 9, 30, tzinfo=UTC),
     actor="user:7",
     request_id="req-1",
 )
+FLOAT_RECORD = (
+    '{"actor":"user:7","artifacts":{"passport":"sha256:' + "0" * 64 + '"},'
+    '"facts":{"result":"match","score":0.97},"format":1,'
+    '"id":"00000000-0000-0000-0000-000000000007","kind":"kyc.document_verified",'
+    '"recorded_at":"2026-10-14T09:30:00.000000+00:00","request_id":"req-1",'
+    '"subject":"customer:42"}'
+).encode()
+"""A record written before floats were refused: FIXED, with a float score."""
 
 
 SUBJECT_KEY = b"subject-key-for-the-evidence-tests"
@@ -117,9 +127,71 @@ def test_canonical_records_never_change() -> None:
     body = FIXED.canonical()
 
     assert sha256(body) == (
-        "sha256:318fd5a72c0f55200492f4ea5f4f2a6d0a4207e2e8fd2f933800641e26dd8f0a"
+        "sha256:23d0fb536aabffe8cf960d22ecfd877ff840b30c9862a32e2c374b2c6b287a6f"
     )
     assert Evidence.from_canonical(body) == FIXED
+
+
+def test_records_written_with_floats_keep_their_bytes() -> None:
+    """Read back, an older record is written again exactly; a changed copy is not."""
+    evidence = Evidence.from_canonical(FLOAT_RECORD)
+
+    assert sha256(FLOAT_RECORD) == (  # The frozen digest of the format before.
+        "sha256:318fd5a72c0f55200492f4ea5f4f2a6d0a4207e2e8fd2f933800641e26dd8f0a"
+    )
+    assert evidence.canonical() == FLOAT_RECORD
+    assert evidence.facts["score"] == 0.97  # Read as written.
+    assert evidence == dataclasses.replace(FIXED, facts=evidence.facts)
+    with pytest.raises(ValueError, match="may not hold floats"):
+        dataclasses.replace(evidence, request_id="req-2").canonical()
+
+
+def test_decimals_are_written_as_fixed_point_strings() -> None:
+    """Amounts stay exact: Decimal goes in as a string and comes back as one."""
+    facts = {
+        "amount": Decimal("10.00"),
+        "lines": [{"price": Decimal("1E+3")}, {"price": Decimal("-0.000001")}],
+        "count": 3,
+    }
+    body = Evidence(kind="k", subject="s", facts=facts).canonical()
+    read = Evidence.from_canonical(body)
+
+    assert b'"facts":{"amount":"10.00","count":3,"lines":' in body
+    assert b'[{"price":"1000"},{"price":"-0.000001"}]' in body
+    assert read.facts == {
+        "amount": "10.00",
+        "lines": [{"price": "1000"}, {"price": "-0.000001"}],
+        "count": 3,
+    }
+    assert dataclasses.replace(read).canonical() == body  # Strings re-encode alike.
+
+
+FLOAT: Final = (
+    "Evidence facts may not hold floats ({}): use Decimal or str, so amounts "
+    "stay exact."
+)
+INFINITE: Final = "Evidence facts must be finite numbers ({})."
+
+
+@pytest.mark.parametrize(
+    ("facts", "message"),
+    [
+        ({"amount": 1e21}, FLOAT.format("facts.amount")),
+        (
+            {"lines": [{"price": 1}, {"price": 0.1}]},
+            FLOAT.format("facts.lines[1].price"),
+        ),
+        ({"rates": (Decimal(1), 2.5)}, FLOAT.format("facts.rates[1]")),
+        ({"amount": Decimal("NaN")}, INFINITE.format("facts.amount")),
+        ({"amount": Decimal("-Infinity")}, INFINITE.format("facts.amount")),
+    ],
+)
+def test_floats_and_non_finite_amounts_are_refused(
+    facts: dict[str, Any], message: str
+) -> None:
+    """A float has no exact decimal value; the message names where, not what."""
+    with pytest.raises(ValueError, match="^" + re.escape(message) + "$"):
+        Evidence(kind="k", subject="s", facts=facts).canonical()
 
 
 @pytest.mark.parametrize(
@@ -215,8 +287,8 @@ def test_records_keep_text_as_utf8() -> None:
 
 
 def test_facts_must_be_plain_json() -> None:
-    """Sets, objects, and NaN have no single JSON form."""
-    for facts in ({"tags": {"a"}}, {"score": float("nan")}):
+    """Sets and other objects have no single JSON form."""
+    for facts in ({"tags": {"a"}}, {"at": datetime(2026, 1, 1, tzinfo=UTC)}):
         with pytest.raises(ValueError, match="plain JSON values"):
             Evidence(kind="k", subject="s", facts=facts).canonical()
 
@@ -603,6 +675,17 @@ async def test_deferred_keys_use_the_configured_subject_key(installed: None) -> 
     keyed = subject_digest("invoice:3", subject_key.encode())
     assert key == f"evidence/{keyed}/{evidence.id}"
     assert recorded.evidence == evidence
+
+
+async def test_queued_records_with_floats_are_still_recorded(installed: None) -> None:
+    """A record deferred before the upgrade is written as its receipt says."""
+    await record_evidence(FLOAT_RECORD.decode())
+
+    (recorded,) = await evidence_store().for_subject("customer:42")
+
+    assert recorded.receipt.digest == sha256(FLOAT_RECORD)
+    assert recorded.evidence.facts["score"] == 0.97
+    assert recorded.intact
 
 
 async def test_rolled_back_work_records_no_evidence(installed: None) -> None:

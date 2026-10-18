@@ -352,6 +352,12 @@ recorded = await evidence_store().verify(receipt)  # raises EvidenceTampered
 - A record is canonical JSON (sorted keys, no spaces, UTF-8) with the id,
   kind, subject, facts, artifact digests, time, actor, and request id. The
   receipt holds its key, its SHA-256 digest, and the ledger transaction.
+- Amounts must be exact. A `Decimal` in the facts is written as a
+  fixed-point string (`Decimal("10.00")` as `"10.00"`) and read back as that
+  string. Floats are refused, with a `ValueError` naming where they are:
+  most decimal amounts have no exact float, and the receipt would prove a
+  rounded value. Records written before floats were refused still read,
+  verify, and, if queued in the outbox, record as they were.
 - The subject is an internal id, such as `customer:42` or a UUID: letters,
   digits, and `_ . : / -`. Email addresses, names, and phone numbers with a
   `+` are refused (`ValueError`, without echoing the value). A check cannot

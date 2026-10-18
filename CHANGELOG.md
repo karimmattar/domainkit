@@ -88,6 +88,14 @@ All notable changes to domainkit. The format follows
 
 ### Fixed
 
+- Evidence refused `Decimal` amounts and accepted floats, the wrong way
+  round for money: `facts={"amount": Decimal("10.00")}` raised, while
+  `{"amount": 1e21}` was hashed into the receipt as `1e+21`. A `Decimal` is
+  now written as a fixed-point string (`"10.00"`), and floats are refused
+  anywhere in the facts, with a `ValueError` naming where; non-finite
+  decimals are refused too. Records written with floats before still read
+  and verify, and evidence read from a record writes those same bytes, so a
+  record already queued in the outbox is recorded unchanged.
 - A value that broke a unique constraint answered 500 `internal_error`:
   only lost optimistic-locking races were translated, so two requests that
   both checked a username before either committed failed the second with an
