@@ -87,6 +87,10 @@ class AuthSettings(BaseModel):
         min_length=1,
     )
     """Hasher classes; the first hashes new passwords, all check old ones."""
+    HASHING_THREADS: int = Field(default=2, ge=1)
+    """Threads per process that hash passwords; each keeps a core busy."""
+    HASHING_QUEUE: int = Field(default=16, ge=0)
+    """Hashing calls that may wait for a thread; more get 503 at once."""
     PASSWORD_VALIDATORS: tuple[PasswordValidatorConfig, ...] = (
         PasswordValidatorConfig(NAME=f"{VALIDATORS}.UserAttributeSimilarityValidator"),
         PasswordValidatorConfig(NAME=f"{VALIDATORS}.MinimumLengthValidator"),
