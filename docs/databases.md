@@ -128,7 +128,7 @@ PostgreSQL. Queries that filter on the time column skip other partitions,
 and old data leaves by dropping a partition instead of deleting rows.
 
 ```python
-from domainkit.db import UTCDateTime, metadata
+from domainkit.db import ExactDecimal, UTCDateTime, metadata
 from domainkit.db.partitioning import Interval, partition_by_range
 
 readings = Table(
@@ -136,7 +136,7 @@ readings = Table(
     metadata,
     Column("id", Uuid, primary_key=True),
     Column("taken_at", UTCDateTime, primary_key=True),
-    Column("value", Numeric(12, 3), nullable=False),
+    Column("value", ExactDecimal(12, 3), nullable=False),
     info={"domain": "metering"},
 )
 partition_by_range(readings, "taken_at", Interval.MONTH, premake=3, retain=24)
@@ -227,6 +227,50 @@ the ledger, so of several writers racing for a key exactly one succeeds.
 
 Tests use `LEDGERS = {"evidence": {"URL": "memory://"}}`: the same port, in
 memory, without proofs.
+
+## Exact amounts
+
+Store money, and any amount that must not drift, in `ExactDecimal(precision,
+scale)` columns rather than `Numeric`:
+
+```python
+from domainkit.db import ExactDecimal
+
+Column("total", ExactDecimal(14, 2), nullable=False)  # up to 999,999,999,999.99
+```
+
+SQLite has no decimal type. It keeps `NUMERIC` values as floats, which
+hold 15 to 17 significant digits, so `12345678901234567.89` comes back as
+`12345678901234568.00`, silently. Since SQLite is the default development
+and test database, a project could pass its tests with amounts that
+PostgreSQL would store differently.
+
+- **Storage.** On PostgreSQL the column is `NUMERIC(precision, scale)`. On
+  SQLite it holds whole minor units (cents for a scale of 2) as integers,
+  which are exact. Revisions declare `NUMERIC` on both.
+- **Values** are `Decimal` (or `int`), and come back as `Decimal` with the
+  column's places: `Decimal("5")` is read as `Decimal("5.00")`. Floats are
+  refused, and so are values with more places or more digits than the
+  column holds (`Decimal("1.005")` in a scale of 2). Round them yourself,
+  with the rule your domain needs, before storing them.
+- **Precision** is at most 18 digits, any 18 of which fit SQLite's 64-bit
+  integers: `ExactDecimal(18, 2)` holds up to 9,999,999,999,999,999.99.
+- **Queries give the same results on both databases**: comparisons,
+  `ORDER BY`, `in_`, `between`, `+` and `-`, `sum`, `min`, `max`, and
+  multiplying or dividing by a number (`price * 2`, `price * Decimal("1.1")`,
+  `price * quantity` for an integer column, `price / 4`). On SQLite, a
+  product with a fraction and a quotient are computed in floating point
+  before they come back as `Decimal`.
+- **In Python instead:**
+  - floor division (`price // 2` is refused);
+  - arithmetic between two amount columns other than `+` and `-` (on SQLite
+    `price * cost` multiplies cents by cents);
+  - new amounts with more places than the column, such as
+    `update(...).values(price=prices.c.price * Decimal("1.1"))`.
+    PostgreSQL rounds them to the column's scale, and SQLite keeps the
+    fraction of a cent, so compute them with your own rounding rule.
+
+  For `avg`, name the type: `func.avg(price, type_=price.type)`.
 
 ## Unique values
 
