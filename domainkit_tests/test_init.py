@@ -108,20 +108,31 @@ def test_init_creates_a_project_that_passes_check_and_its_tests(
 
 
 def test_production_settings_come_from_the_environment(tmp_path: Path) -> None:
-    """Production starts only with its hosts and database URL set."""
+    """Production starts only with its hosts, database URL, and proxies set."""
     project = tmp_path / "billing"
     init("billingAPI", str(project))
     production = {
         "BILLING_API_SETTINGS_MODULE": "config.settings.production",
         "BILLING_API_ALLOWED_HOSTS": "api.example.com",
+        "BILLING_API_TRUSTED_PROXIES": "10.0.0.0/8, fd00::/8",
     }
+    database = {"BILLING_API_DATABASE_URL": "postgresql+asyncpg://app@db/billing"}
 
     missing = run(project, "manage.py", "check", env=production)
-    database = {"BILLING_API_DATABASE_URL": "postgresql+asyncpg://app@db/billing"}
+    no_proxies = {**production, **database}
+    del no_proxies["BILLING_API_TRUSTED_PROXIES"]
+    without_proxies = run(project, "manage.py", "check", env=no_proxies)
+    direct = {**no_proxies, "BILLING_API_TRUSTED_PROXIES": ""}
+    directly = run(project, "manage.py", "check", env=direct)
     ready = run(project, "manage.py", "check", env={**production, **database})
 
     assert missing.returncode == 1
     assert "Set the BILLING_API_DATABASE_URL environment variable." in missing.stderr
+    assert without_proxies.returncode == 1
+    assert "Set the BILLING_API_TRUSTED_PROXIES" in without_proxies.stderr
+    # Empty: callers connect directly, and check says what that means.
+    assert directly.returncode == 0
+    assert directly.stdout.splitlines()[1].split()[1] == "TRUSTED_PROXIES"
     # Docs are off, HSTS is on, and callers are rate limited: nothing to warn about.
     assert ready.stdout == CHECKED
 
@@ -136,6 +147,7 @@ def test_production_hardening_can_be_relaxed_from_the_environment(
         "BILLING_API_SETTINGS_MODULE": "config.settings.production",
         "BILLING_API_ALLOWED_HOSTS": "api.example.com",
         "BILLING_API_DATABASE_URL": "postgresql+asyncpg://app@db/billing",
+        "BILLING_API_TRUSTED_PROXIES": "10.0.0.0/8",
         "BILLING_API_API_DOCS": "true",
         "BILLING_API_SECURE_HSTS_SECONDS": "0",
     }

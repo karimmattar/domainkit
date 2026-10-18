@@ -73,9 +73,10 @@ billing/
   tests/test_health.py
 ```
 
-The production settings read `BILLING_API_ALLOWED_HOSTS` and
-`BILLING_API_DATABASE_URL` from the environment, and the deployment checks
-refuse to start without them, or without verified TLS to the database. They
+The production settings read `BILLING_API_ALLOWED_HOSTS`,
+`BILLING_API_DATABASE_URL`, and `BILLING_API_TRUSTED_PROXIES` (the load
+balancers' networks, or empty) from the environment, and the deployment
+checks refuse to start without them, or without verified TLS to the database. They
 also turn the API docs off, send HSTS for a year, and limit each caller to
 300 requests a minute; `BILLING_API_API_DOCS`,
 `BILLING_API_SECURE_HSTS_SECONDS`, and `BILLING_API_RATE_LIMIT` change that.
