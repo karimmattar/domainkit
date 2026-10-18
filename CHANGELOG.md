@@ -6,6 +6,21 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The audit trail's seals (`docs/contrib.md`):
+  - A row holding a lone surrogate (which JSON can escape) no longer stops
+    sealing for good, and such a value in a personal field no longer fails
+    the transaction that records it. Digests of every other row, and every
+    other pseudonym, are unchanged. Evidence refuses such facts as not
+    plain JSON.
+  - A host whose clock runs ahead no longer stops anchoring for good (one
+    anchor dated in the future held every later one back) or leaves the
+    rows written before a future-dated row unsealable.
+  - `auditverify` fails when anchoring stopped: seals that no anchor covers
+    a day past `AUDIT.ANCHOR_EVERY` (`Report.unanchored`, and `verify`'s
+    new `every`).
+
 ## [0.6.0] - 2026-10-18
 
 ### Added

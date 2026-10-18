@@ -1,6 +1,7 @@
 """The audit trail's hash chain, its anchors on a ledger, and verification."""
 
 import asyncio
+import hashlib
 import importlib
 import io
 import os
@@ -22,11 +23,14 @@ from domainkit.contrib.audit import record
 from domainkit.contrib.audit.management.commands.auditverify import (
     Command as VerifyCommand,
 )
+from domainkit.contrib.audit.management.commands.auditverify import _summary
 from domainkit.contrib.audit.protection import protect, statements
 from domainkit.contrib.audit.seals import (
+    COLUMNS,
     GENESIS,
     LOOKBACK,
     Anchor,
+    Report,
     anchor,
     anchor_key,
     digest,
@@ -178,6 +182,31 @@ def test_anchors_round_trip_through_the_ledger_value() -> None:
     assert Anchor.decode(written.encode()) == written
 
 
+def test_lone_surrogates_are_digested_as_they_are() -> None:
+    """JSON can escape half a surrogate pair; a row holding one has a digest."""
+    row = dict.fromkeys(COLUMNS) | {"details": {"name": "\ud800"}}
+    canonical = b'{"name":"\xed\xa0\x80"}'  # The surrogate, UTF-8 style.
+
+    expected = hashlib.sha256(
+        b'{"action":null,"actor":null,"client_ip":null,"details":'
+        + canonical
+        + b',"event_id":null,"id":null,"occurred_at":null,"outcome":null,'
+        b'"request_id":null,"target":null}'
+    ).hexdigest()
+    assert digest(row) == expected
+
+
+async def test_rows_with_lone_surrogates_are_sealed(tables: None) -> None:
+    """One such row cannot stop the chain: it and the rows after it are sealed."""
+    start = datetime.now(UTC)
+    await add(start)
+    await add(start + timedelta(seconds=1), name="\ud800")
+    await add(start + timedelta(seconds=2))
+
+    assert await seal("default") == 3
+    assert (await verify("default")).intact
+
+
 async def test_rows_are_sealed_in_a_chain_once(tables: None) -> None:
     """Each row gets the next number; its link follows the one before."""
     start = datetime.now(UTC)
@@ -274,6 +303,20 @@ async def test_the_lookback_includes_its_first_instant(tables: None) -> None:
     assert await seal("default") == 1
 
     assert [each["entry_id"] for each in await seals()][-1] == edge
+
+
+async def test_a_row_from_a_clock_ahead_leaves_none_unsealable(
+    tables: None,
+) -> None:
+    """The look back starts at the present at most, not at a future row."""
+    now = datetime.now(UTC)
+    await add(now + 2 * LOOKBACK)
+    await seal("default")
+    rows_written_after = [await add(now + timedelta(seconds=n)) for n in range(2)]
+
+    assert await seal("default") == 2
+
+    assert [each["entry_id"] for each in await seals()][1:] == rows_written_after
 
 
 async def test_sealing_goes_on_when_the_newest_sealed_row_is_gone(
@@ -437,6 +480,66 @@ async def test_heads_are_anchored_at_most_once_per_period(tables: None) -> None:
     assert anchor_key("default") == b"domainkit/audit/default"
 
 
+async def test_an_anchor_from_a_clock_ahead_holds_none_back(tables: None) -> None:
+    """Anchoring goes on; a head anchored at this very instant still waits."""
+    ledger = MemoryLedger()
+    now = datetime(2026, 10, 18, 9, 0, tzinfo=UTC)
+    every = timedelta(hours=1)
+    await add(now)
+    await seal("default")
+    await anchor("default", ledger, every=every, now=now + timedelta(days=365))
+    await add(now + timedelta(seconds=1))
+    await seal("default")
+
+    caught_up = await anchor("default", ledger, every=every, now=now)
+    await add(now + timedelta(seconds=2))
+    await seal("default")
+    same_instant = await anchor("default", ledger, every=every, now=now)
+
+    assert caught_up is not None
+    assert (caught_up.seq, caught_up.anchored_at) == (2, now)
+    assert same_instant is None
+
+
+async def test_seals_left_unanchored_are_reported(tables: None) -> None:
+    """Seals the newest anchor misses for over ``every`` + ``LOOKBACK``."""
+    every = timedelta(hours=2)
+    await add()
+    await seal_all()
+    await add(datetime.now(UTC) + timedelta(seconds=1))
+    await seal("default")
+    sealed_at = (await seals())[-1]["sealed_at"]
+    due = sealed_at + every + LOOKBACK
+    tick = timedelta(microseconds=1)
+
+    async def unanchored(now: datetime, ledger: Any = ledgers["audit"]) -> int:  # noqa: ANN401
+        return (await verify("default", ledger, now=now, every=every)).unanchored
+
+    assert await unanchored(due) == 0
+    assert await unanchored(due + tick) == 1
+    assert await unanchored(due + tick, ledger=None) == 0
+    late = await verify("default", ledgers["audit"], now=due + tick, every=every)
+    assert not late.intact
+    await anchor("default", ledgers["audit"], every=timedelta(0))
+    assert await unanchored(due + tick) == 0
+
+
+async def test_unanchored_seals_are_due_after_anchor_every(tables: None) -> None:
+    """By default, ``every`` is ``AUDIT.ANCHOR_EVERY``."""
+    await add()
+    await seal("default")
+    sealed_at = (await seals())[-1]["sealed_at"]
+    due = sealed_at + LOOKBACK + timedelta(hours=3)
+
+    with override_settings(AUDIT={"LEDGER": "audit", "ANCHOR_EVERY": "PT3H"}):
+        on_time = await verify("default", ledgers["audit"], now=due)
+        late = await verify(
+            "default", ledgers["audit"], now=due + timedelta(microseconds=1)
+        )
+
+    assert (on_time.unanchored, late.unanchored) == (0, 1)
+
+
 async def test_without_a_ledger_rows_are_only_sealed(tables: None) -> None:
     """``AUDIT.LEDGER`` unset: nothing is anchored."""
     await add()
@@ -511,6 +614,13 @@ def test_seal_and_verify_commands(
         "  broken links at: 2, 3\n"
         "  rewritten anchors at: 4\n"
         "  unsealed rows: 1\n"
+    )
+
+
+def test_auditverify_counts_seals_left_unanchored() -> None:
+    """Anchoring that stopped is a problem of its own."""
+    assert _summary(Report("default", sealed=5, anchors=1, unanchored=2)) == (
+        "default: 5 seals, 1 anchors: NOT INTACT.\n  seals left unanchored: 2"
     )
 
 
