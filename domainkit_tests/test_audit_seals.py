@@ -506,8 +506,9 @@ async def test_seals_left_unanchored_are_reported(tables: None) -> None:
     every = timedelta(hours=2)
     await add()
     await seal_all()
-    await add(datetime.now(UTC) + timedelta(seconds=1))
-    await seal("default")
+    for n in (1, 2):
+        await add(datetime.now(UTC) + timedelta(seconds=n))
+    await seal("default")  # Both in one batch, at one instant.
     sealed_at = (await seals())[-1]["sealed_at"]
     due = sealed_at + every + LOOKBACK
     tick = timedelta(microseconds=1)
@@ -516,7 +517,7 @@ async def test_seals_left_unanchored_are_reported(tables: None) -> None:
         return (await verify("default", ledger, now=now, every=every)).unanchored
 
     assert await unanchored(due) == 0
-    assert await unanchored(due + tick) == 1
+    assert await unanchored(due + tick) == 2
     assert await unanchored(due + tick, ledger=None) == 0
     late = await verify("default", ledgers["audit"], now=due + tick, every=every)
     assert not late.intact
