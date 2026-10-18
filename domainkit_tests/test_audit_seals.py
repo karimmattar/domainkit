@@ -1,6 +1,7 @@
 """The audit trail's hash chain, its anchors on a ledger, and verification."""
 
 import asyncio
+import importlib
 import io
 import os
 import uuid
@@ -399,6 +400,8 @@ async def test_the_sealing_task_runs_every_seal_every(tables: None) -> None:
     from domainkit.contrib.audit import tasks
     from domainkit.contrib.messaging.registry import get_task
 
+    if get_task("domainkit.audit.seal") is None:  # Dropped after an earlier test.
+        tasks = importlib.reload(tasks)
     await add()
     await tasks.seal_trail()
 
