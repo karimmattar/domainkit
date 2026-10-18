@@ -634,9 +634,14 @@ async def test_an_outage_still_shares_one_computation(error: CacheError) -> None
         await release.wait()
         return [Line("a", 1)]
 
+    async def other() -> list[Line]:
+        await release.wait()
+        return [Line("b", 2)]
+
     waiting = [
         asyncio.create_task(cache.get_or_set("k", slow, list[Line])) for _ in range(5)
     ]
+    elsewhere = asyncio.create_task(cache.get_or_set("other", other, list[Line]))
     await asyncio.sleep(0)
     release.set()
     first, *others = await asyncio.gather(*waiting)
@@ -644,9 +649,10 @@ async def test_an_outage_still_shares_one_computation(error: CacheError) -> None
     assert first == [Line("a", 1)]
     assert all(other == first and other is not first for other in others)
     assert len(calls) == 1
+    assert await elsewhere == [Line("b", 2)]  # Each key has its own.
     # Each refused read reaches the store; an unavailable one starts the
     # cooldown, which skips the rest. The value is not written either way.
-    assert store.calls == (1 if isinstance(error, CacheUnavailable) else 5)
+    assert store.calls == (1 if isinstance(error, CacheUnavailable) else 6)
 
 
 async def test_refused_operations_are_worked_around(

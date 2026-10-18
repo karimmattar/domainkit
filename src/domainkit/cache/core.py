@@ -392,9 +392,10 @@ class Cache:
             return await asyncio.shield(task)
         except asyncio.CancelledError:
             caller = asyncio.current_task()
-            if not task.cancelled() or caller is None or caller.cancelling():
+            if caller is None or caller.cancelling():
                 raise
-            return encode(await factory())  # close() stopped the computation.
+            # Not cancelled itself, so close() stopped the computation.
+            return encode(await factory())
 
     def _forget(self, full: str, task: asyncio.Task[bytes]) -> None:
         """Drop a finished computation; its error reaches whoever awaited it."""
