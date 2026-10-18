@@ -284,9 +284,17 @@ It selects the test settings, never reads `.env`, and provides these fixtures:
 | Fixture | Scope | Gives |
 | --- | --- | --- |
 | `database` | session | The test database's URL, after migrating it up, down to base, and up again. That proves every revision is reversible and empties a reused database. In-memory SQLite becomes a temporary file. |
-| `client` | test | A `TestClient` for the project's application, with its lifespan, on that database. It sends no credentials. |
+| `db` | test | That database put back as `migrate` left it: rows earlier tests committed are gone, and the ones `migrate` wrote (content types, permissions) are there. Every database in `DATABASES` is put back. Request it in tests that reach the database without a client. |
+| `client` | test | A `TestClient` for the project's application, with its lifespan, on the `db` database. It sends no credentials. |
 | `client_for` | test | `client_for("billing.view_invoice", ...)`: a client of the same application that authenticates as a new user granted those permissions. Keyword arguments set the user's fields (`is_staff=True`, `username="carol"`); the username is unique otherwise. Needs `domainkit.contrib.auth`. |
 | `admin_client` | test | A client that authenticates as a new superuser. The tests `startdomain` generates use it. |
+
+So a test sees only the rows it writes, in any order, however it wrote
+them: through a client, a unit of work, a command, or the worker. The
+database is put back before each test that asks for it, by deleting every
+row and inserting the rows read once after migrating; on PostgreSQL, tables
+with triggers of their own (an append-only audit trail) have them off while
+this runs. Sequences keep counting, so do not assert on generated ids.
 
 Memory caches are emptied before every test, so no test sees what another
 cached. Redis caches are left alone: give the test settings their own

@@ -13,9 +13,15 @@ The ``.env`` file is never read during tests. The fixtures:
     which proves every revision is reversible and empties a reused database.
     An in-memory SQLite URL becomes a temporary file, so every connection
     sees the same tables. Yields the URL.
+``db``
+    The migrated database, put back as ``migrate`` left it before the test:
+    whatever earlier tests committed is gone, and the rows ``migrate``
+    wrote (content types, permissions) are there. Every database in
+    ``DATABASES`` is put back. Request it in tests that reach the database
+    without a client.
 ``client``
     A ``TestClient`` for the project's application, lifespan included, on
-    the migrated database. Requests send no credentials.
+    the ``db`` database. Requests send no credentials.
 ``client_for``
     ``client_for("shop.view_product", ...)``: a client of the same
     application that authenticates as a new user granted those
@@ -45,6 +51,7 @@ from pydantic import SecretStr
 from domainkit.cache import caches
 from domainkit.conf import DEFAULT_DB_ALIAS, DatabaseConfig, override_settings, settings
 from domainkit.conf.env import project_prefix
+from domainkit.db.snapshots import Snapshot, restore_snapshot, take_snapshot
 from domainkit.http import get_asgi_application
 from domainkit.management import call_command
 from domainkit.management.base import run_async
@@ -101,8 +108,20 @@ def database(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
         yield url
 
 
+@pytest.fixture(scope="session")
+def _migrated_rows(database: str) -> Snapshot:
+    """Every table's rows, as ``migrate`` left them."""
+    return run_async(take_snapshot())
+
+
 @pytest.fixture
-def client(database: str) -> Iterator[TestClient]:
+def db(_migrated_rows: Snapshot) -> None:
+    """Put the test databases back as ``migrate`` left them."""
+    run_async(restore_snapshot(_migrated_rows))
+
+
+@pytest.fixture
+def client(db: None) -> Iterator[TestClient]:
     """Serve the project's application on the test database."""
     with TestClient(get_asgi_application()) as test_client:
         yield test_client

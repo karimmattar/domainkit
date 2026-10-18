@@ -2,7 +2,8 @@
 
 They need the domain installed (INSTALLED_DOMAINS) and mounted (config/urls.py).
 ``admin_client`` calls as a superuser; ``client_for`` as a user with chosen
-permissions; ``client`` anonymously.
+permissions; ``client`` anonymously. Each test starts from the database as
+``migrate`` left it, so it sees only the {{ aggregates_title }} it creates.
 """
 
 import io
@@ -68,7 +69,8 @@ def test_business_rules_map_to_http_errors(admin_client: TestClient) -> None:
 
 def test_cursor_pagination_walks_every_page(admin_client: TestClient) -> None:
     """``next_cursor`` leads through all {{ aggregates_title }} in name order."""
-    created = [admin_client.post(URL, json={"name": f"walk-{n}"}).json() for n in "cab"]
+    names = ["Cherry", "Apple", "Banana"]
+    created = [admin_client.post(URL, json={"name": name}).json() for name in names]
     seen: list[str] = []
     params: dict[str, str | int] = {"limit": 2}
     while True:
@@ -78,8 +80,7 @@ def test_cursor_pagination_walks_every_page(admin_client: TestClient) -> None:
             break
         params["cursor"] = page["next_cursor"]
 
-    walked = [name for name in seen if name.startswith("walk-")]
-    assert walked == sorted(item["name"] for item in created)
+    assert seen == sorted(item["name"] for item in created)
 
 
 def test_page_size_and_cursor_validation(admin_client: TestClient) -> None:
@@ -103,7 +104,7 @@ def test_management_command_lists_{{ aggregates }}(admin_client: TestClient) -> 
     admin_client.post(URL, json={"name": "Listed"})
     output = io.StringIO()
 
-    call_command("{{ aggregates }}", "--limit", "500", stdout=output)
+    call_command("{{ aggregates }}", stdout=output)
 
     assert "Listed" in output.getvalue()
 
