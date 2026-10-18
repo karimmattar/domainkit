@@ -34,6 +34,7 @@ from domainkit.http.ratelimit import (
 )
 from domainkit.utils.rates import parse_rate
 from domainkit_tests import sample_routes
+from domainkit_tests.test_http import headerless, started
 
 BASE_MIDDLEWARE = [
     "domainkit.http.middleware.RequestContextMiddleware",
@@ -185,6 +186,7 @@ def test_rate_limit_middleware() -> None:
     assert refused.headers["RateLimit-Reset"] in {"59", "60"}
     assert second.status_code == 200
     assert (refused.status_code, refused.json()["code"]) == (429, "rate_limited")
+    assert refused.json()["detail"] == "Too many requests; slow down."
     assert int(refused.headers["Retry-After"]) > 0
     assert exempt == [200, 200, 200]
 
@@ -243,6 +245,20 @@ def test_rate_limited_websockets_close_without_denial_responses() -> None:
         "reached the application",
         {"type": "websocket.close", "code": 1013},
     ]
+
+
+def test_raw_applications_may_omit_headers_and_clients() -> None:
+    """A start or an accept without headers still gets the quota headers.
+
+    ASGI makes the message's ``headers`` and the scope's ``client`` optional;
+    callers without an address share one bucket.
+    """
+    with override_settings(RATE_LIMIT="2/minute"):
+        limited = RateLimitMiddleware(headerless)
+
+    starts = [started(limited, kind) for kind in ("http", "websocket")]
+
+    assert [start[b"ratelimit-remaining"] for start in starts] == [b"1", b"0"]
 
 
 def test_rate_limits_count_http_requests_per_caller() -> None:
