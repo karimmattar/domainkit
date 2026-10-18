@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Table, false, insert, select
 from sqlalchemy.sql import Select
+from starlette.testclient import WebSocketDenialResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from domainkit import setup
@@ -24,7 +25,13 @@ from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
-from domainkit.http.ratelimit import Decision, MemoryBackend, _caller, client_group
+from domainkit.http.ratelimit import (
+    Decision,
+    MemoryBackend,
+    RateLimitMiddleware,
+    _caller,
+    client_group,
+)
 from domainkit.utils.rates import parse_rate
 from domainkit_tests import sample_routes
 
@@ -180,6 +187,62 @@ def test_rate_limit_middleware() -> None:
     assert (refused.status_code, refused.json()["code"]) == (429, "rate_limited")
     assert int(refused.headers["Retry-After"]) > 0
     assert exempt == [200, 200, 200]
+
+
+def test_rate_limits_count_websocket_handshakes() -> None:
+    """Each connection counts once; over the limit, its handshake gets a 429."""
+    with override_settings(
+        RATE_LIMIT="1/minute",
+        MIDDLEWARE=[*BASE_MIDDLEWARE, "domainkit.http.ratelimit.RateLimitMiddleware"],
+    ):
+        client = TestClient(get_asgi_application())
+        with client.websocket_connect("/ws") as socket:
+            assert socket.receive_text() == "hi"
+            accepted: dict[bytes, bytes] = dict(socket.extra_headers or [])
+        with (
+            pytest.raises(WebSocketDenialResponse) as refused,
+            client.websocket_connect("/ws"),
+        ):
+            pass
+
+    assert (accepted[b"ratelimit-limit"], accepted[b"ratelimit-remaining"]) == (
+        b"1",
+        b"0",
+    )
+    assert refused.value.status_code == 429
+    assert refused.value.json()["code"] == "rate_limited"
+    assert int(refused.value.headers["Retry-After"]) > 0
+    assert refused.value.headers["X-Request-ID"]
+
+
+def test_rate_limited_websockets_close_without_denial_responses() -> None:
+    """A server that cannot send a 429 gets the handshake closed with 1013."""
+    sent: list[object] = []
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        sent.append("reached the application")
+
+    async def receive() -> Message:
+        return {"type": "websocket.connect"}
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    with override_settings(RATE_LIMIT="1/minute"):
+        middleware = RateLimitMiddleware(app)
+    scope = {
+        "type": "websocket",
+        "path": "/ws",
+        "headers": [],
+        "client": ("203.0.113.9", 1),
+    }
+    asyncio.run(middleware(scope, receive, send))
+    asyncio.run(middleware(scope, receive, send))
+
+    assert sent == [
+        "reached the application",
+        {"type": "websocket.close", "code": 1013},
+    ]
 
 
 def test_rate_limits_count_http_requests_per_caller() -> None:

@@ -146,7 +146,13 @@ async def count(request: Request) -> dict[str, int]:
 
 @router.websocket("/socket", dependencies=[Public])
 async def socket(websocket: WebSocket) -> None:
-    """Greet the user over a WebSocket."""
+    """Greet the user over a WebSocket, with the actor its context carries."""
     await websocket.accept()
-    await websocket.send_json({"user": current_user(websocket).get_username()})
+    request = current_request()
+    await websocket.send_json(
+        {
+            "user": current_user(websocket).get_username(),
+            "actor": request.actor if request else "no context",
+        }
+    )
     await websocket.close()

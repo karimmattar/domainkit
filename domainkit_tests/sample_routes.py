@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import Column, Integer, MetaData, Table, insert, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domainkit.context import current_request
 from domainkit.contrib.idempotency.operations import running_operation
 from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.db import SqlAlchemyUnitOfWork, connections
@@ -230,3 +231,33 @@ async def socket(websocket: WebSocket) -> None:
     await websocket.accept()
     await websocket.send_text("hi")
     await websocket.close()
+
+
+@router.websocket("/ws/context")
+async def socket_context(websocket: WebSocket) -> None:
+    """Accept, then report the request context the connection runs in."""
+    await websocket.accept()
+    request = current_request()
+    await websocket.send_json(
+        None
+        if request is None
+        else {
+            "request_id": request.request_id,
+            "method": request.method,
+            "path": request.path,
+            "client_ip": request.client_ip,
+        }
+    )
+    await websocket.close()
+
+
+@router.websocket("/ws/refused")
+async def refused_socket(websocket: WebSocket) -> None:
+    """Close without accepting: the handshake is refused."""
+    await websocket.close()
+
+
+@router.websocket("/ws/crash")
+async def crashing_socket(websocket: WebSocket) -> None:
+    """Fail before accepting."""
+    raise RuntimeError("socket crashed")

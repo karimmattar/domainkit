@@ -644,15 +644,19 @@ def test_api_tokens_work_beside_jwt(api: Api) -> None:
 
 
 def test_websockets_see_the_user(api: Api) -> None:
-    """The middleware authenticates WebSocket handshakes too."""
-    create_user("alice")
+    """The middleware authenticates WebSocket handshakes, and sets the actor.
+
+    The actor is what the audit trail, logs, and outbox headers record, so
+    work done over a WebSocket is attributed to its user, not to "system".
+    """
+    alice = create_user("alice")
     client = api()
     token = login(client, "alice")["access_token"]
 
     with client.websocket_connect("/socket", headers=bearer(token)) as socket:
-        assert socket.receive_json() == {"user": "alice"}
+        assert socket.receive_json() == {"user": "alice", "actor": str(alice)}
     with client.websocket_connect("/socket") as socket:
-        assert socket.receive_json() == {"user": ""}
+        assert socket.receive_json() == {"user": "", "actor": None}
     with (
         pytest.raises(WebSocketDisconnect) as refused,
         client.websocket_connect("/socket", headers=bearer("dkt_unknown")),

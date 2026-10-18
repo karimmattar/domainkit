@@ -326,7 +326,9 @@ counts or records it. It tries `AUTH.AUTHENTICATION_CLASSES` in order:
   served without looking at credentials at all.
 
 Clients send `Authorization: Bearer <token>`. WebSocket handshakes are
-authenticated the same way, and refused with close code 1008.
+authenticated the same way, and refused with close code 1008. The user is
+the connection's actor, so the audit trail records what it does under
+their id.
 
 ### Opaque tokens
 

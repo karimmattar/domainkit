@@ -6,7 +6,8 @@ default order:
 
 1. ``ProxyHeadersMiddleware``: the real client address behind a load balancer.
 2. ``SecurityHeadersMiddleware``: headers on every response, including errors.
-3. ``RequestContextMiddleware``: request id, access log, safe 500 responses.
+3. ``RequestContextMiddleware``: request id, access log, safe 500 responses,
+   for HTTP requests and WebSocket connections.
 4. ``AllowedHostsMiddleware``: rejects untrusted ``Host`` headers (logged).
 5. ``RequestBodyLimitMiddleware``: rejects oversized bodies (logged).
 
@@ -39,6 +40,12 @@ REQUEST_ID_HEADER: Final = "X-Request-ID"
 _REQUEST_ID: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _HOST: Final = re.compile(r"([a-z0-9.-]+|\[[a-f0-9]*:[a-f0-9.:]+\])(?::[0-9]+)?")
 """A valid Host header (lowercased): the host, then an optional port."""
+WEBSOCKET_METHOD: Final = "WS"
+"""The method a WebSocket connection's request context and access log show."""
+_STARTS: Final = frozenset(
+    {"http.response.start", "websocket.http.response.start", "websocket.accept"}
+)
+"""Messages that answer a request (a WebSocket's accept, or its denial)."""
 
 access_logger = logging.getLogger(ACCESS_LOGGER)
 security_logger = logging.getLogger(SECURITY_LOGGER)
@@ -178,6 +185,12 @@ class RequestContextMiddleware:
 
     Unhandled exceptions are logged once with the request id. Outside debug
     mode the client gets a generic JSON 500 with no internal details.
+
+    A WebSocket connection gets a context too (method ``WS``), so the actor,
+    the audit trail, and logs name its user. The request id is sent with the
+    accept, and the access log line, written when the connection ends, shows
+    101 if it was accepted and 403 if it was closed first. An error before
+    the accept closes it with 1011, the WebSocket equivalent of a 500.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -187,10 +200,11 @@ class RequestContextMiddleware:
         self.quiet_paths = frozenset(settings.ACCESS_LOG_QUIET_PATHS)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Serve one request inside its context."""
-        if scope["type"] != "http":
+        """Serve one request, or one WebSocket connection, inside its context."""
+        if scope["type"] not in {"http", "websocket"}:
             await self.app(scope, receive, send)
             return
+        websocket = scope["type"] == "websocket"
         supplied = Headers(scope=scope).get(REQUEST_ID_HEADER)
         request_id = (
             supplied if supplied and _REQUEST_ID.fullmatch(supplied) else uuid4().hex
@@ -199,7 +213,7 @@ class RequestContextMiddleware:
         context = RequestContext(
             request_id=request_id,
             client_ip=client[0] if client else None,
-            method=scope["method"],
+            method=WEBSOCKET_METHOD if websocket else scope["method"],
             path=scope["path"],
         )
         response_status: int | None = None
@@ -207,9 +221,17 @@ class RequestContextMiddleware:
 
         async def send_with_id(message: Message) -> None:
             nonlocal response_status
-            if message["type"] == "http.response.start":
-                response_status = message["status"]
+            if message["type"] in _STARTS:
+                accepted = message["type"] == "websocket.accept"
+                response_status = (
+                    status.HTTP_101_SWITCHING_PROTOCOLS
+                    if accepted
+                    else message["status"]
+                )
+                message.setdefault("headers", [])
                 MutableHeaders(scope=message)[REQUEST_ID_HEADER] = request_id
+            elif message["type"] == "websocket.close" and response_status is None:
+                response_status = status.HTTP_403_FORBIDDEN  # Closed before accept.
             await send(message)
 
         with bind_request(context):
@@ -227,6 +249,9 @@ class RequestContextMiddleware:
                 )
                 if self.debug or response_status is not None:
                     raise
+                if websocket:
+                    await send({"type": "websocket.close", "code": 1011})
+                    return
                 response = error_response(
                     500, "Internal server error.", code="internal_error"
                 )
