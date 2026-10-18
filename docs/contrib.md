@@ -267,7 +267,21 @@ the same request gets the stored response, with `Idempotent-Replayed: true`.
 | Same key, different request | 422 `idempotency_key_reused` |
 | Same key while the first is still running | 409 `idempotency_key_in_use`, `Retry-After: 1` |
 | Key not 1 to 255 printable ASCII characters | 400 `invalid_idempotency_key` |
-| First response was a 5xx, or larger than `MAX_RESPONSE_BYTES` | Not stored: the retry runs again |
+| First request failed (a 5xx or an exception) before committing anything | Not stored: the retry runs again |
+| First response larger than `MAX_RESPONSE_BYTES`, nothing committed | Not stored: the retry runs again |
+| First request committed, then failed or answered over `MAX_RESPONSE_BYTES` | 409 `idempotency_response_unavailable`: it never runs again |
+
+A request runs twice only if nothing it did was saved. When a SQL unit of
+work commits during a keyed request, the key is marked committed in the
+same transaction, and a committed key is never released, even if the reply
+to the commit was lost. A retry then gets the stored response or, when the
+response could not be kept, a 409 telling the client to look up the result
+instead. Keep `IDEMPOTENCY.DATABASE` on the database your writes use where
+you can: a unit of work on another database marks the key right after its
+commit, so a crash in between leaves the key in progress until it expires.
+Only units of work are seen: call payment providers and other services
+from a deferred task (`uow.defer`), which the outbox runs once, not from
+the handler.
 
 Keys are scoped to the actor, which `AuthenticationMiddleware` sets (list
 it first), so one user cannot replay another's response. Without an

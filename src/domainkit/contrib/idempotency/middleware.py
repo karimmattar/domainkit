@@ -4,7 +4,16 @@ A client sends a unique key (a random UUID) with an unsafe request. The first
 request runs and its response is stored; a retry with the same key and the
 same request gets the stored response with ``Idempotent-Replayed: true``. The
 same key with a different request is a 422, and a retry while the first is
-still running is a 409. Server errors are not stored, so they can be retried.
+still running is a 409.
+
+A request that fails before committing anything (a server error, an
+exception) releases its key, so it can be retried. Once a SQL unit of work
+commits during the request, the key is never released (see ``operations``):
+if the response cannot be kept (a server error after the commit, an
+exception, a body over ``MAX_RESPONSE_BYTES``), a retry gets a 409
+``idempotency_response_unavailable`` instead of running the changes again.
+Only commits through a unit of work are seen: call payment providers and
+other services from deferred tasks, not from the handler.
 
 Keys are scoped to the authenticated actor (set by
 ``AuthenticationMiddleware``, which must come first). Without an actor,
@@ -20,7 +29,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
 from fastapi import status
-from sqlalchemy import Delete, delete, insert, select, update
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -30,6 +39,7 @@ from domainkit.context import current_request
 from domainkit.db import connections
 from domainkit.http.errors import error_response
 
+from .operations import Operation, run_operation
 from .settings import IdempotencySettings
 from .tables import idempotency_keys
 
@@ -142,6 +152,14 @@ class IdempotencyMiddleware:
                 code="idempotency_key_in_use",
             )
             response.headers["Retry-After"] = "1"
+        elif existing["body"] is None:
+            response = error_response(
+                status.HTTP_409_CONFLICT,
+                "The request with this Idempotency-Key already ran (status "
+                f"{existing['status_code']}), but its response was not kept; "
+                "look up the result instead of retrying.",
+                code="idempotency_response_unavailable",
+            )
         else:
             headers = [
                 (name.encode(), value.encode())
@@ -166,7 +184,7 @@ class IdempotencyMiddleware:
         receive: Receive,
         send: Send,
     ) -> None:
-        """Run the request, then store its response (or release the key)."""
+        """Run the request as the key's operation, then store or release the key."""
         started: dict[str, Any] = {}
         chunks: list[bytes] = []
         size = 0
@@ -181,33 +199,54 @@ class IdempotencyMiddleware:
                     chunks.append(message.get("body", b""))
             await send(message)
 
-        engine = connections.engine(config.DATABASE)
-        try:
-            await self.app(scope, receive, capture)
-        except BaseException:
-            async with engine.begin() as connection:
-                await connection.execute(_release(key_hash))
-            raise
+        with run_operation(key_hash) as operation:
+            try:
+                await self.app(scope, receive, capture)
+            except BaseException:
+                await _finish(config, operation, started, None)
+                raise
         code = started.get("status", status.HTTP_500_INTERNAL_SERVER_ERROR)
-        async with engine.begin() as connection:
-            if code >= 500 or size > config.MAX_RESPONSE_BYTES:
-                await connection.execute(_release(key_hash))
-                return
-            headers = {
-                name.decode().lower(): value.decode()
-                for name, value in started.get("headers", [])
-                if name.decode().lower() in _STORED_HEADERS
-            }
-            await connection.execute(
-                update(idempotency_keys)
-                .where(idempotency_keys.c.key_hash == key_hash)
-                .values(status_code=code, headers=headers, body=b"".join(chunks))
+        kept = code < 500 and size <= config.MAX_RESPONSE_BYTES
+        await _finish(config, operation, started, b"".join(chunks) if kept else None)
+
+
+async def _finish(
+    config: IdempotencySettings,
+    operation: Operation,
+    started: dict[str, Any],
+    body: bytes | None,
+) -> None:
+    """Store the response; without one, release the key unless changes committed.
+
+    ``body`` is None when the response is not kept. The release skips a key
+    marked committed, which a commit that failed to report back still sets.
+    """
+    async with connections.engine(config.DATABASE).begin() as connection:
+        if body is None and not operation.committed:
+            released = await connection.execute(
+                delete(idempotency_keys).where(
+                    idempotency_keys.c.key_hash == operation.key_hash,
+                    idempotency_keys.c.committed_at.is_(None),
+                )
             )
-
-
-def _release(key_hash: str) -> Delete:
-    """Forget an unfinished key so the client may retry."""
-    return delete(idempotency_keys).where(idempotency_keys.c.key_hash == key_hash)
+            if released.rowcount:
+                return
+        headers = {
+            name.decode().lower(): value.decode()
+            for name, value in started.get("headers", [])
+            if name.decode().lower() in _STORED_HEADERS
+        }
+        await connection.execute(
+            update(idempotency_keys)
+            .where(idempotency_keys.c.key_hash == operation.key_hash)
+            .values(
+                status_code=started.get(
+                    "status", status.HTTP_500_INTERNAL_SERVER_ERROR
+                ),
+                headers=headers,
+                body=body,
+            )
+        )
 
 
 def _caller(scope: Scope) -> str:

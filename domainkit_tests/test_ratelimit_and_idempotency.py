@@ -1,7 +1,8 @@
 """Rate limiting and Idempotency-Key replay."""
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -250,11 +251,10 @@ def test_callers_are_actors_or_addresses() -> None:
         assert idempotency._caller(credentialed) != anonymous
 
 
-@pytest.fixture
-def idempotent(database_url: str) -> Iterator[TestClient]:
-    """An app with the idempotency app and middleware on an empty database."""
+@contextmanager
+def idempotent_app(databases: dict[str, str]) -> Iterator[TestClient]:
+    """The idempotency app and middleware, keys on ``default``, payments on each."""
     sample_routes.created.clear()
-    url = database_url
     registry.clear()
     with override_settings(
         INSTALLED_DOMAINS=[
@@ -262,7 +262,7 @@ def idempotent(database_url: str) -> Iterator[TestClient]:
             "domainkit.contrib.idempotency",
             "domainkit_tests.sample_domains.alpha",
         ],
-        DATABASES={"default": {"URL": url}},
+        DATABASES={alias: {"URL": url} for alias, url in databases.items()},
         IDEMPOTENCY={"MAX_RESPONSE_BYTES": 1024},
         MIDDLEWARE=[
             *BASE_MIDDLEWARE,
@@ -274,6 +274,9 @@ def idempotent(database_url: str) -> Iterator[TestClient]:
         async def create() -> None:
             async with connections.engine().begin() as connection:
                 await connection.run_sync(idempotency_keys.create)
+            for alias in databases:
+                async with connections.engine(alias).begin() as connection:
+                    await connection.run_sync(sample_routes.payments.create)
             await connections.close_all()
 
         asyncio.run(create())
@@ -282,6 +285,37 @@ def idempotent(database_url: str) -> Iterator[TestClient]:
         ) as client:
             yield client
     registry.clear()
+
+
+@pytest.fixture
+def idempotent(database_url: str) -> Iterator[TestClient]:
+    """An app with the idempotency app and middleware on an empty database."""
+    with idempotent_app({"default": database_url}) as client:
+        yield client
+
+
+def stored_keys() -> list[dict[str, object]]:
+    """The rows of the idempotency table."""
+
+    async def read() -> list[dict[str, object]]:
+        async with connections.engine().connect() as connection:
+            rows = (await connection.execute(select(idempotency_keys))).all()
+        await connections.close_all()
+        return [dict(row._mapping) for row in rows]
+
+    return asyncio.run(read())
+
+
+def payments_on(alias: str = "default") -> int:
+    """How many payments ``alias`` holds."""
+
+    async def count() -> int:
+        async with connections.engine(alias).connect() as connection:
+            rows = (await connection.execute(select(sample_routes.payments))).all()
+        await connections.close_all()
+        return len(rows)
+
+    return asyncio.run(count())
 
 
 def post(client: TestClient, path: str, key: str, body: object) -> object:
@@ -389,13 +423,81 @@ def test_failures_and_large_responses_are_not_stored(idempotent: TestClient) -> 
         assert "Idempotent-Replayed" not in retry.headers
         assert first.status_code == retry.status_code
 
-    async def stored() -> list[object]:
-        async with connections.engine().connect() as connection:
-            rows = (await connection.execute(select(idempotency_keys))).all()
-        await connections.close_all()
-        return list(rows)
+    assert stored_keys() == []
 
-    assert asyncio.run(stored()) == []
+
+def test_committed_requests_never_run_twice(idempotent: TestClient) -> None:
+    """After a commit the key is kept: a retry learns the request ran."""
+    for outcome, status_code in (
+        ("crash", 500),
+        ("unavailable", 503),
+        ("large", 201),
+        ("unreported", 500),
+    ):
+        headers = {"Idempotency-Key": outcome}
+        first = idempotent.post(f"/pay?outcome={outcome}", headers=headers)
+        retry = idempotent.post(f"/pay?outcome={outcome}", headers=headers)
+        assert first.status_code == status_code, outcome
+        assert (retry.status_code, retry.json()["code"]) == (
+            409,
+            "idempotency_response_unavailable",
+        )
+        assert retry.json()["detail"] == (
+            "The request with this Idempotency-Key already ran (status "
+            f"{status_code}), but its response was not kept; look up the result "
+            "instead of retrying."
+        )
+        assert "Retry-After" not in retry.headers
+
+    assert payments_on() == 4
+    assert all(row["committed_at"] is not None for row in stored_keys())
+
+
+def test_committed_responses_are_replayed(idempotent: TestClient) -> None:
+    """A kept response replays; requests without a key commit as usual."""
+    headers = {"Idempotency-Key": "pay"}
+    first = idempotent.post("/pay", headers=headers)
+    retry = idempotent.post("/pay", headers=headers)
+    unkeyed = idempotent.post("/pay")
+
+    assert (first.status_code, first.content) == (201, b"paid")
+    assert (retry.status_code, retry.content) == (201, b"paid")
+    assert retry.headers["Idempotent-Replayed"] == "true"
+    assert unkeyed.status_code == 201
+    assert payments_on() == 2
+    [row] = stored_keys()
+    assert row["committed_at"] is not None
+
+
+def test_a_rejected_commit_releases_the_key(idempotent: TestClient) -> None:
+    """The mark commits with the changes: a failed commit leaves no mark."""
+    headers = {"Idempotency-Key": "rejected"}
+    first = idempotent.post("/pay?outcome=rejected", headers=headers)
+    retry = idempotent.post("/pay?outcome=rejected", headers=headers)
+
+    assert (first.status_code, retry.status_code) == (500, 500)
+    assert payments_on() == 0
+    assert stored_keys() == []
+
+
+def test_commits_elsewhere_are_marked_after_them(
+    make_database: Callable[[str], str],
+) -> None:
+    """Changes on another database mark the key right after their commit."""
+    databases = {"default": make_database("keys"), "other": make_database("other")}
+    with idempotent_app(databases) as client:
+        for outcome in ("crash", "ok"):
+            headers = {"Idempotency-Key": outcome}
+            path = f"/pay?outcome={outcome}&database=other"
+            first = client.post(path, headers=headers)
+            retry = client.post(path, headers=headers)
+            assert first.status_code == {"crash": 500, "ok": 201}[outcome]
+            assert retry.status_code == {"crash": 409, "ok": 201}[outcome]
+
+        assert payments_on("other") == 2
+        rows = stored_keys()
+        assert len(rows) == 2
+        assert all(row["committed_at"] is not None for row in rows)
 
 
 def test_storage_limits_are_inclusive(idempotent: TestClient) -> None:

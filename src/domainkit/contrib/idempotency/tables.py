@@ -14,6 +14,11 @@ idempotency_keys = Table(
     Column("body", LargeBinary),
     Column("created_at", UTCDateTime, nullable=False),
     Column("expires_at", UTCDateTime, nullable=False, index=True),
+    Column("committed_at", UTCDateTime),
     info={"domain": "idempotency"},
 )
-"""A row without ``status_code`` is a request still in progress."""
+"""A row without ``status_code`` is a request still in progress.
+
+``committed_at`` is set once the request's changes commit. A finished row
+whose ``body`` is NULL ran, but its response was not kept.
+"""
