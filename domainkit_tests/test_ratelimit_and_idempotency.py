@@ -658,7 +658,7 @@ async def clear_keys() -> None:
 
 
 def test_raw_responses_may_omit_their_parts(idempotent: TestClient) -> None:
-    """A body message without bytes counts as empty; no response is a 500."""
+    """Missing optional ASGI keys count as empty; no response is a 500."""
     runs: list[str] = []
 
     async def answer(scope: Scope, receive: Receive, send: Send) -> None:
@@ -670,6 +670,9 @@ def test_raw_responses_may_omit_their_parts(idempotent: TestClient) -> None:
     run_raw(answer)
     replayed = run_raw(answer)
     assert runs == ["answer"]
+    # A scope without a query string has the same fingerprint as an empty one.
+    [row] = stored_keys()
+    assert row["fingerprint"] == idempotency._hash("POST", "/raw", b"", b"")
     assert replayed[1] == {"type": "http.response.body", "body": b"ok"}
 
     async def silent(scope: Scope, receive: Receive, send: Send) -> None:
