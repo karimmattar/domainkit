@@ -264,7 +264,20 @@ def test_anonymous_users_have_nothing() -> None:
 
 
 class Badge(AbstractBaseUser):
-    """A user named by a badge code, with a nickname of their own."""
+    """A user named by a badge code, with a nickname staff may change."""
+
+    USERNAME_FIELD: ClassVar[str] = "code"
+    EDITABLE_FIELDS: ClassVar[frozenset[str]] = frozenset({"nickname"})
+    READ_ONLY_FIELDS: ClassVar[frozenset[str]] = frozenset({"issued"})
+
+    code: str
+    nickname: str = ""
+    issued: str = ""
+    risk_flag: bool = False
+
+
+class Unlisted(AbstractBaseUser):
+    """Names no fields for staff, and tries to open protected ones."""
 
     USERNAME_FIELD: ClassVar[str] = "code"
 
@@ -272,11 +285,33 @@ class Badge(AbstractBaseUser):
     nickname: str = ""
 
 
+class Overreaching(Unlisted):
+    """Lists the username and protected fields as editable."""
+
+    EDITABLE_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {"code", "is_superuser", "password", "nickname"}
+    )
+
+
+def test_staff_see_and_change_only_the_fields_a_model_names() -> None:
+    """Allowlists, never the username or protected fields; nothing by default."""
+    assert User.editable_fields() == {"email", "first_name", "last_name"}
+    assert User.admin_fields() == {"email", "first_name", "last_name", "date_joined"}
+    assert Badge.admin_fields() == {"nickname", "issued"}
+    assert Unlisted.editable_fields() == Unlisted.admin_fields() == frozenset()
+    assert Overreaching.editable_fields() == {"nickname"}
+
+    badge = Badge(id=UserId(uuid4()), password=HASH, code="B-7")
+    for given in ({"risk_flag": True}, {"issued": "2026"}):
+        with pytest.raises(UnknownUserField):
+            badge.update(**given)
+    assert (badge.risk_flag, badge.issued) == (False, "")
+
+
 def test_users_update_their_editable_fields() -> None:
-    """Only fields outside ``PROTECTED_FIELDS`` and the username change."""
+    """Only the named fields outside ``PROTECTED_FIELDS`` and the username change."""
     user = new_user(email="a@example.com")
 
-    assert User.editable_fields() == {"email", "first_name", "last_name"}
     user.update(email="Alice@EXAMPLE.com", first_name="Al@EXAMPLE", last_name="")
     assert (user.email, user.first_name) == ("Alice@example.com", "Al@EXAMPLE")
     user.update(email="Alice@example.com")

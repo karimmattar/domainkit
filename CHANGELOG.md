@@ -24,7 +24,9 @@ All notable changes to domainkit. The format follows
   other staff grant only the permissions they hold and cannot change users
   or groups that hold more. Changes are audited (`UserUpdated`,
   `UserDeleted`, `GroupDeleted` are new events). Custom user models work:
-  `editable_fields()` names the fields staff may set, values are checked
+  staff see only the fields a model lists in `EDITABLE_FIELDS` and
+  `READ_ONLY_FIELDS` and change only the first, so a new field such as a
+  `risk_flag` stays out of the admin API until listed. Values are checked
   against their type annotations, and `clean_field()` tidies them.
 - `client_for` and `admin_client` in `domainkit.testing`: clients that
   authenticate as new users with chosen permissions, or as a superuser.

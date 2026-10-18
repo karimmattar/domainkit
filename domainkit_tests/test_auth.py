@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import (
+    Boolean,
     Column,
     Integer,
     MetaData,
@@ -117,6 +118,26 @@ class ReaderBackend(BaseBackend):
 
 
 NoUsernameField = type("NoUsernameField", (AbstractBaseUser,), {})
+
+
+class EditsMissing(Account):
+    """Lets staff edit a field it does not have."""
+
+    EDITABLE_FIELDS = frozenset({"phone", "fax"})
+
+
+class ShowsMissing(Account):
+    """Shows staff a field it does not have."""
+
+    READ_ONLY_FIELDS = frozenset({"date_joined", "badge"})
+
+
+class Unlocking(Account):
+    """Lets staff edit the username and a protected field."""
+
+    EDITABLE_FIELDS = Account.EDITABLE_FIELDS | {"username", "is_superuser"}
+
+
 not_a_table = object()
 detached = Table("detached_users", MetaData(), Column("id", Uuid, primary_key=True))
 narrow = Table(
@@ -131,6 +152,7 @@ ghost = Table(
     metadata,
     *abstract_user_columns(),
     Column("phone", String(32), nullable=False),
+    Column("risk_flag", Boolean, nullable=False),
     info={"domain": "ghost"},
 )
 
@@ -411,6 +433,27 @@ def test_backend_settings_are_checked(use_auth: UseAuth) -> None:
             f"AUTH.USER_MODEL: '{HERE}.NoUsernameField' sets no USERNAME_FIELD.",
         ),
         (
+            {"USER_MODEL": f"{HERE}.EditsMissing"},
+            (
+                "AUTH.USER_MODEL: EDITABLE_FIELDS names fields "
+                f"'{HERE}.EditsMissing' lacks: fax."
+            ),
+        ),
+        (
+            {"USER_MODEL": f"{HERE}.ShowsMissing"},
+            (
+                "AUTH.USER_MODEL: READ_ONLY_FIELDS names fields "
+                f"'{HERE}.ShowsMissing' lacks: badge."
+            ),
+        ),
+        (
+            {"USER_MODEL": f"{HERE}.Unlocking"},
+            (
+                f"AUTH.USER_MODEL: EDITABLE_FIELDS of '{HERE}.Unlocking' names fields "
+                "that change only through their own methods: is_superuser, username."
+            ),
+        ),
+        (
             {"USER_MODEL": f"{HERE}.Account"},
             "AUTH.USER_TABLE must name the table of a custom AUTH.USER_MODEL.",
         ),
@@ -460,6 +503,7 @@ def test_user_tables_name_their_domain(
         metadata,
         *abstract_user_columns(),
         Column("phone", String(32), nullable=False),
+        Column("risk_flag", Boolean, nullable=False),
     )
     monkeypatch.setattr(sys.modules[__name__], "untagged", untagged, raising=False)
     try:

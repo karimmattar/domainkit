@@ -160,7 +160,9 @@ the first `migrate` that creates users.
 # accounts/domain/model.py
 class Account(AbstractUser):
     phone: str = ""
+    risk_flag: bool = False
     REQUIRED_FIELDS = ("email", "phone")  # what createsuperuser asks for
+    EDITABLE_FIELDS = AbstractUser.EDITABLE_FIELDS | {"phone"}  # staff may change
 
 
 # accounts/infrastructure/orm.py
@@ -169,9 +171,18 @@ accounts = Table(
     metadata,
     *abstract_user_columns(),
     Column("phone", String(32), nullable=False),
+    Column("risk_flag", Boolean, nullable=False),
     info={"domain": "accounts"},
 )
 ```
+
+Staff see and change only the fields a model names. `EDITABLE_FIELDS`
+lists what the admin API may change (`email`, `first_name`, and
+`last_name` on `AbstractUser`, nothing on `AbstractBaseUser`), and
+`READ_ONLY_FIELDS` what it only shows (`date_joined`). A new field, such
+as `risk_flag` above, stays out of the admin API until you list it.
+Startup refuses names the model lacks, and protected fields (credentials,
+status flags, grants, the username) in `EDITABLE_FIELDS`.
 
 ```python
 AUTH = {
@@ -526,11 +537,11 @@ custom user), `auth.*_group`, or `auth.view_permission`.
 
 A user is shown with `id`, `username`, `is_active`, `is_staff`,
 `is_superuser`, `last_login`, `groups`, the `permissions` granted directly,
-and `fields`: the model's other fields (`email`, `first_name`, `last_name`,
-`date_joined`, and those of a custom user). `fields` in a request changes
-them; credentials, flags, grants, `date_joined`, and the username are not
-among them (`AbstractBaseUser.PROTECTED_FIELDS`, `editable_fields()`), and
-naming one answers `422 unknown_user_field`. Values are checked against the
+and `fields`: the ones the model lists in `EDITABLE_FIELDS` and
+`READ_ONLY_FIELDS` (`email`, `first_name`, `last_name`, and `date_joined`
+for `AbstractUser`). `fields` in a request changes only those in
+`EDITABLE_FIELDS` (`editable_fields()`); naming any other field answers
+`422 unknown_user_field`. Values are checked against the
 field's type annotation (`422 invalid_user_field`), and `clean_field(name,
 value)`, which a custom user may override, tidies what is stored.
 

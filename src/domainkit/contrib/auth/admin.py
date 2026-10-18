@@ -62,8 +62,6 @@ from .validators import validate_password
 
 PAGE_SIZE: Final = 50
 MAX_PAGE_SIZE: Final = 200
-READ_ONLY_FIELDS: Final = frozenset({"date_joined"})
-"""Fields ``/users`` shows but never changes."""
 HIDDEN_FIELDS: Final = frozenset(
     {"id", "version", "password", "groups", "user_permissions", "last_login"}
 )
@@ -111,7 +109,7 @@ FieldValue = str | bool | int | float | None
 
 
 class AdminUserOut(BaseModel):
-    """A user as staff see it; ``fields`` holds the model's other fields."""
+    """A user as staff see it; ``fields`` holds the model's ``admin_fields()``."""
 
     id: UUID
     username: str
@@ -127,7 +125,7 @@ class AdminUserOut(BaseModel):
     @classmethod
     def of(cls, user: AbstractBaseUser) -> Self:
         """Describe ``user``."""
-        shown = {each.name for each in dataclasses.fields(user)} - HIDDEN_FIELDS
+        shown = type(user).admin_fields() - HIDDEN_FIELDS
         shown -= STATUS_FIELDS | {user.USERNAME_FIELD}
         return cls(
             id=user.id,

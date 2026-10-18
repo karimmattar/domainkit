@@ -176,6 +176,18 @@ def _user_model(path: str) -> type[AbstractBaseUser]:
         )
     if not hasattr(model, "USERNAME_FIELD"):
         raise ImproperlyConfigured(f"AUTH.USER_MODEL: {path!r} sets no USERNAME_FIELD.")
+    fields = {field.name for field in dataclasses.fields(model)}
+    for listed in ("EDITABLE_FIELDS", "READ_ONLY_FIELDS"):
+        if unknown := sorted(getattr(model, listed) - fields):
+            raise ImproperlyConfigured(
+                f"AUTH.USER_MODEL: {listed} names fields {path!r} lacks: "
+                f"{', '.join(unknown)}."
+            )
+    if fixed := sorted(model.EDITABLE_FIELDS - model.editable_fields()):
+        raise ImproperlyConfigured(
+            f"AUTH.USER_MODEL: EDITABLE_FIELDS of {path!r} names fields that change "
+            f"only through their own methods: {', '.join(fixed)}."
+        )
     return model
 
 

@@ -8,7 +8,6 @@ Swap the user for one of your own by subclassing ``AbstractUser`` (or
 ``AbstractBaseUser``) and naming it in ``AUTH.USER_MODEL``.
 """
 
-import dataclasses
 import re
 import secrets
 import unicodedata
@@ -188,6 +187,14 @@ class AbstractBaseUser(AggregateRoot[UserId]):
         }
     )
     """Fields that change through their own methods, never ``update``."""
+    EDITABLE_FIELDS: ClassVar[frozenset[str]] = frozenset()
+    """Fields staff may change in the admin API (``update``).
+
+    Name each one: a field left out, such as a custom ``risk_flag``, is
+    neither shown to staff nor changed by them.
+    """
+    READ_ONLY_FIELDS: ClassVar[frozenset[str]] = frozenset()
+    """Fields the admin API shows to staff but never changes."""
     is_authenticated: ClassVar[bool] = True
     is_anonymous: ClassVar[bool] = False
 
@@ -327,9 +334,13 @@ class AbstractBaseUser(AggregateRoot[UserId]):
 
     @classmethod
     def editable_fields(cls) -> frozenset[str]:
-        """Fields ``update`` may change: not the username, credentials, or grants."""
-        names = {each.name for each in dataclasses.fields(cls)}
-        return frozenset(names - cls.PROTECTED_FIELDS - {cls.USERNAME_FIELD})
+        """``EDITABLE_FIELDS``, never the username, credentials, or grants."""
+        return cls.EDITABLE_FIELDS - cls.PROTECTED_FIELDS - {cls.USERNAME_FIELD}
+
+    @classmethod
+    def admin_fields(cls) -> frozenset[str]:
+        """Fields the admin API shows: the editable and the read-only ones."""
+        return cls.editable_fields() | cls.READ_ONLY_FIELDS
 
     @classmethod
     def check_editable(cls, names: Iterable[str]) -> None:
@@ -382,6 +393,10 @@ class AbstractUser(AbstractBaseUser):
     USERNAME_FIELD: ClassVar[str] = "username"
     EMAIL_FIELD: ClassVar[str | None] = "email"
     REQUIRED_FIELDS: ClassVar[tuple[str, ...]] = ("email",)
+    EDITABLE_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {"email", "first_name", "last_name"}
+    )
+    READ_ONLY_FIELDS: ClassVar[frozenset[str]] = frozenset({"date_joined"})
 
     username: str
     email: str = ""
