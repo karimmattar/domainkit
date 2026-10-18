@@ -88,6 +88,14 @@ All notable changes to domainkit. The format follows
 
 ### Fixed
 
+- SQLite lost digits of amounts: it keeps `NUMERIC` as a float, so
+  `12345678901234567.89` came back as `12345678901234568.00`, silently, in
+  the default development and test database. The new
+  `domainkit.db.ExactDecimal(precision, scale)` column is `NUMERIC` on
+  PostgreSQL and whole minor units on SQLite, and gives the same results on
+  both for comparisons, ordering, sums, and arithmetic with plain numbers.
+  It refuses floats and values it would have to round (`docs/databases.md`,
+  "Exact amounts").
 - Tests saw what earlier tests committed: the `domainkit.testing` plugin
   migrated the database once per session and never emptied it, so results
   depended on test order, and the tests `startdomain` generates had to
