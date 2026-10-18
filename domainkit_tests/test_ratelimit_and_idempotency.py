@@ -340,6 +340,12 @@ def test_callers_are_actors_or_addresses() -> None:
         [(b"x-api-key", b"alice"), (b"x-api-key", b"bob")],
         [(b"authorization", b"cookie"), (b"cookie", b"x")],  # Counts keep them apart.
         [(b"authorization", b"cookie"), (b"authorization", b"x")],
+        # Without counts, these two would hash the same parts.
+        [(b"authorization", b"proxy-authorization"), (b"authorization", b"None")],
+        [
+            (b"proxy-authorization", b"proxy-authorization"),
+            (b"proxy-authorization", b"None"),
+        ],
     ):
         credentialed = {"type": "http", "headers": headers, **scope}
         caller = idempotency._caller(credentialed, names)
@@ -793,14 +799,17 @@ def test_a_request_that_lost_its_key_cannot_commit_through_it(
 def test_refusals_and_secrets_after_a_commit_are_settled(
     idempotent: TestClient,
 ) -> None:
-    """A 4xx that committed is replayed; a no-store response is never kept."""
+    """A 4xx that committed is replayed; a 5xx or no-store response is never kept."""
     declined = {"Idempotency-Key": "declined"}
     secret = {"Idempotency-Key": "secret"}
+    failed = {"Idempotency-Key": "failed"}
 
     first = idempotent.post("/pay?outcome=declined", headers=declined)
     again = idempotent.post("/pay?outcome=declined", headers=declined)
     token = idempotent.post("/pay?outcome=secret", headers=secret)
     retry = idempotent.post("/pay?outcome=secret", headers=secret)
+    error = idempotent.post("/pay?outcome=failed", headers=failed)
+    after_error = idempotent.post("/pay?outcome=failed", headers=failed)
 
     assert (first.status_code, again.status_code) == (402, 402)
     assert again.headers["Idempotent-Replayed"] == "true"
@@ -809,7 +818,12 @@ def test_refusals_and_secrets_after_a_commit_are_settled(
         409,
         "idempotency_response_unavailable",
     )
-    assert payments_on() == 2
+    assert error.status_code == 500  # A server error, even after a commit, is not kept.
+    assert (after_error.status_code, after_error.json()["code"]) == (
+        409,
+        "idempotency_response_unavailable",
+    )
+    assert payments_on() == 3
     assert {row["key_hash"]: row["body"] for row in stored_keys()}[
         keyed("secret")
     ] is None
@@ -871,6 +885,7 @@ def test_storage_limits_are_inclusive(idempotent: TestClient) -> None:
         ("status_code=500", False),
         ("cache=no-store", False),
         ("cache=private,%20No-Store", False),
+        ("cache=no-store,private", False),
         ("cache=no-cache", True),
     ):
         headers = {"Idempotency-Key": query}

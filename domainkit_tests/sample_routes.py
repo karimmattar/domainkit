@@ -227,6 +227,8 @@ async def pay(outcome: str = "ok", database: str = "default") -> Response:
         raise RuntimeError("crashed after the commit")
     if outcome == "unavailable":
         raise HTTPException(503, "Try later.")
+    if outcome == "failed":
+        return Response(b"failed", status_code=500)
     if outcome == "declined":
         return Response(b"declined", status_code=402)
     if outcome == "secret":
