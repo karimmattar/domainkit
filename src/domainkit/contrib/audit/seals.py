@@ -10,7 +10,8 @@ verifies what it returns: a chain rewritten after a head was anchored no
 longer matches it.
 
 ``verify`` reports changed and missing rows, links that do not follow,
-anchors the chain no longer matches, and rows left unsealed.
+anchors the chain no longer matches, seals left unanchored, and rows left
+unsealed.
 
 Rows are sealed after they commit, by the worker every ``AUDIT.SEAL_EVERY``
 or by ``auditseal``, so a row can be rewritten unnoticed until it is sealed
@@ -114,6 +115,9 @@ class Report:
     """Seals whose number or link does not follow the one before."""
     rewritten: list[int] = field(default_factory=list)
     """Anchored heads the chain no longer has."""
+    unanchored: int = 0
+    """Seals after the newest anchor, sealed more than ``ANCHOR_EVERY`` and
+    ``LOOKBACK`` ago: anchoring stopped (checked with a ledger only)."""
     unsealed: int = 0
     """Rows older than ``LOOKBACK`` without a seal."""
 
@@ -121,7 +125,7 @@ class Report:
     def intact(self) -> bool:
         """Whether nothing was found wrong."""
         problems = (self.changed, self.missing, self.broken, self.rewritten)
-        return not (any(problems) or self.unsealed)
+        return not (any(problems) or self.unanchored or self.unsealed)
 
 
 def digest(row: Mapping[Any, Any]) -> str:
@@ -163,7 +167,8 @@ async def anchor(
 ) -> Anchor | None:
     """Write ``database``'s head to ``ledger``; None when there is nothing new.
 
-    A head is anchored at most once per ``every``, and never twice.
+    A head is anchored at most once per ``every``, and never twice. An anchor
+    dated after ``now`` (written by a clock running ahead) holds none back.
     """
     now = now or datetime.now(UTC)
     async with connections.engine(database).connect() as connection:
@@ -175,7 +180,7 @@ async def anchor(
     except LedgerKeyNotFound:
         latest = None
     if latest is not None and (
-        latest.seq == head.seq or now - latest.anchored_at < every
+        latest.seq == head.seq or timedelta(0) <= now - latest.anchored_at < every
     ):
         return None
     written = Anchor(head.seq, head.link, now)
@@ -199,12 +204,27 @@ async def seal_all() -> dict[str, tuple[int, Anchor | None]]:
 
 
 async def verify(
-    database: str, ledger: Ledger | None = None, *, now: datetime | None = None
+    database: str,
+    ledger: Ledger | None = None,
+    *,
+    now: datetime | None = None,
+    every: timedelta | None = None,
 ) -> Report:
-    """Check ``database``'s chain against its rows, and against ``ledger``."""
+    """Check ``database``'s chain against its rows, and against ``ledger``.
+
+    With a ledger, seals sealed more than ``every`` (default:
+    ``AUDIT.ANCHOR_EVERY``) and ``LOOKBACK`` ago must be anchored.
+    """
+    now = now or datetime.now(UTC)
     report = Report(database)
     anchored = await _anchors(database, ledger) if ledger is not None else {}
     report.anchors = len(anchored)
+    newest_anchored = max(anchored, default=0)
+    overdue = None  # Sealed before this, a seal must be anchored.
+    if ledger is not None:
+        if every is None:
+            every = registry.settings(AuditSettings).ANCHOR_EVERY
+        overdue = now - every - LOOKBACK
     previous = Head(0, GENESIS)
     query = (
         select(audit_seals, *(audit_log.c[name] for name in COLUMNS))
@@ -225,16 +245,23 @@ async def verify(
                 report.changed.append(seal_row["entry_id"])
             if anchored.pop(seal_row["seq"], seal_row["link"]) != seal_row["link"]:
                 report.rewritten.append(seal_row["seq"])
+            if (
+                overdue is not None
+                and seal_row["seq"] > newest_anchored
+                and seal_row["sealed_at"] < overdue
+            ):
+                report.unanchored += 1
             previous = Head(seal_row["seq"], seal_row["link"])
         report.rewritten.extend(sorted(anchored))  # Anchored seals now gone.
-        report.unsealed = await _unsealed(connection, now or datetime.now(UTC))
+        report.unsealed = await _unsealed(connection, now)
     return report
 
 
 async def _seal_batch(connection: AsyncConnection, batch: int) -> int:
     """Seal up to ``batch`` rows after the head, oldest first."""
     head = await _head(connection)
-    horizon = await _horizon(connection, head)
+    sealed_at = datetime.now(UTC)
+    horizon = await _horizon(connection, head, sealed_at)
     unsealed = (
         select(*(audit_log.c[name] for name in COLUMNS))
         .outerjoin(audit_seals, audit_seals.c.entry_id == audit_log.c.id)
@@ -246,7 +273,6 @@ async def _seal_batch(connection: AsyncConnection, batch: int) -> int:
         unsealed = unsealed.where(audit_log.c.occurred_at >= horizon)
     rows = (await connection.execute(unsealed)).mappings().all()
     previous = head or Head(0, GENESIS)
-    sealed_at = datetime.now(UTC)
     seals = []
     for row in rows:
         row_digest = digest(row)
@@ -277,8 +303,14 @@ async def _head(connection: AsyncConnection) -> Head | None:
     return None if found is None else Head(found.seq, found.link)
 
 
-async def _horizon(connection: AsyncConnection, head: Head | None) -> datetime | None:
-    """Where to look for unsealed rows: ``LOOKBACK`` before the head's row."""
+async def _horizon(
+    connection: AsyncConnection, head: Head | None, now: datetime
+) -> datetime | None:
+    """Where to look for unsealed rows: ``LOOKBACK`` before the head's row.
+
+    A head's row dated after ``now`` (a clock running ahead) counts as
+    ``now``, so it cannot leave the rows written before it unsealable.
+    """
     if head is None:
         return None
     newest = await connection.scalar(
@@ -286,7 +318,7 @@ async def _horizon(connection: AsyncConnection, head: Head | None) -> datetime |
         .join(audit_seals, audit_seals.c.entry_id == audit_log.c.id)
         .where(audit_seals.c.seq == head.seq)
     )
-    return None if newest is None else newest - LOOKBACK
+    return None if newest is None else min(newest, now) - LOOKBACK
 
 
 async def _unsealed(connection: AsyncConnection, now: datetime) -> int:
@@ -327,7 +359,12 @@ def _plain(value: object) -> object:
 
 
 def _canonical(document: object) -> bytes:
-    """``document`` as compact JSON with sorted keys."""
+    """``document`` as compact JSON with sorted keys.
+
+    Strings can hold lone surrogates (JSON can escape half a surrogate
+    pair); they are encoded as they are, so every row has a digest, and the
+    bytes of every other string stay plain UTF-8.
+    """
     return json.dumps(
         document, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode()
+    ).encode("utf-8", "surrogatepass")

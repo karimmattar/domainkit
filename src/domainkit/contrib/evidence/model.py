@@ -161,12 +161,11 @@ class Evidence:
             "request_id": self.request_id,
         }
         try:
-            text = _CANONICAL_JSON.encode(document)
-        except (TypeError, ValueError) as exc:
+            return _CANONICAL_JSON.encode(document).encode()
+        except (TypeError, ValueError) as exc:  # UnicodeEncodeError: surrogates.
             raise ValueError(
                 f"Evidence facts must be plain JSON values: {exc}"
             ) from exc
-        return text.encode()
 
     @classmethod
     def from_canonical(cls, data: bytes) -> "Evidence":
