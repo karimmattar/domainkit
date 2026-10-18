@@ -248,6 +248,7 @@ async def test_records_are_written_once_and_read_verified() -> None:
     assert receipt.key == evidence_key("evidence", FIXED, SUBJECT_KEY)
     assert receipt.digest == sha256(FIXED.canonical())
     assert (recorded.evidence, recorded.revisions, recorded.intact) == (FIXED, 1, True)
+    assert recorded.receipt == receipt  # With its ledger transaction.
     assert "customer" not in receipt.key
 
 
