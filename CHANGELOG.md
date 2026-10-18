@@ -88,6 +88,17 @@ All notable changes to domainkit. The format follows
 
 ### Fixed
 
+- With a broker, every write waited on it: publishing a commit's messages
+  ran inside the request, after the commit, so a slow or stopped RabbitMQ
+  added up to its connect and publish timeouts to each write. Each commit
+  also built a new worker, which declared the exchange and queues again.
+  Commits now hand their messages to a background publisher per event loop
+  and return. It keeps one worker per outbox, so queues are declared once,
+  and stops taking messages past 10,000 waiting, leaving them to the
+  relays. The messaging app's shutdown gives it five seconds to finish.
+- RabbitMQ brokers used for the first time by several requests at once
+  opened a connection and a publishing channel for each, and kept only the
+  last. A lock now makes them share one.
 - `CONNECT_ARGS` could turn database TLS and timeouts off unseen. It
   replaced the driver arguments derived from the settings, so a deployment
   with `SSLMODE = "verify-full"` passed the deployment checks while

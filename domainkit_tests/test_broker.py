@@ -48,6 +48,34 @@ def rabbit(server: FakeAMQP, **options: object) -> RabbitMQBroker:
     return RabbitMQBroker(config, connect=cast(Any, server.connect))
 
 
+async def test_racing_first_uses_share_one_connection() -> None:
+    """Callers racing to open the broker get one connection and one channel."""
+    server = FakeAMQP()
+    channels: list[object] = []
+
+    async def slow_connect(url: str, **options: Any) -> object:  # noqa: ANN401
+        await asyncio.sleep(0)  # A real connect yields while it handshakes.
+        connection = await server.connect(url, **options)
+        opened = connection.channel
+
+        async def channel(**options: Any) -> object:  # noqa: ANN401
+            await asyncio.sleep(0)
+            made = await opened(**options)
+            channels.append(made)
+            return made
+
+        connection.channel = channel  # type: ignore[method-assign,assignment]
+        return connection
+
+    config = BrokerConfig.model_validate(RABBIT)
+    broker = RabbitMQBroker(config, connect=cast(Any, slow_connect))
+
+    await asyncio.gather(*(broker.check() for _ in range(5)))
+    await broker.close()
+
+    assert (len(server.connections), len(channels)) == (1, 1)
+
+
 class Inbox:
     """Collect deliveries; ``wait`` until ``count`` arrived."""
 

@@ -5,7 +5,7 @@ import io
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -38,7 +38,11 @@ from domainkit.contrib.messaging import (
 from domainkit.contrib.messaging import outbox as outbox_module
 from domainkit.contrib.messaging import registry as tasks
 from domainkit.contrib.messaging import worker as worker_module
-from domainkit.contrib.messaging.dispatch import BrokerWorkers
+from domainkit.contrib.messaging.dispatch import (
+    BrokerWorkers,
+    close_publishers,
+    commit_publisher,
+)
 from domainkit.contrib.messaging.outbox import insert_statements, message_row
 from domainkit.contrib.messaging.tables import DEAD, DONE, PENDING, messages
 from domainkit.contrib.messaging.worker import Claimed, backoff
@@ -636,8 +640,14 @@ async def broker_tables(brokered: None) -> AsyncIterator[MemoryBroker]:
     broker = brokers["work"]
     assert isinstance(broker, MemoryBroker)
     yield broker
+    await close_publishers()
     await brokers.close_all()
     await connections.close_all()
+
+
+async def published() -> None:
+    """Wait until the background publisher offered what was committed."""
+    await commit_publisher(registry.settings(MessagingSettings)).flush()
 
 
 async def settled(count: int) -> list[dict[str, object]]:
@@ -729,6 +739,7 @@ async def test_commits_publish_their_messages_at_once(
         uow.defer(remember, value=uuid.uuid4(), delay=timedelta(hours=1))
         await uow.commit()
     await enqueue(remember, value=uuid.uuid4())
+    await published()
 
     assert (broker_tables.pending("emails"), broker_tables.pending("default")) == (1, 1)
     email, delayed, enqueued = await outbox()
@@ -757,14 +768,127 @@ async def test_failed_commit_publications_leave_work_to_the_relay(
         down = Unreachable(declare=False)
         monkeypatch.setattr(BrokerHandler, "__getitem__", lambda self, alias: down)
         await enqueue(remember, value=uuid.uuid4())
+        await published()
         monkeypatch.undo()
         monkeypatch.setattr(Worker, "relay_ids", database_down)
         await enqueue(remember, value=uuid.uuid4())
+        await published()
 
     first, second = await outbox()
     assert (first["lock_id"], second["lock_id"]) == (None, None)
     assert "Could not publish committed messages; the relay will" in caplog.messages
     assert broker_tables.pending("default") == 0
+
+
+class Stalled(MemoryBroker):
+    """A slow broker: publishing waits until ``release`` is set."""
+
+    def __init__(self) -> None:
+        """Hold every publish."""
+        super().__init__()
+        self.release = asyncio.Event()
+
+    async def publish(self, queue: str, body: bytes, *, message_id: str) -> None:
+        """Publish once released."""
+        await self.release.wait()
+        await super().publish(queue, body, message_id=message_id)
+
+
+async def test_commits_never_wait_on_the_broker(
+    broker_tables: MemoryBroker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stuck broker holds the background publisher, never the commit."""
+    stalled = Stalled()
+    monkeypatch.setattr(BrokerHandler, "__getitem__", lambda self, alias: stalled)
+
+    async with asyncio.timeout(1):
+        await enqueue(remember, value=uuid.uuid4())
+    assert stalled.pending("default") == 0
+    stalled.release.set()
+    await published()
+
+    assert stalled.pending("default") == 1
+
+
+async def test_commits_declare_their_queues_once(
+    broker_tables: MemoryBroker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The publisher keeps a worker per outbox, so each queue is declared once."""
+    declared: list[list[str]] = []
+    original = MemoryBroker.declare
+
+    async def counting(self: MemoryBroker, queues: Iterable[str]) -> None:
+        declared.append(sorted(queues))
+        await original(self, queues)
+
+    monkeypatch.setattr(MemoryBroker, "declare", counting)
+    for _ in range(3):
+        await enqueue(remember, value=uuid.uuid4())
+        await published()
+
+    assert declared == [["default"]]
+    assert broker_tables.pending("default") == 3
+
+
+async def test_the_backlog_is_bounded(
+    broker_tables: MemoryBroker,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Past MAX_UNPUBLISHED waiting messages, commits leave theirs to the relay."""
+    stalled = Stalled()
+    monkeypatch.setattr(BrokerHandler, "__getitem__", lambda self, alias: stalled)
+    monkeypatch.setattr(dispatch, "MAX_UNPUBLISHED", 2)
+
+    for _ in range(3):
+        await enqueue(remember, value=uuid.uuid4())
+    stalled.release.set()
+    await published()
+
+    assert stalled.pending("default") == 2
+    assert [row["lock_id"] is None for row in await outbox()].count(True) == 1
+    assert "Left 1 committed messages to the relay: 2 are already waiting" in (
+        caplog.messages
+    )
+
+
+async def test_shutdown_waits_for_the_publisher_then_stops_it(
+    broker_tables: MemoryBroker,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Shutdown lets a stuck publish go after CLOSE_TIMEOUT; the relay sends it."""
+    stalled = Stalled()
+    monkeypatch.setattr(BrokerHandler, "__getitem__", lambda self, alias: stalled)
+    monkeypatch.setattr(dispatch, "CLOSE_TIMEOUT", 0.05)
+    config = registry.settings(MessagingSettings)
+    await enqueue(remember, value=uuid.uuid4())
+    publisher = commit_publisher(config)
+
+    async with asyncio.timeout(1):
+        await close_publishers()
+
+    assert "Left 1 committed messages to the relay at shutdown" in caplog.messages
+    assert commit_publisher(config) is not publisher
+    await commit_publisher(config).flush()  # A fresh one has nothing to send.
+
+
+async def test_the_messaging_app_closes_the_publishers_at_shutdown(
+    brokered: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MessagingConfig.shutdown flushes and stops the background publishers."""
+    from domainkit.contrib.messaging import apps as messaging_apps
+
+    closed: list[bool] = []
+
+    async def record() -> None:
+        closed.append(True)
+
+    monkeypatch.setattr(messaging_apps, "close_publishers", record)
+    config = next(config for config in registry if config.label == "messaging")
+    await config.shutdown()
+
+    assert closed == [True]
 
 
 async def test_after_commit_failures_are_reported(

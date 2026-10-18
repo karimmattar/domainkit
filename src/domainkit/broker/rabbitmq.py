@@ -7,6 +7,7 @@ confirmation, so a message is either safely queued or the publisher knows
 it is not. Consumers acknowledge each message after its work is recorded.
 """
 
+import asyncio
 import ssl
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from contextlib import asynccontextmanager
@@ -101,6 +102,9 @@ class RabbitMQBroker(Broker):
         self._connect = connect
         self._connection: AbstractConnection | None = None
         self._publishing: tuple[AbstractChannel, AbstractExchange] | None = None
+        # Callers racing on first use share one connection and one channel.
+        self._opening = asyncio.Lock()
+        self._opening_publisher = asyncio.Lock()
 
     @property
     def exchange_name(self) -> str:
@@ -113,15 +117,18 @@ class RabbitMQBroker(Broker):
 
     async def _open(self) -> AbstractConnection:
         """The connection, opened on first use."""
-        if self._connection is None:
-            async with _translated():
-                self._connection = await self._connect(
-                    self.config.URL.get_secret_value(),
-                    ssl_context=ssl_context(self.config),
-                    timeout=self.config.CONNECT_TIMEOUT,
-                    client_properties={"connection_name": f"domainkit {self.prefix}"},
-                )
-        return self._connection
+        async with self._opening:
+            if self._connection is None:
+                async with _translated():
+                    self._connection = await self._connect(
+                        self.config.URL.get_secret_value(),
+                        ssl_context=ssl_context(self.config),
+                        timeout=self.config.CONNECT_TIMEOUT,
+                        client_properties={
+                            "connection_name": f"domainkit {self.prefix}"
+                        },
+                    )
+            return self._connection
 
     async def _declare_on(
         self, channel: AbstractChannel, queues: Iterable[str]
@@ -141,15 +148,16 @@ class RabbitMQBroker(Broker):
 
     async def _publisher(self) -> tuple[AbstractChannel, AbstractExchange]:
         """The publishing channel (confirms on, returns raise) and the exchange."""
-        if self._publishing is None:
-            connection = await self._open()
-            async with _translated():
-                channel = await connection.channel(
-                    publisher_confirms=True, on_return_raises=True
-                )
-                exchange, _ = await self._declare_on(channel, ())
-            self._publishing = (channel, exchange)
-        return self._publishing
+        async with self._opening_publisher:
+            if self._publishing is None:
+                connection = await self._open()
+                async with _translated():
+                    channel = await connection.channel(
+                        publisher_confirms=True, on_return_raises=True
+                    )
+                    exchange, _ = await self._declare_on(channel, ())
+                self._publishing = (channel, exchange)
+            return self._publishing
 
     async def declare(self, queues: Iterable[str]) -> None:
         """Declare the exchange and the queues, bound by name."""

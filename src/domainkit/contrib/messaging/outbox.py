@@ -158,4 +158,4 @@ async def enqueue(
     rows = rows_for((), [task], EventBus(), config)
     async with connections.engine(config.DATABASE).begin() as connection:
         await write(connection, connection.dialect.name, rows)
-    await publish_committed(config, config.DATABASE, [row["id"] for row in rows])
+    publish_committed(config, config.DATABASE, [row["id"] for row in rows])

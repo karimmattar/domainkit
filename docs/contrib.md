@@ -97,7 +97,7 @@ inspects any outbox.
 | `CLEANUP_INTERVAL` | `3600.0` | Seconds between those deletions. |
 | `BROKER` | `None` | An alias in `BROKERS`: workers take their work from that broker instead of polling the outbox (below). |
 | `REPUBLISH_AFTER` | `3600.0` | With a broker: seconds a published message may wait for a worker before the relay publishes it again, as lost. |
-| `PUBLISH_ON_COMMIT` | `True` | With a broker: the committing process publishes the commit's due messages right away, instead of leaving them to the relays' next poll. |
+| `PUBLISH_ON_COMMIT` | `True` | With a broker: the committing process publishes the commit's due messages in the background right away, instead of leaving them to the relays' next poll. |
 
 Run `runworker --metrics-port 9100` to expose the worker's metrics. Scale by
 running more workers; `SIGTERM` lets running messages finish first.
@@ -134,12 +134,16 @@ Install the `rabbitmq` extra (`domainkit[rabbitmq]`, which brings
 aio-pika). Then `runworker` works like this:
 
 - **Publish on commit.** Right after a unit of work commits (and after
-  `enqueue()`), its process locks the messages it wrote for
-  `REPUBLISH_AFTER` and publishes a small pointer to each: its id, its
-  database, and the lock. RabbitMQ confirms every publication. This adds a
-  database update and a broker round trip to each request that writes
-  messages; set `PUBLISH_ON_COMMIT` to `False` to leave publishing to the
-  relays. Delayed tasks wait for the relay.
+  `enqueue()`), its process hands the messages it wrote to a background
+  publisher and returns: a slow or stopped broker never delays the commit.
+  The publisher locks them for `REPUBLISH_AFTER` and publishes a small
+  pointer to each (its id, its database, and the lock), and RabbitMQ
+  confirms every publication. It declares each queue once per process. If
+  more than 10,000 committed messages are waiting to be published, newer
+  ones are left to the relays, and at shutdown the publisher gets five
+  seconds to finish; the outbox holds the rest. Set `PUBLISH_ON_COMMIT` to
+  `False` to leave all publishing to the relays. Delayed tasks wait for the
+  relay.
 - **Relay.** Workers also claim due messages of their outbox, as a polling
   worker would, and publish them the same way: delayed tasks when they fall
   due, retries, and anything a commit could not publish (the broker was
