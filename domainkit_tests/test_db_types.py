@@ -16,8 +16,11 @@ from sqlalchemy import (
     select,
     update,
 )
+from sqlalchemy.dialects import sqlite
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import StatementError
 from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.schema import CreateTable
 
 from domainkit.conf import override_settings
 from domainkit.db import ExactDecimal, connections
@@ -154,6 +157,18 @@ async def test_queries_compute_the_same_on_every_database(engine: AsyncEngine) -
     ]
     for expression, expected in computed:
         assert await scalars(engine, select(expression).where(first)) == [expected]
+    # Products keep the places PostgreSQL gives them, whole factors included.
+    forms = [
+        (amount * 2, "19.90"),
+        (3 * amount, "29.85"),
+        (amount * prices.c.quantity, "29.85"),
+        (amount * Decimal("1.5"), "14.925"),
+    ]
+    for expression, form in forms:
+        assert [
+            str(value)
+            for value in await scalars(engine, select(expression).where(first))
+        ] == [form]
     assert await scalars(
         engine, select(func.sum(amount * prices.c.quantity)).where(prices.c.id < 3)
     ) == [Decimal("30.55")]
@@ -165,20 +180,36 @@ async def test_queries_compute_the_same_on_every_database(engine: AsyncEngine) -
     ]
 
 
-async def test_updates_go_through_the_type(engine: AsyncEngine) -> None:
-    """A raise by a fixed amount, and one by a percentage, stay exact."""
-    await stored(engine, {"id": 1, "amount": Decimal("10.00")})
+async def test_fractional_products_come_back_in_their_shortest_form(
+    engine: AsyncEngine,
+) -> None:
+    """3.33 * 0.7 is 2.331; SQLite computes 2.33099999..., read back as 2.331."""
+    await stored(engine, {"id": 1, "amount": Decimal("3.33")})
+    amount = prices.c.amount
 
-    async with engine.begin() as connection:
-        await connection.execute(update(prices).values(amount=prices.c.amount + 1))
-    raised = await scalars(engine, select(prices.c.amount))
+    products = select(amount * Decimal("0.7"), Decimal("0.7") * amount)
+    async with engine.connect() as connection:
+        found = (await connection.execute(products)).one()
+
+    assert tuple(found) == (Decimal("2.331"), Decimal("2.331"))
+
+
+async def test_updates_go_through_the_type(engine: AsyncEngine) -> None:
+    """Adding an amount and multiplying by a whole number stay exact."""
+    await stored(engine, {"id": 1, "amount": Decimal("10.05")})
+
     async with engine.begin() as connection:
         await connection.execute(
-            update(prices).values(amount=prices.c.amount * Decimal("1.1"))
+            update(prices).values(amount=prices.c.amount + Decimal("0.95"))
         )
+    raised = await scalars(engine, select(prices.c.amount))
+    async with engine.begin() as connection:
+        await connection.execute(update(prices).values(amount=prices.c.amount * 3))
 
     assert raised == [Decimal("11.00")]
-    assert await scalars(engine, select(prices.c.amount)) == [Decimal("12.10")]
+    assert [str(value) for value in await scalars(engine, select(prices.c.amount))] == [
+        "33.00"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -235,10 +266,22 @@ def test_columns_must_fit_sqlite_integers(precision: int, scale: int) -> None:
 
 def test_floor_division_is_refused() -> None:
     """Its result is a count, not an amount; SQLite would give cents."""
-    with pytest.raises(
-        TypeError, match=r"^Floor-divide ExactDecimal amounts in Python"
-    ):
+    refused = (
+        r"^Floor-divide ExactDecimal amounts in Python: on SQLite the column "
+        r"holds minor units, and the result would differ\.$"
+    )
+    with pytest.raises(TypeError, match=refused):
         _ = prices.c.amount // 2
+
+
+def test_tables_declare_numeric_on_every_database() -> None:
+    """``create_all`` declares the column's digits on SQLite and PostgreSQL."""
+    postgres = make_url("postgresql+asyncpg://").get_dialect()()
+    for dialect in (sqlite.dialect(), postgres):
+        ddl = str(CreateTable(prices).compile(dialect=dialect))
+        assert "amount NUMERIC(18, 2)" in ddl
+        assert "units NUMERIC(10, 0)" in ddl
+        assert "rate NUMERIC(4, 4)" in ddl
 
 
 def test_revisions_store_amounts_as_numeric() -> None:

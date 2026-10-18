@@ -261,10 +261,16 @@ PostgreSQL would store differently.
   `price * quantity` for an integer column, `price / 4`). On SQLite, a
   product with a fraction and a quotient are computed in floating point
   before they come back as `Decimal`.
-- **In Python instead:** floor division (`price // 2` is refused), and
-  arithmetic between two amount columns other than `+` and `-` (on SQLite
-  `price * cost` multiplies cents by cents). For `avg`, name the type:
-  `func.avg(price, type_=price.type)`.
+- **In Python instead:**
+  - floor division (`price // 2` is refused);
+  - arithmetic between two amount columns other than `+` and `-` (on SQLite
+    `price * cost` multiplies cents by cents);
+  - new amounts with more places than the column, such as
+    `update(...).values(price=prices.c.price * Decimal("1.1"))`.
+    PostgreSQL rounds them to the column's scale, and SQLite keeps the
+    fraction of a cent, so compute them with your own rounding rule.
+
+  For `avg`, name the type: `func.avg(price, type_=price.type)`.
 
 ## Unique values
 
