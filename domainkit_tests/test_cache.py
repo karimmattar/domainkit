@@ -528,7 +528,8 @@ def test_pending_computations_end_with_their_loop(
         await asyncio.sleep(0)
         caller.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await caller
+            async with asyncio.timeout(5):
+                await caller
 
     with caplog.at_level(logging.ERROR, "asyncio"):
         asyncio.run(abandon())
@@ -940,7 +941,8 @@ async def test_closing_a_cache_stops_its_computations_first() -> None:
     cache = make_cache(RecordingStore(events, "store"))
     factory = Stuck(on_cancel=lambda: events.append("computation"))
     waiting = asyncio.create_task(cache.get_or_set("k", factory, int))
-    await factory.started.wait()
+    async with asyncio.timeout(5):
+        await factory.started.wait()
 
     async with asyncio.timeout(5):
         await cache.close()
@@ -958,7 +960,8 @@ async def test_a_caller_cancelled_while_its_cache_closes_stays_cancelled() -> No
     waiting: asyncio.Task[int]
     factory = Stuck(on_cancel=lambda: waiting.cancel())
     waiting = asyncio.create_task(cache.get_or_set("k", factory, int))
-    await factory.started.wait()
+    async with asyncio.timeout(5):
+        await factory.started.wait()
 
     async with asyncio.timeout(5):
         await cache.close()
