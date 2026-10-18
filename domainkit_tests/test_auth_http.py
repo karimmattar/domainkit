@@ -22,10 +22,12 @@ from domainkit.contrib.auth import (
     Credentials,
     User,
     authentication,
+    hashers,
 )
 from domainkit.contrib.auth import (
     tokens as token_module,
 )
+from domainkit.contrib.auth.hashers import HashingPool
 from domainkit.contrib.auth.tables import tokens
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
@@ -225,6 +227,25 @@ def test_wrong_credentials_are_refused_and_audited(api: Api) -> None:
     ] * 3
     assert rows[0]["details"] == {"reason": "invalid_credentials"}
     assert client.post("/auth/login", json={"username": "alice"}).status_code == 422
+
+
+def test_logins_answer_503_when_hashing_is_saturated(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A full hashing queue refuses a login at once, for known and unknown users."""
+    create_user("alice")
+    client = api()
+    full = HashingPool(threads=1, queue=0)
+    full.pending = full.capacity
+    monkeypatch.setattr(hashers, "_pool", lambda: full)
+
+    for username in ("alice", "nobody"):
+        refused = client.post(
+            "/auth/login", json={"username": username, "password": PASSWORD}
+        )
+        assert refused.status_code == 503
+        assert refused.json()["code"] == "password_checks_busy"
+        assert refused.headers["Retry-After"] == "1"
 
 
 def test_logins_are_throttled_per_address_and_per_username(api: Api) -> None:

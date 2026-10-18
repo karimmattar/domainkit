@@ -6,8 +6,11 @@ A password checked against an older or weaker hash is re-hashed with the
 first hasher. Hashes from a Django project's database check here as they
 are, so users can move over without resetting passwords.
 
-Hashing is slow on purpose. The ``a``-prefixed functions run it in a worker
-thread, so a login never blocks the event loop.
+Hashing is slow on purpose. The ``a``-prefixed functions run it on the
+process's hashing threads (``AUTH.HASHING_THREADS``), so a login never blocks
+the event loop. At most ``AUTH.HASHING_QUEUE`` calls wait for a thread; more
+are refused at once with ``PasswordChecksBusy`` (503), so a flood of logins
+cannot pile up work the process will never finish.
 """
 
 import asyncio
@@ -18,12 +21,16 @@ import math
 import secrets
 import string
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from functools import cache
+from functools import cache, partial
 from typing import ClassVar, Final
 
+from fastapi import status
+
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.http.errors import APIError
 from domainkit.utils.module_loading import import_string
 
 from .models import UNUSABLE_PASSWORD_PREFIX
@@ -323,18 +330,73 @@ def check_password(password: str, encoded: str | None) -> bool:
     return verify_password(password, encoded).correct
 
 
+class PasswordChecksBusy(APIError):
+    """Every hashing thread is busy and the queue is full."""
+
+    def __init__(self) -> None:
+        """A 503 that asks the client to try again shortly."""
+        super().__init__(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Too many password checks at once; try again in a moment.",
+            code="password_checks_busy",
+            headers={"Retry-After": "1"},
+        )
+
+
+class HashingPool:
+    """``threads`` threads that hash, and room for ``queue`` calls to wait."""
+
+    def __init__(self, threads: int, queue: int) -> None:
+        """Start the threads lazily, on the first call."""
+        self.capacity = threads + queue
+        self.pending = 0
+        """Calls running or waiting, in this process."""
+        self._executor = ThreadPoolExecutor(
+            max_workers=threads, thread_name_prefix="domainkit-hashing"
+        )
+
+    async def run[T](self, function: Callable[..., T], *args: object) -> T:
+        """Call ``function(*args)`` on a hashing thread.
+
+        Raises:
+            PasswordChecksBusy: ``threads + queue`` calls are already pending.
+        """
+        if self.pending >= self.capacity:
+            raise PasswordChecksBusy
+        self.pending += 1
+        try:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(self._executor, partial(function, *args))
+        finally:
+            self.pending -= 1
+
+
+@cache
+def hashing_pool(threads: int, queue: int) -> HashingPool:
+    """The process's pool for these settings."""
+    return HashingPool(threads, queue)
+
+
+def _pool() -> HashingPool:
+    """The pool ``AUTH.HASHING_THREADS`` and ``AUTH.HASHING_QUEUE`` describe."""
+    from .settings import auth_settings
+
+    config = auth_settings()
+    return hashing_pool(config.HASHING_THREADS, config.HASHING_QUEUE)
+
+
 async def amake_password(password: str) -> str:
-    """``make_password`` in a worker thread."""
-    return await asyncio.to_thread(make_password, password)
+    """``make_password`` on a hashing thread; raises ``PasswordChecksBusy``."""
+    return await _pool().run(make_password, password)
 
 
 async def averify_password(password: str, encoded: str | None) -> PasswordCheck:
-    """``verify_password`` in a worker thread."""
-    return await asyncio.to_thread(verify_password, password, encoded)
+    """``verify_password`` on a hashing thread; raises ``PasswordChecksBusy``."""
+    return await _pool().run(verify_password, password, encoded)
 
 
 async def acheck_password(password: str, encoded: str | None) -> bool:
-    """``check_password`` in a worker thread."""
+    """``check_password`` on a hashing thread; raises ``PasswordChecksBusy``."""
     return (await averify_password(password, encoded)).correct
 
 

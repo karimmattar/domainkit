@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import hashlib
+import threading
 from typing import ClassVar
 
 import pytest
@@ -12,7 +13,9 @@ from domainkit.contrib.auth.hashers import (
     SALT_CHARS,
     Argon2PasswordHasher,
     FastPBKDF2PasswordHasher,
+    HashingPool,
     PasswordCheck,
+    PasswordChecksBusy,
     PBKDF2PasswordHasher,
     PBKDF2SHA1PasswordHasher,
     ScryptPasswordHasher,
@@ -27,6 +30,7 @@ from domainkit.contrib.auth.hashers import (
     make_password,
     verify_password,
 )
+from domainkit.contrib.auth.settings import AuthSettings
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit_tests.conftest import UseAuth
 
@@ -285,3 +289,82 @@ def test_hashers_only_need_encode_and_verify() -> None:
     assert hasher.verify(PASSWORD, encoded)
     assert not hasher.must_update(encoded)
     hasher.harden_runtime(PASSWORD, encoded)
+
+
+def test_hashing_pools_refuse_calls_beyond_their_queue() -> None:
+    """Threads plus queue calls may be pending; the next is refused at once."""
+    pool = HashingPool(threads=1, queue=1)
+    started, release = threading.Event(), threading.Event()
+
+    def slow(value: str) -> str:
+        started.set()
+        release.wait(5)
+        return value
+
+    async def scenario() -> tuple[list[str], int]:
+        running = asyncio.create_task(pool.run(slow, "first"))
+        waiting = asyncio.create_task(pool.run(slow, "second"))
+        await asyncio.to_thread(started.wait, 5)
+        await asyncio.sleep(0)
+        with pytest.raises(PasswordChecksBusy) as busy:
+            await pool.run(slow, "third")
+        assert pool.pending == 2
+        assert busy.value.status_code == 503
+        assert busy.value.code == "password_checks_busy"
+        assert busy.value.detail == (
+            "Too many password checks at once; try again in a moment."
+        )
+        assert busy.value.headers == {"Retry-After": "1"}
+        release.set()
+        return list(await asyncio.gather(running, waiting)), pool.pending
+
+    assert asyncio.run(scenario()) == (["first", "second"], 0)
+
+
+def test_pending_calls_free_their_place_when_cancelled_or_failing() -> None:
+    """A cancelled or failed call no longer counts against the queue."""
+    pool = HashingPool(threads=1, queue=0)
+
+    def fail() -> None:
+        raise ValueError("bad hash")
+
+    async def scenario() -> int:
+        with pytest.raises(ValueError, match="bad hash"):
+            await pool.run(fail)
+        return pool.pending
+
+    assert asyncio.run(scenario()) == 0
+
+
+def test_passwords_hash_on_the_configured_pool(
+    use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The a-functions use the pool AUTH describes, on its own threads."""
+    use_auth(HASHING_THREADS=3, HASHING_QUEUE=5)
+    threads: list[str] = []
+
+    def record(*args: object) -> str:
+        threads.append(threading.current_thread().name)
+        return "made"
+
+    monkeypatch.setattr(hashers, "make_password", record)
+    monkeypatch.setattr(hashers, "verify_password", record)
+
+    async def scenario() -> list[object]:
+        return [
+            await amake_password(PASSWORD),
+            await averify_password(PASSWORD, None),
+        ]
+
+    assert asyncio.run(scenario()) == ["made", "made"]
+    assert all(name.startswith("domainkit-hashing") for name in threads)
+    pool = hashers._pool()
+    assert pool is hashers.hashing_pool(3, 5)
+    assert pool.capacity == 8
+
+
+def test_hashing_defaults_to_one_thread_and_a_short_queue() -> None:
+    """One hash at a time per process, like a Django worker; eight may wait."""
+    defaults = AuthSettings()
+
+    assert (defaults.HASHING_THREADS, defaults.HASHING_QUEUE) == (1, 8)

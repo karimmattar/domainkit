@@ -256,8 +256,18 @@ AUTH = {
 
 A user holds a `PasswordHash`, which only the hashers make, so a raw
 password can never be stored by mistake, and hashes never appear in logs.
-Hashing is slow on purpose; `authenticate` and the repositories run it in a
-worker thread, so the event loop never waits.
+Hashing is slow on purpose; `authenticate` and the repositories run it on
+the process's hashing threads (`HASHING_THREADS`), so the event loop never
+waits. At most `HASHING_QUEUE` calls wait for a thread. When the queue is
+full, a login, password change, or user creation answers
+`503 password_checks_busy` with `Retry-After: 1` at once, rather than
+queueing work the process cannot finish. Unknown usernames are hashed too,
+so response times do not reveal which exist. Raise the limits on processes
+with cores to spare; `LOGIN_RATE` limits each client and username, these
+limit the process. They keep the rest of the API responsive during a login
+flood, but logins themselves may then be refused: stopping a flood from
+many addresses takes measures before hashing, such as locking an account
+after repeated failures.
 
 `AUTH.PASSWORD_HASHERS` lists hasher classes. The first hashes new
 passwords; every one listed checks passwords it once hashed. When a
@@ -566,6 +576,8 @@ changed what.
 | `USER_MODEL` | `"domainkit.contrib.auth.models.User"` | The user class. |
 | `USER_TABLE` | `None` (the default user's table) | A custom user's `Table`; required with a custom `USER_MODEL`. |
 | `PASSWORD_HASHERS` | PBKDF2, PBKDF2-SHA1, Argon2, scrypt | Hasher classes; the first hashes new passwords. |
+| `HASHING_THREADS` | `1` | Threads per process that hash passwords; each keeps a core busy. One, like a Django worker, so with a process per core hashing never takes the event loops' cores. |
+| `HASHING_QUEUE` | `8` | Hashing calls that may wait for a thread (about 0.4 s each); more answer `503 password_checks_busy`. |
 | `PASSWORD_VALIDATORS` | the four above | Rules for new passwords; `[]` checks nothing. |
 | `BACKENDS` | `["domainkit.contrib.auth.backends.ModelBackend"]` | Authentication and permission backends, in order. |
 | `AUTHENTICATION_CLASSES` | `["domainkit.contrib.auth.authentication.TokenAuthentication"]` | How requests prove who sent them, in order; the first issues login tokens. |
