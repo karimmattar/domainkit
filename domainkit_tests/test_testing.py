@@ -7,9 +7,11 @@ import pytest
 
 # The pytester fixture unloads the modules first imported while it is in use.
 # Alembic keeps global state in its context module, and the routes the inner
-# tests serve define the shop's tables: load both beforehand.
+# tests serve define tables (the shop's, the idempotency keys): load them
+# beforehand, or a second run in the same process defines them again.
 import domainkit.db.migrations  # noqa: F401
-import domainkit_tests.sample_auth_routes  # noqa: F401
+import domainkit_tests.sample_auth_routes
+import domainkit_tests.sample_routes  # noqa: F401
 from domainkit.conf import override_settings, settings
 from domainkit.conf.env import project_prefix
 from domainkit.testing import IN_MEMORY, migrated_database
