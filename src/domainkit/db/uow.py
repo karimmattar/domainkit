@@ -4,6 +4,9 @@ Before each commit, every installed domain's ``DomainConfig.stage`` may add
 rows to the same transaction: ``domainkit.contrib.messaging`` writes the
 outbox (durable handlers, deferred tasks), ``domainkit.contrib.audit`` the
 audit trail. They commit, or roll back, together with the business change.
+
+A unique constraint that refuses a value, at commit or at an earlier flush,
+raises ``DuplicateValue`` (a 409), or the subclass the constraint names.
 """
 
 import logging
@@ -12,11 +15,14 @@ from collections.abc import Sequence
 from types import TracebackType
 from typing import Final, Self
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.exc import StaleDataError
 
 from domainkit.apps import registry
 from domainkit.db.connections import connections
+from domainkit.db.errors import duplicate_value
+from domainkit.db.orm import metadata
 from domainkit.db.routing import ShardKey, router
 from domainkit.ddd import (
     ConcurrentUpdate,
@@ -80,10 +86,15 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         """Close the session, which rolls back anything not committed.
 
         Unlike ``rollback()``, closing detaches loaded aggregates without
-        expiring them, so a use case can return what it read.
+        expiring them, so a use case can return what it read. A unique
+        violation from a flush inside the block becomes ``DuplicateValue``.
         """
         self._deferred.clear()
         await self.session.close()
+        if isinstance(exc, IntegrityError):
+            duplicate = duplicate_value(exc, metadata)
+            if duplicate is not None:
+                raise duplicate from exc
 
     @abstractmethod
     def create_repositories(self, session: AsyncSession) -> None:
@@ -117,7 +128,11 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
                 report_error(exc, domain=config.label)
 
     async def _commit(self) -> None:
-        """Commit, turning a lost optimistic-locking race into ``ConcurrentUpdate``."""
+        """Commit, translating what the database refused.
+
+        A lost optimistic-locking race raises ``ConcurrentUpdate``, and a
+        taken unique value ``DuplicateValue``.
+        """
         try:
             await self.session.commit()
         except StaleDataError as exc:
@@ -125,6 +140,11 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
                 "The data changed while this request was running; reload it and "
                 "try again."
             ) from exc
+        except IntegrityError as exc:
+            duplicate = duplicate_value(exc, metadata)
+            if duplicate is None:
+                raise
+            raise duplicate from exc
 
     async def _rollback(self) -> None:
         """Roll the session's transaction back."""

@@ -228,6 +228,36 @@ the ledger, so of several writers racing for a key exactly one succeeds.
 Tests use `LEDGERS = {"evidence": {"URL": "memory://"}}`: the same port, in
 memory, without proofs.
 
+## Unique values
+
+When a unique constraint or a primary key refuses a value, the unit of work
+raises `DuplicateValue`, a `Conflict` that answers 409 with the code
+`duplicate_value`. It does so at `commit()`, and also when an earlier flush
+inside the `async with` block hits the constraint, whether explicit or a
+query's autoflush. `constraint` and `fields` say which constraint refused
+what. The message names the fields but never the values, which may be
+personal data. Other integrity errors, such as a missing required value or
+a broken foreign key, are left as they are.
+
+To give a constraint its own code, name a `DuplicateValue` subclass in its
+`info`, or in its column's when it covers one column:
+
+```python
+class EmailTaken(DuplicateValue):  # code: email_taken
+    """Another account has that email."""
+
+
+Column("email", String(254), unique=True, info={"duplicate": EmailTaken})
+UniqueConstraint("tenant_id", "handle", info={"duplicate": HandleTaken})
+```
+
+The constraint is looked up in `domainkit.db.metadata`, by the name
+PostgreSQL reports or by the table and columns SQLite reports. Checking
+first, as `create_user` does for usernames, still gives a friendlier
+message; the constraint settles two requests that both pass the check.
+Auth's username and group name columns name `UsernameTaken` and
+`GroupNameTaken`.
+
 ## Testing
 
 - The pytest plugin's `database` fixture migrates every target. Point the

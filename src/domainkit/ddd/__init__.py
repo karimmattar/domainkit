@@ -11,6 +11,7 @@ from domainkit.ddd.exceptions import (
     ConcurrentUpdate,
     Conflict,
     DomainError,
+    DuplicateValue,
     NotFound,
     PermissionDenied,
 )
@@ -29,6 +30,7 @@ __all__ = [
     "DeferredTask",
     "DomainError",
     "DomainEvent",
+    "DuplicateValue",
     "Entity",
     "EventBus",
     "EventHandler",
