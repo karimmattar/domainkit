@@ -23,6 +23,7 @@ from sqlalchemy.pool import NullPool
 from domainkit.conf import DEFAULT_DB_ALIAS, DatabaseConfig, settings
 from domainkit.db.drivers import connect_args
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.utils.closing import close_each
 from domainkit.utils.readiness import failing_checks
 
 type _Pool = tuple[AsyncEngine, async_sessionmaker[AsyncSession]]
@@ -122,10 +123,12 @@ class ConnectionHandler:
         return stats
 
     async def close_all(self) -> None:
-        """Dispose the running loop's engines; the next use creates fresh ones."""
+        """Dispose the running loop's engines; the next use creates fresh ones.
+
+        Every engine is disposed even if one fails; the first error is raised.
+        """
         pools = self._pools.pop(asyncio.get_running_loop(), {})
-        for engine, _ in pools.values():
-            await engine.dispose()
+        await close_each([engine for engine, _ in pools.values()], AsyncEngine.dispose)
 
     def _pool(self, alias: str) -> _Pool:
         """Return the engine and session factory of ``alias`` for the running loop."""

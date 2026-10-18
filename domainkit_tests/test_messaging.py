@@ -4,6 +4,8 @@ import asyncio
 import io
 import json
 import logging
+import os
+import signal
 import uuid
 from collections.abc import (
     AsyncIterator,
@@ -16,7 +18,7 @@ from collections.abc import (
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Final
 
 import pytest
 from prometheus_client import REGISTRY
@@ -1308,6 +1310,175 @@ async def test_stopping_waits_for_every_running_delivery(
 
     assert {"a:done", "b:done"} <= set(ran)
     assert [row["status"] for row in await outbox()] == [DONE, DONE]
+
+
+SLOW: Final = {"TASK_TIMEOUT": 30, "VISIBILITY_TIMEOUT": 60}
+"""Long enough that only a shutdown stops a task waiting at its gate."""
+
+
+async def stopped(running: asyncio.Task[None]) -> None:
+    """Wait up to five seconds for ``running`` to end; fail, never hang."""
+    await asyncio.wait({running}, timeout=5)
+    assert running.done()
+
+
+def interrupted() -> float:
+    """How many tasks were stopped before they finished, so far."""
+    labels = {"kind": "task", "outcome": "interrupted"}
+    return REGISTRY.get_sample_value("messaging_messages_total", labels) or 0
+
+
+async def given_back(name: str) -> None:
+    """Check that the task waiting at gate ``name`` went back to the outbox."""
+    (row,) = [row for row in await outbox() if row["payload"] == {"name": name}]
+    assert row["status"] == PENDING
+    assert row["attempts"] == 0  # The cut-short run does not count.
+    assert (row["lock_id"], row["locked_until"]) == (None, None)
+    assert row["available_at"] <= datetime.now(UTC)  # type: ignore[operator]
+    assert f"{name}:done" not in ran
+
+
+async def test_stopping_gives_back_what_does_not_finish_in_time(
+    tables: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Past SHUTDOWN_TIMEOUT, running messages are cancelled and go back."""
+    gates["late"] = asyncio.Event()
+    await enqueue(wait_at_gate, name="late")
+    config = MessagingSettings(**{**FAST, **SLOW, "SHUTDOWN_TIMEOUT": 0.05})
+    worker, stop, before = Worker(config), asyncio.Event(), interrupted()
+    running = asyncio.create_task(worker.run(stop))
+    await until(lambda: "late:started" in ran)
+
+    with caplog.at_level(logging.WARNING, "domainkit.contrib.messaging.worker"):
+        stop.set()
+        await stopped(running)
+
+    await given_back("late")
+    assert caplog.messages == [
+        "Stopping 1 running message(s) that did not finish in time; they run again"
+    ]
+    assert interrupted() == before + 1
+    gates["late"].set()  # It runs again, as a first attempt.
+    assert await worker.run_once() == 1
+    assert [(row["status"], row["attempts"]) for row in await outbox()] == [(DONE, 1)]
+
+
+async def test_a_cancelled_worker_gives_its_messages_back_at_once(
+    tables: None,
+) -> None:
+    """Cancelling run() does not wait for SHUTDOWN_TIMEOUT."""
+    gates["cut"] = asyncio.Event()
+    await enqueue(wait_at_gate, name="cut")
+    running = asyncio.create_task(
+        Worker(MessagingSettings(**{**FAST, **SLOW})).run(asyncio.Event())
+    )
+    await until(lambda: "cut:started" in ran)
+
+    running.cancel()
+    await stopped(running)
+
+    assert running.cancelled()
+    await given_back("cut")
+
+
+async def test_a_message_the_outbox_cannot_take_back_waits_for_its_lock(
+    tables: None, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Giving a message back has RELEASE_TIMEOUT; after it, the lock expires."""
+    gates["stuck"] = asyncio.Event()
+    await enqueue(wait_at_gate, name="stuck")
+    monkeypatch.setattr(worker_module, "RELEASE_TIMEOUT", 0.05)
+    worker = Worker(MessagingSettings(**{**FAST, **SLOW, "SHUTDOWN_TIMEOUT": 0}))
+    release = worker._release
+
+    async def hangs_when_given_back(message: Claimed, **values: object) -> None:
+        if values.get("status") == PENDING:
+            await asyncio.Event().wait()
+        await release(message, **values)
+
+    monkeypatch.setattr(worker, "_release", hangs_when_given_back)
+    stop = asyncio.Event()
+    running = asyncio.create_task(worker.run(stop))
+    await until(lambda: "stuck:started" in ran)
+
+    with caplog.at_level(logging.ERROR, "domainkit.contrib.messaging.worker"):
+        stop.set()
+        await stopped(running)
+
+    (row,) = await outbox()
+    assert (row["status"], row["attempts"]) == (PENDING, 1)
+    assert row["lock_id"] is not None
+    target = "domainkit_tests.test_messaging.wait_at_gate"
+    logged = (
+        f"Could not give back task {target} after stopping it; it runs again "
+        "once its lock expires"
+    )
+    assert caplog.messages == [logged]
+    cause = caplog.records[0].exc_info
+    assert cause
+    assert cause[0] is TimeoutError
+
+
+async def test_stopping_gives_back_deliveries_that_do_not_finish_in_time(
+    broker_tables: MemoryBroker,
+) -> None:
+    """Brokered workers drain within SHUTDOWN_TIMEOUT too, then stop the rest."""
+    gates.update(quick=asyncio.Event(), slow=asyncio.Event())
+    await enqueue(wait_at_gate, name="quick")
+    await enqueue(wait_at_gate, name="slow")
+    config = MessagingSettings(**{**BROKERED, **SLOW, "SHUTDOWN_TIMEOUT": 0.2})
+    stop = asyncio.Event()
+    running = asyncio.create_task(
+        BrokerWorkers([Worker(config)], ["default"], config).run(stop)
+    )
+    await until(lambda: {"quick:started", "slow:started"} <= set(ran))
+
+    stop.set()
+    gates["quick"].set()
+    await stopped(running)
+
+    assert "quick:done" in ran
+    await given_back("slow")
+
+
+async def test_a_cancelled_brokered_worker_gives_its_deliveries_back(
+    broker_tables: MemoryBroker,
+) -> None:
+    """Cancelling BrokerWorkers.run() stops its deliveries at once."""
+    gates["cut"] = asyncio.Event()
+    await enqueue(wait_at_gate, name="cut")
+    config = MessagingSettings(**{**BROKERED, **SLOW})
+    running = asyncio.create_task(
+        BrokerWorkers([Worker(config)], ["default"], config).run(asyncio.Event())
+    )
+    await until(lambda: "cut:started" in ran)
+
+    running.cancel()
+    await stopped(running)
+
+    assert running.cancelled()
+    await given_back("cut")
+
+
+def test_a_second_signal_stops_the_worker_at_once(
+    messaging: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first signal stops claiming; the second cancels what still runs."""
+
+    async def needs_two_signals(self: Worker, stop: asyncio.Event) -> None:
+        os.kill(os.getpid(), signal.SIGTERM)
+        async with asyncio.timeout(5):
+            await stop.wait()
+        os.kill(os.getpid(), signal.SIGINT)
+        await asyncio.sleep(5)  # Cancelled by the second signal.
+
+    monkeypatch.setattr(Worker, "run", needs_two_signals)
+
+    assert run("runworker") == (
+        "Worker started; press Ctrl+C to stop.\n"
+        "Stopped running messages at once; they run again.\n"
+        "Worker stopped.\n"
+    )
 
 
 async def test_a_broker_must_be_configured(database_url: str) -> None:

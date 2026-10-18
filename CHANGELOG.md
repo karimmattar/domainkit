@@ -88,6 +88,19 @@ All notable changes to domainkit. The format follows
 
 ### Fixed
 
+- Stopping a worker could leave messages locked for minutes. `SIGTERM` waited
+  for running messages with no deadline (`TASK_TIMEOUT` is 240 seconds), so
+  platforms killed the worker first, and a cancelled worker skipped the wait
+  altogether: either way the messages stayed hidden until
+  `VISIBILITY_TIMEOUT` and the attempt counted. Running messages now get
+  `MESSAGING.SHUTDOWN_TIMEOUT` (20 seconds); then, or on a second signal,
+  they are cancelled and go back to the outbox, due at once and with the
+  attempt given back. Brokered workers do the same with their deliveries.
+- Shutdown stopped at the first resource that failed to close: an error
+  disposing one database left the others, the caches, and the brokers open,
+  and a hung close stalled the rest. Every cache, database, ledger, and
+  broker is now closed even when another fails, each kind within five
+  seconds, and failures are logged. Management commands close ledgers too.
 - A cache outage multiplied the load on the database: while a cache failed,
   `get_or_set` and `@cached` called the factory once per caller, so a
   stampede on a hot key ran the query once for every request. Concurrent

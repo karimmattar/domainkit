@@ -30,7 +30,7 @@ from domainkit.broker import Broker, BrokerError, Delivery, brokers
 from domainkit.db.routing import router
 
 from .settings import MessagingSettings
-from .worker import Worker
+from .worker import Worker, finish
 
 try:
     from .metrics import observe_skipped
@@ -80,39 +80,40 @@ class BrokerWorkers:
         return self._outboxes.get(database)
 
     async def run(self, stop: asyncio.Event) -> None:
-        """Relay and consume until ``stop`` is set; then finish the running ones."""
+        """Relay and consume until ``stop`` is set; then finish the running ones.
+
+        Running deliveries get ``SHUTDOWN_TIMEOUT`` seconds; then, or when
+        ``run`` itself is cancelled, the rest are cancelled, and their
+        messages go back to the outbox.
+        """
         broker = brokers[self.alias]
-        active = 0
-        idle = asyncio.Event()
-        idle.set()
+        running: set[asyncio.Task[None]] = set()
 
         async def handle(delivery: Delivery) -> None:
-            nonlocal active
-            active += 1
-            idle.clear()
-            try:
-                await self.deliver(delivery)
-            finally:
-                active -= 1
-                if active == 0:
-                    idle.set()
+            task = asyncio.create_task(self.deliver(delivery))
+            running.add(task)
+            task.add_done_callback(running.discard)
+            await task
 
         subscription = await broker.consume(
             self.queues, self.config.CONCURRENCY, handle
         )
         try:
-            if self.relays:
-                await asyncio.gather(
-                    *(
-                        self._relay_until(worker, broker, stop)
-                        for worker in self.workers
+            try:
+                if self.relays:
+                    await asyncio.gather(
+                        *(
+                            self._relay_until(worker, broker, stop)
+                            for worker in self.workers
+                        )
                     )
-                )
-            else:
-                await stop.wait()
+                else:
+                    await stop.wait()
+            finally:
+                await subscription.cancel()
+            await finish(running, self.config.SHUTDOWN_TIMEOUT)
         finally:
-            await subscription.cancel()
-            await idle.wait()  # Deliveries already running finish first.
+            await finish(running, 0)  # Cancelled: stop the running ones now.
 
     async def _relay_until(
         self, worker: Worker, broker: Broker, stop: asyncio.Event

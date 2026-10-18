@@ -9,6 +9,7 @@ from domainkit.exceptions import ImproperlyConfigured
 from domainkit.ledger.base import Ledger
 from domainkit.ledger.immudb import ImmudbLedger
 from domainkit.ledger.memory import MemoryLedger
+from domainkit.utils.closing import close_each
 from domainkit.utils.readiness import failing_checks
 
 type LedgerFactory = Callable[[LedgerConfig], Ledger]
@@ -66,10 +67,9 @@ class LedgerHandler:
         await self[alias].check()
 
     async def close_all(self) -> None:
-        """Close every ledger opened so far."""
+        """Close every ledger opened so far, even if one fails (it is raised)."""
         ledgers, self._ledgers = self._ledgers, {}
-        for ledger in ledgers.values():
-            await ledger.close()
+        await close_each(ledgers.values(), Ledger.close)
 
 
 ledgers: Final = LedgerHandler()

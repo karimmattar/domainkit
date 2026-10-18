@@ -27,6 +27,8 @@ class MessagingSettings(BaseModel):
     BATCH_SIZE: int = Field(default=50, ge=1)
     CONCURRENCY: int = Field(default=10, ge=1)
     """Messages one worker process runs at the same time."""
+    SHUTDOWN_TIMEOUT: float = Field(default=20.0, ge=0)
+    """Seconds a stopping worker lets running messages finish; the rest run again."""
     RETENTION_SECONDS: float = Field(default=7 * 24 * 3600.0, gt=0)
     """How long finished messages are kept; dead ones are kept until retried."""
     CLEANUP_INTERVAL: float = Field(default=3600.0, gt=0)

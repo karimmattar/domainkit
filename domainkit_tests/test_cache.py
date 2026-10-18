@@ -995,7 +995,7 @@ def test_caches_close_before_what_their_computations_use(
 
     closed.clear()
     run_async(asyncio.sleep(0))  # Management commands.
-    assert closed == ["caches", "connections", "brokers"]
+    assert closed == ["caches", "connections", "ledgers", "brokers"]
 
 
 def test_readiness_checks_only_caches_that_ask_for_it() -> None:

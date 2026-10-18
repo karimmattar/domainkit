@@ -17,6 +17,9 @@ from domainkit.management import BaseCommand, CommandError
 class Command(BaseCommand):
     """Process durable handlers and tasks; SIGTERM finishes running work first.
 
+    Running messages get ``MESSAGING.SHUTDOWN_TIMEOUT`` to finish; a second
+    signal stops them at once. Either way, stopped messages run again.
+
     One worker runs per outbox (each database that hosts domains has one),
     all in this process unless ``--database`` picks one target. With
     ``MESSAGING.BROKER``, they relay their outboxes to the broker and run
@@ -93,21 +96,37 @@ class Command(BaseCommand):
             counts = await asyncio.gather(*(worker.run_once() for worker in workers))
             self.write(f"Processed {sum(counts)} message(s).")
             return
-        stop = asyncio.Event()
-        loop = asyncio.get_running_loop()
-        for signal_number in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(signal_number, stop.set)
         config = registry.settings(MessagingSettings)
         if config.BROKER is None and not relay:
             raise CommandError("--no-relay needs MESSAGING.BROKER.")
-        if config.BROKER is None:
-            self.write("Worker started; press Ctrl+C to stop.")
-            await asyncio.gather(*(worker.run(stop) for worker in workers))
-        else:
-            selected = sorted(queues or tasks.queues())
-            self.write(
-                f"Worker started on broker {config.BROKER!r} "
-                f"(queues: {', '.join(selected)}); press Ctrl+C to stop."
-            )
-            await BrokerWorkers(workers, selected, config, relay=relay).run(stop)
+        stop = asyncio.Event()
+        main = asyncio.current_task()
+        forced = False
+
+        def on_signal() -> None:
+            nonlocal forced
+            if stop.is_set() and main is not None:  # The second: stop now.
+                forced = True
+                main.cancel()
+            stop.set()
+
+        loop = asyncio.get_running_loop()
+        for signal_number in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(signal_number, on_signal)
+        try:
+            if config.BROKER is None:
+                self.write("Worker started; press Ctrl+C to stop.")
+                await asyncio.gather(*(worker.run(stop) for worker in workers))
+            else:
+                selected = sorted(queues or tasks.queues())
+                self.write(
+                    f"Worker started on broker {config.BROKER!r} "
+                    f"(queues: {', '.join(selected)}); press Ctrl+C to stop."
+                )
+                await BrokerWorkers(workers, selected, config, relay=relay).run(stop)
+        except asyncio.CancelledError:
+            if not forced or main is None:
+                raise
+            main.uncancel()
+            self.write("Stopped running messages at once; they run again.")
         self.write("Worker stopped.")

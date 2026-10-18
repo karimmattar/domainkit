@@ -17,6 +17,7 @@ from domainkit.cache.memory import DummyStore, MemoryStore
 from domainkit.conf import DEFAULT_CACHE_ALIAS, CacheConfig, settings
 from domainkit.conf.global_settings import REDIS_SCHEMES
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.utils.closing import close_each
 from domainkit.utils.readiness import failing_checks
 
 type StoreFactory = Callable[[CacheConfig], Store]
@@ -105,11 +106,13 @@ class CacheHandler:
         await self[alias].check()
 
     async def close_all(self) -> None:
-        """Close the running loop's caches; the next use opens new ones."""
+        """Close the running loop's caches; the next use opens new ones.
+
+        Every cache is closed even if one fails; the first error is raised.
+        """
         loop = asyncio.get_running_loop()
         caches = [*self._caches.pop(loop, {}).values(), *self._replaced.pop(loop, [])]
-        for cache in caches:
-            await cache.close()
+        await close_each(caches, Cache.close)
 
     def reset(self) -> None:
         """Forget every memory entry of the process (between tests)."""

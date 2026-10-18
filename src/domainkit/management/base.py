@@ -87,14 +87,10 @@ def run_async[T](awaitable: Awaitable[T]) -> T:
 
 
 async def _run_async[T](awaitable: Awaitable[T]) -> T:
-    """Await ``awaitable``, then close connections opened in this loop."""
-    from domainkit.broker import brokers
-    from domainkit.cache import caches
-    from domainkit.db.connections import connections
+    """Await ``awaitable``, then close what it opened (caches, databases, ...)."""
+    from domainkit.lifecycle import close_resources
 
     try:
         return await awaitable
     finally:
-        await caches.close_all()  # First: their computations use the others.
-        await connections.close_all()
-        await brokers.close_all()
+        await close_resources()
