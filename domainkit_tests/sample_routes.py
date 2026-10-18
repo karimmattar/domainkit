@@ -6,7 +6,10 @@ from typing import Final
 from fastapi import APIRouter, HTTPException, Request, Response, WebSocket
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy import Column, Integer, MetaData, Table, insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from domainkit.db import SqlAlchemyUnitOfWork
 from domainkit.ddd import (
     BusinessRuleViolation,
     ConcurrentUpdate,
@@ -154,6 +157,53 @@ async def respond(status_code: int = 200, size: int = 0, parts: int = 1) -> Resp
             yield b"x" * size
 
     return StreamingResponse(body(), status_code=status_code, media_type="text/plain")
+
+
+payments_metadata = MetaData()
+payments = Table(
+    "framework_test_payments",
+    payments_metadata,
+    Column("id", Integer, primary_key=True),
+)
+
+
+class PaymentsUnitOfWork(SqlAlchemyUnitOfWork):
+    """Records payments through its session."""
+
+    def create_repositories(self, session: AsyncSession) -> None:
+        """None: the route inserts rows itself."""
+
+
+class UnreportedCommit(PaymentsUnitOfWork):
+    """Commits, then fails as if the reply to COMMIT was lost."""
+
+    async def _commit(self) -> None:
+        await super()._commit()
+        raise ConnectionError("The reply to COMMIT was lost.")
+
+
+class RejectedCommit(PaymentsUnitOfWork):
+    """Fails to commit after every domain staged its rows."""
+
+    async def _commit(self) -> None:
+        await self._rollback()
+        raise ConnectionError("The database refused the commit.")
+
+
+UNITS_OF_WORK: Final = {"unreported": UnreportedCommit, "rejected": RejectedCommit}
+
+
+@router.post("/pay", status_code=201)
+async def pay(outcome: str = "ok", database: str = "default") -> Response:
+    """Record a payment on ``database``, then answer as ``outcome`` says."""
+    async with UNITS_OF_WORK.get(outcome, PaymentsUnitOfWork)(database=database) as uow:
+        await uow.session.execute(insert(payments))
+        await uow.commit()
+    if outcome == "crash":
+        raise RuntimeError("crashed after the commit")
+    if outcome == "unavailable":
+        raise HTTPException(503, "Try later.")
+    return Response(b"x" * 2048 if outcome == "large" else b"paid", status_code=201)
 
 
 @router.websocket("/ws")

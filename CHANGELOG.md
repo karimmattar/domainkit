@@ -83,6 +83,15 @@ All notable changes to domainkit. The format follows
 
 ### Fixed
 
+- An idempotency key could run a request twice (ADR 0019): the key was
+  released whenever the response was not stored (a 5xx, an exception, or a
+  body over `MAX_RESPONSE_BYTES`), even after the request had committed its
+  changes, so the retry made them again. A SQL unit of work that commits
+  during a keyed request now marks the key committed in the same
+  transaction (right after it, on another database), and a committed key is
+  never released. A retry whose response could not be kept gets 409
+  `idempotency_response_unavailable`. The idempotency table has a new
+  `committed_at` column: run `makemigrations` and `migrate`.
 - Evidence could keep personal data forever (L4): any subject was stored
   as written, and keys used a plain SHA-256 of it, so a guessed email
   address found its records. Subjects must now be internal ids (letters,

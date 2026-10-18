@@ -1,19 +1,21 @@
 """Rate limiting and Idempotency-Key replay."""
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import insert, select
-from starlette.types import Message
+from sqlalchemy import Table, false, insert, select
+from sqlalchemy.sql import Select
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from domainkit import setup
 from domainkit.apps import registry
 from domainkit.conf import Settings, override_settings
 from domainkit.context import RequestContext, bind_request
+from domainkit.contrib.idempotency import apps as idempotency_apps
 from domainkit.contrib.idempotency import middleware as idempotency
 from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.db import connections
@@ -250,11 +252,18 @@ def test_callers_are_actors_or_addresses() -> None:
         assert idempotency._caller(credentialed) != anonymous
 
 
-@pytest.fixture
-def idempotent(database_url: str) -> Iterator[TestClient]:
-    """An app with the idempotency app and middleware on an empty database."""
+def test_hashes_are_length_prefixed() -> None:
+    """Each part is prefixed by its length, so parts never run together."""
+    assert idempotency._hash("POST", b"body") == (
+        "9f1b2cf8e2f8a57ec1e0de928a6deb9a6789a6dfe4b04c823249e3b3765bbcf8"
+    )
+    assert idempotency._hash("ab", "c") != idempotency._hash("a", "bc")
+
+
+@contextmanager
+def idempotent_app(databases: dict[str, str]) -> Iterator[TestClient]:
+    """The idempotency app and middleware, keys on ``default``, payments on each."""
     sample_routes.created.clear()
-    url = database_url
     registry.clear()
     with override_settings(
         INSTALLED_DOMAINS=[
@@ -262,7 +271,7 @@ def idempotent(database_url: str) -> Iterator[TestClient]:
             "domainkit.contrib.idempotency",
             "domainkit_tests.sample_domains.alpha",
         ],
-        DATABASES={"default": {"URL": url}},
+        DATABASES={alias: {"URL": url} for alias, url in databases.items()},
         IDEMPOTENCY={"MAX_RESPONSE_BYTES": 1024},
         MIDDLEWARE=[
             *BASE_MIDDLEWARE,
@@ -274,6 +283,9 @@ def idempotent(database_url: str) -> Iterator[TestClient]:
         async def create() -> None:
             async with connections.engine().begin() as connection:
                 await connection.run_sync(idempotency_keys.create)
+            for alias in databases:
+                async with connections.engine(alias).begin() as connection:
+                    await connection.run_sync(sample_routes.payments.create)
             await connections.close_all()
 
         asyncio.run(create())
@@ -282,6 +294,37 @@ def idempotent(database_url: str) -> Iterator[TestClient]:
         ) as client:
             yield client
     registry.clear()
+
+
+@pytest.fixture
+def idempotent(database_url: str) -> Iterator[TestClient]:
+    """An app with the idempotency app and middleware on an empty database."""
+    with idempotent_app({"default": database_url}) as client:
+        yield client
+
+
+def stored_keys() -> list[dict[str, object]]:
+    """The rows of the idempotency table."""
+
+    async def read() -> list[dict[str, object]]:
+        async with connections.engine().connect() as connection:
+            rows = (await connection.execute(select(idempotency_keys))).all()
+        await connections.close_all()
+        return [dict(row._mapping) for row in rows]
+
+    return asyncio.run(read())
+
+
+def payments_on(alias: str = "default") -> int:
+    """How many payments ``alias`` holds."""
+
+    async def count() -> int:
+        async with connections.engine(alias).connect() as connection:
+            rows = (await connection.execute(select(sample_routes.payments))).all()
+        await connections.close_all()
+        return len(rows)
+
+    return asyncio.run(count())
 
 
 def post(client: TestClient, path: str, key: str, body: object) -> object:
@@ -305,6 +348,7 @@ def test_retries_replay_the_first_response(idempotent: TestClient) -> None:
     assert (first.status_code, first.json()) == (201, {"count": 1})
     assert (again.status_code, again.json()) == (201, {"count": 1})
     assert again.headers["Idempotent-Replayed"] == "true"
+    assert (b"idempotent-replayed", b"true") in again.headers.raw
     assert again.headers["Location"] == "/counter/1"
     assert (other.json(), plain.json()) == ({"count": 2}, {"count": 3})
 
@@ -318,6 +362,9 @@ def test_key_misuse_is_refused(idempotent: TestClient) -> None:
     assert (reused.status_code, reused.json()["code"]) == (
         422,
         "idempotency_key_reused",
+    )
+    assert reused.json()["detail"] == (
+        "This Idempotency-Key was used for a different request."
     )
 
     requery = idempotent.post(
@@ -336,6 +383,9 @@ def test_key_misuse_is_refused(idempotent: TestClient) -> None:
         assert (response.status_code, response.json()["code"]) == (
             400,
             "invalid_idempotency_key",
+        )
+        assert response.json()["detail"] == (
+            "Idempotency-Key must be 1 to 255 printable ASCII characters."
         )
 
     async def in_flight() -> None:
@@ -358,6 +408,9 @@ def test_key_misuse_is_refused(idempotent: TestClient) -> None:
         "/counter", json={"a": 1}, headers={"Idempotency-Key": "busy"}
     )
     assert (busy.status_code, busy.json()["code"]) == (409, "idempotency_key_in_use")
+    assert busy.json()["detail"] == (
+        "A request with this Idempotency-Key is still in progress."
+    )
     assert busy.headers["Retry-After"] == "1"
 
     read = idempotent.get("/ok", headers={"Idempotency-Key": "k"})
@@ -382,20 +435,110 @@ def test_oversized_streamed_bodies_get_413(idempotent: TestClient) -> None:
 
 
 def test_failures_and_large_responses_are_not_stored(idempotent: TestClient) -> None:
-    """Server errors and oversized bodies release the key for a retry."""
+    """Server errors and oversized bodies release their key, and only theirs."""
+    idempotent.post("/counter", json={}, headers={"Idempotency-Key": "kept"})
     for path in ("/unavailable", "/crash", "/large"):
         first = idempotent.post(path, json={}, headers={"Idempotency-Key": path})
         retry = idempotent.post(path, json={}, headers={"Idempotency-Key": path})
         assert "Idempotent-Replayed" not in retry.headers
         assert first.status_code == retry.status_code
 
-    async def stored() -> list[object]:
-        async with connections.engine().connect() as connection:
-            rows = (await connection.execute(select(idempotency_keys))).all()
-        await connections.close_all()
-        return list(rows)
+    assert [row["status_code"] for row in stored_keys()] == [201]
 
-    assert asyncio.run(stored()) == []
+
+def test_committed_requests_never_run_twice(idempotent: TestClient) -> None:
+    """After a commit the key is kept: a retry learns the request ran."""
+    for outcome, status_code in (
+        ("crash", 500),
+        ("unavailable", 503),
+        ("large", 201),
+        ("unreported", 500),
+    ):
+        headers = {"Idempotency-Key": outcome}
+        first = idempotent.post(f"/pay?outcome={outcome}", headers=headers)
+        retry = idempotent.post(f"/pay?outcome={outcome}", headers=headers)
+        assert first.status_code == status_code, outcome
+        assert (retry.status_code, retry.json()["code"]) == (
+            409,
+            "idempotency_response_unavailable",
+        )
+        assert retry.json()["detail"] == (
+            "The request with this Idempotency-Key already ran (status "
+            f"{status_code}), but its response was not kept; look up the result "
+            "instead of retrying."
+        )
+        assert "Retry-After" not in retry.headers
+
+    assert payments_on() == 4
+    assert all(row["committed_at"] is not None for row in stored_keys())
+
+
+def test_committed_responses_are_replayed(idempotent: TestClient) -> None:
+    """A kept response replays; requests without a key commit as usual."""
+    headers = {"Idempotency-Key": "pay"}
+    first = idempotent.post("/pay", headers=headers)
+    retry = idempotent.post("/pay", headers=headers)
+    unkeyed = idempotent.post("/pay")
+
+    assert (first.status_code, first.content) == (201, b"paid")
+    assert (retry.status_code, retry.content) == (201, b"paid")
+    assert retry.headers["Idempotent-Replayed"] == "true"
+    assert unkeyed.status_code == 201
+    assert payments_on() == 2
+    [row] = stored_keys()
+    assert row["committed_at"] is not None
+
+
+def test_a_rejected_commit_releases_the_key(idempotent: TestClient) -> None:
+    """The mark commits with the changes: a failed commit leaves no mark."""
+    headers = {"Idempotency-Key": "rejected"}
+    first = idempotent.post("/pay?outcome=rejected", headers=headers)
+    retry = idempotent.post("/pay?outcome=rejected", headers=headers)
+
+    assert (first.status_code, retry.status_code) == (500, 500)
+    assert payments_on() == 0
+    assert stored_keys() == []
+
+
+def test_commits_elsewhere_are_marked_after_them(
+    make_database: Callable[[str], str],
+) -> None:
+    """Changes on another database mark the key right after their commit."""
+    databases = {"default": make_database("keys"), "other": make_database("other")}
+    with idempotent_app(databases) as client:
+        for outcome in ("crash", "ok"):
+            headers = {"Idempotency-Key": outcome}
+            path = f"/pay?outcome={outcome}&database=other"
+            first = client.post(path, headers=headers)
+            retry = client.post(path, headers=headers)
+            assert first.status_code == {"crash": 500, "ok": 201}[outcome]
+            assert retry.status_code == {"crash": 409, "ok": 201}[outcome]
+
+        assert payments_on("other") == 2
+        rows = stored_keys()
+        assert len(rows) == 2
+        assert all(row["committed_at"] is not None for row in rows)
+
+
+def test_a_failed_mark_still_keeps_the_key(
+    make_database: Callable[[str], str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If marking a commit elsewhere fails, the request still never reruns."""
+
+    def unreachable(key_hash: str) -> None:
+        raise ConnectionError("The keys' database is away.")
+
+    monkeypatch.setattr(idempotency_apps, "mark_committed", unreachable)
+    databases = {"default": make_database("keys"), "other": make_database("other")}
+    with idempotent_app(databases) as client:
+        headers = {"Idempotency-Key": "crash"}
+        first = client.post("/pay?outcome=crash&database=other", headers=headers)
+        retry = client.post("/pay?outcome=crash&database=other", headers=headers)
+
+        assert (first.status_code, retry.status_code) == (500, 409)
+        assert payments_on("other") == 1
+        [row] = stored_keys()
+        assert row["committed_at"] is None
 
 
 def test_storage_limits_are_inclusive(idempotent: TestClient) -> None:
@@ -422,6 +565,7 @@ def test_expired_keys_run_again_and_are_purged(idempotent: TestClient) -> None:
     from domainkit.contrib.idempotency.tasks import purge_expired
 
     idempotent.post("/counter", json={}, headers={"Idempotency-Key": "old"})
+    idempotent.post("/counter", json={}, headers={"Idempotency-Key": "other"})
 
     async def expire() -> None:
         async with connections.engine().begin() as connection:
@@ -434,7 +578,9 @@ def test_expired_keys_run_again_and_are_purged(idempotent: TestClient) -> None:
 
     asyncio.run(expire())
     again = idempotent.post("/counter", json={}, headers={"Idempotency-Key": "old"})
-    assert again.json() == {"count": 2}
+    assert again.json() == {"count": 3}
+    # Claiming a key clears only that key; the purge clears the others.
+    assert len(stored_keys()) == 2
 
     asyncio.run(expire())
 
@@ -448,6 +594,97 @@ def test_expired_keys_run_again_and_are_purged(idempotent: TestClient) -> None:
     assert asyncio.run(purge()) == 0
 
 
+def test_keys_live_until_the_instant_they_expire(
+    idempotent: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """At ``expires_at`` a key still replays; it is expired only afterwards."""
+    idempotent.post("/counter", json={}, headers={"Idempotency-Key": "edge"})
+    [row] = stored_keys()
+    monkeypatch.setattr(idempotency, "_now", lambda: row["expires_at"])
+
+    at_expiry = idempotent.post(
+        "/counter", json={}, headers={"Idempotency-Key": "edge"}
+    )
+
+    assert at_expiry.headers["Idempotent-Replayed"] == "true"
+    assert len(sample_routes.created) == 1
+
+
+def test_a_key_released_while_claimed_is_in_progress(
+    idempotent: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A row gone between the failed insert and the read means: try again."""
+    idempotent.post("/counter", json={}, headers={"Idempotency-Key": "gone"})
+
+    def nothing(table: Table) -> Select[tuple[object, ...]]:
+        return select(table).where(false())
+
+    monkeypatch.setattr(idempotency, "select", nothing)
+    retry = idempotent.post("/counter", json={}, headers={"Idempotency-Key": "gone"})
+
+    assert (retry.status_code, retry.json()["code"]) == (409, "idempotency_key_in_use")
+
+
+def run_raw(app: ASGIApp) -> list[Message]:
+    """Send one keyed POST through the middleware straight to ``app``."""
+
+    async def scenario() -> list[Message]:
+        sent: list[Message] = []
+
+        async def receive() -> Message:
+            return {"type": "http.request"}
+
+        async def send(message: Message) -> None:
+            sent.append(message)
+
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/raw",
+            "headers": [(b"idempotency-key", b"raw")],
+        }
+        await idempotency.IdempotencyMiddleware(app)(scope, receive, send)
+        await connections.close_all()
+        return sent
+
+    return asyncio.run(scenario())
+
+
+async def clear_keys() -> None:
+    """Forget every stored key."""
+    async with connections.engine().begin() as connection:
+        await connection.execute(idempotency_keys.delete())
+    await connections.close_all()
+
+
+def test_raw_responses_may_omit_their_parts(idempotent: TestClient) -> None:
+    """Missing optional ASGI keys count as empty; no response is a 500."""
+    runs: list[str] = []
+
+    async def answer(scope: Scope, receive: Receive, send: Send) -> None:
+        runs.append("answer")
+        await send({"type": "http.response.start", "status": 200})
+        await send({"type": "http.response.body", "more_body": True})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    run_raw(answer)
+    replayed = run_raw(answer)
+    assert runs == ["answer"]
+    # A scope without a query string has the same fingerprint as an empty one.
+    [row] = stored_keys()
+    assert row["fingerprint"] == idempotency._hash("POST", "/raw", b"", b"")
+    assert replayed[1] == {"type": "http.response.body", "body": b"ok"}
+
+    async def silent(scope: Scope, receive: Receive, send: Send) -> None:
+        runs.append("silent")
+
+    asyncio.run(clear_keys())
+    run_raw(silent)
+    run_raw(silent)
+    assert runs == ["answer", "silent", "silent"]
+    assert stored_keys() == []
+
+
 def test_request_bodies_are_read_and_replayed() -> None:
     """Chunked bodies are joined; the app still sees the disconnect afterwards."""
     incoming: list[Message] = [
@@ -459,31 +696,37 @@ def test_request_bodies_are_read_and_replayed() -> None:
     async def receive() -> Message:
         return incoming.pop(0)
 
-    async def scenario() -> tuple[bytes, Message, Message, bytes]:
+    async def scenario() -> tuple[bytes, Message, Message, bytes, bytes]:
         body, replay = await idempotency._read_body(receive)
         first, second = await replay(), await replay()
         empty, _ = await idempotency._read_body(receive_disconnect)
-        return body, first, second, empty
+        bare, _ = await idempotency._read_body(receive_bare)
+        return body, first, second, empty, bare
 
     async def receive_disconnect() -> Message:
         return {"type": "http.disconnect"}
 
-    body, first, second, empty = asyncio.run(scenario())
+    async def receive_bare() -> Message:
+        return {"type": "http.request"}
+
+    body, first, second, empty, bare = asyncio.run(scenario())
     assert body == b"abc"
     assert first == {"type": "http.request", "body": b"abc", "more_body": False}
     assert second == {"type": "http.disconnect"}
-    assert empty == b""
+    assert (empty, bare) == (b"", b"")
 
 
-def test_purge_is_scheduled_only_with_messaging(tmp_path: Path) -> None:
-    """Without messaging installed, no periodic purge is registered."""
+def test_purge_is_scheduled_only_with_messaging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ready() imports the hourly purge only when messaging is installed."""
+    imported: list[str] = []
+    monkeypatch.setattr(idempotency_apps, "import_module", imported.append)
+    domains = ["domainkit.contrib.idempotency", "domainkit_tests.sample_domains.alpha"]
+    for installed in (domains, ["domainkit.contrib.messaging", *domains]):
+        registry.clear()
+        with override_settings(INSTALLED_DOMAINS=installed):
+            setup()
     registry.clear()
-    with override_settings(
-        INSTALLED_DOMAINS=[
-            "domainkit.contrib.idempotency",
-            "domainkit_tests.sample_domains.alpha",
-        ],
-    ):
-        setup()
-        assert registry.is_installed("domainkit.contrib.idempotency")
-    registry.clear()
+
+    assert imported == ["domainkit.contrib.idempotency.tasks"]

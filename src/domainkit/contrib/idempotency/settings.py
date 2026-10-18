@@ -15,4 +15,4 @@ class IdempotencySettings(BaseModel):
     """How long a stored response is replayed for the same key."""
     METHODS: tuple[str, ...] = ("POST", "PATCH")
     MAX_RESPONSE_BYTES: int = Field(default=1_048_576, ge=1)
-    """Larger responses are not stored; a retry then runs again."""
+    """Larger responses are not stored: a retry runs again if nothing committed."""
