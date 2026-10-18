@@ -30,6 +30,7 @@ from domainkit.contrib.auth.hashers import (
     make_password,
     verify_password,
 )
+from domainkit.contrib.auth.settings import AuthSettings
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit_tests.conftest import UseAuth
 
@@ -360,3 +361,10 @@ def test_passwords_hash_on_the_configured_pool(
     pool = hashers._pool()
     assert pool is hashers.hashing_pool(3, 5)
     assert pool.capacity == 8
+
+
+def test_hashing_defaults_to_one_thread_and_a_short_queue() -> None:
+    """One hash at a time per process, like a Django worker; eight may wait."""
+    defaults = AuthSettings()
+
+    assert (defaults.HASHING_THREADS, defaults.HASHING_QUEUE) == (1, 8)
