@@ -1,6 +1,7 @@
 """Unique violations become ``DuplicateValue`` (a 409), named by their constraint."""
 
 from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -25,7 +26,7 @@ from domainkit.db import connections, create_engine
 from domainkit.db.errors import duplicate_value
 from domainkit.db.orm import NAMING_CONVENTION
 from domainkit.ddd import DuplicateValue
-from domainkit.http.errors import status_code_for
+from domainkit.http.errors import database_refusal, status_code_for
 from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork, test_metadata
 
 pytestmark = pytest.mark.anyio
@@ -239,6 +240,107 @@ async def test_psycopg_errors_name_their_constraint() -> None:
     error = IntegrityError("INSERT", {}, psycopg_error)  # type: ignore[arg-type]
 
     assert type(duplicate_value(error, metadata)) is EmailTaken
+
+
+def test_database_refusals_come_from_the_sqlstate() -> None:
+    """Busy states, data exceptions, and a pool out of connections; nothing else."""
+    from sqlalchemy.exc import DBAPIError
+    from sqlalchemy.exc import TimeoutError as PoolTimeout
+
+    def refusal(driver_error: object) -> tuple[int, str] | None:
+        found = database_refusal(DBAPIError("SELECT", {}, driver_error))  # type: ignore[arg-type]
+        return None if found is None else (found.status_code, found.code)
+
+    assert refusal(SimpleNamespace(sqlstate="57014")) == (503, "database_busy")
+    assert refusal(SimpleNamespace(pgcode="40P01")) == (503, "database_busy")
+    assert refusal(SimpleNamespace(sqlstate="22P02")) == (422, "invalid_value")
+    assert refusal(SimpleNamespace(pgcode="22003")) == (422, "invalid_value")
+    for unrelated in ("23502", "08006", "42P01", "02000"):
+        assert refusal(SimpleNamespace(sqlstate=unrelated)) is None, unrelated
+    assert refusal(SimpleNamespace(sqlstate=22021)) is None  # Not a SQLSTATE.
+    assert refusal(SimpleNamespace()) is None
+    pool = database_refusal(PoolTimeout("QueuePool limit reached"))
+    assert pool is not None
+    assert (pool.status_code, pool.headers) == (503, {"Retry-After": "1"})
+    assert database_refusal(ValueError("22021")) is None
+
+
+async def test_postgres_refusals_are_found_on_real_errors(engine: AsyncEngine) -> None:
+    """A NUL is a value PostgreSQL refuses; a statement timeout means busy."""
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    if engine.dialect.name != "postgresql":
+        pytest.skip("SQLite stores a NUL, and has no statement timeout")
+    with pytest.raises(DBAPIError) as nul:
+        async with engine.begin() as connection:
+            await connection.execute(insert(accounts).values(id=1, email="a\x00b"))
+    async with engine.begin() as connection:
+        await connection.execute(text("SET LOCAL statement_timeout = 1"))
+        with pytest.raises(DBAPIError) as slow:
+            await connection.execute(text("SELECT pg_sleep(1)"))
+        await connection.rollback()
+
+    invalid, busy = database_refusal(nul.value), database_refusal(slow.value)
+    assert invalid is not None
+    assert busy is not None
+    assert (invalid.code, busy.code) == ("invalid_value", "database_busy")
+
+
+async def test_row_values_stay_out_of_postgres_errors(engine: AsyncEngine) -> None:
+    """``DETAIL: Failing row contains (...)`` is dropped unless ``LOG_PARAMETERS``."""
+    from domainkit.conf import DatabaseConfig
+
+    if engine.dialect.name != "postgresql":
+        pytest.skip("Only PostgreSQL repeats a row's values in its errors")
+    secret = "alice@example.com"
+    shown = create_engine(
+        DatabaseConfig(URL=connections.config("default").URL, LOG_PARAMETERS=True)
+    )
+    try:
+        hidden_error = await refused(
+            engine, accounts, id=1, email=secret, required=None
+        )
+        shown_error = await refused(shown, accounts, id=1, email=secret, required=None)
+    finally:
+        await shown.dispose()
+
+    cause = hidden_error.orig.__cause__ if hidden_error.orig else None
+    for text_of in (str(hidden_error), str(hidden_error.orig), str(cause)):
+        assert "null value in column" in text_of
+        assert secret not in text_of
+        assert "DETAIL" not in text_of
+    assert f"Failing row contains (1, {secret}" in str(shown_error)
+
+
+def test_errors_without_a_detail_are_left_as_they_are() -> None:
+    """Python's own errors and messages that are not text pass through."""
+    from domainkit.db.connections import _drop_detail
+
+    plain = ValueError("a message\nDETAIL:  kept, not a database's")
+    numbered = OSError(5, "I/O error")
+    for error in (plain, numbered):
+        context = SimpleNamespace(sqlalchemy_exception=None, original_exception=error)
+        _drop_detail(context)  # type: ignore[arg-type]
+
+    assert plain.args == ("a message",)  # Read as a driver's, it loses its DETAIL.
+    assert numbered.args == (5, "I/O error")
+
+
+def test_network_databases_wait_briefly_for_a_connection(tmp_path: Path) -> None:
+    """``POOL_TIMEOUT`` defaults to 10 s for network databases; set, it wins."""
+    from domainkit.conf import DatabaseConfig
+    from domainkit.db.connections import DEFAULT_POOL_TIMEOUT
+
+    def timeout(**config: object) -> float:
+        engine = create_engine(DatabaseConfig.model_validate(config))
+        return engine.sync_engine.pool.timeout()  # type: ignore[attr-defined,no-any-return]
+
+    network = "postgresql+asyncpg://app@db/app"
+    local = f"sqlite+aiosqlite:///{tmp_path / 'pool.sqlite3'}"
+    assert timeout(URL=network) == DEFAULT_POOL_TIMEOUT == 10.0
+    assert timeout(URL=network, POOL_TIMEOUT=2.5) == 2.5
+    assert timeout(URL=local) == 30.0  # SQLAlchemy's own default.
 
 
 async def test_a_duplicate_info_must_be_a_duplicate_value_class(
