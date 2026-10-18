@@ -300,6 +300,9 @@ async def test_concurrent_changes_raise_instead_of_overwriting(
             await second.commit()
 
     assert caught.value.code == "concurrent_update"
+    assert caught.value.message == (
+        "The data changed while this request was running; reload it and try again."
+    )
     async with NotesUnitOfWork() as uow:
         stored = await uow.notes.get(note.id)
     assert (stored.text, stored.version) == ("mine", 2)

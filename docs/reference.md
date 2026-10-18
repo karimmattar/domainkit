@@ -227,7 +227,7 @@ are never echoed back.
 | Raised | Status | `code` |
 | --- | --- | --- |
 | `NotFound` | 404 | from the class, such as `invoice_not_found` |
-| `Conflict`, `ConcurrentUpdate` | 409 | from the class |
+| `Conflict`, `ConcurrentUpdate`, `DuplicateValue` | 409 | from the class; a unique constraint may name its own (see [databases.md](databases.md#unique-values)) |
 | `BusinessRuleViolation` | 422 | from the class |
 | `PermissionDenied` | 403 | from the class |
 | other `DomainError` | 400 | from the class |

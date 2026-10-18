@@ -6,6 +6,7 @@ below to a status code. Subclass the closest one, for example
 ``code`` (``product_not_found``) unless it sets its own.
 """
 
+from collections.abc import Sequence
 from typing import ClassVar
 
 from domainkit.utils.text import snake_case
@@ -38,6 +39,22 @@ class Conflict(DomainError):
 
 class ConcurrentUpdate(Conflict):
     """Someone else changed the aggregate first; reload it and try again."""
+
+
+class DuplicateValue(Conflict):
+    """A value that must be unique is taken (a unique constraint refused it)."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        constraint: str | None = None,
+        fields: Sequence[str] = (),
+    ) -> None:
+        """Store the message, and the constraint and fields that refused it."""
+        super().__init__(message)
+        self.constraint = constraint
+        self.fields = tuple(fields)
 
 
 class BusinessRuleViolation(DomainError):

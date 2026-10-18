@@ -38,6 +38,7 @@ from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.contrib.contenttypes.tables import start_mappers as start_content_types
 from domainkit.db import UTCDateTime, map_imperatively, metadata
 
+from .exceptions import GroupNameTaken, UsernameTaken
 from .models import (
     GROUP_NAME_MAX_LENGTH,
     USERNAME_MAX_LENGTH,
@@ -85,7 +86,13 @@ def abstract_user_columns() -> list[Column[Any]]:
     """New columns for the fields of ``AbstractUser``."""
     return [
         *abstract_base_user_columns(),
-        Column("username", String(USERNAME_MAX_LENGTH), nullable=False, unique=True),
+        Column(
+            "username",
+            String(USERNAME_MAX_LENGTH),
+            nullable=False,
+            unique=True,
+            info={"duplicate": UsernameTaken},
+        ),
         Column("email", String(254), nullable=False),
         Column("first_name", String(150), nullable=False),
         Column("last_name", String(150), nullable=False),
@@ -106,7 +113,13 @@ groups = Table(
     "domainkit_groups",
     metadata,
     Column("id", Uuid, primary_key=True),
-    Column("name", String(GROUP_NAME_MAX_LENGTH), nullable=False, unique=True),
+    Column(
+        "name",
+        String(GROUP_NAME_MAX_LENGTH),
+        nullable=False,
+        unique=True,
+        info={"duplicate": GroupNameTaken},
+    ),
     Column("version", Integer, nullable=False),
     info={"domain": "auth"},
 )

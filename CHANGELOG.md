@@ -88,6 +88,16 @@ All notable changes to domainkit. The format follows
 
 ### Fixed
 
+- A value that broke a unique constraint answered 500 `internal_error`:
+  only lost optimistic-locking races were translated, so two requests that
+  both checked a username before either committed failed the second with an
+  unhandled `IntegrityError`. A unique or primary key violation, at commit
+  or at an earlier flush in the unit of work, now raises `DuplicateValue`
+  (`domainkit.ddd`), a 409 with the code `duplicate_value` that names the
+  constraint and fields but never the values. A constraint, or its column,
+  can name its own subclass with `info={"duplicate": ...}` for a code of its
+  own; auth's usernames and group names raise `UsernameTaken` and
+  `GroupNameTaken`, which are now `DuplicateValue` subclasses.
 - Stopping a worker could leave messages locked for minutes. `SIGTERM` waited
   for running messages with no deadline (`TASK_TIMEOUT` is 240 seconds), so
   platforms killed the worker first, and a cancelled worker skipped the wait

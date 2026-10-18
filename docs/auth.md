@@ -138,8 +138,9 @@ inactive user. `has_perms`, `get_all_permissions`, and `user.has_domain_perms(la
 (Django's `has_module_perms`) do what their names say.
 
 `UserRepository.create_user` and `create_superuser` hash the password they
-are given and refuse a taken username (`UsernameTaken`, a 409); they do not
-validate it. Call `validate_password(password, user)` where people choose
+are given and refuse a taken username (`UsernameTaken`, a 409), also when
+two requests race for it and the unique constraint refuses the second; they
+do not validate it. Call `validate_password(password, user)` where people choose
 passwords. `set_password(user, None)` makes a password unusable.
 
 Changes are recorded as events, never with passwords or hashes in them:

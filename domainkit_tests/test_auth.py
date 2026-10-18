@@ -354,6 +354,43 @@ def test_base_backend_knows_nobody() -> None:
     assert not run(backend.has_perm(AnonymousUser(), "x.y"))
 
 
+def test_racing_signups_get_username_taken(auth_project: str) -> None:
+    """When both checks pass before either commits, the database refuses one."""
+
+    async def scenario() -> UsernameTaken:
+        async with AuthUnitOfWork() as first, AuthUnitOfWork() as second:
+            await first.users.create_user("ada")
+            await second.users.create_user("ada")
+            await first.commit()
+            with pytest.raises(UsernameTaken) as taken:
+                await second.commit()
+        return taken.value
+
+    taken = run(scenario())
+
+    assert taken.code == "username_taken"
+    assert taken.message == "The username is already taken."
+    assert (taken.constraint, taken.fields) == (
+        "uq_domainkit_users_username",
+        ("username",),
+    )
+
+
+def test_racing_groups_get_group_name_taken(auth_project: str) -> None:
+    """Group names are refused the same way."""
+
+    async def scenario() -> GroupNameTaken:
+        async with AuthUnitOfWork() as first, AuthUnitOfWork() as second:
+            await first.groups.create("editors")
+            await second.groups.create("editors")
+            await first.commit()
+            with pytest.raises(GroupNameTaken) as taken:
+                await second.commit()
+        return taken.value
+
+    assert run(scenario()).code == "group_name_taken"
+
+
 def test_repositories(auth_project: str) -> None:
     """Taken names, superusers, unusable passwords, and unknown permissions."""
 

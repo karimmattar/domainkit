@@ -2,14 +2,14 @@
 
 from collections.abc import Sequence
 
-from domainkit.ddd import BusinessRuleViolation, Conflict, NotFound
+from domainkit.ddd import BusinessRuleViolation, DuplicateValue, NotFound
 
 
 class InvalidUsername(BusinessRuleViolation):
     """The username is empty, too long, or uses characters it may not."""
 
 
-class UsernameTaken(Conflict):
+class UsernameTaken(DuplicateValue):
     """Another user has that username."""
 
 
@@ -17,7 +17,7 @@ class InvalidGroupName(BusinessRuleViolation):
     """The group name is empty or too long."""
 
 
-class GroupNameTaken(Conflict):
+class GroupNameTaken(DuplicateValue):
     """Another group has that name."""
 
 
