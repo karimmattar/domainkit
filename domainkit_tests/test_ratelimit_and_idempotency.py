@@ -1,6 +1,7 @@
 """Rate limiting and Idempotency-Key replay."""
 
 import asyncio
+import secrets
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -591,6 +592,21 @@ def test_new_keys_are_leased(
     one, two = stored_keys()
     assert one["locked_until"] == now + timedelta(seconds=60)
     assert one["token"] != two["token"]
+
+
+def test_writes_touch_only_their_own_key(
+    idempotent: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tokens guard writes, but the key picks the row, even if tokens collide."""
+    plant("other", token="shared")
+    monkeypatch.setattr(secrets, "token_hex", lambda size: "shared")
+
+    idempotent.post("/pay", headers={"Idempotency-Key": "mine"})
+
+    rows = {row["key_hash"]: row for row in stored_keys()}
+    mine, other = rows[keyed("mine")], rows[keyed("other")]
+    assert mine["status_code"] == 201
+    assert (other["status_code"], other["committed_at"]) == (None, None)
 
 
 def test_dead_requests_are_not_taken_over_when_unlike_or_committed(

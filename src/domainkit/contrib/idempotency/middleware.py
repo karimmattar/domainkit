@@ -290,8 +290,8 @@ def _abandoned(existing: dict[str, Any], fingerprint: str) -> bool:
     """Whether the same request died before committing: its lease ran out."""
     return (
         existing.get("fingerprint") == fingerprint
-        and existing.get("status_code") is None
-        and existing.get("committed_at") is None
+        and existing["status_code"] is None
+        and existing["committed_at"] is None
         and existing["locked_until"] < _now()
     )
 
