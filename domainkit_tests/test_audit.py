@@ -2,9 +2,11 @@
 
 import asyncio
 import io
+import os
 import re
+import time
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,7 +27,8 @@ from domainkit.contrib.audit import (
     pseudonym_of,
     record,
 )
-from domainkit.contrib.audit.personal import audited_databases
+from domainkit.contrib.audit.management.commands.auditforget import Command
+from domainkit.contrib.audit.personal import audited_databases, pseudonym
 from domainkit.contrib.audit.protection import PROTECT, UNPROTECT, protect, unprotect
 from domainkit.contrib.audit.tables import audit_keys, audit_log
 from domainkit.db import connections
@@ -155,8 +158,10 @@ async def test_explicit_records(tables: None) -> None:
 
 def test_action_names_use_domain_labels(audited: str) -> None:
     """Events of an installed domain are named after its label."""
+    shipped = type("Shipped", (DomainEvent,), {"__module__": "outside.orders.events"})
     assert action_for(GreetingSent) == "alpha.greeting_sent"
     assert action_for(NoteWritten) == "domainkit_tests.note_written"
+    assert action_for(shipped) == "outside.orders.shipped"
 
 
 def test_auditlog_command(audited: str) -> None:
@@ -450,8 +455,10 @@ async def test_forgetting_reaches_every_audited_database(
     assert str(member) not in await subjects()
 
 
-def test_auditforget_command(audited: str) -> None:
-    """Subjects, anonymous days, or both; one of them is needed."""
+def test_auditforget_command(audited: str, local_zone: Callable[[str], None]) -> None:
+    """Subjects, anonymous days (counted in UTC), or both; one is needed."""
+    # A zone whose date differs from UTC's now, so a local "today" would show.
+    local_zone("Etc/GMT-14" if datetime.now(UTC).hour >= 12 else "Etc/GMT+12")
 
     async def prepare() -> None:
         today = datetime.now(UTC).date()
@@ -485,3 +492,70 @@ def test_auditforget_command(audited: str) -> None:
         run()
     with pytest.raises(CommandError, match=r"^--anonymous-days cannot be negative\.$"):
         run("--anonymous-days", "-1")
+
+
+@pytest.fixture
+def local_zone() -> Iterator[Callable[[str], None]]:
+    """Set the process's local time zone; the original comes back afterwards."""
+    previous = os.environ.get("TZ")
+
+    def use(name: str) -> None:
+        os.environ["TZ"] = name
+        time.tzset()
+
+    yield use
+    if previous is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = previous
+    time.tzset()
+
+
+def test_pseudonyms_are_a_keyed_hash_of_the_field_and_its_canonical_json() -> None:
+    """The derivation is fixed, so rows stay findable across releases."""
+    key = bytes(range(32))
+
+    assert pseudonym(key, "nickname", {"b": 1, "a": "é"}) == (
+        "pseudonym:fe0fdc5a5fe59c7adbdf51dc8b4b319b"
+    )
+    assert pseudonym(key, "nickname", "ann") != pseudonym(key, "nickname", "bob")
+    assert pseudonym(key, "nickname", None) != pseudonym(key, "nickname", "null")
+
+
+async def test_the_day_of_anonymous_callers_is_utcs_wherever_the_server_is(
+    tables: None, local_zone: Callable[[str], None]
+) -> None:
+    """At UTC+14, 23:30 UTC on 2 January is still 2 January's subject."""
+    local_zone("Etc/GMT-14")
+    late = datetime(2026, 1, 2, 23, 30, tzinfo=UTC)
+
+    await commit_events(MemberJoined(member_id=None, email="x", occurred_at=late))
+
+    assert await subjects() == ["anonymous:2026-01-02"]
+
+
+async def test_an_excluded_event_does_not_hide_the_next_one(tables: None) -> None:
+    """Exclusions skip one event, not the rest of the commit."""
+    with override_settings(AUDIT={"EXCLUDE": ["*.member_joined"]}):
+        note = Note(id=NoteId(uuid.uuid4()), text="audited")
+        note.record(MemberJoined(member_id=None, email="x"))
+        note.record(NoteWritten(note_id=note.id))
+        async with NotesUnitOfWork() as uow:
+            await uow.notes.add(note)
+            await uow.commit()
+
+    assert [entry["action"] for entry in await entries()] == [
+        "domainkit_tests.note_written"
+    ]
+
+
+def test_auditforget_explains_its_arguments() -> None:
+    """``--help`` names the subjects and the retention period."""
+    usage = Command().create_parser("manage.py", "auditforget").format_help()
+
+    assert "usage: manage.py auditforget [-h] [--anonymous-days DAYS]" in usage
+    assert "[subject ...]" in usage
+    assert (
+        "keep anonymous callers' addresses for DAYS days (UTC) and forget older ones"
+        in " ".join(usage.split())
+    )
