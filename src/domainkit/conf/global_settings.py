@@ -93,7 +93,7 @@ class DatabaseConfig(BaseModel):
     POOL_RECYCLE: int | None = Field(default=None, gt=0)
     POOL_PRE_PING: bool = True
     CONNECT_ARGS: dict[str, Any] = Field(default_factory=dict)
-    """Extra driver arguments; they override the ones derived from the settings."""
+    """Extra driver arguments; they may not replace TLS or the timeouts above."""
 
     @model_validator(mode="after")
     def check_client_certificate(self) -> Self:
