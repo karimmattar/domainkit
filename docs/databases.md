@@ -260,8 +260,10 @@ Auth's username and group name columns name `UsernameTaken` and
 
 ## Testing
 
-- The pytest plugin's `database` fixture migrates every target. Point the
-  test settings at PostgreSQL to test partitions and locking for real.
+- The pytest plugin's `database` fixture migrates every target, and its
+  `db` fixture (which `client` uses) puts every database back as `migrate`
+  left it before each test. Point the test settings at PostgreSQL to test
+  partitions and locking for real.
 - domainkit's own suite runs its database tests on SQLite, and on PostgreSQL
   when `DOMAINKIT_TEST_POSTGRES_URL` is set. Its immudb tests run when
   `DOMAINKIT_TEST_IMMUDB_URL` is set. CI sets both.

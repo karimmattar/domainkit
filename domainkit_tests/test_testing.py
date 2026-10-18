@@ -161,3 +161,50 @@ def test_clients_for_users_and_superusers(
         )
 
     result.assert_outcomes(passed=1)
+
+
+def test_every_test_starts_from_the_migrated_database(
+    auth_project: str, prefix: str, pytester: pytest.Pytester
+) -> None:
+    """What a test commits is gone in the next; the rows ``migrate`` wrote stay.
+
+    Without the reset, the second ``carol`` would be a taken username.
+    """
+    pytester.makepyfile(
+        test_isolation="""
+        from sqlalchemy import func, select, table
+
+        from domainkit.db import connections
+        from domainkit.management.base import run_async
+
+        def count(name):
+            async def read():
+                query = select(func.count()).select_from(table(name))
+                async with connections.engine().connect() as connection:
+                    return await connection.scalar(query)
+            return run_async(read())
+
+        def test_carol(client_for):
+            assert client_for("shop.view_product", username="carol")
+            assert count("domainkit_users") == 1
+
+        def test_carol_again(client_for):
+            assert client_for(username="carol")
+
+        def test_without_a_client(db):
+            assert count("domainkit_users") == 0
+            assert count("domainkit_tokens") == 0
+            assert count("domainkit_permissions") > 0
+            assert count("domainkit_content_types") > 0
+        """
+    )
+    with override_settings(
+        DATABASES={"default": {"URL": IN_MEMORY}},
+        ROOT_ROUTER="domainkit_tests.sample_auth_routes.router",
+        MIDDLEWARE=MIDDLEWARE[:3],
+    ):
+        result = pytester.runpytest_inprocess(
+            "-p", "domainkit.testing", "-p", "no:randomly", "-p", "no:cov"
+        )
+
+    result.assert_outcomes(passed=3)

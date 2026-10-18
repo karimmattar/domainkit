@@ -88,6 +88,13 @@ All notable changes to domainkit. The format follows
 
 ### Fixed
 
+- Tests saw what earlier tests committed: the `domainkit.testing` plugin
+  migrated the database once per session and never emptied it, so results
+  depended on test order, and the tests `startdomain` generates had to
+  filter rows and raise limits. The new `db` fixture puts every database
+  back as `migrate` left it before each test (the rows `migrate` wrote, such
+  as permissions, stay), and `client`, `client_for`, and `admin_client` use
+  it. On PostgreSQL this works with the audit trail's append-only triggers.
 - Work done over a WebSocket was audited as `"system"`: request context was
   bound for HTTP only, so the authenticated user never became the actor of
   the audit trail, logs, or outbox headers, and connections had no request
