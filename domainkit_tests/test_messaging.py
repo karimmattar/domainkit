@@ -47,6 +47,7 @@ from domainkit.contrib.messaging import registry as tasks
 from domainkit.contrib.messaging import worker as worker_module
 from domainkit.contrib.messaging.dispatch import (
     BrokerWorkers,
+    CommitPublisher,
     close_publishers,
     commit_publisher,
 )
@@ -652,9 +653,11 @@ async def broker_tables(brokered: None) -> AsyncIterator[MemoryBroker]:
     await connections.close_all()
 
 
-async def published() -> None:
-    """Wait until the background publisher offered what was committed."""
-    await commit_publisher(registry.settings(MessagingSettings)).flush()
+async def published(publisher: CommitPublisher | None = None) -> None:
+    """Wait until the publisher offered what was committed; fail, never hang."""
+    publisher = publisher or commit_publisher(registry.settings(MessagingSettings))
+    async with asyncio.timeout(5):
+        await publisher.flush()
 
 
 async def settled(count: int) -> list[dict[str, object]]:
@@ -878,7 +881,7 @@ async def test_shutdown_waits_for_the_publisher_then_stops_it(
 
     assert "Left 1 committed messages to the relay at shutdown" in caplog.messages
     assert commit_publisher(config) is not publisher
-    await commit_publisher(config).flush()  # A fresh one has nothing to send.
+    await published(commit_publisher(config))  # A fresh one has nothing to send.
 
 
 class RecordingWorker:
@@ -911,9 +914,9 @@ async def test_publishers_relay_each_outbox_through_its_own_worker(
 
     publisher.submit("other", [first])
     assert publisher.unpublished == {"other": [first]}
-    await publisher.flush()
+    await published(publisher)
     publisher.submit("other", [second])
-    await publisher.flush()
+    await published(publisher)
     await publisher.close()
 
     assert RecordingWorker.made == [(config, "other")]
@@ -929,18 +932,21 @@ async def test_closed_publishers_start_again_when_used(
 ) -> None:
     """After close(), a submit starts the task again."""
     publisher = commit_publisher(registry.settings(MessagingSettings))
+    await enqueue(remember, value=uuid.uuid4())
+    await published(publisher)
     await publisher.close()
 
     await enqueue(remember, value=uuid.uuid4())
     async with asyncio.timeout(1):
-        await publisher.flush()
+        await published(publisher)
 
-    assert broker_tables.pending("default") == 1
+    assert broker_tables.pending("default") == 2
 
 
 def test_publishers_need_a_broker() -> None:
     """Without MESSAGING.BROKER there is nothing to publish to."""
-    with pytest.raises(ValueError, match=r"CommitPublisher needs MESSAGING\.BROKER\."):
+    refused = r"^CommitPublisher needs MESSAGING\.BROKER\.$"
+    with pytest.raises(ValueError, match=refused):
         dispatch.CommitPublisher(MessagingSettings())
 
 
