@@ -880,7 +880,7 @@ def test_users_without_a_staff_flag(swapped: TestClient) -> None:
 
 @pytest.mark.parametrize("swapped", [ACCOUNTS], indirect=True)
 def test_custom_user_fields(swapped: TestClient) -> None:
-    """A custom model's own fields are shown and changed."""
+    """A custom model's listed fields are shown and changed; others never are."""
     client = swapped
     root = staff("root", is_superuser=True)
     url = f"{ADMIN}/users"
@@ -889,6 +889,25 @@ def test_custom_user_fields(swapped: TestClient) -> None:
         url, json={"username": "carol", "fields": {"phone": "+20 100"}}, headers=root
     ).json()
     assert made["fields"]["phone"] == "+20 100"
+    assert set(made["fields"]) == {
+        "email",
+        "first_name",
+        "last_name",
+        "date_joined",
+        "phone",
+    }
+    for response in (
+        client.post(
+            url, json={"username": "dan", "fields": {"risk_flag": True}}, headers=root
+        ),
+        client.patch(
+            f"{url}/{made['id']}", json={"fields": {"risk_flag": True}}, headers=root
+        ),
+    ):
+        assert error(response, 422) == (
+            "unknown_user_field",
+            "These user fields cannot be changed here: risk_flag.",
+        )
     changed = client.patch(
         f"{url}/{made['id']}", json={"fields": {"phone": "+20 111"}}, headers=root
     )
