@@ -52,7 +52,8 @@ def pseudonym(key: bytes, field: str, value: object) -> str:
     """``value``, the ``field`` of a subject, as a pseudonym under their ``key``.
 
     The field's name is part of it, so equal values in different fields do
-    not give away that they are equal.
+    not give away that they are equal. Lone surrogates in strings are
+    encoded as they are, so every value has a pseudonym.
     """
     data = json.dumps(
         to_jsonable_python(value),
@@ -60,7 +61,8 @@ def pseudonym(key: bytes, field: str, value: object) -> str:
         separators=(",", ":"),
         ensure_ascii=False,
     )
-    digest = hmac.new(key, f"{field}\0{data}".encode(), hashlib.sha256).hexdigest()
+    message = f"{field}\0{data}".encode("utf-8", "surrogatepass")
+    digest = hmac.new(key, message, hashlib.sha256).hexdigest()
     return f"{PREFIX}{digest[:DIGITS]}"
 
 
