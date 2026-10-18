@@ -1,6 +1,8 @@
 """The audit trail: committed events and explicit records."""
 
 import asyncio
+import hashlib
+import hmac
 import io
 import os
 import re
@@ -520,6 +522,28 @@ def test_pseudonyms_are_a_keyed_hash_of_the_field_and_its_canonical_json() -> No
     )
     assert pseudonym(key, "nickname", "ann") != pseudonym(key, "nickname", "bob")
     assert pseudonym(key, "nickname", None) != pseudonym(key, "nickname", "null")
+
+
+def test_values_with_lone_surrogates_have_pseudonyms() -> None:
+    """JSON can escape half a surrogate pair, a lone surrogate: hashed as is."""
+    key = bytes(range(32))
+    message = b'nickname\x00"\xed\xa0\x80"'  # The surrogate, UTF-8 style.
+    expected = hmac.new(key, message, hashlib.sha256).hexdigest()[:32]
+
+    assert pseudonym(key, "nickname", "\ud800") == f"pseudonym:{expected}"
+    assert pseudonym(key, "nickname", "\ud800") != pseudonym(key, "nickname", "\udc00")
+
+
+async def test_a_lone_surrogate_in_a_personal_field_is_recorded(tables: None) -> None:
+    """The event commits; its audit row holds the value's pseudonym."""
+    member = uuid.uuid4()
+
+    await commit_events(MemberJoined(member_id=member, email="\ud800", plan="gold"))
+
+    (entry,) = await entries()
+    assert entry["details"]["email"] == await pseudonym_of(
+        str(member), "email", "\ud800"
+    )
 
 
 async def test_the_day_of_anonymous_callers_is_utcs_wherever_the_server_is(
