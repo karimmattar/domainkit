@@ -123,7 +123,7 @@ NoUsernameField = type("NoUsernameField", (AbstractBaseUser,), {})
 class EditsMissing(Account):
     """Lets staff edit a field it does not have."""
 
-    EDITABLE_FIELDS = frozenset({"phone", "fax"})
+    EDITABLE_FIELDS = frozenset({"phone", "fax", "pager"})
 
 
 class ShowsMissing(Account):
@@ -436,7 +436,7 @@ def test_backend_settings_are_checked(use_auth: UseAuth) -> None:
             {"USER_MODEL": f"{HERE}.EditsMissing"},
             (
                 "AUTH.USER_MODEL: EDITABLE_FIELDS names fields "
-                f"'{HERE}.EditsMissing' lacks: fax."
+                f"'{HERE}.EditsMissing' lacks: fax, pager."
             ),
         ),
         (
