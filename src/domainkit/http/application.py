@@ -38,9 +38,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         async with registry.lifespan():
             yield
     finally:
+        await caches.close_all()  # First: their computations use the others.
         await connections.close_all()
         await ledgers.close_all()
-        await caches.close_all()
         await brokers.close_all()
 
 
