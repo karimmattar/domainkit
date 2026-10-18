@@ -4,7 +4,9 @@ A client sends a unique key (a random UUID) with an unsafe request. The first
 request runs and its response is stored; a retry with the same key and the
 same request gets the stored response with ``Idempotent-Replayed: true``. The
 same key with a different request is a 422, and a retry while the first is
-still running is a 409.
+still running is a 409. A request holds its key for ``LEASE_SECONDS``; if it
+dies before committing anything, a retry after the lease takes the key over
+and runs (see ``operations``).
 
 A request that fails before committing anything (a server error, an
 exception) releases its key, so it can be retried. Once a SQL unit of work
@@ -25,6 +27,7 @@ middleware after ``RequestContextMiddleware`` and
 """
 
 import hashlib
+import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
@@ -89,14 +92,18 @@ class IdempotencyMiddleware:
         fingerprint = _hash(
             scope["method"], scope["path"], scope.get("query_string", b""), body
         )
-        existing = await self._claim(config, key_hash, fingerprint)
-        if existing is not None:
+        operation = Operation(key_hash, secrets.token_hex(16))
+        existing = await self._claim(config, operation, fingerprint)
+        if existing is not None and not (
+            _abandoned(existing, fingerprint)
+            and await self._take_over(config, operation, existing["token"])
+        ):
             await self._answer_repeat(existing, fingerprint, scope, receive, send)
             return
-        await self._run_and_store(config, key_hash, scope, replay_receive, send)
+        await self._run_and_store(config, operation, scope, replay_receive, send)
 
     async def _claim(
-        self, config: IdempotencySettings, key_hash: str, fingerprint: str
+        self, config: IdempotencySettings, operation: Operation, fingerprint: str
     ) -> dict[str, Any] | None:
         """Insert an in-progress row; return the existing one if the key is taken."""
         now = _now()
@@ -104,7 +111,7 @@ class IdempotencyMiddleware:
         async with engine.begin() as connection:
             await connection.execute(
                 delete(idempotency_keys).where(
-                    idempotency_keys.c.key_hash == key_hash,
+                    idempotency_keys.c.key_hash == operation.key_hash,
                     idempotency_keys.c.expires_at < now,
                 )
             )
@@ -112,10 +119,12 @@ class IdempotencyMiddleware:
             async with engine.begin() as connection:
                 await connection.execute(
                     insert(idempotency_keys).values(
-                        key_hash=key_hash,
+                        key_hash=operation.key_hash,
                         fingerprint=fingerprint,
                         created_at=now,
                         expires_at=now + timedelta(seconds=config.TTL_SECONDS),
+                        token=operation.token,
+                        locked_until=now + timedelta(seconds=config.LEASE_SECONDS),
                     )
                 )
         except IntegrityError:
@@ -123,12 +132,37 @@ class IdempotencyMiddleware:
                 row = (
                     await connection.execute(
                         select(idempotency_keys).where(
-                            idempotency_keys.c.key_hash == key_hash
+                            idempotency_keys.c.key_hash == operation.key_hash
                         )
                     )
                 ).first()
             return dict(row._mapping) if row is not None else {}
         return None
+
+    async def _take_over(
+        self, config: IdempotencySettings, operation: Operation, held_by: str
+    ) -> bool:
+        """Take the key from the request holding it as ``held_by``.
+
+        Only while that request still holds it, unfinished and uncommitted:
+        it may have finished or committed since its row was read, or another
+        retry may have taken the key first.
+        """
+        async with connections.engine(config.DATABASE).begin() as connection:
+            taken = await connection.execute(
+                update(idempotency_keys)
+                .where(
+                    idempotency_keys.c.key_hash == operation.key_hash,
+                    idempotency_keys.c.token == held_by,
+                    idempotency_keys.c.status_code.is_(None),
+                    idempotency_keys.c.committed_at.is_(None),
+                )
+                .values(
+                    token=operation.token,
+                    locked_until=_now() + timedelta(seconds=config.LEASE_SECONDS),
+                )
+            )
+        return bool(taken.rowcount)
 
     async def _answer_repeat(
         self,
@@ -139,13 +173,14 @@ class IdempotencyMiddleware:
         send: Send,
     ) -> None:
         """Replay a finished response, or refuse a mismatch or a request in flight."""
+        status_code = existing.get("status_code")
         if existing.get("fingerprint") not in {None, fingerprint}:
             response = error_response(
                 status.HTTP_422_UNPROCESSABLE_CONTENT,
                 "This Idempotency-Key was used for a different request.",
                 code="idempotency_key_reused",
             )
-        elif existing.get("status_code") is None:
+        elif status_code is None and not _died_after_commit(existing):
             response = error_response(
                 status.HTTP_409_CONFLICT,
                 "A request with this Idempotency-Key is still in progress.",
@@ -153,11 +188,12 @@ class IdempotencyMiddleware:
             )
             response.headers["Retry-After"] = "1"
         elif existing["body"] is None:
+            ended = "" if status_code is None else f" (status {status_code})"
             response = error_response(
                 status.HTTP_409_CONFLICT,
-                "The request with this Idempotency-Key already ran (status "
-                f"{existing['status_code']}), but its response was not kept; "
-                "look up the result instead of retrying.",
+                f"The request with this Idempotency-Key already ran{ended}, but "
+                "its response was not kept; look up the result instead of "
+                "retrying.",
                 code="idempotency_response_unavailable",
             )
         else:
@@ -168,7 +204,7 @@ class IdempotencyMiddleware:
             await send(
                 {
                     "type": "http.response.start",
-                    "status": existing["status_code"],
+                    "status": status_code,
                     "headers": [*headers, (REPLAYED.lower().encode(), b"true")],
                 }
             )
@@ -179,7 +215,7 @@ class IdempotencyMiddleware:
     async def _run_and_store(
         self,
         config: IdempotencySettings,
-        key_hash: str,
+        operation: Operation,
         scope: Scope,
         receive: Receive,
         send: Send,
@@ -199,7 +235,7 @@ class IdempotencyMiddleware:
                     chunks.append(message.get("body", b""))
             await send(message)
 
-        with run_operation(key_hash) as operation:
+        with run_operation(operation):
             try:
                 await self.app(scope, receive, capture)
             except BaseException:
@@ -220,12 +256,13 @@ async def _finish(
 
     ``body`` is None when the response is not kept. The release skips a key
     marked committed, which a commit that failed to report back still sets.
+    Nothing is written once a retry has taken the key over.
     """
     async with connections.engine(config.DATABASE).begin() as connection:
         if body is None and not operation.committed:
             released = await connection.execute(
                 delete(idempotency_keys).where(
-                    idempotency_keys.c.key_hash == operation.key_hash,
+                    operation.holds_key(),
                     idempotency_keys.c.committed_at.is_(None),
                 )
             )
@@ -238,7 +275,7 @@ async def _finish(
         }
         await connection.execute(
             update(idempotency_keys)
-            .where(idempotency_keys.c.key_hash == operation.key_hash)
+            .where(operation.holds_key())
             .values(
                 status_code=started.get(
                     "status", status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -247,6 +284,23 @@ async def _finish(
                 body=body,
             )
         )
+
+
+def _abandoned(existing: dict[str, Any], fingerprint: str) -> bool:
+    """Whether the same request died before committing: its lease ran out."""
+    return (
+        existing.get("fingerprint") == fingerprint
+        and existing.get("status_code") is None
+        and existing.get("committed_at") is None
+        and existing["locked_until"] < _now()
+    )
+
+
+def _died_after_commit(existing: dict[str, Any]) -> bool:
+    """Whether a committed request's lease ran out before it finished."""
+    return (
+        existing.get("committed_at") is not None and existing["locked_until"] < _now()
+    )
 
 
 def _caller(scope: Scope) -> str:

@@ -15,10 +15,14 @@ idempotency_keys = Table(
     Column("created_at", UTCDateTime, nullable=False),
     Column("expires_at", UTCDateTime, nullable=False, index=True),
     Column("committed_at", UTCDateTime),
+    Column("token", String(32), nullable=False),
+    Column("locked_until", UTCDateTime, nullable=False),
     info={"domain": "idempotency"},
 )
 """A row without ``status_code`` is a request still in progress.
 
 ``committed_at`` is set once the request's changes commit. A finished row
-whose ``body`` is NULL ran, but its response was not kept.
+whose ``body`` is NULL ran, but its response was not kept. ``token`` names
+the request holding the key; a retry may take over a key whose
+``locked_until`` has passed, unless its changes committed.
 """

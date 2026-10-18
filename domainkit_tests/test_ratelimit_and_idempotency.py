@@ -17,6 +17,8 @@ from domainkit.conf import Settings, override_settings
 from domainkit.context import RequestContext, bind_request
 from domainkit.contrib.idempotency import apps as idempotency_apps
 from domainkit.contrib.idempotency import middleware as idempotency
+from domainkit.contrib.idempotency.operations import Operation
+from domainkit.contrib.idempotency.settings import IdempotencySettings
 from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
@@ -315,6 +317,32 @@ def stored_keys() -> list[dict[str, object]]:
     return asyncio.run(read())
 
 
+def keyed(key: str) -> str:
+    """The hash of ``key`` sent by the test client without credentials."""
+    return idempotency._hash(f"anonymous:testclient:{idempotency._hash('', '')}", key)
+
+
+def plant(key: str, path: str = "/pay", *, body: bytes = b"", **values: object) -> None:
+    """Store ``key`` as held by a request on ``path`` with token ``first``."""
+    now = datetime.now(UTC)
+    row = {
+        "key_hash": keyed(key),
+        "fingerprint": idempotency._hash("POST", path, b"", body),
+        "created_at": now,
+        "expires_at": now + timedelta(hours=1),
+        "token": "first",
+        "locked_until": now + timedelta(minutes=1),
+        **values,
+    }
+
+    async def store() -> None:
+        async with connections.engine().begin() as connection:
+            await connection.execute(insert(idempotency_keys).values(**row))
+        await connections.close_all()
+
+    asyncio.run(store())
+
+
 def payments_on(alias: str = "default") -> int:
     """How many payments ``alias`` holds."""
 
@@ -388,22 +416,7 @@ def test_key_misuse_is_refused(idempotent: TestClient) -> None:
             "Idempotency-Key must be 1 to 255 printable ASCII characters."
         )
 
-    async def in_flight() -> None:
-        now = datetime.now(UTC)
-        async with connections.engine().begin() as connection:
-            await connection.execute(
-                insert(idempotency_keys).values(
-                    key_hash=idempotency._hash(
-                        f"anonymous:testclient:{idempotency._hash('', '')}", "busy"
-                    ),
-                    fingerprint=idempotency._hash("POST", "/counter", b"", b'{"a":1}'),
-                    created_at=now,
-                    expires_at=now + timedelta(hours=1),
-                )
-            )
-        await connections.close_all()
-
-    asyncio.run(in_flight())
+    plant("busy", "/counter", body=b'{"a":1}')
     busy = idempotent.post(
         "/counter", json={"a": 1}, headers={"Idempotency-Key": "busy"}
     )
@@ -518,6 +531,8 @@ def test_commits_elsewhere_are_marked_after_them(
         rows = stored_keys()
         assert len(rows) == 2
         assert all(row["committed_at"] is not None for row in rows)
+        # Pinned before the commit: no retry may take these keys over.
+        assert all(row["locked_until"] == row["expires_at"] for row in rows)
 
 
 def test_a_failed_mark_still_keeps_the_key(
@@ -525,7 +540,7 @@ def test_a_failed_mark_still_keeps_the_key(
 ) -> None:
     """If marking a commit elsewhere fails, the request still never reruns."""
 
-    def unreachable(key_hash: str) -> None:
+    def unreachable(operation: Operation) -> None:
         raise ConnectionError("The keys' database is away.")
 
     monkeypatch.setattr(idempotency_apps, "mark_committed", unreachable)
@@ -539,6 +554,146 @@ def test_a_failed_mark_still_keeps_the_key(
         assert payments_on("other") == 1
         [row] = stored_keys()
         assert row["committed_at"] is None
+
+
+def test_keys_of_dead_requests_are_taken_over(
+    idempotent: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A request that died before committing loses its key once its lease ends."""
+    later = datetime.now(UTC) + timedelta(minutes=5)
+    monkeypatch.setattr(idempotency, "_now", lambda: later)
+    plant("dead", locked_until=later - timedelta(microseconds=1))
+    plant("dying", locked_until=later)
+
+    taken = idempotent.post("/pay", headers={"Idempotency-Key": "dead"})
+    replayed = idempotent.post("/pay", headers={"Idempotency-Key": "dead"})
+    held = idempotent.post("/pay", headers={"Idempotency-Key": "dying"})
+
+    assert (taken.status_code, taken.content) == (201, b"paid")
+    assert replayed.headers["Idempotent-Replayed"] == "true"
+    assert (held.status_code, held.json()["code"]) == (409, "idempotency_key_in_use")
+    assert payments_on() == 1
+    rows = {row["key_hash"]: row for row in stored_keys()}
+    assert rows[keyed("dead")]["token"] not in {"first", rows[keyed("dying")]["token"]}
+    assert len(str(rows[keyed("dead")]["token"])) == 32
+    assert rows[keyed("dead")]["locked_until"] == later + timedelta(seconds=60)
+
+
+def test_new_keys_are_leased(
+    idempotent: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A claimed key is held for LEASE_SECONDS under a fresh random token."""
+    now = datetime.now(UTC)
+    monkeypatch.setattr(idempotency, "_now", lambda: now)
+    for key in ("one", "two"):
+        idempotent.post("/pay", headers={"Idempotency-Key": key})
+
+    one, two = stored_keys()
+    assert one["locked_until"] == now + timedelta(seconds=60)
+    assert one["token"] != two["token"]
+
+
+def test_dead_requests_are_not_taken_over_when_unlike_or_committed(
+    idempotent: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another request is refused; a committed one is never run again."""
+    later = datetime.now(UTC) + timedelta(minutes=5)
+    monkeypatch.setattr(idempotency, "_now", lambda: later)
+    expired = later - timedelta(microseconds=1)
+    plant("unlike", "/counter", locked_until=expired)
+    plant("committed", locked_until=expired, committed_at=expired)
+    plant("committing", locked_until=later, committed_at=expired)
+
+    unlike = idempotent.post("/pay", headers={"Idempotency-Key": "unlike"})
+    committed = idempotent.post("/pay", headers={"Idempotency-Key": "committed"})
+    committing = idempotent.post("/pay", headers={"Idempotency-Key": "committing"})
+
+    assert (unlike.status_code, unlike.json()["code"]) == (
+        422,
+        "idempotency_key_reused",
+    )
+    assert (committed.status_code, committed.json()["code"]) == (
+        409,
+        "idempotency_response_unavailable",
+    )
+    assert committed.json()["detail"] == (
+        "The request with this Idempotency-Key already ran, but its response was "
+        "not kept; look up the result instead of retrying."
+    )
+    assert (committing.status_code, committing.json()["code"]) == (
+        409,
+        "idempotency_key_in_use",
+    )
+    assert payments_on() == 0
+
+
+def test_taking_over_needs_the_row_as_it_was_read(idempotent: TestClient) -> None:
+    """The holder may have finished or committed, or a retry won the key first."""
+    config = registry.settings(IdempotencySettings)
+    middleware = idempotency.IdempotencyMiddleware(get_asgi_application())
+    gone = datetime.now(UTC) - timedelta(seconds=1)
+    for changed, taken in (
+        ({}, True),
+        ({"token": "other"}, False),
+        ({"status_code": 201}, False),
+        ({"committed_at": gone}, False),
+    ):
+        asyncio.run(clear_keys())
+        plant("race", locked_until=gone, **changed)
+
+        async def attempt() -> bool:
+            operation = Operation(keyed("race"), "retry")
+            result = await middleware._take_over(config, operation, "first")
+            await connections.close_all()
+            return result
+
+        assert asyncio.run(attempt()) is taken, changed
+        assert [row["token"] for row in stored_keys()] == [
+            "retry" if taken else changed.get("token", "first")
+        ]
+
+
+def test_a_request_that_lost_its_key_cannot_commit_through_it(
+    idempotent: TestClient,
+) -> None:
+    """Once a retry holds the key, the first request saves and stores nothing."""
+    lost = idempotent.post(
+        "/pay?outcome=overtaken", headers={"Idempotency-Key": "overtaken"}
+    )
+    crashed = idempotent.post(
+        "/pay?outcome=overtaken-crash", headers={"Idempotency-Key": "crashed"}
+    )
+
+    assert (lost.status_code, lost.json()["code"]) == (
+        409,
+        "idempotency_key_taken_over",
+    )
+    assert lost.json()["detail"] == (
+        "This request ran past its Idempotency-Key lease, and a retry took the "
+        "key over; its changes were not saved."
+    )
+    assert crashed.status_code == 500
+    assert payments_on() == 0
+    rows = stored_keys()
+    assert [(row["token"], row["status_code"]) for row in rows] == [("retry", None)] * 2
+
+
+def test_a_lost_key_refuses_commits_elsewhere_too(
+    make_database: Callable[[str], str],
+) -> None:
+    """The key is pinned before a commit elsewhere, which a lost key refuses."""
+    databases = {"default": make_database("keys"), "other": make_database("other")}
+    with idempotent_app(databases) as client:
+        headers = {"Idempotency-Key": "late"}
+        lost = client.post("/pay?outcome=overtaken&database=other", headers=headers)
+
+        assert (lost.status_code, lost.json()["code"]) == (
+            409,
+            "idempotency_key_taken_over",
+        )
+        assert payments_on("other") == 0
+        [row] = stored_keys()
+        assert (row["token"], row["status_code"]) == ("retry", None)
 
 
 def test_storage_limits_are_inclusive(idempotent: TestClient) -> None:
