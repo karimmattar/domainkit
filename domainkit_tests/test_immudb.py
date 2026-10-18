@@ -130,7 +130,10 @@ async def test_plain_text_is_refused_by_a_tls_server(prefix: bytes) -> None:
 async def test_evidence_on_immudb(ledger: ImmudbLedger) -> None:
     """Record, verify, list; a second write to the key is caught."""
     store = LedgerEvidenceStore(
-        ledger, namespace=f"t{uuid.uuid4().hex[:8]}", max_bytes=4096
+        ledger,
+        namespace=f"t{uuid.uuid4().hex[:8]}",
+        max_bytes=4096,
+        subject_key=b"subject-key-for-the-immudb-tests",
     )
     evidence = Evidence(
         kind="kyc.document_verified", subject="customer:1", facts={"ok": True}

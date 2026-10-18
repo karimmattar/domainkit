@@ -1198,8 +1198,10 @@ async def test_the_worker_outlives_database_outages(
     original = worker.process
 
     async def process_then_stop(message: Claimed) -> None:
-        await original(message)
+        # Stop before the poll interval ends, or a slow run claims once more.
+        # The worker still finishes this message before run() returns.
         stop.set()
+        await original(message)
 
     monkeypatch.setattr(worker, "process", process_then_stop)
     with caplog.at_level(logging.INFO, "domainkit.contrib.messaging.worker"):

@@ -24,3 +24,4 @@ accepted record: supersede it with a new one and link both ways.
 | [0015](0015-auth-and-content-types.md) | Users, groups, and permissions modelled on Django's | Accepted |
 | [0016](0016-authenticating-requests.md) | Authenticate requests with tokens; rules decide who may call routes | Accepted |
 | [0017](0017-deny-by-default-and-admin-api.md) | Routes deny by default; staff manage users through an admin API | Accepted |
+| [0018](0018-evidence-subjects-are-internal-ids.md) | Evidence subjects are internal ids, keyed by a secret digest | Accepted |

@@ -22,8 +22,14 @@ DIGEST: Final = re.compile(r"sha256:[0-9a-f]{64}")
 """How artifacts and records are referenced: ``sha256:<64 hex digits>``."""
 FORMAT: Final = 1
 """Version of the record layout, stored in every record."""
+SUBJECT: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]*")
+"""Internal ids such as ``customer:42``: no ``@``, spaces, or ``+``."""
 _KIND_LENGTH: Final = 100
 _SUBJECT_LENGTH: Final = 255
+_CANONICAL_JSON: Final = json.JSONEncoder(
+    sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+)
+"""Sorted keys, no spaces, UTF-8 text, and no NaN: one form per value."""
 
 
 class EvidenceNotFound(NotFound):
@@ -59,15 +65,17 @@ def sha256(data: bytes) -> str:
 class Evidence:
     """What happened, about whom, and the digests that back it up.
 
-    Keep personal data out of ``facts``: a ledger never forgets. Store
-    references or digests, or encrypt personal fields with keys you can
-    destroy. The current request's actor and id are captured when created.
+    Keep personal data out of ``subject`` and ``facts``: a ledger never
+    forgets. The subject is an internal id, never an email address, name, or
+    phone number. In facts, store references or digests, or encrypt personal
+    fields with keys you can destroy. The current request's actor and id are
+    captured when created.
     """
 
     kind: str
     """Dotted lowercase name, such as ``kyc.document_verified``."""
     subject: str
-    """What the evidence is about, such as ``customer:42``; keys use its digest."""
+    """The internal id of what the evidence is about, such as ``customer:42``."""
     facts: Mapping[str, Any] = field(default_factory=dict)
     """JSON values: results, scores, versions, references."""
     artifacts: Mapping[str, str] = field(default_factory=dict)
@@ -85,6 +93,13 @@ class Evidence:
             )
         if not 0 < len(self.subject) <= _SUBJECT_LENGTH:
             raise ValueError("Evidence subject must be 1 to 255 characters.")
+        # The subject is not echoed: it may be the personal data refused here.
+        if not SUBJECT.fullmatch(self.subject):
+            raise ValueError(
+                "Evidence subject must be an internal id such as 'customer:42' "
+                "(letters, digits, and _ . : / -), never personal data such as "
+                "an email address, a name, or a phone number."
+            )
         for name, digest in self.artifacts.items():
             if not DIGEST.fullmatch(digest):
                 raise ValueError(f"Artifact {name!r} must be a sha256:<hex> digest.")
@@ -107,13 +122,7 @@ class Evidence:
             "request_id": self.request_id,
         }
         try:
-            text = json.dumps(
-                document,
-                sort_keys=True,
-                separators=(",", ":"),
-                ensure_ascii=False,
-                allow_nan=False,
-            )
+            text = _CANONICAL_JSON.encode(document)
         except (TypeError, ValueError) as exc:
             raise ValueError(
                 f"Evidence facts must be plain JSON values: {exc}"
