@@ -175,9 +175,13 @@ async def test_append_only_tables_are_restored_and_stay_protected(
 
 @on_postgres
 async def test_partitions_are_refilled_through_their_parent(database_url: str) -> None:
-    """A partition's rows are restored once, through the partitioned table."""
+    """A partition's rows are restored once, through the partitioned table.
+
+    The tables after it (``framework_test_shops``) are restored too.
+    """
     with override_settings(DATABASES={"default": {"URL": database_url}}):
         async with connections.engine().begin() as connection:
+            await connection.run_sync(shops.create)
             for statement in (
                 (
                     "CREATE TABLE framework_test_readings (id int, day date) "
@@ -196,6 +200,7 @@ async def test_partitions_are_refilled_through_their_parent(database_url: str) -
             await connection.exec_driver_sql(
                 "INSERT INTO framework_test_readings VALUES (2, '2026-10-19')"
             )
+            await connection.execute(insert(shops).values(id=1, name="later"))
 
         await restore_snapshot(snapshot)
 
@@ -204,6 +209,7 @@ async def test_partitions_are_refilled_through_their_parent(database_url: str) -
                 text("SELECT id FROM framework_test_readings_2026")
             )
             assert found.scalars().all() == [1]
+        assert await rows("default", shops) == []
         await connections.close_all()
 
 
