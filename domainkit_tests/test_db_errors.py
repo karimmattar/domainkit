@@ -39,6 +39,10 @@ class HandleTaken(DuplicateValue):
     """Another account in the tenant has that handle."""
 
 
+class CodeTaken(DuplicateValue):
+    """Another account has that code."""
+
+
 metadata = MetaData(naming_convention=NAMING_CONVENTION)
 accounts = Table(
     "framework_test_accounts",
@@ -47,10 +51,11 @@ accounts = Table(
     Column("email", String(50), unique=True, info={"duplicate": EmailTaken}),
     Column("tenant", String(10)),
     Column("handle", String(10)),
-    Column("code", String(10), unique=True),
+    Column("code", String(10)),
     Column("nick", String(10)),
     Column("required", String(10), nullable=False, default="x"),
     Unique("tenant", "handle", info={"duplicate": HandleTaken}),
+    Unique("code", info={"duplicate": CodeTaken}),
 )
 Index("ix_framework_test_accounts_lower_nick", func.lower(accounts.c.nick), unique=True)
 strangers = Table(
@@ -88,7 +93,10 @@ async def refused(engine: AsyncEngine, table: Table, **row: object) -> Integrity
 
 
 async def test_constraints_name_their_error_and_fields(engine: AsyncEngine) -> None:
-    """A column's or a constraint's info picks the class; fields name what is taken."""
+    """A column's or a constraint's info picks the class; fields name what is taken.
+
+    The primary key names none, so it is a plain ``DuplicateValue``.
+    """
     async with engine.begin() as connection:
         await connection.execute(
             insert(accounts).values(
@@ -102,7 +110,7 @@ async def test_constraints_name_their_error_and_fields(engine: AsyncEngine) -> N
             HandleTaken,
             "uq_framework_test_accounts_tenant",
         ),
-        ({"id": 4, "code": "c"}, DuplicateValue, "uq_framework_test_accounts_code"),
+        ({"id": 4, "code": "c"}, CodeTaken, "uq_framework_test_accounts_code"),
         ({"id": 1}, DuplicateValue, "pk_framework_test_accounts"),
     ]
     for row, error_class, constraint in cases:
