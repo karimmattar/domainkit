@@ -83,6 +83,11 @@ All notable changes to domainkit. The format follows
 
 ### Fixed
 
+- A keyed request whose client disconnected mid-upload ran on the part of
+  the body that had arrived, as if it were all of it, and the result was
+  stored under the key, so the client's retry with the whole body got 422.
+  `IdempotencyMiddleware` now stops at the disconnect: no key is claimed
+  and nothing runs.
 - A crash left an idempotency key in progress for a day (ADR 0020): every
   retry got 409 until the key expired. Keys are now leased for
   `IDEMPOTENCY.LEASE_SECONDS` (60 by default) under a random token. Once

@@ -6,7 +6,8 @@ same request gets the stored response with ``Idempotent-Replayed: true``. The
 same key with a different request is a 422, and a retry while the first is
 still running is a 409. A request holds its key for ``LEASE_SECONDS``; if it
 dies before committing anything, a retry after the lease takes the key over
-and runs (see ``operations``).
+and runs (see ``operations``). A client that disconnects before sending its
+whole body claims no key and runs nothing.
 
 A request that fails before committing anything (a server error, an
 exception) releases its key, so it can be retried. Once a SQL unit of work
@@ -87,7 +88,10 @@ class IdempotencyMiddleware:
                 code="invalid_idempotency_key",
             )(scope, receive, send)
             return
-        body, replay_receive = await _read_body(receive)
+        read = await _read_body(receive)
+        if read is None:
+            return  # The client left before sending its whole body: run nothing.
+        body, replay_receive = read
         key_hash = _hash(_caller(scope), key)
         fingerprint = _hash(
             scope["method"], scope["path"], scope.get("query_string", b""), body
@@ -314,13 +318,17 @@ def _caller(scope: Scope) -> str:
     return f"anonymous:{client[0] if client else 'unknown'}:{credentials}"
 
 
-async def _read_body(receive: Receive) -> tuple[bytes, Receive]:
-    """Read the whole body, then return a ``receive`` that replays it."""
+async def _read_body(receive: Receive) -> tuple[bytes, Receive] | None:
+    """Read the whole body, then return a ``receive`` that replays it.
+
+    None if the client disconnected first: part of a body is never replayed
+    as if it were all of it.
+    """
     chunks = []
     while True:
         message = await receive()
         if message["type"] != "http.request":
-            break
+            return None
         chunks.append(message.get("body", b""))
         if not message.get("more_body"):
             break
