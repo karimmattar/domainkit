@@ -15,6 +15,7 @@ from sqlalchemy.engine import Engine
 from domainkit import setup
 from domainkit.apps import registry
 from domainkit.conf import override_settings
+from domainkit.contrib.audit import pseudonym_of
 from domainkit.contrib.auth import (
     AuthUnitOfWork,
     Permission,
@@ -304,7 +305,10 @@ def test_staff_create_users(api: Api) -> None:
     assert login(client, "newbie")["access_token"]
     created = audited("auth.user_created")[-1]
     assert created["actor"] == admin_id
-    assert created["details"] == {"user_id": made["id"], "username": "newbie"}
+    assert created["details"] == {
+        "user_id": made["id"],
+        "username": run_async(pseudonym_of(made["id"], "username", "newbie")),
+    }
 
     flags = {"username": "keeper", "is_active": False, "is_staff": True}
     kept = client.post(url, json=flags, headers=headers).json()
@@ -573,7 +577,12 @@ def test_staff_delete_users(api: Api) -> None:
     assert error(client.get(url, headers=headers), 404)[0] == "user_not_found"
     assert error(client.delete(url, headers=headers), 404)[0] == "user_not_found"
     assert stored_tokens(bob) == []
-    assert details("auth.user_deleted") == [{"user_id": str(bob), "username": "bob"}]
+    assert details("auth.user_deleted") == [
+        {
+            "user_id": str(bob),
+            "username": run_async(pseudonym_of(str(bob), "username", "bob")),
+        }
+    ]
     assert create_user("bob") != bob
 
     root = create_user("root", is_superuser=True)

@@ -235,12 +235,67 @@ data, in its own transaction:
 ```python
 from domainkit.contrib.audit import Outcome, record
 
-await record("auth.login", Outcome.DENIED, target=username, reason="mfa")
+await record("auth.login", Outcome.DENIED, reason="mfa")
 ```
 
 `python manage.py auditlog --actor alice --action catalog.product_created` reads the
 trail. Events are audited in the database where they commit, so with several
 databases, `auditlog --database <alias>` reads another one.
+
+### Personal data
+
+An append-only trail cannot delete what it holds, so personal data never
+goes into it in clear. Each personal value is stored as a pseudonym,
+`pseudonym:` and 32 hex digits: an HMAC-SHA256 of the field's name and the
+value, keyed with a random key of the person it is about, its subject.
+Subjects' keys live in `domainkit_audit_keys`, which is not append-only.
+
+- **The client's address** is the actor's personal data. Without an actor,
+  it belongs to that day's anonymous callers (subject `anonymous:2026-10-18`,
+  in UTC).
+- **Event fields** are personal when marked with `Personal`, naming the field
+  that identifies the person. Auth marks the username of `UserCreated` and
+  `UserDeleted`:
+
+  ```python
+  from typing import Annotated
+  from uuid import UUID
+
+  from domainkit.ddd import DomainEvent, Personal
+
+
+  class MemberJoined(DomainEvent):
+      member_id: UUID
+      email: Annotated[str, Personal(of="member_id")]
+  ```
+
+- **Explicit records** take personal details apart, under the actor (or the
+  day's anonymous callers) unless a `subject` is named:
+  `record("auth.login", Outcome.DENIED, personal={"username": username})`.
+- **`actor` and `target`** are not pseudonymised. The actor is a user's id;
+  give targets ids, not names or emails.
+
+A value and its subject always give the same pseudonym, so the trail still
+answers "did this happen to this person?":
+`await pseudonym_of(str(user.id), "username", "alice")` returns the pseudonym
+to look for, or None once the person is forgotten. Each database keeps its
+own keys, so look in the one that recorded the rows (`database=`, by
+default `AUDIT.DATABASE`). A row whose personal value is None stores None.
+
+To honour an erasure request, delete the person's key, in every database
+that holds an audit trail:
+
+```shell
+python manage.py auditforget 4b0c6f0e-...            # or: await forget(str(user.id))
+python manage.py auditforget --anonymous-days 30     # anonymous callers' days before that
+```
+
+Their pseudonyms stay in the trail, unchanged, but can no longer be linked
+to them by anyone: the key was random and is gone. A later event about them
+gets a new key, unlinkable to the old pseudonyms. Run `--anonymous-days` on
+a schedule to keep anonymous callers' addresses only as long as you need
+them. Rows written before this release keep their values in clear; the
+append-only protection keeps them as they are.
 
 The application only inserts. To make sure a compromised API cannot rewrite
 history, make the table append-only in the database itself. Add a revision

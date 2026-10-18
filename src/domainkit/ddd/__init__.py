@@ -18,6 +18,7 @@ from domainkit.ddd.exceptions import (
 from domainkit.ddd.messages import Command, Query
 from domainkit.ddd.model import AggregateRoot, Entity, ValueObject
 from domainkit.ddd.pagination import Page
+from domainkit.ddd.personal import Personal
 from domainkit.ddd.repository import InMemoryRepository, Repository
 from domainkit.ddd.uow import DeferredTask, UnitOfWork
 
@@ -38,6 +39,7 @@ __all__ = [
     "NotFound",
     "Page",
     "PermissionDenied",
+    "Personal",
     "Query",
     "Repository",
     "UnitOfWork",

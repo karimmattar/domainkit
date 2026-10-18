@@ -1,18 +1,20 @@
 """What happens to users and groups; the audit trail records each one.
 
 Events carry ids, names, and permission keys, never passwords or hashes.
+Usernames are personal data: the audit trail keeps them as pseudonyms.
 """
 
+from typing import Annotated
 from uuid import UUID
 
-from domainkit.ddd import DomainEvent
+from domainkit.ddd import DomainEvent, Personal
 
 
 class UserCreated(DomainEvent):
     """A user was created."""
 
     user_id: UUID
-    username: str
+    username: Annotated[str, Personal(of="user_id")]
 
 
 class PasswordChanged(DomainEvent):
@@ -52,7 +54,7 @@ class UserDeleted(DomainEvent):
     """A user was deleted."""
 
     user_id: UUID
-    username: str
+    username: Annotated[str, Personal(of="user_id")]
 
 
 class UserStatusChanged(DomainEvent):

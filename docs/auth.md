@@ -148,7 +148,10 @@ Changes are recorded as events, never with passwords or hashes in them:
 `UserLeftGroup`, `UserPermissionGranted`, `UserPermissionRevoked`,
 `GroupCreated`, `GroupRenamed`, `GroupPermissionGranted`, and
 `GroupPermissionRevoked`. With `domainkit.contrib.audit` installed, each
-becomes a row of the audit trail (`auth.user_permission_granted`).
+becomes a row of the audit trail (`auth.user_permission_granted`). The
+username in `UserCreated` and `UserDeleted` is personal data: the trail keeps
+it as a pseudonym of the user's id, which `auditforget <user id>` makes
+unlinkable (see [contrib.md](contrib.md)).
 
 ## A custom user model
 

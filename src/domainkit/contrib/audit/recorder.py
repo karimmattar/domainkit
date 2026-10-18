@@ -3,11 +3,16 @@
 Who acted comes from the request context: the authenticated actor,
 ``anonymous`` for unauthenticated requests, ``system`` outside requests.
 Never put secrets in event fields or ``details``: they are kept for good.
+
+Personal values are written as pseudonyms (see ``personal``): the client's
+address, as the actor's (or the day's anonymous callers'), and event fields
+marked ``Personal``, as the person's they name.
 """
 
 import fnmatch
 import uuid
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
@@ -20,8 +25,10 @@ from domainkit.apps import registry
 from domainkit.context import current_request
 from domainkit.db import connections
 from domainkit.ddd import DomainEvent
+from domainkit.ddd.personal import personal_fields
 from domainkit.utils.text import snake_case
 
+from .personal import anonymous_subject, pseudonym, subject_keys
 from .settings import AuditSettings
 from .tables import audit_log
 
@@ -58,35 +65,87 @@ def action_for(event_type: type[DomainEvent]) -> str:
     return f"{label}.{snake_case(event_type.__name__)}"
 
 
+@dataclass(frozen=True, slots=True)
+class PersonalValue:
+    """A value of a row to write as a pseudonym of its subject."""
+
+    name: str
+    """The column (``client_ip``) or, ``in_details``, the key in ``details``."""
+    subject: str
+    value: object
+    in_details: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class Draft:
+    """An audit row whose personal values are not pseudonyms yet."""
+
+    row: dict[str, Any]
+    personal: tuple[PersonalValue, ...] = field(default=())
+
+    def written(self, keys: Mapping[str, bytes]) -> dict[str, Any]:
+        """The row to insert, each personal value a pseudonym under ``keys``."""
+        row = {**self.row, "details": dict(self.row["details"])}
+        for item in self.personal:
+            place = row["details"] if item.in_details else row
+            place[item.name] = pseudonym(keys[item.subject], item.name, item.value)
+        return row
+
+
 def audit_row(
     action: str,
     outcome: Outcome,
     *,
     target: str | None = None,
     details: Mapping[str, object] | None = None,
+    personal: Mapping[str, tuple[str | None, object]] | None = None,
     event_id: uuid.UUID | None = None,
     occurred_at: datetime | None = None,
-) -> dict[str, Any]:
-    """Build one audit row in the current request context."""
+) -> Draft:
+    """Build one audit row in the current request context.
+
+    ``personal`` maps keys of ``details`` to their subject and value. A
+    subject of None, and the client's address, belong to the actor; without
+    one, to the day's anonymous callers.
+    """
     request = current_request()
-    return {
+    occurred_at = occurred_at or datetime.now(UTC)
+    caller = (request.actor if request else None) or anonymous_subject(
+        occurred_at.astimezone(UTC).date()
+    )
+    row = {
         "id": uuid.uuid4(),
-        "occurred_at": occurred_at or datetime.now(UTC),
+        "occurred_at": occurred_at,
         "actor": _actor(),
         "action": action,
         "outcome": outcome.value,
         "target": target,
         "request_id": request.request_id if request else None,
-        "client_ip": request.client_ip if request else None,
+        "client_ip": None,
         "event_id": event_id,
         "details": to_jsonable_python(dict(details or {})),
     }
+    personal = dict(personal or {})
+    if taken := sorted(personal.keys() & row["details"].keys()):
+        raise ValueError(f"Audit details cannot be both plain and personal: {taken}.")
+    values = []
+    for name, (subject, value) in personal.items():
+        if value is None:
+            row["details"][name] = None  # Nothing personal to hide.
+        else:
+            values.append(PersonalValue(name, subject or caller, value))
+    if request and request.client_ip is not None:
+        values.append(
+            PersonalValue("client_ip", caller, request.client_ip, in_details=False)
+        )
+    return Draft(row, tuple(values))
 
 
-def event_rows(
-    events: Sequence[DomainEvent], config: AuditSettings
-) -> list[dict[str, Any]]:
-    """Audit rows for committed events, minus excluded actions."""
+def event_rows(events: Sequence[DomainEvent], config: AuditSettings) -> list[Draft]:
+    """Audit rows for committed events, minus excluded actions.
+
+    A field marked ``Personal`` is the person's that its ``of`` field names.
+    """
     rows = []
     for event in events:
         action = action_for(type(event))
@@ -95,11 +154,16 @@ def event_rows(
         details = to_jsonable_python(event)
         details.pop("event_id", None)
         details.pop("occurred_at", None)
+        personal = {
+            name: (_subject(details[marker.of]), details.pop(name))
+            for name, marker in personal_fields(type(event)).items()
+        }
         rows.append(
             audit_row(
                 action,
                 Outcome.SUCCESS,
                 details=details,
+                personal=personal,
                 event_id=event.event_id,
                 occurred_at=event.occurred_at,
             )
@@ -108,11 +172,24 @@ def event_rows(
 
 
 async def write(
-    executor: AsyncSession | AsyncConnection, rows: Sequence[dict[str, Any]]
+    executor: AsyncSession | AsyncConnection, drafts: Sequence[Draft]
 ) -> None:
-    """Insert ``rows`` through a session or connection."""
-    if rows:
-        await executor.execute(insert(audit_log).values(list(rows)))
+    """Insert ``drafts`` through a session or connection, in its transaction.
+
+    The subjects' keys are read, or made, in the same transaction.
+    """
+    if not drafts:
+        return
+    subjects = {item.subject for draft in drafts for item in draft.personal}
+    keys = await subject_keys(executor, subjects)
+    await executor.execute(
+        insert(audit_log).values([draft.written(keys) for draft in drafts])
+    )
+
+
+def _subject(value: object) -> str | None:
+    """The subject a person's id names, as text; None for no id."""
+    return None if value is None else str(value)
 
 
 async def record(
@@ -120,14 +197,24 @@ async def record(
     outcome: Outcome = Outcome.SUCCESS,
     *,
     target: str | None = None,
+    personal: Mapping[str, object] | None = None,
+    subject: str | None = None,
     **details: object,
 ) -> None:
     """Record an action in its own transaction (denials, failures, reads).
 
     Committed domain events are recorded automatically; use this for what
-    no event describes, such as a refused login.
+    no event describes, such as a refused login. ``personal`` details are
+    written as pseudonyms of ``subject``: by default the actor, or the
+    day's anonymous callers.
     """
     config = registry.settings(AuditSettings)
-    row = audit_row(action, outcome, target=target, details=details)
+    row = audit_row(
+        action,
+        outcome,
+        target=target,
+        details=details,
+        personal={name: (subject, value) for name, value in (personal or {}).items()},
+    )
     async with connections.engine(config.DATABASE).begin() as connection:
         await write(connection, [row])

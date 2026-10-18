@@ -2,24 +2,36 @@
 
 import asyncio
 import io
+import re
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Annotated, Any
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import insert, select
 
 from domainkit import setup
 from domainkit.apps import registry
 from domainkit.conf import override_settings, settings
 from domainkit.context import RequestContext, bind_request
-from domainkit.contrib.audit import Outcome, action_for, record
+from domainkit.contrib.audit import (
+    Outcome,
+    action_for,
+    forget,
+    forget_anonymous,
+    pseudonym_of,
+    record,
+)
+from domainkit.contrib.audit.personal import audited_databases
 from domainkit.contrib.audit.protection import PROTECT, UNPROTECT, protect, unprotect
-from domainkit.contrib.audit.tables import audit_log
+from domainkit.contrib.audit.tables import audit_keys, audit_log
 from domainkit.db import connections
-from domainkit.management import call_command
+from domainkit.ddd import DomainEvent, Personal
+from domainkit.ddd.personal import personal_fields
+from domainkit.management import CommandError, call_command
 from domainkit_tests.sample_domains.alpha.events import GreetingSent
 from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork, NoteWritten, notes
 
@@ -27,6 +39,7 @@ pytestmark = pytest.mark.anyio
 
 ALPHA = "domainkit_tests.sample_domains.alpha"
 AUDIT = "domainkit.contrib.audit"
+IP = "203.0.113.5"
 
 
 @pytest.fixture
@@ -47,6 +60,7 @@ async def tables(audited: str) -> AsyncIterator[None]:
     """Create the audit and notes tables."""
     async with connections.engine().begin() as connection:
         await connection.run_sync(audit_log.create)
+        await connection.run_sync(audit_keys.create)
         await connection.run_sync(notes.create)
     yield
     await connections.close_all()
@@ -65,7 +79,7 @@ async def write_note(*, actor: str | None = None, commit: bool = True) -> Note:
     """Store a note that records ``NoteWritten``, as ``actor``."""
     note = Note(id=NoteId(uuid.uuid4()), text="audited")
     note.record(NoteWritten(note_id=note.id))
-    with bind_request(RequestContext("req-9", "203.0.113.5", "POST", "/notes", actor)):
+    with bind_request(RequestContext("req-9", IP, "POST", "/notes", actor)):
         async with NotesUnitOfWork() as uow:
             await uow.notes.add(note)
             if commit:
@@ -81,7 +95,8 @@ async def test_committed_events_are_audited(tables: None) -> None:
     (entry,) = await entries()
     assert entry["action"] == "domainkit_tests.note_written"
     assert (entry["actor"], entry["outcome"]) == ("alice", "success")
-    assert (entry["request_id"], entry["client_ip"]) == ("req-9", "203.0.113.5")
+    assert entry["request_id"] == "req-9"
+    assert entry["client_ip"] == await pseudonym_of("alice", "client_ip", IP)
     assert entry["details"] == {"note_id": str(note.id)}
     assert entry["event_id"] is not None
 
@@ -198,3 +213,275 @@ def test_protection_installs_triggers_on_postgresql_only() -> None:
     assert postgres.statements == [*PROTECT, *UNPROTECT]
     assert sqlite.statements == []
     assert all("domainkit_audit_log" in statement for statement in PROTECT[1:])
+
+
+# Personal data ------------------------------------------------------------------
+
+
+class MemberJoined(DomainEvent):
+    """An event with personal data about a member."""
+
+    member_id: uuid.UUID | None
+    email: Annotated[str, Personal(of="member_id")]
+    plan: Annotated[str, "not personal"] = "basic"
+
+
+PSEUDONYM = re.compile(r"pseudonym:[0-9a-f]{32}")
+
+
+async def commit_events(
+    *events: DomainEvent,
+    actor: str | None = None,
+    uow_class: type[NotesUnitOfWork] = NotesUnitOfWork,
+) -> None:
+    """Commit ``events``, recorded by a new note, as ``actor`` from ``IP``."""
+    note = Note(id=NoteId(uuid.uuid4()), text="audited")
+    for event in events:
+        note.record(event)
+    with bind_request(RequestContext("req-7", IP, "POST", "/members", actor)):
+        async with uow_class() as uow:
+            await uow.notes.add(note)
+            await uow.commit()
+
+
+async def subjects(alias: str = "default") -> list[str]:
+    """The subjects that have a key in ``alias``, sorted."""
+    async with connections.engine(alias).connect() as connection:
+        found = await connection.scalars(
+            select(audit_keys.c.subject).order_by(audit_keys.c.subject)
+        )
+        return list(found)
+
+
+def test_personal_fields_are_found_by_their_markers() -> None:
+    """Only ``Personal`` metadata counts, and ``of`` must name another field."""
+
+    class Unknown(DomainEvent):
+        email: Annotated[str, Personal(of="member_id")]
+
+    class Itself(DomainEvent):
+        email: Annotated[str, Personal(of="email")]
+
+    assert personal_fields(MemberJoined) == {"email": Personal(of="member_id")}
+    for event, of in ((Unknown, "member_id"), (Itself, "email")):
+        refused = (
+            rf"\.{event.__name__}\.email: Personal\(of='{of}'\) must name another "
+            r"field of the class\.$"
+        )
+        with pytest.raises(TypeError, match=refused):
+            personal_fields(event)
+
+
+async def test_personal_values_are_pseudonyms_of_their_subject(tables: None) -> None:
+    """The member's email is theirs; the client's address is the actor's."""
+    member = uuid.uuid4()
+
+    await commit_events(
+        MemberJoined(member_id=member, email="ann@example.com", plan="gold"),
+        actor="alice",
+    )
+
+    (entry,) = await entries()
+    email = await pseudonym_of(str(member), "email", "ann@example.com")
+    assert entry["details"] == {
+        "member_id": str(member),
+        "plan": "gold",
+        "email": email,
+    }
+    assert entry["client_ip"] == await pseudonym_of("alice", "client_ip", IP)
+    assert PSEUDONYM.fullmatch(entry["details"]["email"])
+    assert PSEUDONYM.fullmatch(entry["client_ip"])
+    assert "ann@example.com" not in repr(entry)
+    assert IP not in repr(entry)
+    assert await subjects() == sorted(["alice", str(member)])
+
+
+async def test_pseudonyms_link_one_subjects_equal_values_only(tables: None) -> None:
+    """Equal values of one subject match; another subject's, or field's, do not."""
+    ann, bob = uuid.uuid4(), uuid.uuid4()
+
+    await commit_events(
+        MemberJoined(member_id=ann, email="same@example.com"),
+        MemberJoined(member_id=ann, email="same@example.com"),
+        MemberJoined(member_id=bob, email="same@example.com"),
+    )
+
+    by_member: dict[str, set[str]] = {}
+    for entry in await entries():
+        details = entry["details"]
+        by_member.setdefault(details["member_id"], set()).add(details["email"])
+    assert len(by_member[str(ann)]) == len(by_member[str(bob)]) == 1
+    assert by_member[str(ann)] != by_member[str(bob)]
+    plan = await pseudonym_of(str(ann), "plan", "same@example.com")
+    assert plan not in by_member[str(ann)]
+
+
+async def test_anonymous_callers_are_one_subject_per_utc_day(tables: None) -> None:
+    """Without an actor, the day the row occurred names the subject, in UTC."""
+    late = datetime(2026, 1, 3, 1, 30, tzinfo=timezone(timedelta(hours=2)))
+
+    await commit_events(
+        MemberJoined(member_id=None, email="x@example.com", occurred_at=late)
+    )
+
+    (entry,) = await entries()
+    subject = "anonymous:2026-01-02"
+    assert entry["actor"] == "anonymous"
+    assert entry["client_ip"] == await pseudonym_of(subject, "client_ip", IP)
+    assert entry["details"]["email"] == await pseudonym_of(
+        subject, "email", "x@example.com"
+    )
+    assert await subjects() == [subject]
+
+
+async def test_forgetting_makes_pseudonyms_unlinkable(tables: None) -> None:
+    """The rows stay as they are; a later event gets a new key."""
+    ann = uuid.uuid4()
+    await commit_events(
+        MemberJoined(member_id=ann, email="ann@example.com"), actor="alice"
+    )
+    before = await entries()
+
+    assert await forget(str(ann), "nobody") == 1
+    assert await forget() == 0
+    assert await pseudonym_of(str(ann), "email", "ann@example.com") is None
+    assert await entries() == before
+    assert await subjects() == ["alice"]
+    await commit_events(
+        MemberJoined(member_id=ann, email="ann@example.com"), actor="alice"
+    )
+
+    later = [entry for entry in await entries() if entry not in before]
+    assert later[0]["details"]["email"] != before[0]["details"]["email"]
+    assert later[0]["client_ip"] == before[0]["client_ip"]
+
+
+async def test_anonymous_days_are_forgotten_before_a_date(tables: None) -> None:
+    """Only anonymous days before the date go; other subjects stay."""
+    for day in (1, 2):
+        when = datetime(2026, 1, day, 12, tzinfo=UTC)
+        await commit_events(MemberJoined(member_id=None, email="x", occurred_at=when))
+    await commit_events(MemberJoined(member_id=None, email="x"), actor="alice")
+
+    assert await forget_anonymous(date(2026, 1, 2)) == 1
+
+    assert await subjects() == ["alice", "anonymous:2026-01-02"]
+
+
+async def test_explicit_records_keep_personal_details_apart(tables: None) -> None:
+    """``personal`` details are the actor's, the day's callers', or ``subject``'s."""
+    with bind_request(RequestContext("req-1", IP, "POST", "/auth/login", None)):
+        await record(
+            "auth.login", Outcome.DENIED, personal={"username": "dave"}, reason="bad"
+        )
+    with bind_request(RequestContext("req-2", None, "POST", "/reset", "erin")):
+        await record("auth.reset", personal={"email": "e@example.com"})
+    await record(
+        "auth.export", personal={"email": "f@example.com", "phone": None}, subject="u-7"
+    )
+
+    denied, reset, export = await entries()
+    day = f"anonymous:{denied['occurred_at'].date().isoformat()}"
+    assert denied["details"] == {
+        "reason": "bad",
+        "username": await pseudonym_of(day, "username", "dave"),
+    }
+    assert denied["client_ip"] == await pseudonym_of(day, "client_ip", IP)
+    assert reset["details"] == {
+        "email": await pseudonym_of("erin", "email", "e@example.com")
+    }
+    assert reset["client_ip"] is None
+    assert export["details"] == {
+        "email": await pseudonym_of("u-7", "email", "f@example.com"),
+        "phone": None,
+    }
+    with pytest.raises(
+        ValueError,
+        match=r"^Audit details cannot be both plain and personal: \['a', 'b'\]\.$",
+    ):
+        await record("x", personal={"b": 1, "a": 2, "c": 3}, a=1, b=2)
+
+
+async def test_writers_racing_for_a_new_subject_share_its_key(tables: None) -> None:
+    """Two transactions making the first key of a subject both succeed."""
+    member = uuid.uuid4()
+
+    await asyncio.gather(
+        *(
+            commit_events(MemberJoined(member_id=member, email="r@example.com"))
+            for _ in range(2)
+        )
+    )
+
+    emails = {entry["details"]["email"] for entry in await entries()}
+    assert emails == {await pseudonym_of(str(member), "email", "r@example.com")}
+    assert str(member) in await subjects()
+
+
+async def test_forgetting_reaches_every_audited_database(
+    tables: None, tmp_path: Path
+) -> None:
+    """Keys are deleted wherever a domain is routed, and in ``AUDIT.DATABASE``."""
+
+    class ElsewhereUnitOfWork(NotesUnitOfWork):
+        database = "elsewhere"
+
+    elsewhere = f"sqlite+aiosqlite:///{tmp_path / 'elsewhere.sqlite3'}"
+    databases = {**settings.DATABASES, "elsewhere": {"URL": elsewhere}}
+    member = uuid.uuid4()
+    with override_settings(
+        DATABASES=databases, DATABASE_ROUTING={"alpha": "elsewhere"}
+    ):
+        async with connections.engine("elsewhere").begin() as connection:
+            for table in (notes, audit_log, audit_keys):
+                await connection.run_sync(table.create)
+        for uow_class in (NotesUnitOfWork, ElsewhereUnitOfWork):
+            await commit_events(
+                MemberJoined(member_id=member, email="m@example.com"),
+                uow_class=uow_class,
+            )
+
+        assert audited_databases() == ("default", "elsewhere")
+        assert await forget(str(member)) == 2
+        assert str(member) not in await subjects("elsewhere")
+        assert (
+            await pseudonym_of(str(member), "email", "m", database="elsewhere") is None
+        )
+    assert str(member) not in await subjects()
+
+
+def test_auditforget_command(audited: str) -> None:
+    """Subjects, anonymous days, or both; one of them is needed."""
+
+    async def prepare() -> None:
+        today = datetime.now(UTC).date()
+        names = ["alice", "bob"]
+        names += [f"anonymous:{today - timedelta(days=days)}" for days in (31, 30, 0)]
+        async with connections.engine().begin() as connection:
+            await connection.run_sync(audit_keys.create)
+            await connection.execute(
+                insert(audit_keys),
+                [
+                    {"subject": name, "key": bytes(32), "created_at": datetime.now(UTC)}
+                    for name in names
+                ],
+            )
+        await connections.close_all()
+
+    asyncio.run(prepare())
+
+    def run(*args: str) -> str:
+        output = io.StringIO()
+        call_command("auditforget", *args, stdout=output)
+        return output.getvalue()
+
+    assert run("alice", "nobody") == "Forgot 1 key.\n"
+    assert run("--anonymous-days", "30") == "Forgot 1 key.\n"
+    assert run("bob", "--anonymous-days", "0") == "Forgot 2 keys.\n"
+    assert run("bob") == "Forgot 0 keys.\n"
+    with pytest.raises(
+        CommandError, match=r"^Name subjects to forget, or --anonymous-days\.$"
+    ):
+        run()
+    with pytest.raises(CommandError, match=r"^--anonymous-days cannot be negative\.$"):
+        run("--anonymous-days", "-1")

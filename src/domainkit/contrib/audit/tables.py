@@ -1,6 +1,11 @@
-"""The audit trail: append-only, one row per recorded action."""
+"""The audit trail: append-only, one row per recorded action.
 
-from sqlalchemy import JSON, Column, Index, String, Table, Uuid
+Personal values in it are pseudonyms, each made with the key of the person
+it is about (the subject). Those keys live in their own table, which is not
+append-only: deleting a subject's key makes their pseudonyms unlinkable.
+"""
+
+from sqlalchemy import JSON, Column, Index, LargeBinary, String, Table, Uuid
 
 from domainkit.db import UTCDateTime, metadata
 
@@ -20,5 +25,14 @@ audit_log = Table(
     Index("ix_domainkit_audit_log_occurred_at", "occurred_at"),
     Index("ix_domainkit_audit_log_actor", "actor", "occurred_at"),
     Index("ix_domainkit_audit_log_action", "action", "occurred_at"),
+    info={"domain": "audit"},
+)
+
+audit_keys = Table(
+    "domainkit_audit_keys",
+    metadata,
+    Column("subject", String(255), primary_key=True),
+    Column("key", LargeBinary(32), nullable=False),
+    Column("created_at", UTCDateTime, nullable=False),
     info={"domain": "audit"},
 )
