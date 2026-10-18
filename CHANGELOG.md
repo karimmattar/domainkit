@@ -65,6 +65,9 @@ All notable changes to domainkit. The format follows
 
 ### Changed
 
+- The `Ledger` port has a new abstract method, `create(key, value)`: write
+  revision 1 of a new key, or raise the new `LedgerKeyExists`. Custom ledger
+  adapters must implement it.
 - New projects (`domainkit init`) install content types and auth, list
   `AuthenticationMiddleware`, and mount `/auth` and `/admin/auth`; their
   test settings use the fast password hasher.
@@ -83,6 +86,13 @@ All notable changes to domainkit. The format follows
 
 ### Fixed
 
+- Recording the same evidence twice at once could look like tampering:
+  `record` read the key, then appended, so concurrent writers both saw it
+  missing and both appended. The key had two revisions, and `verify()`
+  raised `EvidenceTampered`. The ledger now writes the key only if it is
+  new (`Ledger.create`, a `keyMustNotExist` precondition on immudb), so one
+  writer creates it and the others get its receipt, or an
+  `EvidenceConflict` if their record differs.
 - A keyed request whose client disconnected mid-upload ran on the part of
   the body that had arrived, as if it were all of it, and the result was
   stored under the key, so the client's retry with the whole body got 422.

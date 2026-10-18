@@ -1,5 +1,6 @@
 """Evidence: canonical records, the ledger store, durable recording, the command."""
 
+import asyncio
 import dataclasses
 import hashlib
 import hmac
@@ -45,7 +46,14 @@ from domainkit.contrib.messaging.tables import messages
 from domainkit.db import connections
 from domainkit.db.routing import router
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.ledger import Ledger, LedgerEntry, LedgerTampered, MemoryLedger, ledgers
+from domainkit.ledger import (
+    Ledger,
+    LedgerEntry,
+    LedgerTampered,
+    LedgerWrite,
+    MemoryLedger,
+    ledgers,
+)
 from domainkit.management import CommandError
 from domainkit_tests.conftest import MakeDatabase
 from domainkit_tests.test_db import NotesUnitOfWork, notes
@@ -324,16 +332,68 @@ async def test_writing_a_key_again_is_detected() -> None:
 async def test_ledger_verification_failures_surface_as_tampering() -> None:
     """A failed proof is never reported as missing or as a conflict."""
 
-    class Corrupt(MemoryLedger):
+    class CorruptReads(MemoryLedger):
         async def read(self, key: bytes, revision: int | None = None) -> LedgerEntry:
             raise LedgerTampered("proof failed")
 
-    evidence_store_ = store(Corrupt(), namespace="e")
+    class CorruptWrites(MemoryLedger):
+        async def create(self, key: bytes, value: bytes) -> LedgerWrite:
+            raise LedgerTampered("proof failed")
 
-    with pytest.raises(EvidenceTampered, match="failed verification"):
-        await evidence_store_.record(FIXED)
-    with pytest.raises(EvidenceTampered, match="failed verification"):
-        await evidence_store_.get("e/x/y")
+    key = evidence_key("e", FIXED, SUBJECT_KEY)
+    reads = CorruptReads()
+    await reads.append(key.encode(), FIXED.canonical())
+
+    with pytest.raises(EvidenceTampered) as writing:
+        await store(CorruptWrites(), namespace="e").record(FIXED)
+    with pytest.raises(EvidenceTampered) as replaying:
+        await store(reads, namespace="e").record(FIXED)
+    with pytest.raises(EvidenceTampered, match="failed verification reading e/x/y"):
+        await store(reads, namespace="e").get("e/x/y")
+
+    assert str(writing.value) == f"The ledger failed verification writing {key}."
+    assert str(replaying.value) == f"The ledger failed verification reading {key}."
+
+
+class Interleaving(MemoryLedger):
+    """Answers reads after other tasks had a turn, as a remote ledger does."""
+
+    async def read(self, key: bytes, revision: int | None = None) -> LedgerEntry:
+        """Read, then let other tasks run before answering."""
+        try:
+            return await super().read(key, revision)
+        finally:
+            await asyncio.sleep(0)
+
+
+async def test_racing_writers_leave_one_revision() -> None:
+    """Concurrent records of one evidence share a receipt; none looks tampered."""
+    ledger = Interleaving()
+    evidence_store_ = store(ledger)
+
+    receipts = await asyncio.gather(*(evidence_store_.record(FIXED) for _ in range(5)))
+
+    assert len(set(receipts)) == 1
+    assert (await evidence_store_.verify(receipts[0])).intact
+    assert await ledger.revision_count(receipts[0].key.encode(), limit=5) == 1
+
+
+async def test_racing_writers_of_different_records_conflict() -> None:
+    """Of two records racing for one id, the first wins; the other conflicts."""
+    ledger = Interleaving()
+    evidence_store_ = store(ledger)
+    rival = dataclasses.replace(FIXED, facts={"result": "mismatch"})
+
+    first, second = await asyncio.gather(
+        evidence_store_.record(FIXED),
+        evidence_store_.record(rival),
+        return_exceptions=True,
+    )
+
+    assert isinstance(second, EvidenceConflict)
+    assert str(second) == f"Evidence {FIXED.id} already holds another record."
+    assert isinstance(first, EvidenceReceipt)
+    assert (await evidence_store_.verify(first)).evidence == FIXED
 
 
 async def test_records_that_are_not_evidence_are_tampering() -> None:

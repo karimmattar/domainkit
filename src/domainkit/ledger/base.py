@@ -1,8 +1,10 @@
 """The ledger port: an append-only store whose reads and writes are verified.
 
-Writing a key again adds a revision; earlier revisions stay readable. Every
-adapter verifies what it returns: immudb checks cryptographic proofs against
-the last state the client trusts (see ADR 0011).
+Writing a key again adds a revision; earlier revisions stay readable.
+``create`` writes only a new key, atomically in the ledger, so two writers
+racing for one key cannot both succeed. Every adapter verifies what it
+returns: immudb checks cryptographic proofs against the last state the
+client trusts (see ADR 0011).
 """
 
 from abc import ABC, abstractmethod
@@ -15,6 +17,10 @@ class LedgerError(Exception):
 
 class LedgerKeyNotFound(LedgerError, LookupError):
     """The key, or the requested revision of it, does not exist."""
+
+
+class LedgerKeyExists(LedgerError):
+    """``create`` found the key already written."""
 
 
 class LedgerTampered(LedgerError):
@@ -50,6 +56,14 @@ class Ledger(ABC):
     @abstractmethod
     async def append(self, key: bytes, value: bytes) -> LedgerWrite:
         """Write a new revision of ``key``, verified."""
+
+    @abstractmethod
+    async def create(self, key: bytes, value: bytes) -> LedgerWrite:
+        """Write the first revision of ``key``, verified.
+
+        Raises ``LedgerKeyExists`` if the key has one: the check and the write
+        are one step in the ledger.
+        """
 
     @abstractmethod
     async def read(self, key: bytes, revision: int | None = None) -> LedgerEntry:

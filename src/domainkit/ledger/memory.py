@@ -4,7 +4,13 @@ It keeps every revision, like immudb, but nothing survives the process and
 nothing is proven: deployments refuse it.
 """
 
-from domainkit.ledger.base import Ledger, LedgerEntry, LedgerKeyNotFound, LedgerWrite
+from domainkit.ledger.base import (
+    Ledger,
+    LedgerEntry,
+    LedgerKeyExists,
+    LedgerKeyNotFound,
+    LedgerWrite,
+)
 
 
 class MemoryLedger(Ledger):
@@ -20,6 +26,12 @@ class MemoryLedger(Ledger):
         self._transactions += 1
         self._revisions.setdefault(key, []).append((value, self._transactions))
         return LedgerWrite(key, self._transactions)
+
+    async def create(self, key: bytes, value: bytes) -> LedgerWrite:
+        """Store the first revision of ``key``; refuse a key that has one."""
+        if key in self._revisions:
+            raise LedgerKeyExists(f"{key!r} is already written.")
+        return await self.append(key, value)
 
     async def read(self, key: bytes, revision: int | None = None) -> LedgerEntry:
         """Return the latest revision, or revision ``revision`` (1-based)."""
