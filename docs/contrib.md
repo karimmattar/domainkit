@@ -93,6 +93,7 @@ inspects any outbox.
 | `POLL_INTERVAL` | `1.0` | Seconds an idle worker waits before looking again. |
 | `BATCH_SIZE` | `50` | Most messages claimed at once. |
 | `CONCURRENCY` | `10` | Messages one worker runs at the same time. |
+| `SHUTDOWN_TIMEOUT` | `20.0` | Seconds a stopping worker lets running messages finish; the rest are stopped and run again. |
 | `RETENTION_SECONDS` | `604800.0` | Finished messages are deleted after this (7 days). |
 | `CLEANUP_INTERVAL` | `3600.0` | Seconds between those deletions. |
 | `BROKER` | `None` | An alias in `BROKERS`: workers take their work from that broker instead of polling the outbox (below). |
@@ -100,7 +101,17 @@ inspects any outbox.
 | `PUBLISH_ON_COMMIT` | `True` | With a broker: the committing process publishes the commit's due messages in the background right away, instead of leaving them to the relays' next poll. |
 
 Run `runworker --metrics-port 9100` to expose the worker's metrics. Scale by
-running more workers; `SIGTERM` lets running messages finish first.
+running more workers.
+
+**Stopping.** `SIGTERM` (or Ctrl+C) stops claiming and gives running
+messages `SHUTDOWN_TIMEOUT` seconds to finish. Messages still running then
+are cancelled and go back to the outbox, due at once; the cut-short run
+does not count as an attempt. A second signal stops them at once. Keep
+`SHUTDOWN_TIMEOUT` a few seconds under the time your platform waits before
+it kills the process (Kubernetes' `terminationGracePeriodSeconds`, 30 by
+default), so they are given back rather than left locked until
+`VISIBILITY_TIMEOUT`. Handlers see the cancellation as
+`asyncio.CancelledError`; let it propagate.
 
 ### Queues
 

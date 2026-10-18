@@ -13,6 +13,7 @@ from domainkit.broker.base import Broker
 from domainkit.broker.memory import MemoryBroker
 from domainkit.conf import BrokerConfig, settings
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.utils.closing import close_each
 
 type BrokerFactory = Callable[[BrokerConfig], Broker]
 
@@ -73,8 +74,7 @@ class BrokerHandler:
         """Close the running loop's brokers; the next use opens new ones."""
         loop = asyncio.get_running_loop()
         current = [broker for _, broker in self._brokers.pop(loop, {}).values()]
-        for broker in [*current, *self._replaced.pop(loop, [])]:
-            await broker.close()
+        await close_each([*current, *self._replaced.pop(loop, [])], Broker.close)
 
 
 brokers: Final = BrokerHandler()

@@ -9,15 +9,12 @@ from fastapi import APIRouter, FastAPI
 
 from domainkit import setup
 from domainkit.apps import registry
-from domainkit.broker import brokers
-from domainkit.cache import caches
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
-from domainkit.db.connections import connections
 from domainkit.db.drivers import connect_args
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import ErrorResponse, install_exception_handlers
-from domainkit.ledger import ledgers
+from domainkit.lifecycle import close_resources
 from domainkit.utils.module_loading import import_string
 
 logger = logging.getLogger(__name__)
@@ -38,10 +35,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         async with registry.lifespan():
             yield
     finally:
-        await caches.close_all()  # First: their computations use the others.
-        await connections.close_all()
-        await ledgers.close_all()
-        await brokers.close_all()
+        await close_resources()
 
 
 def get_asgi_application() -> FastAPI:

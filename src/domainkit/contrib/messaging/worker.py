@@ -10,6 +10,10 @@ workers can share one outbox. There is no ordering guarantee between messages.
 A worker outlives database outages: it logs each failure, waits longer each
 time (up to ``OUTAGE_MAX_PAUSE``), and carries on. A message whose outcome
 could not be written runs again once its lock expires.
+
+A stopping worker gives running messages ``SHUTDOWN_TIMEOUT`` to finish, then
+cancels the rest. A cancelled message goes back to the outbox, due at once,
+and the cut-short run does not count as an attempt.
 """
 
 import asyncio
@@ -66,6 +70,10 @@ OUTAGE_MAX_PAUSE: Final = 60.0
 """Longest wait between attempts while an outbox's database fails."""
 UNRECORDED: Final = "unrecorded"
 """The outcome of a message that ran but whose outcome could not be written."""
+INTERRUPTED: Final = "interrupted"
+"""The outcome of a message cancelled before it finished (a stopping worker)."""
+RELEASE_TIMEOUT: Final = 5.0
+"""Seconds a cancelled message may take to go back to the outbox."""
 
 
 class UnknownTarget(LookupError):
@@ -156,6 +164,22 @@ class Outage:
             self.failures = 0
 
 
+async def finish(tasks: set[asyncio.Task[None]], grace: float) -> None:
+    """Give ``tasks`` ``grace`` seconds to end, then cancel and await the rest."""
+    if tasks:
+        await asyncio.wait(tasks, timeout=grace)
+    late = [task for task in tasks if not task.done()]
+    if late:
+        logger.warning(
+            "Stopping %d running message(s) that did not finish in time; they "
+            "run again",
+            len(late),
+        )
+    for task in late:
+        task.cancel()
+    await asyncio.gather(*late, return_exceptions=True)
+
+
 def _event_classes(base: type[DomainEvent] = DomainEvent) -> dict[str, type[Any]]:
     """Map every loaded event class to its qualified name."""
     found: dict[str, type[Any]] = {}
@@ -205,7 +229,11 @@ class Worker:
         return Outage(self.database, self.config.POLL_INTERVAL)
 
     async def run(self, stop: asyncio.Event) -> None:
-        """Process messages until ``stop`` is set, then finish the running ones."""
+        """Process messages until ``stop`` is set, then finish the running ones.
+
+        They get ``SHUTDOWN_TIMEOUT`` seconds; then, or when ``run`` itself is
+        cancelled, the rest are cancelled and go back to the outbox.
+        """
         running: set[asyncio.Task[None]] = set()
         stopping = asyncio.create_task(stop.wait())
         outage = self.outage()
@@ -235,10 +263,10 @@ class Worker:
                     await asyncio.wait(
                         {stopping, *running}, return_when=asyncio.FIRST_COMPLETED
                     )
+            await finish(running, self.config.SHUTDOWN_TIMEOUT)
         finally:
             stopping.cancel()
-        if running:
-            await asyncio.gather(*running)
+            await finish(running, 0)  # Cancelled: stop the running ones now.
 
     async def run_once(self) -> int:
         """Run every message that is due now; return how many ran."""
@@ -408,7 +436,8 @@ class Worker:
         """Run one message under its original request id and actor; never raises.
 
         If its outcome cannot be written, the message runs again once its
-        lock expires (``VISIBILITY_TIMEOUT``).
+        lock expires (``VISIBILITY_TIMEOUT``). If it is cancelled, it goes
+        back to the outbox before the cancellation goes on.
         """
         context = RequestContext(
             request_id=message.headers.get("request_id") or message.id.hex,
@@ -424,6 +453,10 @@ class Worker:
         ):
             try:
                 outcome = await self._run(message, started)
+            except asyncio.CancelledError:
+                await self._interrupted(message)
+                observe(message.kind, INTERRUPTED, time.perf_counter() - started)
+                raise
             except Exception as exc:  # The lock runs the message again later.
                 logger.error(
                     "Could not record the outcome of %s %s; it runs again once "
@@ -508,6 +541,27 @@ class Worker:
             exc_info=exc,
         )
         return "retry"
+
+    async def _interrupted(self, message: Claimed) -> None:
+        """Give a cancelled message back, its attempt not counted.
+
+        It was due when claimed, so it is due again at once. If the outbox
+        cannot take it in ``RELEASE_TIMEOUT``, it runs again once its lock
+        expires.
+        """
+        try:
+            async with asyncio.timeout(RELEASE_TIMEOUT):
+                await self._release(
+                    message, status=PENDING, attempts=messages.c.attempts - 1
+                )
+        except Exception as exc:  # Logged; the message's lock expires.
+            logger.error(
+                "Could not give back %s %s after stopping it; it runs again once "
+                "its lock expires",
+                message.kind,
+                message.target,
+                exc_info=exc,
+            )
 
     async def _release(self, message: Claimed, **values: object) -> None:
         """Update ``message`` unless another worker reclaimed it meanwhile."""

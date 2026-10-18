@@ -331,7 +331,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | A bounded context | a package with `apps.py` (`DomainConfig`) | `INSTALLED_DOMAINS` |
 | Domain settings | a Pydantic model | `DomainConfig.settings_class` |
 | Startup wiring | `DomainConfig.ready()` | (called by `setup()`) |
-| Process resources (clients, pools) | `async DomainConfig.startup()` / `shutdown()` | (called by the app lifespan) |
+| Process resources (clients, pools) | `async DomainConfig.startup()` / `shutdown()` | (called by the app lifespan; after the domains stop, the framework closes its caches, databases, ledgers, and brokers, in that order, each within 5 seconds, and a failure is logged without keeping the rest open; management commands close them too) |
 | A readiness check | `async DomainConfig.check()` | (called by `/ready`) |
 | A check of the built application (routes, middleware) | `DomainConfig.check_application(app)`, returning problems | (called when the app is built and by `check`; staging and production refuse to start with any) |
 | Work staged with each commit | `async DomainConfig.stage(uow, events, tasks)` | (called by the unit of work) |
