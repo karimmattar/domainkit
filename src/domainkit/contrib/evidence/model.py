@@ -2,6 +2,9 @@
 
 A record is stored as canonical JSON (sorted keys, no spaces, UTF-8). Its
 SHA-256 digest is the receipt anyone holding a copy can check it against.
+Amounts must be exact: ``Decimal`` facts are written as fixed-point strings
+("10.00"), and floats are refused, since most decimal amounts have no exact
+float and the receipt would prove a rounded value.
 """
 
 import hashlib
@@ -11,6 +14,7 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any, Final
 
 from domainkit.context import current_request
@@ -56,6 +60,28 @@ def _request_id() -> str | None:
     return request.request_id if request else None
 
 
+def _exact(value: Any, path: str) -> Any:  # noqa: ANN401 - JSON values.
+    """``value`` with Decimals as fixed-point strings; floats are refused.
+
+    ``path`` names the place in the facts, never the value, which may be
+    personal data.
+    """
+    if isinstance(value, float):
+        raise ValueError(
+            f"Evidence facts may not hold floats ({path}): use Decimal or str, "
+            "so amounts stay exact."
+        )
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise ValueError(f"Evidence facts must be finite numbers ({path}).")
+        return format(value, "f")
+    if isinstance(value, Mapping):
+        return {key: _exact(item, f"{path}.{key}") for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_exact(item, f"{path}[{index}]") for index, item in enumerate(value)]
+    return value
+
+
 def sha256(data: bytes) -> str:
     """``sha256:<hex>`` of ``data``: how evidence refers to artifacts and records."""
     return f"sha256:{hashlib.sha256(data).hexdigest()}"
@@ -77,13 +103,19 @@ class Evidence:
     subject: str
     """The internal id of what the evidence is about, such as ``customer:42``."""
     facts: Mapping[str, Any] = field(default_factory=dict)
-    """JSON values: results, scores, versions, references."""
+    """JSON values: results, scores, versions, references.
+
+    ``Decimal`` amounts are stored as strings ("10.00") and read back as
+    strings; floats are refused.
+    """
     artifacts: Mapping[str, str] = field(default_factory=dict)
     """Names of external documents to their ``sha256:`` digests."""
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     recorded_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     actor: str | None = field(default_factory=_actor)
     request_id: str | None = field(default_factory=_request_id)
+    _record: bytes | None = field(default=None, init=False, repr=False, compare=False)
+    """The bytes ``from_canonical`` read, written back unchanged."""
 
     def __post_init__(self) -> None:
         """Refuse records that could not be stored or verified later."""
@@ -107,13 +139,20 @@ class Evidence:
             raise ValueError("Evidence recorded_at must be timezone-aware.")
 
     def canonical(self) -> bytes:
-        """The stored form: canonical JSON, the same bytes every time."""
+        """The stored form: canonical JSON, the same bytes every time.
+
+        Evidence read with ``from_canonical`` keeps the bytes it was read
+        from, so a record written before floats were refused (and queued in
+        the outbox) is still recorded exactly as its receipt says.
+        """
+        if self._record is not None:
+            return self._record
         document = {
             "format": FORMAT,
             "id": str(self.id),
             "kind": self.kind,
             "subject": self.subject,
-            "facts": dict(self.facts),
+            "facts": _exact(self.facts, "facts"),
             "artifacts": dict(self.artifacts),
             "recorded_at": self.recorded_at.astimezone(UTC).isoformat(
                 timespec="microseconds"
@@ -135,7 +174,7 @@ class Evidence:
         document = json.loads(data)
         if document.get("format") != FORMAT:
             raise ValueError(f"Unknown evidence format {document.get('format')!r}.")
-        return cls(
+        evidence = cls(
             kind=document["kind"],
             subject=document["subject"],
             facts=document["facts"],
@@ -145,6 +184,8 @@ class Evidence:
             actor=document["actor"],
             request_id=document["request_id"],
         )
+        object.__setattr__(evidence, "_record", bytes(data))
+        return evidence
 
 
 @dataclass(frozen=True, slots=True)
