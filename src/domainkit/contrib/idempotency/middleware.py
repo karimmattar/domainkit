@@ -58,7 +58,7 @@ def _hash(*parts: str | bytes) -> str:
     digest = hashlib.sha256()
     for part in parts:
         data = part.encode() if isinstance(part, str) else part
-        digest.update(len(data).to_bytes(8, "big"))
+        digest.update(len(data).to_bytes(8))  # Big-endian.
         digest.update(data)
     return digest.hexdigest()
 
@@ -268,16 +268,14 @@ async def _read_body(receive: Receive) -> tuple[bytes, Receive]:
         if message["type"] != "http.request":
             break
         chunks.append(message.get("body", b""))
-        if not message.get("more_body", False):
+        if not message.get("more_body"):
             break
     body = b"".join(chunks)
-    sent = False
+    pending: list[Message] = [
+        {"type": "http.request", "body": body, "more_body": False}
+    ]
 
     async def replay() -> Message:
-        nonlocal sent
-        if not sent:
-            sent = True
-            return {"type": "http.request", "body": body, "more_body": False}
-        return await receive()
+        return pending.pop() if pending else await receive()
 
     return body, replay
