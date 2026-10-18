@@ -1,7 +1,8 @@
 """Install ``domainkit.contrib.audit`` to keep an audit trail."""
 
 from collections.abc import Sequence
-from typing import cast
+from importlib import import_module
+from typing import Final, cast
 
 from domainkit.apps import DomainConfig, registry
 from domainkit.db import SqlAlchemyUnitOfWork
@@ -10,6 +11,8 @@ from domainkit.ddd import DeferredTask, DomainEvent, UnitOfWork
 
 from .recorder import event_rows, write
 from .settings import AuditSettings
+
+MESSAGING: Final = "domainkit.contrib.messaging"
 
 
 class AuditConfig(DomainConfig):
@@ -20,9 +23,11 @@ class AuditConfig(DomainConfig):
     settings_class = AuditSettings
 
     def ready(self) -> None:
-        """Check where explicit records go."""
+        """Check where explicit records go; seal on a schedule with messaging."""
         config = registry.settings(AuditSettings)
         router.require_standalone(config.DATABASE, "AUDIT.DATABASE")
+        if registry.is_installed(MESSAGING):
+            import_module(f"{self.name}.tasks")
 
     async def stage(
         self,

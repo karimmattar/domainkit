@@ -88,6 +88,15 @@ All notable changes to domainkit. The format follows
 
 ### Fixed
 
+- The audit trail was not tamper-evident: the tables' owner could drop the
+  append-only triggers, rewrite rows, and restore them unnoticed. Rows are
+  now sealed into a hash chain (`domainkit_audit_seals`, by the worker every
+  `AUDIT.SEAL_EVERY` or by `auditseal`), each chain's head is anchored on a
+  ledger (`AUDIT.LEDGER`, immudb) at most once per `AUDIT.ANCHOR_EVERY`, and
+  `auditverify` reports changed or missing rows, broken links, rewritten
+  anchors, and rows never sealed. `protect(op, audit_seals)` makes the seals
+  append-only too. Run `makemigrations` and `migrate` for the new table
+  (`docs/contrib.md`, "Tamper evidence").
 - The audit trail kept personal data forever: usernames and clients'
   addresses went into an append-only table, which an erasure request cannot
   touch. They are now pseudonyms (an HMAC with a random key of the person

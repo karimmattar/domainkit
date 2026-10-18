@@ -1,11 +1,20 @@
-"""The audit trail: append-only, one row per recorded action.
+"""The audit trail: append-only, one row per recorded action, sealed in a chain.
 
 Personal values in it are pseudonyms, each made with the key of the person
 it is about (the subject). Those keys live in their own table, which is not
 append-only: deleting a subject's key makes their pseudonyms unlinkable.
 """
 
-from sqlalchemy import JSON, Column, Index, LargeBinary, String, Table, Uuid
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Column,
+    Index,
+    LargeBinary,
+    String,
+    Table,
+    Uuid,
+)
 
 from domainkit.db import UTCDateTime, metadata
 
@@ -36,3 +45,15 @@ audit_keys = Table(
     Column("created_at", UTCDateTime, nullable=False),
     info={"domain": "audit"},
 )
+
+audit_seals = Table(
+    "domainkit_audit_seals",
+    metadata,
+    Column("seq", BigInteger, primary_key=True, autoincrement=False),
+    Column("entry_id", Uuid, nullable=False, unique=True),
+    Column("digest", String(64), nullable=False),
+    Column("link", String(64), nullable=False),
+    Column("sealed_at", UTCDateTime, nullable=False),
+    info={"domain": "audit"},
+)
+"""Each row's place in the hash chain (see ``seals``); append-only too."""

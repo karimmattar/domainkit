@@ -14,40 +14,49 @@ revision::
     def downgrade() -> None:
         unprotect(op)
 
-On other databases both do nothing.
+Protect the seals of the hash chain the same way, in the revision that
+creates them: ``protect(op, audit_seals)``. On other databases both do
+nothing.
 """
 
-from typing import Final, Protocol
+from typing import Protocol
 
-from sqlalchemy import Connection
+from sqlalchemy import Connection, Table
 
 from .tables import audit_log
 
-_FUNCTION: Final = f"{audit_log.name}_append_only"
 
-PROTECT: Final = (
-    f"""
-    CREATE FUNCTION {_FUNCTION}() RETURNS trigger LANGUAGE plpgsql AS $$
+def statements(table: Table) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The statements that protect ``table``, and those that undo them."""
+    function = f"{table.name}_append_only"
+    protect = (
+        f"""
+    CREATE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN
-        RAISE EXCEPTION '{audit_log.name} is append-only'
+        RAISE EXCEPTION '{table.name} is append-only'
             USING ERRCODE = 'insufficient_privilege';
     END
     $$
     """,
-    (
-        f"CREATE TRIGGER {_FUNCTION} BEFORE UPDATE OR DELETE ON {audit_log.name} "
-        f"FOR EACH ROW EXECUTE FUNCTION {_FUNCTION}()"
-    ),
-    (
-        f"CREATE TRIGGER {_FUNCTION}_truncate BEFORE TRUNCATE ON {audit_log.name} "
-        f"FOR EACH STATEMENT EXECUTE FUNCTION {_FUNCTION}()"
-    ),
-)
-UNPROTECT: Final = (
-    f"DROP TRIGGER IF EXISTS {_FUNCTION}_truncate ON {audit_log.name}",
-    f"DROP TRIGGER IF EXISTS {_FUNCTION} ON {audit_log.name}",
-    f"DROP FUNCTION IF EXISTS {_FUNCTION}()",
-)
+        (
+            f"CREATE TRIGGER {function} BEFORE UPDATE OR DELETE ON {table.name} "
+            f"FOR EACH ROW EXECUTE FUNCTION {function}()"
+        ),
+        (
+            f"CREATE TRIGGER {function}_truncate BEFORE TRUNCATE ON {table.name} "
+            f"FOR EACH STATEMENT EXECUTE FUNCTION {function}()"
+        ),
+    )
+    unprotect = (
+        f"DROP TRIGGER IF EXISTS {function}_truncate ON {table.name}",
+        f"DROP TRIGGER IF EXISTS {function} ON {table.name}",
+        f"DROP FUNCTION IF EXISTS {function}()",
+    )
+    return protect, unprotect
+
+
+PROTECT, UNPROTECT = statements(audit_log)
+"""The audit trail's protection, and its removal."""
 
 
 class Operations(Protocol):
@@ -62,14 +71,14 @@ class Operations(Protocol):
         ...
 
 
-def protect(op: Operations) -> None:
-    """Refuse UPDATE, DELETE, and TRUNCATE on the audit trail."""
-    _run(op, PROTECT)
+def protect(op: Operations, table: Table = audit_log) -> None:
+    """Refuse UPDATE, DELETE, and TRUNCATE on ``table`` (the audit trail)."""
+    _run(op, statements(table)[0])
 
 
-def unprotect(op: Operations) -> None:
+def unprotect(op: Operations, table: Table = audit_log) -> None:
     """Remove the protection (downgrades, retention jobs run as the owner)."""
-    _run(op, UNPROTECT)
+    _run(op, statements(table)[1])
 
 
 def _run(op: Operations, statements: tuple[str, ...]) -> None:
