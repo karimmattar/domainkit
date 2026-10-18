@@ -341,8 +341,14 @@ rewrite.
 - **Verifying.** `python manage.py auditverify` checks every row against
   its seal, every link against the one before, and every anchored head
   against the chain. It prints what it found and fails on changed or
-  missing rows, broken links, rewritten anchors, and rows older than a day
-  that were never sealed.
+  missing rows, broken links, rewritten anchors, seals that no anchor
+  covers a day past `AUDIT.ANCHOR_EVERY` (anchoring stopped), and rows
+  older than a day that were never sealed.
+
+Every row can be sealed, whatever its strings hold (a lone surrogate, which
+JSON can escape, included). A host whose clock runs ahead cannot stop
+sealing or anchoring: a row or an anchor dated in the future counts as
+dated now.
 
 A row can be changed unnoticed only until it is sealed and its head
 anchored, so anchor as often as you need: the default is hourly. Erasing a

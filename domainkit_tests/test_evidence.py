@@ -287,8 +287,12 @@ def test_records_keep_text_as_utf8() -> None:
 
 
 def test_facts_must_be_plain_json() -> None:
-    """Sets and other objects have no single JSON form."""
-    for facts in ({"tags": {"a"}}, {"at": datetime(2026, 1, 1, tzinfo=UTC)}):
+    """Sets, other objects, and lone surrogates have no single UTF-8 JSON form."""
+    for facts in (
+        {"tags": {"a"}},
+        {"at": datetime(2026, 1, 1, tzinfo=UTC)},
+        {"name": "\ud800"},
+    ):
         with pytest.raises(ValueError, match="plain JSON values"):
             Evidence(kind="k", subject="s", facts=facts).canonical()
 
