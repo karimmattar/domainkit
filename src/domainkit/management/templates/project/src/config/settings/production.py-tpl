@@ -1,9 +1,12 @@
 """Settings for production: addresses and secrets come from the environment.
 
 Set {{ prefix }}SETTINGS_MODULE=config.settings.production,
-{{ prefix }}ALLOWED_HOSTS (comma-separated), and {{ prefix }}DATABASE_URL.
-Startup fails when one is missing, and the deployment checks refuse DEBUG,
-wildcard hosts, and network databases without verified TLS. The API docs
+{{ prefix }}ALLOWED_HOSTS (comma-separated), {{ prefix }}DATABASE_URL, and
+{{ prefix }}TRUSTED_PROXIES: the networks of the load balancers or proxies in
+front of the application (comma-separated, such as 10.0.0.0/8), or empty when
+callers connect directly. Startup fails when one is missing, and the
+deployment checks refuse DEBUG, wildcard hosts, proxies trusted from every
+address, and network databases without verified TLS. The API docs
 are off, browsers are told to use HTTPS only, and callers are rate limited;
 {{ prefix }}API_DOCS, {{ prefix }}SECURE_HSTS_SECONDS, and {{ prefix }}RATE_LIMIT change that.
 """
@@ -13,6 +16,9 @@ from config.settings.base import env
 
 ENVIRONMENT = "production"
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS")
+# The proxies' X-Forwarded-For names each caller; without them, every caller
+# behind a load balancer shares its address, and so its rate limit.
+TRUSTED_PROXIES = env.list("TRUSTED_PROXIES")
 DATABASES = {
     "default": {"URL": env.str("DATABASE_URL"), "SSLMODE": "verify-full"},
 }

@@ -144,7 +144,7 @@ Each `BROKERS` entry:
 | `READINESS_CACHE_SECONDS` | `1.0` | How long a `/ready` result is reused, so probe floods cannot load the database. |
 | `READINESS_DETAILS` | `False` | Name failing components in `/ready` responses (always logged). |
 | `ACCESS_LOG_QUIET_PATHS` | `/health`, `/ready` | Successful requests to these paths are logged at DEBUG. |
-| `TRUSTED_PROXIES` | `()` | Networks (`10.0.0.0/8`) whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed. Empty: the socket peer is the client. |
+| `TRUSTED_PROXIES` | `()` | Networks (`10.0.0.0/8`) whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed. The client is the right-most address that is not a trusted proxy, across every line of the header; hops may carry a port. The scheme is the `X-Forwarded-Proto` value at the client's place from the right, or the last one. Empty: the socket peer is the client. |
 | `RATE_LIMIT` | `None` | Requests per caller, such as `"300/minute"` (`second`, `minute`, `hour`, `day`). `None` disables it. |
 | `RATE_LIMIT_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths never counted. |
 | `RATE_LIMIT_BACKEND` | `domainkit.http.ratelimit.MemoryBackend` | Where counts live. The default is per process, and keeps the 100,000 most recently seen callers; one seen longer ago starts afresh. Behind several replicas, use `domainkit.http.ratelimit.RedisBackend`: one count per caller in Redis, on the server's clock. If Redis fails, requests are let through. |
@@ -167,6 +167,7 @@ With `ENVIRONMENT` set to `staging` or `production`, startup fails on:
 
 - `DEBUG = True`
 - `*` in `ALLOWED_HOSTS`
+- a `TRUSTED_PROXIES` network that holds every address (`0.0.0.0/0`, `::/0`)
 - `ECHO` or `LOG_PARAMETERS` on any database
 - a network database without `SSLMODE = "verify-full"`
 - a `memory://` ledger, or an immudb ledger without `TLS_CA` or
@@ -193,8 +194,11 @@ passes, so an API that is public on purpose can keep them:
 - `API_DOCS = True`: anyone can read `/docs`, `/redoc`, and `/openapi.json`
 - `SECURE_HSTS_SECONDS = 0`: browsers are not told to keep to HTTPS
 - no `RATE_LIMIT`, or `RateLimitMiddleware` missing from `MIDDLEWARE`
+- a rate limit with no `TRUSTED_PROXIES`: behind a load balancer, every
+  caller would share its address and its count
 
-The production settings that `init` creates avoid all three.
+The production settings that `init` create avoid the first three, and ask
+for `TRUSTED_PROXIES`: leave it empty only when callers connect directly.
 
 ## Middleware
 

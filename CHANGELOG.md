@@ -20,6 +20,20 @@ All notable changes to domainkit. The format follows
   - `auditverify` fails when anchoring stopped: seals that no anchor covers
     a day past `AUDIT.ANCHOR_EVERY` (`Report.unanchored`, and `verify`'s
     new `every`).
+- Clients behind trusted proxies can no longer choose their address, and
+  so their rate limit, login throttle, and the address the audit trail
+  records: every line of `X-Forwarded-For` now counts, not only the first,
+  which the client sends itself when a proxy adds a line of its own
+  (HAProxy's `option forwardfor`). `X-Forwarded-Proto` is read at the
+  client's place, not from its left, which the client could set. Hops with
+  a port (`203.0.113.9:4711`, `[2001:db8::1]:443`) and IPv4 addresses
+  mapped into IPv6 (`::ffff:10.0.0.2`) are understood, where they used to
+  put every caller in the proxy's count.
+- The production settings `init` creates ask for `TRUSTED_PROXIES`, so
+  callers behind a load balancer are no longer all counted, and throttled,
+  as one. Staging and production refuse a network that holds every address
+  (`0.0.0.0/0`, `::/0`), and `check` warns about a rate limit without
+  trusted proxies.
 - Idempotency kept working tokens: a login or refresh sent with an
   `Idempotency-Key` stored its response, tokens and all, in
   `domainkit_idempotency_keys` for a day (for good without messaging),
