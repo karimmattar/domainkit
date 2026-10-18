@@ -319,11 +319,59 @@ def downgrade() -> None:
     unprotect(op)
 ```
 
+### Tamper evidence
+
+Triggers stop the application, but not the tables' owner, who can drop
+them, rewrite rows, and put them back. So the trail is also sealed into a
+hash chain, and the chain's head is anchored on a ledger the owner cannot
+rewrite.
+
+- **Sealing.** Each row not sealed yet gets the next number in
+  `domainkit_audit_seals`, with its digest (the SHA-256 of the row's
+  canonical JSON) and its link (the SHA-256 of the previous link and the
+  digest). The worker seals every `AUDIT.SEAL_EVERY` when
+  `domainkit.contrib.messaging` is installed; otherwise run
+  `python manage.py auditseal` on a schedule. Each database's trail is its
+  own chain.
+- **Anchoring.** With `AUDIT.LEDGER` naming a ledger in `LEDGERS` (immudb),
+  sealing also writes each chain's head (its number and link) there, at
+  most once per `AUDIT.ANCHOR_EVERY`, as a new revision of
+  `domainkit/audit/<alias>`. immudb keeps every revision and verifies what
+  it returns.
+- **Verifying.** `python manage.py auditverify` checks every row against
+  its seal, every link against the one before, and every anchored head
+  against the chain. It prints what it found and fails on changed or
+  missing rows, broken links, rewritten anchors, and rows older than a day
+  that were never sealed.
+
+A row can be changed unnoticed only until it is sealed and its head
+anchored, so anchor as often as you need: the default is hourly. Erasing a
+person (`auditforget`) deletes a key, not a row, so the chain stays intact.
+
+Protect the seals like the trail, in the revision that creates them:
+
+```python
+from domainkit.contrib.audit.tables import audit_seals
+
+
+def upgrade() -> None:
+    ...  # The revision's create_table.
+    protect(op, audit_seals)
+
+
+def downgrade() -> None:
+    unprotect(op, audit_seals)
+    ...
+```
+
 | `AUDIT` key | Default | Meaning |
 | --- | --- | --- |
 | `DATABASE` | `"default"` | Where `record()` writes, and what `auditlog` reads by default. |
 | `EVENTS` | `True` | Record every committed domain event. |
 | `EXCLUDE` | `()` | Actions to skip, as shell patterns (`catalog.*`, `*.viewed`). |
+| `LEDGER` | `None` | `LEDGERS` alias to anchor each chain's head on; `None` seals without anchoring. |
+| `ANCHOR_EVERY` | 1 hour | Anchor a new head at most this often. |
+| `SEAL_EVERY` | 5 minutes | How often the worker seals new rows. |
 
 ## Idempotency: safe retries of unsafe requests
 

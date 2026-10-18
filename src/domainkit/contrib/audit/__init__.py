@@ -13,11 +13,14 @@ Personal data is kept only as pseudonyms of the person it is about, and
     await forget(str(user.id))
 
 The application only inserts rows; ``protection.protect`` makes the table
-append-only in PostgreSQL itself, from a migration.
+append-only in PostgreSQL itself, from a migration. Rows are sealed into a
+hash chain whose head is anchored on a ledger, so ``verify`` finds rows
+changed or removed even by the table's owner (see ``seals``).
 """
 
 from .personal import forget, forget_anonymous, pseudonym_of
 from .recorder import Outcome, action_for, record
+from .seals import seal, seal_all, verify
 from .settings import AuditSettings
 
 __all__ = [
@@ -28,4 +31,7 @@ __all__ = [
     "forget_anonymous",
     "pseudonym_of",
     "record",
+    "seal",
+    "seal_all",
+    "verify",
 ]
