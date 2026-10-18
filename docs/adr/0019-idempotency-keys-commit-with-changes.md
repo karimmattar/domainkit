@@ -1,6 +1,6 @@
 # 0019. Mark idempotency keys committed in the transaction of the changes
 
-- Status: Accepted
+- Status: Accepted; leases added by [0020](0020-lease-idempotency-keys.md)
 - Date: 2026-10-18
 
 ## Context

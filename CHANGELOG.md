@@ -83,6 +83,15 @@ All notable changes to domainkit. The format follows
 
 ### Fixed
 
+- A crash left an idempotency key in progress for a day (ADR 0020): every
+  retry got 409 until the key expired. Keys are now leased for
+  `IDEMPOTENCY.LEASE_SECONDS` (60 by default) under a random token. Once
+  the lease ends, a retry takes over a key whose request died before
+  committing, and gets 409 `idempotency_response_unavailable` if it
+  committed. A request that ran past its lease and lost its key cannot
+  commit: its unit of work fails with 409 `idempotency_key_taken_over`.
+  The idempotency table has new `token` and `locked_until` columns: run
+  `makemigrations` and `migrate`.
 - An idempotency key could run a request twice (ADR 0019): the key was
   released whenever the response was not stored (a 5xx, an exception, or a
   body over `MAX_RESPONSE_BYTES`), even after the request had committed its

@@ -265,23 +265,36 @@ the same request gets the stored response, with `Idempotent-Replayed: true`.
 | --- | --- |
 | Same key, same method, path, query and body | The stored response, replayed |
 | Same key, different request | 422 `idempotency_key_reused` |
-| Same key while the first is still running | 409 `idempotency_key_in_use`, `Retry-After: 1` |
+| Same key while the first is still running, within its lease | 409 `idempotency_key_in_use`, `Retry-After: 1` |
 | Key not 1 to 255 printable ASCII characters | 400 `invalid_idempotency_key` |
 | First request failed (a 5xx or an exception) before committing anything | Not stored: the retry runs again |
 | First response larger than `MAX_RESPONSE_BYTES`, nothing committed | Not stored: the retry runs again |
-| First request committed, then failed or answered over `MAX_RESPONSE_BYTES` | 409 `idempotency_response_unavailable`: it never runs again |
+| First request died before committing, and its lease has ended | The retry takes the key over and runs |
+| First request committed, then failed, died, or answered over `MAX_RESPONSE_BYTES` | 409 `idempotency_response_unavailable`: it never runs again |
+| First request ran past its lease and a retry took its key | The first gets 409 `idempotency_key_taken_over`; its changes are not saved |
 
 A request runs twice only if nothing it did was saved. When a SQL unit of
 work commits during a keyed request, the key is marked committed in the
 same transaction, and a committed key is never released, even if the reply
 to the commit was lost. A retry then gets the stored response or, when the
 response could not be kept, a 409 telling the client to look up the result
-instead. Keep `IDEMPOTENCY.DATABASE` on the database your writes use where
-you can: a unit of work on another database marks the key right after its
-commit, so a crash in between leaves the key in progress until it expires.
-Only units of work are seen: call payment providers and other services
-from a deferred task (`uow.defer`), which the outbox runs once, not from
-the handler.
+instead. Only units of work are seen: call payment providers and other
+services from a deferred task (`uow.defer`), which the outbox runs once, not
+from the handler.
+
+A request holds its key for `LEASE_SECONDS`. If the process dies before the
+request commits anything, a retry after the lease takes the key over and
+runs. Each holder has a random token, and the mark is written only under
+it: a request that ran past its lease and lost its key to a retry cannot
+commit, so the changes are made once. Set `LEASE_SECONDS` above the
+longest a request may run, such as your server's or proxy's timeout.
+
+Keep `IDEMPOTENCY.DATABASE` on the database your writes use where you can.
+A unit of work on another database cannot carry the mark in its
+transaction: before it commits, the key is pinned until it expires, so no
+retry takes it over, and right after, it is marked committed. A crash
+after the pin leaves the key in progress until it expires. If the reply to
+that commit is lost, the key is released as though nothing was saved.
 
 Keys are scoped to the actor, which `AuthenticationMiddleware` sets (list
 it first), so one user cannot replay another's response. Without an
@@ -295,6 +308,7 @@ expired keys are purged hourly.
 | --- | --- | --- |
 | `DATABASE` | `"default"` | Alias holding the keys. |
 | `TTL_SECONDS` | `86400.0` | How long a key is remembered (24 hours). |
+| `LEASE_SECONDS` | `60.0` | How long a request holds its key before a retry may take it over. |
 | `METHODS` | `POST`, `PATCH` | Methods that honour the header; others ignore it. |
 | `MAX_RESPONSE_BYTES` | `1048576` | Larger responses are passed through but not stored. |
 

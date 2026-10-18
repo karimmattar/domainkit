@@ -6,10 +6,12 @@ from typing import Final
 from fastapi import APIRouter, HTTPException, Request, Response, WebSocket
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import Column, Integer, MetaData, Table, insert
+from sqlalchemy import Column, Integer, MetaData, Table, insert, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from domainkit.db import SqlAlchemyUnitOfWork
+from domainkit.contrib.idempotency.operations import running_operation
+from domainkit.contrib.idempotency.tables import idempotency_keys
+from domainkit.db import SqlAlchemyUnitOfWork, connections
 from domainkit.ddd import (
     BusinessRuleViolation,
     ConcurrentUpdate,
@@ -193,9 +195,25 @@ class RejectedCommit(PaymentsUnitOfWork):
 UNITS_OF_WORK: Final = {"unreported": UnreportedCommit, "rejected": RejectedCommit}
 
 
+async def lose_key() -> None:
+    """Hand the running request's key to another token, as a retry would."""
+    operation = running_operation()
+    assert operation is not None
+    async with connections.engine().begin() as connection:
+        await connection.execute(
+            update(idempotency_keys)
+            .where(idempotency_keys.c.key_hash == operation.key_hash)
+            .values(token="retry")
+        )
+
+
 @router.post("/pay", status_code=201)
 async def pay(outcome: str = "ok", database: str = "default") -> Response:
     """Record a payment on ``database``, then answer as ``outcome`` says."""
+    if outcome.startswith("overtaken"):
+        await lose_key()
+    if outcome == "overtaken-crash":
+        raise RuntimeError("crashed before the commit")
     async with UNITS_OF_WORK.get(outcome, PaymentsUnitOfWork)(database=database) as uow:
         await uow.session.execute(insert(payments))
         await uow.commit()
