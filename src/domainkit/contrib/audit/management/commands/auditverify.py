@@ -52,6 +52,8 @@ def _summary(report: Report) -> str:
     ):
         if found:
             lines.append(f"  {name}: {', '.join(str(each) for each in found)}")
+    if report.unanchored:
+        lines.append(f"  seals left unanchored: {report.unanchored}")
     if report.unsealed:
         lines.append(f"  unsealed rows: {report.unsealed}")
     return "\n".join(lines)
