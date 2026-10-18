@@ -209,26 +209,9 @@ class RateLimitMiddleware:
             return
         limit, period = self.rate
         decision = await self.backend.hit(_caller(scope), limit, period)
-        headers = {
-            "RateLimit-Limit": str(limit),
-            "RateLimit-Remaining": str(decision.remaining),
-            "RateLimit-Reset": str(math.ceil(decision.reset_after)),
-        }
+        headers = _quota(limit, decision)
         if not decision.allowed:
-            if scope["type"] == "websocket" and _DENIAL not in scope.get(
-                "extensions", {}
-            ):
-                await send({"type": "websocket.close", "code": TRY_AGAIN_LATER})
-                return
-            response = error_response(
-                status.HTTP_429_TOO_MANY_REQUESTS,
-                "Too many requests; slow down.",
-                code="rate_limited",
-            )
-            response.headers.update(
-                {**headers, "Retry-After": str(math.ceil(decision.retry_after))}
-            )
-            await response(scope, receive, send)
+            await refuse(scope, receive, send, limit, decision)
             return
 
         async def send_with_headers(message: Message) -> None:
@@ -240,13 +223,45 @@ class RateLimitMiddleware:
         await self.app(scope, receive, send_with_headers)
 
 
+async def refuse(
+    scope: Scope, receive: Receive, send: Send, limit: int, decision: Decision
+) -> None:
+    """Answer a refused caller: 429, or close a WebSocket with 1013 if need be."""
+    if scope["type"] == "websocket" and _DENIAL not in scope.get("extensions", {}):
+        await send({"type": "websocket.close", "code": TRY_AGAIN_LATER})
+        return
+    response = error_response(
+        status.HTTP_429_TOO_MANY_REQUESTS,
+        "Too many requests; slow down.",
+        code="rate_limited",
+    )
+    response.headers.update(
+        {**_quota(limit, decision), "Retry-After": str(math.ceil(decision.retry_after))}
+    )
+    await response(scope, receive, send)
+
+
+def address_key(scope: Scope) -> str:
+    """The key a caller without an actor is counted by: its address."""
+    client = scope.get("client")
+    return f"ip:{client_group(client[0]) if client else 'unknown'}"
+
+
 def _caller(scope: Scope) -> str:
     """Identify the caller: the actor if authenticated, else the client address."""
     request = current_request()
     if request is not None and request.actor:
         return f"actor:{request.actor}"
-    client = scope.get("client")
-    return f"ip:{client_group(client[0]) if client else 'unknown'}"
+    return address_key(scope)
+
+
+def _quota(limit: int, decision: Decision) -> dict[str, str]:
+    """The ``RateLimit-*`` headers of ``decision``."""
+    return {
+        "RateLimit-Limit": str(limit),
+        "RateLimit-Remaining": str(decision.remaining),
+        "RateLimit-Reset": str(math.ceil(decision.reset_after)),
+    }
 
 
 def client_group(host: str) -> str:

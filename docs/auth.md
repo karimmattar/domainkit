@@ -422,13 +422,25 @@ Tokens come as OAuth 2's token response:
 ```
 
 Logins are limited to `AUTH.LOGIN_RATE` (10 a minute) per client address
-(IPv6 per network, `RATE_LIMIT_IPV6_PREFIX`) and per username, with the `RATE_LIMIT_BACKEND` (use `RedisBackend` behind
-several replicas), and so are password changes. Unknown users, wrong
-passwords, and inactive users get the same answer in the same time. With
-`domainkit.contrib.audit` installed, refused and throttled logins are
-audited as `auth.login` (outcome `denied`, without the username, which may
-be a password typed in the wrong field), and logins and logouts as
-`auth.user_logged_in` and `auth.user_logged_out`, attributed to the user.
+(IPv6 per network, `RATE_LIMIT_IPV6_PREFIX`) and per account, with the
+`RATE_LIMIT_BACKEND` (use `RedisBackend` behind several replicas). Names
+that logging in treats as one account (`alice`, `ALICE`, and their
+full-width or mathematical look-alikes, under NFKC) share one count.
+Password changes have a count of their own per user, so throttled logins
+for a name never stop its user changing the password. Unknown users, wrong
+passwords, inactive users, and users without a usable password get the
+same answer in the same time. With `domainkit.contrib.audit` installed,
+refused logins are audited as `auth.login` (outcome `denied`, without the
+username, which may be a password typed in the wrong field), and throttled
+ones once per count and period, so a flood adds no rows; logins and
+logouts are audited as `auth.user_logged_in` and `auth.user_logged_out`,
+attributed to the user.
+
+Refused tokens are counted too, per client address, against `RATE_LIMIT`:
+they never reach `RateLimitMiddleware`, which counts the user. Past the
+limit the address gets 429, and its requests with credentials are refused
+before any lookup until `Retry-After` has passed. An opaque token that does
+not have the form of an issued one is refused without a lookup.
 
 ## Protecting routes
 
