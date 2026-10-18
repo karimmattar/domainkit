@@ -7,16 +7,18 @@ from contextlib import ExitStack
 
 import pytest
 from fastapi.testclient import TestClient
-from starlette.types import Message, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from starlette.websockets import WebSocketDisconnect
 
 from domainkit.conf import override_settings
+from domainkit.context import current_request
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.http.middleware import (
     AllowedHostsMiddleware,
     RequestBodyLimitMiddleware,
     RequestBodyTooLarge,
+    RequestContextMiddleware,
     host_allowed,
     security_headers,
 )
@@ -291,6 +293,53 @@ def test_failing_websockets_are_raised_in_debug_mode(make_client: MakeClient) ->
         client.websocket_connect("/ws/crash"),
     ):
         pass
+
+
+async def headerless(scope: Scope, receive: Receive, send: Send) -> None:
+    """Accept, or answer 200, without headers: ASGI makes them optional."""
+    if scope["type"] == "websocket":
+        await send({"type": "websocket.accept"})
+        return
+    await send({"type": "http.response.start", "status": 200})
+    await send({"type": "http.response.body", "body": b"ok"})
+
+
+def started(app: ASGIApp, kind: str) -> dict[bytes, bytes]:
+    """The headers ``app`` starts its response (or accept) with, for a raw scope.
+
+    The scope names no client, which ASGI also makes optional.
+    """
+    sent: list[Message] = []
+
+    async def receive() -> Message:
+        return {"type": "websocket.connect"}
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    async def call() -> None:
+        scope = {"type": kind, "method": "GET", "path": "/raw", "headers": []}
+        await app(scope, receive, send)
+
+    asyncio.run(call())
+    return dict(sent[0]["headers"])
+
+
+def test_raw_applications_may_omit_headers_and_clients() -> None:
+    """The request id is added to a start or an accept that has no headers."""
+    seen: list[str | None] = []
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        request = current_request()
+        seen.append(request.client_ip if request else "no context")
+        await headerless(scope, receive, send)
+
+    starts = [
+        started(RequestContextMiddleware(app), kind) for kind in ("http", "websocket")
+    ]
+
+    assert seen == [None, None]
+    assert [len(start[b"x-request-id"]) for start in starts] == [32, 32]
 
 
 def test_request_body_limits(make_client: MakeClient) -> None:
