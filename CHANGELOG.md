@@ -86,6 +86,16 @@ All notable changes to domainkit. The format follows
 
 ### Fixed
 
+- `CONNECT_ARGS` could turn database TLS and timeouts off unseen. It
+  replaced the driver arguments derived from the settings, so a deployment
+  with `SSLMODE = "verify-full"` passed the deployment checks while
+  `CONNECT_ARGS = {"ssl": False}` connected in plain text, and adding any
+  `server_settings` (asyncpg) or `options` (psycopg) dropped the statement,
+  lock, and idle timeouts. `CONNECT_ARGS` is now added to the derived
+  arguments: `server_settings` and `options` are merged with the timeouts,
+  and setting what `SSLMODE`, the TLS files, or a timeout already set is
+  refused with an `ImproperlyConfigured` naming the setting to change. The
+  check runs when the application is built, before any query.
 - Recording the same evidence twice at once could look like tampering:
   `record` read the key, then appended, so concurrent writers both saw it
   missing and both appended. The key had two revisions, and `verify()`

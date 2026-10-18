@@ -8,11 +8,13 @@ from typing import Any
 
 import pytest
 
-from domainkit.conf import DatabaseConfig
+from domainkit.conf import DatabaseConfig, override_settings
 from domainkit.db.drivers import client_ssl_context, connect_args
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.http import get_asgi_application
 
 POSTGRES = "postgresql+asyncpg://app@db/app"
+TIMEOUTS_SETTINGS = "STATEMENT_TIMEOUT, LOCK_TIMEOUT, IDLE_IN_TRANSACTION_TIMEOUT"
 
 
 def config(url: str = POSTGRES, **options: Any) -> DatabaseConfig:  # noqa: ANN401 - settings values.
@@ -142,12 +144,128 @@ def test_psycopg_arguments(client_certificate: tuple[Path, Path]) -> None:
     }
 
 
-def test_other_drivers_and_overrides() -> None:
-    """SQLite takes no TLS; explicit CONNECT_ARGS always win."""
+def test_other_drivers() -> None:
+    """SQLite takes no TLS, and no timeouts."""
     assert connect_args(config("sqlite+aiosqlite:///x.db")) == {}
     with pytest.raises(ImproperlyConfigured, match="not supported by the 'aiosqlite'"):
         connect_args(config("sqlite+aiosqlite:///x.db", SSLMODE="require"))
-
-    args = connect_args(config(CONNECT_ARGS={"server_settings": {"jit": "off"}}))
-    assert args["server_settings"] == {"jit": "off"}
     assert connect_args(config(), "sqlite+aiosqlite:///other.db") == {}
+
+
+TIMEOUTS = {
+    "statement_timeout": "30000",
+    "lock_timeout": "10000",
+    "idle_in_transaction_session_timeout": "60000",
+}
+PSYCOPG = "postgresql+psycopg://app@db/app"
+IDLE = "idle_in_transaction_session_timeout"
+
+
+def test_connect_args_add_to_the_derived_ones() -> None:
+    """Extra arguments and server settings join TLS and the timeouts."""
+    args = connect_args(
+        config(
+            SSLMODE="verify-full",
+            CONNECT_ARGS={"command_timeout": 5, "server_settings": {"jit": "off"}},
+        )
+    )
+    libpq = connect_args(
+        config(PSYCOPG, CONNECT_ARGS={"options": "-c jit=off", "application_name": "a"})
+    )
+    migrating = connect_args(
+        config(CONNECT_ARGS={"server_settings": {"statement_timeout": "0"}}),
+        timeouts=False,
+    )
+
+    assert isinstance(args["ssl"], ssl.SSLContext)
+    assert args["command_timeout"] == 5
+    assert args["server_settings"] == {**TIMEOUTS, "jit": "off"}
+    assert libpq == {
+        "options": (
+            "-c statement_timeout=30000 -c lock_timeout=10000 "
+            "-c idle_in_transaction_session_timeout=60000 -c jit=off"
+        ),
+        "application_name": "a",
+    }
+    # Without derived timeouts (migrations), nothing is replaced.
+    assert migrating == {"server_settings": {"statement_timeout": "0"}}
+    # Without SSLMODE nothing is derived for TLS, so CONNECT_ARGS may set it.
+    assert connect_args(config(CONNECT_ARGS={"ssl": True}))["ssl"] is True
+
+
+@pytest.mark.parametrize(
+    ("url", "options", "refused"),
+    [
+        (
+            POSTGRES,
+            {"SSLMODE": "verify-full", "CONNECT_ARGS": {"ssl": False}},
+            "ssl (from SSLMODE)",
+        ),
+        (
+            POSTGRES,
+            {
+                "CONNECT_ARGS": {
+                    "server_settings": {"statement_timeout": "0", "jit": "off"}
+                }
+            },
+            "statement_timeout (from STATEMENT_TIMEOUT)",
+        ),
+        (
+            POSTGRES,
+            {"CONNECT_ARGS": {"server_settings": "statement_timeout=0"}},
+            f"server_settings (from {TIMEOUTS_SETTINGS})",
+        ),
+        (
+            PSYCOPG,
+            {"SSLMODE": "verify-full", "CONNECT_ARGS": {"sslmode": "disable"}},
+            "sslmode (from SSLMODE)",
+        ),
+        (
+            PSYCOPG,
+            {"CONNECT_ARGS": {"options": f"-c lock_timeout=0 -c {IDLE}=0"}},
+            (
+                f"{IDLE} (from IDLE_IN_TRANSACTION_TIMEOUT), "
+                "lock_timeout (from LOCK_TIMEOUT)"
+            ),
+        ),
+        (
+            PSYCOPG,
+            {"CONNECT_ARGS": {"options": ["-c", "statement_timeout=0"]}},
+            f"options (from {TIMEOUTS_SETTINGS})",
+        ),
+    ],
+)
+def test_connect_args_never_replace_tls_or_timeouts(
+    url: str, options: dict[str, Any], refused: str
+) -> None:
+    """Turning TLS or a timeout off takes its setting, not CONNECT_ARGS."""
+    with pytest.raises(ImproperlyConfigured) as replaced:
+        connect_args(config(url, **options))
+
+    assert str(replaced.value) == (
+        "CONNECT_ARGS may not replace driver arguments derived from the settings: "
+        f"{refused}. Change those settings instead."
+    )
+
+
+def test_tls_files_cannot_be_replaced(client_certificate: tuple[Path, Path]) -> None:
+    """A CA set by SSLROOTCERT stays; one CONNECT_ARGS adds alone is fine."""
+    cert, _ = client_certificate
+    pinned = config(PSYCOPG, SSLMODE="verify-full", SSLROOTCERT=cert)
+    unpinned = config(
+        PSYCOPG, SSLMODE="verify-full", CONNECT_ARGS={"sslrootcert": "/ca.pem"}
+    )
+
+    with pytest.raises(ImproperlyConfigured, match=r"sslrootcert \(from SSLROOTCERT\)"):
+        connect_args(pinned.model_copy(update={"CONNECT_ARGS": {"sslrootcert": "/x"}}))
+    assert connect_args(unpinned)["sslrootcert"] == "/ca.pem"
+
+
+def test_applications_refuse_bad_driver_arguments() -> None:
+    """The refusal comes when the application is built, before any query."""
+    weakened = {"URL": POSTGRES, "SSLMODE": "verify-full", "CONNECT_ARGS": {"ssl": 0}}
+    with (
+        override_settings(DATABASES={"default": weakened}),
+        pytest.raises(ImproperlyConfigured, match=r"ssl \(from SSLMODE\)"),
+    ):
+        get_asgi_application()

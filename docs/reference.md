@@ -66,7 +66,7 @@ Each `DATABASES` entry:
 | `IDLE_IN_TRANSACTION_TIMEOUT` | `60.0` | Seconds before PostgreSQL ends a session idling inside a transaction. |
 | `POOL_SIZE`, `MAX_OVERFLOW`, `POOL_TIMEOUT`, `POOL_RECYCLE` | SQLAlchemy's | Connection pool sizing. |
 | `POOL_PRE_PING` | `True` | Test connections before use, so database restarts are survived. |
-| `CONNECT_ARGS` | `{}` | Driver arguments; they override the options above. |
+| `CONNECT_ARGS` | `{}` | Extra driver arguments, added to those derived from the options above. asyncpg's `server_settings` and libpq's `options` are merged with the timeouts. Setting what the options above already set (TLS, a timeout) is refused when the application is built; change that option instead. |
 
 Each `LEDGERS` entry:
 

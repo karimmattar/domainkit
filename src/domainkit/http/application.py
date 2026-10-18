@@ -14,6 +14,7 @@ from domainkit.cache import caches
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db.connections import connections
+from domainkit.db.drivers import connect_args
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import ErrorResponse, install_exception_handlers
 from domainkit.ledger import ledgers
@@ -46,6 +47,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def get_asgi_application() -> FastAPI:
     """Set up the framework and return the configured application."""
     setup()
+    # Refuse bad driver arguments (CONNECT_ARGS, TLS files) now, not at first use.
+    for database in settings.DATABASES.values():
+        connect_args(database)
     docs = settings.API_DOCS
     app = FastAPI(
         title=settings.PROJECT_NAME,
