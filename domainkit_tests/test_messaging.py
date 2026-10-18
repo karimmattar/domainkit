@@ -422,7 +422,8 @@ async def test_cleanup_and_run_loop(tables: None) -> None:
         stop.set()
 
     worker.process = process_then_stop  # type: ignore[method-assign]
-    await worker.run(stop)
+    async with asyncio.timeout(5):
+        await worker.run(stop)
     assert len(ran) == 1
 
     async with connections.engine().begin() as connection:
