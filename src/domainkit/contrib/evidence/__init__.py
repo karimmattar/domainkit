@@ -3,6 +3,7 @@
 Install ``domainkit.contrib.evidence``, configure a ledger, and record::
 
     LEDGERS = {"evidence": {"URL": "immudb://user:pw@immudb:3322/evidence"}}
+    EVIDENCE = {"SUBJECT_KEY": env.str("EVIDENCE_SUBJECT_KEY")}  # Deployments.
 
     store = evidence_store()
     receipt = await store.record(

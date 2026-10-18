@@ -338,6 +338,24 @@ digests, or encrypt personal fields with keys you can destroy.
 `python manage.py evidence --subject customer:42` lists a subject's records;
 `evidence --verify <key>` proves one.
 
+**Deployments need `SUBJECT_KEY`**: staging and production refuse to start
+without it. Generate a value once, keep it in your secret store, and read
+it from the environment:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+```python
+EVIDENCE = {"SUBJECT_KEY": env.str("EVIDENCE_SUBJECT_KEY")}
+```
+
+`env.str` reads `<PREFIX>EVIDENCE_SUBJECT_KEY`, or a mounted secret file
+named by `<PREFIX>EVIDENCE_SUBJECT_KEY_FILE`. Back the key up with the
+ledger's credentials, and never change it: `for_subject` finds records only
+under the key they were written with, though the keys kept with their
+receipts always work.
+
 | `EVIDENCE` key | Default | Meaning |
 | --- | --- | --- |
 | `LEDGER` | `"evidence"` | Alias in `LEDGERS` (`immudb://`; `memory://` in tests). |

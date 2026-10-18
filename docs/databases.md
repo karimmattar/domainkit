@@ -182,6 +182,8 @@ LEDGERS = {
         "SERVER_SIGNING_KEY": BASE_DIR / "certs" / "immudb-signing.pub",
     },
 }
+# Evidence keys hide subjects with this secret; required in deployments.
+EVIDENCE = {"SUBJECT_KEY": env.str("EVIDENCE_SUBJECT_KEY")}
 ```
 
 Prepare immudb once:
@@ -195,7 +197,9 @@ openssl ec -in signing.key -pubout -out immudb-signing.pub
 ```
 
 - In staging and production, ledgers need `TLS_CA` and
-  `SERVER_SIGNING_KEY`, and `memory://` is refused.
+  `SERVER_SIGNING_KEY`, and `memory://` is refused. Evidence also needs
+  `EVIDENCE.SUBJECT_KEY`
+  ([contrib.md](contrib.md#evidence-records-that-provably-never-change)).
 - `/ready` checks every ledger (`ledger:<alias>`).
 - Each process trusts the server's state when it first connects, then
   verifies every later step against it. The signing key is what protects
