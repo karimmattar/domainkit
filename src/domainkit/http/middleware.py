@@ -60,8 +60,12 @@ class ProxyHeadersMiddleware:
 
     Only connections from ``TRUSTED_PROXIES`` are believed. The client is the
     right-most ``X-Forwarded-For`` address that is not itself a trusted proxy,
-    so a client cannot spoof its address by sending the header itself.
-    Without trusted proxies this middleware does nothing.
+    so a client cannot spoof its address by sending the header itself. Every
+    line of a header counts (some proxies add a line instead of extending
+    one), in order. The scheme is the ``X-Forwarded-Proto`` value at the
+    client's place, counted from the right as its address was, or the last
+    value when there are fewer. Without trusted proxies this middleware does
+    nothing.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -80,9 +84,12 @@ class ProxyHeadersMiddleware:
         ):
             scope = dict(scope)
             headers = Headers(scope=scope)
-            if real := self.client_address(headers.get("x-forwarded-for", "")):
-                scope["client"] = (real, 0)
-            proto = headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
+            place = 1  # From the right: the hop the scheme describes.
+            if found := self.client_hop(_values(headers, "x-forwarded-for")):
+                address, place = found
+                scope["client"] = (address, 0)
+            protos = _values(headers, "x-forwarded-proto")
+            proto = protos[-min(place, len(protos))].lower() if protos else ""
             if proto in {"http", "https"}:
                 secure = proto == "https"
                 if scope["type"] == "websocket":
@@ -93,23 +100,56 @@ class ProxyHeadersMiddleware:
 
     def trusted(self, address: str) -> bool:
         """Report whether ``address`` belongs to a trusted proxy."""
-        try:
-            ip = ipaddress.ip_address(address)
-        except ValueError:
-            return False
+        ip = _ip(address)
+        return ip is not None and self._covers(ip)
+
+    def _covers(self, ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+        """Whether a trusted network holds ``ip``."""
         return any(ip in network for network in self.networks)
 
-    def client_address(self, forwarded_for: str) -> str | None:
-        """Return the first untrusted hop, from the right; None if malformed."""
-        hops = [hop.strip() for hop in forwarded_for.split(",") if hop.strip()]
-        for hop in reversed(hops):
-            try:
-                ipaddress.ip_address(hop)
-            except ValueError:
+    def client_hop(self, hops: list[str]) -> tuple[str, int] | None:
+        """The first untrusted hop from the right, and its place; None if malformed.
+
+        Hops may carry a port (``203.0.113.9:4711``, ``[2001:db8::1]:443``),
+        and IPv4 addresses mapped into IPv6 count as IPv4.
+        """
+        addresses = []
+        for hop in hops:
+            if (ip := _ip(hop)) is None:
                 return None
-            if not self.trusted(hop):
-                return hop
-        return hops[0] if hops else None
+            addresses.append(ip)
+        for place, ip in enumerate(reversed(addresses), start=1):
+            if not self._covers(ip):
+                return str(ip), place
+        return (str(addresses[0]), len(addresses)) if addresses else None
+
+
+def _values(headers: Headers, name: str) -> list[str]:
+    """Every comma-separated value of every ``name`` line, in order."""
+    return [
+        value.strip()
+        for line in headers.getlist(name)
+        for value in line.split(",")
+        if value.strip()
+    ]
+
+
+def _ip(text: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """``text`` as an address, without a port; IPv4-mapped IPv6 as IPv4."""
+    host = text
+    if text.startswith("["):  # [2001:db8::1]:443
+        host, bracket, _ = text[1:].partition("]")
+        if not bracket:
+            return None
+    elif text.count(":") == 1:  # 203.0.113.9:4711
+        host = text.partition(":")[0]
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return None
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    return ip
 
 
 def security_headers(

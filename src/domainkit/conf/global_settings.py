@@ -534,6 +534,12 @@ class Settings(BaseModel):
                 f"Requests are not rate limited; set RATE_LIMIT and list "
                 f"{RATE_LIMIT_MIDDLEWARE} in MIDDLEWARE."
             )
+        elif not self.TRUSTED_PROXIES:
+            warnings.append(
+                "TRUSTED_PROXIES is empty, so callers are rate limited by the "
+                "address they connect from: behind a load balancer or proxy, "
+                "they all share its count. List its networks in TRUSTED_PROXIES."
+            )
         return warnings
 
     def _check_deployment(self) -> None:
@@ -543,6 +549,11 @@ class Settings(BaseModel):
             raise ValueError(f"DEBUG must be False {where}")
         if "*" in self.ALLOWED_HOSTS:
             raise ValueError(f"ALLOWED_HOSTS must list real host names {where}")
+        if any(network.prefixlen == 0 for network in self.TRUSTED_PROXIES):
+            raise ValueError(
+                f"TRUSTED_PROXIES must list the proxies' networks, not every "
+                f"address {where}: any caller could choose its own address"
+            )
         rules: dict[str, Callable[[DatabaseConfig], bool]] = {
             "ECHO logs every statement; disable it": lambda db: db.ECHO,
             "LOG_PARAMETERS exposes bound values; disable it": lambda db: (

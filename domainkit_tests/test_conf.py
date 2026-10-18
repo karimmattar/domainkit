@@ -342,6 +342,14 @@ def test_settings_class_extends_the_schema(make_package: MakePackage) -> None:
             },
             "SSLMODE must be 'verify-full' in staging for \\['default'\\]",
         ),
+        (
+            {"ENVIRONMENT": "production", "TRUSTED_PROXIES": ["10.0.0.0/8", "::/0"]},
+            "TRUSTED_PROXIES .* not every address in production: any caller",
+        ),
+        (
+            {"ENVIRONMENT": "staging", "TRUSTED_PROXIES": ["0.0.0.0/0"]},
+            "proxies' networks, not every address in staging",
+        ),
     ],
 )
 def test_schema_rejects_unsafe_combinations(
@@ -378,6 +386,7 @@ HARDENED = {
     "SECURE_HSTS_SECONDS": 1,
     "RATE_LIMIT": "300/minute",
     "MIDDLEWARE": [*DEFAULT_MIDDLEWARE, RATE_LIMIT_MIDDLEWARE],
+    "TRUSTED_PROXIES": ["10.0.0.0/8"],
 }
 DOCS_WARNING = (
     "API_DOCS publishes /docs, /redoc, and /openapi.json to anyone; "
@@ -391,6 +400,11 @@ RATE_WARNING = (
     "Requests are not rate limited; set RATE_LIMIT and list "
     "domainkit.http.ratelimit.RateLimitMiddleware in MIDDLEWARE."
 )
+PROXY_WARNING = (
+    "TRUSTED_PROXIES is empty, so callers are rate limited by the address they "
+    "connect from: behind a load balancer or proxy, they all share its count. "
+    "List its networks in TRUSTED_PROXIES."
+)
 
 
 @pytest.mark.parametrize(
@@ -402,6 +416,8 @@ RATE_WARNING = (
         ({"SECURE_HSTS_SECONDS": 0}, [HSTS_WARNING]),
         ({"RATE_LIMIT": None}, [RATE_WARNING]),
         ({"MIDDLEWARE": DEFAULT_MIDDLEWARE}, [RATE_WARNING]),
+        ({"TRUSTED_PROXIES": []}, [PROXY_WARNING]),
+        ({"RATE_LIMIT": None, "TRUSTED_PROXIES": []}, [RATE_WARNING]),
         (
             {
                 "ENVIRONMENT": "staging",

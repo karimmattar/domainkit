@@ -162,6 +162,7 @@ def test_check_lists_weak_deployment_choices() -> None:
         **with_hsts,
         "RATE_LIMIT": "10/second",
         "MIDDLEWARE": [*DEFAULT_MIDDLEWARE, RATE_LIMIT_MIDDLEWARE],
+        "TRUSTED_PROXIES": ["10.0.0.0/8"],
     }
     with override_settings(**hardened):
         assert run("check") == (
