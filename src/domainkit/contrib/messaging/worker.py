@@ -543,18 +543,16 @@ class Worker:
         return "retry"
 
     async def _interrupted(self, message: Claimed) -> None:
-        """Give a cancelled message back: due now, its attempt not counted.
+        """Give a cancelled message back, its attempt not counted.
 
-        If the outbox cannot take it in ``RELEASE_TIMEOUT``, the message runs
-        again once its lock expires.
+        It was due when claimed, so it is due again at once. If the outbox
+        cannot take it in ``RELEASE_TIMEOUT``, it runs again once its lock
+        expires.
         """
         try:
             async with asyncio.timeout(RELEASE_TIMEOUT):
                 await self._release(
-                    message,
-                    status=PENDING,
-                    available_at=_now(),
-                    attempts=messages.c.attempts - 1,
+                    message, status=PENDING, attempts=messages.c.attempts - 1
                 )
         except Exception as exc:  # Logged; the message's lock expires.
             logger.error(

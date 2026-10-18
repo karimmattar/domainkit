@@ -8,10 +8,11 @@ import pytest
 
 from domainkit import lifecycle
 from domainkit.broker import brokers
+from domainkit.broker.handler import BrokerHandler
 from domainkit.cache import CacheHandler, DummyStore
 from domainkit.cache import caches as cache_handler
 from domainkit.conf import override_settings
-from domainkit.db.connections import connections
+from domainkit.db.connections import ConnectionHandler, connections
 from domainkit.ledger import ledgers
 from domainkit.lifecycle import close_resources
 from domainkit.utils.closing import close_each
@@ -25,21 +26,18 @@ async def test_every_resource_closes_even_when_one_fails(
     """A failing or hung close is logged, and the rest still close, in order."""
     closed: list[str] = []
 
-    async def fails() -> None:
-        closed.append("caches")
-        raise RuntimeError("cache server gone")
+    async def fails(name: str) -> None:
+        closed.append(name)
+        raise RuntimeError(f"{name} gone")
 
     async def hangs() -> None:
         closed.append("databases")
         await asyncio.Event().wait()
 
-    async def closes(name: str) -> None:
-        closed.append(name)
-
-    monkeypatch.setattr(cache_handler, "close_all", fails)
+    monkeypatch.setattr(cache_handler, "close_all", partial(fails, "caches"))
     monkeypatch.setattr(connections, "close_all", hangs)
-    monkeypatch.setattr(ledgers, "close_all", partial(closes, "ledgers"))
-    monkeypatch.setattr(brokers, "close_all", partial(closes, "brokers"))
+    monkeypatch.setattr(ledgers, "close_all", partial(fails, "ledgers"))
+    monkeypatch.setattr(brokers, "close_all", partial(fails, "brokers"))
     monkeypatch.setattr(lifecycle, "CLOSE_TIMEOUT", 0.05)
 
     with caplog.at_level(logging.ERROR, "domainkit.lifecycle"):
@@ -48,14 +46,26 @@ async def test_every_resource_closes_even_when_one_fails(
 
     assert closed == ["caches", "databases", "ledgers", "brokers"]
     assert caplog.messages == [
-        "Could not close the caches; closing the rest",
-        "Could not close the databases; closing the rest",
+        f"Could not close the {name}; closing the rest" for name in closed
     ]
     causes = [record.exc_info for record in caplog.records]
     assert [cause[0] if cause else None for cause in causes] == [
         RuntimeError,
         TimeoutError,
+        RuntimeError,
+        RuntimeError,
     ]
+
+
+def test_closing_what_a_loop_never_opened_does_nothing() -> None:
+    """Handlers close only the running loop's resources, if it has any."""
+
+    async def close_fresh() -> None:
+        await CacheHandler().close_all()
+        await ConnectionHandler().close_all()
+        await BrokerHandler().close_all()
+
+    asyncio.run(close_fresh())
 
 
 async def test_close_each_closes_every_item_then_raises_the_first_failure(

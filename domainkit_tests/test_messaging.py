@@ -1316,16 +1316,18 @@ SLOW: Final = {"TASK_TIMEOUT": 30, "VISIBILITY_TIMEOUT": 60}
 """Long enough that only a shutdown stops a task waiting at its gate."""
 
 
-async def stopped(running: asyncio.Task[None]) -> None:
-    """Wait up to five seconds for ``running`` to end; fail, never hang."""
-    await asyncio.wait({running}, timeout=5)
+async def stopped(running: asyncio.Task[None], within: float = 5) -> None:
+    """Wait up to ``within`` seconds for ``running`` to end; fail, never hang."""
+    await asyncio.wait({running}, timeout=within)
     assert running.done()
 
 
-def interrupted() -> float:
-    """How many tasks were stopped before they finished, so far."""
+def interrupted() -> tuple[float, float]:
+    """Tasks stopped before they finished so far, and seconds spent on tasks."""
     labels = {"kind": "task", "outcome": "interrupted"}
-    return REGISTRY.get_sample_value("messaging_messages_total", labels) or 0
+    count = REGISTRY.get_sample_value("messaging_messages_total", labels) or 0
+    duration = "messaging_message_duration_seconds_sum"
+    return count, REGISTRY.get_sample_value(duration, {"kind": "task"}) or 0
 
 
 async def given_back(name: str) -> None:
@@ -1353,11 +1355,14 @@ async def test_stopping_gives_back_what_does_not_finish_in_time(
         stop.set()
         await stopped(running)
 
+    assert running.result() is None  # A stop, not a cancellation.
     await given_back("late")
     assert caplog.messages == [
         "Stopping 1 running message(s) that did not finish in time; they run again"
     ]
-    assert interrupted() == before + 1
+    count, seconds = interrupted()
+    assert count == before[0] + 1
+    assert 0.05 <= seconds - before[1] < 5  # It ran until SHUTDOWN_TIMEOUT.
     gates["late"].set()  # It runs again, as a first attempt.
     assert await worker.run_once() == 1
     assert [(row["status"], row["attempts"]) for row in await outbox()] == [(DONE, 1)]
@@ -1375,7 +1380,7 @@ async def test_a_cancelled_worker_gives_its_messages_back_at_once(
     await until(lambda: "cut:started" in ran)
 
     running.cancel()
-    await stopped(running)
+    await stopped(running, within=0.5)
 
     assert running.cancelled()
     await given_back("cut")
@@ -1437,6 +1442,7 @@ async def test_stopping_gives_back_deliveries_that_do_not_finish_in_time(
     gates["quick"].set()
     await stopped(running)
 
+    assert running.result() is None
     assert "quick:done" in ran
     await given_back("slow")
 
@@ -1454,7 +1460,7 @@ async def test_a_cancelled_brokered_worker_gives_its_deliveries_back(
     await until(lambda: "cut:started" in ran)
 
     running.cancel()
-    await stopped(running)
+    await stopped(running, within=0.5)
 
     assert running.cancelled()
     await given_back("cut")
@@ -1479,6 +1485,38 @@ def test_a_second_signal_stops_the_worker_at_once(
         "Stopped running messages at once; they run again.\n"
         "Worker stopped.\n"
     )
+
+
+def test_one_signal_lets_the_worker_finish(
+    messaging: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first signal only asks the workers to stop."""
+
+    async def drains(self: Worker, stop: asyncio.Event) -> None:
+        os.kill(os.getpid(), signal.SIGTERM)
+        async with asyncio.timeout(5):
+            await stop.wait()
+        await asyncio.sleep(0.05)  # Running messages finish meanwhile.
+
+    monkeypatch.setattr(Worker, "run", drains)
+
+    assert run("runworker") == (
+        "Worker started; press Ctrl+C to stop.\nWorker stopped.\n"
+    )
+
+
+def test_a_worker_cancelled_otherwise_is_not_reported_as_stopped(
+    messaging: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a second signal turns a cancellation into a stop."""
+
+    async def cancelled(self: Worker, stop: asyncio.Event) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(Worker, "run", cancelled)
+
+    with pytest.raises(asyncio.CancelledError):
+        run("runworker")
 
 
 async def test_a_broker_must_be_configured(database_url: str) -> None:
@@ -1511,7 +1549,7 @@ def test_consume_only_workers_and_their_flag(
     assert seen == [False]
     with (
         override_settings(MESSAGING=FAST),
-        pytest.raises(CommandError, match=r"--no-relay needs MESSAGING\.BROKER"),
+        pytest.raises(CommandError, match=r"^--no-relay needs MESSAGING\.BROKER\.$"),
     ):
         run("runworker", "--no-relay")
 
@@ -1538,18 +1576,26 @@ async def test_consume_only_workers_never_relay(broker_tables: MemoryBroker) -> 
 def test_runworker_on_a_broker(brokered: None, monkeypatch: pytest.MonkeyPatch) -> None:
     """The worker command picks the broker and its queues; --queue narrows them."""
     seen: list[list[str]] = []
+    claimed: list[frozenset[str] | None] = []
 
     async def stopped_at_once(self: BrokerWorkers, stop: asyncio.Event) -> None:
+        assert isinstance(stop, asyncio.Event)
         seen.append(self.queues)
+        claimed.extend(worker.queues for worker in self.workers)
 
     monkeypatch.setattr(BrokerWorkers, "run", stopped_at_once)
     assert run("runworker", "--queue", "emails") == (
         "Worker started on broker 'work' (queues: emails); press Ctrl+C to stop.\n"
         "Worker stopped.\n"
     )
-    run("runworker")
+    every = ", ".join(sorted(tasks.queues()))
+    assert run("runworker") == (
+        f"Worker started on broker 'work' (queues: {every}); press Ctrl+C to "
+        "stop.\nWorker stopped.\n"
+    )
     assert seen[0] == ["emails"]
     assert {"default", "emails"} <= set(seen[1])
+    assert claimed == [frozenset({"emails"}), None]
     with pytest.raises(CommandError, match="Queue names have 1 to 64"):
         run("runworker", "--queue", "bad queue")
 
