@@ -88,6 +88,16 @@ All notable changes to domainkit. The format follows
 
 ### Fixed
 
+- The audit trail kept personal data forever: usernames and clients'
+  addresses went into an append-only table, which an erasure request cannot
+  touch. They are now pseudonyms (an HMAC with a random key of the person
+  they are about), and forgetting a person deletes their key, so their
+  pseudonyms can no longer be linked to them: `auditforget <user id>`, or
+  `forget()`. Anonymous callers' addresses belong to one key per day, which
+  `auditforget --anonymous-days N` drops. Event fields are classified with
+  the new `domainkit.ddd.Personal` marker, and `record()` takes `personal`
+  details. Run `makemigrations` and `migrate` for the new
+  `domainkit_audit_keys` table (`docs/contrib.md`, "Personal data").
 - SQLite lost digits of amounts: it keeps `NUMERIC` as a float, so
   `12345678901234567.89` came back as `12345678901234568.00`, silently, in
   the default development and test database. The new
