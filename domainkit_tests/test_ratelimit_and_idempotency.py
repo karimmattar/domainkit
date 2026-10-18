@@ -796,14 +796,18 @@ def test_a_key_released_while_claimed_is_in_progress(
     assert (retry.status_code, retry.json()["code"]) == (409, "idempotency_key_in_use")
 
 
-def run_raw(app: ASGIApp) -> list[Message]:
-    """Send one keyed POST through the middleware straight to ``app``."""
+def run_raw(app: ASGIApp, *incoming: Message) -> list[Message]:
+    """Send one keyed POST through the middleware straight to ``app``.
+
+    The request sends ``incoming``, or else an empty body.
+    """
+    messages = list(incoming or [{"type": "http.request"}])
 
     async def scenario() -> list[Message]:
         sent: list[Message] = []
 
         async def receive() -> Message:
-            return {"type": "http.request"}
+            return messages.pop(0)
 
         async def send(message: Message) -> None:
             sent.append(message)
@@ -867,24 +871,54 @@ def test_request_bodies_are_read_and_replayed() -> None:
     async def receive() -> Message:
         return incoming.pop(0)
 
-    async def scenario() -> tuple[bytes, Message, Message, bytes, bytes]:
-        body, replay = await idempotency._read_body(receive)
+    async def scenario() -> tuple[bytes, Message, Message, bytes]:
+        read = await idempotency._read_body(receive)
+        bare = await idempotency._read_body(receive_bare)
+        assert read is not None
+        assert bare is not None
+        body, replay = read
         first, second = await replay(), await replay()
-        empty, _ = await idempotency._read_body(receive_disconnect)
-        bare, _ = await idempotency._read_body(receive_bare)
-        return body, first, second, empty, bare
-
-    async def receive_disconnect() -> Message:
-        return {"type": "http.disconnect"}
+        return body, first, second, bare[0]
 
     async def receive_bare() -> Message:
         return {"type": "http.request"}
 
-    body, first, second, empty, bare = asyncio.run(scenario())
+    body, first, second, bare = asyncio.run(scenario())
     assert body == b"abc"
     assert first == {"type": "http.request", "body": b"abc", "more_body": False}
     assert second == {"type": "http.disconnect"}
-    assert (empty, bare) == (b"", b"")
+    assert bare == b""
+
+
+def test_bodies_cut_short_by_a_disconnect_are_not_read() -> None:
+    """A disconnect before the last chunk, or before any, leaves no body."""
+    disconnect: Message = {"type": "http.disconnect"}
+    part: Message = {"type": "http.request", "body": b"ab", "more_body": True}
+    for incoming in ([disconnect], [part, disconnect]):
+
+        async def receive(messages: list[Message] = incoming) -> Message:
+            return messages.pop(0)
+
+        assert asyncio.run(idempotency._read_body(receive)) is None
+
+
+def test_requests_cut_short_claim_and_run_nothing(idempotent: TestClient) -> None:
+    """A dropped upload never runs on part of its body; its retry runs in full."""
+    bodies: list[bytes] = []
+
+    async def record(scope: Scope, receive: Receive, send: Send) -> None:
+        message = await receive()
+        bodies.append(message["body"])
+        await send({"type": "http.response.start", "status": 201})
+        await send({"type": "http.response.body", "body": b"done"})
+
+    part = {"type": "http.request", "body": b'{"amount": 1', "more_body": True}
+    cut = run_raw(record, part, {"type": "http.disconnect"})
+
+    assert (cut, bodies, stored_keys()) == ([], [], [])
+    whole = run_raw(record, {"type": "http.request", "body": b'{"amount": 100}'})
+    assert whole[0]["status"] == 201
+    assert bodies == [b'{"amount": 100}']
 
 
 def test_purge_is_scheduled_only_with_messaging(

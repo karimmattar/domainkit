@@ -272,6 +272,7 @@ the same request gets the stored response, with `Idempotent-Replayed: true`.
 | First request died before committing, and its lease has ended | The retry takes the key over and runs |
 | First request committed, then failed, died, or answered over `MAX_RESPONSE_BYTES` | 409 `idempotency_response_unavailable`: it never runs again |
 | First request ran past its lease and a retry took its key | The first gets 409 `idempotency_key_taken_over`; its changes are not saved |
+| Client disconnected before sending the whole body | Nothing runs and no key is claimed: retry with the same key |
 
 A request runs twice only if nothing it did was saved. When a SQL unit of
 work commits during a keyed request, the key is marked committed in the
