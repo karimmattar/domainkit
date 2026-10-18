@@ -58,24 +58,19 @@ class EvidenceStore(ABC):
         return recorded
 
 
-def subject_digest(subject: str, key: bytes | None) -> str:
+def subject_digest(subject: str, key: bytes) -> str:
     """The key part for ``subject``, so keys never show it.
 
     HMAC-SHA-256 under ``key`` (``EVIDENCE.SUBJECT_KEY``), so nobody without
-    the key can find a subject's records by hashing guesses. With ``None``,
-    plain SHA-256, as format 1 records were keyed.
+    the key can find a subject's records by hashing guesses.
     """
-    data = subject.encode()
-    digest = (
-        hashlib.sha256(data) if key is None else hmac.new(key, data, hashlib.sha256)
-    )
+    digest = hmac.new(key, subject.encode(), hashlib.sha256)
     return digest.hexdigest()[:_SUBJECT_DIGEST_LENGTH]
 
 
 def evidence_key(namespace: str, evidence: Evidence, subject_key: bytes) -> str:
-    """``<namespace>/<subject digest>/<evidence id>``; format 1 keeps plain digests."""
-    key = None if evidence.format == 1 else subject_key
-    return f"{namespace}/{subject_digest(evidence.subject, key)}/{evidence.id}"
+    """``<namespace>/<subject digest>/<evidence id>``."""
+    return f"{namespace}/{subject_digest(evidence.subject, subject_key)}/{evidence.id}"
 
 
 class LedgerEvidenceStore(EvidenceStore):
@@ -142,13 +137,8 @@ class LedgerEvidenceStore(EvidenceStore):
     async def for_subject(
         self, subject: str, *, limit: int = 100
     ) -> list[RecordedEvidence]:
-        """Scan the subject's key prefixes, then format 1's, and read each record."""
-        scans = [
-            await self.ledger.keys(
-                f"{self.namespace}/{subject_digest(subject, key)}/".encode(),
-                limit=limit,
-            )
-            for key in (self.subject_key, None)
-        ]
-        keys = [*scans[0], *scans[1]][:limit]
+        """Scan the subject's key prefix and read each record."""
+        digest = subject_digest(subject, self.subject_key)
+        prefix = f"{self.namespace}/{digest}/".encode()
+        keys = await self.ledger.keys(prefix, limit=limit)
         return [await self.get(key.decode()) for key in keys]

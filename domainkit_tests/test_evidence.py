@@ -4,7 +4,6 @@ import dataclasses
 import hashlib
 import hmac
 import io
-import json
 import re
 import time
 import uuid
@@ -40,7 +39,6 @@ from domainkit.contrib.evidence.settings import (
 from domainkit.contrib.evidence.tasks import (
     RECORD_TASK,
     defer_evidence,
-    record_evidence,
 )
 from domainkit.contrib.messaging import Worker
 from domainkit.contrib.messaging.tables import messages
@@ -107,19 +105,13 @@ async def installed(make_database: MakeDatabase) -> AsyncIterator[None]:
 
 
 def test_canonical_records_never_change() -> None:
-    """Frozen digests: changing a layout would break every receipt issued."""
+    """Frozen digest: changing the format would break every receipt issued."""
     body = FIXED.canonical()
-    format_1 = dataclasses.replace(FIXED, format=1)
 
     assert sha256(body) == (
-        "sha256:ef9623c6f3abdac9316665dbbbd7ca5acb743bc2e042dd6851926b5590f3587d"
-    )
-    assert Evidence.from_canonical(body) == FIXED
-    # Format 1 records read back give the same bytes, so retries still match.
-    assert sha256(format_1.canonical()) == (
         "sha256:318fd5a72c0f55200492f4ea5f4f2a6d0a4207e2e8fd2f933800641e26dd8f0a"
     )
-    assert Evidence.from_canonical(format_1.canonical()) == format_1
+    assert Evidence.from_canonical(body) == FIXED
 
 
 @pytest.mark.parametrize(
@@ -200,13 +192,6 @@ def test_internal_ids_are_subjects(subject: str) -> None:
     assert Evidence(kind="kyc.checked", subject=subject).subject == subject
 
 
-def test_format_1_records_keep_their_subjects() -> None:
-    """Records from before subjects were checked are still read back."""
-    format_1 = Evidence(kind="kyc.checked", subject="jane@example.com", format=1)
-
-    assert Evidence.from_canonical(format_1.canonical()) == format_1
-
-
 def test_the_longest_kind_and_subject_are_accepted() -> None:
     """Limits are inclusive: 100 characters of kind, 255 of subject."""
     evidence = Evidence(kind="k" * 100, subject="s" * 255)
@@ -228,16 +213,13 @@ def test_facts_must_be_plain_json() -> None:
             Evidence(kind="k", subject="s", facts=facts).canonical()
 
 
-@pytest.mark.parametrize(("layout", "shown"), [(0, "0"), (3, "3"), (None, "None")])
-def test_unknown_record_formats_are_refused(layout: int | None, shown: str) -> None:
+@pytest.mark.parametrize(
+    ("record", "shown"), [(b'{"format": 2}', "2"), (b"{}", "None")]
+)
+def test_unknown_record_formats_are_refused(record: bytes, shown: str) -> None:
     """A record from a future layout, or none, is not misread."""
-    record = json.dumps({"format": layout} if layout is not None else {}).encode()
-
     with pytest.raises(ValueError, match=rf"^Unknown evidence format {shown}\.$"):
         Evidence.from_canonical(record)
-    if layout is not None:
-        with pytest.raises(ValueError, match=rf"^Unknown evidence format {shown}\.$"):
-            Evidence(kind="kyc.checked", subject="customer:1", format=layout)
 
 
 def test_evidence_remembers_who_and_which_request() -> None:
@@ -270,33 +252,13 @@ async def test_records_are_written_once_and_read_verified() -> None:
 
 
 def test_keys_use_a_keyed_digest_of_the_subject() -> None:
-    """Format 2 keys use HMAC-SHA-256 under the subject key; format 1 plain SHA-256."""
+    """Keys use HMAC-SHA-256 of the subject under the subject key, not plain SHA-256."""
     keyed = hmac.new(SUBJECT_KEY, b"customer:42", hashlib.sha256).hexdigest()[:32]
-    plain = hashlib.sha256(b"customer:42").hexdigest()[:32]
-    format_1 = dataclasses.replace(FIXED, format=1)
 
     assert subject_digest("customer:42", SUBJECT_KEY) == keyed
-    assert subject_digest("customer:42", None) == plain
     assert subject_digest("customer:42", b"another-key") != keyed
+    assert keyed != hashlib.sha256(b"customer:42").hexdigest()[:32]
     assert evidence_key("e", FIXED, SUBJECT_KEY) == f"e/{keyed}/{FIXED.id}"
-    assert evidence_key("e", format_1, SUBJECT_KEY) == f"e/{plain}/{FIXED.id}"
-
-
-async def test_format_1_records_keep_their_keys_and_are_listed() -> None:
-    """A format 1 record (a retry from the outbox) keeps its plain-digest key."""
-    evidence_store_ = store()
-    format_1 = dataclasses.replace(FIXED, format=1, id=uuid.UUID(int=8))
-    old = await evidence_store_.record(format_1)
-    new = await evidence_store_.record(FIXED)
-
-    listed = await evidence_store_.for_subject("customer:42")
-    first = await evidence_store_.for_subject("customer:42", limit=1)
-
-    plain = subject_digest("customer:42", None)
-    assert old.key == f"evidence/{plain}/{format_1.id}"
-    assert [recorded.receipt for recorded in listed] == [new, old]
-    assert [recorded.evidence for recorded in listed] == [FIXED, format_1]
-    assert [recorded.receipt for recorded in first] == [new]
 
 
 async def test_retries_compare_with_the_original_record() -> None:
@@ -410,7 +372,7 @@ async def test_evidence_is_listed_by_subject() -> None:
 
 
 async def test_subjects_are_listed_a_hundred_records_at_a_time() -> None:
-    """Each prefix scan asks for the limit (100 by default), not for everything."""
+    """The prefix scan asks for the limit (100 by default), not for everything."""
 
     class Counting(MemoryLedger):
         def __init__(self) -> None:
@@ -425,7 +387,7 @@ async def test_subjects_are_listed_a_hundred_records_at_a_time() -> None:
     await store(ledger).for_subject("customer:1")
     await store(ledger).for_subject("customer:1", limit=7)
 
-    assert ledger.limits == [100, 100, 7, 7]
+    assert ledger.limits == [100, 7]
 
 
 # The app -------------------------------------------------------------------------
@@ -580,18 +542,6 @@ async def test_deferred_keys_use_the_configured_subject_key(installed: None) -> 
     keyed = subject_digest("invoice:3", subject_key.encode())
     assert key == f"evidence/{keyed}/{evidence.id}"
     assert recorded.evidence == evidence
-
-
-async def test_queued_format_1_records_keep_their_keys(installed: None) -> None:
-    """A record queued before the upgrade lands where defer_evidence said."""
-    format_1 = dataclasses.replace(FIXED, format=1)
-
-    await record_evidence(format_1.canonical().decode())
-    recorded = await evidence_store().get(
-        f"evidence/{subject_digest('customer:42', None)}/{FIXED.id}"
-    )
-
-    assert recorded.evidence == format_1
 
 
 async def test_rolled_back_work_records_no_evidence(installed: None) -> None:
