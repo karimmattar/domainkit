@@ -178,6 +178,13 @@ With `ENVIRONMENT` set to `staging` or `production`, startup fails on:
   or a client certificate, and any cache URL that weakens certificate checks
   (`ssl_cert_reqs=none` or `optional`, `ssl_check_hostname=false`)
 
+Installed contrib apps add their own:
+
+- auth: a password hasher made for tests in `AUTH.PASSWORD_HASHERS`
+  ([auth.md](auth.md))
+- evidence: no `EVIDENCE.SUBJECT_KEY`
+  ([contrib.md](contrib.md#evidence-records-that-provably-never-change))
+
 `migrate --downgrade` also needs `--allow-data-loss` there.
 
 `check` also warns about choices that are valid but weak there. It still
