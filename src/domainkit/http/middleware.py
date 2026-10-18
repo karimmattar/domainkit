@@ -135,14 +135,17 @@ def _values(headers: Headers, name: str) -> list[str]:
 
 
 def _ip(text: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
-    """``text`` as an address, without a port; IPv4-mapped IPv6 as IPv4."""
-    host = text
+    """``text`` as an address, after any port; IPv4-mapped IPv6 as IPv4."""
+    host, port = text, None
     if text.startswith("["):  # [2001:db8::1]:443
-        host, bracket, _ = text[1:].partition("]")
-        if not bracket:
+        host, bracket, rest = text[1:].partition("]")
+        if not bracket or rest[:1] not in {"", ":"}:
             return None
+        port = rest[1:] if rest else None
     elif text.count(":") == 1:  # 203.0.113.9:4711
-        host = text.partition(":")[0]
+        host, _, port = text.partition(":")
+    if port is not None and not port.isdecimal():
+        return None
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
