@@ -136,7 +136,7 @@ async def test_forwarded_headers_only_from_trusted_proxies(
         ),
         (
             "10.0.0.5",
-            {"x-forwarded-for": "[2001:db8::1]:443, [2001:db8::2]"},
+            {"x-forwarded-for": "[2001:db8::1]:443, [2001:db8::2]:8"},
             (("2001:db8::2", 0), "http"),
         ),
         *(
