@@ -12,6 +12,7 @@ configured by one setting, a dictionary whose keys are all optional.
 | `domainkit.contrib.evidence` | `EVIDENCE` | none: records live on a ledger |
 | `domainkit.contrib.contenttypes` | none | `domainkit_content_types` |
 | `domainkit.contrib.auth` | `AUTH` | users, groups, permissions; see [auth.md](auth.md) |
+| `domainkit.contrib.flags` | `FLAGS` | `domainkit_flags`, `domainkit_dynamic_settings` |
 
 With several databases ([databases.md](databases.md)), the outbox and the
 audit trail commit with business data, so their tables are created in every
@@ -395,6 +396,67 @@ def downgrade() -> None:
 | `ANCHOR_EVERY` | 1 hour | Anchor a new head at most this often. |
 | `SEAL_EVERY` | 5 minutes | How often the worker seals new rows. |
 
+### History
+
+A record's history is the rows about it, newest first, from every audited
+database (Django admin's "History"). Rows name what they are about in two
+ways:
+
+- an explicit record has a `target`: `record("report.viewed", target="r-1")`;
+- a committed event holds its aggregate's id in a field of `details`, such
+  as `product_id`; give events the id of the aggregate they are about, as
+  `startdomain` does.
+
+```python
+from domainkit.contrib.audit.history import history
+
+entries = await history(target="r-1")
+entries = await history(aggregate=("product_id", str(product.id)), limit=20)
+older = await history(target="r-1", before=entries[-1].position)
+```
+
+Each entry lists its `changes`, where the details allow. An explicit record
+can say what changed, with `before` and `after` mappings:
+`record("report.renamed", target="r-1", before={"name": "Q1"}, after={"name": "Q2"})`.
+They are kept as written, so never put personal data in them; pass it as
+`personal=`. Otherwise each field is compared with the newest older entry of the
+history that has it, on the same page or the one entry fetched past it, so
+events read best when they carry the fields they change
+(`ProductRenamed(product_id=..., name=...)`). A field nothing older has is
+new (`before` is None).
+
+Personal values stay the pseudonyms the trail holds, also for people who
+were forgotten: reading a history reads no keys. An aggregate's id is
+matched as text, so query by ids, never by personal fields (they are
+pseudonyms).
+
+From the command line, each change under its entry:
+
+```shell
+python manage.py auditlog --target r-1
+python manage.py auditlog --aggregate product_id=6f1c7e6a-...
+```
+
+Staff read histories over HTTP, with `audit.view_history` (a permission
+`migrate` creates for the trail's `AuditEntry` model) and `is_staff`, or as
+superusers. Mount the router next to the admin API:
+
+```python
+from domainkit.contrib.audit.api import router as audit_router
+
+router.include_router(audit_router, prefix="/admin/audit")
+```
+
+`GET /admin/audit/history?target=r-1` and
+`GET /admin/audit/history?field=product_id&id=...` answer pages of up to
+`limit` (50, at most 200) entries, with `next_cursor`. Entries leave out
+the client's address. The permission opens every record's history, and
+querying by a field reads the whole trail: grant it as you would read
+access to the trail.
+
+**Upgrading.** The trail gained an index on `target`, for histories. Run
+`makemigrations` and `migrate` in each project that installs audit.
+
 ## Idempotency: safe retries of unsafe requests
 
 A client sends `Idempotency-Key: <random UUID>` with a `POST` or `PATCH`. The
@@ -546,3 +608,109 @@ receipts always work.
 | `NAMESPACE` | `"evidence"` | Key prefix, so projects or environments can share one ledger. |
 | `MAX_BYTES` | `262144` | Largest record; keep documents elsewhere and record their digests. |
 | `SUBJECT_KEY` | `None` | Secret for the subject digests in keys, 32 characters or more. Required in staging and production; elsewhere a public development key is used. Keep it for as long as the evidence: a new key hides earlier records from `for_subject`, though the keys in their receipts still work. |
+
+## Flags: feature flags and dynamic settings
+
+A flag turns a feature on for everyone, for no one, or for some users, in
+the database, without a deployment:
+
+- `everyone`: `True` is on for all, `False` off for all; unset (`None`), the
+  rules below decide;
+- `users`: user ids it is on for;
+- `groups`: group names it is on for;
+- `percentage`: a share of the other users, 0 to 100. A user's place comes
+  from a hash of the flag's name and the user's id, so they stay in or out
+  while the percentage stays, and stay in as it grows.
+
+Anonymous callers get a flag only when `everyone` is on. A flag nobody
+created is off.
+
+```python
+from fastapi import Depends
+
+from domainkit.contrib.auth import Public
+from domainkit.contrib.flags import RequireFlag, flag_enabled
+
+if await flag_enabled("new_checkout", user=user):
+    ...
+
+
+@router.get("/beta", dependencies=[Depends(RequireFlag("beta")), Public])
+async def beta() -> ...: ...
+```
+
+`flag_enabled` takes the request's user (`domainkit.contrib.auth`), or any
+object with an `id` and, optionally, `groups` with names. `RequireFlag`
+answers 404 while the flag is off for the caller, so the route looks
+absent. It is not an access rule: the route still needs `Require(...)` or
+`Public`.
+
+A dynamic setting is a value staff change at runtime, typed and validated
+by pydantic. Declare it in code, with its default:
+
+```python
+from typing import Annotated
+
+from pydantic import Field
+
+from domainkit.contrib.flags import dynamic_setting
+
+MAX_ITEMS = dynamic_setting(
+    "checkout.max_items",
+    Annotated[int, Field(ge=1, le=100)],
+    default=10,
+    description="Items per order.",
+)
+
+limit = await MAX_ITEMS.get()
+```
+
+`get()` returns the stored value, or the default when none is stored. A
+stored value the type no longer accepts (the declaration changed) gives the
+default, and a warning in the log. Never keep secrets in dynamic settings:
+the audit trail records their values.
+
+Change both from the command line, or through the staff API:
+
+```shell
+python manage.py flags                                    # every flag
+python manage.py flags set beta --percentage 10 --groups staff
+python manage.py flags set beta --everyone on            # on, off, or rules
+python manage.py flags delete beta
+python manage.py flags settings                           # every dynamic setting
+python manage.py flags setting checkout.max_items 25      # the value, as JSON
+python manage.py flags setting checkout.max_items --reset
+```
+
+```python
+from domainkit.contrib.flags.admin import router as flags_router
+
+router.include_router(flags_router, prefix="/admin/flags")
+```
+
+| Endpoint | Permission |
+| --- | --- |
+| `GET /flags` | `flags.view_flag` |
+| `POST /flags` | `flags.add_flag`; a taken name is 409 |
+| `PUT /flags/{name}` | `flags.change_flag` |
+| `DELETE /flags/{name}` | `flags.delete_flag` |
+| `GET /settings` | `flags.view_dynamicsetting`: values, defaults, descriptions, and JSON schemas |
+| `PUT /settings/{key}` | `flags.change_dynamicsetting`; a value the type refuses is 422 |
+| `DELETE /settings/{key}` | `flags.change_dynamicsetting`: back to the default |
+
+Every endpoint also needs a staff user (`is_staff`) or a superuser. Each
+change, from the API or the command, is a domain event (`FlagChanged`,
+`FlagDeleted`, `SettingChanged`, `SettingReset`), so the audit trail records
+who changed what, and `auditlog --aggregate name=beta` shows a flag's
+history.
+
+Every flag and stored setting is read in one query and cached as one entry
+in `FLAGS.CACHE`. A change drops the entry once it commits, so this process,
+and every process sharing a Redis cache, see it at once. Processes with
+their own memory cache see it when their entry expires, within
+`FLAGS.CACHE_TTL`.
+
+| `FLAGS` key | Default | Meaning |
+| --- | --- | --- |
+| `CACHE` | `"default"` | The cache alias holding the flags and settings. |
+| `CACHE_TTL` | `30.0` | Seconds a cached copy lives: how long other processes with a memory cache may see an old value. |
