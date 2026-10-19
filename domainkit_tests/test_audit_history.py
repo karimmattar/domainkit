@@ -34,6 +34,7 @@ from domainkit_tests.test_auth_admin import staff
 from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork, notes
 
 AUDIT = "domainkit.contrib.audit"
+FLAGS = "domainkit.contrib.flags"
 HISTORY = "/admin/audit/history"
 MIDDLEWARE = [
     "domainkit.http.middleware.RequestContextMiddleware",
@@ -58,10 +59,10 @@ def run(*args: str, **options: Any) -> str:  # noqa: ANN401 - command options.
 
 @pytest.fixture
 def project(database_url: str, tmp_path: Path) -> Iterator[None]:
-    """Auth and audit migrated, plus the notes table."""
+    """Auth, audit, and flags migrated, plus the notes table."""
     registry.clear()
     with override_settings(
-        INSTALLED_DOMAINS=[CONTENTTYPES, AUTH, AUDIT, ALPHA],
+        INSTALLED_DOMAINS=[CONTENTTYPES, AUTH, AUDIT, FLAGS, ALPHA],
         DATABASES={"default": {"URL": database_url}},
         MIGRATIONS_DIR=tmp_path / "migrations",
         ROOT_ROUTER="domainkit_tests.staff_routes.router",
