@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from domainkit.conf import DatabaseConfig, override_settings
 from domainkit.db.drivers import client_ssl_context, connect_args
@@ -236,6 +237,32 @@ def test_connect_args_add_to_the_derived_ones() -> None:
             {"CONNECT_ARGS": {"options": ["-c", "statement_timeout=0"]}},
             f"options (from {TIMEOUTS_SETTINGS})",
         ),
+        # PostgreSQL reads setting names in any case, and - as _.
+        (
+            POSTGRES,
+            {"CONNECT_ARGS": {"server_settings": {"STATEMENT_TIMEOUT": "0"}}},
+            "statement_timeout (from STATEMENT_TIMEOUT)",
+        ),
+        (
+            POSTGRES,
+            {"CONNECT_ARGS": {"server_settings": {"Lock-Timeout": "0"}}},
+            "lock_timeout (from LOCK_TIMEOUT)",
+        ),
+        (
+            PSYCOPG,
+            {"CONNECT_ARGS": {"options": "-c STATEMENT_TIMEOUT=0"}},
+            "statement_timeout (from STATEMENT_TIMEOUT)",
+        ),
+        (
+            PSYCOPG,
+            {"CONNECT_ARGS": {"options": "--lock-timeout=0"}},
+            "lock_timeout (from LOCK_TIMEOUT)",
+        ),
+        (
+            PSYCOPG,
+            {"CONNECT_ARGS": {"options": f"-c{IDLE.upper()}=0"}},
+            f"{IDLE} (from IDLE_IN_TRANSACTION_TIMEOUT)",
+        ),
     ],
 )
 def test_connect_args_never_replace_tls_or_timeouts(
@@ -249,6 +276,13 @@ def test_connect_args_never_replace_tls_or_timeouts(
         "CONNECT_ARGS may not replace driver arguments derived from the settings: "
         f"{refused}. Change those settings instead."
     )
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("nan"), "Infinity"])
+def test_timeouts_are_finite(value: object) -> None:
+    """An endless timeout is no timeout: it is refused, not overflowed later."""
+    with pytest.raises(ValidationError, match="finite number"):
+        config(STATEMENT_TIMEOUT=value)
 
 
 def test_tls_files_cannot_be_replaced(client_certificate: tuple[Path, Path]) -> None:

@@ -42,6 +42,10 @@ class Command(BaseCommand):
         **options: object,
     ) -> None:
         """Write revisions, merge revisions, or only report with ``--check``."""
+        try:
+            migrations.check_message(message)
+        except ValueError as exc:
+            raise CommandError(str(exc)) from None
         targets = (database,) if database else migrations.migration_targets()
         if merge:
             merged = [

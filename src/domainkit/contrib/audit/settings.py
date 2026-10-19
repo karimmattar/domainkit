@@ -10,7 +10,7 @@ from domainkit.conf import DEFAULT_DB_ALIAS
 class AuditSettings(BaseModel):
     """What to record; every key is optional."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     DATABASE: str = DEFAULT_DB_ALIAS
     """Alias holding the audit trail; event audits need units of work on it."""

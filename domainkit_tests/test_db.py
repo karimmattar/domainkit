@@ -1,6 +1,7 @@
 """SQLAlchemy integration: connections, repositories, units of work, migrations."""
 
 import asyncio
+import io
 import re
 from collections.abc import Iterator
 from pathlib import Path
@@ -33,6 +34,7 @@ from domainkit.db.migrations import (
 )
 from domainkit.ddd import AggregateRoot, ConcurrentUpdate, DomainEvent, EventBus
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.management import CommandError, call_command
 
 pytestmark = pytest.mark.anyio
 
@@ -265,6 +267,33 @@ def test_migration_workflow(migration_project: Path) -> None:
     downgrade("base")
     with pytest.raises(AlembicCommandError, match="not up to date"):
         pending_changes()
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        'x"""\nimport os\n"""',
+        "two\nlines",
+        "C:\\new folder",
+        'ends with triple quotes"""',
+        "tab\there",
+    ],
+)
+def test_migration_messages_stay_inside_the_docstring(
+    migration_project: Path, message: str
+) -> None:
+    """A message that could end the docstring or escape a character is refused."""
+    refusal = (
+        "A migration message is one line of text, without backslashes or "
+        'triple quotes (""").'
+    )
+    with pytest.raises(ValueError, match=f"^{re.escape(refusal)}$"):
+        make_migration(message)
+    with pytest.raises(CommandError) as failed:
+        call_command("makemigrations", message=message, stdout=io.StringIO())
+
+    assert str(failed.value) == refusal
+    assert not migration_project.exists()
 
 
 def test_migrate_prefers_migration_url(migration_project: Path, database: str) -> None:
