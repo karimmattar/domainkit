@@ -172,7 +172,8 @@ class FilterSet:
             for lookup in each.lookups
         }
         if taken := {ORDERING, SEARCH, REQUEST} & set(cls.filters):
-            raise TypeError(f"{cls.__name__}: {', '.join(taken)} is not a filter name.")
+            names = ", ".join(sorted(taken))
+            raise TypeError(f"{cls.__name__}: {names} cannot name a filter.")
         for name in (*cls.ordering_fields, *_fields(cls.default_ordering)):
             _orderable(cls.model, name)
         for name in cls.search_fields:

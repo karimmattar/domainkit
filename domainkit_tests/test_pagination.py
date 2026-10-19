@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 from hypothesis import given
 from hypothesis import strategies as st
 
-from domainkit.ddd import AggregateRoot, InvalidQuery, UnknownField
+from domainkit.ddd import AggregateRoot, InvalidQuery, Page, UnknownField
 from domainkit.ddd.query import F, Ordering, Query
 from domainkit.http import InvalidCursor, decode_cursor, encode_cursor
 from domainkit.http.errors import install_exception_handlers
@@ -30,6 +30,12 @@ from domainkit.http.pagination import (
     encode_position,
 )
 from domainkit_tests.gadgets import Color, InMemoryGadgets, Label, Size, make_gadget
+
+
+def test_pages_built_by_hand_know_whether_more_follow() -> None:
+    """``limit + 1`` fetched items mean more; ``limit`` or fewer do not."""
+    assert Page.from_items([1, 2, 3], 2) == Page([1, 2], has_more=True)
+    assert Page.from_items([1, 2], 2) == Page([1, 2], has_more=False)
 
 
 def test_round_trip() -> None:
@@ -236,10 +242,12 @@ def test_forged_positions_never_crash(values: list[object]) -> None:
 
 def test_pagination_declares_its_parameters() -> None:
     """Cursor or offset mode, with bounds FastAPI checks."""
-    with pytest.raises(ValueError, match="default_limit <= max_limit"):
+    refusal = r"^Pagination needs 1 <= default_limit <= max_limit\.$"
+    with pytest.raises(ValueError, match=refusal):
         Pagination(default_limit=0)
-    with pytest.raises(ValueError, match="default_limit <= max_limit"):
+    with pytest.raises(ValueError, match=refusal):
         Pagination(default_limit=10, max_limit=5)
+    assert Pagination(default_limit=1, max_limit=1).page(1) == PageRequest(1)
     cursors = Pagination(default_limit=2, max_limit=3, count=True)
     offsets = Pagination(offset=True, max_offset=6)
 
@@ -248,6 +256,7 @@ def test_pagination_declares_its_parameters() -> None:
     assert cursors.page() == PageRequest(limit=50, cursor=None, offset=None, count=True)
     assert cursors.page(2, "abc", 5) == PageRequest(2, "abc", None, count=True)
     assert offsets.page(2, "abc", 5) == PageRequest(2, None, 5, count=False)
+    assert offsets.page() == PageRequest(50, None, 0, count=False)
     assert repr(offsets) == "Pagination(offset=True, count=False)"
 
 
@@ -299,8 +308,15 @@ def test_cursor_pages_over_http() -> None:
     parameters = client.get("/openapi.json").json()["paths"]["/gadgets"]["get"][
         "parameters"
     ]
-    limit = next(each for each in parameters if each["name"] == "limit")
+    named = {each["name"]: each for each in parameters}
+    limit, cursor = named["limit"], named["cursor"]
     assert (limit["schema"]["maximum"], limit["schema"]["default"]) == (3, 2)
+    assert limit["schema"]["minimum"] == 1
+    assert limit["description"] == "Items per page."
+    assert cursor["description"] == "The previous page's next_cursor."
+    assert cursor["schema"]["anyOf"][0]["maxLength"] == MAX_CURSOR_LENGTH
+    too_long = client.get("/gadgets", params={"cursor": "A" * (MAX_CURSOR_LENGTH + 1)})
+    assert too_long.json()["code"] == "validation_error"
 
 
 def test_offset_pages_over_http() -> None:
@@ -316,5 +332,10 @@ def test_offset_pages_over_http() -> None:
     assert first["total"] is None
     last = client.get("/gadgets", params={"offset": 3}).json()
     assert (last["items"], last["next_offset"]) == (["e"], None)
-    refused = client.get("/gadgets", params={"offset": 4})
-    assert refused.status_code == 422
+    for offset in (4, -1):
+        refused = client.get("/gadgets", params={"offset": offset})
+        assert refused.json()["code"] == "validation_error"
+    spec = client.get("/openapi.json").json()["paths"]["/gadgets"]["get"]
+    offset_parameter = next(p for p in spec["parameters"] if p["name"] == "offset")
+    assert offset_parameter["description"] == "Items to skip."
+    assert offset_parameter["schema"]["minimum"] == 0

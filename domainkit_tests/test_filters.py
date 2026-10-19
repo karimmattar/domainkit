@@ -26,26 +26,35 @@ from domainkit_tests.gadgets import (
 LATER = datetime(2026, 2, 1, tzinfo=UTC)
 
 
-class GadgetFilters(FilterSet):
-    """Every kind of filter a gadget listing offers."""
+def gadget_filters() -> type[FilterSet]:
+    """Declare the gadget listing's filters.
 
-    model = Gadget
-    name = Filter("exact", "icontains", "istartswith", max_length=10)
-    price = Filter("gte", "lte")
-    stock = Filter("exact", "isnull", "gt")
-    color = Filter("exact", "in")
-    size = Filter("lt")
-    label = Filter()
-    made_at = Filter("gt")
-    active = Filter()
-    sku = Filter("exact", field="parts.sku")
-    maker = Filter("iexact", field="maker.name")
-    ordering_fields = ("name", "price", "made_at")
-    default_ordering = ("-made_at",)
-    search_fields = ("name", "label")
-    max_conditions = 4
-    max_values = 3
-    max_search_words = 2
+    Tests declare their filter sets as they run, so mutation testing maps
+    the declaration code to the tests that check its result.
+    """
+
+    class GadgetFilters(FilterSet):
+        """Every kind of filter a gadget listing offers."""
+
+        model = Gadget
+        name = Filter("exact", "icontains", "istartswith", max_length=10)
+        price = Filter("gte", "lte")
+        stock = Filter("exact", "isnull", "gt")
+        color = Filter("exact", "in")
+        size = Filter("lt")
+        label = Filter()
+        made_at = Filter("gt")
+        active = Filter()
+        sku = Filter("exact", field="parts.sku")
+        maker = Filter("iexact", field="maker.name")
+        ordering_fields = ("name", "price", "made_at")
+        default_ordering = ("-made_at",)
+        search_fields = ("name", "label")
+        max_conditions = 4
+        max_values = 3
+        max_search_words = 2
+
+    return GadgetFilters
 
 
 ITEMS = [
@@ -69,14 +78,20 @@ ITEMS = [
 
 
 @pytest.fixture
-def client() -> TestClient:
-    """An application listing ``ITEMS`` through ``GadgetFilters``."""
+def declared() -> type[FilterSet]:
+    """The gadget listing's filter set, freshly declared."""
+    return gadget_filters()
+
+
+@pytest.fixture
+def client(declared: type[FilterSet]) -> TestClient:
+    """An application listing ``ITEMS`` through the gadget filters."""
     repository = InMemoryGadgets(ITEMS)
     app = FastAPI()
     install_exception_handlers(app)
 
     @app.get("/gadgets")
-    async def listing(filters: Annotated[GadgetFilters, Depends()]) -> list[str]:
+    async def listing(filters: Annotated[FilterSet, Depends(declared)]) -> list[str]:
         return [each.name for each in await repository.filter(filters.query())]
 
     return TestClient(app)
@@ -143,6 +158,7 @@ def test_filters_narrow_and_order_the_listing(
             "Unknown lookup on name; it offers name, name__icontains",
         ),
         ({"version__gt": 1}, "The listing cannot be filtered on version."),
+        ({"price__gte__x": 1}, "Unknown lookup on price; it offers"),
         ({"name": ["a", "b"]}, "Give the name filter once."),
         ({"ordering": ["name", "-name"]}, "Name each field once in the ordering."),
         ({"search": "a b c"}, "Search for at most 2 words."),
@@ -195,7 +211,9 @@ def test_lookups_are_unknown_only_for_filtered_names(client: TestClient) -> None
     assert names(client, other__thing="x", unrelated="y") == ["beta", "gamma", "alpha"]
 
 
-def test_openapi_documents_each_parameter_with_its_type(client: TestClient) -> None:
+def test_openapi_documents_each_parameter_with_its_type(
+    client: TestClient, declared: type[FilterSet]
+) -> None:
     """Types, enums, bounds, and descriptions reach the schema."""
     spec = client.get("/openapi.json").json()
     parameters = {
@@ -204,7 +222,7 @@ def test_openapi_documents_each_parameter_with_its_type(client: TestClient) -> N
 
     assert "_request" not in parameters
     assert set(parameters) == {
-        *GadgetFilters.filters,
+        *declared.filters,
         "ordering",
         "search",
     }
@@ -239,8 +257,9 @@ def test_openapi_documents_each_parameter_with_its_type(client: TestClient) -> N
     )
 
 
-def test_filter_sets_build_queries_in_code() -> None:
+def test_filter_sets_build_queries_in_code(declared: type[FilterSet]) -> None:
     """Without a request, the parameters are keyword arguments."""
+    GadgetFilters = declared
     filters = GadgetFilters(price__gte=Decimal(1), color__in=[Color.RED], search="al")
 
     assert filters.ordering == (Ordering("made_at", descending=True),)
@@ -255,8 +274,15 @@ def test_filter_sets_build_queries_in_code() -> None:
     assert query == Query(filters.criteria, ordering=filters.ordering, limit=2)
     assert GadgetFilters().criteria is None
     assert GadgetFilters(ordering=["name"]).ordering == (Ordering("name"),)
-    with pytest.raises(InvalidFilter, match="Unknown filter: nope"):
-        GadgetFilters(nope=1)
+    with pytest.raises(InvalidFilter) as caught:
+        GadgetFilters(nope=1, other=2)
+    assert caught.value.detail == "Unknown filter: nope, other."
+    at_most = GadgetFilters(name="alpha", stock=1, price__gte=Decimal(0), search="a")
+    assert at_most.values == {
+        "name": "alpha",
+        "stock": 1,
+        "price__gte": Decimal(0),
+    }
 
 
 def test_filter_sets_are_checked_when_declared() -> None:
@@ -267,12 +293,15 @@ def test_filter_sets_are_checked_when_declared() -> None:
         ({"ordering_fields": ("parts",)}, "holds child entities"),
         ({"default_ordering": ("-nope",)}, "has no field 'nope'"),
         ({"search_fields": ("price",)}, "price is not text to search"),
-        ({"search": Filter(field="name")}, "search is not a filter name"),
+        (
+            {"search": Filter(field="name"), "ordering": Filter(field="name")},
+            r"^Broken: ordering, search cannot name a filter\.$",
+        ),
     ]
     for body, message in declarations:
         with pytest.raises((TypeError, ValueError), match=message):
             type("Broken", (FilterSet,), {"model": Gadget, **body})
-    with pytest.raises(ValueError, match="Offer gte and lte instead of range"):
+    with pytest.raises(ValueError, match=r"^Offer gte and lte instead of range\.$"):
         Filter("range")
     with pytest.raises(ValueError, match="is not a valid Lookup"):
         Filter("regex")
@@ -283,14 +312,6 @@ class Tagged(AggregateRoot[int]):
 
     tags: list[str]
     anything: Any = None
-
-
-class TaggedFilters(FilterSet):
-    """A filter on a field of no known type: text."""
-
-    model = Tagged
-    anything = Filter()
-    tag = Filter("in", field="anything", max_length=4)
 
 
 class Code(ValueObject):
@@ -309,29 +330,35 @@ class Coded(AggregateRoot[int]):
     code: Code
 
 
-class CodedFilters(FilterSet):
-    """Filters on the code."""
-
-    model = Coded
-    code = Filter()
-
-
-def test_refusals_never_repeat_the_value() -> None:
+def test_refusals_never_repeat_the_value(declared: type[FilterSet]) -> None:
     """A value object's own ValueError is not shown; a domain error is."""
+
+    class CodedFilters(FilterSet):
+        model = Coded
+        code = Filter()
+
     with pytest.raises(InvalidFilter) as caught:
         CodedFilters(code="secret-42")
     assert caught.value.detail == "A filter value does not fit its field."
     assert isinstance(caught.value.__cause__, ValueError)
     with pytest.raises(InvalidFilter, match="A label is at most 20"):
-        GadgetFilters(label="x" * 21)
+        declared(label="x" * 21)
 
 
 def test_fields_of_no_known_type_are_filtered_as_text() -> None:
     """Their parameters are strings; an ``__in`` bounds each one."""
+
+    class TaggedFilters(FilterSet):
+        model = Tagged
+        anything = Filter()
+        tag = Filter("in", field="anything", max_length=4)
+
     app = FastAPI()
 
     @app.get("/tagged")
-    async def tagged(filters: Annotated[TaggedFilters, Depends()]) -> list[str]:
+    async def tagged(
+        filters: Annotated[FilterSet, Depends(TaggedFilters)],
+    ) -> list[str]:
         return [str(filters.criteria)]
 
     client = TestClient(app)
@@ -346,6 +373,12 @@ def test_fields_of_no_known_type_are_filtered_as_text() -> None:
     assert client.get("/tagged", params={"anything": "x"}).status_code == 200
     with pytest.raises(TypeError, match="tags: gt needs a field whose values sort"):
         type("Broken", (FilterSet,), {"model": Tagged, "tags": Filter("gt")})
+
+    class Exact(FilterSet):
+        model = Tagged
+        tags = Filter()
+
+    assert set(Exact.filters) == {"tags"}
 
 
 def test_filter_sets_without_a_model_are_bases() -> None:

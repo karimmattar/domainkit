@@ -208,6 +208,7 @@ def test_values_are_coerced_to_their_field() -> None:
     assert fields["label"].coerce(Label("B")) == Label("B")
     assert fields["price"].coerce(3) == 3
     assert fields["price"].coerce(Decimal("1.5")) == Decimal("1.5")
+    assert fields["price"].coerce(Decimal("1E+400")) == Decimal("1E+400")  # Finite.
     assert fields["stock"].coerce(None) is None
     assert fields["active"].coerce(True) is True
     assert fields_of(Thing)["anything"].coerce(object) is object
@@ -301,7 +302,9 @@ def test_expressions_build_conditions() -> None:
         assert condition == Condition("name", lookup, value)
     assert (name != "a") == Not(Condition("name", Lookup.EXACT, "a"))
     assert (1 < F("stock")) == Condition("stock", Lookup.GT, 1)  # noqa: SIM300 - reflected.
-    with pytest.raises(InvalidQuery, match="not one string"):
+    with pytest.raises(
+        InvalidQuery, match=r"^in_ takes a collection of values, not one string\.$"
+    ):
         name.in_("ab")
     with pytest.raises(InvalidQuery, match="not one string"):
         name.in_(b"ab")
@@ -322,7 +325,9 @@ def test_criteria_combine_and_flatten() -> None:
     assert And.of(a) is a
     assert Or.of(a) is a
     assert list((~(a & b) | c).conditions()) == [a, b, c]
-    with pytest.raises(TypeError, match="Combine criteria with &"):
+    with pytest.raises(
+        TypeError, match=r"^Combine criteria with &, \| and ~, not with and, or, not\.$"
+    ):
         bool(a)
     with pytest.raises(TypeError, match="Combine criteria with &"):
         a and b  # noqa: B018 - the mistake being refused.
@@ -356,7 +361,9 @@ def test_criteria_check_fields_and_values_when_bound() -> None:
     with pytest.raises(InvalidQuery, match="pair cannot be compared by lte"):
         (F("pair") <= Pair(1, 2)).bind(Thing)
     assert thing["pair"].coerce(Pair(1, 2)) == Pair(1, 2)
-    with pytest.raises(InvalidQuery, match="Bind the criteria"):
+    with pytest.raises(
+        InvalidQuery, match=r"^Bind the criteria to a class before evaluating them\.$"
+    ):
         (F("name") == "a").evaluate(make_gadget())
 
 
