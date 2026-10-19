@@ -1,17 +1,61 @@
-"""Opaque cursors for keyset pagination.
+"""Pages over HTTP: opaque cursors, page sizes, and offsets.
 
-A cursor encodes the sort key of the last item a client received, for example
-``(name, id)``. It is base64url JSON: opaque to clients, readable in logs.
-Decoding validates the shape, so a tampered cursor is a 422, never a 500.
+``Pagination`` is a FastAPI dependency that reads ``limit`` and ``cursor``
+(or ``offset``) from the query string; the ``PageRequest`` it gives fetches
+the page from a repository and answers with a ``PageOut``::
+
+    pages = Pagination(max_limit=100)
+
+    @router.get("/orders")
+    async def list_orders(
+        page: Annotated[PageRequest, Depends(pages)], uow: UnitOfWorkDep
+    ) -> PageOut[OrderOut]:
+        query = Query(ordering=["-placed_at"])
+        async with uow:
+            found = await page.fetch(uow.orders, query)
+        return page.respond(found, [OrderOut.of(o) for o in found.items], query)
+
+A cursor holds the position of the last item a client received: the values
+of the ordering's fields, the id last, as versioned base64url JSON with the
+ordering it belongs to (ADR 0023). It is opaque, not secret. Decoding checks
+everything (the version, the ordering, how many values there are, and each
+value's type against its field), so a tampered cursor is a 422
+``invalid_cursor``, never a 500, and its values only ever reach SQL as bound
+parameters.
+
+``encode_cursor`` and ``decode_cursor`` are the older, untyped cursors of
+plain strings, for hand-written keyset paging.
 """
 
 import base64
 import json
+import math
+import re
 from collections.abc import Sequence
-from typing import Final
+from dataclasses import dataclass
+from datetime import date, datetime, time
+from decimal import Decimal
+from enum import Enum
+from inspect import Parameter, Signature
+from typing import Annotated, Any, Final
+from uuid import UUID
 
+from fastapi import Query as QueryParameter
 from fastapi import status
+from pydantic import BaseModel
 
+from domainkit.ddd.exceptions import DomainError
+from domainkit.ddd.fields import FieldInfo, base_type, fields_of, primitive
+from domainkit.ddd.model import AggregateRoot
+from domainkit.ddd.pagination import Page
+from domainkit.ddd.query import (
+    CriteriaLike,
+    Ordering,
+    Query,
+    as_query,
+    total_ordering,
+)
+from domainkit.ddd.repository import Repository
 from domainkit.http.errors import APIError
 
 CURSOR_PATTERN: Final = r"^[A-Za-z0-9_-]+$"
@@ -21,6 +65,14 @@ MAX_CURSOR_LENGTH: Final = 2048
 
 Enough for a sort key of about 1,500 UTF-8 bytes (a 200-character name in any
 script plus an id)."""
+CURSOR_VERSION: Final = 1
+"""The format of cursors ``encode_position`` makes (ADR 0023)."""
+DEFAULT_LIMIT: Final = 50
+MAX_LIMIT: Final = 200
+MAX_OFFSET: Final = 10_000
+"""The deepest offset ``Pagination(offset=True)`` accepts by default."""
+_INT64: Final = 2**63
+_DECIMAL: Final = re.compile(r"-?\d{1,40}(\.\d{1,40})?")
 
 
 class InvalidCursor(APIError):
@@ -42,11 +94,7 @@ def encode_cursor(values: Sequence[str]) -> str:
         ValueError: The cursor would be longer than ``decode_cursor`` accepts
             (sort keys must stay short).
     """
-    raw = json.dumps(list(values), separators=(",", ":"), ensure_ascii=False)
-    cursor = base64.urlsafe_b64encode(raw.encode()).rstrip(b"=").decode()
-    if len(cursor) > MAX_CURSOR_LENGTH:
-        raise ValueError(f"Sort key too long for a cursor ({len(cursor)} chars).")
-    return cursor
+    return _encode(list(values))
 
 
 def decode_cursor(cursor: str, size: int) -> list[str]:
@@ -55,13 +103,7 @@ def decode_cursor(cursor: str, size: int) -> list[str]:
     Raises:
         InvalidCursor: The cursor is malformed or has the wrong shape.
     """
-    if len(cursor) > MAX_CURSOR_LENGTH:
-        raise InvalidCursor
-    try:
-        padded = cursor + "=" * (-len(cursor) % 4)
-        values = json.loads(base64.urlsafe_b64decode(padded))
-    except ValueError as exc:
-        raise InvalidCursor from exc
+    values = _decode(cursor)
     if (
         not isinstance(values, list)
         or len(values) != size
@@ -69,3 +111,293 @@ def decode_cursor(cursor: str, size: int) -> list[str]:
     ):
         raise InvalidCursor
     return values
+
+
+def encode_position(position: Sequence[object], ordering: Sequence[Ordering]) -> str:
+    """An opaque cursor for ``position`` in ``ordering`` (a page's ``next_position``).
+
+    Raises:
+        TypeError: A value has no cursor form.
+        ValueError: The cursor would be too long; order by shorter fields.
+    """
+    values = [_to_json(value) for value in position]
+    return _encode([CURSOR_VERSION, _signature(ordering), *values])
+
+
+def decode_position(
+    cursor: str, ordering: Sequence[Ordering], model: type
+) -> tuple[object, ...]:
+    """The position a cursor from ``encode_position`` holds, checked field by field.
+
+    Raises:
+        InvalidCursor: The cursor is malformed, of another version or
+            ordering, or holds a value that does not fit its field.
+    """
+    payload = _decode(cursor)
+    if (
+        not isinstance(payload, list)
+        or len(payload) != len(ordering) + 2
+        or type(payload[0]) is not int
+        or payload[0] != CURSOR_VERSION
+        or payload[1] != _signature(ordering)
+    ):
+        raise InvalidCursor
+    fields = fields_of(model)
+    return tuple(
+        _from_json(fields[item.bind(model).field], value)
+        for item, value in zip(ordering, payload[2:], strict=True)
+    )
+
+
+def _signature(ordering: Sequence[Ordering]) -> str:
+    """The ordering as text, ``-placed_at,id``: a cursor belongs to one."""
+    return ",".join(map(str, ordering))
+
+
+def _encode(payload: object) -> str:
+    """Base64url JSON, without padding, within ``MAX_CURSOR_LENGTH``."""
+    raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+    cursor = base64.urlsafe_b64encode(raw.encode()).rstrip(b"=").decode()
+    if len(cursor) > MAX_CURSOR_LENGTH:
+        raise ValueError(f"Sort key too long for a cursor ({len(cursor)} chars).")
+    return cursor
+
+
+def _decode(cursor: str) -> object:
+    """The JSON inside a cursor.
+
+    Raises:
+        InvalidCursor: Too long, not base64url, or not JSON.
+    """
+    if len(cursor) > MAX_CURSOR_LENGTH or not re.fullmatch(CURSOR_PATTERN, cursor):
+        raise InvalidCursor
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        return json.loads(base64.urlsafe_b64decode(padded))
+    except ValueError as exc:  # binascii and Unicode errors are ValueErrors.
+        raise InvalidCursor from exc
+
+
+def _to_json(value: object) -> object:
+    """A position value as JSON: amounts, times, and ids as text."""
+    value = primitive(value)
+    if value is None or isinstance(value, bool | int | str):
+        return value
+    if isinstance(value, float) and math.isfinite(value):
+        return value
+    if isinstance(value, Decimal | UUID):
+        return str(value)
+    if isinstance(value, date | time):  # A datetime is a date.
+        return value.isoformat()
+    raise TypeError(f"{type(value).__name__} values cannot be put in a cursor.")
+
+
+def _from_json(field: FieldInfo, value: object) -> object:
+    """``value`` from a cursor, as ``field`` holds it.
+
+    Raises:
+        InvalidCursor: It is not what the field holds.
+    """
+    if value is None:
+        if not field.nullable:
+            raise InvalidCursor
+        return None
+    kind = base_type(field.kind)
+    if kind is not None and issubclass(kind, Enum):
+        members = [member.value for member in kind]
+        kind = type(members[0]) if members else None
+    try:
+        parsed = _parse(kind, value)
+        return field.coerce(parsed)
+    except (ValueError, TypeError, DomainError) as exc:
+        raise InvalidCursor from exc
+
+
+def _parse(kind: type | None, value: object) -> object:
+    """Read ``value``, as JSON gave it, as a value of ``kind``.
+
+    Raises:
+        ValueError: It is not one.
+    """
+    if kind is bool:
+        return _of(bool, value)
+    if kind is int:
+        number = _of(int, value)
+        if isinstance(number, bool) or abs(number) >= _INT64:
+            raise ValueError("not a 64-bit integer")
+        return number
+    if kind is str:
+        return _of(str, value)
+    if kind is float:
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            raise ValueError("not a number")
+        return float(value)
+    if kind is Decimal:
+        text = _of(str, value)
+        if not _DECIMAL.fullmatch(text):
+            raise ValueError("not an amount")
+        return Decimal(text)
+    if kind is UUID:
+        return UUID(_of(str, value))
+    if kind is datetime:
+        return datetime.fromisoformat(_of(str, value))
+    if kind is date:
+        return date.fromisoformat(_of(str, value))
+    if kind is time:
+        return time.fromisoformat(_of(str, value))
+    raise ValueError("this field cannot be in a cursor")
+
+
+def _of[T](kind: type[T], value: object) -> T:
+    """``value`` if it is a ``kind``; bools are not integers here.
+
+    Raises:
+        ValueError: It is not.
+    """
+    if not isinstance(value, kind) or (kind is int and isinstance(value, bool)):
+        raise ValueError(f"not a {kind.__name__}")
+    return value
+
+
+class PageOut[ItemT](BaseModel):
+    """A page of items: pass ``next_cursor`` back as ``cursor`` for the next.
+
+    In offset mode ``next_offset`` is set instead. ``total`` counts every
+    match when the endpoint counts.
+    """
+
+    items: list[ItemT]
+    next_cursor: str | None = None
+    next_offset: int | None = None
+    total: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PageRequest:
+    """The page a request asks for; ``Pagination`` makes it from the query string."""
+
+    limit: int
+    cursor: str | None = None
+    offset: int | None = None
+    """Set in offset mode only, where it replaces the cursor."""
+    count: bool = False
+
+    async def fetch[AggregateT: AggregateRoot[Any]](
+        self,
+        repository: Repository[AggregateT, Any],
+        query: Query | CriteriaLike | None = None,
+    ) -> Page[AggregateT]:
+        """Fetch the page of ``query`` (its ordering, then the id) from ``repository``.
+
+        Raises:
+            InvalidCursor: The cursor does not fit the query's ordering or
+                the aggregate's fields.
+        """
+        ordering = total_ordering(as_query(query).ordering)
+        after = None
+        if self.cursor is not None:
+            after = decode_position(self.cursor, ordering, repository.aggregate_type)
+        return await repository.paginate(
+            query,
+            limit=self.limit,
+            after=after,
+            offset=self.offset or 0,
+            count=self.count,
+        )
+
+    def respond[ItemT](
+        self,
+        page: Page[Any],
+        items: list[ItemT],
+        query: Query | CriteriaLike | None = None,
+    ) -> PageOut[ItemT]:
+        """The response for ``page``, whose items are shown as ``items``."""
+        if self.offset is not None:
+            following = self.offset + self.limit if page.has_more else None
+            return PageOut(items=items, next_offset=following, total=page.total)
+        cursor = None
+        if page.next_position is not None:
+            ordering = total_ordering(as_query(query).ordering)
+            cursor = encode_position(page.next_position, ordering)
+        return PageOut(items=items, next_cursor=cursor, total=page.total)
+
+
+class Pagination:
+    """A FastAPI dependency that reads a ``PageRequest`` from the query string.
+
+    ``limit`` defaults to ``default_limit`` and may not exceed ``max_limit``.
+    Pages continue with ``cursor``, or, with ``offset=True``, with
+    ``offset``, up to ``max_offset``. ``count=True`` counts every match into
+    ``total`` (one more query per page). OpenAPI documents the parameters
+    with their bounds; values out of bounds are a 422 ``validation_error``.
+    """
+
+    def __init__(
+        self,
+        *,
+        default_limit: int = DEFAULT_LIMIT,
+        max_limit: int = MAX_LIMIT,
+        offset: bool = False,
+        max_offset: int = MAX_OFFSET,
+        count: bool = False,
+    ) -> None:
+        """Describe the parameters; they are checked by FastAPI."""
+        if not 1 <= default_limit <= max_limit:
+            raise ValueError("Pagination needs 1 <= default_limit <= max_limit.")
+        self.offset = offset
+        self.count = count
+        limit = Parameter(
+            "limit",
+            Parameter.KEYWORD_ONLY,
+            default=default_limit,
+            annotation=Annotated[
+                int,
+                QueryParameter(ge=1, le=max_limit, description="Items per page."),
+            ],
+        )
+        if offset:
+            position = Parameter(
+                "offset",
+                Parameter.KEYWORD_ONLY,
+                default=0,
+                annotation=Annotated[
+                    int,
+                    QueryParameter(ge=0, le=max_offset, description="Items to skip."),
+                ],
+            )
+        else:
+            position = Parameter(
+                "cursor",
+                Parameter.KEYWORD_ONLY,
+                default=None,
+                annotation=Annotated[
+                    str | None,
+                    QueryParameter(
+                        max_length=MAX_CURSOR_LENGTH,
+                        pattern=CURSOR_PATTERN,
+                        description="The previous page's next_cursor.",
+                    ),
+                ],
+            )
+        self.__signature__ = Signature([limit, position], return_annotation=PageRequest)
+
+    async def __call__(
+        self, *, limit: int, cursor: str | None = None, offset: int = 0
+    ) -> PageRequest:
+        """The page the query string asks for."""
+        return self.page(limit, cursor, offset)
+
+    def page(
+        self, limit: int = DEFAULT_LIMIT, cursor: str | None = None, offset: int = 0
+    ) -> PageRequest:
+        """The ``PageRequest`` this dependency makes, for code and tests."""
+        return PageRequest(
+            limit=limit,
+            cursor=None if self.offset else cursor,
+            offset=offset if self.offset else None,
+            count=self.count,
+        )
+
+    def __repr__(self) -> str:
+        """``Pagination(offset=True, count=False)``."""
+        return f"Pagination(offset={self.offset}, count={self.count})"
