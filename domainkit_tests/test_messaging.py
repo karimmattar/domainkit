@@ -63,9 +63,10 @@ from domainkit.contrib.messaging.outbox import insert_statements, message_row
 from domainkit.contrib.messaging.tables import DEAD, DONE, PENDING, messages
 from domainkit.contrib.messaging.worker import Claimed, backoff
 from domainkit.db import connections
-from domainkit.ddd import event_bus
+from domainkit.ddd import DomainEvent, event_bus
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import CommandError, call_command
+from domainkit_tests.sample_domains.alpha.events import GreetingSent
 from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork, NoteWritten, notes
 
 pytestmark = pytest.mark.anyio
@@ -125,6 +126,11 @@ async def durable_handler(event: NoteWritten) -> None:
     """Record the event and who caused it."""
     request = current_request()
     ran.append((event, request.actor if request else None))
+
+
+async def any_event_handler(event: DomainEvent) -> None:
+    """Record any event it is subscribed to."""
+    ran.append((event, None))
 
 
 @pytest.fixture(autouse=True)
@@ -354,21 +360,33 @@ async def test_slow_tasks_time_out(tables: None) -> None:
     assert str(row["last_error"]).startswith("TimeoutError")
 
 
+HANDLER = "domainkit_tests.test_messaging.durable_handler"
+NOTE_WRITTEN = "domainkit_tests.test_db.NoteWritten"
+
+
 @pytest.mark.parametrize(
-    ("kind", "target", "headers"),
+    ("kind", "target", "headers", "error"),
     [
-        ("task", "missing.task", {}),
-        ("event", "missing.handler", {"event_type": "x"}),
+        ("task", "missing.task", {}, "No task 'missing.task'."),
         (
             "event",
-            "domainkit_tests.test_messaging.durable_handler",
+            "missing.handler",
             {"event_type": "x"},
+            "No durable handler 'missing.handler'.",
         ),
-        ("letter", "anything", {}),
+        (
+            "event",
+            "missing.handler",
+            {"event_type": NOTE_WRITTEN},
+            "No durable handler 'missing.handler'.",
+        ),
+        ("event", HANDLER, {"event_type": "x"}, f"No durable handler {HANDLER!r}."),
+        ("event", HANDLER, {}, f"No durable handler {HANDLER!r}."),
+        ("letter", "anything", {}, "Unknown message kind 'letter'."),
     ],
 )
 async def test_unknown_targets_dead_letter_at_once(
-    tables: None, kind: str, target: str, headers: dict[str, str]
+    tables: None, kind: str, target: str, headers: dict[str, str], error: str
 ) -> None:
     """Messages this process cannot run are not retried."""
     row = message_row(
@@ -377,10 +395,63 @@ async def test_unknown_targets_dead_letter_at_once(
     async with connections.engine().begin() as connection:
         await connection.execute(messages.insert().values(row))
 
-    await Worker().run_once()
+    event_bus.subscribe(NoteWritten, durable_handler, durable=True)
+    try:
+        await Worker().run_once()
+    finally:
+        event_bus.unsubscribe(NoteWritten, durable_handler)
 
     (stored,) = await outbox()
-    assert (stored["status"], stored["attempts"]) == (DEAD, 1)
+    assert (stored["status"], stored["attempts"], stored["last_error"]) == (
+        DEAD,
+        1,
+        f"UnknownTarget: {error}",
+    )
+
+
+async def test_any_event_handlers_run_only_for_their_event_types(
+    tables: None,
+) -> None:
+    """A row pairing a handler with another event dies; each subscribed type runs."""
+    greeting = GreetingSent(to="ann")
+    written = NoteWritten(note_id=NoteId(uuid.uuid4()))
+
+    async def queue(event: DomainEvent) -> None:
+        row = message_row(
+            kind="event",
+            target=tasks.qualified_name(any_event_handler),
+            payload=tasks.dump_event(event),
+            headers={"event_type": tasks.qualified_name(type(event))},
+            max_attempts=5,
+        )
+        async with connections.engine().begin() as connection:
+            await connection.execute(messages.insert().values(row))
+
+    event_bus.subscribe(NoteWritten, any_event_handler, durable=True)
+    try:
+        await queue(greeting)
+        await Worker().run_once()
+        (refused,) = await outbox()
+        event_bus.subscribe(GreetingSent, any_event_handler, durable=True)
+        await queue(greeting)
+        await queue(written)
+        await Worker().run_once()
+    finally:
+        event_bus.unsubscribe(NoteWritten, any_event_handler)
+        event_bus.unsubscribe(GreetingSent, any_event_handler)
+
+    assert (refused["status"], refused["attempts"], refused["last_error"]) == (
+        DEAD,
+        1,
+        (
+            "UnknownTarget: 'domainkit_tests.test_messaging.any_event_handler' does "
+            "not handle GreetingSent."
+        ),
+    )
+    assert sorted(type(event).__name__ for event, _ in ran) == [
+        "GreetingSent",
+        "NoteWritten",
+    ]
 
 
 async def test_dedupe_keys_and_delays(tables: None) -> None:
