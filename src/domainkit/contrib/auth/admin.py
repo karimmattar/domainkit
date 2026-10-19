@@ -47,11 +47,12 @@ from domainkit.http import (
 )
 
 from .access import BasePermission, IsAdminUser, IsSuperuser, Require
-from .backends import get_all_permissions, has_perms
+from .backends import ModelBackend, get_all_permissions, get_backends, has_perms
 from .events import UserLoggedOut
 from .exceptions import (
     GroupNotFound,
     InvalidUserField,
+    LastSuperuser,
     UnknownUserField,
     UserNotFound,
 )
@@ -321,8 +322,15 @@ async def update_user(
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
         await _may_change(actor, user)
+        was_active = user.is_active
         if body.is_superuser is not None and body.is_superuser != user.is_superuser:
             _superusers_only(actor, "Only superusers may make or unmake superusers.")
+        if (
+            user.is_superuser
+            and user.is_active
+            and False in (body.is_superuser, body.is_active)
+        ):
+            await _not_the_last_superuser(uow)  # Before anything is flushed.
         if body.is_staff is not None:
             set_staff = getattr(user, "set_staff", None)
             if set_staff is None:
@@ -333,6 +341,9 @@ async def update_user(
         if body.is_superuser is not None:
             user.set_superuser(body.is_superuser)
         user.update(**_checked(type(user), body.fields))
+        await _may_change(actor, user)  # Not into someone who holds more either.
+        if was_active and not user.is_active:  # Their sessions end with them.
+            await uow.tokens.revoke_user(user.id)
         await uow.commit()
     return AdminUserOut.of(user)
 
@@ -347,6 +358,8 @@ async def delete_user(
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
         await _may_change(actor, user)
+        if user.is_superuser and user.is_active:
+            await _not_the_last_superuser(uow)
         user.delete()
         await uow.tokens.revoke_user(user.id)
         await uow.users.remove(user)
@@ -577,16 +590,35 @@ async def _may_change(actor: AnyUser, user: AbstractBaseUser) -> None:
 
     Changing a password or logging a user out is as good as becoming them,
     so staff only change users whose every grant (direct or through groups,
-    active or not) they have themselves; only superusers change superusers.
+    active or not, and from every backend in ``AUTH.BACKENDS``) they have
+    themselves; only superusers change superusers. Other backends grant an
+    inactive user nothing, so only superusers change inactive users while
+    such backends are configured: what the user would hold is unknown.
     """
     if user.is_superuser:
         _superusers_only(actor, "Only superusers may change superusers.")
     granted = {permission.key for permission in user.user_permissions}
+    if user.is_active:
+        granted |= await get_all_permissions(user)
+    elif any(not isinstance(backend, ModelBackend) for backend in get_backends()):
+        _superusers_only(
+            actor,
+            "Only superusers may change inactive users while other backends "
+            "grant permissions.",
+        )
     await _may_grant(
         actor,
         granted | _keys(*user.groups),
         "You can only change users whose permissions you have",
     )
+
+
+async def _not_the_last_superuser(uow: AuthUnitOfWork) -> None:
+    """Refuse to demote, deactivate, or delete the last active superuser."""
+    if await uow.users.active_superusers() <= 1:
+        raise LastSuperuser(
+            "This is the last active superuser; make another one first."
+        )
 
 
 async def _may_change_group(actor: AnyUser, group: Group) -> None:

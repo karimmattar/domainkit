@@ -112,6 +112,33 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
             self._track(user)
         return Page.from_items(users, limit)
 
+    async def store_rehash(
+        self, user_id: UUID, verified: PasswordHash, rehashed: PasswordHash
+    ) -> None:
+        """Replace the ``verified`` hash with ``rehashed``, the same password.
+
+        It does not bump the user's ``version``, so logins that rehash at
+        once never conflict. A hash changed meanwhile (a new password) is
+        left as it is.
+        """
+        table = get_user_table()
+        await self.session.execute(
+            update(table)
+            .where(table.c.id == user_id, table.c.password == verified)
+            .values(password=rehashed)
+        )
+
+    async def active_superusers(self) -> int:
+        """How many active superusers there are."""
+        table = get_user_table()
+        found = await self.session.execute(
+            select(func.count())
+            .select_from(table)
+            .where(table.c.is_superuser.is_(True), table.c.is_active.is_(True))
+        )
+        count: int = found.scalar_one()
+        return count
+
     async def record_login(self, user: AbstractBaseUser) -> None:
         """Store the login time and record ``UserLoggedIn``.
 
