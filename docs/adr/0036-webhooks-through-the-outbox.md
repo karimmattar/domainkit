@@ -52,15 +52,19 @@ the target is checked:
   a new `webhooks` extra.
 - Staff manage subscriptions through an admin API guarded by model
   permissions on `webhooks.subscription`; the secret is shown when made
-  or rotated, and nowhere else.
+  or rotated, and nowhere else. Those two answers are marked
+  `Cache-Control: no-store`, so no cache keeps them and the idempotency
+  middleware stores no copy to replay: a retry with the same
+  `Idempotency-Key` gets a 409, not the secret again.
 
 ## Consequences
 
 - An event is sent only if its change commits, at least once; receivers
   must deduplicate by `webhook-id`.
-- Secrets are stored in the clear, because signing needs them; database
-  access is enough to forge deliveries. Encrypting them needs a key-
-  management design (a `Signer`) that does not exist yet.
+- Secrets are stored in the clear in the subscriptions table, because
+  signing needs them; database access is enough to forge deliveries. This
+  is the one accepted risk left: the secrets can move to encryption at rest
+  once domainkit has an encryption helper derived from `SECRET_KEY`.
 - Deliveries cannot reach internal services unless a network is allowed by
   name, and never through an egress proxy; a deployment that requires one
   needs a change here.

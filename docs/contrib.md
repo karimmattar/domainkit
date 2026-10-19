@@ -489,10 +489,10 @@ router.include_router(webhooks_admin, prefix="/admin/webhooks")
 | Method and path | Permission | Does |
 | --- | --- | --- |
 | `GET /subscriptions` | `webhooks.view_subscription` | List subscriptions (`limit`, `offset`). |
-| `POST /subscriptions` | `webhooks.add_subscription` | Subscribe a URL to `event_types`; the answer holds the secret, shown this once. |
+| `POST /subscriptions` | `webhooks.add_subscription` | Subscribe a URL to `event_types`; the answer holds the secret, shown this once (`no-store`). |
 | `GET /subscriptions/{id}` | `view` | One subscription. |
 | `PATCH /subscriptions/{id}` | `change` | Change `url`, `event_types`, `description`, or `active`. |
-| `POST /subscriptions/{id}/rotate-secret` | `change` | A new secret, shown once. |
+| `POST /subscriptions/{id}/rotate-secret` | `change` | A new secret, shown once (`no-store`). |
 | `DELETE /subscriptions/{id}` | `delete` | Delete it; its pending deliveries are cancelled. |
 | `GET /subscriptions/{id}/deliveries` | `view` | Its deliveries, newest first (`status`, `limit`, `offset`). |
 | `GET /deliveries/{id}` | `view` | A delivery, its body, and every attempt (status code, latency, error). |
@@ -501,8 +501,13 @@ router.include_router(webhooks_admin, prefix="/admin/webhooks")
 Each endpoint also needs a staff user or a superuser. Secrets never appear
 in listings, logs, events, or reprs; changes are recorded as events
 (`SubscriptionCreated` and others), which the audit trail keeps, with the
-URL's host only, since URLs may hold tokens. Secrets are stored as they
-are, since signing needs them: whoever reads the table can sign as you.
+URL's host only, since URLs may hold tokens. The two answers that hold a
+secret are marked `Cache-Control: no-store`: no cache keeps them, and
+`IdempotencyMiddleware` stores no copy, so a retry with the same
+`Idempotency-Key` gets a 409 rather than the secret again. Secrets are
+stored as they are in the subscriptions table, since signing needs them:
+whoever reads that table can sign as you. They will move to encryption at
+rest once domainkit has an encryption helper derived from `SECRET_KEY`.
 
 `python manage.py webhooks subscriptions` lists subscriptions (host only),
 `webhooks deliveries [--status S] [--subscription ID]` the latest

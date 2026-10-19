@@ -37,7 +37,8 @@ All notable changes to domainkit. The format follows
   attempt, and replayable (`webhooks replay`). URLs must be https and
   resolve only to public addresses, and the checked address is the one
   connected to. Staff manage subscriptions through an admin API; secrets
-  are shown once (ADR 0036). Install `domainkit[webhooks]`.
+  are shown once, in answers marked `no-store` that neither caches nor
+  idempotency keys keep (ADR 0036). Install `domainkit[webhooks]`.
 - `AsyncTestClient`, which serves the application in the test's own event
   loop, with its lifespan, and the `async_client`, `async_client_for`, and
   `async_admin_client` fixtures, for async tests (DJ-62). New projects'

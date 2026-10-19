@@ -10,7 +10,8 @@ Every endpoint needs a staff user (``is_staff``) or a superuser, and the
 permission of its action on ``webhooks.subscription``: ``view``, ``add``,
 ``change`` (also to rotate a secret or replay a delivery), or ``delete``.
 A subscription's secret is in the answer that creates or rotates it, and
-nowhere else.
+nowhere else: those answers are marked ``Cache-Control: no-store``, so no
+cache keeps them and ``IdempotencyMiddleware`` stores no copy to replay.
 """
 
 import json
@@ -18,7 +19,7 @@ from datetime import datetime, timedelta
 from typing import Annotated, Any, Final, Literal, Self
 from uuid import UUID
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from sqlalchemy import select
 
@@ -193,6 +194,12 @@ async def _subscription(uow: WebhooksUnitOfWork, subscription_id: UUID) -> Subsc
     return await uow.subscriptions.get(SubscriptionId(subscription_id))
 
 
+def _no_store(response: Response) -> None:
+    """Keep an answer holding a secret out of caches and idempotency replays."""
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+
+
 def _checked(url: str) -> str:
     """The host of ``url``, once the guard accepts it (else 422)."""
     config = registry.settings(WebhookSettings)
@@ -218,7 +225,9 @@ async def list_subscriptions(
     "/subscriptions", status_code=status.HTTP_201_CREATED, responses=_errors(*CHANGE)
 )
 async def create_subscription(
-    body: SubscriptionIn, actor: Annotated[AnyUser, _staff("add")]
+    body: SubscriptionIn,
+    response: Response,
+    actor: Annotated[AnyUser, _staff("add")],
 ) -> NewSubscriptionOut:
     """Subscribe a URL to event types (``*`` for all); returns its secret, once.
 
@@ -226,6 +235,7 @@ async def create_subscription(
     ``WEBHOOKS.ALLOWED_PRIVATE_NETWORKS``); its host is checked again
     before every delivery.
     """
+    _no_store(response)
     host = _checked(body.url)
     subscription = Subscription.create(
         body.url, host, body.event_types, body.description, active=body.active
@@ -272,13 +282,16 @@ async def update_subscription(
     "/subscriptions/{subscription_id}/rotate-secret", responses=_errors(*CHANGE)
 )
 async def rotate_secret(
-    subscription_id: UUID, actor: Annotated[AnyUser, _staff("change")]
+    subscription_id: UUID,
+    response: Response,
+    actor: Annotated[AnyUser, _staff("change")],
 ) -> SecretOut:
     """Give a subscription a new secret, shown once.
 
     The old one also signs deliveries for ``WEBHOOKS.SECRET_OVERLAP_SECONDS``,
     so receivers can switch without missing any.
     """
+    _no_store(response)
     overlap = timedelta(
         seconds=registry.settings(WebhookSettings).SECRET_OVERLAP_SECONDS
     )

@@ -4,6 +4,7 @@ import io
 import logging
 import uuid
 from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from domainkit import setup
 from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.contrib.auth import open_routes
+from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.contrib.webhooks import queue_deliveries
 from domainkit.contrib.webhooks.models import (
     SubscriptionChanged,
@@ -53,23 +55,30 @@ NEW = {"url": "https://hooks.example.com/in/T0K3N", "event_types": ["invoice.pai
 type Headers = dict[str, str]
 
 
-@pytest.fixture
-def client(database_url: str, tmp_path: Path) -> Iterator[TestClient]:
-    """A migrated project with auth, messaging, and webhooks; the admin mounted."""
+@contextmanager
+def project(
+    database_url: str, tmp_path: Path, *, idempotency: bool = False
+) -> Iterator[TestClient]:
+    """A migrated project with auth, messaging, and webhooks; the admin mounted.
+
+    With ``idempotency``, the idempotency app and its middleware too.
+    """
     registry.clear()
+    extra = ["domainkit.contrib.idempotency"] if idempotency else []
     with override_settings(
         INSTALLED_DOMAINS=[
             CONTENTTYPES,
             AUTH,
             "domainkit.contrib.messaging",
             "domainkit.contrib.webhooks",
+            *extra,
             SHOP,
             ALPHA,
         ],
         DATABASES={"default": {"URL": database_url}},
         MIGRATIONS_DIR=tmp_path / "migrations",
         ROOT_ROUTER="domainkit_tests.sample_webhook_routes.router",
-        MIDDLEWARE=MIDDLEWARE[:-1],  # Without idempotency keys.
+        MIDDLEWARE=MIDDLEWARE if idempotency else MIDDLEWARE[:-1],
         AUTH={"PASSWORD_HASHERS": [FAST_HASHER]},
         MESSAGING={**FAST, "VISIBILITY_TIMEOUT": 60},
     ):
@@ -79,6 +88,20 @@ def client(database_url: str, tmp_path: Path) -> Iterator[TestClient]:
         with TestClient(get_asgi_application()) as test_client:
             yield test_client
     registry.clear()
+
+
+@pytest.fixture
+def client(database_url: str, tmp_path: Path) -> Iterator[TestClient]:
+    """The project, without idempotency keys."""
+    with project(database_url, tmp_path) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def keyed_client(database_url: str, tmp_path: Path) -> Iterator[TestClient]:
+    """The project, with idempotency keys."""
+    with project(database_url, tmp_path, idempotency=True) as test_client:
+        yield test_client
 
 
 @pytest.fixture
@@ -411,3 +434,65 @@ def test_subscription_rows_hold_no_extra_secrets(
 
     row = run_async(read())
     assert (row.secret, row.previous_secret) == (created["secret"], None)
+
+
+NO_STORE = {"cache-control": "no-store", "pragma": "no-cache"}
+
+
+def stored_bodies() -> list[bytes | None]:
+    """The bodies the idempotency table holds."""
+
+    async def read() -> list[bytes | None]:
+        async with connections.engine().connect() as connection:
+            rows = await connection.execute(select(idempotency_keys.c.body))
+            return [row.body for row in rows]
+
+    return run_async(read())
+
+
+def test_a_new_subscription_is_never_kept_for_replay(keyed_client: TestClient) -> None:
+    """Its answer holds the secret: no-store, so a keyed retry gets 409, not it."""
+    headers = {**staff("hooks-admin", *ALL), "Idempotency-Key": "create-1"}
+
+    first = keyed_client.post(f"{ADMIN}/subscriptions", json=NEW, headers=headers)
+    retry = keyed_client.post(f"{ADMIN}/subscriptions", json=NEW, headers=headers)
+
+    assert first.status_code == 201
+    assert {name: first.headers[name] for name in NO_STORE} == NO_STORE
+    assert (retry.status_code, retry.json()["code"]) == (
+        409,
+        "idempotency_response_unavailable",
+    )
+    secret = first.json()["secret"]
+    assert secret not in retry.text
+    assert stored_bodies() == [None]
+    assert secret.encode() not in repr(stored_bodies()).encode()
+
+
+def test_a_rotated_secret_is_never_kept_for_replay(keyed_client: TestClient) -> None:
+    """Rotating answers no-store too; a keyed retry gets 409, not the secret."""
+    admin = staff("hooks-admin", *ALL)
+    created = keyed_client.post(f"{ADMIN}/subscriptions", json=NEW, headers=admin)
+    rotate = f"{ADMIN}/subscriptions/{created.json()['id']}/rotate-secret"
+    headers = {**admin, "Idempotency-Key": "rotate-1"}
+
+    first = keyed_client.post(rotate, headers=headers)
+    retry = keyed_client.post(rotate, headers=headers)
+
+    assert first.status_code == 200
+    assert {name: first.headers[name] for name in NO_STORE} == NO_STORE
+    assert (retry.status_code, retry.json()["code"]) == (
+        409,
+        "idempotency_response_unavailable",
+    )
+    assert first.json()["secret"] not in retry.text
+    assert stored_bodies() == [None]
+
+
+def test_other_answers_may_be_kept(client: TestClient, admin: Headers) -> None:
+    """Only answers with a secret opt out; the rest keep the default headers."""
+    created = create(client, admin)
+
+    read = client.get(f"{ADMIN}/subscriptions/{created['id']}", headers=admin)
+
+    assert "pragma" not in read.headers
