@@ -6,7 +6,9 @@ Enable it, and name the test settings, in the project's ``pyproject.toml``::
     addopts = "-p domainkit.testing"
     domainkit_settings = "config.settings.test"
 
-The ``.env`` file is never read during tests. The fixtures:
+The ``.env`` file is never read during tests. The database fixtures empty
+every database the settings name, so they refuse settings whose
+``ENVIRONMENT`` is not ``"test"``. The fixtures:
 
 ``database``
     Session-wide: migrates the test database up, down to base, and up again,
@@ -79,14 +81,23 @@ def migrated_database(scratch: Path) -> Iterator[str]:
 
     Each in-memory SQLite database becomes a file in ``scratch``
     (``test.sqlite3`` for ``default``, ``test_<alias>.sqlite3`` for others).
+    Migrating down drops every table, so only test settings are accepted.
     """
+    if settings.ENVIRONMENT != "test":
+        raise pytest.UsageError(
+            f"The database fixtures empty every database in DATABASES, so they "
+            f'need ENVIRONMENT = "test", not {settings.ENVIRONMENT!r}. Name the '
+            f"test settings with {SETTINGS_INI} in pyproject.toml."
+        )
     databases: dict[str, DatabaseConfig] = {}
     for alias, config in settings.DATABASES.items():
         databases[alias] = config
-        if config.URL.get_secret_value() == IN_MEMORY:
-            name = "test" if alias == DEFAULT_DB_ALIAS else f"test_{alias}"
-            url = SecretStr(f"sqlite+aiosqlite:///{scratch / name}.sqlite3")
-            databases[alias] = config.model_copy(update={"URL": url})
+        name = "test" if alias == DEFAULT_DB_ALIAS else f"test_{alias}"
+        url = SecretStr(f"sqlite+aiosqlite:///{scratch / name}.sqlite3")
+        for field in ("URL", "MIGRATION_URL"):
+            value = getattr(config, field)
+            if value is not None and value.get_secret_value() == IN_MEMORY:
+                databases[alias] = databases[alias].model_copy(update={field: url})
     output = io.StringIO()
     with override_settings(DATABASES=databases):
         call_command("migrate", stdout=output)
