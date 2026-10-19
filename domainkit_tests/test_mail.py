@@ -61,6 +61,13 @@ FAST = {
     "VISIBILITY_TIMEOUT": 10,
 }
 
+DEPLOYED = {
+    "ENVIRONMENT": "production",
+    "ALLOWED_HOSTS": ["api.example.com"],
+    # No network database, which would need verified TLS here.
+    "DATABASES": {"default": {"URL": "sqlite+aiosqlite:///:memory:"}},
+}
+
 type Install = Callable[..., None]
 
 
@@ -308,7 +315,7 @@ def test_deployments_refuse_development_backends(
     install: Install, environment: str, backend: str
 ) -> None:
     """Memory keeps mail in the process; the console prints reset links."""
-    deployed = {"ENVIRONMENT": environment, "ALLOWED_HOSTS": ["api.example.com"]}
+    deployed = {**DEPLOYED, "ENVIRONMENT": environment}
 
     with pytest.raises(
         ImproperlyConfigured,
@@ -319,9 +326,7 @@ def test_deployments_refuse_development_backends(
 
 def test_deployments_accept_smtp_over_tls(install: Install) -> None:
     """The default backend, encrypted, passes."""
-    deployed = {"ENVIRONMENT": "production", "ALLOWED_HOSTS": ["api.example.com"]}
-
-    install(BACKEND="domainkit.contrib.mail.backends.SmtpBackend", settings=deployed)
+    install(BACKEND="domainkit.contrib.mail.backends.SmtpBackend", settings=DEPLOYED)
 
     assert isinstance(mail.get_backend(), SmtpBackend)
 

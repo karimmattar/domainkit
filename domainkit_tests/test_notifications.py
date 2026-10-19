@@ -313,7 +313,12 @@ def test_backends_are_checked_at_startup(
         install(**options)
 
 
-DEPLOYED = {"ENVIRONMENT": "production", "ALLOWED_HOSTS": ["api.example.com"]}
+DEPLOYED = {
+    "ENVIRONMENT": "production",
+    "ALLOWED_HOSTS": ["api.example.com"],
+    # No network database, which would need verified TLS here.
+    "DATABASES": {"default": {"URL": "sqlite+aiosqlite:///:memory:"}},
+}
 ADAPTERS = {
     "SMS_BACKEND": "domainkit_tests.test_notifications.GatewaySms",
     "PUSH_BACKEND": "domainkit_tests.test_notifications.PushService",
