@@ -6,6 +6,7 @@ plays one that is down. Running against real servers needs them set up
 (see ``docs/cache.md``).
 """
 
+import re
 from pathlib import Path
 from typing import Any, Final
 
@@ -74,27 +75,50 @@ def test_server_urls_are_read_as_redis_py_reads_them() -> None:
     )
 
 
+SCHEME: Final = (
+    "a Redis URL starts with redis://, redis+sentinel://, or redis+cluster:// "
+    "(rediss for TLS)"
+)
+NO_HOST: Final = "a Redis URL needs a host: redis://host:6379/0"
+PORT: Final = (
+    "the URL's port is not a number; percent-encode / ? # @ and : in the user "
+    "name and password"
+)
+OPTIONS: Final = (
+    "Sentinel and Cluster URLs take no options after ? or #; use the cache's settings"
+)
+SERVICE: Final = (
+    "a Sentinel URL names the service, then maybe a database: "
+    "redis+sentinel://host:26379/mymaster/0"
+)
+DATABASE: Final = "a Cluster URL names no database: Cluster has only 0"
+HOST: Final = (
+    "each host of a Sentinel or Cluster URL is host:port, [IPv6]:port, or a host "
+    "alone, separated by commas"
+)
+
+
 @pytest.mark.parametrize(
     ("url", "message"),
     [
-        ("memcached://:s3cret@h", "a Redis URL starts with"),
-        ("redis://:s3cret@/0", "needs a host"),
-        ("redis://u:s3cret/x@h:1/0", "port is not a number"),
-        ("redis+sentinel://:s3cret@h/m?ssl=0", "no options after"),
-        ("redis+cluster://:s3cret@h#x", "no options after"),
-        ("redis+sentinel://:s3cret@h", "names the service"),
-        ("redis+sentinel://:s3cret@h/m/x", "names the service"),
-        ("redis+sentinel://:s3cret@h/" + "m" * 129, "names the service"),
-        ("redis+cluster://:s3cret@h/1", "Cluster has only 0"),
-        ("redis+cluster://:s3cret@", "each host"),
-        ("redis+cluster://:s3cret@h:0", "each host"),
-        ("redis+cluster://:s3cret@h:65536", "each host"),
-        ("redis+cluster://:s3cret@h,", "each host"),
-        ("redis+cluster://:s3cret@h_1", "each host"),
-        ("redis+cluster://:s3cret@[::1", "each host"),
+        ("memcached://:s3cret@h", SCHEME),
+        ("redis://:s3cret@/0", NO_HOST),
+        ("redis://u:s3cret/x@h:1/0", PORT),
+        ("redis+sentinel://:s3cret@h/m?ssl=0", OPTIONS),
+        ("redis+cluster://:s3cret@h#x", OPTIONS),
+        ("redis+sentinel://:s3cret@h", SERVICE),
+        ("redis+sentinel://:s3cret@h/m/x", SERVICE),
+        ("redis+sentinel://:s3cret@h/" + "m" * 129, SERVICE),
+        ("redis+cluster://:s3cret@h/1", DATABASE),
+        ("redis+cluster://:s3cret@", HOST),
+        ("redis+cluster://:s3cret@h:0", HOST),
+        ("redis+cluster://:s3cret@h:65536", HOST),
+        ("redis+cluster://:s3cret@h,", HOST),
+        ("redis+cluster://:s3cret@h_1", HOST),
+        ("redis+cluster://:s3cret@[::1", HOST),
         (
             "redis+cluster://:s3cret@" + ",".join(["h"] * (MAX_HOSTS + 1)),
-            "at most 32",
+            "a Redis URL lists at most 32 hosts",
         ),
     ],
 )
@@ -102,7 +126,7 @@ def test_malformed_urls_are_refused_without_quoting_them(
     url: str, message: str
 ) -> None:
     """Every error names the problem, never the URL, which may hold a password."""
-    with pytest.raises(ValueError, match=message) as refused:
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$") as refused:
         parse_redis_url(url)
     assert "s3cret" not in str(refused.value)
 
@@ -111,6 +135,16 @@ def test_the_highest_port_and_most_hosts_are_accepted() -> None:
     """Port 65535 and 32 hosts are within the limits."""
     hosts = ",".join(f"h{index}:65535" for index in range(MAX_HOSTS))
     assert len(parse_redis_url(f"redis+cluster://{hosts}").hosts) == MAX_HOSTS
+    assert parse_redis_url("redis+cluster://h:1").hosts == (("h", 1),)
+
+
+def test_passwords_and_options_may_hold_separators() -> None:
+    """The first colon ends the user name; only the first :// ends the scheme."""
+    target = parse_redis_url("redis+cluster://u:pa:ss@h")
+    assert (target.username, target.password) == ("u", "pa:ss")
+    assert parse_redis_url("redis://cache/0?client_name=a://b").hosts == (
+        ("cache", 6379),
+    )
 
 
 @pytest.mark.parametrize(

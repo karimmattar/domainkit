@@ -2,7 +2,9 @@
 
 import asyncio
 import inspect
+import re
 from collections.abc import Iterator
+from datetime import timedelta
 from typing import Any, Final
 
 import pytest
@@ -11,8 +13,10 @@ from fastapi.testclient import TestClient
 
 from domainkit.cache import cache_page, caches
 from domainkit.cache.pages import REQUEST, RESPONSE, _matches, _signature
+from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.http import get_asgi_application
+from domainkit.testing import TestClient as DomainkitTestClient
 from domainkit_tests import sample_platform_routes
 from domainkit_tests.conftest import MakePackage
 
@@ -25,9 +29,19 @@ MIDDLEWARE: Final = [
 DOWN: Final = {"URL": "redis://127.0.0.1:9/0", "KEY_PREFIX": "down", "RETRIES": 0}
 
 
+PAGES: Final = "domainkit_tests.sample_platform_routes.pages"
+
+
 @pytest.fixture
-def computed() -> Iterator[list[str]]:
-    """What the cached endpoints computed during the test."""
+def computed(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
+    """What the cached endpoints computed during the test.
+
+    The pages are decorated again for the test, so that the test, not the
+    import, runs ``@cache_page``.
+    """
+    monkeypatch.setattr(
+        sample_platform_routes, "pages", sample_platform_routes.page_routes()
+    )
     sample_platform_routes.computed.clear()
     yield sample_platform_routes.computed
     sample_platform_routes.computed.clear()
@@ -36,10 +50,7 @@ def computed() -> Iterator[list[str]]:
 @pytest.fixture
 def client(computed: list[str]) -> Iterator[TestClient]:
     """An application with cached pages, users, and languages."""
-    with override_settings(
-        ROOT_ROUTER="domainkit_tests.sample_platform_routes.router",
-        MIDDLEWARE=MIDDLEWARE,
-    ):
+    with override_settings(ROOT_ROUTER=PAGES, MIDDLEWARE=MIDDLEWARE):
         yield TestClient(get_asgi_application())
 
 
@@ -52,7 +63,7 @@ def test_answers_are_computed_once_then_served(
     assert computed == ["products:all:None"]
     assert first.json() == second.json() == [{"id": 1, "name": "all"}]
     assert first.headers["ETag"] == second.headers["ETag"]
-    assert first.headers["ETag"].startswith('W/"')
+    assert re.fullmatch(r'W/"[0-9a-f]{32}"', first.headers["ETag"])
     assert first.headers["Cache-Control"] == "public, no-cache"
     assert first.headers["Vary"] == "Authorization, Accept-Language"
 
@@ -148,7 +159,7 @@ def test_pages_that_vary_on_the_user_keep_an_entry_each(
 
 @pytest.mark.parametrize(
     "header",
-    ["{etag}", "{bare}", '"other", {etag}', "*", ' "x" , {bare} '],
+    ["{etag}", "{bare}", '"other", {etag}', '"other",{etag}', "*", ' "x" , {bare} '],
 )
 def test_validators_that_match_get_304(client: TestClient, header: str) -> None:
     """``If-None-Match`` naming the answer, weakly or not, or ``*``: no body."""
@@ -194,7 +205,7 @@ def test_pages_work_while_the_cache_is_down(computed: list[str]) -> None:
     """The cache fails open: answers are computed, still with their validators."""
     with (
         override_settings(
-            ROOT_ROUTER="domainkit_tests.sample_platform_routes.router",
+            ROOT_ROUTER=PAGES,
             MIDDLEWARE=MIDDLEWARE,
             CACHES={"default": DOWN},
         ),
@@ -217,10 +228,7 @@ def test_named_pages_share_their_entries(computed: list[str]) -> None:
         computed.append("moved")
         return {"language": "moved"}
 
-    with override_settings(
-        ROOT_ROUTER="domainkit_tests.sample_platform_routes.router",
-        MIDDLEWARE=MIDDLEWARE,
-    ):
+    with override_settings(ROOT_ROUTER=PAGES, MIDDLEWARE=MIDDLEWARE):
         assert TestClient(get_asgi_application()).get("/greeting").json() == {
             "language": "en"
         }
@@ -293,7 +301,9 @@ def test_endpoints_keep_their_parameters_and_documentation(
     assert names == ["item_id", "q"]
     assert operation["summary"] == "Read Item"
     assert operation["description"] == "Read one item."
-    assert "Item" in str(operation["responses"]["200"])
+    assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/Item"
+    }
 
 
 def test_cache_page_is_checked_when_applied() -> None:
@@ -308,11 +318,14 @@ def test_cache_page_is_checked_when_applied() -> None:
     async def taken(_cache_page_request: str) -> None:
         return None
 
-    with pytest.raises(TypeError, match="async endpoints"):
+    with pytest.raises(TypeError, match=r"^@cache_page decorates async endpoints\.$"):
         cache_page()(sync)  # type: ignore[arg-type]
-    with pytest.raises(TypeError, match="not Response objects"):
+    with pytest.raises(
+        TypeError,
+        match=r"^@cache_page caches values FastAPI serializes, not Response objects\.$",
+    ):
         cache_page()(raw)
-    with pytest.raises(ValueError, match="max_age cannot be negative"):
+    with pytest.raises(ValueError, match=r"^max_age cannot be negative\.$"):
         cache_page(max_age=-1)
     with pytest.raises(TypeError, match="parameter names"):
         cache_page()(taken)
@@ -331,6 +344,68 @@ def test_signatures_add_the_request_and_response_before_extra_keywords() -> None
     assert signature.parameters[RESPONSE].annotation is Response
     assert signature.parameters["a"].annotation is inspect.Parameter.empty
     assert signature.return_annotation is int
+
+
+def test_signatures_resolve_the_return_type_or_leave_it_empty() -> None:
+    """A return type written as a string is resolved; none stays none."""
+
+    async def written() -> "int":
+        return 1
+
+    async def unwritten():  # type: ignore[no-untyped-def]  # noqa: ANN202 - on purpose.
+        return 1
+
+    assert _signature(written, {"return": int}).return_annotation is int
+    assert _signature(unwritten, {}).return_annotation is inspect.Signature.empty
+
+
+def test_entries_expire_after_their_ttl(computed: list[str]) -> None:
+    """An entry is served for ``ttl`` seconds, then computed again."""
+    with (
+        override_settings(ROOT_ROUTER=PAGES, MIDDLEWARE=MIDDLEWARE),
+        freeze_time("2026-10-19T12:00:00Z") as clock,
+    ):
+        client = DomainkitTestClient(get_asgi_application())
+        client.get("/products")
+        clock.tick(timedelta(seconds=30))
+        client.get("/products")
+        clock.tick(timedelta(seconds=31))
+        client.get("/products")
+
+    assert computed == ["products:all:None"] * 2
+
+
+def test_endpoints_on_the_same_path_keep_their_own_entries() -> None:
+    """Entries are named after the endpoint, not only its path."""
+    first, second = FastAPI(), FastAPI()
+
+    @first.get("/same")
+    @cache_page(ttl=60)
+    async def one() -> dict[str, str]:
+        return {"from": "one"}
+
+    @second.get("/same")
+    @cache_page(ttl=60)
+    async def two() -> dict[str, str]:
+        return {"from": "two"}
+
+    assert TestClient(first).get("/same").json() == {"from": "one"}
+    assert TestClient(second).get("/same").json() == {"from": "two"}
+
+
+def test_endpoints_without_a_return_type_are_cached_as_they_are() -> None:
+    """Without an annotation, the value is cached as it comes."""
+    app = FastAPI()
+
+    @app.get("/plain")
+    @cache_page(ttl=60)
+    async def plain():  # type: ignore[no-untyped-def]  # noqa: ANN202 - on purpose.
+        return {"plain": [1, 2]}
+
+    client = TestClient(app)
+    assert (
+        client.get("/plain").json() == client.get("/plain").json() == {"plain": [1, 2]}
+    )
 
 
 def test_validator_matching() -> None:

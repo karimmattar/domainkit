@@ -114,9 +114,9 @@ def parse_po(text: str) -> list[Message]:
     fuzzy = False
     for number, raw in enumerate(text.splitlines(), start=1):
         line = raw.strip()
-        if not line or line.startswith("#~"):
+        if not line:
             continue
-        if line.startswith("#"):
+        if line.startswith("#"):  # Comments, flags, and obsolete (#~) entries.
             fuzzy = fuzzy or (line.startswith("#,") and "fuzzy" in _flags(line))
             continue
         keyword = _KEYWORD.fullmatch(line)

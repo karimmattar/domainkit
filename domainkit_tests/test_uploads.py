@@ -24,6 +24,7 @@ from domainkit.http.uploads import (
     ZIP,
     StoredUpload,
     UploadRefused,
+    _head,
     content_disposition,
     sanitize_filename,
     save_upload,
@@ -31,6 +32,7 @@ from domainkit.http.uploads import (
     sniff,
 )
 from domainkit.storage import FileMissing, MemoryStorage, storages
+from domainkit.storage.base import CHUNK_SIZE
 
 pytestmark = pytest.mark.anyio
 
@@ -122,6 +124,7 @@ def test_sizes_are_checked(client: TestClient, tmp_path: Path) -> None:
     assert (large[0], large[1]["code"]) == (413, "file_too_large")
     assert large[1]["detail"] == "The file is too large."
     assert (empty[0], empty[1]["code"]) == (400, "empty_file")
+    assert empty[1]["detail"] == "The file is empty."
     assert len(stored_files(tmp_path)) == 1
 
 
@@ -169,8 +172,57 @@ async def test_declared_sizes_are_refused_before_reading() -> None:
     with pytest.raises(UploadRefused, match="too large"):
         await save_upload(declared, types=IMAGES, max_size=1000, storage=storage)
     assert declared.file.tell() == 0
-    with pytest.raises(ValueError, match="needs the types"):
+    with pytest.raises(ValueError, match=r"^save_upload needs the types it accepts\.$"):
         await save_upload(declared, types=[], max_size=1000, storage=storage)
+
+
+class Recording(io.BytesIO):
+    """A file that remembers how much each read asked for."""
+
+    def __init__(self, data: bytes) -> None:
+        """Hold ``data``."""
+        super().__init__(data)
+        self.asked: list[int | None] = []
+
+    def read(self, size: int | None = -1) -> bytes:
+        """Note the size asked for."""
+        self.asked.append(size)
+        return super().read(size)
+
+
+async def test_only_the_head_is_read_to_know_the_type() -> None:
+    """``SNIFF_BYTES``, though the file gives a few bytes at a time."""
+    upload = UploadFile(Trickle(b"x" * 2000))
+
+    assert await _head(upload) == b"x" * 512
+    assert upload.file.tell() == 512
+
+
+async def test_large_uploads_stream_in_chunks(fresh_storages: None) -> None:
+    """Every byte, a chunk at a time, into the default storage's top level."""
+    content = PNG_BYTES + bytes(range(256)) * 1000  # Several chunks.
+    file = Recording(content)
+    with override_settings(
+        STORAGES={"default": {"BACKEND": "domainkit.storage.MemoryStorage"}}
+    ):
+        stored = await save_upload(
+            UploadFile(file, size=None), types=IMAGES, max_size=10**6
+        )
+        storage = storages["default"]
+
+    assert isinstance(storage, MemoryStorage)
+    assert "/" not in stored.name
+    assert stored.size == len(content)
+    assert storage.files[stored.name] == content
+    assert all(size is not None and 0 < size <= CHUNK_SIZE for size in file.asked)
+
+
+@pytest.fixture
+def fresh_storages() -> Iterator[None]:
+    """Forget the storages made."""
+    storages.reset()
+    yield
+    storages.reset()
 
 
 @pytest.mark.parametrize(
@@ -239,6 +291,7 @@ def test_text_is_utf8_without_controls(head: bytes, text: bool) -> None:
         ("CON.txt", "_CON.txt"),
         ("lpt9", "_lpt9"),
         ("console.txt", "console.txt"),
+        ("Xray.pngX", "Xray.pngX"),
         ("e\u0301te\u0301.txt", "\u00e9t\u00e9.txt"),
         ("تقرير.pdf", "تقرير.pdf"),
         ("\u202e\u200b", "file"),
@@ -263,6 +316,12 @@ def test_long_names_keep_their_extension() -> None:
     assert len(odd.encode()) == 255
     assert odd == ("a" * 300 + "." + "b" * 17)[:255]
     assert sanitize_filename("a" * 251 + ".pdf") == "a" * 251 + ".pdf"
+    sixteen = "." + "b" * 16
+    assert sanitize_filename("a" * 300 + sixteen) == "a" * (255 - 17) + sixteen
+    assert sanitize_filename("a.b" + "c" * 300 + ".png").endswith("c.png")
+    # The cut stem loses the dots and spaces it ends with, nothing else.
+    cut = sanitize_filename("a" * 248 + "X. " + "b" * 20 + ".txt")
+    assert cut == "a" * 248 + "X.txt"
 
 
 def test_content_disposition_names_files_for_every_client() -> None:
@@ -337,6 +396,11 @@ async def test_serving_closes_the_file() -> None:
 
     body = b"".join([chunk async for chunk in response.body_iterator])  # type: ignore[misc]
     assert body == b"data"
+    assert response.headers["Content-Disposition"].startswith(
+        f'attachment; filename="{name}"'
+    )
+    assert response.headers["Content-Security-Policy"] == "default-src 'none'; sandbox"
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
     assert response.background is not None
     await response.background()
     with pytest.raises(FileMissing):

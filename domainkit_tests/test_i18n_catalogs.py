@@ -4,6 +4,7 @@ import ast
 import gettext
 import io
 import re
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Final
 
@@ -84,13 +85,38 @@ def test_entries_are_read_with_their_parts() -> None:
     assert parse_po("") == parse_po("# Nothing yet.\n\n") == []
 
 
+def test_flags_and_strings_over_several_lines() -> None:
+    """Flags in any order or spacing, never in comments; continued strings."""
+    messages = parse_po(
+        HEADER
+        + '#, fuzzy, python-format\nmsgid "a"\nmsgstr "x"\n\n'
+        + '#,fuzzy\nmsgid "b"\nmsgstr "y"\n\n'
+        + '# fuzzy, says a translator\nmsgid "c"\nmsgstr "z"\n\n'
+        + 'msgctxt ""\n"me"\n"nu"\nmsgid "{n} file"\nmsgid_plural ""\n"{n} "\n'
+        + '"files"\nmsgstr[0] ""\n"{n} fi"\n"chier"\nmsgstr[1] "{n} fichiers"\n'
+    )
+
+    a, b, c, files = messages[1:]
+    assert (a.fuzzy, b.fuzzy, c.fuzzy) == (True, True, False)
+    assert (files.context, files.plural, files.msgstr) == (
+        "menu",
+        "{n} files",
+        ("{n} fichier", "{n} fichiers"),
+    )
+
+
 @pytest.mark.parametrize(
     ("text", "message"),
     [
         ('msgstr "x"\n', "line 1: msgstr before msgid"),
         ('msgid_plural "x"\n', "line 1: msgid_plural before msgid"),
         ('"x"\n', "line 1: cannot read"),
-        ('msgid "a"\nmsgstr "b"\nnonsense\n', "line 3: cannot read 'nonsense'"),
+        ('msgid "a"\nmsgstr "b"\nnonsense\n', "^line 3: cannot read 'nonsense'$"),
+        (
+            'msgid "a"\nmsgstr "b"\n' + "n" * 50 + "\n",
+            "^line 3: cannot read '" + "n" * 40 + "'$",
+        ),
+        ('msgid ""\n"a\\q"\nmsgstr ""\n', r"^line 2: unknown escape \\q"),
         ('msgid "a"\nmsgstr "b" "c"\n', "line 2: a string must be in double quotes"),
         ("msgid 'a'\n", "line 1: cannot read"),
         ('msgid "a\\q"\nmsgstr ""\n', "line 1: unknown escape \\\\q"),
@@ -110,7 +136,15 @@ def test_entries_are_read_with_their_parts() -> None:
                 'msgid "a"\nmsgstr "b"\n\nmsgctxt "x"\nmsgid "a"\nmsgstr "c"\n\n'
                 'msgid "a"\nmsgstr "d"\n'
             ),
-            "line 8: 'a' is also on line 1",
+            "^line 8: 'a' is also on line 1$",
+        ),
+        (
+            'msgid "'
+            + "a" * 50
+            + '"\nmsgstr ""\n\nmsgid "'
+            + "a" * 50
+            + '"\nmsgstr ""\n',
+            "^line 4: '" + "a" * 40 + "' is also on line 1$",
         ),
     ],
 )
@@ -122,7 +156,7 @@ def test_malformed_catalogs_name_the_line(text: str, message: str) -> None:
 
 def test_headers_must_be_present_reviewed_and_utf8() -> None:
     """The header gives the charset and plural rule gettext needs."""
-    with pytest.raises(CatalogError, match="no header"):
+    with pytest.raises(CatalogError, match=r'^the catalog has no header \(msgid ""\)$'):
         header(parse_po('msgid "a"\nmsgstr "b"\n'))
     with pytest.raises(CatalogError, match="line 2: the header is fuzzy"):
         header(parse_po('#, fuzzy\nmsgid ""\nmsgstr "Language: ar\\n"\n'))
@@ -132,7 +166,13 @@ def test_headers_must_be_present_reviewed_and_utf8() -> None:
                 'msgid ""\nmsgstr "Content-Type: text/plain; charset=ISO-8859-1\\n"\n'
             )
         )
-    with pytest.raises(CatalogError, match="charset=UTF-8"):
+    with pytest.raises(
+        CatalogError,
+        match=(
+            r"^line 1: the header must say Content-Type: text/plain; "
+            r"charset=UTF-8$"
+        ),
+    ):
         header(parse_po('msgid ""\nmsgstr "Language: ar\\n"\n'))
     context_only = parse_po('msgctxt "x"\nmsgid ""\nmsgstr "y"\n')
     with pytest.raises(CatalogError, match="no header"):
@@ -152,6 +192,10 @@ def test_headers_must_be_present_reviewed_and_utf8() -> None:
             "line 6: Plural-Forms says 2 forms, the entry has 3",
         ),
         ('msgid "Hi {name}"\nmsgstr "Salut {nom}"\n', "line 6: .*uses {nom}, which"),
+        (
+            'msgid "Hi"\nmsgstr "{b} {a}"\n',
+            "^line 6: the translation uses {a}, {b}, which the message does not have$",
+        ),
         (
             (
                 'msgid "{n} file"\nmsgid_plural "{n} files"\nmsgstr[0] "{count}"\n'
@@ -314,6 +358,21 @@ def _name(node: ast.expr) -> str:
     return getattr(node, "id", getattr(node, "attr", ""))
 
 
+MUTANT: Final = re.compile(r".*__mutmut_[0-9]+")
+"""Names of mutmut's mutated copies of functions, whose text it changed on purpose."""
+
+
+def _nodes(tree: ast.AST) -> Iterator[ast.AST]:
+    """Every node below ``tree``, but those of functions mutmut made."""
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and (
+            MUTANT.fullmatch(node.name)
+        ):
+            continue
+        yield node
+        yield from _nodes(node)
+
+
 def framework_messages() -> set[str]:
     """The fixed messages the framework answers requests with.
 
@@ -326,7 +385,7 @@ def framework_messages() -> set[str]:
     for directory in SCANNED:
         for path in (SRC / directory).rglob("*.py"):
             tree = ast.parse(path.read_text("utf-8"))
-            for node in ast.walk(tree):
+            for node in _nodes(tree):
                 if isinstance(node, ast.Call) and _RAISERS.fullmatch(_name(node.func)):
                     found |= _texts(node)
                 if isinstance(node, ast.ClassDef) and any(
@@ -334,7 +393,7 @@ def framework_messages() -> set[str]:
                 ):
                     found |= {
                         text
-                        for call in ast.walk(node)
+                        for call in _nodes(node)
                         if isinstance(call, ast.Call) and _name(call.func) == "__init__"
                         for text in _texts(call)
                     }
@@ -415,13 +474,20 @@ def test_the_command_takes_directories_and_locales(tmp_path: Path) -> None:
 
     assert run(str(tmp_path), "-l", "ar") == f"Compiled {ar} (1 translated).\n"
     assert not fr.with_suffix(".mo").exists()
+    assert run(str(tmp_path), "-l", "ar", "-l", "fr").splitlines() == [
+        f"Compiled {ar} (1 translated).",
+        f"Compiled {fr} (1 translated).",
+    ]
 
 
 def test_check_fails_on_missing_or_stale_files(tmp_path: Path) -> None:
     """``--check`` writes nothing, and names each ``.mo`` to rebuild."""
     ar = write_po(tmp_path, "ar", 'msgid "Hi"\nmsgstr "أهلًا"\n')
-    with pytest.raises(CommandError, match=f"Out of date: {ar.with_suffix('.mo')}"):
+    fr = write_po(tmp_path, "fr", 'msgid "Hi"\nmsgstr "Salut"\n')
+    stale = f"{ar.with_suffix('.mo')}, {fr.with_suffix('.mo')}"
+    with pytest.raises(CommandError) as refused:
         run(str(tmp_path), "--check")
+    assert str(refused.value) == f"Out of date: {stale}. Run compilemessages."
     assert not ar.with_suffix(".mo").exists()
     run(str(tmp_path))
     ar.write_text(HEADER + 'msgid "Hi"\nmsgstr "مرحبًا"\n', encoding="utf-8")
@@ -431,7 +497,7 @@ def test_check_fails_on_missing_or_stale_files(tmp_path: Path) -> None:
 
 def test_the_command_reports_bad_catalogs(tmp_path: Path) -> None:
     """A malformed catalog names its file and line; none at all is an error too."""
-    with pytest.raises(CommandError, match=r"No \.po catalogs found"):
+    with pytest.raises(CommandError, match=r"^No \.po catalogs found\.$"):
         run(str(tmp_path))
     po = write_po(tmp_path, "ar", 'msgid "Hi"\nmsgstr "{name}"\n')
     with pytest.raises(CommandError, match=f"{po}: line 6: the translation uses"):

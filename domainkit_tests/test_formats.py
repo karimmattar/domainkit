@@ -85,7 +85,13 @@ def test_now_follows_the_frozen_clock() -> None:
 def test_naive_datetimes_have_no_local_time() -> None:
     """Their zone is unknown, so they are refused."""
     naive = datetime(2026, 10, 19, 12)  # noqa: DTZ001 - naive on purpose.
-    with pytest.raises(ValueError, match="aware datetime"):
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"^localtime\(\) needs an aware datetime; "
+            r"a naive one's zone is unknown\.$"
+        ),
+    ):
         localtime(naive)
     unknown_offset = datetime(2026, 10, 19, tzinfo=NoOffset())
     with pytest.raises(ValueError, match="aware datetime"):
@@ -118,6 +124,7 @@ class NoOffset(tzinfo):
         (7, None, "7"),
         (999, None, "999"),
         (1000, None, "1,000"),
+        (123456, None, "123,456"),
         (1234567, None, "1,234,567"),
         (-1234567, None, "-1,234,567"),
         (1234.5, None, "1,234.5"),
@@ -162,18 +169,23 @@ def test_numbers_in_arabic() -> None:
 
 def test_numbers_are_checked() -> None:
     """Booleans, infinities, and negative places are refused."""
-    with pytest.raises(TypeError, match="not booleans"):
+    with pytest.raises(
+        TypeError, match=r"^number_format\(\) takes numbers, not booleans\.$"
+    ):
         number_format(True)
     for value in (float("inf"), float("nan"), Decimal("-Infinity")):
-        with pytest.raises(ValueError, match="finite numbers"):
+        with pytest.raises(
+            ValueError, match=r"^number_format\(\) takes finite numbers\.$"
+        ):
             number_format(value)
-    with pytest.raises(ValueError, match="cannot be negative"):
+    with pytest.raises(ValueError, match=r"^decimal_places cannot be negative\.$"):
         number_format(1, -1)
 
 
 def test_languages_without_formats_fall_back() -> None:
     """To their primary subtag, then to English; registered ones are used."""
     assert get_formats("ar-eg") is ARABIC
+    assert get_formats("ar-eg-u-nu") is ARABIC  # The primary subtag, not "ar-eg-u".
     assert get_formats("fr") is ENGLISH
     with override("ar"):
         assert get_formats() is ARABIC

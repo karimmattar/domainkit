@@ -117,6 +117,7 @@ def test_languages_are_codes(bad: str) -> None:
         ("zh-hant", "zh_Hant"),
         ("es-419", "es_419"),
         ("sr-latn-rs", "sr_Latn-rs"),
+        ("xx-abc", "xx_Abc"),
     ],
 )
 def test_catalogs_are_filed_under_locales(language: str, locale: str) -> None:
@@ -163,6 +164,8 @@ LANGUAGES: Final = ("en", "ar", "pt-br", "fr-ca")
         ("ar-eg-x-y-zzzzzzzzz", "en"),
         ("a" * 9, "en"),
         ("de", "en"),
+        ("ar;level=1;q=0.1, en;q=0.5", "en"),  # Other parameters are skipped.
+        ("ar;q=0.5=1, en;q=0.1", "en"),  # A malformed quality drops the range.
     ],
 )
 def test_accept_language_picks_the_most_preferred_language(
@@ -325,6 +328,9 @@ def test_lazy_strings_translate_when_used() -> None:
     assert "> " + invalid == "> The request is invalid."
     assert LazyString(lambda: "%s and %s") % ("a", "b") == "a and b"
     assert things.format(n=2) == "2 things"
+    assert str(ngettext_lazy("{n} thing", "{n} things", 1)) == "{n} thing"
+    assert LazyString(lambda: "{} and {}").format("a", "b") == "a and b"
+    assert npgettext("drawer", "{n} box", "{n} boxes", 2) == "{n} boxes"
     assert gettext_noop("Not translated now.") == "Not translated now."
 
 

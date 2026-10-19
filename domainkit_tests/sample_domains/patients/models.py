@@ -35,10 +35,12 @@ class Appointment(AggregateRoot[UUID]):
 
 
 class Card(AggregateRoot[int]):
-    """A loyalty card whose number is unique."""
+    """A loyalty card whose number and code are unique, and its nickname not."""
 
     holder_id: str
     number: Annotated[str, Personal(of="holder_id")]
+    code: Annotated[str, Personal(of="holder_id")]
+    nickname: Annotated[str, Personal(of="holder_id")]
 
 
 class Badge(AggregateRoot[int]):

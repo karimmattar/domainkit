@@ -23,7 +23,6 @@ from sqlalchemy import (
     select,
     tuple_,
 )
-from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -260,10 +259,9 @@ def _python_type(model: PersonalModel, name: str) -> object:
         return None
 
 
-def _identity(aggregate: object) -> str:
-    """An aggregate's primary key, as text (``a/b`` for several columns)."""
-    identity = getattr(sa_inspect(aggregate), "identity", None) or ()
-    return "/".join(str(part) for part in identity)
+def _identity(aggregate: Any) -> str:  # noqa: ANN401 - any aggregate.
+    """An aggregate's id, as text."""
+    return str(aggregate.id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -359,7 +357,7 @@ async def _count(policy: Policy, alias: str, cutoff: datetime | date) -> int:
     """How many rows a purge would delete or erase."""
     query = select(func.count()).select_from(policy.table).where(_old(policy, cutoff))
     async with connections.engine(alias).connect() as connection:
-        return int(await connection.scalar(query) or 0)
+        return int(await connection.scalar(query))
 
 
 async def _delete_old(
@@ -371,9 +369,10 @@ async def _delete_old(
         batch = (
             select(*keys).where(_old(policy, cutoff)).order_by(*keys).limit(BATCH_SIZE)
         )
-        selected = keys[0].in_(batch) if len(keys) == 1 else tuple_(*keys).in_(batch)
         async with connections.engine(alias).begin() as connection:
-            result = await connection.execute(delete(policy.table).where(selected))
+            result = await connection.execute(
+                delete(policy.table).where(tuple_(*keys).in_(batch))
+            )
         progress.count += result.rowcount
         if result.rowcount < BATCH_SIZE:
             return

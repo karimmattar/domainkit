@@ -79,7 +79,6 @@ class PersonalModel:
     domain: str
     model: str
     cls: type
-    table: Table
     subjects: Mapping[str, tuple[str, ...]]
     """Each field naming a subject, and the fields about that subject."""
     columns: Mapping[str, Column[Any]]
@@ -198,12 +197,7 @@ def _inspect_models() -> tuple[list[PersonalModel], list[str]]:
         if len(columns) < len(subjects.keys() | markers.keys()):
             continue
         model = PersonalModel(
-            installed.domain,
-            installed.options.model,
-            cls,
-            cast(Table, mapper.local_table),  # installed_models() keeps tables only.
-            subjects,
-            columns,
+            installed.domain, installed.options.model, cls, subjects, columns
         )
         if not model.erases_itself():
             model = replace(model, erasures=_erasures(model, found))
@@ -252,7 +246,11 @@ def _members(hint: object) -> list[object]:
 
 
 def _unique(column: Column[Any]) -> bool:
-    """Whether a unique constraint or index covers ``column`` alone."""
+    """Whether a unique constraint or index covers ``column`` alone.
+
+    ``Column(unique=True)`` is a unique constraint too (or a unique index,
+    with ``index=True``).
+    """
     table = column.table
     constraints = [
         constraint.columns
@@ -260,9 +258,7 @@ def _unique(column: Column[Any]) -> bool:
         if isinstance(constraint, UniqueConstraint)
     ]
     indexes = [index.columns for index in table.indexes if index.unique]
-    return bool(column.unique) or any(
-        list(columns) == [column] for columns in [*constraints, *indexes]
-    )
+    return any(list(columns) == [column] for columns in [*constraints, *indexes])
 
 
 def _inspect_policies(

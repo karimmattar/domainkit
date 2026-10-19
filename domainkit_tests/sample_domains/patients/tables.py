@@ -1,6 +1,15 @@
 """Tables of the patients domain."""
 
-from sqlalchemy import Column, Date, Integer, String, Table, Text, Uuid
+from sqlalchemy import (
+    Column,
+    Date,
+    Integer,
+    String,
+    Table,
+    Text,
+    UniqueConstraint,
+    Uuid,
+)
 
 from domainkit.db import UTCDateTime, map_imperatively, metadata
 
@@ -47,10 +56,14 @@ cards = Table(
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=False),
     Column("holder_id", String(64), nullable=False),
-    Column("number", String(40), nullable=False, unique=True),
+    Column("number", String(40), nullable=False),
+    Column("code", String(16), nullable=False, unique=True),
+    Column("nickname", String(40), nullable=False),
     Column("version", Integer, nullable=False),
+    UniqueConstraint("number"),
     info={"domain": "patients"},
 )
+"""Numbers are unique by a constraint of the table, codes by their column's."""
 
 badges = Table(
     "patients_badges",

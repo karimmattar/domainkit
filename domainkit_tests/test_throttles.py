@@ -232,5 +232,7 @@ def test_throttles_are_checked_when_made() -> None:
         with pytest.raises(ValueError, match="128 letters"):
             Throttle("1/minute", scope=scope)
     assert Throttle("1/minute", scope="A-z_0.9" + "x" * 121).scope
-    with pytest.raises(ImproperlyConfigured, match="must guard a route"):
+    with pytest.raises(
+        ImproperlyConfigured, match=r"^Throttle without a scope must guard a route\.$"
+    ):
         asyncio.run(Throttle("1/minute", backend=Recorder())(connection()))

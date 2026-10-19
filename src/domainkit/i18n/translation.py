@@ -123,7 +123,7 @@ def _language_range(item: str) -> tuple[str, float] | None:
     if not _RANGE.fullmatch(tag):
         return None
     quality = 1.0
-    for parameter in parameters.split(";") if parameters else ():
+    for parameter in parameters.split(";"):
         name, _, value = parameter.partition("=")
         if name.strip().lower() != "q":
             continue

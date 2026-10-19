@@ -167,52 +167,64 @@ computed: list[str] = []
 """What each run of a cached endpoint computed, in order."""
 
 
-@router.get("/products")
-@cache_page(ttl=60)
-async def products(
-    category: str = "all", tag: Annotated[list[str] | None, Query()] = None
-) -> list[ProductOut]:
-    """List products; the list itself is cached."""
-    computed.append(f"products:{category}:{tag}")
-    return [
-        ProductOut.model_validate(Product(id=1, name=category), from_attributes=True)
-    ]
+def page_routes() -> APIRouter:
+    """The cached pages, on a new router.
+
+    Tests build it when they run, not on import, so each test applies
+    ``@cache_page`` itself (and mutation testing sees it do so).
+    """
+    pages = APIRouter()
+
+    @pages.get("/products")
+    @cache_page(ttl=60)
+    async def products(
+        category: str = "all", tag: Annotated[list[str] | None, Query()] = None
+    ) -> list[ProductOut]:
+        """List products; the list itself is cached."""
+        computed.append(f"products:{category}:{tag}")
+        return [
+            ProductOut.model_validate(
+                Product(id=1, name=category), from_attributes=True
+            )
+        ]
+
+    @pages.get("/products/{product_id}")
+    @cache_page(ttl=60, vary=["X-Tenant"], max_age=30)
+    async def product(product_id: int) -> ProductOut:
+        """One product, per tenant; the full record goes in, the public part out."""
+        computed.append(f"product:{product_id}")
+        if product_id == 0:
+            raise NotFound("No such user.")
+        return Product(id=product_id, name="widget")  # type: ignore[return-value]
+
+    @pages.get("/me/basket")
+    @cache_page(ttl=60, vary_on_user=True)
+    async def basket() -> dict[str, str | None]:
+        """The caller's basket, cached per user."""
+        context = current_request()
+        actor = context.actor if context else None
+        computed.append(f"basket:{actor}")
+        return {"owner": actor}
+
+    @pages.get("/greeting")
+    @cache_page(ttl=60, name="shared.greeting")
+    async def greeting() -> dict[str, str]:
+        """A greeting in the request's language."""
+        computed.append(f"greeting:{get_language()}")
+        return {"language": get_language()}
+
+    @pages.post("/products")
+    @cache_page(ttl=60)
+    async def add_product(body: ProductOut) -> ProductOut:
+        """Never cached: only GET answers are."""
+        computed.append(f"add:{body.id}")
+        return body
+
+    return pages
 
 
-@router.get("/products/{product_id}")
-@cache_page(ttl=60, vary=["X-Tenant"], max_age=30)
-async def product(product_id: int) -> ProductOut:
-    """One product, per tenant; the full record goes in, the public part out."""
-    computed.append(f"product:{product_id}")
-    if product_id == 0:
-        raise NotFound("No such user.")
-    return Product(id=product_id, name="widget")  # type: ignore[return-value]
-
-
-@router.get("/me/basket")
-@cache_page(ttl=60, vary_on_user=True)
-async def basket() -> dict[str, str | None]:
-    """The caller's basket, cached per user."""
-    context = current_request()
-    actor = context.actor if context else None
-    computed.append(f"basket:{actor}")
-    return {"owner": actor}
-
-
-@router.get("/greeting")
-@cache_page(ttl=60, name="shared.greeting")
-async def greeting() -> dict[str, str]:
-    """A greeting in the request's language."""
-    computed.append(f"greeting:{get_language()}")
-    return {"language": get_language()}
-
-
-@router.post("/products")
-@cache_page(ttl=60)
-async def add_product(body: ProductOut) -> ProductOut:
-    """Never cached: only GET answers are."""
-    computed.append(f"add:{body.id}")
-    return body
+pages = page_routes()
+"""The cached pages; ``test_cache_pages`` swaps in a new set for each test."""
 
 
 @router.post("/uploads")

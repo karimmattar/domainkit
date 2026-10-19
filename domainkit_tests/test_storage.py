@@ -7,6 +7,7 @@ import re
 import stat
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -25,10 +26,12 @@ from domainkit.storage import (
     storages,
 )
 from domainkit.storage.base import CHUNK_SIZE
+from domainkit.storage.handler import StorageHandler
 
 pytestmark = pytest.mark.anyio
 
 TOKEN = r"[0-9a-f]{32}"
+LINK_REFUSED = r"^A directory of the name is a symbolic link or a file; refused\.$"
 
 
 @pytest.fixture(params=["filesystem", "memory"])
@@ -76,14 +79,22 @@ def test_new_names_are_random_and_placed() -> None:
 )
 def test_directories_are_plain_segments(directory: str) -> None:
     """No dots first, no empty or absolute parts, at most eight segments."""
-    with pytest.raises(ValueError, match="up to 8 segments"):
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"^A storage directory is up to 8 segments of letters, digits, _ and -\.$"
+        ),
+    ):
         new_name(directory)
 
 
 @pytest.mark.parametrize("extension", ["png", ".PNG", ".tar.gz", ".", ".abcdefghijk"])
 def test_extensions_are_one_lower_case_suffix(extension: str) -> None:
     """A dot and 1 to 10 lower-case letters or digits."""
-    with pytest.raises(ValueError, match="An extension is a dot"):
+    with pytest.raises(
+        ValueError,
+        match=r"^An extension is a dot and 1 to 10 lower-case letters or digits\.$",
+    ):
         new_name(extension=extension)
 
 
@@ -133,6 +144,7 @@ async def test_files_are_saved_read_and_deleted(storage: Storage) -> None:
     assert await storage.size(name) == len(data)
     async with await storage.open(name) as file:
         assert (file.name, file.size) == (name, len(data))
+        assert await file.read(0) == b""
         assert await file.read(10) == data[:10]
         assert await file.read() == data[10:]
         assert await file.read() == b""
@@ -183,7 +195,10 @@ async def test_size_limits_keep_nothing_larger(storage: Storage) -> None:
 
 def test_locations_are_absolute(tmp_path: Path) -> None:
     """A relative location would depend on the working directory."""
-    with pytest.raises(ImproperlyConfigured, match="absolute location"):
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=r"^FileSystemStorage needs an absolute location, not 'media'\.$",
+    ):
         FileSystemStorage("media")
     assert FileSystemStorage(str(tmp_path)).location == tmp_path
 
@@ -233,6 +248,22 @@ async def test_failed_writes_leave_nothing(files: FileSystemStorage) -> None:
     assert leftovers(files.location) == ["tmp"]
 
 
+async def test_a_link_planted_at_the_temporary_name_is_not_followed(
+    files: FileSystemStorage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The temporary file is new or nothing: a link there stops the save."""
+    await files.save(b"x")  # The location exists.
+    fixed = SimpleNamespace(token_hex=lambda size: "a" * (2 * size))
+    monkeypatch.setattr("domainkit.storage.base.secrets", fixed)
+    monkeypatch.setattr("domainkit.storage.filesystem.secrets", fixed)
+    victim = tmp_path / "victim"
+    (files.location / f".{'a' * 32}.aaaaaaaa.part").symlink_to(victim)
+
+    with pytest.raises(FileExistsError):
+        await files.save(b"payload")
+    assert not victim.exists()
+
+
 async def test_a_failed_rename_leaves_nothing(
     files: FileSystemStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -271,9 +302,9 @@ async def test_links_inside_the_storage_lead_nowhere(
         await files.open(f"escape/{'a' * 32}")
     assert await files.exists(f"escape/{'a' * 32}") is False
     assert await files.delete(f"escape/{'a' * 32}") is False
-    with pytest.raises(StorageError, match="symbolic link or a file"):
+    with pytest.raises(StorageError, match=LINK_REFUSED):
         await files.save(b"x", directory="escape")
-    with pytest.raises(StorageError, match="symbolic link or a file"):
+    with pytest.raises(StorageError, match=LINK_REFUSED):
         await files.save(b"x", directory=name)  # A file where a directory would go.
     assert await files.delete(f"docs/{'b' * 32}") is True  # The link, not its target.
 
@@ -337,14 +368,67 @@ async def test_closed_files_cannot_be_read(files: FileSystemStorage) -> None:
     await file.close()
     await file.close()
 
-    with pytest.raises(StorageError, match="closed"):
+    with pytest.raises(StorageError, match=r"^The file is closed\.$"):
         await file.read()
+
+
+async def test_whole_files_are_read_past_a_megabyte(files: FileSystemStorage) -> None:
+    """``read()`` reads a megabyte at a time until the end."""
+    data = bytes(range(256)) * 6000  # About 1.5 MB.
+    async with await files.open(await files.save(data)) as file:
+        assert await file.read() == data
+
+
+async def test_missing_parents_of_the_location_are_made(tmp_path: Path) -> None:
+    """The location is made on the first save, with its parents."""
+    nested = FileSystemStorage(tmp_path / "a" / "b")
+    name = await nested.save(b"x", directory="d")
+
+    assert (tmp_path / "a" / "b" / name).read_bytes() == b"x"
+
+
+async def test_reading_makes_no_directories(files: FileSystemStorage) -> None:
+    """Asking about a file in a new directory leaves the storage as it was."""
+    await files.save(b"x")
+    name = f"fresh/{'a' * 32}.png"
+
+    assert await files.exists(name) is False
+    with pytest.raises(FileMissing):
+        await files.open(name)
+    assert not (files.location / "fresh").exists()
+
+
+async def test_a_location_that_is_a_file_is_an_error(tmp_path: Path) -> None:
+    """A misconfigured location fails loudly, not as a missing file."""
+    (tmp_path / "file").write_bytes(b"")
+    storage = FileSystemStorage(tmp_path / "file")
+
+    with pytest.raises(NotADirectoryError):
+        await storage.open("a" * 32)
+
+
+async def test_deleting_a_link_to_a_directory_removes_the_link(
+    files: FileSystemStorage, tmp_path: Path
+) -> None:
+    """The link goes; the directory it pointed to stays."""
+    await files.save(b"x")
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    (files.location / ("a" * 32)).symlink_to(target)
+
+    assert await files.delete("a" * 32) is True
+    assert not (files.location / ("a" * 32)).is_symlink()
+    assert target.is_dir()
 
 
 def test_urls_point_where_a_web_server_serves_files(tmp_path: Path) -> None:
     """Only with a ``base_url``; names are quoted."""
     served = FileSystemStorage(tmp_path, base_url="https://cdn.example.com/media")
     assert served.url("a/b.png") == "https://cdn.example.com/media/a/b.png"
+    slashed = FileSystemStorage(tmp_path, base_url="https://cdn.example.com/media/")
+    assert slashed.url("a/b.png") == "https://cdn.example.com/media/a/b.png"
+    exed = FileSystemStorage(tmp_path, base_url="https://cdn.example.com/X")
+    assert exed.url("b.png") == "https://cdn.example.com/X/b.png"
     assert FileSystemStorage(tmp_path).url("a/b.png") is None
 
 
@@ -379,6 +463,8 @@ def test_storages_are_made_from_settings(tmp_path: Path, fresh_storages: None) -
         assert changed is not default
     with override_settings(STORAGES={}), pytest.raises(ImproperlyConfigured):
         storages["default"]
+    with override_settings(STORAGES=configured):
+        assert isinstance(StorageHandler()["scratch"], MemoryStorage)
 
 
 @pytest.mark.parametrize(

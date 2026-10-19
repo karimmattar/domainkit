@@ -12,6 +12,7 @@ from typing import Any, Final
 
 import pytest
 from sqlalchemy import Column, Date, PickleType, String, insert, select, text, update
+from sqlalchemy import delete as sa_delete
 from sqlalchemy.exc import DBAPIError
 
 from domainkit import setup
@@ -41,7 +42,7 @@ from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import call_command
 from domainkit.management.base import CommandError, run_async
-from domainkit_tests.conftest import ALPHA
+from domainkit_tests.conftest import ALPHA, MakeDatabase
 from domainkit_tests.sample_domains.patients import tables
 from domainkit_tests.sample_domains.patients.apps import PatientsConfig
 from domainkit_tests.sample_domains.patients.models import Visit
@@ -53,6 +54,8 @@ ODDITIES: Final = "domainkit_tests.sample_domains.oddities"
 NOW: Final = datetime(2026, 10, 19, 12, tzinfo=UTC)
 ANN: Final = uuid.UUID("00000000-0000-4000-8000-00000000000a")
 BOB: Final = uuid.UUID("00000000-0000-4000-8000-00000000000b")
+SUBJECT_MESSAGE: Final = r"^A subject is 1 to 255 characters, without control codes\.$"
+REASON_MESSAGE: Final = r"^A reason is 1 to 255 characters, without control codes\.$"
 
 
 @pytest.fixture
@@ -71,15 +74,22 @@ def clinic(database_url: str, tmp_path: Path) -> Iterator[str]:
     registry.clear()
 
 
-async def insert_rows(table: Any, *rows: dict[str, Any]) -> None:  # noqa: ANN401 - a Table.
+async def insert_rows(
+    table: Any,  # noqa: ANN401 - a Table.
+    *rows: dict[str, Any],
+    database: str = "default",
+) -> None:
     """Insert ``rows`` into ``table``."""
-    async with connections.engine("default").begin() as connection:
+    async with connections.engine(database).begin() as connection:
         await connection.execute(insert(table), list(rows))
 
 
-async def rows_of(table: Any) -> list[dict[str, Any]]:  # noqa: ANN401 - a Table.
+async def rows_of(
+    table: Any,  # noqa: ANN401 - a Table.
+    database: str = "default",
+) -> list[dict[str, Any]]:
     """Every row of ``table``, in key order."""
-    async with connections.engine("default").connect() as connection:
+    async with connections.engine(database).connect() as connection:
         query = select(table).order_by(*table.primary_key.columns)
         return [dict(row) for row in (await connection.execute(query)).mappings()]
 
@@ -103,6 +113,18 @@ def visit(number: int, *, patient: uuid.UUID = ANN, days: int = 0) -> dict[str, 
         "visited_at": NOW - timedelta(days=days),
         "notes": f"note {number}",
         "symptoms": f"cough {number}",
+        "version": 1,
+    }
+
+
+def card(number: int, digits: str, code: str, nickname: str) -> dict[str, Any]:
+    """Ann's card ``number``."""
+    return {
+        "id": number,
+        "holder_id": str(ANN),
+        "number": digits,
+        "code": code,
+        "nickname": nickname,
         "version": 1,
     }
 
@@ -144,8 +166,8 @@ async def fill() -> None:
     )
     await insert_rows(
         tables.cards,
-        {"id": 1, "holder_id": str(ANN), "number": "4111-0001", "version": 1},
-        {"id": 2, "holder_id": str(ANN), "number": "4111-0002", "version": 1},
+        card(1, "4111-0001", "C-0001", "Annie"),
+        card(2, "4111-0002", "C-0002", "Nan"),
     )
     await insert_rows(
         tables.badges,
@@ -197,10 +219,11 @@ def test_markers_privacy_cannot_follow_are_problems(clinic: str) -> None:
     ):
         setup()
         found = problems()
-        with pytest.raises(ImproperlyConfigured, match="Privacy cannot be applied"):
+        with pytest.raises(ImproperlyConfigured) as refused:
             personal_models()
         assert registry.get_domain_config("privacy").check_application(None) == found  # type: ignore[arg-type]
 
+    assert str(refused.value) == "Privacy cannot be applied:\n  " + "\n  ".join(found)
     assert found == [
         (
             "Basket.lines: Personal is read only on the field itself; mark the whole "
@@ -265,8 +288,8 @@ def test_a_subjects_data_is_exported_from_every_domain(clinic: str) -> None:
         {"id": str(uuid.UUID(int=11)), "fields": {"doctor_phone": "555-0199"}},
     ]
     assert [record["fields"] for record in patients["card"]] == [
-        {"number": "4111-0001"},
-        {"number": "4111-0002"},
+        {"number": "4111-0001", "code": "C-0001", "nickname": "Annie"},
+        {"number": "4111-0002", "code": "C-0002", "nickname": "Nan"},
     ]
     assert patients["badge"] == [{"id": "7", "fields": {"born_on": "1990-05-17"}}]
     assert "room" not in patients
@@ -297,7 +320,7 @@ def test_subjects_are_checked() -> None:
     """One to 255 characters, without control codes."""
     assert check_subject("x" * 255) == "x" * 255
     for bad in ("", "x" * 256, "a\nb", "a\x00b", "a\x7fb"):
-        with pytest.raises(ValueError, match="A subject is 1 to 255"):
+        with pytest.raises(ValueError, match=SUBJECT_MESSAGE):
             check_subject(bad)
 
 
@@ -305,9 +328,9 @@ def test_reasons_are_checked() -> None:
     """A reason goes into the audit trail: one line, of at most 255 characters."""
     assert check_reason("x" * 255) == "x" * 255
     for bad in ("", "x" * 256, "ticket\n42", "a\x7fb"):
-        with pytest.raises(ValueError, match="A reason is 1 to 255"):
+        with pytest.raises(ValueError, match=REASON_MESSAGE):
             check_reason(bad)
-    with pytest.raises(ValueError, match="A reason is 1 to 255"):
+    with pytest.raises(ValueError, match=REASON_MESSAGE):
         run_async(erase_subject(str(ANN), reason=""))
 
 
@@ -317,7 +340,6 @@ def test_subject_values_follow_their_column() -> None:
         "d",
         "m",
         object,
-        tables.cards,
         {},
         {
             "number": Column("number", String(10)),
@@ -369,6 +391,10 @@ def test_a_subjects_data_is_erased_through_units_of_work(clinic: str) -> None:
     assert all(number.startswith(ERASED) for number in numbers)
     assert len(set(numbers)) == 2
     assert all(len(number) == 31 for number in numbers)
+    codes = [card["code"] for card in cards]  # Cut to the column's 16 characters.
+    assert all(code.startswith(ERASED) and len(code) == 16 for code in codes)
+    assert len(set(codes)) == 2
+    assert [card["nickname"] for card in cards] == ["", ""]
     assert [(b["born_on"], b["erased_count"]) for b in badges] == [
         (date(1990, 1, 1), 2)
     ]
@@ -381,16 +407,40 @@ def test_a_subjects_data_is_erased_through_units_of_work(clinic: str) -> None:
         ("patients.patient", ("name", "email")),
         ("patients.visit", ("notes", "symptoms")),
         ("patients.appointment", ("doctor_phone",)),
-        ("patients.card", ("number",)),
+        ("patients.card", ("number", "code", "nickname")),
         ("patients.badge", ("born_on",)),
     }
     assert {event["details"]["reason"] for event in events} == {"ticket 42", "request"}
+    assert {
+        (event["details"]["model"], event["details"]["aggregate_id"])
+        for event in events
+    } >= {
+        ("patients.patient", str(ANN)),
+        ("patients.card", "1"),
+        ("patients.card", "2"),
+        ("patients.badge", "7"),
+    }
     erasures = run_async(audited("privacy.erase"))
     assert [(row["target"], row["details"]) for row in erasures] == [
         (str(ANN), {"aggregates": 8, "reason": "ticket 42"}),
         (str(ANN), {"aggregates": 1, "reason": "request"}),
     ]
     assert run_async(pseudonym_of(str(ANN), "name", "Ann")) is None
+
+
+def test_people_are_erased_wherever_they_are_the_subject(clinic: str) -> None:
+    """A doctor's phone goes, though the appointment's patient is someone else."""
+
+    async def erase() -> int:
+        await fill()
+        return await erase_subject("dr-who")
+
+    assert run_async(erase()) == 1
+    appointments = run_async(rows_of(tables.appointments))
+    assert [(a["patient_name"], a["doctor_phone"]) for a in appointments] == [
+        ("Ann", None),
+        ("Bob", "555-0199"),
+    ]
 
 
 def test_erasing_someone_unknown_changes_nothing(clinic: str) -> None:
@@ -438,8 +488,9 @@ async def fill_old() -> None:
 def test_retention_deletes_old_rows_and_erases_old_aggregates(
     clinic: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Rows past ``keep`` go; old visits keep their rows, not their notes."""
+    """Rows past ``keep`` go, in batches; old visits keep rows, not notes."""
     monkeypatch.setattr(operations, "BATCH_SIZE", 2)
+    deleted, loaded = watch_batches(monkeypatch)
 
     async def apply() -> tuple[list[Any], list[Any]]:
         await fill_old()
@@ -448,6 +499,7 @@ def test_retention_deletes_old_rows_and_erases_old_aggregates(
         return preview, done
 
     preview, done = run_async(apply())
+    batches = (list(deleted), list(loaded))
 
     assert [(r.policy, r.action, r.count) for r in preview] == [
         ("patients.patients_access_log", "would delete", 3),
@@ -483,10 +535,79 @@ def test_retention_deletes_old_rows_and_erases_old_aggregates(
         ("patients.patients_daily_counts", "success", 4),
         ("patients.patients_visits", "success", 3),
     ]
-    assert purges[0]["details"]["operation"] == "deleted"
+    assert [row["details"] for row in purges] == [
+        {
+            "database": "default",
+            "before": (NOW - timedelta(days=30)).isoformat(),
+            "operation": "deleted",
+            "rows": 3,
+        },
+        {
+            "database": "default",
+            "before": "2026-10-12",
+            "operation": "deleted",
+            "rows": 4,
+        },
+        {
+            "database": "default",
+            "before": (NOW - timedelta(days=365)).isoformat(),
+            "operation": "erased",
+            "rows": 3,
+        },
+    ]
     erased = run_async(audited("privacy.personal_data_erased"))
     assert {row["details"]["reason"] for row in erased} == {"retention"}
+    # Deleted 2 then 1 log rows, 2, 2, then none of the counts; erased 2, then 1.
+    assert batches == (
+        ["patients_access_log"] * 2 + ["patients_daily_counts"] * 3,
+        [2, 1],
+    )
     assert run_async(purge(now=NOW))[2].count == 0  # Nothing left to erase.
+
+
+def watch_batches(monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], list[int]]:
+    """Record the table of each batch deleted, and the size of each batch erased."""
+    deleted: list[str] = []
+    loaded: list[int] = []
+    matching = operations._Aggregates.matching
+
+    def watched_delete(table: Any) -> Any:  # noqa: ANN401 - as delete().
+        deleted.append(table.name)
+        return sa_delete(table)
+
+    async def watched_matching(
+        self: Any,  # noqa: ANN401 - an _Aggregates.
+        condition: Any,  # noqa: ANN401 - a clause.
+        limit: int | None = None,
+    ) -> list[Any]:
+        found = await matching(self, condition, limit)
+        loaded.append(len(found))
+        return found
+
+    monkeypatch.setattr(operations, "delete", watched_delete)
+    monkeypatch.setattr(operations._Aggregates, "matching", watched_matching)
+    return deleted, loaded
+
+
+def test_retention_of_an_aggregate_deletes_its_old_rows(
+    clinic: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without ``erase``, a policy naming an aggregate deletes its rows."""
+    from domainkit_tests.sample_domains.patients.models import Appointment
+
+    retention = Retention(aggregate=Appointment, field="booked_at", keep=timedelta(1))
+    monkeypatch.setattr(PatientsConfig, "RETENTION", (retention,))
+
+    async def apply() -> list[Any]:
+        await fill()
+        return await purge(now=NOW + timedelta(days=2))
+
+    done = run_async(apply())
+
+    assert [(r.policy, r.action, r.count) for r in done] == [
+        ("patients.patients_appointments", "deleted", 2)
+    ]
+    assert run_async(rows_of(tables.appointments)) == []
 
 
 def test_refusals_stop_one_table_and_are_recorded(
@@ -507,6 +628,11 @@ def test_refusals_stop_one_table_and_are_recorded(
         return await purge(now=NOW)
 
     done = run_async(apply())
+    assert [(r.database, r.action) for r in done] == [
+        ("default", "deleted"),
+        ("default", "deleted"),
+        ("default", "erased"),
+    ]
     assert [(r.policy, r.count, r.refused) for r in done] == [
         (
             "patients.patients_access_log",
@@ -522,7 +648,18 @@ def test_refusals_stop_one_table_and_are_recorded(
     ]
     failures = run_async(audited("privacy.purge"))
     assert [row["outcome"] for row in failures] == ["failure", "failure", "success"]
-    assert failures[0]["details"]["reason"].startswith("append-only")
+    assert [row["target"] for row in failures] == [
+        "patients.patients_access_log",
+        "patients.patients_daily_counts",
+        "patients.patients_visits",
+    ]
+    assert failures[0]["details"] == {
+        "database": "default",
+        "before": (NOW - timedelta(days=30)).isoformat(),
+        "operation": "deleted",
+        "rows": 0,
+        "reason": "append-only: the database refuses to delete its rows",
+    }
 
     class Other(Exception):
         sqlstate = "XX000"
@@ -533,6 +670,102 @@ def test_refusals_stop_one_table_and_are_recorded(
     monkeypatch.setattr(operations, "_delete_old", fail)
     with pytest.raises(DBAPIError):
         run_async(purge(now=NOW))
+
+
+@pytest.fixture
+def clinic_shards(make_database: MakeDatabase, tmp_path: Path) -> Iterator[None]:
+    """The patients domain on a shard group of two databases."""
+    registry.clear()
+    with override_settings(
+        INSTALLED_DOMAINS=[AUDIT, PRIVACY, PATIENTS, ALPHA],
+        DATABASES={
+            "default": {"URL": make_database("default")},
+            "clinic_a": {"URL": make_database("clinic_a")},
+            "clinic_b": {"URL": make_database("clinic_b")},
+        },
+        SHARDS={"clinic": {"DATABASES": ["clinic_a", "clinic_b"], "BUCKETS": 16}},
+        DATABASE_ROUTING={"patients": "clinic"},
+        MIGRATIONS_DIR=tmp_path / "migrations",
+    ):
+        setup()
+        call_command("makemigrations", "-m", "clinic", stdout=io.StringIO())
+        call_command("migrate", stdout=io.StringIO())
+        yield
+    registry.clear()
+
+
+def test_every_shard_is_searched_erased_and_purged(
+    clinic_shards: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each database of the domain's shard group, one after the other."""
+    log = PatientsConfig.RETENTION[0]
+    monkeypatch.setattr(PatientsConfig, "RETENTION", (log, PatientsConfig.RETENTION[2]))
+    patient = {
+        "id": ANN,
+        "name": "Ann",
+        "email": None,
+        "registered_at": NOW,
+        "version": 1,
+    }
+
+    async def scenario() -> tuple[dict[str, Any], int, list[Any], list[Any]]:
+        await insert_rows(tables.patients, patient, database="clinic_a")
+        await insert_rows(tables.visits, visit(1, days=400), database="clinic_b")
+        for database, numbers in (("clinic_a", (1, 2)), ("clinic_b", (3,))):
+            await insert_rows(
+                tables.access_log,
+                *(
+                    {"id": n, "patient_id": ANN, "accessed_at": NOW - timedelta(40)}
+                    for n in numbers
+                ),
+                database=database,
+            )
+        exported = await export_subject(str(ANN))
+        erased = await erase_subject(str(ANN))
+        preview = await purge(dry_run=True, now=NOW)
+        done = await purge(now=NOW)
+        return exported, erased, preview, done
+
+    exported, erased, preview, done = run_async(scenario())
+
+    assert sorted(exported["domains"]["patients"]) == ["patient", "visit"]
+    assert erased == 2
+    assert [p["name"] for p in run_async(rows_of(tables.patients, "clinic_a"))] == [""]
+    assert [v["notes"] for v in run_async(rows_of(tables.visits, "clinic_b"))] == [None]
+    assert [(r.policy, r.database, r.action, r.count) for r in preview] == [
+        ("patients.patients_access_log", "clinic_a", "would delete", 2),
+        ("patients.patients_access_log", "clinic_b", "would delete", 1),
+        ("patients.patients_visits", "clinic_a", "would erase", 0),
+        ("patients.patients_visits", "clinic_b", "would erase", 0),
+    ]
+    assert [(r.database, r.action, r.count) for r in done] == [
+        ("clinic_a", "deleted", 2),
+        ("clinic_b", "deleted", 1),
+        ("clinic_a", "erased", 0),
+        ("clinic_b", "erased", 0),
+    ]
+    purges = run_async(audited("privacy.purge"))
+    assert [row["details"]["database"] for row in purges] == [
+        "clinic_a",
+        "clinic_b",
+        "clinic_a",
+        "clinic_b",
+    ]
+
+    class Refusal(Exception):
+        sqlstate = "23503"
+
+    async def refuse(*args: object) -> None:
+        raise DBAPIError("DELETE", None, Refusal("referenced"))
+
+    monkeypatch.setattr(operations, "_delete_old", refuse)
+    refused = run_async(purge(now=NOW))
+    assert [(r.database, r.refused is None) for r in refused] == [
+        ("clinic_a", False),
+        ("clinic_b", False),
+        ("clinic_a", True),
+        ("clinic_b", True),
+    ]
 
 
 @pytest.mark.skipif(
@@ -662,13 +895,18 @@ def test_columns_without_a_python_type_are_no_dates() -> None:
 
 def test_retention_needs_one_table_or_aggregate() -> None:
     """Exactly one of them, a positive time, and ``erase`` only for aggregates."""
-    with pytest.raises(ValueError, match="a table or an aggregate, not both"):
+    both = r"^A Retention names a table or an aggregate, not both\.$"
+    with pytest.raises(ValueError, match=both):
         Retention(field="x", keep=timedelta(days=1))
-    with pytest.raises(ValueError, match="a table or an aggregate, not both"):
+    with pytest.raises(ValueError, match=both):
         Retention(table="t", aggregate=Visit, field="x", keep=timedelta(days=1))
-    with pytest.raises(ValueError, match="positive time"):
+    with pytest.raises(
+        ValueError, match=r"^A Retention keeps rows for a positive time\.$"
+    ):
         Retention(table="t", field="x", keep=timedelta(0))
-    with pytest.raises(ValueError, match="name it"):
+    with pytest.raises(
+        ValueError, match=r"^erase=True erases an aggregate's fields; name it\.$"
+    ):
         Retention(table="t", field="x", keep=timedelta(days=1), erase=True)
 
 
@@ -685,18 +923,51 @@ def run(*args: str) -> str:
 def test_the_command_exports(clinic: str, tmp_path: Path) -> None:
     """To standard output, or to a new file only its owner can read."""
     run_async(fill())
-    printed = json.loads(run("export", "--subject", str(BOB)))
+    run_async(rename(BOB, "\u0628\u0648\u0628"))
+    raw = run("export", "--subject", str(BOB))
+    printed = json.loads(raw)
     target = tmp_path / "bob.json"
     written = run("export", "--subject", str(BOB), "--output", str(target))
 
-    assert printed["domains"]["patients"]["patient"][0]["fields"]["name"] == "Bob"
+    assert printed["domains"]["patients"]["patient"][0]["fields"]["name"] == (
+        "\u0628\u0648\u0628"
+    )
+    assert raw.startswith('{\n  "subject": ')  # Indented by two.
+    assert '"name": "\u0628\u0648\u0628"' in raw  # Not escaped.
     assert written == f"Wrote the personal data of {BOB} to {target}.\n"
     assert json.loads(target.read_text("utf-8"))["subject"] == str(BOB)
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
     with pytest.raises(CommandError, match="exists; name a new file"):
         run("export", "--subject", str(BOB), "--output", str(target))
-    with pytest.raises(CommandError, match="A subject is 1 to 255"):
+    with pytest.raises(CommandError, match=SUBJECT_MESSAGE):
         run("export", "--subject", "a\nb")
+
+
+async def rename(patient: uuid.UUID, name: str) -> None:
+    """Change a patient's name in place."""
+    async with connections.engine("default").begin() as connection:
+        await connection.execute(
+            update(tables.patients)
+            .where(tables.patients.c.id == patient)
+            .values(name=name)
+        )
+
+
+def test_the_command_needs_an_action_and_a_subject(
+    clinic: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Argument errors come from the parser, before anything runs."""
+    for args, missing in (
+        ((), "action"),
+        (("export",), "--subject"),
+        (("erase",), "--subject"),
+    ):
+        with pytest.raises(SystemExit):
+            call_command("privacy", *args, stdout=io.StringIO())
+        assert (
+            f"the following arguments are required: {missing}"
+            in capsys.readouterr().err
+        )
 
 
 def test_the_command_erases_after_confirmation(
@@ -705,21 +976,38 @@ def test_the_command_erases_after_confirmation(
     """Typing the subject again goes on; anything else cancels."""
     run_async(fill())
     answers = iter(["someone else", str(BOB)])
-    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+    prompts: list[str] = []
 
-    with pytest.raises(CommandError, match="Erasure cancelled"):
+    def answer(prompt: str) -> str:
+        prompts.append(prompt)
+        return next(answers)
+
+    monkeypatch.setattr("builtins.input", answer)
+
+    with pytest.raises(CommandError, match=r"^Erasure cancelled\.$"):
         run("erase", "--subject", str(BOB))
-    with pytest.raises(CommandError, match="A reason is 1 to 255"):
+    with pytest.raises(CommandError, match=REASON_MESSAGE):
         run("erase", "--subject", str(BOB), "--reason", "", "--noinput")
     confirmed = run("erase", "--subject", str(BOB), "--reason", "ticket 7")
     unattended = run("erase", "--subject", str(BOB), "--noinput")
+    one = run("erase", "--subject", "dr-who", "--noinput")
 
+    assert prompts[0] == (
+        f"This erases the personal data of {BOB} in every installed domain, for "
+        "good. Type the subject again to go on: "
+    )
     assert confirmed == (
         f"Erased the personal data of {BOB} in 3 aggregates, and forgot their "
         "audit keys.\n"
     )
     assert unattended.startswith(f"Erased the personal data of {BOB} in 0 aggregates")
+    assert one == (
+        "Erased the personal data of dr-who in 1 aggregate, and forgot their "
+        "audit keys.\n"
+    )
     assert [p["name"] for p in run_async(rows_of(tables.patients))] == ["Ann", ""]
+    reasons = [row["details"]["reason"] for row in run_async(audited("privacy.erase"))]
+    assert reasons == ["ticket 7", "request", "request"]
 
 
 def test_the_command_purges(clinic: str, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -747,11 +1035,22 @@ def test_the_command_purges(clinic: str, monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr(operations, "_delete_old", refuse)
     output = io.StringIO()
-    with pytest.raises(
-        CommandError, match=r"Not purged: patients\.patients_access_log"
+    with (
+        pytest.raises(
+            CommandError,
+            match=(
+                r"^Not purged: patients\.patients_access_log, "
+                r"patients\.patients_daily_counts\.$"
+            ),
+        ),
+        freeze_time(NOW),
     ):
         call_command("privacy", "purge", stdout=output)
-    assert "refused, other rows still refer to them" in output.getvalue()
+    assert output.getvalue().splitlines()[0] == (
+        "patients.patients_access_log on default: deleted 0 row(s) from before "
+        f"{(NOW - timedelta(days=30)).isoformat()}; refused, other rows still "
+        "refer to them"
+    )
     monkeypatch.setattr(PatientsConfig, "RETENTION", ())
     assert run("purge") == "No domain declares a RETENTION.\n"
 

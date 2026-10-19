@@ -84,6 +84,9 @@ python manage.py privacy erase --subject 3f2a... --reason "ticket 812"
 ```
 
 It asks for the subject again before it starts (`--noinput` does not).
+Subjects and reasons are one line of at most 255 characters; the reason
+(default `request`) is recorded with every erasure, so name a ticket, not
+the person.
 For every aggregate holding data about the subject:
 
 - the aggregate is loaded through a unit of work and its marked fields

@@ -274,7 +274,7 @@ def _render(pattern: str, value: date | time, formats: LocaleFormats) -> str:
         token = match[0]
         if match[1] is not None:
             parts.append(_field(token, value, formats))
-        elif token.startswith("'") and len(token) > 1:
+        elif len(token) > 1:  # Quoted text; '' is a quote.
             parts.append(token[1:-1].replace("''", "'") or "'")
         else:
             parts.append(token)

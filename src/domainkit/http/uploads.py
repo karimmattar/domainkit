@@ -86,14 +86,16 @@ def _zip(head: bytes) -> bool:
 def _text(head: bytes) -> bool:
     """UTF-8 without control characters but tabs and line breaks.
 
-    A character cut off by the end of ``head`` does not count against it.
+    A character cut off by the end of ``head`` does not count against it:
+    the decoder says "unexpected end of data" for that alone, as it stops
+    at the first fault.
     """
     if not head or any(byte < 0x20 and byte not in _TEXT_CONTROLS for byte in head):
         return False
     try:
         head.decode("utf-8")
     except UnicodeDecodeError as exc:
-        return exc.reason == "unexpected end of data" and exc.start >= len(head) - 3
+        return exc.reason == "unexpected end of data"
     return True
 
 
@@ -284,9 +286,7 @@ async def serve(
     file = await target.open(name)
     headers = {
         "Content-Length": str(file.size),
-        "Content-Disposition": content_disposition(
-            filename or name.rpartition("/")[2], inline=inline
-        ),
+        "Content-Disposition": content_disposition(filename or name, inline=inline),
         "Content-Security-Policy": "default-src 'none'; sandbox",
         "X-Content-Type-Options": "nosniff",
     }
