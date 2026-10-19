@@ -301,15 +301,15 @@ def test_throttled_counts_are_remembered_within_a_bound(
     from fastapi import FastAPI
     from starlette.requests import Request
 
-    from domainkit.contrib.auth import api
+    from domainkit.contrib.auth import throttling
 
-    monkeypatch.setattr(api, "MAX_REFUSALS", 1)
+    monkeypatch.setattr(throttling, "MAX_REFUSALS", 1)
     request = Request({"type": "http", "headers": [], "app": FastAPI()})
 
-    assert api._first_refusal(request, "a", 60)
-    assert not api._first_refusal(request, "a", 60)
-    assert api._first_refusal(request, "b", 60)
-    assert api._first_refusal(request, "a", 60)  # Let go when "b" came.
+    assert throttling.first_refusal(request, "a", 60)
+    assert not throttling.first_refusal(request, "a", 60)
+    assert throttling.first_refusal(request, "b", 60)
+    assert throttling.first_refusal(request, "a", 60)  # Let go when "b" came.
 
 
 def test_logins_from_unknown_addresses_are_throttled_together(

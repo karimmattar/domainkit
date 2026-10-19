@@ -28,6 +28,7 @@ from sqlalchemy import (
     Table,
     UniqueConstraint,
     Uuid,
+    false,
 )
 from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import relationship
@@ -94,6 +95,8 @@ def abstract_user_columns() -> list[Column[Any]]:
             info={"duplicate": UsernameTaken},
         ),
         Column("email", String(254), nullable=False),
+        # Existing rows start unverified when the column is added.
+        Column("email_verified", Boolean, nullable=False, server_default=false()),
         Column("first_name", String(150), nullable=False),
         Column("last_name", String(150), nullable=False),
         Column("is_staff", Boolean, nullable=False),

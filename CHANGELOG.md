@@ -28,6 +28,23 @@ All notable changes to domainkit. The format follows
 - `domainkit.contrib.notifications`: text messages and push notifications
   queued the same way, with `SmsBackend` and `PushBackend` ports for a
   project's provider, and console and memory backends (DJ-50).
+- Password reset, email verification, and signing up (DJ-38;
+  `docs/auth.md`, "Password reset"), with `domainkit.contrib.auth.recovery`
+  and `domainkit.contrib.auth.signup` routers to mount:
+  - `POST /auth/password-reset` always answers 202, in the same time,
+    whether or not an account uses the address; the worker mails a link
+    whose token is signed, expires (`AUTH.PASSWORD_RESET_TIMEOUT`), and
+    ends once used or once the user logs in. Confirming it ends every
+    session.
+  - `AbstractUser.email_verified`, set by a mailed link and cleared when
+    the address changes. Run `makemigrations` and `migrate` for the new
+    column.
+  - `POST /auth/signup`, off until `AUTH.SIGNUP_ENABLED`, checks the fields
+    and password rules at once, then answers 202 and tells the address by
+    mail when the username or address is taken.
+  - Requests that send mail count against the new `AUTH.EMAIL_RATE`, and
+    token checks against `AUTH.LOGIN_RATE`; resets, verifications,
+    signups, and refusals are audited.
 
 ### Changed
 
@@ -37,6 +54,7 @@ All notable changes to domainkit. The format follows
   `django-insecure-`. Fallbacks are held to the same rules, and the errors
   never quote a key. The production settings that `init` creates read it
   from `<PREFIX>SECRET_KEY`; set it before upgrading a deployment.
+- `/auth/me` and the admin API show `email_verified`.
 
 ## [0.6.2] - 2026-10-19
 

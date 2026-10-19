@@ -168,6 +168,7 @@ def test_logins_return_opaque_tokens(api: Api) -> None:
         "id": str(alice),
         "username": "alice",
         "email": "alice@example.com",
+        "email_verified": False,
         "is_staff": False,
         "is_superuser": False,
         "groups": [],

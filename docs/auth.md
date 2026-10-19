@@ -106,6 +106,7 @@ permissions.
 | `username` | text, unique | 1 to 150 letters, digits, and `@ . + - _`; NFKC-normalized. |
 | `password` | `PasswordHash` | Never a raw password; see below. |
 | `email`, `first_name`, `last_name` | text | The email's domain is lower-cased. |
+| `email_verified` | bool | Whether the user proved they read mail at `email`; a new address clears it. |
 | `is_active` | bool | Inactive users cannot log in and have no permissions. |
 | `is_staff` | bool | May use the admin API (with its permissions). |
 | `is_superuser` | bool | Has every permission without grants. |
@@ -414,7 +415,7 @@ error body.
 | `POST /login` | `{"username", "password"}` | `200` with tokens; `401 invalid_credentials`; `429 login_throttled`. |
 | `POST /refresh` | `{"refresh_token"}` | `200` with new tokens; `401` for a used, expired, or unknown refresh token; `400 refresh_not_supported` with opaque tokens. |
 | `POST /logout` | optional `{"everywhere": true}` | `204`: this session's tokens end, or every token of the user. |
-| `GET /me` | | The user: `id`, `username`, `email`, `is_staff`, `is_superuser`, `last_login`, `groups`, and `permissions`. |
+| `GET /me` | | The user: `id`, `username`, `email`, `email_verified`, `is_staff`, `is_superuser`, `last_login`, `groups`, and `permissions`. |
 | `POST /password` | `{"old_password", "new_password"}` | `204`: every other session of the user ends; `400 wrong_password`; `422` if a validator refuses the new password. |
 
 `username` is the user model's `USERNAME_FIELD` (the email, for `Member`).
@@ -455,6 +456,98 @@ for a name count whoever sends them, so a caller who keeps sending
 `LOGIN_RATE` wrong passwords for it leaves its user few attempts of their
 own. Sessions already open are not affected, and password changes have
 their own count. The audited `throttled` refusals show such a flood.
+
+## Password reset
+
+People who forgot their password ask for a link by mail, and choose a new
+one with it. Install messaging and mail (`docs/mail.md`), and mount the
+router that has these endpoints next to the one that logs in:
+
+```python
+INSTALLED_DOMAINS = [
+    "domainkit.contrib.messaging",
+    "domainkit.contrib.mail",
+    "domainkit.contrib.contenttypes",
+    "domainkit.contrib.auth",
+    ...,
+]
+AUTH = {"PASSWORD_RESET_URL": "https://app.example.com/reset-password?token={token}"}
+```
+
+```python
+from domainkit.contrib.auth.recovery import router as recovery_router
+
+router.include_router(recovery_router, prefix="/auth")
+```
+
+| Endpoint | Who | Body | Answer |
+| --- | --- | --- | --- |
+| `POST /password-reset` | anyone | `{"email"}` | Always `202`; `429 throttled`. |
+| `POST /password-reset/confirm` | anyone | `{"token", "new_password"}` | `204`; `400 invalid_token`; `422` if a validator refuses the password. |
+| `POST /email-verification` | a user | | `202`; `429 throttled`. |
+| `POST /email-verification/confirm` | anyone | `{"token"}` | `204`; `400 invalid_token`. |
+
+A reset request answers `202` whether or not an account uses the address,
+with the same body, in the same time: it only queues a task. The worker
+looks the address up, in any case, and mails every active user of it who
+has a usable password a link, `PASSWORD_RESET_URL` with the token in place
+of `{token}` (the token alone without one), which works for
+`PASSWORD_RESET_TIMEOUT` (an hour). Your page posts the token and the new
+password to `/password-reset/confirm`. The new password is checked by the
+validators, and every session of the user ends.
+
+Reset tokens are signed with `SECRET_KEY` and never stored, not even in
+the outbox: the worker makes them as it mails them. A token rests on the
+user's password hash, last login, email, and status, so it stops working
+once it is used, once the user logs in, or once any of those changes. A
+wrong token, a used or expired one, and one for no user all get the same
+`400 invalid_token`. Requests for mail count against `EMAIL_RATE` (5 an
+hour) per client address and per email address; token checks count
+against `LOGIN_RATE` per client address and per user.
+
+The audit trail records `auth.password_reset_requested` for each link
+mailed, `auth.password_reset` for a reset (and `denied`, with the reason
+`invalid_token` or `throttled`, for refusals), and `auth.password_changed`.
+
+### Email verification
+
+`AbstractUser` has `email_verified`, false for new users and for existing
+ones once the column is added (run `makemigrations` and `migrate`). A user
+asks for a link at `/email-verification`; the worker mails it to their
+address, unless it is verified, and `/email-verification/confirm` with its
+token sets `email_verified`. The link works once, for
+`EMAIL_VERIFICATION_TIMEOUT` (three days), and only for the address it went
+to: changing the email clears `email_verified` and ends the links sent
+before. Staff cannot set it in the admin API, where it is read-only.
+`user.verify_email()` sets it in code. Verifications are audited as
+`auth.email_verified`.
+
+### Signing up
+
+`domainkit.contrib.auth.signup.router` has `POST /signup` (anyone), with
+`{"username", "email", "password"}`. It answers 404 until
+`AUTH.SIGNUP_ENABLED` is on. The fields and the password validators are
+checked at once (`422`), which tells nothing about other accounts. Then it
+answers `202` whatever happens next, in the same time, and the worker
+either creates the account and mails a verification link, or, when the
+username (in any case) or the address is taken, mails the address given
+that it is. Whether an account exists is told only to whoever reads mail
+at the address. Signups count against `EMAIL_RATE` per client address and
+per email address, and are audited as `auth.user_signed_up`. The new user
+can log in once the worker has run, before verifying the address: check
+`email_verified` in routes that need it.
+
+The password's hash travels to the worker in the outbox, kept until
+`MESSAGING.RETENTION_SECONDS` after the account is made. Two signups for
+one new address at the same moment can both succeed: email addresses are
+not unique in the user table.
+
+The worker renders the mail from the templates `auth/password_reset`,
+`auth/email_verification`, and `auth/signup_exists` (plain text). Replace
+them from `MAIL.TEMPLATE_DIRS`; they are given `user`, `username`, `link`,
+and `valid_for` (`1 hour`), and `email` for the last. `check` reports
+these routes mounted without messaging and mail, or with a user model
+without `EMAIL_FIELD` and `email_verified`.
 
 ## Protecting routes
 
@@ -596,8 +689,8 @@ custom user), `auth.*_group`, or `auth.view_permission`.
 A user is shown with `id`, `username`, `is_active`, `is_staff`,
 `is_superuser`, `last_login`, `groups`, the `permissions` granted directly,
 and `fields`: the ones the model lists in `EDITABLE_FIELDS` and
-`READ_ONLY_FIELDS` (`email`, `first_name`, `last_name`, and `date_joined`
-for `AbstractUser`). `fields` in a request changes only those in
+`READ_ONLY_FIELDS` (`email`, `first_name`, `last_name`, `date_joined`, and
+`email_verified` for `AbstractUser`). `fields` in a request changes only those in
 `EDITABLE_FIELDS` (`editable_fields()`); naming any other field answers
 `422 unknown_user_field`. Values are checked against the
 field's type annotation (`422 invalid_user_field`), and `clean_field(name,
@@ -640,7 +733,13 @@ changed what.
 | `AUTHENTICATION_EXEMPT_PATHS` | `["/health", "/ready", "/metrics"]` | Paths served without looking at credentials. |
 | `TOKEN_TTL` | 14 days | How long a login's opaque token works; `None` until revoked. |
 | `TOKEN_PREFIX` | `"dkt_"` | Starts every opaque token; changing it invalidates existing tokens. |
-| `LOGIN_RATE` | `"10/minute"` | Login and password-change attempts per client address and per username; `None` for no limit. |
+| `LOGIN_RATE` | `"10/minute"` | Login and password-change attempts per client address and per username, and checks of one-time codes and link tokens; `None` for no limit. |
+| `EMAIL_RATE` | `"5/hour"` | Requests that send mail (resets, verifications, signups) per client address and per email address or user. |
+| `PASSWORD_RESET_TIMEOUT` | 1 hour | How long a reset link works. |
+| `PASSWORD_RESET_URL` | `None` | Your page that takes a reset token: `{token}` marks where. |
+| `EMAIL_VERIFICATION_TIMEOUT` | 3 days | How long a verification link works. |
+| `EMAIL_VERIFICATION_URL` | `None` | Your page that takes a verification token. |
+| `SIGNUP_ENABLED` | `False` | Let anyone create an account at `/signup`. |
 | `REQUIRE_ROUTE_RULES` | `True` | Every route must say who may call it (`Require`, a user parameter, or `Public`); see "Deny by default". |
 | `JWT` | see below | JSON Web Tokens, for `JWTAuthentication`. |
 

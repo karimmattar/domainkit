@@ -16,7 +16,7 @@ from domainkit.db.routing import router
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.utils.module_loading import import_string
 
-from .access import routes_need_users, unguarded_routes
+from .access import _routes, routes_need_users, unguarded_routes
 from .authentication import get_authenticators
 from .backends import get_backends
 from .hashers import insecure_hashers
@@ -28,6 +28,9 @@ from .validators import get_password_validators
 
 CONTENTTYPES = "domainkit.contrib.contenttypes"
 MESSAGING = "domainkit.contrib.messaging"
+MAIL = "domainkit.contrib.mail"
+MAILING_ROUTERS = ("recovery", "signup")
+"""Modules whose routes send mail, and need a user model with an address."""
 AUTHENTICATION_MIDDLEWARE = "domainkit.contrib.auth.middleware.AuthenticationMiddleware"
 OUTSIDE_AUTHENTICATION = ("domainkit.http.middleware.RequestContextMiddleware",)
 """Middleware that must run before ``AuthenticationMiddleware``."""
@@ -83,6 +86,8 @@ class AuthConfig(DomainConfig):
         declared_permissions()
         if registry.is_installed(MESSAGING):
             import_module(f"{self.name}.tasks")
+            for module in MAILING_ROUTERS:
+                import_module(f"{self.name}.{module}").register_tasks()
 
     def check_application(self, app: FastAPI) -> list[str]:
         """Routes that declare no rule, and rules no middleware can answer."""
@@ -103,6 +108,31 @@ class AuthConfig(DomainConfig):
                 "call it."
                 for route, takes_rules in unguarded_routes(app)
             )
+        problems.extend(self._mailing_problems(app))
+        return problems
+
+    def _mailing_problems(self, app: FastAPI) -> list[str]:
+        """What routes that send mail lack: the apps, or an address to send to."""
+        called = {dependant.call for _, dependant in _routes(app.routes) if dependant}
+        problems = []
+        for name in MAILING_ROUTERS:
+            module = import_module(f"{self.name}.{name}")
+            if not called & {route.endpoint for route in module.router.routes}:
+                continue
+            if missing := [
+                app for app in (MESSAGING, MAIL) if not registry.is_installed(app)
+            ]:
+                problems.append(
+                    f"Routes of {module.__name__} send mail: add {', '.join(missing)} "
+                    "to INSTALLED_DOMAINS."
+                )
+            if self.user_model.EMAIL_FIELD is None or not hasattr(
+                self.user_model, "verify_email"
+            ):
+                problems.append(
+                    f"Routes of {module.__name__} need a user model with an "
+                    "EMAIL_FIELD and email_verified, as AbstractUser has."
+                )
         return problems
 
     def holds_table(self, table: Table) -> bool:

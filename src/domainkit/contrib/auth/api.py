@@ -13,11 +13,6 @@ OAuth 2's token response format. Attempts are limited to
 to the audit trail when ``domainkit.contrib.audit`` is installed.
 """
 
-import hashlib
-import math
-import time
-import unicodedata
-from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
@@ -28,13 +23,8 @@ from uuid import UUID
 from fastapi import APIRouter, Body, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from domainkit.apps import registry
-from domainkit.conf import settings
 from domainkit.context import bind_request, current_request
 from domainkit.http.errors import APIError, ErrorResponse
-from domainkit.http.ratelimit import Backend, client_group
-from domainkit.utils.module_loading import import_string
-from domainkit.utils.rates import parse_rate
 
 from .access import AuthenticatedUser, Public
 from .authentication import Credentials, IssuedTokens, get_authenticators
@@ -43,14 +33,11 @@ from .events import UserLoggedOut
 from .hashers import acheck_password
 from .models import AbstractBaseUser, UserId
 from .settings import auth_settings
+from .throttling import account_key, address_key, audit_refusal, throttle
 from .uow import AuthUnitOfWork
-from .users import get_user_model
 from .validators import validate_password
 
-AUDIT = "domainkit.contrib.audit"
 PASSWORD_MAX_LENGTH = 4096
-MAX_REFUSALS = 10_000
-"""Throttled keys remembered, to audit each once per period."""
 """Longer passwords are refused before hashing, which they would slow down."""
 
 router = APIRouter(tags=["auth"])
@@ -107,6 +94,8 @@ class UserOut(BaseModel):
     id: UUID
     username: str
     email: str | None
+    email_verified: bool | None
+    """None: the user model keeps no such field."""
     is_staff: bool
     is_superuser: bool
     last_login: datetime | None
@@ -195,6 +184,7 @@ async def me(user: AuthenticatedUser) -> UserOut:
         id=user.id,
         username=user.get_username(),
         email=email if isinstance(email, str) else None,
+        email_verified=getattr(user, "email_verified", None),
         is_staff=getattr(user, "is_staff", False) is True,
         is_superuser=user.is_superuser,
         last_login=user.last_login,
@@ -241,22 +231,14 @@ async def _throttle(request: Request, *keys: str) -> None:
     The first refusal of each key in a period is audited, not every one, so
     a flood of attempts writes no rows to the append-only trail.
     """
-    rate = auth_settings().LOGIN_RATE
-    if rate is None:
-        return
-    limit, period = parse_rate(rate)
-    limiter = _limiter(request)
-    for key in keys:
-        decision = await limiter.hit(key, limit, period)
-        if not decision.allowed:
-            if _first_refusal(request, key, period):
-                await _audit_refusal("throttled")
-            raise APIError(
-                status.HTTP_429_TOO_MANY_REQUESTS,
-                "Too many login attempts; try again later.",
-                code="login_throttled",
-                headers={"Retry-After": str(math.ceil(decision.retry_after))},
-            )
+    await throttle(
+        request,
+        auth_settings().LOGIN_RATE,
+        keys,
+        action="auth.login",
+        detail="Too many login attempts; try again later.",
+        code="login_throttled",
+    )
 
 
 def _no_store(response: Response) -> None:
@@ -270,54 +252,12 @@ def _no_store(response: Response) -> None:
 
 def _login_keys(request: Request, username: str) -> tuple[str, str]:
     """The counts a login is checked against: its address's and its account's."""
-    client = client_group(request.client.host) if request.client else "unknown"
-    return f"login:ip:{client}", f"login:user:{_account(username)}"
-
-
-def _account(username: str) -> str:
-    """The key of the account ``username`` names, as logging in finds it.
-
-    Names the lookup treats as one (``alice`` and its full-width or
-    mathematical look-alikes, under NFKC) share one key, in any case.
-    """
-    name = get_user_model().normalize_username(username)
-    folded = unicodedata.normalize("NFKC", name.casefold())
-    return hashlib.sha256(folded.encode()).hexdigest()
-
-
-def _first_refusal(request: Request, key: str, period: int) -> bool:
-    """Whether ``key`` was refused for the first time in ``period`` here."""
-    state = request.app.state
-    refused: OrderedDict[str, float] | None = getattr(state, "login_refusals", None)
-    if refused is None:
-        refused = state.login_refusals = OrderedDict()
-    now = time.monotonic()
-    since = refused.get(key)
-    if since is not None and now - since < period:
-        return False
-    refused[key] = now
-    refused.move_to_end(key)
-    if len(refused) > MAX_REFUSALS:
-        refused.popitem(last=False)
-    return True
-
-
-def _limiter(request: Request) -> Backend:
-    """The application's login counter (``RATE_LIMIT_BACKEND``), made once."""
-    state = request.app.state
-    limiter: Backend | None = getattr(state, "login_limiter", None)
-    if limiter is None:
-        limiter = import_string(settings.RATE_LIMIT_BACKEND)()
-        state.login_limiter = limiter
-    return limiter
+    return address_key(request, "login"), account_key("login", username)
 
 
 async def _audit_refusal(reason: str) -> None:
     """Record a refused login, without the username: it may be a password."""
-    if registry.is_installed(AUDIT):
-        from domainkit.contrib.audit import Outcome, record
-
-        await record("auth.login", Outcome.DENIED, reason=reason)
+    await audit_refusal("auth.login", reason)
 
 
 @contextmanager

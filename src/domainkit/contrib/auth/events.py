@@ -50,6 +50,37 @@ class TokenCreated(DomainEvent):
     name: str
 
 
+class TokenRevoked(DomainEvent):
+    """A user revoked one of their own tokens."""
+
+    user_id: UUID
+    name: str
+
+
+class PasswordResetRequested(DomainEvent):
+    """A reset link was sent to the user's email address."""
+
+    user_id: UUID
+
+
+class PasswordReset(DomainEvent):
+    """The user chose a new password through a reset link."""
+
+    user_id: UUID
+
+
+class EmailVerified(DomainEvent):
+    """The user proved they read mail at their address."""
+
+    user_id: UUID
+
+
+class UserSignedUp(DomainEvent):
+    """Someone created their own account (``AUTH.SIGNUP_ENABLED``)."""
+
+    user_id: UUID
+
+
 class UserUpdated(DomainEvent):
     """Fields of a user changed (names only: values may be personal data)."""
 

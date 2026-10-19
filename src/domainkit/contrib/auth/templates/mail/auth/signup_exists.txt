@@ -1,0 +1,7 @@
+Hello,
+
+Someone tried to sign up with this email address, but an account already
+uses this address or the username chosen. If it was you, log in, reset your
+password, or sign up again with another username.
+
+If it was not you, ignore this message.

@@ -21,6 +21,7 @@ from domainkit.contrib.contenttypes.models import ContentType
 from domainkit.ddd import AggregateRoot, Entity, ValueObject
 
 from .events import (
+    EmailVerified,
     GroupCreated,
     GroupDeleted,
     GroupPermissionGranted,
@@ -179,6 +180,7 @@ class AbstractBaseUser(AggregateRoot[UserId]):
             "password",
             "last_login",
             "date_joined",
+            "email_verified",
             "is_active",
             "is_staff",
             "is_superuser",
@@ -396,10 +398,14 @@ class AbstractUser(AbstractBaseUser):
     EDITABLE_FIELDS: ClassVar[frozenset[str]] = frozenset(
         {"email", "first_name", "last_name"}
     )
-    READ_ONLY_FIELDS: ClassVar[frozenset[str]] = frozenset({"date_joined"})
+    READ_ONLY_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {"date_joined", "email_verified"}
+    )
 
     username: str
     email: str = ""
+    email_verified: bool = False
+    """Whether the user proved they read mail at ``email``; a new one resets it."""
     first_name: str = ""
     last_name: str = ""
     is_staff: bool = False
@@ -417,6 +423,19 @@ class AbstractUser(AbstractBaseUser):
     def set_staff(self, value: bool) -> None:
         """Let the user into the admin API (or stop it)."""
         self._set_status("is_staff", value)
+
+    def verify_email(self) -> None:
+        """Record that the user reads mail at their current address."""
+        if not self.email_verified:
+            self.email_verified = True
+            self.record(EmailVerified(user_id=self.id))
+
+    def update(self, **fields: object) -> None:
+        """Change editable fields; a new email address is not verified yet."""
+        email = self.email
+        super().update(**fields)
+        if self.email != email:
+            self.email_verified = False
 
     def clean_field(self, name: str, value: object) -> object:
         """Lower-case the email's domain, as on creation."""

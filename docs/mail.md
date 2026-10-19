@@ -36,8 +36,8 @@ async with uow:
         "Your invoice",
         f"Invoice {invoice.number} is attached to your account.",
         [customer.email],
-        html_message="<p>...</p>",   # optional
-        uow=uow,                     # sent only if this commits
+        html_message="<p>...</p>",  # optional
+        uow=uow,  # sent only if this commits
     )
     await uow.commit()
 
@@ -45,10 +45,12 @@ message = EmailMessage(
     subject="Welcome",
     body="Hello.",
     to=("Alice <alice@example.com>",),
-    cc=(...), bcc=(...), reply_to=(...),
+    cc=(...),
+    bcc=(...),
+    reply_to=(...),
     headers={"List-Unsubscribe": "<https://example.com/u/1>"},
 )
-await message.send(uow)              # or send() alone: its own transaction
+await message.send(uow)  # or send() alone: its own transaction
 ```
 
 Without `uow`, the task is stored at once in a transaction of its own.
@@ -173,7 +175,7 @@ directory there to replace a template a contrib app ships, such as
 INSTALLED_DOMAINS = [
     "domainkit.contrib.messaging",
     "domainkit.contrib.notifications",
-    ...
+    ...,
 ]
 NOTIFICATIONS = {
     "SMS_BACKEND": "accounts.infrastructure.sms.GatewaySmsBackend",
@@ -185,8 +187,13 @@ NOTIFICATIONS = {
 from domainkit.contrib.notifications import send_push, send_sms
 
 await send_sms("+33612345678", "Your code is 123456", uow=uow)
-await send_push(device.token, "Shipped", "Your order is on its way",
-                data={"order": str(order.id)}, uow=uow)
+await send_push(
+    device.token,
+    "Shipped",
+    "Your order is on its way",
+    data={"order": str(order.id)},
+    uow=uow,
+)
 ```
 
 `SmsBackend` and `PushBackend` are ports: no provider ships with domainkit.

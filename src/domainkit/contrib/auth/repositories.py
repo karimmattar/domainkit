@@ -45,6 +45,29 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
             self._track(user)
         return user
 
+    async def username_taken(self, username: str) -> bool:
+        """Whether a user has ``username`` (normalized), in any case."""
+        column = get_user_table().c[self.model.USERNAME_FIELD]
+        name = self.model.normalize_username(username).lower()
+        statement = select(exists().where(func.lower(column) == name))
+        return bool(await self.session.scalar(statement))
+
+    async def find_by_email(self, email: str) -> list[AbstractBaseUser]:
+        """Users whose ``EMAIL_FIELD`` is ``email``, in any case; none without one."""
+        field = self.model.EMAIL_FIELD
+        if field is None or not email.strip():
+            return []
+        column = get_user_table().c[field]
+        statement = (
+            select(self.model)
+            .where(func.lower(column) == email.strip().lower())
+            .order_by(get_user_table().c.id)
+        )
+        users = list(await self.session.scalars(statement))
+        for user in users:
+            self._track(user)
+        return users
+
     async def create_user(
         self,
         username: str,

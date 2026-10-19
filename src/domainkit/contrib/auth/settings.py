@@ -12,6 +12,8 @@ from domainkit.utils.rates import parse_rate
 PBKDF2: str = "domainkit.contrib.auth.hashers.PBKDF2PasswordHasher"
 VALIDATORS: str = "domainkit.contrib.auth.validators"
 AUTHENTICATION: str = "domainkit.contrib.auth.authentication"
+TOKEN_PLACEHOLDER: Final = "{token}"  # noqa: S105 - a placeholder, not a secret.
+"""Where a reset or verification link takes its token."""
 HMAC_ALGORITHMS: Final = frozenset({"HS256", "HS384", "HS512"})
 """JWT algorithms that sign and verify with one shared secret."""
 
@@ -119,16 +121,44 @@ class AuthSettings(BaseModel):
     TOKEN_PREFIX: str = Field(default="dkt_", pattern=r"^[A-Za-z][A-Za-z0-9]{1,15}_$")
     """Starts every opaque token, so secret scanners and people can spot one."""
     LOGIN_RATE: str | None = "10/minute"
-    """Login attempts allowed per client address and per username."""
+    """Login attempts allowed per client address and per username.
+
+    Also counts one-time codes, and reset and verification links checked.
+    """
+    EMAIL_RATE: str | None = "5/hour"
+    """Requests that send mail (resets, verifications, signups) per client
+    address and per email address."""
     JWT: JWTSettings = JWTSettings()
     """Signing and lifetimes of JSON Web Tokens (``JWTAuthentication``)."""
+    PASSWORD_RESET_TIMEOUT: timedelta = Field(
+        default=timedelta(hours=1), gt=timedelta(0)
+    )
+    """How long a password reset link works; using it, or logging in, ends it."""
+    PASSWORD_RESET_URL: str | None = None
+    """The page that takes a reset link's ``{token}``; None sends the token alone."""
+    EMAIL_VERIFICATION_TIMEOUT: timedelta = Field(
+        default=timedelta(days=3), gt=timedelta(0)
+    )
+    """How long an email verification link works."""
+    EMAIL_VERIFICATION_URL: str | None = None
+    """The page that takes a verification link's ``{token}``."""
+    SIGNUP_ENABLED: bool = False
+    """Let anyone create an account at ``/signup`` (``auth.signup.router``)."""
 
-    @field_validator("LOGIN_RATE")
+    @field_validator("LOGIN_RATE", "EMAIL_RATE")
     @classmethod
     def _check_rate(cls, value: str | None) -> str | None:
         """Refuse rates ``parse_rate`` cannot read."""
         if value is not None:
             parse_rate(value)
+        return value
+
+    @field_validator("PASSWORD_RESET_URL", "EMAIL_VERIFICATION_URL")
+    @classmethod
+    def _check_link(cls, value: str | None) -> str | None:
+        """A link must say where its token goes."""
+        if value is not None and TOKEN_PLACEHOLDER not in value:
+            raise ValueError(f"the URL needs {TOKEN_PLACEHOLDER} where the token goes")
         return value
 
 
