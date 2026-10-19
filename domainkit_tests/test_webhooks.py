@@ -573,6 +573,7 @@ async def test_the_checked_address_is_the_one_connected_to(
             (302, b"", {"Location": "http://169.254.169.254/"}),
             "HTTP 302: redirects are not followed.",
         ),
+        ((300, b"", {}), "HTTP 300: redirects are not followed."),
         ((500, b"boom", {}), "HTTP 500."),
         ((404, b"", {}), "HTTP 404."),
         ((418, b"", {}), "HTTP 418."),

@@ -19,7 +19,7 @@ class SubscriptionRepository(SqlAlchemyRepository[Subscription, SubscriptionId])
         """The error for a missing subscription."""
         return SubscriptionNotFound(f"No webhook subscription has id {id_}.")
 
-    async def list(self, *, limit: int, offset: int = 0) -> list[Subscription]:
+    async def page(self, *, limit: int, offset: int = 0) -> list[Subscription]:
         """Up to ``limit`` subscriptions, from the ``offset``-th, oldest first."""
         statement = (
             select(Subscription)

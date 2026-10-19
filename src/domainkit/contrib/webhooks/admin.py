@@ -209,7 +209,7 @@ async def list_subscriptions(
 ) -> list[SubscriptionOut]:
     """Subscriptions, oldest first."""
     async with WebhooksUnitOfWork() as uow:
-        found = await uow.subscriptions.list(limit=limit, offset=offset)
+        found = await uow.subscriptions.page(limit=limit, offset=offset)
     return [SubscriptionOut.of(subscription) for subscription in found]
 
 
