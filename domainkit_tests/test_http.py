@@ -13,8 +13,10 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from starlette.websockets import WebSocketDisconnect
 
 from domainkit.apps import registry
+from domainkit.cache import caches
 from domainkit.conf import override_settings
 from domainkit.context import current_request
+from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application, health
 from domainkit.http.middleware import (
@@ -25,6 +27,7 @@ from domainkit.http.middleware import (
     host_allowed,
     security_headers,
 )
+from domainkit.ledger import ledgers
 from domainkit.log import SECURITY_LOGGER
 from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
 
@@ -472,13 +475,21 @@ def test_readiness_probes_share_one_round_of_checks(
 ) -> None:
     """Probes during a round wait for it; its result is cached from its end."""
     rounds: list[int] = []
+    timeouts: list[float] = []
 
     async def slow_check(seconds: float) -> list[str]:
         rounds.append(1)
+        timeouts.append(seconds)
         await asyncio.sleep(0.1)
         return []
 
+    async def quick_check(seconds: float) -> list[str]:
+        timeouts.append(seconds)
+        return []
+
     monkeypatch.setattr(registry, "check", slow_check)
+    for checked in (connections, ledgers, caches):
+        monkeypatch.setattr(checked, "check_all", quick_check)
     request = SimpleNamespace(app=SimpleNamespace(state=State()))
 
     async def probe_flood() -> list[list[str]]:
@@ -490,11 +501,12 @@ def test_readiness_probes_share_one_round_of_checks(
         again = await health._failing_checks(request)  # type: ignore[arg-type]
         return [*answers, again]
 
-    with override_settings(READINESS_CACHE_SECONDS=0.05):
+    with override_settings(READINESS_CACHE_SECONDS=0.05, READINESS_TIMEOUT=0.5):
         answers = asyncio.run(probe_flood())
 
     assert rounds == [1]  # One round; cached 0.05 s from its end, not its start.
     assert answers == [[]] * 20
+    assert timeouts == [0.5] * 4  # Each kind of check, bounded by the setting.
 
 
 def test_a_round_left_on_another_loop_is_not_awaited(

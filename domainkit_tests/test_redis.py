@@ -359,7 +359,9 @@ async def test_refused_rate_limits_let_requests_through(
         finally:
             await caches.close_all()
 
-    assert [(d.allowed, d.remaining) for d in decisions] == [(True, 0)] * 3
+    assert [
+        (d.allowed, d.remaining, d.reset_after, d.retry_after) for d in decisions
+    ] == [(True, 0, 0.0, 0.0)] * 3
     assert len(scripts) == 2  # The second hit came while Redis was skipped.
     warning = (
         "Redis refused the rate limit; letting requests through for 0.2s: "

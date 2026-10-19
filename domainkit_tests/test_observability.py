@@ -164,6 +164,7 @@ def test_unknown_methods_share_one_label(database: None) -> None:
 
     other = sample("http_requests_total", method="OTHER", **unmatched)
     assert other == before + 3
+    assert sample("http_requests_in_progress", method="OTHER") == 0  # Back down.
     assert sample("http_requests_total", method="FOO", **unmatched) == 0
     assert sample("http_requests_total", method="PATCH", **unmatched) >= 1
 
