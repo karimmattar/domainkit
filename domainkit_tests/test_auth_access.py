@@ -159,7 +159,9 @@ def test_permission_rules() -> None:
     assert str(empty.value) == "HasPermissions needs at least one permission."
 
     on_object = HasObjectPermissions("shop.view_product")
-    assert allows(on_object, AnonymousUser())
+    assert allows(on_object, user())  # Any user; each object decides.
+    assert not allows(on_object, AnonymousUser())
+    assert not allows(on_object, user(is_active=False))
     assert not allows_object(on_object, alice, object())  # ModelBackend has none.
 
     model = ModelPermissions("shop.product")

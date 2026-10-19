@@ -156,3 +156,19 @@ async def socket(websocket: WebSocket) -> None:
         }
     )
     await websocket.close()
+
+
+@router.websocket("/guarded-socket", dependencies=[Depends(Require(IsAdminUser))])
+async def guarded_socket(websocket: WebSocket) -> None:
+    """Staff only."""
+    await websocket.accept()
+    await websocket.send_json({"user": current_user(websocket).get_username()})
+    await websocket.close()
+
+
+@router.websocket("/user-socket")
+async def user_socket(websocket: WebSocket, user: AuthenticatedUser) -> None:
+    """Users who logged in."""
+    await websocket.accept()
+    await websocket.send_json({"user": user.get_username()})
+    await websocket.close()
