@@ -191,6 +191,7 @@ def test_what_fastapi_cannot_see_is_refused(
         {"price__gte": "cheap"},
         {"made_at__gt": "2026-01-01T00:00:00"},
         {"stock__gt": 2**63},
+        {"stock__gt": -(2**63) - 1},
         {"color__in": ["x" * 201]},
         {"name": "x" * 11},
         {"ordering": "stock"},
@@ -255,6 +256,17 @@ def test_openapi_documents_each_parameter_with_its_type(
     assert parameters["stock__isnull"]["description"] == (
         "Only items whose stock is missing (true) or present (false)."
     )
+    assert parameters["color__in"]["description"] == (
+        "Only items whose color is one of these."
+    )
+    assert parameters["ordering"]["description"] == (
+        "Order by these fields; - for descending."
+    )
+    assert parameters["search"]["description"] == (
+        "Words to find in name, label, ignoring case."
+    )
+    bounds = parameters["stock__gt"]["schema"]["anyOf"][0]
+    assert (bounds["minimum"], bounds["exclusiveMaximum"]) == (-(2**63), 2**63)
 
 
 def test_filter_sets_build_queries_in_code(declared: type[FilterSet]) -> None:
