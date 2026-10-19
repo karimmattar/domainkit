@@ -1,7 +1,7 @@
 """Writing messages: inside a unit of work, or on their own (``enqueue``)."""
 
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -14,8 +14,11 @@ from domainkit.context import current_request
 from domainkit.db import connections
 from domainkit.ddd import DeferredTask, DomainEvent, EventBus
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.tracing import trace_headers
 
 from .registry import (
+    CHAIN,
+    Chain,
     Task,
     dump_arguments,
     dump_event,
@@ -31,12 +34,24 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-def _headers(**extra: str) -> dict[str, Any]:
-    """Carry the request id and actor to the worker, for logs and audit."""
+type Watcher = Callable[[str, Sequence[Mapping[str, Any]]], Awaitable[None]]
+"""Called with each outbox and the rows just committed to it."""
+
+watchers: list[Watcher] = []
+"""Called after messages commit (``domainkit.contrib.messaging.testing``)."""
+
+
+def _headers(**extra: object) -> dict[str, Any]:
+    """Carry the request id, actor, and trace context to the worker.
+
+    The worker logs and audits under the request id and actor, and continues
+    the trace of the span that was active (the commit's, in a unit of work).
+    """
     request = current_request()
     return {
         "request_id": request.request_id if request else None,
         "actor": request.actor if request else None,
+        **trace_headers(),
         **extra,
     }
 
@@ -52,6 +67,7 @@ def message_row(
     delay: timedelta | None = None,
     dedupe_key: str | None = None,
     available_at: datetime | None = None,
+    priority: int = 0,
 ) -> dict[str, Any]:
     """Build one pending outbox row."""
     now = _now()
@@ -60,6 +76,7 @@ def message_row(
         "kind": kind,
         "target": target,
         "queue": queue,
+        "priority": priority,
         "payload": dict(payload),
         "headers": dict(headers),
         "status": PENDING,
@@ -90,17 +107,24 @@ def rows_for(
         for handler in bus.handlers_for(type(event), durable=True)
     ]
     for deferred in tasks:
-        spec = spec_for(deferred.function)
+        function: object = deferred.function
+        rest: list[str] = []
+        if isinstance(function, Chain):
+            rest = function.keys[1:]
+            spec = spec_for(function.steps[0])
+        else:
+            spec = spec_for(deferred.function)
         rows.append(
             message_row(
                 kind="task",
                 target=spec.key,
                 payload=dump_arguments(deferred.kwargs),
-                headers=_headers(),
+                headers=_headers(**({CHAIN: rest} if rest else {})),
                 max_attempts=spec.max_attempts or config.MAX_ATTEMPTS,
                 queue=spec.queue,
                 delay=deferred.delay,
                 dedupe_key=deferred.dedupe_key,
+                priority=spec.priority,
             )
         )
     return rows
@@ -151,11 +175,29 @@ async def enqueue(
     Inside a use case prefer ``uow.defer``: the task is then stored only if
     the business change commits.
     """
-    from .dispatch import publish_committed  # Imports this module.
-
     config = registry.settings(MessagingSettings)
     task = DeferredTask(function, kwargs, delay, dedupe_key)
     rows = rows_for((), [task], EventBus(), config)
     async with connections.engine(config.DATABASE).begin() as connection:
         await write(connection, connection.dialect.name, rows)
-    publish_committed(config, config.DATABASE, [row["id"] for row in rows])
+    await notify_committed(config, config.DATABASE, rows)
+
+
+async def notify_committed(
+    config: MessagingSettings,
+    database: str,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    publish: bool = True,
+) -> None:
+    """Follow up on ``rows``, just committed to ``database``'s outbox.
+
+    They go to the background publisher (with a broker, unless not
+    ``publish``), then to the ``watchers``.
+    """
+    from .dispatch import publish_committed  # Imports this module.
+
+    if publish:
+        publish_committed(config, database, [row["id"] for row in rows])
+    for watcher in watchers[:]:  # A watcher may remove itself.
+        await watcher(database, rows)

@@ -1,19 +1,48 @@
-"""The W3C trace context: written from the active span, restored as a parent."""
+"""The W3C trace context, carried through the outbox from commit to worker."""
+
+import uuid
 
 import pytest
 from opentelemetry import trace
 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, TraceState
 
 from domainkit import tracing
+from domainkit.contrib.messaging import Worker, chain, enqueue, task
+from domainkit.contrib.messaging.outbox import message_row
+from domainkit.contrib.messaging.tables import messages
+from domainkit.db import connections
+from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork
+from domainkit_tests.test_messaging import (  # noqa: F401 - fixtures.
+    immediate_retries,
+    messaging,
+    outbox,
+    ran,
+    remember,
+    tables,
+)
 from domainkit_tests.test_observability import (  # noqa: F401 - fixtures.
     EXPORTER,
     fresh_spans,
     tracer_provider,
 )
 
+pytestmark = pytest.mark.anyio
+
 TRACE_ID = 0x4BF92F3577B34DA6A3CE929D0E0E4736
 SPAN_ID = 0x00F067AA0BA902B7
 TRACEPARENT = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+
+
+@task(name="tests.traced_first")
+async def traced_first() -> None:
+    """The first step of a traced chain."""
+    ran.append("first")
+
+
+@task(name="tests.traced_second")
+async def traced_second() -> None:
+    """The second step."""
+    ran.append("second")
 
 
 def test_no_span_no_headers() -> None:
@@ -157,3 +186,64 @@ def test_invalid_trace_context_is_dropped() -> None:
     assert kept.context is not None
     assert kept.context.trace_id == TRACE_ID
     assert dict(state) == {}
+
+
+@pytest.mark.usefixtures("tables")
+async def test_workers_continue_the_trace_of_the_commit() -> None:
+    """The commit's span is the parent of the message's span, across processes."""
+    async with NotesUnitOfWork() as uow:
+        await uow.notes.add(Note(id=NoteId(uuid.uuid4()), text="t"))
+        uow.defer(remember, value=uuid.uuid4())
+        await uow.commit()
+    (row,) = await outbox()
+    headers = row["headers"]
+    assert isinstance(headers, dict)
+
+    await Worker().run_once()
+
+    commit, process = EXPORTER.get_finished_spans()
+    assert (commit.name, process.name) == ("uow.commit", "message.process")
+    assert commit.context is not None
+    assert process.context is not None
+    assert process.parent is not None
+    assert headers["traceparent"] == (
+        f"00-{commit.context.trace_id:032x}-{commit.context.span_id:016x}-"
+        f"{commit.context.trace_flags:02x}"
+    )
+    assert process.context.trace_id == commit.context.trace_id
+    assert process.parent.span_id == commit.context.span_id
+
+
+@pytest.mark.usefixtures("tables")
+async def test_chains_and_bad_headers_in_the_worker() -> None:
+    """A chain's next step is a child of the step before; bad headers start anew."""
+    with tracing.span("request"):
+        await enqueue(chain(traced_first, traced_second))
+    row = message_row(
+        kind="task",
+        target="tests.traced_first",
+        payload={},
+        headers={"traceparent": "00-zz", "tracestate": "x"},
+        max_attempts=1,
+    )
+    async with connections.engine().begin() as connection:
+        await connection.execute(messages.insert().values(row))
+
+    await Worker().run_once()
+
+    spans = EXPORTER.get_finished_spans()
+    request = next(span for span in spans if span.name == "request")
+    processed = [span for span in spans if span.name == "message.process"]
+    assert request.context is not None
+    trace_id = request.context.trace_id
+    in_trace = [s for s in processed if s.context and s.context.trace_id == trace_id]
+    assert len(in_trace) == 2
+    first, second = sorted(in_trace, key=lambda span: span.start_time or 0)
+    assert first.parent is not None
+    assert second.parent is not None
+    assert first.context is not None
+    assert first.parent.span_id == request.context.span_id
+    assert second.parent.span_id == first.context.span_id
+    (stray,) = [s for s in processed if s not in in_trace]
+    assert stray.parent is None
+    assert sorted(ran) == ["first", "first", "second"]

@@ -11,6 +11,8 @@ DEFAULT_QUEUE: Final = "default"
 PENDING: Final = "pending"
 DONE: Final = "done"
 DEAD: Final = "dead"
+CANCELLED: Final = "cancelled"
+STATUSES: Final = (PENDING, DONE, DEAD, CANCELLED)
 
 messages = Table(
     "domainkit_messages",
@@ -19,6 +21,7 @@ messages = Table(
     Column("kind", String(16), nullable=False),
     Column("target", String(255), nullable=False),
     Column("queue", String(64), nullable=False, server_default=DEFAULT_QUEUE),
+    Column("priority", Integer, nullable=False, server_default="0"),
     Column("payload", JSON, nullable=False),
     Column("headers", JSON, nullable=False),
     Column("status", String(16), nullable=False),
@@ -27,6 +30,7 @@ messages = Table(
     Column("available_at", UTCDateTime, nullable=False),
     Column("locked_until", UTCDateTime),
     Column("lock_id", Uuid),
+    Column("started_at", UTCDateTime),
     Column("created_at", UTCDateTime, nullable=False),
     Column("finished_at", UTCDateTime),
     Column("last_error", Text),
@@ -36,5 +40,17 @@ messages = Table(
 )
 """``kind`` is ``event`` (a durable handler) or ``task``; ``target`` names it.
 
-``queue`` picks the workers that run it (``runworker --queue``).
+``queue`` picks the workers that run it (``runworker --queue``), and
+``priority`` the order among a queue's due messages (higher first).
+``started_at`` is when a worker last started it; it is cleared when the
+message goes back to wait. A pending message with ``started_at`` and a live
+``locked_until`` is running; with a live lock alone, a relay published it.
 """
+
+PRIORITY_INDEX: Final = Index(
+    "ix_domainkit_messages_priority",
+    messages.c.status,
+    messages.c.priority.desc(),
+    messages.c.available_at,
+)
+"""Claims take due messages by priority, then by age."""

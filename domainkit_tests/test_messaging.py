@@ -184,7 +184,9 @@ async def test_deferred_tasks_commit_with_the_change(tables: None) -> None:
             uow.defer(remember, value=value, label="one")
             await uow.commit()
     (row,) = await outbox()
-    assert (row["status"], row["kind"], row["headers"]) == (
+    headers = dict(row["headers"])  # type: ignore[call-overload]
+    headers.pop("traceparent", None)  # When another test set up tracing.
+    assert (row["status"], row["kind"], headers) == (
         PENDING,
         "task",
         {"request_id": "req-1", "actor": "alice"},
@@ -725,7 +727,7 @@ def test_commands(
 
     # One success and three attempts of the failing task.
     assert run("runworker", "--once") == "Processed 4 message(s).\n"
-    assert run("messages") == "pending  0\ndone     1\ndead     1\n"
+    assert run("messages") == "pending  0\ndone     1\ndead     1\ncancelled 0\n"
     (dead_line,) = run("messages", "--dead").splitlines()
     assert "tests.always_fails  x3  RuntimeError: still broken" in dead_line
     dead_id = dead_line.split()[0]
@@ -1845,7 +1847,7 @@ async def test_unrecorded_outcomes_run_again_later(
     await enqueue(remember, value=uuid.uuid4())
     worker = Worker(MessagingSettings(**FAST))
     (claimed,) = await worker.claim(10)
-    monkeypatch.setattr(worker, "_release", Flaky(worker._release))
+    monkeypatch.setattr(worker, "_done", Flaky(worker._done))
     before = REGISTRY.get_sample_value(
         "messaging_messages_total", {"kind": "task", "outcome": "unrecorded"}
     )
@@ -1941,7 +1943,7 @@ async def test_every_delivery_is_settled(
         update={"CONCURRENCY": 1, "BATCH_SIZE": 1}
     )
     worker = Worker(config)
-    monkeypatch.setattr(worker, "_release", Flaky(worker._release))
+    monkeypatch.setattr(worker, "_done", Flaky(worker._done))
     stop = asyncio.Event()
     running = asyncio.create_task(
         BrokerWorkers([worker], ["default"], config).run(stop)
