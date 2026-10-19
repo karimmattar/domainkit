@@ -204,6 +204,7 @@ def test_mfa_settings_are_bounded() -> None:
         {"CHALLENGE_TTL": 0},
         {"CHALLENGE_TTL": 3601},
         {"ISSUER": ""},
+        {"RATE": "often"},
     ):
         with pytest.raises(ValidationError):
             MfaSettings(**options)
@@ -393,7 +394,7 @@ def test_challenges_expire_and_name_their_user(
 def test_code_checks_are_throttled_per_user(identity: Api, clock: list[float]) -> None:
     """Guesses for one user count wherever they come from."""
     create_user("alice")
-    client = identity(LOGIN_RATE="3/minute")
+    client = identity(MFA={"RATE": "3/minute"})
     enrol(client, bearer(login(client, "alice")["access_token"]), clock)
     token = log_in(client).json()["mfa_token"]
     elsewhere = TestClient(client.app, client=("203.0.113.9", 1))

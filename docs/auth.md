@@ -372,10 +372,12 @@ request with a scoped token may do what both its user and its scopes
 allow, so a permission taken from the user later is gone from the token
 too. `HasPermissions`, `ModelPermissions`, and `HasObjectPermissions`
 check both; `HasScope(*keys)` checks the scopes alone (credentials without
-scopes allow every one); `IsSuperuser` refuses scoped credentials; and
-`IsUnscoped` keeps a route to credentials without scopes. These routes and
-the admin API take only those, so a scoped token can neither make a token
-with more nor grant anything. `createtoken --scope KEY` makes scoped tokens
+scopes allow every one); `IsAdminUser` and `IsSuperuser` refuse scoped
+credentials, since staff and superusers hold more than any scope names;
+and `IsUnscoped` keeps a route to credentials without scopes. These
+routes, the admin API, `/password`, the second-factor routes, and
+`/logout` with `everywhere` take only those, so a scoped token can neither
+make a token with more, grant anything, nor change or lock its account. `createtoken --scope KEY` makes scoped tokens
 from the command line. Creating and revoking are audited
 (`auth.token_created` with the scopes, `auth.token_revoked`).
 
@@ -520,7 +522,9 @@ user `addcertificate <username> <cert.pem>` registered it for, by its
 SHA-256; `cleartokens --user` and `DELETE /tokens/{id}` remove it. With
 `MATCH = "subject"`, the subject's common name is the username: everything
 the CA signs logs in as someone, so use it only with a CA of your own (it
-needs `cryptography`, the `mfa` extra). Neither domainkit nor this class
+needs `cryptography`, the `mfa` extra). Through `HEADER` it also needs
+`VERIFY_HEADER`, which startup checks: a proxy that passes on certificates
+it did not verify would let a self-signed one name any user. Neither domainkit nor this class
 checks the chain or the dates: the server or the proxy must, against the
 CA you trust. Requests get `request.auth.scheme == "certificate"`.
 
@@ -636,8 +640,12 @@ tokens. Browser sessions do the same: `POST /session` answers `202`, and
   side, is accepted once: the step is recorded, and a code of that step or
   an earlier one is refused, so a code seen over a shoulder cannot be
   replayed.
-- Code checks count against `LOGIN_RATE` per user, wherever they come
-  from, and per client address at `/mfa/login`.
+- Code checks count against `MFA.RATE` (10 an hour) per user, wherever
+  they come from, and per client address at `/mfa/login`: a guesser who
+  has the password gets a few hundred tries a day at a one-in-a-million
+  code. Anyone with the password can also use up that count and hold the
+  user's logins back for the hour; the audited `throttled` refusals show
+  it.
 - Turning it off, and new recovery codes, need the password and a code:
   a stolen session cannot remove the factor.
 - Secrets are stored encrypted with AES-256-GCM under a key derived from
@@ -778,7 +786,7 @@ async def greeting(user: CurrentUser): ...               # anyone; AnonymousUser
 | `AllowAny` | Anyone. |
 | `IsAuthenticated` | Users who logged in. |
 | `IsAuthenticatedOrReadOnly` | Anyone for `GET`, `HEAD`, `OPTIONS`; users otherwise. A WebSocket handshake is a `GET`, so anyone may open one: guard sockets that take writes with `IsAuthenticated`. |
-| `IsAdminUser` | Staff users (`is_staff`). |
+| `IsAdminUser` | Staff users (`is_staff`), with credentials that carry no scopes. |
 | `IsSuperuser` | Active superusers, with credentials that carry no scopes. |
 | `HasPermissions(*keys)` | Users granted every permission (by any backend). |
 | `ModelPermissions(model)` | Django's model permissions by method: `GET`/`HEAD` need `view`, `POST` `add`, `PUT`/`PATCH` `change`, `DELETE` `delete`; `OPTIONS` needs a user, and a WebSocket handshake `view`. `model` is a mapped class or `"<domain>.<model>"`. |
@@ -965,12 +973,13 @@ changed what.
 | `CHALLENGE_TTL` | 5 minutes | How long the step between the password and the code may take (an hour at most). |
 | `RECOVERY_CODES` | `10` | Recovery codes each user gets (1 to 50). |
 | `WINDOW` | `1` | Steps of 30 seconds either side of now whose codes count (0 to 10). |
+| `RATE` | `"10/hour"` | Codes checked per user, and per client address at `/mfa/login`; `None` for no limit. |
 
 | `AUTH["CLIENT_CERT"]` key | Default | Meaning |
 | --- | --- | --- |
 | `MATCH` | `"fingerprint"` | `fingerprint`: the users `addcertificate` registered; `subject`: the common name is the username. |
 | `HEADER` | `None` | The header a trusted proxy sets to the URL-encoded PEM; `None` takes certificates from the ASGI TLS extension only. Needs `TRUSTED_PROXIES`. |
-| `VERIFY_HEADER` | `None` | The header in which the proxy says `SUCCESS` (nginx's `$ssl_client_verify`). |
+| `VERIFY_HEADER` | `None` | The header in which the proxy says `SUCCESS` (nginx's `$ssl_client_verify`). Required with `HEADER` and `MATCH = "subject"`. |
 
 | `AUTH["JWT"]` key | Default | Meaning |
 | --- | --- | --- |

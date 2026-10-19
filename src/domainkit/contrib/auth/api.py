@@ -21,13 +21,14 @@ from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Request, Response, status
+from fastapi import APIRouter, Body, Depends, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from domainkit.context import bind_request, current_request
+from domainkit.ddd import PermissionDenied
 from domainkit.http.errors import APIError, ErrorResponse
 
-from .access import AuthenticatedUser, Public
+from .access import AuthenticatedUser, IsUnscoped, Public, Require
 from .authentication import Credentials, IssuedTokens, get_authenticators
 from .backends import authenticate, get_all_permissions
 from .events import UserLoggedOut
@@ -188,16 +189,21 @@ async def refresh(body: RefreshIn, response: Response) -> TokenOut:
 @router.post(
     "/logout",
     status_code=status.HTTP_204_NO_CONTENT,
-    responses=_errors(status.HTTP_401_UNAUTHORIZED),
+    responses=_errors(status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN),
 )
 async def logout(
     request: Request,
     user: AuthenticatedUser,
     body: Annotated[LogoutIn | None, Body()] = None,
 ) -> None:
-    """End this session's tokens, or every token of the user."""
+    """End this session's tokens, or every token of the user.
+
+    Credentials limited to scopes end only themselves.
+    """
     everywhere = body is not None and body.everywhere
     credentials = _credentials(request)
+    if everywhere and credentials.scopes is not None:
+        raise PermissionDenied("Credentials limited to scopes end only themselves.")
     async with AuthUnitOfWork() as uow:
         stored = await uow.users.get(UserId(user.id))
         if everywhere:
@@ -231,9 +237,11 @@ async def me(user: AuthenticatedUser) -> UserOut:
 @router.post(
     "/password",
     status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(Require(IsUnscoped()))],
     responses=_errors(
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_401_UNAUTHORIZED,
+        status.HTTP_403_FORBIDDEN,
         status.HTTP_422_UNPROCESSABLE_CONTENT,
         status.HTTP_429_TOO_MANY_REQUESTS,
     ),

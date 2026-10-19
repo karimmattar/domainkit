@@ -26,8 +26,8 @@ gets 403. ``AuthenticationMiddleware`` must be installed.
 
 Credentials may be limited to scopes, permission keys (a token made with
 ``scopes``): the permission rules then allow only what both the user and
-the scopes allow, ``IsSuperuser`` refuses them, and ``IsUnscoped`` keeps a
-route to credentials without a limit.
+the scopes allow, ``IsAdminUser`` and ``IsSuperuser`` refuse them, and
+``IsUnscoped`` keeps a route to credentials without a limit.
 """
 
 from collections.abc import Iterable, Iterator, Sequence
@@ -219,11 +219,15 @@ class IsAuthenticatedOrReadOnly(BasePermission):
 
 
 class IsAdminUser(BasePermission):
-    """Staff users (``is_staff``)."""
+    """Staff users (``is_staff``), with credentials that are not limited to scopes."""
 
     async def has_permission(self, request: HTTPConnection, user: AnyUser) -> bool:
-        """The user is staff."""
-        return user.is_authenticated and getattr(user, "is_staff", False) is True
+        """The user is staff; scopes name permissions, and staff hold more."""
+        return (
+            user.is_authenticated
+            and getattr(user, "is_staff", False) is True
+            and scopes_of(request) is None
+        )
 
 
 class IsSuperuser(BasePermission):

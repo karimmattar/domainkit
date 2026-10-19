@@ -274,6 +274,17 @@ def test_headers_need_trusted_proxies(use_auth: UseAuth) -> None:
     )
 
 
+def test_subjects_through_headers_need_the_proxys_check(use_auth: UseAuth) -> None:
+    """Without it, a self-signed certificate could name any user."""
+    proxies = {"TRUSTED_PROXIES": ["10.0.0.0/8"]}
+    subject = {"HEADER": "X-Client-Cert", "MATCH": "subject"}
+
+    with pytest.raises(ImproperlyConfigured, match="needs VERIFY_HEADER"):
+        use_auth(settings=proxies, CLIENT_CERT=subject)
+    use_auth(settings=proxies, CLIENT_CERT={**subject, "VERIFY_HEADER": "X-Verify"})
+    use_auth(CLIENT_CERT={"MATCH": "subject"})  # The server's own check suffices.
+
+
 @pytest.mark.parametrize(
     ("scope", "trusted"),
     [

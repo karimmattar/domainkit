@@ -258,6 +258,8 @@ async def _issue(username: str, name: str) -> None:
     [
         ({"name": ""}, "name"),
         ({"name": "n" * 101}, "name"),
+        ({"name": "ci\nadmin"}, "name"),
+        ({"name": "ci\x00"}, "name"),
         ({"expires_in_days": 0}, "expires_in_days"),
         ({"expires_in_days": 3651}, "expires_in_days"),
         ({"scopes": [f"a.b{n}" for n in range(101)]}, "scopes"),
@@ -430,3 +432,31 @@ def test_rules_need_something_to_check() -> None:
 
     with pytest.raises(ImproperlyConfigured, match="at least one scope"):
         HasScope()
+
+
+def test_scoped_tokens_cannot_change_the_account(identity: Api) -> None:
+    """Passwords, second factors, staff routes, and logging out everywhere."""
+    create_user("alice", is_staff=True)
+    grant("alice", VIEW)
+    client = identity()
+    headers = user_session(client)
+    scoped = bearer(make(client, headers, scopes=[VIEW]).json()["token"])
+
+    refused = [
+        client.post(
+            "/auth/password",
+            json={"old_password": PASSWORD, "new_password": "n3w-Strong-pass"},
+            headers=scoped,
+        ),
+        client.post("/auth/logout", json={"everywhere": True}, headers=scoped),
+        client.get("/auth/mfa", headers=scoped),
+        client.post("/auth/mfa/totp", json={"password": PASSWORD}, headers=scoped),
+        client.get("/scoped/staff", headers=scoped),
+    ]
+
+    assert [response.status_code for response in refused] == [403] * 5
+    assert client.get("/scoped/staff", headers=headers).status_code == 200
+    assert client.get("/auth/me", headers=headers).status_code == 200
+    assert client.post("/auth/logout", headers=scoped).status_code == 204
+    assert client.get("/whoami", headers=scoped).status_code == 401
+    assert client.get("/auth/me", headers=headers).status_code == 200

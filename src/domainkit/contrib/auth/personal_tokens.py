@@ -60,8 +60,10 @@ class TokenIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1, max_length=NAME_MAX_LENGTH)
-    """What it is for, as the list shows it."""
+    name: str = Field(
+        min_length=1, max_length=NAME_MAX_LENGTH, pattern=r"^[^\x00-\x1f\x7f]+$"
+    )
+    """What it is for, as the list shows it: one line."""
     scopes: list[Annotated[str, Field(min_length=1, max_length=255)]] | None = Field(
         default=None, max_length=MAX_SCOPES
     )

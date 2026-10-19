@@ -188,6 +188,15 @@ class AuthConfig(DomainConfig):
                 "AUTH.CLIENT_CERT.HEADER is believed only from TRUSTED_PROXIES; "
                 "list the proxy that sets it."
             )
+        if (
+            config.CLIENT_CERT.HEADER is not None
+            and config.CLIENT_CERT.MATCH == "subject"
+            and config.CLIENT_CERT.VERIFY_HEADER is None
+        ):
+            raise ImproperlyConfigured(
+                'AUTH.CLIENT_CERT: MATCH = "subject" through HEADER needs '
+                "VERIFY_HEADER, or anyone could sign a certificate naming any user."
+            )
         insecure = insecure_hashers(config.PASSWORD_HASHERS)
         if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
             return

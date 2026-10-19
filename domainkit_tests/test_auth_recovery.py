@@ -572,3 +572,16 @@ def test_addresses_are_looked_up_only_where_they_can_match(identity: Api) -> Non
         return len(blank), len(found), len(none)
 
     assert run_async(find()) == (0, 0, 0)
+
+
+@pytest.mark.parametrize(
+    "email", ["a\x00@example.com", "a@exam\x7fple.com", "a@b@c", "no-at", "a b@c.d"]
+)
+def test_addresses_that_cannot_be_one_are_refused_at_once(
+    identity: Api, email: str
+) -> None:
+    """Control characters, spaces, and extra @ never reach the outbox."""
+    response = identity().post("/auth/password-reset", json={"email": email})
+
+    assert response.status_code == 422
+    assert outbox_payloads() == []

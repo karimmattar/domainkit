@@ -133,6 +133,16 @@ class MfaSettings(BaseModel):
     """Recovery codes each user gets, each good once."""
     WINDOW: int = Field(default=1, ge=0, le=10)
     """30-second steps either side of now whose codes still count (clock drift)."""
+    RATE: str | None = "10/hour"
+    """Codes checked per user, and per client address at ``/mfa/login``."""
+
+    @field_validator("RATE")
+    @classmethod
+    def _check_rate(cls, value: str | None) -> str | None:
+        """Refuse rates ``parse_rate`` cannot read."""
+        if value is not None:
+            parse_rate(value)
+        return value
 
 
 class ClientCertSettings(BaseModel):

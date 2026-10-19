@@ -110,9 +110,11 @@ All notable changes to domainkit. The format follows
   never quote a key. The production settings that `init` creates read it
   from `<PREFIX>SECRET_KEY`; set it before upgrading a deployment.
 - `/auth/me` and the admin API show `email_verified`.
-- `IsSuperuser` refuses credentials limited to scopes, and the admin API
-  refuses them altogether: what staff grant is bounded by their
-  permissions, never by a token's scopes.
+- `IsAdminUser` and `IsSuperuser` refuse credentials limited to scopes,
+  and the admin API, `/auth/password`, and `/auth/logout` with
+  `everywhere` refuse them altogether: what staff grant is bounded by
+  their permissions, never by a token's scopes, and a scoped key must not
+  change or lock its account.
 - **On PostgreSQL, the test fixtures no longer use the database the test
   settings name**: they create `test_<name>` on the same server and drop it
   after the run, so the test role needs `CREATEDB`. A role without it can

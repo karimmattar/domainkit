@@ -21,8 +21,9 @@ one that logs in::
 A code works once: its step is recorded, and an earlier or equal step is
 refused. Recovery codes are stored as digests and work once. Secrets are
 encrypted under a key derived from ``SECRET_KEY`` (``encryption``). Codes
-and passwords checked count against ``AUTH.LOGIN_RATE`` per user (and per
-client address at ``/mfa/login``). Turning it on or off, new recovery
+checked count against ``AUTH.MFA.RATE`` per user (and per client address
+at ``/mfa/login``), passwords against ``AUTH.LOGIN_RATE``. Credentials
+limited to scopes cannot change the factors. Turning it on or off, new recovery
 codes, used ones, and refusals are audited.
 """
 
@@ -32,7 +33,7 @@ from datetime import timedelta
 from typing import Final, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Request, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from domainkit import clock
@@ -40,7 +41,7 @@ from domainkit.conf import settings
 from domainkit.http.errors import APIError
 
 from . import totp
-from .access import AuthenticatedUser, Public
+from .access import AuthenticatedUser, IsUnscoped, Public, Require
 from .api import (
     PASSWORD_MAX_LENGTH,
     MfaChallengeOut,
@@ -70,6 +71,8 @@ BOX_PURPOSE: Final = "domainkit.auth.totp"
 type Method = Literal["totp", "recovery"]
 
 router = APIRouter(tags=["auth"])
+UNSCOPED: Final = [Depends(Require(IsUnscoped()))]
+"""Changes to the factors need credentials that scopes do not limit."""
 
 
 class MfaChallengeTokenGenerator(UserTokenGenerator):
@@ -249,7 +252,9 @@ def secret_box() -> SecretBox:
     return SecretBox(BOX_PURPOSE)
 
 
-@router.get("/mfa", responses=_errors(status.HTTP_401_UNAUTHORIZED))
+@router.get(
+    "/mfa", dependencies=UNSCOPED, responses=_errors(status.HTTP_401_UNAUTHORIZED)
+)
 async def mfa_status(user: AuthenticatedUser) -> MfaStatusOut:
     """Whether the user's logins need a second factor."""
     async with AuthUnitOfWork() as uow:
@@ -261,6 +266,7 @@ async def mfa_status(user: AuthenticatedUser) -> MfaStatusOut:
 
 @router.post(
     "/mfa/totp",
+    dependencies=UNSCOPED,
     responses=_errors(
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_401_UNAUTHORIZED,
@@ -297,6 +303,7 @@ async def start_enrolment(
 
 @router.post(
     "/mfa/totp/confirm",
+    dependencies=UNSCOPED,
     responses=_errors(
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_401_UNAUTHORIZED,
@@ -339,6 +346,7 @@ async def confirm_enrolment(
 @router.post(
     "/mfa/totp/disable",
     status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=UNSCOPED,
     responses=_errors(
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_401_UNAUTHORIZED,
@@ -359,6 +367,7 @@ async def disable(
 
 @router.post(
     "/mfa/recovery-codes",
+    dependencies=UNSCOPED,
     responses=_errors(
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_401_UNAUTHORIZED,
@@ -446,10 +455,10 @@ async def _spend_totp(
 
 
 async def _limit(request: Request, keys: list[str]) -> None:
-    """Count code checks against ``AUTH.LOGIN_RATE``."""
+    """Count code checks against ``AUTH.MFA.RATE``."""
     await throttle(
         request,
-        auth_settings().LOGIN_RATE,
+        auth_settings().MFA.RATE,
         keys,
         action="auth.mfa",
         detail="Too many attempts; try again later.",

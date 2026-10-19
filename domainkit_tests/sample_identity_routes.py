@@ -9,6 +9,7 @@ from domainkit.contrib.auth import (
     CurrentUser,
     HasPermissions,
     HasScope,
+    IsAdminUser,
     IsSuperuser,
     ModelPermissions,
     Public,
@@ -95,6 +96,12 @@ for method in ("GET", "DELETE"):
 @router.get("/scoped/scope", dependencies=[Depends(Require(HasScope(VIEW_PRODUCT)))])
 async def scoped_scope() -> dict[str, bool]:
     """Credentials that allow viewing products, whatever the user holds."""
+    return {"ok": True}
+
+
+@router.get("/scoped/staff", dependencies=[Depends(Require(IsAdminUser))])
+async def scoped_staff() -> dict[str, bool]:
+    """Staff, without scopes."""
     return {"ok": True}
 
 

@@ -52,7 +52,7 @@ from .throttling import address_key, audit_refusal, email_key, throttle
 from .uow import AuthUnitOfWork
 from .validators import validate_password
 
-EMAIL_PATTERN: Final = r"^[^@\s]{1,64}@[^@\s]{1,253}$"
+EMAIL_PATTERN: Final = r"^[^@\s\x00-\x1f\x7f]{1,64}@[^@\s\x00-\x1f\x7f]{1,253}$"
 """An address to look up; anything that cannot be one is refused at once."""
 RESET_TASK: Final = "domainkit.auth.send_password_reset"
 VERIFICATION_TASK: Final = "domainkit.auth.send_email_verification"
