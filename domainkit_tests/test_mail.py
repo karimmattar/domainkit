@@ -904,14 +904,21 @@ def test_template_errors(
         ("{ name }}", "braces hold a name"),
         ("{{ 1 + 1 }}", "braces hold a name"),
         ("{{}}", "braces hold a name"),
+        ("{{ name }} and }}", "braces hold a name"),
+        ("{{ name }}{{ name }}, then {{", "braces hold a name"),
     ],
 )
 def test_templates_reach_no_private_name_or_method(template: str, message: str) -> None:
     """Only public attributes and keys; anything else in braces is an error."""
     from domainkit.contrib.mail.templates import render_string
 
-    with pytest.raises(TemplateError, match=message):
+    with pytest.raises(TemplateError, match=message) as raised:
         render_string(template, {"invoice": Invoice(), "name": "Ann"})
+    if message == "braces hold a name":
+        assert str(raised.value) == (
+            "Template braces hold a name such as {{ user.email }}; names start "
+            "with a letter."
+        )
 
 
 def test_template_values_are_not_templates() -> None:

@@ -68,6 +68,8 @@ def test_tokens_are_shown_once_and_listed_without_their_value(identity: Api) -> 
         ("ci", False),
         ("login", True),
     ]
+    assert listed["items"][0]["expires_at"] == body["expires_at"]
+    assert listed["items"][0]["expires_at"] is not None
     assert body["token"] not in str(listed)
     assert {item["id"] for item in listed["items"]} == {
         row["id"] for row in stored_tokens(alice)
@@ -99,6 +101,14 @@ def test_scopes_narrow_what_a_token_may_do(identity: Api) -> None:
     assert client.get("/scoped/view", headers=narrow).status_code == 403
     empty = bearer(make(client, headers, scopes=[]).json()["token"])
     assert client.get("/scoped/model", headers=empty).status_code == 403
+    make(client, headers, scopes=[VIEW, DELETE, VIEW])
+    listed = client.get("/auth/tokens", headers=headers).json()["items"]
+    assert sorted(tuple(item["scopes"]) for item in listed if item["name"] == "ci") == [
+        (),
+        (DELETE,),
+        (DELETE, VIEW),
+        (VIEW,),
+    ]
 
 
 def test_tokens_never_carry_more_than_their_user(identity: Api) -> None:
