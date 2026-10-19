@@ -349,11 +349,13 @@ def test_request_body_limits(make_client: MakeClient) -> None:
     assert client.post("/echo", content=b"x" * 10).json() == {"size": 10}
     declared = client.post("/echo", content=b"x" * 11)
     assert (declared.status_code, declared.json()["code"]) == (413, "content_too_large")
+    assert declared.json()["detail"] == "Request body too large."
     invalid = client.post("/echo", content=b"x", headers={"Content-Length": "x"})
     assert (invalid.status_code, invalid.json()["code"]) == (
         400,
         "invalid_content_length",
     )
+    assert invalid.json()["detail"] == "Invalid Content-Length header."
 
     def chunks() -> Iterator[bytes]:
         yield b"x" * 6
@@ -361,6 +363,7 @@ def test_request_body_limits(make_client: MakeClient) -> None:
 
     streamed = client.post("/echo", content=chunks())
     assert (streamed.status_code, streamed.json()["code"]) == (413, "content_too_large")
+    assert streamed.json()["detail"] == "Request body too large."
 
 
 @pytest.mark.parametrize(
@@ -622,6 +625,7 @@ async def test_body_limit_answers_for_middleware_that_reads_bodies() -> None:
 
     assert sent[0]["status"] == 413
     assert b'"content_too_large"' in sent[1]["body"]
+    assert b'"Request body too large."' in sent[1]["body"]
 
 
 @pytest.mark.anyio
