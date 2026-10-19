@@ -12,8 +12,9 @@ password. The fields and the password rules (``AUTH.PASSWORD_VALIDATORS``)
 are checked at once: a refusal there says nothing about other accounts.
 Then it answers 202 whatever happens next, in the same time: the worker
 creates the account and mails a verification link, or, when the username
-or the address is taken, mails the address that it is. Whether an account
-exists is told only to the owner of the address given. Attempts count
+or the address is taken, mails the address that it is. Whether an address
+has an account is told only to its owner; a username taken is told to
+whoever gives their own address, as any signup must. Attempts count
 against ``AUTH.EMAIL_RATE`` per client address and per email address.
 """
 

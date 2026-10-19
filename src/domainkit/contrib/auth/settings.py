@@ -214,7 +214,8 @@ class AuthSettings(BaseModel):
     LOGIN_RATE: str | None = "10/minute"
     """Login attempts allowed per client address and per username.
 
-    Also counts one-time codes, and reset and verification links checked.
+    Also counts reset and verification links checked, per client address
+    (one-time codes count against ``MFA.RATE``).
     """
     EMAIL_RATE: str | None = "5/hour"
     """Requests that send mail (resets, verifications, signups) per client

@@ -315,7 +315,7 @@ def test_reading_a_token_never_trusts_it() -> None:
 
 
 def test_resets_and_checks_are_throttled(identity: Api) -> None:
-    """Mail per address and per recipient; token checks per address and user."""
+    """Mail per address and per recipient; token checks per address alone."""
     create_user("alice", email="alice@example.com")
     client = identity(EMAIL_RATE="2/hour", LOGIN_RATE="2/minute")
     other = from_address(client, "198.51.100.7")
@@ -344,7 +344,8 @@ def test_resets_and_checks_are_throttled(identity: Api) -> None:
     fourth = from_address(client, "203.0.113.10")
     assert confirm(fourth, f"{token[:-1]}x").status_code == 400
     assert confirm(fourth, f"{token[:-2]}xx").status_code == 400
-    assert confirm(from_address(client, "203.0.113.11"), token).status_code == 429
+    # Forged tokens naming alice use up no count of hers: her link works.
+    assert confirm(from_address(client, "203.0.113.11"), token).status_code == 204
 
 
 def test_email_verification_marks_the_address_verified(identity: Api) -> None:

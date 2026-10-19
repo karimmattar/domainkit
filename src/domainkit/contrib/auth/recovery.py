@@ -18,7 +18,9 @@ mount the router next to the one that logs in::
 
 Requests that send mail count against ``AUTH.EMAIL_RATE`` per client
 address and per email address (or user); tokens checked count against
-``AUTH.LOGIN_RATE`` per address and per user. Refused tokens, refusals by
+``AUTH.LOGIN_RATE`` per client address: not per user, since a signature
+cannot be guessed, and a count anyone could use up with forged tokens
+would lock the user out of their link. Refused tokens, refusals by
 the rate, resets, and verifications go to the audit trail. Links are made
 in the worker, so no token is ever stored, not even in the outbox.
 """
@@ -254,20 +256,16 @@ async def _limit_mail(request: Request, scope: str, recipient: str) -> None:
 async def _limit_checks(
     request: Request, scope: str, tokens: UserTokenGenerator, token: str
 ) -> UserId | None:
-    """Count a token check per client address and per user; return the user's id."""
-    user_id = tokens.user_id(token)
-    keys = [address_key(request, f"{scope}-confirm")]
-    if user_id is not None:
-        keys.append(f"{scope}-confirm:user:{user_id}")
+    """Count a token check per client address; return the user's id."""
     await throttle(
         request,
         auth_settings().LOGIN_RATE,
-        keys,
+        [address_key(request, f"{scope}-confirm")],
         action=f"auth.{scope.replace('-', '_')}",
         detail="Too many attempts; try again later.",
         code="throttled",
     )
-    return user_id
+    return tokens.user_id(token)
 
 
 async def _holder(

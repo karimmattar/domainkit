@@ -21,10 +21,11 @@ one that logs in::
 A code works once: its step is recorded, and an earlier or equal step is
 refused. Recovery codes are stored as digests and work once. Secrets are
 encrypted under a key derived from ``SECRET_KEY`` (``encryption``). Codes
-checked count against ``AUTH.MFA.RATE`` per user (and per client address
-at ``/mfa/login``), passwords against ``AUTH.LOGIN_RATE``. Credentials
-limited to scopes cannot change the factors. Turning it on or off, new recovery
-codes, used ones, and refusals are audited.
+checked count against ``AUTH.MFA.RATE`` per user and, at ``/mfa/login``,
+per client address (there, per user only once the challenge holds);
+passwords count against ``AUTH.LOGIN_RATE``. Credentials limited to
+scopes cannot change the factors. Turning it on or off, new recovery codes,
+used ones, and refusals are audited.
 """
 
 import hashlib
@@ -183,21 +184,23 @@ async def challenge(user: AbstractBaseUser) -> MfaChallengeOut | None:
 async def verify_challenge(request: Request, token: str, code: str) -> AbstractBaseUser:
     """The user a challenge and its code prove; the code is spent.
 
+    Each attempt counts against ``AUTH.MFA.RATE`` for the client address,
+    and one with a challenge that holds (it took the password) for its
+    user too: forged challenges cannot use up a user's count.
+
     Raises:
         InvalidChallenge: The challenge is wrong, used, or expired.
         InvalidCode: The code is wrong, or was used.
-        APIError: 429, past ``AUTH.LOGIN_RATE`` for the address or the user.
+        APIError: 429, past ``AUTH.MFA.RATE`` for the address or the user.
     """
+    await _limit(request, [address_key(request, "mfa")])
     user_id = challenges.user_id(token)
-    keys = [address_key(request, "mfa")]
-    if user_id is not None:
-        keys.append(f"mfa:user:{user_id}")
-    await _limit(request, keys)
     async with AuthUnitOfWork() as uow:
         user = None if user_id is None else await uow.users.find(user_id)
         held = challenges.check_token(user, token)  # As long without a user.
         method = None
         if user is not None and held:
+            await _limit(request, [f"mfa:user:{user.id}"])
             method = await spend_code(uow, user, code)
             if method is not None:
                 await uow.commit()

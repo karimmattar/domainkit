@@ -519,7 +519,9 @@ server {
 
 With `MATCH = "fingerprint"` (the default), a certificate logs in as the
 user `addcertificate <username> <cert.pem>` registered it for, by its
-SHA-256; `cleartokens --user` and `DELETE /tokens/{id}` remove it. With
+SHA-256; `cleartokens --user` and `DELETE /tokens/{id}` remove it, and
+so does whatever ends every token of the user (a new password, a reset,
+logging out everywhere): register it again then. With
 `MATCH = "subject"`, the subject's common name is the username: everything
 the CA signs logs in as someone, so use it only with a CA of your own (it
 needs `cryptography`, the `mfa` extra). Through `HEADER` it also needs
@@ -643,9 +645,10 @@ tokens. Browser sessions do the same: `POST /session` answers `202`, and
 - Code checks count against `MFA.RATE` (10 an hour) per user, wherever
   they come from, and per client address at `/mfa/login`: a guesser who
   has the password gets a few hundred tries a day at a one-in-a-million
-  code. Anyone with the password can also use up that count and hold the
-  user's logins back for the hour; the audited `throttled` refusals show
-  it.
+  code. At `/mfa/login` an attempt counts for the user only once its
+  challenge holds, so a forged challenge cannot use up the count; anyone
+  with the password can, and hold the user's logins back for the hour.
+  The audited `throttled` refusals show it.
 - Turning it off, and new recovery codes, need the password and a code:
   a stolen session cannot remove the factor.
 - Secrets are stored encrypted with AES-256-GCM under a key derived from
@@ -710,7 +713,9 @@ once it is used, once the user logs in, or once any of those changes. A
 wrong token, a used or expired one, and one for no user all get the same
 `400 invalid_token`. Requests for mail count against `EMAIL_RATE` (5 an
 hour) per client address and per email address; token checks count
-against `LOGIN_RATE` per client address and per user.
+against `LOGIN_RATE` per client address. They are not counted per user:
+a signature cannot be guessed, and a count that anyone could use up with
+forged tokens would lock the user out of the link they were sent.
 
 The audit trail records `auth.password_reset_requested` for each link
 mailed, `auth.password_reset` for a reset (and `denied`, with the reason
@@ -738,8 +743,11 @@ checked at once (`422`), which tells nothing about other accounts. Then it
 answers `202` whatever happens next, in the same time, and the worker
 either creates the account and mails a verification link, or, when the
 username (in any case) or the address is taken, mails the address given
-that it is. Whether an account exists is told only to whoever reads mail
-at the address. Signups count against `EMAIL_RATE` per client address and
+that it is. Whether an address has an account is told only to whoever
+reads mail at it. Usernames are not secret that way: someone who signs up
+with their own address learns from the mail that a username is taken, as
+any signup form must tell; `EMAIL_RATE` bounds how fast. Signups count
+against `EMAIL_RATE` per client address and
 per email address, and are audited as `auth.user_signed_up`. The new user
 can log in once the worker has run, before verifying the address: check
 `email_verified` in routes that need it.
@@ -942,7 +950,7 @@ changed what.
 | `AUTHENTICATION_EXEMPT_PATHS` | `["/health", "/ready", "/metrics"]` | Paths served without looking at credentials. |
 | `TOKEN_TTL` | 14 days | How long a login's opaque token works; `None` until revoked. |
 | `TOKEN_PREFIX` | `"dkt_"` | Starts every opaque token; changing it invalidates existing tokens. |
-| `LOGIN_RATE` | `"10/minute"` | Login and password-change attempts per client address and per username, and checks of one-time codes and link tokens; `None` for no limit. |
+| `LOGIN_RATE` | `"10/minute"` | Login and password-change attempts per client address and per username, and checks of link tokens per client address; `None` for no limit. |
 | `EMAIL_RATE` | `"5/hour"` | Requests that send mail (resets, verifications, signups) per client address and per email address or user. |
 | `PASSWORD_RESET_TIMEOUT` | 1 hour | How long a reset link works. |
 | `PASSWORD_RESET_URL` | `None` | Your page that takes a reset token: `{token}` marks where. |

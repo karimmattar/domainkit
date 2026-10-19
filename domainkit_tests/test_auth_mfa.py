@@ -405,6 +405,28 @@ def test_code_checks_are_throttled_per_user(identity: Api, clock: list[float]) -
     assert (throttled.status_code, throttled.json()["code"]) == (429, "throttled")
 
 
+def test_forged_challenges_use_up_no_count_of_the_user(
+    identity: Api, clock: list[float]
+) -> None:
+    """Only a challenge that holds (it took the password) counts for its user."""
+    alice = create_user("alice")
+    client = identity(MFA={"RATE": "2/minute"})
+    secret, _ = enrol(client, bearer(login(client, "alice")["access_token"]), clock)
+    forged = f"{alice.hex}:1:{'A' * 43}"
+
+    for number in range(3):
+        stranger = TestClient(client.app, client=(f"203.0.113.{number}", 1))
+        refused = finish(stranger, forged, "000000")
+        assert (refused.status_code, refused.json()["code"]) == (400, "invalid_token")
+    by_address = [finish(client, forged, "000000").status_code for _ in range(3)]
+    clock[0] += 30
+    owner = TestClient(client.app, client=("198.51.100.20", 1))
+    token = log_in(owner).json()["mfa_token"]
+
+    assert by_address == [400, 400, 429]  # Each address still has its count.
+    assert finish(owner, token, code_at(secret, clock[0])).status_code == 200
+
+
 def test_turning_it_off_needs_the_password_and_a_code(
     identity: Api, clock: list[float]
 ) -> None:
