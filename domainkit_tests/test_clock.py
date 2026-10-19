@@ -24,8 +24,10 @@ from domainkit.contrib.messaging import outbox, worker
 from domainkit.ddd import DomainEvent
 from domainkit.ddd import events as ddd_events
 from domainkit.http.ratelimit import MemoryBackend
-from domainkit_tests.conftest import MakePackage, UseAuth
+from domainkit.testing import TestClient
+from domainkit_tests.conftest import Api, MakePackage, UseAuth
 from domainkit_tests.test_auth_authentication import jwt_auth
+from domainkit_tests.test_auth_http import JWT, audited, bearer, create_user, login
 
 NEW_YEAR = datetime(2030, 1, 1, 9, tzinfo=UTC)
 
@@ -284,6 +286,47 @@ async def test_a_memory_rate_window_follows_a_frozen_clock() -> None:
         assert not (await backend.hit("k", 2, 60)).allowed
         frozen_clock.tick(30)
         assert (await backend.hit("k", 2, 60)).allowed
+
+
+def test_tokens_and_the_audit_trail_follow_a_frozen_clock(api: Api) -> None:
+    """Opaque tokens expire on the frozen clock, and audit rows carry its time.
+
+    domainkit's ``TestClient`` carries the caller's frozen clock into the
+    application's thread.
+    """
+    create_user("alice")
+    with TestClient(api(TOKEN_TTL=timedelta(hours=1)).app) as client:
+        with freeze_time(NEW_YEAR) as frozen_clock:
+            token = login(client, "alice")["access_token"]
+            frozen_clock.tick(timedelta(minutes=59))
+            assert client.get("/whoami", headers=bearer(token)).status_code == 200
+            frozen_clock.tick(timedelta(minutes=1))
+            expired = client.get("/whoami", headers=bearer(token))
+        assert expired.json()["detail"] == "Token expired."
+        assert audited("auth.user_logged_in")[-1]["occurred_at"] == NEW_YEAR
+
+
+def test_jwts_are_checked_on_the_frozen_clock(api: Api) -> None:
+    """A JWT issued at a frozen moment is valid then, and expires on that clock."""
+    create_user("alice")
+    issuing = {**JWT, "JWT": {"SIGNING_KEY": "k" * 32, "LEEWAY": timedelta(seconds=10)}}
+    app = api(**issuing).app
+    with TestClient(app) as client, freeze_time(NEW_YEAR) as frozen_clock:
+        token = bearer(login(client, "alice")["access_token"])
+
+        def detail() -> object:
+            body = client.get("/whoami", headers=token).json()
+            return body.get("detail", body.get("user"))
+
+        assert detail() == "alice"
+        frozen_clock.move_to(NEW_YEAR - timedelta(seconds=10))
+        assert detail() == "alice"  # Within the leeway.
+        frozen_clock.move_to(NEW_YEAR - timedelta(seconds=11))
+        assert detail() == "Invalid token."  # Issued in its future.
+        frozen_clock.move_to(NEW_YEAR + timedelta(minutes=5, seconds=9))
+        assert detail() == "alice"
+        frozen_clock.move_to(NEW_YEAR + timedelta(minutes=5, seconds=10))
+        assert detail() == "Token expired."
 
 
 def test_memory_cache_entries_expire_on_the_clock() -> None:
