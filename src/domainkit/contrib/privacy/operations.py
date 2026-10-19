@@ -9,7 +9,7 @@ import re
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from typing import Any, Final
 
 from pydantic_core import to_jsonable_python
@@ -27,6 +27,7 @@ from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from domainkit import clock
 from domainkit.contrib.audit import Outcome, forget, record
 from domainkit.db import SqlAlchemyRepository, SqlAlchemyUnitOfWork, connections
 from domainkit.http.errors import sqlstate
@@ -44,7 +45,7 @@ BATCH_SIZE: Final = 500
 """Rows deleted, or aggregates erased, per transaction by ``purge``."""
 REQUEST: Final = "request"
 RETENTION: Final = "retention"
-_SUBJECT: Final = re.compile(r"[^\x00-\x1f\x7f]{1,255}")
+_TEXT: Final = re.compile(r"[^\x00-\x1f\x7f]{1,255}")
 REFUSALS: Final = {
     "42501": "append-only: the database refuses to delete its rows",
     "23503": "other rows still refer to them",
@@ -59,9 +60,20 @@ def check_subject(subject: str) -> str:
     Raises:
         ValueError: It cannot.
     """
-    if not _SUBJECT.fullmatch(subject):
+    if not _TEXT.fullmatch(subject):
         raise ValueError("A subject is 1 to 255 characters, without control codes.")
     return subject
+
+
+def check_reason(reason: str) -> str:
+    """Return ``reason`` if it can go into the audit trail: one line, 1 to 255.
+
+    Raises:
+        ValueError: It cannot.
+    """
+    if not _TEXT.fullmatch(reason):
+        raise ValueError("A reason is 1 to 255 characters, without control codes.")
+    return reason
 
 
 async def export_subject(subject: str) -> dict[str, Any]:
@@ -70,6 +82,9 @@ async def export_subject(subject: str) -> dict[str, Any]:
     Grouped by domain and model; each record has the aggregate's id and
     its fields about the subject. The export is recorded in the audit
     trail, with how many records it holds.
+
+    Raises:
+        ValueError: ``subject`` is not 1 to 255 printable characters.
     """
     check_subject(subject)
     domains: dict[str, dict[str, dict[str, dict[str, object]]]] = {}
@@ -96,7 +111,7 @@ async def export_subject(subject: str) -> dict[str, Any]:
     await record("privacy.export", target=subject, records=count)
     return {
         "subject": subject,
-        "exported_at": datetime.now(UTC).isoformat(),
+        "exported_at": clock.now().isoformat(),
         "domains": to_jsonable_python(
             {
                 domain: {
@@ -120,8 +135,13 @@ async def erase_subject(subject: str, *, reason: str = REQUEST) -> int:
     change. Aggregates already erased are left alone, so running it again
     is harmless. The subject's keys in the audit trail are then forgotten,
     and the erasure recorded.
+
+    Raises:
+        ValueError: ``subject`` or ``reason`` is not 1 to 255 printable
+            characters.
     """
     check_subject(subject)
+    check_reason(reason)
     erased = 0
     for model in personal_models():
         for of, fields in model.subjects.items():
@@ -278,7 +298,7 @@ async def purge(*, dry_run: bool = False, now: datetime | None = None) -> list[P
     is reported and recorded, and the others go on. ``dry_run`` only
     counts.
     """
-    moment = now or datetime.now(UTC)
+    moment = now or clock.now()
     results: list[Purged] = []
     for policy in retention_policies():
         cutoff = policy.cutoff(moment)

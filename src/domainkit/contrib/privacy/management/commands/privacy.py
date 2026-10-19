@@ -6,6 +6,7 @@ from argparse import ArgumentParser
 from pathlib import Path
 
 from domainkit.contrib.privacy import (
+    check_reason,
     check_subject,
     erase_subject,
     export_subject,
@@ -65,6 +66,7 @@ class Command(BaseCommand):
             return
         try:
             subject = check_subject(subject or "")
+            check_reason(reason)
         except ValueError as exc:
             raise CommandError(str(exc)) from None
         if action == "export":

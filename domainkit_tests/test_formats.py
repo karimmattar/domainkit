@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.i18n import (
     date_format,
@@ -69,6 +70,16 @@ def test_now_is_aware_and_utc() -> None:
     with override_settings(TIME_ZONE="Pacific/Kiritimati"):  # UTC+14
         assert localtime().utcoffset() == timedelta(hours=14)
         assert localdate() == localtime().date()
+
+
+def test_now_follows_the_frozen_clock() -> None:
+    """``now()`` is the framework's clock, so tests can freeze "today" too."""
+    with (
+        freeze_time("2026-10-19T22:30:00Z"),
+        override_settings(TIME_ZONE="Pacific/Kiritimati"),
+    ):
+        assert tz.now() == datetime(2026, 10, 19, 22, 30, tzinfo=UTC)
+        assert localdate() == date(2026, 10, 20)
 
 
 def test_naive_datetimes_have_no_local_time() -> None:

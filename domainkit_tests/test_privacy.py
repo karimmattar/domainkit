@@ -16,6 +16,7 @@ from sqlalchemy.exc import DBAPIError
 
 from domainkit import setup
 from domainkit.apps import registry
+from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.audit import record
 from domainkit.contrib.audit.personal import pseudonym_of
@@ -24,6 +25,7 @@ from domainkit.contrib.audit.tables import audit_keys, audit_log
 from domainkit.contrib.privacy import (
     PersonalModel,
     Retention,
+    check_reason,
     check_subject,
     erase_subject,
     export_subject,
@@ -240,13 +242,14 @@ def test_a_subjects_data_is_exported_from_every_domain(clinic: str) -> None:
 
     async def export() -> dict[str, Any]:
         await fill()
-        return await export_subject(str(ANN))
+        with freeze_time("2026-10-19T12:00:00Z"):
+            return await export_subject(str(ANN))
 
     exported = run_async(export())
     patients = exported["domains"]["patients"]
 
     assert exported["subject"] == str(ANN)
-    assert datetime.fromisoformat(exported["exported_at"]).tzinfo is not None
+    assert exported["exported_at"] == "2026-10-19T12:00:00+00:00"
     assert patients["patient"] == [
         {"id": str(ANN), "fields": {"name": "Ann", "email": "ann@example.com"}}
     ]
@@ -296,6 +299,16 @@ def test_subjects_are_checked() -> None:
     for bad in ("", "x" * 256, "a\nb", "a\x00b", "a\x7fb"):
         with pytest.raises(ValueError, match="A subject is 1 to 255"):
             check_subject(bad)
+
+
+def test_reasons_are_checked() -> None:
+    """A reason goes into the audit trail: one line, of at most 255 characters."""
+    assert check_reason("x" * 255) == "x" * 255
+    for bad in ("", "x" * 256, "ticket\n42", "a\x7fb"):
+        with pytest.raises(ValueError, match="A reason is 1 to 255"):
+            check_reason(bad)
+    with pytest.raises(ValueError, match="A reason is 1 to 255"):
+        run_async(erase_subject(str(ANN), reason=""))
 
 
 def test_subject_values_follow_their_column() -> None:
@@ -696,6 +709,8 @@ def test_the_command_erases_after_confirmation(
 
     with pytest.raises(CommandError, match="Erasure cancelled"):
         run("erase", "--subject", str(BOB))
+    with pytest.raises(CommandError, match="A reason is 1 to 255"):
+        run("erase", "--subject", str(BOB), "--reason", "", "--noinput")
     confirmed = run("erase", "--subject", str(BOB), "--reason", "ticket 7")
     unattended = run("erase", "--subject", str(BOB), "--noinput")
 
@@ -710,10 +725,10 @@ def test_the_command_erases_after_confirmation(
 def test_the_command_purges(clinic: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """One line per table and database; refusals fail the command."""
     run_async(fill_old())
-    monkeypatch.setattr(operations, "datetime", FrozenTime)
 
-    preview = run("purge", "--dry-run")
-    done = run("purge")
+    with freeze_time(NOW):
+        preview = run("purge", "--dry-run")
+        done = run("purge")
 
     assert preview.splitlines()[0] == (
         "patients.patients_access_log on default: would delete 3 row(s) from "
@@ -739,15 +754,6 @@ def test_the_command_purges(clinic: str, monkeypatch: pytest.MonkeyPatch) -> Non
     assert "refused, other rows still refer to them" in output.getvalue()
     monkeypatch.setattr(PatientsConfig, "RETENTION", ())
     assert run("purge") == "No domain declares a RETENTION.\n"
-
-
-class FrozenTime(datetime):
-    """``datetime`` whose ``now`` is ``NOW``."""
-
-    @classmethod
-    def now(cls, tz: Any = None) -> "FrozenTime":  # noqa: ANN401 - as datetime's.
-        """Always ``NOW``."""
-        return cls.fromtimestamp(NOW.timestamp(), tz)
 
 
 def test_keys_not_about_anyone_stay(clinic: str) -> None:

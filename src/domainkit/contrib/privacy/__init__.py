@@ -30,6 +30,7 @@ from .events import PersonalDataErased
 from .models import PersonalModel, Policy, personal_models, problems, retention_policies
 from .operations import (
     Purged,
+    check_reason,
     check_subject,
     erase_subject,
     export_subject,
@@ -43,6 +44,7 @@ __all__ = [
     "Policy",
     "Purged",
     "Retention",
+    "check_reason",
     "check_subject",
     "erase_subject",
     "export_subject",

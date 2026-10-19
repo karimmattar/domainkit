@@ -19,10 +19,11 @@ Zones come from the system's time zone database; where there is none
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import UTC, date, datetime, tzinfo
+from datetime import date, datetime, tzinfo
 from functools import cache
 from zoneinfo import ZoneInfo
 
+from domainkit import clock
 from domainkit.conf import settings
 
 _active: ContextVar[tzinfo | None] = ContextVar("timezone", default=None)
@@ -60,8 +61,11 @@ def override(timezone: str | tzinfo) -> Iterator[None]:
 
 
 def now() -> datetime:
-    """The current time, aware, in UTC: what to store and compare."""
-    return datetime.now(UTC)
+    """The current time, aware, in UTC: what to store and compare.
+
+    It is ``domainkit.clock.now()``, so a frozen clock stops it too.
+    """
+    return clock.now()
 
 
 def localtime(
