@@ -32,6 +32,8 @@ BUILTINS = {
     "broker",
     "cache",
     "check",
+    "dbshell",
+    "diffsettings",
     "dumpdata",
     "flush",
     "init",
