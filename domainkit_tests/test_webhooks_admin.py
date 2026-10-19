@@ -270,6 +270,10 @@ def test_only_staff_with_the_permission_get_in(client: TestClient) -> None:
     assert client.post(f"{one}/rotate-secret", headers=viewer).status_code == 403
     assert client.delete(one, headers=viewer).status_code == 403
     assert client.patch(one, json={}, headers=viewer).status_code == 403
+    delivery = f"{ADMIN}/deliveries/{uuid.uuid4()}"
+    assert client.get(delivery, headers=viewer).status_code == 404  # Allowed.
+    assert client.post(f"{delivery}/replay", headers=viewer).status_code == 403
+    assert client.get(f"{ADMIN}/deliveries/{uuid.uuid4()}").status_code == 401
 
 
 def queue(event_type: str = "invoice.paid", key: str = "k") -> None:
@@ -309,6 +313,9 @@ def test_staff_inspect_and_replay_deliveries(
     one = f"{ADMIN}/deliveries/{item['id']}"
     detail = client.get(one, headers=admin)
     pending = client.post(f"{one}/replay", headers=admin)
+    none_failed = client.get(
+        f"{ADMIN}/subscriptions/{created['id']}/deliveries?status=failed", headers=admin
+    )
     fail_deliveries()
     failed = client.get(
         f"{ADMIN}/subscriptions/{created['id']}/deliveries?status=failed", headers=admin
@@ -325,6 +332,7 @@ def test_staff_inspect_and_replay_deliveries(
     assert detail.json()["payload"]["data"] == {"invoice": 7}
     assert detail.json()["log"] == []
     assert (pending.status_code, pending.json()) == (202, {"replayed": False})
+    assert none_failed.json() == []
     assert len(failed.json()) == 2
     assert replayed.json() == {"replayed": True}
     for response in (

@@ -14,6 +14,7 @@ from domainkit import setup
 from domainkit.apps import registry
 from domainkit.conf import UNSET, override_settings
 from domainkit.contrib.messaging import Worker
+from domainkit.contrib.messaging import worker as worker_module
 from domainkit.contrib.messaging.tables import DONE, messages
 from domainkit.contrib.messaging.testing import drain
 from domainkit.contrib.webhooks import delivery as delivery_module
@@ -297,6 +298,23 @@ async def test_oversized_events_are_reported_and_dropped(
     assert caplog.messages[0].startswith("Dropped a webhook event: ")
 
 
+async def test_bodies_may_be_exactly_the_largest_size(hooks: Receiver) -> None:
+    """MAX_PAYLOAD_BYTES is the largest body allowed, not the first refused."""
+    await subscribe(hooks.url(), "*")
+    now = datetime.now(UTC)
+    size = len(delivery_module.body_of("x", {"d": ""}, now))
+    limit = 1024
+    exact = {"d": "y" * (limit - size)}
+    assert len(delivery_module.body_of("x", exact, now)) == limit
+
+    with override_settings(WEBHOOKS={**SETTINGS, "MAX_PAYLOAD_BYTES": limit}):
+        assert await queue_deliveries("x", exact, key="fits", occurred_at=now) == 1
+        with pytest.raises(delivery_module.PayloadTooLarge, match="has 1025 bytes"):
+            await queue_deliveries(
+                "x", {"d": "y" * (limit - size + 1)}, key="over", occurred_at=now
+            )
+
+
 async def test_finished_deliveries_can_be_replayed(hooks: Receiver) -> None:
     """A replay sends again under the same id; pending ones stay as they are."""
     await subscribe(hooks.url(), "note.written")
@@ -331,6 +349,38 @@ async def test_deliveries_that_are_not_pending_are_left_alone(
     await delivery_module.deliver(uuid.uuid4())
 
     assert len(hooks.requests) == 1
+
+
+async def test_a_failed_attempt_with_attempts_left_stays_pending(
+    hooks: Receiver,
+) -> None:
+    """It raises for the worker to retry, and the delivery is not finished."""
+    await subscribe(hooks.url(), "note.written")
+    hooks.answers.append((500, b"", {}))
+    await queue_deliveries("note.written", {}, key="k", occurred_at=datetime.now(UTC))
+    (row,) = await rows(deliveries)
+    token = worker_module._attempt.set(worker_module.Attempt(uuid.uuid4(), 1, 3))
+    try:
+        with pytest.raises(delivery_module.DeliveryFailed, match=r"^HTTP 500\.$"):
+            await delivery_module.deliver(row.id)
+    finally:
+        worker_module._attempt.reset(token)
+
+    (pending,) = await rows(deliveries)
+    assert (pending.status, pending.attempts, pending.finished_at) == (PENDING, 1, None)
+    assert pending.last_attempt_at is not None
+
+
+async def test_a_fan_out_that_runs_twice_queues_once(hooks: Receiver) -> None:
+    """A durable handler may run twice; the event's id keeps deliveries single."""
+    await subscribe(hooks.url(), "note.written")
+    event = NoteWritten(note_id=NoteId(uuid.uuid4()))
+
+    await delivery_module.fan_out(event)
+    await delivery_module.fan_out(event)
+    await delivery_module.fan_out(NoteWritten(note_id=event.note_id))  # Another.
+
+    assert len(await rows(deliveries)) == 2
 
 
 async def test_a_direct_call_makes_one_final_attempt(hooks: Receiver) -> None:
@@ -389,13 +439,28 @@ async def test_old_finished_deliveries_are_purged(
 
 
 async def test_the_purge_runs_hourly(hooks: Receiver) -> None:
-    """The periodic task deletes what is older than RETENTION_SECONDS."""
+    """The periodic task deletes what is older than RETENTION_SECONDS (30 days)."""
     from domainkit.contrib.messaging import registry as tasks
 
+    await subscribe(hooks.url(), "*")
+    for key in ("old", "recent"):
+        await queue_deliveries("x", {}, key=key, occurred_at=datetime.now(UTC))
+    await drain(delayed=True)
+    old, _ = await rows(deliveries)
+    async with connections.engine().begin() as connection:
+        await connection.execute(
+            update(deliveries)
+            .where(deliveries.c.id == old.id)
+            .values(finished_at=datetime.now(UTC) - timedelta(days=31))
+        )
     spec = tasks.get_task("domainkit.contrib.webhooks.purge")
     assert spec is not None
     assert spec.every == timedelta(hours=1)
+
     await spec.function()
+
+    assert [row.id for row in await rows(deliveries)] != [old.id]
+    assert len(await rows(deliveries)) == 1
 
 
 def test_webhooks_need_messaging(database_url: str) -> None:

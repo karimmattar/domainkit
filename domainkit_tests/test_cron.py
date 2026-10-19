@@ -112,7 +112,13 @@ def test_macros_stand_for_expressions(macro: str, expression: str) -> None:
 @pytest.mark.parametrize(
     ("expression", "error"),
     [
-        ("* * * *", "'* * * *' needs five fields: minute, hour, day of month"),
+        (
+            "* * * *",
+            (
+                "'* * * *' needs five fields: minute, hour, day of month, month, "
+                "and day of week"
+            ),
+        ),
         ("* * * * * *", "needs five fields"),
         ("@reboot", "needs five fields"),
         ("1,,2 * * * *", "minute: '' is not a value, range, or step"),
@@ -136,6 +142,8 @@ def test_macros_stand_for_expressions(macro: str, expression: str) -> None:
         ("*/0 * * * *", "minute: the step 0 is out of range"),
         ("*/61 * * * *", "minute: the step 61 is out of range"),
         ("* */25 * * *", "hour: the step 25 is out of range"),
+        ("* * */32 * *", "day of month: the step 32 is out of range"),
+        ("* * * */13 *", "month: the step 13 is out of range"),
         ("0 0 30 2 *", "'0 0 30 2 *' never runs"),
         ("0 0 31 4,6,9,11 *", "never runs"),
         ("*" * 257, "at most 256 characters"),
@@ -143,8 +151,10 @@ def test_macros_stand_for_expressions(macro: str, expression: str) -> None:
 )
 def test_malformed_expressions_are_refused(expression: str, error: str) -> None:
     """Each mistake is named, with its field."""
-    with pytest.raises(CronError, match=error.replace("*", r"\*").replace("+", r"\+")):
+    with pytest.raises(CronError) as refused:
         Cron.parse(expression)
+    assert error in str(refused.value)
+    assert str(refused.value) == str(refused.value).strip()
 
 
 def test_the_longest_expression_is_accepted() -> None:
@@ -159,8 +169,12 @@ def test_time_zones_are_checked() -> None:
     """Zones are IANA names; unknown or malformed ones are refused."""
     assert zone(CAIRO).key == CAIRO
     for name in ("Mars/Olympus", "../etc/passwd", "/etc/localtime", ""):
-        with pytest.raises(CronError, match=r"Unknown time zone .*domainkit\[tzdata\]"):
+        with pytest.raises(CronError) as refused:
             zone(name)
+        assert str(refused.value) == (
+            f"Unknown time zone {name!r}; use an IANA name such as 'Africa/Cairo' "
+            "(on Windows, install domainkit[tzdata])."
+        )
     with pytest.raises(CronError, match="Unknown time zone 'Nowhere'"):
         Cron.parse("0 0 * * *", "Nowhere")
 

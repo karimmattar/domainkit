@@ -122,6 +122,9 @@ def test_traceparent_must_follow_the_w3c_format(value: object, parsed: object) -
         ("key", None),
         ("key=", None),
         ("key=trailing \t", [("key", "trailing")]),  # Spaces around are allowed.
+        (",a=1", [("a", "1")]),  # Empty members are skipped, not the end.
+        ("k=vX", [("k", "vX")]),
+        ("a=1,\nb=2", None),  # Only spaces and tabs may surround members.
         ("key=a,b", None),
         ("key=a=b", None),
         ("a=1,a=2", None),

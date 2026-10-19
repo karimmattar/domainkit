@@ -213,8 +213,13 @@ def test_backoff_delays_are_positive_finite_and_bounded(
     base: float, cap: float
 ) -> None:
     """Zero, negative, infinite, or longer than a year is refused."""
-    with pytest.raises(ImproperlyConfigured, match="must be more than 0 and at most"):
+    with pytest.raises(ImproperlyConfigured) as refused:
         Backoff(base=base, cap=cap)
+    name, value = ("base", base) if not 0 < base <= 365 * 86400 else ("cap", cap)
+    assert str(refused.value) == (
+        f"Backoff {name} must be more than 0 and at most 3.1536e+07 seconds, "
+        f"not {value!r}."
+    )
     assert Backoff(base=365 * 86400, cap=365 * 86400).delay(1) <= 365 * 86400
 
 
