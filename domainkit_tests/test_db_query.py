@@ -135,6 +135,9 @@ CASES: list[tuple[Criteria | None, tuple[str, ...]]] = [
     (F("label") > "A", ("label",)),
     (F("price") > Decimal("1.995"), ("price", "-name")),
     (F("price") <= 2, ("-price",)),
+    (F("price") < 2, ("-price",)),
+    (F("stock") < 3, ("stock",)),
+    (F("size") < Size.LARGE, ()),
     (F("price") == Decimal("2.000"), ()),
     (F("price").range(Decimal("-1.25"), Decimal("1.5")), ("price",)),
     (F("price").in_([Decimal("1.5"), Decimal("10")]), ()),
@@ -142,6 +145,12 @@ CASES: list[tuple[Criteria | None, tuple[str, ...]]] = [
     (~(F("stock") > 0), ("-stock", "name")),
     (F("stock") == None, ("-stock",)),  # noqa: E711
     (F("stock") != None, ("stock", "-price")),  # noqa: E711
+    (F("stock") != 3, ("-stock", "name")),
+    (F("active") > False, ()),
+    (F("active").range(False, True), ("active",)),
+    (F("name").contains("a") | F("name").contains("zz"), ()),
+    (~F("name").startswith("a"), ("name",)),
+    (F("parts.sku").startswith("x"), ()),
     (F("stock").isnull(), ()),
     (~F("stock").in_([0, 3]), ()),
     (F("stock").in_([]), ()),

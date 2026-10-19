@@ -92,6 +92,8 @@ class Thing:
     pair: Pair
     wrapped: Wrapper
     count: Annotated[int | None, MaxLength(3)]
+    later: None | int  # noqa: RUF036 - None first, on purpose.
+    noted: Annotated[str, ["unhashable", "metadata"]]
     on: date
     at: time
 
@@ -141,6 +143,8 @@ def test_awkward_hints_are_described_as_well_as_they_can_be() -> None:
     assert fields["count"].kind is int
     assert fields["count"].nullable is True
     assert fields["count"].metadata == (MaxLength(3),)
+    assert (fields["later"].kind, fields["later"].nullable) == (int, True)
+    assert fields["noted"].metadata == (["unhashable", "metadata"],)
     union = describe(Thing, "x", Annotated[int, MaxLength(2)] | None)
     assert (union.kind, union.nullable, union.metadata) == (int, True, (MaxLength(2),))
 
@@ -341,14 +345,22 @@ def test_criteria_check_fields_and_values_when_bound() -> None:
         (F("name.upper") == 1, InvalidQuery, "name holds no child entities"),
         (F("parts") == 1, InvalidQuery, "holds child entities; name one of"),
         (F("maker") == 1, InvalidQuery, "holds child entities"),
-        (F("stock").lookup("isnull", 1), InvalidQuery, "isnull takes True or False"),
+        (
+            F("stock").lookup("isnull", 1),
+            InvalidQuery,
+            r"^isnull takes True or False, not int\.$",
+        ),
         (F("price").contains("1"), InvalidQuery, "price is not text"),
         (F("color").icontains("r"), InvalidQuery, "color is not text"),
         (F("name").contains(1), InvalidQuery, "contains takes text, not int"),  # type: ignore[arg-type]
         (F("stock") > None, InvalidQuery, "gt on stock takes values, not None"),
         (F("stock").in_([1, None]), InvalidQuery, "in on stock takes values"),
         (F("stock").range(1, None), InvalidQuery, "range on stock takes values"),
-        (F("stock").lookup("range", (1, 2, 3)), InvalidQuery, "a low and a high"),
+        (
+            F("stock").lookup("range", (1, 2, 3)),
+            InvalidQuery,
+            r"^range takes a low and a high value\.$",
+        ),
         (F("stock").lookup("in", [1]), InvalidQuery, "in on stock takes values"),
         (F("stock") > "1", InvalidQuery, "holds int, not str"),
     ]
@@ -510,7 +522,9 @@ def test_queries_check_their_bounds() -> None:
         Query(limit=-1)
     with pytest.raises(ValueError, match="offset cannot be negative"):
         Query(offset=-1)
-    with pytest.raises(ValueError, match="not both"):
+    with pytest.raises(
+        ValueError, match=r"^A query continues after a position or skips, not both\.$"
+    ):
         Query(offset=1, after=("a",))
     query = Query(Cheap(), ordering=["-name", F("price"), Ordering("id")], limit=0)
     assert query.ordering == (
@@ -547,7 +561,9 @@ def test_queries_are_refined_by_copies() -> None:
 def test_row_locks_wait_skip_or_refuse() -> None:
     """Not both of nowait and skip_locked."""
     assert RowLock() == RowLock(nowait=False, skip_locked=False)
-    with pytest.raises(ValueError, match="not both"):
+    with pytest.raises(
+        ValueError, match=r"^A row lock takes nowait or skip_locked, not both\.$"
+    ):
         RowLock(nowait=True, skip_locked=True)
 
 
@@ -652,7 +668,10 @@ def test_positions_must_fit_their_ordering() -> None:
     ordering = (Ordering("stock"), Ordering("id"))
     with pytest.raises(InvalidQuery, match=r"needs 2 values for stock, id, not 1"):
         following(Gadget, ordering, ("a",))
-    with pytest.raises(InvalidQuery, match="Nothing sorts after"):
+    with pytest.raises(
+        InvalidQuery,
+        match=r"^Nothing sorts after a position whose values are missing\.$",
+    ):
         following(Gadget, (Ordering("stock"),), (None,))
     with pytest.raises(UnknownField):
         following(Gadget, (Ordering("nope"),), (1,))

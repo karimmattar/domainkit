@@ -6,6 +6,7 @@ import json
 import re
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
+from enum import StrEnum
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -63,6 +64,13 @@ def test_forged_cursors_are_rejected(cursor: str) -> None:
         decode_cursor(cursor, 2)
 
     assert (caught.value.status_code, caught.value.code) == (422, "invalid_cursor")
+    assert caught.value.detail == "The cursor is invalid; start again without one."
+
+
+class Single(StrEnum):
+    """An enum of one member."""
+
+    ONLY = "only"
 
 
 class Record(AggregateRoot[UUID]):
@@ -81,6 +89,7 @@ class Record(AggregateRoot[UUID]):
     size: Size
     label: Label
     missing: int | None
+    single: Single
     tags: list[str]
     anything: Any = None
 
@@ -89,7 +98,7 @@ ORDER = tuple(
     Ordering(name)
     for name in (
         "text", "count", "flag", "ratio", "amount", "when", "day", "moment", "ref",
-        "color", "size", "label", "missing", "id",
+        "color", "size", "label", "missing", "single", "id",
     )
 )  # fmt: skip
 POSITION = (
@@ -106,6 +115,7 @@ POSITION = (
     Size.LARGE,
     Label("x"),
     None,
+    Single.ONLY,
     UUID(int=8),
 )
 
@@ -124,6 +134,8 @@ def test_positions_round_trip_with_their_types() -> None:
     assert decode_position(cursor, ORDER, Record) == POSITION
     decoded = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
     assert decoded[:2] == [CURSOR_VERSION, ",".join(map(str, ORDER))]
+    raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+    assert b", " not in raw  # Compact JSON keeps cursors short.
     assert decoded[2:5] == ["Ünïcode", -(2**62), True]
 
 
@@ -193,6 +205,17 @@ def test_values_that_do_not_fit_their_field_are_refused(
     with pytest.raises(InvalidCursor) as caught:
         decode_position(cursor, ordering, Record)
     assert caught.value.status_code == 422
+
+
+def test_cursors_hold_any_base64url_text_and_nothing_else() -> None:
+    """Cursors up to the longest round-trip; a character outside base64url fails."""
+    ordering = (Ordering("count"), Ordering("id"))
+    longest = encode_cursor(["x" * 1532])
+    assert len(longest) == MAX_CURSOR_LENGTH
+    assert decode_cursor(longest, 1) == ["x" * 1532]
+    cursor = encode_position((1, UUID(int=1)), ordering)
+    with pytest.raises(InvalidCursor):
+        decode_position(cursor[:4] + "...." + cursor[4:], ordering, Record)
 
 
 def test_missing_values_fit_only_nullable_fields() -> None:
@@ -332,6 +355,8 @@ def test_offset_pages_over_http() -> None:
     assert first["total"] is None
     last = client.get("/gadgets", params={"offset": 3}).json()
     assert (last["items"], last["next_offset"]) == (["e"], None)
+    counted = application(Pagination(offset=True, count=True))
+    assert counted.get("/gadgets").json()["total"] == 4
     for offset in (4, -1):
         refused = client.get("/gadgets", params={"offset": offset})
         assert refused.json()["code"] == "validation_error"
