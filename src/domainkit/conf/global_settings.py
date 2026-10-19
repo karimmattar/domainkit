@@ -423,6 +423,20 @@ class BrokerConfig(BaseModel):
         return user not in {"", "guest"}
 
 
+MEMORY_STORAGE: Final = "domainkit.storage.MemoryStorage"
+
+
+class StorageConfig(BaseModel):
+    """One ``STORAGES`` entry: a ``Storage`` class and its arguments (Django's)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    BACKEND: str = "domainkit.storage.FileSystemStorage"
+    """Dotted path to a ``domainkit.storage.Storage`` class."""
+    OPTIONS: dict[str, Any] = Field(default_factory=dict)
+    """Keyword arguments of the class, such as ``{"location": "/srv/files"}``."""
+
+
 class Settings(BaseModel):
     """Validated, read-only settings; extra names are checked at ``setup()``."""
 
@@ -462,6 +476,8 @@ class Settings(BaseModel):
     """Caches by alias; ``default`` is required (``memory://`` unless set)."""
     BROKERS: dict[str, BrokerConfig] = Field(default_factory=dict)
     """Message brokers by alias; ``MESSAGING.BROKER`` names the worker's."""
+    STORAGES: dict[str, StorageConfig] = Field(default_factory=dict)
+    """File storages by alias (``domainkit.storage``); none unless set."""
     LOGGING: dict[str, Any] = Field(default_factory=_minimal_logging)
     """``logging.config.dictConfig`` mapping applied by ``setup()``."""
 
@@ -709,3 +725,13 @@ class Settings(BaseModel):
             brokers = self.BROKERS.items()
             if aliases := sorted(a for a, b in brokers if violates_broker(b)):
                 raise ValueError(f"{message} {where} for BROKERS {aliases}")
+        if aliases := sorted(
+            alias
+            for alias, storage in self.STORAGES.items()
+            if storage.BACKEND == MEMORY_STORAGE
+        ):
+            raise ValueError(
+                f"memory storages keep files in one process, until it ends; use "
+                f"FileSystemStorage or a storage of your own {where} for "
+                f"STORAGES {aliases}"
+            )

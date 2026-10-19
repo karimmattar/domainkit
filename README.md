@@ -12,6 +12,8 @@ A Django-style framework for domain-driven FastAPI services. It provides:
   replica, globally or per route
 - answers in the caller's language (English and Arabic ship), times shown
   in the business's time zone, and numbers and dates in local formats
+- file storage and uploads checked by their content, under names the
+  storage makes
 - background work through a transactional outbox, run by polling workers or
   through RabbitMQ, with queues for separate worker pools
 - users, groups, and permissions per content type, as in Django's
@@ -22,7 +24,7 @@ A Django-style framework for domain-driven FastAPI services. It provides:
   and tamper-evident evidence
 
 ```bash
-pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, immudb, redis, rabbitmq, metrics, tracing, testing
+pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, immudb, redis, rabbitmq, metrics, tracing, uploads, testing
 ```
 
 ## Documentation
@@ -39,6 +41,8 @@ pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, i
   types, passwords, backends, tokens, route rules, and the admin API
 - [docs/i18n.md](https://github.com/karimmattar/domainkit/blob/main/docs/i18n.md): responses in the caller's language,
   time zones, and number and date formats
+- [docs/uploads.md](https://github.com/karimmattar/domainkit/blob/main/docs/uploads.md): file storages, receiving uploads,
+  and serving files
 - [docs/versioning.md](https://github.com/karimmattar/domainkit/blob/main/docs/versioning.md): compatibility, deprecations, and releases
 - [docs/adr/](https://github.com/karimmattar/domainkit/tree/main/docs/adr): the decisions behind the design
 - [CHANGELOG.md](https://github.com/karimmattar/domainkit/blob/main/CHANGELOG.md) and [SECURITY.md](https://github.com/karimmattar/domainkit/blob/main/SECURITY.md)

@@ -29,3 +29,4 @@ accepted record: supersede it with a new one and link both ways.
 | [0020](0020-lease-idempotency-keys.md) | Lease idempotency keys, and write them only under the holder's token | Accepted |
 | [0021](0021-check-mounted-applications.md) | Check mounted applications and Starlette routes too | Accepted |
 | [0039](0039-translate-messages-at-the-boundary.md) | Translate messages at the HTTP boundary, from gettext catalogs compiled in Python | Accepted |
+| [0040](0040-store-files-under-random-names.md) | Store files under random names; trust only their content | Accepted |

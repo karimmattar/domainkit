@@ -296,34 +296,47 @@ SCANNED: Final = (
     "contrib/idempotency",
 )
 _RAISERS: Final = re.compile(
-    r"error_response|APIError|.*(NotFound|Denied|Failed|Conflict|Violation|Missing)"
+    r"error_response|APIError|.*(NotFound|Denied|Failed|Conflict|Violation|Missing|Refused)"
 )
+
+
+def _texts(call: ast.Call) -> set[str]:
+    """The string constants passed to ``call`` by position."""
+    return {
+        arg.value
+        for arg in call.args
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+    }
+
+
+def _name(node: ast.expr) -> str:
+    """The name a call or a base class is written with."""
+    return getattr(node, "id", getattr(node, "attr", ""))
 
 
 def framework_messages() -> set[str]:
     """The fixed messages the framework answers requests with.
 
-    The text given to ``error_response``, ``APIError``, ``APIError``
-    subclasses (``super().__init__(status.HTTP_..., "...")``), and domain
-    and authentication errors, in the modules that answer requests.
-    Messages with values inside (f-strings) cannot be in a catalog.
+    The text given to ``error_response``, ``APIError``, and domain,
+    authentication, and upload errors, and to ``super().__init__`` in
+    their subclasses, in the modules that answer requests. Messages with
+    values inside (f-strings) cannot be in a catalog.
     """
     found = set(EXTRA_MESSAGES)
     for directory in SCANNED:
         for path in (SRC / directory).rglob("*.py"):
-            for node in ast.walk(ast.parse(path.read_text("utf-8"))):
-                if not isinstance(node, ast.Call):
-                    continue
-                name = getattr(node.func, "id", getattr(node.func, "attr", ""))
-                statuses = any(
-                    isinstance(arg, ast.Attribute) and arg.attr.startswith("HTTP_")
-                    for arg in node.args
-                )
-                if _RAISERS.fullmatch(name) or (name == "__init__" and statuses):
+            tree = ast.parse(path.read_text("utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call) and _RAISERS.fullmatch(_name(node.func)):
+                    found |= _texts(node)
+                if isinstance(node, ast.ClassDef) and any(
+                    _RAISERS.fullmatch(_name(base)) for base in node.bases
+                ):
                     found |= {
-                        arg.value
-                        for arg in node.args
-                        if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+                        text
+                        for call in ast.walk(node)
+                        if isinstance(call, ast.Call) and _name(call.func) == "__init__"
+                        for text in _texts(call)
                     }
     return found
 
@@ -338,7 +351,8 @@ def test_every_framework_message_is_translated() -> None:
     ours = {m.msgid for m in messages if m.context is None}
 
     found = framework_messages()
-    assert len(found) >= 30
+    assert {"No file has that name.", "The file is empty."} <= found
+    assert len(found) >= 34
     assert found - ours == set()
 
 

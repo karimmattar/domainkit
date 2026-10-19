@@ -122,6 +122,21 @@ Each `CACHES` entry:
 | `READINESS` | `False` | Fail `/ready` while this cache is unreachable. Leave it off for caches the service can run without, or an outage takes every replica out of rotation. |
 | `SENTINEL_PASSWORD` | `None` | `redis+sentinel://` only: the Sentinels' own password, when they ask for one (the URL's is the primary's). Kept secret. |
 
+### Storages
+
+Where files live; see [uploads.md](uploads.md).
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `STORAGES` | `{}` | File storages by alias (below), as Django's `STORAGES`. `storages["default"]` is the one `save_upload` and `serve` use unless told otherwise. |
+
+Each `STORAGES` entry:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `BACKEND` | `domainkit.storage.FileSystemStorage` | Dotted path to a `domainkit.storage.Storage` class: `FileSystemStorage`, `MemoryStorage` (tests; refused in staging and production), or your own. |
+| `OPTIONS` | `{}` | The class's keyword arguments. `FileSystemStorage` takes `location` (an absolute directory), `base_url` (where a web server serves it, if one does), `file_mode` (`0o600`), and `directory_mode` (`0o700`). |
+
 ### Brokers
 
 Message brokers carry the worker's work when `MESSAGING.BROKER` names one;
@@ -217,6 +232,8 @@ With `ENVIRONMENT` set to `staging` or `production`, startup fails on:
 - a `memory://` broker, a broker on another host without `amqps://`, a
   broker URL that turns certificate checks off (`no_verify_ssl`), and a
   broker without a user of its own (none, or `guest`)
+- a `MemoryStorage` in `STORAGES`: its files live in one process, until
+  it ends
 - a Redis cache on another host without `rediss://` (`rediss+sentinel://`,
   `rediss+cluster://`), or without a password or a client certificate, and
   any cache URL that weakens certificate checks (`ssl_cert_reqs=none` or

@@ -32,6 +32,15 @@ All notable changes to domainkit. The format follows
   (`domainkit.i18n`), keep catalogs per domain or in `LOCALE_PATHS`, and
   compile them with `manage.py compilemessages`, which needs no GNU tools
   and checks them (`--check` in CI). New projects install the middleware.
+- File storage and uploads (DJ-27; `docs/uploads.md`, ADR 0040):
+  `domainkit.storage`, with `FileSystemStorage` and `MemoryStorage`
+  configured in `STORAGES`, stores files under random names it makes,
+  writes them atomically, and never follows symbolic links.
+  `domainkit.http.uploads.save_upload` stores a FastAPI `UploadFile` only
+  if its first bytes are of a type the route accepts, stops it at
+  `max_size` while it streams, and cleans the client's file name;
+  `serve` streams a stored file from a guarded route as a sandboxed
+  download. FastAPI's form parser comes with the new `uploads` extra.
 - `TIME_ZONE`, with `localtime()`, `localdate()`, and `timezone.override()`
   to show stored UTC times where the business is, and `number_format`,
   `date_format`, `time_format`, and `datetime_format` that write numbers

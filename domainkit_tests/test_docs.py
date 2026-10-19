@@ -14,6 +14,7 @@ from domainkit.conf.global_settings import (
     LedgerConfig,
     Settings,
     ShardConfig,
+    StorageConfig,
 )
 from domainkit.contrib.audit.settings import AuditSettings
 from domainkit.contrib.auth.settings import AuthSettings, JWTSettings
@@ -46,6 +47,7 @@ def documented(page: str) -> set[str]:
         (ShardConfig, "reference.md"),
         (CacheConfig, "reference.md"),
         (BrokerConfig, "reference.md"),
+        (StorageConfig, "reference.md"),
         (MessagingSettings, "contrib.md"),
         (AuditSettings, "contrib.md"),
         (IdempotencySettings, "contrib.md"),

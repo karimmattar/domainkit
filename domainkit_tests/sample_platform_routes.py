@@ -1,9 +1,10 @@
 """Routes exercising throttles, cached pages, uploads, and translations."""
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 from typing import Annotated, Final
 
-from fastapi import APIRouter, Depends, Query, Response, WebSocket
+from fastapi import APIRouter, Depends, Query, Response, UploadFile, WebSocket
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.datastructures import Headers
 from starlette.requests import HTTPConnection
@@ -13,6 +14,7 @@ from domainkit.cache import cache_page
 from domainkit.context import bind_request, current_request
 from domainkit.ddd import NotFound
 from domainkit.http.ratelimit import Throttle
+from domainkit.http.uploads import IMAGES, PDF, save_upload, serve
 from domainkit.i18n import get_language
 
 ACTOR_HEADER: Final = "X-Test-Actor"
@@ -211,3 +213,29 @@ async def add_product(body: ProductOut) -> ProductOut:
     """Never cached: only GET answers are."""
     computed.append(f"add:{body.id}")
     return body
+
+
+@router.post("/uploads")
+async def upload(file: UploadFile) -> dict[str, object]:
+    """Keep an image or a PDF of up to 1,024 bytes."""
+    stored = await save_upload(
+        file,
+        types=(*IMAGES, PDF),
+        max_size=1024,
+        storage="uploads",
+        directory="avatars",
+    )
+    return asdict(stored)
+
+
+@router.get("/files/{name:path}")
+async def download(
+    name: str,
+    content_type: str = "application/octet-stream",
+    inline: bool = False,
+    filename: str | None = None,
+) -> StreamingResponse:
+    """Send a stored file."""
+    return await serve(
+        "uploads", name, content_type=content_type, inline=inline, filename=filename
+    )
