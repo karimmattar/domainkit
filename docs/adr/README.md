@@ -28,6 +28,8 @@ accepted record: supersede it with a new one and link both ways.
 | [0019](0019-idempotency-keys-commit-with-changes.md) | Mark idempotency keys committed in the transaction of the changes | Accepted |
 | [0020](0020-lease-idempotency-keys.md) | Lease idempotency keys, and write them only under the holder's token | Accepted |
 | [0021](0021-check-mounted-applications.md) | Check mounted applications and Starlette routes too | Accepted |
+| [0037](0037-one-clock-frozen-per-context.md) | Read the time from one clock, frozen per context in tests | Accepted |
+| [0038](0038-test-databases-of-their-own.md) | Give the tests PostgreSQL databases of their own | Accepted |
 | [0039](0039-translate-messages-at-the-boundary.md) | Translate messages at the HTTP boundary, from gettext catalogs compiled in Python | Accepted |
 | [0040](0040-store-files-under-random-names.md) | Store files under random names; trust only their content | Accepted |
 | [0041](0041-privacy-through-personal-markers.md) | Answer privacy requests from Personal markers, through units of work | Accepted |

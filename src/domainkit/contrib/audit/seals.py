@@ -31,6 +31,7 @@ from uuid import UUID
 from sqlalchemy import func, insert, select, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from domainkit import clock
 from domainkit.apps import registry
 from domainkit.db import connections
 from domainkit.ledger import Ledger, LedgerKeyNotFound, ledgers
@@ -170,7 +171,7 @@ async def anchor(
     A head is anchored at most once per ``every``, and never twice. An anchor
     dated after ``now`` (written by a clock running ahead) holds none back.
     """
-    now = now or datetime.now(UTC)
+    now = now or clock.now()
     async with connections.engine(database).connect() as connection:
         head = await _head(connection)
     if head is None:
@@ -215,7 +216,7 @@ async def verify(
     With a ledger, seals sealed more than ``every`` (default:
     ``AUDIT.ANCHOR_EVERY``) and ``LOOKBACK`` ago must be anchored.
     """
-    now = now or datetime.now(UTC)
+    now = now or clock.now()
     report = Report(database)
     anchored = await _anchors(database, ledger) if ledger is not None else {}
     report.anchors = len(anchored)
@@ -260,7 +261,7 @@ async def verify(
 async def _seal_batch(connection: AsyncConnection, batch: int) -> int:
     """Seal up to ``batch`` rows after the head, oldest first."""
     head = await _head(connection)
-    sealed_at = datetime.now(UTC)
+    sealed_at = clock.now()
     horizon = await _horizon(connection, head, sealed_at)
     unsealed = (
         select(*(audit_log.c[name] for name in COLUMNS))

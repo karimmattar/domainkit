@@ -43,6 +43,7 @@ from starlette.requests import HTTPConnection
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from domainkit.cache import CacheError, CacheUnavailable, caches
+from domainkit.clock import monotonic
 from domainkit.conf import settings
 from domainkit.conf.global_settings import REDIS_SCHEMES
 from domainkit.context import current_request
@@ -85,7 +86,7 @@ class MemoryBackend:
     """
 
     def __init__(
-        self, max_keys: int = 100_000, clock: Callable[[], float] = time.monotonic
+        self, max_keys: int = 100_000, clock: Callable[[], float] = monotonic
     ) -> None:
         """Keep at most ``max_keys`` callers; ``clock`` reads seconds."""
         self.max_keys = max_keys

@@ -15,7 +15,6 @@ to the audit trail when ``domainkit.contrib.audit`` is installed.
 
 import hashlib
 import math
-import time
 import unicodedata
 from collections import OrderedDict
 from collections.abc import Iterator
@@ -28,6 +27,7 @@ from uuid import UUID
 from fastapi import APIRouter, Body, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
+from domainkit import clock
 from domainkit.apps import registry
 from domainkit.conf import settings
 from domainkit.context import bind_request, current_request
@@ -291,7 +291,7 @@ def _first_refusal(request: Request, key: str, period: int) -> bool:
     refused: OrderedDict[str, float] | None = getattr(state, "login_refusals", None)
     if refused is None:
         refused = state.login_refusals = OrderedDict()
-    now = time.monotonic()
+    now = clock.monotonic()
     since = refused.get(key)
     if since is not None and now - since < period:
         return False

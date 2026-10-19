@@ -13,10 +13,11 @@ event reliably.
 import logging
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import field
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Final
 from uuid import UUID, uuid4
 
+from domainkit import clock
 from domainkit.ddd._dataclass import MessageMeta
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 def _now() -> datetime:
     """Return the current time in UTC."""
-    return datetime.now(UTC)
+    return clock.now()
 
 
 class DomainEvent(metaclass=MessageMeta):

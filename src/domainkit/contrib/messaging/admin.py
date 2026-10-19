@@ -1,11 +1,11 @@
 """Operator queries: queue depth, dead letters, and retries."""
 
 import uuid
-from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select, update
 
+from domainkit import clock
 from domainkit.db import connections
 
 from .settings import MessagingSettings
@@ -51,9 +51,7 @@ async def retry_dead(
     statement = (
         update(messages)
         .where(messages.c.status == DEAD)
-        .values(
-            status=PENDING, attempts=0, available_at=datetime.now(UTC), finished_at=None
-        )
+        .values(status=PENDING, attempts=0, available_at=clock.now(), finished_at=None)
     )
     if message_id is not None:
         statement = statement.where(messages.c.id == message_id)
