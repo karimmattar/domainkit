@@ -213,7 +213,7 @@ class IdempotencyMiddleware:
             )
         else:
             headers = [
-                (name.encode(), value.encode())
+                (name.encode("latin-1"), value.encode("latin-1"))
                 for name, value in (existing["headers"] or {}).items()
             ]
             await send(
@@ -287,10 +287,10 @@ async def _finish(
             )
             if released.rowcount:
                 return
-        headers = {
-            name.decode().lower(): value.decode()
+        headers = {  # ASGI header values are Latin-1 bytes, not always UTF-8.
+            name.decode("latin-1").lower(): value.decode("latin-1")
             for name, value in started.get("headers", [])
-            if name.decode().lower() in _STORED_HEADERS
+            if name.decode("latin-1").lower() in _STORED_HEADERS
         }
         await connection.execute(
             update(idempotency_keys)

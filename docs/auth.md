@@ -443,8 +443,18 @@ attributed to the user.
 Refused tokens are counted too, per client address, against `RATE_LIMIT`:
 they never reach `RateLimitMiddleware`, which counts the user. Past the
 limit the address gets 429, and its requests with credentials are refused
-before any lookup until `Retry-After` has passed. An opaque token that does
-not have the form of an issued one is refused without a lookup.
+before any lookup until `Retry-After` has passed. Credentials in another
+header than `Authorization`, which only a class of your own reads (an
+`X-API-Key`), are read, and refused with the same 429 even when they hold,
+so a guess that works never stands out. An opaque token that does not have
+the form of an issued one is refused without a lookup.
+
+The count per account is what stops guessing one user's password from many
+addresses, and it also lets anyone hold that user's logins back: attempts
+for a name count whoever sends them, so a caller who keeps sending
+`LOGIN_RATE` wrong passwords for it leaves its user few attempts of their
+own. Sessions already open are not affected, and password changes have
+their own count. The audited `throttled` refusals show such a flood.
 
 ## Protecting routes
 
@@ -475,11 +485,11 @@ async def greeting(user: CurrentUser): ...               # anyone; AnonymousUser
 | --- | --- |
 | `AllowAny` | Anyone. |
 | `IsAuthenticated` | Users who logged in. |
-| `IsAuthenticatedOrReadOnly` | Anyone for `GET`, `HEAD`, `OPTIONS`; users otherwise. |
+| `IsAuthenticatedOrReadOnly` | Anyone for `GET`, `HEAD`, `OPTIONS`; users otherwise. A WebSocket handshake is a `GET`, so anyone may open one: guard sockets that take writes with `IsAuthenticated`. |
 | `IsAdminUser` | Staff users (`is_staff`). |
 | `IsSuperuser` | Active superusers. |
 | `HasPermissions(*keys)` | Users granted every permission (by any backend). |
-| `ModelPermissions(model)` | Django's model permissions by method: `GET`/`HEAD` need `view`, `POST` `add`, `PUT`/`PATCH` `change`, `DELETE` `delete`; `OPTIONS` needs a user. `model` is a mapped class or `"<domain>.<model>"`. |
+| `ModelPermissions(model)` | Django's model permissions by method: `GET`/`HEAD` need `view`, `POST` `add`, `PUT`/`PATCH` `change`, `DELETE` `delete`; `OPTIONS` needs a user, and a WebSocket handshake `view`. `model` is a mapped class or `"<domain>.<model>"`. |
 | `HasObjectPermissions(*keys)` | Users granted every permission on the object, by a backend with object permissions. The request itself needs an active user who logged in; check each object with `check_object_permissions`. |
 
 Combine rule instances with `&`, `|`, and `~`:
@@ -526,11 +536,27 @@ async def catalog(): ...
 public_router = APIRouter(dependencies=[Public])  # every route in it
 ```
 
-The framework's own routes (`/health`, `/ready`, `/metrics`) and the login
-and refresh endpoints are covered already. `AUTH.REQUIRE_ROUTE_RULES =
-False` turns the rule off; routes that read the user still need
-`AuthenticationMiddleware`, and startup reports them while it is missing.
-`open_routes(app)` returns the list, for a test of your own.
+The framework's own routes (`/health`, `/ready`, `/metrics`, and the
+`API_DOCS` pages) and the login and refresh endpoints are covered already.
+Applications mounted with routes of their own (another `FastAPI`, a
+Starlette `Mount` of routes) are checked route by route. What takes no
+dependencies, a mounted `StaticFiles` or another ASGI application, and
+Starlette's own `Route` and `WebSocketRoute`, cannot declare a rule, so it
+is listed (`MOUNT /static`) until you serve it from a FastAPI route with
+`Require(...)`, or mark it public with `mark_public`:
+
+```python
+from starlette.staticfiles import StaticFiles
+
+from domainkit.contrib.auth import mark_public
+
+router.mount("/static", mark_public(StaticFiles(directory="static")))
+```
+
+`AUTH.REQUIRE_ROUTE_RULES = False` turns the rule off; routes that read
+the user still need `AuthenticationMiddleware`, and startup reports them
+while it is missing. `open_routes(app)` returns the list, for a test of
+your own.
 
 ## The admin API
 

@@ -46,6 +46,7 @@ from .access import (
     Require,
     check_object_permissions,
     current_user,
+    mark_public,
     open_routes,
 )
 from .authentication import (
@@ -165,6 +166,7 @@ __all__ = [
     "has_perm",
     "has_perms",
     "make_password",
+    "mark_public",
     "open_routes",
     "password_help_texts",
     "validate_password",

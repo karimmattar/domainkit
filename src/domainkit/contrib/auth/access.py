@@ -25,7 +25,7 @@ A refused anonymous caller gets 401, so it knows to log in; a refused user
 gets 403. ``AuthenticationMiddleware`` must be installed.
 """
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import Annotated, Any, ClassVar, Final, cast
 
 from fastapi import Depends, FastAPI, Request, status
@@ -33,6 +33,7 @@ from fastapi.dependencies.models import Dependant
 from fastapi.routing import APIRoute, APIWebSocketRoute, iter_route_contexts
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.requests import HTTPConnection
+from starlette.routing import BaseRoute, Host, Mount, Route, WebSocketRoute
 
 from domainkit.ddd import PermissionDenied
 from domainkit.exceptions import ImproperlyConfigured
@@ -43,8 +44,10 @@ from .backends import has_perms
 from .models import AbstractBaseUser, AnyUser
 
 SAFE_METHODS: Final = frozenset({"GET", "HEAD", "OPTIONS"})
-FRAMEWORK_ROUTES: Final = "domainkit.http."
-"""Modules whose routes (probes, metrics) guard themselves."""
+FRAMEWORK_ROUTES: Final = ("domainkit.http.", "fastapi.")
+"""Modules whose routes guard themselves (probes, metrics, ``API_DOCS``)."""
+PUBLIC_MARK: Final = "domainkit_public"
+"""The attribute ``mark_public`` sets."""
 MODEL_ACTIONS: Final = {
     "GET": "view",
     "HEAD": "view",
@@ -384,46 +387,103 @@ USER_GUARDS: Final[tuple[object, ...]] = (current_user, authenticated_user)
 """Dependencies that read the user, besides ``Require``."""
 
 
+def mark_public[T](served: T) -> T:
+    """Mark a mounted application or a Starlette endpoint public on purpose.
+
+    They take no dependencies, so ``Public`` cannot sit on them, and
+    ``open_routes`` lists them otherwise::
+
+        app.mount("/static", mark_public(StaticFiles(directory="static")))
+    """
+    setattr(served, PUBLIC_MARK, True)
+    return served
+
+
 def open_routes(app: FastAPI) -> list[str]:
     """``METHOD /path`` of every route that declares no access rule.
 
     A route declares one with ``Require``, ``CurrentUser``,
     ``AuthenticatedUser``, or ``Public``, on itself or its router. The
-    framework's own routes (``/health``, ``/ready``, ``/metrics``) guard
-    themselves.
+    framework's own routes (``/health``, ``/ready``, ``/metrics``, and the
+    ``API_DOCS``) guard themselves. Mounted FastAPI and Starlette
+    applications are walked route by route. What takes no dependencies (a
+    mounted ``StaticFiles``, Starlette's own ``Route``) is listed unless
+    marked with ``mark_public``.
     """
+    return [name for name, _ in unguarded_routes(app)]
+
+
+def unguarded_routes(app: FastAPI) -> list[tuple[str, bool]]:
+    """``open_routes``, each with whether it could take a rule (a dependency)."""
     guards = (public, *USER_GUARDS)
-    return [name for name, dependant in _routes(app) if not _uses(dependant, guards)]
+    return [
+        (name, dependant is not None)
+        for name, dependant in _routes(app.routes)
+        if dependant is None or not _uses(dependant, guards)
+    ]
 
 
 def routes_need_users(app: FastAPI) -> bool:
     """Whether some route of ``app`` reads the user or checks rules."""
-    return any(_uses(dependant, USER_GUARDS) for _, dependant in _routes(app))
+    return any(
+        dependant is not None and _uses(dependant, USER_GUARDS)
+        for _, dependant in _routes(app.routes)
+    )
 
 
-def _routes(app: FastAPI) -> list[tuple[str, Dependant]]:
+def _routes(
+    routes: Sequence[BaseRoute], prefix: str = ""
+) -> Iterator[tuple[str, Dependant | None]]:
     """``METHOD /path`` and dependencies of each route, but the framework's own.
 
     Routers are walked as OpenAPI walks them, so the prefixes and
-    dependencies of the routers a route is included through count.
+    dependencies of the routers a route is included through count, and so
+    are the applications mounted with routes of their own. What takes no
+    dependencies (an application without routes, Starlette's own routes)
+    has None, unless it was marked public.
     """
-    found = []
-    for context in iter_route_contexts(app.routes):
+    for context in iter_route_contexts(routes):
         route = context.original_route
+        # Routes of included routers keep their full path (and a WebSocket
+        # its dependencies) here; FastAPI's own context has them for others.
+        effective = getattr(context, "starlette_route", None)
+        if isinstance(effective, type(route)):
+            route = effective
+        found: tuple[str, Dependant | None]
         if isinstance(route, APIWebSocketRoute):
-            # Included WebSockets keep their full path and dependencies here.
-            effective = getattr(context, "starlette_route", None)
-            if isinstance(effective, APIWebSocketRoute):
-                route = effective
-            name, dependant = f"WEBSOCKET {route.path}", route.dependant
+            found = (f"WEBSOCKET {prefix}{route.path}", route.dependant)
         elif isinstance(route, APIRoute):
-            name = f"{' '.join(sorted(route.methods or ()))} {context.path}"
-            dependant = context.dependant
-        else:
+            methods = " ".join(sorted(route.methods or ()))
+            found = (f"{methods} {prefix}{context.path}", context.dependant)
+        elif _marked_public(route):
             continue
-        if not route.endpoint.__module__.startswith(FRAMEWORK_ROUTES):
-            found.append((name, dependant))
-    return found
+        elif isinstance(route, Mount | Host) and route.routes:
+            inner = prefix + route.path if isinstance(route, Mount) else prefix
+            yield from _routes(route.routes, inner)
+            continue
+        else:
+            path = getattr(route, "path", "")
+            found = (f"{_kind(route)} {prefix}{path}".rstrip(), None)
+        endpoint = getattr(route, "endpoint", None)
+        if not getattr(endpoint, "__module__", "").startswith(FRAMEWORK_ROUTES):
+            yield found
+
+
+def _marked_public(route: BaseRoute) -> bool:
+    """Whether what ``route`` serves was marked with ``mark_public``."""
+    served = (getattr(route, name, None) for name in ("endpoint", "app", "_base_app"))
+    return any(getattr(target, PUBLIC_MARK, False) is True for target in served)
+
+
+def _kind(route: BaseRoute) -> str:
+    """How ``open_routes`` names a route that takes no dependencies."""
+    if isinstance(route, Route):
+        return " ".join(sorted(route.methods)) if route.methods else "ANY"
+    if isinstance(route, WebSocketRoute):
+        return "WEBSOCKET"
+    if isinstance(route, Host):
+        return f"HOST {route.host}"
+    return "MOUNT" if isinstance(route, Mount) else type(route).__name__
 
 
 def _uses(dependant: Dependant, guards: tuple[object, ...]) -> bool:

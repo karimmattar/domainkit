@@ -463,6 +463,55 @@ def post(client: TestClient, path: str, key: str, body: object) -> object:
     return client.post(path, json=body, headers={"Idempotency-Key": key})
 
 
+@pytest.mark.usefixtures("idempotent")
+def test_headers_are_replayed_byte_for_byte() -> None:
+    """Header values are Latin-1 bytes: one that is not UTF-8 is kept as sent.
+
+    Storing it used to raise once the response had gone out, so the key was
+    never answered. (The test client cannot read such a header: raw ASGI.)
+    """
+
+    async def created(scope: Scope, receive: Receive, send: Send) -> None:
+        headers = [(b"location", b"/caf\xe9")]
+        await send({"type": "http.response.start", "status": 201, "headers": headers})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    app = idempotency.IdempotencyMiddleware(created)
+
+    async def post() -> list[Message]:
+        sent: list[Message] = []
+
+        async def receive() -> Message:
+            return {"type": "http.request", "body": b"{}"}
+
+        async def send(message: Message) -> None:
+            sent.append(message)
+
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/created",
+            "headers": [(b"idempotency-key", b"latin")],
+            "client": ("203.0.113.1", 1),
+        }
+        await app(scope, receive, send)
+        return sent
+
+    async def twice() -> tuple[list[Message], list[Message]]:
+        try:
+            return await post(), await post()
+        finally:
+            await connections.close_all()
+
+    first, again = asyncio.run(twice())
+
+    assert first[0]["headers"] == [(b"location", b"/caf\xe9")]
+    assert again[0]["headers"] == [
+        (b"location", b"/caf\xe9"),
+        (b"idempotent-replayed", b"true"),
+    ]
+
+
 def test_retries_replay_the_first_response(idempotent: TestClient) -> None:
     """The same key and request run once; repeats get the stored response."""
     first = idempotent.post(

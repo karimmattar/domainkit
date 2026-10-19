@@ -3,15 +3,24 @@
 import io
 import logging
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
-from fastapi import APIRouter, Depends, FastAPI
+from fastapi import APIRouter, Depends, FastAPI, WebSocket
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
+from starlette.routing import Host, Mount, Route, WebSocketRoute
+from starlette.staticfiles import StaticFiles
 
 from domainkit.conf import override_settings
-from domainkit.contrib.auth import IsAuthenticated, Public, Require, open_routes
+from domainkit.contrib.auth import (
+    IsAuthenticated,
+    Public,
+    Require,
+    mark_public,
+    open_routes,
+)
 from domainkit.contrib.auth.access import routes_need_users
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
@@ -47,6 +56,22 @@ async def raw(request: Request) -> PlainTextResponse:
     return PlainTextResponse("raw")
 
 
+@mark_public
+async def marked(request: Request) -> PlainTextResponse:
+    """A plain Starlette route, public on purpose."""
+    return PlainTextResponse("marked")
+
+
+async def raw_socket(websocket: WebSocket) -> None:
+    """A plain Starlette WebSocket."""
+    await websocket.close()
+
+
+mounted = APIRouter()
+"""A project's router that mounts files."""
+mounted.mount("/static", StaticFiles(directory="static", check_dir=False))
+
+
 def test_routes_without_rules_are_listed() -> None:
     """``Require``, the user dependencies, and ``Public`` count, at any depth."""
     app = FastAPI()
@@ -61,12 +86,70 @@ def test_routes_without_rules_are_listed() -> None:
         "WEBSOCKET /v1/socket",
         "GET /direct",
         "WEBSOCKET /direct-socket",
+        "GET HEAD /raw",
     ]
     assert routes_need_users(app)
     public = app_of(sample_open_routes.public)
     assert open_routes(public) == []
     assert not routes_need_users(public)
     assert open_routes(app_of(sample_auth_routes.router)) == []
+
+
+def test_what_takes_no_rule_is_listed_unless_marked(tmp_path: Path) -> None:
+    """Mounts and Starlette's own routes cannot take ``Public``: ``mark_public``.
+
+    Mounted applications with routes are walked, so each of their routes
+    counts. Such routes, and a mounted ``StaticFiles``, used to be served to
+    anyone without being listed.
+    """
+    sub = app_of(alone(sample_open_routes.open_route), sample_open_routes.public)
+    files = StaticFiles(directory=tmp_path)
+    nested = APIRouter()
+    nested.add_route("/raw", raw)
+    nested.mount("/files", files)
+    nested.mount("/sub", sub)
+    app = FastAPI()
+    app.mount("/sub", sub)
+    app.mount("/static", files)
+    app.mount("/assets", mark_public(StaticFiles(directory=tmp_path)))
+    app.add_route("/raw", raw)
+    app.add_route("/marked", marked)
+    app.router.routes.append(WebSocketRoute("/raw-socket", raw_socket))
+    app.router.routes.append(Mount("/v2", routes=[Route("/raw", raw)]))
+    app.router.routes.append(Host("files.example.org", files))
+    app.include_router(nested, prefix="/nested")
+
+    assert open_routes(app) == [
+        "GET /sub/alone",
+        "MOUNT /static",
+        "GET HEAD /raw",
+        "WEBSOCKET /raw-socket",
+        "GET HEAD /v2/raw",
+        "HOST files.example.org",
+        "GET HEAD /nested/raw",
+        "MOUNT /nested/files",
+        "GET /nested/sub/alone",
+    ]
+    assert not routes_need_users(app)
+    app.mount("/guarded", app_of(alone(sample_open_routes.authenticated)))
+    assert routes_need_users(app)
+
+
+def test_the_check_says_how_to_mark_what_takes_no_rule(use_auth: UseAuth) -> None:
+    """A mount is reported with the way to guard it, or to mark it public."""
+    use_auth(
+        settings={
+            "ROOT_ROUTER": "domainkit_tests.test_auth_route_rules.mounted",
+            "MIDDLEWARE": MIDDLEWARE[:3],
+        }
+    )
+    assert application_problems(get_asgi_application()) == [
+        (
+            "MOUNT /static takes no access rule: serve it from a FastAPI route "
+            "with Require(...), or wrap it in mark_public(...) if anyone may "
+            "call it."
+        )
+    ]
 
 
 def alone(endpoint: Callable[..., Any], **options: Any) -> APIRouter:  # noqa: ANN401 - route options.

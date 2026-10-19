@@ -27,3 +27,4 @@ accepted record: supersede it with a new one and link both ways.
 | [0018](0018-evidence-subjects-are-internal-ids.md) | Evidence subjects are internal ids, keyed by a secret digest | Accepted |
 | [0019](0019-idempotency-keys-commit-with-changes.md) | Mark idempotency keys committed in the transaction of the changes | Accepted |
 | [0020](0020-lease-idempotency-keys.md) | Lease idempotency keys, and write them only under the holder's token | Accepted |
+| [0021](0021-check-mounted-applications.md) | Check mounted applications and Starlette routes too | Accepted |
