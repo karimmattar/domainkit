@@ -320,18 +320,39 @@ def test_callers_are_actors_or_addresses() -> None:
     scope = {"client": ("203.0.113.4", 1)}
     assert _caller(scope) == "ip:203.0.113.4"
     assert _caller({}) == "ip:unknown"
+    names = IdempotencySettings().CREDENTIAL_HEADERS
     with bind_request(RequestContext("r", None, "GET", "/", actor="alice")):
         assert _caller(scope) == "actor:alice"
-        assert idempotency._caller(scope) == "actor:alice"
-    anonymous = idempotency._caller({"type": "http", "headers": [], **scope})
+        assert idempotency._caller(scope, names) == "actor:alice"
+    anonymous = idempotency._caller({"type": "http", "headers": [], **scope}, names)
     assert anonymous.startswith("anonymous:203.0.113.4:")
-    assert idempotency._caller({"type": "http", "headers": []}).startswith(
+    assert idempotency._caller({"type": "http", "headers": []}, names).startswith(
         "anonymous:unknown:"
     )
     # Without an actor, different credentials never share keys.
-    for name in (b"authorization", b"cookie"):
-        credentialed = {"type": "http", "headers": [(name, b"x")], **scope}
-        assert idempotency._caller(credentialed) != anonymous
+    seen = {anonymous}
+    for headers in (
+        [(b"authorization", b"x")],
+        [(b"proxy-authorization", b"x")],
+        [(b"cookie", b"x")],
+        [(b"x-api-key", b"alice")],
+        [(b"x-api-key", b"bob")],
+        [(b"x-api-key", b"alice"), (b"x-api-key", b"bob")],
+        [(b"authorization", b"cookie"), (b"cookie", b"x")],  # Counts keep them apart.
+        [(b"authorization", b"cookie"), (b"authorization", b"x")],
+        # Without counts, these two would hash the same parts.
+        [(b"authorization", b"proxy-authorization"), (b"authorization", b"None")],
+        [
+            (b"proxy-authorization", b"proxy-authorization"),
+            (b"proxy-authorization", b"None"),
+        ],
+    ):
+        credentialed = {"type": "http", "headers": headers, **scope}
+        caller = idempotency._caller(credentialed, names)
+        assert caller not in seen
+        seen.add(caller)
+    other_header = {"type": "http", "headers": [(b"x-token", b"x")], **scope}
+    assert idempotency._caller(other_header, names) == anonymous
 
 
 def test_hashes_are_length_prefixed() -> None:
@@ -399,7 +420,9 @@ def stored_keys() -> list[dict[str, object]]:
 
 def keyed(key: str) -> str:
     """The hash of ``key`` sent by the test client without credentials."""
-    return idempotency._hash(f"anonymous:testclient:{idempotency._hash('', '')}", key)
+    scope = {"type": "http", "headers": [], "client": ("testclient", 50000)}
+    caller = idempotency._caller(scope, IdempotencySettings().CREDENTIAL_HEADERS)
+    return idempotency._hash(caller, key)
 
 
 def plant(key: str, path: str = "/pay", *, body: bytes = b"", **values: object) -> None:
@@ -773,6 +796,61 @@ def test_a_request_that_lost_its_key_cannot_commit_through_it(
     assert [(row["token"], row["status_code"]) for row in rows] == [("retry", None)] * 2
 
 
+def test_refusals_and_secrets_after_a_commit_are_settled(
+    idempotent: TestClient,
+) -> None:
+    """A 4xx that committed is replayed; a 5xx or no-store response is never kept."""
+    declined = {"Idempotency-Key": "declined"}
+    secret = {"Idempotency-Key": "secret"}
+    failed = {"Idempotency-Key": "failed"}
+
+    first = idempotent.post("/pay?outcome=declined", headers=declined)
+    again = idempotent.post("/pay?outcome=declined", headers=declined)
+    token = idempotent.post("/pay?outcome=secret", headers=secret)
+    retry = idempotent.post("/pay?outcome=secret", headers=secret)
+    error = idempotent.post("/pay?outcome=failed", headers=failed)
+    after_error = idempotent.post("/pay?outcome=failed", headers=failed)
+
+    assert (first.status_code, again.status_code) == (402, 402)
+    assert again.headers["Idempotent-Replayed"] == "true"
+    assert (token.status_code, token.content) == (201, b"token")
+    assert (retry.status_code, retry.json()["code"]) == (
+        409,
+        "idempotency_response_unavailable",
+    )
+    assert error.status_code == 500  # A server error, even after a commit, is not kept.
+    assert (after_error.status_code, after_error.json()["code"]) == (
+        409,
+        "idempotency_response_unavailable",
+    )
+    assert payments_on() == 3
+    assert {row["key_hash"]: row["body"] for row in stored_keys()}[
+        keyed("secret")
+    ] is None
+
+
+def test_without_a_worker_claims_sweep_expired_keys(
+    idempotent: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no hourly purge, each claim deletes a few expired keys."""
+    gone = datetime.now(UTC) - timedelta(seconds=1)
+    for key in ("old-1", "old-2", "old-3"):
+        plant(key, expires_at=gone)
+    plant("live")
+    with_worker = idempotent.post("/pay", headers={"Idempotency-Key": "a"})
+    kept = {row["key_hash"] for row in stored_keys()}
+    monkeypatch.setattr(idempotency, "MESSAGING", "not.installed")
+    monkeypatch.setattr(idempotency, "PURGE_BATCH", 2)
+
+    idempotent.post("/pay", headers={"Idempotency-Key": "b"})
+
+    assert with_worker.status_code == 201
+    assert {keyed(key) for key in ("old-1", "old-2", "old-3")} <= kept
+    left = {row["key_hash"] for row in stored_keys()}
+    assert len(left & {keyed(key) for key in ("old-1", "old-2", "old-3")}) == 1
+    assert {keyed("live"), keyed("a"), keyed("b")} <= left
+
+
 def test_a_lost_key_refuses_commits_elsewhere_too(
     make_database: Callable[[str], str],
 ) -> None:
@@ -792,13 +870,23 @@ def test_a_lost_key_refuses_commits_elsewhere_too(
 
 
 def test_storage_limits_are_inclusive(idempotent: TestClient) -> None:
-    """A body of exactly MAX_RESPONSE_BYTES is stored; every 5xx, even 500, is not."""
+    """A body of exactly MAX_RESPONSE_BYTES is stored; every 5xx, even 500, is not.
+
+    Nor is a 4xx when nothing committed, or a response that must not be
+    stored (``Cache-Control: no-store``).
+    """
     for query, replayed in (
         ("size=1024", True),
         ("size=1025", False),
         ("size=600&parts=2", False),
-        ("status_code=499", True),
+        ("status_code=399", True),
+        ("status_code=400", False),  # Refused, nothing committed: runs again.
+        ("status_code=499", False),
         ("status_code=500", False),
+        ("cache=no-store", False),
+        ("cache=private,%20No-Store", False),
+        ("cache=no-store,private", False),
+        ("cache=no-cache", True),
     ):
         headers = {"Idempotency-Key": query}
         first = idempotent.post(f"/respond?{query}", headers=headers)
