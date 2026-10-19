@@ -14,6 +14,7 @@ from domainkit.conf import override_settings
 from domainkit.context import current_request
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
+from domainkit.http import middleware as middleware_module
 from domainkit.http.middleware import (
     AllowedHostsMiddleware,
     RequestBodyLimitMiddleware,
@@ -49,6 +50,77 @@ def make_client() -> Iterator[MakeClient]:
 def client(make_client: MakeClient) -> TestClient:
     """Client with the framework test settings."""
     return make_client()
+
+
+@pytest.mark.parametrize(
+    ("failure", "status_code", "code"),
+    [
+        ("pool", 503, "database_busy"),
+        ("57014", 503, "database_busy"),
+        ("55P03", 503, "database_busy"),
+        ("40001", 503, "database_busy"),
+        ("40P01", 503, "database_busy"),
+        ("22021", 422, "invalid_value"),
+        ("22001", 422, "invalid_value"),
+        ("23502", 500, "internal_error"),
+        ("None", 500, "internal_error"),
+    ],
+)
+def test_database_errors_that_are_not_bugs_answer_as_such(
+    make_client: MakeClient,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    status_code: int,
+    code: str,
+) -> None:
+    """Busy is a 503 to retry, a value the column refuses a 422; neither a bug."""
+    reported: list[BaseException] = []
+    monkeypatch.setattr(
+        middleware_module, "report_error", lambda exc, **_: reported.append(exc)
+    )
+    client = make_client(raise_server_exceptions=False)
+    failure_path = f"/database/{failure}"
+
+    with caplog.at_level(logging.WARNING, logger="domainkit.http.middleware"):
+        response = client.get(failure_path)
+
+    assert (response.status_code, response.json()["code"]) == (status_code, code)
+    refused = [r for r in caplog.records if r.getMessage().startswith("Database")]
+    if status_code == 500:
+        assert (len(reported), refused) == (1, [])
+        return
+    assert reported == []
+    reason = "TimeoutError" if failure == "pool" else f"SQLSTATE {failure}"
+    assert [(r.levelname, r.getMessage()) for r in refused] == [
+        ("WARNING", f"Database refused GET {failure_path}: {code} ({reason})")
+    ]
+    assert refused[0].exc_info is None
+    if status_code == 503:
+        assert response.headers["Retry-After"] == "1"
+        assert response.json()["detail"] == "The database is busy; try again shortly."
+    else:
+        assert "Retry-After" not in response.headers
+        assert response.json()["detail"] == (
+            "A value cannot be stored: it is too long, out of range, or holds a "
+            "character the database refuses."
+        )
+
+
+@pytest.mark.parametrize(("failure", "close_code"), [("pool", 1013), ("22021", 1007)])
+def test_websockets_the_database_refuses_are_closed_so(
+    make_client: MakeClient, failure: str, close_code: int
+) -> None:
+    """Busy is "try again later" (1013); a refused value "invalid data" (1007)."""
+    client = make_client(raise_server_exceptions=False)
+
+    with (
+        pytest.raises(WebSocketDisconnect) as closed,
+        client.websocket_connect(f"/ws/database/{failure}"),
+    ):
+        pass
+
+    assert closed.value.code == close_code
 
 
 def test_security_headers_follow_settings() -> None:
