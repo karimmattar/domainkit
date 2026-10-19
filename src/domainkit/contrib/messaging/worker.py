@@ -497,7 +497,13 @@ class Worker:
             event_type = _event_classes().get(message.headers.get("event_type", ""))
             if handler is None or event_type is None:
                 raise UnknownTarget(f"No durable handler {message.target!r}.")
-            await handler[1](load_event(event_type, message.payload))
+            handled, function = handler
+            if not issubclass(event_type, handled):
+                # Only an outbox row written by hand can pair them.
+                raise UnknownTarget(
+                    f"{message.target!r} does not handle {event_type.__qualname__}."
+                )
+            await function(load_event(event_type, message.payload))
         elif message.kind == "task":
             spec = get_task(message.target)
             if spec is None:

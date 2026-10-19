@@ -43,6 +43,14 @@ All notable changes to domainkit. The format follows
   failed every handshake with an internal error (close code 1011), even
   for users they allow; a refused handshake now gets the same 401 or 403
   response as a request.
+- Evidence: a record read under a key that does not end with its own id,
+  or listed by `for_subject` under a prefix while about another subject, is
+  `EvidenceTampered`. Anyone with the ledger's write credentials could
+  copy a real record under another key or subject, and it read as intact.
+  Keys from an earlier `NAMESPACE` or `SUBJECT_KEY` still read.
+- The worker runs a durable handler only for the event types it is
+  subscribed to; an outbox row pairing it with another event is
+  dead-lettered instead of handing it an event it does not expect.
 
 ## [0.6.0] - 2026-10-18
 

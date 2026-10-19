@@ -46,6 +46,9 @@ event_bus.subscribe(UserCreated, notify_crm, durable=True)
 async def purge_expired() -> None: ...
 ```
 
+A durable handler runs only for the events it is subscribed to (or their
+subclasses); a message pairing it with another event is dead-lettered.
+
 Outside a unit of work, `await enqueue(send_welcome, user_id=...)` queues a
 task in its own transaction. Arguments are stored as JSON and converted back
 using the task's type hints (`UUID`, `datetime`, `Decimal`, models).
@@ -482,8 +485,11 @@ recorded = await evidence_store().verify(receipt)  # raises EvidenceTampered
   evidence leave one revision and all get its receipt.
 - Reads return revision 1, the original. If anything wrote the key again,
   `RecordedEvidence.intact` is false and `verify()` raises
-  `EvidenceTampered`. With immudb, every read and write is also checked
-  against a Merkle proof and, in deployments, the server's signature.
+  `EvidenceTampered`. So does a read of a record under a key that does
+  not end with its own id, and a `for_subject` listing that finds a record
+  about another subject under the prefix: real records copied elsewhere.
+  With immudb, every read and write is also checked against a Merkle proof
+  and, in deployments, the server's signature.
 - Receipts are what tie evidence to your data: anyone holding the ledger's
   write credentials can add records, though never change one unnoticed. Keep
   each receipt (or key) with the change it proves; `for_subject` is a
