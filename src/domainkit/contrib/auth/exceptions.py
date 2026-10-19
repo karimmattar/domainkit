@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 
-from domainkit.ddd import BusinessRuleViolation, DuplicateValue, NotFound
+from domainkit.ddd import BusinessRuleViolation, Conflict, DuplicateValue, NotFound
 
 
 class InvalidUsername(BusinessRuleViolation):
@@ -52,3 +52,7 @@ class InvalidPassword(BusinessRuleViolation):
         """Keep every rule the password breaks; the message lists them."""
         super().__init__(" ".join(errors))
         self.errors = list(errors)
+
+
+class LastSuperuser(Conflict):
+    """The step would leave no active superuser to run the system."""
