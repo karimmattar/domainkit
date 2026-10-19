@@ -300,6 +300,22 @@ def test_template_context_validates_names() -> None:
         assert str(refused.value) == message
 
 
+def test_merges_of_several_targets_are_listed_one_per_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each target's merge revision gets its own line."""
+    monkeypatch.setattr(
+        migrations_module, "migration_targets", lambda: ("default", "reports")
+    )
+    monkeypatch.setattr(
+        migrations_module, "make_merge", lambda target: Path(f"/{target}.py")
+    )
+
+    assert run("makemigrations", "--merge") == (
+        "Created /default.py.\nCreated /reports.py.\n"
+    )
+
+
 def test_startdomain_refuses_bad_targets(
     make_package: MakePackage, tmp_path: Path
 ) -> None:
@@ -311,6 +327,36 @@ def test_startdomain_refuses_bad_targets(
     make_package("taken_parent", {"shop/__init__.py": ""})
     with pytest.raises(CommandError, match="already exists"):
         run("startdomain", "shop", parent="taken_parent", tests_dir=tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("name", "plural", "command"),
+    [
+        ("partition", None, "partitions"),  # Built in.
+        ("message", None, "messages"),  # Messaging's, installed or not.
+        ("shop", "check", "check"),
+    ],
+)
+def test_startdomain_never_replaces_a_command(
+    make_package: MakePackage,
+    tmp_path: Path,
+    name: str,
+    plural: str | None,
+    command: str,
+) -> None:
+    """The generated command is named after the plural; it may not take another's."""
+    parent = make_package("fresh_parent", {})
+    tests = tmp_path / "generated_tests"
+
+    with pytest.raises(CommandError) as refused:
+        run("startdomain", name, plural=plural, parent="fresh_parent", tests_dir=tests)
+
+    assert str(refused.value) == (
+        f"The domain's command would be {command!r}, which already names a command "
+        "and would replace it; pass --plural with another name."
+    )
+    assert [path.name for path in parent.iterdir()] == ["__init__.py"]
+    assert not tests.exists()
 
 
 def test_startdomain_generates_a_working_domain(
@@ -329,6 +375,7 @@ def test_startdomain_generates_a_working_domain(
     )
 
     package = tmp_path / "generated" / "shop"
+    assert output.startswith(f"Created {package} and {tests_dir / 'shop'}.\n")
     assert output.endswith(
         "Next steps:\n"
         "  1. Add 'generated.shop' to INSTALLED_DOMAINS in your settings.\n"
@@ -369,16 +416,21 @@ def test_startdomain_creates_test_packages_inside_the_project(
     make_package: MakePackage, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Test directories inside the project get ``__init__.py`` files with docstrings."""
-    make_package("inner_parent", {})
+    make_package("inner_parent.sub", {})
     monkeypatch.setattr(startdomain, "project_root", lambda: tmp_path)
     monkeypatch.setattr(startdomain, "format_python", lambda paths: False)
 
-    run("startdomain", "shop", parent="inner_parent")
-    run("startdomain", "cart", parent="inner_parent")
+    run("startdomain", "shop", parent="inner_parent.sub")
+    run("startdomain", "cart", parent="inner_parent.sub")
 
-    init = tmp_path / "tests" / "inner_parent" / "__init__.py"
-    assert init.read_text(encoding="utf-8") == '"""Tests of inner_parent."""\n'
-    assert (tmp_path / "tests" / "__init__.py").is_file()
+    tests = tmp_path / "tests"
+    for directory in (tests / "inner_parent", tests / "inner_parent" / "sub"):
+        init = directory / "__init__.py"
+        assert init.read_text(encoding="utf-8") == (
+            f'"""Tests of {directory.name}."""\n'
+        )
+    assert (tests / "inner_parent" / "sub" / "shop").is_dir()
+    assert (tests / "__init__.py").is_file()
 
 
 def test_format_python_needs_ruff(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -428,8 +480,12 @@ def test_branches_must_be_merged(migration_project: Path) -> None:
         run("check")
     with pytest.raises(CommandError, match="makemigrations --merge"):
         run("migrate")
-    with pytest.raises(CommandError, match="makemigrations --merge"):
+    with pytest.raises(CommandError) as unmerged:
         run("makemigrations")
+    assert str(unmerged.value) == (
+        "The migration history of 'default' has 2 heads; run 'manage.py "
+        "makemigrations --merge' first."
+    )
 
     assert run("makemigrations", "--merge").startswith("Created ")
     assert run("makemigrations", "--merge") == "Nothing to merge.\n"

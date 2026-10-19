@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel, ValidationError
 
 from domainkit.conf import (
     UNSET,
@@ -25,6 +26,8 @@ from domainkit.conf.env import (
 )
 from domainkit.conf.global_settings import DEFAULT_MIDDLEWARE, RATE_LIMIT_MIDDLEWARE
 from domainkit.conf.lazy import LazySettings
+from domainkit.contrib.idempotency.settings import IdempotencySettings
+from domainkit.contrib.messaging.settings import MessagingSettings
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit_tests.conftest import MakePackage
 
@@ -81,27 +84,39 @@ def test_env_conversions(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
 @pytest.mark.parametrize(
     ("method", "value", "expected"),
     [
-        ("int", "x", "an integer"),
-        ("float", "y", "a number"),
-        ("bool", "z", "a boolean"),
+        ("int", "s3cr3t-x", "an integer"),
+        ("float", "s3cr3t-y", "a finite number"),
+        ("float", "inf", "a finite number"),
+        ("float", "-Infinity", "a finite number"),
+        ("float", "nan", "a finite number"),
+        ("bool", "s3cr3t-z", "a boolean (true/false)"),
     ],
 )
 def test_env_invalid_values_name_the_variable(
     monkeypatch: pytest.MonkeyPatch, method: str, value: str, expected: str
 ) -> None:
-    """Conversion errors say which variable is wrong and what was expected."""
+    """Conversion errors name the variable and what was expected, never the value.
+
+    The value may be a secret from a ``_FILE``; no chained error quotes it.
+    """
     monkeypatch.setenv("T_BAD", value)
 
-    with pytest.raises(ImproperlyConfigured, match=f"T_BAD must be {expected}"):
+    with pytest.raises(ImproperlyConfigured) as caught:
         getattr(Env(prefix="T_", env_file=Path("/nonexistent")), method)("BAD")
 
+    assert str(caught.value) == f"T_BAD must be {expected}."
+    assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__ or caught.value.__context__ is None
 
-def test_env_required_variable(monkeypatch: pytest.MonkeyPatch) -> None:
+
+@pytest.mark.parametrize("method", ["str", "int", "float", "bool", "list", "path"])
+def test_env_required_variable(monkeypatch: pytest.MonkeyPatch, method: str) -> None:
     """A missing variable without a default names the variable to set."""
     monkeypatch.delenv("T_REQUIRED", raising=False)
 
-    with pytest.raises(ImproperlyConfigured, match="Set the T_REQUIRED"):
-        Env(prefix="T_", env_file=Path("/nonexistent")).str("REQUIRED")
+    with pytest.raises(ImproperlyConfigured) as missing:
+        getattr(Env(prefix="T_", env_file=Path("/nonexistent")), method)("REQUIRED")
+    assert str(missing.value) == "Set the T_REQUIRED environment variable."
 
 
 def test_env_secret_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -513,3 +528,78 @@ def test_global_configure_and_reset(monkeypatch: pytest.MonkeyPatch) -> None:
         assert settings.SETTINGS_MODULE == "domainkit_tests.settings"
         reset_settings()
         assert unwrap_settings().SETTINGS_MODULE == "domainkit_tests.other_settings"
+
+
+def test_domain_settings_are_hidden_in_reprs_and_dumps() -> None:
+    """Domain settings may hold keys; only their own validated models show them."""
+    key = "k" * 40  # Built, so secret scanners do not take it for a real key.
+    loaded = Settings.model_validate(
+        {"DEBUG": True, "AUTH": {"JWT": {"SIGNING_KEY": key}}}
+    )
+
+    for shown in (
+        repr(loaded),
+        str(loaded),
+        str(loaded.model_dump()),
+        loaded.model_dump_json(),
+    ):
+        assert key not in shown
+        assert "**********" in shown
+    assert "DEBUG=True" in repr(loaded)
+    assert loaded.model_dump()["DEBUG"] is True
+    assert dict(loaded)["AUTH"] == {"JWT": {"SIGNING_KEY": key}}
+
+
+@pytest.mark.parametrize(
+    ("setting", "entry"),
+    [
+        (
+            "CACHES",
+            {"URL": "redis://cache:pa/ss-s3cr3t@redis:6379/0", "KEY_PREFIX": "a"},
+        ),
+        ("LEDGERS", {"URL": "immudb://ledger:pa/ss-s3cr3t@immudb:3322/defaultdb"}),
+        ("BROKERS", {"URL": "amqps://broker:pa/ss-s3cr3t@rabbit/vhost", "PREFIX": "a"}),
+    ],
+)
+def test_urls_with_unreadable_ports_are_refused_quietly(
+    setting: str, entry: dict[str, str]
+) -> None:
+    """A / in the password ends the host early; the error quotes none of it."""
+    with (
+        pytest.raises(ImproperlyConfigured) as refused,
+        override_settings(**{setting: {"default": entry}}),
+    ):
+        pass  # pragma: no cover - refused on entry.
+
+    message = str(refused.value)
+    assert message.endswith(
+        "Value error, the URL's port is not a number; percent-encode / ? # @ and : "
+        "in the user name and password"
+    )
+    assert "pa" not in message.replace("password", "")
+    assert "s3cr3t" not in message
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan")])
+def test_settings_numbers_are_finite(value: float) -> None:
+    """Infinity and NaN are no setting's value, in any settings model."""
+    with (
+        pytest.raises(ImproperlyConfigured, match="finite number"),
+        override_settings(READINESS_TIMEOUT=value),
+    ):
+        pass  # pragma: no cover - refused on entry.
+
+
+@pytest.mark.parametrize(
+    ("schema", "field"),
+    [
+        (MessagingSettings, "SHUTDOWN_TIMEOUT"),
+        (IdempotencySettings, "LEASE_SECONDS"),
+    ],
+)
+def test_domain_settings_numbers_are_finite(
+    schema: type[BaseModel], field: str
+) -> None:
+    """Domain settings refuse infinity too: an endless shutdown never ends."""
+    with pytest.raises(ValidationError, match="finite number"):
+        schema.model_validate({field: float("inf")})

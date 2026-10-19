@@ -20,7 +20,14 @@ domain's `settings_class`, or to a project schema named by `SETTINGS_CLASS`.
 Read values with `domainkit.conf.settings`. Read environment variables in a
 settings module with `domainkit.conf.Env`: it adds the prefix, reads `.env`
 (or `<PREFIX>ENV_FILE`), and accepts `<NAME>_FILE` for secrets mounted as
-files.
+files. Its errors name the variable and what it must be, never the value,
+which may be a secret. Numbers must be finite here and in every setting:
+infinity and NaN are refused.
+
+`repr(settings)` and its dumps show domain settings (`AUTH`, `EVIDENCE`, ...)
+as `**********`: they may hold keys, which their own models keep as
+secrets. Percent-encode `/ ? # @ :` in the user names and passwords of
+URLs; an unreadable port is refused without quoting the URL.
 
 ### Core
 
@@ -67,7 +74,7 @@ Each `DATABASES` entry:
 | `POOL_SIZE`, `MAX_OVERFLOW`, `POOL_RECYCLE` | SQLAlchemy's | Connection pool sizing. |
 | `POOL_TIMEOUT` | `10.0` for network databases, else SQLAlchemy's | Seconds a request waits for a connection; past it the request gets 503 `database_busy`. |
 | `POOL_PRE_PING` | `True` | Test connections before use, so database restarts are survived. |
-| `CONNECT_ARGS` | `{}` | Extra driver arguments, added to those derived from the options above. asyncpg's `server_settings` and libpq's `options` are merged with the timeouts. Setting what the options above already set (TLS, a timeout) is refused when the application is built; change that option instead. |
+| `CONNECT_ARGS` | `{}` | Extra driver arguments, added to those derived from the options above. asyncpg's `server_settings` and libpq's `options` are merged with the timeouts. Setting what the options above already set (TLS, a timeout) is refused when the application is built, however the server setting is spelled (`STATEMENT_TIMEOUT`, `--statement-timeout=`); change that option instead. |
 
 Each `LEDGERS` entry:
 
@@ -329,8 +336,8 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `check` | | Settings, domains, routes and their access rules, middleware, layer rules, and a single migration head. In staging and production it also lists [weak choices](#deployment-checks) as warnings. |
 | `broker` | `check\|declare`, `[ALIAS ...]` | Connect to brokers (all by default), or declare the exchange and every queue the worker's tasks use on `MESSAGING.BROKER`. |
 | `cache` | `check\|clear`, `[ALIAS ...]`, `--all` | Ping caches (all by default), or delete every key of the named caches, all versions, in their namespace only. Clearing needs aliases or `--all`. |
-| `startdomain` | `name`, `--aggregate`, `--plural`, `--parent`, `--tests-dir` | Generate a bounded context and its tests. |
-| `makemigrations` | `-m/--message`, `--check`, `--merge`, `--database` | Write a revision per target with changes; `--check` fails if one is missing; `--merge` joins two heads. Without `--database`, every target. |
+| `startdomain` | `name`, `--aggregate`, `--plural`, `--parent`, `--tests-dir` | Generate a bounded context and its tests. Its command is named after the plural, which may not name an existing command (built in, installed, or a contrib app's). |
+| `makemigrations` | `-m/--message`, `--check`, `--merge`, `--database` | Write a revision per target with changes; `--check` fails if one is missing; `--merge` joins two heads. Without `--database`, every target. The message is one line, without backslashes or triple quotes. |
 | `migrate` | `[revision]`, `--downgrade`, `--allow-data-loss`, `--database` | Apply revisions (or revert down to one) on every database of every target, then create partitions. A revision id needs `--database` when there are several targets. |
 | `showmigrations` | `--database` | Applied and pending revisions; a shard group lists each database. |
 | `partitions` | `--database`, `--prune`, `--dry-run` | Create the current and upcoming partitions of partitioned tables; `--prune` drops those past `retain`. |
