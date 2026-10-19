@@ -1,0 +1,330 @@
+"""FilterSets: typed, bounded filters, ordering, and search from the query string."""
+
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from typing import Annotated, Any
+
+import pytest
+from fastapi import Depends, FastAPI
+from fastapi.testclient import TestClient
+
+from domainkit.ddd import AggregateRoot
+from domainkit.ddd.query import F, Ordering, Query
+from domainkit.http.errors import install_exception_handlers
+from domainkit.http.filters import Filter, FilterSet, InvalidFilter
+from domainkit_tests.gadgets import (
+    MADE,
+    Color,
+    Gadget,
+    InMemoryGadgets,
+    Size,
+    make_gadget,
+    make_maker,
+    make_part,
+)
+
+LATER = datetime(2026, 2, 1, tzinfo=UTC)
+
+
+class GadgetFilters(FilterSet):
+    """Every kind of filter a gadget listing offers."""
+
+    model = Gadget
+    name = Filter("exact", "icontains", "istartswith", max_length=10)
+    price = Filter("gte", "lte")
+    stock = Filter("exact", "isnull", "gt")
+    color = Filter("exact", "in")
+    size = Filter("lt")
+    label = Filter()
+    made_at = Filter("gt")
+    active = Filter()
+    sku = Filter("exact", field="parts.sku")
+    maker = Filter("iexact", field="maker.name")
+    ordering_fields = ("name", "price", "made_at")
+    default_ordering = ("-made_at",)
+    search_fields = ("name", "label")
+    max_conditions = 4
+    max_values = 3
+    max_search_words = 2
+
+
+ITEMS = [
+    make_gadget("alpha", price="1.00", stock=1, parts=[make_part("S1")]),
+    make_gadget(
+        "beta",
+        price="5.00",
+        color=Color.BLUE,
+        made_at=LATER,
+        maker=make_maker("Acme"),
+        active=False,
+    ),
+    make_gadget(
+        "gamma",
+        price="9.50",
+        stock=3,
+        size=Size.LARGE,
+        made_at=MADE + timedelta(hours=1),
+    ),
+]
+
+
+@pytest.fixture
+def client() -> TestClient:
+    """An application listing ``ITEMS`` through ``GadgetFilters``."""
+    repository = InMemoryGadgets(ITEMS)
+    app = FastAPI()
+    install_exception_handlers(app)
+
+    @app.get("/gadgets")
+    async def listing(filters: Annotated[GadgetFilters, Depends()]) -> list[str]:
+        return [each.name for each in await repository.filter(filters.query())]
+
+    return TestClient(app)
+
+
+def names(client: TestClient, **params: Any) -> list[str]:  # noqa: ANN401 - any value.
+    """The names the listing answers with."""
+    response = client.get("/gadgets", params=params)
+    assert response.status_code == 200, response.json()
+    return list(response.json())
+
+
+def refusal(client: TestClient, **params: Any) -> tuple[str, str]:  # noqa: ANN401
+    """The code and detail of a 422."""
+    response = client.get("/gadgets", params=params)
+    assert response.status_code == 422, response.json()
+    body = response.json()
+    return body["code"], body["detail"]
+
+
+@pytest.mark.parametrize(
+    ("params", "expected"),
+    [
+        ({}, ["beta", "gamma", "alpha"]),
+        ({"name": "beta"}, ["beta"]),
+        ({"name__icontains": "AM"}, ["gamma"]),
+        ({"name__istartswith": "A"}, ["alpha"]),
+        ({"price__gte": "5", "price__lte": "9.50"}, ["beta", "gamma"]),
+        ({"stock": 3}, ["gamma"]),
+        ({"stock__isnull": "true"}, ["beta"]),
+        ({"stock__isnull": "false", "stock__gt": 1}, ["gamma"]),
+        ({"color": "blue"}, ["beta"]),
+        ({"color__in": ["red", "green"]}, ["gamma", "alpha"]),
+        ({"size__lt": 10}, ["beta", "alpha"]),
+        ({"label": "GAMMA"}, ["gamma"]),
+        ({"made_at__gt": MADE.isoformat()}, ["beta", "gamma"]),
+        ({"active": "false"}, ["beta"]),
+        ({"sku": "S1"}, ["alpha"]),
+        ({"maker__iexact": "ACME"}, ["beta"]),
+        ({"ordering": "name"}, ["alpha", "beta", "gamma"]),
+        ({"ordering": ["-price", "name"]}, ["gamma", "beta", "alpha"]),
+        ({"search": "ALP"}, ["alpha"]),
+        ({"search": "a  MM"}, ["gamma"]),
+        ({"search": "   "}, ["beta", "gamma", "alpha"]),
+        ({"limit": 5, "cursor": "abc"}, ["beta", "gamma", "alpha"]),
+    ],
+)
+def test_filters_narrow_and_order_the_listing(
+    client: TestClient, params: dict[str, Any], expected: list[str]
+) -> None:
+    """Each declared lookup, the ordering, and the search."""
+    assert names(client, **params) == expected
+
+
+@pytest.mark.parametrize(
+    ("params", "detail"),
+    [
+        (
+            {"price__regex": "1"},
+            "Unknown lookup on price; it offers price__gte, price__lte.",
+        ),
+        (
+            {"name__contains": "a"},
+            "Unknown lookup on name; it offers name, name__icontains",
+        ),
+        ({"version__gt": 1}, "The listing cannot be filtered on version."),
+        ({"name": ["a", "b"]}, "Give the name filter once."),
+        ({"ordering": ["name", "-name"]}, "Name each field once in the ordering."),
+        ({"search": "a b c"}, "Search for at most 2 words."),
+        (
+            {"name": "a", "stock": 1, "color": "red", "size__lt": 2, "active": "true"},
+            "Combine at most 4 filters.",
+        ),
+        (
+            {"name": "a", "stock": 1, "color": "red", "search": "x y"},
+            "Combine at most 4",
+        ),
+        ({"label": "x" * 21}, "A filter value does not fit its field: A label is"),
+    ],
+)
+def test_what_fastapi_cannot_see_is_refused(
+    client: TestClient, params: dict[str, Any], detail: str
+) -> None:
+    """422 ``invalid_filter``, with the reason."""
+    code, message = refusal(client, **params)
+
+    assert code == "invalid_filter"
+    assert message.startswith(detail)
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"color": "purple"},
+        {"color__in": ["red", "red", "red", "red"]},
+        {"price__gte": "cheap"},
+        {"made_at__gt": "2026-01-01T00:00:00"},
+        {"stock__gt": 2**63},
+        {"color__in": ["x" * 201]},
+        {"name": "x" * 11},
+        {"ordering": "stock"},
+        {"ordering": ["name", "price", "made_at", "-name"]},
+        {"search": "x" * 101},
+        {"active": "maybe"},
+    ],
+)
+def test_values_of_the_wrong_type_or_size_are_validation_errors(
+    client: TestClient, params: dict[str, Any]
+) -> None:
+    """FastAPI checks types, enums, and bounds: 422 ``validation_error``."""
+    assert refusal(client, **params)[0] == "validation_error"
+
+
+def test_lookups_are_unknown_only_for_filtered_names(client: TestClient) -> None:
+    """Parameters of other names, the route's own, pass by."""
+    assert names(client, other__thing="x", unrelated="y") == ["beta", "gamma", "alpha"]
+
+
+def test_openapi_documents_each_parameter_with_its_type(client: TestClient) -> None:
+    """Types, enums, bounds, and descriptions reach the schema."""
+    spec = client.get("/openapi.json").json()
+    parameters = {
+        each["name"]: each for each in spec["paths"]["/gadgets"]["get"]["parameters"]
+    }
+
+    assert "_request" not in parameters
+    assert set(parameters) == {
+        *GadgetFilters.filters,
+        "ordering",
+        "search",
+    }
+    color = parameters["color"]["schema"]["anyOf"][0]["$ref"]
+    assert spec["components"]["schemas"][color.rsplit("/", 1)[1]]["enum"] == [
+        "red",
+        "green",
+        "blue",
+    ]
+    listed = parameters["color__in"]["schema"]["anyOf"][0]
+    assert (listed["type"], listed["maxItems"]) == ("array", 3)
+    assert parameters["name"]["schema"]["anyOf"][0] == {
+        "type": "string",
+        "maxLength": 10,
+    }
+    assert parameters["stock__isnull"]["schema"]["anyOf"][0] == {"type": "boolean"}
+    assert parameters["stock__gt"]["schema"]["anyOf"][0]["type"] == "integer"
+    assert parameters["label"]["schema"]["anyOf"][0]["type"] == "string"
+    assert parameters["made_at__gt"]["schema"]["anyOf"][0]["format"] == "date-time"
+    ordering = parameters["ordering"]["schema"]["anyOf"][0]
+    assert ordering["items"]["enum"] == [
+        "name", "-name", "price", "-price", "made_at", "-made_at",
+    ]  # fmt: skip
+    assert ordering["maxItems"] == 3
+    assert parameters["search"]["schema"]["anyOf"][0]["maxLength"] == 100
+    assert parameters["price__gte"]["description"] == (
+        "Only items whose price is at least this."
+    )
+    assert parameters["sku"]["description"] == "Only items whose parts.sku is this."
+    assert parameters["stock__isnull"]["description"] == (
+        "Only items whose stock is missing (true) or present (false)."
+    )
+
+
+def test_filter_sets_build_queries_in_code() -> None:
+    """Without a request, the parameters are keyword arguments."""
+    filters = GadgetFilters(price__gte=Decimal(1), color__in=[Color.RED], search="al")
+
+    assert filters.ordering == (Ordering("made_at", descending=True),)
+    assert filters.values == {"price__gte": Decimal(1), "color__in": [Color.RED]}
+    assert filters.search == ["al"]
+    assert filters.criteria == (
+        (F("price") >= Decimal(1))
+        & F("color").in_([Color.RED])
+        & (F("name").icontains("al") | F("label").icontains("al"))
+    )
+    query = filters.query(limit=2)
+    assert query == Query(filters.criteria, ordering=filters.ordering, limit=2)
+    assert GadgetFilters().criteria is None
+    assert GadgetFilters(ordering=["name"]).ordering == (Ordering("name"),)
+    with pytest.raises(InvalidFilter, match="Unknown filter: nope"):
+        GadgetFilters(nope=1)
+
+
+def test_filter_sets_are_checked_when_declared() -> None:
+    """Lookups must fit their fields; orderings and search fields must exist."""
+    declarations: list[tuple[dict[str, Any], str]] = [
+        ({"price": Filter("icontains")}, "price: icontains needs a text field"),
+        ({"nope": Filter()}, "Gadget has no field 'nope'"),
+        ({"ordering_fields": ("parts",)}, "holds child entities"),
+        ({"default_ordering": ("-nope",)}, "has no field 'nope'"),
+        ({"search_fields": ("price",)}, "price is not text to search"),
+        ({"search": Filter(field="name")}, "search is not a filter name"),
+    ]
+    for body, message in declarations:
+        with pytest.raises((TypeError, ValueError), match=message):
+            type("Broken", (FilterSet,), {"model": Gadget, **body})
+    with pytest.raises(ValueError, match="Offer gte and lte instead of range"):
+        Filter("range")
+    with pytest.raises(ValueError, match="is not a valid Lookup"):
+        Filter("regex")
+
+
+class Tagged(AggregateRoot[int]):
+    """An aggregate with fields that do not sort, or have no known type."""
+
+    tags: list[str]
+    anything: Any = None
+
+
+class TaggedFilters(FilterSet):
+    """A filter on a field of no known type: text."""
+
+    model = Tagged
+    anything = Filter()
+    tag = Filter("in", field="anything", max_length=4)
+
+
+def test_fields_of_no_known_type_are_filtered_as_text() -> None:
+    """Their parameters are strings; an ``__in`` bounds each one."""
+    app = FastAPI()
+
+    @app.get("/tagged")
+    async def tagged(filters: Annotated[TaggedFilters, Depends()]) -> list[str]:
+        return [str(filters.criteria)]
+
+    client = TestClient(app)
+    spec = client.get("/openapi.json").json()
+    parameters = {
+        each["name"]: each["schema"]["anyOf"][0]
+        for each in spec["paths"]["/tagged"]["get"]["parameters"]
+    }
+    assert parameters["anything"] == {"type": "string", "maxLength": 200}
+    assert parameters["tag__in"]["items"] == {"type": "string", "maxLength": 4}
+    assert client.get("/tagged", params={"tag__in": ["abcde"]}).status_code == 422
+    assert client.get("/tagged", params={"anything": "x"}).status_code == 200
+    with pytest.raises(TypeError, match="tags: gt needs a field whose values sort"):
+        type("Broken", (FilterSet,), {"model": Tagged, "tags": Filter("gt")})
+
+
+def test_filter_sets_without_a_model_are_bases() -> None:
+    """A subclass that sets no model declares nothing yet."""
+
+    class Base(FilterSet):
+        name = Filter()
+
+    class Concrete(Base):
+        model = Gadget
+
+    assert Base.filters == {}
+    assert set(Concrete.filters) == {"name"}
+    assert Filter().lookups == (Filter("exact").lookups[0],)
+    assert Filter("gt", "gt").lookups == (Filter("gt").lookups[0],)

@@ -28,6 +28,7 @@ from sqlalchemy.sql.schema import Column
 from domainkit.ddd.fields import InvalidQuery, UnknownField
 from domainkit.ddd.query import (
     CASE_FOLDED,
+    ORDERING_LOOKUPS,
     And,
     Condition,
     Criteria,
@@ -142,7 +143,13 @@ def _compare(
     value: object,
     dialect: str,
 ) -> ColumnElement[bool]:
-    """The comparison itself, on a present value."""
+    """The comparison itself, on a present value.
+
+    ``True`` and ``False`` are bound like other values: SQLAlchemy would
+    refuse ``>`` with them as literals.
+    """
+    if lookup in ORDERING_LOOKUPS:
+        value = _bound_bools(value, column)
     match lookup:
         case Lookup.EXACT:
             return column.is_(None) if value is None else column == value
@@ -163,6 +170,13 @@ def _compare(
             return column <= value
         case _:
             return _text(column, lookup, str(value), dialect)
+
+
+def _bound_bools(value: object, column: Column[Any]) -> object:
+    """``value`` (or a range's two), with booleans as bound parameters."""
+    if isinstance(value, tuple):
+        return tuple(_bound_bools(each, column) for each in value)
+    return literal(value, column.type) if isinstance(value, bool) else value
 
 
 def _text(

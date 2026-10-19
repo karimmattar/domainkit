@@ -9,13 +9,21 @@ from typing import Any, NewType
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import Column, Integer, MetaData, Table, create_engine, select
+from sqlalchemy import (
+    Column,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    create_engine,
+    select,
+)
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.orm import column_property
 
 from domainkit.conf import override_settings
-from domainkit.db import connections, map_imperatively
+from domainkit.db import SqlAlchemyRepository, connections, map_imperatively
 from domainkit.db.query import compile_criteria, compile_ordering, mapper_of
 from domainkit.ddd import (
     AggregateRoot,
@@ -373,6 +381,38 @@ async def test_bulk_updates_bypass_aggregates_but_bump_versions(tables: None) ->
             ("blue", False, 2),
             ("red", False, 3),
         ]
+
+
+class Plain(AggregateRoot[int]):
+    """An aggregate whose table has no version column."""
+
+    text: str
+
+
+plain = Table(
+    "framework_test_plain",
+    loose_metadata,
+    Column("id", Integer, primary_key=True),
+    Column("text", String(10), nullable=False),
+)
+map_imperatively(Plain, plain)
+
+
+class PlainRepository(SqlAlchemyRepository[Plain, int]):
+    """Plain rows."""
+
+
+async def test_bulk_updates_without_a_version_column(database: str) -> None:
+    """Without optimistic locking, nothing more is set."""
+    async with connections.engine().begin() as connection:
+        await connection.run_sync(loose_metadata.create_all)
+    async with connections.session() as session:
+        repository = PlainRepository(session)
+        await repository.add_all([Plain(id=1, text="a"), Plain(id=2, text="b")])
+        assert await repository.update_rows(F("text") == "a", text="c") == 1
+        await session.commit()
+        assert [each.text for each in await repository.filter()] == ["c", "b"]
+    await connections.close_all()
 
 
 async def test_bulk_updates_check_what_they_set(tables: None) -> None:
