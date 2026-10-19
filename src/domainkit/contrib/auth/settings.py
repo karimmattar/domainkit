@@ -19,7 +19,7 @@ HMAC_ALGORITHMS: Final = frozenset({"HS256", "HS384", "HS512"})
 class PasswordValidatorConfig(BaseModel):
     """One ``PASSWORD_VALIDATORS`` entry: a class and its options."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     NAME: str
     """Dotted path to the validator class."""
@@ -34,7 +34,7 @@ class PasswordValidatorConfig(BaseModel):
 class JWTSettings(BaseModel):
     """``AUTH["JWT"]``: signed access tokens (``JWTAuthentication``)."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     SIGNING_KEY: SecretStr | None = None
     """The HMAC secret (32 bytes or more), or the private key in PEM."""
@@ -71,7 +71,7 @@ class JWTSettings(BaseModel):
 class AuthSettings(BaseModel):
     """Users, hashing, validation, and backends; every key is optional."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     USER_MODEL: str = "domainkit.contrib.auth.models.User"
     """Dotted path to the user class (``AUTH_USER_MODEL``)."""

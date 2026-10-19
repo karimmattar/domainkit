@@ -10,7 +10,7 @@ from domainkit.conf import DEFAULT_DB_ALIAS
 class MessagingSettings(BaseModel):
     """Delivery, retry, and worker options; every key is optional."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     DATABASE: str = DEFAULT_DB_ALIAS
     """Alias holding the outbox; units of work that defer tasks must use it."""

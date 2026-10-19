@@ -30,6 +30,8 @@ SOURCES: Final = {
     "idle_in_transaction_session_timeout": "IDLE_IN_TRANSACTION_TIMEOUT",
 }
 """The settings behind each driver argument and server setting derived here."""
+_OPTION: Final = re.compile(r"(?:-c\s*|--)([\w.-]+)=")
+"""A server setting in libpq ``options``, as PostgreSQL's command line takes it."""
 
 
 def client_ssl_context(config: DatabaseConfig) -> ssl.SSLContext | None:
@@ -90,15 +92,24 @@ def _add(derived: dict[str, Any], extra: Mapping[str, Any]) -> dict[str, Any]:
     for name in derived.keys() & extra.keys():
         added = extra[name]
         if name == "server_settings" and isinstance(added, Mapping):
-            _refuse(derived[name].keys() & added.keys())
+            _refuse(derived[name].keys() & {_setting(key) for key in added})
             combined[name] = {**derived[name], **added}
         elif name == "options" and isinstance(added, str):
-            settings = re.findall(r"-c (\w+)=", derived[name])
-            _refuse({setting for setting in settings if f"{setting}=" in added})
+            _refuse(_option_settings(derived[name]) & _option_settings(added))
             combined[name] = f"{derived[name]} {added}"
         else:
             _refuse({name})
     return combined
+
+
+def _setting(name: str) -> str:
+    """A PostgreSQL setting's name as the server reads it: any case, - as _."""
+    return name.lower().replace("-", "_")
+
+
+def _option_settings(options: str) -> set[str]:
+    """The settings libpq ``options`` set: ``-c name=``, ``-cname=``, ``--name=``."""
+    return {_setting(name) for name in _OPTION.findall(options)}
 
 
 def _refuse(names: Set[str]) -> None:

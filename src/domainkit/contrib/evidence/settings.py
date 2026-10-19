@@ -11,7 +11,7 @@ DEVELOPMENT_SUBJECT_KEY: Final = b"domainkit-evidence-development-subject-key"
 class EvidenceSettings(BaseModel):
     """Where evidence is kept, how large a record may be, how keys hide subjects."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     LEDGER: str = "evidence"
     """Alias in ``LEDGERS`` (``immudb://``; ``memory://`` in tests)."""
