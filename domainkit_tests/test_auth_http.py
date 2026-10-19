@@ -368,7 +368,7 @@ def test_refused_credentials_count_against_the_rate_limit(
     with override_settings(RATE_LIMIT="3/minute"):
         client = api()
         alice = bearer(login(client, "alice")["access_token"])
-        codes = [client.get("/whoami", headers=guess).status_code for _ in range(4)]
+        guesses = [client.get("/whoami", headers=guess) for _ in range(4)]
         held = client.get("/whoami", headers=alice)
         with (
             pytest.raises(WebSocketDenialResponse) as socket,
@@ -379,10 +379,16 @@ def test_refused_credentials_count_against_the_rate_limit(
         anonymous = client.get("/whoami")
         elsewhere = TestClient(client.app, client=("203.0.113.9", 1))
         served = elsewhere.get("/whoami", headers=alice)
+        guessed_elsewhere = elsewhere.get("/whoami", headers=guess)
 
-    assert codes == [401, 401, 401, 429]
+    assert [response.status_code for response in guesses] == [401, 401, 401, 429]
+    assert guesses[0].json()["detail"] == "Invalid token."
+    for refused in (guesses[3], held):
+        assert refused.headers["RateLimit-Limit"] == "3"
+        assert refused.headers["RateLimit-Remaining"] == "0"
     assert (held.status_code, held.json()["code"]) == (429, "rate_limited")
     assert int(held.headers["Retry-After"]) > 0
+    assert guessed_elsewhere.status_code == 401  # Each address has its own count.
     assert socket.value.status_code == 429
     assert looked_up == 4  # The held requests were refused before any lookup.
     assert anonymous.json()["user"] == ""
