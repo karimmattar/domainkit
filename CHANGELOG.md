@@ -43,6 +43,12 @@ All notable changes to domainkit. The format follows
   failed every handshake with an internal error (close code 1011), even
   for users they allow; a refused handshake now gets the same 401 or 403
   response as a request.
+- A WebSocket message over `MAX_REQUEST_BODY_SIZE` closes the connection
+  with 1009 (message too big) and is logged as a security event: messages
+  were limited only by the server (16 MiB for uvicorn). The application is
+  told the client left.
+- Releases run one at a time and are never cancelled halfway
+  (`release.yml` concurrency).
 
 ## [0.6.0] - 2026-10-18
 

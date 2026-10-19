@@ -46,6 +46,8 @@ _STARTS: Final = frozenset(
     {"http.response.start", "websocket.http.response.start", "websocket.accept"}
 )
 """Messages that answer a request (a WebSocket's accept, or its denial)."""
+MESSAGE_TOO_BIG: Final = 1009
+"""WebSocket close code for a message over ``MAX_REQUEST_BODY_SIZE``."""
 
 access_logger = logging.getLogger(ACCESS_LOGGER)
 security_logger = logging.getLogger(SECURITY_LOGGER)
@@ -402,7 +404,11 @@ class RequestBodyTooLarge(APIError):
 
 
 class RequestBodyLimitMiddleware:
-    """Refuse bodies over the limit, by declared length and while streaming."""
+    """Refuse bodies over the limit, by declared length and while streaming.
+
+    A WebSocket message over the limit closes the connection with 1009
+    (message too big); the application sees the client disconnect.
+    """
 
     def __init__(self, app: ASGIApp) -> None:
         """Wrap ``app`` with the ``MAX_REQUEST_BODY_SIZE`` byte limit."""
@@ -411,6 +417,9 @@ class RequestBodyLimitMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Check ``Content-Length`` first, then count streamed bytes."""
+        if scope["type"] == "websocket":
+            await self._websocket(scope, receive, send)
+            return
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -456,6 +465,30 @@ class RequestBodyLimitMiddleware:
             await error_response(
                 413, "Request body too large.", code="content_too_large"
             )(scope, receive, send)
+
+    async def _websocket(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Close the connection on a message over the limit, text or bytes."""
+        closed = False
+
+        async def limited_receive() -> Message:
+            nonlocal closed
+            message = await receive()
+            if message["type"] == "websocket.receive":
+                size = len(message.get("bytes") or b"") + len(
+                    (message.get("text") or "").encode()
+                )
+                if size > self.max_body_size:
+                    self._reject(size)
+                    closed = True
+                    await send({"type": "websocket.close", "code": MESSAGE_TOO_BIG})
+                    return {"type": "websocket.disconnect", "code": MESSAGE_TOO_BIG}
+            return message
+
+        async def open_send(message: Message) -> None:
+            if not closed:  # After the close, the application talks to no one.
+                await send(message)
+
+        await self.app(scope, limited_receive, open_send)
 
     def _reject(self, size: int) -> None:
         """Log an oversized request as a security event."""

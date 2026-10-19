@@ -527,6 +527,60 @@ def test_application_without_root_router() -> None:
     assert "/ok" not in paths
 
 
+def test_websocket_messages_have_the_body_limit(
+    make_client: MakeClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A message over MAX_REQUEST_BODY_SIZE, in UTF-8 bytes, closes with 1009."""
+    client = make_client(MAX_REQUEST_BODY_SIZE=10)
+
+    with (
+        caplog.at_level(logging.WARNING, logger=SECURITY_LOGGER),
+        client.websocket_connect("/ws/echo") as socket,
+    ):
+        socket.send_bytes(b"x" * 10)
+        assert socket.receive_json() == {"size": 10}
+        socket.send_text("\u00e9" * 5)  # Ten bytes in UTF-8.
+        assert socket.receive_json() == {"size": 10}
+        socket.send_text("\u00e9" * 6)  # Six characters, twelve bytes.
+        with pytest.raises(WebSocketDisconnect) as closed:
+            socket.receive_json()
+
+    assert closed.value.code == 1009  # Message too big.
+    assert "Rejected request body of 12 bytes (limit 10)" in caplog.messages
+
+
+@pytest.mark.anyio
+async def test_websockets_closed_for_size_hear_nothing_more() -> None:
+    """The application is told the client left; what it sends then is dropped."""
+    told: list[Message] = []
+    sent: list[Message] = []
+    messages: list[Message] = [
+        {"type": "websocket.receive", "text": "ok"},
+        {"type": "websocket.receive", "bytes": b"x" * 11},
+    ]
+    incoming = iter(messages)
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        told.extend([await receive(), await receive()])
+        await send({"type": "websocket.send", "text": "too late"})
+
+    async def receive() -> Message:
+        return next(incoming)
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    with override_settings(MAX_REQUEST_BODY_SIZE=10):
+        middleware = RequestBodyLimitMiddleware(app)
+    await middleware({"type": "websocket", "headers": []}, receive, send)
+
+    assert told == [
+        {"type": "websocket.receive", "text": "ok"},
+        {"type": "websocket.disconnect", "code": 1009},
+    ]
+    assert sent == [{"type": "websocket.close", "code": 1009}]
+
+
 @pytest.mark.anyio
 async def test_body_limit_ignores_other_messages() -> None:
     """Disconnect messages pass through the body counter untouched."""

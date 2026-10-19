@@ -13,6 +13,12 @@ on:
 permissions:
   contents: read
 
+# One release at a time, and never cancelled halfway: two tags pushed
+# together publish one after the other.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 env:
   POETRY_VERSION: "2.2.1"
 

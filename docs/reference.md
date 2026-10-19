@@ -139,7 +139,7 @@ Each `BROKERS` entry:
 | --- | --- | --- |
 | `ALLOWED_HOSTS` | `localhost`, `127.0.0.1`, `[::1]` | Accepted `Host` values; `*.example.com` matches subdomains. A `Host` that is not a name, an IPv4 address, or a bracketed IPv6 address (with an optional port) is refused before matching. A wildcard `*` is refused in staging and production. |
 | `API_DOCS` | `True` | Serve `/docs`, `/redoc`, and `/openapi.json`. `check` warns when it is on in staging and production. |
-| `MAX_REQUEST_BODY_SIZE` | `1048576` | Bytes; larger bodies get 413, whether declared or streamed. |
+| `MAX_REQUEST_BODY_SIZE` | `1048576` | Bytes; larger bodies get 413, whether declared or streamed. A larger WebSocket message, text counted in UTF-8 bytes, closes the connection with 1009. |
 | `READINESS_TIMEOUT` | `5.0` | Seconds each readiness check may take. |
 | `READINESS_CACHE_SECONDS` | `1.0` | How long a `/ready` result is reused, so probe floods cannot load the database. |
 | `READINESS_DETAILS` | `False` | Name failing components in `/ready` responses (always logged). |
@@ -160,6 +160,23 @@ Each `BROKERS` entry:
 | `CORS_ALLOWED_METHODS` | `GET POST PUT PATCH DELETE` | |
 | `CORS_ALLOWED_HEADERS` | `Authorization Content-Type X-Request-ID` | |
 | `CORS_ALLOW_CREDENTIALS` | `False` | Cannot be combined with origin `*`. |
+
+### Server limits
+
+The application limits bodies, WebSocket messages, and request rates. Slow
+and oversized requests are the server's to stop, before the application
+sees them. Run uvicorn behind a reverse proxy or load balancer that limits
+header size and the time to send headers and body (nginx:
+`large_client_header_buffers`, `client_header_timeout`,
+`client_body_timeout`), and set uvicorn's own limits:
+
+```bash
+uvicorn config.asgi:application --limit-concurrency 200 --timeout-keep-alive 5 \
+  --h11-max-incomplete-event-size 16384 --ws-max-size 1048576
+```
+
+`--ws-max-size` stops a WebSocket message before it is read whole;
+`MAX_REQUEST_BODY_SIZE` then closes the connection on one that got through.
 
 ### Deployment checks
 
@@ -215,7 +232,7 @@ first:
 | `domainkit.http.middleware.AllowedHostsMiddleware` | Refuses unknown `Host` headers with 400. |
 | `domainkit.contrib.auth.middleware.AuthenticationMiddleware` | Finds the user from the request's token and makes it the actor, so what follows counts users (auth; see [auth.md](auth.md)). |
 | `domainkit.http.ratelimit.RateLimitMiddleware` | Counts per actor, or per client address (IPv6: per /64). A WebSocket handshake counts once; over the limit it gets the 429, or a 1013 close where the server cannot send one. |
-| `domainkit.http.middleware.RequestBodyLimitMiddleware` | Refuses bodies over `MAX_REQUEST_BODY_SIZE` with 413. |
+| `domainkit.http.middleware.RequestBodyLimitMiddleware` | Refuses bodies over `MAX_REQUEST_BODY_SIZE` with 413, and closes WebSockets with 1009 on a larger message. |
 | `domainkit.contrib.idempotency.middleware.IdempotencyMiddleware` | Last: reads whole bodies, which the limit above has already bounded. |
 
 `DEFAULT_MIDDLEWARE` (proxy headers, security headers, request context,
