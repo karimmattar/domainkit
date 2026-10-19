@@ -306,7 +306,10 @@ cached. Redis caches are left alone: give the test settings their own
 
 Point the test settings at PostgreSQL (for example from a
 `TEST_DATABASE_URL` variable) to run the same suite there. Never point them
-at a database you want to keep.
+at a database you want to keep. The database fixtures refuse settings whose
+`ENVIRONMENT` is not `"test"`, so a missing `domainkit_settings` cannot
+empty the development database. They read and restore rows as the schema
+owner (`MIGRATION_URL` when set), which append-only tables need.
 
 ## Commands
 

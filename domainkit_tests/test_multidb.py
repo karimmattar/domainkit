@@ -5,8 +5,10 @@ is set (see ``make_database``).
 """
 
 import asyncio
+import sqlite3
 import uuid
 from collections.abc import Iterator
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -358,3 +360,48 @@ def test_the_plugin_migrates_every_target(
 
     assert (tmp_path / "test.sqlite3").is_file()
     assert (tmp_path / "test_reports.sqlite3").is_file()
+
+
+def sqlite_tables(path: Path) -> list[str]:
+    """The names of the tables in the SQLite file at ``path``."""
+    with closing(sqlite3.connect(path)) as connection:
+        found = connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        return sorted(row[0] for row in found)
+
+
+def test_the_plugin_migrates_an_in_memory_owner_url_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``migrate`` uses ``MIGRATION_URL``: it becomes the same file as ``URL``."""
+    monkeypatch.setattr(migrations_module, "metadata", schema)
+    with override_settings(
+        INSTALLED_DOMAINS=[ALPHA],
+        DATABASES={"default": {"URL": IN_MEMORY, "MIGRATION_URL": IN_MEMORY}},
+        MIGRATIONS_DIR=tmp_path / "migrations",
+    ):
+        setup()
+        with migrated_database(tmp_path):
+            pass
+
+    assert sqlite_tables(tmp_path / "test.sqlite3") == ["alembic_version"]
+
+
+@pytest.mark.parametrize("environment", ["local", "staging", "production"])
+def test_the_plugin_empties_nothing_outside_tests(
+    tmp_path: Path, environment: str
+) -> None:
+    """Settings that are not the test settings are refused before any change."""
+    kept = tmp_path / "kept.sqlite3"
+    with closing(sqlite3.connect(kept)) as connection:
+        connection.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY)")
+    with (
+        override_settings(
+            ENVIRONMENT=environment,
+            DATABASES={"default": {"URL": f"sqlite+aiosqlite:///{kept}"}},
+        ),
+        pytest.raises(pytest.UsageError, match=f"not {environment!r}"),
+        migrated_database(tmp_path),
+    ):
+        pass  # pragma: no cover - refused on entry.
+
+    assert sqlite_tables(kept) == ["orders"]
