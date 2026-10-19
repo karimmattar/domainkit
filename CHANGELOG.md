@@ -6,6 +6,49 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Cron schedules: `@periodic(cron="0 3 * * 1-5", tz="Africa/Cairo")` runs
+  a task at wall-clock times in a time zone, with a parser of our own
+  (lists, ranges, steps, names, macros). Daylight saving time never runs a
+  time twice or skips one: a skipped time runs at the end of the gap, a
+  repeated one once (ADR 0034). On Windows, install `domainkit[tzdata]`.
+- Tasks set their own `timeout`, `max_attempts`, `backoff` (`Backoff`,
+  exponential or fixed, capped, with jitter), `retry_on`, and
+  `dont_retry_on`, over `MESSAGING`'s (DJ-52). `current_attempt()` tells a
+  task which run it is.
+- Task `priority` (-100 to 100, higher first, as in Django's tasks),
+  `chain(a, b)` to run a task after another succeeds with its result, and
+  a per-task `rate` ("10/minute") counted by `RATE_LIMIT_BACKEND` (ADR
+  0035).
+- `messages --pending`, `--locked`, and `--queue` list waiting, running,
+  and published messages; `messages --cancel ID` cancels one no worker
+  runs; `messages` shows each queue's lag, and so does the new
+  `messaging_outbox_lag_seconds` gauge (DJ-53).
+- Outbox messages carry the W3C trace context of their commit, and the
+  worker's span continues it; malformed `traceparent` and `tracestate`
+  values are dropped (`domainkit.tracing.trace_headers`, `remote_parent`).
+- `domainkit.contrib.messaging.testing`, a pytest plugin with
+  `captured_events`, `outbox` (`assert_queued`, `run_queued` and
+  `arun_queued`), and `execute_deferred`, for sync and async tests.
+- `domainkit.contrib.webhooks` sends exposed domain events to subscribed
+  URLs through the outbox, so only committed changes are sent. Deliveries
+  are signed as Standard Webhooks, retried with backoff, logged per
+  attempt, and replayable (`webhooks replay`). URLs must be https and
+  resolve only to public addresses, and the checked address is the one
+  connected to. Staff manage subscriptions through an admin API; secrets
+  are shown once (ADR 0036). Install `domainkit[webhooks]`.
+
+### Changed
+
+- The outbox has `priority` and `started_at` columns, an index, and a
+  `cancelled` status: run `makemigrations` and `migrate` in projects that
+  install messaging before deploying.
+- `MESSAGING.RETRY_BASE_SECONDS` and `RETRY_MAX_SECONDS` are at most a
+  year, and a retry delay no longer overflows after a thousand attempts.
+- `messages` prints a `cancelled` count and each queue's lag after the
+  counts by status.
+
 ## [0.6.2] - 2026-10-19
 
 ### Added

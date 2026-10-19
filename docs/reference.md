@@ -215,6 +215,9 @@ Installed contrib apps add their own:
   ([auth.md](auth.md))
 - evidence: no `EVIDENCE.SUBJECT_KEY`
   ([contrib.md](contrib.md#evidence-records-that-provably-never-change))
+- webhooks: a loopback or link-local network in
+  `WEBHOOKS.ALLOWED_PRIVATE_NETWORKS`
+  ([contrib.md](contrib.md#webhooks-signed-events-for-other-services))
 
 `migrate --downgrade` also needs `--allow-data-loss` there.
 
@@ -290,6 +293,7 @@ when a span is active. Query strings and bound SQL values are never logged.
 | `messaging_messages_total` | `kind`, `outcome` |
 | `messaging_message_duration_seconds` | `kind` |
 | `messaging_outbox_messages` | `status` |
+| `messaging_outbox_lag_seconds` | `queue` (seconds its oldest due message has waited for a worker) |
 | `messaging_relayed_total` | `outcome` (`published`, `failed`) |
 | `messaging_deliveries_skipped_total` | |
 | `cache_lookups_total` | `cache`, `result` (`hit`, `miss`, `invalid`, `early`) |
@@ -297,7 +301,10 @@ when a span is active. Query strings and bound SQL values are never logged.
 
 **Traces** (`domainkit[tracing]`): unit-of-work commits and worker messages
 get spans. domainkit only uses the OpenTelemetry API; configure the SDK and
-exporter in the deployment, or run under `opentelemetry-instrument`.
+exporter in the deployment, or run under `opentelemetry-instrument`. Outbox
+messages carry the W3C trace context of their commit, so a worker's span
+continues the trace of the request that queued its work
+([contrib.md](contrib.md#traces)).
 
 ## Testing
 
@@ -335,6 +342,10 @@ row and inserting the rows read once after migrating; on PostgreSQL, tables
 with triggers of their own (an append-only audit trail) have them off while
 this runs. Sequences keep counting, so do not assert on generated ids.
 
+Fixtures for published events and queued work (`captured_events`,
+`outbox`, `execute_deferred`) come with messaging's own plugin
+([contrib.md](contrib.md#testing)).
+
 Memory caches are emptied before every test, so no test sees what another
 cached. Redis caches are left alone: give the test settings their own
 `KEY_PREFIX`.
@@ -366,7 +377,8 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `runserver` | `[addr:port]`, `--noreload` | Development server. Production runs uvicorn directly. |
 | `shell` | | Python console with settings, the registry, and connections loaded. |
 | `runworker` | `--once`, `--metrics-port`, `--metrics-address`, `--database`, `--queue`, `--no-relay` | Run outbox messages (messaging): one worker per outbox, every hosting database by default; `--queue` (repeatable) limits them to some queues. With `MESSAGING.BROKER`, relay to the broker and run what it delivers; `--no-relay` only consumes. `--once` always works from the outbox. |
-| `messages` | `--dead`, `--limit`, `--retry ID\|all`, `--database` | Inspect an outbox, and requeue dead letters (messaging). |
+| `messages` | `--pending\|--locked\|--dead`, `--queue`, `--limit`, `--retry ID\|all`, `--cancel ID`, `--database` | Count an outbox's messages and show each queue's lag, list them, requeue dead letters, or cancel a message no worker runs (messaging). |
+| `webhooks` | `subscriptions\|deliveries\|replay`, `[ID ...]`, `--failed`, `--status`, `--subscription`, `--limit` | List webhook subscriptions or deliveries, or send finished deliveries again (webhooks). |
 | `auditlog` | `--actor`, `--action`, `--limit`, `--database` | Read the audit trail (audit). |
 | `auditseal` | | Seal new audit rows into each database's hash chain and anchor its head on `AUDIT.LEDGER` (audit). |
 | `auditverify` | `--database` | Check the audit trail against its seals and anchors; fails if anything changed (audit). |

@@ -16,10 +16,10 @@ A Django-style framework for domain-driven FastAPI services. It provides:
   and a swappable user model; token or JWT authentication, and route rules
   as in Django REST framework
 - optional apps for reliable messaging, audit trails, idempotent requests,
-  and tamper-evident evidence
+  tamper-evident evidence, and signed outgoing webhooks
 
 ```bash
-pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, immudb, redis, rabbitmq, metrics, tracing, testing
+pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, immudb, redis, rabbitmq, metrics, tracing, testing, webhooks, tzdata
 ```
 
 ## Documentation
@@ -31,7 +31,7 @@ pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, i
 - [docs/cache.md](https://github.com/karimmattar/domainkit/blob/main/docs/cache.md): caches in memory, Redis, and Valkey,
   and shared rate limits
 - [docs/contrib.md](https://github.com/karimmattar/domainkit/blob/main/docs/contrib.md): messaging (and workers on RabbitMQ),
-  audit, idempotency, and evidence
+  webhooks, audit, idempotency, and evidence
 - [docs/auth.md](https://github.com/karimmattar/domainkit/blob/main/docs/auth.md): users, groups, permissions, content
   types, passwords, backends, tokens, route rules, and the admin API
 - [docs/versioning.md](https://github.com/karimmattar/domainkit/blob/main/docs/versioning.md): compatibility, deprecations, and releases
