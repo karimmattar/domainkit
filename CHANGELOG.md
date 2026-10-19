@@ -156,6 +156,14 @@ All notable changes to domainkit. The format follows
   generated command silently replaced it.
 - `makemigrations` refuses a message that could end the revision's
   docstring (triple quotes, a backslash, more than one line).
+- `ExactDecimal` (`docs/databases.md`):
+  - A value with more places or digits than the column holds is compared
+    exactly (`where(price > Decimal("9.995"))`, `in_`, `between`) instead
+    of failing the query with a 500, on every database.
+  - On SQLite, an amount added to, subtracted from, or compared with an
+    amount of another scale, or an integer column, is counted in the same
+    units: `price > rate` compared cents with ten-thousandths, and
+    `price + quantity` added a count to cents.
 - Evidence: a record read under a key that does not end with its own id,
   or listed by `for_subject` under a prefix while about another subject, is
   `EvidenceTampered`. Anyone with the ledger's write credentials could
