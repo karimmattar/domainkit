@@ -107,10 +107,14 @@ class Command(BaseCommand):
 
 
 def _libpq(url: URL, config: DatabaseConfig) -> dict[str, str]:
-    """The libpq variables for ``url`` and the alias's TLS options."""
+    """The libpq variables for ``url`` and the alias's TLS options.
+
+    Several ``host`` query values (asyncpg tries them in turn) become
+    libpq's comma-separated list.
+    """
     host = url.host or url.query.get("host")
     found = {
-        "PGHOST": host if isinstance(host, str) else None,
+        "PGHOST": host if isinstance(host, str) else ",".join(host or ()),
         "PGPORT": None if url.port is None else str(url.port),
         "PGUSER": url.username,
         "PGPASSWORD": url.password,

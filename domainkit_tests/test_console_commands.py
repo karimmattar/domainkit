@@ -401,3 +401,18 @@ def test_command_code_names_itself_in_tracebacks() -> None:
 
     frames = traceback.extract_tb(failed.value.__traceback__)
     assert frames[-1].filename == "<command>"
+
+
+def test_dbshell_passes_every_host(client: Client) -> None:
+    """Several ``host`` values become libpq's list; none leaves PGHOST unset."""
+    hosts = "postgresql+asyncpg://app@/shop?host=/run/a&host=/run/b"
+    with override_settings(DATABASES={"default": {"URL": hosts}}):
+        run("dbshell")
+    with override_settings(
+        DATABASES={"default": {"URL": "postgresql+asyncpg:///shop"}}
+    ):
+        run("dbshell")
+
+    (_, several), (_, none) = client.calls
+    assert several["PGHOST"] == "/run/a,/run/b"
+    assert "PGHOST" not in none

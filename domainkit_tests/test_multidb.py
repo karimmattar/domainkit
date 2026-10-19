@@ -415,3 +415,20 @@ def test_the_plugin_empties_nothing_outside_tests(
         pass  # pragma: no cover - refused on entry.
 
     assert sqlite_tables(kept) == ["orders"]
+
+
+def test_plans_and_sql_follow_each_target(two_targets: Path) -> None:
+    """Each database plans, and prints the SQL of, its own target's history."""
+    created = [
+        Path(line.removeprefix("Created ").removesuffix("."))
+        for line in run("makemigrations", "-m", "initial").splitlines()
+    ]
+    default, reports = (path.name[:9] for path in created)
+
+    assert run("migrate", "--plan") == (
+        f"Database 'default':\n  apply  {default}  Initial.\n"
+        f"Database 'reports':\n  apply  {reports}  Initial.\n"
+    )
+    sql = run("migrate", "--sql", "--database", "reports")
+    assert "CREATE TABLE alpha_things" in sql
+    assert notes.name not in sql
