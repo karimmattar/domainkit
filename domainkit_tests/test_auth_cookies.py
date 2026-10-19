@@ -86,6 +86,36 @@ def test_a_session_lives_in_an_http_only_cookie(identity: Api) -> None:
     assert logged_in["actor"] == str(alice)
 
 
+def test_both_cookies_take_the_cookie_settings(identity: Api) -> None:
+    """Domain, path, SameSite, and lifetime apply to the session and the token."""
+    create_user("alice")
+    client = browser(
+        identity,
+        COOKIE={
+            "DOMAIN": "example.test",
+            "PATH": "/api",
+            "SAMESITE": "strict",
+            "TTL": 3600,
+        },
+    )
+
+    response = client.post(
+        "/auth/session",
+        json={"username": "alice", "password": PASSWORD},
+        headers=TRUSTED,
+    )
+
+    for cookie in set_cookies(response).values():
+        attributes = {part.strip() for part in cookie.split(";")[1:]}
+        assert {
+            "Domain=example.test",
+            "Path=/api",
+            "SameSite=strict",
+            "Max-Age=3600",
+            "Secure",
+        } <= attributes
+
+
 def test_unsafe_methods_need_a_trusted_origin_and_the_token(identity: Api) -> None:
     """Without both, a cookie request is refused with 403 csrf_failed."""
     create_user("alice")
