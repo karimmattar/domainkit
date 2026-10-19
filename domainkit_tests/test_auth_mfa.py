@@ -115,6 +115,18 @@ def test_codes_match_within_the_window_only() -> None:
         assert totp.match(key, wrong, NOW) is None
 
 
+def test_earlier_steps_win_over_later_ones(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A code of the step before and the step after counts for the one before."""
+    step = totp.time_step(NOW)
+    monkeypatch.setattr(
+        totp,
+        "hotp",
+        lambda key, counter, digits=6: "123456" if counter != step else "000000",
+    )
+
+    assert totp.match(b"k", "123456", NOW) == step - 1
+
+
 def test_the_current_step_wins_when_codes_repeat(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -130,6 +142,9 @@ def test_otpauth_uris_for_authenticator_apps() -> None:
 
     assert totp.encode_secret(secret) == "AAAQEAYEAUDAOCAJBIFQYDIOB4IBCEQT"
     assert totp.encode_secret(b"\x00") == "AA"
+    assert totp.otpauth_uri(secret, account="a/b", issuer="X").startswith(
+        "otpauth://totp/X%3Aa%2Fb?"
+    )
     assert totp.otpauth_uri(secret, account="alice@x.org", issuer="Billing & Co") == (
         "otpauth://totp/Billing%20%26%20Co%3Aalice%40x.org"
         "?secret=AAAQEAYEAUDAOCAJBIFQYDIOB4IBCEQT&issuer=Billing%20%26%20Co"
@@ -151,15 +166,18 @@ def test_secrets_are_encrypted_and_bound_to_their_owner() -> None:
     assert box.encrypt(b"secret", associated=b"alice") != sealed  # A new nonce.
     assert box.decrypt(sealed, associated=b"alice") == (b"secret", True)
     tampered = sealed[:-1] + bytes([sealed[-1] ^ 1])
-    for value, owner in (
-        (sealed, b"bob"),
-        (tampered, b"alice"),
-        (b"\x02" + sealed[1:], b"alice"),
-        (sealed[:5], b"alice"),
-        (b"", b"alice"),
+    unknown = "The value is not one SecretBox encrypted."
+    undecrypted = "No key decrypts the value."
+    for value, owner, message in (
+        (sealed, b"bob", undecrypted),
+        (tampered, b"alice", undecrypted),
+        (b"\x02" + sealed[1:], b"alice", unknown),
+        (sealed[:5], b"alice", unknown),
+        (b"", b"alice", unknown),
     ):
-        with pytest.raises(DecryptionFailed):
+        with pytest.raises(DecryptionFailed) as refused:
             box.decrypt(value, associated=owner)
+        assert str(refused.value) == message
     with pytest.raises(DecryptionFailed):
         SecretBox("other").decrypt(sealed, associated=b"alice")
     assert repr(box) == "SecretBox(purpose='tests')"
@@ -188,8 +206,11 @@ def test_encryption_needs_a_key_and_cryptography(
     monkeypatch.setitem(
         sys.modules, "cryptography.hazmat.primitives.ciphers.aead", None
     )
-    with pytest.raises(ImproperlyConfigured, match=r"domainkit\[mfa\]"):
+    with pytest.raises(ImproperlyConfigured) as refused:
         SecretBox("tests")
+    assert str(refused.value) == (
+        'Encrypting secrets needs cryptography: pip install "domainkit[mfa]".'
+    )
 
 
 def test_mfa_settings_are_bounded() -> None:
@@ -425,6 +446,10 @@ def test_code_checks_are_throttled_per_user(identity: Api, clock: list[float]) -
     assert finish(elsewhere, token, "111111").status_code == 401
     throttled = finish(elsewhere, token, "222222")
     assert (throttled.status_code, throttled.json()["code"]) == (429, "throttled")
+    assert throttled.json()["detail"] == "Too many attempts; try again later."
+    assert [row["details"] for row in audited("auth.mfa")] == [
+        {"reason": "invalid_code"}
+    ] * 2 + [{"reason": "throttled"}]
 
 
 def test_forged_challenges_use_up_no_count_of_the_user(
@@ -483,6 +508,9 @@ def test_turning_it_off_needs_the_password_and_a_code(
     assert done.status_code == 204
     assert device_rows() == []
     assert log_in(client).status_code == 200
+    assert [row["details"] for row in audited("auth.mfa")] == [
+        {"reason": "invalid_code"}
+    ]
     (disabled,) = audited("auth.mfa_disabled")
     assert disabled["details"] == {"user_id": str(alice)}
     assert client.get("/auth/mfa", headers=headers).json() == {
@@ -512,6 +540,10 @@ def test_new_recovery_codes_replace_the_old(identity: Api, clock: list[float]) -
     assert finish(client, log_in(client).json()["mfa_token"], old[1]).status_code == 401
     assert finish(client, log_in(client).json()["mfa_token"], new[1]).status_code == 200
     assert len(audited("auth.recovery_codes_regenerated")) == 1
+    spent = finish(
+        client, log_in(client).json()["mfa_token"], code_at(secret, clock[0])
+    )
+    assert spent.status_code == 401  # The code it took is used.
 
 
 def test_enrolment_states(identity: Api, clock: list[float]) -> None:

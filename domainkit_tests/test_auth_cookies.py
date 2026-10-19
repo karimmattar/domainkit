@@ -186,13 +186,50 @@ def test_origins_are_trusted_by_host_and_scheme(
     create_user("alice")
     client = browser(
         identity,
-        CSRF_TRUSTED_ORIGINS=["https://app.example.com", "https://*.shop.example.org"],
+        CSRF_TRUSTED_ORIGINS=[
+            "http://plain.example.com",
+            "https://app.example.com",
+            "https://*.shop.example.org",
+        ],
     )
     csrf = start(client)
 
     response = client.post("/notes", headers={"Origin": origin, "X-CSRF-Token": csrf})
 
     assert (response.status_code == 200) is trusted
+
+
+def test_requests_without_a_host_trust_no_origin_of_their_own(identity: Api) -> None:
+    """Without ``Host`` (HTTP/1.0), only listed origins are trusted."""
+    from starlette.requests import HTTPConnection
+
+    from domainkit.contrib.auth.cookies import trusted_origin
+
+    identity(CSRF_TRUSTED_ORIGINS=["https://app.example.com"])
+    connection = HTTPConnection(
+        {
+            "type": "http",
+            "scheme": "https",
+            "server": ("10.0.0.1", 443),
+            "path": "/",
+            "query_string": b"",
+            "headers": [],
+        }
+    )
+
+    assert trusted_origin("https://app.example.com", connection)
+    for origin in ("https://", "https://xxxx", "https://10.0.0.1"):
+        assert not trusted_origin(origin, connection), origin
+
+
+def test_csrf_tokens_hold_144_random_bits(identity: Api) -> None:
+    """24 URL-safe characters, then this session's signature."""
+    identity()
+
+    value, _, signature = csrf_token("d" * 64).partition(":")
+
+    assert len(value) == 24
+    assert signature
 
 
 def test_wildcard_hosts_alone_never_trust_an_origin(identity: Api) -> None:
