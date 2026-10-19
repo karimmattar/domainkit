@@ -36,6 +36,13 @@ class UserLoggedOut(DomainEvent):
     everywhere: bool
 
 
+class RefreshTokenReused(DomainEvent):
+    """A used refresh token came back; the login was ended, as it may be stolen."""
+
+    user_id: UUID
+    family: UUID
+
+
 class TokenCreated(DomainEvent):
     """A long-lived token was made for a user (``createtoken``)."""
 
