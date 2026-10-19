@@ -15,7 +15,7 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
 
-from domainkit import setup
+from domainkit import clock, setup
 from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.contrib import mail
@@ -522,6 +522,32 @@ def test_the_mime_form_hides_bcc_and_keeps_every_part() -> None:
         "c@example.com",
         "hidden@example.com",
     ]
+
+
+def test_headers_are_spelled_as_mail_programs_write_them() -> None:
+    """Each name as the RFCs spell it; the date of the clock, in UTC."""
+    message = EmailMessage(
+        subject="S",
+        body="B",
+        to=("a@example.com",),
+        cc=("c@example.com",),
+        reply_to=("r@example.com",),
+    ).prepared("s@example.org")
+
+    with clock.freeze_time("2026-01-02T03:04:05Z"):
+        raw = message.to_mime().as_bytes()
+
+    head = raw.split(b"\r\n\r\n", 1)[0].split(b"\r\n")
+    assert {line.partition(b":")[0] for line in head} >= {
+        b"From",
+        b"To",
+        b"Cc",
+        b"Reply-To",
+        b"Subject",
+        b"Date",
+        b"Message-ID",
+    }
+    assert b"Date: Fri, 02 Jan 2026 03:04:05 +0000" in head
 
 
 def test_plain_messages_have_one_part_and_no_optional_headers() -> None:
