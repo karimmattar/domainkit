@@ -25,7 +25,7 @@ from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Request, status
+from fastapi import APIRouter, Body, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from domainkit.apps import registry
@@ -125,8 +125,9 @@ def _errors(*codes: int) -> dict[int | str, dict[str, object]]:
     response_model_exclude_none=True,
     responses=_errors(status.HTTP_401_UNAUTHORIZED, status.HTTP_429_TOO_MANY_REQUESTS),
 )
-async def login(body: LoginIn, request: Request) -> TokenOut:
+async def login(body: LoginIn, request: Request, response: Response) -> TokenOut:
     """Check a username and password; return tokens."""
+    _no_store(response)
     await _throttle(request, *_login_keys(request, body.username))
     user = await authenticate(username=body.username, password=body.password)
     if user is None:
@@ -151,8 +152,9 @@ async def login(body: LoginIn, request: Request) -> TokenOut:
     response_model_exclude_none=True,
     responses=_errors(status.HTTP_400_BAD_REQUEST, status.HTTP_401_UNAUTHORIZED),
 )
-async def refresh(body: RefreshIn) -> TokenOut:
+async def refresh(body: RefreshIn, response: Response) -> TokenOut:
     """Exchange a refresh token, once, for new tokens."""
+    _no_store(response)
     async with AuthUnitOfWork() as uow:
         tokens = await get_authenticators()[0].refresh(uow, body.refresh_token)
         await uow.commit()
@@ -255,6 +257,15 @@ async def _throttle(request: Request, *keys: str) -> None:
                 code="login_throttled",
                 headers={"Retry-After": str(math.ceil(decision.retry_after))},
             )
+
+
+def _no_store(response: Response) -> None:
+    """Keep tokens out of every cache, as OAuth 2 asks (RFC 6749, 5.1).
+
+    ``IdempotencyMiddleware`` does not store such responses either.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
 
 
 def _login_keys(request: Request, username: str) -> tuple[str, str]:

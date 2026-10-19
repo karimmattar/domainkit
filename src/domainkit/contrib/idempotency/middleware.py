@@ -9,21 +9,22 @@ dies before committing anything, a retry after the lease takes the key over
 and runs (see ``operations``). A client that disconnects before sending its
 whole body claims no key and runs nothing.
 
-A request that fails before committing anything (a server error, an
-exception) releases its key, so it can be retried. Once a SQL unit of work
-commits during the request, the key is never released (see ``operations``):
-if the response cannot be kept (a server error after the commit, an
-exception, a body over ``MAX_RESPONSE_BYTES``), a retry gets a 409
+A request that fails or is refused (a 4xx) before committing anything, or
+that raises, releases its key, so it can be retried. Once a SQL unit of
+work commits during the request, the key is never released (see
+``operations``): if the response cannot be kept (a server error after the
+commit, an exception, a body over ``MAX_RESPONSE_BYTES``, or one marked
+``Cache-Control: no-store``, such as new tokens), a retry gets a 409
 ``idempotency_response_unavailable`` instead of running the changes again.
 Only commits through a unit of work are seen: call payment providers and
 other services from deferred tasks, not from the handler.
 
 Keys are scoped to the authenticated actor (set by
 ``AuthenticationMiddleware``, which must come first). Without an actor,
-they are scoped to the client address and the request's credentials
-(``Authorization`` and ``Cookie``, hashed), so callers behind one address
-never share keys even where the project authenticates on its own. List the
-middleware after ``RequestContextMiddleware`` and
+they are scoped to the client address and the request's credentials (the
+``CREDENTIAL_HEADERS``, hashed), so callers behind one address never share
+keys where the project authenticates on its own with one of those headers.
+List the middleware after ``RequestContextMiddleware`` and
 ``RequestBodyLimitMiddleware`` (it reads the whole body).
 """
 
@@ -47,6 +48,9 @@ from .operations import Operation, run_operation
 from .settings import IdempotencySettings
 from .tables import idempotency_keys
 
+MESSAGING: Final = "domainkit.contrib.messaging"
+PURGE_BATCH: Final = 100
+"""Expired keys deleted with each claim when no worker purges them hourly."""
 HEADER: Final = "idempotency-key"
 REPLAYED: Final = "Idempotent-Replayed"
 _STORED_HEADERS: Final = frozenset({"content-type", "location", "content-language"})
@@ -92,7 +96,7 @@ class IdempotencyMiddleware:
         if read is None:
             return  # The client left before sending its whole body: run nothing.
         body, replay_receive = read
-        key_hash = _hash(_caller(scope), key)
+        key_hash = _hash(_caller(scope, config.CREDENTIAL_HEADERS), key)
         fingerprint = _hash(
             scope["method"], scope["path"], scope.get("query_string", b""), body
         )
@@ -112,13 +116,20 @@ class IdempotencyMiddleware:
         """Insert an in-progress row; return the existing one if the key is taken."""
         now = _now()
         engine = connections.engine(config.DATABASE)
+        expired = idempotency_keys.c.expires_at < now
         async with engine.begin() as connection:
             await connection.execute(
                 delete(idempotency_keys).where(
-                    idempotency_keys.c.key_hash == operation.key_hash,
-                    idempotency_keys.c.expires_at < now,
+                    idempotency_keys.c.key_hash == operation.key_hash, expired
                 )
             )
+            if not registry.is_installed(MESSAGING):  # No hourly purge: sweep a few.
+                oldest = select(idempotency_keys.c.key_hash).where(expired)
+                await connection.execute(
+                    delete(idempotency_keys).where(
+                        idempotency_keys.c.key_hash.in_(oldest.limit(PURGE_BATCH))
+                    )
+                )
         try:
             async with engine.begin() as connection:
                 await connection.execute(
@@ -246,7 +257,11 @@ class IdempotencyMiddleware:
                 await _finish(config, operation, started, None)
                 raise
         code = started.get("status", status.HTTP_500_INTERNAL_SERVER_ERROR)
-        kept = code < 500 and size <= config.MAX_RESPONSE_BYTES
+        kept = (
+            (code < 400 or (code < 500 and operation.committed))
+            and size <= config.MAX_RESPONSE_BYTES
+            and not _no_store(started)
+        )
         await _finish(config, operation, started, b"".join(chunks) if kept else None)
 
 
@@ -307,15 +322,32 @@ def _died_after_commit(existing: dict[str, Any]) -> bool:
     )
 
 
-def _caller(scope: Scope) -> str:
+def _caller(scope: Scope, credential_headers: tuple[str, ...]) -> str:
     """Scope keys to the actor, or else to the address and the credentials."""
     request = current_request()
     if request is not None and request.actor:
         return f"actor:{request.actor}"
     client = scope.get("client")
     headers = Headers(scope=scope)
-    credentials = _hash(headers.get("authorization", ""), headers.get("cookie", ""))
+    credentials = _hash(
+        *(
+            part
+            for name in credential_headers
+            for values in (headers.getlist(name),)
+            for part in (name, str(len(values)), *values)
+        )
+    )
     return f"anonymous:{client[0] if client else 'unknown'}:{credentials}"
+
+
+def _no_store(started: dict[str, Any]) -> bool:
+    """Whether the response says it must not be stored (``Cache-Control``)."""
+    for name, value in started.get("headers", []):
+        if name.lower() == b"cache-control":
+            directives = value.decode("latin-1").lower().split(",")
+            if "no-store" in (directive.strip() for directive in directives):
+                return True
+    return False
 
 
 async def _read_body(receive: Receive) -> tuple[bytes, Receive] | None:
