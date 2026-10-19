@@ -20,6 +20,7 @@ import pytest
 from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
 from pydantic import BaseModel, ValidationError
+from redis.asyncio import Redis
 
 from domainkit.broker import brokers
 from domainkit.cache import (
@@ -1127,7 +1128,9 @@ def test_redis_clients_use_short_timeouts_and_tls_options(tmp_path: Path) -> Non
         str(tmp_path / "client.key"),
     )
     assert options["retry"].get_retries() == 0
-    assert isinstance(RedisStore.from_config(config).client.connection_pool, type(pool))
+    client = RedisStore.from_config(config).client
+    assert isinstance(client, Redis)
+    assert isinstance(client.connection_pool, type(pool))
 
 
 # Rate limits in Redis, the command, the testing plugin ------------------------------

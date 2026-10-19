@@ -44,9 +44,55 @@ CACHES = {
   suite against Redis 8.8 (plain and TLS) and Valkey 9.1. Redis 8 is
   licensed AGPLv3, RSALv2, or SSPLv1; Valkey is BSD-3-Clause. domainkit and
   redis-py work with either, so the choice of server is yours.
-- One endpoint per cache: a single server, or a managed service's primary
-  endpoint, which handles failover. Redis Cluster and Sentinel are not
-  supported yet.
+- One endpoint per cache (a single server, or a managed service's primary
+  endpoint, which handles failover), a Sentinel group, or a Cluster: see
+  [Sentinel and Cluster](#sentinel-and-cluster).
+
+### Sentinel and Cluster
+
+A Sentinel group or a Cluster has several addresses, so it has a scheme of
+its own. Add `s` after `redis` for TLS, as with one server:
+
+```python
+CACHES = {
+    "default": {"URL": "memory://"},
+    # Sentinels at port 26379 unless given; the service, then the database.
+    "shared": {
+        "URL": "rediss+sentinel://:password@sentinel-1,sentinel-2,sentinel-3/mymaster/0",
+        "KEY_PREFIX": "billing",
+        "SENTINEL_PASSWORD": env.str("SENTINEL_PASSWORD"),  # if they ask for one
+    },
+    # Any reachable nodes, at port 6379 unless given; the client finds the rest.
+    "sessions": {
+        "URL": "rediss+cluster://user:password@node-1:6379,node-2:6379",
+        "KEY_PREFIX": "billing",
+    },
+}
+```
+
+- **Sentinel.** The client asks the Sentinels where the primary is, and
+  asks again after a failover; reads and writes go to the primary. The
+  URL's user and password are the primary's; `SENTINEL_PASSWORD` is the
+  Sentinels' own, when they have one. TLS, `TLS_CA`, and the client
+  certificate apply to both. The primary's address comes from the
+  Sentinels, so its certificate must name the address they announce.
+- **Cluster.** Keys spread over the nodes by hash slot. Every operation of
+  a cache touches one key per command or splits its keys by slot (`MGET`,
+  `DEL`), so none is refused for crossing slots, and the rate limiter's
+  script reads and writes one key. A Cluster has only database 0.
+  `cache clear` scans every primary.
+- The URLs take no `?options`; set timeouts and pool sizes with the cache's
+  settings. Pools wait up to `CONNECT_TIMEOUT` for a free connection, as
+  with one server; a Cluster has a pool of `MAX_CONNECTIONS` per node.
+- The [deployment checks](reference.md#deployment-checks) apply as for one
+  server: `rediss+sentinel://` or `rediss+cluster://` when any host is
+  elsewhere, a password or a client certificate, and certificate checks on.
+- A Sentinel group or Cluster that cannot be reached, or with slots no node
+  serves, counts as unavailable: caches fail open and rate limits let
+  requests through, as with one server.
+- The tests build these clients and run their commands on fakes; no real
+  Sentinel or Cluster runs in CI. Check a deployment against real servers
+  before relying on it: `python manage.py cache check`.
 
 Every key looks like `<KEY_PREFIX>:<VERSION>:<key>`. Raise `VERSION` to drop
 every entry at once, for example after changing the shape of a cached type:

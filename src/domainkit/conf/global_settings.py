@@ -24,6 +24,8 @@ from pydantic import (
 
 from domainkit.conf.env import project_root
 from domainkit.utils.rates import parse_rate
+from domainkit.utils.redis_urls import REDIS_SCHEMES as REDIS_SCHEMES
+from domainkit.utils.redis_urls import SENTINEL_SCHEMES, parse_redis_url
 
 DEFAULT_DB_ALIAS: Final = "default"
 HIDDEN: Final = "**********"
@@ -226,9 +228,8 @@ class ShardConfig(BaseModel):
 
 
 DEFAULT_CACHE_ALIAS: Final = "default"
-CACHE_SCHEMES: Final = frozenset({"memory", "dummy", "redis", "rediss"})
-"""URL schemes of caches (``CACHES``)."""
-REDIS_SCHEMES: Final = frozenset({"redis", "rediss"})
+CACHE_SCHEMES: Final = frozenset({"memory", "dummy"}) | REDIS_SCHEMES
+"""URL schemes of caches (``CACHES``): Redis's include Sentinel and Cluster."""
 LOCAL_HOSTS: Final = frozenset({"localhost", "127.0.0.1", "::1"})
 _UNVERIFIED_TLS: Final = {
     "ssl_cert_reqs": frozenset({"none", "optional"}),
@@ -247,7 +248,11 @@ class CacheConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     URL: SecretStr = SecretStr("memory://")
-    """``memory://`` (this process), ``redis://``/``rediss://`` (Redis, Valkey), ``dummy://``."""
+    """``memory://`` (this process), ``redis://``/``rediss://`` (Redis, Valkey), ``dummy://``.
+
+    ``redis+sentinel://`` and ``redis+cluster://`` (``rediss`` for TLS) name a
+    Sentinel group or a Cluster by several addresses.
+    """
     TTL: float | None = Field(default=300.0, gt=0)
     """Seconds an entry lives unless a call says otherwise; None keeps entries."""
     KEY_PREFIX: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]{1,64}$")
@@ -275,40 +280,51 @@ class CacheConfig(BaseModel):
     TLS_KEY: Path | None = None
     READINESS: bool = False
     """Fail ``/ready`` while this cache is unreachable (off: the service copes)."""
+    SENTINEL_PASSWORD: SecretStr | None = None
+    """``redis+sentinel://``: the Sentinels' own password, if they ask for one."""
 
     @model_validator(mode="after")
     def check_url(self) -> Self:
         """Accept cache URLs; Redis needs a host and a key prefix of its own."""
-        parts = urlsplit(self.URL.get_secret_value())
-        if parts.scheme not in CACHE_SCHEMES:
+        scheme = self.scheme
+        if scheme not in CACHE_SCHEMES:
             raise ValueError(
-                "a cache URL starts with memory://, redis://, rediss://, or dummy://"
+                "a cache URL starts with memory://, redis://, rediss://, "
+                "redis+sentinel://, redis+cluster://, or dummy://"
             )
-        _check_port(parts)
-        if parts.scheme in REDIS_SCHEMES:
-            if not parts.hostname:
-                raise ValueError("a Redis URL needs a host: redis://host:6379/0")
+        if scheme in REDIS_SCHEMES:
+            parse_redis_url(self.URL.get_secret_value())
             if self.KEY_PREFIX is None:
                 raise ValueError(
                     "Redis caches need a KEY_PREFIX, unique among the services "
                     "that share the server"
                 )
+        else:
+            _check_port(urlsplit(self.URL.get_secret_value()))
         tls = (self.TLS_CA, self.TLS_CERT, self.TLS_KEY)
-        if parts.scheme != "rediss" and any(tls):
+        if not scheme.startswith("rediss") and any(tls):
             raise ValueError("TLS_CA, TLS_CERT and TLS_KEY need a rediss:// URL")
         if (self.TLS_CERT is None) != (self.TLS_KEY is None):
             raise ValueError("TLS_CERT and TLS_KEY go together")
+        if self.SENTINEL_PASSWORD is not None and scheme not in SENTINEL_SCHEMES:
+            raise ValueError("SENTINEL_PASSWORD needs a redis+sentinel:// URL")
         return self
 
     @property
     def scheme(self) -> str:
-        """``memory``, ``dummy``, ``redis``, or ``rediss``."""
-        return urlsplit(self.URL.get_secret_value()).scheme
+        """``memory``, ``dummy``, ``redis``, ``rediss``, or a Sentinel or Cluster's."""
+        return self.URL.get_secret_value().partition("://")[0].lower()
 
     def is_network(self) -> bool:
         """Report whether this cache is a Redis server on another host."""
-        host = urlsplit(self.URL.get_secret_value()).hostname
-        return self.scheme in REDIS_SCHEMES and host not in LOCAL_HOSTS
+        if self.scheme not in REDIS_SCHEMES:
+            return False
+        hosts = parse_redis_url(self.URL.get_secret_value()).hosts
+        return any(host not in LOCAL_HOSTS for host, _ in hosts)
+
+    def uses_tls(self) -> bool:
+        """Report whether connections to this Redis use TLS (a ``rediss`` scheme)."""
+        return self.scheme.startswith("rediss")
 
     def verifies_tls(self) -> bool:
         """Report whether the URL leaves redis-py's certificate checks on."""
@@ -321,8 +337,11 @@ class CacheConfig(BaseModel):
 
     def has_credentials(self) -> bool:
         """Report whether the cache authenticates: a password or a certificate."""
-        parts = urlsplit(self.URL.get_secret_value())
-        return bool(parts.password) or self.TLS_CERT is not None
+        if self.TLS_CERT is not None:
+            return True
+        if self.scheme not in REDIS_SCHEMES:
+            return False
+        return bool(parse_redis_url(self.URL.get_secret_value()).password)
 
 
 BROKER_SCHEMES: Final = frozenset({"amqp", "amqps", "memory"})
@@ -621,7 +640,7 @@ class Settings(BaseModel):
                 raise ValueError(f"{message} {where} for LEDGERS {aliases}")
         cache_rules: dict[str, Callable[[CacheConfig], bool]] = {
             "network caches need rediss:// (TLS)": lambda cache: (
-                cache.is_network() and cache.scheme != "rediss"
+                cache.is_network() and not cache.uses_tls()
             ),
             "caches must verify the server certificate": lambda cache: (
                 not cache.verifies_tls()

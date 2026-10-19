@@ -106,7 +106,7 @@ Each `CACHES` entry:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `URL` | `memory://` | `memory://` (this process), `redis://` or `rediss://` (Redis or Valkey, through redis-py; the `redis` extra), or `dummy://` (keeps nothing). redis-py URL options (`?socket_keepalive=true`) apply. Kept secret. |
+| `URL` | `memory://` | `memory://` (this process), `redis://` or `rediss://` (Redis or Valkey, through redis-py; the `redis` extra), `redis+sentinel://` or `redis+cluster://` (a Sentinel group or a Cluster, by several addresses; `rediss+` for TLS; see [cache.md](cache.md#sentinel-and-cluster)), or `dummy://` (keeps nothing). redis-py URL options (`?socket_keepalive=true`) apply to one server. Kept secret. |
 | `TTL` | `300.0` | Seconds an entry lives unless a call passes `ttl`; `None` keeps entries until evicted. |
 | `KEY_PREFIX` | the alias | Namespace of every key (`[A-Za-z0-9_.-]`, up to 64). Required for Redis: unique among the services sharing a server. |
 | `VERSION` | `1` | Part of every key. Raise it to drop every entry at once, as after changing a cached type. |
@@ -120,6 +120,7 @@ Each `CACHES` entry:
 | `TLS_CA` | system CAs | CA bundle that signed the server's certificate (`rediss://` only). |
 | `TLS_CERT`, `TLS_KEY` | `None` | Client certificate and key for mutual TLS (`rediss://` only). |
 | `READINESS` | `False` | Fail `/ready` while this cache is unreachable. Leave it off for caches the service can run without, or an outage takes every replica out of rotation. |
+| `SENTINEL_PASSWORD` | `None` | `redis+sentinel://` only: the Sentinels' own password, when they ask for one (the URL's is the primary's). Kept secret. |
 
 ### Brokers
 
@@ -205,9 +206,10 @@ With `ENVIRONMENT` set to `staging` or `production`, startup fails on:
 - a `memory://` broker, a broker on another host without `amqps://`, a
   broker URL that turns certificate checks off (`no_verify_ssl`), and a
   broker without a user of its own (none, or `guest`)
-- a Redis cache on another host without `rediss://`, or without a password
-  or a client certificate, and any cache URL that weakens certificate checks
-  (`ssl_cert_reqs=none` or `optional`, `ssl_check_hostname=false`)
+- a Redis cache on another host without `rediss://` (`rediss+sentinel://`,
+  `rediss+cluster://`), or without a password or a client certificate, and
+  any cache URL that weakens certificate checks (`ssl_cert_reqs=none` or
+  `optional`, `ssl_check_hostname=false`)
 
 Installed contrib apps add their own:
 

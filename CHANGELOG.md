@@ -13,6 +13,11 @@ All notable changes to domainkit. The format follows
   function returns, apart from `RATE_LIMIT` and with the same backends. Over
   the rate, the route answers 429 `throttled` with `Retry-After` (DJ-25;
   `docs/cache.md`, "Throttles for one route").
+- Caches and rate limits on a Redis Sentinel group
+  (`redis+sentinel://host-1,host-2/mymaster/0`) or a Redis Cluster
+  (`redis+cluster://node-1,node-2`), `rediss+` for TLS, with
+  `SENTINEL_PASSWORD` for Sentinels that ask for one. The deployment checks
+  hold them to the rules for one server (DJ-58; `docs/cache.md`).
 
 ## [0.6.2] - 2026-10-19
 
