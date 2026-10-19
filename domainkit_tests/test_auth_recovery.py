@@ -3,6 +3,7 @@
 import re
 import uuid
 from datetime import timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from urllib.parse import unquote
@@ -30,7 +31,7 @@ from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.http.application import application_problems
 from domainkit.management.base import run_async
-from domainkit_tests.conftest import IDENTITY_DOMAINS, Api
+from domainkit_tests.conftest import IDENTITY_DOMAINS, MEMORY_MAIL, Api
 from domainkit_tests.sample_domains.members.models import Member
 from domainkit_tests.test_auth_http import (
     PASSWORD,
@@ -192,6 +193,28 @@ def test_links_point_to_the_configured_page(identity: Api) -> None:
     assert confirm(client, unquote(token)).status_code == 204
 
 
+def test_projects_may_word_the_links_themselves(identity: Api, tmp_path: Path) -> None:
+    """A template in ``MAIL.TEMPLATE_DIRS`` replaces ours, and is given the user."""
+    ours = tmp_path / "templates" / "auth"
+    ours.mkdir(parents=True)
+    (ours / "password_reset.txt").write_text(
+        "{{ user.email }} ({{ username }}): {{ link }}, {{ valid_for }}.",
+        encoding="utf-8",
+    )
+    create_user("alice", email="alice@example.com")
+    client = identity()
+
+    with override_settings(
+        MAIL={**MEMORY_MAIL, "TEMPLATE_DIRS": [str(tmp_path / "templates")]}
+    ):
+        reset(client, "alice@example.com")
+        run_worker()
+
+    (message,) = mail.outbox
+    assert message.subject == ""
+    assert message.body == f"alice@example.com (alice): {token_in(message)}, 1 hour."
+
+
 def test_link_urls_need_a_place_for_the_token() -> None:
     """A URL without ``{token}`` would send links that do nothing."""
     with pytest.raises(ValueError, match=r"needs \{token\}"):
@@ -332,6 +355,9 @@ def test_resets_and_checks_are_throttled(identity: Api) -> None:
 
     for response in (by_address, by_recipient):
         assert (response.status_code, response.json()["code"]) == (429, "throttled")
+        assert response.json()["detail"] == (
+            "Too many requests for mail; try again later."
+        )
         assert response.headers["Retry-After"]
     assert len(outbox_payloads()) == 3
     throttled = audited("auth.password_reset")
@@ -342,12 +368,23 @@ def test_resets_and_checks_are_throttled(identity: Api) -> None:
     third = from_address(client, "203.0.113.9")
     assert confirm(third, "wrong").status_code == 400
     assert confirm(third, "wrong").status_code == 400
-    assert confirm(third, token).status_code == 429  # This address is done.
+    done = confirm(third, token)  # This address is done.
+    assert (done.status_code, done.json()["code"]) == (429, "throttled")
+    assert done.json()["detail"] == "Too many attempts; try again later."
+    assert [row["details"] for row in audited("auth.password_reset")] == [
+        {"reason": "throttled"}
+    ] * 2 + [{"reason": "invalid_token"}] * 2 + [{"reason": "throttled"}]
+    # Each kind of request has counts of its own.
+    verify = third.post("/auth/email-verification/confirm", json={"token": "wrong"})
+    assert verify.status_code == 400
     fourth = from_address(client, "203.0.113.10")
     assert confirm(fourth, f"{token[:-1]}x").status_code == 400
     assert confirm(fourth, f"{token[:-2]}xx").status_code == 400
     # Forged tokens naming alice use up no count of hers: her link works.
     assert confirm(from_address(client, "203.0.113.11"), token).status_code == 204
+    create_user("bob", email="bob@example.com")
+    headers = bearer(login(client, "bob")["access_token"])
+    assert client.post("/auth/email-verification", headers=headers).status_code == 202
 
 
 def test_email_verification_marks_the_address_verified(identity: Api) -> None:

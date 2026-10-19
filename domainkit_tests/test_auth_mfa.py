@@ -345,9 +345,28 @@ def test_a_code_works_once(identity: Api, clock: list[float]) -> None:
 
     assert first.status_code == 200
     assert (replayed.status_code, replayed.json()["code"]) == (401, "invalid_code")
+    assert replayed.json()["detail"] == "The code is wrong, or was used already."
     assert earlier.status_code == 401
     refused = audited("auth.mfa")
     assert [row["details"] for row in refused] == [{"reason": "invalid_code"}] * 2
+
+
+def test_logins_take_codes_within_the_window(identity: Api, clock: list[float]) -> None:
+    """``MFA.WINDOW = 0``: only the current step's code logs in."""
+    create_user("alice")
+    client = identity(MFA={"WINDOW": 0})
+    secret, _ = enrol(client, bearer(login(client, "alice")["access_token"]), clock)
+    clock[0] += 90
+
+    late = finish(
+        client, log_in(client).json()["mfa_token"], code_at(secret, clock[0] - 30)
+    )
+    current = finish(
+        client, log_in(client).json()["mfa_token"], code_at(secret, clock[0])
+    )
+
+    assert late.status_code == 401
+    assert current.status_code == 200
 
 
 def test_recovery_codes_stand_in_once(identity: Api, clock: list[float]) -> None:

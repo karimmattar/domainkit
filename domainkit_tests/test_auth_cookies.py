@@ -93,16 +93,20 @@ def test_unsafe_methods_need_a_trusted_origin_and_the_token(identity: Api) -> No
     csrf = start(client)
     token = {"X-CSRF-Token": csrf}
 
-    cases = {
-        "names no origin": {**token},
-        "not trusted": {**token, "Origin": "https://evil.example"},
-        "missing or wrong": {**TRUSTED},
-        "missing or wrong ": {**TRUSTED, "X-CSRF-Token": csrf + "x"},
-    }
-    for message, headers in cases.items():
+    wrong_token = "The CSRF token is missing or wrong."
+    cases = [
+        ("The request names no origin (Origin or Referer).", {**token}),
+        (
+            "The request comes from an origin that is not trusted.",
+            {**token, "Origin": "https://evil.example"},
+        ),
+        (wrong_token, {**TRUSTED}),
+        (wrong_token, {**TRUSTED, "X-CSRF-Token": csrf + "x"}),
+    ]
+    for message, headers in cases:
         response = client.post("/notes", headers=headers)
         assert (response.status_code, response.json()["code"]) == (403, "csrf_failed")
-        assert message.strip() in response.json()["detail"]
+        assert response.json()["detail"] == message
         assert "WWW-Authenticate" not in response.headers
 
     allowed = client.post("/notes", headers={**TRUSTED, **token})
