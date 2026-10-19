@@ -484,6 +484,46 @@ async def test_records_that_are_not_evidence_are_tampering() -> None:
             await evidence_store_.get(key)
 
 
+async def test_records_under_another_key_are_tampering() -> None:
+    """A real record copied under another key, or another subject, is caught."""
+    ledger = MemoryLedger()
+    evidence_store_ = store(ledger)
+    theirs = Evidence(kind="consent.given", subject="customer:1")
+    receipt = await evidence_store_.record(theirs)
+    body = theirs.canonical()
+    copied = f"evidence/{subject_digest('customer:3', SUBJECT_KEY)}/{uuid.uuid4()}"
+    filed = f"evidence/{subject_digest('customer:2', SUBJECT_KEY)}/{theirs.id}"
+    await ledger.append(copied.encode(), body)
+    await ledger.append(filed.encode(), body)
+
+    with pytest.raises(EvidenceTampered) as moved:
+        await evidence_store_.get(copied)
+    with pytest.raises(EvidenceTampered) as misfiled:
+        await evidence_store_.for_subject("customer:2")
+
+    assert str(moved.value) == f"{copied} holds the record of evidence {theirs.id}."
+    assert str(misfiled.value) == (
+        f"{filed} is filed under the subject of another record."
+    )
+    assert (await evidence_store_.get(filed)).evidence == theirs  # Its own id.
+    assert [r.receipt for r in await evidence_store_.for_subject("customer:1")] == [
+        receipt
+    ]
+
+
+async def test_keys_from_an_earlier_namespace_or_subject_key_still_read() -> None:
+    """Receipts keep working after NAMESPACE or SUBJECT_KEY changes."""
+    ledger = MemoryLedger()
+    evidence = Evidence(kind="consent.given", subject="customer:1")
+    receipt = await store(ledger).record(evidence)
+    later = LedgerEvidenceStore(
+        ledger, namespace="moved", max_bytes=4096, subject_key=b"k" * 32
+    )
+
+    assert (await later.verify(receipt)).evidence == evidence
+    assert await later.for_subject("customer:1") == []
+
+
 async def test_missing_and_oversized_evidence() -> None:
     """Unknown keys are 404s; records over MAX_BYTES are refused."""
     evidence_store_ = store()

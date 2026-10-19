@@ -128,7 +128,12 @@ class LedgerEvidenceStore(EvidenceStore):
         return EvidenceReceipt(evidence.id, key, sha256(body), existing.transaction)
 
     async def get(self, key: str) -> RecordedEvidence:
-        """Read revision 1, the original, and count the key's revisions."""
+        """Read revision 1, the original, and count the key's revisions.
+
+        A record must end its own key: one copied under another key is
+        tampering. The rest of the key is not checked, since a new
+        ``NAMESPACE`` or ``SUBJECT_KEY`` leaves earlier keys valid.
+        """
         try:
             entry = await self.ledger.read(key.encode(), revision=1)
             revisions = await self.ledger.revision_count(
@@ -144,6 +149,8 @@ class LedgerEvidenceStore(EvidenceStore):
             evidence = Evidence.from_canonical(entry.value)
         except (ValueError, KeyError, TypeError) as exc:
             raise EvidenceTampered(f"{key} does not hold an evidence record.") from exc
+        if not key.endswith(f"/{evidence.id}"):
+            raise EvidenceTampered(f"{key} holds the record of evidence {evidence.id}.")
         receipt = EvidenceReceipt(
             evidence.id, key, sha256(entry.value), entry.transaction
         )
@@ -152,8 +159,18 @@ class LedgerEvidenceStore(EvidenceStore):
     async def for_subject(
         self, subject: str, *, limit: int = 100
     ) -> list[RecordedEvidence]:
-        """Scan the subject's key prefix and read each record."""
+        """Scan the subject's key prefix and read each record.
+
+        Every record found must be about ``subject``: one filed under the
+        subject's prefix but about someone else is tampering.
+        """
         digest = subject_digest(subject, self.subject_key)
         prefix = f"{self.namespace}/{digest}/".encode()
         keys = await self.ledger.keys(prefix, limit=limit)
-        return [await self.get(key.decode()) for key in keys]
+        recorded = [await self.get(key.decode()) for key in keys]
+        for found in recorded:
+            if found.evidence.subject != subject:
+                raise EvidenceTampered(
+                    f"{found.receipt.key} is filed under the subject of another record."
+                )
+        return recorded
