@@ -14,6 +14,10 @@ refilled parents first. On PostgreSQL, partitions are refilled through their
 parent, and tables with triggers of their own (such as an append-only audit
 trail) have them turned off while they are emptied, inside the same
 transaction. Sequences are not reset.
+
+Both connect as the schema owner (``MIGRATION_URL`` when set): emptying an
+append-only table needs its owner. ``restore_snapshot`` deletes every row,
+so it runs only with ``ENVIRONMENT = "test"``.
 """
 
 from collections.abc import Sequence
@@ -40,7 +44,8 @@ from sqlalchemy import table as table_clause
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from domainkit.conf import settings
-from domainkit.db.connections import create_engine
+from domainkit.db.connections import create_owner_engine
+from domainkit.exceptions import ImproperlyConfigured
 
 _PARTITIONS = text(
     "SELECT relname FROM pg_class "
@@ -78,7 +83,7 @@ async def take_snapshot() -> Snapshot:
     """Read every table of every database in ``DATABASES``."""
     snapshot: Snapshot = {}
     for alias, config in settings.DATABASES.items():
-        engine = create_engine(config)
+        engine = create_owner_engine(config)
         try:
             async with engine.connect() as connection:
                 snapshot[alias] = [
@@ -96,8 +101,13 @@ async def take_snapshot() -> Snapshot:
 
 async def restore_snapshot(snapshot: Snapshot) -> None:
     """Empty every table, then put the snapshot's rows back, one database at a time."""
+    if settings.ENVIRONMENT != "test":
+        raise ImproperlyConfigured(
+            f"restore_snapshot deletes every row in DATABASES; it runs only with "
+            f'ENVIRONMENT = "test", not {settings.ENVIRONMENT!r}.'
+        )
     for alias, tables in snapshot.items():
-        engine = create_engine(settings.DATABASES[alias])
+        engine = create_owner_engine(settings.DATABASES[alias])
         try:
             async with engine.begin() as connection:
                 for entry in reversed(tables):
@@ -144,9 +154,9 @@ async def _rows(connection: AsyncConnection, query: Select[Any]) -> Any:  # noqa
 
 async def _empty(connection: AsyncConnection, entry: TableRows) -> None:
     """Delete every row of the entry's table, its own triggers off if it has any."""
-    name = entry.table.name
+    name = connection.dialect.identifier_preparer.format_table(entry.table)
     if entry.triggered:
-        await connection.execute(text(f'ALTER TABLE "{name}" DISABLE TRIGGER USER'))
+        await connection.execute(text(f"ALTER TABLE {name} DISABLE TRIGGER USER"))
     await connection.execute(delete(entry.table))
     if entry.triggered:
-        await connection.execute(text(f'ALTER TABLE "{name}" ENABLE TRIGGER USER'))
+        await connection.execute(text(f"ALTER TABLE {name} ENABLE TRIGGER USER"))
