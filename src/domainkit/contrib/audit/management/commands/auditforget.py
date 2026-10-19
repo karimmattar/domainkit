@@ -1,8 +1,9 @@
 """``auditforget``: make people's pseudonyms in the audit trail unlinkable."""
 
 from argparse import ArgumentParser
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 
+from domainkit import clock
 from domainkit.contrib.audit.personal import forget, forget_anonymous
 from domainkit.management import BaseCommand, CommandError
 
@@ -36,6 +37,6 @@ class Command(BaseCommand):
             raise CommandError("--anonymous-days cannot be negative.")
         forgotten = await forget(*subjects)
         if anonymous_days is not None:
-            today = datetime.now(UTC).date()
+            today = clock.today()
             forgotten += await forget_anonymous(today - timedelta(days=anonymous_days))
         self.write(f"Forgot {forgotten} key{'' if forgotten == 1 else 's'}.")

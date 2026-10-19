@@ -4,8 +4,8 @@ Each domain package has four layers; dependencies point inward only::
 
     api  ->  infrastructure  ->  application  ->  domain
 
-- ``domain``: the standard library, ``domainkit.ddd``, and its own domain layer.
-  No frameworks, no I/O, no settings.
+- ``domain``: the standard library, ``domainkit.ddd``, ``domainkit.clock``, and
+  its own domain layer. No frameworks, no I/O, no settings.
 - ``application``: no ``infrastructure`` or ``api`` code, and no web or
   database libraries; it reaches storage through repository ports.
 - ``infrastructure``: no ``api`` code and no web libraries.
@@ -26,7 +26,7 @@ from typing import Final
 
 LAYERS: Final = ("domain", "application", "infrastructure", "api")
 
-DOMAIN_ALLOWED_PREFIXES: Final = ("domainkit.ddd",)
+DOMAIN_ALLOWED_PREFIXES: Final = ("domainkit.ddd", "domainkit.clock")
 """Non-stdlib modules a domain layer may import (besides its own layer)."""
 
 FORBIDDEN_LIBRARIES: Final = {
@@ -127,7 +127,7 @@ def _layer_rule(package: str, layer: str | None, imported: str) -> str | None:
         if not _is_stdlib(imported) and not _within(imported, allowed):
             return (
                 "the domain layer may import only the standard library, "
-                "domainkit.ddd, and its own domain layer"
+                "domainkit.ddd, domainkit.clock, and its own domain layer"
             )
         return None
     if layer is None:

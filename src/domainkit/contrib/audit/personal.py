@@ -19,7 +19,7 @@ import hmac
 import json
 import secrets
 from collections.abc import Collection
-from datetime import UTC, date, datetime
+from datetime import date
 from typing import Final
 
 from pydantic_core import to_jsonable_python
@@ -27,6 +27,7 @@ from sqlalchemy import ColumnElement, delete, select
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
+from domainkit import clock
 from domainkit.apps import registry
 from domainkit.db import connections
 from domainkit.db.routing import router
@@ -80,7 +81,7 @@ async def subject_keys(
     if not missing:
         return keys
     insert = postgresql.insert if _dialect(executor) == "postgresql" else sqlite.insert
-    now = datetime.now(UTC)
+    now = clock.now()
     new_keys = [
         {"subject": subject, "key": secrets.token_bytes(KEY_BYTES), "created_at": now}
         for subject in missing
