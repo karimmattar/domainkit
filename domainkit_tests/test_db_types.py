@@ -10,6 +10,8 @@ from sqlalchemy import (
     Column,
     Integer,
     MetaData,
+    Numeric,
+    String,
     Table,
     func,
     insert,
@@ -273,6 +275,8 @@ async def test_comparisons_take_values_of_any_places(engine: AsyncEngine) -> Non
         (amount > -beyond, [1, 2, 3]),
         (amount == beyond, []),
         (amount > Decimal(2**70), []),
+        (amount == -LARGEST, [3]),  # Eighteen digits, sent whole.
+        (amount < Decimal(2**63).scaleb(-2), [1, 2, 3]),  # Just past 64 bits.
     ]
     for condition, expected in queries:
         found = await scalars(
@@ -331,6 +335,34 @@ async def test_amounts_meet_other_scales_and_integers_exactly(
     ]
     for condition, expected in conditions:
         assert await scalars(engine, select(condition)) == [expected], condition
+
+
+def test_only_amounts_and_integers_are_rescaled() -> None:
+    """Other columns meet the amount as they are, as before."""
+    other = Table(
+        "framework_test_other",
+        MetaData(),
+        Column("ratio", Numeric(5, 2)),
+        Column("label", String(10)),
+    )
+    amount = prices.c.amount
+    dialect = sqlite.dialect()
+
+    for expression, sql in [
+        (
+            amount > other.c.ratio,
+            "framework_test_prices.amount > framework_test_other.ratio",
+        ),
+        (
+            amount == other.c.label,
+            "framework_test_prices.amount = framework_test_other.label",
+        ),
+        (
+            amount > prices.c.quantity,
+            "framework_test_prices.amount > (framework_test_prices.quantity * 100)",
+        ),
+    ]:
+        assert str(expression.compile(dialect=dialect)) == sql
 
 
 async def test_the_bounds_of_a_column_are_inclusive(engine: AsyncEngine) -> None:

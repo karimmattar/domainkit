@@ -163,7 +163,7 @@ class ExactDecimal(TypeDecorator[Decimal]):
             )
         if op in _SCALING:
             whole = isinstance(value, int) and not isinstance(value, bool)
-            return Integer() if whole and op is operators.mul else _Factor(self.scale)
+            return Integer() if whole and op is operators.mul else _Factor()
         if op in _COMPARING:
             return _Compared(self.scale)
         return self
@@ -336,25 +336,14 @@ class _MinorUnits(Numeric[Decimal]):
 class _Factor(TypeDecorator[Decimal]):
     """A fraction an amount is multiplied by, or a number it is divided by.
 
-    The result takes this type. On SQLite the amount is in minor units, and
-    so is the result, which is scaled back; the factor is sent as a float,
-    so a quotient is not truncated to a whole number. PostgreSQL computes
-    in ``NUMERIC``, exactly.
+    The result takes the amount's type. On SQLite the amount is in minor
+    units, and so is the result, which that type scales back; the factor
+    is sent as a float, so a quotient is not truncated to a whole number.
+    PostgreSQL computes in ``NUMERIC``, exactly.
     """
 
     impl = Numeric
     cache_ok = True
-
-    def __init__(self, scale: int) -> None:
-        """Scale results back by ``scale`` places on SQLite."""
-        super().__init__()
-        self.scale = scale
-
-    def load_dialect_impl(self, dialect: Dialect) -> TypeEngine[Any]:
-        """Values pass through as they are on SQLite."""
-        if dialect.name == "sqlite":
-            return dialect.type_descriptor(_MinorUnits())
-        return dialect.type_descriptor(Numeric())
 
     def process_bind_param(
         self, value: Decimal | int | None, dialect: Dialect
@@ -363,14 +352,3 @@ class _Factor(TypeDecorator[Decimal]):
         if value is None or dialect.name != "sqlite":
             return value
         return float(value)
-
-    def process_result_value(
-        self, value: Decimal | float | None, dialect: Dialect
-    ) -> Decimal | None:
-        """The result as a ``Decimal``, from minor units on SQLite."""
-        if value is None:
-            return None
-        amount = Decimal(repr(value)) if isinstance(value, float) else Decimal(value)
-        if dialect.name == "sqlite":
-            return amount.scaleb(-self.scale)
-        return amount
