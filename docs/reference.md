@@ -220,6 +220,9 @@ Installed contrib apps add their own:
   ([auth.md](auth.md))
 - evidence: no `EVIDENCE.SUBJECT_KEY`
   ([contrib.md](contrib.md#evidence-records-that-provably-never-change))
+- mail: the console or memory backend; and in any environment without
+  `DEBUG`, SMTP without TLS ([mail.md](mail.md))
+- notifications: the console or memory backends ([mail.md](mail.md))
 
 `migrate --downgrade` also needs `--allow-data-loss` there.
 
@@ -438,6 +441,8 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | A rule for who may call a route | `auth.access.BasePermission` | `Depends(Require(rule))` on the route, or `Public` for anyone |
 | A password hasher | `auth.hashers.PasswordHasher` | `AUTH.PASSWORD_HASHERS` |
 | A password rule | a class with `validate(password, user)` and `help_text()` | `AUTH.PASSWORD_VALIDATORS` |
+| An email backend (a provider's API) | `mail.BaseEmailBackend` | `MAIL.BACKEND` |
+| A text-message or push provider | `notifications.SmsBackend`, `notifications.PushBackend` | `NOTIFICATIONS.SMS_BACKEND`, `NOTIFICATIONS.PUSH_BACKEND` |
 | Middleware | an ASGI class taking `app` | `MIDDLEWARE` |
 | An error tracker | `(exc, context) -> None` | `ERROR_REPORTERS` |
 | A rate-limit store other than memory or Redis | `ratelimit.Backend` | `RATE_LIMIT_BACKEND` |

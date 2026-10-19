@@ -14,6 +14,20 @@ All notable changes to domainkit. The format follows
   and constant-time checks. A new key signs while the old ones still verify,
   so a key can be replaced without logging anyone out. `derive_key` gives
   other uses a key of their own (`docs/reference.md`, "Signing"; ADR 0028).
+- `domainkit.contrib.mail`, Django's `django.core.mail` through the outbox:
+  `send_mail` and `EmailMessage(...).send(uow)` queue a task with the
+  change, so a message goes out if and only if it commits, and the worker
+  sends it, retrying up to `MAIL.MAX_ATTEMPTS`. Backends send over SMTP
+  (STARTTLS or TLS, with the certificate checked, and timeouts), to the
+  console, or to `mail.outbox` for tests. Messages refuse header injection
+  and are bounded (DJ-48; `docs/mail.md`; ADR 0029).
+- Mail templates: `render_mail("billing/invoice", context, to=[...])` reads a
+  subject, a text body, and an optional HTML body from `templates/mail/` in
+  domain packages or `MAIL.TEMPLATE_DIRS`, and escapes values in the HTML
+  (DJ-49).
+- `domainkit.contrib.notifications`: text messages and push notifications
+  queued the same way, with `SmsBackend` and `PushBackend` ports for a
+  project's provider, and console and memory backends (DJ-50).
 
 ### Changed
 

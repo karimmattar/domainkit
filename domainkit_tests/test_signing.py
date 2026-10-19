@@ -3,6 +3,7 @@
 import base64
 import json
 import logging
+from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
 
@@ -443,3 +444,43 @@ def test_errors_and_logs_never_show_the_key(caplog: pytest.LogCaptureFixture) ->
     assert "secret-value" not in str(refused.value)
     assert signed[-20:-1] not in str(refused.value)
     assert caplog.records == []
+
+
+def test_refusals_say_why() -> None:
+    """Each refusal names what is wrong, and nothing it was given."""
+    signer = TimestampSigner(salt="tests")
+    refusals: dict[str, Callable[[], object]] = {
+        "No signature found.": lambda: signer.unsign("unsigned"),
+        "The signature does not match.": lambda: signer.unsign("a:b"),
+        "No timestamp found.": lambda: signer.unsign(Signer.sign(signer, "value:")),
+        "The timestamp is not base 62.": lambda: signer.unsign(
+            Signer.sign(signer, "value:!")
+        ),
+        "The signed value is not an encoded object.": lambda: signer.unsign_object(
+            signer.sign("!")
+        ),
+    }
+    for message, refuse in refusals.items():
+        with pytest.raises(BadSignature) as refused:
+            refuse()
+        assert str(refused.value) == message
+    with pytest.raises(ValueError, match="cannot be empty") as empty:
+        Signer(key=b"")
+    assert str(empty.value) == "A key cannot be empty."
+    with (
+        override_settings(SECRET_KEY=UNSET),
+        pytest.raises(ImproperlyConfigured) as unset,
+    ):
+        derive_key("one")
+    assert str(unset.value) == (
+        "Set SECRET_KEY: it signs the values this service hands out "
+        "(docs/reference.md)."
+    )
+
+
+def test_timestamped_values_may_hold_the_separator(clock: list[float]) -> None:
+    """The timestamp is the last part before the signature, whatever the value."""
+    signer = TimestampSigner(salt="tests")
+
+    assert signer.unsign(signer.sign("a:b:c"), max_age=0) == "a:b:c"
+    assert signer.unsign_object(signer.sign_object({"a:b": ":"})) == {"a:b": ":"}
