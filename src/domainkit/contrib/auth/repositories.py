@@ -26,7 +26,14 @@ from .hashers import amake_password
 from .models import AbstractBaseUser, Group, GroupId, PasswordHash, Permission, UserId
 from .settings import auth_settings
 from .tables import groups, mfa_devices, permissions, recovery_codes, tokens
-from .tokens import AuthToken, TokenKind, new_token, token_digest, utc_now
+from .tokens import (
+    LAST_USED_EVERY,
+    AuthToken,
+    TokenKind,
+    new_token,
+    token_digest,
+    utc_now,
+)
 from .users import get_user_model, get_user_table
 
 
@@ -307,29 +314,97 @@ class TokenStore:
         name: str = "",
         family: UUID | None = None,
         now: datetime | None = None,
+        scopes: frozenset[str] | None = None,
     ) -> str:
         """Store a new token for ``user_id`` and return it (shown only now).
 
-        It works for ``ttl`` from ``now`` (default: the current time).
+        It works for ``ttl`` from ``now`` (default: the current time), with
+        the permission keys in ``scopes`` only, if given.
         """
-        raw = new_token(auth_settings().TOKEN_PREFIX)
-        now = now or utc_now()
-        self.session.add(
-            AuthToken(
-                id=token_digest(raw),
-                user_id=user_id,
-                kind=kind,
-                name=name,
-                family=family,
-                created_at=now,
-                expires_at=None if ttl is None else now + ttl,
-            )
+        raw, _ = await self.create(
+            user_id,
+            kind=kind,
+            ttl=ttl,
+            name=name,
+            family=family,
+            now=now,
+            scopes=scopes,
         )
         return raw
 
+    async def create(
+        self,
+        user_id: UUID,
+        *,
+        kind: TokenKind = TokenKind.ACCESS,
+        ttl: timedelta | None,
+        name: str = "",
+        family: UUID | None = None,
+        now: datetime | None = None,
+        scopes: frozenset[str] | None = None,
+    ) -> tuple[str, AuthToken]:
+        """``issue``, returning the stored token with the raw one."""
+        raw = new_token(auth_settings().TOKEN_PREFIX)
+        now = now or utc_now()
+        token = AuthToken(
+            id=token_digest(raw),
+            user_id=user_id,
+            kind=kind,
+            name=name,
+            family=family,
+            created_at=now,
+            expires_at=None if ttl is None else now + ttl,
+            scopes=scopes,
+        )
+        self.session.add(token)
+        return raw, token
+
     async def find(self, raw: str) -> AuthToken | None:
         """The stored token ``raw`` is, expired or not."""
-        return await self.session.get(AuthToken, token_digest(raw))
+        return await self.find_digest(token_digest(raw))
+
+    async def find_digest(self, digest: str) -> AuthToken | None:
+        """The stored token whose digest is ``digest``."""
+        return await self.session.get(AuthToken, digest)
+
+    async def touch(self, token: AuthToken, now: datetime | None = None) -> bool:
+        """Record that ``token`` was used, at most once per ``LAST_USED_EVERY``.
+
+        Concurrent requests write once: the update checks the stored time.
+        """
+        moment = now or utc_now()
+        last = token.last_used_at
+        if last is not None and moment - last < LAST_USED_EVERY:
+            return False
+        result = await self.session.execute(
+            update(tokens)
+            .where(
+                tokens.c.id == token.id,
+                tokens.c.last_used_at.is_(None)
+                | (tokens.c.last_used_at <= moment - LAST_USED_EVERY),
+            )
+            .values(last_used_at=moment)
+        )
+        set_committed_value(token, "last_used_at", moment)
+        return _count(result) == 1
+
+    async def of_user(
+        self, user_id: UUID, *, limit: int, before: tuple[datetime, str] | None = None
+    ) -> Page[AuthToken]:
+        """The user's tokens, newest first, after the position ``before``."""
+        statement = (
+            select(AuthToken)
+            .where(tokens.c.user_id == user_id)
+            .order_by(tokens.c.created_at.desc(), tokens.c.id.desc())
+            .limit(limit + 1)
+        )
+        if before is not None:
+            created, token_id = before
+            statement = statement.where(
+                (tokens.c.created_at < created)
+                | ((tokens.c.created_at == created) & (tokens.c.id < token_id))
+            )
+        return Page.from_items(list(await self.session.scalars(statement)), limit)
 
     async def family_active(self, family: UUID, now: datetime | None = None) -> bool:
         """Whether the login ``family`` still has an unexpired token."""

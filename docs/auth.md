@@ -349,6 +349,40 @@ request looks its token up: logging out, a password change, or
 scripts and other services. The prefix lets secret scanners and people
 recognize a leaked token.
 
+### Personal tokens and scopes
+
+`domainkit.contrib.auth.personal_tokens.router` lets users manage their
+own tokens, like GitHub's personal access tokens:
+
+```python
+from domainkit.contrib.auth.personal_tokens import router as tokens_router
+
+router.include_router(tokens_router, prefix="/auth")
+```
+
+| Endpoint | Body | Answer |
+| --- | --- | --- |
+| `GET /tokens` | `?limit=50&cursor=` | The user's tokens, newest first: `id` (the digest), `name`, `kind` (`access`, `session`, `refresh`), `scopes`, `created_at`, `expires_at`, `last_used_at`, and `current` for the one this request uses; `next_cursor`. |
+| `POST /tokens` | `{"name", "scopes", "expires_in_days"}` | `201`, with `token`: the value, shown this once. `expires_in_days` is 90 by default (1 to 3650), `null` for no end. `403 scope_not_held` for a scope the user lacks. |
+| `DELETE /tokens/{id}` | | `204`; `404 token_not_found` for a token that is not the user's. A refresh token takes its JWT login with it. |
+
+A token's scopes are permission keys (`shop.view_product`), at most 100,
+each one the user holds when the token is made. They only narrow: a
+request with a scoped token may do what both its user and its scopes
+allow, so a permission taken from the user later is gone from the token
+too. `HasPermissions`, `ModelPermissions`, and `HasObjectPermissions`
+check both; `HasScope(*keys)` checks the scopes alone (credentials without
+scopes allow every one); `IsSuperuser` refuses scoped credentials; and
+`IsUnscoped` keeps a route to credentials without scopes. These routes and
+the admin API take only those, so a scoped token can neither make a token
+with more nor grant anything. `createtoken --scope KEY` makes scoped tokens
+from the command line. Creating and revoking are audited
+(`auth.token_created` with the scopes, `auth.token_revoked`).
+
+Every token records when it last authenticated a request
+(`last_used_at`), written at most once every five minutes, so a key no one
+uses shows up without a write per request.
+
 ### JSON Web Tokens
 
 `JWTAuthentication` (the `jwt` extra: `pip install "domainkit[jwt]"`)
@@ -693,10 +727,12 @@ async def greeting(user: CurrentUser): ...               # anyone; AnonymousUser
 | `IsAuthenticated` | Users who logged in. |
 | `IsAuthenticatedOrReadOnly` | Anyone for `GET`, `HEAD`, `OPTIONS`; users otherwise. A WebSocket handshake is a `GET`, so anyone may open one: guard sockets that take writes with `IsAuthenticated`. |
 | `IsAdminUser` | Staff users (`is_staff`). |
-| `IsSuperuser` | Active superusers. |
+| `IsSuperuser` | Active superusers, with credentials that carry no scopes. |
 | `HasPermissions(*keys)` | Users granted every permission (by any backend). |
 | `ModelPermissions(model)` | Django's model permissions by method: `GET`/`HEAD` need `view`, `POST` `add`, `PUT`/`PATCH` `change`, `DELETE` `delete`; `OPTIONS` needs a user, and a WebSocket handshake `view`. `model` is a mapped class or `"<domain>.<model>"`. |
 | `HasObjectPermissions(*keys)` | Users granted every permission on the object, by a backend with object permissions. The request itself needs an active user who logged in; check each object with `check_object_permissions`. |
+| `HasScope(*keys)` | Users whose credentials' scopes cover every key; credentials without scopes cover all. |
+| `IsUnscoped` | Users whose credentials carry no scopes (a login, not a scoped token). |
 
 Combine rule instances with `&`, `|`, and `~`:
 `Require(IsAdminUser() | HasPermissions("billing.view_invoice"))`. A rule of
@@ -894,7 +930,7 @@ changed what.
 | --- | --- | --- |
 | `createsuperuser` | `--<USERNAME_FIELD>`, `--<field>` per `REQUIRED_FIELDS`, `--noinput` | Create a superuser (and staff), asking for what the options leave out. With `--noinput`, values come from `<PREFIX>SUPERUSER_<FIELD>` (or a `_FILE`), and the password from `<PREFIX>SUPERUSER_PASSWORD`, which must pass the validators; without one the password is unusable. |
 | `changepassword` | `[username]` | Ask twice for a new password that passes the validators; three tries. The default user is your login name. Every token of the user ends. |
-| `createtoken` | `username`, `--name`, `--days` (90), `--no-expiry` | Print a new opaque token for the user's scripts; it is shown once. |
+| `createtoken` | `username`, `--name`, `--days` (90), `--no-expiry`, `--scope` | Print a new opaque token for the user's scripts; it is shown once. Each `--scope KEY` limits it to that permission, which the user must have. |
 | `cleartokens` | `--user` | Delete expired tokens (hourly with `domainkit.contrib.messaging`), or every token of one user. |
 | `resetmfa` | `username` | Turn a user's second factor off and end their sessions, for a user who lost the app and the recovery codes. |
 

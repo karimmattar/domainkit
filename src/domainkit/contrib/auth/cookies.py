@@ -106,9 +106,11 @@ class CookieAuthentication(BaseAuthentication):
             if token is None or token.kind != TokenKind.SESSION or token.expired():
                 return None
             user = await uow.users.find(UserId(token.user_id))
-        if user is None or not user.is_active:
-            return None
-        check_request(connection, token.id)
+            if user is None or not user.is_active:
+                return None
+            check_request(connection, token.id)
+            if await uow.tokens.touch(token):
+                await uow.commit()
         return Credentials(user, scheme=SCHEME, token_id=token.id)
 
 

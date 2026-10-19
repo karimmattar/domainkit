@@ -46,7 +46,7 @@ from domainkit.http import (
     encode_cursor,
 )
 
-from .access import BasePermission, IsAdminUser, IsSuperuser, Require
+from .access import BasePermission, IsAdminUser, IsSuperuser, IsUnscoped, Require
 from .backends import ModelBackend, get_all_permissions, get_backends, has_perms
 from .events import UserLoggedOut
 from .exceptions import (
@@ -88,9 +88,17 @@ class HasModelPermission(BasePermission):
 
 
 def staff(action: str, model: Callable[[], type]) -> Any:  # noqa: ANN401 - Depends.
-    """The dependency of an admin endpoint: staff with ``action`` on the model."""
+    """The dependency of an admin endpoint: staff with ``action`` on the model.
+
+    Credentials limited to scopes are refused: what staff grant is bounded
+    by their permissions, never by a token's scopes.
+    """
     return Depends(
-        Require(IsAdminUser() | IsSuperuser(), HasModelPermission(action, model))
+        Require(
+            IsUnscoped(),
+            IsAdminUser() | IsSuperuser(),
+            HasModelPermission(action, model),
+        )
     )
 
 

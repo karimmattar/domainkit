@@ -28,6 +28,7 @@ from sqlalchemy import (
     LargeBinary,
     String,
     Table,
+    Text,
     UniqueConstraint,
     Uuid,
     false,
@@ -70,6 +71,25 @@ class PasswordHashType(TypeDecorator[PasswordHash]):
     ) -> PasswordHash | None:
         """Wrap the stored text."""
         return None if value is None else PasswordHash(value)
+
+
+class ScopesType(TypeDecorator[frozenset[str]]):
+    """Store a token's scopes as permission keys separated by spaces."""
+
+    impl = Text
+    cache_ok = True
+
+    def process_bind_param(
+        self, value: frozenset[str] | None, dialect: Dialect
+    ) -> str | None:
+        """Join the keys, sorted; None (no limit) stays None."""
+        return None if value is None else " ".join(sorted(value))
+
+    def process_result_value(
+        self, value: str | None, dialect: Dialect
+    ) -> frozenset[str] | None:
+        """Split the stored keys."""
+        return None if value is None else frozenset(value.split())
 
 
 def abstract_base_user_columns() -> list[Column[Any]]:
@@ -178,6 +198,9 @@ tokens = Table(
     Column("created_at", UTCDateTime, nullable=False),
     Column("expires_at", UTCDateTime),
     Column("used_at", UTCDateTime),
+    # Permission keys the token is limited to; NULL: every one of its user's.
+    Column("scopes", ScopesType),
+    Column("last_used_at", UTCDateTime),
     Index("ix_domainkit_tokens_user_id", "user_id"),
     Index("ix_domainkit_tokens_family", "family"),
     Index("ix_domainkit_tokens_expires_at", "expires_at"),

@@ -61,6 +61,14 @@ All notable changes to domainkit. The format follows
   secrets are stored encrypted with AES-GCM under a key derived from
   `SECRET_KEY` (ADR 0030). `resetmfa` turns it off for a user who lost it.
   Run `makemigrations` and `migrate` for the new tables.
+- Scoped personal tokens (DJ-33): `domainkit.contrib.auth.personal_tokens`
+  lets users list, create, and revoke their own tokens at `/auth/tokens`,
+  shown once and limited to scopes (permission keys they hold) if they
+  wish. Permission rules allow a scoped token only what both its user and
+  its scopes allow; `HasScope` and `IsUnscoped` are new rules, and
+  `createtoken --scope` makes scoped tokens. Tokens record when they were
+  last used, at most every five minutes. Run `makemigrations` and
+  `migrate` for the tokens' new columns.
 - `AsyncTestClient`, which serves the application in the test's own event
   loop, with its lifespan, and the `async_client`, `async_client_for`, and
   `async_admin_client` fixtures, for async tests (DJ-62). New projects'
@@ -95,6 +103,9 @@ All notable changes to domainkit. The format follows
   never quote a key. The production settings that `init` creates read it
   from `<PREFIX>SECRET_KEY`; set it before upgrading a deployment.
 - `/auth/me` and the admin API show `email_verified`.
+- `IsSuperuser` refuses credentials limited to scopes, and the admin API
+  refuses them altogether: what staff grant is bounded by their
+  permissions, never by a token's scopes.
 - **On PostgreSQL, the test fixtures no longer use the database the test
   settings name**: they create `test_<name>` on the same server and drop it
   after the run, so the test role needs `CREATEDB`. A role without it can

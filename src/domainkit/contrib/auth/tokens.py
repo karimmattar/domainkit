@@ -13,7 +13,7 @@ together if a used token comes back.
 import hashlib
 import re
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Final
 from uuid import UUID
@@ -24,6 +24,8 @@ from domainkit.ddd import Entity
 TOKEN_BYTES: Final = 32
 _BODY: Final = re.compile(r"[A-Za-z0-9_-]{43}")  # token_urlsafe(TOKEN_BYTES)
 """Random bytes in a token: 256 bits, beyond guessing."""
+LAST_USED_EVERY: Final = timedelta(minutes=5)
+"""How often a token's ``last_used_at`` is written, at most."""
 
 
 class TokenKind(StrEnum):
@@ -51,6 +53,10 @@ class AuthToken(Entity[str]):
     """None: works until revoked."""
     used_at: datetime | None = None
     """When a refresh token was exchanged; it never works again."""
+    scopes: frozenset[str] | None = None
+    """The permission keys it is limited to; None: all of its user's."""
+    last_used_at: datetime | None = None
+    """When it last authenticated a request, to ``LAST_USED_EVERY``."""
 
     class Meta:
         """Its content type's name."""

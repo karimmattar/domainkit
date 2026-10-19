@@ -44,10 +44,12 @@ class RefreshTokenReused(DomainEvent):
 
 
 class TokenCreated(DomainEvent):
-    """A long-lived token was made for a user (``createtoken``)."""
+    """A long-lived token was made for a user (``createtoken``, ``/tokens``)."""
 
     user_id: UUID
     name: str
+    scopes: tuple[str, ...] | None = None
+    """The permission keys it is limited to; None: all of the user's."""
 
 
 class MfaEnabled(DomainEvent):
