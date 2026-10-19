@@ -36,6 +36,7 @@ from domainkit.ddd import (
     UnknownField,
 )
 from domainkit.ddd.query import Criteria, F, Ordering, Query, RowLock
+from domainkit.testing import assert_num_queries
 from domainkit_tests.conftest import POSTGRES_VARIABLE
 from domainkit_tests.gadgets import (
     MADE,
@@ -601,3 +602,15 @@ def test_values_bind_through_their_column_types() -> None:
 
     assert "1.995" not in str(compiled)
     assert set(compiled.params.values()) == {Decimal("1.995"), Label("X")}
+
+
+async def test_a_page_costs_its_query_and_its_childrens(tables: None) -> None:
+    """One SELECT, one per child relationship (selectin), and one to count."""
+    await store(*dataset())
+    async with GadgetsUnitOfWork() as uow:
+        with assert_num_queries(3):  # Gadgets, then their parts and makers.
+            page = await uow.gadgets.paginate(F("stock") >= 0, limit=2)
+        with assert_num_queries(4):
+            await uow.gadgets.paginate(limit=2, after=page.next_position, count=True)
+        with assert_num_queries(1):
+            await uow.gadgets.exists(F("parts.sku") == "X1")
