@@ -877,6 +877,32 @@ def test_rehashing_skips_users_deleted_meanwhile(auth_project: str) -> None:
     run(ModelBackend()._rehash(UserId(uuid4()), old, make_password(PASSWORD)))
 
 
+def test_rehashing_touches_only_the_user_who_logged_in(auth_project: str) -> None:
+    """Users sharing a hash (imported from an unsalted one) keep theirs."""
+    shared = PasswordHash(make_password(PASSWORD))
+
+    async def stored(username: str) -> AbstractBaseUser:
+        async with AuthUnitOfWork() as uow:
+            user = await uow.users.get_by_natural_key(username)
+        assert user is not None
+        return user
+
+    async def scenario() -> list[str]:
+        async with AuthUnitOfWork() as uow:
+            for name in ("alice", "bob"):
+                user = await uow.users.create_user(name)
+                user.set_password(shared)
+            await uow.commit()
+        alice = await stored("alice")
+        await ModelBackend()._rehash(alice.id, shared, make_password(PASSWORD))
+        return [(await stored(name)).password.value for name in ("alice", "bob")]
+
+    alice, bob = run(scenario())
+
+    assert alice != shared.value
+    assert bob == shared.value
+
+
 def test_rehashing_never_undoes_a_new_password(auth_project: str) -> None:
     """A login's late rehash of the old password leaves a new one in place."""
 

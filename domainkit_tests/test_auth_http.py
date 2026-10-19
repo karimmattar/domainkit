@@ -579,7 +579,10 @@ def test_jwt_logins_refresh_and_end(api: Api, caplog: pytest.LogCaptureFixture) 
         record.getMessage() for record in caplog.records
     ]
     (row,) = audited("auth.refresh_token_reused")
-    assert (row["actor"], row["details"]["family"]) == ("anonymous", family)
+    assert (row["actor"], row["details"]) == (
+        "anonymous",
+        {"user_id": str(alice), "family": family},
+    )
     for token in (body["access_token"], refreshed["access_token"]):
         ended = client.get("/whoami", headers=bearer(token))
         assert ended.json()["detail"] == "Session ended; log in again."
