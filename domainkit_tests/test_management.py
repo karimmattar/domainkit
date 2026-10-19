@@ -32,6 +32,7 @@ BUILTINS = {
     "broker",
     "cache",
     "check",
+    "compilemessages",
     "init",
     "makemigrations",
     "migrate",

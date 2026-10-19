@@ -7,8 +7,13 @@ A Django-style framework for domain-driven FastAPI services. It provides:
 - DDD building blocks, with the layer rules between them enforced
 - several databases: domains routed to their own, sharding by key,
   PostgreSQL range partitioning, and immudb ledgers for evidence
-- caches in memory or in Redis and Valkey, with stampede protection, and
-  rate limits shared by every replica
+- caches in memory or in Redis and Valkey (one server, Sentinel, or
+  Cluster), with stampede protection, and rate limits shared by every
+  replica, globally or per route
+- answers in the caller's language (English and Arabic ship), times shown
+  in the business's time zone, and numbers and dates in local formats
+- file storage and uploads checked by their content, under names the
+  storage makes
 - background work through a transactional outbox, run by polling workers or
   through RabbitMQ, with queues for separate worker pools
 - users, groups, and permissions per content type, as in Django's
@@ -16,10 +21,11 @@ A Django-style framework for domain-driven FastAPI services. It provides:
   and a swappable user model; token or JWT authentication, and route rules
   as in Django REST framework
 - optional apps for reliable messaging, audit trails, idempotent requests,
-  and tamper-evident evidence
+  tamper-evident evidence, signed outgoing webhooks, and privacy requests
+  (export, erasure, and retention)
 
 ```bash
-pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, mfa, immudb, redis, rabbitmq, metrics, tracing, testing
+pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, mfa, immudb, redis, rabbitmq, metrics, tracing, uploads, testing, webhooks, tzdata
 ```
 
 ## Documentation
@@ -31,11 +37,17 @@ pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, m
 - [docs/cache.md](https://github.com/karimmattar/domainkit/blob/main/docs/cache.md): caches in memory, Redis, and Valkey,
   and shared rate limits
 - [docs/contrib.md](https://github.com/karimmattar/domainkit/blob/main/docs/contrib.md): messaging (and workers on RabbitMQ),
-  audit, idempotency, and evidence
+  webhooks, audit, idempotency, and evidence
 - [docs/auth.md](https://github.com/karimmattar/domainkit/blob/main/docs/auth.md): users, groups, permissions, content
   types, passwords, backends, tokens, route rules, and the admin API
 - [docs/mail.md](https://github.com/karimmattar/domainkit/blob/main/docs/mail.md): email, mail templates, text messages,
   and push notifications, sent through the outbox
+- [docs/i18n.md](https://github.com/karimmattar/domainkit/blob/main/docs/i18n.md): responses in the caller's language,
+  time zones, and number and date formats
+- [docs/uploads.md](https://github.com/karimmattar/domainkit/blob/main/docs/uploads.md): file storages, receiving uploads,
+  and serving files
+- [docs/privacy.md](https://github.com/karimmattar/domainkit/blob/main/docs/privacy.md): exporting and erasing a person's
+  data, and retention
 - [docs/testing.md](https://github.com/karimmattar/domainkit/blob/main/docs/testing.md): the pytest plugin: test databases,
   sync and async clients, factories, a clock to freeze, and query counts
 - [docs/versioning.md](https://github.com/karimmattar/domainkit/blob/main/docs/versioning.md): compatibility, deprecations, and releases

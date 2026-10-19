@@ -76,6 +76,82 @@ All notable changes to domainkit. The format follows
   (`docs/auth.md`, "Client certificates", has an nginx example).
   `ProxyHeadersMiddleware` keeps the proxy's address in
   `scope["domainkit.peer"]` for this.
+- Cron schedules: `@periodic(cron="0 3 * * 1-5", tz="Africa/Cairo")` runs
+  a task at wall-clock times in a time zone, with a parser of our own
+  (lists, ranges, steps, names, macros). Daylight saving time never runs a
+  time twice or skips one: a skipped time runs at the end of the gap, a
+  repeated one once (ADR 0034). On Windows, install `domainkit[tzdata]`.
+- Tasks set their own `timeout`, `max_attempts`, `backoff` (`Backoff`,
+  exponential or fixed, capped, with jitter), `retry_on`, and
+  `dont_retry_on`, over `MESSAGING`'s (DJ-52). `current_attempt()` tells a
+  task which run it is.
+- Task `priority` (-100 to 100, higher first, as in Django's tasks),
+  `chain(a, b)` to run a task after another succeeds with its result, and
+  a per-task `rate` ("10/minute") counted by `RATE_LIMIT_BACKEND` (ADR
+  0035).
+- `messages --pending`, `--locked`, and `--queue` list waiting, running,
+  and published messages; `messages --cancel ID` cancels one no worker
+  runs; `messages` shows each queue's lag, and so does the new
+  `messaging_outbox_lag_seconds` gauge (DJ-53).
+- Outbox messages carry the W3C trace context of their commit, and the
+  worker's span continues it; malformed `traceparent` and `tracestate`
+  values are dropped (`domainkit.tracing.trace_headers`, `remote_parent`).
+- `domainkit.contrib.messaging.testing`, a pytest plugin with
+  `captured_events`, `outbox` (`assert_queued`, `run_queued` and
+  `arun_queued`), and `execute_deferred`, for sync and async tests.
+- `domainkit.contrib.webhooks` sends exposed domain events to subscribed
+  URLs through the outbox, so only committed changes are sent. Deliveries
+  are signed as Standard Webhooks, retried with backoff, logged per
+  attempt, and replayable (`webhooks replay`). URLs must be https and
+  resolve only to public addresses, and the checked address is the one
+  connected to. Staff manage subscriptions through an admin API; secrets
+  are shown once, in answers marked `no-store` that neither caches nor
+  idempotency keys keep (ADR 0036). Install `domainkit[webhooks]`.
+- `domainkit.http.ratelimit.Throttle`, a FastAPI dependency that limits one
+  route, or the routes of one scope, per user, per address, or per key a
+  function returns, apart from `RATE_LIMIT` and with the same backends. Over
+  the rate, the route answers 429 `throttled` with `Retry-After` (DJ-25;
+  `docs/cache.md`, "Throttles for one route").
+- `@cache_page` caches what a GET endpoint returns, keyed by path, query,
+  language, and the headers it lists, with an `ETag` and 304s for
+  `If-None-Match`. Callers with credentials are never served shared
+  answers; `vary_on_user=True` keeps an entry per user. Cached pages
+  replace the `no-store` default with `Cache-Control` of their own
+  (DJ-57; `docs/cache.md`, "Caching whole responses").
+- Caches and rate limits on a Redis Sentinel group
+  (`redis+sentinel://host-1,host-2/mymaster/0`) or a Redis Cluster
+  (`redis+cluster://node-1,node-2`), `rediss+` for TLS, with
+  `SENTINEL_PASSWORD` for Sentinels that ask for one. The deployment checks
+  hold them to the rules for one server (DJ-58; `docs/cache.md`).
+- Error details and validation messages in the caller's language
+  (DJ-59; `docs/i18n.md`, ADR 0039): `LocaleMiddleware` picks a language of
+  `LANGUAGES` from `Accept-Language` and answers with `Content-Language`;
+  domainkit ships English and Arabic. Projects mark their own text with
+  `gettext`, `ngettext`, `pgettext`, and their lazy variants
+  (`domainkit.i18n`), keep catalogs per domain or in `LOCALE_PATHS`, and
+  compile them with `manage.py compilemessages`, which needs no GNU tools
+  and checks them (`--check` in CI). New projects install the middleware.
+- File storage and uploads (DJ-27; `docs/uploads.md`, ADR 0040):
+  `domainkit.storage`, with `FileSystemStorage` and `MemoryStorage`
+  configured in `STORAGES`, stores files under random names it makes,
+  writes them atomically, and never follows symbolic links.
+  `domainkit.http.uploads.save_upload` stores a FastAPI `UploadFile` only
+  if its first bytes are of a type the route accepts, stops it at
+  `max_size` while it streams, and cleans the client's file name;
+  `serve` streams a stored file from a guarded route as a sandboxed
+  download. FastAPI's form parser comes with the new `uploads` extra.
+- `TIME_ZONE`, with `localtime()`, `localdate()`, and `timezone.override()`
+  to show stored UTC times where the business is, and `number_format`,
+  `date_format`, `time_format`, and `datetime_format` that write numbers
+  and dates as English and Arabic do (DJ-60; `docs/i18n.md`).
+- `domainkit.contrib.privacy` (DJ-69; `docs/privacy.md`, ADR 0041) answers
+  privacy requests across every installed domain from `Personal` markers
+  on aggregate fields: `manage.py privacy export` writes what is held about
+  a subject, `privacy erase` erases it through units of work, with a
+  `PersonalDataErased` event, and forgets the subject in the audit trail,
+  and `privacy purge` applies the retention policies domains declare in
+  `DomainConfig.RETENTION`, never on append-only tables. Every operation is
+  audited.
 - `AsyncTestClient`, which serves the application in the test's own event
   loop, with its lifespan, and the `async_client`, `async_client_for`, and
   `async_admin_client` fixtures, for async tests (DJ-62). New projects'
@@ -115,6 +191,13 @@ All notable changes to domainkit. The format follows
   `everywhere` refuse them altogether: what staff grant is bounded by
   their permissions, never by a token's scopes, and a scoped key must not
   change or lock its account.
+- The outbox has `priority` and `started_at` columns, an index, and a
+  `cancelled` status: run `makemigrations` and `migrate` in projects that
+  install messaging before deploying.
+- `MESSAGING.RETRY_BASE_SECONDS` and `RETRY_MAX_SECONDS` are at most a
+  year, and a retry delay no longer overflows after a thousand attempts.
+- `messages` prints a `cancelled` count and each queue's lag after the
+  counts by status.
 - **On PostgreSQL, the test fixtures no longer use the database the test
   settings name**: they create `test_<name>` on the same server and drop it
   after the run, so the test role needs `CREATEDB`. A role without it can

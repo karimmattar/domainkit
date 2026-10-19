@@ -109,7 +109,7 @@ Each `CACHES` entry:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `URL` | `memory://` | `memory://` (this process), `redis://` or `rediss://` (Redis or Valkey, through redis-py; the `redis` extra), or `dummy://` (keeps nothing). redis-py URL options (`?socket_keepalive=true`) apply. Kept secret. |
+| `URL` | `memory://` | `memory://` (this process), `redis://` or `rediss://` (Redis or Valkey, through redis-py; the `redis` extra), `redis+sentinel://` or `redis+cluster://` (a Sentinel group or a Cluster, by several addresses; `rediss+` for TLS; see [cache.md](cache.md#sentinel-and-cluster)), or `dummy://` (keeps nothing). redis-py URL options (`?socket_keepalive=true`) apply to one server. Kept secret. |
 | `TTL` | `300.0` | Seconds an entry lives unless a call passes `ttl`; `None` keeps entries until evicted. |
 | `KEY_PREFIX` | the alias | Namespace of every key (`[A-Za-z0-9_.-]`, up to 64). Required for Redis: unique among the services sharing a server. |
 | `VERSION` | `1` | Part of every key. Raise it to drop every entry at once, as after changing a cached type. |
@@ -123,6 +123,22 @@ Each `CACHES` entry:
 | `TLS_CA` | system CAs | CA bundle that signed the server's certificate (`rediss://` only). |
 | `TLS_CERT`, `TLS_KEY` | `None` | Client certificate and key for mutual TLS (`rediss://` only). |
 | `READINESS` | `False` | Fail `/ready` while this cache is unreachable. Leave it off for caches the service can run without, or an outage takes every replica out of rotation. |
+| `SENTINEL_PASSWORD` | `None` | `redis+sentinel://` only: the Sentinels' own password, when they ask for one (the URL's is the primary's). Kept secret. |
+
+### Storages
+
+Where files live; see [uploads.md](uploads.md).
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `STORAGES` | `{}` | File storages by alias (below), as Django's `STORAGES`. `storages["default"]` is the one `save_upload` and `serve` use unless told otherwise. |
+
+Each `STORAGES` entry:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `BACKEND` | `domainkit.storage.FileSystemStorage` | Dotted path to a `domainkit.storage.Storage` class: `FileSystemStorage`, `MemoryStorage` (tests; refused in staging and production), or your own. |
+| `OPTIONS` | `{}` | The class's keyword arguments. `FileSystemStorage` takes `location` (an absolute directory), `base_url` (where a web server serves it, if one does), `file_mode` (`0o600`), and `directory_mode` (`0o700`). |
 
 ### Brokers
 
@@ -172,6 +188,17 @@ Each `BROKERS` entry:
 | `CORS_ALLOWED_HEADERS` | `Authorization Content-Type X-Request-ID` | |
 | `CORS_ALLOW_CREDENTIALS` | `False` | Cannot be combined with origin `*`. |
 
+### Languages and time zones
+
+See [i18n.md](i18n.md).
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `LANGUAGE_CODE` | `"en"` | The language of responses when `Accept-Language` asks for none of `LANGUAGES`, and outside requests. It must be one of them. |
+| `LANGUAGES` | `(("en", "English"), ("ar", "Arabic"))` | `(code, name)` of each language responses may be in; `LocaleMiddleware` picks one per request. Codes are lower case (`ar`, `pt-br`). |
+| `LOCALE_PATHS` | `()` | Directories of `<locale>/LC_MESSAGES/messages.mo` catalogs, looked up before each installed domain's `locale` directory, then domainkit's own. |
+| `TIME_ZONE` | `"UTC"` | The zone dates are shown in (`localtime`, `localdate`, and the date formats). Dates are stored and compared in UTC whatever it says. |
+
 ### Server limits
 
 The application limits bodies, WebSocket messages, and request rates. Slow
@@ -211,9 +238,12 @@ With `ENVIRONMENT` set to `staging` or `production`, startup fails on:
 - a `memory://` broker, a broker on another host without `amqps://`, a
   broker URL that turns certificate checks off (`no_verify_ssl`), and a
   broker without a user of its own (none, or `guest`)
-- a Redis cache on another host without `rediss://`, or without a password
-  or a client certificate, and any cache URL that weakens certificate checks
-  (`ssl_cert_reqs=none` or `optional`, `ssl_check_hostname=false`)
+- a `MemoryStorage` in `STORAGES`: its files live in one process, until
+  it ends
+- a Redis cache on another host without `rediss://` (`rediss+sentinel://`,
+  `rediss+cluster://`), or without a password or a client certificate, and
+  any cache URL that weakens certificate checks (`ssl_cert_reqs=none` or
+  `optional`, `ssl_check_hostname=false`)
 
 Installed contrib apps add their own:
 
@@ -224,6 +254,9 @@ Installed contrib apps add their own:
 - mail: the console or memory backend; and in any environment without
   `DEBUG`, SMTP without TLS ([mail.md](mail.md))
 - notifications: the console or memory backends ([mail.md](mail.md))
+- webhooks: a loopback or link-local network in
+  `WEBHOOKS.ALLOWED_PRIVATE_NETWORKS`
+  ([contrib.md](contrib.md#webhooks-signed-events-for-other-services))
 
 `migrate --downgrade` also needs `--allow-data-loss` there.
 
@@ -249,6 +282,7 @@ first:
 | `domainkit.http.middleware.ProxyHeadersMiddleware` | First, so everything after it sees the real client address and scheme. |
 | `domainkit.http.metrics.MetricsMiddleware` | Counts every response, including ones refused below. |
 | `domainkit.http.middleware.SecurityHeadersMiddleware` | Adds the `SECURE_*` headers to every response. |
+| `domainkit.http.locale.LocaleMiddleware` | Picks the request's language from `Accept-Language`, before anything below answers, so their errors are translated; adds `Content-Language` and `Vary: Accept-Language` ([i18n.md](i18n.md)). |
 | `domainkit.http.middleware.CORSMiddleware` | Answers preflights before any work. |
 | `domainkit.http.middleware.RequestContextMiddleware` | Request id (`X-Request-ID`), access log, the context that logs and audit rows read. WebSocket connections get one too: method `WS`, the request id sent with the accept, one access log line when the connection ends (101 if accepted, 403 if closed first). |
 | `domainkit.http.middleware.AllowedHostsMiddleware` | Refuses unknown `Host` headers with 400. |
@@ -301,7 +335,9 @@ locally, and fails the first time something signs. See
 
 Every error response is JSON: `{"detail", "code", "request_id"}`, plus
 `errors` (location, message, type) for validation errors. Submitted values
-are never echoed back.
+are never echoed back. With `LocaleMiddleware`, `detail` and each `msg`
+are in the request's language; `code` and `type` never change
+([i18n.md](i18n.md)).
 
 | Raised | Status | `code` |
 | --- | --- | --- |
@@ -335,6 +371,7 @@ when a span is active. Query strings and bound SQL values are never logged.
 | `messaging_messages_total` | `kind`, `outcome` |
 | `messaging_message_duration_seconds` | `kind` |
 | `messaging_outbox_messages` | `status` |
+| `messaging_outbox_lag_seconds` | `queue` (seconds its oldest due message has waited for a worker) |
 | `messaging_relayed_total` | `outcome` (`published`, `failed`) |
 | `messaging_deliveries_skipped_total` | |
 | `cache_lookups_total` | `cache`, `result` (`hit`, `miss`, `invalid`, `early`) |
@@ -342,7 +379,10 @@ when a span is active. Query strings and bound SQL values are never logged.
 
 **Traces** (`domainkit[tracing]`): unit-of-work commits and worker messages
 get spans. domainkit only uses the OpenTelemetry API; configure the SDK and
-exporter in the deployment, or run under `opentelemetry-instrument`.
+exporter in the deployment, or run under `opentelemetry-instrument`. Outbox
+messages carry the W3C trace context of their commit, so a worker's span
+continues the trace of the request that queued its work
+([contrib.md](contrib.md#traces)).
 
 ## Testing
 
@@ -366,6 +406,10 @@ factories, a clock to freeze (`freeze_time`), and query-count assertions
 (`assert_num_queries`, `assert_max_queries`). [docs/testing.md](testing.md)
 covers them all.
 
+Fixtures for published events and queued work (`captured_events`,
+`outbox`, `execute_deferred`) come with messaging's own plugin
+([contrib.md](contrib.md#testing)).
+
 ## Commands
 
 Run as `python manage.py <command>`; `init` runs before a project exists, as
@@ -377,6 +421,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `init` | `name`, `[directory]` | Create a project: base, local, test, and production settings, routes, `manage.py`, `.env`, and a first test. The name sets the environment prefix; the directory (default `./<name>`) must be empty or missing. |
 | `check` | | Settings, domains, routes and their access rules, middleware, layer rules, and a single migration head. In staging and production it also lists [weak choices](#deployment-checks) as warnings. |
 | `broker` | `check\|declare`, `[ALIAS ...]` | Connect to brokers (all by default), or declare the exchange and every queue the worker's tasks use on `MESSAGING.BROKER`. |
+| `compilemessages` | `[DIRECTORY ...]`, `-l/--locale`, `--check` | Compile translation catalogs (`.po`) to `.mo` files: in the directories named, or in `LOCALE_PATHS` and each installed domain's `locale` directory. `--check` writes nothing and fails if one is missing or out of date ([i18n.md](i18n.md)). |
 | `cache` | `check\|clear`, `[ALIAS ...]`, `--all` | Ping caches (all by default), or delete every key of the named caches, all versions, in their namespace only. Clearing needs aliases or `--all`. |
 | `startdomain` | `name`, `--aggregate`, `--plural`, `--parent`, `--tests-dir` | Generate a bounded context and its tests. Its command is named after the plural, which may not name an existing command (built in, installed, or a contrib app's). |
 | `makemigrations` | `-m/--message`, `--check`, `--merge`, `--database` | Write a revision per target with changes; `--check` fails if one is missing; `--merge` joins two heads. Without `--database`, every target. The message is one line, without backslashes or triple quotes. |
@@ -386,11 +431,13 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `runserver` | `[addr:port]`, `--noreload` | Development server. Production runs uvicorn directly. |
 | `shell` | | Python console with settings, the registry, and connections loaded. |
 | `runworker` | `--once`, `--metrics-port`, `--metrics-address`, `--database`, `--queue`, `--no-relay` | Run outbox messages (messaging): one worker per outbox, every hosting database by default; `--queue` (repeatable) limits them to some queues. With `MESSAGING.BROKER`, relay to the broker and run what it delivers; `--no-relay` only consumes. `--once` always works from the outbox. |
-| `messages` | `--dead`, `--limit`, `--retry ID\|all`, `--database` | Inspect an outbox, and requeue dead letters (messaging). |
+| `messages` | `--pending\|--locked\|--dead`, `--queue`, `--limit`, `--retry ID\|all`, `--cancel ID`, `--database` | Count an outbox's messages and show each queue's lag, list them, requeue dead letters, or cancel a message no worker runs (messaging). |
+| `webhooks` | `subscriptions\|deliveries\|replay`, `[ID ...]`, `--failed`, `--status`, `--subscription`, `--limit` | List webhook subscriptions or deliveries, or send finished deliveries again (webhooks). |
 | `auditlog` | `--actor`, `--action`, `--limit`, `--database` | Read the audit trail (audit). |
 | `auditseal` | | Seal new audit rows into each database's hash chain and anchor its head on `AUDIT.LEDGER` (audit). |
 | `auditverify` | `--database` | Check the audit trail against its seals and anchors; fails if anything changed (audit). |
 | `auditforget` | `subject ...`, `--anonymous-days` | Make people's pseudonyms in the audit trail unlinkable, in every audited database (audit). |
+| `privacy` | `export --subject ID [--output FILE]`, `erase --subject ID [--reason] [--noinput]`, `purge [--dry-run]` | Export or erase what every installed domain holds about a person, from `Personal` markers on aggregates, or apply the domains' retention policies; each is audited (privacy; see [privacy.md](privacy.md)). |
 | `evidence` | `--subject`, `--verify KEY`, `--limit` | List a subject's evidence, or verify one record (evidence). |
 | `createsuperuser` | `--<USERNAME_FIELD>`, `--<field>` per `REQUIRED_FIELDS`, `--noinput` | Create a superuser, asking for what the options leave out; `--noinput` reads `<PREFIX>SUPERUSER_<FIELD>` (auth; see [auth.md](auth.md)). |
 | `changepassword` | `[username]` | Set a user's password, asked twice and validated; the user's tokens end (auth). |
@@ -412,6 +459,8 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | Work staged with each commit | `async DomainConfig.stage(uow, events, tasks)` | (called by the unit of work) |
 | Work after each commit | `async DomainConfig.committed(uow)` | (called by the unit of work; failures are reported, never raised) |
 | Rows after each `migrate` (`post_migrate`) | `async DomainConfig.migrated(connection, database)` | (called by `migrate` for each database it upgraded, in one transaction as the schema owner) |
+| How long a domain keeps rows | `DomainConfig.RETENTION`, a sequence of `privacy.Retention` | (checked when the app is built; applied by `privacy purge`; see [privacy.md](privacy.md)) |
+| Erasing a personal field no default fits | `erase_personal_data(fields)` on the aggregate | (called by `privacy erase` and retention erasure) |
 | Tables a domain stops using | `DomainConfig.holds_table(table)` | (asked by migrations and content types; a swapped user table answers no) |
 | A user model | a subclass of `AbstractUser` or `AbstractBaseUser`, and its table | `AUTH.USER_MODEL`, `AUTH.USER_TABLE` |
 | An authentication or permission backend | `auth.backends.BaseBackend` | `AUTH.BACKENDS` |

@@ -43,6 +43,14 @@ Memory caches are emptied before every test, so no test sees what another
 cached. Redis caches are left alone: give the test settings their own
 `KEY_PREFIX`.
 
+Fixtures for domain events and background work come with messaging's own
+plugin, `-p domainkit.contrib.messaging.testing`, which projects made by
+`domainkit init` enable too: `captured_events`, `outbox` (assert what was
+queued, and `run_queued()` or `await arun_queued()` to run it here), and
+`execute_deferred` ([contrib.md](contrib.md#testing)). They follow the
+frozen clock: `outbox.run_queued(delayed=True)` makes waiting work due at
+the clock's time.
+
 ## Test databases
 
 The plugin never uses the databases the test settings name. For each entry

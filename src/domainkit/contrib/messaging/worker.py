@@ -14,19 +14,24 @@ could not be written runs again once its lock expires.
 A stopping worker gives running messages ``SHUTDOWN_TIMEOUT`` to finish, then
 cancels the rest. A cancelled message goes back to the outbox, due at once,
 and the cut-short run does not count as an attempt.
+
+Tasks may set their own timeout, retry policy, priority, and rate (see
+``task``). A task over its rate goes back to the outbox until the rate
+allows it, without spending an attempt. A task in a chain writes the next
+step in the transaction that records it as done.
 """
 
 import asyncio
 import json
 import logging
-import secrets
 import time
 import uuid
-from collections.abc import Iterable, Sequence
-from contextlib import suppress
+from collections.abc import Iterable, Iterator, Sequence
+from contextlib import contextmanager, suppress
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 from weakref import WeakKeyDictionary
 
 from pydantic import ValidationError
@@ -36,23 +41,35 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from domainkit import clock
 from domainkit.apps import registry
 from domainkit.broker import Broker, BrokerError
+from domainkit.conf import settings
 from domainkit.context import SYSTEM_ACTOR, RequestContext, bind_request
 from domainkit.db import connections
 from domainkit.ddd import DomainEvent, EventBus, event_bus
+from domainkit.exceptions import ImproperlyConfigured
 from domainkit.reporting import report_error
-from domainkit.tracing import span
+from domainkit.tracing import remote_parent, span, trace_headers
+from domainkit.utils.module_loading import import_string
 
-from .outbox import message_row, write
+from .outbox import message_row, notify_committed, write
 from .registry import (
+    CHAIN,
+    TaskSpec,
+    all_tasks,
     call_task,
+    cron_tasks,
     durable_handlers,
     get_task,
     load_event,
+    next_arguments,
     periodic_tasks,
     qualified_name,
 )
+from .retry import Backoff, retryable
 from .settings import MessagingSettings
-from .tables import DEAD, DONE, PENDING, messages
+from .tables import CANCELLED, DEAD, DEFAULT_QUEUE, DONE, PENDING, messages
+
+if TYPE_CHECKING:
+    from domainkit.http.ratelimit import Backend
 
 try:
     from .metrics import observe, observe_relay
@@ -66,7 +83,6 @@ except ImportError:  # pragma: no cover - only without the [metrics] extra.
 
 
 logger = logging.getLogger(__name__)
-_random = secrets.SystemRandom()
 _ERROR_LENGTH = 2000
 OUTAGE_MAX_PAUSE: Final = 60.0
 """Longest wait between attempts while an outbox's database fails."""
@@ -76,6 +92,8 @@ INTERRUPTED: Final = "interrupted"
 """The outcome of a message cancelled before it finished (a stopping worker)."""
 RELEASE_TIMEOUT: Final = 5.0
 """Seconds a cancelled message may take to go back to the outbox."""
+THROTTLED: Final = "throttled"
+"""The outcome of a task held back by its rate; it runs later."""
 
 
 class UnknownTarget(LookupError):
@@ -105,6 +123,39 @@ def _without_input(exc: BaseException) -> BaseException:
         for error in exc.errors()
     )
     return InvalidData(f"{exc.title}: {problems}").with_traceback(exc.__traceback__)
+
+
+@dataclass(frozen=True, slots=True)
+class Attempt:
+    """The run a worker is making of a message, as its task sees it."""
+
+    message_id: uuid.UUID
+    number: int
+    """1 for the first run; retries count up."""
+    max_attempts: int
+
+    @property
+    def last(self) -> bool:
+        """Whether a failure now dead-letters the message."""
+        return self.number >= self.max_attempts
+
+
+_attempt: ContextVar[Attempt | None] = ContextVar("domainkit_attempt", default=None)
+
+
+def current_attempt() -> Attempt | None:
+    """The run of the message being processed, or None outside the worker."""
+    return _attempt.get()
+
+
+@contextmanager
+def _attempting(message: "Claimed") -> Iterator[None]:
+    """Make ``message``'s run the current attempt in the block."""
+    token = _attempt.set(Attempt(message.id, message.attempts, message.max_attempts))
+    try:
+        yield
+    finally:
+        _attempt.reset(token)
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,10 +191,7 @@ def _now() -> datetime:
 
 def backoff(attempts: int, config: MessagingSettings) -> float:
     """Seconds before retrying after ``attempts`` runs: doubling, capped, jittered."""
-    ceiling = min(
-        config.RETRY_MAX_SECONDS, config.RETRY_BASE_SECONDS * 2.0 ** (attempts - 1)
-    )
-    return ceiling * _random.uniform(0.5, 1.0)
+    return Backoff(config.RETRY_BASE_SECONDS, config.RETRY_MAX_SECONDS).delay(attempts)
 
 
 class Outage:
@@ -234,8 +282,21 @@ class Worker:
         self.bus = bus or event_bus
         self.queues = None if queues is None else frozenset(queues)
         self._scheduled: dict[str, int] = {}
+        self._next_runs: dict[str, datetime] = {}
         self._last_cleanup = float("-inf")
         self._declared: WeakKeyDictionary[Broker, set[str]] = WeakKeyDictionary()
+        self._limiter: Backend | None = None
+        self._rate_slots: dict[str, float] = {}
+        for spec in all_tasks():
+            if (
+                spec.timeout is not None
+                and spec.timeout >= self.config.VISIBILITY_TIMEOUT
+            ):
+                raise ImproperlyConfigured(
+                    f"Task {spec.key!r} may run {spec.timeout:g}s; that must stay "
+                    f"under MESSAGING.VISIBILITY_TIMEOUT "
+                    f"({self.config.VISIBILITY_TIMEOUT:g}s)."
+                )
 
     @property
     def engine(self) -> AsyncEngine:
@@ -311,7 +372,7 @@ class Worker:
                 messages.c.available_at <= now,
                 or_(messages.c.locked_until.is_(None), messages.c.locked_until < now),
             )
-            .order_by(messages.c.available_at)
+            .order_by(messages.c.priority.desc(), messages.c.available_at)
             .limit(limit)
             .with_for_update(skip_locked=True)
         )
@@ -332,6 +393,7 @@ class Worker:
                 locked_until=now + timedelta(seconds=self.config.VISIBILITY_TIMEOUT),
                 lock_id=lock_id,
                 attempts=messages.c.attempts + 1,
+                started_at=now,
             )
             .returning(*_CLAIMED)
         )
@@ -448,6 +510,7 @@ class Worker:
                 locked_until=now + timedelta(seconds=self.config.VISIBILITY_TIMEOUT),
                 lock_id=lock_id,
                 attempts=messages.c.attempts + 1,
+                started_at=now,
             )
             .returning(*_CLAIMED)
         )
@@ -460,6 +523,7 @@ class Worker:
 
         A message no request queued (a periodic task, a command's) runs as
         ``SYSTEM_ACTOR``; one an anonymous request queued, without an actor.
+        Its span continues the trace of the work that queued it.
 
         If its outcome cannot be written, the message runs again once its
         lock expires (``VISIBILITY_TIMEOUT``). If it is cancelled, it goes
@@ -476,7 +540,9 @@ class Worker:
         started = time.perf_counter()
         with (
             bind_request(context),
+            remote_parent(message.headers),
             span("message.process", kind=message.kind, target=message.target),
+            _attempting(message),
         ):
             try:
                 outcome = await self._run(message, started)
@@ -497,18 +563,37 @@ class Worker:
 
     async def _run(self, message: Claimed, started: float) -> str:
         """Run ``message`` and record its outcome; return the outcome."""
+        spec = get_task(message.target) if message.kind == "task" else None
+        if spec is not None and spec.rate is not None:
+            delay = await self._throttle(spec, spec.rate)
+            if delay is not None:
+                await self._release(
+                    message,
+                    status=PENDING,
+                    attempts=messages.c.attempts - 1,
+                    available_at=_now() + timedelta(seconds=delay),
+                    started_at=None,
+                )
+                return THROTTLED
+        timeout = self.config.TASK_TIMEOUT
+        if spec is not None and spec.timeout is not None:
+            timeout = spec.timeout
         try:
             if message.attempts > message.max_attempts:
                 raise AttemptsExhausted(
                     "The worker stopped during the last attempt (a crash, "
                     "or a kill before TASK_TIMEOUT)."
                 )
-            async with asyncio.timeout(self.config.TASK_TIMEOUT):
-                await self._execute(message)
+            async with asyncio.timeout(timeout):
+                result = await self._execute(message)
+            follow_up = self._follow_up(message, result)
         except Exception as exc:  # noqa: BLE001 - logged and retried by _failed.
-            permanent = isinstance(exc, UnknownTarget | AttemptsExhausted)
-            return await self._failed(message, exc, permanent=permanent)
-        await self._release(message, status=DONE, finished_at=_now())
+            permanent = isinstance(exc, UnknownTarget | AttemptsExhausted) or (
+                spec is not None
+                and not retryable(exc, spec.retry_on, spec.dont_retry_on)
+            )
+            return await self._failed(message, exc, permanent=permanent, spec=spec)
+        await self._done(message, follow_up)
         logger.debug(
             "Ran %s %s in %.1fms",
             message.kind,
@@ -517,8 +602,65 @@ class Worker:
         )
         return DONE
 
-    async def _execute(self, message: Claimed) -> None:
-        """Call the handler or task ``message`` names."""
+    async def _throttle(self, spec: TaskSpec, rate: tuple[int, int]) -> float | None:
+        """Count a run of ``spec``; None if its rate allows it, else seconds to wait.
+
+        Messages held back in a row wait one interval more each, so a backlog
+        comes due at the rate instead of all at once.
+        """
+        if self._limiter is None:
+            self._limiter = import_string(settings.RATE_LIMIT_BACKEND)()
+        limit, period = rate
+        decision = await self._limiter.hit(f"task:{spec.key}", limit, period)
+        if decision.allowed:
+            return None
+        now = clock.monotonic()
+        slot = max(now + decision.retry_after, self._rate_slots.get(spec.key, now))
+        self._rate_slots[spec.key] = slot + period / limit
+        return slot - now
+
+    def _follow_up(self, message: Claimed, result: object) -> dict[str, Any] | None:
+        """The outbox row of the chain's next step, if ``message`` has one."""
+        chain = message.headers.get(CHAIN)
+        if message.kind != "task" or not chain:
+            return None
+        target, *rest = chain
+        spec = get_task(target)
+        headers = {**message.headers, **trace_headers()}
+        headers.pop(CHAIN)
+        if rest:
+            headers[CHAIN] = rest
+        return message_row(
+            kind="task",
+            target=target,
+            payload=next_arguments(message.payload, result),
+            headers=headers,
+            max_attempts=(spec and spec.max_attempts) or self.config.MAX_ATTEMPTS,
+            queue=spec.queue if spec else DEFAULT_QUEUE,
+            priority=spec.priority if spec else 0,
+            dedupe_key=f"chain:{message.id}",
+        )
+
+    async def _done(self, message: Claimed, follow_up: dict[str, Any] | None) -> None:
+        """Record ``message`` as done, and queue its chain's next step with it."""
+        statement = (
+            update(messages)
+            .where(messages.c.id == message.id, messages.c.lock_id == message.lock_id)
+            .values(locked_until=None, lock_id=None, status=DONE, finished_at=_now())
+        )
+        async with self.engine.begin() as connection:
+            released = (await connection.execute(statement)).rowcount
+            if follow_up is not None and released:
+                await write(connection, connection.dialect.name, [follow_up])
+        if follow_up is not None and released:
+            # The relay publishes it: a publication cut short by shutdown
+            # would leave it locked.
+            await notify_committed(
+                self.config, self.database, [follow_up], publish=False
+            )
+
+    async def _execute(self, message: Claimed) -> object:
+        """Call the handler or task ``message`` names; return a task's result."""
         if message.kind == "event":
             handler = durable_handlers(self.bus).get(message.target)
             event_type = _event_classes().get(message.headers.get("event_type", ""))
@@ -531,18 +673,26 @@ class Worker:
                     f"{message.target!r} does not handle {event_type.__qualname__}."
                 )
             await function(load_event(event_type, message.payload))
-        elif message.kind == "task":
+            return None
+        if message.kind == "task":
             spec = get_task(message.target)
             if spec is None:
                 raise UnknownTarget(f"No task {message.target!r}.")
-            await call_task(spec.function, message.payload)
-        else:
-            raise UnknownTarget(f"Unknown message kind {message.kind!r}.")
+            return await call_task(spec.function, message.payload)
+        raise UnknownTarget(f"Unknown message kind {message.kind!r}.")
 
     async def _failed(
-        self, message: Claimed, exc: BaseException, *, permanent: bool
+        self,
+        message: Claimed,
+        exc: BaseException,
+        *,
+        permanent: bool,
+        spec: TaskSpec | None = None,
     ) -> str:
-        """Schedule a retry, or dead-letter and report; return the outcome."""
+        """Schedule a retry, or dead-letter and report; return the outcome.
+
+        The delay comes from the task's ``backoff``, or ``MESSAGING``'s.
+        """
         exc = _without_input(exc)
         error = f"{type(exc).__name__}: {exc}"[:_ERROR_LENGTH]
         if permanent or message.attempts >= message.max_attempts:
@@ -558,12 +708,16 @@ class Worker:
             )
             report_error(exc, message_id=str(message.id), target=message.target)
             return DEAD
-        delay = backoff(message.attempts, self.config)
+        if spec is not None and spec.backoff is not None:
+            delay = spec.backoff.delay(message.attempts)
+        else:
+            delay = backoff(message.attempts, self.config)
         await self._release(
             message,
             status=PENDING,
             available_at=_now() + timedelta(seconds=delay),
             last_error=error,
+            started_at=None,
         )
         logger.warning(
             "%s %s failed (attempt %d of %d); retrying in %.1fs",
@@ -586,7 +740,10 @@ class Worker:
         try:
             async with asyncio.timeout(RELEASE_TIMEOUT):
                 await self._release(
-                    message, status=PENDING, attempts=messages.c.attempts - 1
+                    message,
+                    status=PENDING,
+                    attempts=messages.c.attempts - 1,
+                    started_at=None,
                 )
         except Exception as exc:  # Logged; the message's lock expires.
             logger.error(
@@ -608,7 +765,12 @@ class Worker:
             await connection.execute(statement)
 
     async def schedule_periodic(self) -> None:
-        """Queue each periodic task once per interval, across all workers."""
+        """Queue each periodic task once per interval or cron time, across workers.
+
+        A cron task's next run is queued ahead, as soon as the one before is
+        due. A run whose time passes while every worker is down still runs
+        once they are back; earlier missed runs are not made up.
+        """
         if not self.schedules:
             return
         now = _now()
@@ -621,15 +783,26 @@ class Worker:
                 continue
             slots[spec.key] = slot
             rows.append(
-                message_row(
-                    kind="task",
-                    target=spec.key,
-                    payload={},
-                    headers={},  # No request or actor caused it.
-                    max_attempts=spec.max_attempts or self.config.MAX_ATTEMPTS,
-                    queue=spec.queue,
+                self._periodic_row(
+                    spec,
                     dedupe_key=f"periodic:{spec.key}:{slot}",
                     available_at=datetime.fromtimestamp(slot * seconds, UTC),
+                )
+            )
+        next_runs = {}
+        for spec, schedule in cron_tasks():
+            queued = self._next_runs.get(spec.key)
+            if queued is not None and queued > now:
+                continue  # Its next run is in the outbox already.
+            run = schedule.next_after(now)
+            if run is None:
+                continue  # None in the next fifty years.
+            next_runs[spec.key] = run
+            rows.append(
+                self._periodic_row(
+                    spec,
+                    dedupe_key=f"cron:{spec.key}:{int(run.timestamp())}",
+                    available_at=run,
                 )
             )
         if rows:
@@ -637,12 +810,29 @@ class Worker:
                 await write(connection, connection.dialect.name, rows)
             # Only now: a failed write is tried again on the next round.
             self._scheduled.update(slots)
+            self._next_runs.update(next_runs)
+
+    def _periodic_row(
+        self, spec: TaskSpec, *, dedupe_key: str, available_at: datetime
+    ) -> dict[str, Any]:
+        """The outbox row of one scheduled run of ``spec``."""
+        return message_row(
+            kind="task",
+            target=spec.key,
+            payload={},
+            headers={},  # No request or actor caused it.
+            max_attempts=spec.max_attempts or self.config.MAX_ATTEMPTS,
+            queue=spec.queue,
+            dedupe_key=dedupe_key,
+            available_at=available_at,
+            priority=spec.priority,
+        )
 
     async def cleanup(self) -> int:
-        """Delete finished messages older than ``RETENTION_SECONDS``."""
+        """Delete done and cancelled messages older than ``RETENTION_SECONDS``."""
         cutoff = _now() - timedelta(seconds=self.config.RETENTION_SECONDS)
         statement = delete(messages).where(
-            messages.c.status == DONE, messages.c.finished_at < cutoff
+            messages.c.status.in_((DONE, CANCELLED)), messages.c.finished_at < cutoff
         )
         async with self.engine.begin() as connection:
             result = await connection.execute(statement)

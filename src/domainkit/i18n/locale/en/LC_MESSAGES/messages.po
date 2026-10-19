@@ -1,0 +1,488 @@
+# domainkit's messages in English.
+# Compile with: domainkit compilemessages src/domainkit/i18n/locale
+msgid ""
+msgstr ""
+"Project-Id-Version: domainkit\n"
+"Language: en\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#. domainkit.http: request errors
+msgid "The request is invalid."
+msgstr ""
+
+msgid "The database is busy; try again shortly."
+msgstr ""
+
+msgid ""
+"A value cannot be stored: it is too long, out of range, or holds a "
+"character the database refuses."
+msgstr ""
+
+msgid "Request body too large."
+msgstr ""
+
+msgid "Invalid host header."
+msgstr ""
+
+msgid "Internal server error."
+msgstr ""
+
+msgid "Invalid Content-Length header."
+msgstr ""
+
+msgid "A valid metrics token is required."
+msgstr ""
+
+msgid "Set METRICS_TOKEN to expose metrics in staging and production."
+msgstr ""
+
+msgid "The cursor is invalid; start again without one."
+msgstr ""
+
+msgid "Too many requests; slow down."
+msgstr ""
+
+msgid ""
+"The data changed while this request was running; reload it and try "
+"again."
+msgstr ""
+
+msgid "This value is already taken."
+msgstr ""
+
+#. HTTP status phrases: the details of errors raised without one
+msgid "Bad Request"
+msgstr ""
+
+msgid "Unauthorized"
+msgstr ""
+
+msgid "Forbidden"
+msgstr ""
+
+msgid "Not Found"
+msgstr ""
+
+msgid "Method Not Allowed"
+msgstr ""
+
+msgid "Not Acceptable"
+msgstr ""
+
+msgid "Conflict"
+msgstr ""
+
+msgid "Content Too Large"
+msgstr ""
+
+msgid "Unsupported Media Type"
+msgstr ""
+
+msgid "Unprocessable Content"
+msgstr ""
+
+msgid "Too Many Requests"
+msgstr ""
+
+msgid "Internal Server Error"
+msgstr ""
+
+msgid "Service Unavailable"
+msgstr ""
+
+#. domainkit.contrib.auth
+msgid "Authentication credentials were not provided."
+msgstr ""
+
+msgid "You do not have permission to perform this action."
+msgstr ""
+
+msgid "Unable to log in with the given credentials."
+msgstr ""
+
+msgid "Your old password was entered incorrectly."
+msgstr ""
+
+msgid "Too many login attempts; try again later."
+msgstr ""
+
+msgid "Tokens are not refreshed here; log in again."
+msgstr ""
+
+msgid "User inactive or deleted."
+msgstr ""
+
+msgid "Invalid token."
+msgstr ""
+
+msgid "Invalid refresh token."
+msgstr ""
+
+msgid "Refresh token reused; log in again."
+msgstr ""
+
+msgid "Token expired."
+msgstr ""
+
+msgid "Session ended; log in again."
+msgstr ""
+
+msgid "Too many password checks at once; try again in a moment."
+msgstr ""
+
+msgid "No such user."
+msgstr ""
+
+msgid "No such group."
+msgstr ""
+
+#. domainkit.contrib.idempotency
+msgid "Idempotency-Key must be 1 to 255 printable ASCII characters."
+msgstr ""
+
+msgid "This Idempotency-Key was used for a different request."
+msgstr ""
+
+msgid "A request with this Idempotency-Key is still in progress."
+msgstr ""
+
+#. domainkit.http.uploads and domainkit.storage
+msgid "The file is too large."
+msgstr ""
+
+msgid "This type of file is not accepted."
+msgstr ""
+
+msgid "The file is empty."
+msgstr ""
+
+msgid "No file has that name."
+msgstr ""
+
+#. Pydantic's validation messages, by their templates; the error's context fills the {names}
+msgctxt "validation"
+msgid "Field required"
+msgstr ""
+
+msgctxt "validation"
+msgid "Extra inputs are not permitted"
+msgstr ""
+
+msgctxt "validation"
+msgid "Field is frozen"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be None"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be greater than {gt}"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be greater than or equal to {ge}"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be less than {lt}"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be less than or equal to {le}"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a multiple of {multiple_of}"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a finite number"
+msgstr ""
+
+msgctxt "validation"
+msgid ""
+"{field_type} should have at least {min_length} item{expected_plural} "
+"after validation, not {actual_length}"
+msgstr ""
+
+msgctxt "validation"
+msgid ""
+"{field_type} should have at most {max_length} item{expected_plural} "
+"after validation, not {actual_length}"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be iterable"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid string"
+msgstr ""
+
+msgctxt "validation"
+msgid ""
+"Input should be a valid string, unable to parse raw data as a unicode "
+"string"
+msgstr ""
+
+msgctxt "validation"
+msgid "String should have at least {min_length} character{expected_plural}"
+msgstr ""
+
+msgctxt "validation"
+msgid "String should have at most {max_length} character{expected_plural}"
+msgstr ""
+
+msgctxt "validation"
+msgid "String should match pattern '{pattern}'"
+msgstr ""
+
+msgctxt "validation"
+msgid "String should contain only ASCII characters"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be {expected}"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid dictionary"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid dictionary or instance of {class_name}"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid dictionary or object to extract fields from"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a dictionary or an instance of {class_name}"
+msgstr ""
+
+msgctxt "validation"
+msgid "Keys should be strings"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid list"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid tuple"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid set"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid frozenset"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid boolean"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid boolean, unable to interpret input"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid integer"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid integer, unable to parse string as an integer"
+msgstr ""
+
+msgctxt "validation"
+msgid "Unable to parse input string as an integer, exceeded maximum size"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid integer, got a number with a fractional part"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid number"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid number, unable to parse string as a number"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid bytes"
+msgstr ""
+
+msgctxt "validation"
+msgid "Data should have at least {min_length} byte{expected_plural}"
+msgstr ""
+
+msgctxt "validation"
+msgid "Data should have at most {max_length} byte{expected_plural}"
+msgstr ""
+
+msgctxt "validation"
+msgid "Value error, {error}"
+msgstr ""
+
+msgctxt "validation"
+msgid "Assertion failed, {error}"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid date"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid date in the format YYYY-MM-DD, {error}"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid date or datetime, {error}"
+msgstr ""
+
+msgctxt "validation"
+msgid ""
+"Datetimes provided to dates should have zero time - e.g. be exact "
+"dates"
+msgstr ""
+
+msgctxt "validation"
+msgid "Date should be in the past"
+msgstr ""
+
+msgctxt "validation"
+msgid "Date should be in the future"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid time"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be in a valid time format, {error}"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid datetime"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid datetime, {error}"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid datetime or date, {error}"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be in the past"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be in the future"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should not have timezone info"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should have timezone info"
+msgstr ""
+
+msgctxt "validation"
+msgid "Timezone offset of {tz_expected} required, got {tz_actual}"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid timedelta"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid timedelta, {error}"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid UUID, {error}"
+msgstr ""
+
+msgctxt "validation"
+msgid "UUID input should be a string, bytes or UUID object"
+msgstr ""
+
+msgctxt "validation"
+msgid "UUID version {expected_version} expected"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid decimal"
+msgstr ""
+
+msgctxt "validation"
+msgid "Decimal input should be an integer, float, string or Decimal object"
+msgstr ""
+
+msgctxt "validation"
+msgid ""
+"Decimal input should have no more than {max_digits} "
+"digit{expected_plural} in total"
+msgstr ""
+
+msgctxt "validation"
+msgid ""
+"Decimal input should have no more than {decimal_places} decimal "
+"place{expected_plural}"
+msgstr ""
+
+msgctxt "validation"
+msgid ""
+"Decimal input should have no more than {whole_digits} "
+"digit{expected_plural} before the decimal point"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input should be a valid URL, {error}"
+msgstr ""
+
+msgctxt "validation"
+msgid "URL input should be a string or URL"
+msgstr ""
+
+msgctxt "validation"
+msgid "Input violated strict URL syntax rules, {error}"
+msgstr ""
+
+msgctxt "validation"
+msgid "URL should have at most {max_length} character{expected_plural}"
+msgstr ""
+
+msgctxt "validation"
+msgid "URL scheme should be {expected_schemes}"
+msgstr ""
+
+msgctxt "validation"
+msgid "Invalid JSON: {error}"
+msgstr ""
+
+msgctxt "validation"
+msgid "JSON input should be string, bytes or bytearray"
+msgstr ""
+
+msgctxt "validation"
+msgid ""
+"Input tag '{tag}' found using {discriminator} does not match any of "
+"the expected tags: {expected_tags}"
+msgstr ""
+
+msgctxt "validation"
+msgid "Unable to extract tag using discriminator {discriminator}"
+msgstr ""
