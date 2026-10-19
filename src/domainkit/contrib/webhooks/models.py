@@ -7,10 +7,11 @@ is shown once, when it is made.
 import re
 from collections.abc import Iterable
 from dataclasses import field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Final, NewType, Self
 from uuid import UUID, uuid4
 
+from domainkit import clock
 from domainkit.ddd import AggregateRoot, BusinessRuleViolation, DomainEvent, NotFound
 
 from .signing import new_secret
@@ -80,8 +81,8 @@ def checked_event_types(event_types: Iterable[str]) -> list[str]:
 
 
 def _now() -> datetime:
-    """Return the current time in UTC."""
-    return datetime.now(UTC)
+    """Return the current time in UTC (``domainkit.clock``)."""
+    return clock.now()
 
 
 class Subscription(AggregateRoot[SubscriptionId]):

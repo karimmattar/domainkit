@@ -38,6 +38,7 @@ from pydantic import ValidationError
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from domainkit import clock
 from domainkit.apps import registry
 from domainkit.broker import Broker, BrokerError
 from domainkit.conf import settings
@@ -185,7 +186,7 @@ _CLAIMED: Final = (
 
 def _now() -> datetime:
     """Return the current time in UTC."""
-    return datetime.now(UTC)
+    return clock.now()
 
 
 def backoff(attempts: int, config: MessagingSettings) -> float:
@@ -613,7 +614,7 @@ class Worker:
         decision = await self._limiter.hit(f"task:{spec.key}", limit, period)
         if decision.allowed:
             return None
-        now = time.monotonic()
+        now = clock.monotonic()
         slot = max(now + decision.retry_after, self._rate_slots.get(spec.key, now))
         self._rate_slots[spec.key] = slot + period / limit
         return slot - now

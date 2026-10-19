@@ -2,13 +2,14 @@
 
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import Executable, insert
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
+from domainkit import clock
 from domainkit.apps import registry
 from domainkit.context import current_request
 from domainkit.db import connections
@@ -31,7 +32,7 @@ from .tables import DEFAULT_QUEUE, PENDING, messages
 
 def _now() -> datetime:
     """Return the current time in UTC."""
-    return datetime.now(UTC)
+    return clock.now()
 
 
 type Watcher = Callable[[str, Sequence[Mapping[str, Any]]], Awaitable[None]]

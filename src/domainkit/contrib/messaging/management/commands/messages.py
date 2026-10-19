@@ -2,9 +2,10 @@
 
 import uuid
 from argparse import ArgumentParser
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
+from domainkit import clock
 from domainkit.apps import registry
 from domainkit.contrib.messaging.admin import (
     State,
@@ -79,7 +80,7 @@ class Command(BaseCommand):
             if limit < 1:
                 raise CommandError("--limit must be 1 or more.")
             rows = await list_messages(config, state, limit, database, queue=queue)
-            now = datetime.now(UTC)
+            now = clock.now()
             for row in rows:
                 self.write(_line(row, state, now))
             return

@@ -98,6 +98,8 @@ class DatabaseConfig(BaseModel):
     POOL_PRE_PING: bool = True
     CONNECT_ARGS: dict[str, Any] = Field(default_factory=dict)
     """Extra driver arguments; they may not replace TLS or the timeouts above."""
+    TEST_NAME: str | None = None
+    """The PostgreSQL database the tests create (``test_<name>`` when None)."""
 
     @model_validator(mode="after")
     def check_client_certificate(self) -> Self:

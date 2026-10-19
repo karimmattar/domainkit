@@ -7,11 +7,12 @@ fails and is retried. With a broker, a waiting message may also be
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Final, Literal
 
 from sqlalchemy import ColumnElement, and_, case, func, not_, select, update
 
+from domainkit import clock
 from domainkit.db import connections
 
 from .settings import MessagingSettings
@@ -39,8 +40,8 @@ LISTED: Final = (
 
 
 def _now() -> datetime:
-    """Return the current time in UTC."""
-    return datetime.now(UTC)
+    """Return the current time in UTC (``domainkit.clock``)."""
+    return clock.now()
 
 
 def locked(now: datetime) -> ColumnElement[bool]:

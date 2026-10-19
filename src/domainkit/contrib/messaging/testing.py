@@ -28,15 +28,17 @@ The fixtures work in sync and async tests:
 """
 
 import asyncio
+import contextvars
 from collections.abc import Coroutine, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Final
 
 import pytest
 from sqlalchemy import or_, update
 
+from domainkit import clock
 from domainkit.db.routing import router
 from domainkit.ddd import DomainEvent, event_bus
 from domainkit.exceptions import ImproperlyConfigured
@@ -220,7 +222,7 @@ async def drain(*, delayed: bool = False, max_rounds: int = MAX_ROUNDS) -> Drain
 
 async def _make_due(worker: Worker) -> None:
     """Make every waiting message of ``worker``'s outbox due now."""
-    now = datetime.now(UTC)
+    now = clock.now()
     statement = (
         update(messages)
         .where(
@@ -240,8 +242,9 @@ def _sync[T](coroutine: Coroutine[Any, Any, T]) -> T:
         asyncio.get_running_loop()
     except RuntimeError:
         return run_async(coroutine)
+    context = contextvars.copy_context()  # A frozen clock, a bound request.
     with ThreadPoolExecutor(max_workers=1) as pool:  # Called from a running loop.
-        return pool.submit(run_async, coroutine).result()
+        return pool.submit(context.run, run_async, coroutine).result()
 
 
 class Outbox:

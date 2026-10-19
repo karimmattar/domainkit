@@ -3,10 +3,11 @@
 import asyncio
 import uuid
 from collections.abc import AsyncIterator, Iterator
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from domainkit import clock
 from domainkit.contrib.messaging import chain, enqueue, task
 from domainkit.contrib.messaging import outbox as outbox_module
 from domainkit.contrib.messaging import testing as kit
@@ -274,3 +275,28 @@ def test_the_plugin_gives_fixtures_to_sync_and_async_tests(
         ["*QueuedWorkFailed: Deferred work failed:*", "*task tests.always_fails*"]
     )
     assert outbox_module.watchers == []
+
+
+async def _now() -> datetime:
+    """The framework's time, read in whatever loop runs this."""
+    return clock.now()
+
+
+async def test_sync_helpers_keep_the_callers_context() -> None:
+    """A frozen clock reaches the thread the sync form runs in."""
+    with clock.freeze_time("2030-01-01T00:00:00Z"):
+        assert kit._sync(_now()) == datetime(2030, 1, 1, tzinfo=UTC)
+
+
+@pytest.mark.usefixtures("tables")
+async def test_delayed_work_runs_at_the_frozen_time(seen: kit.Outbox) -> None:
+    """With a frozen clock, delayed=True makes waiting work due at its time."""
+    with clock.freeze_time("2030-01-01T00:00:00Z") as frozen:
+        await enqueue(remember, value=uuid.uuid4(), delay=timedelta(hours=1))
+        assert await seen.arun_queued() == 0
+        frozen.tick(timedelta(hours=2))
+        assert await seen.arun_queued() == 1
+        await enqueue(remember, value=uuid.uuid4(), delay=timedelta(days=1))
+        assert seen.run_queued(delayed=True) == 1
+    (_, last) = await outbox()
+    assert last["finished_at"] == datetime(2030, 1, 1, 2, tzinfo=UTC)

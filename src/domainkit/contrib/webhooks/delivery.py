@@ -22,6 +22,7 @@ from sqlalchemy import Executable, delete, insert, select, update
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from domainkit import clock
 from domainkit.apps import registry
 from domainkit.conf import settings
 from domainkit.contrib.messaging import Backoff, current_attempt, periodic, task
@@ -125,8 +126,8 @@ def webhooks_alias() -> str:
 
 
 def _now() -> datetime:
-    """Return the current time in UTC."""
-    return datetime.now(UTC)
+    """Return the current time in UTC (``domainkit.clock``)."""
+    return clock.now()
 
 
 def body_of(event_type: str, data: Mapping[str, Any], occurred_at: datetime) -> bytes:

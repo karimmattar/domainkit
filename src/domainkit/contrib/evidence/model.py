@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Final
 
+from domainkit import clock
 from domainkit.context import current_request
 from domainkit.ddd import Conflict, NotFound
 
@@ -111,7 +112,7 @@ class Evidence:
     artifacts: Mapping[str, str] = field(default_factory=dict)
     """Names of external documents to their ``sha256:`` digests."""
     id: uuid.UUID = field(default_factory=uuid.uuid4)
-    recorded_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    recorded_at: datetime = field(default_factory=clock.now)
     actor: str | None = field(default_factory=_actor)
     request_id: str | None = field(default_factory=_request_id)
     _record: bytes | None = field(default=None, init=False, repr=False, compare=False)

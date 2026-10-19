@@ -14,7 +14,7 @@ nowhere else.
 """
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Annotated, Any, Final, Literal, Self
 from uuid import UUID
 
@@ -22,6 +22,7 @@ from fastapi import APIRouter, Query, status
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from sqlalchemy import select
 
+from domainkit import clock
 from domainkit.apps import registry
 from domainkit.conf import settings
 from domainkit.contrib.auth import AnyUser
@@ -113,7 +114,7 @@ class SubscriptionOut(BaseModel):
             active=subscription.active,
             description=subscription.description,
             created_at=subscription.created_at,
-            rotating=len(subscription.signing_secrets(datetime.now(UTC))) > 1,
+            rotating=len(subscription.signing_secrets(clock.now())) > 1,
         )
 
 
