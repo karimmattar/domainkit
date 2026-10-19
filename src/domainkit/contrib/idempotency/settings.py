@@ -21,3 +21,10 @@ class IdempotencySettings(BaseModel):
     METHODS: tuple[str, ...] = ("POST", "PATCH")
     MAX_RESPONSE_BYTES: int = Field(default=1_048_576, ge=1)
     """Larger responses are not stored: a retry runs again if nothing committed."""
+    CREDENTIAL_HEADERS: tuple[str, ...] = (
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "x-api-key",
+    )
+    """Headers that name a caller without an actor: their keys are apart."""
