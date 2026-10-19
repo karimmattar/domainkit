@@ -25,7 +25,6 @@ from typing import Final
 from uuid import uuid4
 
 from fastapi import status
-from sqlalchemy.exc import DBAPIError
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.middleware import cors
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -36,7 +35,7 @@ from domainkit.http.errors import (
     APIError,
     database_refusal,
     error_response,
-    sqlstate,
+    refusal_reason,
 )
 from domainkit.log import ACCESS_LOGGER, SECURITY_LOGGER
 from domainkit.reporting import report_error
@@ -301,9 +300,7 @@ class RequestContextMiddleware:
                         context.method,
                         context.path,
                         refusal.code,
-                        f"SQLSTATE {sqlstate(exc)}"
-                        if isinstance(exc, DBAPIError)
-                        else type(exc).__name__,
+                        refusal_reason(exc),
                     )
                     await self._refuse(refusal, scope, receive, send_with_id)
                     return
@@ -338,7 +335,10 @@ class RequestContextMiddleware:
             await send({"type": "websocket.close", "code": code})
             return
         response = error_response(
-            refusal.status_code, str(refusal.detail), code=refusal.code
+            refusal.status_code,
+            str(refusal.detail),
+            code=refusal.code,
+            errors=refusal.errors,
         )
         response.headers.update(refusal.headers or {})
         await response(scope, receive, send)

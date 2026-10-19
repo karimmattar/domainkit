@@ -399,6 +399,10 @@ class BrokerConfig(BaseModel):
         return user not in {"", "guest"}
 
 
+ABSOLUTE_URI: Final = r"^[A-Za-z][A-Za-z0-9+.-]*:[^\s]+$"
+"""An absolute URI without whitespace (``https://...``, ``urn:...``)."""
+
+
 class Settings(BaseModel):
     """Validated, read-only settings; extra names are checked at ``setup()``."""
 
@@ -445,6 +449,10 @@ class Settings(BaseModel):
     """Accepted ``Host`` header values; ``*.example.com`` matches subdomains."""
     API_DOCS: bool = True
     """Serve ``/docs``, ``/redoc``, and ``/openapi.json``."""
+    ERROR_FORMAT: Literal["domainkit", "problem+json"] = "domainkit"
+    """Error bodies: ``{"detail", "code", ...}``, or RFC 9457 problem details."""
+    ERROR_TYPE_BASE_URL: str | None = Field(default=None, pattern=ABSOLUTE_URI)
+    """Problem details: each code's ``type`` is this URL plus the code."""
     MAX_REQUEST_BODY_SIZE: int = Field(default=1_048_576, ge=1)
     """Largest accepted request body in bytes; larger requests get 413."""
     READINESS_TIMEOUT: float = Field(default=5.0, gt=0)
