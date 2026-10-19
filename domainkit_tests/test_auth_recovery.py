@@ -246,10 +246,11 @@ def test_weak_passwords_leave_the_link_working(identity: Api) -> None:
     "token",
     [
         "nonsense",
-        f"{uuid.uuid4().hex}:1abc:{'A' * 43}",
-        f"{uuid.uuid4().hex.upper()}:1abc:{'A' * 43}",
+        f"6f1c9a3e2b7d4e8f9a0b1c2d3e4f5a6b:1abc:{'A' * 43}",
+        f"6F1C9A3E2B7D4E8F9A0B1C2D3E4F5A6B:1abc:{'A' * 43}",
         "x" * 256,
     ],
+    ids=["nonsense", "no-such-user", "upper-case-id", "longest"],
 )
 def test_wrong_tokens_are_refused_and_audited(identity: Api, token: str) -> None:
     """Any wrong token gets the same 400, and an audit row without the token."""
