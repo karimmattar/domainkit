@@ -380,8 +380,8 @@ def test_the_plugin_migrates_an_in_memory_owner_url_too(
         MIGRATIONS_DIR=tmp_path / "migrations",
     ):
         setup()
-        with migrated_database(tmp_path):
-            pass
+        with migrated_database(tmp_path) as url:
+            assert url == f"sqlite+aiosqlite:///{tmp_path / 'test.sqlite3'}"
 
     assert sqlite_tables(tmp_path / "test.sqlite3") == ["alembic_version"]
 
