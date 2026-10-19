@@ -1,9 +1,10 @@
 """Hourly purge of expired keys (needs ``domainkit.contrib.messaging``)."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 
 from sqlalchemy import delete
 
+from domainkit import clock
 from domainkit.apps import registry
 from domainkit.contrib.messaging import periodic
 from domainkit.db import connections
@@ -18,7 +19,5 @@ async def purge_expired() -> None:
     config = registry.settings(IdempotencySettings)
     async with connections.engine(config.DATABASE).begin() as connection:
         await connection.execute(
-            delete(idempotency_keys).where(
-                idempotency_keys.c.expires_at < datetime.now(UTC)
-            )
+            delete(idempotency_keys).where(idempotency_keys.c.expires_at < clock.now())
         )

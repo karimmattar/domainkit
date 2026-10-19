@@ -104,7 +104,7 @@ def test_init_creates_a_project_that_passes_check_and_its_tests(
     assert checked.stdout == CHECKED
     tested = run(project, "-m", "pytest", "-q", "-p", "no:cacheprovider")
     assert tested.returncode == 0, tested.stdout + tested.stderr
-    assert "2 passed" in tested.stdout
+    assert "3 passed" in tested.stdout
 
 
 def test_production_settings_come_from_the_environment(tmp_path: Path) -> None:

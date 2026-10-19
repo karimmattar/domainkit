@@ -100,6 +100,8 @@ class DatabaseConfig(BaseModel):
     """Extra driver arguments; they may not replace TLS or the timeouts above."""
     REPLICAS: tuple[str, ...] = ()
     """Aliases of read replicas of this database; read-only work goes there."""
+    TEST_NAME: str | None = None
+    """The PostgreSQL database the tests create (``test_<name>`` when None)."""
 
     @model_validator(mode="after")
     def check_client_certificate(self) -> Self:
