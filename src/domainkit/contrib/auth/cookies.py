@@ -142,7 +142,7 @@ def check_origin(connection: HTTPConnection, *, required: bool = False) -> None:
         parts = urlsplit(referer)
         origin = f"{parts.scheme}://{parts.netloc}"
     if origin is None:
-        if required or connection.url.scheme in {"https", "wss"}:
+        if required or connection.url.scheme == "https":
             raise CSRFFailed("The request names no origin (Origin or Referer).")
         return
     if not trusted_origin(origin, connection):
