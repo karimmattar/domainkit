@@ -388,3 +388,19 @@ async def test_create_stores_in_sql(notes_database: None) -> None:
         stored = [await uow.notes.get(item.id) for item in (note, *others)]
     assert [item.text for item in stored] == ["first", "note 1", "note 2"]
     assert [item.version for item in stored] == [1, 1, 1]
+
+
+def test_plain_defaults_are_copied_all_the_way_down() -> None:
+    """Nested lists and dicts are never shared between objects."""
+
+    class Options(Factory[dict[str, Any]]):
+        class Meta:
+            model = dict
+
+        sizes: ClassVar[dict[str, list[str]]] = {"shirt": ["S", "M"]}
+
+    first, second = Options.build_batch(2)
+    first["sizes"]["shirt"].append("L")
+
+    assert second["sizes"] == {"shirt": ["S", "M"]}
+    assert Options.sizes == {"shirt": ["S", "M"]}

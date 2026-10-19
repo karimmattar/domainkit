@@ -170,17 +170,17 @@ def plan_databases(
 ) -> tuple[dict[str, DatabaseConfig], list[TestDatabase]]:
     """Point every entry at its test database; list the ones to create.
 
-    Entries naming the same database share one test database.
+    Entries naming the same database on the same server share one.
     """
     replaced: dict[str, DatabaseConfig] = {}
-    created: dict[str, TestDatabase] = {}
+    created: dict[tuple[str | None, int | None, str], TestDatabase] = {}
     for alias, config in databases.items():
-        if make_url(config.URL.get_secret_value()).get_backend_name() == "postgresql":
+        url = make_url(config.URL.get_secret_value())
+        if url.get_backend_name() == "postgresql":
             name = name_test_database(alias, config, worker)
             replaced[alias] = _renamed(config, name)
-            owner = replaced[alias].MIGRATION_URL or replaced[alias].URL
             created.setdefault(
-                owner.get_secret_value(), TestDatabase(name, replaced[alias])
+                (url.host, url.port, name), TestDatabase(name, replaced[alias])
             )
         else:
             file = "test" if alias == DEFAULT_DB_ALIAS else f"test_{alias}"
@@ -202,8 +202,8 @@ def migrated_database(
     check_test_settings()
     databases, created = plan_databases(settings.DATABASES, scratch, worker)
     with override_settings(DATABASES=databases):
-        run_async(_each(created, TestDatabase.create, keep=keepdb))
         try:
+            run_async(_each(created, TestDatabase.create, keep=keepdb))
             migrate(round_trip=not keepdb)
             snapshot = run_async(take_snapshot()) if keepdb else None
             try:

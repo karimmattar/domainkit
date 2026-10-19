@@ -119,7 +119,9 @@ def test_tick_moves_forward_only(ticks: Ticks) -> None:
     )
     assert frozen_clock.monotonic() == 100.0 + 7201.5
     assert frozen_clock.tick(0) == frozen_clock.now()
-    with pytest.raises(ValueError, match="move_to"):
+    with pytest.raises(
+        ValueError, match=r"^tick\(\) moves forward; use move_to\(\) to go back\.$"
+    ):
         frozen_clock.tick(-1)
     ticks.now += 60  # Real time passing does not move a clock that stands still.
     assert frozen_clock.now() == NEW_YEAR + timedelta(hours=2, seconds=1.5)
@@ -193,8 +195,9 @@ def test_a_clock_started_elsewhere_lapses_when_stopped() -> None:
     copied = task.run(copy_context)  # A task started inside the freezes.
     assert task.run(frozen) is copied.run(frozen) is inner
 
-    inner.stop()  # Not this context's: the token stays where it was made.
+    copied.run(inner.stop)  # Its value, but not its token: it lapses.
     assert task.run(frozen) is copied.run(frozen) is outer
+    inner.stop()  # Stopping twice, from anywhere, changes nothing more.
     assert task.run(clock.now) == NEW_YEAR
     outer.stop()
     assert task.run(frozen) is copied.run(frozen) is None
@@ -352,7 +355,7 @@ def test_jwt_times_are_checked_as_pyjwt_would(use_auth: UseAuth) -> None:
     authenticator = jwt_auth(
         use_auth, SIGNING_KEY="k" * 32, LEEWAY=timedelta(seconds=5)
     )
-    user = SimpleNamespace(id=uuid4())
+    user = type("U", (), {"id": uuid4()})()
     now = int(NEW_YEAR.timestamp())
 
     def verdict(**changes: object) -> str:

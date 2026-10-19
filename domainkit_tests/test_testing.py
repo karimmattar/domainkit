@@ -1,6 +1,7 @@
 """The pytest plugin that projects enable with ``-p domainkit.testing``."""
 
 import asyncio
+import io
 import os
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
@@ -9,8 +10,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+import anyio
+import anyio.abc
+import anyio.from_thread
 import pytest
 from fastapi import FastAPI, Request, WebSocket
+from fastapi.responses import RedirectResponse
 from sqlalchemy import make_url, text
 from sqlalchemy.ext.asyncio import create_async_engine
 from starlette.types import Receive, Scope, Send
@@ -33,6 +38,8 @@ from domainkit.testing import (
     freeze_time,
     migrated_database,
 )
+from domainkit.testing import databases as databases_module
+from domainkit.testing.clients import CarryingPortal
 from domainkit.testing.databases import (
     WORKER_VARIABLE,
     name_test_database,
@@ -407,7 +414,13 @@ def test_keepdb_is_described(pytester: pytest.Pytester) -> None:
     """``pytest --help`` explains ``--keepdb``."""
     result = pytester.runpytest_inprocess("-p", "domainkit.testing", "--help")
 
-    result.stdout.fnmatch_lines(["domainkit:", "  --keepdb *"])
+    result.stdout.fnmatch_lines(
+        [
+            "domainkit:",
+            "  --keepdb * Keep the PostgreSQL test databases for the next run, and",
+            "* only migrate them up.",
+        ]
+    )
 
 
 NEW_YEAR = datetime(2030, 1, 1, tzinfo=UTC)
@@ -431,7 +444,19 @@ def clock_app(events: list[str]) -> FastAPI:
             "greeting": getattr(request.state, "greeting", ""),
             "header": request.headers.get("x-test", ""),
             "agent": request.headers["user-agent"],
+            "host": request.headers["host"],
+            "client": f"{request.client.host}:{request.client.port}"
+            if request.client
+            else "",
         }
+
+    @app.get("/then")
+    async def then() -> RedirectResponse:
+        return RedirectResponse("/now")
+
+    @app.post("/echo")
+    async def echo(request: Request) -> dict[str, str]:
+        return {"body": (await request.body()).decode()}
 
     @app.websocket("/now")
     async def now_socket(websocket: WebSocket) -> None:
@@ -456,6 +481,8 @@ def test_the_sync_client_carries_the_callers_clock() -> None:
             "greeting": "hi",
             "header": "1",
             "agent": "testclient",
+            "host": "testserver",
+            "client": "testclient:50000",
         }
         assert other.portal is client.portal
     assert events == ["startup", "shutdown"]
@@ -467,9 +494,10 @@ def test_clients_share_only_an_entered_clients_loop() -> None:
     client = TestClient(clock_app([]))
     with freeze_time(NEW_YEAR):  # A client used without entering still carries it.
         assert client.get("/now").json()["now"] == NEW_YEAR.isoformat()
-    with pytest.raises(RuntimeError, match="Enter the client first"):
+    refusal = r"^Enter the client first: with TestClient\(app\) as \.\.\.$"
+    with pytest.raises(RuntimeError, match=refusal):
         client.another({})
-    with pytest.raises(RuntimeError, match="Enter the client first"):
+    with pytest.raises(RuntimeError, match=refusal):
         client.authenticated("shop.view_product")
 
 
@@ -486,10 +514,16 @@ async def test_the_async_client_runs_the_lifespan_in_this_loop() -> None:
             "greeting": "hi",
             "header": "",
             "agent": "testclient",
+            "host": "testserver",
+            "client": "testclient:50000",
         }
-        other = client.another({"x-test": "2"})
-        assert (await other.get("/now")).json()["header"] == "2"
-        await other.aclose()
+        assert (await client.get("/then")).json()["greeting"] == "hi"
+        assert (await client.post("/echo", content=b"hello")).json() == {
+            "body": "hello"
+        }
+        async with client.another({"x-test": "2"}) as other:  # No second lifespan.
+            assert (await other.get("/now")).json()["header"] == "2"
+        assert events == ["startup"]
     assert events == ["startup", "shutdown"]
 
     async with AsyncTestClient(clock_app(events), lifespan=False):
@@ -517,6 +551,8 @@ class BrokenLifespan:
                 raise LookupError(f"no {phase}")
             if self.how == "fails":
                 await send({"type": f"lifespan.{phase}.failed", "message": "nope"})
+            if self.how == "fails quietly":
+                await send({"type": f"lifespan.{phase}.failed"})
             return
 
 
@@ -526,7 +562,8 @@ class BrokenLifespan:
     ("how", "error", "match"),
     [
         ("raises", LookupError, "no "),
-        ("fails", RuntimeError, "lifespan .* failed: nope"),
+        ("fails", RuntimeError, "lifespan .* failed: nope$"),
+        ("fails quietly", RuntimeError, "lifespan .* failed: $"),
         ("returns", RuntimeError, "lifespan .* failed: it stopped"),
     ],
 )
@@ -604,7 +641,12 @@ def test_each_entry_points_at_its_test_database(tmp_path: Path) -> None:
         "default": DatabaseConfig.model_validate(
             {"URL": f"{SERVER}/shop", "MIGRATION_URL": f"{SERVER}/shop", "ECHO": True}
         ),
-        "replica": DatabaseConfig.model_validate({"URL": f"{SERVER}/shop"}),
+        "replica": DatabaseConfig.model_validate(
+            {"URL": "postgresql+asyncpg://reader@db.internal:5432/shop"}
+        ),
+        "elsewhere": DatabaseConfig.model_validate(
+            {"URL": "postgresql+asyncpg://owner@db2.internal:5432/shop"}
+        ),
         "reports": DatabaseConfig.model_validate(
             {"URL": f"{SERVER}/reports", "TEST_NAME": "test_reports"}
         ),
@@ -627,7 +669,11 @@ def test_each_entry_points_at_its_test_database(tmp_path: Path) -> None:
     }
     assert urls == {
         "default": (f"{SERVER}/test_shop_gw2", f"{SERVER}/test_shop_gw2"),
-        "replica": (f"{SERVER}/test_shop_gw2", None),
+        "replica": ("postgresql+asyncpg://reader@db.internal:5432/test_shop_gw2", None),
+        "elsewhere": (
+            "postgresql+asyncpg://owner@db2.internal:5432/test_shop_gw2",
+            None,
+        ),
         "reports": (f"{SERVER}/test_reports_gw2", None),
         "cache": (f"sqlite+aiosqlite:///{tmp_path / 'test_cache.sqlite3'}",) * 2,
         "files": (f"sqlite+aiosqlite:///{tmp_path / 'kept.sqlite3'}", None),
@@ -635,6 +681,7 @@ def test_each_entry_points_at_its_test_database(tmp_path: Path) -> None:
     assert replaced["default"].ECHO is True
     assert [(database.name, database.config) for database in created] == [
         ("test_shop_gw2", replaced["default"]),
+        ("test_shop_gw2", replaced["elsewhere"]),
         ("test_reports_gw2", replaced["reports"]),
     ]
 
@@ -766,3 +813,66 @@ def test_keepdb_keeps_the_database_for_the_next_run(
             os.environ[POSTGRES_VARIABLE],
             f'DROP DATABASE IF EXISTS "test_{name}_kept" WITH (FORCE)',
         )
+
+
+def test_portal_tasks_start_with_the_callers_context() -> None:
+    """Tasks the portal starts get the arguments, the name, and the context."""
+    seen: list[object] = []
+
+    async def task(
+        first: int, second: int, *, task_status: anyio.abc.TaskStatus[str]
+    ) -> None:
+        running = asyncio.current_task()
+        assert running is not None
+        seen.extend([first, second, clock.now(), running.get_name()])
+        task_status.started("ready")
+
+    with (
+        anyio.from_thread.start_blocking_portal() as portal,
+        freeze_time(NEW_YEAR),
+    ):
+        future, started = CarryingPortal(portal).start_task(task, 1, 2, name="probe")
+        future.result()
+
+    assert started == "ready"
+    assert seen == [1, 2, NEW_YEAR, "probe"]
+
+
+def test_errors_name_the_entry(tmp_path: Path) -> None:
+    """A refused test database names the ``DATABASES`` entry it comes from."""
+    reports = DatabaseConfig.model_validate(
+        {"URL": f"{SERVER}/reports", "TEST_NAME": "reports"}
+    )
+
+    with pytest.raises(pytest.UsageError, match=r"^DATABASES\['reports'\]: refusing"):
+        plan_databases({"reports": reports}, tmp_path, None)
+
+
+@pytest.mark.parametrize(
+    ("keepdb", "calls"),
+    [
+        (False, [("migrate",), ("migrate", "base", True), ("migrate",)]),
+        (True, [("migrate",)]),
+    ],
+)
+def test_migrations_go_down_and_up_unless_kept(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    keepdb: bool,
+    calls: list[tuple[object, ...]],
+) -> None:
+    """Up, down to base, and up again; with ``keepdb``, up only. Quietly."""
+    made: list[tuple[object, ...]] = []
+
+    def call_command(*args: str, stdout: io.StringIO, downgrade: bool = False) -> None:
+        assert isinstance(stdout, io.StringIO)
+        made.append((*args, True) if downgrade else args)
+
+    monkeypatch.setattr(databases_module, "call_command", call_command)
+    with (
+        override_settings(DATABASES={"default": {"URL": IN_MEMORY}}),
+        migrated_database(tmp_path, keepdb=keepdb),
+    ):
+        pass
+
+    assert made == calls

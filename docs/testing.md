@@ -114,7 +114,8 @@ async def test_viewers_cannot_create(async_client_for: AsyncClientFor) -> None:
 
 
 async def test_admins_create(async_admin_client: AsyncTestClient) -> None:
-    created = await async_admin_client.post("/api/v1/billing/invoices", json={...})
+    body = {"customer": "Acme", "total": "10.00"}
+    created = await async_admin_client.post("/api/v1/billing/invoices", json=body)
     assert created.status_code == 201
 ```
 
@@ -132,9 +133,9 @@ same way; enter them with `with` and `async with` to run the lifespan.
 `await async_client.authenticated(...)` return clients for a new user, and
 `await user_token("billing.view_invoice")` returns a token for one.
 
-Async tests run on AnyIO's pytest plugin, which comes with FastAPI: mark
-them with `pytest.mark.anyio`. The sync fixtures (`db`, `client`) work in
-them too.
+Async tests run on AnyIO's pytest plugin, which comes with FastAPI, on its
+default asyncio backend: mark them with `pytest.mark.anyio`. The sync
+fixtures (`db`, `client`) work in them too.
 
 ## Factories
 

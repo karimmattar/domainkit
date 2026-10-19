@@ -39,7 +39,7 @@ import copy
 import itertools
 from collections.abc import Callable, Mapping
 from types import FunctionType
-from typing import Any, ClassVar, Final, cast
+from typing import Any, ClassVar, Final
 
 from domainkit.ddd import UnitOfWork
 
@@ -139,8 +139,6 @@ class Fields:
 
     def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - any field.
         """Return field ``name``, computing it on first read."""
-        if name.startswith("_"):
-            raise AttributeError(name)
         if name not in self._values:
             self._values[name] = self._compute(name)
         return self._values[name]
@@ -274,7 +272,8 @@ class Factory[T]:
             raise TypeError(f"{cls.__name__} needs Meta.model.")
         excluded = cls._option("exclude") or ()
         values = {k: v for k, v in fields.values().items() if k not in excluded}
-        return cast("T", model(**values))
+        made: T = model(**values)
+        return made
 
     @classmethod
     def _repository(cls, uow: UnitOfWork) -> Any:  # noqa: ANN401 - a repository.
@@ -296,7 +295,8 @@ class Factory[T]:
                 f"Give {cls.__name__}.create() a unit of work, or set "
                 f"Meta.unit_of_work."
             )
-        return cast("UnitOfWork", make())
+        uow: UnitOfWork = make()
+        return uow
 
     @classmethod
     def _option(cls, name: str) -> Any:  # noqa: ANN401 - any Meta option.

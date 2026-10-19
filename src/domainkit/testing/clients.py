@@ -148,7 +148,7 @@ class AsyncTestClient(httpx2.AsyncClient):
         traceback: TracebackType | None = None,
     ) -> None:
         """Close the client, then shut the application down."""
-        await super().__aexit__(exc_type, exc, traceback)
+        await self.aclose()
         if self.lifespan is not None:
             await self.lifespan.shutdown()
 
@@ -196,11 +196,7 @@ class Lifespan:
 
     async def _run(self) -> None:
         """Serve the lifespan scope; tell the other side when the app is done."""
-        scope = {
-            "type": "lifespan",
-            "asgi": {"version": "3.0", "spec_version": "2.0"},
-            "state": self.state,
-        }
+        scope = {"type": "lifespan", "state": self.state}
         try:
             await self.app(scope, self._to_app.get, self._from_app.put)
         finally:
