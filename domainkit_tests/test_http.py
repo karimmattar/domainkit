@@ -4,16 +4,19 @@ import asyncio
 import logging
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.datastructures import State
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from starlette.websockets import WebSocketDisconnect
 
+from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.context import current_request
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.http import get_asgi_application
+from domainkit.http import get_asgi_application, health
 from domainkit.http.middleware import (
     AllowedHostsMiddleware,
     RequestBodyLimitMiddleware,
@@ -462,6 +465,56 @@ def test_readiness_results_are_cached(make_client: MakeClient) -> None:
     AlphaConfig.healthy = False
 
     assert client.get("/ready").status_code == 200
+
+
+def test_readiness_probes_share_one_round_of_checks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Probes during a round wait for it; its result is cached from its end."""
+    rounds: list[int] = []
+
+    async def slow_check(seconds: float) -> list[str]:
+        rounds.append(1)
+        await asyncio.sleep(0.1)
+        return []
+
+    monkeypatch.setattr(registry, "check", slow_check)
+    request = SimpleNamespace(app=SimpleNamespace(state=State()))
+
+    async def probe_flood() -> list[list[str]]:
+        check = health._failing_checks
+        probes = [asyncio.ensure_future(check(request)) for _ in range(20)]  # type: ignore[arg-type]
+        await asyncio.sleep(0.01)
+        probes[0].cancel()  # A probe that gives up stops no one else.
+        answers = await asyncio.gather(*probes[1:])
+        again = await health._failing_checks(request)  # type: ignore[arg-type]
+        return [*answers, again]
+
+    with override_settings(READINESS_CACHE_SECONDS=0.05):
+        answers = asyncio.run(probe_flood())
+
+    assert rounds == [1]  # One round; cached 0.05 s from its end, not its start.
+    assert answers == [[]] * 20
+
+
+def test_a_round_left_on_another_loop_is_not_awaited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A round a finished event loop left pending is replaced, not awaited."""
+
+    async def no_failures(seconds: float) -> list[str]:
+        return []
+
+    monkeypatch.setattr(registry, "check", no_failures)
+    loop = asyncio.new_event_loop()
+    stranded = loop.create_future()
+    loop.close()
+    state = State()
+    state.readiness_round = stranded
+    request = SimpleNamespace(app=SimpleNamespace(state=state))
+
+    assert asyncio.run(health._failing_checks(request)) == []  # type: ignore[arg-type]
+    assert state.readiness_round is not stranded
 
 
 def test_lifespan_runs_domain_hooks() -> None:

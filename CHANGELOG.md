@@ -34,6 +34,18 @@ All notable changes to domainkit. The format follows
   as one. Staging and production refuse a network that holds every address
   (`0.0.0.0/0`, `::/0`), and `check` warns about a rate limit without
   trusted proxies.
+- A flood of `/ready` probes runs one round of checks at a time: each
+  probe that missed the cache ran every check itself (500 probes, 500
+  rounds; behind a busy pool, failing probes took replicas out of
+  rotation). A result is now reused for `READINESS_CACHE_SECONDS` from
+  when its round ended, not began.
+- `RedisBackend` lets requests through when Redis refuses the count (out of
+  memory, a read-only replica after a failover), as it does when Redis is
+  down: every request got a 500. Redis is then skipped for the cache's
+  `FAILURE_COOLDOWN`.
+- `http_requests_total` and the other request metrics count methods
+  other than the nine standard ones as `OTHER`: servers that let any
+  method through let callers make a label each.
 
 ## [0.6.0] - 2026-10-18
 

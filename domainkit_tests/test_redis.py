@@ -9,6 +9,7 @@ test uses its own key prefix, so tests can share servers.
 """
 
 import asyncio
+import logging
 import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
@@ -328,6 +329,43 @@ async def test_rate_limits_are_shared_between_replicas(
     assert 0.5 < refused.reset_after <= 1.0
     assert (other.allowed, other.remaining) == (True, 1)
     assert 0 < ttl <= 1000  # Kept only until the quota is full again.
+
+
+async def test_refused_rate_limits_let_requests_through(
+    server: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A read-only replica or a full Redis lets requests through, then cools."""
+    scripts: list[str] = []
+
+    async def refuse(self: RedisStore, key: str, *args: float) -> tuple[int, float]:
+        scripts.append(key)
+        raise CacheError("READONLY You can't write against a read only replica.")
+
+    monkeypatch.setattr(RedisStore, "gcra", refuse)
+    cooling = {**server, "FAILURE_COOLDOWN": 0.2}
+    with (
+        override_settings(
+            CACHES={"default": {}, "shared": cooling}, RATE_LIMIT_CACHE="shared"
+        ),
+        caplog.at_level(logging.WARNING, logger="domainkit.http.ratelimit"),
+    ):
+        backend = RedisBackend()
+        try:
+            decisions = [await backend.hit("ip:203.0.113.7", 1, 60) for _ in range(2)]
+            await asyncio.sleep(0.25)
+            decisions.append(await backend.hit("ip:203.0.113.7", 1, 60))
+        finally:
+            await caches.close_all()
+
+    assert [(d.allowed, d.remaining) for d in decisions] == [(True, 0)] * 3
+    assert len(scripts) == 2  # The second hit came while Redis was skipped.
+    warning = (
+        "Redis refused the rate limit; letting requests through for 0.2s: "
+        "READONLY You can't write against a read only replica."
+    )
+    assert [record.getMessage() for record in caplog.records] == [warning] * 2
 
 
 def test_rate_limit_middleware_on_redis(shared: dict[str, object]) -> None:
