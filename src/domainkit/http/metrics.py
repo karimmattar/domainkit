@@ -30,6 +30,10 @@ from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db.connections import connections
 from domainkit.http.errors import APIError
 
+METHODS: Final = frozenset(
+    {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE"}
+)
+"""Methods counted by name; any other is ``OTHER``, so labels stay few."""
 REQUESTS: Final = Counter(
     "http_requests_total", "HTTP requests.", ["method", "route", "status"]
 )
@@ -68,7 +72,7 @@ class MetricsMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        method = scope["method"]
+        method = scope["method"] if scope["method"] in METHODS else "OTHER"
         status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
         started = time.perf_counter()
 
