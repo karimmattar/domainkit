@@ -32,6 +32,8 @@ class TokenKind(StrEnum):
     """Authenticates requests."""
     REFRESH = "refresh"
     """Exchanged, once, for a new access token and refresh token."""
+    SESSION = "session"
+    """A browser's session cookie (``CookieAuthentication``), never a header."""
 
 
 class AuthToken(Entity[str]):

@@ -31,6 +31,7 @@ MESSAGING = "domainkit.contrib.messaging"
 MAIL = "domainkit.contrib.mail"
 MAILING_ROUTERS = ("recovery", "signup")
 """Modules whose routes send mail, and need a user model with an address."""
+COOKIE_AUTHENTICATION = "domainkit.contrib.auth.cookies.CookieAuthentication"
 AUTHENTICATION_MIDDLEWARE = "domainkit.contrib.auth.middleware.AuthenticationMiddleware"
 OUTSIDE_AUTHENTICATION = ("domainkit.http.middleware.RequestContextMiddleware",)
 """Middleware that must run before ``AuthenticationMiddleware``."""
@@ -77,7 +78,7 @@ class AuthConfig(DomainConfig):
         self.user_model = _user_model(config.USER_MODEL)
         self.user_table = _user_table(config, self.user_model)
         self._check_routing()
-        self._check_hashers(config)
+        self._check_deployment(config)
         _check_middleware()
         get_backends()
         get_authenticators()
@@ -109,28 +110,40 @@ class AuthConfig(DomainConfig):
                 for route, takes_rules in unguarded_routes(app)
             )
         problems.extend(self._mailing_problems(app))
+        if (
+            self._mounted(app, "cookies")
+            and COOKIE_AUTHENTICATION not in auth_settings().AUTHENTICATION_CLASSES
+        ):
+            problems.append(
+                f"Routes of {self.name}.cookies start browser sessions, but "
+                f"AUTH.AUTHENTICATION_CLASSES lacks {COOKIE_AUTHENTICATION}."
+            )
         return problems
+
+    def _mounted(self, app: FastAPI, name: str) -> bool:
+        """Whether a route of the router in module ``name`` is served by ``app``."""
+        called = {dependant.call for _, dependant in _routes(app.routes) if dependant}
+        module = import_module(f"{self.name}.{name}")
+        return bool(called & {route.endpoint for route in module.router.routes})
 
     def _mailing_problems(self, app: FastAPI) -> list[str]:
         """What routes that send mail lack: the apps, or an address to send to."""
-        called = {dependant.call for _, dependant in _routes(app.routes) if dependant}
         problems = []
         for name in MAILING_ROUTERS:
-            module = import_module(f"{self.name}.{name}")
-            if not called & {route.endpoint for route in module.router.routes}:
+            if not self._mounted(app, name):
                 continue
-            if missing := [
-                app for app in (MESSAGING, MAIL) if not registry.is_installed(app)
-            ]:
+            module = f"{self.name}.{name}"
+            installed = registry.is_installed
+            if missing := [name for name in (MESSAGING, MAIL) if not installed(name)]:
                 problems.append(
-                    f"Routes of {module.__name__} send mail: add {', '.join(missing)} "
+                    f"Routes of {module} send mail: add {', '.join(missing)} "
                     "to INSTALLED_DOMAINS."
                 )
             if self.user_model.EMAIL_FIELD is None or not hasattr(
                 self.user_model, "verify_email"
             ):
                 problems.append(
-                    f"Routes of {module.__name__} need a user model with an "
+                    f"Routes of {module} need a user model with an "
                     "EMAIL_FIELD and email_verified, as AbstractUser has."
                 )
         return problems
@@ -164,13 +177,20 @@ class AuthConfig(DomainConfig):
                 f"(foreign keys join them): {where}."
             )
 
-    def _check_hashers(self, config: AuthSettings) -> None:
-        """Staging and production refuse hashers made for tests."""
+    def _check_deployment(self, config: AuthSettings) -> None:
+        """Staging and production refuse hashers made for tests, and plain cookies."""
         insecure = insecure_hashers(config.PASSWORD_HASHERS)
-        if insecure and settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
+        if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
+            return
+        if insecure:
             raise ImproperlyConfigured(
                 f"AUTH.PASSWORD_HASHERS {insecure} are for tests; remove them in "
                 f"{settings.ENVIRONMENT}."
+            )
+        if config.COOKIE.SECURE is False:
+            raise ImproperlyConfigured(
+                f"AUTH.COOKIE.SECURE = False sends session cookies over plain HTTP; "
+                f"remove it in {settings.ENVIRONMENT}."
             )
 
 

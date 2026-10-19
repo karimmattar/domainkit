@@ -66,13 +66,17 @@ class IssuedTokens:
 
 
 class AuthenticationFailed(APIError):
-    """Credentials were presented and do not hold (401)."""
+    """Credentials were presented and do not hold (401, unless a subclass says)."""
 
-    def __init__(self, detail: str) -> None:
-        """Use status 401 and the code ``authentication_failed``."""
-        super().__init__(
-            status.HTTP_401_UNAUTHORIZED, detail, code="authentication_failed"
-        )
+    def __init__(
+        self,
+        detail: str,
+        *,
+        status_code: int = status.HTTP_401_UNAUTHORIZED,
+        code: str = "authentication_failed",
+    ) -> None:
+        """Use status 401 and the code ``authentication_failed`` by default."""
+        super().__init__(status_code, detail, code=code)
 
 
 class RefreshNotSupported(APIError):

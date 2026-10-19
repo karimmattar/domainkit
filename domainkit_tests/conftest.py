@@ -332,6 +332,10 @@ IDENTITY_DOMAINS: Final = [
     ALPHA,
 ]
 MEMORY_MAIL: Final = {"BACKEND": "domainkit.contrib.mail.backends.MemoryBackend"}
+IDENTITY_AUTHENTICATION: Final = [
+    "domainkit.contrib.auth.authentication.TokenAuthentication",
+    "domainkit.contrib.auth.cookies.CookieAuthentication",
+]
 
 
 @pytest.fixture
@@ -345,7 +349,10 @@ def identity(database_url: str, tmp_path: Path) -> Iterator[Api]:
 
     registry.clear()
     mail.outbox.clear()
-    auth: dict[str, Any] = {"PASSWORD_HASHERS": [FAST_HASHER]}
+    auth: dict[str, Any] = {
+        "PASSWORD_HASHERS": [FAST_HASHER],
+        "AUTHENTICATION_CLASSES": IDENTITY_AUTHENTICATION,
+    }
     with override_settings(
         INSTALLED_DOMAINS=IDENTITY_DOMAINS,
         DATABASES={"default": {"URL": database_url}},

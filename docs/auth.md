@@ -379,6 +379,65 @@ AUTH = {
   in PEM; other services can then check access tokens with the public key
   alone. Startup signs and verifies a token, so wrong keys fail early.
 
+### Browser sessions in cookies
+
+Browser apps should not keep tokens where scripts can read them.
+`CookieAuthentication` keeps the session in an HttpOnly cookie instead,
+and guards it against cross-site request forgery (CSRF):
+
+```python
+AUTH = {
+    "AUTHENTICATION_CLASSES": [
+        "domainkit.contrib.auth.authentication.TokenAuthentication",
+        "domainkit.contrib.auth.cookies.CookieAuthentication",
+    ],
+    "CSRF_TRUSTED_ORIGINS": ["https://app.example.com"],
+}
+```
+
+```python
+from domainkit.contrib.auth.cookies import router as session_router
+
+router.include_router(session_router, prefix="/auth")
+```
+
+| Endpoint | Body | Answer |
+| --- | --- | --- |
+| `POST /session` | `{"username", "password"}` | `200 {"csrf_token"}`, and two cookies: the session (`COOKIE.NAME`) and the CSRF token (`COOKIE.CSRF_NAME`); `401`, `403 csrf_failed`, and `429` as for `/login`. |
+| `GET /session` | | `200 {"csrf_token"}`: a new token for this session, also in its cookie; `400 no_session` without a session cookie. |
+| `DELETE /session` | | `204`: the session ends and both cookies are cleared. |
+
+The session cookie is HttpOnly, `Secure` unless `DEBUG` (staging and
+production refuse `COOKIE.SECURE = False`), `SameSite=Lax` by default,
+and holds an opaque token of the kind `session`, stored as a digest like
+the others: it never works in an `Authorization` header, and logging out,
+a password change, or `cleartokens --user` ends it. A request the session
+authenticates with a method other than `GET`, `HEAD`, or `OPTIONS` must:
+
+- come from a trusted origin: its `Origin` header (or `Referer`, without
+  one) is the request's own origin, a host in `ALLOWED_HOSTS` with the
+  request's scheme (a wildcard `*` trusts none), or one of
+  `AUTH.CSRF_TRUSTED_ORIGINS` (`https://*.example.com` for subdomains). An
+  HTTPS request that names neither is refused, as browsers always send one;
+- send the CSRF token in `X-CSRF-Token` (`COOKIE.CSRF_HEADER`), equal to
+  the CSRF cookie and signed with `SECRET_KEY` for this session, so a token
+  set by another site or subdomain, or taken from another session, fails.
+
+Anything else gets `403 csrf_failed`. Logging in at `/session` checks the
+origin too. A WebSocket handshake with the session cookie must come from a
+trusted origin (cross-site WebSocket hijacking). Requests with an
+`Authorization` header ignore the cookie, so header-token clients are
+unaffected. A session that ended, expired, or belongs to an inactive user
+leaves the request anonymous rather than refused, so a stale cookie never
+stops the browser from logging in again.
+
+A single-page app on another origin needs CORS with credentials:
+`CORS_ALLOWED_ORIGINS = ["https://app.example.com"]`,
+`CORS_ALLOW_CREDENTIALS = True`, and `X-CSRF-Token` in
+`CORS_ALLOWED_HEADERS`. `check` reports the router mounted without
+`CookieAuthentication` in `AUTHENTICATION_CLASSES`. List it after the
+classes that read headers: it issues no tokens for `/login`.
+
 ### Other credentials
 
 A class of your own subclasses `BaseAuthentication`, returns `Credentials`
@@ -740,8 +799,21 @@ changed what.
 | `EMAIL_VERIFICATION_TIMEOUT` | 3 days | How long a verification link works. |
 | `EMAIL_VERIFICATION_URL` | `None` | Your page that takes a verification token. |
 | `SIGNUP_ENABLED` | `False` | Let anyone create an account at `/signup`. |
+| `COOKIE` | see below | Browser sessions, for `CookieAuthentication`. |
+| `CSRF_TRUSTED_ORIGINS` | `()` | Origins (`https://app.example.com`, `https://*.example.com`) whose pages may send cookie requests, besides the request's own and `ALLOWED_HOSTS`. |
 | `REQUIRE_ROUTE_RULES` | `True` | Every route must say who may call it (`Require`, a user parameter, or `Public`); see "Deny by default". |
 | `JWT` | see below | JSON Web Tokens, for `JWTAuthentication`. |
+
+| `AUTH["COOKIE"]` key | Default | Meaning |
+| --- | --- | --- |
+| `NAME` | `"dk_session"` | The session cookie (HttpOnly). `__Host-` names need `SECURE`, no `DOMAIN`, and the `PATH` `/`. |
+| `CSRF_NAME` | `"dk_csrf"` | The cookie scripts read the CSRF token from. |
+| `CSRF_HEADER` | `"X-CSRF-Token"` | The header they send it back in. |
+| `SAMESITE` | `"lax"` | `lax`, `strict`, or `none` (which needs `SECURE`). |
+| `SECURE` | `None` | HTTPS only; `None` means unless `DEBUG`. `False` is refused in staging and production. |
+| `DOMAIN` | `None` | `None` keeps the cookies to this host. |
+| `PATH` | `"/"` | |
+| `TTL` | 14 days | How long a browser session works. |
 
 | `AUTH["JWT"]` key | Default | Meaning |
 | --- | --- | --- |

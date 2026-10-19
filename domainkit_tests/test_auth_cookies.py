@@ -1,0 +1,460 @@
+"""Browser sessions in HttpOnly cookies, and the CSRF checks they need."""
+
+from datetime import timedelta
+from typing import Any
+
+import pytest
+from fastapi.testclient import TestClient
+from pydantic import ValidationError
+from starlette.websockets import WebSocketDisconnect
+
+from domainkit.conf import override_settings
+from domainkit.contrib.auth.cookies import CookieAuthentication, csrf_token
+from domainkit.contrib.auth.settings import AuthSettings, CookieSettings
+from domainkit.exceptions import ImproperlyConfigured
+from domainkit.http import get_asgi_application
+from domainkit.http.application import application_problems
+from domainkit_tests.conftest import Api, UseAuth
+from domainkit_tests.test_auth_http import (
+    PASSWORD,
+    audited,
+    bearer,
+    create_user,
+    login,
+    stored_tokens,
+)
+
+SITE = "https://testserver"
+TRUSTED = {"Origin": SITE}
+
+
+def browser(identity: Api, **auth: Any) -> TestClient:  # noqa: ANN401 - AUTH keys.
+    """A client of the identity API over HTTPS, as a browser would be."""
+    client = identity(**auth)
+    return TestClient(client.app, base_url=SITE)
+
+
+def start(client: TestClient, username: str = "alice") -> str:
+    """Log in with cookies; return the CSRF token."""
+    response = client.post(
+        "/auth/session",
+        json={"username": username, "password": PASSWORD},
+        headers=TRUSTED,
+    )
+    assert response.status_code == 200, response.json()
+    token: str = response.json()["csrf_token"]
+    return token
+
+
+def set_cookies(response: Any) -> dict[str, str]:  # noqa: ANN401 - a response.
+    """Each ``Set-Cookie`` header, by cookie name."""
+    return {
+        header.split("=", 1)[0]: header
+        for header in response.headers.get_list("set-cookie")
+    }
+
+
+def test_a_session_lives_in_an_http_only_cookie(identity: Api) -> None:
+    """The session is HttpOnly and Secure; scripts read only the CSRF token."""
+    alice = create_user("alice")
+    client = browser(identity)
+
+    response = client.post(
+        "/auth/session",
+        json={"username": "alice", "password": PASSWORD},
+        headers=TRUSTED,
+    )
+
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "no-store"
+    csrf = response.json()["csrf_token"]
+    cookies = set_cookies(response)
+    session = cookies["dk_session"]
+    assert "HttpOnly" in session
+    assert "Secure" in session
+    assert "SameSite=lax" in session
+    assert "Path=/" in session
+    assert f"Max-Age={14 * 24 * 3600}" in session
+    assert f"dk_csrf={csrf};" in cookies["dk_csrf"]
+    assert "HttpOnly" not in cookies["dk_csrf"]
+    assert "Secure" in cookies["dk_csrf"]
+    assert client.cookies["dk_session"].startswith("dkt_")
+    (token,) = stored_tokens(alice)
+    assert (token["kind"], token["name"]) == ("session", "browser")
+    assert client.get("/whoami").json() == {"user": "alice", "scheme": "cookie"}
+    (logged_in,) = audited("auth.user_logged_in")
+    assert logged_in["actor"] == str(alice)
+
+
+def test_unsafe_methods_need_a_trusted_origin_and_the_token(identity: Api) -> None:
+    """Without both, a cookie request is refused with 403 csrf_failed."""
+    create_user("alice")
+    client = browser(identity)
+    csrf = start(client)
+    token = {"X-CSRF-Token": csrf}
+
+    cases = {
+        "names no origin": {**token},
+        "not trusted": {**token, "Origin": "https://evil.example"},
+        "missing or wrong": {**TRUSTED},
+        "missing or wrong ": {**TRUSTED, "X-CSRF-Token": csrf + "x"},
+    }
+    for message, headers in cases.items():
+        response = client.post("/notes", headers=headers)
+        assert (response.status_code, response.json()["code"]) == (403, "csrf_failed")
+        assert message.strip() in response.json()["detail"]
+        assert "WWW-Authenticate" not in response.headers
+
+    allowed = client.post("/notes", headers={**TRUSTED, **token})
+    assert allowed.json() == {"user": "alice", "scheme": "cookie"}
+    by_referer = client.post("/notes", headers={"Referer": f"{SITE}/page?x=1", **token})
+    assert by_referer.status_code == 200
+    bad_referer = client.post(
+        "/notes", headers={"Referer": "https://evil.example/page", **token}
+    )
+    assert bad_referer.status_code == 403
+    # Safe methods need neither.
+    assert client.get("/whoami").json()["scheme"] == "cookie"
+
+
+def test_csrf_tokens_belong_to_one_session(identity: Api) -> None:
+    """Another session's token, even in both places, is refused."""
+    create_user("alice")
+    create_user("bob")
+    alice = browser(identity)
+    start(alice)
+    bob = TestClient(alice.app, base_url=SITE)
+    bobs = start(bob, "bob")
+
+    alice.cookies.set("dk_csrf", bobs)
+    response = alice.post("/notes", headers={**TRUSTED, "X-CSRF-Token": bobs})
+
+    assert (response.status_code, response.json()["code"]) == (403, "csrf_failed")
+
+
+def test_tokens_must_be_signed_by_this_service(identity: Api) -> None:
+    """A token in the right form, signed with another key, is refused."""
+    create_user("alice")
+    client = browser(identity)
+    start(client)
+    session = stored_tokens_of_cookie(client)
+    with override_settings(
+        SECRET_KEY="another-0123456789-abcdefghijklmnopqrstuvwxyz-XYZ"
+    ):
+        forged = csrf_token(session)
+    client.cookies.set("dk_csrf", forged)
+
+    response = client.post("/notes", headers={**TRUSTED, "X-CSRF-Token": forged})
+
+    assert response.status_code == 403
+    assert csrf_token(session) != csrf_token(session)  # A new nonce each time.
+
+
+def stored_tokens_of_cookie(client: TestClient) -> str:
+    """The digest of the client's session cookie."""
+    from domainkit.contrib.auth.tokens import token_digest
+
+    return token_digest(client.cookies["dk_session"])
+
+
+@pytest.mark.parametrize(
+    ("origin", "trusted"),
+    [
+        ("https://testserver", True),
+        ("https://testserver:443", True),
+        ("http://testserver", False),
+        ("https://app.example.com", True),
+        ("https://deep.shop.example.org", True),
+        ("https://shop.example.org", False),
+        ("http://app.example.com", False),
+        ("https://app.example.com:8443", False),
+        ("https://evil.com", False),
+        ("https://testserver.evil.com", False),
+        ("null", False),
+        ("file://", False),
+        ("https://user@testserver", False),
+    ],
+)
+def test_origins_are_trusted_by_host_and_scheme(
+    identity: Api, origin: str, trusted: bool
+) -> None:
+    """``ALLOWED_HOSTS`` with the request's scheme, or ``CSRF_TRUSTED_ORIGINS``."""
+    create_user("alice")
+    client = browser(
+        identity,
+        CSRF_TRUSTED_ORIGINS=["https://app.example.com", "https://*.shop.example.org"],
+    )
+    csrf = start(client)
+
+    response = client.post("/notes", headers={"Origin": origin, "X-CSRF-Token": csrf})
+
+    assert (response.status_code == 200) is trusted
+
+
+def test_wildcard_hosts_alone_never_trust_an_origin(identity: Api) -> None:
+    """``ALLOWED_HOSTS = ["*"]`` trusts no other origin than the request's own."""
+    create_user("alice")
+    with override_settings(ALLOWED_HOSTS=["*"]):
+        client = browser(identity)
+        csrf = start(client)
+        response = client.post(
+            "/notes", headers={"Origin": "https://evil.example", "X-CSRF-Token": csrf}
+        )
+
+    assert response.status_code == 403
+
+
+def test_plain_http_in_development_needs_only_the_token(identity: Api) -> None:
+    """Over HTTP with ``DEBUG``, a request may name no origin; the token stays."""
+    create_user("alice")
+    with override_settings(DEBUG=True):
+        client = identity()
+        response = client.post(
+            "/auth/session", json={"username": "alice", "password": PASSWORD}
+        )
+        csrf = response.json()["csrf_token"]
+        assert "Secure" not in set_cookies(response)["dk_session"]
+
+        assert client.post("/notes", headers={"X-CSRF-Token": csrf}).status_code == 200
+        assert client.post("/notes").status_code == 403
+
+
+def test_header_tokens_ignore_cookies(identity: Api) -> None:
+    """With ``Authorization``, the cookie plays no part: no CSRF token needed."""
+    create_user("alice")
+    create_user("bob")
+    client = browser(identity)
+    start(client, "bob")
+    token = login(TestClient(client.app), "alice")["access_token"]
+
+    response = client.post("/notes", headers=bearer(token))
+    other_scheme = client.get("/whoami", headers={"Authorization": "Basic YTpi"})
+
+    assert response.json() == {"user": "alice", "scheme": "token"}
+    # A header no class reads still keeps the cookie out: the caller is anonymous.
+    assert other_scheme.json() == {"user": "", "scheme": None}
+
+
+def test_session_tokens_never_work_as_bearer_tokens(identity: Api) -> None:
+    """A session token out of its cookie, in a header, is refused."""
+    create_user("alice")
+    client = browser(identity)
+    start(client)
+    raw = client.cookies["dk_session"]
+
+    response = TestClient(client.app).get("/whoami", headers=bearer(raw))
+
+    assert response.status_code == 401
+
+
+def test_logging_out_ends_the_session_and_clears_the_cookies(identity: Api) -> None:
+    """``DELETE /session`` revokes the token; a stale cookie is anonymous."""
+    alice = create_user("alice")
+    client = browser(identity)
+    csrf = start(client)
+    session = client.cookies["dk_session"]
+
+    refused = client.delete("/auth/session", headers=TRUSTED)
+    response = client.delete("/auth/session", headers={**TRUSTED, "X-CSRF-Token": csrf})
+
+    assert refused.status_code == 403
+    assert response.status_code == 204
+    cleared = set_cookies(response)
+    assert set(cleared) == {"dk_session", "dk_csrf"}
+    assert all("Max-Age=0" in header for header in cleared.values())
+    assert stored_tokens(alice) == []
+    (logged_out,) = audited("auth.user_logged_out")
+    assert logged_out["details"] == {"user_id": str(alice), "everywhere": False}
+
+    stale = TestClient(client.app, base_url=SITE, cookies={"dk_session": session})
+    assert stale.get("/whoami").json() == {"user": "", "scheme": None}
+    assert stale.post("/notes").status_code == 401  # Anonymous: no CSRF check.
+    assert stale.delete("/auth/session").status_code == 204
+    assert start(stale)  # A stale cookie never stops a new login.
+
+
+def test_sessions_of_inactive_or_expired_users_are_anonymous(
+    identity: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """They are not refused with 401: the browser could not clear the cookie."""
+    from domainkit.contrib.auth import tokens
+
+    create_user("alice")
+    create_user("off")
+    client = browser(identity, COOKIE={"TTL": timedelta(minutes=5)})
+    start(client)
+    assert client.get("/whoami").json()["user"] == "alice"
+    later = tokens.utc_now() + timedelta(minutes=6)
+    monkeypatch.setattr(tokens, "utc_now", lambda: later)
+    assert client.get("/whoami").json()["user"] == ""
+    monkeypatch.undo()
+
+    off = TestClient(client.app, base_url=SITE)
+    start(off, "off")
+    deactivate("off")
+    assert off.get("/whoami").json()["user"] == ""
+    for cookie in ("dkt_short", "not-a-token"):
+        odd = TestClient(client.app, base_url=SITE, cookies={"dk_session": cookie})
+        assert odd.get("/whoami").json()["user"] == ""
+
+
+def deactivate(username: str) -> None:
+    """Make ``username`` inactive."""
+    from domainkit.contrib.auth import AuthUnitOfWork
+    from domainkit.management.base import run_async
+
+    async def change() -> None:
+        async with AuthUnitOfWork() as uow:
+            user = await uow.users.get_by_natural_key(username)
+            assert user is not None
+            user.set_active(False)
+            await uow.commit()
+
+    run_async(change())
+
+
+def test_the_csrf_token_can_be_asked_for_again(identity: Api) -> None:
+    """``GET /session`` hands a new token for the cookie session."""
+    create_user("alice")
+    client = browser(identity)
+    start(client)
+
+    response = client.get("/auth/session")
+
+    fresh = response.json()["csrf_token"]
+    assert client.cookies["dk_csrf"] == fresh
+    assert (
+        client.post("/notes", headers={**TRUSTED, "X-CSRF-Token": fresh}).status_code
+        == 200
+    )
+    no_session = TestClient(client.app).get("/auth/session")
+    assert (no_session.status_code, no_session.json()["code"]) == (400, "no_session")
+    token = login(TestClient(client.app), "alice")["access_token"]
+    by_header = TestClient(client.app).get("/auth/session", headers=bearer(token))
+    assert by_header.status_code == 400
+
+
+def test_logins_are_checked_like_any_other(identity: Api) -> None:
+    """Wrong passwords, throttling, and origins, before any password is checked."""
+    create_user("alice")
+    client = browser(identity, LOGIN_RATE="2/minute")
+    wrong = {"username": "alice", "password": "wrong"}
+
+    forged = client.post(
+        "/auth/session", json=wrong, headers={"Origin": "https://evil.example"}
+    )
+    first = client.post("/auth/session", json=wrong, headers=TRUSTED)
+    second = client.post("/auth/session", json=wrong, headers=TRUSTED)
+    third = client.post("/auth/session", json=wrong, headers=TRUSTED)
+
+    assert (forged.status_code, forged.json()["code"]) == (403, "csrf_failed")
+    assert first.status_code == second.status_code == 401
+    assert first.json()["code"] == "invalid_credentials"
+    assert third.status_code == 429
+    assert [row["details"] for row in audited("auth.login")] == [
+        {"reason": "invalid_credentials"},
+        {"reason": "invalid_credentials"},
+        {"reason": "throttled"},
+    ]
+
+
+def test_websockets_with_the_cookie_need_a_trusted_origin(identity: Api) -> None:
+    """Cross-site WebSocket hijacking: the handshake's origin is checked."""
+    create_user("alice")
+    client = browser(identity)
+    start(client)
+
+    cookie = {"Cookie": f"dk_session={client.cookies['dk_session']}"}
+
+    # TestClient opens sockets over ws://, which pages over http:// may use.
+    same_site = {"Origin": "http://testserver"}
+
+    with client.websocket_connect("/live", headers={**same_site, **cookie}) as ws:
+        assert ws.receive_json() == {"user": "alice"}
+    for headers in ({"Origin": "https://evil.example"}, TRUSTED, {}):
+        with (
+            pytest.raises(WebSocketDisconnect) as closed,
+            client.websocket_connect("/live", headers={**headers, **cookie}),
+        ):
+            pass  # pragma: no cover - the handshake is refused.
+        assert closed.value.code == 1008
+    with TestClient(client.app).websocket_connect("/live") as anonymous:
+        assert anonymous.receive_json() == {"user": ""}
+
+
+def test_cookie_settings_follow_browser_rules() -> None:
+    """``SameSite=None`` and ``__Host-`` cookies need what browsers ask of them."""
+    with pytest.raises(ValidationError, match="needs SECURE"):
+        CookieSettings(SAMESITE="none", SECURE=False)
+    for options in (
+        {"SECURE": False},
+        {"DOMAIN": "example.com"},
+        {"PATH": "/api"},
+    ):
+        with pytest.raises(ValidationError, match="__Host- cookies need"):
+            CookieSettings(NAME="__Host-dk", **options)
+        with pytest.raises(ValidationError, match="__Host- cookies need"):
+            CookieSettings(CSRF_NAME="__Host-csrf", **options)
+    assert CookieSettings(NAME="__Host-dk", CSRF_NAME="__Host-csrf", SECURE=True)
+    assert CookieSettings(SAMESITE="none")
+    for name in ("bad name", "semi;colon", ""):
+        with pytest.raises(ValidationError, match="NAME"):
+            CookieSettings(NAME=name)
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://app.example.com/",
+        "https://app.example.com/path",
+        "app.example.com",
+        "ftp://app.example.com",
+        "https://*app.example.com",
+        "https://APP.example.com",
+    ],
+)
+def test_trusted_origins_are_a_scheme_and_a_host(origin: str) -> None:
+    """Anything else would never match an ``Origin`` header."""
+    with pytest.raises(ValidationError, match="scheme and a host"):
+        AuthSettings(CSRF_TRUSTED_ORIGINS=[origin])
+
+
+def test_deployments_refuse_plain_cookies(use_auth: UseAuth) -> None:
+    """``COOKIE.SECURE = False`` is refused in staging and production."""
+    deployed = {
+        "ENVIRONMENT": "production",
+        "ALLOWED_HOSTS": ["api.example.com"],
+        "DATABASES": {"default": {"URL": "sqlite+aiosqlite:///:memory:"}},
+    }
+
+    hashers = ["domainkit.contrib.auth.hashers.PBKDF2PasswordHasher"]
+
+    use_auth(settings=deployed, PASSWORD_HASHERS=hashers, COOKIE={"SECURE": True})
+    with pytest.raises(ImproperlyConfigured, match=r"COOKIE\.SECURE = False"):
+        use_auth(settings=deployed, PASSWORD_HASHERS=hashers, COOKIE={"SECURE": False})
+    use_auth(settings={"ENVIRONMENT": "test"}, COOKIE={"SECURE": False})
+
+
+def test_session_routes_need_the_cookie_class(identity: Api) -> None:
+    """``check`` reports the router mounted without ``CookieAuthentication``."""
+    identity(
+        AUTHENTICATION_CLASSES=[
+            "domainkit.contrib.auth.authentication.TokenAuthentication"
+        ]
+    )
+
+    assert application_problems(get_asgi_application()) == [
+        (
+            "Routes of domainkit.contrib.auth.cookies start browser sessions, but "
+            "AUTH.AUTHENTICATION_CLASSES lacks "
+            "domainkit.contrib.auth.cookies.CookieAuthentication."
+        )
+    ]
+
+
+def test_cookie_authentication_issues_no_login_tokens() -> None:
+    """Sessions start at ``/session``; ``/login`` needs another class first."""
+    import asyncio
+
+    with pytest.raises(ImproperlyConfigured, match="issues no tokens"):
+        asyncio.run(CookieAuthentication().issue(None, None))  # type: ignore[arg-type]

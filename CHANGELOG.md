@@ -45,6 +45,13 @@ All notable changes to domainkit. The format follows
   - Requests that send mail count against the new `AUTH.EMAIL_RATE`, and
     token checks against `AUTH.LOGIN_RATE`; resets, verifications,
     signups, and refusals are audited.
+- Browser sessions in cookies (DJ-43): `CookieAuthentication` reads an
+  opaque token from an HttpOnly, Secure, SameSite cookie that
+  `POST /auth/session` sets and `DELETE /auth/session` clears. Unsafe
+  requests it authenticates must come from a trusted origin (their own,
+  `ALLOWED_HOSTS`, or `AUTH.CSRF_TRUSTED_ORIGINS`) and send a CSRF token
+  signed for the session (`X-CSRF-Token`); others get `403 csrf_failed`.
+  Header-token clients are unaffected.
 
 ### Changed
 

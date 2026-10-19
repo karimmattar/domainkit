@@ -1,10 +1,18 @@
 """Settings of ``domainkit.contrib.auth``: ``AUTH = {...}``."""
 
 import json
+import re
 from datetime import timedelta
-from typing import Any, Final, Literal
+from typing import Any, Final, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
 from domainkit.apps import registry
 from domainkit.utils.rates import parse_rate
@@ -14,6 +22,10 @@ VALIDATORS: str = "domainkit.contrib.auth.validators"
 AUTHENTICATION: str = "domainkit.contrib.auth.authentication"
 TOKEN_PLACEHOLDER: Final = "{token}"  # noqa: S105 - a placeholder, not a secret.
 """Where a reset or verification link takes its token."""
+COOKIE_NAME: Final = r"^[A-Za-z0-9_.-]{1,64}$"
+"""Cookie names: letters, digits, ``_ . -`` (``__Host-`` included)."""
+ORIGIN: Final = re.compile(r"https?://(\*\.)?[a-z0-9.-]+(:[0-9]{1,5})?")
+"""An origin: a scheme and a host, and a port; ``*.`` matches subdomains."""
 HMAC_ALGORITHMS: Final = frozenset({"HS256", "HS384", "HS512"})
 """JWT algorithms that sign and verify with one shared secret."""
 
@@ -68,6 +80,41 @@ class JWTSettings(BaseModel):
     """``aud``: set in every token and required in every token checked."""
     LEEWAY: timedelta = Field(default=timedelta(0), ge=timedelta(0))
     """Clock difference tolerated when checking ``exp`` and ``iat``."""
+
+
+class CookieSettings(BaseModel):
+    """``AUTH["COOKIE"]``: browser sessions (``CookieAuthentication``)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    NAME: str = Field(default="dk_session", pattern=COOKIE_NAME)
+    """The session cookie: HttpOnly, so scripts never read it."""
+    CSRF_NAME: str = Field(default="dk_csrf", pattern=COOKIE_NAME)
+    """The cookie that hands scripts the CSRF token."""
+    CSRF_HEADER: str = Field(default="X-CSRF-Token", pattern=r"^[A-Za-z0-9-]{1,64}$")
+    """The header scripts send the CSRF token back in."""
+    SAMESITE: Literal["lax", "strict", "none"] = "lax"
+    SECURE: bool | None = None
+    """Send the cookies over HTTPS only; None: unless ``DEBUG``."""
+    DOMAIN: str | None = Field(default=None, pattern=r"^[A-Za-z0-9.-]{1,253}$")
+    """None: this host only (not its subdomains)."""
+    PATH: str = Field(default="/", pattern=r"^/[A-Za-z0-9._~/-]*$")
+    TTL: timedelta = Field(default=timedelta(days=14), gt=timedelta(0))
+    """How long a browser session works."""
+
+    @model_validator(mode="after")
+    def check_prefixes(self) -> Self:
+        """Keep the rules browsers apply to ``__Host-`` and ``SameSite=None``."""
+        if self.SAMESITE == "none" and self.SECURE is False:
+            raise ValueError('SAMESITE "none" needs SECURE cookies')
+        for name in (self.NAME, self.CSRF_NAME):
+            if name.startswith("__Host-") and (
+                self.SECURE is False or self.DOMAIN is not None or self.PATH != "/"
+            ):
+                raise ValueError(
+                    "__Host- cookies need SECURE, no DOMAIN, and the PATH /"
+                )
+        return self
 
 
 class AuthSettings(BaseModel):
@@ -144,6 +191,10 @@ class AuthSettings(BaseModel):
     """The page that takes a verification link's ``{token}``."""
     SIGNUP_ENABLED: bool = False
     """Let anyone create an account at ``/signup`` (``auth.signup.router``)."""
+    COOKIE: CookieSettings = CookieSettings()
+    """Browser sessions in cookies (``CookieAuthentication``)."""
+    CSRF_TRUSTED_ORIGINS: tuple[str, ...] = ()
+    """Origins of pages that may send cookie requests besides ``ALLOWED_HOSTS``'."""
 
     @field_validator("LOGIN_RATE", "EMAIL_RATE")
     @classmethod
@@ -151,6 +202,18 @@ class AuthSettings(BaseModel):
         """Refuse rates ``parse_rate`` cannot read."""
         if value is not None:
             parse_rate(value)
+        return value
+
+    @field_validator("CSRF_TRUSTED_ORIGINS")
+    @classmethod
+    def _check_origins(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        """Origins are a scheme and a host: ``https://app.example.com``."""
+        for origin in value:
+            if not ORIGIN.fullmatch(origin):
+                raise ValueError(
+                    "origins are a scheme and a host, such as "
+                    "https://app.example.com or https://*.example.com"
+                )
         return value
 
     @field_validator("PASSWORD_RESET_URL", "EMAIL_VERIFICATION_URL")
