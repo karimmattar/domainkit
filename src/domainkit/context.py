@@ -8,6 +8,10 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from typing import Final
+
+SYSTEM_ACTOR: Final = "system"
+"""The actor of work no caller asked for: periodic tasks, commands' messages."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,7 +19,8 @@ class RequestContext:
     """Facts about the request or job being served; no personal data.
 
     ``actor`` names who is acting. Authentication sets it; None means an
-    anonymous caller, and background work carries the actor that queued it.
+    anonymous caller, and background work carries the actor that queued it,
+    or ``SYSTEM_ACTOR`` when no request did.
     """
 
     request_id: str
