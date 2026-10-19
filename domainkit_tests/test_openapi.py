@@ -2,13 +2,14 @@
 
 import io
 import json
+import re
 from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
-from fastapi import APIRouter, Depends, FastAPI, Response
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Response, status
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
@@ -17,7 +18,11 @@ from domainkit.ddd import NotFound
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.http import openapi as openapi_module
-from domainkit.http.openapi import breaking_changes, duplicate_operation_ids
+from domainkit.http.openapi import (
+    MAX_DEPTH,
+    breaking_changes,
+    duplicate_operation_ids,
+)
 from domainkit.http.versioning import (
     Deprecation,
     DeprecationHeadersMiddleware,
@@ -30,6 +35,10 @@ SINCE = datetime(2026, 1, 1, tzinfo=UTC)
 SUNSET = datetime(2027, 1, 1, 12, tzinfo=UTC)
 OLD = Deprecation(since=SINCE, sunset=SUNSET, link="https://example.com/v2")
 GONE_SOON = Deprecation(since=date(2026, 6, 1))
+LINK_REFUSED = (
+    "A deprecation's link is an absolute http(s) URL without spaces, quotes, or "
+    "angle brackets."
+)
 
 
 class Item(BaseModel):
@@ -221,20 +230,28 @@ def test_openapi_marks_deprecated_operations(client: TestClient) -> None:
 @pytest.mark.parametrize(
     ("options", "message"),
     [
-        ({"since": datetime(2026, 1, 1)}, "needs a time zone"),  # noqa: DTZ001
-        ({"since": SINCE, "sunset": SINCE}, "must follow"),
-        ({"since": SINCE, "link": "ftp://example.com"}, "absolute http"),
-        ({"since": SINCE, "link": "https://"}, "absolute http"),
-        ({"since": SINCE, "link": 'https://a.example/x>; rel="evil"'}, "absolute"),
-        ({"since": SINCE, "link": "https://a.example/\r\nSet-Cookie: x"}, "absolute"),
+        ({"since": datetime(2026, 1, 1)}, "Deprecation since needs a time zone."),  # noqa: DTZ001
+        (
+            {"since": SINCE, "sunset": datetime(2027, 1, 1)},  # noqa: DTZ001
+            "Deprecation sunset needs a time zone.",
+        ),
+        (
+            {"since": SINCE, "sunset": SINCE},
+            "A deprecation's sunset must follow its since.",
+        ),
+        ({"since": SINCE, "link": "ftp://example.com"}, LINK_REFUSED),
+        ({"since": SINCE, "link": "https://"}, LINK_REFUSED),
+        ({"since": SINCE, "link": 'https://a.example/x>; rel="evil"'}, LINK_REFUSED),
+        ({"since": SINCE, "link": "https://a.example/\r\nSet-Cookie: x"}, LINK_REFUSED),
     ],
 )
 def test_deprecations_refuse_what_headers_cannot_carry(
     options: dict[str, Any], message: str
 ) -> None:
     """Naive times, a sunset before the start, and links that break headers."""
-    with pytest.raises(ImproperlyConfigured, match=message):
+    with pytest.raises(ImproperlyConfigured) as refused:
         Deprecation(**options)
+    assert str(refused.value) == message
 
 
 def test_deprecation_times_are_utc() -> None:
@@ -245,6 +262,7 @@ def test_deprecation_times_are_utc() -> None:
     )
 
     assert deprecation.since == SINCE
+    assert deprecation.since.tzinfo is UTC
     assert deprecation.headers() == [
         ("Deprecation", "@1767225600"),
         ("Sunset", "Sun, 01 Feb 2026 00:00:00 GMT"),
@@ -254,7 +272,11 @@ def test_deprecation_times_are_utc() -> None:
 @pytest.mark.parametrize("version", ["", "v 1", "/v1", "x" * 33])
 def test_versions_are_plain_names(version: str) -> None:
     """A version becomes a path segment and a prefix of names."""
-    with pytest.raises(ImproperlyConfigured, match="API version"):
+    message = (
+        f"API version {version!r} must be letters, digits, '.', '_', or '-' "
+        "(at most 32), such as 'v1'."
+    )
+    with pytest.raises(ImproperlyConfigured, match=f"^{re.escape(message)}$"):
         versioned_router(version)
 
 
@@ -362,6 +384,8 @@ def test_openapi_diff_refuses_huge_files(
 
     with pytest.raises(CommandError, match="is larger than 4 bytes"):
         run("--diff", str(path))
+    monkeypatch.setattr(openapi, "MAX_SCHEMA_BYTES", path.stat().st_size)
+    assert run("--diff", str(path)).startswith("No breaking changes since")
 
 
 # Breaking changes ---------------------------------------------------------------
@@ -726,3 +750,426 @@ def test_bounds_compare_numbers_only() -> None:
     assert tightened(1, True, max) is False
     assert tightened(True, 2, max) is True
     assert tightened(1, "2", max) is False
+
+
+def nested(levels: int, leaf: dict[str, Any], key: str) -> dict[str, Any]:
+    """``leaf`` inside ``levels`` objects (``properties``) or arrays (``items``)."""
+    schema = leaf
+    for _ in range(levels):
+        schema = obj(a=schema) if key == "properties" else {"items": schema}
+    return schema
+
+
+def composed(levels: int, leaf: dict[str, Any], key: str) -> dict[str, Any]:
+    """``leaf`` inside ``levels`` single-member ``anyOf`` (or ``allOf``) lists."""
+    schema = leaf
+    for _ in range(levels):
+        schema = {key: [schema]}
+    return schema
+
+
+def parameter(schema: dict[str, Any]) -> dict[str, Any]:
+    """An operation taking one query parameter."""
+    return {"parameters": [{"name": "q", "in": "query", "schema": schema}]}
+
+
+@pytest.mark.parametrize("key", ["properties", "items"])
+def test_nesting_is_followed_sixty_four_levels_deep(key: str) -> None:
+    """Parameters, bodies, and responses: level 64 is compared, 65 is not."""
+    for levels, expected in ((MAX_DEPTH, 1), (MAX_DEPTH + 1, 0)):
+        old, new = nested(levels, STRING, key), nested(levels, INTEGER, key)
+        for operation in (parameter, body, answer):
+            found = changes(document(operation(old)), document(operation(new)))
+            assert len(found) == expected, (levels, operation.__name__, found)
+
+
+@pytest.mark.parametrize("key", ["anyOf", "allOf"])
+def test_compositions_are_followed_sixty_four_levels_deep(key: str) -> None:
+    """Types and properties of compositions nested up to ``MAX_DEPTH`` count."""
+    where = "POST /things/{thing_id} 200"
+    deep = document(answer(composed(MAX_DEPTH, obj(gone=STRING), key)))
+    deeper = document(answer(composed(MAX_DEPTH + 1, obj(gone=STRING), key)))
+    integer = document(answer(INTEGER))
+    emptied = document(answer(obj()))
+
+    removed = [f"{where}: removed field 'gone'"] if key == "allOf" else []
+    assert changes(deep, integer) == [f"{where} may now be integer", *removed]
+    assert changes(deeper, integer) == []
+    assert changes(deep, emptied) == removed
+    assert changes(deeper, emptied) == []
+
+
+def test_every_way_to_name_a_type_counts() -> None:
+    """``oneOf``, ``properties`` alone, enum values, and malformed lists."""
+    old = document(
+        body(
+            obj(
+                one={"oneOf": [STRING, INTEGER]},
+                shape={"properties": {"x": STRING}},
+                values={"enum": [True, 1, 2.5]},
+                nothing={"anyOf": []},
+                untyped={"type": []},
+                both={"allOf": [STRING, INTEGER]},
+                loose={"anyOf": [{}, STRING]},
+            )
+        )
+    )
+    new = document(
+        body(
+            obj(
+                one={"oneOf": [STRING]},
+                shape=STRING,
+                values=STRING,
+                nothing=STRING,
+                untyped=STRING,
+                both=INTEGER,
+                loose=INTEGER,
+            )
+        )
+    )
+
+    where = "POST /things/{thing_id}: request body field"
+    assert changes(old, new) == [
+        f"{where} 'one' no longer accepts integer",
+        f"{where} 'shape' no longer accepts object",
+        f"{where} 'values' no longer accepts boolean, integer, number",
+        f"{where} 'nothing' no longer accepts other types",
+        f"{where} 'untyped' no longer accepts other types",
+        f"{where} 'both' no longer accepts other types",
+        f"{where} 'loose' no longer accepts other types",
+    ]
+
+
+def test_references_inside_compositions_are_followed() -> None:
+    """``anyOf`` and ``allOf`` members and their properties may be ``$ref``s."""
+    schemas = {"Text": STRING, "Shape": obj(x=STRING, y=STRING)}
+    old = document(
+        body(
+            obj(
+                text={"anyOf": [{"anyOf": [{"$ref": "#/components/schemas/Text"}]}]},
+                shape={"allOf": [{"allOf": [{"$ref": "#/components/schemas/Shape"}]}]},
+            )
+        ),
+        schemas=schemas,
+    )
+    new = document(
+        body(
+            obj(
+                text={"anyOf": [INTEGER]},
+                shape={
+                    "allOf": [
+                        {**obj(x=INTEGER, y=STRING), "additionalProperties": False}
+                    ]
+                },
+            )
+        ),
+        schemas=schemas,
+    )
+    answers = document(
+        answer(
+            obj(shape={"allOf": [{"allOf": [{"$ref": "#/components/schemas/Shape"}]}]})
+        ),
+        schemas=schemas,
+    )
+    narrower = document(answer(obj(shape={"allOf": [obj(x=STRING)]})))
+
+    where = "POST /things/{thing_id}: request body field"
+    assert changes(old, new) == [
+        f"{where} 'text' no longer accepts string",
+        f"{where} 'shape' field 'x' no longer accepts string",
+    ]
+    assert changes(answers, narrower) == [
+        "POST /things/{thing_id} 200 field 'shape': removed field 'y'"
+    ]
+
+
+def test_each_pair_of_references_is_compared_once() -> None:
+    """Pairs are told apart by both of their references, inline schemas too."""
+    text = {"$ref": "#/components/schemas/Text"}
+    number = {"$ref": "#/components/schemas/Number"}
+    schemas = {"Text": STRING, "Number": INTEGER}
+
+    def fields(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
+        return document(body(obj(a=a, b=b)), schemas=schemas)
+
+    where = "POST /things/{thing_id}: request body field 'b'"
+    assert changes(fields(STRING, INTEGER), fields(text, text)) == [
+        f"{where} no longer accepts integer"
+    ]
+    assert changes(fields(text, number), fields(text, text)) == [
+        f"{where} no longer accepts integer"
+    ]
+    assert changes(fields(text, text), fields(text, number)) == [
+        f"{where} no longer accepts string"
+    ]
+
+
+def test_boolean_schemas_and_missing_items_are_tolerated() -> None:
+    """``true`` as a schema allows anything; arrays without items are not compared."""
+    old = document(body(obj(flag=True, list={"type": "array", "items": STRING})))
+    new = document(body(obj(flag=STRING, list={"type": "array"})))
+
+    flag = "POST /things/{thing_id}: request body field 'flag'"
+    assert changes(old, new) == [f"{flag} no longer accepts other types"]
+    assert changes(new, old) == []
+
+
+def test_escaped_pointers_are_followed() -> None:
+    """``~1`` is a slash and ``~0`` a tilde in a ``$ref``."""
+    old = document(
+        answer({"$ref": "#/components/schemas/a~1b~0c"}),
+        schemas={"a/b~c": obj(x=STRING)},
+    )
+
+    assert changes(old, document(answer(obj()))) == [
+        "POST /things/{thing_id} 200: removed field 'x'"
+    ]
+
+
+def test_referenced_responses_bodies_and_parameters_are_followed() -> None:
+    """``components`` responses, request bodies, and parameters resolve."""
+    referenced = document(
+        {
+            "parameters": [{"$ref": "#/components/parameters/Lang"}],
+            "requestBody": {"$ref": "#/components/requestBodies/Thing"},
+            "responses": {"200": {"$ref": "#/components/responses/Thing"}},
+        },
+        parameters={
+            "Lang": {"name": "lang", "in": "header", "required": True, "schema": STRING}
+        },
+    )
+    referenced["components"]["requestBodies"] = {
+        "Thing": {"content": {"application/json": {"schema": obj(a=STRING)}}}
+    }
+    referenced["components"]["responses"] = {
+        "Thing": {"content": {"application/json": {"schema": obj(x=STRING)}}}
+    }
+    inline = document(
+        {
+            "parameters": [
+                {"name": "lang", "in": "header", "required": True, "schema": STRING}
+            ],
+            **body(obj(a=INTEGER), required=False),
+            **answer(obj()),
+        }
+    )
+
+    assert changes(referenced, inline) == [
+        "POST /things/{thing_id}: request body field 'a' no longer accepts string",
+        "POST /things/{thing_id} 200: removed field 'x'",
+    ]
+    assert changes(inline, referenced) == [
+        "POST /things/{thing_id}: request body field 'a' no longer accepts integer",
+    ]
+
+
+def test_parameter_values_are_compared() -> None:
+    """A parameter accepting fewer values breaks; malformed ones are skipped."""
+    old = document(
+        {
+            "parameters": [
+                {"name": "limit", "in": "query", "schema": {"maximum": 100}},
+            ]
+        }
+    )
+    new = document(
+        {
+            "parameters": [
+                {"name": "limit", "in": "query", "schema": {"maximum": 50}},
+                {"name": "nowhere", "required": True},
+                {"in": "query", "required": True},
+            ]
+        }
+    )
+
+    assert changes(old, new) == [
+        "POST /things/{thing_id}: query parameter 'limit' has a tighter maximum (50)"
+    ]
+
+
+def test_bodies_compare_every_media_type() -> None:
+    """Each media type of the old body is looked for; bodies may lack content."""
+    old = document(
+        {
+            "requestBody": {
+                "content": {
+                    "application/xml": {"schema": STRING},
+                    "application/json": {"schema": obj(a=STRING)},
+                }
+            }
+        }
+    )
+    new = document(body(obj(a=INTEGER), required=False))
+    bare = document({"requestBody": {"required": False}})
+
+    assert changes(old, new) == [
+        "POST /things/{thing_id}: no longer accepts application/xml",
+        "POST /things/{thing_id}: request body field 'a' no longer accepts string",
+    ]
+    assert changes(old, bare) == []
+
+
+def test_every_success_status_is_compared() -> None:
+    """Statuses after an error or a removed one are still compared."""
+    old = document(
+        {
+            "responses": {
+                "default": {"description": "error"},
+                "201": {"description": "created"},
+                "200": {"content": {"application/json": {"schema": obj(x=STRING)}}},
+                "202": {"content": {"application/json": {"schema": STRING}}},
+                "203": {"content": {"application/problem+json": {"schema": STRING}}},
+            }
+        }
+    )
+    new = document(
+        {
+            "responses": {
+                "200": {"content": {"application/json": {"schema": obj()}}},
+                "202": {"content": {"text/plain": {"schema": STRING}}},
+                "203": {"content": {"application/problem+json": {}}},
+            }
+        }
+    )
+
+    assert changes(old, new) == [
+        "POST /things/{thing_id}: no longer answers 201",
+        "POST /things/{thing_id} 200: removed field 'x'",
+        "POST /things/{thing_id}: no longer answers 202 with JSON",
+        "POST /things/{thing_id} 203 may now be other types",
+    ]
+    assert changes(document({}), new) == []
+    assert changes(old, document({})) == [
+        f"POST /things/{{thing_id}}: no longer answers {status}"
+        for status in ("201", "200", "202", "203")
+    ]
+
+
+def test_paths_and_operations_after_a_removed_one_are_compared() -> None:
+    """A removed path or operation does not end the comparison."""
+    old = {
+        "paths": {
+            "/gone": {"get": {}},
+            "/kept": {"put": {}, "post": answer(STRING), "patch": answer(STRING)},
+        }
+    }
+    new = {"paths": {"/kept": {"post": answer(INTEGER), "patch": answer(INTEGER)}}}
+
+    assert changes(old, new) == [
+        "/gone: removed",
+        "PUT /kept: removed",
+        "POST /kept 200 may now be integer",
+        "PATCH /kept 200 may now be integer",
+    ]
+
+
+def test_clashes_name_every_method_of_a_route() -> None:
+    """Mounted apps are skipped; a route's methods are listed together."""
+    with override_settings(OPENAPI_OPERATION_IDS="route_name"):
+        app = FastAPI(generate_unique_id_function=openapi_module.operation_id)
+        app.mount("/static", FastAPI())
+        app.add_api_route("/a", same, methods=["PUT", "POST"])
+        app.add_api_route("/b", same, methods=["GET"])
+
+        assert duplicate_operation_ids(app) == [
+            (
+                "Operation id 'same' names POST PUT /a and GET /b; give the routes "
+                "distinct names (name=...)."
+            )
+        ]
+
+
+def test_versioned_routers_put_their_deprecation_first() -> None:
+    """Errors raised by a version's own guards carry its headers too."""
+
+    async def refuse() -> None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Sign in.")
+
+    async def thing() -> dict[str, bool]:
+        return {"ok": True}
+
+    old = versioned_router("v3", deprecation=OLD, dependencies=[Depends(refuse)])
+    new = versioned_router("v4", dependencies=[Depends(lambda: None)], tags=["v4"])
+    app = FastAPI()
+    for version in (old, new):
+        version.add_api_route("/thing", thing, methods=["GET"])
+        app.include_router(version)
+    app.add_middleware(DeprecationHeadersMiddleware)
+    paths = app.openapi()["paths"]
+
+    with TestClient(app) as test_client:
+        refused = test_client.get("/v3/thing")
+        answered = test_client.get("/v4/thing")
+
+    assert refused.status_code == 401
+    assert refused.headers["Deprecation"] == "@1767225600"
+    assert answered.json() == {"ok": True}
+    assert "Deprecation" not in answered.headers
+    assert paths["/v3/thing"]["get"]["deprecated"] is True
+    assert paths["/v3/thing"]["get"]["operationId"] == "v3_thing"
+    assert "deprecated" not in paths["/v4/thing"]["get"]
+    assert paths["/v4/thing"]["get"]["operationId"] == "v4_thing"
+    assert paths["/v4/thing"]["get"]["tags"] == ["v4"]
+
+
+def test_deprecation_links_are_http_or_https() -> None:
+    """Both schemes are accepted, and sent as ``Link``."""
+    for link in ("http://example.com/old", "https://example.com/old"):
+        deprecation = Deprecation(since=SINCE, link=link)
+        assert deprecation.headers()[-1] == ("Link", f'<{link}>; rel="deprecation"')
+
+
+def test_finishing_tolerates_sparse_schemas() -> None:
+    """Schemas without paths, components, responses, or content."""
+    app = FastAPI()
+    app.include_router(v1)
+    schema: dict[str, Any] = {
+        "paths": {
+            "/v1/items": {"get": {}},
+            "/v1/items/{item_id}": {"delete": {"responses": {"204": {}}}},
+        }
+    }
+
+    with override_settings(ERROR_FORMAT="problem+json"):
+        finished = openapi_module.finish_schema(app, schema)
+        bare = openapi_module.finish_schema(app, {})
+
+    assert finished["paths"]["/v1/items"]["get"]["deprecated"] is True
+    assert finished["paths"]["/v1/items/{item_id}"]["delete"]["responses"] == {
+        "204": {
+            "headers": {
+                name: {
+                    "description": openapi_module.DEPRECATION_HEADERS[name],
+                    "schema": {"type": "string"},
+                }
+                for name in ("Deprecation", "Sunset", "Link")
+            }
+        }
+    }
+    for document in (finished, bare):
+        assert {"ProblemDetails", "FieldError"} <= set(
+            document["components"]["schemas"]
+        )
+        assert "ErrorResponse" not in document["components"]["schemas"]
+
+
+def test_openapi_keeps_text_readable(tmp_path: Path) -> None:
+    """Two spaces a level by default, ``-o`` for short, text not escaped."""
+    path = tmp_path / "openapi.json"
+    with override_settings(PROJECT_NAME="Café"):
+        printed = run()
+        run("-o", str(path))
+
+    assert printed.startswith('{\n  "openapi": ')
+    assert '"title": "Café"' in printed
+    assert path.read_text(encoding="utf-8") == printed
+
+
+def test_openapi_diff_says_why_a_file_cannot_be_read(tmp_path: Path) -> None:
+    """The reason, not the exception."""
+    missing = tmp_path / "missing.json"
+
+    with pytest.raises(CommandError) as refused:
+        run("--diff", str(missing))
+
+    assert str(refused.value) == f"Cannot read {missing}: No such file or directory."

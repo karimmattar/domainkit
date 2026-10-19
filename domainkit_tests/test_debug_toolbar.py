@@ -1,24 +1,37 @@
 """The debug toolbar: SQL per request, likely N+1 queries, profiles; DEBUG only."""
 
+import asyncio
 import logging
+import re
+import time
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from fastapi import APIRouter, WebSocket
 from fastapi.testclient import TestClient
 from sqlalchemy import text
+from starlette.datastructures import MutableHeaders
 
+from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.conf.global_settings import DEBUG_TOOLBAR_MIDDLEWARE
 from domainkit.db import connections
-from domainkit.debug import DebugToolbarMiddleware, record_queries, statement_shape
+from domainkit.debug import (
+    DebugToolbarMiddleware,
+    QueryLog,
+    record_queries,
+    statement_shape,
+)
 from domainkit.debug import middleware as middleware_module
 from domainkit.debug import queries as queries_module
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
+from domainkit.testing import CapturedQueries
 
 SECRET = "hunter2-secret"
 MIDDLEWARE = [
@@ -39,6 +52,12 @@ async def list_books() -> dict[str, int]:
             )
         await connection.execute(text(f"SELECT '{SECRET}'"))
     return {"books": 6}
+
+
+@router.post("/echo")
+async def echo(book: dict[str, str]) -> dict[str, str]:
+    """Answer with the body."""
+    return book
 
 
 @router.websocket("/socket")
@@ -173,7 +192,10 @@ def test_deployments_refuse_the_toolbar() -> None:
         pass
     with (
         override_settings(**deployed),
-        pytest.raises(ImproperlyConfigured, match="for development, not production"),
+        pytest.raises(
+            ImproperlyConfigured,
+            match=r"^DebugToolbarMiddleware is for development, not production\.$",
+        ),
     ):
         Toolbar(lambda scope, receive, send: None)  # type: ignore[arg-type,return-value]
 
@@ -230,3 +252,79 @@ def test_listeners_are_added_once() -> None:
         pass
 
     assert event.contains(Engine, "after_cursor_execute", queries_module._after)
+
+
+def test_request_bodies_reach_the_application(make_client: MakeClient) -> None:
+    """The toolbar passes the request through as it came."""
+    response = make_client().post("/echo", json={"title": "Dune"})
+
+    assert response.json() == {"title": "Dune"}
+    assert "Server-Timing" in response.headers
+
+
+def test_the_toolbar_counts_what_assert_num_queries_counts(
+    make_client: MakeClient,
+) -> None:
+    """One statement each, an ``executemany`` too; the request's only."""
+    client = make_client(DEBUG_TOOLBAR={"HEADERS": True})
+
+    with CapturedQueries() as queries:
+        response = client.get("/books")
+
+    assert response.headers["X-Debug-Queries"] == str(len(queries)) == "7"
+
+
+def test_timings_are_in_milliseconds() -> None:
+    """``db`` is the statements' time; ``app`` the time to the response."""
+    with override_settings(DEBUG=True, DEBUG_TOOLBAR={"HEADERS": True}):
+        toolbar = DebugToolbarMiddleware(None)  # type: ignore[arg-type]
+    log = QueryLog()
+    log.add("SELECT 1", 0.25)
+    log.add("SELECT 2", 0.125)
+    message: dict[str, Any] = {"type": "http.response.start", "headers": []}
+
+    toolbar._annotate(message, log, time.perf_counter() - 2, None)
+
+    headers = dict(MutableHeaders(scope=message).items())
+    database, app = headers["server-timing"].split(", ")
+    assert database == 'db;dur=375.0;desc="2 queries"'
+    assert 2000 <= float(app.removeprefix("app;dur=")) < 60_000
+    assert headers["x-debug-query-time"] == "375.0"
+
+
+def test_profiles_are_named_by_time(make_client: MakeClient, tmp_path: Path) -> None:
+    """``<UTC time>-<8 hex digits>.prof``."""
+    client = make_client(DEBUG_TOOLBAR={"PROFILE_DIR": tmp_path})
+
+    with freeze_time(datetime(2026, 10, 19, 13, 30, 5, tzinfo=UTC)):
+        name = client.get("/books", headers={"X-Debug-Profile": "1"}).headers[
+            "X-Debug-Profile"
+        ]
+
+    assert re.fullmatch(r"20261019T133005-[0-9a-f]{8}\.prof", name)
+
+
+def test_query_times_add_up(database_url: str) -> None:
+    """Each statement's time adds to the log's, measured forwards."""
+    log = QueryLog()
+    log.add("SELECT 1", 1.5)
+    log.add("SELECT 1", 0.5)
+
+    assert (log.count, log.seconds) == (2, 2.0)
+    with override_settings(DATABASES={"default": {"URL": database_url}}):
+
+        async def query() -> float:
+            async with connections.engine().connect() as connection:
+                with record_queries() as recorded:
+                    await connection.execute(text("SELECT 1"))
+            await connections.close_all()
+            return recorded.seconds
+
+        assert 0 <= asyncio.run(query()) < 60
+
+
+def test_shapes_keep_five_hundred_characters() -> None:
+    """A shape of exactly ``MAX_SHAPE`` characters is kept whole."""
+    statement = "SELECT " + "x" * (queries_module.MAX_SHAPE - len("SELECT "))
+
+    assert statement_shape(statement) == statement

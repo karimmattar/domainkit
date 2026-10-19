@@ -172,7 +172,8 @@ def breaking_changes(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[str
     """What in ``new`` breaks clients written against ``old``.
 
     Breaking: a removed path or operation, a success status no longer
-    answered, a new required parameter, body, or body field, a request
+    answered (or no longer with JSON), a new required parameter, body, or
+    body field, a request
     value accepted before and refused now (a narrower type, fewer enum
     values, tighter bounds, no other fields), and a response field removed,
     no longer always present, or of a wider type or more enum values.
@@ -242,8 +243,12 @@ def _compare_operation(
             comparison.found.append(f"{where}: no longer answers {status}")
             continue
         old_schema = _json_schema(comparison.old, response)
+        if old_schema is None:
+            continue
         new_schema = _json_schema(comparison.new, new_responses[status])
-        if old_schema is not None and new_schema is not None:
+        if new_schema is None:
+            comparison.found.append(f"{where}: no longer answers {status} with JSON")
+        else:
             _compare_response(
                 comparison, f"{where} {status}", old_schema, new_schema, 0
             )
@@ -461,7 +466,7 @@ def _types(
     declared = schema.get("type")
     if isinstance(declared, str):
         return {declared}
-    if isinstance(declared, list):
+    if isinstance(declared, list) and declared:
         return {str(each) for each in declared}
     for key in ("anyOf", "oneOf"):
         members = schema.get(key)
@@ -502,12 +507,13 @@ def _type_of(value: object) -> str:
 def _uncovered(wanted: set[str], offered: set[str]) -> set[str]:
     """The types in ``wanted`` that ``offered`` does not allow.
 
-    ``any`` allows everything, and ``number`` allows integers.
+    ``any`` allows everything, and ``number`` allows integers. Only ``any``
+    itself covers ``any``.
     """
     if "any" in offered:
         return set()
     if "any" in wanted:
-        return {"any"} if offered else set()
+        return {"any"}
     covered = offered | ({"integer"} if "number" in offered else set())
     return wanted - covered
 

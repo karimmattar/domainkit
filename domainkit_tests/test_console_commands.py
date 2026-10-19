@@ -1,14 +1,16 @@
 """``dbshell``, ``diffsettings``, and ``shell``: consoles on the project."""
 
+import asyncio
 import io
 import shutil
+import traceback
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from domainkit.conf import UNSET, override_settings, use_settings
+from domainkit.conf import UNSET, override_settings, settings, use_settings
 from domainkit.management import CommandError, call_command
 from domainkit.management.commands import shell
 from domainkit_tests.conftest import MakePackage, UseAuth
@@ -30,10 +32,12 @@ class Client:
         """Answer every run with ``returncode``."""
         self.returncode = returncode
         self.calls: list[tuple[list[str], dict[str, str]]] = []
+        self.checks: list[bool] = []
 
     def run(self, argv: list[str], *, env: dict[str, str], check: bool) -> Any:  # noqa: ANN401
         """Record the call."""
         self.calls.append((argv, env))
+        self.checks.append(check)
         return SimpleNamespace(returncode=self.returncode)
 
 
@@ -321,6 +325,13 @@ def test_the_console_awaits_and_reports(
     assert "Not imported: boxes_one.broken (RuntimeError)." in captured.err
     assert "Not imported: boxes_two.models.Box (name taken)." in captured.err
     assert "_Hidden" not in captured.err
+    assert "never" not in captured.err  # Commands are never imported.
+    assert captured.err.startswith(
+        f"{settings.PROJECT_NAME} shell (domainkit_tests.settings); use await at "
+        "the top level.\nAvailable: asyncio, settings, registry, connections, Box.\n"
+        "Not imported: "
+    )
+    assert captured.err.endswith("ZeroDivisionError: division by zero\n\n")
 
 
 def test_the_console_exits_on_request(console_input: list[str]) -> None:
@@ -331,3 +342,62 @@ def test_the_console_exits_on_request(console_input: list[str]) -> None:
         run("shell")
 
     assert exited.value.code == 4
+
+
+def test_dbshell_flags_and_messages(client: Client, tmp_path: Path) -> None:
+    """``--allow-production`` on the command line; the client's status is ours."""
+    url = f"sqlite+aiosqlite:///{tmp_path / 'local.db'}"
+    with override_settings(
+        DATABASES={"default": {"URL": url}},
+        ENVIRONMENT="production",
+        ALLOWED_HOSTS=["api.example.com"],
+    ):
+        with pytest.raises(CommandError) as refused:
+            run("dbshell")
+        run("dbshell", "--allow-production")
+    with (
+        override_settings(DATABASES={"default": {"URL": "sqlite+aiosqlite://"}}),
+        pytest.raises(CommandError) as memory,
+    ):
+        run("dbshell")
+
+    assert str(refused.value) == (
+        "dbshell gives full access to the production database; repeat with "
+        "--allow-production if that is meant."
+    )
+    assert str(memory.value) == "An in-memory SQLite database has no file to open."
+    assert client.checks == [False]
+
+
+def test_diffsettings_leaves_unchanged_settings_out() -> None:
+    """Defaults of every type compare equal; lists keep their items."""
+    middleware = ["domainkit.http.middleware.RequestContextMiddleware"]
+    with override_settings(MIDDLEWARE=middleware):
+        lines = run("diffsettings").splitlines()
+
+    assert not [line for line in lines if line.startswith("ACCESS_LOG_QUIET_PATHS")]
+    assert f"MIDDLEWARE = {middleware!r}" in lines
+
+
+def test_the_console_waits_for_the_rest_of_a_block() -> None:
+    """An unfinished block asks for more lines, as Python's console does."""
+    loop = asyncio.new_event_loop()
+    try:
+        console = shell.AsyncConsole({}, loop)
+        assert console.push("if True:") is True
+        assert console.push("    value = await asyncio.sleep(0, result=1)") is True
+        console.locals["asyncio"] = asyncio
+        assert console.push("") is False
+    finally:
+        loop.close()
+
+    assert console.locals["value"] == 1
+
+
+def test_command_code_names_itself_in_tracebacks() -> None:
+    """Errors in ``-c`` code point at ``<command>``."""
+    with pytest.raises(ZeroDivisionError) as failed:
+        run("shell", "-c", "1 / 0")
+
+    frames = traceback.extract_tb(failed.value.__traceback__)
+    assert frames[-1].filename == "<command>"

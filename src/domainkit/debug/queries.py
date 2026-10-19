@@ -6,6 +6,12 @@ A shape is the statement with its literals and placeholders replaced by
 ``?`` and lists of them by ``(...)``, so ``SELECT ... WHERE id = $1`` run
 for each of fifty rows is one shape run fifty times: an N+1. Bound values
 are never read.
+
+It counts as ``domainkit.testing.assert_num_queries`` does (each statement
+sent to the driver once, an ``executemany`` too), but only the statements
+of its own context: concurrent requests each count their own, where the
+test assertion counts every thread of the process. Find a request's
+queries with the toolbar; keep them in check with the assertion.
 """
 
 import re

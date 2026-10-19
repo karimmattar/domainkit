@@ -3,7 +3,6 @@
 import cProfile
 import logging
 import time
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 from uuid import uuid4
@@ -11,6 +10,7 @@ from uuid import uuid4
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from domainkit import clock
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.debug.queries import QueryLog, record_queries
@@ -86,7 +86,7 @@ class DebugToolbarMiddleware:
             return None
         if Headers(scope=scope).get(PROFILE_HEADER) != "1":
             return None
-        return directory / f"{datetime.now(UTC):%Y%m%dT%H%M%S}-{uuid4().hex[:8]}.prof"
+        return directory / f"{clock.now():%Y%m%dT%H%M%S}-{uuid4().hex[:8]}.prof"
 
     def _annotate(
         self,

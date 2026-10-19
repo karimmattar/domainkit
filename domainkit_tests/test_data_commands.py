@@ -4,6 +4,7 @@ import asyncio
 import enum
 import io
 import json
+import re
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, date, datetime, time, timedelta
@@ -29,6 +30,7 @@ from sqlalchemy import (
     insert,
     select,
     text,
+    update,
 )
 from sqlalchemy.types import NullType, TypeDecorator
 
@@ -42,6 +44,7 @@ from domainkit.db import UTCDateTime, connections, metadata
 from domainkit.db import fixtures as fixtures_module
 from domainkit.db.fixtures import FixtureError, read_fixture, select_tables, to_json
 from domainkit.management import CommandError, call_command
+from domainkit.testing import CapturedQueries
 from domainkit_tests.conftest import (
     ALPHA,
     AUTH,
@@ -192,6 +195,15 @@ async def _scalar(statement: Any) -> Any:  # noqa: ANN401 - any result.
     try:
         async with connections.engine().connect() as connection:
             return await connection.scalar(statement)
+    finally:
+        await connections.close_all()
+
+
+async def _scalars(statement: Any) -> list[Any]:  # noqa: ANN401 - any query.
+    """Run a query on the default database; every first column."""
+    try:
+        async with connections.engine().connect() as connection:
+            return list(await connection.scalars(statement))
     finally:
         await connections.close_all()
 
@@ -534,3 +546,236 @@ def test_fixture_helpers() -> None:
     unknown = Column("unknown", NullType())
     assert fixtures_module._decoded(unknown, {"kept": True}) == {"kept": True}
     assert fixtures_module._encoded(kinds.c.label, 3) == 3
+
+
+def test_dump_options_on_the_command_line(project: str, tmp_path: Path) -> None:
+    """``-o``, two spaces by default, ``--indent N``, and text as it is."""
+    path = tmp_path / "kinds.json"
+
+    async def rename() -> None:
+        async with connections.engine().begin() as connection:
+            await connection.execute(update(kinds).values(label="Café"))
+        await connections.close_all()
+
+    asyncio.run(rename())
+    printed = run("dumpdata", kinds.name)
+
+    assert printed.startswith('{\n  "format": "domainkit.fixture",\n')
+    assert '"label": "Café"' in printed
+    assert run("dumpdata", kinds.name, "-o", str(path)) == (
+        f"Wrote 1 row(s) of 1 table(s) to {path}.\n"
+    )
+    assert path.read_text(encoding="utf-8") == printed
+    assert run("dumpdata", kinds.name, "--indent", "4").startswith('{\n    "format": ')
+
+
+def test_loading_updates_stored_rows(project: str, tmp_path: Path) -> None:
+    """Rows with a stored key replace the stored values, several at a time."""
+    path = tmp_path / "kinds.json"
+    rows = [{"id": 1, "label": "replaced"}, {"id": 2, "label": "added"}]
+    path.write_text(
+        json.dumps(
+            {
+                "format": "domainkit.fixture",
+                "version": 1,
+                "tables": [{"table": kinds.name, "rows": rows}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    run("loaddata", str(path))
+
+    assert run("loaddata", str(path), "--dry-run") == (
+        f"{path}: framework_test_kinds: 2 rows, replacing 2\n"
+    )
+    labels = asyncio.run(_scalars(select(kinds.c.label).order_by(kinds.c.id)))
+    assert labels == ["replaced", "added"]
+
+
+def test_loading_works_in_chunks(
+    project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rows are written and counted ``CHUNK`` at a time."""
+    monkeypatch.setattr(fixtures_module, "CHUNK", 2)
+    path = tmp_path / "notes.json"
+    tags = [{"kind": number, "tag": "x"} for number in range(5)]
+    path.write_text(
+        json.dumps(
+            {
+                "format": "domainkit.fixture",
+                "version": 1,
+                "tables": [{"table": kind_tags.name, "rows": tags}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    run("loaddata", str(path))
+
+    with CapturedQueries() as queries:
+        plan = run("loaddata", str(path))
+
+    assert f"{path}: framework_test_kind_tags: 5 rows, replacing 5\n" in plan
+    inserts = [each for each in queries.statements if each.startswith("INSERT")]
+    assert len(inserts) == 3
+    assert count(kind_tags) == 5
+
+
+def test_dry_runs_cover_every_fixture(project: str, tmp_path: Path) -> None:
+    """Each file is read and described; nothing is written."""
+    first, second = tmp_path / "first.json", tmp_path / "second.json"
+    for path, label in ((first, "one"), (second, "two")):
+        path.write_text(
+            json.dumps(
+                {
+                    "format": "domainkit.fixture",
+                    "version": 1,
+                    "tables": [{"table": kind_notes.name, "rows": [{"text": label}]}],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    plan = run("loaddata", str(first), str(second), "--dry-run")
+
+    assert plan == (
+        f"{first}: framework_test_kind_notes: 1 row\n"
+        f"{second}: framework_test_kind_notes: 1 row\n"
+    )
+    assert count(kind_notes) == 0
+
+
+def test_loading_names_constraints_it_cannot_describe(
+    project: str, tmp_path: Path
+) -> None:
+    """A unique value taken by another row is "a constraint"; nothing loads."""
+    domain = asyncio.run(_scalar(select(content_types.c.domain).limit(1)))
+    model = asyncio.run(
+        _scalar(select(content_types.c.model).where(content_types.c.domain == domain))
+    )
+    path = tmp_path / "taken.json"
+    path.write_text(
+        json.dumps(
+            {
+                "format": "domainkit.fixture",
+                "version": 1,
+                "tables": [
+                    {
+                        "table": content_types.name,
+                        "rows": [{"id": 9999, "domain": domain, "model": model}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CommandError) as refused:
+        run("loaddata", str(path))
+
+    assert str(refused.value) == (
+        f"{path}: the database refused the rows (a constraint); nothing was loaded."
+    )
+
+
+def test_unreadable_fixtures_say_why(project: str, tmp_path: Path) -> None:
+    """The reason, not the exception."""
+    missing = tmp_path / "missing.json"
+
+    with pytest.raises(CommandError) as refused:
+        run("loaddata", str(missing))
+
+    assert str(refused.value) == f"Cannot read {missing}: No such file or directory."
+
+
+def test_force_is_a_flag(project: str, tmp_path: Path) -> None:
+    """``--force`` on the command line, for ``loaddata`` and ``flush``."""
+    path = tmp_path / "shop.json"
+    path.write_text(run("dumpdata", "shop"), encoding="utf-8")
+    sqlite = {"default": {"URL": f"sqlite+aiosqlite:///{tmp_path / 'other.db'}"}}
+    with override_settings(DATABASES=sqlite):
+        run("migrate")
+        with override_settings(ENVIRONMENT="staging"):
+            assert run("loaddata", str(path), "--force").endswith(
+                f"Loaded 1 row from {path}.\n"
+            )
+            assert run("flush", "--force").endswith(" from 'default'.\n")
+
+
+def test_flush_says_how_many_rows_went(project: str) -> None:
+    """The total of the plan."""
+    plan = run("flush", "--dry-run")
+    total = sum(int(match) for match in re.findall(r": delete (\d+) rows?\n", plan))
+
+    assert run("flush").endswith(f"Deleted {total} rows from 'default'.\n")
+
+
+def test_flush_keeps_tables_marked_to_stay(project: str) -> None:
+    """``info={"flush": False}`` keeps a table and its rows."""
+    kinds.info["flush"] = False
+    try:
+        plan = run("flush")
+    finally:
+        del kinds.info["flush"]
+
+    assert "default: framework_test_kinds: kept\n" in plan
+    assert count(kinds) == 1
+
+
+def test_seeds_and_unknown_domains_are_listed(
+    project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every domain seeded, in order; every unknown label."""
+
+    async def seed(self: object) -> None:
+        return None
+
+    monkeypatch.setattr(type(registry.get_domain_config("shop")), "seed", seed)
+
+    assert run("seed") == "Seeded shop, kinds.\n"
+    with pytest.raises(CommandError) as refused:
+        run("seed", "nope", "nada")
+    assert str(refused.value) == "No installed domain 'nope', 'nada'."
+
+
+def test_fixtures_refuse_odd_table_names(project: str, tmp_path: Path) -> None:
+    """A table name that is not text is refused like an unknown one."""
+    with pytest.raises(FixtureError, match="holds no table"):
+        read_fixture(
+            {
+                "format": "domainkit.fixture",
+                "version": 1,
+                "tables": [{"table": ["x"], "rows": []}],
+            },
+            "default",
+        )
+    with pytest.raises(FixtureError) as refused:
+        read_fixture(
+            {
+                "format": "domainkit.fixture",
+                "version": 1,
+                "tables": [{"table": kinds.name, "rows": [{"a": 1, "b": 2}]}],
+            },
+            "default",
+        )
+    assert str(refused.value) == "'framework_test_kinds' has no column a, b."
+
+
+def test_null_values_load_as_null(project: str, tmp_path: Path) -> None:
+    """``null`` is no value, whatever the column's type."""
+    path = tmp_path / "nulls.json"
+    row: dict[str, Any] = dict.fromkeys(ROW) | {"id": 3}
+    path.write_text(
+        json.dumps(
+            {
+                "format": "domainkit.fixture",
+                "version": 1,
+                "tables": [{"table": kinds.name, "rows": [row]}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    run("loaddata", str(path))
+
+    stored = asyncio.run(_scalar(select(kinds.c.day).where(kinds.c.id == 3)))
+    assert stored is None

@@ -113,7 +113,6 @@ class DynamicSettingDefinition[T]:
                 f"'_', '.', or '-' (at most {NAME_LENGTH})."
             )
         self.key = key
-        self.type = type_
         self.description = description
         self.adapter: TypeAdapter[T] = TypeAdapter(type_)
         try:

@@ -4,6 +4,7 @@ import asyncio
 import io
 import logging
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Annotated, Any
@@ -16,6 +17,7 @@ from sqlalchemy import insert, update
 from domainkit import setup
 from domainkit.apps import registry
 from domainkit.cache import caches
+from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.auth.models import AnonymousUser
 from domainkit.contrib.flags import (
@@ -26,6 +28,7 @@ from domainkit.contrib.flags import (
     flag_enabled,
 )
 from domainkit.contrib.flags import store as store_module
+from domainkit.contrib.flags.events import FlagChanged
 from domainkit.contrib.flags.models import bucket
 from domainkit.contrib.flags.tables import dynamic_settings, flags
 from domainkit.db import connections
@@ -489,3 +492,118 @@ def test_stored_settings_can_be_read_without_a_declaration(project: None) -> Non
     asyncio.run(store())
     assert run_async(store_module.current()).settings == {"old.key": 1}
     assert not enabled("beta")
+
+
+def test_rollout_buckets_never_change() -> None:
+    """A user's bucket is part of the contract: releases must not move it."""
+    flag = Flag(id="rollout")
+    assert bucket("rollout", "7") == 43
+
+    flag.configure(everyone=None, percentage=43, users=[], groups=[], note="")
+    assert not flag.enabled_for("7", [])
+    flag.configure(everyone=None, percentage=44, users=[], groups=[], note="")
+    assert flag.enabled_for("7", [])
+
+
+def test_changes_are_recorded_with_their_rules() -> None:
+    """``FlagChanged`` carries every rule but the note."""
+    flag = Flag(id="beta")
+    flag.configure(
+        everyone=False, percentage=5, users=["u2", "u1"], groups=["g"], note="why"
+    )
+
+    (event,) = flag.pull_events()
+    assert isinstance(event, FlagChanged)
+    assert (event.name, event.everyone, event.percentage) == ("beta", False, 5)
+    assert (event.users, event.groups) == (("u1", "u2"), ("g",))
+
+
+def test_flags_are_read_with_the_stored_rules(project: None) -> None:
+    """The rollout uses the flag's name; anonymous users are nobody."""
+    user = SimpleNamespace(id="7")
+    run("flags", "set", "rollout", "--percentage", "43")
+    assert not enabled("rollout", user)
+    run("flags", "set", "rollout", "--percentage", "44")
+    assert enabled("rollout", user)
+
+    run("flags", "set", "beta", "--users", "u1", "--groups", "staff")
+    assert not enabled("beta", SimpleNamespace(id="u1", is_authenticated=False))
+    assert not enabled("beta", SimpleNamespace(id="u9"))  # No groups at all.
+
+
+def test_cached_flags_expire_after_the_ttl(project: None) -> None:
+    """Changes made behind the store's back show once ``CACHE_TTL`` passes."""
+    with freeze_time() as clock:
+        run("flags", "set", "beta", "--everyone", "on")
+        assert enabled("beta")
+
+        async def behind_its_back() -> None:
+            async with connections.engine().begin() as connection:
+                await connection.execute(update(flags).values(everyone=False))
+            await connections.close_all()
+
+        asyncio.run(behind_its_back())
+        clock.tick(timedelta(seconds=29))
+        assert enabled("beta")
+        clock.tick(timedelta(seconds=2))
+        assert not enabled("beta")
+
+
+def test_setting_values_are_stored_as_json(
+    project: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Dates and the like are stored as JSON text; unset settings log nothing."""
+    when = dynamic_setting(
+        "launch.at", datetime, default=datetime(2026, 1, 1, tzinfo=UTC)
+    )
+    pair = dynamic_setting("grid.size", tuple[int, int], default=(1, 2))
+
+    assert when.default_json() == "2026-01-01T00:00:00Z"
+    assert when.checked("2026-02-01T00:00:00+00:00") == "2026-02-01T00:00:00Z"
+    assert pair.default_json() == [1, 2]
+    assert dynamic_setting("plain.key", int, default=1).description == ""
+    with pytest.raises(InvalidSettingValue) as refused:
+        pair.checked(["a", "b"])
+    assert str(refused.value) == (
+        "grid.size: Input should be a valid integer, unable to parse string as an "
+        "integer; Input should be a valid integer, unable to parse string as an "
+        "integer."
+    )
+    with caplog.at_level(logging.WARNING, logger="domainkit.contrib.flags.store"):
+        assert run_async(when.get()) == datetime(2026, 1, 1, tzinfo=UTC)
+    assert caplog.text == ""
+
+
+def test_refused_stored_values_are_logged_by_key(
+    project: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The warning names the key, never the value."""
+    setting = max_items()
+    run("flags", "setting", "checkout.max_items", "20")
+
+    async def corrupt() -> None:
+        async with connections.engine().begin() as connection:
+            await connection.execute(update(dynamic_settings).values(value="lots"))
+        await connections.close_all()
+
+    asyncio.run(corrupt())
+    clear_caches()
+    with caplog.at_level(logging.WARNING, logger="domainkit.contrib.flags.store"):
+        run_async(setting.get())
+
+    assert [record.getMessage() for record in caplog.records] == [
+        (
+            "Dynamic setting 'checkout.max_items' holds a value its type refuses; "
+            "using the default"
+        )
+    ]
+
+
+def test_the_command_refuses_unknown_everyone_values(
+    project: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--everyone`` is on, off, or rules."""
+    with pytest.raises(SystemExit):
+        run("flags", "set", "beta", "--everyone", "maybe")
+
+    assert "invalid choice: 'maybe'" in capsys.readouterr().err

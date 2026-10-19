@@ -369,7 +369,15 @@ def test_integrity_refusals_answer_with_codes_and_fields() -> None:
                 }
             ],
         )
-        assert answer(check)[:2] == (422, "check_violation")
+        assert answer(check) == (
+            422,
+            "check_violation",
+            (
+                "A value breaks a rule of the data: it is out of the range or set "
+                "the database accepts."
+            ),
+            None,
+        )
         assert integrity_refusal(driver("99999")) is None
 
 
@@ -382,6 +390,7 @@ def test_duplicates_outside_a_unit_of_work_are_conflicts() -> None:
 
     assert refusal is not None
     assert (refusal.status_code, refusal.code) == (409, "duplicate_value")
+    assert refusal.detail == "The shelf_code is already taken."
     assert [error.loc for error in refusal.errors or []] == [["body", "shelf_code"]]
 
 
@@ -487,3 +496,134 @@ def test_duplicates_answer_with_field_errors(client: TestClient) -> None:
             "type": "duplicate_value",
         }
     ]
+
+
+def ranges() -> tuple[MetaData, Table]:
+    """A table whose CHECK constraints name their columns."""
+    local = MetaData()
+    table = Table(
+        "framework_test_ranges",
+        local,
+        Column("low", Integer, CheckConstraint("low >= 0", name="low_positive")),
+        Column("high", Integer),
+    )
+    table.append_constraint(CheckConstraint(table.c.high > 0, name="high_positive"))
+    return local, table
+
+
+def sqlite_error(name: str, message: str) -> IntegrityError:
+    """SQLite's error, its extended name as aiosqlite gives it."""
+    error = Exception(message)
+    error.sqlite_errorname = name  # type: ignore[attr-defined]
+    return IntegrityError("INSERT", {}, error)
+
+
+def test_sqlite_checks_name_their_columns() -> None:
+    """SQLite names the constraint; its table and columns are looked up."""
+    local, _ = ranges()
+    high = sqlite_error(
+        "SQLITE_CONSTRAINT_CHECK", "CHECK constraint failed: high_positive"
+    )
+
+    assert integrity_violation(high, local) == IntegrityViolation(
+        "check", "high_positive", ("high",)
+    )
+
+
+def test_check_refusals_name_the_fields() -> None:
+    """422 ``check_violation``, one error per field the constraint covers."""
+    local, table = ranges()
+    high = asyncpg("23514", constraint_name="high_positive", table_name=table.name)
+
+    with _metadata(local):
+        refusal = database_refusal(high)
+
+    assert refusal is not None
+    assert [error.model_dump() for error in refusal.errors or []] == [
+        {
+            "loc": ["body", "high"],
+            "msg": "This value is not allowed.",
+            "type": "check_violation",
+        }
+    ]
+
+
+def test_diagnostics_may_be_partial() -> None:
+    """Unknown tables, missing columns, odd messages, and absent attributes."""
+    unknown_table = asyncpg("23514", constraint_name="x", table_name="other_table")
+    no_column = asyncpg("23502", table_name="framework_test_books")
+    odd_message = asyncpg(
+        "23503", constraint_name="x", table_name="framework_test_books", message=5
+    )
+    still_used = driver(
+        "23503",
+        diag=Diag(
+            constraint_name="fk_framework_test_books_shelf_framework_test_shelves",
+            table_name="framework_test_books",
+            message_primary='update or delete on table "framework_test_shelves"',
+        ),
+    )
+
+    assert integrity_violation(unknown_table, metadata) == IntegrityViolation(
+        "check", "x"
+    )
+    assert integrity_violation(no_column, metadata) == IntegrityViolation("not_null")
+    assert integrity_violation(odd_message, metadata) == IntegrityViolation(
+        "foreign_key", "x", (), False
+    )
+    assert integrity_violation(still_used, metadata) == IntegrityViolation(
+        "foreign_key",
+        "fk_framework_test_books_shelf_framework_test_shelves",
+        (),
+        True,
+    )
+    for bare in (driver("23505", diag=Diag()), asyncpg("23505")):
+        duplicate = duplicate_value(bare, metadata)
+        assert duplicate is not None
+        assert duplicate.constraint is None
+
+
+def test_unnamed_unique_constraints_have_no_name() -> None:
+    """A constraint nobody named is reported without one."""
+    local = MetaData()
+    Table(
+        "framework_test_codes",
+        local,
+        Column("id", Integer, primary_key=True),
+        Column("code", String(10), unique=True),
+    )
+    taken = sqlite_error(
+        "SQLITE_CONSTRAINT_UNIQUE",
+        "UNIQUE constraint failed: framework_test_codes.code",
+    )
+
+    duplicate = duplicate_value(taken, local)
+
+    assert duplicate is not None
+    assert (duplicate.constraint, duplicate.fields) == (None, ("code",))
+
+
+def test_field_names_look_at_every_mapper_of_a_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A class that leaves a column out does not hide another that maps it."""
+    local = MetaData()
+    labels = Table(
+        "framework_test_labels",
+        local,
+        Column("id", Integer, primary_key=True),
+        Column("code", String(10)),
+    )
+
+    class Plain:
+        """Maps the key only."""
+
+    class Labelled:
+        """Maps the code as ``label``."""
+
+    mappers = orm_registry(metadata=MetaData())
+    mappers.map_imperatively(Plain, labels, exclude_properties=["code"])
+    mappers.map_imperatively(Labelled, labels, properties={"label": labels.c.code})
+    monkeypatch.setattr(errors_module, "mapper_registry", mappers)
+
+    assert field_name(labels.c.code) == "label"

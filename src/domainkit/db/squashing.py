@@ -25,7 +25,6 @@ import ast
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, cast
 
@@ -33,6 +32,7 @@ from alembic.script import Script, ScriptDirectory
 from alembic.script.revision import RevisionError
 from alembic.util.exc import CommandError as AlembicError
 
+from domainkit import clock
 from domainkit.db import migrations
 from domainkit.db.routing import router
 from domainkit.utils.formatting import format_python
@@ -187,7 +187,7 @@ def _parse(script: Script) -> _Revision:
         else:
             raise SquashRefused(
                 f"{path.name} has code besides imports, upgrade, and downgrade "
-                f"(line {getattr(node, 'lineno', '?')}); move it into them first."
+                f"(line {node.lineno}); move it into them first."
             )
     if set(bodies) != {"upgrade", "downgrade"}:
         raise SquashRefused(f"{path.name} lacks an upgrade or a downgrade.")
@@ -299,7 +299,7 @@ def _render(revisions: Sequence[_Revision], message: str) -> str:
         "",
         f"Revision: {newest.revision}",
         f"Revises: {down or ''}",
-        f"Created: {datetime.now(UTC):%Y-%m-%d %H:%M:%S}",
+        f"Created: {clock.now():%Y-%m-%d %H:%M:%S}",
         f"Squashes: {replaced}",
         '"""',
         "",

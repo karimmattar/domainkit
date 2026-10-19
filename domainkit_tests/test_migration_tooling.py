@@ -11,6 +11,7 @@ import pytest
 from alembic.script import ScriptDirectory
 from sqlalchemy import Column, Integer, MetaData, String, Table
 
+from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.db import migrations as migrations_module
 from domainkit.db import squashing
@@ -271,7 +272,7 @@ def test_a_partial_squash_keeps_later_revisions(
     ("arguments", "message"),
     [
         (("--start", "nope"), "Can't locate revision"),
-        (("--start", "base"), "Name revisions, not 'base'"),
+        (("--start", "base"), r"^Not squashed: Name revisions, not 'base'\.$"),
         (("-m", 'x"""'), "one line of text"),
     ],
 )
@@ -289,7 +290,9 @@ def test_squashing_needs_a_run_in_order(history: list[Path]) -> None:
 
     with pytest.raises(CommandError, match=f"{third} is not before {first}"):
         run("squashmigrations", first, "--start", third)
-    with pytest.raises(CommandError, match="at least two revisions"):
+    with pytest.raises(
+        CommandError, match=r"^Not squashed: Squashing needs at least two revisions\.$"
+    ):
         run("squashmigrations", second, "--start", second)
 
 
@@ -298,7 +301,11 @@ def test_squashing_refuses_databases_inside_the_run(history: list[Path]) -> None
     second = history[1].name[:9]
     run("migrate", second, "--downgrade")
 
-    with pytest.raises(CommandError, match=f"is at {second}, which the squash"):
+    with pytest.raises(
+        CommandError,
+        match=f"is at {second}, which the squash replaces; migrate it to the "
+        "newest revision of the run first.$",
+    ):
         run("squashmigrations")
     assert run("squashmigrations", second).startswith("Created ")
 
@@ -315,7 +322,11 @@ def test_squashing_refuses_branches(history: list[Path], project: Path) -> None:
         splice=True,
         rev_id="0002_side",
     )
-    with pytest.raises(CommandError, match="has 2 heads"):
+    with pytest.raises(
+        CommandError,
+        match=r"has 2 heads; it needs one "
+        r"\(run 'manage.py makemigrations --merge'\)\.$",
+    ):
         run("squashmigrations")
     run("makemigrations", "--merge")
     with pytest.raises(CommandError, match="merges branches"):
@@ -324,18 +335,28 @@ def test_squashing_refuses_branches(history: list[Path], project: Path) -> None:
         run("squashmigrations", second)
 
 
+CODE_BESIDES = (
+    r"code besides imports, upgrade, and downgrade \(line \d+\); move it into them"
+)
+
+
 @pytest.mark.parametrize(
     ("old", "new", "message"),
     [
         (
             "def downgrade() -> None:",
             "HELPER = 1\n\n\ndef downgrade() -> None:",
-            "code besides",
+            CODE_BESIDES,
         ),
         (
             "def downgrade() -> None:",
             "@staticmethod\ndef downgrade() -> None:",
-            "code besides",
+            CODE_BESIDES,
+        ),
+        (
+            "def downgrade() -> None:",
+            '"""A note."""\n\n\ndef downgrade() -> None:',
+            CODE_BESIDES,
         ),
         (
             'def downgrade() -> None:\n    """Revert this revision."""\n    pass\n',
@@ -345,7 +366,10 @@ def test_squashing_refuses_branches(history: list[Path], project: Path) -> None:
         (
             '    """Revert this revision."""\n    pass',
             '    """Revert this revision."""\n    raise NotImplementedError',
-            "cannot be reverted",
+            (
+                r"cannot be reverted \(its downgrade raises\), so the squashed "
+                r"revision could not be either\.$"
+            ),
         ),
         (
             "branch_labels: str | Sequence[str] | None = None",
@@ -356,6 +380,21 @@ def test_squashing_refuses_branches(history: list[Path], project: Path) -> None:
             "import sqlalchemy as sa",
             "import sqlalchemy as sa\nimport json as op",
             "different things as 'op'",
+        ),
+        (
+            "import sqlalchemy as sa",
+            "import sqlalchemy as sa\nimport os.path\nfrom json import dumps as os",
+            "different things as 'os'",
+        ),
+        (
+            "import sqlalchemy as sa",
+            "import sqlalchemy as sa\nfrom json import dumps\nfrom pickle import dumps",
+            "different things as 'dumps'",
+        ),
+        (
+            "import sqlalchemy as sa",
+            "import sqlalchemy as sa\nimport json as codec\nimport pickle as codec",
+            "different things as 'codec'",
         ),
     ],
 )
@@ -385,7 +424,7 @@ def test_squashing_merges_imports(history: list[Path]) -> None:
     write(
         history[2],
         "import sqlalchemy as sa",
-        "import sqlalchemy as sa\nimport os.path\nimport os.path as os_path",
+        "import sqlalchemy as sa\nimport os.path\nimport os.path as os_path\nimport os",
     )
 
     text = created(run("squashmigrations").splitlines()[0]).read_text(encoding="utf-8")
@@ -393,6 +432,7 @@ def test_squashing_merges_imports(history: list[Path]) -> None:
     assert text.count("import os.path\n") == 1
     assert "from json import dumps" in text
     assert 'op.create_table(\n        "framework_test_bins"' in text
+    assert text.count("def upgrade() -> None:") == 1
 
 
 def test_a_squash_that_fails_its_checks_puts_the_files_back(
@@ -408,7 +448,9 @@ def test_a_squash_that_fails_its_checks_puts_the_files_back(
         raise SquashRefused("The squashed revision does not join the history.")
 
     monkeypatch.setattr(squashing, "_render", broken)
-    with pytest.raises(CommandError, match="would not compile"):
+    with pytest.raises(
+        CommandError, match=r"would not compile: .*_squashed\.py, line 1\)"
+    ):
         run("squashmigrations")
     monkeypatch.undo()
     monkeypatch.setattr(migrations_module, "metadata", metadata)
@@ -430,7 +472,9 @@ def test_replacements_are_checked_against_the_history(
 
     with pytest.raises(SquashRefused, match="does not load"):
         squashing._check_replacement("default", fake)  # type: ignore[arg-type]
-    with pytest.raises(SquashRefused, match="does not join"):
+    with pytest.raises(
+        SquashRefused, match=r"^The squashed revision does not join the history\.$"
+    ):
         squashing._check_replacement("default", [run_[1], run_[2]])
 
 
@@ -440,3 +484,102 @@ def test_squash_returns_the_file_and_the_revisions(history: list[Path]) -> None:
 
     assert path.name.endswith("_everything.py")
     assert replaced == [revision.name[:9] for revision in history]
+
+
+def test_the_squashed_file_says_what_it_replaces(history: list[Path]) -> None:
+    """Its name, its header, and one function per replaced body, in order."""
+    first, second, third = (path.name[:9] for path in history)
+    write(history[2], '"""Fill.', '"""Fill \\"\\"\\"now\\"\\"\\".')
+
+    with freeze_time("2026-05-04T03:02:01Z"):
+        path, replaced = squash(
+            "default", start=second, end=third, message="bins and names"
+        )
+
+    text = path.read_text(encoding="utf-8")
+    assert (path.name, replaced) == (f"{third}_bins_and_names.py", [second, third])
+    assert text.startswith(
+        '"""Bins and names.\n\n'
+        f"Revision: {third}\nRevises: {first}\nCreated: 2026-05-04 03:02:01\n"
+        f'Squashes: {second}, {third}\n"""\n'
+    )
+    assert f'down_revision: str | None = "{first}"' in text
+    assert (
+        '    """Apply the squashed revisions, oldest first."""\n'
+        f"    _upgrade_{second}()\n    _upgrade_{third}()\n"
+    ) in text
+    assert (
+        '    """Revert the squashed revisions, newest first."""\n'
+        f"    _downgrade_{third}()\n    _downgrade_{second}()\n"
+    ) in text
+    assert f'    """Upgrade {second}: Bins."""\n' in text
+    assert f"    \"\"\"Downgrade {third}: Fill '''now'''.\"\"\"\n" in text
+    assert '"""Apply this revision."""' not in text
+
+
+def test_squashes_are_named_squashed_by_default(history: list[Path]) -> None:
+    """Without a message, and a message's own full stop is kept single."""
+    path, _ = squash("default")
+
+    assert path.name.endswith("_squashed.py")
+    assert path.read_text(encoding="utf-8").startswith('"""Squashed.\n\nRevision:')
+    assert "\nRevises:\n" in path.read_text(encoding="utf-8")
+
+
+def test_a_message_ending_a_sentence_keeps_one_full_stop(history: list[Path]) -> None:
+    """``tidy up.`` becomes ``Tidy up.``."""
+    path, _ = squash("default", message="tidy up.")
+
+    assert path.read_text(encoding="utf-8").startswith('"""Tidy up.\n')
+
+
+def test_file_names_come_from_the_message() -> None:
+    """Words joined by underscores, at most forty characters, never empty."""
+    assert squashing._slug("Bins & names!") == "bins_names"
+    assert squashing._slug("x" * 50) == "x" * 40
+    assert squashing._slug("!!!") == "squashed"
+
+
+def test_databases_with_nothing_applied_do_not_hold_a_squash_back(
+    history: list[Path],
+) -> None:
+    """A database at no revision loses nothing."""
+    run("migrate", "base", "--downgrade")
+
+    assert run("squashmigrations").startswith("Created ")
+
+
+def test_a_run_may_end_where_a_branch_starts(history: list[Path]) -> None:
+    """The newest revision of a run may have several children."""
+    from alembic import command
+
+    first, second, _ = (path.name[:9] for path in history)
+    command.revision(
+        migrations_module.alembic_config(),
+        message="side",
+        head=second,
+        splice=True,
+        rev_id="0004_side",
+    )
+    run("makemigrations", "--merge")
+    run("migrate")
+
+    output = run("squashmigrations", second, "--start", first)
+
+    assert output.splitlines()[1:] == [f"  {first}", f"  {second}"]
+
+
+def test_offline_sql_writes_values_inline(project: Path) -> None:
+    """A data migration's values are written into the SQL, not bound."""
+    run("makemigrations", "-m", "shelves")
+    fill = created(run("makemigrations", "--empty", "-m", "fill"))
+    write(
+        fill,
+        '    """Apply this revision."""\n    pass',
+        '    """Apply this revision."""\n'
+        '    name = sa.column("name", sa.String)\n'
+        '    shelves = sa.table("framework_test_shelves", name)\n'
+        '    op.execute(shelves.insert().values(name="first shelf"))',
+    )
+
+    assert "'first shelf'" in run("migrate", "--sql")

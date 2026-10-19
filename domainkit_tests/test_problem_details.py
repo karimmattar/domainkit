@@ -5,6 +5,7 @@ from contextlib import ExitStack
 from typing import Any
 
 import pytest
+from fastapi import APIRouter
 from fastapi.testclient import TestClient
 
 from domainkit.conf import override_settings
@@ -13,12 +14,28 @@ from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.http.errors import (
     PROBLEM_MEDIA_TYPE,
+    APIError,
+    FieldError,
     error_response,
     problem_details,
     status_phrase,
 )
 
 type MakeClient = Callable[..., TestClient]
+router = APIRouter()
+
+
+@router.post("/answers")
+async def refuse() -> None:
+    """Refuse with field errors of the route's own."""
+    raise APIError(
+        409,
+        "Taken.",
+        code="taken",
+        errors=[FieldError(loc=["body", "slug"], msg="Pick another.", type="taken")],
+    )
+
+
 PROBLEMS = {"ERROR_FORMAT": "problem+json"}
 
 
@@ -120,6 +137,10 @@ def test_instances_are_escaped_paths_and_optional() -> None:
         response = error_response(404, "gone", code="not_found")
 
     assert inside.instance == "/files/a%20b/%C3%BC"
+    kept = RequestContext("req-1", None, "GET", "/users/a@b:c;d=e,f", None)
+    assert problem_details(404, "gone", code="x", request=kept).instance == (
+        "/users/a@b:c;d=e,f"
+    )
     assert response.media_type == PROBLEM_MEDIA_TYPE
     assert problem_details(499, "odd", code="odd").instance is None
     assert problem_details(499, "odd", code="odd").title == "Error"
@@ -190,3 +211,21 @@ def test_openapi_keeps_the_error_body_another_route_still_uses(
     _document_problems(schema)
 
     assert "ErrorResponse" in schema["components"]["schemas"]
+
+
+@pytest.mark.parametrize("problems", [False, True])
+def test_errors_raised_by_routes_keep_their_fields(
+    make_client: MakeClient, problems: bool
+) -> None:
+    """An ``APIError`` with ``errors`` answers with them, in either format."""
+    settings = PROBLEMS if problems else {}
+    client = make_client(
+        ROOT_ROUTER="domainkit_tests.test_problem_details.router", **settings
+    )
+
+    response = client.post("/answers")
+
+    assert response.status_code == 409
+    assert response.json()["errors"] == [
+        {"loc": ["body", "slug"], "msg": "Pick another.", "type": "taken"}
+    ]

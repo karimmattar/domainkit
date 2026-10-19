@@ -209,6 +209,11 @@ by its shape: the SQL with every value and placeholder replaced by `?`.
 Bound values are never read. Staging and production refuse to start with
 it listed.
 
+It counts statements as `assert_num_queries` does
+([testing.md](testing.md#counting-queries)), but only the request's own,
+so concurrent requests do not mix. Find a request's queries with the
+toolbar, then keep them in check with `assert_max_queries` in a test.
+
 | `DEBUG_TOOLBAR` key | Default | Meaning |
 | --- | --- | --- |
 | `REPEATED_QUERIES` | `5` | Runs of one statement shape in one request that log a likely N+1. |
@@ -355,7 +360,8 @@ several methods has one id, as FastAPI makes it (and warns). See ADR 0031.
 writes it), and `openapi --diff openapi.json` lists what changed since in
 ways that break clients, and exits 1 if anything did:
 
-- a path or an operation removed, or a success status no longer answered;
+- a path or an operation removed, or a success status no longer answered
+  (or no longer answered with JSON);
 - a new required parameter, request body, or body field;
 - a request value accepted before and refused now: a narrower type, fewer
   enum values, a tighter bound, or fields a closed object no longer takes;
@@ -513,8 +519,9 @@ stored row. Rows load in one transaction, and on PostgreSQL serial ids then
 continue after the highest one loaded.
 
 State is never dumped or loaded: the audit trail (a copy of its keys would
-outlive `auditforget`), tokens, the outbox, idempotency keys, and any table
-with `info={"fixtures": False}`. A fixture can still hold personal data and
+outlive `auditforget`), tokens, the outbox, idempotency keys, webhook
+subscriptions (they hold signing secrets: set them up in each environment)
+and deliveries, and any table with `info={"fixtures": False}`. A fixture can still hold personal data and
 password hashes: keep it as safe as the database.
 
 `flush` keeps append-only tables, those with `info={"append_only": True}`

@@ -360,19 +360,13 @@ def run_migrations() -> None:
 
 
 def _render_offline(database: DatabaseConfig) -> None:
-    """Configure Alembic for SQL output in the database's dialect, and run it."""
+    """Configure Alembic for SQL output in the database's dialect, and run it.
+
+    Values are written into the statements (``literal_binds``): offline SQL
+    has nothing to bind them to. The autogenerate options are not needed.
+    """
     url = make_url((database.MIGRATION_URL or database.URL).get_secret_value())
-    dialect = url.get_backend_name()
-    context.configure(
-        dialect_name=dialect,
-        target_metadata=metadata,
-        literal_binds=True,
-        render_as_batch=dialect == "sqlite",
-        render_item=render_item,
-        include_object=partial(
-            include_object, target=context.config.attributes[_TARGET]
-        ),
-    )
+    context.configure(dialect_name=url.get_backend_name(), literal_binds=True)
     with context.begin_transaction():
         context.run_migrations()
 

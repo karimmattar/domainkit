@@ -55,9 +55,20 @@ from domainkit.db.routing import router
 FORMAT: Final = "domainkit.fixture"
 VERSION: Final = 1
 STATE_TABLES: Final = frozenset(
-    {"domainkit_tokens", "domainkit_messages", "domainkit_idempotency_keys"}
+    {
+        "domainkit_tokens",
+        "domainkit_messages",
+        "domainkit_idempotency_keys",
+        "domainkit_webhook_subscriptions",
+        "domainkit_webhook_deliveries",
+        "domainkit_webhook_attempts",
+    }
 )
-"""Framework tables of state, never dumped or loaded (flushed, though)."""
+"""Framework tables of state or secrets, never dumped or loaded (flushed, though).
+
+Webhook subscriptions hold their signing secrets: set them up in each
+environment instead.
+"""
 CHUNK: Final = 500
 """Rows per statement when reading keys or writing rows."""
 _TRIGGERED: Final = text(
@@ -216,7 +227,6 @@ async def flush_plan(database: str) -> tuple[dict[str, int], list[str]]:
             counts = {
                 table.name: int(
                     await connection.scalar(select(func.count()).select_from(table))
-                    or 0
                 )
                 for table in emptied
             }

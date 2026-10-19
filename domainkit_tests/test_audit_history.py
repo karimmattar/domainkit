@@ -4,8 +4,10 @@ import asyncio
 import base64
 import io
 import json
+import re
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
@@ -19,11 +21,14 @@ from domainkit.conf import override_settings
 from domainkit.context import RequestContext, bind_request
 from domainkit.contrib.audit import forget, record
 from domainkit.contrib.audit.history import (
+    MAX_LIMIT,
     FieldChange,
+    HistoryEntry,
     changes,
     history,
     history_page,
 )
+from domainkit.contrib.audit.tables import audit_log
 from domainkit.db import connections
 from domainkit.ddd import DomainEvent, Personal
 from domainkit.http import get_asgi_application
@@ -177,7 +182,6 @@ def test_histories_merge_every_audited_database(
 ) -> None:
     """Rows from several databases come back as one history, by time."""
     elsewhere = f"sqlite+aiosqlite:///{tmp_path / 'elsewhere.sqlite3'}"
-    from domainkit.contrib.audit.tables import audit_log
 
     async def copy() -> None:
         async with connections.engine("elsewhere").begin() as connection:
@@ -347,3 +351,168 @@ def test_history_queries_are_validated(
     response = client.get(HISTORY, params=params, headers=headers)
 
     assert (response.status_code, response.json()["code"]) == (422, code)
+
+
+EARLIER = datetime(2026, 10, 19, 10, 0, tzinfo=UTC)
+LATER = EARLIER + timedelta(minutes=5)
+
+
+def identifier(last: int) -> uuid.UUID:
+    """A UUID ending in ``last``, to order rows by id."""
+    return uuid.UUID(int=last)
+
+
+async def write_rows(
+    *rows: tuple[datetime, int, dict[str, Any]],
+    target: str = "t-1",
+    alias: str = "default",
+) -> None:
+    """Insert audit rows for ``target`` as given: time, id, details."""
+    async with connections.engine(alias).begin() as connection:
+        for at, last, details in rows:
+            await connection.execute(
+                audit_log.insert().values(
+                    id=identifier(last),
+                    occurred_at=at,
+                    actor="u1",
+                    action="test.changed",
+                    outcome="success",
+                    target=target,
+                    details=details,
+                )
+            )
+    await connections.close_all()
+
+
+@contextmanager
+def elsewhere(tmp_path: Path) -> Iterator[None]:
+    """A second database, ``elsewhere``, with an audit trail of its own."""
+    url = f"sqlite+aiosqlite:///{tmp_path / 'elsewhere.sqlite3'}"
+    with override_settings(
+        DATABASES={
+            "default": {"URL": connections.config().URL.get_secret_value()},
+            "elsewhere": {"URL": url},
+        }
+    ):
+
+        async def create() -> None:
+            async with connections.engine("elsewhere").begin() as connection:
+                await connection.run_sync(audit_log.create)
+            await connections.close_all()
+
+        asyncio.run(create())
+        yield
+
+
+def ids(entries: Sequence[HistoryEntry]) -> list[int]:
+    """The rows' ids, as the ints ``identifier`` took."""
+    return [entry.id.int for entry in entries]
+
+
+def test_pages_go_by_time_then_id(project: None) -> None:
+    """Rows of one moment page by id; other targets never leak in."""
+    asyncio.run(
+        write_rows(
+            (EARLIER, 0xFF, {}),
+            (EARLIER, 0x80, {}),
+            (EARLIER, 0x10, {}),
+            (LATER, 1, {}),
+        )
+    )
+    asyncio.run(write_rows((EARLIER, 5, {}), target="t-2"))
+
+    first = run_async(history_page(target="t-1", limit=2))
+    rest = run_async(
+        history_page(target="t-1", limit=2, before=first.entries[-1].position)
+    )
+
+    assert (ids(first.entries), first.more) == ([1, 0xFF], True)
+    assert (ids(rest.entries), rest.more) == ([0x80, 0x10], False)
+    older = run_async(history(target="t-1", before=rest.entries[0].position))
+    assert ids(older) == [0x10]
+
+
+def test_pages_hold_one_to_two_hundred_entries(project: None) -> None:
+    """Fifty by default; ``more`` only when more follow."""
+    rows: list[tuple[datetime, int, dict[str, Any]]] = [
+        (EARLIER + timedelta(seconds=n), n + 1, {}) for n in range(51)
+    ]
+    asyncio.run(write_rows(*rows))
+
+    assert len(run_async(history(target="t-1"))) == 50
+    assert ids(run_async(history(target="t-1", limit=1))) == [51]
+    assert len(run_async(history(target="t-1", limit=MAX_LIMIT))) == 51
+    exact = run_async(history_page(target="t-1", limit=51))
+    assert (len(exact.entries), exact.more) == (51, False)
+
+
+def test_changes_look_one_entry_past_the_page(project: None, tmp_path: Path) -> None:
+    """The last entry of a page compares with the next older one only."""
+    with elsewhere(tmp_path):
+        asyncio.run(
+            write_rows(
+                (LATER, 3, {"x": 3}), (EARLIER + timedelta(minutes=1), 2, {"y": 1})
+            )
+        )
+        asyncio.run(write_rows((EARLIER, 1, {"x": 1}), alias="elsewhere"))
+
+        page = run_async(
+            history_page(target="t-1", limit=1, databases=["default", "elsewhere"])
+        )
+
+    assert page.more
+    assert page.entries[0].changes == (FieldChange("x", None, 3),)
+
+
+def test_entries_say_what_they_are_about(note: uuid.UUID) -> None:
+    """The target, and the event an entry records."""
+    asyncio.run(record("report.viewed", target="r-1"))
+
+    (viewed,) = run_async(history(target="r-1"))
+    titled = run_async(history(aggregate=("note_id", str(note))))[0]
+
+    assert (viewed.target, viewed.event_id) == ("r-1", None)
+    assert isinstance(titled.event_id, uuid.UUID)
+    assert titled.target is None
+
+
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        ({}, "Name a target, or an aggregate's field and id."),
+        ({"target": "a", "limit": 0}, "A history page holds 1 to 200 entries."),
+    ],
+)
+def test_history_query_errors_say_what_to_do(
+    options: dict[str, Any], message: str
+) -> None:
+    """The whole message."""
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        run_async(history(**options))
+
+
+def test_auditlog_reads_one_database_and_filters(project: None, tmp_path: Path) -> None:
+    """``--database`` reads one alias; ``--actor``, ``--action``, ``--limit``."""
+    with elsewhere(tmp_path):
+        asyncio.run(write_rows((EARLIER, 1, {}), (LATER, 2, {})))
+        asyncio.run(write_rows((LATER, 3, {}), alias="elsewhere"))
+        asyncio.run(record("report.viewed", target="r-1"))
+
+        listed = run("auditlog", "--target", "t-1", "--database", "default")
+        assert len(listed.splitlines()) == 2
+        lines = run("auditlog", "--target", "t-1", "--database", "elsewhere")
+        assert lines == "2026-10-19 10:05:00  u1  test.changed  success  -\n"
+        assert len(run("auditlog", "--target", "t-1", "--limit", "1").splitlines()) == 1
+        assert run("auditlog", "--action", "report.viewed").count("\n") == 1
+        assert "report.viewed" not in run("auditlog", "--actor", "u1")
+        assert run("auditlog", "--limit", "1").count("\n") == 1
+
+
+def test_auditlog_reads_aggregate_ids_after_the_first_equals(project: None) -> None:
+    """``FIELD=ID``: the id may hold ``=``; it may not be empty."""
+    asyncio.run(write_rows((EARLIER, 1, {"code": "a=b"})))
+
+    assert "test.changed" in run("auditlog", "--aggregate", "code=a=b")
+    with pytest.raises(CommandError) as refused:
+        run("auditlog", "--aggregate", "code=")
+    assert str(refused.value) == "--aggregate takes FIELD=ID, as product_id=42."
