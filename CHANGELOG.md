@@ -6,6 +6,24 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `SECRET_KEY` and `SECRET_KEY_FALLBACKS`, and `domainkit.signing`, Django's
+  `signing`: `Signer`, `TimestampSigner`, and `dumps`/`loads` for compact,
+  URL-safe, signed JSON, with HMAC-SHA256 under a key derived for each salt
+  and constant-time checks. A new key signs while the old ones still verify,
+  so a key can be replaced without logging anyone out. `derive_key` gives
+  other uses a key of their own (`docs/reference.md`, "Signing"; ADR 0028).
+
+### Changed
+
+- **Staging and production need `SECRET_KEY`** (DJ-37): startup fails
+  without one, or with one shorter than 50 characters, with fewer than 5
+  different ones, or starting with `domainkit-insecure-` or
+  `django-insecure-`. Fallbacks are held to the same rules, and the errors
+  never quote a key. The production settings that `init` creates read it
+  from `<PREFIX>SECRET_KEY`; set it before upgrading a deployment.
+
 ## [0.6.2] - 2026-10-19
 
 ### Added

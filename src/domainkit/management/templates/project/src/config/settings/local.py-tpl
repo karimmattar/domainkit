@@ -4,6 +4,8 @@ from config.settings.base import *
 from config.settings.base import BASE_DIR, env
 
 DEBUG = True
+# Signs reset links and cookies here; production needs a key of its own.
+SECRET_KEY = env.str("SECRET_KEY", "domainkit-insecure-local-development-key")
 DATABASES = {
     "default": {
         "URL": env.str("DATABASE_URL", f"sqlite+aiosqlite:///{BASE_DIR / 'db.sqlite3'}")

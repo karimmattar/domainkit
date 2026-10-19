@@ -45,6 +45,7 @@ from domainkit.http.ratelimit import RedisBackend
 from domainkit.ledger import ledgers
 from domainkit.management import call_command
 from domainkit.management.base import CommandError, run_async
+from domainkit_tests.settings import SECRET_KEY
 
 pytestmark = pytest.mark.anyio
 
@@ -236,7 +237,11 @@ def test_deployed_caches_need_tls_and_credentials(
     cache: dict[str, object], message: str
 ) -> None:
     """Staging and production refuse plaintext, unverified, or anonymous Redis."""
-    base = {"ENVIRONMENT": "production", "ALLOWED_HOSTS": ["api.example.com"]}
+    base = {
+        "ENVIRONMENT": "production",
+        "ALLOWED_HOSTS": ["api.example.com"],
+        "SECRET_KEY": SECRET_KEY,
+    }
     caches_setting = {"default": {}, "shared": {**cache, "KEY_PREFIX": "billing"}}
 
     with pytest.raises(ValidationError, match=f"{message}.*CACHES \\['shared'\\]"):

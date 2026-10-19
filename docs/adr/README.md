@@ -28,3 +28,4 @@ accepted record: supersede it with a new one and link both ways.
 | [0019](0019-idempotency-keys-commit-with-changes.md) | Mark idempotency keys committed in the transaction of the changes | Accepted |
 | [0020](0020-lease-idempotency-keys.md) | Lease idempotency keys, and write them only under the holder's token | Accepted |
 | [0021](0021-check-mounted-applications.md) | Check mounted applications and Starlette routes too | Accepted |
+| [0028](0028-one-secret-key-signs-and-derives.md) | Sign with one `SECRET_KEY`, and derive a key per purpose from it | Accepted |

@@ -36,6 +36,7 @@ from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import call_command
 from domainkit.management.base import CommandError
 from domainkit_tests.fake_amqp import FakeAMQP
+from domainkit_tests.settings import SECRET_KEY
 
 pytestmark = pytest.mark.anyio
 
@@ -189,7 +190,11 @@ def test_deployed_brokers_need_tls_and_a_user(
     broker: dict[str, object], message: str
 ) -> None:
     """Staging and production refuse brokers that are local, plain, or anonymous."""
-    base = {"ENVIRONMENT": "production", "ALLOWED_HOSTS": ["api.example.com"]}
+    base = {
+        "ENVIRONMENT": "production",
+        "ALLOWED_HOSTS": ["api.example.com"],
+        "SECRET_KEY": SECRET_KEY,
+    }
 
     with pytest.raises(ValidationError, match=f"{message}.*BROKERS \\['work'\\]"):
         Settings.model_validate({**base, "BROKERS": {"work": broker}})

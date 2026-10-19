@@ -115,6 +115,7 @@ def test_production_settings_come_from_the_environment(tmp_path: Path) -> None:
         "BILLING_API_SETTINGS_MODULE": "config.settings.production",
         "BILLING_API_ALLOWED_HOSTS": "api.example.com",
         "BILLING_API_TRUSTED_PROXIES": "10.0.0.0/8, fd00::/8",
+        "BILLING_API_SECRET_KEY": "s3cret-" * 8,
     }
     database = {"BILLING_API_DATABASE_URL": "postgresql+asyncpg://app@db/billing"}
 
@@ -125,6 +126,11 @@ def test_production_settings_come_from_the_environment(tmp_path: Path) -> None:
     direct = {**no_proxies, "BILLING_API_TRUSTED_PROXIES": ""}
     directly = run(project, "manage.py", "check", env=direct)
     ready = run(project, "manage.py", "check", env={**production, **database})
+    no_key = {**production, **database}
+    del no_key["BILLING_API_SECRET_KEY"]
+    without_key = run(project, "manage.py", "check", env=no_key)
+    weak_key = {**no_key, "BILLING_API_SECRET_KEY": "domainkit-insecure-" * 3}
+    with_weak_key = run(project, "manage.py", "check", env=weak_key)
 
     assert missing.returncode == 1
     assert "Set the BILLING_API_DATABASE_URL environment variable." in missing.stderr
@@ -135,6 +141,13 @@ def test_production_settings_come_from_the_environment(tmp_path: Path) -> None:
     assert directly.stdout.splitlines()[1].split()[1] == "TRUSTED_PROXIES"
     # Docs are off, HSTS is on, and callers are rate limited: nothing to warn about.
     assert ready.stdout == CHECKED
+    assert without_key.returncode == 1
+    assert "Set the BILLING_API_SECRET_KEY environment variable." in (
+        without_key.stderr
+    )
+    assert with_weak_key.returncode == 1
+    assert "SECRET_KEY holds a development key in production" in with_weak_key.stderr
+    assert "domainkit-insecure-" not in with_weak_key.stderr
 
 
 def test_production_hardening_can_be_relaxed_from_the_environment(
@@ -148,6 +161,7 @@ def test_production_hardening_can_be_relaxed_from_the_environment(
         "BILLING_API_ALLOWED_HOSTS": "api.example.com",
         "BILLING_API_DATABASE_URL": "postgresql+asyncpg://app@db/billing",
         "BILLING_API_TRUSTED_PROXIES": "10.0.0.0/8",
+        "BILLING_API_SECRET_KEY": "s3cret-" * 8,
         "BILLING_API_API_DOCS": "true",
         "BILLING_API_SECURE_HSTS_SECONDS": "0",
     }
