@@ -6,6 +6,53 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `AsyncTestClient`, which serves the application in the test's own event
+  loop, with its lifespan, and the `async_client`, `async_client_for`, and
+  `async_admin_client` fixtures, for async tests (DJ-62). New projects'
+  tests show one.
+- Factories for aggregates in `domainkit.testing` (DJ-63): `Factory`, with
+  `Sequence`, `LazyFunction`, `LazyAttribute`, `SubFactory`, and
+  overrides (`price__amount=`). `build()` makes an object in memory;
+  `await create()` stores it through a unit of work, in memory or SQL, and
+  commits.
+- `domainkit.clock` (DJ-64, ADR 0037): `now()`, `today()`, and
+  `monotonic()`, the one clock the framework reads, and `freeze_time`, a
+  context manager and fixture that stops it or moves it. Token expiry (JWTs
+  included), idempotency leases, rate windows counted in the process,
+  memory cache lifetimes, and the timestamps of audit entries, events,
+  messages, and evidence all follow it. Domain code may import it. The
+  database's own `now()` is not frozen.
+- `assert_num_queries` and `assert_max_queries` (DJ-65), context managers
+  and fixtures that count the SQL statements a block runs, and list them
+  when the count is wrong.
+- PostgreSQL test databases of their own (N-02, ADR 0038): the plugin
+  creates `test_<name>` (or the entry's new `TEST_NAME`), migrates it,
+  and drops it after the run; `--keepdb` keeps it for the next one, and
+  each pytest-xdist worker gets its own (`test_<name>_gw0`).
+- `docs/testing.md`, on the plugin and everything above.
+
+### Changed
+
+- **On PostgreSQL, the test fixtures no longer use the database the test
+  settings name**: they create `test_<name>` on the same server and drop it
+  after the run, so the test role needs `CREATEDB`. A role without it can
+  create the database once and run with `--keepdb`. SQLite is unchanged.
+- The `client` fixture is a `domainkit.testing.TestClient`, a subclass of
+  Starlette's whose requests see the caller's context variables, so a
+  frozen clock reaches the application.
+- JWTs' `exp`, `iat`, and `nbf` are checked by domainkit, on
+  `domainkit.clock`, as PyJWT checked them on the host's clock.
+
+### Fixed
+
+- `client_for` and `admin_client` work in async tests. They called
+  `asyncio.run`, which fails inside a running event loop (N-01).
+- Clients from `client_for` and `admin_client` run on the `client`
+  fixture's event loop. Each of their requests started an event loop of its
+  own, with a database engine nothing closed (ASYNC-24).
+
 ## [0.6.2] - 2026-10-19
 
 ### Added
