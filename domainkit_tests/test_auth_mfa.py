@@ -3,6 +3,7 @@
 import base64
 import io
 import re
+import secrets
 import sys
 from typing import Any
 from uuid import UUID, uuid4
@@ -612,7 +613,7 @@ def test_recovery_codes_are_sixteen_draws_in_groups_of_four(
 ) -> None:
     """Each character is drawn on its own from the base-32 alphabet."""
     draws = iter(mfa.RECOVERY_ALPHABET * 2)
-    monkeypatch.setattr(mfa.secrets, "choice", lambda alphabet: next(draws))
+    monkeypatch.setattr(secrets, "choice", lambda alphabet: next(draws))
 
     assert mfa.new_recovery_codes(2) == ["abcd-efgh-ijkl-mnop", "qrst-uvwx-yz23-4567"]
 
