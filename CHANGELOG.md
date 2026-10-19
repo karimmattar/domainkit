@@ -39,6 +39,51 @@ All notable changes to domainkit. The format follows
   connected to. Staff manage subscriptions through an admin API; secrets
   are shown once, in answers marked `no-store` that neither caches nor
   idempotency keys keep (ADR 0036). Install `domainkit[webhooks]`.
+- `domainkit.http.ratelimit.Throttle`, a FastAPI dependency that limits one
+  route, or the routes of one scope, per user, per address, or per key a
+  function returns, apart from `RATE_LIMIT` and with the same backends. Over
+  the rate, the route answers 429 `throttled` with `Retry-After` (DJ-25;
+  `docs/cache.md`, "Throttles for one route").
+- `@cache_page` caches what a GET endpoint returns, keyed by path, query,
+  language, and the headers it lists, with an `ETag` and 304s for
+  `If-None-Match`. Callers with credentials are never served shared
+  answers; `vary_on_user=True` keeps an entry per user. Cached pages
+  replace the `no-store` default with `Cache-Control` of their own
+  (DJ-57; `docs/cache.md`, "Caching whole responses").
+- Caches and rate limits on a Redis Sentinel group
+  (`redis+sentinel://host-1,host-2/mymaster/0`) or a Redis Cluster
+  (`redis+cluster://node-1,node-2`), `rediss+` for TLS, with
+  `SENTINEL_PASSWORD` for Sentinels that ask for one. The deployment checks
+  hold them to the rules for one server (DJ-58; `docs/cache.md`).
+- Error details and validation messages in the caller's language
+  (DJ-59; `docs/i18n.md`, ADR 0039): `LocaleMiddleware` picks a language of
+  `LANGUAGES` from `Accept-Language` and answers with `Content-Language`;
+  domainkit ships English and Arabic. Projects mark their own text with
+  `gettext`, `ngettext`, `pgettext`, and their lazy variants
+  (`domainkit.i18n`), keep catalogs per domain or in `LOCALE_PATHS`, and
+  compile them with `manage.py compilemessages`, which needs no GNU tools
+  and checks them (`--check` in CI). New projects install the middleware.
+- File storage and uploads (DJ-27; `docs/uploads.md`, ADR 0040):
+  `domainkit.storage`, with `FileSystemStorage` and `MemoryStorage`
+  configured in `STORAGES`, stores files under random names it makes,
+  writes them atomically, and never follows symbolic links.
+  `domainkit.http.uploads.save_upload` stores a FastAPI `UploadFile` only
+  if its first bytes are of a type the route accepts, stops it at
+  `max_size` while it streams, and cleans the client's file name;
+  `serve` streams a stored file from a guarded route as a sandboxed
+  download. FastAPI's form parser comes with the new `uploads` extra.
+- `TIME_ZONE`, with `localtime()`, `localdate()`, and `timezone.override()`
+  to show stored UTC times where the business is, and `number_format`,
+  `date_format`, `time_format`, and `datetime_format` that write numbers
+  and dates as English and Arabic do (DJ-60; `docs/i18n.md`).
+- `domainkit.contrib.privacy` (DJ-69; `docs/privacy.md`, ADR 0041) answers
+  privacy requests across every installed domain from `Personal` markers
+  on aggregate fields: `manage.py privacy export` writes what is held about
+  a subject, `privacy erase` erases it through units of work, with a
+  `PersonalDataErased` event, and forgets the subject in the audit trail,
+  and `privacy purge` applies the retention policies domains declare in
+  `DomainConfig.RETENTION`, never on append-only tables. Every operation is
+  audited.
 - `AsyncTestClient`, which serves the application in the test's own event
   loop, with its lifespan, and the `async_client`, `async_client_for`, and
   `async_admin_client` fixtures, for async tests (DJ-62). New projects'

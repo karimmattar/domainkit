@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from importlib import import_module
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import BaseModel
 
@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from sqlalchemy import Table
     from sqlalchemy.ext.asyncio import AsyncConnection
 
+    from domainkit.contrib.privacy import Retention
     from domainkit.db.routing import DatabaseRouter
     from domainkit.ddd import DeferredTask, DomainEvent, UnitOfWork
 
@@ -34,6 +35,8 @@ class DomainConfig:
     verbose_name: str = ""
     settings_class: type[BaseModel] | None = None
     """Schema for this domain's settings, read from ``settings_name``."""
+    RETENTION: ClassVar[Sequence["Retention"]] = ()
+    """How long rows of its tables are kept (``domainkit.contrib.privacy``)."""
 
     def __init__(self, name: str, module: ModuleType) -> None:
         """Bind the config to the domain package ``name``."""

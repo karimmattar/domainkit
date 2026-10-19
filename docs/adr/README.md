@@ -33,3 +33,6 @@ accepted record: supersede it with a new one and link both ways.
 | [0036](0036-webhooks-through-the-outbox.md) | Send webhooks through the outbox, signed, to checked addresses only | Accepted |
 | [0037](0037-one-clock-frozen-per-context.md) | Read the time from one clock, frozen per context in tests | Accepted |
 | [0038](0038-test-databases-of-their-own.md) | Give the tests PostgreSQL databases of their own | Accepted |
+| [0039](0039-translate-messages-at-the-boundary.md) | Translate messages at the HTTP boundary, from gettext catalogs compiled in Python | Accepted |
+| [0040](0040-store-files-under-random-names.md) | Store files under random names; trust only their content | Accepted |
+| [0041](0041-privacy-through-personal-markers.md) | Answer privacy requests from Personal markers, through units of work | Accepted |
