@@ -99,9 +99,9 @@ def _without_input(exc: BaseException) -> BaseException:
     """
     if not isinstance(exc, ValidationError):
         return exc
-    problems = "; ".join(
+    problems = "; ".join(  # Each error's location and message, nothing else.
         f"{'.'.join(map(str, error['loc'])) or '(value)'}: {error['msg']}"
-        for error in exc.errors(include_url=False, include_input=False)
+        for error in exc.errors()
     )
     return InvalidData(f"{exc.title}: {problems}").with_traceback(exc.__traceback__)
 

@@ -308,11 +308,21 @@ class Elsewhere(ValueObject):
 
 
 def test_personal_fields_may_be_optional() -> None:
-    """A marker on one member of a union marks the field."""
+    """A marker on one member of a union marks the field; each one is checked."""
+
+    class Either(DomainEvent):
+        member_id: uuid.UUID
+        contact: (
+            Annotated[str, Personal(of="nobody")]
+            | Annotated[int, Personal(of="member_id")]
+        )
+
     assert personal_fields(MemberMoved) == {
         "phone": Personal(of="member_id"),
         "street": Personal(of="member_id"),
     }
+    with pytest.raises(TypeError, match=r"Personal\(of='nobody'\) must name"):
+        personal_fields(Either)
 
 
 def test_personal_markers_below_the_field_are_refused() -> None:
@@ -331,8 +341,22 @@ def test_personal_markers_below_the_field_are_refused() -> None:
         member_id: uuid.UUID
         address: Address
 
+    class Described(DomainEvent):
+        member_id: uuid.UUID
+        emails: Annotated[list[marked], "not personal"]
+
+    class Deeper(DomainEvent):
+        member_id: uuid.UUID
+        emails: dict[str, Annotated[list[marked], "not personal"]]
+
     whole = re.escape("Annotated[..., Personal(of=...)].")
-    for event, field in ((Listed, "emails"), (Mapped, "emails"), (Nested, "address")):
+    for event, field in (
+        (Listed, "emails"),
+        (Mapped, "emails"),
+        (Nested, "address"),
+        (Described, "emails"),
+        (Deeper, "emails"),
+    ):
         refused = (
             rf"\.{event.__name__}\.{field}: Personal is read only on the field "
             rf"itself; mark the whole field, as {whole}$"

@@ -282,6 +282,7 @@ def test_only_validation_errors_are_rewritten() -> None:
 
     class Order(BaseModel):
         lines: list[int]
+        note: str
 
     with pytest.raises(ValidationError) as caught:
         Order.model_validate({"lines": [1, "two"]})
@@ -291,7 +292,7 @@ def test_only_validation_errors_are_rewritten() -> None:
     assert worker_module._without_input(other) is other
     assert str(worker_module._without_input(caught.value)) == (
         "Order: lines.1: Input should be a valid integer, unable to parse string "
-        "as an integer"
+        "as an integer; note: Field required"
     )
     assert str(worker_module._without_input(whole.value)) == (
         "int: (value): Input should be a valid integer, unable to parse string "
