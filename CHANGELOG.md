@@ -119,6 +119,14 @@ All notable changes to domainkit. The format follows
   each other with 409 `concurrent_update`: the new hash is stored without
   the user's version, and only over the hash that was checked, so a
   password changed meanwhile stays.
+- The pytest plugin's database fixtures, and `restore_snapshot`, refuse
+  settings whose `ENVIRONMENT` is not `"test"`. Without `domainkit_settings`
+  they used to migrate the development database down to base and delete
+  every row.
+- Snapshots connect as the schema owner (`MIGRATION_URL` when set), as
+  emptying append-only tables needs, and quote table names properly: a
+  name holding `"` broke the statement that turns triggers off. An
+  in-memory `MIGRATION_URL` becomes the same test file as `URL`.
 
 ## [0.6.0] - 2026-10-18
 
