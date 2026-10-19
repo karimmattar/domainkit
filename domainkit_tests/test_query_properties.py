@@ -193,7 +193,7 @@ async def select_alike(items: list[Gadget], query: Query) -> list[object]:
     fake = InMemoryGadgets(items)
     criteria, deleted = query.criteria, query.include_deleted
     async with GadgetsUnitOfWork(readonly=True) as uow:
-        found = [each.id for each in await uow.gadgets.filter(query)]
+        found: list[object] = [each.id for each in await uow.gadgets.filter(query)]
         assert found == [each.id for each in await fake.filter(query)]
         counted = await uow.gadgets.count(criteria, include_deleted=deleted)
         assert counted == len(found)

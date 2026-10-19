@@ -1,4 +1,4 @@
-# Databases: several kinds, routing, shards, partitions, ledgers
+# Databases: several kinds, routing, replicas, shards, partitions, ledgers
 
 A project can use several databases of two kinds, each in its own setting:
 
@@ -13,6 +13,11 @@ The decisions behind this page are ADRs
 [0010](adr/0010-postgresql-range-partitioning.md), and
 [0011](adr/0011-immudb-ledger-for-evidence.md). Settings are listed in
 [reference.md](reference.md#databases-and-migrations).
+
+Querying repositories, pages, filters, bulk changes, soft delete, row
+locks, and savepoints are in [queries.md](queries.md). Read replicas and
+tables derived from domain classes follow ADR
+[0024](adr/0024-replicas-and-derived-tables.md).
 
 ## Routing domains to databases
 
@@ -121,6 +126,44 @@ shard has its own outbox and audit trail; `runworker` runs them all, or
 If you would rather shard inside the database, a group of one alias pointing
 at a Citus coordinator works without framework changes.
 
+## Read replicas
+
+An alias may name read replicas, each an alias of its own:
+
+```python
+DATABASES = {
+    "default": {"URL": env.str("DATABASE_URL"), "REPLICAS": ["replica"]},
+    "replica": {"URL": env.str("DATABASE_REPLICA_URL"), "SSLMODE": "verify-full"},
+}
+```
+
+```python
+async with OrdersUnitOfWork(readonly=True) as uow:  # on the replica
+    page = await uow.orders.paginate(query, limit=50)
+
+
+class ReportsUnitOfWork(SqlAlchemyUnitOfWork):
+    readonly = True  # always on a replica
+```
+
+- **Reads.** A read-only unit of work opens its session on a replica of the
+  alias its routing gives (a shard's alias works too); with several, units
+  of work take turns. Without `REPLICAS` it reads the alias itself.
+- **Writes** always go to the primary: a read-only unit of work refuses to
+  commit (`ReadOnlyError`), and on PostgreSQL its transaction is `READ
+  ONLY`, so a write that skips the unit of work is refused as well. A
+  replica is never a target: routing a domain to one, naming one as a
+  unit of work's `database`, or migrating one is refused. Replication
+  keeps it migrated.
+- **Lag.** A replica may be behind: a request that writes and then reads
+  what it wrote should read in its writable unit of work.
+- **Settings.** A replica is another alias than `default`, of one primary,
+  outside every shard group, with no replicas of its own. Each is a
+  `DATABASES` entry, so the deployment checks (TLS, `ECHO`,
+  `LOG_PARAMETERS`) and `/ready` cover it, and it has its own pool.
+- **Tests.** Point the replica at the primary's URL, or leave `REPLICAS`
+  out of the test settings: two SQLite files do not replicate.
+
 ## Partitioning
 
 Tables that only grow (events, readings, logs) can be split by time on
@@ -228,6 +271,123 @@ the ledger, so of several writers racing for a key exactly one succeeds.
 Tests use `LEDGERS = {"evidence": {"URL": "memory://"}}`: the same port, in
 memory, without proofs.
 
+## Tables from domain classes
+
+`table_for` derives a table from an entity's dataclass fields and type
+hints, so a field is declared once:
+
+```python
+from domainkit.db import map_imperatively, table_for
+from domainkit.ddd import AggregateRoot, Digits, MaxLength
+
+
+class Product(AggregateRoot[ProductId]):
+    name: ProductName  # value object: ProductName(value: str)
+    sku: Annotated[str, MaxLength(40)]
+    price: Annotated[Decimal, Digits(12, 2)]
+    status: Status = Status.DRAFT  # an Enum
+    published_at: datetime | None = None
+
+
+products = table_for(
+    Product,
+    "catalog_products",
+    Index("ix_catalog_products_sku", "sku", unique=True),
+    domain="catalog",
+)
+
+
+def start_mappers() -> None:
+    map_imperatively(Product, products)
+```
+
+| Hint | Column |
+| --- | --- |
+| `int` | `BigInteger` (`INTEGER` on SQLite); `version` is `Integer` |
+| `str` | `String(n)` with `MaxLength(n)`, else `Text` |
+| `bool`, `float` | `Boolean`, `Double` |
+| `Decimal` | `ExactDecimal(p, s)`; it needs `Digits(p, s)` |
+| `datetime`, `date`, `time` | `UTCDateTime`, `Date`, `Time` |
+| `UUID` (or a `NewType` of one) | `Uuid` |
+| an `Enum` | `EnumValue`: the members' values, text or integers |
+| a value object of one field | `ValueObjectType`: that field's column type |
+| a class you registered | `register_column_type(Money, MoneyType())` |
+| `X \| None` | the same, nullable; anything else is `NOT NULL` |
+
+- `id` is the primary key. A `version` field (every aggregate has one)
+  turns on optimistic locking. `deleted_at` comes with `SoftDeletable`.
+- Child entities (`list[OrderLine]`, `Address | None`) are not columns;
+  map them as relationships (below).
+- Columns in the arguments replace the derived one of the same name
+  (`Column("sku", String(40, collation="C"), nullable=False)`); indexes,
+  constraints, and other columns are added. A type the table does not cover
+  is a `TypeError` naming the field.
+- Enums are stored by value, so `ORDER BY` follows the values and a member
+  may be renamed; changing a value needs a data migration. Value objects
+  come back through their constructor, so their rules run on load.
+- The result is an ordinary `Table` on `metadata`: `makemigrations` writes
+  plain SQL types into revisions (`sa.String(length=5)` for an enum), and
+  hand-written tables keep working beside derived ones.
+- `MaxLength` and `Digits` say what storage needs; they do not check values.
+  Check them in the domain, as value objects do.
+
+## Child entities
+
+An aggregate owns its child entities: they are loaded, saved, and deleted
+with it. Each lives in a table of its own, with a foreign key to the
+aggregate's, and is mapped as a relationship:
+
+```python
+from domainkit.db import child, children, map_imperatively, table_for
+
+
+class OrderLine(Entity[LineId]):
+    sku: Annotated[str, MaxLength(40)]
+    quantity: int
+
+
+class Order(AggregateRoot[OrderId]):
+    lines: list[OrderLine] = field(default_factory=list)
+    address: Address | None = None  # Address is an Entity too
+
+
+order_lines = table_for(
+    OrderLine,
+    "sales_order_lines",
+    Column(
+        "order_id", ForeignKey("sales_orders.id", ondelete="CASCADE"), nullable=False
+    ),
+    domain="sales",
+)
+
+
+def start_mappers() -> None:
+    map_imperatively(OrderLine, order_lines)
+    map_imperatively(Address, addresses)
+    map_imperatively(
+        Order,
+        orders,
+        properties={
+            "lines": children(OrderLine, order_by=order_lines.c.sku),
+            "address": child(Address),
+        },
+    )
+```
+
+- `children` loads the collection with the aggregate (`lazy="selectin"`:
+  one more query per page of aggregates, never a lazy load, which async
+  sessions cannot do), saves new lines with it, and deletes a line removed
+  from the list (`cascade="all, delete-orphan"`). `child` does the same for
+  one entity. Pass `order_by` for a stable order, `collection_class=set`
+  for a `set[...]` field, or any other `relationship()` option.
+- Another aggregate is referenced by its id, not by a relationship, so
+  each loads and locks on its own. If you map a read-only reference anyway,
+  give it `lazy="raise"`, so an unloaded access fails loudly instead of
+  needing I/O.
+- `ON DELETE CASCADE` matters to bulk deletes (`delete_rows`) on
+  PostgreSQL; SQLite enforces foreign keys only with `PRAGMA foreign_keys`.
+- Queries reach into children with dotted names: `F("lines.sku") == "A-1"`.
+
 ## Exact amounts
 
 Store money, and any amount that must not drift, in `ExactDecimal(precision,
@@ -320,6 +480,9 @@ Auth's username and group name columns name `UsernameTaken` and
   `db` fixture (which `client` uses) puts every database back as `migrate`
   left it before each test. Point the test settings at PostgreSQL to test
   partitions and locking for real.
+- In-memory repositories answer queries as the database does
+  ([queries.md](queries.md#what-a-query-means-everywhere)), so use cases
+  can be tested without one.
 - domainkit's own suite runs its database tests on SQLite, and on PostgreSQL
   when `DOMAINKIT_TEST_POSTGRES_URL` is set. Its immudb tests run when
   `DOMAINKIT_TEST_IMMUDB_URL` is set. CI sets both.

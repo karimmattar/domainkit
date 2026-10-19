@@ -1,5 +1,6 @@
 """Read replicas: read-only work reads from them; writes stay on the primary."""
 
+import io
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
@@ -14,6 +15,7 @@ from domainkit.db import connections
 from domainkit.db.routing import router
 from domainkit.ddd import ReadOnlyError
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.management import CommandError, call_command
 from domainkit_tests.conftest import MakeDatabase
 from domainkit_tests.gadgets import GadgetsUnitOfWork, make_gadget, metadata
 
@@ -135,6 +137,8 @@ def test_nothing_writes_to_a_replica(replicated: tuple[str, str, str]) -> None:
         GadgetsUnitOfWork(database="one")
     with pytest.raises(ImproperlyConfigured, match="readonly=True"):
         router.aliases_of("two")
+    with pytest.raises((ImproperlyConfigured, CommandError), match="read replica"):
+        call_command("migrate", "--database", "one", stdout=io.StringIO())
 
 
 def test_without_replicas_reads_stay_on_the_primary() -> None:

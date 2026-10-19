@@ -75,6 +75,7 @@ Each `DATABASES` entry:
 | `POOL_TIMEOUT` | `10.0` for network databases, else SQLAlchemy's | Seconds a request waits for a connection; past it the request gets 503 `database_busy`. |
 | `POOL_PRE_PING` | `True` | Test connections before use, so database restarts are survived. |
 | `CONNECT_ARGS` | `{}` | Extra driver arguments, added to those derived from the options above. asyncpg's `server_settings` and libpq's `options` are merged with the timeouts. Setting what the options above already set (TLS, a timeout) is refused when the application is built, however the server setting is spelled (`STATEMENT_TIMEOUT`, `--statement-timeout=`); change that option instead. |
+| `REPLICAS` | `()` | Aliases of read replicas of this database; read-only units of work take turns on them ([databases.md](databases.md#read-replicas)). Each is an alias of its own, other than `default`, of one primary, outside every shard group, with no replicas of its own, and never a routing target. |
 
 Each `LEDGERS` entry:
 
@@ -261,12 +262,14 @@ are never echoed back.
 | Raised | Status | `code` |
 | --- | --- | --- |
 | `NotFound` | 404 | from the class, such as `invoice_not_found` |
-| `Conflict`, `ConcurrentUpdate`, `DuplicateValue` | 409 | from the class; a unique constraint may name its own (see [databases.md](databases.md#unique-values)) |
+| `Conflict`, `ConcurrentUpdate`, `DuplicateValue`, `LockNotAvailable` | 409 | from the class; a unique constraint may name its own (see [databases.md](databases.md#unique-values)); `lock_not_available` for `get_for_update(nowait=True)` ([queries.md](queries.md#row-locks)) |
 | `BusinessRuleViolation` | 422 | from the class |
 | `PermissionDenied` | 403 | from the class |
 | other `DomainError` | 400 | from the class |
 | `domainkit.http.APIError(status, detail, code=…)` | as given | as given |
 | request validation | 422 | `validation_error` |
+| a cursor this API did not issue for the request's ordering, or one that was altered | 422 | `invalid_cursor` ([queries.md](queries.md#pages)) |
+| a filter a `FilterSet` does not offer, given twice, or over its bounds | 422 | `invalid_filter` ([queries.md](queries.md#filters-over-http)) |
 | no pooled connection within `POOL_TIMEOUT`, or a statement cancelled by `STATEMENT_TIMEOUT` or `LOCK_TIMEOUT`, or lost to a deadlock or a serialization failure | 503 | `database_busy`, with `Retry-After: 1`; logged as a warning, not reported |
 | a value the database refuses (SQLSTATE class 22: a NUL character, text too long, a number out of range) | 422 | `invalid_value`; logged as a warning, not reported |
 | unexpected exception | 500 | `internal_error`; logged and sent to `ERROR_REPORTERS` |

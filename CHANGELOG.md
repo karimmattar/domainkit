@@ -6,6 +6,45 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Repositories answer queries (`docs/queries.md`, ADR 0022):
+  `filter`, `first`, `count`, `exists`, and `paginate` take criteria built
+  from fields, `(F("status") == "open") & (F("total") >= 10)`, with
+  Django's lookups, orderings, and named `Specification`s. In-memory fakes
+  evaluate them exactly as SQL does (missing values, NULL ordering, the id
+  as tie-breaker, exact amounts), and unknown fields or ill-typed values
+  fail before any SQL runs (DJ-11).
+- `Pagination` and `PageRequest` page any repository over HTTP with
+  versioned, typed cursors, or with bounded offsets, and optional counts;
+  a tampered cursor is a 422 `invalid_cursor` (DJ-21, ADR 0023).
+- `FilterSet` turns `?status=open&total__gte=10&ordering=-placed_at&search=acme`
+  into a query, with lookups allowed per field, typed and documented in
+  OpenAPI, and bounded; anything else is a 422 `invalid_filter` (DJ-20).
+- `add_all` and `remove_all` on repositories, and `update_rows` and
+  `delete_rows` on the SQL adapter for changes that deliberately bypass
+  aggregates and their events (DJ-14).
+- Soft delete: aggregates that inherit `SoftDeletable` are marked deleted by
+  `remove`, left out of reads unless `include_deleted=True`, and brought
+  back with `restore` (DJ-15).
+- `get_for_update(id, nowait=..., skip_locked=...)` and `RowLock` lock rows
+  until the commit (`FOR UPDATE` on PostgreSQL, emulated by in-memory
+  repositories), and `UnitOfWork.savepoint()` undoes part of a unit of work
+  that fails (DJ-18).
+- Read replicas: a `DATABASES` entry names its `REPLICAS`, and read-only
+  units of work (`readonly=True`) read from them while writes stay on the
+  primary (DJ-17, ADR 0024).
+- `table_for` derives a table from an aggregate's fields and type hints,
+  with `MaxLength` and `Digits` for lengths and amounts, enums stored by
+  value, and single-field value objects stored as what they wrap; `children`
+  and `child` map the child entities an aggregate owns (DJ-10, DJ-12).
+
+### Changed
+
+- The auth admin's `/users` and `/groups` listings use the new paginator:
+  cursors issued before the upgrade are refused once with
+  `invalid_cursor`, and the client starts again.
+
 ## [0.6.2] - 2026-10-19
 
 ### Added
