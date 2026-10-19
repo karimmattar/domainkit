@@ -85,7 +85,7 @@ class ModelBackend(BaseBackend):
         if not check.correct or not self.user_can_authenticate(user):
             return None
         if check.rehashed is not None:
-            await self._rehash(user.id, check.rehashed)
+            await self._rehash(user.id, user.password, check.rehashed)
         return user
 
     def user_can_authenticate(self, user: AbstractBaseUser) -> bool:
@@ -115,13 +115,18 @@ class ModelBackend(BaseBackend):
         """Answer from the loaded user, without a query."""
         return obj is None and user.has_perm(perm)
 
-    async def _rehash(self, user_id: UserId, rehashed: str) -> None:
-        """Store a password hash made with current settings."""
+    async def _rehash(
+        self, user_id: UserId, verified: PasswordHash, rehashed: str
+    ) -> None:
+        """Store a password hash made with current settings.
+
+        On its own, without the user's ``version``: logins that rehash the
+        same password at once must not refuse each other. Only while the
+        ``verified`` hash is still stored, so a new password is never undone.
+        """
         async with AuthUnitOfWork() as uow:
-            user = await uow.users.find(user_id)
-            if user is not None:
-                user.rehash_password(PasswordHash(rehashed))
-                await uow.commit()
+            await uow.users.store_rehash(user_id, verified, PasswordHash(rehashed))
+            await uow.commit()
 
 
 @cache
