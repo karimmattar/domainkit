@@ -234,10 +234,12 @@ class FilterSet:
         criteria = And.of(*parts)
         try:
             criteria.bind(self.model)
-        except (InvalidQuery, ValueError, TypeError, DomainError) as exc:
+        except (InvalidQuery, DomainError) as exc:  # Their messages hold no values.
             raise InvalidFilter(
                 f"A filter value does not fit its field: {exc}"
             ) from exc
+        except (ValueError, TypeError) as exc:  # A value object's; it may quote one.
+            raise InvalidFilter("A filter value does not fit its field.") from exc
         return criteria
 
     def _check_names(self, request: Request) -> None:

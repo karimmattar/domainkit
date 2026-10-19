@@ -8,7 +8,7 @@ import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
-from domainkit.ddd import AggregateRoot
+from domainkit.ddd import AggregateRoot, ValueObject
 from domainkit.ddd.query import F, Ordering, Query
 from domainkit.http.errors import install_exception_handlers
 from domainkit.http.filters import Filter, FilterSet, InvalidFilter
@@ -291,6 +291,39 @@ class TaggedFilters(FilterSet):
     model = Tagged
     anything = Filter()
     tag = Filter("in", field="anything", max_length=4)
+
+
+class Code(ValueObject):
+    """A value object whose own errors quote the value."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        """Parse like int(), whose message repeats what it was given."""
+        int(self.value)
+
+
+class Coded(AggregateRoot[int]):
+    """An aggregate with such a value object."""
+
+    code: Code
+
+
+class CodedFilters(FilterSet):
+    """Filters on the code."""
+
+    model = Coded
+    code = Filter()
+
+
+def test_refusals_never_repeat_the_value() -> None:
+    """A value object's own ValueError is not shown; a domain error is."""
+    with pytest.raises(InvalidFilter) as caught:
+        CodedFilters(code="secret-42")
+    assert caught.value.detail == "A filter value does not fit its field."
+    assert isinstance(caught.value.__cause__, ValueError)
+    with pytest.raises(InvalidFilter, match="A label is at most 20"):
+        GadgetFilters(label="x" * 21)
 
 
 def test_fields_of_no_known_type_are_filtered_as_text() -> None:
