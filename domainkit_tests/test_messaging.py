@@ -307,21 +307,33 @@ async def test_slow_tasks_time_out(tables: None) -> None:
     assert str(row["last_error"]).startswith("TimeoutError")
 
 
+HANDLER = "domainkit_tests.test_messaging.durable_handler"
+NOTE_WRITTEN = "domainkit_tests.test_db.NoteWritten"
+
+
 @pytest.mark.parametrize(
-    ("kind", "target", "headers"),
+    ("kind", "target", "headers", "error"),
     [
-        ("task", "missing.task", {}),
-        ("event", "missing.handler", {"event_type": "x"}),
+        ("task", "missing.task", {}, "No task 'missing.task'."),
         (
             "event",
-            "domainkit_tests.test_messaging.durable_handler",
+            "missing.handler",
             {"event_type": "x"},
+            "No durable handler 'missing.handler'.",
         ),
-        ("letter", "anything", {}),
+        (
+            "event",
+            "missing.handler",
+            {"event_type": NOTE_WRITTEN},
+            "No durable handler 'missing.handler'.",
+        ),
+        ("event", HANDLER, {"event_type": "x"}, f"No durable handler {HANDLER!r}."),
+        ("event", HANDLER, {}, f"No durable handler {HANDLER!r}."),
+        ("letter", "anything", {}, "Unknown message kind 'letter'."),
     ],
 )
 async def test_unknown_targets_dead_letter_at_once(
-    tables: None, kind: str, target: str, headers: dict[str, str]
+    tables: None, kind: str, target: str, headers: dict[str, str], error: str
 ) -> None:
     """Messages this process cannot run are not retried."""
     row = message_row(
@@ -330,10 +342,18 @@ async def test_unknown_targets_dead_letter_at_once(
     async with connections.engine().begin() as connection:
         await connection.execute(messages.insert().values(row))
 
-    await Worker().run_once()
+    event_bus.subscribe(NoteWritten, durable_handler, durable=True)
+    try:
+        await Worker().run_once()
+    finally:
+        event_bus.unsubscribe(NoteWritten, durable_handler)
 
     (stored,) = await outbox()
-    assert (stored["status"], stored["attempts"]) == (DEAD, 1)
+    assert (stored["status"], stored["attempts"], stored["last_error"]) == (
+        DEAD,
+        1,
+        f"UnknownTarget: {error}",
+    )
 
 
 async def test_any_event_handlers_run_only_for_their_event_types(
