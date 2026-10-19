@@ -30,6 +30,7 @@ from domainkit.cache.redis import (
 from domainkit.conf import CacheConfig, Settings, override_settings
 from domainkit.http.ratelimit import RedisBackend
 from domainkit.utils.redis_urls import MAX_HOSTS, RedisTarget, parse_redis_url
+from domainkit_tests.settings import SECRET_KEY
 
 pytestmark = pytest.mark.anyio
 
@@ -210,7 +211,11 @@ def test_deployed_sentinels_and_clusters_need_tls_and_credentials(
     url: str, message: str
 ) -> None:
     """Staging and production hold them to the rules for one server."""
-    base = {"ENVIRONMENT": "production", "ALLOWED_HOSTS": ["api.example.com"]}
+    base = {
+        "ENVIRONMENT": "production",
+        "ALLOWED_HOSTS": ["api.example.com"],
+        "SECRET_KEY": SECRET_KEY,
+    }
     shared = {"URL": url, "KEY_PREFIX": "billing"}
     with pytest.raises(ValidationError, match=f"{message}.*CACHES \\['shared'\\]"):
         Settings.model_validate({**base, "CACHES": {"default": {}, "shared": shared}})

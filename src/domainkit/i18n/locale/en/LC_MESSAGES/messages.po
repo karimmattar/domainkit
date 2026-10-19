@@ -139,6 +139,72 @@ msgstr ""
 msgid "No such group."
 msgstr ""
 
+msgid "Credentials limited to scopes cannot do this."
+msgstr ""
+
+msgid "Credentials limited to scopes end only themselves."
+msgstr ""
+
+msgid "Your password was entered incorrectly."
+msgstr ""
+
+msgid "Too many attempts; try again later."
+msgstr ""
+
+msgid "Too many requests for mail; try again later."
+msgstr ""
+
+msgid "The link is invalid or has expired."
+msgstr ""
+
+msgid "The request names no origin (Origin or Referer)."
+msgstr ""
+
+msgid "The request comes from an origin that is not trusted."
+msgstr ""
+
+msgid "The CSRF token is missing or wrong."
+msgstr ""
+
+msgid "This request has no browser session."
+msgstr ""
+
+msgid "A second factor is on; turn it off first."
+msgstr ""
+
+msgid "No enrolment is waiting for a code; start one first."
+msgstr ""
+
+msgid "The login has expired; log in again."
+msgstr ""
+
+msgid "The code is wrong, or was used already."
+msgstr ""
+
+msgid "No such token."
+msgstr ""
+
+msgid "Client certificates in headers are taken from trusted proxies only."
+msgstr ""
+
+msgid "The client certificate did not verify."
+msgstr ""
+
+msgid "The proxy did not verify the client certificate."
+msgstr ""
+
+msgid "Malformed client certificate."
+msgstr ""
+
+msgid "Unknown client certificate."
+msgstr ""
+
+msgid "The value is not one SecretBox encrypted."
+msgstr ""
+
+msgid "No key decrypts the value."
+msgstr ""
+
 #. domainkit.contrib.idempotency
 msgid "Idempotency-Key must be 1 to 255 printable ASCII characters."
 msgstr ""
