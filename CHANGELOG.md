@@ -103,6 +103,22 @@ All notable changes to domainkit. The format follows
 - `http_requests_total` and the other request metrics count methods
   other than the nine standard ones as `OTHER`: servers that let any
   method through let callers make a label each.
+- The admin API counts what every backend in `AUTH.BACKENDS` grants when
+  staff change a user, and what the change itself would grant. Staff with
+  `change_user` could take over a user whose permissions came from another
+  backend (a role or directory backend) by setting their password. While
+  other backends are configured, only superusers change inactive users.
+- Deactivating a user deletes their tokens: reactivating them used to bring
+  back every session, including a stolen one.
+- The last active superuser can no longer be demoted, deactivated, or
+  deleted (`409 last_superuser`).
+- A JWT refresh token used twice, the sign of a stolen one, is logged as a
+  security warning and audited (`RefreshTokenReused`), besides ending its
+  login as before.
+- Logins that upgrade the same password's hash at once no longer refuse
+  each other with 409 `concurrent_update`: the new hash is stored without
+  the user's version, and only over the hash that was checked, so a
+  password changed meanwhile stays.
 - Settings keep their secrets:
   - `repr(settings)` and its dumps hide domain settings (`AUTH`, `EVIDENCE`,
     ...), whose keys (`JWT.SIGNING_KEY`, `SUBJECT_KEY`) they showed in clear.
