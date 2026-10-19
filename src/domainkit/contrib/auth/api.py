@@ -15,6 +15,9 @@ to the audit trail when ``domainkit.contrib.audit`` is installed.
 
 import hashlib
 import math
+import time
+import unicodedata
+from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
@@ -41,10 +44,13 @@ from .hashers import acheck_password
 from .models import AbstractBaseUser, UserId
 from .settings import auth_settings
 from .uow import AuthUnitOfWork
+from .users import get_user_model
 from .validators import validate_password
 
 AUDIT = "domainkit.contrib.audit"
 PASSWORD_MAX_LENGTH = 4096
+MAX_REFUSALS = 10_000
+"""Throttled keys remembered, to audit each once per period."""
 """Longer passwords are refused before hashing, which they would slow down."""
 
 router = APIRouter(tags=["auth"])
@@ -122,7 +128,7 @@ def _errors(*codes: int) -> dict[int | str, dict[str, object]]:
 async def login(body: LoginIn, request: Request, response: Response) -> TokenOut:
     """Check a username and password; return tokens."""
     _no_store(response)
-    await _throttle(request, body.username)
+    await _throttle(request, *_login_keys(request, body.username))
     user = await authenticate(username=body.username, password=body.password)
     if user is None:
         await _audit_refusal("invalid_credentials")
@@ -211,7 +217,7 @@ async def change_password(
     request: Request, body: PasswordIn, user: AuthenticatedUser
 ) -> None:
     """Change the password; every other session of the user ends."""
-    await _throttle(request, user.get_username())
+    await _throttle(request, f"password:user:{user.id}")
     if not await acheck_password(body.old_password, user.password.value):
         raise APIError(
             status.HTTP_400_BAD_REQUEST,
@@ -229,19 +235,22 @@ async def change_password(
         await uow.commit()
 
 
-async def _throttle(request: Request, username: str) -> None:
-    """Refuse a login past ``AUTH.LOGIN_RATE`` for the address or username."""
+async def _throttle(request: Request, *keys: str) -> None:
+    """Refuse a password check past ``AUTH.LOGIN_RATE`` for any of ``keys``.
+
+    The first refusal of each key in a period is audited, not every one, so
+    a flood of attempts writes no rows to the append-only trail.
+    """
     rate = auth_settings().LOGIN_RATE
     if rate is None:
         return
     limit, period = parse_rate(rate)
     limiter = _limiter(request)
-    client = client_group(request.client.host) if request.client else "unknown"
-    user_key = hashlib.sha256(username.casefold().encode()).hexdigest()
-    for key in (f"login:ip:{client}", f"login:user:{user_key}"):
+    for key in keys:
         decision = await limiter.hit(key, limit, period)
         if not decision.allowed:
-            await _audit_refusal("throttled")
+            if _first_refusal(request, key, period):
+                await _audit_refusal("throttled")
             raise APIError(
                 status.HTTP_429_TOO_MANY_REQUESTS,
                 "Too many login attempts; try again later.",
@@ -257,6 +266,40 @@ def _no_store(response: Response) -> None:
     """
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
+
+
+def _login_keys(request: Request, username: str) -> tuple[str, str]:
+    """The counts a login is checked against: its address's and its account's."""
+    client = client_group(request.client.host) if request.client else "unknown"
+    return f"login:ip:{client}", f"login:user:{_account(username)}"
+
+
+def _account(username: str) -> str:
+    """The key of the account ``username`` names, as logging in finds it.
+
+    Names the lookup treats as one (``alice`` and its full-width or
+    mathematical look-alikes, under NFKC) share one key, in any case.
+    """
+    name = get_user_model().normalize_username(username)
+    folded = unicodedata.normalize("NFKC", name.casefold())
+    return hashlib.sha256(folded.encode()).hexdigest()
+
+
+def _first_refusal(request: Request, key: str, period: int) -> bool:
+    """Whether ``key`` was refused for the first time in ``period`` here."""
+    state = request.app.state
+    refused: OrderedDict[str, float] | None = getattr(state, "login_refusals", None)
+    if refused is None:
+        refused = state.login_refusals = OrderedDict()
+    now = time.monotonic()
+    since = refused.get(key)
+    if since is not None and now - since < period:
+        return False
+    refused[key] = now
+    refused.move_to_end(key)
+    if len(refused) > MAX_REFUSALS:
+        refused.popitem(last=False)
+    return True
 
 
 def _limiter(request: Request) -> Backend:

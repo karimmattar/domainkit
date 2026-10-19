@@ -25,10 +25,13 @@ from domainkit.contrib.auth import (
     authentication,
     hashers,
 )
+from domainkit.contrib.auth import middleware as auth_middleware
 from domainkit.contrib.auth import (
     tokens as token_module,
 )
 from domainkit.contrib.auth.hashers import HashingPool
+from domainkit.contrib.auth.middleware import AuthenticationMiddleware
+from domainkit.contrib.auth.repositories import TokenStore
 from domainkit.contrib.auth.tables import tokens
 from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.db import connections
@@ -318,6 +321,166 @@ async def _stored_bodies() -> list[bytes | None]:
     async with connections.engine().connect() as connection:
         rows = await connection.execute(select(idempotency_keys.c.body))
         return [row.body for row in rows]
+
+
+FULL_WIDTH = "\uff41\uff4c\uff49\uff43\uff45"  # alice, as NFKC finds it.
+BOLD = "\U0001d41a\U0001d425\U0001d422\U0001d41c\U0001d41e"  # alice, in bold.
+
+
+def test_look_alike_usernames_share_one_count(api: Api) -> None:
+    """Names logging in treats as one account are throttled as one."""
+    create_user("alice")
+    client = api(LOGIN_RATE="2/minute")
+
+    def attempt(number: int, username: str) -> int:
+        caller = TestClient(client.app, client=(f"203.0.113.{number}", 1))
+        wrong = {"username": username, "password": "wrong"}
+        return caller.post("/auth/login", json=wrong).status_code
+
+    assert [attempt(n, name) for n, name in enumerate(("alice", FULL_WIDTH, BOLD))] == [
+        401,
+        401,
+        429,
+    ]
+
+
+def test_password_changes_have_a_count_of_their_own(api: Api) -> None:
+    """Throttled logins for a name never stop its user changing the password."""
+    create_user("alice")
+    client = api(LOGIN_RATE="2/minute")
+    alice = bearer(login(client, "alice")["access_token"])
+    for number in (1, 2):  # Someone else uses up alice's logins.
+        TestClient(client.app, client=(f"203.0.113.{number}", 1)).post(
+            "/auth/login", json={"username": "alice", "password": "wrong"}
+        )
+
+    def change(old: str) -> int:
+        body = {"old_password": old, "new_password": "n3w-Passw0rd!"}
+        return client.post("/auth/password", headers=alice, json=body).status_code
+
+    assert [change(PASSWORD), change("wrong"), change("wrong")] == [204, 400, 429]
+
+
+def test_a_flood_of_throttled_logins_is_audited_once_per_count(api: Api) -> None:
+    """Each count's first refusal in a period is audited; the rest add no rows."""
+    create_user("alice")
+    client = api(LOGIN_RATE="1/minute")
+    wrong = {"username": "alice", "password": "wrong"}
+
+    codes = [client.post("/auth/login", json=wrong).status_code for _ in range(5)]
+    first = len(audited("auth.login"))
+    elsewhere = TestClient(client.app, client=("203.0.113.9", 1))
+    assert elsewhere.post("/auth/login", json=wrong).status_code == 429
+
+    assert codes == [401, 429, 429, 429, 429]
+    assert first == 2  # The wrong password, then the address's first refusal.
+    assert [row["details"] for row in audited("auth.login")] == [
+        {"reason": "invalid_credentials"},
+        {"reason": "throttled"},
+        {"reason": "throttled"},  # alice's count, refused for the first time.
+    ]
+
+
+def test_refused_credentials_count_against_the_rate_limit(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Past ``RATE_LIMIT``, an address's credentials are refused unread."""
+    create_user("alice")
+    lookups: list[str] = []
+    find = TokenStore.find
+
+    async def counted(self: TokenStore, raw: str) -> Any:  # noqa: ANN401
+        lookups.append(raw)
+        return await find(self, raw)
+
+    monkeypatch.setattr(TokenStore, "find", counted)
+    guess = bearer("dkt_" + "A" * 43)  # Well formed, so it is looked up.
+    with override_settings(RATE_LIMIT="3/minute"):
+        client = api()
+        alice = bearer(login(client, "alice")["access_token"])
+        guesses = [client.get("/whoami", headers=guess) for _ in range(4)]
+        held = client.get("/whoami", headers=alice)
+        with (
+            pytest.raises(WebSocketDenialResponse) as socket,
+            client.websocket_connect("/socket", headers=alice),
+        ):
+            pass
+        looked_up = len(lookups)
+        anonymous = client.get("/whoami")
+        elsewhere = TestClient(client.app, client=("203.0.113.9", 1))
+        served = elsewhere.get("/whoami", headers=alice)
+        guessed_elsewhere = elsewhere.get("/whoami", headers=guess)
+
+    assert [response.status_code for response in guesses] == [401, 401, 401, 429]
+    assert guesses[0].json()["detail"] == "Invalid token."
+    for refused in (guesses[3], held):
+        assert refused.headers["RateLimit-Limit"] == "3"
+        assert refused.headers["RateLimit-Remaining"] == "0"
+    assert (held.status_code, held.json()["code"]) == (429, "rate_limited")
+    assert int(held.headers["Retry-After"]) > 0
+    assert guessed_elsewhere.status_code == 401  # Each address has its own count.
+    assert socket.value.status_code == 429
+    assert looked_up == 4  # The held requests were refused before any lookup.
+    assert anonymous.json()["user"] == ""
+    assert served.json()["user"] == "alice"
+
+
+def test_held_addresses_are_let_go(api: Api, monkeypatch: pytest.MonkeyPatch) -> None:
+    """After ``Retry-After``, and when too many others are held, first in first out."""
+    create_user("alice")
+    clock = [1000.0]
+    monkeypatch.setattr(auth_middleware, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(auth_middleware, "MAX_HELD", 2)
+    with override_settings(RATE_LIMIT="1/minute"):
+        client = api()
+        alice = bearer(login(client, "alice")["access_token"])
+        guess = bearer("dkt_" + "A" * 43)
+        middleware = _find(client.app, AuthenticationMiddleware)
+
+        assert [client.get("/whoami", headers=guess).status_code for _ in range(2)] == [
+            401,
+            429,
+        ]
+        clock[0] += 59.9
+        held = client.get("/whoami", headers=alice)
+        clock[0] += 0.2
+        served = client.get("/whoami", headers=alice)
+        for number in (1, 2, 3):
+            caller = TestClient(client.app, client=(f"203.0.113.{number}", 1))
+            for _ in range(2):
+                caller.get("/whoami", headers=guess)
+
+    assert held.status_code == 429
+    assert served.json()["user"] == "alice"
+    assert list(middleware.held) == ["ip:203.0.113.2", "ip:203.0.113.3"]
+
+
+def _find[T](app: object, kind: type[T]) -> T:
+    """The middleware of ``kind`` in ``app``'s stack."""
+    layer: Any = getattr(app, "middleware_stack", None) or app
+    while not isinstance(layer, kind):
+        layer = layer.app
+    return layer
+
+
+def test_malformed_tokens_are_refused_without_a_lookup(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a token of the issued form is looked up."""
+    lookups: list[str] = []
+    find = TokenStore.find
+
+    async def counted(self: TokenStore, raw: str) -> Any:  # noqa: ANN401
+        lookups.append(raw)
+        return await find(self, raw)
+
+    monkeypatch.setattr(TokenStore, "find", counted)
+    client = api()
+    for raw in ("dkt_unknown", "dkt_" + "A" * 42, "dkt_" + "A" * 44, "dkt_" + "+" * 43):
+        response = client.get("/whoami", headers=bearer(raw))
+        assert response.json()["detail"] == "Invalid token."
+
+    assert lookups == []
 
 
 def test_bad_tokens_are_refused_even_on_public_routes(
