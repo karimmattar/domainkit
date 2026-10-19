@@ -6,6 +6,8 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-19
+
 ### Fixed
 
 - The audit trail's seals (`docs/contrib.md`):
@@ -617,7 +619,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/karimmattar/domainkit/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/karimmattar/domainkit/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/karimmattar/domainkit/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/karimmattar/domainkit/compare/v0.3.0...v0.4.0
