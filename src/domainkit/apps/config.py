@@ -120,6 +120,16 @@ class DomainConfig:
         Content types and permissions are created this way.
         """
 
+    async def seed(self) -> None:
+        """Add the rows a fresh database needs to be useful (``manage.py seed``).
+
+        Sample data for development, or defaults a deployment starts with.
+        ``seed`` calls the hooks in ``INSTALLED_DOMAINS`` order, so a domain
+        may use what those before it seeded. Write rows through the domain's
+        own units of work, and make running twice harmless: rows that exist
+        stay as they are.
+        """
+
     def check_application(self, app: "FastAPI") -> list[str]:
         """Problems with the built application, such as routes no rule guards.
 
