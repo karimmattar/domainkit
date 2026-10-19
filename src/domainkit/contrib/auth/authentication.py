@@ -33,7 +33,7 @@ from domainkit.utils.module_loading import import_string
 
 from .models import AbstractBaseUser, UserId
 from .settings import HMAC_ALGORITHMS, AuthSettings, JWTSettings, auth_settings
-from .tokens import TokenKind, utc_now
+from .tokens import TokenKind, utc_now, well_formed
 from .uow import AuthUnitOfWork
 
 
@@ -129,8 +129,11 @@ class TokenAuthentication(BaseAuthentication):
     async def authenticate(self, connection: HTTPConnection) -> Credentials | None:
         """The user of a stored, unexpired access token."""
         raw = bearer_token(connection)
-        if raw is None or not raw.startswith(auth_settings().TOKEN_PREFIX):
+        prefix = auth_settings().TOKEN_PREFIX
+        if raw is None or not raw.startswith(prefix):
             return None
+        if not well_formed(raw, prefix):  # No database work for a guess.
+            raise AuthenticationFailed("Invalid token.")
         async with AuthUnitOfWork() as uow:
             token = await uow.tokens.find(raw)
             if token is None or token.kind != TokenKind.ACCESS:

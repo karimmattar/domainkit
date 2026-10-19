@@ -305,16 +305,20 @@ def verify_password(password: str, encoded: str | None) -> PasswordCheck:
     """Check ``password`` against ``encoded``; re-hash it if settings changed.
 
     A wrong password takes as long as a right one would with current
-    settings, so response times do not tell how old a hash is.
+    settings, so response times do not tell how old a hash is. A hash no
+    password matches (unusable, malformed, or of a hasher not configured)
+    costs one hash too, so they do not tell which accounts have one.
     """
-    if encoded is None or encoded.startswith(UNUSABLE_PASSWORD_PREFIX):
-        return PasswordCheck(correct=False)
     preferred = get_hashers()[0]
+    if encoded is None or encoded.startswith(UNUSABLE_PASSWORD_PREFIX):
+        preferred.hash(password)
+        return PasswordCheck(correct=False)
     try:
         hasher = identify_hasher(encoded)
         outdated = hasher is not preferred or preferred.must_update(encoded)
         correct = hasher.verify(password, encoded)
     except ValueError:  # A malformed hash never matches.
+        preferred.hash(password)
         return PasswordCheck(correct=False)
     if not correct:
         if hasher is preferred and outdated:
