@@ -420,6 +420,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `changepassword` | `[username]` | Set a user's password, asked twice and validated; the user's tokens end (auth). |
 | `createtoken` | `username`, `--name`, `--days`, `--no-expiry` | Print a new token for a user's scripts, shown once (auth). |
 | `cleartokens` | `--user` | Delete expired tokens, or every token of one user (auth). |
+| `resetmfa` | `username` | Turn a user's second factor off, and end their sessions (auth). |
 
 ## Extension points
 

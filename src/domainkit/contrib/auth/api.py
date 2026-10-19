@@ -8,9 +8,10 @@ Mount the router where the API keeps them, ``/auth`` for example::
 
 ``POST /login`` checks a username and password with ``AUTH.BACKENDS`` and
 returns tokens from the first ``AUTH.AUTHENTICATION_CLASSES`` class, in
-OAuth 2's token response format. Attempts are limited to
-``AUTH.LOGIN_RATE`` per client address and per username, and refusals go
-to the audit trail when ``domainkit.contrib.audit`` is installed.
+OAuth 2's token response format; a user with a second factor gets 202 and
+a challenge for ``/mfa/login`` instead (``auth.mfa``). Attempts are limited
+to ``AUTH.LOGIN_RATE`` per client address and per username, and refusals
+go to the audit trail when ``domainkit.contrib.audit`` is installed.
 """
 
 from collections.abc import Iterator
@@ -108,15 +109,44 @@ def _errors(*codes: int) -> dict[int | str, dict[str, object]]:
     return {code: {"model": ErrorResponse} for code in codes}
 
 
+class MfaChallengeOut(BaseModel):
+    """The password holds; send this token and a code to ``/mfa/login``."""
+
+    mfa_required: Literal[True] = True
+    mfa_token: str
+    expires_in: int
+    """Seconds the token works."""
+
+
 @router.post(
     "/login",
     dependencies=[Public],
     response_model_exclude_none=True,
-    responses=_errors(status.HTTP_401_UNAUTHORIZED, status.HTTP_429_TOO_MANY_REQUESTS),
+    responses={
+        status.HTTP_202_ACCEPTED: {"model": MfaChallengeOut},
+        **_errors(status.HTTP_401_UNAUTHORIZED, status.HTTP_429_TOO_MANY_REQUESTS),
+    },
 )
-async def login(body: LoginIn, request: Request, response: Response) -> TokenOut:
-    """Check a username and password; return tokens."""
+async def login(
+    body: LoginIn, request: Request, response: Response
+) -> TokenOut | MfaChallengeOut:
+    """Check a username and password; return tokens, or a second-factor challenge."""
     _no_store(response)
+    user = await check_password(request, body)
+    from .mfa import challenge  # Imports this module.
+
+    if (pending := await challenge(user)) is not None:
+        response.status_code = status.HTTP_202_ACCEPTED
+        return pending
+    return _token_out(await issue_login(user))
+
+
+async def check_password(request: Request, body: LoginIn) -> AbstractBaseUser:
+    """The user a login's username and password prove, counted and audited.
+
+    Raises:
+        APIError: 401 for wrong credentials; 429 past ``AUTH.LOGIN_RATE``.
+    """
     await _throttle(request, *_login_keys(request, body.username))
     user = await authenticate(username=body.username, password=body.password)
     if user is None:
@@ -126,13 +156,18 @@ async def login(body: LoginIn, request: Request, response: Response) -> TokenOut
             "Unable to log in with the given credentials.",
             code="invalid_credentials",
         )
+    return user
+
+
+async def issue_login(user: AbstractBaseUser) -> IssuedTokens:
+    """Record the user's login, and issue them tokens (the first class's)."""
     with _acting_as(user):
         async with AuthUnitOfWork() as uow:
             stored = await uow.users.get(UserId(user.id))
             tokens = await get_authenticators()[0].issue(uow, stored)
             await uow.users.record_login(stored)
             await uow.commit()
-    return _token_out(tokens)
+    return tokens
 
 
 @router.post(

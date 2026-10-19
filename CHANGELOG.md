@@ -52,6 +52,15 @@ All notable changes to domainkit. The format follows
   `ALLOWED_HOSTS`, or `AUTH.CSRF_TRUSTED_ORIGINS`) and send a CSRF token
   signed for the session (`X-CSRF-Token`); others get `403 csrf_failed`.
   Header-token clients are unaffected.
+- Two-factor logins (DJ-41; `docs/auth.md`, "Two-factor logins"; the `mfa`
+  extra): an authenticator app (TOTP) and single-use recovery codes, from
+  `domainkit.contrib.auth.mfa`. Once on, `/login` and `/auth/session`
+  answer 202 with a signed challenge that `/auth/mfa/login` (or
+  `/auth/session/mfa`) takes with a code. Codes work once, checks are
+  throttled per user, turning it off needs the password and a code, and
+  secrets are stored encrypted with AES-GCM under a key derived from
+  `SECRET_KEY` (ADR 0030). `resetmfa` turns it off for a user who lost it.
+  Run `makemigrations` and `migrate` for the new tables.
 
 ### Changed
 

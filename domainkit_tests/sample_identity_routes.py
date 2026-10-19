@@ -8,13 +8,20 @@ from domainkit.contrib.auth import AnyUser, CurrentUser, Public, Require
 from domainkit.contrib.auth.access import current_user
 from domainkit.contrib.auth.api import router as auth_router
 from domainkit.contrib.auth.cookies import router as session_router
+from domainkit.contrib.auth.mfa import router as mfa_router
 from domainkit.contrib.auth.recovery import router as recovery_router
 from domainkit.contrib.auth.signup import router as signup_router
 from domainkit.http.health import router as health_router
 
 router = APIRouter()
 router.include_router(health_router)
-for included in (auth_router, recovery_router, signup_router, session_router):
+for included in (
+    auth_router,
+    recovery_router,
+    signup_router,
+    session_router,
+    mfa_router,
+):
     router.include_router(included, prefix="/auth")
 
 

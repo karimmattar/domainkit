@@ -17,8 +17,10 @@ List the class after the classes that read headers, and mount the router::
 
 ``POST /session`` logs in, sets the session cookie (``AUTH.COOKIE.NAME``:
 HttpOnly, Secure unless ``DEBUG``, ``SameSite``) and the CSRF cookie
-(readable by scripts), and returns the CSRF token. ``GET /session``
-returns the token again, and ``DELETE /session`` logs out and clears both.
+(readable by scripts), and returns the CSRF token; with a second factor
+it answers 202 with a challenge, and ``POST /session/mfa`` with a code
+finishes. ``GET /session`` returns the token again, and ``DELETE /session``
+logs out and clears both.
 
 A request the session cookie authenticates, with a method other than
 ``GET``, ``HEAD``, or ``OPTIONS``, must come from a trusted origin (its
@@ -49,17 +51,16 @@ from domainkit.signing import BadSignature, Signer, constant_time_compare
 from .access import SAFE_METHODS, Public
 from .api import (
     LoginIn,
+    MfaChallengeOut,
     _acting_as,
-    _audit_refusal,
     _credentials,
     _errors,
-    _login_keys,
     _no_store,
-    _throttle,
+    check_password,
 )
 from .authentication import AuthenticationFailed, BaseAuthentication, Credentials
-from .backends import authenticate
 from .events import UserLoggedOut
+from .mfa import MfaLoginIn, challenge, verify_challenge
 from .models import AbstractBaseUser, UserId
 from .settings import auth_settings
 from .tokens import TokenKind, token_digest, well_formed
@@ -214,19 +215,40 @@ class CsrfOut(BaseModel):
         status.HTTP_429_TOO_MANY_REQUESTS,
     ),
 )
-async def log_in(body: LoginIn, request: Request, response: Response) -> CsrfOut:
-    """Check a username and password; start a browser session in cookies."""
+async def log_in(
+    body: LoginIn, request: Request, response: Response
+) -> CsrfOut | MfaChallengeOut:
+    """Check a username and password; start a browser session in cookies.
+
+    A user with a second factor gets 202 and a challenge for
+    ``/session/mfa`` instead.
+    """
     _no_store(response)
     check_origin(request)
-    await _throttle(request, *_login_keys(request, body.username))
-    user = await authenticate(username=body.username, password=body.password)
-    if user is None:
-        await _audit_refusal("invalid_credentials")
-        raise APIError(
-            status.HTTP_401_UNAUTHORIZED,
-            "Unable to log in with the given credentials.",
-            code="invalid_credentials",
-        )
+    user = await check_password(request, body)
+    if (pending := await challenge(user)) is not None:
+        response.status_code = status.HTTP_202_ACCEPTED
+        return pending
+    return await start_session(user, response)
+
+
+@router.post(
+    "/session/mfa",
+    dependencies=[Public],
+    responses=_errors(
+        status.HTTP_400_BAD_REQUEST,
+        status.HTTP_401_UNAUTHORIZED,
+        status.HTTP_403_FORBIDDEN,
+        status.HTTP_429_TOO_MANY_REQUESTS,
+    ),
+)
+async def log_in_with_code(
+    body: MfaLoginIn, request: Request, response: Response
+) -> CsrfOut:
+    """Finish a login with a second factor; start the browser session."""
+    _no_store(response)
+    check_origin(request)
+    user = await verify_challenge(request, body.mfa_token, body.code)
     return await start_session(user, response)
 
 

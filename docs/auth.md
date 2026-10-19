@@ -54,7 +54,7 @@ python manage.py createsuperuser
 | App | Tables |
 | --- | --- |
 | `domainkit.contrib.contenttypes` | `domainkit_content_types` |
-| `domainkit.contrib.auth` | `domainkit_users`, `domainkit_groups`, `domainkit_permissions`, `domainkit_group_permissions`, `domainkit_users_groups`, `domainkit_users_permissions`, `domainkit_tokens` |
+| `domainkit.contrib.auth` | `domainkit_users`, `domainkit_groups`, `domainkit_permissions`, `domainkit_group_permissions`, `domainkit_users_groups`, `domainkit_users_permissions`, `domainkit_tokens`, `domainkit_mfa_devices`, `domainkit_recovery_codes` |
 
 Users, groups, permissions, and content types are joined by foreign keys,
 so they must live in one database: route `auth`, `contenttypes`, and a
@@ -516,6 +516,60 @@ for a name count whoever sends them, so a caller who keeps sending
 own. Sessions already open are not affected, and password changes have
 their own count. The audited `throttled` refusals show such a flood.
 
+## Two-factor logins
+
+`domainkit.contrib.auth.mfa` adds a second factor: an authenticator app
+(TOTP, RFC 6238) and single-use recovery codes. It needs the `mfa` extra
+(`pip install "domainkit[mfa]"`) and `SECRET_KEY`:
+
+```python
+from domainkit.contrib.auth.mfa import router as mfa_router
+
+router.include_router(mfa_router, prefix="/auth")
+```
+
+| Endpoint | Who | Body | Answer |
+| --- | --- | --- | --- |
+| `GET /mfa` | a user | | `{"enabled", "recovery_codes_left"}`. |
+| `POST /mfa/totp` | a user | `{"password"}` | `{"secret", "otpauth_uri"}`: the secret in base 32, and the URI for a QR code; `400 wrong_password`; `409 mfa_enabled`. |
+| `POST /mfa/totp/confirm` | a user | `{"code"}` | `{"recovery_codes"}`, shown once: the second factor is on; `401 invalid_code`; `400 no_enrolment`. |
+| `POST /mfa/totp/disable` | a user | `{"password", "code"}` | `204`: it is off. |
+| `POST /mfa/recovery-codes` | a user | `{"password", "code"}` | `{"recovery_codes"}`: new codes replace the old ones. |
+| `POST /mfa/login` | anyone | `{"mfa_token", "code"}` | The tokens `/login` would have returned; `400 invalid_token`; `401 invalid_code`; `429 throttled`. |
+
+Once it is on, `/login` checks the password as before, then answers `202`
+with `{"mfa_required": true, "mfa_token", "expires_in"}` instead of
+tokens. The token is a challenge signed with `SECRET_KEY`: it works for
+`MFA.CHALLENGE_TTL` (5 minutes), and ends once the login is done or the
+password changes. `/mfa/login` takes it with a code from the app, or a
+recovery code (in any case, with or without its dashes), and returns the
+tokens. Browser sessions do the same: `POST /session` answers `202`, and
+`POST /session/mfa` sets the cookies.
+
+- A code from the current 30-second step, or `MFA.WINDOW` steps either
+  side, is accepted once: the step is recorded, and a code of that step or
+  an earlier one is refused, so a code seen over a shoulder cannot be
+  replayed.
+- Code checks count against `LOGIN_RATE` per user, wherever they come
+  from, and per client address at `/mfa/login`.
+- Turning it off, and new recovery codes, need the password and a code:
+  a stolen session cannot remove the factor.
+- Secrets are stored encrypted with AES-256-GCM under a key derived from
+  `SECRET_KEY`, bound to the user's id ([ADR 0030](adr/0030-encrypt-totp-secrets-under-a-derived-key.md)).
+  Recovery codes (10 of 80 random bits, `MFA.RECOVERY_CODES`) are stored
+  as digests. When `SECRET_KEY` is replaced, keep the old key in
+  `SECRET_KEY_FALLBACKS` until every user with a second factor has logged
+  in: each login moves their secret to the new key. Without it, those
+  users cannot log in.
+- `resetmfa <username>` turns it off for a user who lost the app and the
+  codes, and ends their sessions; check who is asking first.
+
+The audit trail records `auth.mfa_enabled`, `auth.mfa_disabled`,
+`auth.recovery_codes_regenerated`, `auth.recovery_code_used` (with the
+codes left), and refusals as `auth.mfa` (`invalid_token`, `invalid_code`,
+`throttled`). Run `makemigrations` and `migrate` for the tables
+`domainkit_mfa_devices` and `domainkit_recovery_codes`.
+
 ## Password reset
 
 People who forgot their password ask for a link by mail, and choose a new
@@ -800,6 +854,7 @@ changed what.
 | `EMAIL_VERIFICATION_URL` | `None` | Your page that takes a verification token. |
 | `SIGNUP_ENABLED` | `False` | Let anyone create an account at `/signup`. |
 | `COOKIE` | see below | Browser sessions, for `CookieAuthentication`. |
+| `MFA` | see below | Second factors (`auth.mfa`). |
 | `CSRF_TRUSTED_ORIGINS` | `()` | Origins (`https://app.example.com`, `https://*.example.com`) whose pages may send cookie requests, besides the request's own and `ALLOWED_HOSTS`. |
 | `REQUIRE_ROUTE_RULES` | `True` | Every route must say who may call it (`Require`, a user parameter, or `Public`); see "Deny by default". |
 | `JWT` | see below | JSON Web Tokens, for `JWTAuthentication`. |
@@ -814,6 +869,13 @@ changed what.
 | `DOMAIN` | `None` | `None` keeps the cookies to this host. |
 | `PATH` | `"/"` | |
 | `TTL` | 14 days | How long a browser session works. |
+
+| `AUTH["MFA"]` key | Default | Meaning |
+| --- | --- | --- |
+| `ISSUER` | `None` | The name authenticator apps show; `PROJECT_NAME` when `None`. |
+| `CHALLENGE_TTL` | 5 minutes | How long the step between the password and the code may take (an hour at most). |
+| `RECOVERY_CODES` | `10` | Recovery codes each user gets (1 to 50). |
+| `WINDOW` | `1` | Steps of 30 seconds either side of now whose codes count (0 to 10). |
 
 | `AUTH["JWT"]` key | Default | Meaning |
 | --- | --- | --- |
@@ -834,6 +896,7 @@ changed what.
 | `changepassword` | `[username]` | Ask twice for a new password that passes the validators; three tries. The default user is your login name. Every token of the user ends. |
 | `createtoken` | `username`, `--name`, `--days` (90), `--no-expiry` | Print a new opaque token for the user's scripts; it is shown once. |
 | `cleartokens` | `--user` | Delete expired tokens (hourly with `domainkit.contrib.messaging`), or every token of one user. |
+| `resetmfa` | `username` | Turn a user's second factor off and end their sessions, for a user who lost the app and the recovery codes. |
 
 Code that sets passwords itself ends the user's sessions with
 `await uow.tokens.revoke_user(user.id)`.

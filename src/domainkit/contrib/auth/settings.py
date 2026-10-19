@@ -117,6 +117,23 @@ class CookieSettings(BaseModel):
         return self
 
 
+class MfaSettings(BaseModel):
+    """``AUTH["MFA"]``: logins with a second factor (``auth.mfa``)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    ISSUER: str | None = Field(default=None, min_length=1, max_length=100)
+    """The name authenticator apps show; None: ``PROJECT_NAME``."""
+    CHALLENGE_TTL: timedelta = Field(
+        default=timedelta(minutes=5), gt=timedelta(0), le=timedelta(hours=1)
+    )
+    """How long the step between the password and the code may take."""
+    RECOVERY_CODES: int = Field(default=10, ge=1, le=50)
+    """Recovery codes each user gets, each good once."""
+    WINDOW: int = Field(default=1, ge=0, le=10)
+    """30-second steps either side of now whose codes still count (clock drift)."""
+
+
 class AuthSettings(BaseModel):
     """Users, hashing, validation, and backends; every key is optional."""
 
@@ -193,6 +210,8 @@ class AuthSettings(BaseModel):
     """Let anyone create an account at ``/signup`` (``auth.signup.router``)."""
     COOKIE: CookieSettings = CookieSettings()
     """Browser sessions in cookies (``CookieAuthentication``)."""
+    MFA: MfaSettings = MfaSettings()
+    """Second factors: authenticator apps and recovery codes."""
     CSRF_TRUSTED_ORIGINS: tuple[str, ...] = ()
     """Origins of pages that may send cookie requests besides ``ALLOWED_HOSTS``'."""
 

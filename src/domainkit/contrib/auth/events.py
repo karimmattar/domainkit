@@ -50,6 +50,31 @@ class TokenCreated(DomainEvent):
     name: str
 
 
+class MfaEnabled(DomainEvent):
+    """The user confirmed an authenticator: logins now need its codes."""
+
+    user_id: UUID
+
+
+class MfaDisabled(DomainEvent):
+    """The user's authenticator and recovery codes were removed."""
+
+    user_id: UUID
+
+
+class RecoveryCodesRegenerated(DomainEvent):
+    """The user's recovery codes were replaced by new ones."""
+
+    user_id: UUID
+
+
+class RecoveryCodeUsed(DomainEvent):
+    """A recovery code stood in for the authenticator, once."""
+
+    user_id: UUID
+    remaining: int
+
+
 class TokenRevoked(DomainEvent):
     """A user revoked one of their own tokens."""
 

@@ -16,7 +16,12 @@ from domainkit.conf.global_settings import (
     ShardConfig,
 )
 from domainkit.contrib.audit.settings import AuditSettings
-from domainkit.contrib.auth.settings import AuthSettings, CookieSettings, JWTSettings
+from domainkit.contrib.auth.settings import (
+    AuthSettings,
+    CookieSettings,
+    JWTSettings,
+    MfaSettings,
+)
 from domainkit.contrib.evidence.settings import EvidenceSettings
 from domainkit.contrib.idempotency.settings import IdempotencySettings
 from domainkit.contrib.mail.settings import MailSettings, SmtpSettings
@@ -55,6 +60,7 @@ def documented(page: str) -> set[str]:
         (AuthSettings, "auth.md"),
         (JWTSettings, "auth.md"),
         (CookieSettings, "auth.md"),
+        (MfaSettings, "auth.md"),
         (MailSettings, "mail.md"),
         (SmtpSettings, "mail.md"),
         (NotificationsSettings, "mail.md"),

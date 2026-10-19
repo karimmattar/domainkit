@@ -19,11 +19,13 @@ it (``accounts_users_groups``, ``accounts_users_permissions``).
 from typing import Any
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Column,
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Table,
     UniqueConstraint,
@@ -182,6 +184,34 @@ tokens = Table(
     info={"domain": "auth"},
 )
 """Opaque access tokens and refresh tokens, by digest."""
+
+mfa_devices = Table(
+    "domainkit_mfa_devices",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    # One authenticator per user; no foreign key, as for tokens.
+    Column("user_id", Uuid, nullable=False, unique=True),
+    # Encrypted (encryption.SecretBox), bound to the user's id.
+    Column("secret", LargeBinary(256), nullable=False),
+    Column("created_at", UTCDateTime, nullable=False),
+    Column("confirmed_at", UTCDateTime),
+    # The step of the last code accepted: no code is accepted twice.
+    Column("last_step", BigInteger),
+    info={"domain": "auth"},
+)
+"""TOTP authenticators; unconfirmed until a first code proves the app has it."""
+
+recovery_codes = Table(
+    "domainkit_recovery_codes",
+    metadata,
+    # SHA-256 of the user's id and the code: the table holds no working code.
+    Column("id", String(64), primary_key=True),
+    Column("user_id", Uuid, nullable=False),
+    Column("used_at", UTCDateTime),
+    Index("ix_domainkit_recovery_codes_user_id", "user_id"),
+    info={"domain": "auth"},
+)
+"""Single-use codes that stand in for a lost authenticator."""
 
 
 def user_link_tables(user_table: Table) -> tuple[Table, Table]:

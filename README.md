@@ -19,7 +19,7 @@ A Django-style framework for domain-driven FastAPI services. It provides:
   and tamper-evident evidence
 
 ```bash
-pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, immudb, redis, rabbitmq, metrics, tracing, testing
+pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, mfa, immudb, redis, rabbitmq, metrics, tracing, testing
 ```
 
 ## Documentation

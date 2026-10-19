@@ -5,12 +5,14 @@ caller commits (see ``AuthUnitOfWork``).
 """
 
 import dataclasses
+import uuid
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete, exists, func, select, update
+from sqlalchemy import delete, exists, func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
@@ -23,7 +25,7 @@ from .exceptions import GroupNameTaken, UnknownGroup, UnknownPermission, Usernam
 from .hashers import amake_password
 from .models import AbstractBaseUser, Group, GroupId, PasswordHash, Permission, UserId
 from .settings import auth_settings
-from .tables import groups, permissions, tokens
+from .tables import groups, mfa_devices, permissions, recovery_codes, tokens
 from .tokens import AuthToken, TokenKind, new_token, token_digest, utc_now
 from .users import get_user_model, get_user_table
 
@@ -377,6 +379,135 @@ class TokenStore:
     async def _delete(self, condition: Any) -> int:  # noqa: ANN401 - a SQL clause.
         """Delete matching tokens; return how many."""
         return _count(await self.session.execute(delete(tokens).where(condition)))
+
+
+@dataclass(frozen=True, slots=True)
+class TotpDevice:
+    """A user's authenticator: its encrypted secret, and the last step used."""
+
+    id: UUID
+    user_id: UUID
+    secret: bytes
+    """Encrypted; ``mfa.secret_box()`` opens it."""
+    created_at: datetime
+    confirmed_at: datetime | None
+    last_step: int | None
+
+    @property
+    def confirmed(self) -> bool:
+        """Whether a code proved the app holds the secret."""
+        return self.confirmed_at is not None
+
+
+class MfaStore:
+    """Authenticators and recovery codes, by user."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Work in ``session``."""
+        self.session = session
+
+    async def device(self, user_id: UUID) -> TotpDevice | None:
+        """The user's authenticator, confirmed or not."""
+        row = (
+            await self.session.execute(
+                select(mfa_devices).where(mfa_devices.c.user_id == user_id)
+            )
+        ).first()
+        return None if row is None else TotpDevice(**row._mapping)
+
+    async def enabled(self, user_id: UUID) -> bool:
+        """Whether the user has a confirmed authenticator."""
+        statement = select(
+            exists().where(
+                mfa_devices.c.user_id == user_id,
+                mfa_devices.c.confirmed_at.is_not(None),
+            )
+        )
+        return bool(await self.session.scalar(statement))
+
+    async def start(self, user_id: UUID, secret: bytes) -> UUID:
+        """Store a new, unconfirmed authenticator, replacing an unconfirmed one."""
+        await self.session.execute(
+            delete(mfa_devices).where(
+                mfa_devices.c.user_id == user_id, mfa_devices.c.confirmed_at.is_(None)
+            )
+        )
+        device_id = uuid.uuid4()
+        await self.session.execute(
+            insert(mfa_devices).values(
+                id=device_id, user_id=user_id, secret=secret, created_at=utc_now()
+            )
+        )
+        return device_id
+
+    async def confirm(self, device_id: UUID, step: int) -> bool:
+        """Confirm the authenticator with the step of its first code."""
+        result = await self.session.execute(
+            update(mfa_devices)
+            .where(mfa_devices.c.id == device_id, mfa_devices.c.confirmed_at.is_(None))
+            .values(confirmed_at=utc_now(), last_step=step)
+        )
+        return _count(result) == 1
+
+    async def use_step(self, device_id: UUID, step: int) -> bool:
+        """Record ``step`` as used, unless it, or a later one, already was."""
+        result = await self.session.execute(
+            update(mfa_devices)
+            .where(
+                mfa_devices.c.id == device_id,
+                mfa_devices.c.last_step.is_(None) | (mfa_devices.c.last_step < step),
+            )
+            .values(last_step=step)
+        )
+        return _count(result) == 1
+
+    async def reseal(self, device_id: UUID, secret: bytes) -> None:
+        """Store the secret encrypted again (under the current key)."""
+        await self.session.execute(
+            update(mfa_devices)
+            .where(mfa_devices.c.id == device_id)
+            .values(secret=secret)
+        )
+
+    async def remove(self, user_id: UUID) -> int:
+        """Delete the user's authenticator and recovery codes; return how many."""
+        removed = await self.session.execute(
+            delete(mfa_devices).where(mfa_devices.c.user_id == user_id)
+        )
+        await self.session.execute(
+            delete(recovery_codes).where(recovery_codes.c.user_id == user_id)
+        )
+        return _count(removed)
+
+    async def replace_codes(self, user_id: UUID, digests: Iterable[str]) -> None:
+        """Make ``digests`` the user's only recovery codes."""
+        await self.session.execute(
+            delete(recovery_codes).where(recovery_codes.c.user_id == user_id)
+        )
+        await self.session.execute(
+            insert(recovery_codes),
+            [{"id": digest, "user_id": user_id} for digest in digests],
+        )
+
+    async def use_code(self, user_id: UUID, digest: str) -> bool:
+        """Spend the user's unused recovery code with ``digest``, once."""
+        result = await self.session.execute(
+            update(recovery_codes)
+            .where(
+                recovery_codes.c.id == digest,
+                recovery_codes.c.user_id == user_id,
+                recovery_codes.c.used_at.is_(None),
+            )
+            .values(used_at=utc_now())
+        )
+        return _count(result) == 1
+
+    async def codes_left(self, user_id: UUID) -> int:
+        """How many of the user's recovery codes are unused."""
+        statement = select(func.count()).where(
+            recovery_codes.c.user_id == user_id, recovery_codes.c.used_at.is_(None)
+        )
+        return int(await self.session.scalar(statement) or 0)
 
 
 def _count(result: Any) -> int:  # noqa: ANN401 - a CursorResult.
