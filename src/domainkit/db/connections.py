@@ -7,11 +7,13 @@ a management command and a test client in one process never share a pool.
 """
 
 import asyncio
+import re
 from functools import partial
 from typing import Any, Final
 from weakref import WeakKeyDictionary
 
-from sqlalchemy import text
+from sqlalchemy import event, text
+from sqlalchemy.engine import ExceptionContext
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -21,6 +23,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from domainkit.conf import DEFAULT_DB_ALIAS, DatabaseConfig, settings
+from domainkit.conf.global_settings import is_network_database
 from domainkit.db.drivers import connect_args
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.utils.closing import close_each
@@ -28,23 +31,39 @@ from domainkit.utils.readiness import failing_checks
 
 type _Pool = tuple[AsyncEngine, async_sessionmaker[AsyncSession]]
 
+DEFAULT_POOL_TIMEOUT: Final = 10.0
+"""Seconds a request waits for a connection to a network database."""
+_DETAIL: Final = re.compile(r"\nDETAIL:  [^\n]*")
+
 
 def create_engine(config: DatabaseConfig) -> AsyncEngine:
-    """Build a pooled engine; bound values stay out of logs and errors by default."""
+    """Build a pooled engine; bound values stay out of logs and errors by default.
+
+    A network database's pool makes a request wait at most
+    ``DEFAULT_POOL_TIMEOUT`` for a connection unless ``POOL_TIMEOUT`` says
+    otherwise; past it, the request is refused as busy (503).
+    """
+    url = config.URL.get_secret_value()
+    timeout = config.POOL_TIMEOUT
+    if timeout is None and is_network_database(url):
+        timeout = DEFAULT_POOL_TIMEOUT
     pool = {
         "pool_size": config.POOL_SIZE,
         "max_overflow": config.MAX_OVERFLOW,
-        "pool_timeout": config.POOL_TIMEOUT,
+        "pool_timeout": timeout,
         "pool_recycle": config.POOL_RECYCLE,
     }
     options: dict[str, Any] = {k: v for k, v in pool.items() if v is not None}
-    return create_async_engine(
-        config.URL.get_secret_value(),
-        echo=config.ECHO,
-        hide_parameters=not config.LOG_PARAMETERS,
-        pool_pre_ping=config.POOL_PRE_PING,
-        connect_args=connect_args(config),
-        **options,
+    return _hiding_details(
+        create_async_engine(
+            url,
+            echo=config.ECHO,
+            hide_parameters=not config.LOG_PARAMETERS,
+            pool_pre_ping=config.POOL_PRE_PING,
+            connect_args=connect_args(config),
+            **options,
+        ),
+        config,
     )
 
 
@@ -55,12 +74,38 @@ def create_owner_engine(config: DatabaseConfig) -> AsyncEngine:
     longer than requests are allowed to, and needs the owner's privileges.
     """
     url = (config.MIGRATION_URL or config.URL).get_secret_value()
-    return create_async_engine(
-        url,
-        poolclass=NullPool,
-        hide_parameters=not config.LOG_PARAMETERS,
-        connect_args=connect_args(config, url, timeouts=False),
+    return _hiding_details(
+        create_async_engine(
+            url,
+            poolclass=NullPool,
+            hide_parameters=not config.LOG_PARAMETERS,
+            connect_args=connect_args(config, url, timeouts=False),
+        ),
+        config,
     )
+
+
+def _hiding_details(engine: AsyncEngine, config: DatabaseConfig) -> AsyncEngine:
+    """Keep the values PostgreSQL repeats in errors out, unless they may show.
+
+    A constraint's error carries a ``DETAIL`` with the values of the row or
+    key (``Failing row contains (1, alice@example.com, ...)``), which would
+    reach logs and error reporters although bound values are hidden.
+    """
+    if not config.LOG_PARAMETERS:
+        event.listen(engine.sync_engine, "handle_error", _drop_detail)
+    return engine
+
+
+def _drop_detail(context: ExceptionContext) -> None:
+    """Remove the ``DETAIL`` from the error, the driver's, and what that wraps."""
+    driver = context.original_exception
+    for error in (context.sqlalchemy_exception, driver):
+        if error is not None and error.args and isinstance(error.args[0], str):
+            error.args = (_DETAIL.sub("", error.args[0]), *error.args[1:])
+    for error in (driver, driver.__cause__):
+        if getattr(error, "detail", None) is not None:  # asyncpg keeps it apart.
+            error.detail = None  # type: ignore[union-attr]
 
 
 class ConnectionHandler:
