@@ -146,8 +146,10 @@ passwords. `set_password(user, None)` makes a password unusable.
 Changes are recorded as events, never with passwords or hashes in them:
 `UserCreated`, `PasswordChanged`, `UserStatusChanged`, `UserJoinedGroup`,
 `UserLeftGroup`, `UserPermissionGranted`, `UserPermissionRevoked`,
-`GroupCreated`, `GroupRenamed`, `GroupPermissionGranted`, and
-`GroupPermissionRevoked`. With `domainkit.contrib.audit` installed, each
+`GroupCreated`, `GroupRenamed`, `GroupPermissionGranted`,
+`GroupPermissionRevoked`, and `RefreshTokenReused` (a used JWT refresh
+token came back, so its login was ended; it is also logged as a security
+warning). With `domainkit.contrib.audit` installed, each
 becomes a row of the audit trail (`auth.user_permission_granted`). The
 username in `UserCreated` and `UserDeleted` is personal data: the trail keeps
 it as a pseudonym of the user's id, which `auditforget <user id>` makes
@@ -569,8 +571,16 @@ Staff hand out only what they have:
 - Other staff cannot grant a permission they lack, directly or through a
   group (`403`).
 - Nor can they change a user or a group that holds such a permission:
-  setting a user's password is as good as becoming them. Inactive users
-  count with every grant they keep.
+  setting a user's password is as good as becoming them. What every backend
+  in `AUTH.BACKENDS` grants counts, and so does what a change would grant
+  (a field a backend reads, a user made active again). Inactive users count
+  with every grant they keep; while other backends are configured, only
+  superusers change inactive users, since those backends grant them nothing
+  until they are active.
+- Deactivating a user ends their sessions: their tokens are deleted, and do
+  not work again if they are reactivated.
+- The last active superuser cannot be demoted, deactivated, or deleted
+  (`409 last_superuser`): make another one first.
 
 Changes are recorded as events (`UserUpdated`, `UserDeleted`,
 `UserStatusChanged`, `UserJoinedGroup`, `GroupDeleted`, and the others),

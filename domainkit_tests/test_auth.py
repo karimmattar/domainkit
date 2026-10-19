@@ -36,6 +36,7 @@ from domainkit.contrib.auth import (
     GroupNameTaken,
     InvalidPassword,
     ModelBackend,
+    PasswordHash,
     UnknownPermission,
     UserId,
     UsernameTaken,
@@ -846,9 +847,58 @@ def test_users_can_log_in_with_their_email(members: None) -> None:
     assert again.id == boss.id
 
 
+def test_logins_that_rehash_at_once_never_conflict(auth_project: str) -> None:
+    """The upgraded hash is stored without the user's version: no login fails."""
+    newer = f"{TwoRoundsHasher.__module__}.TwoRoundsHasher"
+
+    async def scenario() -> tuple[list[AbstractBaseUser | None], int, int, str]:
+        async with AuthUnitOfWork() as uow:
+            created = await uow.users.create_user("alice", PASSWORD)
+            await uow.commit()
+        with override_settings(AUTH={"PASSWORD_HASHERS": [newer, FAST_HASHER]}):
+            logged_in = await asyncio.gather(
+                *(authenticate(username="alice", password=PASSWORD) for _ in range(4))
+            )
+        async with AuthUnitOfWork() as uow:
+            stored = await uow.users.get_by_natural_key("alice")
+        assert stored is not None
+        return logged_in, created.version, stored.version, stored.password.value
+
+    logged_in, before, after, stored_hash = run(scenario())
+
+    assert all(user is not None for user in logged_in)
+    assert after == before  # Nobody's changes are refused for a rehash.
+    assert stored_hash.startswith("pbkdf2_sha256$2$")
+
+
 def test_rehashing_skips_users_deleted_meanwhile(auth_project: str) -> None:
     """A user gone before the new hash is stored is left alone."""
-    run(ModelBackend()._rehash(UserId(uuid4()), make_password(PASSWORD)))
+    old = PasswordHash(make_password(PASSWORD))
+    run(ModelBackend()._rehash(UserId(uuid4()), old, make_password(PASSWORD)))
+
+
+def test_rehashing_never_undoes_a_new_password(auth_project: str) -> None:
+    """A login's late rehash of the old password leaves a new one in place."""
+
+    async def scenario() -> tuple[AbstractBaseUser | None, AbstractBaseUser | None]:
+        async with AuthUnitOfWork() as uow:
+            user = await uow.users.create_user("alice", PASSWORD)
+            await uow.commit()
+        verified = user.password
+        async with AuthUnitOfWork() as uow:
+            changed = await uow.users.get(user.id)
+            changed.set_password(PasswordHash(make_password("a new passphrase")))
+            await uow.commit()
+        await ModelBackend()._rehash(user.id, verified, make_password(PASSWORD))
+        return (
+            await authenticate(username="alice", password=PASSWORD),
+            await authenticate(username="alice", password="a new passphrase"),
+        )
+
+    old, new = run(scenario())
+
+    assert old is None
+    assert new is not None
 
 
 def test_get_user_model_needs_auth(monkeypatch: pytest.MonkeyPatch) -> None:

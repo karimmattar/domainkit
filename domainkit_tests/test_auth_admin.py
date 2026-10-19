@@ -17,7 +17,9 @@ from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.contrib.audit import pseudonym_of
 from domainkit.contrib.auth import (
+    AnyUser,
     AuthUnitOfWork,
+    BaseBackend,
     Permission,
     User,
     admin,
@@ -499,6 +501,127 @@ def test_staff_only_change_users_who_hold_less(api: Api) -> None:
         f"{ADMIN}/users/{boss}/password", json={"password": NEW_PASSWORD}, headers=root
     )
     assert response.status_code == 204
+
+
+class RoleBackend(BaseBackend):
+    """Grants from outside the user table: staff named ``boss...`` may delete."""
+
+    async def get_all_permissions(
+        self, user: AnyUser, obj: object | None = None
+    ) -> frozenset[str]:
+        """``shop.delete_product`` for active staff whose name starts ``boss``."""
+        boss = user.get_username().startswith("boss")
+        if obj is None and user.is_active and getattr(user, "is_staff", False) and boss:
+            return frozenset({"shop.delete_product"})
+        return frozenset()
+
+
+BACKENDS = [
+    "domainkit.contrib.auth.backends.ModelBackend",
+    f"{__name__}.RoleBackend",
+]
+
+
+def test_staff_only_change_users_other_backends_grant_less(api: Api) -> None:
+    """Every backend's grants count; while one is configured, inactive users wait."""
+    client = api(BACKENDS=BACKENDS)
+    headers = staff("helpdesk", *ADMIN_PERMISSIONS)
+    cfo = create_user("boss-cfo", is_staff=True)
+    intern = create_user("boss-intern")
+    idle = create_user("idle", is_active=False)
+
+    taken = client.post(
+        f"{ADMIN}/users/{cfo}/password",
+        json={"password": NEW_PASSWORD},
+        headers=headers,
+    )
+    promoted = client.patch(
+        f"{ADMIN}/users/{intern}", json={"is_staff": True}, headers=headers
+    )
+    woken = client.patch(
+        f"{ADMIN}/users/{idle}", json={"is_active": True}, headers=headers
+    )
+
+    lacking = f"You can only change users whose permissions you have; {LACK_DELETE}"
+    assert error(taken, 403) == ("permission_denied", lacking)
+    assert error(promoted, 403) == ("permission_denied", lacking)  # Into a boss.
+    inactive = (
+        "Only superusers may change inactive users while other backends grant "
+        "permissions."
+    )
+    assert error(woken, 403) == ("permission_denied", inactive)
+    intern_now = client.get(f"{ADMIN}/users/{intern}", headers=headers).json()
+    assert intern_now["is_staff"] is False  # Refused before the commit.
+    root = staff("root", is_superuser=True)
+    for path, body in ((f"{cfo}/password", {"password": NEW_PASSWORD}),):
+        assert client.post(f"{ADMIN}/users/{path}", json=body, headers=root).is_success
+    assert client.patch(
+        f"{ADMIN}/users/{idle}", json={"is_active": True}, headers=root
+    ).is_success
+
+
+def test_deactivating_a_user_ends_their_sessions(api: Api) -> None:
+    """Tokens do not come back to life when the user is active again."""
+    client = api()
+    headers = staff("admin", *ADMIN_PERMISSIONS)
+    worker = create_user("worker")
+    token = bearer(login(client, "worker")["access_token"])
+
+    for active in (False, True):
+        response = client.patch(
+            f"{ADMIN}/users/{worker}", json={"is_active": active}, headers=headers
+        )
+        assert response.status_code == 200
+    again = client.patch(
+        f"{ADMIN}/users/{worker}", json={"is_active": True}, headers=headers
+    )
+
+    assert again.status_code == 200
+    assert client.get("/whoami", headers=token).status_code == 401
+    assert stored_tokens(worker) == []
+
+
+def test_the_last_active_superuser_stays(api: Api) -> None:
+    """Demoting, deactivating, or deleting the last one is refused, not done."""
+    client = api()
+    root_id = create_user("root", is_superuser=True)
+    root = token_for("root")
+    refusal = (
+        "last_superuser",
+        "This is the last active superuser; make another one first.",
+    )
+    staff("dormant", is_superuser=True, is_active=False)  # Inactive: no help.
+
+    assert (
+        error(
+            client.patch(
+                f"{ADMIN}/users/{root_id}", json={"is_superuser": False}, headers=root
+            ),
+            409,
+        )
+        == refusal
+    )
+    assert (
+        error(
+            client.patch(
+                f"{ADMIN}/users/{root_id}", json={"is_active": False}, headers=root
+            ),
+            409,
+        )
+        == refusal
+    )
+    assert (
+        error(client.delete(f"{ADMIN}/users/{root_id}", headers=root), 409) == refusal
+    )
+    assert client.patch(
+        f"{ADMIN}/users/{root_id}", json={"is_superuser": True}, headers=root
+    ).is_success  # Not a demotion.
+
+    staff("second", is_superuser=True)
+    demoted = client.patch(
+        f"{ADMIN}/users/{root_id}", json={"is_superuser": False}, headers=root
+    )
+    assert (demoted.status_code, demoted.json()["is_superuser"]) == (200, False)
 
 
 def test_staff_set_passwords_and_end_sessions(api: Api) -> None:

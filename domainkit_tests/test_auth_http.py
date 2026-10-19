@@ -1,6 +1,7 @@
 """Authenticating requests: logins, tokens, JWT, access rules, and the actor."""
 
 import io
+import logging
 from datetime import timedelta
 from typing import Any
 from uuid import UUID
@@ -33,6 +34,7 @@ from domainkit.contrib.auth.tables import tokens
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
+from domainkit.log import SECURITY_LOGGER
 from domainkit.management import call_command
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import AUTH, MIDDLEWARE, Api, UseAuth
@@ -525,7 +527,7 @@ def test_changepassword_ends_every_session(
     assert stored_tokens(alice_id) == []
 
 
-def test_jwt_logins_refresh_and_end(api: Api) -> None:
+def test_jwt_logins_refresh_and_end(api: Api, caplog: pytest.LogCaptureFixture) -> None:
     """Access tokens are signed; refresh tokens rotate, once each."""
     alice = create_user("alice")
     client = api(**JWT)
@@ -564,11 +566,20 @@ def test_jwt_logins_refresh_and_end(api: Api) -> None:
         == 200
     )
 
-    reused = client.post("/auth/refresh", json={"refresh_token": body["refresh_token"]})
+    with caplog.at_level(logging.WARNING, logger=SECURITY_LOGGER):
+        reused = client.post(
+            "/auth/refresh", json={"refresh_token": body["refresh_token"]}
+        )
     assert (reused.status_code, reused.json()["detail"]) == (
         401,
         "Refresh token reused; log in again.",
     )
+    family = str(issued["family"])
+    assert f"A refresh token came back after use; its login {family} is ended" in [
+        record.getMessage() for record in caplog.records
+    ]
+    (row,) = audited("auth.refresh_token_reused")
+    assert (row["actor"], row["details"]["family"]) == ("anonymous", family)
     for token in (body["access_token"], refreshed["access_token"]):
         ended = client.get("/whoami", headers=bearer(token))
         assert ended.json()["detail"] == "Session ended; log in again."

@@ -43,6 +43,22 @@ All notable changes to domainkit. The format follows
   failed every handshake with an internal error (close code 1011), even
   for users they allow; a refused handshake now gets the same 401 or 403
   response as a request.
+- The admin API counts what every backend in `AUTH.BACKENDS` grants when
+  staff change a user, and what the change itself would grant. Staff with
+  `change_user` could take over a user whose permissions came from another
+  backend (a role or directory backend) by setting their password. While
+  other backends are configured, only superusers change inactive users.
+- Deactivating a user deletes their tokens: reactivating them used to bring
+  back every session, including a stolen one.
+- The last active superuser can no longer be demoted, deactivated, or
+  deleted (`409 last_superuser`).
+- A JWT refresh token used twice, the sign of a stolen one, is logged as a
+  security warning and audited (`RefreshTokenReused`), besides ending its
+  login as before.
+- Logins that upgrade the same password's hash at once no longer refuse
+  each other with 409 `concurrent_update`: the new hash is stored without
+  the user's version, and only over the hash that was checked, so a
+  password changed meanwhile stays.
 
 ## [0.6.0] - 2026-10-18
 
