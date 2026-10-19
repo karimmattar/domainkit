@@ -1173,3 +1173,62 @@ def test_openapi_diff_says_why_a_file_cannot_be_read(tmp_path: Path) -> None:
         run("--diff", str(missing))
 
     assert str(refused.value) == f"Cannot read {missing}: No such file or directory."
+
+
+def test_fields_required_before_stay_quiet() -> None:
+    """Only fields newly required are reported."""
+    old = document(body(obj(("a",), a=STRING, b=STRING)))
+    new = document(body(obj(("a", "b"), a=STRING, b=STRING)))
+
+    assert changes(old, new) == [
+        "POST /things/{thing_id}: request body field 'b' is now required"
+    ]
+
+
+def test_references_on_either_side_are_followed() -> None:
+    """Compositions and properties resolve ``$ref``s in their own document."""
+    schemas = {"Text": STRING, "Shape": obj(x=STRING)}
+    text = {"anyOf": [{"$ref": "#/components/schemas/Text"}]}
+    shape = {"allOf": [{"$ref": "#/components/schemas/Shape"}]}
+    plain = document(
+        body(obj(text={"type": ["string", "integer"]}, shape=obj(x=INTEGER))),
+        schemas=schemas,
+    )
+    referenced = document(body(obj(text=text, shape=shape)), schemas=schemas)
+    answered = document(answer(obj(text=text, shape=shape)), schemas=schemas)
+    answered_plain = document(answer(obj(text=STRING, shape=obj(x=STRING, y=STRING))))
+
+    where = "POST /things/{thing_id}: request body field"
+    assert changes(plain, referenced) == [
+        f"{where} 'text' no longer accepts integer",
+        f"{where} 'shape' field 'x' no longer accepts integer",
+    ]
+    assert changes(answered, document(answer(obj(text=INTEGER, shape=obj())))) == [
+        "POST /things/{thing_id} 200 field 'shape': removed field 'x'",
+        "POST /things/{thing_id} 200 field 'text' may now be integer",
+    ]
+    assert changes(answered_plain, answered) == [
+        "POST /things/{thing_id} 200 field 'shape': removed field 'y'"
+    ]
+
+
+def test_statuses_without_json_before_are_skipped() -> None:
+    """A success status that had no JSON body does not end the comparison."""
+    old = document(
+        {
+            "responses": {
+                "201": {"description": "created"},
+                "200": {"content": {"application/json": {"schema": obj(x=STRING)}}},
+            }
+        }
+    )
+    new = document(
+        {
+            "responses": {
+                "201": {"description": "created"},
+                "200": {"content": {"application/json": {"schema": obj()}}},
+            }
+        }
+    )
+
+    assert changes(old, new) == ["POST /things/{thing_id} 200: removed field 'x'"]

@@ -440,6 +440,7 @@ def test_pages_hold_one_to_two_hundred_entries(project: None) -> None:
     asyncio.run(write_rows(*rows))
 
     assert len(run_async(history(target="t-1"))) == 50
+    assert len(run("auditlog", "--target", "t-1").splitlines()) == 50
     assert ids(run_async(history(target="t-1", limit=1))) == [51]
     assert len(run_async(history(target="t-1", limit=MAX_LIMIT))) == 51
     exact = run_async(history_page(target="t-1", limit=51))

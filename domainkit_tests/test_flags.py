@@ -332,8 +332,11 @@ def test_the_command_sets_dynamic_settings(project: None) -> None:
         "checkout.max_items is back to 10.\n"
     )
     for arguments, message in [
-        (("checkout.max_items",), "Give a value as JSON, or --reset"),
-        (("checkout.max_items", "1", "--reset"), "Give a value as JSON, or --reset"),
+        (("checkout.max_items",), r"^Give a value as JSON, or --reset\.$"),
+        (
+            ("checkout.max_items", "1", "--reset"),
+            r"^Give a value as JSON, or --reset\.$",
+        ),
         (("checkout.max_items", "{"), "is not JSON"),
         (("checkout.max_items", "0"), "greater than or equal to 1"),
         (("nope", "1"), "No dynamic setting is called 'nope'"),
@@ -607,3 +610,26 @@ def test_the_command_refuses_unknown_everyone_values(
         run("flags", "set", "beta", "--everyone", "maybe")
 
     assert "invalid choice: 'maybe'" in capsys.readouterr().err
+
+
+def test_flagged_routes_ask_about_the_caller(client: TestClient) -> None:
+    """The request's user decides; while off, the route is a plain 404."""
+    headers = staff("tester")
+
+    async def user_id() -> str:
+        from domainkit.contrib.auth import AuthUnitOfWork
+
+        async with AuthUnitOfWork() as uow:
+            user = await uow.users.get_by_natural_key("tester")
+            assert user is not None
+            return str(user.id)
+
+    run("flags", "set", "beta", "--users", run_async(user_id()))
+
+    assert client.get("/beta", headers=headers).json() == {"feature": "beta"}
+    absent = client.get("/beta")
+    assert (absent.status_code, absent.json()["code"], absent.json()["detail"]) == (
+        404,
+        "not_found",
+        "Not found.",
+    )

@@ -294,7 +294,9 @@ def test_loading_is_refused_in_deployments_without_force(
         run("migrate")
         with override_settings(ENVIRONMENT="production"):
             output = io.StringIO()
-            with pytest.raises(CommandError, match="repeat with --force"):
+            with pytest.raises(
+                CommandError, match=r"repeat with --force after taking a backup\.$"
+            ):
                 call_command("loaddata", str(path), stdout=output)
             assert output.getvalue() == (
                 f"{path}: shop_products: 1 row\n{path}: shop_stock_levels: 0 rows\n"
@@ -309,8 +311,14 @@ def test_loading_is_refused_in_deployments_without_force(
     [
         ([], "Not a fixture"),
         ({"format": "domainkit.fixture", "version": 2}, "version 2 is unknown"),
-        ({"format": "domainkit.fixture", "version": 1, "tables": {}}, "is a list"),
-        ({"format": "domainkit.fixture", "version": 1, "tables": [1]}, "has a"),
+        (
+            {"format": "domainkit.fixture", "version": 1, "tables": {}},
+            ': A fixture\'s "tables" is a list\\.$',
+        ),
+        (
+            {"format": "domainkit.fixture", "version": 1, "tables": [1]},
+            ': Each table of a fixture has a "table" and "rows"\\.$',
+        ),
         (
             {
                 "format": "domainkit.fixture",

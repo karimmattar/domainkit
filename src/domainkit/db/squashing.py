@@ -231,7 +231,8 @@ def _assigns_header(node: ast.stmt) -> bool:
 def _body(function: ast.FunctionDef, lines: list[str]) -> str:
     """The function's statements as written, comments included, without its docstring.
 
-    A body of only ``pass`` (and comments) is ``pass``.
+    A body of only ``pass`` (and comments) is ``pass``. Comments right above
+    the first statement come along when there is no docstring.
     """
     statements = [each for each in function.body if not isinstance(each, ast.Pass)]
     first = function.body[0]
@@ -239,7 +240,12 @@ def _body(function: ast.FunctionDef, lines: list[str]) -> str:
         statements = statements[1:]
     if not statements:
         return "    pass"
-    start = first.end_lineno if _is_docstring(first) else statements[0].lineno - 1
+    if _is_docstring(first):
+        start = first.end_lineno
+    else:
+        start = statements[0].lineno - 1
+        while start > function.lineno and lines[start - 1].lstrip().startswith("#"):
+            start -= 1
     end = statements[-1].end_lineno
     return "\n".join(lines[start:end]).strip("\n")
 

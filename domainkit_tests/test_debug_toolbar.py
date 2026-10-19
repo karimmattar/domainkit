@@ -328,3 +328,19 @@ def test_shapes_keep_five_hundred_characters() -> None:
     statement = "SELECT " + "x" * (queries_module.MAX_SHAPE - len("SELECT "))
 
     assert statement_shape(statement) == statement
+
+
+def test_the_response_time_is_measured_from_the_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``app`` is the milliseconds from the request to its response."""
+    with override_settings(DEBUG=True):
+        toolbar = DebugToolbarMiddleware(None)  # type: ignore[arg-type]
+    clock = SimpleNamespace(perf_counter=lambda: 12.5)
+    monkeypatch.setattr(middleware_module, "time", clock)
+    message: dict[str, Any] = {"type": "http.response.start", "headers": []}
+
+    toolbar._annotate(message, QueryLog(), 10.0, None)
+
+    timing = MutableHeaders(scope=message)["server-timing"]
+    assert timing == 'db;dur=0.0;desc="0 queries", app;dur=2500.0'

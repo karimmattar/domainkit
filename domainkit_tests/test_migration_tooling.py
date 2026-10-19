@@ -239,6 +239,7 @@ def test_squashing_keeps_the_newest_id_and_both_directions(
     output = run("squashmigrations", "-m", "initial")
 
     squashed = created(output.splitlines()[0])
+    assert squashed.name == f"{newest}_initial.py"
     assert output.splitlines()[1:] == [f"  {path.name[:9]}" for path in history]
     assert sorted(path.name for path in project.glob("*.py")) == [squashed.name]
     text = squashed.read_text(encoding="utf-8")
@@ -427,8 +428,17 @@ def test_squashing_merges_imports(history: list[Path]) -> None:
         "import sqlalchemy as sa\nimport os.path\nimport os.path as os_path\nimport os",
     )
 
+    write(history[2], '    """Apply this revision."""\n', "")
+    write(
+        history[2],
+        '    """Revert this revision."""\n    pass',
+        '    op.execute("SELECT 1")',
+    )
+
     text = created(run("squashmigrations").splitlines()[0]).read_text(encoding="utf-8")
 
+    assert "    # Name every shelf.\n    op.execute(" in text
+    assert text.count("def downgrade() -> None:") == 1
     assert text.count("import os.path\n") == 1
     assert "from json import dumps" in text
     assert 'op.create_table(\n        "framework_test_bins"' in text
@@ -513,7 +523,7 @@ def test_the_squashed_file_says_what_it_replaces(history: list[Path]) -> None:
         f"    _downgrade_{third}()\n    _downgrade_{second}()\n"
     ) in text
     assert f'    """Upgrade {second}: Bins."""\n' in text
-    assert f"    \"\"\"Downgrade {third}: Fill '''now'''.\"\"\"\n" in text
+    assert f"    \"\"\"Downgrade {third}: Fill '''now'''.\"\"\"\n    pass\n" in text
     assert '"""Apply this revision."""' not in text
 
 
@@ -546,7 +556,9 @@ def test_databases_with_nothing_applied_do_not_hold_a_squash_back(
     """A database at no revision loses nothing."""
     run("migrate", "base", "--downgrade")
 
-    assert run("squashmigrations").startswith("Created ")
+    output = run("squashmigrations")
+    text = created(output.splitlines()[0]).read_text(encoding="utf-8")
+    assert text.startswith('"""Squashed.\n')
 
 
 def test_a_run_may_end_where_a_branch_starts(history: list[Path]) -> None:
@@ -583,3 +595,45 @@ def test_offline_sql_writes_values_inline(project: Path) -> None:
     )
 
     assert "'first shelf'" in run("migrate", "--sql")
+
+
+def test_the_python_api_plans_prints_and_fakes_upgrades_by_default(
+    project: Path,
+) -> None:
+    """``plan``, ``sql``, and ``fake`` move up unless told to move down."""
+    first = created(run("makemigrations", "-m", "shelves")).name[:9]
+    output = io.StringIO()
+
+    assert migrations_module.plan("head") == [
+        migrations_module.PlannedStep(first, "Shelves.", True)
+    ]
+    migrations_module.sql("head", output=output)
+    assert "CREATE TABLE framework_test_shelves" in output.getvalue()
+    migrations_module.fake("head")
+    assert run("showmigrations").startswith("[X]")
+
+
+def test_plans_stop_at_the_target_and_tolerate_missing_docstrings(
+    project: Path,
+) -> None:
+    """A downgrade to a revision reverts only those above it."""
+    first = created(run("makemigrations", "-m", "shelves")).name[:9]
+    fill = created(run("makemigrations", "--empty", "-m", "fill"))
+    fill.write_text(
+        re.sub(r'^""".*?"""\n', "", fill.read_text(encoding="utf-8"), flags=re.DOTALL),
+        encoding="utf-8",
+    )
+    run("migrate")
+
+    assert run("migrate", first, "--plan", "--downgrade") == (
+        f"Database 'default':\n  revert {fill.name[:9]}  \n"
+    )
+
+
+def test_empty_revisions_make_their_directories(project: Path, tmp_path: Path) -> None:
+    """``MIGRATIONS_DIR`` and its parents are created when missing."""
+    deep = tmp_path / "deep" / "er" / "migrations"
+    with override_settings(MIGRATIONS_DIR=deep):
+        empty = created(run("makemigrations", "--empty", "-m", "start"))
+
+    assert empty.parent == deep
