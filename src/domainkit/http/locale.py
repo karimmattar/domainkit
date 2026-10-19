@@ -12,32 +12,12 @@ Place it before ``RequestContextMiddleware``, so the errors that and every
 later middleware answer with are translated too.
 """
 
-from collections.abc import Iterable
-
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from domainkit.conf import settings
 from domainkit.i18n.translation import negotiate, override
-
-
-def patch_vary(headers: MutableHeaders, names: Iterable[str]) -> None:
-    """Add ``names`` to the ``Vary`` header, once each, whatever their case.
-
-    ``Vary: *`` already covers every header, so it is left alone.
-    """
-    current = [
-        value.strip() for value in headers.get("Vary", "").split(",") if value.strip()
-    ]
-    if "*" in current:
-        return
-    seen = {value.lower() for value in current}
-    for name in names:
-        if name.lower() not in seen:
-            current.append(name)
-            seen.add(name.lower())
-    if current:
-        headers["Vary"] = ", ".join(current)
+from domainkit.utils.headers import patch_vary
 
 
 class LocaleMiddleware:

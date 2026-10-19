@@ -13,6 +13,12 @@ All notable changes to domainkit. The format follows
   function returns, apart from `RATE_LIMIT` and with the same backends. Over
   the rate, the route answers 429 `throttled` with `Retry-After` (DJ-25;
   `docs/cache.md`, "Throttles for one route").
+- `@cache_page` caches what a GET endpoint returns, keyed by path, query,
+  language, and the headers it lists, with an `ETag` and 304s for
+  `If-None-Match`. Callers with credentials are never served shared
+  answers; `vary_on_user=True` keeps an entry per user. Cached pages
+  replace the `no-store` default with `Cache-Control` of their own
+  (DJ-57; `docs/cache.md`, "Caching whole responses").
 - Caches and rate limits on a Redis Sentinel group
   (`redis+sentinel://host-1,host-2/mymaster/0`) or a Redis Cluster
   (`redis+cluster://node-1,node-2`), `rediss+` for TLS, with

@@ -12,6 +12,10 @@ then use them anywhere in the application layer::
     @cached(ttl=60)
     async def invoice_summary(invoice_id: UUID) -> InvoiceSummary: ...
 
+    @router.get("/invoices", dependencies=[Public])
+    @cache_page(ttl=60)
+    async def list_invoices() -> list[InvoiceSummary]: ...
+
 Values are JSON; a failing cache is skipped, not fatal. See ADR 0012 and
 ``docs/cache.md``.
 """
@@ -21,6 +25,7 @@ from domainkit.cache.core import DEFAULT_TTL, TTL, Cache
 from domainkit.cache.decorators import CachedFunction, cached, invalidate_on
 from domainkit.cache.handler import CacheHandler, caches
 from domainkit.cache.memory import DummyStore, MemoryStore
+from domainkit.cache.pages import cache_page
 
 __all__ = [
     "DEFAULT_TTL",
@@ -33,6 +38,7 @@ __all__ = [
     "DummyStore",
     "MemoryStore",
     "Store",
+    "cache_page",
     "cached",
     "caches",
     "invalidate_on",

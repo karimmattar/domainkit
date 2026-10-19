@@ -157,6 +157,65 @@ pass `None` to keep the entry until it is evicted. A miss reads as `None`, so
 use `get_or_set` to cache a missing row: it stores `null` and tells the two
 apart.
 
+## Caching whole responses
+
+`@cache_page` caches what a GET endpoint returns, as Django's per-view cache
+does. Put it under the route decorator:
+
+```python
+from domainkit.cache import cache_page
+from domainkit.contrib.auth import Public
+
+
+@router.get("/products", dependencies=[Public])
+@cache_page(ttl=60)
+async def list_products(category: str | None = None) -> list[ProductOut]:
+    return await catalog.products(category)
+
+
+@router.get("/products/{product_id}", dependencies=[Public])
+@cache_page(ttl=300, vary=["X-Tenant"], max_age=60)
+async def read_product(product_id: int) -> ProductOut: ...
+
+
+@router.get("/me/basket", dependencies=[Depends(Require())])
+@cache_page(ttl=30, vary_on_user=True)
+async def my_basket(user: CurrentUser) -> BasketOut: ...
+```
+
+- **What is cached** is the endpoint's return value, typed by its return
+  annotation as with `@cached`: only the fields the annotation declares
+  are stored, and FastAPI serializes the value on every request, so
+  `response_model` filtering always applies. Annotate the return type
+  with the model the response shows. Endpoints that return a `Response`
+  cannot be cached this way. Headers an endpoint sets on its `Response`
+  are not cached: on a hit, the endpoint does not run.
+- **Entries are keyed** by the endpoint (or `name`), the path, the query
+  (in any order of names), the request's language (see
+  [i18n.md](i18n.md)), and the request headers listed in `vary`. Only GET
+  answers are cached; refusals and errors never are.
+- **Who asks.** The route's dependencies run on every request, the cached
+  ones too, so rules (`Require`) and throttles still decide first. A
+  request with credentials (an actor, or an `Authorization` header) is
+  never served from, or stored in, the cache, unless the page says
+  `vary_on_user=True`: then each actor has entries of their own, and
+  anonymous callers share theirs. Credentials that no middleware accepted
+  (no actor) are never cached either way.
+- **Browsers and proxies.** The framework answers `Cache-Control:
+  no-store` by default. Cached pages override it on purpose: `public,
+  no-cache` (keep it, but ask each time), `private` when they vary on the
+  user, or `max-age=<max_age>` to let clients reuse an answer without
+  asking. They add `Vary: Authorization` and the `vary` headers, so shared
+  caches keep them apart too.
+- **Validators.** Each answer carries a weak `ETag` of its value. A request
+  whose `If-None-Match` names it (or `*`) gets 304 without a body, from
+  the cache.
+- **Freshness** is the TTL's, as for any entry. To drop every page at
+  once, raise the cache's `VERSION` or run `cache clear`. Keep TTLs short
+  for data that changes.
+- **Failures.** The cache fails open, as everywhere: while it is down,
+  every request runs the endpoint.
+
 ## Values are JSON
 
 Values are stored as JSON, never pickled. Pickle runs code while it loads,

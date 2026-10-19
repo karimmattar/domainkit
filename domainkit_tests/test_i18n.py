@@ -15,7 +15,7 @@ from domainkit import setup
 from domainkit.apps import registry
 from domainkit.conf import Settings, override_settings
 from domainkit.http import get_asgi_application
-from domainkit.http.locale import LocaleMiddleware, patch_vary
+from domainkit.http.locale import LocaleMiddleware
 from domainkit.i18n import (
     LazyString,
     get_language,
@@ -42,6 +42,7 @@ from domainkit.i18n.translation import (
     to_locale,
 )
 from domainkit.i18n.validation import _localized
+from domainkit.utils.headers import patch_vary
 from domainkit_tests.conftest import ALPHA, MakePackage
 
 ARABIC_PLURALS: Final = (

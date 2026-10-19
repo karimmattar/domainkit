@@ -1,14 +1,15 @@
 """Routes exercising throttles, cached pages, uploads, and translations."""
 
 from dataclasses import replace
-from typing import Final
+from typing import Annotated, Final
 
-from fastapi import APIRouter, Depends, Response, WebSocket
+from fastapi import APIRouter, Depends, Query, Response, WebSocket
 from pydantic import BaseModel, Field
 from starlette.datastructures import Headers
 from starlette.requests import HTTPConnection
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from domainkit.cache import cache_page
 from domainkit.context import bind_request, current_request
 from domainkit.ddd import NotFound
 from domainkit.http.ratelimit import Throttle
@@ -27,8 +28,11 @@ class ActorFromHeader:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Bind the actor the header names, if any."""
         context = current_request()
+        if context is None:  # Lifespan events have no request.
+            await self.app(scope, receive, send)
+            return
         actor = Headers(scope=scope).get(ACTOR_HEADER)
-        if actor is None or context is None:
+        if actor is None:
             await self.app(scope, receive, send)
             return
         with bind_request(replace(context, actor=actor)):
@@ -140,3 +144,70 @@ async def language_socket(websocket: WebSocket) -> None:
     await websocket.accept()
     await websocket.send_text(get_language())
     await websocket.close()
+
+
+class Product(BaseModel):
+    """What the catalog stores, including what only staff see."""
+
+    id: int
+    name: str
+    cost: int = 7
+
+
+class ProductOut(BaseModel):
+    """What callers see of a product."""
+
+    id: int
+    name: str
+
+
+computed: list[str] = []
+"""What each run of a cached endpoint computed, in order."""
+
+
+@router.get("/products")
+@cache_page(ttl=60)
+async def products(
+    category: str = "all", tag: Annotated[list[str] | None, Query()] = None
+) -> list[ProductOut]:
+    """List products; the list itself is cached."""
+    computed.append(f"products:{category}:{tag}")
+    return [
+        ProductOut.model_validate(Product(id=1, name=category), from_attributes=True)
+    ]
+
+
+@router.get("/products/{product_id}")
+@cache_page(ttl=60, vary=["X-Tenant"], max_age=30)
+async def product(product_id: int) -> ProductOut:
+    """One product, per tenant; the full record goes in, the public part out."""
+    computed.append(f"product:{product_id}")
+    if product_id == 0:
+        raise NotFound("No such user.")
+    return Product(id=product_id, name="widget")  # type: ignore[return-value]
+
+
+@router.get("/me/basket")
+@cache_page(ttl=60, vary_on_user=True)
+async def basket() -> dict[str, str | None]:
+    """The caller's basket, cached per user."""
+    context = current_request()
+    actor = context.actor if context else None
+    computed.append(f"basket:{actor}")
+    return {"owner": actor}
+
+
+@router.get("/greeting")
+@cache_page(ttl=60, name="shared.greeting")
+async def greeting() -> dict[str, str]:
+    """A greeting in the request's language."""
+    computed.append(f"greeting:{get_language()}")
+    return {"language": get_language()}
+
+
+@router.post("/products")
+@cache_page(ttl=60)
+async def add_product(body: ProductOut) -> ProductOut:
+    """Never cached: only GET answers are."""
+    computed.append(f"add:{body.id}")
+    return body
