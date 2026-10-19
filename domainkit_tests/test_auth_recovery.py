@@ -313,6 +313,11 @@ def test_a_token_for_one_purpose_or_user_fits_no_other(identity: Api) -> None:
         assert not password_reset_tokens.check_token(b, reset_a)
         assert not password_reset_tokens.check_token(None, reset_a)
         assert not email_verification_tokens.check_token(a, reset_a)
+        # Two users of one unverified address share the token's state, not its id.
+        cast(Any, b).email = email_of(a)  # Not saved.
+        verify_a = email_verification_tokens.make_token(a)
+        assert email_verification_tokens.check_token(a, verify_a)
+        assert not email_verification_tokens.check_token(b, verify_a)
         return email_verification_tokens.make_token(a), forged, reset_a
 
     verification, forged, _ = run_async(tokens())
@@ -337,6 +342,7 @@ def test_reading_a_token_never_trusts_it() -> None:
     ):
         expected = user if token == f"{user.hex}" else None
         assert password_reset_tokens.user_id(token) == expected
+    assert password_reset_tokens.user_id(f"{user.hex}:" + "x" * 223) == user  # 256.
 
 
 def test_resets_and_checks_are_throttled(identity: Api) -> None:

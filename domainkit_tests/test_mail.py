@@ -4,6 +4,7 @@ import email
 import email.policy
 import logging
 import smtplib
+import socket
 import ssl
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
@@ -665,15 +666,16 @@ async def test_smtp_speaks_tls_at_once_on_port_465(
     assert len(server.received) == 1
 
 
+@pytest.mark.parametrize("security", ["starttls", "tls"])
 async def test_smtp_refuses_a_certificate_it_cannot_check(
-    tables: Install, tls_files: tuple[Path, Path], tmp_path: Path
+    tables: Install, tls_files: tuple[Path, Path], tmp_path: Path, security: str
 ) -> None:
     """A server certificate no trusted CA signed fails the delivery."""
     cert, key = tls_files
     other, _ = certificate(tmp_path, "other")
-    server = SmtpServer(tls=server_context(cert, key))
+    server = SmtpServer(tls=server_context(cert, key), implicit=security == "tls")
     with smtp_server(server):
-        backend = SmtpBackend(smtp_settings(server, TLS_CA=other))
+        backend = SmtpBackend(smtp_settings(server, TLS_CA=other, SECURITY=security))
         with pytest.raises(MailDeliveryFailed) as failed:
             await backend.send_messages([PREPARED])
 
@@ -684,8 +686,12 @@ async def test_smtp_refuses_a_certificate_it_cannot_check(
 async def test_smtp_needs_tls_unless_debugging(tables: Install) -> None:
     """Plain text is refused outside DEBUG, and works with it (a local catcher)."""
     server = SmtpServer()
-    with pytest.raises(ImproperlyConfigured, match='SECURITY = "none"'):
+    with pytest.raises(ImproperlyConfigured, match='SECURITY = "none"') as refused:
         SmtpBackend(SmtpSettings(SECURITY="none"))
+    assert str(refused.value) == (
+        'MAIL.SMTP.SECURITY = "none" sends mail in plain text; use "starttls" or '
+        '"tls" (only DEBUG allows it).'
+    )
     with pytest.raises(ImproperlyConfigured, match='SECURITY = "none"'):
         tables(
             SMTP={"SECURITY": "none"},
@@ -771,6 +777,36 @@ async def test_smtp_failures_to_connect_are_delivery_failures(tables: Install) -
         backend = SmtpBackend(SmtpSettings(PORT=port, SECURITY="none", TIMEOUT=2))
     with pytest.raises(MailDeliveryFailed, match="ConnectionRefusedError"):
         await backend.send_messages([PREPARED])
+
+
+@pytest.mark.parametrize("security", ["starttls", "tls"])
+async def test_smtp_gives_up_on_a_silent_server(tables: Install, security: str) -> None:
+    """``TIMEOUT`` bounds the wait for a server that accepts and says nothing."""
+    with socket.socket() as silent:
+        silent.bind(("127.0.0.1", 0))
+        silent.listen()
+        backend = SmtpBackend(
+            SmtpSettings(
+                HOST="127.0.0.1",
+                PORT=silent.getsockname()[1],
+                SECURITY=security,
+                TIMEOUT=0.3,
+            )
+        )
+        with pytest.raises(MailDeliveryFailed, match=r"Timeout|Disconnected"):
+            await backend.send_messages([PREPARED])
+
+
+async def test_smtp_envelopes_come_from_the_sender(tables: Install) -> None:
+    """A ``Sender`` header never becomes the envelope's sender."""
+    server = SmtpServer()
+    message = PREPARED.model_copy(update={"headers": {"Sender": "x@example.net"}})
+    with override_settings(DEBUG=True), smtp_server(server):
+        backend = SmtpBackend(smtp_settings(server, SECURITY="none"))
+        assert await backend.send_messages([message]) == 1
+
+    (received,) = server.received
+    assert received.sender == "sender@example.org"
 
 
 async def test_smtp_drops_a_connection_the_server_hung_up(

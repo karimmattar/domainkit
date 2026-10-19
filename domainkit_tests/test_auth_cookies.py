@@ -290,6 +290,20 @@ def test_plain_http_in_development_needs_only_the_token(identity: Api) -> None:
         assert client.post("/notes").status_code == 403
 
 
+@pytest.mark.parametrize(("debug", "secure"), [(True, True), (False, False)])
+def test_secure_overrides_debug(identity: Api, debug: bool, secure: bool) -> None:
+    """``COOKIE.SECURE`` set either way wins over what ``DEBUG`` would pick."""
+    create_user("alice")
+    with override_settings(DEBUG=debug):
+        client = identity(COOKIE={"SECURE": secure})
+        response = client.post(
+            "/auth/session", json={"username": "alice", "password": PASSWORD}
+        )
+
+    for cookie in set_cookies(response).values():
+        assert ("Secure" in cookie) is secure
+
+
 def test_header_tokens_ignore_cookies(identity: Api) -> None:
     """With ``Authorization``, the cookie plays no part: no CSRF token needed."""
     create_user("alice")
