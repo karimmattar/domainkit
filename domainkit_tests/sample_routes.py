@@ -276,6 +276,15 @@ async def socket(websocket: WebSocket) -> None:
     await websocket.close()
 
 
+@router.websocket("/ws/echo")
+async def echo_socket(websocket: WebSocket) -> None:
+    """Answer each message with its size in bytes until the client leaves."""
+    await websocket.accept()
+    while (message := await websocket.receive())["type"] == "websocket.receive":
+        data = message.get("bytes") or (message.get("text") or "").encode()
+        await websocket.send_json({"size": len(data)})
+
+
 @router.websocket("/ws/context")
 async def socket_context(websocket: WebSocket) -> None:
     """Accept, then report the request context the connection runs in."""
