@@ -41,7 +41,7 @@ watchers: list[Watcher] = []
 """Called after messages commit (``domainkit.contrib.messaging.testing``)."""
 
 
-def _headers(**extra: object) -> dict[str, Any]:
+def context_headers(**extra: object) -> dict[str, Any]:
     """Carry the request id, actor, and trace context to the worker.
 
     The worker logs and audits under the request id and actor, and continues
@@ -100,7 +100,7 @@ def rows_for(
             kind="event",
             target=qualified_name(handler),
             payload=dump_event(event),
-            headers=_headers(event_type=qualified_name(type(event))),
+            headers=context_headers(event_type=qualified_name(type(event))),
             max_attempts=config.MAX_ATTEMPTS,
         )
         for event in events
@@ -119,7 +119,7 @@ def rows_for(
                 kind="task",
                 target=spec.key,
                 payload=dump_arguments(deferred.kwargs),
-                headers=_headers(**({CHAIN: rest} if rest else {})),
+                headers=context_headers(**({CHAIN: rest} if rest else {})),
                 max_attempts=spec.max_attempts or config.MAX_ATTEMPTS,
                 queue=spec.queue,
                 delay=deferred.delay,
