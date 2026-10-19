@@ -17,6 +17,8 @@ from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 from starlette.exceptions import HTTPException
 from starlette.routing import Match
 
@@ -36,6 +38,18 @@ STATUS_CODES: Final[tuple[tuple[type[DomainError], int], ...]] = (
     (BusinessRuleViolation, status.HTTP_422_UNPROCESSABLE_CONTENT),
 )
 """Status for each base error; any other ``DomainError`` is a 400."""
+
+DATA_EXCEPTION: Final = "22"
+"""SQLSTATE class of values the database cannot take (a NUL, an overflow)."""
+BUSY_STATES: Final = frozenset(
+    {
+        "57014",  # query_canceled: STATEMENT_TIMEOUT ran out.
+        "55P03",  # lock_not_available: LOCK_TIMEOUT ran out.
+        "40001",  # serialization_failure
+        "40P01",  # deadlock_detected
+    }
+)
+"""SQLSTATEs of statements worth trying again later."""
 
 _BODILESS: Final = frozenset({status.HTTP_204_NO_CONTENT, status.HTTP_304_NOT_MODIFIED})
 _METHODS: Final = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
@@ -166,6 +180,47 @@ async def validation_error_handler(
         "The request is invalid.",
         code="validation_error",
         errors=errors,
+    )
+
+
+def database_refusal(exc: BaseException) -> APIError | None:
+    """The answer to a database error that is not a bug; None for any other.
+
+    The pool out of connections, and statements cancelled by a timeout or
+    lost to another transaction, are 503 ``database_busy``: try again
+    shortly. A value the database cannot store (a NUL character, a number
+    or text too long for its column) is 422 ``invalid_value``.
+    """
+    if isinstance(exc, PoolTimeout):
+        return _busy()
+    if not isinstance(exc, DBAPIError):
+        return None
+    state = sqlstate(exc)
+    if state in BUSY_STATES:
+        return _busy()
+    if state is not None and state.startswith(DATA_EXCEPTION):
+        return APIError(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "A value cannot be stored: it is too long, out of range, or holds "
+            "a character the database refuses.",
+            code="invalid_value",
+        )
+    return None
+
+
+def sqlstate(exc: DBAPIError) -> str | None:
+    """The SQLSTATE of a driver's error, from asyncpg or psycopg."""
+    state = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
+    return state if isinstance(state, str) else None
+
+
+def _busy() -> APIError:
+    """503: the database cannot take the request now."""
+    return APIError(
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+        "The database is busy; try again shortly.",
+        code="database_busy",
+        headers={"Retry-After": "1"},
     )
 
 

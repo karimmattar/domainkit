@@ -235,8 +235,9 @@ RATE_LIMIT_CACHE = "shared"  # a redis:// or rediss:// cache
 The same algorithm as in memory (GCRA) runs in one Lua script on the
 server's clock, so replicas never race and their clocks do not matter. Each
 caller costs one key, `<KEY_PREFIX>:ratelimit:<caller>`, kept only until the
-caller's quota is full again. If Redis fails, requests are let through and
-logged: the limit protects the service, and its outage should not stop it.
+caller's quota is full again. If Redis fails, or refuses the count (out of
+memory, a read-only replica), requests are let through and logged: the limit
+protects the service, and its outage should not stop it.
 `cache clear` resets these counters too.
 
 ## Security on the server
