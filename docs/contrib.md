@@ -394,7 +394,8 @@ the same request gets the stored response, with `Idempotent-Replayed: true`.
 | Same key, different request | 422 `idempotency_key_reused` |
 | Same key while the first is still running, within its lease | 409 `idempotency_key_in_use`, `Retry-After: 1` |
 | Key not 1 to 255 printable ASCII characters | 400 `invalid_idempotency_key` |
-| First request failed (a 5xx or an exception) before committing anything | Not stored: the retry runs again |
+| First request failed (a 5xx or an exception) or was refused (a 4xx) before committing anything | Not stored: the retry runs again |
+| First response marked `Cache-Control: no-store` (new tokens, from `/auth/login` and `/auth/refresh`) | Never stored: a retry runs again if nothing committed, else gets the 409 below |
 | First response larger than `MAX_RESPONSE_BYTES`, nothing committed | Not stored: the retry runs again |
 | First request died before committing, and its lease has ended | The retry takes the key over and runs |
 | First request committed, then failed, died, or answered over `MAX_RESPONSE_BYTES` | 409 `idempotency_response_unavailable`: it never runs again |
@@ -427,10 +428,12 @@ that commit is lost, the key is released as though nothing was saved.
 Keys are scoped to the actor, which `AuthenticationMiddleware` sets (list
 it first), so one user cannot replay another's response. Without an
 actor, keys are scoped to the client address and a hash of the request's
-`Authorization` and `Cookie` headers. Add
-`IdempotencyMiddleware` last in `MIDDLEWARE`: it reads whole bodies, which
-`RequestBodyLimitMiddleware` has already bounded. With messaging installed,
-expired keys are purged hourly.
+`CREDENTIAL_HEADERS` (`Authorization`, `Proxy-Authorization`, `Cookie`,
+`X-API-Key`): list the header your project authenticates with if it is
+another. Add `IdempotencyMiddleware` last in `MIDDLEWARE`: it reads whole
+bodies, which `RequestBodyLimitMiddleware` has already bounded. With
+messaging installed, expired keys are purged hourly; without it, each new
+key deletes up to 100 expired ones.
 
 | `IDEMPOTENCY` key | Default | Meaning |
 | --- | --- | --- |
@@ -439,6 +442,7 @@ expired keys are purged hourly.
 | `LEASE_SECONDS` | `60.0` | How long a request holds its key before a retry may take it over. |
 | `METHODS` | `POST`, `PATCH` | Methods that honour the header; others ignore it. |
 | `MAX_RESPONSE_BYTES` | `1048576` | Larger responses are passed through but not stored. |
+| `CREDENTIAL_HEADERS` | `authorization`, `proxy-authorization`, `cookie`, `x-api-key` | Headers that tell callers without an actor apart. |
 
 ## Evidence: records that provably never change
 
