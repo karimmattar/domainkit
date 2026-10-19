@@ -7,6 +7,11 @@ audit trail. They commit, or roll back, together with the business change.
 
 A unique constraint that refuses a value, at commit or at an earlier flush,
 raises ``DuplicateValue`` (a 409), or the subclass the constraint names.
+
+A read-only unit of work opens its session on a replica of its database
+when ``DATABASES`` names one (``REPLICAS``), and on the database itself
+otherwise; on PostgreSQL its transaction is ``READ ONLY`` either way.
+``savepoint()`` is a ``SAVEPOINT`` in the session's transaction.
 """
 
 import logging
@@ -16,13 +21,14 @@ from types import TracebackType
 from typing import Final, Self
 
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, AsyncSessionTransaction
 from sqlalchemy.orm.exc import StaleDataError
 
 from domainkit.apps import registry
 from domainkit.db.connections import connections
 from domainkit.db.errors import duplicate_value
 from domainkit.db.orm import metadata
+from domainkit.db.repository import reload_expired
 from domainkit.db.routing import ShardKey, router
 from domainkit.ddd import (
     ConcurrentUpdate,
@@ -31,6 +37,7 @@ from domainkit.ddd import (
     EventBus,
     UnitOfWork,
 )
+from domainkit.ddd.uow import Savepoint
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.reporting import report_error
 from domainkit.tracing import span
@@ -48,12 +55,18 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
     group, ``shard_key`` picks the database::
 
         async with AccountsUnitOfWork(shard_key=tenant_id) as uow: ...
+
+    ``readonly=True`` (or ``readonly = True`` on the subclass) reads from a
+    replica of that database, if it has one, and refuses to commit.
     """
 
     database: str | None = None
     """Target (a SQL alias or a shard group); None follows ``DATABASE_ROUTING``."""
     alias: str
-    """The one SQL alias this unit of work uses, resolved from the target."""
+    """The one SQL alias this unit of work uses, resolved from the target.
+
+    A read-only unit of work's is a replica's, when the database has one.
+    """
     session: AsyncSession
 
     def __init__(
@@ -62,18 +75,21 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         shard_key: ShardKey | None = None,
         database: str | None = None,
         events: EventBus | None = None,
+        readonly: bool | None = None,
     ) -> None:
         """Resolve the database now, so a missing shard key fails before any work."""
-        super().__init__(events=events)
+        super().__init__(events=events, readonly=readonly)
         self.database = (
             database or self.database or router.target_for_module(type(self).__module__)
         )
         self.alias = router.alias_for(self.database, shard_key)
+        if self.readonly:
+            self.alias = router.read_alias(self.alias)
         self.shard_key = shard_key
 
     async def __aenter__(self) -> Self:
         """Open a session and the repositories that share it."""
-        self.session = connections.session(self.alias)
+        self.session = connections.session(self.alias, readonly=self.readonly)
         self.create_repositories(self.session)
         return await super().__aenter__()
 
@@ -149,3 +165,35 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
     async def _rollback(self) -> None:
         """Roll the session's transaction back."""
         await self.session.rollback()
+
+    async def _begin_savepoint(self) -> Savepoint:
+        """``SAVEPOINT`` in the session's transaction (flushing first)."""
+        return _SessionSavepoint(self.session, await self.session.begin_nested())
+
+    def _translate(self, exc: BaseException) -> BaseException | None:
+        """A unique violation inside a savepoint becomes ``DuplicateValue``."""
+        if isinstance(exc, IntegrityError):
+            return duplicate_value(exc, metadata)
+        return None
+
+
+class _SessionSavepoint(Savepoint):
+    """A ``SAVEPOINT``; rolling back reloads what it had changed."""
+
+    def __init__(self, session: AsyncSession, nested: AsyncSessionTransaction) -> None:
+        """Hold the nested transaction of ``session``."""
+        self.session = session
+        self.nested = nested
+
+    async def rollback(self) -> None:
+        """``ROLLBACK TO SAVEPOINT``, then reload what SQLAlchemy expired.
+
+        Rolling back expires what the savepoint changed; read lazily, that
+        would need I/O outside ``await``, so it is read again now.
+        """
+        await self.nested.rollback()
+        await reload_expired(self.session)
+
+    async def release(self) -> None:
+        """``RELEASE SAVEPOINT``, after flushing."""
+        await self.nested.commit()
