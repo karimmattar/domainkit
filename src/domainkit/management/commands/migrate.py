@@ -1,4 +1,9 @@
-"""``migrate``: bring database schemas to a revision, target by target."""
+"""``migrate``: bring database schemas to a revision, target by target.
+
+``--plan`` lists what would run, ``--sql`` prints it as SQL (rendered
+offline by Alembic), and ``--fake`` records a revision as applied without
+running it. None of them changes the schema.
+"""
 
 from argparse import ArgumentParser
 from typing import Final
@@ -21,7 +26,7 @@ class Command(BaseCommand):
     help = "Apply migrations to every target's databases (uses MIGRATION_URL when set)."
 
     def add_arguments(self, parser: ArgumentParser) -> None:
-        """Accept a revision, a target, and a direction."""
+        """Accept a revision, a target, a direction, and a dry mode."""
         parser.add_argument(
             "target", nargs="?", default="head", help="revision (default: head)"
         )
@@ -39,6 +44,26 @@ class Command(BaseCommand):
             action="store_true",
             help="required to downgrade in staging and production",
         )
+        mode = parser.add_mutually_exclusive_group()
+        mode.add_argument(
+            "--plan", action="store_true", help="list the revisions that would run"
+        )
+        mode.add_argument(
+            "--sql",
+            action="store_true",
+            help="print the SQL instead of running it (rendered offline)",
+        )
+        mode.add_argument(
+            "--fake",
+            action="store_true",
+            help="record TARGET as applied without running anything",
+        )
+        parser.add_argument(
+            "--from",
+            dest="start",
+            metavar="REVISION",
+            help="with --sql: the revision to start from (default: the database's)",
+        )
 
     def handle(
         self,
@@ -47,11 +72,18 @@ class Command(BaseCommand):
         database: str | None,
         downgrade: bool,
         allow_data_loss: bool,
+        plan: bool,
+        sql: bool,
+        fake: bool,
+        start: str | None,
         **options: object,
     ) -> None:
-        """Apply or revert revisions on each database, then report it."""
+        """Apply, revert, plan, print, or record revisions on each database."""
+        if start is not None and not sql:
+            raise CommandError("--from goes with --sql.")
         if (
             downgrade
+            and not (plan or sql)
             and settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS
             and not allow_data_loss
         ):
@@ -66,20 +98,47 @@ class Command(BaseCommand):
                 "target with --database."
             )
         for alias in (alias for name in targets for alias in router.aliases_of(name)):
-            self._migrate(alias, target, downgrade=downgrade)
+            try:
+                if plan:
+                    self._plan(alias, target, downgrade=downgrade)
+                elif sql:
+                    migrations.sql(
+                        target,
+                        alias,
+                        start=start,
+                        downgrade=downgrade,
+                        output=self.stdout,
+                    )
+                elif fake:
+                    migrations.fake(target, alias, downgrade=downgrade)
+                    self.write(
+                        f"Database {alias!r} is recorded at {target}; nothing ran."
+                    )
+                else:
+                    self._migrate(alias, target, downgrade=downgrade)
+            except AlembicError as exc:
+                hint = ""
+                if "Multiple head" in str(exc):
+                    hint = " Run 'manage.py makemigrations --merge' first."
+                raise CommandError(f"{exc}{hint}") from exc
+
+    def _plan(self, alias: str, target: str, *, downgrade: bool) -> None:
+        """List what moving one database to ``target`` would run."""
+        steps = migrations.plan(target, alias, downgrade=downgrade)
+        if not steps:
+            self.write(f"Database {alias!r}: nothing to do.")
+            return
+        self.write(f"Database {alias!r}:")
+        for step in steps:
+            action = "apply " if step.upgrade else "revert"
+            self.write(f"  {action} {step.revision}  {step.message}")
 
     def _migrate(self, alias: str, target: str, *, downgrade: bool) -> None:
         """Move one database, then create its partitions when upgrading."""
-        try:
-            if downgrade:
-                migrations.downgrade(target, alias)
-            else:
-                migrations.upgrade(target, alias)
-        except AlembicError as exc:
-            hint = ""
-            if "Multiple head" in str(exc):
-                hint = " Run 'manage.py makemigrations --merge' first."
-            raise CommandError(f"{exc}{hint}") from exc
+        if downgrade:
+            migrations.downgrade(target, alias)
+        else:
+            migrations.upgrade(target, alias)
         self.write(f"Database {alias!r} is at {target}.")
         if downgrade:
             return

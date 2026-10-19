@@ -40,6 +40,7 @@ BUILTINS = {
     "runserver",
     "shell",
     "showmigrations",
+    "squashmigrations",
     "startdomain",
 }
 
