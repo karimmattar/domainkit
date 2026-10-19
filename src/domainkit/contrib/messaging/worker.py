@@ -29,12 +29,13 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 from weakref import WeakKeyDictionary
 
+from pydantic import ValidationError
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from domainkit.apps import registry
 from domainkit.broker import Broker, BrokerError
-from domainkit.context import RequestContext, bind_request
+from domainkit.context import SYSTEM_ACTOR, RequestContext, bind_request
 from domainkit.db import connections
 from domainkit.ddd import DomainEvent, EventBus, event_bus
 from domainkit.reporting import report_error
@@ -82,6 +83,27 @@ class UnknownTarget(LookupError):
 
 class AttemptsExhausted(RuntimeError):
     """The worker stopped (crashed, killed) during the message's last attempt."""
+
+
+class InvalidData(ValueError):
+    """Data failed validation; the message names fields and rules, not values."""
+
+
+def _without_input(exc: BaseException) -> BaseException:
+    """``exc``, or for a pydantic ``ValidationError``, one without input values.
+
+    A ``ValidationError``'s text quotes the data it refused, often a task's
+    personal arguments, into ``last_error`` (kept with dead letters), logs,
+    and error reports. ``InvalidData`` keeps its locations, messages, and
+    traceback instead.
+    """
+    if not isinstance(exc, ValidationError):
+        return exc
+    problems = "; ".join(  # Each error's location and message, nothing else.
+        f"{'.'.join(map(str, error['loc'])) or '(value)'}: {error['msg']}"
+        for error in exc.errors()
+    )
+    return InvalidData(f"{exc.title}: {problems}").with_traceback(exc.__traceback__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -435,6 +457,9 @@ class Worker:
     async def process(self, message: Claimed) -> None:
         """Run one message under its original request id and actor; never raises.
 
+        A message no request queued (a periodic task, a command's) runs as
+        ``SYSTEM_ACTOR``; one an anonymous request queued, without an actor.
+
         If its outcome cannot be written, the message runs again once its
         lock expires (``VISIBILITY_TIMEOUT``). If it is cancelled, it goes
         back to the outbox before the cancellation goes on.
@@ -444,7 +469,8 @@ class Worker:
             client_ip=None,
             method=message.kind.upper(),
             path=message.target,
-            actor=message.headers.get("actor"),
+            actor=message.headers.get("actor")
+            or (None if message.headers.get("request_id") else SYSTEM_ACTOR),
         )
         started = time.perf_counter()
         with (
@@ -510,6 +536,7 @@ class Worker:
         self, message: Claimed, exc: BaseException, *, permanent: bool
     ) -> str:
         """Schedule a retry, or dead-letter and report; return the outcome."""
+        exc = _without_input(exc)
         error = f"{type(exc).__name__}: {exc}"[:_ERROR_LENGTH]
         if permanent or message.attempts >= message.max_attempts:
             await self._release(

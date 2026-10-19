@@ -127,6 +127,17 @@ All notable changes to domainkit. The format follows
   emptying append-only tables needs, and quote table names properly: a
   name holding `"` broke the statement that turns triggers off. An
   in-memory `MIGRATION_URL` becomes the same test file as `URL`.
+- Personal data in the audit trail (`docs/contrib.md`):
+  - A `Personal` marker on an optional field (`Annotated[str, Personal(...)]
+    | None`) was ignored, and the value stored in clear; such fields are
+    now pseudonyms. A marker inside a field (in a `list[...]`, or on a value
+    object's own fields) raises `TypeError` instead of being ignored.
+  - The worker no longer keeps, logs, or reports the values a pydantic
+    validation error quotes: such errors become `InvalidData`, naming fields
+    and rules only. A task's refused arguments used to be stored in
+    `last_error` for as long as the dead letter was kept.
+  - Work no request queued (periodic tasks, messages from commands) is
+    audited as `system`, not `anonymous`.
 - Settings keep their secrets:
   - `repr(settings)` and its dumps hide domain settings (`AUTH`, `EVIDENCE`,
     ...), whose keys (`JWT.SIGNING_KEY`, `SUBJECT_KEY`) they showed in clear.
