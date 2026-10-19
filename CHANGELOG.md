@@ -18,7 +18,8 @@ All notable changes to domainkit. The format follows
   database is in the middle of.
 - `dumpdata`, `loaddata`, and `flush`, with JSON fixtures written table by
   table, parents first. State never goes in a fixture (the audit trail,
-  tokens, the outbox, idempotency keys), `flush` keeps the audit trail,
+  tokens, the outbox, idempotency keys, webhook subscriptions with their
+  signing secrets, and deliveries), `flush` keeps the audit trail,
   and both `loaddata` and `flush` say what they will replace or delete,
   and refuse in staging and production without `--force`. `seed` runs the
   new `DomainConfig.seed()` hook of each installed domain.
@@ -27,9 +28,9 @@ All notable changes to domainkit. The format follows
   `--allow-production`. `diffsettings` lists the settings that differ from
   the defaults, secrets hidden.
 - `openapi` prints or writes the OpenAPI schema, and `openapi --diff
-  OLD.json` lists the changes that break clients (removed operations, new
-  required parameters or fields, narrower request values, removed or wider
-  response fields) and exits 1 if there are any. With
+  OLD.json` lists the changes that break clients (removed operations or
+  success statuses, new required parameters or fields, narrower request
+  values, removed or wider response fields) and exits 1 if there are any. With
   `OPENAPI_OPERATION_IDS = "route_name"`, which new projects set, operation
   ids are route names, stable when routers move (ADR 0031).
 - API versions and deprecations (`domainkit.http.versioning`):
