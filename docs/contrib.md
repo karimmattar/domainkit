@@ -64,7 +64,11 @@ not guaranteed.
 `ERROR_REPORTERS`. A message naming an unknown task or handler is
 dead-lettered at once. So is a message whose worker died (a crash, or a
 kill) during its last attempt: it is not run again after `max_attempts`. `python manage.py messages --dead` lists dead
-letters, and `--retry ID` (or `all`) queues them again after a fix.
+letters, and `--retry ID` (or `all`) queues them again after a fix. A
+message's last error is kept with it, logged, and reported. Validation
+errors (arguments or an event that no longer fit) are kept as `InvalidData`,
+naming the fields and rules but not the values, which are often personal
+data. Pass ids in task arguments rather than names or emails all the same.
 
 **Database outages** do not stop a worker. When its outbox cannot be
 reached (a restart, a network drop, a failover), it logs the error, waits
@@ -228,7 +232,10 @@ project that installs messaging.
 Every committed domain event becomes a row in `domainkit_audit_log`, written
 in the same transaction as the change. A row holds:
 
-- `occurred_at`, `actor`, `request_id`, and `client_ip`, from the request
+- `occurred_at`, `actor`, `request_id`, and `client_ip`, from the request.
+  The actor is `anonymous` for callers who did not authenticate, and
+  `system` outside requests, as in periodic tasks and other work no request
+  queued; work a request queued keeps its actor.
 - `action`, named `<domain label>.<event in snake case>` (`catalog.product_created`)
 - `outcome`, `target`, `event_id`, and the event's fields as `details`
 
@@ -270,7 +277,13 @@ Subjects' keys live in `domainkit_audit_keys`, which is not append-only.
   class MemberJoined(DomainEvent):
       member_id: UUID
       email: Annotated[str, Personal(of="member_id")]
+      phone: Annotated[str, Personal(of="member_id")] | None = None
   ```
+
+  The whole field becomes one pseudonym, also when it is optional. Mark
+  the field itself: a marker inside it (`list[Annotated[str, Personal(...)]]`,
+  or a value object's own marked fields) raises `TypeError`, since it would
+  be ignored.
 
 - **Explicit records** take personal details apart, under the actor (or the
   day's anonymous callers) unless a `subject` is named:
