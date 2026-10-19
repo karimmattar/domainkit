@@ -20,12 +20,8 @@ from domainkit.management.base import BaseCommand
 
 SKIPPED: Final = frozenset({"management", "tests", "migrations"})
 """Parts of a domain package the shell never imports."""
-KINDS: Final = (
-    ("models", (Entity, ValueObject)),
-    ("repositories", (Repository,)),
-    ("units of work", (UnitOfWork,)),
-)
-"""What the shell imports from each domain, and the classes that say so."""
+KINDS: Final = (Entity, ValueObject, Repository, UnitOfWork)
+"""What the shell imports from each domain: models, repositories, units of work."""
 
 
 class AsyncConsole(code.InteractiveConsole):
@@ -133,9 +129,7 @@ def domain_classes(skipped: list[str]) -> Iterator[tuple[str, type]]:
                     isinstance(value, type)
                     and value.__module__ == module.__name__
                     and not name.startswith("_")
-                    and any(
-                        issubclass(value, kind) for _, kinds in KINDS for kind in kinds
-                    )
+                    and issubclass(value, KINDS)
                 ):
                     yield name, value
 
