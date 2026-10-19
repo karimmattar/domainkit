@@ -57,6 +57,61 @@ All notable changes to domainkit. The format follows
   each entry's field changes; `auditlog --target` and `--aggregate`; and
   `GET /history` for staff with the new `audit.view_history` permission.
   Personal values stay pseudonyms, also for people who were forgotten.
+- Cron schedules: `@periodic(cron="0 3 * * 1-5", tz="Africa/Cairo")` runs
+  a task at wall-clock times in a time zone, with a parser of our own
+  (lists, ranges, steps, names, macros). Daylight saving time never runs a
+  time twice or skips one: a skipped time runs at the end of the gap, a
+  repeated one once (ADR 0034). On Windows, install `domainkit[tzdata]`.
+- Tasks set their own `timeout`, `max_attempts`, `backoff` (`Backoff`,
+  exponential or fixed, capped, with jitter), `retry_on`, and
+  `dont_retry_on`, over `MESSAGING`'s (DJ-52). `current_attempt()` tells a
+  task which run it is.
+- Task `priority` (-100 to 100, higher first, as in Django's tasks),
+  `chain(a, b)` to run a task after another succeeds with its result, and
+  a per-task `rate` ("10/minute") counted by `RATE_LIMIT_BACKEND` (ADR
+  0035).
+- `messages --pending`, `--locked`, and `--queue` list waiting, running,
+  and published messages; `messages --cancel ID` cancels one no worker
+  runs; `messages` shows each queue's lag, and so does the new
+  `messaging_outbox_lag_seconds` gauge (DJ-53).
+- Outbox messages carry the W3C trace context of their commit, and the
+  worker's span continues it; malformed `traceparent` and `tracestate`
+  values are dropped (`domainkit.tracing.trace_headers`, `remote_parent`).
+- `domainkit.contrib.messaging.testing`, a pytest plugin with
+  `captured_events`, `outbox` (`assert_queued`, `run_queued` and
+  `arun_queued`), and `execute_deferred`, for sync and async tests.
+- `domainkit.contrib.webhooks` sends exposed domain events to subscribed
+  URLs through the outbox, so only committed changes are sent. Deliveries
+  are signed as Standard Webhooks, retried with backoff, logged per
+  attempt, and replayable (`webhooks replay`). URLs must be https and
+  resolve only to public addresses, and the checked address is the one
+  connected to. Staff manage subscriptions through an admin API; secrets
+  are shown once, in answers marked `no-store` that neither caches nor
+  idempotency keys keep (ADR 0036). Install `domainkit[webhooks]`.
+- `AsyncTestClient`, which serves the application in the test's own event
+  loop, with its lifespan, and the `async_client`, `async_client_for`, and
+  `async_admin_client` fixtures, for async tests (DJ-62). New projects'
+  tests show one.
+- Factories for aggregates in `domainkit.testing` (DJ-63): `Factory`, with
+  `Sequence`, `LazyFunction`, `LazyAttribute`, `SubFactory`, and
+  overrides (`price__amount=`). `build()` makes an object in memory;
+  `await create()` stores it through a unit of work, in memory or SQL, and
+  commits.
+- `domainkit.clock` (DJ-64, ADR 0037): `now()`, `today()`, and
+  `monotonic()`, the one clock the framework reads, and `freeze_time`, a
+  context manager and fixture that stops it or moves it. Token expiry (JWTs
+  included), idempotency leases, rate windows counted in the process,
+  memory cache lifetimes, and the timestamps of audit entries, events,
+  messages, and evidence all follow it. Domain code may import it. The
+  database's own `now()` is not frozen.
+- `assert_num_queries` and `assert_max_queries` (DJ-65), context managers
+  and fixtures that count the SQL statements a block runs, and list them
+  when the count is wrong.
+- PostgreSQL test databases of their own (N-02, ADR 0038): the plugin
+  creates `test_<name>` (or the entry's new `TEST_NAME`), migrates it,
+  and drops it after the run; `--keepdb` keeps it for the next one, and
+  each pytest-xdist worker gets its own (`test_<name>_gw0`).
+- `docs/testing.md`, on the plugin and everything above.
 
 ### Changed
 
@@ -75,6 +130,30 @@ All notable changes to domainkit. The format follows
 - The audit trail gained an index on `target`, for histories. Run
   `makemigrations` and `migrate` in projects that install audit.
 - `check` and startup report operation ids that two routes share.
+- The outbox has `priority` and `started_at` columns, an index, and a
+  `cancelled` status: run `makemigrations` and `migrate` in projects that
+  install messaging before deploying.
+- `MESSAGING.RETRY_BASE_SECONDS` and `RETRY_MAX_SECONDS` are at most a
+  year, and a retry delay no longer overflows after a thousand attempts.
+- `messages` prints a `cancelled` count and each queue's lag after the
+  counts by status.
+- **On PostgreSQL, the test fixtures no longer use the database the test
+  settings name**: they create `test_<name>` on the same server and drop it
+  after the run, so the test role needs `CREATEDB`. A role without it can
+  create the database once and run with `--keepdb`. SQLite is unchanged.
+- The `client` fixture is a `domainkit.testing.TestClient`, a subclass of
+  Starlette's whose requests see the caller's context variables, so a
+  frozen clock reaches the application.
+- JWTs' `exp`, `iat`, and `nbf` are checked by domainkit, on
+  `domainkit.clock`, as PyJWT checked them on the host's clock.
+
+### Fixed
+
+- `client_for` and `admin_client` work in async tests. They called
+  `asyncio.run`, which fails inside a running event loop (N-01).
+- Clients from `client_for` and `admin_client` run on the `client`
+  fixture's event loop. Each of their requests started an event loop of its
+  own, with a database engine nothing closed (ASYNC-24).
 
 ## [0.6.2] - 2026-10-19
 

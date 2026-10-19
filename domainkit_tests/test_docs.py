@@ -22,6 +22,7 @@ from domainkit.contrib.evidence.settings import EvidenceSettings
 from domainkit.contrib.flags.settings import FlagsSettings
 from domainkit.contrib.idempotency.settings import IdempotencySettings
 from domainkit.contrib.messaging.settings import MessagingSettings
+from domainkit.contrib.webhooks.settings import WebhookSettings
 from domainkit.management import BUILTIN_COMMANDS, _find_commands
 
 DOCS = Path(__file__).parents[1] / "docs"
@@ -31,6 +32,7 @@ CONTRIB_COMMANDS = (
     "domainkit.contrib.evidence.management.commands",
     "domainkit.contrib.auth.management.commands",
     "domainkit.contrib.flags.management.commands",
+    "domainkit.contrib.webhooks.management.commands",
 )
 
 
@@ -55,6 +57,7 @@ def documented(page: str) -> set[str]:
         (IdempotencySettings, "contrib.md"),
         (EvidenceSettings, "contrib.md"),
         (FlagsSettings, "contrib.md"),
+        (WebhookSettings, "contrib.md"),
         (AuthSettings, "auth.md"),
         (JWTSettings, "auth.md"),
     ],

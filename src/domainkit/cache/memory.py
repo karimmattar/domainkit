@@ -2,12 +2,12 @@
 
 import re
 import threading
-import time
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from typing import Final
 
 from domainkit.cache.base import CacheError, Store
+from domainkit.clock import monotonic
 
 _INTEGER: Final = re.compile(rb"-?[0-9]+")
 
@@ -22,7 +22,7 @@ class MemoryStore(Store):
     """
 
     def __init__(
-        self, max_entries: int, clock: Callable[[], float] = time.monotonic
+        self, max_entries: int, clock: Callable[[], float] = monotonic
     ) -> None:
         """Keep at most ``max_entries``; ``clock`` reads seconds."""
         self.max_entries = max_entries

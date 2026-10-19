@@ -1,8 +1,8 @@
 """Domain-driven design building blocks ("seedwork").
 
-This package depends only on the standard library and ``domainkit.utils``, so
-a domain layer that imports nothing but ``domainkit.ddd`` stays free of
-frameworks and I/O.
+This package depends only on the standard library, ``domainkit.utils``, and
+``domainkit.clock``, so a domain layer that imports nothing but
+``domainkit.ddd`` stays free of frameworks and I/O.
 """
 
 from domainkit.ddd.events import DomainEvent, EventBus, EventHandler, event_bus

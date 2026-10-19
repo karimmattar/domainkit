@@ -74,6 +74,7 @@ Each `DATABASES` entry:
 | `POOL_SIZE`, `MAX_OVERFLOW`, `POOL_RECYCLE` | SQLAlchemy's | Connection pool sizing. |
 | `POOL_TIMEOUT` | `10.0` for network databases, else SQLAlchemy's | Seconds a request waits for a connection; past it the request gets 503 `database_busy`. |
 | `POOL_PRE_PING` | `True` | Test connections before use, so database restarts are survived. |
+| `TEST_NAME` | `None` | The PostgreSQL database `domainkit.testing` creates for the tests, and drops after them; `test_<name>` when unset. It must start with `test_` ([docs/testing.md](testing.md)). |
 | `CONNECT_ARGS` | `{}` | Extra driver arguments, added to those derived from the options above. asyncpg's `server_settings` and libpq's `options` are merged with the timeouts. Setting what the options above already set (TLS, a timeout) is refused when the application is built, however the server setting is spelled (`STATEMENT_TIMEOUT`, `--statement-timeout=`); change that option instead. |
 
 Each `LEDGERS` entry:
@@ -239,6 +240,9 @@ Installed contrib apps add their own:
   ([auth.md](auth.md))
 - evidence: no `EVIDENCE.SUBJECT_KEY`
   ([contrib.md](contrib.md#evidence-records-that-provably-never-change))
+- webhooks: a loopback or link-local network in
+  `WEBHOOKS.ALLOWED_PRIVATE_NETWORKS`
+  ([contrib.md](contrib.md#webhooks-signed-events-for-other-services))
 
 `migrate --downgrade` also needs `--allow-data-loss` there.
 
@@ -411,6 +415,7 @@ when a span is active. Query strings and bound SQL values are never logged.
 | `messaging_messages_total` | `kind`, `outcome` |
 | `messaging_message_duration_seconds` | `kind` |
 | `messaging_outbox_messages` | `status` |
+| `messaging_outbox_lag_seconds` | `queue` (seconds its oldest due message has waited for a worker) |
 | `messaging_relayed_total` | `outcome` (`published`, `failed`) |
 | `messaging_deliveries_skipped_total` | |
 | `cache_lookups_total` | `cache`, `result` (`hit`, `miss`, `invalid`, `early`) |
@@ -418,20 +423,16 @@ when a span is active. Query strings and bound SQL values are never logged.
 
 **Traces** (`domainkit[tracing]`): unit-of-work commits and worker messages
 get spans. domainkit only uses the OpenTelemetry API; configure the SDK and
-exporter in the deployment, or run under `opentelemetry-instrument`.
+exporter in the deployment, or run under `opentelemetry-instrument`. Outbox
+messages carry the W3C trace context of their commit, so a worker's span
+continues the trace of the request that queued its work
+([contrib.md](contrib.md#traces)).
 
 ## Testing
 
 `domainkit.testing` is a pytest plugin, like pytest-django. Install it with
-the `testing` extra, which brings pytest and httpx2 (Starlette's `TestClient`
-needs it), as a development dependency:
-
-```toml
-[dependency-groups]
-dev = ["domainkit[testing]"]
-```
-
-Then enable it in the project's `pyproject.toml`:
+the `testing` extra, which brings pytest and httpx2, as a development
+dependency, and enable it in the project's `pyproject.toml`:
 
 ```toml
 [tool.pytest.ini_options]
@@ -439,33 +440,19 @@ addopts = "-p domainkit.testing"
 domainkit_settings = "config.settings.test"
 ```
 
-It selects the test settings, never reads `.env`, and provides these fixtures:
+It selects the test settings, never reads `.env`, and refuses settings whose
+`ENVIRONMENT` is not `"test"`. Its fixtures make the test databases
+(`test_<name>` on PostgreSQL, dropped after the run unless `--keepdb`; see
+`TEST_NAME`), put them back before each test (`db`), and serve the
+application to sync and async tests (`client`, `client_for`, `admin_client`,
+`async_client`, `async_client_for`, `async_admin_client`). It also brings
+factories, a clock to freeze (`freeze_time`), and query-count assertions
+(`assert_num_queries`, `assert_max_queries`). [docs/testing.md](testing.md)
+covers them all.
 
-| Fixture | Scope | Gives |
-| --- | --- | --- |
-| `database` | session | The test database's URL, after migrating it up, down to base, and up again. That proves every revision is reversible and empties a reused database. In-memory SQLite becomes a temporary file. |
-| `db` | test | That database put back as `migrate` left it: rows earlier tests committed are gone, and the ones `migrate` wrote (content types, permissions) are there. Every database in `DATABASES` is put back. Request it in tests that reach the database without a client. |
-| `client` | test | A `TestClient` for the project's application, with its lifespan, on the `db` database. It sends no credentials. |
-| `client_for` | test | `client_for("billing.view_invoice", ...)`: a client of the same application that authenticates as a new user granted those permissions. Keyword arguments set the user's fields (`is_staff=True`, `username="carol"`); the username is unique otherwise. Needs `domainkit.contrib.auth`. |
-| `admin_client` | test | A client that authenticates as a new superuser. The tests `startdomain` generates use it. |
-
-So a test sees only the rows it writes, in any order, however it wrote
-them: through a client, a unit of work, a command, or the worker. The
-database is put back before each test that asks for it, by deleting every
-row and inserting the rows read once after migrating; on PostgreSQL, tables
-with triggers of their own (an append-only audit trail) have them off while
-this runs. Sequences keep counting, so do not assert on generated ids.
-
-Memory caches are emptied before every test, so no test sees what another
-cached. Redis caches are left alone: give the test settings their own
-`KEY_PREFIX`.
-
-Point the test settings at PostgreSQL (for example from a
-`TEST_DATABASE_URL` variable) to run the same suite there. Never point them
-at a database you want to keep. The database fixtures refuse settings whose
-`ENVIRONMENT` is not `"test"`, so a missing `domainkit_settings` cannot
-empty the development database. They read and restore rows as the schema
-owner (`MIGRATION_URL` when set), which append-only tables need.
+Fixtures for published events and queued work (`captured_events`,
+`outbox`, `execute_deferred`) come with messaging's own plugin
+([contrib.md](contrib.md#testing)).
 
 ## Commands
 
@@ -495,7 +482,8 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `seed` | `[LABEL ...]` | Run installed domains' `DomainConfig.seed` hooks, in `INSTALLED_DOMAINS` order. |
 | `openapi` | `--output`, `--indent`, `--diff OLD` | Print or write the OpenAPI schema; `--diff` lists breaking changes since `OLD` and exits 1 if any (see [The API surface](#the-api-surface)). |
 | `runworker` | `--once`, `--metrics-port`, `--metrics-address`, `--database`, `--queue`, `--no-relay` | Run outbox messages (messaging): one worker per outbox, every hosting database by default; `--queue` (repeatable) limits them to some queues. With `MESSAGING.BROKER`, relay to the broker and run what it delivers; `--no-relay` only consumes. `--once` always works from the outbox. |
-| `messages` | `--dead`, `--limit`, `--retry ID\|all`, `--database` | Inspect an outbox, and requeue dead letters (messaging). |
+| `messages` | `--pending\|--locked\|--dead`, `--queue`, `--limit`, `--retry ID\|all`, `--cancel ID`, `--database` | Count an outbox's messages and show each queue's lag, list them, requeue dead letters, or cancel a message no worker runs (messaging). |
+| `webhooks` | `subscriptions\|deliveries\|replay`, `[ID ...]`, `--failed`, `--status`, `--subscription`, `--limit` | List webhook subscriptions or deliveries, or send finished deliveries again (webhooks). |
 | `auditlog` | `--actor`, `--action`, `--limit`, `--database`, `--target`, `--aggregate FIELD=ID` | Read the audit trail, or one record's history with what each entry changed (audit; see [contrib.md](contrib.md#history)). |
 | `auditseal` | | Seal new audit rows into each database's hash chain and anchor its head on `AUDIT.LEDGER` (audit). |
 | `auditverify` | `--database` | Check the audit trail against its seals and anchors; fails if anything changed (audit). |
