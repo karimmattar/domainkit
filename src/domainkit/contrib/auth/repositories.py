@@ -131,12 +131,13 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
     async def active_superusers(self) -> int:
         """How many active superusers there are."""
         table = get_user_table()
-        count = await self.session.scalar(
+        found = await self.session.execute(
             select(func.count())
             .select_from(table)
             .where(table.c.is_superuser.is_(True), table.c.is_active.is_(True))
         )
-        return int(count or 0)
+        count: int = found.scalar_one()
+        return count
 
     async def record_login(self, user: AbstractBaseUser) -> None:
         """Store the login time and record ``UserLoggedIn``.

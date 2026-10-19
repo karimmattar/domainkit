@@ -560,6 +560,45 @@ def test_staff_only_change_users_other_backends_grant_less(api: Api) -> None:
     ).is_success
 
 
+class DirectoryBackend(BaseBackend):
+    """Grants from a directory alone: ``helpdesk`` administers users."""
+
+    async def get_all_permissions(
+        self, user: AnyUser, obj: object | None = None
+    ) -> frozenset[str]:
+        """Every admin permission for ``helpdesk``, nothing for anyone else."""
+        if obj is None and user.is_active and user.get_username() == "helpdesk":
+            return frozenset(ADMIN_PERMISSIONS)
+        return frozenset()
+
+
+def test_stored_grants_count_while_no_backend_reads_them(api: Api) -> None:
+    """Without ModelBackend a user's own grants are idle, but they still count.
+
+    Configuring ModelBackend again would bring them back.
+    """
+    client = api(BACKENDS=[f"{__name__}.DirectoryBackend"])
+    headers = staff("helpdesk")
+    plain = create_user("plain")
+    clerk = create_user("clerk")
+    grant("clerk", "shop.delete_product")
+
+    allowed = client.post(
+        f"{ADMIN}/users/{plain}/password",
+        json={"password": NEW_PASSWORD},
+        headers=headers,
+    )
+    taken = client.post(
+        f"{ADMIN}/users/{clerk}/password",
+        json={"password": NEW_PASSWORD},
+        headers=headers,
+    )
+
+    assert allowed.status_code == 204
+    lacking = f"You can only change users whose permissions you have; {LACK_DELETE}"
+    assert error(taken, 403) == ("permission_denied", lacking)
+
+
 def test_deactivating_a_user_ends_their_sessions(api: Api) -> None:
     """Tokens do not come back to life when the user is active again."""
     client = api()
@@ -591,6 +630,7 @@ def test_the_last_active_superuser_stays(api: Api) -> None:
         "This is the last active superuser; make another one first.",
     )
     staff("dormant", is_superuser=True, is_active=False)  # Inactive: no help.
+    create_user("clerk")  # Active, but no superuser: no help either.
 
     assert (
         error(
