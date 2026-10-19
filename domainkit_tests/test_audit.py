@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Annotated, Any
+from typing import Annotated, Any, Optional
 
 import pytest
 from sqlalchemy import insert, select
@@ -20,7 +20,7 @@ from sqlalchemy import insert, select
 from domainkit import setup
 from domainkit.apps import registry
 from domainkit.conf import override_settings, settings
-from domainkit.context import RequestContext, bind_request
+from domainkit.context import SYSTEM_ACTOR, RequestContext, bind_request
 from domainkit.contrib.audit import (
     Outcome,
     action_for,
@@ -34,7 +34,7 @@ from domainkit.contrib.audit.personal import audited_databases, pseudonym
 from domainkit.contrib.audit.protection import PROTECT, UNPROTECT, protect, unprotect
 from domainkit.contrib.audit.tables import audit_keys, audit_log
 from domainkit.db import connections
-from domainkit.ddd import DomainEvent, Personal
+from domainkit.ddd import DomainEvent, Personal, ValueObject
 from domainkit.ddd.personal import personal_fields
 from domainkit.management import CommandError, call_command
 from domainkit_tests.sample_domains.alpha.events import GreetingSent
@@ -279,6 +279,104 @@ def test_personal_fields_are_found_by_their_markers() -> None:
             personal_fields(event)
 
 
+class MemberMoved(DomainEvent):
+    """An event whose personal fields may be missing."""
+
+    member_id: uuid.UUID
+    phone: Annotated[str, Personal(of="member_id")] | None = None
+    street: Optional[Annotated[str, Personal(of="member_id")]] = None  # noqa: UP045
+
+
+class Address(ValueObject):
+    """A value object with a personal field of its own."""
+
+    owner_id: uuid.UUID
+    street: Annotated[str, Personal(of="owner_id")]
+
+
+class Place(ValueObject):
+    """A value object without personal data, which refers to itself."""
+
+    name: str
+    within: "Place | None" = None
+
+
+class Elsewhere(ValueObject):
+    """A value object whose annotation names a type only checkers import."""
+
+    thing: "NotImportedHere"  # type: ignore[name-defined]  # noqa: F821
+
+
+def test_personal_fields_may_be_optional() -> None:
+    """A marker on one member of a union marks the field."""
+    assert personal_fields(MemberMoved) == {
+        "phone": Personal(of="member_id"),
+        "street": Personal(of="member_id"),
+    }
+
+
+def test_personal_markers_below_the_field_are_refused() -> None:
+    """Only whole fields become pseudonyms: a marker deeper would be ignored."""
+    marked = Annotated[str, Personal(of="member_id")]
+
+    class Listed(DomainEvent):
+        member_id: uuid.UUID
+        emails: list[marked]
+
+    class Mapped(DomainEvent):
+        member_id: uuid.UUID
+        emails: dict[str, marked] | None
+
+    class Nested(DomainEvent):
+        member_id: uuid.UUID
+        address: Address
+
+    whole = re.escape("Annotated[..., Personal(of=...)].")
+    for event, field in ((Listed, "emails"), (Mapped, "emails"), (Nested, "address")):
+        refused = (
+            rf"\.{event.__name__}\.{field}: Personal is read only on the field "
+            rf"itself; mark the whole field, as {whole}$"
+        )
+        with pytest.raises(TypeError, match=refused):
+            personal_fields(event)
+
+
+def test_other_fields_may_hold_any_type() -> None:
+    """Unmarked classes, even recursive or unresolvable ones, and whole marks pass.
+
+    A field marked as a whole is a pseudonym whole, markers inside it or not.
+    """
+    marked = Annotated[str, Personal(of="member_id")]
+
+    class Visited(DomainEvent):
+        member_id: uuid.UUID
+        place: Place
+        elsewhere: Elsewhere | None = None
+        address: Annotated[Address, Personal(of="member_id")] | None = None
+        emails: Annotated[tuple[marked, ...], Personal(of="member_id")] = ()
+
+    assert personal_fields(Visited) == {
+        "address": Personal(of="member_id"),
+        "emails": Personal(of="member_id"),
+    }
+
+
+async def test_optional_personal_values_are_pseudonyms(tables: None) -> None:
+    """An optional personal field is kept as a pseudonym, never as clear text."""
+    member = uuid.uuid4()
+
+    await commit_events(MemberMoved(member_id=member, phone="+20 100 000 0000"))
+
+    (entry,) = await entries()
+    phone = await pseudonym_of(str(member), "phone", "+20 100 000 0000")
+    assert entry["details"] == {
+        "member_id": str(member),
+        "phone": phone,
+        "street": None,  # Nothing personal to keep.
+    }
+    assert "+20 100" not in repr(entry)
+
+
 async def test_personal_values_are_pseudonyms_of_their_subject(tables: None) -> None:
     """The member's email is theirs; the client's address is the actor's."""
     member = uuid.uuid4()
@@ -373,6 +471,21 @@ async def test_anonymous_days_are_forgotten_before_a_date(tables: None) -> None:
     assert await forget_anonymous(date(2026, 1, 2)) == 1
 
     assert await subjects() == ["alice", "anonymous:2026-01-02"]
+
+
+async def test_system_work_keeps_personal_values_as_the_days(tables: None) -> None:
+    """Work no request queued is the system's; its values are the day's callers'."""
+    job = RequestContext("job-1", None, "TASK", "tests.export", SYSTEM_ACTOR)
+    with bind_request(job):
+        await record("member.exported", personal={"email": "ann@example.com"})
+
+    (entry,) = await entries()
+    day = f"anonymous:{entry['occurred_at'].date().isoformat()}"
+    assert entry["actor"] == SYSTEM_ACTOR
+    assert entry["details"] == {
+        "email": await pseudonym_of(day, "email", "ann@example.com")
+    }
+    assert await subjects() == [day]
 
 
 async def test_explicit_records_keep_personal_details_apart(tables: None) -> None:

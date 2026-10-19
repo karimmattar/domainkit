@@ -22,6 +22,7 @@ from typing import Any, ClassVar, Final
 
 import pytest
 from prometheus_client import REGISTRY
+from pydantic import BaseModel, TypeAdapter, ValidationError
 from sqlalchemy import select, update
 
 from domainkit import setup
@@ -35,7 +36,12 @@ from domainkit.broker import (
     brokers,
 )
 from domainkit.conf import UNSET, override_settings
-from domainkit.context import RequestContext, bind_request, current_request
+from domainkit.context import (
+    SYSTEM_ACTOR,
+    RequestContext,
+    bind_request,
+    current_request,
+)
 from domainkit.contrib.messaging import (
     MessagingSettings,
     Worker,
@@ -247,6 +253,52 @@ async def test_failures_retry_then_dead_letter(
     ]
 
 
+async def test_invalid_arguments_are_reported_without_their_values(
+    tables: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The error kept, logged, and reported names the field, never its value."""
+    await enqueue(remember, value="ann@example.com")
+
+    await Worker().run_once()
+
+    (row,) = await outbox()
+    assert row["status"] == DEAD
+    assert str(row["last_error"]).startswith(
+        "InvalidData: remember: value: Input should be a valid UUID"
+    )
+    dead = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert [type(r.exc_info[1]).__name__ for r in dead if r.exc_info] == ["InvalidData"]
+    assert dead[0].exc_info is not None
+    assert dead[0].exc_info[2] is not None  # Where it failed is kept.
+    ((text, _),) = reported
+    assert text.startswith("remember: value: Input should be a valid UUID")
+    for kept in (str(row["last_error"]), caplog.text, text):
+        assert "ann@example.com" not in kept
+
+
+def test_only_validation_errors_are_rewritten() -> None:
+    """Other errors pass as they are; nested locations are joined with dots."""
+    other = RuntimeError("still broken")
+
+    class Order(BaseModel):
+        lines: list[int]
+
+    with pytest.raises(ValidationError) as caught:
+        Order.model_validate({"lines": [1, "two"]})
+    with pytest.raises(ValidationError) as whole:
+        TypeAdapter(int).validate_python("three")
+
+    assert worker_module._without_input(other) is other
+    assert str(worker_module._without_input(caught.value)) == (
+        "Order: lines.1: Input should be a valid integer, unable to parse string "
+        "as an integer"
+    )
+    assert str(worker_module._without_input(whole.value)) == (
+        "int: (value): Input should be a valid integer, unable to parse string "
+        "as an integer"
+    )
+
+
 async def test_a_retry_can_succeed(tables: None) -> None:
     """A task that fails once finishes on its second attempt."""
     await enqueue(fails_once, key="k")
@@ -338,6 +390,26 @@ async def test_dedupe_keys_and_delays(tables: None) -> None:
 
     assert await Worker().run_once() == 1
     assert [row["status"] for row in await outbox()] == [DONE, PENDING]
+
+
+async def test_work_no_request_queued_runs_as_the_system(tables: None) -> None:
+    """Commands' and periodic work is the system's; anonymous requests' stays so."""
+    first, second = uuid.uuid4(), uuid.uuid4()
+    await enqueue(remember, value=first)
+    with bind_request(RequestContext("req-3", "203.0.113.9", "POST", "/x")):
+        await enqueue(remember, value=second)
+
+    @periodic(every=timedelta(hours=1), name="tests.hourly_actor")
+    async def hourly() -> None:
+        ran.append(("hourly", "", current_request()))
+
+    try:
+        await Worker().run_once()
+    finally:
+        tasks._tasks.pop("tests.hourly_actor")
+
+    actors = {key: context.actor for key, _, context in ran}
+    assert actors == {first: SYSTEM_ACTOR, second: None, "hourly": SYSTEM_ACTOR}
 
 
 async def test_periodic_tasks_run_once_per_interval(tables: None) -> None:
