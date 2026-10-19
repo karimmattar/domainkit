@@ -208,6 +208,8 @@ def test_mfa_settings_are_bounded() -> None:
     ):
         with pytest.raises(ValidationError):
             MfaSettings(**options)
+    assert MfaSettings(RATE=None).RATE is None
+    assert MfaSettings(RATE="3/minute").RATE == "3/minute"
 
 
 # The API ------------------------------------------------------------------------
