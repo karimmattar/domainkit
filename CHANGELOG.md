@@ -6,6 +6,14 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `domainkit.http.ratelimit.Throttle`, a FastAPI dependency that limits one
+  route, or the routes of one scope, per user, per address, or per key a
+  function returns, apart from `RATE_LIMIT` and with the same backends. Over
+  the rate, the route answers 429 `throttled` with `Retry-After` (DJ-25;
+  `docs/cache.md`, "Throttles for one route").
+
 ## [0.6.2] - 2026-10-19
 
 ### Added

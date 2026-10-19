@@ -240,6 +240,57 @@ memory, a read-only replica), requests are let through and logged: the limit
 protects the service, and its outage should not stop it.
 `cache clear` resets these counters too.
 
+## Throttles for one route
+
+`RATE_LIMIT` counts every request of a caller. A route that costs more (an
+export, a search, sending an email) can have its own, tighter limit with
+`Throttle`, a FastAPI dependency. It counts with the same backend as
+`RATE_LIMIT_BACKEND` (Redis if you set `RedisBackend`), separately from the
+global limit, which it does not need:
+
+```python
+from fastapi import Depends
+
+from domainkit.contrib.auth import Require
+from domainkit.http.ratelimit import Throttle
+
+export_limit = Throttle("5/hour")  # per user, or per address when anonymous
+
+
+@router.post("/exports", dependencies=[Depends(Require()), Depends(export_limit)])
+async def create_export(...): ...
+
+
+def api_key(request: Request) -> str | None:
+    return request.headers.get("X-API-Key")  # None: count by address
+
+
+@router.get(
+    "/search",
+    dependencies=[Public, Depends(Throttle("30/minute", key=api_key))],
+)
+async def search(...): ...
+
+
+# Routes with one scope share one count.
+mail_limit = Throttle("10/hour", key="address", scope="mail")
+```
+
+- `key="user"` (the default) counts the actor, and anonymous callers by
+  address; `key="address"` counts by address even for users; a function of
+  the request (sync or async) counts by what it returns, hashed before it is
+  stored, or by address when it returns `None`.
+- Each route counts on its own unless routes share a `scope`.
+- Over the rate, the route answers 429 `throttled`, with `Retry-After` and
+  the `RateLimit-*` headers of that throttle; a WebSocket handshake is
+  closed with 1013. Requests that pass carry no headers from the throttle.
+- A throttle does not decide who may call a route: the route still needs
+  `Require(...)` or `Public`. Put the throttle after `Require` so that
+  refused callers are not counted.
+- Logging in and refused credentials keep their own limits
+  (`AUTH.LOGIN_RATE`, and `RATE_LIMIT` for refused tokens; see
+  [auth.md](auth.md)).
+
 ## Security on the server
 
 Give each service its own Redis user, limited to its prefix and to the
