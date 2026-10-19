@@ -6,13 +6,16 @@ persistence, its HTTP API, and tests, ready to rename and grow.
 """
 
 import keyword
+import pkgutil
 import re
 from argparse import ArgumentParser
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Final
 
+import domainkit.contrib
 from domainkit.conf.env import project_root
+from domainkit.management import get_commands
 from domainkit.management.base import BaseCommand, CommandError
 from domainkit.utils.formatting import format_python
 from domainkit.utils.text import camel_case, pluralize, snake_case
@@ -128,6 +131,11 @@ class Command(BaseCommand):
     ) -> None:
         """Render the package and its tests, then print the next steps."""
         context = template_context(name, parent, aggregate, plural)
+        if (command := context["aggregates"]) in existing_commands():
+            raise CommandError(
+                f"The domain's command would be {command!r}, which already names "
+                "a command and would replace it; pass --plural with another name."
+            )
         package_dir = package_directory(parent) / name
         root = project_root()
         tests_root = tests_dir or root / "tests" / Path(*parent.split("."))
@@ -144,6 +152,20 @@ class Command(BaseCommand):
             directory = directory.parent
         format_python([package_dir, tests_root / name])
         self.write(_next_steps(context, package_dir, tests_root / name))
+
+
+def existing_commands() -> set[str]:
+    """Built-in commands, installed domains', and every contrib app's.
+
+    The domain's generated command (``manage.py <aggregates>``) would
+    replace any of them, the last also once that app is installed.
+    """
+    contrib = [
+        str(commands)
+        for package in domainkit.contrib.__path__
+        for commands in Path(package).glob("*/management/commands")
+    ]
+    return set(get_commands()) | {name for _, name, _ in pkgutil.iter_modules(contrib)}
 
 
 def _next_steps(context: dict[str, str], package_dir: Path, tests_dir: Path) -> str:

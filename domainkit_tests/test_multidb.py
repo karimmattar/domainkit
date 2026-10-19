@@ -141,6 +141,16 @@ def test_each_target_has_its_own_history(two_targets: Path) -> None:
     assert "domainkit_messages" in reports_text
 
 
+def test_makemigrations_writes_only_the_named_target(two_targets: Path) -> None:
+    """--database limits makemigrations to that target."""
+    output = run("makemigrations", "-m", "initial", "--database", "reports")
+    (created,) = output.splitlines()
+
+    revision = Path(created.removeprefix("Created ").removesuffix("."))
+    assert revision.parent == two_targets / "reports"
+    assert not list(two_targets.glob("*.py"))
+
+
 def test_migrate_moves_every_target(two_targets: Path) -> None:
     """Migrate upgrades each target; check and --check see no gaps."""
     run("makemigrations", "-m", "initial")
