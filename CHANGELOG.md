@@ -34,6 +34,15 @@ All notable changes to domainkit. The format follows
   as one. Staging and production refuse a network that holds every address
   (`0.0.0.0/0`, `::/0`), and `check` warns about a rate limit without
   trusted proxies.
+- `Require(HasObjectPermissions(...))` no longer lets anyone in, anonymous
+  callers included, where a route never checked an object. The rule now
+  needs an active user who logged in, as it says; each object is still
+  checked with `check_object_permissions`. The deny-by-default check
+  counted such routes as guarded.
+- `Require(...)` and `AuthenticatedUser` work on WebSocket routes. They
+  failed every handshake with an internal error (close code 1011), even
+  for users they allow; a refused handshake now gets the same 401 or 403
+  response as a request.
 - A flood of `/ready` probes runs one round of checks at a time: each
   probe that missed the cache ran every check itself (500 probes, 500
   rounds; behind a busy pool, failing probes took replicas out of

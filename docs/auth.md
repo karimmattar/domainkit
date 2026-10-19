@@ -331,7 +331,9 @@ counts or records it. It tries `AUTH.AUTHENTICATION_CLASSES` in order:
 Clients send `Authorization: Bearer <token>`. WebSocket handshakes are
 authenticated the same way, and refused with close code 1008. The user is
 the connection's actor, so the audit trail records what it does under
-their id.
+their id. `Require(...)` and `AuthenticatedUser` guard WebSocket routes as
+they do others: a refused handshake gets the same 401 or 403 response,
+before the socket opens.
 
 ### Opaque tokens
 
@@ -464,7 +466,7 @@ async def greeting(user: CurrentUser): ...               # anyone; AnonymousUser
 | `IsSuperuser` | Active superusers. |
 | `HasPermissions(*keys)` | Users granted every permission (by any backend). |
 | `ModelPermissions(model)` | Django's model permissions by method: `GET`/`HEAD` need `view`, `POST` `add`, `PUT`/`PATCH` `change`, `DELETE` `delete`; `OPTIONS` needs a user. `model` is a mapped class or `"<domain>.<model>"`. |
-| `HasObjectPermissions(*keys)` | Users granted every permission on the object, by a backend with object permissions. |
+| `HasObjectPermissions(*keys)` | Users granted every permission on the object, by a backend with object permissions. The request itself needs an active user who logged in; check each object with `check_object_permissions`. |
 
 Combine rule instances with `&`, `|`, and `~`:
 `Require(IsAdminUser() | HasPermissions("billing.view_invoice"))`. A rule of
