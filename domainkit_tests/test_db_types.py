@@ -271,6 +271,7 @@ async def test_comparisons_take_values_of_any_places(engine: AsyncEngine) -> Non
         (amount.between(Decimal("9.9450"), Decimal("9.9599")), [1]),
         (amount.in_([Decimal("9.951"), Decimal("9.96")]), [2]),
         (amount.not_in([Decimal("9.951")]), [1, 2, 3]),
+        (amount.in_([None, Decimal("9.96")]), [2]),  # None matches no amount.
         (amount < beyond, [1, 2, 3]),
         (amount > -beyond, [1, 2, 3]),
         (amount == beyond, []),
