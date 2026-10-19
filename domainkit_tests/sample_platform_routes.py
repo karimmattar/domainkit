@@ -3,13 +3,16 @@
 from dataclasses import replace
 from typing import Final
 
-from fastapi import APIRouter, Depends, WebSocket
+from fastapi import APIRouter, Depends, Response, WebSocket
+from pydantic import BaseModel, Field
 from starlette.datastructures import Headers
 from starlette.requests import HTTPConnection
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from domainkit.context import bind_request, current_request
+from domainkit.ddd import NotFound
 from domainkit.http.ratelimit import Throttle
+from domainkit.i18n import get_language
 
 ACTOR_HEADER: Final = "X-Test-Actor"
 
@@ -95,4 +98,45 @@ async def throttled_socket(websocket: WebSocket) -> None:
     """Accept one connection a minute per caller."""
     await websocket.accept()
     await websocket.send_text("hi")
+    await websocket.close()
+
+
+class Order(BaseModel):
+    """A body with limits, for translated validation messages."""
+
+    reference: str = Field(max_length=5)
+    quantity: int = Field(gt=0)
+
+
+@router.post("/orders")
+async def place(order: Order) -> dict[str, int]:
+    """Validate an order."""
+    return {"quantity": order.quantity}
+
+
+@router.get("/language")
+async def language() -> dict[str, str]:
+    """The language the request is served in."""
+    return {"language": get_language()}
+
+
+@router.get("/labelled")
+async def labelled(response: Response) -> dict[str, str]:
+    """Say the language and the variance of the response itself."""
+    response.headers["Content-Language"] = "en-gb"
+    response.headers["Vary"] = "Origin, accept-language"
+    return {"status": "ok"}
+
+
+@router.get("/missing-user")
+async def missing_user() -> None:
+    """Raise a domain error whose message the catalogs translate."""
+    raise NotFound("No such user.")
+
+
+@router.websocket("/language-ws")
+async def language_socket(websocket: WebSocket) -> None:
+    """Send the language the connection is served in."""
+    await websocket.accept()
+    await websocket.send_text(get_language())
     await websocket.close()

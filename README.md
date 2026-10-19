@@ -7,8 +7,11 @@ A Django-style framework for domain-driven FastAPI services. It provides:
 - DDD building blocks, with the layer rules between them enforced
 - several databases: domains routed to their own, sharding by key,
   PostgreSQL range partitioning, and immudb ledgers for evidence
-- caches in memory or in Redis and Valkey, with stampede protection, and
-  rate limits shared by every replica
+- caches in memory or in Redis and Valkey (one server, Sentinel, or
+  Cluster), with stampede protection, and rate limits shared by every
+  replica, globally or per route
+- answers in the caller's language (English and Arabic ship), times shown
+  in the business's time zone, and numbers and dates in local formats
 - background work through a transactional outbox, run by polling workers or
   through RabbitMQ, with queues for separate worker pools
 - users, groups, and permissions per content type, as in Django's
@@ -34,6 +37,8 @@ pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, i
   audit, idempotency, and evidence
 - [docs/auth.md](https://github.com/karimmattar/domainkit/blob/main/docs/auth.md): users, groups, permissions, content
   types, passwords, backends, tokens, route rules, and the admin API
+- [docs/i18n.md](https://github.com/karimmattar/domainkit/blob/main/docs/i18n.md): responses in the caller's language,
+  time zones, and number and date formats
 - [docs/versioning.md](https://github.com/karimmattar/domainkit/blob/main/docs/versioning.md): compatibility, deprecations, and releases
 - [docs/adr/](https://github.com/karimmattar/domainkit/tree/main/docs/adr): the decisions behind the design
 - [CHANGELOG.md](https://github.com/karimmattar/domainkit/blob/main/CHANGELOG.md) and [SECURITY.md](https://github.com/karimmattar/domainkit/blob/main/SECURITY.md)

@@ -6,6 +6,11 @@ values are never echoed back, because they may hold secrets.
 
 The domain layer raises ``DomainError`` subclasses and never mentions HTTP;
 this module is the only place that maps them to status codes.
+
+Details and validation messages are translated into the request's language
+here, as the body is built (``gettext`` and ``validation_message``, see
+``domainkit.i18n``): pass English text, and add its translations to the
+catalogs.
 """
 
 import re
@@ -30,6 +35,7 @@ from domainkit.ddd.exceptions import (
     NotFound,
     PermissionDenied,
 )
+from domainkit.i18n import gettext, validation_message
 
 STATUS_CODES: Final[tuple[tuple[type[DomainError], int], ...]] = (
     (NotFound, status.HTTP_404_NOT_FOUND),
@@ -102,7 +108,7 @@ def error_response(
     """Build an error body that carries the request id for support cases."""
     request = current_request()
     body = ErrorResponse(
-        detail=detail,
+        detail=gettext(detail),
         code=code,
         request_id=request.request_id if request else None,
         errors=errors,
@@ -170,7 +176,7 @@ async def validation_error_handler(
     errors = [
         FieldError(
             loc=list(error.get("loc", ())),
-            msg=str(error.get("msg", "")),
+            msg=validation_message(error),
             type=str(error.get("type", "")),
         )
         for error in exc.errors()

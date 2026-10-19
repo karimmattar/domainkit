@@ -170,6 +170,17 @@ Each `BROKERS` entry:
 | `CORS_ALLOWED_HEADERS` | `Authorization Content-Type X-Request-ID` | |
 | `CORS_ALLOW_CREDENTIALS` | `False` | Cannot be combined with origin `*`. |
 
+### Languages and time zones
+
+See [i18n.md](i18n.md).
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `LANGUAGE_CODE` | `"en"` | The language of responses when `Accept-Language` asks for none of `LANGUAGES`, and outside requests. It must be one of them. |
+| `LANGUAGES` | `(("en", "English"), ("ar", "Arabic"))` | `(code, name)` of each language responses may be in; `LocaleMiddleware` picks one per request. Codes are lower case (`ar`, `pt-br`). |
+| `LOCALE_PATHS` | `()` | Directories of `<locale>/LC_MESSAGES/messages.mo` catalogs, looked up before each installed domain's `locale` directory, then domainkit's own. |
+| `TIME_ZONE` | `"UTC"` | The zone dates are shown in (`localtime`, `localdate`, and the date formats). Dates are stored and compared in UTC whatever it says. |
+
 ### Server limits
 
 The application limits bodies, WebSocket messages, and request rates. Slow
@@ -242,6 +253,7 @@ first:
 | `domainkit.http.middleware.ProxyHeadersMiddleware` | First, so everything after it sees the real client address and scheme. |
 | `domainkit.http.metrics.MetricsMiddleware` | Counts every response, including ones refused below. |
 | `domainkit.http.middleware.SecurityHeadersMiddleware` | Adds the `SECURE_*` headers to every response. |
+| `domainkit.http.locale.LocaleMiddleware` | Picks the request's language from `Accept-Language`, before anything below answers, so their errors are translated; adds `Content-Language` and `Vary: Accept-Language` ([i18n.md](i18n.md)). |
 | `domainkit.http.middleware.CORSMiddleware` | Answers preflights before any work. |
 | `domainkit.http.middleware.RequestContextMiddleware` | Request id (`X-Request-ID`), access log, the context that logs and audit rows read. WebSocket connections get one too: method `WS`, the request id sent with the accept, one access log line when the connection ends (101 if accepted, 403 if closed first). |
 | `domainkit.http.middleware.AllowedHostsMiddleware` | Refuses unknown `Host` headers with 400. |
@@ -258,7 +270,9 @@ allowed hosts, body limit) applies when a settings module sets no
 
 Every error response is JSON: `{"detail", "code", "request_id"}`, plus
 `errors` (location, message, type) for validation errors. Submitted values
-are never echoed back.
+are never echoed back. With `LocaleMiddleware`, `detail` and each `msg`
+are in the request's language; `code` and `type` never change
+([i18n.md](i18n.md)).
 
 | Raised | Status | `code` |
 | --- | --- | --- |
@@ -359,6 +373,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `init` | `name`, `[directory]` | Create a project: base, local, test, and production settings, routes, `manage.py`, `.env`, and a first test. The name sets the environment prefix; the directory (default `./<name>`) must be empty or missing. |
 | `check` | | Settings, domains, routes and their access rules, middleware, layer rules, and a single migration head. In staging and production it also lists [weak choices](#deployment-checks) as warnings. |
 | `broker` | `check\|declare`, `[ALIAS ...]` | Connect to brokers (all by default), or declare the exchange and every queue the worker's tasks use on `MESSAGING.BROKER`. |
+| `compilemessages` | `[DIRECTORY ...]`, `-l/--locale`, `--check` | Compile translation catalogs (`.po`) to `.mo` files: in the directories named, or in `LOCALE_PATHS` and each installed domain's `locale` directory. `--check` writes nothing and fails if one is missing or out of date ([i18n.md](i18n.md)). |
 | `cache` | `check\|clear`, `[ALIAS ...]`, `--all` | Ping caches (all by default), or delete every key of the named caches, all versions, in their namespace only. Clearing needs aliases or `--all`. |
 | `startdomain` | `name`, `--aggregate`, `--plural`, `--parent`, `--tests-dir` | Generate a bounded context and its tests. Its command is named after the plural, which may not name an existing command (built in, installed, or a contrib app's). |
 | `makemigrations` | `-m/--message`, `--check`, `--merge`, `--database` | Write a revision per target with changes; `--check` fails if one is missing; `--merge` joins two heads. Without `--database`, every target. The message is one line, without backslashes or triple quotes. |

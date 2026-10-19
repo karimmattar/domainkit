@@ -6,10 +6,12 @@ the framework does not declare must belong to an installed domain (see
 so a misspelled setting fails at startup instead of being silently ignored.
 """
 
+import re
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, Final, Literal, Self
 from urllib.parse import SplitResult, parse_qs, urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import (
     BaseModel,
@@ -34,6 +36,9 @@ HIDDEN: Final = "**********"
 Environment = Literal["local", "test", "staging", "production"]
 DEPLOYED_ENVIRONMENTS: Final = frozenset({"staging", "production"})
 """Environments held to the deployment checks in ``Settings``."""
+
+LANGUAGE_PATTERN: Final = r"^[a-z]{2,3}(-[a-z0-9]{2,8})*$"
+"""A language code in settings: lower case, as ``ar`` or ``pt-br``."""
 
 RATE_LIMIT_MIDDLEWARE: Final = "domainkit.http.ratelimit.RateLimitMiddleware"
 DEFAULT_MIDDLEWARE: Final = (
@@ -507,6 +512,15 @@ class Settings(BaseModel):
     )
     CORS_ALLOW_CREDENTIALS: bool = False
 
+    LANGUAGE_CODE: str = Field(default="en", pattern=LANGUAGE_PATTERN)
+    """The language of responses when the caller asks for none of ``LANGUAGES``."""
+    LANGUAGES: tuple[tuple[str, str], ...] = (("en", "English"), ("ar", "Arabic"))
+    """``(code, name)`` of each language responses may be in (``LocaleMiddleware``)."""
+    LOCALE_PATHS: tuple[Path, ...] = ()
+    """Directories of ``<locale>/LC_MESSAGES/messages.mo``, ahead of the domains'."""
+    TIME_ZONE: str = "UTC"
+    """The zone dates are shown in (``localtime``); they are stored in UTC."""
+
     def __repr_args__(self) -> Iterator[tuple[str | None, Any]]:
         """Show declared settings; domain settings, which may hold keys, hidden."""
         domain = self.model_extra or {}
@@ -536,6 +550,7 @@ class Settings(BaseModel):
             raise ValueError("CORS_ALLOW_CREDENTIALS cannot be used with origin '*'")
         if self.RATE_LIMIT is not None:
             parse_rate(self.RATE_LIMIT)
+        self._check_i18n()
         if self.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
             self._check_deployment()
         return self
@@ -567,6 +582,29 @@ class Settings(BaseModel):
                 f"DATABASE_ROUTING[{label!r}] = {target!r} must name a shard group "
                 "or a SQL alias outside the shard groups"
             )
+
+    def _check_i18n(self) -> None:
+        """Languages are codes like ``pt-br``, listed once; the zone exists."""
+        codes = [code for code, _ in self.LANGUAGES]
+        if not codes:
+            raise ValueError("LANGUAGES must list at least one language")
+        if bad := [code for code in codes if not re.fullmatch(LANGUAGE_PATTERN, code)]:
+            raise ValueError(
+                f"LANGUAGES codes are lower case, as 'ar' or 'pt-br', not {bad}"
+            )
+        if len(set(codes)) != len(codes):
+            raise ValueError("LANGUAGES lists a language twice")
+        if self.LANGUAGE_CODE not in codes:
+            raise ValueError(
+                f"LANGUAGE_CODE {self.LANGUAGE_CODE!r} is not in LANGUAGES"
+            )
+        try:
+            ZoneInfo(self.TIME_ZONE)
+        except (ValueError, ZoneInfoNotFoundError):
+            raise ValueError(
+                f"TIME_ZONE {self.TIME_ZONE!r} is not a time zone, such as "
+                "'Africa/Cairo' or 'UTC' (install tzdata if the system has none)"
+            ) from None
 
     def deployment_warnings(self) -> list[str]:
         """Weak but valid choices in staging and production; ``check`` lists them.

@@ -18,6 +18,18 @@ All notable changes to domainkit. The format follows
   (`redis+cluster://node-1,node-2`), `rediss+` for TLS, with
   `SENTINEL_PASSWORD` for Sentinels that ask for one. The deployment checks
   hold them to the rules for one server (DJ-58; `docs/cache.md`).
+- Error details and validation messages in the caller's language
+  (DJ-59; `docs/i18n.md`, ADR 0039): `LocaleMiddleware` picks a language of
+  `LANGUAGES` from `Accept-Language` and answers with `Content-Language`;
+  domainkit ships English and Arabic. Projects mark their own text with
+  `gettext`, `ngettext`, `pgettext`, and their lazy variants
+  (`domainkit.i18n`), keep catalogs per domain or in `LOCALE_PATHS`, and
+  compile them with `manage.py compilemessages`, which needs no GNU tools
+  and checks them (`--check` in CI). New projects install the middleware.
+- `TIME_ZONE`, with `localtime()`, `localdate()`, and `timezone.override()`
+  to show stored UTC times where the business is, and `number_format`,
+  `date_format`, `time_format`, and `datetime_format` that write numbers
+  and dates as English and Arabic do (DJ-60; `docs/i18n.md`).
 
 ## [0.6.2] - 2026-10-19
 
