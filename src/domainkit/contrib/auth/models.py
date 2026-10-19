@@ -13,10 +13,11 @@ import secrets
 import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, ClassVar, Final, NewType, Self
 from uuid import UUID, uuid4
 
+from domainkit import clock
 from domainkit.contrib.contenttypes.models import ContentType
 from domainkit.ddd import AggregateRoot, Entity, ValueObject
 
@@ -52,7 +53,7 @@ _HASH: Final = re.compile(r"[a-z][a-z0-9_]*\$.+")
 
 def _now() -> datetime:
     """Return the current time in UTC."""
-    return datetime.now(UTC)
+    return clock.now()
 
 
 class PasswordHash(ValueObject):

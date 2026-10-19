@@ -10,13 +10,13 @@ addresses are counted by digest: the counts hold no personal data.
 
 import hashlib
 import math
-import time
 import unicodedata
 from collections import OrderedDict
 from collections.abc import Iterable
 
 from fastapi import Request, status
 
+from domainkit import clock
 from domainkit.apps import registry
 from domainkit.conf import settings
 from domainkit.http.errors import APIError
@@ -89,7 +89,7 @@ def first_refusal(request: Request, key: str, period: int) -> bool:
     refused: OrderedDict[str, float] | None = getattr(state, "login_refusals", None)
     if refused is None:
         refused = state.login_refusals = OrderedDict()
-    now = time.monotonic()
+    now = clock.monotonic()
     since = refused.get(key)
     if since is not None and now - since < period:
         return False

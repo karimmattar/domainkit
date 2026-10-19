@@ -33,6 +33,7 @@ from pydantic import ValidationError
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from domainkit import clock
 from domainkit.apps import registry
 from domainkit.broker import Broker, BrokerError
 from domainkit.context import SYSTEM_ACTOR, RequestContext, bind_request
@@ -134,7 +135,7 @@ _CLAIMED: Final = (
 
 def _now() -> datetime:
     """Return the current time in UTC."""
-    return datetime.now(UTC)
+    return clock.now()
 
 
 def backoff(attempts: int, config: MessagingSettings) -> float:

@@ -30,7 +30,7 @@ List the middleware after ``RequestContextMiddleware`` and
 
 import hashlib
 import secrets
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any, Final
 
 from fastapi import status
@@ -39,6 +39,7 @@ from sqlalchemy.exc import IntegrityError
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from domainkit import clock
 from domainkit.apps import registry
 from domainkit.context import current_request
 from domainkit.db import connections
@@ -58,7 +59,7 @@ _STORED_HEADERS: Final = frozenset({"content-type", "location", "content-languag
 
 def _now() -> datetime:
     """Return the current time in UTC."""
-    return datetime.now(UTC)
+    return clock.now()
 
 
 def _hash(*parts: str | bytes) -> str:

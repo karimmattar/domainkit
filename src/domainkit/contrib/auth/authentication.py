@@ -286,13 +286,17 @@ class JWTAuthentication(BaseAuthentication):
                 algorithms=[self.config.ALGORITHM],
                 audience=self.config.AUDIENCE,
                 issuer=self.config.ISSUER,
-                leeway=self.config.LEEWAY,
-                options={"require": required},
+                # The times are checked below, on domainkit's clock.
+                options={
+                    "require": required,
+                    "verify_exp": False,
+                    "verify_iat": False,
+                    "verify_nbf": False,
+                },
             )
-        except self.jwt.ExpiredSignatureError:
-            raise AuthenticationFailed("Token expired.") from None
         except self.jwt.InvalidTokenError:
             raise AuthenticationFailed("Invalid token.") from None
+        _check_times(claims, self.config.LEEWAY)
         return claims
 
     def _pair(
@@ -383,6 +387,28 @@ def _keys(config: JWTSettings) -> tuple[bytes | str, bytes | str]:
             f"{config.ALGORITHM}."
         )
     return secret, config.VERIFYING_KEY
+
+
+def _check_times(claims: dict[str, Any], leeway: timedelta) -> None:
+    """Check ``iat``, ``nbf``, and ``exp`` on domainkit's clock, as PyJWT would.
+
+    PyJWT reads the host's clock, which a frozen clock (``domainkit.clock``)
+    does not move; the tokens are issued on domainkit's.
+
+    Raises:
+        AuthenticationFailed: The token is malformed, not valid yet, or expired.
+    """
+    now = utc_now().timestamp()
+    slack = leeway.total_seconds()
+    try:
+        issued, expires = int(claims["iat"]), int(claims["exp"])
+        starts = int(claims.get("nbf", issued))
+    except (TypeError, ValueError, OverflowError):
+        raise AuthenticationFailed("Invalid token.") from None
+    if max(issued, starts) > now + slack:
+        raise AuthenticationFailed("Invalid token.")
+    if expires <= now - slack:
+        raise AuthenticationFailed("Token expired.")
 
 
 def _uuid(value: object) -> UUID:

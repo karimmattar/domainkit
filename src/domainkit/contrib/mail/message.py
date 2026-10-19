@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, Annotated, Any, Final, Self
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
+from domainkit import clock
+
 if TYPE_CHECKING:
     from domainkit.ddd import UnitOfWork
 
@@ -186,7 +188,7 @@ class EmailMessage(BaseModel):
         ):
             if values:
                 message[name] = ", ".join(values)
-        message["Date"] = formatdate(usegmt=True)
+        message["Date"] = formatdate(clock.now().timestamp(), usegmt=True)
         message["Message-ID"] = self.message_id
         for name, value in self.headers.items():
             message[name] = value

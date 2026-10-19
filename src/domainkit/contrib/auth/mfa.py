@@ -28,7 +28,6 @@ codes, used ones, and refusals are audited.
 
 import hashlib
 import secrets
-import time
 from datetime import timedelta
 from typing import Final, Literal
 from uuid import UUID
@@ -36,6 +35,7 @@ from uuid import UUID
 from fastapi import APIRouter, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
+from domainkit import clock
 from domainkit.conf import settings
 from domainkit.http.errors import APIError
 
@@ -463,5 +463,5 @@ def _normalize(code: str) -> str:
 
 
 def _now() -> float:
-    """Seconds since the epoch."""
-    return time.time()
+    """Seconds since the epoch, on ``domainkit.clock``."""
+    return clock.now().timestamp()

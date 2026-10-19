@@ -30,13 +30,13 @@ once read, even when they hold: a guess that works gets the same 429.
 import logging
 from collections import OrderedDict
 from dataclasses import replace
-from time import monotonic
 from typing import Final
 
 from fastapi import status
 from starlette.requests import HTTPConnection
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from domainkit.clock import monotonic
 from domainkit.conf import settings
 from domainkit.context import bind_request, current_request
 from domainkit.http.errors import error_response

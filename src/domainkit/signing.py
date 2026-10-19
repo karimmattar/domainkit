@@ -24,11 +24,11 @@ import binascii
 import hashlib
 import hmac
 import json
-import time
 from collections.abc import Sequence
 from datetime import timedelta
 from typing import Any, ClassVar, Final
 
+from domainkit import clock
 from domainkit.conf import settings
 from domainkit.exceptions import ImproperlyConfigured
 
@@ -242,8 +242,8 @@ def loads(
 
 
 def _now() -> float:
-    """Seconds since the epoch."""
-    return time.time()
+    """Seconds since the epoch, on ``domainkit.clock``."""
+    return clock.now().timestamp()
 
 
 def _key(value: Key, *, empty: bool = False) -> bytes:

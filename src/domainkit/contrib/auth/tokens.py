@@ -13,11 +13,12 @@ together if a used token comes back.
 import hashlib
 import re
 import secrets
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import StrEnum
 from typing import Final
 from uuid import UUID
 
+from domainkit import clock
 from domainkit.ddd import Entity
 
 TOKEN_BYTES: Final = 32
@@ -63,7 +64,7 @@ class AuthToken(Entity[str]):
 
 def utc_now() -> datetime:
     """The current time in UTC."""
-    return datetime.now(UTC)
+    return clock.now()
 
 
 def new_token(prefix: str) -> str:
