@@ -607,6 +607,30 @@ def test_jwt_logins_refresh_and_end(api: Api, caplog: pytest.LogCaptureFixture) 
     )
 
 
+def test_reused_refresh_tokens_of_deleted_users_still_fail(api: Api) -> None:
+    """Tokens have no foreign key: one can outlive a user removed without them."""
+    create_user("alice")
+    client = api(**JWT)
+    first = login(client, "alice")["refresh_token"]
+    client.post("/auth/refresh", json={"refresh_token": first})
+
+    async def remove() -> None:
+        async with AuthUnitOfWork() as uow:
+            user = await uow.users.get_by_natural_key("alice")
+            assert user is not None
+            await uow.users.remove(user)
+            await uow.commit()
+
+    run_async(remove())
+    reused = client.post("/auth/refresh", json={"refresh_token": first})
+
+    assert (reused.status_code, reused.json()["detail"]) == (
+        401,
+        "Refresh token reused; log in again.",
+    )
+    assert audited("auth.refresh_token_reused") == []
+
+
 def test_jwt_password_changes_keep_this_session(api: Api) -> None:
     """Other logins end; this one, and its refresh token, go on."""
     create_user("alice")
