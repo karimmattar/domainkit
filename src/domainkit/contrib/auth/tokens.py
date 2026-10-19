@@ -11,6 +11,7 @@ together if a used token comes back.
 """
 
 import hashlib
+import re
 import secrets
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -20,6 +21,7 @@ from uuid import UUID
 from domainkit.ddd import Entity
 
 TOKEN_BYTES: Final = 32
+_BODY: Final = re.compile(r"[A-Za-z0-9_-]{43}")  # token_urlsafe(TOKEN_BYTES)
 """Random bytes in a token: 256 bits, beyond guessing."""
 
 
@@ -65,6 +67,12 @@ def utc_now() -> datetime:
 def new_token(prefix: str) -> str:
     """A new random token: ``prefix`` and 43 URL-safe characters."""
     return prefix + secrets.token_urlsafe(TOKEN_BYTES)
+
+
+def well_formed(token: str, prefix: str) -> bool:
+    """Whether ``token`` has the form of ``new_token(prefix)``'s tokens."""
+    body = token.removeprefix(prefix)
+    return body != token and _BODY.fullmatch(body) is not None
 
 
 def token_digest(token: str) -> str:

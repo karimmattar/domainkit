@@ -241,12 +241,25 @@ def test_wrong_passwords_on_outdated_hashes_cost_full_time(
 
 
 def test_unusable_unknown_and_malformed_hashes_never_match(
-    use_auth: UseAuth,
+    use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """None, ``!...``, unknown algorithms, and broken hashes all fail."""
-    use_auth()
+    """None, ``!...``, unknown algorithms, and broken hashes all fail.
+
+    Each costs one hash with the preferred hasher, as a wrong password does,
+    so response times do not tell which accounts have no usable password.
+    """
+    use_auth(PASSWORD_HASHERS=[f"{HERE}.TwoRoundsHasher"])
+    hashed: list[str] = []
+    hash_once = TwoRoundsHasher.hash
+
+    def counted(self: TwoRoundsHasher, password: str) -> str:
+        hashed.append(password)
+        return hash_once(self, password)
+
+    monkeypatch.setattr(TwoRoundsHasher, "hash", counted)
     for encoded in (None, "!abc", "md5$x$y", "pbkdf2_sha256$x"):
         assert verify_password(PASSWORD, encoded) == PasswordCheck(correct=False)
+    assert hashed == [PASSWORD] * 4
     assert not is_password_usable(None)
     assert not is_password_usable("!abc")
     assert is_password_usable(make_password(PASSWORD))
