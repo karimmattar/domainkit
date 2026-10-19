@@ -26,7 +26,7 @@ gets 403. ``AuthenticationMiddleware`` must be installed.
 """
 
 from collections.abc import Sequence
-from typing import Annotated, Any, ClassVar, Final
+from typing import Annotated, Any, ClassVar, Final, cast
 
 from fastapi import Depends, FastAPI, Request, status
 from fastapi.dependencies.models import Dependant
@@ -55,7 +55,18 @@ MODEL_ACTIONS: Final = {
 }
 """The permission each method needs from ``ModelPermissions``."""
 
-bearer = HTTPBearer(
+
+class _Bearer(HTTPBearer):
+    """``HTTPBearer`` for WebSocket handshakes too: both carry the header."""
+
+    async def __call__(
+        self, request: HTTPConnection
+    ) -> HTTPAuthorizationCredentials | None:
+        """The token the connection names, if any."""
+        return await super().__call__(cast(Request, request))
+
+
+bearer = _Bearer(
     auto_error=False,
     scheme_name="Token",
     description="A token from logging in: `Authorization: Bearer <token>`.",
@@ -233,12 +244,13 @@ class HasObjectPermissions(HasPermissions):
     """Users granted every permission named on the object itself.
 
     Object permissions come from backends other than ``ModelBackend``
-    (``AUTH.BACKENDS``); the request itself is allowed.
+    (``AUTH.BACKENDS``). The request itself needs an active user who logged
+    in; check each object with ``check_object_permissions``.
     """
 
     async def has_permission(self, request: HTTPConnection, user: AnyUser) -> bool:
-        """Leave the decision to the object."""
-        return True
+        """An active user who logged in; the object decides the rest."""
+        return user.is_authenticated and user.is_active
 
     async def has_object_permission(
         self, request: HTTPConnection, user: AnyUser, obj: object
@@ -297,7 +309,7 @@ class Require:
 
     async def __call__(
         self,
-        request: Request,
+        request: HTTPConnection,
         _: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
     ) -> AnyUser:
         """The user, if every rule allows the request.
@@ -342,7 +354,7 @@ def current_user(connection: HTTPConnection) -> AnyUser:
 
 
 async def authenticated_user(
-    request: Request,
+    request: HTTPConnection,
     _: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
 ) -> AbstractBaseUser:
     """The user who logged in.
