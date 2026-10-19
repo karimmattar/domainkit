@@ -449,6 +449,8 @@ class Settings(BaseModel):
     """Accepted ``Host`` header values; ``*.example.com`` matches subdomains."""
     API_DOCS: bool = True
     """Serve ``/docs``, ``/redoc``, and ``/openapi.json``."""
+    OPENAPI_OPERATION_IDS: Literal["fastapi", "route_name"] = "fastapi"
+    """Operation ids: FastAPI's (name, path, and method), or the route's name."""
     ERROR_FORMAT: Literal["domainkit", "problem+json"] = "domainkit"
     """Error bodies: ``{"detail", "code", ...}``, or RFC 9457 problem details."""
     ERROR_TYPE_BASE_URL: str | None = Field(default=None, pattern=ABSOLUTE_URI)

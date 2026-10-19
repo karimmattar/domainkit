@@ -25,3 +25,6 @@ MIDDLEWARE = [
     "domainkit.http.middleware.RequestBodyLimitMiddleware",
 ]
 ASGI_APPLICATION = "config.asgi:application"
+# Operation ids are route names, so generated clients keep their method
+# names when routers move (docs/reference.md, "The API surface").
+OPENAPI_OPERATION_IDS = "route_name"

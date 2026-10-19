@@ -14,6 +14,12 @@ from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db.drivers import connect_args
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import ErrorResponse, install_exception_handlers
+from domainkit.http.openapi import (
+    duplicate_operation_ids,
+    install_openapi,
+    operation_id,
+)
+from domainkit.http.versioning import DeprecationHeadersMiddleware
 from domainkit.lifecycle import close_resources
 from domainkit.utils.module_loading import import_string
 
@@ -59,10 +65,14 @@ def get_asgi_application() -> FastAPI:
             code: {"model": ErrorResponse, "description": description}
             for code, description in FRAMEWORK_ERRORS.items()
         },
+        generate_unique_id_function=operation_id,
     )
     install_exception_handlers(app)
+    install_openapi(app)
     if settings.ROOT_ROUTER:
         app.include_router(_load(settings.ROOT_ROUTER, APIRouter, "ROOT_ROUTER"))
+    # Innermost: it sees the responses routes answer, error handlers' too.
+    app.add_middleware(DeprecationHeadersMiddleware)
     # add_middleware() wraps the stack, so add the outermost entry last.
     for path in reversed(settings.MIDDLEWARE):
         middleware: Any = _load(path, type, "MIDDLEWARE")
@@ -76,8 +86,15 @@ def get_asgi_application() -> FastAPI:
 
 
 def application_problems(app: FastAPI) -> list[str]:
-    """What the installed domains find wrong with ``app`` (``check_application``)."""
-    return [problem for config in registry for problem in config.check_application(app)]
+    """What is wrong with ``app``: clashing operation ids, and what domains find.
+
+    Domains report through ``DomainConfig.check_application``.
+    """
+    problems = duplicate_operation_ids(app)
+    problems.extend(
+        problem for config in registry for problem in config.check_application(app)
+    )
+    return problems
 
 
 def _load[T](path: str, expected: type[T], setting: str) -> T:

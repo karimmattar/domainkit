@@ -134,3 +134,59 @@ def test_type_base_urls_are_absolute(url: str) -> None:
         override_settings(ERROR_TYPE_BASE_URL=url),
     ):
         pass
+
+
+def test_openapi_documents_problem_details(make_client: MakeClient) -> None:
+    """Error responses are documented as problem details, not the usual body."""
+    schema = make_client(**PROBLEMS).get("/openapi.json").json()
+
+    responses = schema["paths"]["/typed"]["post"]["responses"]
+    assert responses["422"]["content"] == {
+        PROBLEM_MEDIA_TYPE: {"schema": {"$ref": "#/components/schemas/ProblemDetails"}}
+    }
+    assert "application/json" in responses["200"]["content"]
+    components = schema["components"]["schemas"]
+    assert {"ProblemDetails", "FieldError"} <= set(components)
+    assert "ErrorResponse" not in components
+    assert components["ProblemDetails"]["required"] == [
+        "title",
+        "status",
+        "detail",
+        "code",
+    ]
+
+
+def test_openapi_keeps_the_error_body_another_route_still_uses(
+    make_client: MakeClient,
+) -> None:
+    """A schema still naming ``ErrorResponse`` elsewhere keeps the component."""
+    from domainkit.http.openapi import _document_problems
+
+    schema: dict[str, Any] = {
+        "paths": {
+            "/x": {
+                "get": {
+                    "responses": {
+                        "404": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/Other"}
+                                }
+                            }
+                        }
+                    }
+                },
+                "parameters": [],
+            }
+        },
+        "components": {
+            "schemas": {
+                "ErrorResponse": {"type": "object"},
+                "Other": {"$ref": "#/components/schemas/ErrorResponse"},
+            }
+        },
+    }
+
+    _document_problems(schema)
+
+    assert "ErrorResponse" in schema["components"]["schemas"]
