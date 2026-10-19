@@ -557,7 +557,32 @@ def test_enrolment_states(identity: Api, clock: list[float]) -> None:
     assert (once_more.status_code, once_more.json()["code"]) == (409, "mfa_enabled")
     assert confirm_again.json()["code"] == "no_enrolment"
     assert wrong_password.json()["code"] == "wrong_password"
+    assert wrong_password.json()["detail"] == "Your password was entered incorrectly."
     assert client.post("/auth/mfa/totp", json={"password": PASSWORD}).status_code == 401
+
+
+def test_passwords_checked_again_count_against_the_login_rate(identity: Api) -> None:
+    """Per user: a stolen session cannot guess the password through them."""
+    create_user("alice")
+    client = identity(LOGIN_RATE="2/minute")
+    headers = bearer(login(client, "alice")["access_token"])
+    elsewhere = TestClient(client.app, client=("203.0.113.9", 1))
+
+    def guess(caller: TestClient) -> int:
+        body = {"password": "nope"}
+        return caller.post("/auth/mfa/totp", json=body, headers=headers).status_code
+
+    assert [guess(client), guess(elsewhere), guess(elsewhere)] == [400, 400, 429]
+
+
+def test_recovery_codes_are_sixteen_draws_in_groups_of_four(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each character is drawn on its own from the base-32 alphabet."""
+    draws = iter(mfa.RECOVERY_ALPHABET * 2)
+    monkeypatch.setattr(mfa.secrets, "choice", lambda alphabet: next(draws))
+
+    assert mfa.new_recovery_codes(2) == ["abcd-efgh-ijkl-mnop", "qrst-uvwx-yz23-4567"]
 
 
 def test_rotated_keys_reseal_the_secret(identity: Api, clock: list[float]) -> None:
