@@ -366,6 +366,25 @@ def test_addresses_people_use_are_accepted(address: str) -> None:
     assert check_address(address) == address.strip()
 
 
+def longest(local: int = 64, domain: int = 189) -> str:
+    """An address with a local part and a domain of these lengths."""
+    labels = ["d" * 63] * (domain // 64) + ["d" * (domain % 64)]
+    return "l" * local + "@" + ".".join(labels)
+
+
+def test_addresses_may_be_as_long_as_the_rfcs_allow() -> None:
+    """64 characters before the @, 254 in all, 320 with a display name."""
+    address = longest()
+    named = "N" * 63 + f" <{address}>"
+
+    assert (len(address), len(named)) == (254, 320)
+    assert check_address(address) == address
+    assert check_address(named) == named
+    for refused in (longest(domain=190), "N" * 64 + f" <{address}>", longest(65, 188)):
+        with pytest.raises(ValueError, match="not an email address"):
+            check_address(refused)
+
+
 @pytest.mark.parametrize(
     "address",
     [
@@ -477,9 +496,11 @@ def test_the_mime_form_hides_bcc_and_keeps_every_part() -> None:
         headers={"List-Unsubscribe": "<https://example.com/u>"},
     ).prepared("Sender <sender@example.org>")
 
-    parsed = email.message_from_bytes(
-        message.to_mime().as_bytes(), policy=email.policy.default
-    )
+    raw = message.to_mime().as_bytes()
+    parsed = email.message_from_bytes(raw, policy=email.policy.default)
+
+    assert b"\r\nFrom: Sender <sender@example.org>\r\n" in raw  # SMTP's form.
+    assert b"\n" not in raw.replace(b"\r\n", b"")
 
     assert parsed["Subject"] == "Ünïcode subject"
     assert parsed["From"] == "Sender <sender@example.org>"
@@ -519,8 +540,9 @@ def test_messages_must_be_prepared_before_sending() -> None:
     """A message without a sender or an id has no MIME form yet."""
     message = EmailMessage(subject="S", body="B", to=("a@example.com",))
 
-    with pytest.raises(ValueError, match="Prepare the message"):
+    with pytest.raises(ValueError, match="Prepare the message") as refused:
         message.to_mime()
+    assert str(refused.value) == "Prepare the message before sending it: prepared()."
     with pytest.raises(ValueError, match="Prepare the message"):
         message.model_copy(update={"from_email": "a@example.com"}).to_mime()
 

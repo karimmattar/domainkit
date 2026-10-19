@@ -573,6 +573,7 @@ def test_email_of_reads_the_email_field() -> None:
     assert email_of(user) == "a@example.com"
     user.EMAIL_FIELD = None  # type: ignore[misc]
     assert email_of(user) is None
+    assert email_of(cast(AbstractBaseUser, SimpleNamespace(EMAIL_FIELD="mail"))) is None
 
 
 @pytest.mark.parametrize(
