@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select, update
 from starlette.requests import HTTPConnection
+from starlette.testclient import WebSocketDenialResponse
 from starlette.websockets import WebSocketDisconnect
 
 from domainkit.conf import override_settings
@@ -680,6 +681,31 @@ def test_websockets_see_the_user(api: Api) -> None:
     ):
         pass
     assert refused.value.code == 1008
+
+
+def test_websocket_routes_take_access_rules(api: Api) -> None:
+    """``Require`` and ``AuthenticatedUser`` refuse a handshake as they do a request.
+
+    The refusal is the same 401 or 403 response, before the socket opens.
+    """
+    create_user("alice")
+    create_user("boss", is_staff=True)
+    client = api()
+    alice = bearer(login(client, "alice")["access_token"])
+    boss = bearer(login(client, "boss")["access_token"])
+
+    def connect(path: str, headers: dict[str, str]) -> object:
+        try:
+            with client.websocket_connect(path, headers=headers) as socket:
+                return socket.receive_json()
+        except WebSocketDenialResponse as denied:
+            return denied.status_code, denied.json()["code"]
+
+    assert connect("/user-socket", {}) == (401, "not_authenticated")
+    assert connect("/user-socket", alice) == {"user": "alice"}
+    assert connect("/guarded-socket", {}) == (401, "not_authenticated")
+    assert connect("/guarded-socket", alice) == (403, "permission_denied")
+    assert connect("/guarded-socket", boss) == {"user": "boss"}
 
 
 def test_jwt_tokens_from_elsewhere_are_refused(
