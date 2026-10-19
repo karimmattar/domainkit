@@ -294,6 +294,24 @@ def test_hmac_keys_of_the_hash_length_are_enough(
     assert authenticator.signing_key == authenticator.verifying_key == b"k" * length
 
 
+def test_throttled_counts_are_remembered_within_a_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each count's first refusal in a period is audited; old ones are let go."""
+    from fastapi import FastAPI
+    from starlette.requests import Request
+
+    from domainkit.contrib.auth import api
+
+    monkeypatch.setattr(api, "MAX_REFUSALS", 1)
+    request = Request({"type": "http", "headers": [], "app": FastAPI()})
+
+    assert api._first_refusal(request, "a", 60)
+    assert not api._first_refusal(request, "a", 60)
+    assert api._first_refusal(request, "b", 60)
+    assert api._first_refusal(request, "a", 60)  # Let go when "b" came.
+
+
 def test_logins_from_unknown_addresses_are_throttled_together(
     use_auth: UseAuth,
 ) -> None:
@@ -301,13 +319,14 @@ def test_logins_from_unknown_addresses_are_throttled_together(
     from fastapi import FastAPI
     from starlette.requests import Request
 
-    from domainkit.contrib.auth.api import _throttle
+    from domainkit.contrib.auth.api import _login_keys, _throttle
     from domainkit.http.errors import APIError
 
     use_auth(LOGIN_RATE="1/minute")
     app = FastAPI()
     anonymous = Request({"type": "http", "headers": [], "app": app})
 
-    asyncio.run(_throttle(anonymous, "alice"))
+    assert _login_keys(anonymous, "alice")[0] == "login:ip:unknown"
+    asyncio.run(_throttle(anonymous, *_login_keys(anonymous, "alice")))
     with pytest.raises(APIError, match="Too many login attempts"):
-        asyncio.run(_throttle(anonymous, "bob"))
+        asyncio.run(_throttle(anonymous, *_login_keys(anonymous, "bob")))
