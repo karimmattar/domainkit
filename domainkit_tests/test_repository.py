@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from domainkit.clock import freeze_time
 from domainkit.ddd import (
     AggregateRoot,
     DomainEvent,
@@ -183,7 +184,7 @@ async def test_only_soft_deletable_aggregates_are_restored() -> None:
 
 
 async def test_aggregates_mark_their_own_deletion() -> None:
-    """mark_deleted takes a time, or now."""
+    """mark_deleted takes a time, or the clock's now."""
     when = datetime(2026, 3, 1, tzinfo=UTC)
     gadget = make_gadget()
 
@@ -191,10 +192,9 @@ async def test_aggregates_mark_their_own_deletion() -> None:
     assert gadget.deleted_at == when
     gadget.restore()
     assert gadget.deleted_at is None
-    before = datetime.now(UTC)
-    gadget.mark_deleted()
-    assert gadget.deleted_at is not None
-    assert gadget.deleted_at >= before
+    with freeze_time("2026-04-01T12:00:00Z"):
+        gadget.mark_deleted()
+    assert gadget.deleted_at == datetime(2026, 4, 1, 12, tzinfo=UTC)
     assert isinstance(gadget, SoftDeletable)
 
 

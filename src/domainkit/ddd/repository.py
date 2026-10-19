@@ -17,10 +17,11 @@ import dataclasses
 from abc import ABC, abstractmethod
 from collections.abc import Hashable, Iterable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from functools import cache
 from typing import Any, Final, Literal, cast, overload
 
+from domainkit import clock
 from domainkit.ddd._dataclass import EntityMeta
 from domainkit.ddd.exceptions import Conflict, NotFound
 from domainkit.ddd.model import AggregateRoot
@@ -70,8 +71,8 @@ class SoftDeletable(metaclass=EntityMeta):
         return self.deleted_at is not None
 
     def mark_deleted(self, when: datetime | None = None) -> None:
-        """Mark the aggregate deleted at ``when`` (default: now)."""
-        self.deleted_at = when or datetime.now(UTC)
+        """Mark the aggregate deleted at ``when`` (default: ``clock.now()``)."""
+        self.deleted_at = when or clock.now()
 
     def restore(self) -> None:
         """Bring a deleted aggregate back."""
