@@ -18,6 +18,7 @@ other credentials (a gateway's header, API keys elsewhere)::
             ...  # return Credentials(user, scheme="gateway"), or None
 """
 
+import logging
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import cache
@@ -29,12 +30,16 @@ from starlette.requests import HTTPConnection
 
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import APIError
+from domainkit.log import SECURITY_LOGGER
 from domainkit.utils.module_loading import import_string
 
+from .events import RefreshTokenReused
 from .models import AbstractBaseUser, UserId
 from .settings import HMAC_ALGORITHMS, AuthSettings, JWTSettings, auth_settings
 from .tokens import TokenKind, utc_now, well_formed
 from .uow import AuthUnitOfWork
+
+security_logger = logging.getLogger(SECURITY_LOGGER)
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,6 +221,12 @@ class JWTAuthentication(BaseAuthentication):
             raise AuthenticationFailed("Invalid refresh token.")
         if token.used_at is not None or not await uow.tokens.mark_used(token):
             await uow.tokens.revoke_family(token.family)
+            security_logger.warning(
+                "A refresh token came back after use; its login %s is ended",
+                token.family,
+            )
+            if (user := await uow.users.find(UserId(token.user_id))) is not None:
+                user.record(RefreshTokenReused(user_id=user.id, family=token.family))
             await uow.commit()
             raise AuthenticationFailed("Refresh token reused; log in again.")
         user = await active_user(uow, token.user_id)

@@ -1,6 +1,7 @@
 """Authenticating requests: logins, tokens, JWT, access rules, and the actor."""
 
 import io
+import logging
 from datetime import timedelta
 from typing import Any
 from uuid import UUID
@@ -37,6 +38,7 @@ from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
+from domainkit.log import SECURITY_LOGGER
 from domainkit.management import call_command
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import AUTH, MIDDLEWARE, Api, UseAuth
@@ -735,7 +737,7 @@ def test_changepassword_ends_every_session(
     assert stored_tokens(alice_id) == []
 
 
-def test_jwt_logins_refresh_and_end(api: Api) -> None:
+def test_jwt_logins_refresh_and_end(api: Api, caplog: pytest.LogCaptureFixture) -> None:
     """Access tokens are signed; refresh tokens rotate, once each."""
     alice = create_user("alice")
     client = api(**JWT)
@@ -774,10 +776,22 @@ def test_jwt_logins_refresh_and_end(api: Api) -> None:
         == 200
     )
 
-    reused = client.post("/auth/refresh", json={"refresh_token": body["refresh_token"]})
+    with caplog.at_level(logging.WARNING, logger=SECURITY_LOGGER):
+        reused = client.post(
+            "/auth/refresh", json={"refresh_token": body["refresh_token"]}
+        )
     assert (reused.status_code, reused.json()["detail"]) == (
         401,
         "Refresh token reused; log in again.",
+    )
+    family = str(issued["family"])
+    assert f"A refresh token came back after use; its login {family} is ended" in [
+        record.getMessage() for record in caplog.records
+    ]
+    (row,) = audited("auth.refresh_token_reused")
+    assert (row["actor"], row["details"]) == (
+        "anonymous",
+        {"user_id": str(alice), "family": family},
     )
     for token in (body["access_token"], refreshed["access_token"]):
         ended = client.get("/whoami", headers=bearer(token))
@@ -801,6 +815,30 @@ def test_jwt_logins_refresh_and_end(api: Api) -> None:
         ).status_code
         == 401
     )
+
+
+def test_reused_refresh_tokens_of_deleted_users_still_fail(api: Api) -> None:
+    """Tokens have no foreign key: one can outlive a user removed without them."""
+    create_user("alice")
+    client = api(**JWT)
+    first = login(client, "alice")["refresh_token"]
+    client.post("/auth/refresh", json={"refresh_token": first})
+
+    async def remove() -> None:
+        async with AuthUnitOfWork() as uow:
+            user = await uow.users.get_by_natural_key("alice")
+            assert user is not None
+            await uow.users.remove(user)
+            await uow.commit()
+
+    run_async(remove())
+    reused = client.post("/auth/refresh", json={"refresh_token": first})
+
+    assert (reused.status_code, reused.json()["detail"]) == (
+        401,
+        "Refresh token reused; log in again.",
+    )
+    assert audited("auth.refresh_token_reused") == []
 
 
 def test_jwt_password_changes_keep_this_session(api: Api) -> None:
