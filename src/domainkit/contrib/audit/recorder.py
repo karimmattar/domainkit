@@ -1,7 +1,8 @@
 """Building and writing audit rows.
 
 Who acted comes from the request context: the authenticated actor,
-``anonymous`` for unauthenticated requests, ``system`` outside requests.
+``anonymous`` for unauthenticated requests, ``system`` outside requests and
+in work no request queued (periodic tasks).
 Never put secrets in event fields or ``details``: they are kept for good.
 
 Personal values are written as pseudonyms (see ``personal``): the client's
@@ -22,7 +23,7 @@ from sqlalchemy import insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from domainkit.apps import registry
-from domainkit.context import current_request
+from domainkit.context import SYSTEM_ACTOR, current_request
 from domainkit.db import connections
 from domainkit.ddd import DomainEvent
 from domainkit.ddd.personal import personal_fields
@@ -47,7 +48,7 @@ def _actor() -> str:
     """Return who is acting in the current context."""
     request = current_request()
     if request is None:
-        return "system"
+        return SYSTEM_ACTOR
     return request.actor or "anonymous"
 
 
@@ -110,8 +111,11 @@ def audit_row(
     """
     request = current_request()
     occurred_at = occurred_at or datetime.now(UTC)
-    caller = (request.actor if request else None) or anonymous_subject(
-        occurred_at.astimezone(UTC).date()
+    actor = request.actor if request else None
+    caller = (
+        actor
+        if actor not in {None, SYSTEM_ACTOR}
+        else anonymous_subject(occurred_at.astimezone(UTC).date())
     )
     row = {
         "id": uuid.uuid4(),
