@@ -69,6 +69,13 @@ All notable changes to domainkit. The format follows
   `createtoken --scope` makes scoped tokens. Tokens record when they were
   last used, at most every five minutes. Run `makemigrations` and
   `migrate` for the tokens' new columns.
+- Client certificates (DJ-44): `ClientCertificateAuthentication` logs in
+  the user a certificate names, by its SHA-256 (`addcertificate`) or by its
+  subject's common name. The certificate comes from the ASGI TLS extension,
+  or from `AUTH.CLIENT_CERT.HEADER`, believed only from `TRUSTED_PROXIES`
+  (`docs/auth.md`, "Client certificates", has an nginx example).
+  `ProxyHeadersMiddleware` keeps the proxy's address in
+  `scope["domainkit.peer"]` for this.
 - `AsyncTestClient`, which serves the application in the test's own event
   loop, with its lifespan, and the `async_client`, `async_client_for`, and
   `async_admin_client` fixtures, for async tests (DJ-62). New projects'

@@ -397,6 +397,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `createtoken` | `username`, `--name`, `--days`, `--no-expiry`, `--scope` | Print a new token for a user's scripts, shown once, limited to the `--scope` permissions if given (auth). |
 | `cleartokens` | `--user` | Delete expired tokens, or every token of one user (auth). |
 | `resetmfa` | `username` | Turn a user's second factor off, and end their sessions (auth). |
+| `addcertificate` | `username`, `certificate`, `--name` | Let a client certificate log in as a user, by its SHA-256 (auth). |
 
 ## Extension points
 

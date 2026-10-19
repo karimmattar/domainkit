@@ -18,6 +18,7 @@ from domainkit.conf.global_settings import (
 from domainkit.contrib.audit.settings import AuditSettings
 from domainkit.contrib.auth.settings import (
     AuthSettings,
+    ClientCertSettings,
     CookieSettings,
     JWTSettings,
     MfaSettings,
@@ -61,6 +62,7 @@ def documented(page: str) -> set[str]:
         (JWTSettings, "auth.md"),
         (CookieSettings, "auth.md"),
         (MfaSettings, "auth.md"),
+        (ClientCertSettings, "auth.md"),
         (MailSettings, "mail.md"),
         (SmtpSettings, "mail.md"),
         (NotificationsSettings, "mail.md"),

@@ -37,6 +37,8 @@ class TokenKind(StrEnum):
     """Exchanged, once, for a new access token and refresh token."""
     SESSION = "session"
     """A browser's session cookie (``CookieAuthentication``), never a header."""
+    CERTIFICATE = "certificate"
+    """A client certificate, by its SHA-256 (``ClientCertificateAuthentication``)."""
 
 
 class AuthToken(Entity[str]):

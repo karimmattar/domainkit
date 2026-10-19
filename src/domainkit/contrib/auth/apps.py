@@ -178,7 +178,16 @@ class AuthConfig(DomainConfig):
             )
 
     def _check_deployment(self, config: AuthSettings) -> None:
-        """Staging and production refuse hashers made for tests, and plain cookies."""
+        """Refuse settings that cannot hold anywhere, and unsafe ones where deployed.
+
+        Staging and production refuse hashers made for tests, and plain
+        cookies.
+        """
+        if config.CLIENT_CERT.HEADER is not None and not settings.TRUSTED_PROXIES:
+            raise ImproperlyConfigured(
+                "AUTH.CLIENT_CERT.HEADER is believed only from TRUSTED_PROXIES; "
+                "list the proxy that sets it."
+            )
         insecure = insecure_hashers(config.PASSWORD_HASHERS)
         if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
             return

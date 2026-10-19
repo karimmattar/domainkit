@@ -472,6 +472,58 @@ A single-page app on another origin needs CORS with credentials:
 `CookieAuthentication` in `AUTHENTICATION_CLASSES`. List it after the
 classes that read headers: it issues no tokens for `/login`.
 
+### Client certificates (mutual TLS)
+
+Services that call the API can prove who they are with a client
+certificate instead of a token. `ClientCertificateAuthentication` takes
+the certificate from one of two places, and only these:
+
+- the ASGI TLS extension, when the ASGI server terminates TLS and checked
+  the certificate itself (`scope["extensions"]["tls"]`; a certificate it
+  says did not verify gets 401);
+- the header `AUTH.CLIENT_CERT.HEADER`, holding the URL-encoded PEM, only
+  on connections from `TRUSTED_PROXIES`, and only with `VERIFY_HEADER`
+  saying `SUCCESS` when that is set. The proxy's own address counts, not
+  the client's that `ProxyHeadersMiddleware` puts in its place. A request
+  from anyone else that sends the header gets 401: a client could
+  otherwise name any certificate. Startup refuses `HEADER` without
+  `TRUSTED_PROXIES`.
+
+```python
+AUTH = {
+    "AUTHENTICATION_CLASSES": [
+        "domainkit.contrib.auth.authentication.TokenAuthentication",
+        "domainkit.contrib.auth.certificates.ClientCertificateAuthentication",
+    ],
+    "CLIENT_CERT": {"HEADER": "X-Client-Cert", "VERIFY_HEADER": "X-Client-Verify"},
+}
+TRUSTED_PROXIES = ["10.0.0.0/8"]  # where nginx runs
+```
+
+```nginx
+server {
+    listen 443 ssl;
+    ssl_client_certificate /etc/nginx/clients-ca.pem;   # the CA that signs clients
+    ssl_verify_client on;                               # or optional, with VERIFY_HEADER
+    location / {
+        # Set, never pass on: whatever the client sent in these is replaced.
+        proxy_set_header X-Client-Cert   $ssl_client_escaped_cert;
+        proxy_set_header X-Client-Verify $ssl_client_verify;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_pass http://api;
+    }
+}
+```
+
+With `MATCH = "fingerprint"` (the default), a certificate logs in as the
+user `addcertificate <username> <cert.pem>` registered it for, by its
+SHA-256; `cleartokens --user` and `DELETE /tokens/{id}` remove it. With
+`MATCH = "subject"`, the subject's common name is the username: everything
+the CA signs logs in as someone, so use it only with a CA of your own (it
+needs `cryptography`, the `mfa` extra). Neither domainkit nor this class
+checks the chain or the dates: the server or the proxy must, against the
+CA you trust. Requests get `request.auth.scheme == "certificate"`.
+
 ### Other credentials
 
 A class of your own subclasses `BaseAuthentication`, returns `Credentials`
@@ -891,6 +943,7 @@ changed what.
 | `SIGNUP_ENABLED` | `False` | Let anyone create an account at `/signup`. |
 | `COOKIE` | see below | Browser sessions, for `CookieAuthentication`. |
 | `MFA` | see below | Second factors (`auth.mfa`). |
+| `CLIENT_CERT` | see below | Client certificates, for `ClientCertificateAuthentication`. |
 | `CSRF_TRUSTED_ORIGINS` | `()` | Origins (`https://app.example.com`, `https://*.example.com`) whose pages may send cookie requests, besides the request's own and `ALLOWED_HOSTS`. |
 | `REQUIRE_ROUTE_RULES` | `True` | Every route must say who may call it (`Require`, a user parameter, or `Public`); see "Deny by default". |
 | `JWT` | see below | JSON Web Tokens, for `JWTAuthentication`. |
@@ -913,6 +966,12 @@ changed what.
 | `RECOVERY_CODES` | `10` | Recovery codes each user gets (1 to 50). |
 | `WINDOW` | `1` | Steps of 30 seconds either side of now whose codes count (0 to 10). |
 
+| `AUTH["CLIENT_CERT"]` key | Default | Meaning |
+| --- | --- | --- |
+| `MATCH` | `"fingerprint"` | `fingerprint`: the users `addcertificate` registered; `subject`: the common name is the username. |
+| `HEADER` | `None` | The header a trusted proxy sets to the URL-encoded PEM; `None` takes certificates from the ASGI TLS extension only. Needs `TRUSTED_PROXIES`. |
+| `VERIFY_HEADER` | `None` | The header in which the proxy says `SUCCESS` (nginx's `$ssl_client_verify`). |
+
 | `AUTH["JWT"]` key | Default | Meaning |
 | --- | --- | --- |
 | `SIGNING_KEY` | `None` (required) | The HMAC secret, or the private key in PEM. |
@@ -932,6 +991,7 @@ changed what.
 | `changepassword` | `[username]` | Ask twice for a new password that passes the validators; three tries. The default user is your login name. Every token of the user ends. |
 | `createtoken` | `username`, `--name`, `--days` (90), `--no-expiry`, `--scope` | Print a new opaque token for the user's scripts; it is shown once. Each `--scope KEY` limits it to that permission, which the user must have. |
 | `cleartokens` | `--user` | Delete expired tokens (hourly with `domainkit.contrib.messaging`), or every token of one user. |
+| `addcertificate` | `username`, `certificate`, `--name` | Let a client certificate (a PEM file) log in as the user, by its SHA-256; prints the fingerprint. |
 | `resetmfa` | `username` | Turn a user's second factor off and end their sessions, for a user who lost the app and the recovery codes. |
 
 Code that sets passwords itself ends the user's sessions with

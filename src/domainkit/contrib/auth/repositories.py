@@ -359,6 +359,18 @@ class TokenStore:
         self.session.add(token)
         return raw, token
 
+    async def add_certificate(self, user_id: UUID, digest: str, *, name: str) -> None:
+        """Let the certificate whose SHA-256 is ``digest`` authenticate ``user_id``."""
+        self.session.add(
+            AuthToken(
+                id=digest,
+                user_id=user_id,
+                kind=TokenKind.CERTIFICATE,
+                name=name,
+                created_at=utc_now(),
+            )
+        )
+
     async def find(self, raw: str) -> AuthToken | None:
         """The stored token ``raw`` is, expired or not."""
         return await self.find_digest(token_digest(raw))

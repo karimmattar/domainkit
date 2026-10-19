@@ -22,6 +22,7 @@ VALIDATORS: str = "domainkit.contrib.auth.validators"
 AUTHENTICATION: str = "domainkit.contrib.auth.authentication"
 TOKEN_PLACEHOLDER: Final = "{token}"  # noqa: S105 - a placeholder, not a secret.
 """Where a reset or verification link takes its token."""
+HEADER_NAME: Final = r"^[A-Za-z0-9-]{1,64}$"
 COOKIE_NAME: Final = r"^[A-Za-z0-9_.-]{1,64}$"
 """Cookie names: letters, digits, ``_ . -`` (``__Host-`` included)."""
 ORIGIN: Final = re.compile(r"https?://(\*\.)?[a-z0-9.-]+(:[0-9]{1,5})?")
@@ -134,6 +135,22 @@ class MfaSettings(BaseModel):
     """30-second steps either side of now whose codes still count (clock drift)."""
 
 
+class ClientCertSettings(BaseModel):
+    """``AUTH["CLIENT_CERT"]``: mutual TLS (``ClientCertificateAuthentication``)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    MATCH: Literal["fingerprint", "subject"] = "fingerprint"
+    """Find the user by the certificate's SHA-256 (``addcertificate``), or by
+    its subject's common name as the username."""
+    HEADER: str | None = Field(default=None, pattern=HEADER_NAME)
+    """The header a trusted proxy puts the URL-encoded PEM in; None: only
+    certificates the server itself checked (the ASGI TLS extension)."""
+    VERIFY_HEADER: str | None = Field(default=None, pattern=HEADER_NAME)
+    """The header in which the proxy says ``SUCCESS`` if it checked the
+    certificate (nginx's ``$ssl_client_verify``)."""
+
+
 class AuthSettings(BaseModel):
     """Users, hashing, validation, and backends; every key is optional."""
 
@@ -212,6 +229,8 @@ class AuthSettings(BaseModel):
     """Browser sessions in cookies (``CookieAuthentication``)."""
     MFA: MfaSettings = MfaSettings()
     """Second factors: authenticator apps and recovery codes."""
+    CLIENT_CERT: ClientCertSettings = ClientCertSettings()
+    """Client certificates (mutual TLS)."""
     CSRF_TRUSTED_ORIGINS: tuple[str, ...] = ()
     """Origins of pages that may send cookie requests besides ``ALLOWED_HOSTS``'."""
 
