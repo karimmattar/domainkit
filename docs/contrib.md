@@ -12,6 +12,7 @@ configured by one setting, a dictionary whose keys are all optional.
 | `domainkit.contrib.evidence` | `EVIDENCE` | none: records live on a ledger |
 | `domainkit.contrib.contenttypes` | none | `domainkit_content_types` |
 | `domainkit.contrib.auth` | `AUTH` | users, groups, permissions; see [auth.md](auth.md) |
+| `domainkit.contrib.privacy` | none | none: exports, erases, and purges domains' rows; see [privacy.md](privacy.md) |
 
 With several databases ([databases.md](databases.md)), the outbox and the
 audit trail commit with business data, so their tables are created in every
@@ -297,6 +298,9 @@ answers "did this happen to this person?":
 to look for, or None once the person is forgotten. Each database keeps its
 own keys, so look in the one that recorded the rows (`database=`, by
 default `AUDIT.DATABASE`). A row whose personal value is None stores None.
+The same markers on aggregate fields let `domainkit.contrib.privacy`
+export and erase what the domains' own tables hold about a person
+([privacy.md](privacy.md)).
 
 To honour an erasure request, delete the person's key, in every database
 that holds an audit trail:

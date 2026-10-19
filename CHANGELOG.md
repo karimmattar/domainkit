@@ -45,6 +45,14 @@ All notable changes to domainkit. The format follows
   to show stored UTC times where the business is, and `number_format`,
   `date_format`, `time_format`, and `datetime_format` that write numbers
   and dates as English and Arabic do (DJ-60; `docs/i18n.md`).
+- `domainkit.contrib.privacy` (DJ-69; `docs/privacy.md`, ADR 0041) answers
+  privacy requests across every installed domain from `Personal` markers
+  on aggregate fields: `manage.py privacy export` writes what is held about
+  a subject, `privacy erase` erases it through units of work, with a
+  `PersonalDataErased` event, and forgets the subject in the audit trail,
+  and `privacy purge` applies the retention policies domains declare in
+  `DomainConfig.RETENTION`, never on append-only tables. Every operation is
+  audited.
 
 ## [0.6.2] - 2026-10-19
 

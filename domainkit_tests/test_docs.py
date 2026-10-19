@@ -29,6 +29,7 @@ CONTRIB_COMMANDS = (
     "domainkit.contrib.audit.management.commands",
     "domainkit.contrib.evidence.management.commands",
     "domainkit.contrib.auth.management.commands",
+    "domainkit.contrib.privacy.management.commands",
 )
 
 
