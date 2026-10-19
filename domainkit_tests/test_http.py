@@ -4,16 +4,22 @@ import asyncio
 import logging
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.datastructures import State
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from starlette.websockets import WebSocketDisconnect
 
+from domainkit.apps import registry
+from domainkit.cache import caches
 from domainkit.conf import override_settings
 from domainkit.context import current_request
+from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.http import get_asgi_application
+from domainkit.http import get_asgi_application, health
+from domainkit.http import middleware as middleware_module
 from domainkit.http.middleware import (
     AllowedHostsMiddleware,
     RequestBodyLimitMiddleware,
@@ -22,6 +28,7 @@ from domainkit.http.middleware import (
     host_allowed,
     security_headers,
 )
+from domainkit.ledger import ledgers
 from domainkit.log import SECURITY_LOGGER
 from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
 
@@ -49,6 +56,77 @@ def make_client() -> Iterator[MakeClient]:
 def client(make_client: MakeClient) -> TestClient:
     """Client with the framework test settings."""
     return make_client()
+
+
+@pytest.mark.parametrize(
+    ("failure", "status_code", "code"),
+    [
+        ("pool", 503, "database_busy"),
+        ("57014", 503, "database_busy"),
+        ("55P03", 503, "database_busy"),
+        ("40001", 503, "database_busy"),
+        ("40P01", 503, "database_busy"),
+        ("22021", 422, "invalid_value"),
+        ("22001", 422, "invalid_value"),
+        ("23502", 500, "internal_error"),
+        ("None", 500, "internal_error"),
+    ],
+)
+def test_database_errors_that_are_not_bugs_answer_as_such(
+    make_client: MakeClient,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    status_code: int,
+    code: str,
+) -> None:
+    """Busy is a 503 to retry, a value the column refuses a 422; neither a bug."""
+    reported: list[BaseException] = []
+    monkeypatch.setattr(
+        middleware_module, "report_error", lambda exc, **_: reported.append(exc)
+    )
+    client = make_client(raise_server_exceptions=False)
+    failure_path = f"/database/{failure}"
+
+    with caplog.at_level(logging.WARNING, logger="domainkit.http.middleware"):
+        response = client.get(failure_path)
+
+    assert (response.status_code, response.json()["code"]) == (status_code, code)
+    refused = [r for r in caplog.records if r.getMessage().startswith("Database")]
+    if status_code == 500:
+        assert (len(reported), refused) == (1, [])
+        return
+    assert reported == []
+    reason = "TimeoutError" if failure == "pool" else f"SQLSTATE {failure}"
+    assert [(r.levelname, r.getMessage()) for r in refused] == [
+        ("WARNING", f"Database refused GET {failure_path}: {code} ({reason})")
+    ]
+    assert refused[0].exc_info is None
+    if status_code == 503:
+        assert response.headers["Retry-After"] == "1"
+        assert response.json()["detail"] == "The database is busy; try again shortly."
+    else:
+        assert "Retry-After" not in response.headers
+        assert response.json()["detail"] == (
+            "A value cannot be stored: it is too long, out of range, or holds a "
+            "character the database refuses."
+        )
+
+
+@pytest.mark.parametrize(("failure", "close_code"), [("pool", 1013), ("22021", 1007)])
+def test_websockets_the_database_refuses_are_closed_so(
+    make_client: MakeClient, failure: str, close_code: int
+) -> None:
+    """Busy is "try again later" (1013); a refused value "invalid data" (1007)."""
+    client = make_client(raise_server_exceptions=False)
+
+    with (
+        pytest.raises(WebSocketDisconnect) as closed,
+        client.websocket_connect(f"/ws/database/{failure}"),
+    ):
+        pass
+
+    assert closed.value.code == close_code
 
 
 def test_security_headers_follow_settings() -> None:
@@ -465,6 +543,65 @@ def test_readiness_results_are_cached(make_client: MakeClient) -> None:
     AlphaConfig.healthy = False
 
     assert client.get("/ready").status_code == 200
+
+
+def test_readiness_probes_share_one_round_of_checks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Probes during a round wait for it; its result is cached from its end."""
+    rounds: list[int] = []
+    timeouts: list[float] = []
+
+    async def slow_check(seconds: float) -> list[str]:
+        rounds.append(1)
+        timeouts.append(seconds)
+        await asyncio.sleep(0.1)
+        return []
+
+    async def quick_check(seconds: float) -> list[str]:
+        timeouts.append(seconds)
+        return []
+
+    monkeypatch.setattr(registry, "check", slow_check)
+    for checked in (connections, ledgers, caches):
+        monkeypatch.setattr(checked, "check_all", quick_check)
+    request = SimpleNamespace(app=SimpleNamespace(state=State()))
+
+    async def probe_flood() -> list[list[str]]:
+        check = health._failing_checks
+        probes = [asyncio.ensure_future(check(request)) for _ in range(20)]  # type: ignore[arg-type]
+        await asyncio.sleep(0.01)
+        probes[0].cancel()  # A probe that gives up stops no one else.
+        answers = await asyncio.gather(*probes[1:])
+        again = await health._failing_checks(request)  # type: ignore[arg-type]
+        return [*answers, again]
+
+    with override_settings(READINESS_CACHE_SECONDS=0.05, READINESS_TIMEOUT=0.5):
+        answers = asyncio.run(probe_flood())
+
+    assert rounds == [1]  # One round; cached 0.05 s from its end, not its start.
+    assert answers == [[]] * 20
+    assert timeouts == [0.5] * 4  # Each kind of check, bounded by the setting.
+
+
+def test_a_round_left_on_another_loop_is_not_awaited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A round a finished event loop left pending is replaced, not awaited."""
+
+    async def no_failures(seconds: float) -> list[str]:
+        return []
+
+    monkeypatch.setattr(registry, "check", no_failures)
+    loop = asyncio.new_event_loop()
+    stranded = loop.create_future()
+    loop.close()
+    state = State()
+    state.readiness_round = stranded
+    request = SimpleNamespace(app=SimpleNamespace(state=state))
+
+    assert asyncio.run(health._failing_checks(request)) == []  # type: ignore[arg-type]
+    assert state.readiness_round is not stranded
 
 
 def test_lifespan_runs_domain_hooks() -> None:

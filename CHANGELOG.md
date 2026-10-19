@@ -77,6 +77,32 @@ All notable changes to domainkit. The format follows
   keyed requests to paths that do not exist store nothing. Without
   messaging, which purges expired keys hourly, each new key now deletes up
   to 100 expired ones; they used to stay until their key came back.
+- Database errors that are not bugs no longer answer 500 nor go to the
+  error reporters:
+  - A request that waits past `POOL_TIMEOUT` for a connection, or whose
+    statement `STATEMENT_TIMEOUT` or `LOCK_TIMEOUT` cancels, or that loses
+    to a deadlock or a serialization failure, gets 503 `database_busy`
+    with `Retry-After: 1`.
+  - A value the database refuses (a NUL character, which anyone could send
+    to `/auth/login`; text too long; a number out of range) gets 422
+    `invalid_value`.
+  - Network databases wait 10 s for a pooled connection, not 30, unless
+    `POOL_TIMEOUT` says otherwise.
+- With `LOG_PARAMETERS` off, the `DETAIL` PostgreSQL adds to constraint
+  errors (`Failing row contains (...)`) is dropped: it repeated the row's
+  values, personal data included, in logs and error reports.
+- A flood of `/ready` probes runs one round of checks at a time: each
+  probe that missed the cache ran every check itself (500 probes, 500
+  rounds; behind a busy pool, failing probes took replicas out of
+  rotation). A result is now reused for `READINESS_CACHE_SECONDS` from
+  when its round ended, not began.
+- `RedisBackend` lets requests through when Redis refuses the count (out of
+  memory, a read-only replica after a failover), as it does when Redis is
+  down: every request got a 500. Redis is then skipped for the cache's
+  `FAILURE_COOLDOWN`.
+- `http_requests_total` and the other request metrics count methods
+  other than the nine standard ones as `OTHER`: servers that let any
+  method through let callers make a label each.
 - A WebSocket message over `MAX_REQUEST_BODY_SIZE` closes the connection
   with 1009 (message too big) and is logged as a security event: messages
   were limited only by the server (16 MiB for uvicorn). The application is

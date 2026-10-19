@@ -294,6 +294,23 @@ def test_logins_are_throttled_per_address_and_per_username(api: Api) -> None:
     } == {401}
 
 
+def test_a_nul_in_a_login_is_a_refused_value(api: Api, database_url: str) -> None:
+    """PostgreSQL refuses a NUL in text: a 422, not a 500; SQLite takes it."""
+    client = api()
+
+    response = client.post(
+        "/auth/login", json={"username": "ad\u0000min", "password": "x"}
+    )
+
+    if database_url.startswith("postgresql"):
+        assert (response.status_code, response.json()["code"]) == (
+            422,
+            "invalid_value",
+        )
+    else:
+        assert response.status_code == 401
+
+
 def test_tokens_are_never_cached_or_kept_for_replay(api: Api) -> None:
     """Login answers ``no-store``, so idempotency keeps no working token."""
     create_user("alice")

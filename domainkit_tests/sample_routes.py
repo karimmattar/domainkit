@@ -7,6 +7,8 @@ from fastapi import APIRouter, HTTPException, Request, Response, WebSocket
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import Column, Integer, MetaData, Table, insert, update
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domainkit.context import current_request
@@ -114,6 +116,34 @@ async def http_error(
         detail={"reason": "structured"} if structured else detail,
         headers={"X-Reason": "test"},
     )
+
+
+class DriverError(Exception):
+    """A driver's error with a SQLSTATE, as asyncpg and psycopg raise."""
+
+    def __init__(self, sqlstate: str | None) -> None:
+        """Carry ``sqlstate``."""
+        super().__init__(f"failed with {sqlstate}")
+        self.sqlstate = sqlstate
+
+
+def database_failure(failure: str) -> Exception:
+    """The error the database raised: ``pool`` ran out, or a SQLSTATE."""
+    if failure == "pool":
+        return PoolTimeout("QueuePool limit reached")
+    return DBAPIError("SELECT 1", None, DriverError(failure))
+
+
+@router.get("/database/{failure}")
+async def database_error(failure: str) -> None:
+    """Fail as the database did."""
+    raise database_failure(failure)
+
+
+@router.websocket("/ws/database/{failure}")
+async def database_socket(websocket: WebSocket, failure: str) -> None:
+    """Fail before the accept, as the database did."""
+    raise database_failure(failure)
 
 
 @router.get("/api-error")
