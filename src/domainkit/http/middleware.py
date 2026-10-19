@@ -25,13 +25,19 @@ from typing import Final
 from uuid import uuid4
 
 from fastapi import status
+from sqlalchemy.exc import DBAPIError
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.middleware import cors
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from domainkit.conf import settings
 from domainkit.context import RequestContext, bind_request
-from domainkit.http.errors import APIError, error_response
+from domainkit.http.errors import (
+    APIError,
+    database_refusal,
+    error_response,
+    sqlstate,
+)
 from domainkit.log import ACCESS_LOGGER, SECURITY_LOGGER
 from domainkit.reporting import report_error
 
@@ -50,6 +56,11 @@ _STARTS: Final = frozenset(
 access_logger = logging.getLogger(ACCESS_LOGGER)
 security_logger = logging.getLogger(SECURITY_LOGGER)
 logger = logging.getLogger(__name__)
+
+TRY_AGAIN_LATER: Final = 1013
+"""WebSocket close code: the server is busy."""
+INVALID_DATA: Final = 1007
+"""WebSocket close code: a value the server cannot take."""
 
 
 type _Network = ipaddress.IPv4Network | ipaddress.IPv6Network
@@ -281,6 +292,19 @@ class RequestContextMiddleware:
             try:
                 await self.app(scope, receive, send_with_id)
             except Exception as exc:
+                refusal = database_refusal(exc)
+                if refusal is not None and response_status is None:
+                    logger.warning(
+                        "Database refused %s %s: %s (%s)",
+                        context.method,
+                        context.path,
+                        refusal.code,
+                        f"SQLSTATE {sqlstate(exc)}"
+                        if isinstance(exc, DBAPIError)
+                        else type(exc).__name__,
+                    )
+                    await self._refuse(refusal, scope, receive, send_with_id)
+                    return
                 logger.exception(
                     "Unhandled error in %s %s", context.method, context.path
                 )
@@ -301,6 +325,21 @@ class RequestContextMiddleware:
                 await response(scope, receive, send_with_id)
             finally:
                 self._log_access(context, response_status, started)
+
+    async def _refuse(
+        self, refusal: APIError, scope: Scope, receive: Receive, send: Send
+    ) -> None:
+        """Answer ``refusal``; a WebSocket is closed as busy (1013) or invalid."""
+        if scope["type"] == "websocket":
+            busy = refusal.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+            code = TRY_AGAIN_LATER if busy else INVALID_DATA
+            await send({"type": "websocket.close", "code": code})
+            return
+        response = error_response(
+            refusal.status_code, str(refusal.detail), code=refusal.code
+        )
+        response.headers.update(refusal.headers or {})
+        await response(scope, receive, send)
 
     def _log_access(
         self, context: RequestContext, response_status: int | None, started: float

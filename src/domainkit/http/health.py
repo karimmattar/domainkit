@@ -2,14 +2,17 @@
 
 ``/ready`` is reachable by anyone who can reach the service, so it says only
 "ready" or "unavailable" unless ``READINESS_DETAILS`` is on; failing checks
-are always logged. Results are reused for ``READINESS_CACHE_SECONDS``, so a
-flood of probes costs at most one round of checks per interval.
+are always logged. Results are reused for ``READINESS_CACHE_SECONDS`` from
+when their round of checks ended, and probes that come during a round wait
+for it, so a flood of probes costs at most one round of checks per interval.
 """
 
+import asyncio
 import time
 
 from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
+from starlette.datastructures import State
 
 from domainkit.apps import registry
 from domainkit.cache import caches
@@ -39,12 +42,27 @@ async def ready(request: Request) -> JSONResponse:
 
 
 async def _failing_checks(request: Request) -> list[str]:
-    """Run the checks, or reuse this application's recent result."""
+    """Reuse this application's recent result, or share one round of checks."""
     state = request.app.state
     cached: tuple[float, list[str]] | None = getattr(state, "readiness", None)
-    now = time.monotonic()
-    if cached is not None and now - cached[0] < settings.READINESS_CACHE_SECONDS:
+    if (
+        cached is not None
+        and time.monotonic() - cached[0] < settings.READINESS_CACHE_SECONDS
+    ):
         return cached[1]
+    running: asyncio.Future[list[str]] | None = getattr(state, "readiness_round", None)
+    if (
+        running is None
+        or running.done()
+        or running.get_loop() is not asyncio.get_running_loop()
+    ):
+        running = state.readiness_round = asyncio.ensure_future(_check(state))
+    # A probe that gives up does not cancel the round the others wait for.
+    return await asyncio.shield(running)
+
+
+async def _check(state: State) -> list[str]:
+    """Run every check; keep the result, timed from when the round ended."""
     seconds = settings.READINESS_TIMEOUT
     failing = [
         *await registry.check(seconds),
@@ -52,5 +70,5 @@ async def _failing_checks(request: Request) -> list[str]:
         *await ledgers.check_all(seconds),
         *await caches.check_all(seconds),
     ]
-    state.readiness = (now, failing)
+    state.readiness = (time.monotonic(), failing)
     return failing

@@ -153,6 +153,22 @@ def test_request_metrics_use_route_templates(database: None) -> None:
     assert 'db_pool_connections{database="default",state="size"}' in text
 
 
+def test_unknown_methods_share_one_label(database: None) -> None:
+    """Any method a server lets through counts as ``OTHER``, so labels stay few."""
+    unmatched = {"route": "unmatched", "status": "404"}
+    before = sample("http_requests_total", method="OTHER", **unmatched)
+    with override_settings(MIDDLEWARE=METRICS_MIDDLEWARE):
+        client = TestClient(get_asgi_application())
+        for method in ("FOO", "BAR", "PURGE", "PATCH"):
+            client.request(method, "/no/such")
+
+    other = sample("http_requests_total", method="OTHER", **unmatched)
+    assert other == before + 3
+    assert sample("http_requests_in_progress", method="OTHER") == 0  # Back down.
+    assert sample("http_requests_total", method="FOO", **unmatched) == 0
+    assert sample("http_requests_total", method="PATCH", **unmatched) >= 1
+
+
 def test_metrics_endpoint_protection() -> None:
     """A token is checked when set; deployments without one are refused."""
     with override_settings(METRICS_TOKEN="s3cret"):
