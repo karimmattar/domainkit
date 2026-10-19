@@ -7,10 +7,10 @@ empties tables. A fixture is one JSON document::
         {"table": "shop_products", "rows": [{"id": "6f1c...", "name": "Lamp"}]}
     ]}
 
-Values are JSON: numbers and text as they are, decimals, times, and ids as
-text, bytes as base64, JSON columns as JSON. Loading converts them back
-from each column's type, and puts a row whose primary key exists in place
-of the stored one.
+Values are JSON: numbers and text as they are, decimals, times, durations,
+ids, and enums as text, bytes as base64, JSON columns as JSON. Loading
+converts them back from each column's type, and puts a row whose primary
+key exists in place of the stored one.
 
 Some tables hold state, not data, and are never dumped or loaded: the audit
 trail (its pseudonyms' keys would outlive ``forget`` in a copy), tokens,
@@ -28,12 +28,10 @@ import binascii
 import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, time
-from decimal import Decimal
 from typing import Any, Final
-from uuid import UUID
 
 from pydantic import TypeAdapter, ValidationError
+from pydantic_core import to_jsonable_python
 from sqlalchemy import (
     JSON,
     Column,
@@ -329,16 +327,15 @@ def _encoded_row(table: Table, row: RowMapping) -> dict[str, Any]:
 
 
 def _encoded(column: Column[Any], value: object) -> object:
-    """One value as JSON."""
+    """One value as JSON: bytes as base64, the rest as pydantic writes them.
+
+    Decimals, ids, times, durations, and enums become text.
+    """
     if value is None or isinstance(column.type, JSON):
         return value
     if isinstance(value, bytes):
         return base64.b64encode(value).decode()
-    if isinstance(value, datetime | date | time):
-        return value.isoformat()
-    if isinstance(value, UUID | Decimal):
-        return str(value)
-    return value
+    return to_jsonable_python(value)
 
 
 def _decoded_row(table: Table, row: object) -> dict[str, Any]:

@@ -1,11 +1,12 @@
 """``dumpdata``, ``loaddata``, ``flush``, and ``seed``: data in and out."""
 
 import asyncio
+import enum
 import io
 import json
 import uuid
 from collections.abc import Iterator
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,9 @@ from sqlalchemy import (
     JSON,
     Column,
     Date,
+    Enum,
     Integer,
+    Interval,
     LargeBinary,
     Numeric,
     String,
@@ -50,6 +53,13 @@ from domainkit_tests.conftest import (
 from domainkit_tests.sample_domains.shop.tables import products
 
 
+class Colour(enum.Enum):
+    """A column of choices."""
+
+    RED = "red"
+    BLUE = "blue"
+
+
 class Opaque(TypeDecorator[str]):
     """A type whose Python type nobody knows."""
 
@@ -75,6 +85,8 @@ kinds = Table(
     Column("reference", Uuid),
     Column("extra", JSON),
     Column("opaque", Opaque),
+    Column("colour", Enum(Colour)),
+    Column("wait", Interval),
     info={"domain": "kinds"},
     extend_existing=True,
 )
@@ -107,6 +119,8 @@ ROW: dict[str, Any] = {
     "reference": uuid.UUID("6f1c7e6a-7d4b-4c55-9f0e-1f2a3b4c5d6e"),
     "extra": {"tags": ["a", "b"], "n": 1},
     "opaque": "as is",
+    "colour": Colour.RED,
+    "wait": timedelta(hours=1, seconds=5),
 }
 SEEDING = """
 from sqlalchemy import insert, select
@@ -207,10 +221,12 @@ def test_dumps_are_json_tables_parents_first(project: str) -> None:
             "amount": "12.50",
             "day": "2026-10-19",
             "hour": "13:30:00",
-            "at": "2026-10-19T13:30:00+00:00",
+            "at": "2026-10-19T13:30:00Z",
             "reference": "6f1c7e6a-7d4b-4c55-9f0e-1f2a3b4c5d6e",
             "extra": {"tags": ["a", "b"], "n": 1},
             "opaque": "as is",
+            "colour": "red",
+            "wait": "PT1H5S",
         }
     ]
 
