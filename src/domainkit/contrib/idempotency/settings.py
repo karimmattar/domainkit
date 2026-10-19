@@ -8,7 +8,7 @@ from domainkit.conf import DEFAULT_DB_ALIAS
 class IdempotencySettings(BaseModel):
     """How long keys live and which requests may carry one."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     DATABASE: str = DEFAULT_DB_ALIAS
     TTL_SECONDS: float = Field(default=24 * 3600.0, gt=0)

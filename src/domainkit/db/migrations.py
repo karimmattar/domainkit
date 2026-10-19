@@ -144,8 +144,22 @@ def status(database: str = DEFAULT_DB_ALIAS) -> list[RevisionStatus]:
     ]
 
 
+def check_message(message: str) -> None:
+    """Refuse a revision message that would break out of the file's docstring.
+
+    The message opens the revision's docstring, so it must be one line of
+    printable text without backslashes or triple quotes.
+    """
+    if not message.isprintable() or "\\" in message or '"""' in message:
+        raise ValueError(
+            "A migration message is one line of text, without backslashes or "
+            'triple quotes (""").'
+        )
+
+
 def make_migration(message: str, database: str = DEFAULT_DB_ALIAS) -> Path | None:
     """Autogenerate the next revision; return its path, or None if nothing changed."""
+    check_message(message)
     config = alembic_config(database)
     # Only writing needs the directory: Alembic skips a missing one when
     # reading, so check, showmigrations, and migrate never create it.

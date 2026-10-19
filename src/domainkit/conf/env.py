@@ -18,6 +18,7 @@ is not expanded.
 """
 
 import builtins
+import math
 import os
 import re
 import tomllib
@@ -188,7 +189,7 @@ class Env:
         text = self.raw(name)
         if text is None:
             return self._default(name, default)
-        return self._convert(name, text, builtins.float, "a number")
+        return self._convert(name, text, _finite, "a finite number")
 
     def bool[D](
         self, name: builtins.str, default: D | _Missing = MISSING
@@ -202,7 +203,7 @@ class Env:
             return True
         if normalized in _FALSE:
             return False
-        raise self._invalid(name, text, "a boolean (true/false)")
+        raise self._invalid(name, "a boolean (true/false)")
 
     def list[D](
         self, name: builtins.str, default: D | _Missing = MISSING
@@ -243,16 +244,26 @@ class Env:
         """Convert with ``cast`` or explain which variable is invalid."""
         try:
             return cast(text)
-        except ValueError as exc:
-            raise self._invalid(name, text, expected) from exc
+        except ValueError:
+            # "from None": the ValueError would quote the value, maybe a secret.
+            raise self._invalid(name, expected) from None
 
     def _invalid(
-        self, name: builtins.str, text: builtins.str, expected: builtins.str
+        self, name: builtins.str, expected: builtins.str
     ) -> ImproperlyConfigured:
-        """Build the error for a value that cannot be converted."""
-        return ImproperlyConfigured(
-            f"{self.prefix}{name} must be {expected}, got {text!r}."
-        )
+        """Build the error for a value that cannot be converted.
+
+        The value is not quoted: it may be a secret read from ``<NAME>_FILE``.
+        """
+        return ImproperlyConfigured(f"{self.prefix}{name} must be {expected}.")
+
+
+def _finite(text: builtins.str) -> builtins.float:
+    """Read a number; infinity and NaN are no setting's value."""
+    value = builtins.float(text)
+    if not math.isfinite(value):
+        raise ValueError  # _convert explains it, without the value.
+    return value
 
 
 def _from_root(path: Path) -> Path:

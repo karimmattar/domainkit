@@ -6,10 +6,10 @@ the framework does not declare must belong to an installed domain (see
 so a misspelled setting fails at startup instead of being silently ignored.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, Final, Literal, Self
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import SplitResult, parse_qs, urlsplit
 
 from pydantic import (
     BaseModel,
@@ -17,6 +17,8 @@ from pydantic import (
     Field,
     IPvAnyNetwork,
     SecretStr,
+    SerializerFunctionWrapHandler,
+    model_serializer,
     model_validator,
 )
 
@@ -24,6 +26,8 @@ from domainkit.conf.env import project_root
 from domainkit.utils.rates import parse_rate
 
 DEFAULT_DB_ALIAS: Final = "default"
+HIDDEN: Final = "**********"
+"""What ``repr`` and dumps of the settings show for domain settings."""
 
 Environment = Literal["local", "test", "staging", "production"]
 DEPLOYED_ENVIRONMENTS: Final = frozenset({"staging", "production"})
@@ -61,7 +65,7 @@ IMMUDB_PORT: Final = 3322
 class DatabaseConfig(BaseModel):
     """One ``DATABASES`` entry: an SQLAlchemy async URL plus connection options."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     URL: SecretStr
     """``dialect+driver://user:password@host/name``; hidden in reprs and errors."""
@@ -111,6 +115,21 @@ class DatabaseConfig(BaseModel):
         return self
 
 
+def _check_port(parts: SplitResult) -> None:
+    """Refuse a URL whose port is not a number, without quoting it.
+
+    A ``/`` in the password ends the host early, so the port Python reads is
+    part of the password; its own error would quote it.
+    """
+    try:
+        parts.port  # noqa: B018 - reading it parses it.
+    except ValueError:
+        raise ValueError(
+            "the URL's port is not a number; percent-encode / ? # @ and : in "
+            "the user name and password"
+        ) from None
+
+
 class LedgerConfig(BaseModel):
     """One ``LEDGERS`` entry: write once, read many, verified on the client.
 
@@ -118,7 +137,7 @@ class LedgerConfig(BaseModel):
     migrated and never take part in a unit of work.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     URL: SecretStr
     """``immudb://user:password@host:3322/database``, or ``memory://`` for tests."""
@@ -135,6 +154,7 @@ class LedgerConfig(BaseModel):
         parts = urlsplit(self.URL.get_secret_value())
         if parts.scheme not in LEDGER_SCHEMES:
             raise ValueError("a ledger URL starts with immudb:// or memory://")
+        _check_port(parts)
         if parts.scheme == "immudb" and not parts.hostname:
             raise ValueError("an immudb URL needs a host: immudb://user:pw@host/db")
         return self
@@ -152,7 +172,7 @@ class ShardConfig(BaseModel):
     to one database. Moving buckets between databases is how a group grows.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     DATABASES: tuple[str, ...] = Field(min_length=1)
     """The group's SQL aliases; ``makemigrations`` compares against the first."""
@@ -224,7 +244,7 @@ class CacheConfig(BaseModel):
     ``get_or_set`` and ``@cached`` compute values instead (see ADR 0012).
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     URL: SecretStr = SecretStr("memory://")
     """``memory://`` (this process), ``redis://``/``rediss://`` (Redis, Valkey), ``dummy://``."""
@@ -264,6 +284,7 @@ class CacheConfig(BaseModel):
             raise ValueError(
                 "a cache URL starts with memory://, redis://, rediss://, or dummy://"
             )
+        _check_port(parts)
         if parts.scheme in REDIS_SCHEMES:
             if not parts.hostname:
                 raise ValueError("a Redis URL needs a host: redis://host:6379/0")
@@ -318,7 +339,7 @@ class BrokerConfig(BaseModel):
     never drops them (see ADR 0014).
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     URL: SecretStr
     """``amqps://user:password@host:5671/vhost`` (RabbitMQ), or ``memory://``."""
@@ -340,6 +361,7 @@ class BrokerConfig(BaseModel):
         parts = urlsplit(self.URL.get_secret_value())
         if parts.scheme not in BROKER_SCHEMES:
             raise ValueError("a broker URL starts with amqp://, amqps://, or memory://")
+        _check_port(parts)
         if parts.scheme != "memory":
             if not parts.hostname:
                 raise ValueError("an AMQP URL needs a host: amqps://user:pw@host/vhost")
@@ -380,7 +402,7 @@ class BrokerConfig(BaseModel):
 class Settings(BaseModel):
     """Validated, read-only settings; extra names are checked at ``setup()``."""
 
-    model_config = ConfigDict(frozen=True, extra="allow")
+    model_config = ConfigDict(frozen=True, extra="allow", allow_inf_nan=False)
 
     SETTINGS_MODULE: str = ""
     """Set by the loader to the module that produced these settings."""
@@ -465,6 +487,23 @@ class Settings(BaseModel):
         "X-Request-ID",
     )
     CORS_ALLOW_CREDENTIALS: bool = False
+
+    def __repr_args__(self) -> Iterator[tuple[str | None, Any]]:
+        """Show declared settings; domain settings, which may hold keys, hidden."""
+        domain = self.model_extra or {}
+        for name, value in super().__repr_args__():
+            yield name, HIDDEN if name in domain else value
+
+    @model_serializer(mode="wrap")
+    def _hide_domain_settings(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        """Dump domain settings hidden: they are checked, and typed, elsewhere."""
+        dumped: dict[str, Any] = handler(self)
+        return {
+            name: HIDDEN if name in (self.model_extra or {}) else value
+            for name, value in dumped.items()
+        }
 
     @model_validator(mode="after")
     def check_consistency(self) -> Self:

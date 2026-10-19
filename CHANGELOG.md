@@ -138,6 +138,24 @@ All notable changes to domainkit. The format follows
     `last_error` for as long as the dead letter was kept.
   - Work no request queued (periodic tasks, messages from commands) is
     audited as `system`, not `anonymous`.
+- Settings keep their secrets:
+  - `repr(settings)` and its dumps hide domain settings (`AUTH`, `EVIDENCE`,
+    ...), whose keys (`JWT.SIGNING_KEY`, `SUBJECT_KEY`) they showed in clear.
+  - `Env` errors no longer quote the value, which may come from a `_FILE`
+    secret, nor chain the error that did.
+  - A URL whose password holds `/` is refused without quoting it; the port
+    Python read was part of the password.
+- Infinity and NaN are refused in every setting and by `Env.float`:
+  `STATEMENT_TIMEOUT=inf` failed at the first connection, and an infinite
+  `MESSAGING.SHUTDOWN_TIMEOUT` never ended a shutdown.
+- `CONNECT_ARGS` cannot turn a timeout off by spelling it differently
+  (`STATEMENT_TIMEOUT`, `-c lock-timeout=0`, `--lock-timeout=0`): PostgreSQL
+  reads setting names in any case, and `-` as `_`.
+- `startdomain` refuses a plural that would name an existing command
+  (`startdomain partition`, `startdomain message`, `--plural check`): the
+  generated command silently replaced it.
+- `makemigrations` refuses a message that could end the revision's
+  docstring (triple quotes, a backslash, more than one line).
 - A WebSocket message over `MAX_REQUEST_BODY_SIZE` closes the connection
   with 1009 (message too big) and is logged as a security event: messages
   were limited only by the server (16 MiB for uvicorn). The application is
