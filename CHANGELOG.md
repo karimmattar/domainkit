@@ -43,6 +43,23 @@ All notable changes to domainkit. The format follows
   failed every handshake with an internal error (close code 1011), even
   for users they allow; a refused handshake now gets the same 401 or 403
   response as a request.
+- Refused tokens are rate limited: they were answered before
+  `RateLimitMiddleware` counted anything, so one address could try tokens
+  without limit, each one a database lookup (2,400 a second in the stress
+  test). They now count per address against `RATE_LIMIT`; past it the
+  address gets 429, and its credentials are refused unread until
+  `Retry-After`. Opaque tokens not of the issued form are refused without
+  a lookup.
+- The per-username login limit counts the account: look-alike names that
+  find the same account under NFKC (full-width or mathematical letters)
+  each had a count of their own. Password changes have their own count per
+  user, so someone else's failed logins no longer stop a user changing
+  their password.
+- Throttled logins are audited once per count and period, not each time:
+  a flood of attempts wrote a row per attempt to the append-only trail.
+- Logging in as a user without a usable password (created without one, or
+  with a hash no configured hasher reads) costs one hash, like a wrong
+  password, so response times no longer tell such accounts apart.
 - The admin API counts what every backend in `AUTH.BACKENDS` grants when
   staff change a user, and what the change itself would grant. Staff with
   `change_user` could take over a user whose permissions came from another
