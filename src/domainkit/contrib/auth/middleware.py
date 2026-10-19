@@ -22,7 +22,9 @@ callers may do (``domainkit.contrib.auth.access``).
 Refused credentials never reach ``RateLimitMiddleware``, so they are
 counted here, per client address, against ``RATE_LIMIT``. Past it, the
 address gets 429, and its requests with an ``Authorization`` header are
-refused before any lookup until ``Retry-After`` has passed.
+refused before any lookup until ``Retry-After`` has passed. Credentials in
+other headers, which only a project's own class reads, are refused too,
+once read, even when they hold: a guess that works gets the same 429.
 """
 
 import logging
@@ -83,17 +85,19 @@ class AuthenticationMiddleware:
             await self.app(scope, receive, send)
             return
         connection = HTTPConnection(scope)
-        if (
-            self.rate is not None
-            and "authorization" in connection.headers
-            and (held := self._held(address_key(scope))) is not None
-        ):
-            await refuse(scope, receive, send, self.rate[0], held)
+        held = self._held(address_key(scope))
+        if held is not None and "authorization" in connection.headers:
+            await refuse(scope, receive, send, *held)
             return
         try:
             credentials = await self._authenticate(connection)
         except _Refused as refused:
             await self._refuse(scope, receive, send, refused)
+            return
+        if held is not None and credentials is not None:
+            # Credentials in another header, read by a project's own class,
+            # are refused once read: a guess that works must not stand out.
+            await refuse(scope, receive, send, *held)
             return
         scope["user"] = AnonymousUser() if credentials is None else credentials.user
         scope["auth"] = credentials
@@ -151,16 +155,19 @@ class AuthenticationMiddleware:
         if len(self.held) > MAX_HELD:
             self.held.popitem(last=False)
 
-    def _held(self, address: str) -> Decision | None:
-        """The refusal ``address`` is still held to, if any."""
+    def _held(self, address: str) -> tuple[int, Decision] | None:
+        """The limit and the refusal ``address`` is still held to, if any."""
         until = self.held.get(address)
-        if until is None:
+        if until is None or self.rate is None:
             return None
         left = until - monotonic()
         if left <= 0:
             del self.held[address]
             return None
-        return Decision(allowed=False, remaining=0, reset_after=left, retry_after=left)
+        refusal = Decision(
+            allowed=False, remaining=0, reset_after=left, retry_after=left
+        )
+        return self.rate[0], refusal
 
 
 class _Refused(Exception):

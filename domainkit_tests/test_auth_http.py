@@ -1,10 +1,12 @@
 """Authenticating requests: logins, tokens, JWT, access rules, and the actor."""
 
+import base64
 import io
+import json
 import logging
 from datetime import timedelta
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -980,6 +982,40 @@ def test_jwt_tokens_from_elsewhere_are_refused(
     assert lenient.get("/whoami", headers=bearer(stale)).status_code == 200
 
 
+def segment(data: dict[str, Any]) -> str:
+    """One base64url JSON segment of a JWT."""
+    return base64.urlsafe_b64encode(json.dumps(data).encode()).rstrip(b"=").decode()
+
+
+def test_forged_jwts_are_refused(api: Api) -> None:
+    """Edited claims, other algorithms, and key hints never get in."""
+    create_user("alice")
+    client = api(**JWT)
+    token = login(client, "alice")["access_token"]
+    header, payload, signature = token.split(".")
+    claims = json.loads(base64.urlsafe_b64decode(payload + "=="))
+    forged = [
+        f"{segment({'alg': 'none', 'typ': 'JWT'})}.{payload}.",
+        f"{segment({'alg': 'None'})}.{payload}.{signature}",
+        f"{segment({'alg': 'HS512', 'typ': 'JWT'})}.{payload}.{signature}",
+        f"{segment({'alg': 'HS256', 'kid': '../../dev/null'})}.{payload}.{signature}",
+        f"{segment({'alg': 'HS256', 'jku': 'https://example.org/k'})}.{payload}.{signature}",
+        f"{header}.{segment({**claims, 'sub': str(uuid4())})}.{signature}",
+        f"{header}.{segment({**claims, 'exp': claims['exp'] + 10**6})}.{signature}",
+        f"{header}.{segment({**claims, 'sid': str(uuid4())})}.{signature}",
+        f"{header}.{payload}.",
+        f"{header}.{payload}.{signature[:-4]}",
+    ]
+
+    for jwt in forged:
+        response = client.get("/whoami", headers=bearer(jwt))
+        assert (response.status_code, response.json()["detail"]) == (
+            401,
+            "Invalid token.",
+        ), jwt
+    assert client.get("/private", headers=bearer(token)).status_code == 200
+
+
 @pytest.mark.parametrize(
     ("middleware", "message"),
     [
@@ -1094,6 +1130,37 @@ def test_projects_add_their_own_authentication(api: Api) -> None:
     assert (unknown.status_code, unknown.json()["detail"]) == (401, "Unknown user.")
     assert client.post("/auth/logout", headers={"X-User": "alice"}).status_code == 204
     assert client.get("/private", headers={"X-User": "alice"}).status_code == 200
+
+
+def test_held_addresses_guess_other_headers_in_vain(api: Api) -> None:
+    """A held address's guess that works, in a project's own header, gets 429 too.
+
+    Only requests with ``Authorization`` are refused unread; others are
+    read, and the right name used to be served among the 429s.
+    """
+    create_user("alice")
+    with override_settings(RATE_LIMIT="3/minute"):
+        client = api(
+            AUTHENTICATION_CLASSES=[
+                f"{AUTHENTICATION}.TokenAuthentication",
+                "domainkit_tests.test_auth_http.HeaderAuthentication",
+            ]
+        )
+        guesses = [
+            client.get("/whoami", headers={"X-User": name}).status_code
+            for name in ("bob", "carol", "dave", "erin")
+        ]
+        right = client.get("/whoami", headers={"X-User": "alice"})
+        anonymous = client.get("/whoami")
+        elsewhere = TestClient(client.app, client=("203.0.113.9", 1))
+        served = elsewhere.get("/whoami", headers={"X-User": "alice"})
+
+    assert guesses == [401, 401, 401, 429]
+    assert (right.status_code, right.json()["code"]) == (429, "rate_limited")
+    assert int(right.headers["Retry-After"]) > 0
+    assert right.headers["RateLimit-Limit"] == "3"
+    assert anonymous.json()["user"] == ""
+    assert served.json()["user"] == "alice"
 
 
 def test_refusals_without_audit(auth_project: str) -> None:

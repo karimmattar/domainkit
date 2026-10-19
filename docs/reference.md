@@ -180,11 +180,16 @@ header size and the time to send headers and body (nginx:
 
 ```bash
 uvicorn config.asgi:application --limit-concurrency 200 --timeout-keep-alive 5 \
-  --h11-max-incomplete-event-size 16384 --ws-max-size 1048576
+  --h11-max-incomplete-event-size 16384 --ws-max-size 1048576 \
+  --no-proxy-headers --no-server-header
 ```
 
 `--ws-max-size` stops a WebSocket message before it is read whole;
 `MAX_REQUEST_BODY_SIZE` then closes the connection on one that got through.
+`--no-proxy-headers` leaves `X-Forwarded-*` to `TRUSTED_PROXIES`: uvicorn
+otherwise reads them itself, from `127.0.0.1` or from whatever
+`FORWARDED_ALLOW_IPS` allows (`*` lets any client choose its address, and
+so its rate limit and login throttle). `runserver` runs this way.
 
 ### Deployment checks
 

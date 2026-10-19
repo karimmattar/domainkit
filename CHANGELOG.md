@@ -6,6 +6,47 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `domainkit.contrib.auth.mark_public`, which marks a mounted application
+  (a `StaticFiles`) or a Starlette endpoint public on purpose, as `Public`
+  does for FastAPI routes.
+
+### Changed
+
+- Run uvicorn with `--no-proxy-headers` (`docs/reference.md`, "Server
+  limits"), so `TRUSTED_PROXIES` alone decides whom `X-Forwarded-For` is
+  believed from: uvicorn reads it itself otherwise, and its
+  `FORWARDED_ALLOW_IPS="*"` lets any client choose its address. The
+  documented command also adds `--no-server-header`.
+- `docs/auth.md` says what the per-account login limit costs (anyone can
+  hold one user's logins back), and that a WebSocket handshake counts as a
+  `GET` for `IsAuthenticatedOrReadOnly` and `ModelPermissions`.
+
+### Fixed
+
+- Deny by default covers every route (ADR 0021). Mounted applications and
+  Starlette's own `Route` and `WebSocketRoute` were skipped, so a mounted
+  FastAPI application, or a `StaticFiles`, was served to anyone without
+  being listed. Applications mounted with routes are now checked route by
+  route, and what takes no dependencies is listed (`MOUNT /static`) unless
+  marked with `mark_public`. **This may stop an application from starting
+  in staging and production** until such mounts are marked or guarded:
+  there is no safe way to tell which were meant to be public.
+- An address held back for refused credentials could still find out which
+  guess was right when a project's own class reads them from another
+  header than `Authorization` (an `X-API-Key`): wrong guesses got 429, and
+  the right one was served. Such credentials now get the same 429 while the
+  address is held, even when they hold.
+- Two staff demoting, deactivating, or deleting the last two active
+  superusers at once could both succeed, leaving none: each counted two.
+  The count now locks the superusers' rows until the commit, so the second
+  waits for the first and sees one (PostgreSQL).
+- `IdempotencyMiddleware` stores and replays header values as the Latin-1
+  bytes ASGI defines them as. A stored header that was not UTF-8 (a
+  `Location` with an accented letter) raised once the response had gone
+  out, and the key was never answered.
+
 ## [0.6.1] - 2026-10-19
 
 ### Fixed

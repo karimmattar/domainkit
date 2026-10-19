@@ -1,6 +1,6 @@
 # 0017. Routes deny by default; staff manage users through an admin API
 
-- Status: Accepted
+- Status: Accepted; its consequence that mounts are not checked is superseded by [0021](0021-check-mounted-applications.md)
 - Date: 2026-10-15
 
 ## Context

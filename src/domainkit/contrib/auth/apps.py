@@ -16,7 +16,7 @@ from domainkit.db.routing import router
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.utils.module_loading import import_string
 
-from .access import open_routes, routes_need_users
+from .access import routes_need_users, unguarded_routes
 from .authentication import get_authenticators
 from .backends import get_backends
 from .hashers import insecure_hashers
@@ -97,7 +97,11 @@ class AuthConfig(DomainConfig):
             problems.extend(
                 f"{route} declares no access rule: add Depends(Require(...)), or "
                 "dependencies=[Public] if anyone may call it."
-                for route in open_routes(app)
+                if takes_rules
+                else f"{route} takes no access rule: serve it from a FastAPI route "
+                "with Require(...), or wrap it in mark_public(...) if anyone may "
+                "call it."
+                for route, takes_rules in unguarded_routes(app)
             )
         return problems
 

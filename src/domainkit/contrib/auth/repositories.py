@@ -129,15 +129,20 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         )
 
     async def active_superusers(self) -> int:
-        """How many active superusers there are."""
+        """How many active superusers there are, locked until the commit.
+
+        Two transactions that each demote one of the last two superusers
+        would both count two; with the rows locked, the second count waits
+        for the first transaction and sees what it left.
+        """
         table = get_user_table()
         found = await self.session.execute(
-            select(func.count())
-            .select_from(table)
+            select(table.c.id)
             .where(table.c.is_superuser.is_(True), table.c.is_active.is_(True))
+            .order_by(table.c.id)
+            .with_for_update()
         )
-        count: int = found.scalar_one()
-        return count
+        return len(found.all())
 
     async def record_login(self, user: AbstractBaseUser) -> None:
         """Store the login time and record ``UserLoggedIn``.

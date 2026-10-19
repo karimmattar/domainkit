@@ -34,6 +34,7 @@ from domainkit.conf import UNSET, DatabaseConfig, override_settings
 from domainkit.contrib.audit import record
 from domainkit.contrib.audit.protection import protect, unprotect
 from domainkit.contrib.audit.tables import audit_log
+from domainkit.contrib.auth import AuthUnitOfWork, UserId
 from domainkit.contrib.messaging import Worker
 from domainkit.contrib.messaging.outbox import message_row, write
 from domainkit.contrib.messaging.tables import messages
@@ -155,6 +156,31 @@ async def test_the_audit_trail_refuses_changes_even_from_its_owner(
         await connection.run_sync(lambda sync: unprotect(Migration(sync)))
         removed = await connection.execute(delete(audit_log))
     assert removed.rowcount == 1
+    await connections.close_all()
+
+
+async def test_superusers_demoted_at_once_leave_one(auth_project: str) -> None:
+    """Counting active superusers locks them until the commit.
+
+    Two staff demoting the last two superusers at once both counted two, so
+    both were let through. The second count now waits for the first
+    transaction, and sees what it left.
+    """
+    async with AuthUnitOfWork() as uow:
+        first = await uow.users.create_user("root", is_superuser=True)
+        await uow.users.create_user("admin", is_superuser=True)
+        await uow.commit()
+
+    async with AuthUnitOfWork() as one, AuthUnitOfWork() as two:
+        assert await one.users.active_superusers() == 2
+        counting = asyncio.create_task(two.users.active_superusers())
+        done, _ = await asyncio.wait({counting}, timeout=0.5)
+        assert not done  # It waits for the first transaction's locks.
+        user = await one.users.get(UserId(first.id))
+        user.set_superuser(False)
+        await one.commit()
+        async with asyncio.timeout(5):
+            assert await counting == 1
     await connections.close_all()
 
 
