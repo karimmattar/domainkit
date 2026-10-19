@@ -93,6 +93,12 @@ def test_a_certificate_the_server_checked_logs_its_user_in(
     tls = TestClient(with_tls(client.app, [pem_of(alice_cert), "-----CA-----"]))
     assert tls.get("/whoami").json() == {"user": "alice", "scheme": "certificate"}
     assert TestClient(with_tls(client.app, [])).get("/whoami").json() == ANONYMOUS
+    (listed,) = tls.get("/auth/tokens").json()["items"]
+    assert (listed["id"], listed["kind"], listed["current"]) == (
+        digest,
+        "certificate",
+        True,
+    )
 
 
 def test_certificates_that_do_not_hold_are_refused(
@@ -107,16 +113,18 @@ def test_certificates_that_do_not_hold_are_refused(
     register("off", off_cert)
     stranger, _ = certificate(tmp_path, "stranger")
     cases = {
-        "did not verify": with_tls(client.app, [pem_of(alice_cert)], "expired"),
-        "Unknown client certificate": with_tls(client.app, [pem_of(stranger)]),
-        "Malformed client certificate": with_tls(client.app, ["not a pem"]),
-        "inactive or deleted": with_tls(client.app, [pem_of(off_cert)]),
+        "The client certificate did not verify.": with_tls(
+            client.app, [pem_of(alice_cert)], "expired"
+        ),
+        "Unknown client certificate.": with_tls(client.app, [pem_of(stranger)]),
+        "Malformed client certificate.": with_tls(client.app, ["not a pem"]),
+        "User inactive or deleted.": with_tls(client.app, [pem_of(off_cert)]),
     }
 
     for message, app in cases.items():
         response = TestClient(app).get("/whoami")
         assert response.status_code == 401, message
-        assert message in response.json()["detail"]
+        assert response.json()["detail"] == message
 
 
 def test_other_tokens_are_not_certificates(identity: Api, alice_cert: Path) -> None:
@@ -174,7 +182,10 @@ def test_trusted_proxies_may_pass_a_certificate_in_a_header(
 
     assert believed.json() == {"user": "alice", "scheme": "certificate"}
     assert unchecked.status_code == unsaid.status_code == 401
-    assert "did not verify" in unchecked.json()["detail"]
+    for refused in (unchecked, unsaid):
+        assert refused.json()["detail"] == (
+            "The proxy did not verify the client certificate."
+        )
     assert (forged.status_code, forged.json()["detail"]) == (
         401,
         "Client certificates in headers are taken from trusted proxies only.",
@@ -260,7 +271,11 @@ def test_subjects_need_cryptography(
     der = certificate_der(pem_of(alice_cert))
     monkeypatch.setitem(sys.modules, "cryptography", None)
 
-    with pytest.raises(ImproperlyConfigured, match=r"domainkit\[mfa\]"):
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=r'^MATCH = "subject" needs cryptography: '
+        r'pip install "domainkit\[mfa\]"\.$',
+    ):
         common_name(der)
 
 

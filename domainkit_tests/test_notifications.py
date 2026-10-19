@@ -179,6 +179,8 @@ async def test_notifications_of_a_rolled_back_change_are_never_sent(
     async with NotesUnitOfWork() as uow:
         await send_sms(PHONE, "Code", uow=uow)
         await send_push("device-token", "Title", "Body", uow=uow)
+        await SmsMessage(to=PHONE, body="Hi").send(uow)
+        await PushMessage(token="t", title="T", body="B").send(uow)
 
     assert await outbox_rows() == []
     assert await Worker().run_once() == 0
@@ -283,7 +285,9 @@ def test_notifications_need_messaging() -> None:
     with (
         override_settings(INSTALLED_DOMAINS=[NOTIFICATIONS, ALPHA]),
         pytest.raises(
-            ImproperlyConfigured, match=r"needs 'domainkit\.contrib\.messaging'"
+            ImproperlyConfigured,
+            match=r"needs 'domainkit\.contrib\.messaging' in INSTALLED_DOMAINS: "
+            "the worker sends the messages",
         ),
     ):
         setup()
@@ -390,13 +394,16 @@ def test_text_messages_at_their_limits_are_fine() -> None:
     assert SmsMessage(to=PHONE, body="x", sender=PHONE).sender == PHONE
 
 
+ONE_LINE = r"error, line breaks and control characters are not allowed \["
+
+
 @pytest.mark.parametrize(
     ("fields", "message"),
     [
         ({"token": ""}, "at least 1 character"),
         ({"token": "t" * 4097}, "at most 4096"),
-        ({"token": "a\nb"}, "line breaks"),
-        ({"title": "a\r\nb"}, "line breaks"),
+        ({"token": "a\nb"}, ONE_LINE),
+        ({"title": "a\r\nb"}, ONE_LINE),
         ({"title": "x" * 256}, "at most 255"),
         ({"body": "x" * 4097}, "at most 4096"),
         ({"data": {str(n): "v" for n in range(51)}}, "at most 50"),

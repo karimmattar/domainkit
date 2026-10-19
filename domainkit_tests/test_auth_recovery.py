@@ -3,7 +3,8 @@
 import re
 import uuid
 from datetime import timedelta
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 from urllib.parse import unquote
 
 import pytest
@@ -14,7 +15,7 @@ from domainkit import setup, signing
 from domainkit.apps import registry
 from domainkit.conf import UNSET, override_settings
 from domainkit.contrib import mail
-from domainkit.contrib.auth import AuthUnitOfWork, UserId
+from domainkit.contrib.auth import AbstractBaseUser, AuthUnitOfWork, UserId
 from domainkit.contrib.auth.onetime import (
     email_of,
     email_verification_tokens,
@@ -452,6 +453,67 @@ def test_verification_skips_gone_or_inactive_users(identity: Api) -> None:
     run_async(send_email_verification(off))
 
     assert mail.outbox == []
+
+
+def unmarked_user() -> Any:  # noqa: ANN401 - a stand-in for a user.
+    """An active user of a model without ``email_verified``."""
+    return SimpleNamespace(
+        id=uuid.uuid4(), is_active=True, EMAIL_FIELD="email", email="a@example.com"
+    )
+
+
+def test_models_without_the_mark_get_no_verification_link(
+    identity: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A user model without ``email_verified`` has nothing a link could set."""
+    from domainkit.contrib.auth import recovery
+
+    user = unmarked_user()
+
+    class Users:
+        async def find(self, user_id: UserId) -> Any:  # noqa: ANN401 - the stand-in.
+            return user
+
+    class StandIn:
+        users = Users()
+
+        async def __aenter__(self) -> "StandIn":
+            return self
+
+        async def __aexit__(self, *exc_info: object) -> None:
+            return None
+
+    monkeypatch.setattr(recovery, "AuthUnitOfWork", StandIn)
+
+    run_async(recovery.send_email_verification(user.id))
+
+    assert mail.outbox == []
+
+
+def test_verification_tokens_hold_for_models_without_the_mark(identity: Api) -> None:
+    """The token rests on the address alone then."""
+    user = cast(AbstractBaseUser, unmarked_user())
+
+    token = email_verification_tokens.make_token(user)
+
+    assert email_verification_tokens.check_token(user, token)
+
+
+def test_verification_links_point_to_the_configured_page(identity: Api) -> None:
+    """``EMAIL_VERIFICATION_URL`` takes the token where it says."""
+    create_user("alice", email="alice@example.com")
+    client = identity(EMAIL_VERIFICATION_URL="https://app.example.com/verify/{token}")
+    headers = bearer(login(client, "alice")["access_token"])
+
+    client.post("/auth/email-verification", headers=headers)
+    run_worker()
+
+    (message,) = mail.outbox
+    (link,) = [line for line in message.body.splitlines() if line.startswith("https")]
+    prefix, token = link[:31], unquote(link[31:])
+    assert prefix == "https://app.example.com/verify/"
+    confirmed = client.post("/auth/email-verification/confirm", json={"token": token})
+    assert confirmed.status_code == 204
 
 
 def test_verification_requests_are_throttled_per_user(identity: Api) -> None:

@@ -101,6 +101,7 @@ def test_taken_usernames_and_addresses_answer_the_same(identity: Api) -> None:
     ]
     exists = next(m for m in mail.outbox if m.to == ("carol@example.com",))
     assert "alice" not in exists.body.lower()
+    assert "sign up with this email address (carol@example.com)" in exists.body
 
 
 def test_fields_and_password_rules_are_checked_at_once(identity: Api) -> None:

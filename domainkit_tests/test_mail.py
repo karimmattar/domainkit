@@ -197,6 +197,8 @@ async def test_mail_goes_out_once_the_change_commits(tables: Install) -> None:
 async def test_mail_of_a_rolled_back_change_is_never_sent(tables: Install) -> None:
     """No commit, no message: nothing is stored, and the worker finds nothing."""
     await write_note(commit=False, **WELCOME)
+    async with NotesUnitOfWork() as uow:
+        await EmailMessage(subject="Hi", body="Text", to=("a@x.org",)).send(uow)
 
     assert await outbox_rows() == []
     assert await Worker().run_once() == 0
@@ -551,7 +553,7 @@ async def test_the_console_backend_writes_each_message(
 
     out = capsys.readouterr().out
     assert out.count("Subject: Console") == 2
-    assert out.count("-" * 79 + "\n") == 2
+    assert out.count("\n" + "-" * 79 + "\n") == 2
     assert "Look here" in out
 
 

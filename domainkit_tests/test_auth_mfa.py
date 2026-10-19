@@ -388,6 +388,7 @@ def test_challenges_expire_and_name_their_user(
 
     for response in (expired, forged, garbage):
         assert (response.status_code, response.json()["code"]) == (400, "invalid_token")
+        assert response.json()["detail"] == "The login has expired; log in again."
     assert [row["details"] for row in audited("auth.mfa")] == [
         {"reason": "invalid_token"}
     ] * 3
