@@ -252,7 +252,9 @@ PostgreSQL would store differently.
   column's places: `Decimal("5")` is read as `Decimal("5.00")`. Floats are
   refused, and so are values with more places or more digits than the
   column holds (`Decimal("1.005")` in a scale of 2). Round them yourself,
-  with the rule your domain needs, before storing them.
+  with the rule your domain needs, before storing them. Comparisons take
+  values of any places and compare them exactly:
+  `where(price > Decimal("9.995"))`, `price.in_(...)`, `price.between(...)`.
 - **Precision** is at most 18 digits, any 18 of which fit SQLite's 64-bit
   integers: `ExactDecimal(18, 2)` holds up to 9,999,999,999,999,999.99.
 - **Queries give the same results on both databases**: comparisons,
@@ -261,6 +263,11 @@ PostgreSQL would store differently.
   `price * quantity` for an integer column, `price / 4`). On SQLite, a
   product with a fraction and a quotient are computed in floating point
   before they come back as `Decimal`.
+- **Amounts of different scales, and integer columns,** are added,
+  subtracted, and compared in the same units (`price + fee`,
+  `price > rate`, `price > quantity`): on SQLite the side with fewer places
+  is scaled up. Put the amount first, or both amounts: `quantity + price`
+  starts from the integer column, and SQLite would add a count to cents.
 - **In Python instead:**
   - floor division (`price // 2` is refused);
   - arithmetic between two amount columns other than `+` and `-` (on SQLite
@@ -269,6 +276,11 @@ PostgreSQL would store differently.
     `update(...).values(price=prices.c.price * Decimal("1.1"))`.
     PostgreSQL rounds them to the column's scale, and SQLite keeps the
     fraction of a cent, so compute them with your own rounding rule.
+
+  - results past SQLite's 64-bit integers (9,223,372,036,854,775,807
+    minor units): there a product or a scaled-up amount becomes a float,
+    and `sum` fails with an overflow, where PostgreSQL computes exactly;
+  - casts to text, which give minor units on SQLite.
 
   For `avg`, name the type: `func.avg(price, type_=price.type)`.
 

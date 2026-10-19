@@ -43,6 +43,14 @@ All notable changes to domainkit. The format follows
   failed every handshake with an internal error (close code 1011), even
   for users they allow; a refused handshake now gets the same 401 or 403
   response as a request.
+- `ExactDecimal` (`docs/databases.md`):
+  - A value with more places or digits than the column holds is compared
+    exactly (`where(price > Decimal("9.995"))`, `in_`, `between`) instead
+    of failing the query with a 500, on every database.
+  - On SQLite, an amount added to, subtracted from, or compared with an
+    amount of another scale, or an integer column, is counted in the same
+    units: `price > rate` compared cents with ten-thousandths, and
+    `price + quantity` added a count to cents.
 
 ## [0.6.0] - 2026-10-18
 

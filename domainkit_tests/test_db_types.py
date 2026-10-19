@@ -233,15 +233,104 @@ async def test_updates_go_through_the_type(engine: AsyncEngine) -> None:
 async def test_values_that_would_round_are_refused(
     engine: AsyncEngine, value: object, error: type[Exception], message: str
 ) -> None:
-    """Nothing is rounded or truncated on the way in, in writes or in queries."""
+    """Nothing is rounded or truncated on the way in; queries refuse non-numbers."""
     with pytest.raises(StatementError) as written:
         await stored(engine, {"id": 1, "amount": value})
+
+    assert isinstance(written.value.orig, error)
+    assert re.search(message, str(written.value.orig))
+    if isinstance(value, Decimal) and value.is_finite():
+        return  # Compared exactly instead: see the next test.
     with pytest.raises(StatementError) as compared:
         await scalars(engine, select(prices.c.id).where(prices.c.amount == value))
+    assert isinstance(compared.value.orig, error)
+    assert re.search(message, str(compared.value.orig))
 
-    for caught in (written.value, compared.value):
-        assert isinstance(caught.orig, error)
-        assert re.search(message, str(caught.orig))
+
+async def test_comparisons_take_values_of_any_places(engine: AsyncEngine) -> None:
+    """A value the column could not hold is compared exactly, not refused."""
+    await stored(
+        engine,
+        {"id": 1, "amount": Decimal("9.95")},
+        {"id": 2, "amount": Decimal("9.96")},
+        {"id": 3, "amount": -LARGEST},
+    )
+    amount = prices.c.amount
+    beyond = Decimal("1E+30")
+    queries = [
+        (amount > Decimal("9.955"), [2]),
+        (amount >= Decimal("9.955"), [2]),
+        (amount < Decimal("9.955"), [1, 3]),
+        (amount <= Decimal("9.955"), [1, 3]),
+        (amount > Decimal("9.949"), [1, 2]),
+        (amount == Decimal("9.950"), [1]),
+        (amount == Decimal("9.9500001"), []),
+        (amount != Decimal("9.9500001"), [1, 2, 3]),
+        (amount.between(Decimal("9.9450"), Decimal("9.9599")), [1]),
+        (amount.in_([Decimal("9.951"), Decimal("9.96")]), [2]),
+        (amount.not_in([Decimal("9.951")]), [1, 2, 3]),
+        (amount < beyond, [1, 2, 3]),
+        (amount > -beyond, [1, 2, 3]),
+        (amount == beyond, []),
+        (amount > Decimal(2**70), []),
+    ]
+    for condition, expected in queries:
+        found = await scalars(
+            engine, select(prices.c.id).where(condition).order_by("id")
+        )
+        assert found == expected, condition
+    nearly = Decimal("9.95000000000000000001")
+    if engine.dialect.name == "sqlite":
+        with pytest.raises(StatementError, match="too close to a whole number"):
+            await scalars(engine, select(prices.c.id).where(amount > nearly))
+    else:
+        assert await scalars(engine, select(prices.c.id).where(amount > nearly)) == [2]
+
+
+async def test_amounts_meet_other_scales_and_integers_exactly(
+    engine: AsyncEngine,
+) -> None:
+    """Both sides count the same units, whatever scale each column has."""
+    await stored(
+        engine,
+        {
+            "id": 1,
+            "amount": Decimal("2.50"),
+            "rate": Decimal("0.1234"),
+            "units": Decimal("10"),
+            "quantity": 3,
+        },
+    )
+    amount, rate, units, quantity = (
+        prices.c.amount,
+        prices.c.rate,
+        prices.c.units,
+        prices.c.quantity,
+    )
+    computed = [
+        (amount + rate, "2.6234"),
+        (rate + amount, "2.6234"),
+        (amount - units, "-7.50"),
+        (units - amount, "7.50"),
+        (amount + quantity, "5.50"),
+        (amount - quantity, "-0.50"),
+        (amount % quantity, "2.50"),
+        (units % amount, "0.00"),
+    ]
+    for expression, form in computed:
+        found = await scalars(engine, select(expression))
+        assert [str(value) for value in found] == [form], expression
+    conditions = [
+        (amount > rate, True),
+        (rate > amount, False),
+        (amount < units, True),
+        (amount < quantity, True),
+        (amount >= quantity, False),
+        (amount == rate, False),
+        (amount != units, True),
+    ]
+    for condition, expected in conditions:
+        assert await scalars(engine, select(condition)) == [expected], condition
 
 
 async def test_the_bounds_of_a_column_are_inclusive(engine: AsyncEngine) -> None:
