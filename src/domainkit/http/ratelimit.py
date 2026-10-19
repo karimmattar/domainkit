@@ -31,7 +31,7 @@ from fastapi import status
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from domainkit.cache import CacheUnavailable, caches
+from domainkit.cache import CacheError, CacheUnavailable, caches
 from domainkit.conf import settings
 from domainkit.conf.global_settings import REDIS_SCHEMES
 from domainkit.context import current_request
@@ -126,14 +126,16 @@ class RedisBackend:
     One Lua script reads and updates the caller's state on the server's
     clock, so replicas never race and their clocks do not matter. Keys live
     in the cache's namespace (``<KEY_PREFIX>:ratelimit:<caller>``) only until
-    the caller's quota is full again. If Redis fails, requests are let
+    the caller's quota is full again. If Redis fails, or refuses the script
+    (out of memory, a read-only replica after a failover), requests are let
     through: the limit protects the service, and its outage must not stop
-    it. The cache is then skipped for ``FAILURE_COOLDOWN`` seconds.
+    it. Redis is then skipped for ``FAILURE_COOLDOWN`` seconds.
     """
 
     def __init__(self, cache: str | None = None) -> None:
         """Count in ``cache`` (default: ``RATE_LIMIT_CACHE``), a Redis cache."""
         self.cache = cache or settings.RATE_LIMIT_CACHE
+        self._skip_until = 0.0
         if caches.config(self.cache).scheme not in REDIS_SCHEMES:
             raise ImproperlyConfigured(
                 f"RedisBackend needs a redis:// or rediss:// cache; "
@@ -150,14 +152,26 @@ class RedisBackend:
             raise ImproperlyConfigured(f"CACHES[{self.cache!r}] is not Redis.")
         interval = period * 1_000_000 / limit
         tolerance = period * 1_000_000 - interval
+        let_through = Decision(
+            allowed=True, remaining=limit - 1, reset_after=0.0, retry_after=0.0
+        )
+        if time.monotonic() < self._skip_until:
+            return let_through
         try:
             allowed, debt = await cache.call(
                 store.gcra, f"{cache.namespace}ratelimit:{key}", interval, tolerance
             )
-        except CacheUnavailable:
-            return Decision(
-                allowed=True, remaining=limit - 1, reset_after=0.0, retry_after=0.0
+        except CacheUnavailable:  # The cache cools down and says so itself.
+            return let_through
+        except CacheError as exc:
+            cooldown = cache.config.FAILURE_COOLDOWN
+            self._skip_until = time.monotonic() + cooldown
+            logger.warning(
+                "Redis refused the rate limit; letting requests through for %.1fs: %s",
+                cooldown,
+                exc,
             )
+            return let_through
         if not allowed:
             return Decision(
                 allowed=False,
