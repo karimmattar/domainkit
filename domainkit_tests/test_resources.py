@@ -1,13 +1,15 @@
 """Resources: aggregates listed, read, and changed over REST by ``ResourceRouter``."""
 
+import asyncio
 import json
 from collections.abc import Callable
 from decimal import Decimal
 from typing import Annotated, Any, Final
+from unittest.mock import Mock
 from uuid import UUID, uuid4
 
 import pytest
-from fastapi import FastAPI, Header, Query
+from fastapi import FastAPI, Header, Query, Request
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, Field
 from starlette.requests import HTTPConnection
@@ -1687,3 +1689,71 @@ def test_query_routes_are_documented(store: InMemoryGadgets) -> None:
         each["in"] == "header" for each in single["parameters"]
     )
     assert {"200", "304", "401", "403"} <= set(single["responses"])
+
+
+def test_lists_may_show_some_fields_and_names_take_a_prefix(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """``list_fields`` trims list items; ``name_prefix`` starts every route name."""
+    use_auth()
+    resource = gadgets(store, list_fields=["name"], name_prefix="shop_")
+    resource.command_route(RenameGadget, service=rename, body=RenameIn, path="/rename")
+    client = client_of(resource)
+
+    listed = client.get("/gadgets", headers=as_("viewer")).json()["items"]
+    document = client.get("/openapi.json").json()
+
+    assert sorted(listed, key=str) == [{"name": "a"}, {"name": "b"}, {"name": "c"}]
+    assert document["components"]["schemas"]["GadgetPage"]["properties"]["items"][
+        "items"
+    ] == {"$ref": "#/components/schemas/GadgetSummary"}
+    assert [each.name for each in resource.operations] == [
+        "shop_list_gadgets",
+        "shop_read_gadget",
+        "shop_rename_gadget",
+    ]
+    assert resource.read_name == "shop_read_gadget"
+    assert [
+        (each.method, each.path, each.action, each.detail)
+        for each in resource.operations
+    ] == [
+        ("GET", "/gadgets", "view", False),
+        ("GET", "/gadgets/{gadget_id}", "view", True),
+        ("POST", "/gadgets/{gadget_id}/rename", "change", True),
+    ]
+    with pytest.raises(TypeError, match=r"GadgetOut has no field nope\."):
+        gadgets(store, list_fields=["nope"])
+
+
+def test_routes_of_your_own_fetch_as_the_resource_does(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """``fetch`` keeps scope and object rules; nested resources cannot use it."""
+    use_auth()
+
+    async def cheap_only(request: HTTPConnection) -> Any:  # noqa: ANN401 - criteria.
+        return F("price") < Decimal("2.50")
+
+    resource = gadgets(store, scope=cheap_only)
+    by_name = {gadget.name: gadget for gadget in store.items.values()}
+
+    @resource.get("/{gadget_id}/name", dependencies=[Public])
+    async def name_of(request: Request, gadget_id: UUID) -> str:
+        found = await resource.fetch(request, FakeGadgetsUnitOfWork(store), gadget_id)
+        return str(getattr(found, "name"))  # noqa: B009 - an aggregate of any type.
+
+    client = client_of(resource)
+    nested = ResourceRouter(
+        "/reviews",
+        model=Review,
+        unit_of_work=FakeGadgetsUnitOfWork,
+        repository=lambda uow: uow,
+        parent=resource,
+        parent_field="gadget",
+        rule=IsAuthenticated(),
+    )
+
+    assert client.get(f"/gadgets/{by_name['b'].id}/name").json() == "b"
+    assert client.get(f"/gadgets/{by_name['a'].id}/name").status_code == 404
+    with pytest.raises(TypeError, match="not nested"):
+        asyncio.run(nested.fetch(Mock(), Mock(), uuid4()))

@@ -222,6 +222,17 @@ All notable changes to domainkit. The format follows
   resource: its fields from the query string (bounded, unknown parameters
   refused), one aggregate or `{"items": [...]}` back, and what the caller
   may not reach or see left out.
+- `domainkit.contrib.admin` (DJ-46; `docs/resources.md`, "The generic
+  admin"): `admin.register(Product, ..., list_display=, filters=, search=,
+  commands=[admin.command(...)])` serves a model under the admin's prefix,
+  for staff with its model permissions: lists, reads with tags, commands
+  run by application services (never raw field edits), queries, and each
+  item's history from the audit trail. `GET /admin/meta` describes the
+  models, fields, filters, and commands the caller may use, as JSON
+  Schema. Users, groups, and permissions keep their own admin.
+- `ResourceRouter` takes `list_fields=` (lists show only those fields) and
+  `name_prefix=` (route names, hence operation ids), records its
+  `operations`, and offers `fetch()` for routes of your own.
 - Generators (DJ-01; `docs/resources.md`, "Generators"): `startaggregate`
   adds an aggregate to a domain, every layer and its tests, with fields
   from a registry of kinds (`--field price:decimal:10:2`, `--field

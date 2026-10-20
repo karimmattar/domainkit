@@ -132,6 +132,26 @@ class _Default:
 DEFAULT: Final = _Default()
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class Operation:
+    """One route of a resource, as its rules and a generic client see it."""
+
+    name: str
+    """The route's name (its operation id)."""
+    method: str
+    path: str
+    """The path inside the resource's router: ``/products/{product_id}/rename``."""
+    action: str
+    """The action its rules check: ``view``, ``add``, ``change``, ``delete``, ..."""
+    rules: tuple[Rule, ...]
+    summary: str | None
+    detail: bool
+    """Whether it acts on one aggregate, named in the path."""
+    body: type[BaseModel] | None
+    parameters: type[BaseModel] | None
+    """The query string a query route reads."""
+
+
 class ResourceRouter(APIRouter):
     """The routes of one aggregate type (see the module)."""
 
@@ -163,6 +183,8 @@ class ResourceRouter(APIRouter):
         update: type[PatchModel] | None = None,
         new_id: Callable[[], object] = uuid4,
         not_found: Callable[[Any], Exception] | None = None,
+        list_fields: Sequence[str] | None = None,
+        name_prefix: str = "",
         **options: Any,  # noqa: ANN401 - APIRouter's options (tags, dependencies).
     ) -> None:
         """Declare the resource and add its list and read routes.
@@ -177,6 +199,9 @@ class ResourceRouter(APIRouter):
         replaces the page's schema; ``lookup`` names the id in the path
         (``<basename>_id``). ``not_found(id)`` is the error for an id that
         names nothing (default: the repository's ``not_found``).
+        ``list_fields`` keeps only those fields of the schema in lists.
+        ``name_prefix`` starts every route's name, hence its operation id,
+        so two resources of one model can live in one application.
 
         Raises:
             TypeError: A declaration does not fit the model.
@@ -228,8 +253,13 @@ class ResourceRouter(APIRouter):
         self.source_schema = given
         self.schema = self._documented(given)
         self.present = present or _presenter(given)
+        self.list_fields = _listed(self.schema, list_fields)
+        """The fields lists show; None: all of them."""
         self.page_schema = page_schema or self._page_schema()
-        self.read_name = f"read_{self.basename}"
+        self.name_prefix = name_prefix
+        self.read_name = f"{name_prefix}read_{self.basename}"
+        self.operations: list[Operation] = []
+        """Every route, in the order declared."""
         self._checks_objects: dict[str, bool] = {}
         """Per action, whether its rules look at the aggregate itself."""
         self._add_list()
@@ -482,7 +512,10 @@ class ResourceRouter(APIRouter):
             async with values["uow"] as uow:
                 found = await page.fetch(self.repository(uow), query)
             hidden = await self._hidden(request)
-            items = [self._dump(request, values, item, hidden) for item in found.items]
+            items = [
+                self._dump(request, values, item, hidden, self.list_fields)
+                for item in found.items
+            ]
             out = page.respond(found, items, query)
             body = {"items": items}
             for name in self.page_schema.model_fields:
@@ -517,7 +550,7 @@ class ResourceRouter(APIRouter):
             f"/{{{self.lookup}}}",
             "GET",
             run,
-            name=self.read_name,
+            name=f"read_{self.basename}",
             summary=f"Read a {self.basename.replace('_', ' ')}",
             action=VIEW,
             detail=True,
@@ -697,6 +730,7 @@ class ResourceRouter(APIRouter):
         provided: Mapping[str, Callable[..., Any]] | None = None,
     ) -> None:
         """Add one route, its parameters and OpenAPI answers declared."""
+        name = f"{self.name_prefix}{name}"
         parameters = [_parameter("request", Request)]
         parameters.append(_parameter("uow", Annotated[Any, Depends(self.unit_of_work)]))
         if self.parent is not None:
@@ -809,6 +843,19 @@ class ResourceRouter(APIRouter):
             openapi_extra=extra,
         )
         self._checks_objects[action] = any(_checks_objects(each) for each in rules)
+        self.operations.append(
+            Operation(
+                name=name,
+                method=method,
+                path=f"{self.prefix}{path}",
+                action=action,
+                rules=rules,
+                summary=summary,
+                detail=detail,
+                body=body,
+                parameters=asked,
+            )
+        )
 
     # Answering ------------------------------------------------------------------
 
@@ -817,6 +864,28 @@ class ResourceRouter(APIRouter):
         given = values.get("filters")
         query = given.query() if isinstance(given, FilterSet) else as_query(given)
         return query.where(*await self._criteria(request, values))
+
+    async def fetch(
+        self, request: HTTPConnection, uow: UnitOfWork, id_: object, action: str = VIEW
+    ) -> Aggregate:
+        """The aggregate ``id_``, as a route of ``action`` would reach it.
+
+        For routes of your own on the resource: what is out of the caller's
+        scope is not found, and rules that look at objects are asked.
+
+        Raises:
+            TypeError: The resource is nested; its routes take the parent too.
+            NotFound: There is none, or it is out of the caller's reach.
+            PermissionDenied: A rule refuses the caller this aggregate.
+        """
+        if self.parent is not None:
+            raise TypeError(
+                "fetch() reaches aggregates of resources that are not nested."
+            )
+        async with uow:
+            aggregate = await self._load(uow, request, {self.lookup: id_})
+        await self._check_object(request, aggregate, action)
+        return aggregate
 
     async def _check_parent(self, values: Values) -> None:
         """Refuse a parent the caller may not reach, as its own read would.
@@ -973,9 +1042,12 @@ class ResourceRouter(APIRouter):
         values: Values,
         aggregate: Aggregate,
         hidden: frozenset[str],
+        include: set[str] | None = None,
     ) -> dict[str, Any]:
-        """The JSON of one aggregate, without what the caller may not see."""
-        document = self.present(aggregate).model_dump(mode="json", exclude=set(hidden))
+        """The JSON of one aggregate (``include``'s fields), without the hidden ones."""
+        document = self.present(aggregate).model_dump(
+            mode="json", include=include, exclude=set(hidden)
+        )
         if self.links:
             document["links"] = self._links(request, values, aggregate)
         return document
@@ -1043,7 +1115,17 @@ class ResourceRouter(APIRouter):
 
     def _page_schema(self) -> type[BaseModel]:
         """``<Name>Page``: the items, and how to ask for the next page."""
-        fields: dict[str, Any] = {"items": (list[self.schema], ...)}  # type: ignore[name-defined]
+        item = self.schema
+        if self.list_fields is not None:
+            kept: dict[str, Any] = {
+                name: (field.annotation, field)
+                for name, field in self.schema.model_fields.items()
+                if name in self.list_fields
+            }
+            item = create_model(
+                f"{self.schema.__name__.removesuffix('Out')}Summary", **kept
+            )
+        fields: dict[str, Any] = {"items": (list[item], ...)}
         if self.pagination.offset:
             fields["next_offset"] = (
                 int | None,
@@ -1201,6 +1283,19 @@ def _checks_objects(rule: Rule) -> bool:
     if isinstance(rule, Not):
         return _checks_objects(rule.rule)
     return type(rule).has_object_permission is not BasePermission.has_object_permission
+
+
+def _listed(schema: type[BaseModel], fields: Sequence[str] | None) -> set[str] | None:
+    """The fields lists show, if they show only some.
+
+    Raises:
+        TypeError: The schema lacks one.
+    """
+    if fields is None:
+        return None
+    if unknown := sorted(set(fields) - set(schema.model_fields)):
+        raise TypeError(f"{schema.__name__} has no field {', '.join(unknown)}.")
+    return set(fields)
 
 
 def _returns_many(handler: Handler) -> bool:

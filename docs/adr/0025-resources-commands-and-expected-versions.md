@@ -59,6 +59,11 @@ its repository, or an expectation the repository checks by itself.
   query string and answers with what its handler returns, an aggregate
   or a list of them, each checked again against the caller's scope and
   the parent, since a handler is free to ignore them.
+- The generic admin (`domainkit.contrib.admin`) is a registry of
+  resources, not a second kit: its actions are commands, its `/meta`
+  is computed per caller from the same rules the routes check, and it
+  refuses auth's models, whose own admin keeps rules (grant ceilings,
+  the last superuser) that generic commands could not.
 - The generators (`startaggregate`, `addcommand`, `addquery`,
   `addevent`) write onto this kit and edit existing files only where
   their syntax tree shows what the generators made: every edit is planned

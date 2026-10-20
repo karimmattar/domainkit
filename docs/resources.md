@@ -362,8 +362,72 @@ ruff. `fakes.py` gains `new_<name>()`, a valid aggregate, and
 later generators start from. What they generate passes ruff, `mypy
 --strict`, and its own tests, as the generators' own test checks.
 
-## The admin APIs
+## The generic admin
 
-The auth admin's user and group listings and reads are resources, so they
-answer with tags too; their writes stay commands of their own, which keep
-the grant ceilings and the last-superuser lock ([auth.md](auth.md)).
+`domainkit.contrib.admin` is Django's `admin.site.register` without HTML:
+register an aggregate, and the admin serves it, with `GET /meta`
+describing everything for a generic client to render.
+
+```python
+from domainkit.contrib import admin
+
+admin.register(
+    Product,
+    unit_of_work=get_unit_of_work,
+    repository=lambda uow: uow.products,
+    list_display=["name", "archived"],
+    search=["name"],
+    ordering=["name"],
+    commands=[
+        admin.command(
+            ArchiveProduct, service=services.archive_product, path="/archive"
+        ),
+        admin.command(
+            RenameProduct,
+            service=services.rename_product,
+            body=RenameIn,
+            path="/rename",
+        ),
+    ],
+    queries=[
+        admin.query(
+            ProductsByOwner, handler=queries.products_by_owner, path="/by-owner"
+        )
+    ],
+)
+
+# config/urls.py, after the modules that register:
+router.include_router(admin.site.router, prefix="/admin")
+```
+
+| Route | Answer |
+| --- | --- |
+| `GET /admin/catalog/products` | A page; each item has `id`, the `list_display` fields, and `links`. `filters=` takes a `FilterSet`; `search=` and `ordering=` make one. |
+| `GET /admin/catalog/products/{product_id}` | The product, with its `ETag`. |
+| `POST /admin/catalog/products/{product_id}/archive` | A command, run by its service; `If-Match` makes it conditional. |
+| `GET /admin/catalog/products/{product_id}/history` | The audit trail's entries about the product, newest first, with what each changed ([contrib.md](contrib.md#history)), when `domainkit.contrib.audit` is installed. |
+| `GET /admin/meta` | Each model the caller may view: its paths, the JSON Schema of an item without the fields the caller may not see, the listed fields, filters, ordering, search, the commands and queries the caller may run (with their bodies' JSON Schemas), and its history's path if the caller may read it. |
+
+- Every route needs staff (`is_staff`) or a superuser, and the model
+  permission of its action: `catalog.view_product` to list, read, and
+  query, `change` for commands (or a command's `action=`), and
+  `audit.view_history` too for histories. `/meta` needs staff.
+- Actions are commands through application services: the admin never
+  sets fields itself, so the domain's rules and events hold.
+- `schema=`, `present=`, `policy=`, `scope=`, and `pagination=` are the
+  resource's; `label=` names the content type when the class is not
+  mapped in an installed domain; `history_field=` names the events' field
+  that holds the id (`product_id`).
+- Route names start with `admin_<domain>_`, so the admin and the domain's
+  own API can serve one model in one application.
+- Users, groups, and permissions keep their own admin at `/admin/auth`,
+  whose grant ceilings and last-superuser lock the generic admin could not
+  keep: registering them is refused. Their listings and reads there are
+  resources too, with tags ([auth.md](auth.md)).
+- Register before the router is mounted (from the modules your routes
+  import, or `DomainConfig.ready()`); a later `register` fails.
+
+`ResourceRouter.fetch(request, uow, id)` loads an aggregate as the
+resource's own routes would, out of scope being `404`, for routes of your
+own on a resource; `list_fields=` and `name_prefix=` are the options the
+admin uses.
