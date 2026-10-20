@@ -280,10 +280,22 @@ def test_positions_are_never_refused_for_their_length(
 def test_amounts_are_written_without_exponents() -> None:
     """``0E-8``, as zero comes back at eight places, was refused coming back."""
     ordering = (Ordering("amount"), Ordering("id"))
-    for amount in (Decimal("0E-8"), Decimal("1E-7"), Decimal("1E+2"), Decimal("-0.50")):
+    for amount in (
+        Decimal("0E-8"),
+        Decimal("1E-7"),
+        Decimal("1E+2"),
+        Decimal("-0.50"),
+        Decimal("9E+39"),
+        Decimal("-1E-40"),
+    ):
         cursor = encode_position((amount, UUID(int=1)), ordering)
         assert decode_position(cursor, ordering, Record) == (amount, UUID(int=1))
         assert "E" not in json.loads(base64.urlsafe_b64decode(cursor + "==="))[2]
+    for odd in map(Decimal, ("1E+40", "1E-41", "1E+999999999", "NaN", "-Infinity")):
+        cursor = encode_position((odd, UUID(int=1)), ordering)  # Not a gigabyte.
+        assert json.loads(base64.urlsafe_b64decode(cursor + "==="))[2] == str(odd)
+        with pytest.raises(InvalidCursor):
+            decode_position(cursor, ordering, Record)
 
 
 def test_cursors_name_fields_of_the_aggregate() -> None:

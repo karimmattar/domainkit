@@ -88,7 +88,11 @@ MAX_LIMIT: Final = 200
 MAX_OFFSET: Final = 10_000
 """The deepest offset ``Pagination(offset=True)`` accepts by default."""
 _INT64: Final = 2**63
-_DECIMAL: Final = re.compile(r"-?\d{1,40}(\.\d{1,40})?")
+_AMOUNT_DIGITS: Final = 40
+"""Digits a cursor's amount may have before the point, and after it."""
+_DECIMAL: Final = re.compile(
+    rf"-?\d{{1,{_AMOUNT_DIGITS}}}(\.\d{{1,{_AMOUNT_DIGITS}}})?"
+)
 _ESCAPED: Final = 6
 """The most bytes one character of text takes in a cursor: JSON writes a
 control character as ``\\u001f``, and UTF-8 any other in at most 4."""
@@ -331,8 +335,14 @@ def _to_json(value: object) -> object:
         return value
     if isinstance(value, float) and math.isfinite(value):
         return value
-    if isinstance(value, Decimal):
-        return format(value, "f")  # Never 0E-8, which decoding refuses.
+    if isinstance(value, Decimal):  # Plain: never 0E-8, which decoding refuses.
+        exponent = value.as_tuple().exponent  # Of the last digit; a letter if NaN.
+        plain = (
+            isinstance(exponent, int)
+            and exponent >= -_AMOUNT_DIGITS
+            and value.adjusted() < _AMOUNT_DIGITS
+        )
+        return format(value, "f") if plain else str(value)  # Not 1E+999999999.
     if isinstance(value, UUID):
         return str(value)
     if isinstance(value, date | time):  # A datetime is a date.
