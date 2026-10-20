@@ -48,7 +48,9 @@ All notable changes to domainkit. The format follows
 - `DEFAULT_MIDDLEWARE` and the project template list
   `WebSocketLimitsMiddleware`, so WebSockets of projects that set no
   `MIDDLEWARE` get the limits above. List it in an older project's
-  `MIDDLEWARE`, after `RateLimitMiddleware`.
+  `MIDDLEWARE`, after `RateLimitMiddleware`; with `domainkit.contrib.auth`
+  installed, listing it before `AuthenticationMiddleware` is refused at
+  startup, as it would count addresses rather than users.
 
 ### Fixed
 

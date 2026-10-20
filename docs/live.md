@@ -33,7 +33,8 @@ The design is explained in [ADR 0055](adr/0055-bound-live-connections.md)
 `WebSocketLimitsMiddleware` bounds every WebSocket. New projects list it;
 add it to an older project's `MIDDLEWARE`, after the authentication and
 rate limit middleware, so it counts users and only handshakes the rate
-limit let through:
+limit let through (with `domainkit.contrib.auth` installed, a project that
+lists it before `AuthenticationMiddleware` does not start):
 
 ```python
 MIDDLEWARE = [
