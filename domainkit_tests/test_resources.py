@@ -4,6 +4,7 @@ import asyncio
 import json
 from collections.abc import Callable
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Annotated, Any, Final
 from unittest.mock import Mock
 from uuid import UUID, uuid4
@@ -197,7 +198,7 @@ async def nothing(command: RenameGadget, uow: FakeGadgetsUnitOfWork) -> None:
 
 
 class Users:
-    """Middleware: the user the ``X-User`` header names (anonymous without one)."""
+    """Middleware: the user ``X-User`` names (anonymous without one), and scopes."""
 
     def __init__(self, app: ASGIApp, users: dict[str, AnyUser]) -> None:
         """Wrap ``app``."""
@@ -205,11 +206,14 @@ class Users:
         self.users = users
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Set ``scope["user"]``."""
+        """Set ``scope["user"]``, and credentials limited to ``X-Scopes`` if sent."""
         if scope["type"] == "http":
             names = dict(scope["headers"])
             name = names.get(b"x-user", b"").decode()
             scope["user"] = self.users.get(name, AnonymousUser())
+            if b"x-scopes" in names:
+                limited = frozenset(names[b"x-scopes"].decode().split())
+                scope["auth"] = SimpleNamespace(scopes=limited)
         await self.app(scope, receive, send)
 
 

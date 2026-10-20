@@ -121,6 +121,9 @@ def test_staff_list_read_and_run_commands(
     assert client.get(GADGETS).status_code == 401
     assert client.get(GADGETS, headers=as_("outsider")).status_code == 403
     assert client.get(GADGETS, headers=as_("nobody")).status_code == 403
+    scoped = as_("root", **{"X-Scopes": "shop.view_gadget"})
+    assert client.get(GADGETS, headers=scoped).status_code == 403
+    assert client.get("/admin/meta", headers=scoped).status_code == 403
 
 
 def test_search_and_ordering_make_filters(
