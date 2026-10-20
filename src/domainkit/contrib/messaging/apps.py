@@ -12,7 +12,6 @@ from domainkit.broker import brokers
 from domainkit.db import SqlAlchemyUnitOfWork
 from domainkit.db.routing import DatabaseRouter, router
 from domainkit.ddd import DeferredTask, DomainEvent, UnitOfWork
-from domainkit.exceptions import ImproperlyConfigured
 from domainkit.lifecycle import Phase
 
 from .dispatch import close_publishers
@@ -35,22 +34,13 @@ class MessagingConfig(DomainConfig):
 
         Shutdown (``domainkit.lifecycle``) closes the background publishers
         in its drain phase, in the application and in management commands
-        alike. It must give a publication under way the time its broker may
-        take to confirm it: ``CLOSE_TIMEOUT`` covers the broker's
-        ``PUBLISH_TIMEOUT``.
+        alike, within the time that phase always has (``drain_time``).
         """
         config = self.get_settings()
         router.require_standalone(config.DATABASE, "MESSAGING.DATABASE")
-        lifecycle.register("publishers", close_publishers, phase=Phase.DRAIN)
         if config.BROKER is not None:
-            broker = brokers.config(config.BROKER)
-            if config.CLOSE_TIMEOUT < broker.PUBLISH_TIMEOUT:
-                raise ImproperlyConfigured(
-                    f"MESSAGING.CLOSE_TIMEOUT ({config.CLOSE_TIMEOUT:g}s) must be "
-                    f"at least BROKERS[{config.BROKER!r}].PUBLISH_TIMEOUT "
-                    f"({broker.PUBLISH_TIMEOUT:g}s), so shutdown lets a "
-                    "publication under way finish."
-                )
+            brokers.config(config.BROKER)
+        lifecycle.register("publishers", close_publishers, phase=Phase.DRAIN)
         if find_spec("prometheus_client") is not None:
             import_module(f"{self.name}.metrics")
 

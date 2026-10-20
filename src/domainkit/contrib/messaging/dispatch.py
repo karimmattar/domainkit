@@ -29,8 +29,10 @@ from itertools import batched
 from typing import Final
 from weakref import WeakKeyDictionary
 
+from domainkit import lifecycle
 from domainkit.broker import Broker, BrokerError, Delivery, Subscription, brokers
 from domainkit.db.routing import router
+from domainkit.lifecycle import PHASE_ENDS, Phase
 from domainkit.tasks import supervise
 
 from .breaker import Breaker, Watched
@@ -39,6 +41,7 @@ from .settings import MessagingSettings
 from .worker import (
     HELPER_GRACE,
     OUTAGE_MAX_PAUSE,
+    RELEASE_TIMEOUT,
     Worker,
     finish,
     pause,
@@ -351,27 +354,46 @@ class CommitPublisher:
             if flushed in self._flushes:
                 self._flushes.remove(flushed)
 
-    async def close(self) -> None:
-        """Flush for up to ``CLOSE_TIMEOUT``, then stop; the relay sends the rest.
+    async def close(self, within: float) -> None:
+        """Flush, then stop, within ``within`` seconds; the relay sends the rest.
 
-        A publication cut short gives its messages back to the outbox
-        before the task ends, within ``RELEASE_TIMEOUT``.
+        The flush keeps back the time a publication it cuts short needs to
+        give its messages back to the outbox (``RELEASE_TIMEOUT``, or half
+        of ``within`` if that is less), so they are unlocked before
+        ``within`` is over, not left locked until their lease runs out.
+        A give-back that takes longer goes on in the task, which shutdown
+        awaits with the other background tasks; so does the give-back of a
+        ``close`` that is cancelled.
         """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + within
         try:
-            async with asyncio.timeout(self.config.CLOSE_TIMEOUT):
-                await self.flush()
-        except TimeoutError:
+            with suppress(TimeoutError):
+                flushed = deadline - min(RELEASE_TIMEOUT, within / 2)
+                async with asyncio.timeout_at(flushed):
+                    await self.flush()
+        finally:
+            task = self._stop()
+        if task is not None:
+            await asyncio.wait({task}, timeout=max(deadline - loop.time(), 0))
+
+    def _stop(self) -> asyncio.Task[None] | None:
+        """Cancel the task and wake every flush; the relay sends what is left.
+
+        A round in flight takes its messages off the backlog as it ends.
+        """
+        if self.backlog:
             logger.warning(
                 "Left %d committed messages to the relay at shutdown", self.backlog
             )
             observe_left("shutdown", self.backlog)
+        self.backlog -= sum(map(len, self.unpublished.values()))
+        self.unpublished.clear()
         task, self._task = self._task, None
         if task is not None:
             task.cancel()
-            await asyncio.wait({task})
-        self.unpublished.clear()
-        self.backlog = 0
         self._idle()
+        return task
 
     def _start(self) -> None:
         """Start the supervised task, unless it runs (or waits to restart)."""
@@ -477,10 +499,28 @@ def commit_publisher(config: MessagingSettings) -> CommitPublisher:
     return publishers[config]
 
 
-async def close_publishers() -> None:
-    """Flush and stop the running loop's publishers (at shutdown)."""
-    for publisher in _publishers.pop(asyncio.get_running_loop(), {}).values():
-        await publisher.close()
+def drain_time() -> float:
+    """Seconds the shutdown's drain phase has, whatever ran before it.
+
+    The phase ends at its share of ``SHUTDOWN_TIMEOUT``, and begins by the
+    end of the domain hooks' share at the latest, so it always has the
+    difference: 20%, 3 seconds of the default 15.
+    """
+    share = PHASE_ENDS[Phase.DRAIN] - PHASE_ENDS[Phase.DOMAINS]
+    return lifecycle.shutdown_timeout() * share
+
+
+async def close_publishers(within: float | None = None) -> None:
+    """Flush and stop the running loop's publishers, at once, within ``within``.
+
+    ``within`` defaults to ``drain_time()``: shutdown runs this in its drain
+    phase, and a publication cut short is given back before the phase ends.
+    """
+    within = drain_time() if within is None else within
+    publishers = _publishers.pop(asyncio.get_running_loop(), {}).values()
+    async with asyncio.TaskGroup() as group:
+        for publisher in publishers:
+            group.create_task(publisher.close(within))
 
 
 def publish_committed(

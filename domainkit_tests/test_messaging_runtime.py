@@ -23,7 +23,7 @@ from sqlalchemy import event, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from domainkit import clock, setup, tasks
+from domainkit import clock, tasks
 from domainkit.apps import registry
 from domainkit.broker import (
     Broker,
@@ -36,7 +36,7 @@ from domainkit.broker import (
     Subscription,
     brokers,
 )
-from domainkit.conf import UNSET, override_settings
+from domainkit.conf import override_settings
 from domainkit.context import RequestContext, bind_request, current_request
 from domainkit.contrib.idempotency.operations import (
     Operation,
@@ -66,7 +66,6 @@ from domainkit.contrib.messaging.tables import DONE, PENDING, messages
 from domainkit.contrib.messaging.worker import LEASE_MARGIN, Claimed
 from domainkit.db import connections
 from domainkit.db.routing import router
-from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import call_command
 from domainkit_tests.test_messaging import (  # noqa: F401 - fixtures.
     ALPHA,
@@ -605,36 +604,6 @@ async def test_a_give_back_that_fails_leaves_the_lease_to_expire(
     assert 0 < seconds_left(row) <= MemoryBroker.publish_timeout + LEASE_MARGIN
 
 
-def test_shutdown_must_outlast_a_publication(database_url: str) -> None:
-    """MESSAGING.CLOSE_TIMEOUT must cover the broker's PUBLISH_TIMEOUT."""
-    registry.clear()
-    refused = (
-        r"MESSAGING\.CLOSE_TIMEOUT \(10s\) must be at least "
-        r"BROKERS\['work'\]\.PUBLISH_TIMEOUT \(20s\)"
-    )
-    with (
-        override_settings(
-            INSTALLED_DOMAINS=[MESSAGING],
-            DATABASES={"default": {"URL": database_url}},
-            BROKERS={"work": {"URL": "memory://", "PUBLISH_TIMEOUT": 20}},
-            MESSAGING={"BROKER": "work"},
-            ALPHA=UNSET,
-        ),
-        pytest.raises(ImproperlyConfigured, match=refused),
-    ):
-        setup()
-    registry.clear()
-    with override_settings(
-        INSTALLED_DOMAINS=[MESSAGING],
-        DATABASES={"default": {"URL": database_url}},
-        BROKERS={"work": {"URL": "memory://", "PUBLISH_TIMEOUT": 20}},
-        MESSAGING={"BROKER": "work", "CLOSE_TIMEOUT": 20},
-        ALPHA=UNSET,
-    ):
-        setup()
-    registry.clear()
-
-
 # Chunked rounds -------------------------------------------------------------------
 
 
@@ -693,7 +662,7 @@ async def test_rounds_lock_and_publish_a_batch_at_a_time(
         monkeypatch.setattr(BrokerHandler, "__getitem__", lambda self, alias: broker)
         publisher.submit("default", ids)
         await published(publisher)
-        await publisher.close()
+        await publisher.close(WAIT)
 
     assert rounds == [2, 2, 1]
 
@@ -992,6 +961,156 @@ async def test_a_publisher_cancelled_at_shutdown_leaves_the_rest_to_the_relay(
     assert left("shutdown") == before + 1
     (row,) = await rows()
     assert (row["lock_id"], row["locked_until"]) == (None, None)
+
+
+def test_publishers_get_the_time_the_drain_phase_always_has() -> None:
+    """A fifth of SHUTDOWN_TIMEOUT: where the drain phase ends, less the hooks'."""
+    with override_settings(SHUTDOWN_TIMEOUT=10):
+        assert dispatch.drain_time() == pytest.approx(2.0)
+    with override_settings(SHUTDOWN_TIMEOUT=25):
+        assert dispatch.drain_time() == pytest.approx(5.0)
+
+
+@pytest.mark.parametrize(
+    ("given", "flushing"),
+    [
+        (30.0, 25.0),  # RELEASE_TIMEOUT (5 s) kept for the give-back.
+        (4.0, 2.0),  # Half kept: less than RELEASE_TIMEOUT.
+    ],
+)
+@pytest.mark.usefixtures("broker_tables")
+async def test_closing_keeps_back_the_time_to_give_a_round_back(
+    monkeypatch: pytest.MonkeyPatch, given: float, flushing: float
+) -> None:
+    """The flush ends RELEASE_TIMEOUT (or half the time, if less) before close's."""
+    deadlines: list[float] = []
+    timeout_at = asyncio.timeout_at
+
+    def spy(when: float | None) -> asyncio.Timeout:
+        assert when is not None
+        deadlines.append(when)
+        return timeout_at(when)
+
+    monkeypatch.setattr(asyncio, "timeout_at", spy)
+    publisher = commit_publisher(registry.settings(MessagingSettings))
+    loop = asyncio.get_running_loop()
+    before = loop.time()
+    await within(publisher.close(given))
+    after = loop.time()
+
+    (deadline,) = deadlines
+    assert before <= deadline - flushing <= after
+
+
+@pytest.mark.usefixtures("broker_tables")
+async def test_shutdown_gives_a_stalled_round_back_within_its_drain_phase(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The publishers' closer unlocks a cut-short round itself, in its phase.
+
+    Shutdown cancels the closer when the drain phase ends, so a flush that
+    ran to the end would leave the round to the tasks phase, or its lease.
+    """
+    from domainkit import lifecycle
+
+    holding = Holding()
+    monkeypatch.setattr(BrokerHandler, "__getitem__", lambda self, alias: holding)
+    await enqueue(remember, value=uuid.uuid4())
+    await within(holding.arrived.wait())
+    before = left("shutdown")
+    seen: list[dict[str, Any]] = []
+
+    async def closing() -> None:
+        await dispatch.close_publishers()  # Within drain_time(): 6 s of 30.
+        seen.extend(await rows())
+
+    monkeypatch.setitem(
+        lifecycle._registered[lifecycle.Phase.DRAIN], "publishers", closing
+    )
+    with override_settings(SHUTDOWN_TIMEOUT=30), caplog.at_level(logging.WARNING):
+        await within(lifecycle.close_resources())
+
+    (row,) = seen
+    assert (row["lock_id"], row["locked_until"]) == (None, None)
+    assert left("shutdown") == before + 1
+    assert logged(caplog, "domainkit.contrib.messaging.dispatch") == [
+        "Left 1 committed messages to the relay at shutdown"
+    ]
+    assert logged(caplog, "domainkit.lifecycle") == []
+
+
+@pytest.mark.usefixtures("broker_tables")
+async def test_closing_ends_in_its_time_while_a_slow_give_back_goes_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A give-back that outlasts close's time finishes in the task, unlocked.
+
+    Close lets go of the task and wakes every flush at once: a commit now
+    starts a new task, and nothing waits on the old one.
+    """
+    holding = Holding()
+    monkeypatch.setattr(BrokerHandler, "__getitem__", lambda self, alias: holding)
+    settling = asyncio.Event()
+    settle = Worker._settle
+
+    async def slow(self: Worker, *args: Any) -> None:  # noqa: ANN401
+        await settling.wait()
+        await settle(self, *args)
+
+    monkeypatch.setattr(Worker, "_settle", slow)
+    publisher = commit_publisher(registry.settings(MessagingSettings))
+    await enqueue(remember, value=uuid.uuid4())
+    await within(holding.arrived.wait())
+    task = publisher._task
+    assert task is not None
+
+    waiting = asyncio.create_task(publisher.flush())
+    await within(publisher.close(0.2))
+    assert not task.done()
+    assert publisher._task is None
+    await within(waiting)
+    (row,) = await rows()
+    assert row["lock_id"] is not None
+    settling.set()
+    await within(asyncio.wait({task}))
+
+    (row,) = await rows()
+    assert (row["lock_id"], row["locked_until"]) == (None, None)
+    assert (publisher.backlog, publisher._task) == (0, None)
+
+
+@pytest.mark.usefixtures("broker_tables")
+async def test_a_cancelled_close_still_stops_the_publisher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancelled mid-flush (its phase ended), close still cancels the round."""
+    holding = Holding()
+    monkeypatch.setattr(BrokerHandler, "__getitem__", lambda self, alias: holding)
+    publisher = commit_publisher(registry.settings(MessagingSettings))
+    await enqueue(remember, value=uuid.uuid4())
+    await within(holding.arrived.wait())
+    publisher.submit("default", [uuid.uuid4()])  # Waits behind the first.
+    task = publisher._task
+    assert task is not None
+    flushing = asyncio.Event()
+    flush = CommitPublisher.flush
+
+    async def watched(self: CommitPublisher) -> None:
+        flushing.set()
+        await flush(self)
+
+    monkeypatch.setattr(CommitPublisher, "flush", watched)
+    closing = asyncio.create_task(publisher.close(WAIT))
+    await within(flushing.wait())
+    closing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await within(closing)
+
+    assert task.cancelling()
+    await within(asyncio.wait({task}))
+    (row,) = await rows()
+    assert (row["lock_id"], row["locked_until"]) == (None, None)
+    assert (publisher.backlog, publisher.unpublished, publisher._task) == (0, {}, None)
 
 
 @pytest.mark.usefixtures("brokered")

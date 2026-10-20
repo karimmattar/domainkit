@@ -115,7 +115,6 @@ inspects any outbox.
 | `BROKER` | `None` | An alias in `BROKERS`: workers take their work from that broker instead of polling the outbox (below). |
 | `REPUBLISH_AFTER` | `3600.0` | With a broker: seconds a published message may wait for a worker before the relay publishes it again, as lost. |
 | `PUBLISH_ON_COMMIT` | `True` | With a broker: the committing process publishes the commit's due messages in the background right away, instead of leaving them to the relays' next poll. |
-| `CLOSE_TIMEOUT` | `10.0` | With a broker: seconds shutdown lets the background publisher finish; at least the broker's `PUBLISH_TIMEOUT` (checked at startup). |
 | `BREAKER_FAILURES` | `5` | With a broker: failed broker calls in a row after which commits stop publishing and leave their messages to the relays. |
 | `BREAKER_COOLDOWN` | `30.0` | Seconds commits leave their messages to the relays before the publisher tries the broker again. |
 | `NOTIFY` | `True` | On PostgreSQL: commits wake idle workers at once (`LISTEN`/`NOTIFY`), unless a broker publishes each commit. |
@@ -189,7 +188,9 @@ aio-pika). Then `runworker` works like this:
   broker failures in a row, commits leave their messages to the relays for
   `BREAKER_COOLDOWN`, then the publisher checks the broker and tries again;
   this is logged once when it starts and once when it ends. At shutdown
-  the publisher gets `CLOSE_TIMEOUT` to finish; the outbox holds the rest.
+  the publisher gets a fifth of `SHUTDOWN_TIMEOUT`, the time shutdown's
+  drain phase always has, and gives back what it cut short within it; the
+  outbox holds the rest.
   Set `PUBLISH_ON_COMMIT` to `False` to leave all publishing to the relays.
   Delayed tasks wait for the relay.
 - **Relay.** Workers also claim due messages of their outbox, as a polling

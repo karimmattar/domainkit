@@ -47,9 +47,16 @@ circuit breaker that skips rounds entirely while the broker is down.
   cancellation, within `RELEASE_TIMEOUT` (five seconds); if it fails, it is
   logged and the lease expires. Both updates match the relay's own lock
   only, so a consumer that already took a message over keeps it.
-- **Shutdown time.** `MESSAGING.CLOSE_TIMEOUT` (10 s) replaces the fixed
-  five seconds and must be at least the broker's `PUBLISH_TIMEOUT`, checked
-  when messaging starts.
+- **Shutdown time.** The publishers close in shutdown's drain phase
+  (ADR 0046), within the time that phase always has: it ends at half of
+  `SHUTDOWN_TIMEOUT` and begins by 30% at the latest, so a fifth (3 s of
+  the default 15). The flush ends `RELEASE_TIMEOUT` (or half that time,
+  if less) before then, so a publication it cuts short gives its messages
+  back before the phase ends; `close` returns by then even if the
+  give-back is slower, which goes on in the task, and shutdown's tasks
+  phase awaits it. A setting of its own (`CLOSE_TIMEOUT`, at least the
+  broker's `PUBLISH_TIMEOUT`) was tried and dropped: the phase ends first,
+  so it promised time shutdown does not give.
 - **A circuit breaker** in the publisher. Broker calls are watched:
   `BrokerUnavailable` counts as a failure, a refusal (`BrokerRefused`) as
   an answer, and a confirmation closes the breaker. After
@@ -80,8 +87,9 @@ circuit breaker that skips rounds entirely while the broker is down.
 - While the breaker is open, messages wait for the relays' next poll
   (`POLL_INTERVAL`) instead of going out at once. The web pool and the
   logs stay quiet during a broker outage.
-- Shutdown's drain phase may end before `CLOSE_TIMEOUT` (it ends halfway
-  through `SHUTDOWN_TIMEOUT`); the lease makes that cheap.
+- At shutdown, a publication slower than the drain phase's time is cut
+  short and published by a relay later; the give-back makes that cost a
+  few seconds, not the lease.
 - Adapters must honour `publish_timeout`: `publish` raises
   `BrokerUnavailable` instead of outlasting it, or the breaker cannot count
   the failure (the relay's own deadline still unlocks the round).

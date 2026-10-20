@@ -42,12 +42,6 @@ class MessagingSettings(BaseModel):
     """With a broker: seconds a published message may wait before it goes again."""
     PUBLISH_ON_COMMIT: bool = True
     """With a broker: publish a commit's messages right after it, not on a poll."""
-    CLOSE_TIMEOUT: float = Field(default=10.0, gt=0, le=300)
-    """With a broker: seconds shutdown waits for committed messages to be published.
-
-    At least the broker's ``PUBLISH_TIMEOUT`` (checked at startup), so a
-    publication under way can finish.
-    """
     BREAKER_FAILURES: int = Field(default=5, ge=1, le=10_000)
     """With a broker: failed publications in a row before commits stop publishing."""
     BREAKER_COOLDOWN: float = Field(default=30.0, gt=0, le=3600)

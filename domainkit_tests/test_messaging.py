@@ -1020,20 +1020,22 @@ async def test_shutdown_waits_for_the_publisher_then_stops_it(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Shutdown lets a stuck publish go after CLOSE_TIMEOUT; the relay sends it."""
+    """Closing lets a stuck publish go in its time; the relay sends the message."""
     stalled = Stalled()
     monkeypatch.setattr(BrokerHandler, "__getitem__", lambda self, alias: stalled)
-    with override_settings(MESSAGING={**BROKERED, "CLOSE_TIMEOUT": 0.05}):
-        config = registry.settings(MessagingSettings)
-        await enqueue(remember, value=uuid.uuid4())
-        publisher = commit_publisher(config)
+    config = registry.settings(MessagingSettings)
+    await enqueue(remember, value=uuid.uuid4())
+    publisher = commit_publisher(config)
+    task = publisher._task
+    assert task is not None
 
-        async with asyncio.timeout(1):
-            await close_publishers()
+    async with asyncio.timeout(1):
+        await close_publishers(within=0.1)
+        await asyncio.wait({task})  # Its give-back may outlast close's time.
 
-        assert "Left 1 committed messages to the relay at shutdown" in (caplog.messages)
-        assert commit_publisher(config) is not publisher
-        await published(commit_publisher(config))  # A new one has nothing to send.
+    assert "Left 1 committed messages to the relay at shutdown" in (caplog.messages)
+    assert commit_publisher(config) is not publisher
+    await published(commit_publisher(config))  # A new one has nothing to send.
     left = REGISTRY.get_sample_value(
         "messaging_left_to_relay_total", {"reason": "shutdown"}
     )
@@ -1077,7 +1079,7 @@ async def test_publishers_relay_each_outbox_through_its_own_worker(
     await published(publisher)
     publisher.submit("other", [second])
     await published(publisher)
-    await publisher.close()
+    await publisher.close(5)
 
     assert RecordingWorker.made == [(config, "other")]
     assert [
@@ -1094,7 +1096,7 @@ async def test_closed_publishers_start_again_when_used(
     publisher = commit_publisher(registry.settings(MessagingSettings))
     await enqueue(remember, value=uuid.uuid4())
     await published(publisher)
-    await publisher.close()
+    await publisher.close(5)
 
     await enqueue(remember, value=uuid.uuid4())
     async with asyncio.timeout(1):

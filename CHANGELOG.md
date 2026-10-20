@@ -43,8 +43,8 @@ All notable changes to domainkit. The format follows
   `LISTEN`/`NOTIFY`, so a message starts right after its commit instead of
   on the next poll, and `POLL_INTERVAL` can be longer. Polling stays as the
   fallback (R20; ADR 0043).
-- `MESSAGING.CLOSE_TIMEOUT` (10 s), `MESSAGING.CLEANUP_BATCH_SIZE` (1,000),
-  and `MESSAGING.METRICS_TTL` (15 s), below.
+- `MESSAGING.CLEANUP_BATCH_SIZE` (1,000) and `MESSAGING.METRICS_TTL`
+  (15 s), below.
 - `domainkit.contrib.messaging.Budget`, the concurrency budget `Worker` and
   `BrokerWorkers` share through `budget=`.
 - `docs/runtime.md`, "Workers and the outbox".
@@ -83,10 +83,11 @@ All notable changes to domainkit. The format follows
   for `REPUBLISH_AFTER` only once the broker confirms. Whatever it did not
   confirm is unlocked at once, also when the publication is cancelled
   (FX-02; ADR 0042).
-- `MESSAGING.CLOSE_TIMEOUT` (10 s) replaces the publisher's fixed five
-  seconds at shutdown, and must be at least the broker's
-  `PUBLISH_TIMEOUT`: startup fails otherwise. Raise it with
-  `PUBLISH_TIMEOUT` before upgrading if you raised that above 10 s.
+- At shutdown the publisher gets the time the drain phase always has, a
+  fifth of `SHUTDOWN_TIMEOUT` (3 s by default), instead of a fixed five
+  seconds. Its flush ends early enough (`RELEASE_TIMEOUT`, or half that
+  time if less) for a publication it cuts short to be unlocked before the
+  phase ends (ADR 0042).
 - Committed messages are published `BATCH_SIZE` at a time, never a whole
   backlog in one statement (N11), and a relay logs one line per round
   instead of one per message.

@@ -249,12 +249,12 @@ messages to the broker without ever holding up a commit:
   publisher holds nothing of its event loop.
 - *Shutdown.* The shutdown's [drain phase](#shutting-down-within-a-budget)
   closes the publishers, in the application and in management commands
-  alike: each gets
-  `MESSAGING.CLOSE_TIMEOUT` (10 seconds, and at least the broker's
-  `PUBLISH_TIMEOUT`) to finish, then stops, and the relays send the rest.
-  The drain phase ends halfway through `SHUTDOWN_TIMEOUT`; raise
-  `SHUTDOWN_TIMEOUT` if a publisher should get all of its `CLOSE_TIMEOUT`.
-  Cut short, it costs a few seconds' delay, never a message.
+  alike, within the time that phase always has: a fifth of
+  `SHUTDOWN_TIMEOUT` (3 seconds of the default 15), since it ends at half
+  and begins by 30% at the latest. The flush ends `RELEASE_TIMEOUT` (five
+  seconds), or half that time if less, before then, so a publication it
+  cuts short is unlocked within the phase; the relays send the rest. Cut
+  short, it costs a few seconds' delay, never a message.
 
 **Brokered shutdown.** A stopping worker stops consuming within five
 seconds, even from a broker that is lost or stalled, and logs it if it
