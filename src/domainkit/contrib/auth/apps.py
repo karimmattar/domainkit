@@ -221,13 +221,19 @@ class AuthConfig(DomainConfig):
 
 
 def _check_middleware() -> None:
-    """``AuthenticationMiddleware`` sets the actor others read: order matters."""
+    """``AuthenticationMiddleware`` sets the actor others read: order matters.
+
+    It binds the actor to the context ``RequestContextMiddleware`` makes, so
+    that one must be listed, and first: without it no actor is bound, and
+    what reads one (the audit trail, rate limits, idempotency keys,
+    ``@cache_page``) cannot tell users apart.
+    """
     order = list(settings.MIDDLEWARE)
     if AUTHENTICATION_MIDDLEWARE not in order:
         return
     position = order.index(AUTHENTICATION_MIDDLEWARE)
     for path in OUTSIDE_AUTHENTICATION:
-        if path in order and order.index(path) > position:
+        if path not in order or order.index(path) > position:
             raise ImproperlyConfigured(
                 f"MIDDLEWARE: list {path} before {AUTHENTICATION_MIDDLEWARE}."
             )

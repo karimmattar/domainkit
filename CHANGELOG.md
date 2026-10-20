@@ -319,6 +319,20 @@ All notable changes to domainkit. The format follows
   frozen clock reaches the application.
 - JWTs' `exp`, `iat`, and `nbf` are checked by domainkit, on
   `domainkit.clock`, as PyJWT checked them on the host's clock.
+- **Startup refuses `AuthenticationMiddleware` without
+  `RequestContextMiddleware`** listed before it, as it already refused the
+  two in the wrong order: without a request context no actor is bound, and
+  rate limits, idempotency keys, the audit trail, and `@cache_page` could
+  not tell users apart. Add `domainkit.http.middleware.RequestContextMiddleware`
+  ahead of it (projects from `init` have it).
+- **`FilterSet` refuses orderings whose cursors could be too long**, when
+  declared: each field of `ordering_fields` and `default_ordering` needs a
+  bound (`Annotated[str, MaxLength(n)]` on text, `Digits` on amounts), and
+  the default ordering, and the `max_ordering` fields that take most room,
+  must fit in `MAX_CURSOR_LENGTH`. The error says what to declare. The cap
+  is now 4,096 characters (from 2,048): three text fields of
+  `MaxLength(150)`, in any script. `cursor_length(ordering, model)` gives
+  the bound of any ordering (ADR 0023).
 
 ### Fixed
 
@@ -330,6 +344,48 @@ All notable changes to domainkit. The format follows
 - Clients from `client_for` and `admin_client` run on the `client`
   fixture's event loop. Each of their requests started an event loop of its
   own, with a database engine nothing closed (ASYNC-24).
+- `privacy export` and `privacy erase` (and `export_subject`,
+  `erase_subject`) refuse an id spelled otherwise than it prints where
+  domains name people by UUID or integer: an upper-case or braced UUID, one
+  without dashes or with `urn:uuid:`, or `042`, `+42`, ` 42`. Such a subject
+  matched the person's UUID or integer columns but not the same id in text
+  columns or audit keys, and the erasure still reported success. The
+  message gives the form to use.
+- `@cache_page` keys entries by the scheme and host too, as Django's
+  `cache_page` keys absolute URLs. A page whose answer depends on the host
+  (a tenant chosen by `Host`, a link built with `url_for`) was served to
+  every host and scheme from the entry the first request filled.
+- `@cache_page` counts the credentials an authentication middleware
+  accepted (`request.auth`) even when no actor is bound. A user logged in
+  by a cookie or a client certificate, behind `AuthenticationMiddleware`
+  without `RequestContextMiddleware`, sent no `Authorization` header and
+  had no actor, so a page without `vary_on_user` stored their answer as
+  public and served it to everyone.
+- A page always answers with its cursor. One sort value longer than about
+  1,500 bytes (an 800-letter Arabic title) made `encode_position` refuse
+  the cursor, so every page that ended on it was a 500. Cursors going out
+  are no longer refused; `FilterSet` bounds them when declared instead
+  (see Changed), and one that is still too long, from a value longer than
+  its field declares, is logged and refused when it comes back.
+- Amounts in cursors are written in plain notation. Amounts of seven or
+  more places, such as zero at eight (`0E-8`), were written with an
+  exponent, which decoding refused, so the page after one was a 422
+  `invalid_cursor`.
+- `dumpdata --output` writes a new file only its owner can read (mode
+  `0600`), and refuses a path that exists, a symbolic link too, as
+  `privacy export --output` does. It wrote with the umask's mode (`0644`
+  usually) a fixture that can hold personal data and password hashes, and
+  followed a link planted where it would go. Delete an old fixture before
+  dumping again.
+- `FilterSet` bounds amounts by their field's `Digits` (40 digits either
+  side of the point without), so an amount out of range is a 422
+  `validation_error`. `?price__gte=1e999999999` reached the database
+  driver, which could not send it to PostgreSQL: a 500.
+- `FilterSet` leaves `<name>__<lookup>` alone for every name it does not
+  filter, as it leaves other parameters. A field of the model it did not
+  filter was a 422 naming the field, and an unknown name passed, so a
+  client could list the model's fields (`password`, `deleted_at`) one
+  guess at a time.
 
 ## [0.6.2] - 2026-10-19
 

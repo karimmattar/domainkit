@@ -1,17 +1,27 @@
 """FilterSets: typed, bounded filters, ordering, and search from the query string."""
 
+import logging
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Any
+from uuid import UUID
 
 import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
-from domainkit.ddd import AggregateRoot, ValueObject
+from domainkit.ddd import AggregateRoot, Digits, MaxLength, ValueObject
 from domainkit.ddd.query import F, Ordering, Query
 from domainkit.http.errors import install_exception_handlers
 from domainkit.http.filters import Filter, FilterSet, InvalidFilter
+from domainkit.http.pagination import (
+    MAX_CURSOR_LENGTH,
+    PageOut,
+    PageRequest,
+    Pagination,
+    cursor_length,
+    longest_ordering,
+)
 from domainkit_tests.gadgets import (
     MADE,
     Color,
@@ -157,7 +167,6 @@ def test_filters_narrow_and_order_the_listing(
             {"name__contains": "a"},
             "Unknown lookup on name; it offers name, name__icontains",
         ),
-        ({"version__gt": 1}, "The listing cannot be filtered on version."),
         ({"price__gte__x": 1}, "Unknown lookup on price; it offers"),
         ({"name": ["a", "b"]}, "Give the name filter once."),
         ({"ordering": ["name", "-name"]}, "Name each field once in the ordering."),
@@ -198,6 +207,10 @@ def test_what_fastapi_cannot_see_is_refused(
         {"ordering": ["name", "price", "made_at", "-name"]},
         {"search": "x" * 101},
         {"active": "maybe"},
+        {"price__gte": "1e999999999"},  # Digits(10, 2): 8 digits, then 2.
+        {"price__gte": "1e-999999999"},
+        {"price__lte": "100000000"},
+        {"price__gte": "0.001"},
     ],
 )
 def test_values_of_the_wrong_type_or_size_are_validation_errors(
@@ -207,9 +220,76 @@ def test_values_of_the_wrong_type_or_size_are_validation_errors(
     assert refusal(client, **params)[0] == "validation_error"
 
 
+def test_amounts_up_to_the_fields_digits_are_taken(client: TestClient) -> None:
+    """The widest amounts of a ``Digits(10, 2)`` field are filters like others."""
+    widest = {"price__gte": "-99999999.99", "price__lte": "99999999.99"}
+    assert names(client, **widest) == ["beta", "gamma", "alpha"]
+    assert names(client, price__gte="9.5") == ["gamma"]
+
+
+class Cost(ValueObject):
+    """An amount of a value object, whose own field has ``Digits``."""
+
+    value: Annotated[Decimal, Digits(5, 1)]
+
+
+class Priced(AggregateRoot[int]):
+    """Amounts with and without ``Digits``."""
+
+    amount: Decimal
+    cost: Cost
+
+
+def test_amounts_are_bounded_without_digits_too() -> None:
+    """40 digits either side of the point; a value object's ``Digits`` apply."""
+
+    class PricedFilters(FilterSet):
+        model = Priced
+        amount = Filter("gte")
+        cost = Filter("lte")
+
+    app = FastAPI()
+    install_exception_handlers(app)
+
+    @app.get("/priced")
+    async def priced(filters: Annotated[PricedFilters, Depends()]) -> str:
+        return str(filters.criteria)
+
+    client = TestClient(app)
+    for params in (
+        {"amount__gte": "9" * 40 + "." + "9" * 40},
+        {"amount__gte": "0." + "0" * 39 + "1"},
+        {"cost__lte": "9999.9"},
+    ):
+        assert client.get("/priced", params=params).status_code == 200, params
+    for params in (
+        {"amount__gte": "9" * 41},
+        {"amount__gte": "1e40"},
+        {"amount__gte": "1e-41"},
+        {"cost__lte": "99999"},
+        {"cost__lte": "0.01"},
+    ):
+        refused = client.get("/priced", params=params)
+        assert refused.json()["code"] == "validation_error", params
+
+
 def test_lookups_are_unknown_only_for_filtered_names(client: TestClient) -> None:
     """Parameters of other names, the route's own, pass by."""
     assert names(client, other__thing="x", unrelated="y") == ["beta", "gamma", "alpha"]
+
+
+def test_answers_tell_nothing_of_fields_the_set_does_not_filter(
+    client: TestClient,
+) -> None:
+    """A field of the model the set does not filter is any other name.
+
+    ``?version__gt=1`` was a 422 naming ``version`` while ``?nosuch__gt=1``
+    passed: a client could list the model's fields, one guess at a time.
+    """
+    unfiltered = client.get("/gadgets")
+    for probe in ("version__gt", "deleted_at__isnull", "parts__x", "nosuch__gt"):
+        answer = client.get("/gadgets", params={probe: "1"})
+        assert (answer.status_code, answer.json()) == (200, unfiltered.json()), probe
 
 
 def test_openapi_documents_each_parameter_with_its_type(
@@ -391,6 +471,121 @@ def test_fields_of_no_known_type_are_filtered_as_text() -> None:
         tags = Filter()
 
     assert set(Exact.filters) == {"tags"}
+
+
+def test_orderings_need_fields_a_cursor_can_bound() -> None:
+    """Text without ``MaxLength`` cannot be ordered by, as a cursor holds it.
+
+    A page ending on a long value could not encode its cursor: a 500 for
+    every page that ended there.
+    """
+    for body in (
+        {"ordering_fields": ("code",)},
+        {"default_ordering": ("-code",)},
+    ):
+        with pytest.raises(
+            TypeError,
+            match=(
+                r"^Broken: Coded\.code holds text of any length, which no cursor "
+                r"can bound: declare its MaxLength\(n\)"
+            ),
+        ):
+            type("Broken", (FilterSet,), {"model": Coded, **body})
+
+
+class Article(AggregateRoot[UUID]):
+    """Three text fields too long to order by all at once."""
+
+    title: Annotated[str, MaxLength(200)]
+    subtitle: Annotated[str, MaxLength(200)]
+    author: Annotated[str, MaxLength(200)]
+    lead: Annotated[str, MaxLength(800)]
+
+
+def test_orderings_whose_cursors_could_be_too_long_are_refused() -> None:
+    """Clients' longest ordering, and the default one, must fit a cursor."""
+    fields = ("title", "subtitle", "author")
+    with pytest.raises(TypeError) as refused:
+        type("Broken", (FilterSet,), {"model": Article, "ordering_fields": fields})
+    # [1,"-lead,id", 6 * 800 + 2 bytes, 38 for the id]: 4,856 bytes of JSON.
+    with pytest.raises(TypeError, match=r"ordering -lead,id can take 6475 char"):
+        type("Broken", (FilterSet,), {"model": Article, "default_ordering": ("-lead",)})
+
+    # The longest names first; 3 * (6 * 200 + 2) bytes of text: 3,681 of JSON.
+    assert str(refused.value) == (
+        "Broken: a cursor for the ordering -subtitle,-author,-title,id can take "
+        "4908 characters, more than MAX_CURSOR_LENGTH (4096): lower its text "
+        "fields' MaxLength, or max_ordering."
+    )
+
+    class Fits(FilterSet):
+        model = Article
+        ordering_fields = ("title", "subtitle", "author")
+        max_ordering = 2
+
+    longest = longest_ordering(Fits.ordering_fields, Article, Fits.max_ordering)
+    assert cursor_length(longest, Article) <= MAX_CURSOR_LENGTH
+    # [1,"-ab,id", 6 * 503 + 2 bytes, the id]: 3,072 bytes, 4,096 characters.
+    widest = text_of(503)
+    exact = {"model": widest, "ordering_fields": ("ab",)}
+    assert cursor_length((Ordering("ab", descending=True),), widest) == 4096
+    type("Exact", (FilterSet,), exact)
+    with pytest.raises(TypeError, match="can take 4104 characters"):
+        type("Broken", (FilterSet,), {**exact, "model": text_of(504)})
+
+
+def text_of(length: int) -> type:
+    """An aggregate with a text field ``ab`` of ``MaxLength(length)``."""
+
+    class Texts(AggregateRoot[UUID]):
+        ab: Annotated[str, MaxLength(length)]
+
+    return Texts
+
+
+def test_a_long_sort_value_never_breaks_a_page(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Pages ending on a value longer than its field declares still answer.
+
+    The in-memory repository keeps names past ``MaxLength(30)``, as SQLite
+    does; such a page was a 500.
+    """
+
+    class Listing(FilterSet):
+        model = Gadget
+        ordering_fields = ("name",)
+        default_ordering = ("name",)
+
+    arabic = make_gadget("b")
+    arabic.name = "b" + "\u0628" * 800  # 1,600 bytes of UTF-8.
+    control = make_gadget("c")
+    control.name = "c" + "\x1f" * 3000  # 18,000 bytes of JSON.
+    repository = InMemoryGadgets([make_gadget("a"), arabic, control, make_gadget("d")])
+    app = FastAPI()
+    install_exception_handlers(app)
+    pages = Pagination(default_limit=1, max_limit=1)
+
+    @app.get("/gadgets")
+    async def listing(
+        filters: Annotated[Listing, Depends()],
+        page: Annotated[PageRequest, Depends(pages)],
+    ) -> PageOut[str]:
+        query = filters.query()
+        found = await page.fetch(repository, query)
+        return page.respond(found, [each.name[0] for each in found.items], query)
+
+    client = TestClient(app)
+    first = client.get("/gadgets").json()
+    second = client.get("/gadgets", params={"cursor": first["next_cursor"]}).json()
+    with caplog.at_level(logging.WARNING, logger="domainkit.http.pagination"):
+        third = client.get("/gadgets", params={"cursor": second["next_cursor"]})
+
+    assert (first["items"], second["items"]) == (["a"], ["b"])
+    assert (third.status_code, third.json()["items"]) == (200, ["c"])
+    assert len(caplog.messages) == 1
+    after = client.get("/gadgets", params={"cursor": third.json()["next_cursor"]})
+    assert (after.status_code, after.json()["code"]) == (422, "validation_error")
 
 
 def test_filter_sets_without_a_model_are_bases() -> None:
