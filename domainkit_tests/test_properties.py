@@ -6,7 +6,7 @@ import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -162,6 +162,32 @@ def test_rate_limits_admit_new_callers_at_any_clock_reading(
     decisions = asyncio.run(decide())
     assert decisions[0].allowed
     assert all(d.retry_after > 0 for d in decisions if not d.allowed)
+
+
+@example(start=0.0, limit=9, period=1)
+@example(start=4086.123456789, limit=2, period=60)
+@given(
+    start=st.floats(min_value=0, max_value=1e7),
+    limit=st.integers(min_value=1, max_value=50),
+    period=st.integers(min_value=1, max_value=3600),
+)
+def test_rate_limits_let_exactly_the_burst_through_at_one_reading(
+    start: float, limit: int, period: int
+) -> None:
+    """At a standing clock (a frozen one), exactly ``limit`` requests pass.
+
+    Seconds added to the reading rounded with its magnitude and with
+    ``period / limit``: 8 of 9 a second passed, or 1 of 2 near a power of two.
+    """
+    backend = MemoryBackend(clock=lambda: start)
+
+    async def decide() -> list[bool]:
+        return [
+            (await backend.hit("caller", limit, period)).allowed
+            for _ in range(limit + 1)
+        ]
+
+    assert asyncio.run(decide()) == [True] * limit + [False]
 
 
 @given(st.text(max_size=20))

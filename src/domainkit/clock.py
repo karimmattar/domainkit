@@ -23,6 +23,7 @@ clocks: ``now()`` in SQL, a column's ``server_default``, and shared rate
 limits counted on the Redis server.
 """
 
+import math
 import time
 from contextlib import suppress
 from contextvars import ContextVar, Token
@@ -49,8 +50,9 @@ def monotonic() -> float:
     """Return seconds from an arbitrary start, for intervals (``time.monotonic``).
 
     A frozen clock's count stands still with it and moves forward when it
-    does, never back. Intervals measured across the end of a freeze are
-    meaningless: the real count takes over again.
+    does, never back. It starts at the whole second at or after the real
+    count, so ticks of whole seconds add exactly. Intervals measured across
+    the start or end of a freeze are meaningless: the count jumps.
     """
     clock = frozen()
     return time.monotonic() if clock is None else clock.monotonic()
@@ -100,7 +102,10 @@ class FrozenClock:
         self._token: Token[FrozenClock | None] | None = None
         self._at = when
         self._since = time.monotonic()
-        self._monotonic = self._since
+        # The count starts at the next whole second, so ticks of whole (or
+        # half, quarter...) seconds add exactly: from a fraction, adding 30
+        # rounds where the sum crosses a power of two.
+        self._monotonic = float(math.ceil(self._since))
 
     def now(self) -> datetime:
         """Return this clock's time."""
