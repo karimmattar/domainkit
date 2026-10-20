@@ -83,7 +83,7 @@ def test_listings_filter_order_and_page(admin_client: TestClient) -> None:
         create(admin_client, name)
     admin_client.post(f"{URL}/{create(admin_client, 'Date')['id']}/archive")
     seen: list[str] = []
-    params: dict[str, Any] = {"limit": 2, "archived": False}
+    params: dict[str, Any] = {"limit": 2, "archived": False, "ordering": "name"}
     while True:
         page = admin_client.get(URL, params=params).json()
         seen += [item["name"] for item in page["items"]]

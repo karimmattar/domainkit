@@ -13,8 +13,7 @@ from domainkit.resources import ModelActions, ResourceRouter, schema_for
 class ProductFilters(FilterSet):
     model = Product
     archived = Filter()
-    ordering_fields = ("name",)
-    default_ordering = ("name",)
+    ordering_fields = ("name",)  # text a client orders by needs a MaxLength
     search_fields = ("name",)
 
 

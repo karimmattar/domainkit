@@ -45,7 +45,6 @@ class {{ Aggregate }}Filters(FilterSet):
     archived = Filter()
     owner_id = Filter()
     ordering_fields = ("name",)
-    default_ordering = ("name",)
     search_fields = ("name",)
 
 
