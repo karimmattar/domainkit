@@ -5,6 +5,7 @@ import os
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Annotated, Any, NewType
 from uuid import uuid4
 
@@ -62,7 +63,6 @@ pytestmark = pytest.mark.anyio
 LATER = datetime(2026, 2, 1, tzinfo=UTC)
 ON_POSTGRES = bool(os.environ.get(POSTGRES_VARIABLE))
 postgres_only = pytest.mark.skipif(not ON_POSTGRES, reason=f"set {POSTGRES_VARIABLE}")
-sqlite_only = pytest.mark.skipif(ON_POSTGRES, reason="SQLite's behaviour")
 SQLITE = create_engine("sqlite://").dialect
 POSTGRES = create_async_engine("postgresql+asyncpg://app@db/app").dialect
 
@@ -573,8 +573,18 @@ async def test_read_only_transactions_refuse_writes_on_postgresql(tables: None) 
             await uow.session.flush()
 
 
-@sqlite_only
-async def test_sqlite_reads_without_row_locks(tables: None) -> None:
+@pytest.fixture
+async def sqlite_tables(tmp_path: Path) -> AsyncIterator[None]:
+    """The gadget tables in a SQLite file, whatever server the suite targets."""
+    url = f"sqlite+aiosqlite:///{tmp_path / 'gadgets.sqlite3'}"
+    with override_settings(DATABASES={"default": {"URL": url}}):
+        async with connections.engine().begin() as connection:
+            await connection.run_sync(metadata.create_all)
+        yield
+        await connections.close_all()
+
+
+async def test_sqlite_reads_without_row_locks(sqlite_tables: None) -> None:
     """SQLite has no row locks: a second transaction reads at once."""
     gadget = make_gadget("a")
     await store(gadget)

@@ -103,9 +103,15 @@ def make_package(
         return root
 
     yield make
-    for module in list(sys.modules):
-        if module.partition(".")[0] in roots:
-            del sys.modules[module]
+    # Forget what came from here, by name or by place: a test may write more
+    # packages under tmp_path (a generator's project) that later tests reuse.
+    here = str(tmp_path)
+    for name, module in list(sys.modules.items()):
+        places = [getattr(module, "__file__", None), *getattr(module, "__path__", ())]
+        if name.partition(".")[0] in roots or any(
+            isinstance(place, str) and place.startswith(here) for place in places
+        ):
+            del sys.modules[name]
 
 
 @pytest.fixture
