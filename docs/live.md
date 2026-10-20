@@ -16,8 +16,10 @@ bounded and authorized for its whole life:
   in all; an event stream after `SSE_MAX_LIFETIME`.
 - **Re-authorization.** Every `LIVE_REAUTH_INTERVAL` seconds, the
   credentials of the handshake are checked again, and so are the access
-  rules of the route. A token revoked or expired, a user deactivated, or a
-  permission removed ends the connection.
+  rules of the route (its `Require`). A token revoked or expired, a user
+  deactivated, or a permission removed ends the connection. Checks a
+  handler makes itself, once, are not run again: put lasting conditions in
+  the route's rules.
 - **Live events.** A route can stream the domain events that commit to the
   clients that may see them (`domainkit.http.live_events`).
 

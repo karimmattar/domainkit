@@ -71,3 +71,7 @@ Options considered:
   it refuses new handshakes; clients back off and reconnect.
 - The route's rules see the request's scope again later: a rule must not
   depend on anything but the connection and the user.
+- Only `Require`'s rules run again. A check a handler makes itself at the
+  start (`check_object_permissions` on an object it loaded) holds for the
+  life of the connection; conditions that must keep holding belong in the
+  route's rules.

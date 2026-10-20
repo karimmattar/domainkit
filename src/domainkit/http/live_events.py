@@ -35,6 +35,7 @@ connected to (ADR 0057).
 """
 
 import asyncio
+import threading
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager, suppress
@@ -169,10 +170,14 @@ class LiveEvents:
         """Hear the events of ``bus`` (default: the global ``event_bus``)."""
         self.bus = event_bus if bus is None else bus
         self._subscribers: set[_Subscriber] = set()
+        self._lock = threading.Lock()
+        """Guards the subscribers: commits in other threads publish too."""
 
     async def publish(self, event: DomainEvent) -> None:
         """Offer a committed event to every subscriber; never waits, never fails."""
-        for subscriber in tuple(self._subscribers):
+        with self._lock:
+            subscribers = tuple(self._subscribers)
+        for subscriber in subscribers:
             subscriber.offer(event)
 
     @asynccontextmanager
@@ -194,11 +199,13 @@ class LiveEvents:
         _check(connection, types)
         self.bus.subscribe(DomainEvent, self.publish)
         subscriber = _Subscriber(connection, types, rule)
-        self._subscribers.add(subscriber)
+        with self._lock:
+            self._subscribers.add(subscriber)
         try:
             yield subscriber.events()
         finally:
-            self._subscribers.discard(subscriber)
+            with self._lock:
+                self._subscribers.discard(subscriber)
 
     def stream(
         self,
