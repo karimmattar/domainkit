@@ -11,6 +11,7 @@ from uuid import UUID
 
 import anyio
 import pytest
+from starlette.background import BackgroundTask
 from starlette.datastructures import State
 from starlette.requests import HTTPConnection
 from starlette.types import Message, Scope
@@ -268,11 +269,20 @@ def ends_with(client: Client, body: bytes) -> bool:
 
 
 @pytest.mark.anyio
-async def test_a_full_process_refuses_streams_with_503() -> None:
+@pytest.mark.parametrize(
+    ("holder", "cap"),
+    [
+        ("someone", "LIVE_MAX_CONNECTIONS"),
+        ("ip:203.0.113.5", "LIVE_MAX_CONNECTIONS_PER_CALLER"),
+    ],
+)
+async def test_a_full_process_refuses_streams_with_503(
+    caplog: pytest.LogCaptureFixture, holder: str, cap: str
+) -> None:
     """Past the caps: 503 with Retry-After, and the source is never read."""
     client = Client()
-    slots = Slots(total=1, per_caller=1)
-    slots.acquire("someone")
+    slots = Slots(total=1 if holder == "someone" else 5, per_caller=1)
+    slots.acquire(holder)  # The address of the client below.
     client.scope["app"].state.live_slots = slots
     source = Source("never")
 
@@ -282,7 +292,8 @@ async def test_a_full_process_refuses_streams_with_503() -> None:
     assert start["status"] == 503
     assert 5 <= int(dict(start["headers"])[b"retry-after"]) <= 15
     assert json.loads(client.body())["code"] == "too_many_connections"
-    assert slots.open == 1
+    assert (slots.open, slots.callers) == (1, {holder: 1})
+    assert f"Refused a live connection: {cap} is reached" in caplog.messages
 
 
 @pytest.mark.anyio
@@ -490,6 +501,50 @@ async def test_the_first_reason_to_end_stands() -> None:
     stream.queued.close()
 
     assert stream.closure is LIFETIME
+
+
+@pytest.mark.anyio
+async def test_a_route_may_change_the_headers_and_retry_at_once() -> None:
+    """Its headers replace the defaults, whatever their case; a zero retry goes."""
+    client = Client()
+    response = EventSourceResponse(
+        Countdown(0),
+        retry=0,
+        headers={"Cache-Control": "private", "X-ACCEL-BUFFERING": "yes"},
+    )
+
+    await client.serve(response)
+
+    headers = client.sent[0]["headers"]
+    assert [value for name, value in headers if name == b"cache-control"] == [
+        b"private"
+    ]
+    assert [value for name, value in headers if name == b"x-accel-buffering"] == [
+        b"yes"
+    ]
+    assert client.body() == b"retry: 0\n\n"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("refused", [False, True])
+async def test_background_tasks_run_once_the_stream_ends(refused: bool) -> None:
+    """As after any response: the stream's end, or its refusal."""
+    client = Client()
+    ran: list[str] = []
+    if refused:
+        slots = Slots(total=1, per_caller=1)
+        slots.acquire("someone")
+        client.scope["app"].state.live_slots = slots
+
+    async def task() -> None:
+        ran.append(client.body().decode())
+
+    response = EventSourceResponse(Countdown(1))
+    response.background = BackgroundTask(task)
+    await client.serve(response)
+
+    assert ran == [client.body().decode()]
+    assert ran[0].startswith("{") is refused
 
 
 class Countdown:

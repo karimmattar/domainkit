@@ -152,7 +152,9 @@ async def prices(request: Request) -> EventSourceResponse:
   than 256 characters, or holding control characters), so the route can
   resume after it.
 - The response has `Cache-Control: no-store` and `X-Accel-Buffering: no`,
-  so nginx passes events on at once.
+  so nginx passes events on at once; `headers=` replaces them, whatever
+  the case of their names. A route's background tasks run once the stream
+  ends.
 - After `SSE_KEEPALIVE` seconds without an event it sends a comment
   (`: keep-alive`), so proxies keep the connection open.
 - It stops as soon as the client disconnects, and closes the source (an

@@ -150,7 +150,8 @@ class EventSourceResponse(Response):
 
     ``retry`` (milliseconds) is sent first, and tells the browser how long
     to wait before it reconnects. A source may end the stream by raising
-    ``Closed``, saying why.
+    ``Closed``, saying why. ``headers`` replace the defaults of the same
+    name, whatever their case. Background tasks run once the stream ends.
     """
 
     media_type = MEDIA_TYPE
@@ -170,8 +171,9 @@ class EventSourceResponse(Response):
         self.retry = retry
         self.status_code = status_code
         self.background = None
+        given = {name.lower(): value for name, value in (headers or {}).items()}
         self.init_headers(
-            {"Cache-Control": "no-store", "X-Accel-Buffering": "no", **(headers or {})}
+            {"cache-control": "no-store", "x-accel-buffering": "no", **given}
         )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -181,11 +183,13 @@ class EventSourceResponse(Response):
         caller = caller_of(scope)
         if (cap := slots.acquire(caller)) is not None:
             await refuse(scope, receive, send, cap)
-            return
-        try:
-            await _Stream(self, scope, receive, send).serve()
-        finally:
-            slots.release(caller)
+        else:
+            try:
+                await _Stream(self, scope, receive, send).serve()
+            finally:
+                slots.release(caller)
+        if self.background is not None:
+            await self.background()
 
 
 class _Stream:
