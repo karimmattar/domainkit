@@ -1674,3 +1674,98 @@ async def test_cleanup_stops_between_batches(
     await within(worker.clean_until(stop))
 
     assert len(await rows()) == 2
+
+
+# Edges ------------------------------------------------------------------------------
+
+
+@pytest.mark.usefixtures("broker_tables")
+async def test_a_commit_as_a_round_ends_starts_the_publisher_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ids submitted just as the task ends are published by a new task."""
+    memory = work_broker()
+    run = CommitPublisher._run
+    committed = False
+
+    async def then_a_commit(self: CommitPublisher) -> None:
+        nonlocal committed
+        await run(self)
+        if not committed:  # After the loop's last look, before the task ends.
+            committed = True
+            await enqueue(remember, value=uuid.uuid4())
+
+    monkeypatch.setattr(CommitPublisher, "_run", then_a_commit)
+    await enqueue(remember, value=uuid.uuid4())
+    await published()
+
+    assert memory.pending("default") == 2
+
+
+async def test_a_flush_that_gives_up_leaves_the_others_waiting() -> None:
+    """A cancelled flush is skipped when the publisher goes idle; the others wake."""
+    publisher = CommitPublisher(MessagingSettings(BROKER="work"))
+    publisher.backlog = 1  # Something waits to be offered.
+    gave_up = asyncio.create_task(publisher.flush())
+    waiting = asyncio.create_task(publisher.flush())
+    await asyncio.sleep(0)  # Both wait for the publisher now.
+    gave_up.cancel()
+    publisher._idle()
+
+    assert await within(waiting) is None
+    with pytest.raises(asyncio.CancelledError):
+        await gave_up
+    assert publisher._flushes == []
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_worker_outlives_failing_schedules(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Queueing periodic tasks may fail too; the worker waits and goes on."""
+    worker = Worker(MessagingSettings(**{**FAST, "POLL_INTERVAL": 0.01}))
+    schedule = worker.schedule_periodic
+    failed = False
+
+    async def flaky() -> None:
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise ConnectionError("database down")
+        await schedule()
+
+    monkeypatch.setattr(worker, "schedule_periodic", flaky)
+    await enqueue(at_gate, name="after the outage")
+    gate.open()
+    stop = asyncio.Event()
+    with caplog.at_level(logging.ERROR, "domainkit.contrib.messaging.worker"):
+        running = asyncio.create_task(worker.run(stop))
+        await gate.until(lambda: gate.finished == ["after the outage"])
+        stop.set()
+        await within(running)
+
+    assert logged(caplog, "domainkit.contrib.messaging.worker")[0].startswith(
+        "Could not reach the outbox of 'default' (1 failure in a row)"
+    )
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_count_cancelled_at_shutdown_ends_its_scrapes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shutdown cancels a count under way; its scrapes end, and it is forgotten."""
+    counting = asyncio.Event()
+
+    async def hangs(config: MessagingSettings, database: str | None = None) -> Any:  # noqa: ANN401
+        counting.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(metrics_module, "queue_counts", hangs)
+    scrape = asyncio.create_task(refresh_outbox())
+    await within(counting.wait())
+    loop = asyncio.get_running_loop()
+    assert await within(tasks.shutdown(loop.time() + WAIT)) == []
+
+    with pytest.raises(asyncio.CancelledError):
+        await within(scrape)
+    assert dict(metrics_module._counting) == {}
