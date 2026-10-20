@@ -554,6 +554,88 @@ async def test_background_tasks_run_once_the_stream_ends(refused: bool) -> None:
     assert ran[0].startswith("{") is refused
 
 
+@pytest.mark.anyio
+async def test_the_end_of_a_stream_outlives_a_cancellation() -> None:
+    """The last message, once on its way, is not cut off by a shutdown."""
+    client = Client()
+    final_started, release = anyio.Event(), anyio.Event()
+    delivered: list[bytes] = []
+    send = client.send
+
+    async def slow_end(message: Message) -> None:
+        if message.get("more_body") is False:
+            final_started.set()
+            await release.wait()
+            delivered.append(message["body"])
+        await send(message)
+
+    client.send = slow_end  # type: ignore[method-assign]
+    shutdown = anyio.CancelScope()
+
+    async def serve() -> None:
+        with shutdown:
+            await client.serve(EventSourceResponse(Countdown(1)))
+
+    async with anyio.create_task_group() as tasks:
+        tasks.start_soon(serve)
+        await final_started.wait()
+        shutdown.cancel()
+        release.set()
+
+    assert delivered == [b""]
+
+
+@pytest.mark.anyio
+async def test_closing_a_source_outlives_a_cancellation() -> None:
+    """A source being closed when the stream is cancelled finishes closing."""
+    client = Client()
+    closing, release = anyio.Event(), anyio.Event()
+    closed: list[bool] = []
+
+    class Slow(Countdown):
+        async def __anext__(self) -> ServerSentEvent:
+            if self.count == 0:
+                await anyio.sleep_forever()
+            return await super().__anext__()
+
+        async def aclose(self) -> None:
+            closing.set()
+            await release.wait()
+            closed.append(True)
+
+    shutdown = anyio.CancelScope()
+
+    async def serve() -> None:
+        with shutdown:
+            await client.serve(EventSourceResponse(Slow(1)))
+
+    async with anyio.create_task_group() as tasks:
+        tasks.start_soon(serve)
+        await client.wait_for(b"data: 0\n\n")
+        shutdown.cancel()
+        await closing.wait()
+        release.set()
+
+    assert closed == [True]
+
+
+@pytest.mark.anyio
+async def test_a_source_that_will_not_close_is_left(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Closing a source is bounded by CLOSE_TIMEOUT."""
+    monkeypatch.setattr(sse, "CLOSE_TIMEOUT", 0.01)
+    client = Client()
+
+    class Stuck(Countdown):
+        async def aclose(self) -> None:
+            await anyio.sleep_forever()
+
+    await client.serve(EventSourceResponse(Stuck(1)))
+
+    assert ends_with(client, b"")
+
+
 class Closable:
     """A source that is not a generator, but can be closed."""
 
