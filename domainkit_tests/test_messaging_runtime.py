@@ -1242,19 +1242,20 @@ async def test_cleanup_runs_on_its_own_schedule_and_outlives_failures(
     config = {**FAST, "POLL_INTERVAL": 0.01, "CLEANUP_INTERVAL": 0.01}
     worker = Worker(MessagingSettings(**config))
     stop = asyncio.Event()
-    cleanup = worker.cleanup
+    clean = worker._clean
     calls = 0
 
-    async def flaky() -> int:
+    async def flaky(stopping: asyncio.Event | None) -> int:
         nonlocal calls
         calls += 1
         if calls <= 2:
             raise ConnectionError("database down")
+        deleted = await clean(stopping)
         if calls == 4:
             stop.set()
-        return await cleanup()
+        return deleted
 
-    monkeypatch.setattr(worker, "cleanup", flaky)
+    monkeypatch.setattr(worker, "_clean", flaky)
     with caplog.at_level(logging.INFO, "domainkit.contrib.messaging.worker"):
         await within(worker.clean_until(stop))
 
@@ -1282,12 +1283,13 @@ async def test_a_slow_cleanup_never_holds_up_claiming(
     monkeypatch.setattr(worker_module, "CLEANUP_START", 0.0)
     cleaning = asyncio.Event()
 
-    async def hangs() -> int:
+    async def hangs(stop: asyncio.Event | None) -> int:
         cleaning.set()
         await asyncio.Event().wait()
         return 0
 
-    monkeypatch.setattr(worker, "cleanup", hangs)
+    monkeypatch.setattr(worker, "_clean", hangs)
+    monkeypatch.setattr(worker_module, "HELPER_GRACE", 0.05)
     stop = asyncio.Event()
     running = asyncio.create_task(worker.run(stop))
     await within(cleaning.wait())
@@ -1582,3 +1584,77 @@ async def test_a_count_failing_after_its_scrapes_gave_up_is_not_logged(
     assert isinstance(results[0], asyncio.CancelledError)
     assert isinstance(results[1], ConnectionError)
     assert logged(caplog, "asyncio") == []
+
+
+# Winding down -------------------------------------------------------------------
+
+
+async def relaying_into(broker: Holding) -> tuple[asyncio.Event, asyncio.Task[None]]:
+    """Start a relaying worker whose first publication ``broker`` holds."""
+    with override_settings(MESSAGING={**BROKERED, "PUBLISH_ON_COMMIT": False}):
+        await enqueue(remember, value=uuid.uuid4())
+    config = registry.settings(MessagingSettings)
+    stop = asyncio.Event()
+    running = asyncio.create_task(
+        BrokerWorkers([Worker(config)], ["default"], config).run(stop)
+    )
+    await within(broker.arrived.wait())
+    return stop, running
+
+
+@pytest.mark.usefixtures("broker_tables")
+async def test_a_stopping_relay_finishes_its_round(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stop lets the round under way publish; it is not cut short."""
+    broker = Holding()
+    monkeypatch.setattr(BrokerHandler, "__getitem__", lambda self, alias: broker)
+    stop, running = await relaying_into(broker)
+
+    stop.set()
+    broker.release.set()
+    await within(running)
+
+    (row,) = await rows()
+    assert row["lock_id"] is not None
+    assert seconds_left(row) > 3000  # Confirmed: REPUBLISH_AFTER.
+    assert broker.pending("default") == 1
+
+
+@pytest.mark.usefixtures("broker_tables")
+async def test_a_relay_that_will_not_stop_is_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After HELPER_GRACE, a relay still publishing is cancelled; it gives back."""
+    broker = Holding()
+    monkeypatch.setattr(BrokerHandler, "__getitem__", lambda self, alias: broker)
+    monkeypatch.setattr(dispatch, "HELPER_GRACE", 0.05)
+    stop, running = await relaying_into(broker)
+
+    stop.set()
+    await within(running)
+
+    (row,) = await rows()
+    assert (row["lock_id"], row["locked_until"]) == (None, None)
+
+
+@pytest.mark.usefixtures("tables")
+async def test_cleanup_stops_between_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Once stopped, cleanup finishes the batch under way and starts no other."""
+    await finished_long_ago(3)
+    monkeypatch.setattr(worker_module, "CLEANUP_START", 0.0)
+    worker = Worker(MessagingSettings(**{**FAST, "CLEANUP_BATCH_SIZE": 1}))
+    stop = asyncio.Event()
+
+    def stop_at_the_first_delete(*args: Any) -> None:  # noqa: ANN401
+        if args[2].lstrip().upper().startswith("DELETE"):
+            stop.set()
+
+    event.listen(
+        worker.engine.sync_engine, "before_cursor_execute", stop_at_the_first_delete
+    )
+    await within(worker.clean_until(stop))
+
+    assert len(await rows()) == 2

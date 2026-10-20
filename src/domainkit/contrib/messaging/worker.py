@@ -109,6 +109,12 @@ Unlocking what a relay could not publish gets as long.
 """
 LEASE_MARGIN: Final = 5.0
 """Seconds a relay's lock outlasts its broker's ``publish_timeout``."""
+HELPER_GRACE: Final = 5.0
+"""Seconds a stopping worker lets its relays, cleanup, and listener finish.
+
+They all watch for the stop, so they end at their next step; one still
+busy after this is cancelled. A cancelled query costs its connection.
+"""
 CLEANUP_START: Final = 60.0
 """Most seconds a worker waits before its first cleanup (or ``CLEANUP_INTERVAL``).
 
@@ -430,9 +436,10 @@ class Worker:
                         # Nothing more is due: wait for a poll, a commit, or stop.
                         await pause(wake, self.config.POLL_INTERVAL)
                 await finish(running, self.config.SHUTDOWN_TIMEOUT)
+                await wind_down(helpers, HELPER_GRACE)
             finally:
                 for helper in helpers:
-                    helper.cancel()
+                    helper.cancel()  # Cancelled itself: they stop now.
 
     async def run_once(self) -> int:
         """Run every message that is due now; return how many ran.
@@ -815,8 +822,8 @@ class Worker:
             if follow_up is not None and released:
                 await write(connection, connection.dialect.name, [follow_up])
         if follow_up is not None and released:
-            # The relay publishes it: a publication cut short by shutdown
-            # would leave it locked.
+            # The relay publishes it, on its next poll or sooner where commits
+            # notify (``outbox.notifies``); worker processes run no publisher.
             await notify_committed(
                 self.config, self.database, [follow_up], publish=False
             )
@@ -1002,9 +1009,13 @@ class Worker:
         one, down to a single row, so statement timeouts slow cleanup down
         but never stop it; batches that go through grow back.
         """
+        return await self._clean(None)
+
+    async def _clean(self, stop: asyncio.Event | None) -> int:
+        """Run ``cleanup``, stopping between batches once ``stop`` is set."""
         dialect = self.dialect
         deleted = 0
-        while True:
+        while stop is None or not stop.is_set():
             size = self._cleanup_batch
             old = (
                 select(messages.c.id)
@@ -1025,8 +1036,9 @@ class Worker:
                 raise
             deleted += count
             if count < size:
-                return deleted
+                break
             self._cleanup_batch = min(size * 2, self.config.CLEANUP_BATCH_SIZE)
+        return deleted
 
     async def run_cleanup_when_due(self) -> None:
         """Run ``cleanup`` every ``CLEANUP_INTERVAL`` seconds.
@@ -1062,7 +1074,7 @@ class Worker:
                 await stop.wait()
         while not stop.is_set():
             try:
-                deleted = await self.cleanup()
+                deleted = await self._clean(stop)
             except Exception as exc:  # noqa: BLE001 - logged; it runs again.
                 await failures.failed(exc, stop)
                 continue
@@ -1143,6 +1155,15 @@ async def set_when(event: asyncio.Event, then: asyncio.Event) -> None:
     """Set ``then`` once ``event`` is set."""
     await event.wait()
     then.set()
+
+
+async def wind_down(tasks: Iterable[asyncio.Task[None]], grace: float) -> None:
+    """Let ``tasks``, told to stop, end within ``grace`` seconds; cancel the rest."""
+    pending = {task for task in tasks if not task.done()}
+    if pending:
+        _, late = await asyncio.wait(pending, timeout=grace)
+        for task in late:
+            task.cancel()
 
 
 async def pause(wake: asyncio.Event, seconds: float) -> None:

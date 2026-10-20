@@ -36,7 +36,15 @@ from domainkit.tasks import supervise
 from .breaker import Breaker, Watched
 from .budget import Budget
 from .settings import MessagingSettings
-from .worker import OUTAGE_MAX_PAUSE, Worker, finish, pause, set_when
+from .worker import (
+    HELPER_GRACE,
+    OUTAGE_MAX_PAUSE,
+    Worker,
+    finish,
+    pause,
+    set_when,
+    wind_down,
+)
 
 try:
     from .metrics import observe_left, observe_skipped
@@ -128,11 +136,11 @@ class BrokerWorkers:
                         helpers.append(group.create_task(worker.clean_until(stop)))
                 await stop.wait()
             finally:
-                for helper in helpers:
-                    helper.cancel()
+                # Cancelled itself, the group cancels the relays and cleanup.
                 grace = await self._stop_consuming(subscription)
                 consuming.ended.set()
             await finish(running, grace)
+            await wind_down(helpers, HELPER_GRACE)
 
     async def _handle(
         self,
@@ -196,9 +204,10 @@ class BrokerWorkers:
                     outage.recovered()
                     if relayed < batch:
                         await pause(wake, self.config.POLL_INTERVAL)
+                await wind_down(helpers, HELPER_GRACE)
             finally:
                 for helper in helpers:
-                    helper.cancel()
+                    helper.cancel()  # Cancelled itself: they stop now.
 
     async def deliver(self, delivery: Delivery) -> None:
         """Run one delivered message, then answer it; every delivery is answered.
