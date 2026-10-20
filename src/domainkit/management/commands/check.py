@@ -4,7 +4,7 @@ from domainkit.apps import registry
 from domainkit.architecture import check_domains
 from domainkit.conf import settings
 from domainkit.db import migrations
-from domainkit.http import get_asgi_application
+from domainkit.http import get_asgi_application, websockets
 from domainkit.http.application import application_problems
 from domainkit.management.base import BaseCommand, CommandError
 
@@ -39,6 +39,7 @@ class Command(BaseCommand):
             )
         labels = ", ".join(config.label for config in registry) or "none"
         warnings = settings.deployment_warnings()
+        warnings += websockets.deployment_warnings(app)
         warnings += [
             found for config in registry for found in config.deployment_warnings()
         ]

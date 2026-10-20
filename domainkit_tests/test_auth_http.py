@@ -40,6 +40,7 @@ from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
+from domainkit.http.websockets import MIDDLEWARE as WEBSOCKET_LIMITS
 from domainkit.log import SECURITY_LOGGER
 from domainkit.management import call_command
 from domainkit.management.base import run_async
@@ -1070,6 +1071,13 @@ def test_forged_jwts_are_refused(api: Api) -> None:
                 "counts users rather than client addresses."
             ),
         ),
+        (  # Its caps would count addresses, so users behind one share them.
+            [MIDDLEWARE[0], WEBSOCKET_LIMITS, MIDDLEWARE[2]],
+            (
+                f"MIDDLEWARE: list {MIDDLEWARE[2]} before {WEBSOCKET_LIMITS}, so "
+                "it counts users rather than client addresses."
+            ),
+        ),
     ],
 )
 def test_the_middleware_order_is_checked(
@@ -1079,7 +1087,16 @@ def test_the_middleware_order_is_checked(
     with pytest.raises(ImproperlyConfigured) as refused:
         use_auth(settings={"MIDDLEWARE": middleware})
     assert str(refused.value) == message
-    use_auth(settings={"MIDDLEWARE": [MIDDLEWARE[0], MIDDLEWARE[2], *MIDDLEWARE[3:]]})
+    use_auth(
+        settings={
+            "MIDDLEWARE": [
+                MIDDLEWARE[0],
+                MIDDLEWARE[2],
+                *MIDDLEWARE[3:],
+                WEBSOCKET_LIMITS,
+            ]
+        }
+    )
     use_auth(settings={"MIDDLEWARE": [MIDDLEWARE[0]]})
     use_auth(settings={"MIDDLEWARE": []})
 

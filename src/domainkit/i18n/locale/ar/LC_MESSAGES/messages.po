@@ -47,6 +47,9 @@ msgstr "المؤشر غير صالح؛ ابدأ من جديد من دونه."
 msgid "Too many requests; slow down."
 msgstr "طلبات كثيرة جدًا؛ تمهّل قليلًا."
 
+msgid "Too many open connections; try again later."
+msgstr "اتصالات مفتوحة كثيرة جدًا؛ أعد المحاولة لاحقًا."
+
 msgid ""
 "The data changed while this request was running; reload it and try "
 "again."

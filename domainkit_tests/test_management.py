@@ -158,15 +158,23 @@ def test_check_lists_weak_deployment_choices() -> None:
     production = {"ENVIRONMENT": "production", "SECURE_HSTS_SECONDS": 0}
     with override_settings(**production):
         assert run("check") == (
-            "System check identified no issues and 3 warnings. Domains: alpha.\n"
+            "System check identified no issues and 4 warnings. Domains: alpha.\n"
             "  Warning: API_DOCS publishes /docs, /redoc, and /openapi.json to "
             "anyone; set it to False unless the API is public.\n"
             "  Warning: SECURE_HSTS_SECONDS is 0, so browsers may still use plain "
             "HTTP; set it (31536000 is a year) once HTTPS works everywhere.\n"
             "  Warning: Requests are not rate limited; set RATE_LIMIT and list "
             "domainkit.http.ratelimit.RateLimitMiddleware in MIDDLEWARE.\n"
+            "  Warning: The server reads WebSocket messages of up to 16777216 "
+            "bytes whole before MAX_REQUEST_BODY_SIZE (1048576) is checked; run "
+            "uvicorn with --ws-max-size 1048576, and set WEBSOCKET_SERVER_MAX_SIZE "
+            "to match.\n"
         )
-    with_hsts = {**production, "SECURE_HSTS_SECONDS": 1}
+    with_hsts = {
+        **production,
+        "SECURE_HSTS_SECONDS": 1,
+        "WEBSOCKET_SERVER_MAX_SIZE": 1_048_576,
+    }
     with override_settings(**with_hsts):
         assert run("check").startswith(
             "System check identified no issues and 2 warnings. Domains: alpha.\n"
@@ -198,7 +206,7 @@ def test_check_lists_the_domains_warnings_too(
         output = run("check")
 
     assert output.startswith(
-        "System check identified no issues and 3 warnings. Domains: alpha.\n"
+        "System check identified no issues and 4 warnings. Domains: alpha.\n"
     )
     assert output.endswith("  Warning: ALPHA is weak here.\n")
 

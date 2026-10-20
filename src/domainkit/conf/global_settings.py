@@ -53,6 +53,7 @@ DEFAULT_MIDDLEWARE: Final = (
     "domainkit.http.middleware.SecurityHeadersMiddleware",
     "domainkit.http.middleware.RequestContextMiddleware",
     "domainkit.http.middleware.AllowedHostsMiddleware",
+    "domainkit.http.websockets.WebSocketLimitsMiddleware",
     "domainkit.http.middleware.RequestBodyLimitMiddleware",
 )
 
@@ -560,6 +561,29 @@ class Settings(BaseModel):
     """IPv6 clients are counted per network of this prefix length (one customer's)."""
     METRICS_TOKEN: SecretStr | None = None
     """Bearer token for ``/metrics``; without it staging and production refuse."""
+
+    LIVE_MAX_CONNECTIONS: int = Field(default=1000, ge=1, le=1_000_000)
+    """Open WebSockets and event streams per process; more are refused (503)."""
+    LIVE_MAX_CONNECTIONS_PER_CALLER: int = Field(default=10, ge=1, le=1_000_000)
+    """Open WebSockets and event streams per user, or per address if anonymous."""
+    LIVE_SEND_QUEUE: int = Field(default=64, ge=1, le=10_000)
+    """Messages or events a live connection may have waiting to be sent."""
+    LIVE_SEND_TIMEOUT: float = Field(default=10.0, gt=0)
+    """Seconds a message may take to reach the client before it counts as too slow."""
+    LIVE_REAUTH_INTERVAL: float | None = Field(default=60.0, gt=0)
+    """Seconds between re-checks of an open connection's credentials and rules."""
+    WEBSOCKET_IDLE_TIMEOUT: float = Field(default=300.0, gt=0)
+    """Seconds without a message either way before a WebSocket is closed (1001)."""
+    WEBSOCKET_MAX_LIFETIME: float = Field(default=3600.0, gt=0)
+    """Seconds a WebSocket may stay open before it is closed (1001)."""
+    WEBSOCKET_MESSAGE_RATE: str | None = "20/second"
+    """Messages a WebSocket client may send, such as ``"20/second"``; None: any."""
+    WEBSOCKET_SERVER_MAX_SIZE: int | None = Field(default=None, ge=1)
+    """The server's ``--ws-max-size`` in bytes; None: its default (16 MiB)."""
+    SSE_KEEPALIVE: float = Field(default=15.0, gt=0)
+    """Seconds of silence before an event stream sends a keep-alive comment."""
+    SSE_MAX_LIFETIME: float = Field(default=3600.0, gt=0)
+    """Seconds an event stream may stay open; the client then reconnects."""
     ERROR_REPORTERS: tuple[str, ...] = ()
     """Callables ``(exc, context) -> None`` by dotted path, e.g. a Sentry adapter."""
 
@@ -617,6 +641,7 @@ class Settings(BaseModel):
             raise ValueError("CORS_ALLOW_CREDENTIALS cannot be used with origin '*'")
         if self.RATE_LIMIT is not None:
             parse_rate(self.RATE_LIMIT)
+        self._check_live_connections()
         self._check_i18n()
         if self.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
             self._check_deployment()
@@ -651,6 +676,15 @@ class Settings(BaseModel):
             raise ValueError(
                 f"DATABASE_ROUTING[{label!r}] = {target!r} must name a shard group "
                 "or a SQL alias outside the shard groups that is not a replica"
+            )
+
+    def _check_live_connections(self) -> None:
+        """The message rate reads, and a caller's cap fits in the process's."""
+        if self.WEBSOCKET_MESSAGE_RATE is not None:
+            parse_rate(self.WEBSOCKET_MESSAGE_RATE)
+        if self.LIVE_MAX_CONNECTIONS_PER_CALLER > self.LIVE_MAX_CONNECTIONS:
+            raise ValueError(
+                "LIVE_MAX_CONNECTIONS_PER_CALLER cannot exceed LIVE_MAX_CONNECTIONS"
             )
 
     def _check_i18n(self) -> None:
@@ -729,6 +763,12 @@ class Settings(BaseModel):
                 "TRUSTED_PROXIES is empty, so callers are rate limited by the "
                 "address they connect from: behind a load balancer or proxy, "
                 "they all share its count. List its networks in TRUSTED_PROXIES."
+            )
+        if self.LIVE_REAUTH_INTERVAL is None:
+            warnings.append(
+                "LIVE_REAUTH_INTERVAL is None, so an open WebSocket or event "
+                "stream keeps a revoked token or a removed permission until it "
+                "closes; set it (60 is a minute)."
             )
         return warnings
 

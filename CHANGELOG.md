@@ -31,6 +31,40 @@ All notable changes to domainkit. The format follows
   flood of logins cannot lock them out; `acheck_password`, `amake_password`,
   and `UserRepository.set_password` take `priority=True` (N7).
 - `docs/runtime.md`: how domainkit runs async work.
+- `WebSocketLimitsMiddleware` bounds every WebSocket (R08; `docs/live.md`;
+  ADR 0055): `LIVE_MAX_CONNECTIONS` open connections per process and
+  `LIVE_MAX_CONNECTIONS_PER_CALLER` per user or address (one more gets 503
+  with `Retry-After`, or a 1013 close where the server cannot answer a
+  handshake with a status); a send queue of `LIVE_SEND_QUEUE` messages, a
+  client slower than `LIVE_SEND_TIMEOUT` closed with 1013;
+  `WEBSOCKET_MESSAGE_RATE` messages per connection, closed with 1008 past
+  it; and `WEBSOCKET_IDLE_TIMEOUT` and `WEBSOCKET_MAX_LIFETIME`, closed with
+  1001. Each close says why, and cancels the handler, so none outlives its
+  connection. `LiveLimits` sets a route's own limits.
+- Open WebSockets and event streams are re-authorized every
+  `LIVE_REAUTH_INTERVAL` seconds (N9; ADR 0056): the handshake's
+  credentials are checked again and the route's `Require` rules re-run with
+  the user loaded afresh, so a revoked or expired token, a deactivated
+  user, or a removed permission closes the connection with 1008. A check
+  that fails or hangs closes it with 1013.
+- `domainkit.http.sse`: `EventSourceResponse` streams Server-Sent Events,
+  with `ServerSentEvent` (`id`, `event`, `retry`, data on several lines,
+  `ServerSentEvent.json`), `last_event_id(request)` for clients that
+  resume, keep-alive comments after `SSE_KEEPALIVE` seconds, an end as soon
+  as the client leaves, and the caps, queue, re-checks, and
+  `SSE_MAX_LIFETIME` above.
+- `domainkit.http.live_events`: domains stream their committed events to
+  the clients that may see them, over an event stream
+  (`live_events.stream`) or a WebSocket (`live_events.forward`). Each event
+  passes the subscription's access rule on its own, goes out without its
+  `Personal` fields unless `render` says otherwise, and a client that falls
+  more than `LIVE_SEND_QUEUE` events behind is closed as too slow. Events
+  reach the connections of the process that committed them (ADR 0057).
+- `check` warns, in staging and production, when the application serves
+  WebSockets under a server that reads larger messages than
+  `MAX_REQUEST_BODY_SIZE` (`WEBSOCKET_SERVER_MAX_SIZE`; uvicorn reads 16 MiB
+  unless run with `--ws-max-size`), or without `WebSocketLimitsMiddleware`,
+  and when `LIVE_REAUTH_INTERVAL` is `None`.
 
 ### Changed
 
@@ -55,6 +89,12 @@ All notable changes to domainkit. The format follows
   `auditverify` are unchanged.
 - A refused password check's `Retry-After` is the time the hashing queue
   takes to drain, jittered, from 1 to 60 seconds, instead of always 1.
+- `DEFAULT_MIDDLEWARE` and the project template list
+  `WebSocketLimitsMiddleware`, so WebSockets of projects that set no
+  `MIDDLEWARE` get the limits above. List it in an older project's
+  `MIDDLEWARE`, after `RateLimitMiddleware`; with `domainkit.contrib.auth`
+  installed, listing it before `AuthenticationMiddleware` is refused at
+  startup, as it would count addresses rather than users.
 
 ### Fixed
 
@@ -75,6 +115,9 @@ All notable changes to domainkit. The format follows
 - After a lull, the in-memory rate limiter forgot every idle caller in one
   request: 100,000 of them cost that request 32 ms. It forgets at most 64
   per request now (IND-RL).
+- The WebSocket message size check no longer copies a text message to
+  measure it: ASCII is counted by its length, other text a chunk at a
+  time (N9).
 
 ## [0.7.0] - 2026-10-20
 

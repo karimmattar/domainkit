@@ -40,6 +40,7 @@ OUTSIDE_AUTHENTICATION = ("domainkit.http.middleware.RequestContextMiddleware",)
 INSIDE_AUTHENTICATION = (
     "domainkit.http.ratelimit.RateLimitMiddleware",
     "domainkit.contrib.idempotency.middleware.IdempotencyMiddleware",
+    "domainkit.http.websockets.WebSocketLimitsMiddleware",
 )
 """Middleware that must run after it, to count users rather than addresses."""
 RELATIONSHIPS = frozenset({"groups", "user_permissions"})

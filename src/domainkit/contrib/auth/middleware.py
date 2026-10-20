@@ -29,6 +29,10 @@ Only credentials that do not hold (401) count: a refusal of credentials
 that do, such as a cookie request that fails its CSRF checks (403), is a
 request another site can make a browser send, and counting it would let
 that site lock everyone behind the browser's address out.
+
+An open WebSocket or event stream has its credentials checked again while
+it lasts (``reauthenticate``, called by ``domainkit.http.live``), so a
+revoked or expired token, or a deactivated user, does not keep it open.
 """
 
 import logging
@@ -44,6 +48,7 @@ from domainkit.clock import monotonic
 from domainkit.conf import settings
 from domainkit.context import bind_request, current_request
 from domainkit.http.errors import error_response
+from domainkit.http.live import REAUTHENTICATE
 from domainkit.http.ratelimit import Backend, Decision, address_key, refuse
 from domainkit.log import SECURITY_LOGGER
 from domainkit.utils.module_loading import import_string
@@ -106,12 +111,44 @@ class AuthenticationMiddleware:
             return
         scope["user"] = AnonymousUser() if credentials is None else credentials.user
         scope["auth"] = credentials
+        scope[REAUTHENTICATE] = self.reauthenticate
         context = current_request()
         if credentials is None or context is None:
             await self.app(scope, receive, send)
             return
         with bind_request(replace(context, actor=str(credentials.user.id))):
             await self.app(scope, receive, send)
+
+    async def reauthenticate(self, scope: Scope) -> bool:
+        """Whether the credentials of ``scope`` still hold, for the same user.
+
+        On success the user, with its groups and permissions, is loaded
+        afresh into the scope, for the access rules checked next. Why
+        credentials failed is logged, never told to the client.
+        """
+        before: Credentials | None = scope.get("auth")
+        try:
+            credentials = await self._authenticate(HTTPConnection(scope))
+        except _Refused as refused:
+            security_logger.warning(
+                "Credentials of an open connection no longer hold: %s",
+                refused.error.detail,
+            )
+            return False
+        if before is None and credentials is None:
+            return True
+        if (
+            before is None
+            or credentials is None
+            or credentials.user.id != before.user.id
+        ):
+            security_logger.warning(
+                "An open connection's credentials no longer name its user"
+            )
+            return False
+        scope["user"] = credentials.user
+        scope["auth"] = credentials
+        return True
 
     async def _authenticate(self, connection: HTTPConnection) -> Credentials | None:
         """The first class's verdict on the request's credentials."""

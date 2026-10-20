@@ -332,6 +332,7 @@ EXTRA_MESSAGES: Final = {
     "You do not have permission to change some of these fields.",  # The same.
     "This value is already taken.",  # db.errors, when no field is known.
     "Too many requests; slow down.",  # http.ratelimit.TOO_MANY_REQUESTS
+    "Too many open connections; try again later.",  # http.live.TOO_MANY_CONNECTIONS
     "Another item of the batch failed, so nothing was applied.",  # resources.batches
     "Credentials limited to scopes cannot do this.",  # auth.access.IsUnscoped
     "Too many attempts; try again later.",  # auth.mfa and auth.recovery, by keyword

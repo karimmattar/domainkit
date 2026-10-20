@@ -448,11 +448,31 @@ class RequestBodyTooLarge(APIError):
         )
 
 
+UTF8_CHUNK: Final = 65_536
+"""Characters measured at a time by ``utf8_size``."""
+
+
+def utf8_size(text: str) -> int:
+    """The size of ``text`` in UTF-8, without encoding all of it at once.
+
+    ASCII text is one byte a character. Other text is encoded a chunk at a
+    time, so measuring a large message never holds a second copy of it.
+    """
+    if text.isascii():
+        return len(text)
+    return sum(
+        len(text[start : start + UTF8_CHUNK].encode())
+        for start in range(0, len(text), UTF8_CHUNK)
+    )
+
+
 class RequestBodyLimitMiddleware:
     """Refuse bodies over the limit, by declared length and while streaming.
 
     A WebSocket message over the limit closes the connection with 1009
-    (message too big); the application sees the client disconnect.
+    (message too big); the application sees the client disconnect. The
+    server has read the whole message by then: run it with
+    ``--ws-max-size`` at the same limit, so it refuses larger ones first.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -519,8 +539,8 @@ class RequestBodyLimitMiddleware:
             nonlocal closed
             message = await receive()
             if message["type"] == "websocket.receive":
-                size = len(message.get("bytes") or b"") + len(
-                    (message.get("text") or "").encode()
+                size = len(message.get("bytes") or b"") + utf8_size(
+                    message.get("text") or ""
                 )
                 if size > self.max_body_size:
                     self._reject(size)

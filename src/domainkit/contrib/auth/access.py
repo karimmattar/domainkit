@@ -43,6 +43,7 @@ from starlette.routing import BaseRoute, Host, Mount, Route, WebSocketRoute
 from domainkit.ddd import PermissionDenied
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import APIError
+from domainkit.http.live import record_check
 
 from .authentication import get_authenticators
 from .backends import has_perms
@@ -340,7 +341,9 @@ class ModelPermissions(BasePermission):
 class Require:
     """A FastAPI dependency: the rules must allow the request; returns the user.
 
-    Without rules, it requires a user who logged in.
+    Without rules, it requires a user who logged in. On a WebSocket or an
+    event stream, the rules are checked again while it stays open
+    (``LIVE_REAUTH_INTERVAL``), with the user loaded afresh.
     """
 
     def __init__(self, *rules: Rule) -> None:
@@ -362,7 +365,13 @@ class Require:
         refusal = await _first_refusal(self.rules, request, user)
         if refusal is not None:
             raise _denied(user, refusal)
+        record_check(request, self.allows)
         return user
+
+    async def allows(self, connection: HTTPConnection) -> bool:
+        """Whether every rule still allows ``connection``'s current user."""
+        user = current_user(connection)
+        return await _first_refusal(self.rules, connection, user) is None
 
 
 async def check_object_permissions(
