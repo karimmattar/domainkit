@@ -3,6 +3,7 @@
 import datetime as dt
 import io
 import sys
+from ipaddress import ip_network
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -38,7 +39,11 @@ CLASSES = [
     f"{AUTHENTICATION}.certificates.ClientCertificateAuthentication",
 ]
 PROXY = "10.0.0.5"
-HEADERS = {"HEADER": "X-Client-Cert", "VERIFY_HEADER": "X-Client-Verify"}
+HEADERS = {
+    "HEADER": "X-Client-Cert",
+    "VERIFY_HEADER": "X-Client-Verify",
+    "PROXIES": [PROXY],
+}
 ANONYMOUS = {"user": "", "scheme": None}
 
 
@@ -155,7 +160,7 @@ def proxied(client: TestClient, address: str = PROXY) -> TestClient:
     return TestClient(client.app, client=(address, 1))
 
 
-def test_trusted_proxies_may_pass_a_certificate_in_a_header(
+def test_certificate_proxies_may_pass_a_certificate_in_a_header(
     identity: Api, alice_cert: Path
 ) -> None:
     """URL-encoded PEM, with the proxy's ``SUCCESS``, from its own address."""
@@ -193,6 +198,34 @@ def test_trusted_proxies_may_pass_a_certificate_in_a_header(
     assert empty.json() == ANONYMOUS
 
 
+def test_other_trusted_proxies_cannot_pass_certificates(
+    identity: Api, tmp_path: Path
+) -> None:
+    """Hosts of ``TRUSTED_PROXIES`` are not ``CLIENT_CERT.PROXIES``.
+
+    ``TRUSTED_PROXIES`` often holds a whole pod network: any pod there
+    could otherwise send its own header and its own ``SUCCESS``, with a
+    self-signed certificate naming the superuser.
+    """
+    create_user("root", is_superuser=True, is_staff=True)
+    forged, _ = certificate(tmp_path, "root")
+    sent = {"X-Client-Cert": quote(pem_of(forged)), "X-Client-Verify": "SUCCESS"}
+    with override_settings(TRUSTED_PROXIES=["10.0.0.0/8"]):
+        client = identity(
+            AUTHENTICATION_CLASSES=CLASSES,
+            CLIENT_CERT={**HEADERS, "MATCH": "subject"},
+        )
+
+        other_pod = proxied(client, "10.42.7.13").get("/scoped/root", headers=sent)
+        proxy = proxied(client).get("/scoped/root", headers=sent)
+
+    assert (other_pod.status_code, other_pod.json()["detail"]) == (
+        401,
+        "Client certificates in headers are taken from trusted proxies only.",
+    )
+    assert proxy.json() == {"ok": True}  # The proxy checked it, and says so.
+
+
 def test_the_peer_is_the_proxy_even_after_forwarded_headers(
     identity: Api, alice_cert: Path
 ) -> None:
@@ -204,7 +237,7 @@ def test_the_peer_is_the_proxy_even_after_forwarded_headers(
     with override_settings(TRUSTED_PROXIES=["10.0.0.0/8"], MIDDLEWARE=middleware):
         client = identity(
             AUTHENTICATION_CLASSES=CLASSES,
-            CLIENT_CERT={"HEADER": "X-Client-Cert"},
+            CLIENT_CERT={"HEADER": "X-Client-Cert", "PROXIES": [PROXY]},
         )
         register("alice", alice_cert)
         sent = {
@@ -279,25 +312,69 @@ def test_subjects_need_cryptography(
         common_name(der)
 
 
-def test_headers_need_trusted_proxies(use_auth: UseAuth) -> None:
-    """A header no proxy is trusted to set could only come from clients."""
-    with pytest.raises(ImproperlyConfigured, match="TRUSTED_PROXIES"):
-        use_auth(CLIENT_CERT={"HEADER": "X-Client-Cert"})
-    use_auth(
-        settings={"TRUSTED_PROXIES": ["10.0.0.0/8"]},
-        CLIENT_CERT={"HEADER": "X-Client-Cert"},
+def test_headers_need_certificate_proxies(use_auth: UseAuth) -> None:
+    """A header no proxy is trusted to set could only come from clients.
+
+    ``TRUSTED_PROXIES`` is not enough: certificates need proxies of their own.
+    """
+    header = {"HEADER": "X-Client-Cert"}
+    with pytest.raises(ImproperlyConfigured) as refused:
+        use_auth(settings={"TRUSTED_PROXIES": ["10.0.0.0/8"]}, CLIENT_CERT=header)
+    assert str(refused.value) == (
+        "AUTH.CLIENT_CERT.HEADER is believed only from AUTH.CLIENT_CERT.PROXIES; "
+        "list the address of the proxy that sets it."
     )
+    use_auth(CLIENT_CERT={**header, "PROXIES": [PROXY]})
+    use_auth(CLIENT_CERT={"PROXIES": [PROXY]})  # Unused without a header.
 
 
 def test_subjects_through_headers_need_the_proxys_check(use_auth: UseAuth) -> None:
     """Without it, a self-signed certificate could name any user."""
-    proxies = {"TRUSTED_PROXIES": ["10.0.0.0/8"]}
-    subject = {"HEADER": "X-Client-Cert", "MATCH": "subject"}
+    subject = {"HEADER": "X-Client-Cert", "MATCH": "subject", "PROXIES": [PROXY]}
 
-    with pytest.raises(ImproperlyConfigured, match="needs VERIFY_HEADER"):
-        use_auth(settings=proxies, CLIENT_CERT=subject)
-    use_auth(settings=proxies, CLIENT_CERT={**subject, "VERIFY_HEADER": "X-Verify"})
+    with pytest.raises(ImproperlyConfigured) as refused:
+        use_auth(CLIENT_CERT=subject)
+    assert str(refused.value) == (
+        'AUTH.CLIENT_CERT: MATCH = "subject" through HEADER needs VERIFY_HEADER, '
+        "or anyone could sign a certificate naming any user."
+    )
+    use_auth(CLIENT_CERT={**subject, "VERIFY_HEADER": "X-Verify"})
     use_auth(CLIENT_CERT={"MATCH": "subject"})  # The server's own check suffices.
+
+
+@pytest.mark.parametrize("environment", ["staging", "production"])
+def test_deployments_take_single_certificate_proxies(
+    use_auth: UseAuth, environment: str
+) -> None:
+    """Staging and production refuse networks: one host each, the proxy's."""
+    deployed = {"ENVIRONMENT": environment, "ALLOWED_HOSTS": ["api.example.com"]}
+    hashers = ["domainkit.contrib.auth.hashers.PBKDF2PasswordHasher"]
+    header = {"HEADER": "X-Client-Cert", "VERIFY_HEADER": "X-Client-Verify"}
+
+    with pytest.raises(ImproperlyConfigured) as refused:
+        use_auth(
+            settings=deployed,
+            PASSWORD_HASHERS=hashers,
+            CLIENT_CERT={
+                **header,
+                "PROXIES": ["10.0.0.5", "10.0.0.0/8", "fd00::/64", "10.0.1.0/31"],
+            },
+        )
+    use_auth(
+        settings=deployed,
+        PASSWORD_HASHERS=hashers,
+        CLIENT_CERT={**header, "PROXIES": ["10.0.0.5", "10.0.0.6/32", "fd00::1"]},
+    )
+    use_auth(  # Tests may.
+        settings={"ENVIRONMENT": "test"},
+        CLIENT_CERT={**header, "PROXIES": ["10.0.0.0/8"]},
+    )
+
+    assert str(refused.value) == (
+        f"AUTH.CLIENT_CERT.PROXIES must list single addresses (/32 or /128) in "
+        f"{environment}, not networks (10.0.0.0/8, fd00::/64, 10.0.1.0/31): any "
+        "host there could name any user."
+    )
 
 
 @pytest.mark.parametrize(
@@ -313,12 +390,12 @@ def test_subjects_through_headers_need_the_proxys_check(use_auth: UseAuth) -> No
         ({"client": ("192.0.2.1", 1), "domainkit.peer": ("10.0.0.1", 1)}, True),
     ],
 )
-def test_trusted_peers(use_auth: UseAuth, scope: dict[str, Any], trusted: bool) -> None:
-    """The socket peer must be in ``TRUSTED_PROXIES``."""
-    use_auth(settings={"TRUSTED_PROXIES": ["10.0.0.0/8", "2001:db8::/32"]})
+def test_trusted_peers(scope: dict[str, Any], trusted: bool) -> None:
+    """The socket peer must be one of the proxies."""
+    proxies = [ip_network("10.0.0.0/8"), ip_network("2001:db8::/32")]
     connection = HTTPConnection({"type": "http", "headers": [], **scope})
 
-    assert trusted_peer(connection) is trusted
+    assert trusted_peer(connection, proxies) is trusted
 
 
 def test_addcertificate_checks_what_it_is_given(

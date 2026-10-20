@@ -72,6 +72,7 @@ from .backends import (
 from .exceptions import (
     GroupNameTaken,
     GroupNotFound,
+    InvalidEmail,
     InvalidGroupName,
     InvalidPassword,
     InvalidUserField,
@@ -129,6 +130,7 @@ __all__ = [
     "HasObjectPermissions",
     "HasPermissions",
     "HasScope",
+    "InvalidEmail",
     "InvalidGroupName",
     "InvalidPassword",
     "InvalidUserField",

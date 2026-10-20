@@ -657,7 +657,7 @@ def test_browser_sessions_take_a_second_factor_too(
         headers=origin,
     )
     assert challenged.status_code == 202
-    assert "dk_session" not in browser.cookies
+    assert "__Host-dk_session" not in browser.cookies
     clock[0] += 30
     forged = browser.post(
         "/auth/session/mfa",

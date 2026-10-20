@@ -205,6 +205,8 @@ def test_subscriptions_record_their_changes_without_secrets() -> None:
         )
     ]
     assert secret not in repr(subscription)
+    assert "SECRET-TOKEN" not in repr(subscription)  # URLs may hold tokens.
+    assert "hooks.example.com" not in repr(subscription)
     assert "SECRET-TOKEN" not in repr(created)
 
     subscription.change(url=subscription.url, event_types=["b", "a"], active=True)

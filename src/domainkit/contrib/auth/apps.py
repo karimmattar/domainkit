@@ -156,6 +156,44 @@ class AuthConfig(DomainConfig):
                 )
         return problems
 
+    def deployment_warnings(self) -> list[str]:
+        """Weak choices in staging and production.
+
+        Login and code checks without a rate, and cookies without
+        ``__Host-`` where it could hold.
+        """
+        if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
+            return []
+        config = auth_settings()
+        cookie = config.COOKIE
+        warnings: list[str] = []
+        if config.LOGIN_RATE is None:
+            warnings.append(
+                "AUTH.LOGIN_RATE is None, so passwords can be guessed without "
+                'limit; set it, such as "10/minute".'
+            )
+        if config.MFA.RATE is None:
+            warnings.append(
+                "AUTH.MFA.RATE is None, so one-time codes can be guessed without "
+                'limit; set it, such as "10/hour".'
+            )
+        if (
+            COOKIE_AUTHENTICATION in config.AUTHENTICATION_CLASSES
+            and cookie.DOMAIN is None
+            and cookie.PATH == "/"
+        ):
+            warnings.extend(
+                f"AUTH.COOKIE.{key} {name!r} lacks the __Host- prefix, so another "
+                f"host of the site (a subdomain) can set it in browsers; name it "
+                f"__Host-{name}, or leave {key} out."
+                for key, name in (
+                    ("NAME", cookie.NAME),
+                    ("CSRF_NAME", cookie.CSRF_NAME),
+                )
+                if name is not None and not name.startswith("__Host-")
+            )
+        return warnings
+
     def holds_table(self, table: Table) -> bool:
         """The default user's tables, unless a custom user replaces them."""
         return not (self.swapped and table in DEFAULT_USER_TABLES)
@@ -188,13 +226,15 @@ class AuthConfig(DomainConfig):
     def _check_deployment(self, config: AuthSettings) -> None:
         """Refuse settings that cannot hold anywhere, and unsafe ones where deployed.
 
-        Staging and production refuse hashers made for tests, and plain
-        cookies.
+        Staging and production refuse hashers made for tests, plain
+        cookies, certificate proxies given as networks, and links sent by
+        mail over plain HTTP.
         """
-        if config.CLIENT_CERT.HEADER is not None and not settings.TRUSTED_PROXIES:
+        if config.CLIENT_CERT.HEADER is not None and not config.CLIENT_CERT.PROXIES:
             raise ImproperlyConfigured(
-                "AUTH.CLIENT_CERT.HEADER is believed only from TRUSTED_PROXIES; "
-                "list the proxy that sets it."
+                "AUTH.CLIENT_CERT.HEADER is believed only from "
+                "AUTH.CLIENT_CERT.PROXIES; list the address of the proxy that "
+                "sets it."
             )
         if (
             config.CLIENT_CERT.HEADER is not None
@@ -217,6 +257,30 @@ class AuthConfig(DomainConfig):
             raise ImproperlyConfigured(
                 f"AUTH.COOKIE.SECURE = False sends session cookies over plain HTTP; "
                 f"remove it in {settings.ENVIRONMENT}."
+            )
+        links = {
+            "PASSWORD_RESET_URL": config.PASSWORD_RESET_URL,
+            "EMAIL_VERIFICATION_URL": config.EMAIL_VERIFICATION_URL,
+            "SIGNUP_URL": config.SIGNUP_URL,
+        }
+        if plain := [
+            key
+            for key, url in links.items()
+            if url is not None and url.lower().startswith("http://")
+        ]:
+            raise ImproperlyConfigured(
+                f"AUTH.{', AUTH.'.join(plain)} send links with their tokens over "
+                f"plain HTTP; use https:// in {settings.ENVIRONMENT}."
+            )
+        if networks := [
+            str(network)
+            for network in config.CLIENT_CERT.PROXIES
+            if network.num_addresses > 1
+        ]:
+            raise ImproperlyConfigured(
+                f"AUTH.CLIENT_CERT.PROXIES must list single addresses (/32 or "
+                f"/128) in {settings.ENVIRONMENT}, not networks "
+                f"({', '.join(networks)}): any host there could name any user."
             )
 
 

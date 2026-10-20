@@ -1,0 +1,8 @@
+Hello,
+
+Someone asked for an account with this email address. If it was you,
+confirm the address within {{ valid_for }} to make the account:
+
+{{ link }}
+
+If it was not you, ignore this message: no account is made.

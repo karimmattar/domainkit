@@ -97,9 +97,13 @@ def secret_box() -> SecretBox:
 
 
 class Subscription(AggregateRoot[SubscriptionId]):
-    """A URL that receives the events it names, signed with its secret."""
+    """A URL that receives the events it names, signed with its secret.
 
-    url: str
+    Neither the URL nor the secret appears in its ``repr``: URLs may hold
+    tokens (``https://hooks.example.com/in/T0K3N``).
+    """
+
+    url: str = field(repr=False)
     event_types: list[str]
     secret: bytes = field(repr=False)
     """The signing secret, encrypted and bound to the id (``secret_box``)."""

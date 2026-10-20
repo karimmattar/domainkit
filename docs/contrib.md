@@ -506,8 +506,10 @@ router.include_router(webhooks_admin, prefix="/admin/webhooks")
 Each endpoint also needs a staff user or a superuser. Secrets never appear
 in listings, logs, events, or reprs; changes are recorded as events
 (`SubscriptionCreated` and others), which the audit trail keeps, with the
-URL's host only, since URLs may hold tokens. The two answers that hold a
-secret are marked `Cache-Control: no-store`: no cache keeps them, and
+URL's host only, since URLs may hold tokens. For the same reason, neither
+a `Subscription`'s `repr` nor those of the admin API's bodies show its
+URL. The two answers that hold a secret are marked `Cache-Control:
+no-store`: no cache keeps them, and
 `IdempotencyMiddleware` stores no copy, so a retry with the same
 `Idempotency-Key` gets a 409 rather than the secret again.
 

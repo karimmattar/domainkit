@@ -14,10 +14,12 @@ The certificate comes from one of two places, and only these:
 - the ASGI TLS extension (``scope["extensions"]["tls"]``), when the server
   terminates TLS and checked the certificate itself;
 - ``AUTH.CLIENT_CERT.HEADER`` (URL-encoded PEM, nginx's
-  ``$ssl_client_escaped_cert``), only on connections from ``TRUSTED_PROXIES``,
-  and with ``VERIFY_HEADER`` saying ``SUCCESS`` when it is set. A request
-  from anywhere else that sends the header is refused: a client could
-  otherwise name any certificate.
+  ``$ssl_client_escaped_cert``), only on connections from
+  ``AUTH.CLIENT_CERT.PROXIES``, the proxies that check certificates, and
+  with ``VERIFY_HEADER`` saying ``SUCCESS`` when it is set. A request from
+  anywhere else that sends the header is refused: a client could otherwise
+  name any certificate. ``TRUSTED_PROXIES`` does not count: it often
+  holds whole networks, where any host could send the header.
 
 ``MATCH = "fingerprint"`` (the default) finds the user by the SHA-256 of
 the certificate, registered with ``addcertificate``; ``"subject"`` takes
@@ -31,12 +33,12 @@ not sign.
 import hashlib
 import ipaddress
 import ssl
+from collections.abc import Iterable
 from typing import Any, Final
 from urllib.parse import unquote
 
 from starlette.requests import HTTPConnection
 
-from domainkit.conf import settings
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.middleware import PEER
 
@@ -55,6 +57,8 @@ SCHEME: Final = "certificate"
 """``request.auth.scheme`` of requests a client certificate authenticates."""
 VERIFIED: Final = "SUCCESS"
 """What ``VERIFY_HEADER`` holds for a certificate the proxy checked."""
+
+type IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 
 class ClientCertificateAuthentication(BaseAuthentication):
@@ -84,11 +88,12 @@ class ClientCertificateAuthentication(BaseAuthentication):
 
 
 def presented_certificate(connection: HTTPConnection) -> str | None:
-    """The client certificate in PEM, from the TLS extension or a trusted proxy.
+    """The client certificate in PEM, from the TLS extension or a proxy.
 
     Raises:
         AuthenticationFailed: The server did not verify it, or a header
-            carries one from an untrusted peer or without the proxy's check.
+            carries one from a peer not in ``CLIENT_CERT.PROXIES`` or
+            without the proxy's check.
     """
     extensions: dict[str, Any] = connection.scope.get("extensions") or {}
     tls: dict[str, Any] = extensions.get("tls") or {}
@@ -102,7 +107,7 @@ def presented_certificate(connection: HTTPConnection) -> str | None:
     value = connection.headers.get(config.HEADER) if config.HEADER else None
     if not value:
         return None
-    if not trusted_peer(connection):
+    if not trusted_peer(connection, config.PROXIES):
         raise AuthenticationFailed(
             "Client certificates in headers are taken from trusted proxies only."
         )
@@ -113,8 +118,8 @@ def presented_certificate(connection: HTTPConnection) -> str | None:
     return unquote(value)
 
 
-def trusted_peer(connection: HTTPConnection) -> bool:
-    """Whether the request came over a socket from ``TRUSTED_PROXIES``.
+def trusted_peer(connection: HTTPConnection, proxies: Iterable[IPNetwork]) -> bool:
+    """Whether the request came over a socket from one of ``proxies``.
 
     The peer is the one ``ProxyHeadersMiddleware`` kept, if it replaced
     ``client``, and ``client`` otherwise.
@@ -128,7 +133,7 @@ def trusted_peer(connection: HTTPConnection) -> bool:
         return False
     if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
         address = address.ipv4_mapped
-    return any(address in network for network in settings.TRUSTED_PROXIES)
+    return any(address in network for network in proxies)
 
 
 def certificate_der(pem: str) -> bytes:
