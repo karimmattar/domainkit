@@ -225,6 +225,7 @@ class FakeChannel:
         """Return the exchange, declaring it once."""
         await self.server.answer("declare_exchange", timeout)
         self.server.exchanges[name] = durable
+        self.server.exchange_types[name] = type
         return FakeExchange(name, self)
 
     async def declare_queue(
@@ -239,6 +240,7 @@ class FakeChannel:
         queue = self.server.queues.get(name)
         if queue is None:
             queue = self.server.queues[name] = FakeQueue(name, arguments, self.server)
+            self.server.durable_queues[name] = durable
         elif queue.arguments != arguments:
             raise ChannelPreconditionFailed(406, "PRECONDITION_FAILED")
         self.server.last_channel = self
@@ -279,6 +281,9 @@ class FakeAMQP:
     def __init__(self) -> None:
         """Start empty and up."""
         self.exchanges: dict[str, bool] = {}
+        """Each declared exchange, and whether it is durable."""
+        self.exchange_types: dict[str, object] = {}
+        self.durable_queues: dict[str, bool] = {}
         self.queues: dict[str, FakeQueue] = {}
         self.bindings: dict[tuple[str, str], set[str]] = {}
         self.published: list[tuple[str, Message, bool, float]] = []

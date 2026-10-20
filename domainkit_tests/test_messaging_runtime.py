@@ -1499,6 +1499,7 @@ async def test_concurrent_scrapes_share_one_count(
     monkeypatch.setattr(metrics_module, "queue_counts", slow)
     scrapes = [asyncio.create_task(refresh_outbox()) for _ in range(3)]
     await within(counting.wait())
+    assert "messaging.outbox_gauges" in {task.get_name() for task in tasks.owned()}
     scrapes[0].cancel()
     go_on.set()
     results = await within(asyncio.gather(*scrapes, return_exceptions=True))
@@ -1510,6 +1511,8 @@ async def test_concurrent_scrapes_share_one_count(
         "messaging_outbox_messages", {"status": "pending"}
     )
     assert pending == 7
+    dead = REGISTRY.get_sample_value("messaging_outbox_messages", {"status": "dead"})
+    assert dead == 0  # None counted: none there.
 
 
 @pytest.mark.usefixtures("tables")
@@ -1578,7 +1581,7 @@ async def test_a_count_failing_after_its_scrapes_gave_up_is_not_logged(
         raise ConnectionError("database down")
 
     monkeypatch.setattr(metrics_module, "queue_counts", failing)
-    with caplog.at_level(logging.DEBUG, "asyncio"):
+    with caplog.at_level(logging.DEBUG):
         gave_up = asyncio.create_task(refresh_outbox())
         waiting = asyncio.create_task(refresh_outbox())
         await within(counting.wait())
@@ -1600,6 +1603,7 @@ async def test_a_count_failing_after_its_scrapes_gave_up_is_not_logged(
     assert isinstance(results[0], asyncio.CancelledError)
     assert isinstance(results[1], ConnectionError)
     assert logged(caplog, "asyncio") == []
+    assert logged(caplog, "domainkit.tasks") == []  # The scrapes have the error.
 
 
 # Winding down -------------------------------------------------------------------
@@ -1814,3 +1818,82 @@ async def test_commits_to_other_queues_do_not_wake_a_worker() -> None:
     await within(wake.wait())
     stop.set()
     await within(listening)
+
+
+@pytest.mark.usefixtures("brokered")
+def test_outboxes_found_later_share_the_workers_settings_and_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A delivery from another outbox runs within the same budget and settings."""
+    config = registry.settings(MessagingSettings).model_copy(
+        update={"POLL_INTERVAL": 0.5}
+    )
+    monkeypatch.setattr(dispatch, "_hosting_aliases", lambda: {"default", "other"})
+    workers = BrokerWorkers([], ["default"], config)
+
+    other = workers.outbox("other")
+
+    assert other is not None
+    assert (other.config, other.budget) == (config, workers.budget)
+    assert other.config is config
+    assert other.budget is workers.budget
+
+
+def answers_recorded(
+    failure: BaseException | None = None,
+) -> tuple[Delivery, list[str]]:
+    """A delivery whose requeue is recorded, and raises ``failure`` if given."""
+    answers: list[str] = []
+
+    async def requeue() -> None:
+        answers.append("requeue")
+        if failure is not None:
+            raise failure
+
+    async def ack() -> None:
+        answers.append("ack")
+
+    return Delivery("default", b"{}", "m", ack, requeue), answers
+
+
+async def test_deliveries_are_given_back_once_consuming_stopped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Give-backs wait for consuming to stop, quietly, and never for long."""
+    consuming = dispatch._Consuming(asyncio.Event())
+    delivery, answers = answers_recorded(BrokerUnavailable("connection lost"))
+    giving_back = asyncio.create_task(consuming.give_back(delivery))
+    await asyncio.sleep(0)  # It waits for consuming to stop.
+    assert answers == []
+    consuming.ended.set()
+    await within(giving_back)  # The broker's failure is not raised.
+    assert answers == ["requeue"]
+
+    monkeypatch.setattr(dispatch, "STOP_CONSUMING_TIMEOUT", 0.01)
+    monkeypatch.setattr(dispatch, "ANSWER_TIMEOUT", 0.01)
+    never = dispatch._Consuming(asyncio.Event())
+    delivery, answers = answers_recorded()
+    await within(never.give_back(delivery))  # Consuming never stopped: given up.
+    assert answers == []
+
+
+@pytest.mark.usefixtures("broker_tables")
+async def test_a_relays_listener_that_will_not_stop_is_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A relay's own helpers get HELPER_GRACE too, then they are cancelled."""
+
+    async def deaf(self: Worker, stop: asyncio.Event, wake: asyncio.Event) -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(Worker, "listen", deaf)
+    monkeypatch.setattr(dispatch, "HELPER_GRACE", 0.01)
+    config = registry.settings(MessagingSettings)
+    stop = asyncio.Event()
+    running = asyncio.create_task(
+        BrokerWorkers([Worker(config)], ["default"], config).run(stop)
+    )
+    await asyncio.sleep(0)
+    stop.set()
+
+    await within(running)

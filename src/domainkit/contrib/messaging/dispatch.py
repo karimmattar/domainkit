@@ -126,7 +126,6 @@ class BrokerWorkers:
                 self.queues, self.config.CONCURRENCY, handle
             )
             helpers: list[asyncio.Task[None]] = []
-            grace = 0.0
             try:
                 if self.relays:
                     for worker in self.workers:

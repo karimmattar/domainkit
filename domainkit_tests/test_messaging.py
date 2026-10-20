@@ -1034,6 +1034,11 @@ async def test_shutdown_waits_for_the_publisher_then_stops_it(
         assert "Left 1 committed messages to the relay at shutdown" in (caplog.messages)
         assert commit_publisher(config) is not publisher
         await published(commit_publisher(config))  # A new one has nothing to send.
+    left = REGISTRY.get_sample_value(
+        "messaging_left_to_relay_total", {"reason": "shutdown"}
+    )
+    assert left is not None
+    assert left >= 1
     (row,) = await outbox()
     # The publication cut short gave its message back: the relay sends it now.
     assert (row["lock_id"], row["locked_until"]) == (None, None)
@@ -1434,7 +1439,7 @@ async def test_deliveries_that_cannot_run_are_settled(
         f"Could not run message {missing} from queue 'default'; requeued"
     ]
 
-    with pytest.raises(ValueError, match=r"needs MESSAGING\.BROKER"):
+    with pytest.raises(ValueError, match=r"^BrokerWorkers needs MESSAGING\.BROKER\.$"):
         BrokerWorkers([], [], MessagingSettings())
 
 
