@@ -831,6 +831,12 @@ it: a request that ran past its lease and lost its key to a retry cannot
 commit, so the changes are made once. Set `LEASE_SECONDS` above the
 longest a request may run, such as your server's or proxy's timeout.
 
+A request that raises, or is cancelled (its client gone, a deadline, an
+anyio cancel scope that cancels every wait inside it), still releases its
+key at once: the response is stored, or the key released, in a task of its
+own that the request's cancellation cannot stop, within 5 seconds. If that
+fails, the failure is logged and the lease applies.
+
 Keep `IDEMPOTENCY.DATABASE` on the database your writes use where you can.
 A unit of work on another database cannot carry the mark in its
 transaction: before it commits, the key is pinned until it expires, so no
@@ -846,7 +852,9 @@ actor, keys are scoped to the client address and a hash of the request's
 another. Add `IdempotencyMiddleware` last in `MIDDLEWARE`: it reads whole
 bodies, which `RequestBodyLimitMiddleware` has already bounded. With
 messaging installed, expired keys are purged hourly; without it, each new
-key deletes up to 100 expired ones.
+key deletes up to 100 expired ones, skipping those another request is
+deleting (`SKIP LOCKED` on PostgreSQL), so concurrent requests never queue
+behind one another's purge.
 
 | `IDEMPOTENCY` key | Default | Meaning |
 | --- | --- | --- |
