@@ -156,6 +156,30 @@ class AuthConfig(DomainConfig):
                 )
         return problems
 
+    def deployment_warnings(self) -> list[str]:
+        """Weak choices in staging and production: cookies without ``__Host-``."""
+        if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
+            return []
+        config = auth_settings()
+        cookie = config.COOKIE
+        warnings: list[str] = []
+        if (
+            COOKIE_AUTHENTICATION in config.AUTHENTICATION_CLASSES
+            and cookie.DOMAIN is None
+            and cookie.PATH == "/"
+        ):
+            warnings.extend(
+                f"AUTH.COOKIE.{key} {name!r} lacks the __Host- prefix, so another "
+                f"host of the site (a subdomain) can set it in browsers; name it "
+                f"__Host-{name}, or leave {key} out."
+                for key, name in (
+                    ("NAME", cookie.NAME),
+                    ("CSRF_NAME", cookie.CSRF_NAME),
+                )
+                if name is not None and not name.startswith("__Host-")
+            )
+        return warnings
+
     def holds_table(self, table: Table) -> bool:
         """The default user's tables, unless a custom user replaces them."""
         return not (self.swapped and table in DEFAULT_USER_TABLES)

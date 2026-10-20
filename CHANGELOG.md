@@ -54,7 +54,11 @@ All notable changes to domainkit. The format follows
     signups, and refusals are audited.
 - Browser sessions in cookies (DJ-43): `CookieAuthentication` reads an
   opaque token from an HttpOnly, Secure, SameSite cookie that
-  `POST /auth/session` sets and `DELETE /auth/session` clears. Unsafe
+  `POST /auth/session` sets and `DELETE /auth/session` clears. The
+  session and CSRF cookies are named `__Host-dk_session` and
+  `__Host-dk_csrf` wherever the prefix holds, so a sibling subdomain
+  cannot plant either; names a project sets are kept, and `check` warns
+  in staging and production about one without the prefix. Unsafe
   requests it authenticates must come from a trusted origin (their own,
   `ALLOWED_HOSTS`, or `AUTH.CSRF_TRUSTED_ORIGINS`) and send a CSRF token
   signed for the session (`X-CSRF-Token`); others get `403 csrf_failed`,
@@ -342,6 +346,8 @@ All notable changes to domainkit. The format follows
   reset skips, and logs by user id, a stored address that cannot take mail
   rather than failing for every account of it. Addresses stored before
   stay as they are.
+- `check` also lists warnings that installed domains return from the new
+  `DomainConfig.deployment_warnings()`, in staging and production.
 
 ### Fixed
 

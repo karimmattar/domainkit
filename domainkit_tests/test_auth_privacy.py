@@ -161,7 +161,7 @@ def test_fixtures_hold_no_secret_and_no_one_time_state(
     assert not names & {"domainkit_tokens", mfa_devices.name, recovery_codes.name}
     (device,) = rows(mfa_devices)
     assert token not in raw
-    assert browser.cookies["dk_session"] not in raw
+    assert browser.cookies["__Host-dk_session"] not in raw
     for secret in (device["secret"], device["id"]):
         assert str(secret) not in raw
     for table in (mfa_devices.name, recovery_codes.name, "domainkit_tokens"):

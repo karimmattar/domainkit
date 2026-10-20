@@ -299,6 +299,8 @@ passes, so an API that is public on purpose can keep them:
 - no `RATE_LIMIT`, or `RateLimitMiddleware` missing from `MIDDLEWARE`
 - a rate limit with no `TRUSTED_PROXIES`: behind a load balancer, every
   caller would share its address and its count
+- auth: a session or CSRF cookie name without the `__Host-` prefix where
+  the prefix could hold ([auth.md](auth.md#browser-sessions-in-cookies))
 
 The production settings that `init` create avoid the first three, and ask
 for `TRUSTED_PROXIES`: leave it empty only when callers connect directly.
@@ -683,6 +685,7 @@ revision: the test database migrates up, down, and up again.
 | Process resources (clients, pools) | `async DomainConfig.startup()` / `shutdown()` | (called by the app lifespan; after the domains stop, the framework closes its caches, databases, ledgers, and brokers, in that order, each within 5 seconds, and a failure is logged without keeping the rest open; management commands close them too) |
 | A readiness check | `async DomainConfig.check()` | (called by `/ready`) |
 | A check of the built application (routes, middleware) | `DomainConfig.check_application(app)`, returning problems | (called when the app is built and by `check`; staging and production refuse to start with any) |
+| Warnings about a domain's weak settings where deployed | `DomainConfig.deployment_warnings()`, returning warnings (none outside staging and production) | (listed by `check` after the framework's own) |
 | Work staged with each commit | `async DomainConfig.stage(uow, events, tasks)` | (called by the unit of work) |
 | Work after each commit | `async DomainConfig.committed(uow)` | (called by the unit of work; failures are reported, never raised) |
 | Rows after each `migrate` (`post_migrate`) | `async DomainConfig.migrated(connection, database)` | (called by `migrate` for each database it upgraded, in one transaction as the schema owner, and by `flush`) |

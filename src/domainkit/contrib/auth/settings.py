@@ -89,10 +89,13 @@ class CookieSettings(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
-    NAME: str = Field(default="dk_session", pattern=COOKIE_NAME)
-    """The session cookie: HttpOnly, so scripts never read it."""
-    CSRF_NAME: str = Field(default="dk_csrf", pattern=COOKIE_NAME)
-    """The cookie that hands scripts the CSRF token."""
+    NAME: str | None = Field(default=None, pattern=COOKIE_NAME)
+    """The session cookie: HttpOnly, so scripts never read it. None:
+    ``__Host-dk_session`` where browsers take the prefix (``SECURE``, no
+    ``DOMAIN``, the ``PATH`` ``/``), ``dk_session`` elsewhere."""
+    CSRF_NAME: str | None = Field(default=None, pattern=COOKIE_NAME)
+    """The cookie that hands scripts the CSRF token. None: ``__Host-dk_csrf``
+    or ``dk_csrf``, as ``NAME``."""
     CSRF_HEADER: str = Field(default="X-CSRF-Token", pattern=r"^[A-Za-z0-9-]{1,64}$")
     """The header scripts send the CSRF token back in."""
     SAMESITE: Literal["lax", "strict", "none"] = "lax"
@@ -109,7 +112,7 @@ class CookieSettings(BaseModel):
         """Keep the rules browsers apply to ``__Host-`` and ``SameSite=None``."""
         if self.SAMESITE == "none" and self.SECURE is False:
             raise ValueError('SAMESITE "none" needs SECURE cookies')
-        for name in (self.NAME, self.CSRF_NAME):
+        for name in (self.NAME or "", self.CSRF_NAME or ""):
             if name.startswith("__Host-") and (
                 self.SECURE is False or self.DOMAIN is not None or self.PATH != "/"
             ):

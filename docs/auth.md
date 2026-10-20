@@ -486,7 +486,7 @@ router.include_router(session_router, prefix="/auth")
 
 | Endpoint | Body | Answer |
 | --- | --- | --- |
-| `POST /session` | `{"username", "password"}` | `200 {"csrf_token"}`, and two cookies: the session (`COOKIE.NAME`) and the CSRF token (`COOKIE.CSRF_NAME`); `401`, `403 csrf_failed`, and `429` as for `/login`. |
+| `POST /session` | `{"username", "password"}` | `200 {"csrf_token"}`, and two cookies: the session (`__Host-dk_session`) and the CSRF token (`__Host-dk_csrf`); `401`, `403 csrf_failed`, and `429` as for `/login`. |
 | `GET /session` | | `200 {"csrf_token"}`: a new token for this session, also in its cookie; `400 no_session` without a session cookie. |
 | `DELETE /session` | | `204`: the session ends and both cookies are cleared. |
 
@@ -513,6 +513,18 @@ trusted origin (cross-site WebSocket hijacking). Requests with an
 unaffected. A session that ended, expired, or belongs to an inactive user
 leaves the request anonymous rather than refused, so a stale cookie never
 stops the browser from logging in again.
+
+The cookies are named `__Host-dk_session` and `__Host-dk_csrf`. Browsers
+take a cookie with the `__Host-` prefix only from the very host that sets
+it, `Secure`, without `Domain`, on the path `/`: a page on a sibling
+subdomain (`evil.example.com` beside `api.example.com`) cannot plant its
+own session or CSRF token in the browser (cookie tossing), so it can
+neither log the browser in as someone else nor fix its session. Where
+the prefix cannot hold, because the cookies are not `Secure` (plain HTTP
+under `DEBUG`), or have a `DOMAIN` or another `PATH`, they are
+`dk_session` and `dk_csrf`. `COOKIE.NAME` and `COOKIE.CSRF_NAME` set the
+names outright; in staging and production, `check` warns about a name
+without the prefix where it could hold.
 
 A single-page app on another origin needs CORS with credentials:
 `CORS_ALLOWED_ORIGINS = ["https://app.example.com"]`,
@@ -1069,8 +1081,8 @@ changed what.
 
 | `AUTH["COOKIE"]` key | Default | Meaning |
 | --- | --- | --- |
-| `NAME` | `"dk_session"` | The session cookie (HttpOnly). `__Host-` names need `SECURE`, no `DOMAIN`, and the `PATH` `/`. |
-| `CSRF_NAME` | `"dk_csrf"` | The cookie scripts read the CSRF token from. |
+| `NAME` | `None`: `"__Host-dk_session"` | The session cookie (HttpOnly). By default `__Host-dk_session` where the prefix holds (Secure, no `DOMAIN`, the `PATH` `/`), else `dk_session`. `__Host-` names need `SECURE`, no `DOMAIN`, and the `PATH` `/`. |
+| `CSRF_NAME` | `None`: `"__Host-dk_csrf"` | The cookie scripts read the CSRF token from; `__Host-dk_csrf` or `dk_csrf`, as `NAME`. |
 | `CSRF_HEADER` | `"X-CSRF-Token"` | The header they send it back in. |
 | `SAMESITE` | `"lax"` | `lax`, `strict`, or `none` (which needs `SECURE`). |
 | `SECURE` | `None` | HTTPS only; `None` means unless `DEBUG`. `False` is refused in staging and production. |

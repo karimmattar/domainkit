@@ -141,6 +141,15 @@ class DomainConfig:
         """
         return []
 
+    def deployment_warnings(self) -> list[str]:
+        """Weak but valid choices of this domain's settings where deployed.
+
+        ``check`` lists them after ``Settings.deployment_warnings``; they
+        do not stop the application. Return none outside staging and
+        production.
+        """
+        return []
+
     def holds_table(self, table: "Table") -> bool:
         """Whether ``table``, tagged with this domain, is in use now.
 
