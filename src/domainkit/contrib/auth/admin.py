@@ -38,13 +38,8 @@ from pydantic_core import to_jsonable_python
 from starlette.requests import HTTPConnection
 
 from domainkit.ddd import PermissionDenied
-from domainkit.http import (
-    CURSOR_PATTERN,
-    MAX_CURSOR_LENGTH,
-    ErrorResponse,
-    decode_cursor,
-    encode_cursor,
-)
+from domainkit.http import CURSOR_PATTERN, MAX_CURSOR_LENGTH, ErrorResponse
+from domainkit.http.pagination import PageRequest
 
 from .access import BasePermission, IsAdminUser, IsSuperuser, IsUnscoped, Require
 from .backends import ModelBackend, get_all_permissions, get_backends, has_perms
@@ -57,6 +52,7 @@ from .exceptions import (
     UserNotFound,
 )
 from .models import AbstractBaseUser, AnyUser, Group, GroupId, Permission, UserId
+from .repositories import GroupRepository
 from .uow import AuthUnitOfWork
 from .users import get_user_model
 from .validators import validate_password
@@ -275,13 +271,13 @@ async def list_users(
     search: Annotated[str | None, Query(max_length=150)] = None,
 ) -> UserPage:
     """Users by username; ``search`` matches part of it, in any case."""
+    request = PageRequest(limit=limit, cursor=cursor)
     async with AuthUnitOfWork() as uow:
-        page = await uow.users.page(limit=limit, after=_position(cursor), search=search)
+        query = uow.users.listing(search)
+        page = await request.fetch(uow.users, query)
     items = [AdminUserOut.of(user) for user in page.items]
-    last = items[-1] if page.has_more else None
     return UserPage(
-        items=items,
-        next_cursor=None if last is None else encode_cursor([last.username]),
+        items=items, next_cursor=request.respond(page, items, query).next_cursor
     )
 
 
@@ -459,13 +455,13 @@ async def list_groups(
     cursor: Cursor = None,
 ) -> GroupPage:
     """Groups by name."""
+    request = PageRequest(limit=limit, cursor=cursor)
     async with AuthUnitOfWork() as uow:
-        page = await uow.groups.page(limit=limit, after=_position(cursor))
+        page = await request.fetch(uow.groups, GroupRepository.LISTING)
     items = [GroupOut.of(group) for group in page.items]
-    last = items[-1] if page.has_more else None
     return GroupPage(
         items=items,
-        next_cursor=None if last is None else encode_cursor([last.name]),
+        next_cursor=request.respond(page, items, GroupRepository.LISTING).next_cursor,
     )
 
 
@@ -580,11 +576,6 @@ async def _group(uow: AuthUnitOfWork, group_id: UUID) -> Group:
     if group is None:
         raise GroupNotFound("No such group.")
     return group
-
-
-def _position(cursor: str | None) -> str | None:
-    """The name a cursor continues after."""
-    return None if cursor is None else decode_cursor(cursor, 1)[0]
 
 
 def _superusers_only(actor: AnyUser, message: str) -> None:

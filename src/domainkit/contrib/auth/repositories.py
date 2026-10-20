@@ -9,7 +9,7 @@ import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Final
 from uuid import UUID
 
 from sqlalchemy import delete, exists, func, insert, select, update
@@ -18,7 +18,8 @@ from sqlalchemy.orm.attributes import set_committed_value
 
 from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.db import SqlAlchemyRepository
-from domainkit.ddd import Page
+from domainkit.ddd import F, Page, RowLock
+from domainkit.ddd.query import Query
 
 from .events import UserLoggedIn
 from .exceptions import GroupNameTaken, UnknownGroup, UnknownPermission, UsernameTaken
@@ -124,6 +125,11 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         else:
             user.set_password(PasswordHash(await amake_password(password)))
 
+    def listing(self, search: str | None = None) -> Query:
+        """Users by username; ``search`` keeps those whose name contains it."""
+        name = F(self.model.USERNAME_FIELD)
+        return Query(name.icontains(search) if search else None, ordering=[name])
+
     async def page(
         self, *, limit: int, after: str | None = None, search: str | None = None
     ) -> Page[AbstractBaseUser]:
@@ -131,18 +137,10 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
 
         Usernames are unique, so one keeps the place between pages.
         """
-        name = get_user_table().c[self.model.USERNAME_FIELD]
-        statement = select(self.model).order_by(name).limit(limit + 1)
+        query = self.listing(search)
         if after is not None:
-            statement = statement.where(name > after)
-        if search:
-            statement = statement.where(
-                func.lower(name).contains(search.lower(), autoescape=True)
-            )
-        users = list(await self.session.scalars(statement))
-        for user in users:
-            self._track(user)
-        return Page.from_items(users, limit)
+            query = query.where(F(self.model.USERNAME_FIELD) > after)
+        return await self.paginate(query, limit=limit)
 
     async def store_rehash(
         self, user_id: UUID, verified: PasswordHash, rehashed: PasswordHash
@@ -167,14 +165,8 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         would both count two; with the rows locked, the second count waits
         for the first transaction and sees what it left.
         """
-        table = get_user_table()
-        found = await self.session.execute(
-            select(table.c.id)
-            .where(table.c.is_superuser.is_(True), table.c.is_active.is_(True))
-            .order_by(table.c.id)
-            .with_for_update()
-        )
-        return len(found.all())
+        active = (F("is_superuser") == True) & (F("is_active") == True)  # noqa: E712
+        return len(await self.filter(Query(active, lock=RowLock())))
 
     async def record_login(self, user: AbstractBaseUser) -> None:
         """Store the login time and record ``UserLoggedIn``.
@@ -204,15 +196,15 @@ class GroupRepository(SqlAlchemyRepository[Group, GroupId]):
             self._track(group)
         return group
 
+    LISTING: Final = Query(ordering=["name"])
+    """Groups by name (unique)."""
+
     async def page(self, *, limit: int, after: str | None = None) -> Page[Group]:
         """Groups by name (unique), after the name ``after``."""
-        statement = select(Group).order_by(groups.c.name).limit(limit + 1)
+        query = self.LISTING
         if after is not None:
-            statement = statement.where(groups.c.name > after)
-        found = list(await self.session.scalars(statement))
-        for group in found:
-            self._track(group)
-        return Page.from_items(found, limit)
+            query = query.where(F("name") > after)
+        return await self.paginate(query, limit=limit)
 
     async def get_many_by_name(self, names: Iterable[str]) -> list[Group]:
         """The groups ``names`` name, in that order.

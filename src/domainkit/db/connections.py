@@ -135,9 +135,20 @@ class ConnectionHandler:
         """Return this event loop's engine for ``alias``, creating it on first use."""
         return self._pool(alias)[0]
 
-    def session(self, alias: str = DEFAULT_DB_ALIAS) -> AsyncSession:
-        """Open a session; objects stay readable after commit."""
-        return self._pool(alias)[1]()
+    def session(
+        self, alias: str = DEFAULT_DB_ALIAS, *, readonly: bool = False
+    ) -> AsyncSession:
+        """Open a session; objects stay readable after commit.
+
+        A ``readonly`` session's transactions are ``READ ONLY`` on
+        PostgreSQL, so even a replica's primary refuses its writes.
+        """
+        engine, sessions = self._pool(alias)
+        if not readonly:
+            return sessions()
+        return AsyncSession(
+            engine.execution_options(postgresql_readonly=True), expire_on_commit=False
+        )
 
     async def check(self, alias: str = DEFAULT_DB_ALIAS) -> None:
         """Run ``SELECT 1`` on ``alias``; raises when the database is unreachable."""

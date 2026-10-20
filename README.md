@@ -34,6 +34,8 @@ pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, m
   observability, testing, commands, and extension points
 - [docs/databases.md](https://github.com/karimmattar/domainkit/blob/main/docs/databases.md): several databases, routing,
   sharding, partitioning, and ledgers
+- [docs/queries.md](https://github.com/karimmattar/domainkit/blob/main/docs/queries.md): querying repositories,
+  pages, filters, soft delete, row locks, and savepoints
 - [docs/cache.md](https://github.com/karimmattar/domainkit/blob/main/docs/cache.md): caches in memory, Redis, and Valkey,
   and shared rate limits
 - [docs/contrib.md](https://github.com/karimmattar/domainkit/blob/main/docs/contrib.md): messaging (and workers on RabbitMQ),

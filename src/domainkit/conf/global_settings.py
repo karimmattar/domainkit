@@ -7,7 +7,7 @@ so a misspelled setting fails at startup instead of being silently ignored.
 """
 
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any, Final, Literal, Self
 from urllib.parse import SplitResult, parse_qs, urlsplit
@@ -110,6 +110,8 @@ class DatabaseConfig(BaseModel):
     POOL_PRE_PING: bool = True
     CONNECT_ARGS: dict[str, Any] = Field(default_factory=dict)
     """Extra driver arguments; they may not replace TLS or the timeouts above."""
+    REPLICAS: tuple[str, ...] = ()
+    """Aliases of read replicas of this database; read-only work goes there."""
     TEST_NAME: str | None = None
     """The PostgreSQL database the tests create (``test_<name>`` when None)."""
 
@@ -603,12 +605,15 @@ class Settings(BaseModel):
                         f"{alias!r} is in shard groups {sharded[alias]!r} and {group!r}"
                     )
                 sharded[alias] = group
+        replicas = self._check_replicas(sharded)
         for label, target in self.DATABASE_ROUTING.items():
-            if target in self.SHARDS or (target in sql and target not in sharded):
+            if target in self.SHARDS or (
+                target in sql and target not in sharded and target not in replicas
+            ):
                 continue
             raise ValueError(
                 f"DATABASE_ROUTING[{label!r}] = {target!r} must name a shard group "
-                "or a SQL alias outside the shard groups"
+                "or a SQL alias outside the shard groups that is not a replica"
             )
 
     def _check_i18n(self) -> None:
@@ -633,6 +638,30 @@ class Settings(BaseModel):
                 f"TIME_ZONE {self.TIME_ZONE!r} is not a time zone, such as "
                 "'Africa/Cairo' or 'UTC' (install tzdata if the system has none)"
             ) from None
+
+    def _check_replicas(self, sharded: Mapping[str, str]) -> dict[str, str]:
+        """Each replica is another alias, of one primary, and nothing more.
+
+        A replica is not ``default``, in no shard group, and has no replicas
+        of its own, so nothing ever writes to or migrates it.
+        """
+        replicas: dict[str, str] = {}
+        for primary, config in self.DATABASES.items():
+            for alias in config.REPLICAS:
+                if alias not in self.DATABASES or alias in {primary, DEFAULT_DB_ALIAS}:
+                    raise ValueError(
+                        f"DATABASES[{primary!r}].REPLICAS: {alias!r} must be "
+                        f"another SQL alias in DATABASES, not {DEFAULT_DB_ALIAS!r}"
+                    )
+                if alias in replicas or alias in sharded:
+                    raise ValueError(
+                        f"{alias!r} is a replica of {primary!r}, so it cannot also "
+                        "be another's replica or in a shard group"
+                    )
+                if self.DATABASES[alias].REPLICAS:
+                    raise ValueError(f"replica {alias!r} cannot have REPLICAS")
+                replicas[alias] = primary
+        return replicas
 
     def deployment_warnings(self) -> list[str]:
         """Weak but valid choices in staging and production; ``check`` lists them.

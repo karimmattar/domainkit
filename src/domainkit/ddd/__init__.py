@@ -15,12 +15,20 @@ from domainkit.ddd.exceptions import (
     NotFound,
     PermissionDenied,
 )
+from domainkit.ddd.fields import Digits, InvalidQuery, MaxLength, UnknownField
 from domainkit.ddd.messages import Command, Query
 from domainkit.ddd.model import AggregateRoot, Entity, ValueObject
 from domainkit.ddd.pagination import Page
 from domainkit.ddd.personal import Personal
-from domainkit.ddd.repository import InMemoryRepository, Repository
-from domainkit.ddd.uow import DeferredTask, UnitOfWork
+from domainkit.ddd.query import Criteria, F, Ordering, RowLock, Specification
+from domainkit.ddd.repository import (
+    InMemoryRepository,
+    LockNotAvailable,
+    Repository,
+    RowLocks,
+    SoftDeletable,
+)
+from domainkit.ddd.uow import DeferredTask, ReadOnlyError, UnitOfWork
 
 __all__ = [
     "AggregateRoot",
@@ -28,21 +36,34 @@ __all__ = [
     "Command",
     "ConcurrentUpdate",
     "Conflict",
+    "Criteria",
     "DeferredTask",
+    "Digits",
     "DomainError",
     "DomainEvent",
     "DuplicateValue",
     "Entity",
     "EventBus",
     "EventHandler",
+    "F",
     "InMemoryRepository",
+    "InvalidQuery",
+    "LockNotAvailable",
+    "MaxLength",
     "NotFound",
+    "Ordering",
     "Page",
     "PermissionDenied",
     "Personal",
     "Query",
+    "ReadOnlyError",
     "Repository",
+    "RowLock",
+    "RowLocks",
+    "SoftDeletable",
+    "Specification",
     "UnitOfWork",
+    "UnknownField",
     "ValueObject",
     "event_bus",
 ]

@@ -1162,3 +1162,22 @@ def test_pages_read_one_row_more_and_track_what_they_load(auth_project: str) -> 
         event.remove(Engine, "before_cursor_execute", record)
     assert len(limits) == 2
     assert all(3 in each and 4 not in each for each in limits)
+
+
+def test_pages_continue_after_a_name_and_search(auth_project: str) -> None:
+    """``after`` and ``search`` narrow the users; groups page from the start."""
+    for name in ("amy", "bob", "cat"):
+        create_user(name)
+        make_group(name)
+
+    async def scenario() -> tuple[list[str], list[str], bool]:
+        async with AuthUnitOfWork() as uow:
+            users = await uow.users.page(limit=5, after="amy", search="B")
+            groups = await uow.groups.page(limit=2)
+        return (
+            [user.get_username() for user in users.items],
+            [group.name for group in groups.items],
+            groups.has_more,
+        )
+
+    assert run_async(scenario()) == (["bob"], ["amy", "bob"], True)
