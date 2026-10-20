@@ -1379,8 +1379,17 @@ def test_workers_wake_only_for_their_queues() -> None:
 
 @pytest.mark.usefixtures("tables")
 async def test_commits_wake_idle_workers() -> None:
-    """On PostgreSQL a commit wakes the listener; elsewhere it returns at once."""
+    """On PostgreSQL a commit wakes the listener; elsewhere it returns at once.
+
+    The listening connection never goes back to the pool: it is thrown away.
+    """
     worker = Worker(MessagingSettings(**{**FAST, "POLL_INTERVAL": 30}))
+    thrown_away: list[object] = []
+    event.listen(
+        worker.engine.sync_engine.pool,
+        "invalidate",
+        lambda *args: thrown_away.append(args[0]),
+    )
     stop, wake = asyncio.Event(), asyncio.Event()
     listening = asyncio.create_task(worker.listen(stop, wake))
     if not postgres():
@@ -1392,8 +1401,10 @@ async def test_commits_wake_idle_workers() -> None:
     wake.clear()
     await enqueue(remember, value=uuid.uuid4())
     await within(wake.wait())
+    assert thrown_away == []
     stop.set()
     await within(listening)
+    assert len(thrown_away) == 1
 
 
 @pytest.mark.usefixtures("tables")
