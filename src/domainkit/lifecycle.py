@@ -18,8 +18,9 @@ the start of the shutdown (``PHASE_ENDS``: 30%, 50%, 60%, 90%, then 100%),
 so time one phase does not use goes to the next, and every phase keeps its
 own share whatever the ones before it did. Inside a phase, a closer that
 fails or overruns is logged and the others still close: one hung item never
-keeps the rest open. Domain hooks run one after another, each within a fair
-share of what is left of their phase.
+keeps the rest open. Domain hooks run one after another, in reverse order;
+each may use what is left of their phase, less a little kept for each hook
+still to run.
 
 Other parts of the framework add their closers with ``register``::
 
@@ -44,6 +45,7 @@ from domainkit.conf.global_settings import Settings
 from domainkit.db.connections import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.ledger import ledgers
+from domainkit.utils.closing import forget_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +203,7 @@ async def _close_all(closers: Mapping[str, Closer], deadline: float) -> None:
     for name, task in running.items():
         if not task.done():
             task.cancel()
+            task.add_done_callback(forget_outcome)
             logger.error(
                 "Could not close the %s within the shutdown budget; closing the rest",
                 name,

@@ -287,11 +287,17 @@ it at once, and the database takes the whole load. `get_or_set` (and so
 `@cached`) prevents that in two ways:
 
 - **One computation per key per process.** Concurrent misses on the same
-  key wait for the first caller's result, also while the cache fails, when
-  every call is a miss. Each caller still gets its own copy, so no two
-  requests share a mutable object. If the first caller is cancelled, the
+  key wait for one computation, also while the cache fails, when every
+  call is a miss. Each caller still gets its own copy, so no two requests
+  share a mutable object. If the first caller is cancelled, the
   computation goes on for the others. Errors reach every waiting caller and
-  are never cached.
+  are never cached. The computation serves every caller, so it runs as
+  none of them: in a clean context, without the first caller's request,
+  actor, language, span, or `Idempotency-Key` (see
+  [runtime.md](runtime.md#clean-contexts)). A factory that needs one of
+  them takes it as an argument, and the key must hold it.
+  `@cache_page`, whose keys hold the user and the language, runs the
+  endpoint as the caller.
 - **Early refresh (XFetch).** Each entry records how long it took to
   compute. As its expiry nears, a read may decide, at random, to recompute
   it while everyone else still gets the old value. The chance rises as
@@ -303,9 +309,10 @@ it at once, and the database takes the whole load. `get_or_set` (and so
 With several replicas, each replica may still recompute a hot key once.
 That is the worst case, not one recomputation per request.
 
-Computations belong to their cache. At shutdown, caches close before
-databases, ledgers, and brokers, and closing one cancels the computations
-still running, so none outlives the connections it uses.
+Computations are background tasks of their event loop
+(`domainkit.tasks.spawn`). At shutdown they are cancelled before caches,
+databases, ledgers, and brokers close, so none outlives the connections it
+uses; closing a cache also cancels its own.
 
 ## When the cache fails
 

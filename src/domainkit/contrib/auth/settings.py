@@ -197,6 +197,12 @@ class AuthSettings(BaseModel):
     """
     HASHING_QUEUE: int = Field(default=8, ge=0)
     """Hashing calls that may wait for a thread; more get 503 at once."""
+    HASHING_RESERVED: int = Field(default=1, ge=0)
+    """Places of the queue kept for signed-in users changing their password.
+
+    Logins and other checks may fill the rest. More than ``HASHING_QUEUE``
+    counts as ``HASHING_QUEUE``.
+    """
     PASSWORD_VALIDATORS: tuple[PasswordValidatorConfig, ...] = (
         PasswordValidatorConfig(NAME=f"{VALIDATORS}.UserAttributeSimilarityValidator"),
         PasswordValidatorConfig(NAME=f"{VALIDATORS}.MinimumLengthValidator"),

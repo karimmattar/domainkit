@@ -393,8 +393,14 @@ Hashing is slow on purpose; `authenticate` and the repositories run it on
 the process's hashing threads (`HASHING_THREADS`), so the event loop never
 waits. At most `HASHING_QUEUE` calls wait for a thread. When the queue is
 full, a login, password change, or user creation answers
-`503 password_checks_busy` with `Retry-After: 1` at once, rather than
-queueing work the process cannot finish. Unknown usernames are hashed too,
+`503 password_checks_busy` at once, rather than queueing work the process
+cannot finish. Its `Retry-After` is the time the queue takes to drain, from
+how long hashes have taken, jittered up to half again so refused clients do
+not all return together (at least 1 s, at most 60 s). A call keeps its place
+until its hash is done, even when its client gives up, so the work in flight
+never exceeds the limits. `HASHING_RESERVED` places of the queue (1 by
+default) are kept for signed-in users changing their password and for staff
+setting one, so a flood of logins cannot lock them out. Unknown usernames are hashed too,
 so response times do not reveal which exist. Raise the limits on processes
 with cores to spare; `LOGIN_RATE` limits each client and username, these
 limit the process. They keep the rest of the API responsive during a login
@@ -1159,6 +1165,7 @@ changed what.
 | `PASSWORD_HASHERS` | PBKDF2, PBKDF2-SHA1, Argon2, scrypt | Hasher classes; the first hashes new passwords. |
 | `HASHING_THREADS` | `1` | Threads per process that hash passwords; each keeps a core busy. One, like a Django worker, so with a process per core hashing never takes the event loops' cores. |
 | `HASHING_QUEUE` | `8` | Hashing calls that may wait for a thread (about 0.4 s each); more answer `503 password_checks_busy`. |
+| `HASHING_RESERVED` | `1` | Places of `HASHING_QUEUE` kept for `POST /auth/password` and the admin's password change; other calls are refused once the rest are taken. More than `HASHING_QUEUE` counts as `HASHING_QUEUE`. |
 | `PASSWORD_VALIDATORS` | the four above | Rules for new passwords; `[]` checks nothing. |
 | `BACKENDS` | `["domainkit.contrib.auth.backends.ModelBackend"]` | Authentication and permission backends, in order. |
 | `AUTHENTICATION_CLASSES` | `["domainkit.contrib.auth.authentication.TokenAuthentication"]` | How requests prove who sent them, in order; the first issues login tokens. |

@@ -3,8 +3,12 @@
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Sequence
+from typing import Any, Final
 
 logger = logging.getLogger(__name__)
+
+RESERVED_SHARE: Final = 0.25
+"""The part of ``close_in_turn``'s time kept back for the items still to close."""
 
 
 async def close_each[T](
@@ -16,7 +20,7 @@ async def close_each[T](
     The first failure in ``items`` order is raised and later ones are
     logged, since only one can be raised. If the wait is cancelled (a
     deadline passed), the items still closing are named in the log and
-    cancelled, and the cancellation goes on.
+    cancelled, those that failed are logged, and the cancellation goes on.
     """
     items = list(items)
 
@@ -32,7 +36,10 @@ async def close_each[T](
         for item, task in zip(items, closing, strict=True):
             if not task.done():
                 task.cancel()
+                task.add_done_callback(forget_outcome)
                 logger.error("Gave up closing %r", item)
+            elif not task.cancelled() and (exc := task.exception()) is not None:
+                logger.error("Could not close %r", item, exc_info=exc)
         raise
     _raise_first(
         items,
@@ -51,16 +58,19 @@ async def close_in_turn[T](
 ) -> None:
     """Close the items one after another, in order; then raise the first failure.
 
-    With ``within``, the items share that many seconds: each may take what
-    is left divided by the items left, so time one does not use goes to the
-    rest, and one that hangs is cut off (``TimeoutError``) without taking
-    the others' share. Every item is tried; later failures are logged.
+    With ``within``, the items share that many seconds. Each may take what
+    is left, less a reserve kept for every item after it (a quarter of
+    ``within``, split among the items), so one slow close may use most of
+    the time while one that hangs is cut off (``TimeoutError``) before the
+    others' reserves. Every item is tried; later failures are logged.
     """
     loop = asyncio.get_running_loop()
     end = None if within is None else loop.time() + within
+    reserve = 0.0 if within is None else within * RESERVED_SHARE / max(len(items), 1)
     failures: list[BaseException | None] = []
     for done, item in enumerate(items):
-        share = None if end is None else (end - loop.time()) / (len(items) - done)
+        after = len(items) - done - 1
+        share = None if end is None else end - loop.time() - reserve * after
         try:
             async with asyncio.timeout(share) as limit:
                 await close(item)
@@ -73,6 +83,12 @@ async def close_in_turn[T](
         else:
             failures.append(None)
     _raise_first(items, failures)
+
+
+def forget_outcome(task: "asyncio.Future[Any]") -> None:
+    """Retrieve how a task given up on ended, so asyncio does not log it."""
+    if not task.cancelled():
+        task.exception()
 
 
 def _raise_first[T](

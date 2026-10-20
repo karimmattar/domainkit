@@ -15,20 +15,26 @@ unsealed.
 
 Rows are sealed after they commit, by the worker every ``AUDIT.SEAL_EVERY``
 or by ``auditseal``, so a row can be rewritten unnoticed until it is sealed
-and its head anchored. Sealing looks back ``LOOKBACK`` before the newest
-sealed row for rows that committed late; a row that committed later still
-stays unsealed, and ``verify`` says so.
+and its head anchored. The newest sealed row is the high-water mark: a run
+looks for unsealed rows from ``AUDIT.SEAL_LATE_WINDOW`` before it, for rows
+that committed late, then on from the last row it sealed, so a run costs
+what is new plus that window, however long the trail. A row that committed
+later still stays unsealed, and ``verify`` says so once it is ``LOOKBACK``
+old. A run seals ``AUDIT.SEAL_BATCHES`` batches at most; what is left waits
+for the next run, and is counted (``audit_unsealed_rows``) and logged when
+it passes ``AUDIT.SEAL_BACKLOG_WARNING``.
 """
 
 import hashlib
 import json
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 from uuid import UUID
 
-from sqlalchemy import func, insert, select, text
+from sqlalchemy import Select, func, insert, literal, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from domainkit import clock
@@ -36,16 +42,39 @@ from domainkit.apps import registry
 from domainkit.db import connections
 from domainkit.ledger import Ledger, LedgerKeyNotFound, ledgers
 
-from .personal import audited_databases
+from .personal import audited_databases, prepare_anonymous_keys
 from .settings import AuditSettings
 from .tables import audit_log, audit_seals
+
+try:
+    from prometheus_client import Gauge
+except ImportError:  # pragma: no cover - only without the [metrics] extra.
+
+    def _observe_backlog(database: str, rows: int) -> None:
+        """Record nothing: ``prometheus_client`` is not installed."""
+
+else:
+    UNSEALED: Final = Gauge(
+        "audit_unsealed_rows",
+        "Audit rows a sealing run left for the next one (0: it caught up).",
+        ["database"],
+    )
+
+    def _observe_backlog(database: str, rows: int) -> None:
+        """Set the backlog gauge of ``database``."""
+        UNSEALED.labels(database).set(rows)
+
+
+logger = logging.getLogger(__name__)
 
 GENESIS: Final = "0" * 64
 """The link before the first seal."""
 LOOKBACK: Final = timedelta(days=1)
-"""How long before the newest sealed row sealing looks for late rows."""
+"""Rows this much older than now without a seal count as unsealed (``verify``)."""
 BATCH: Final = 1000
 """Rows sealed per transaction."""
+BACKLOG_COUNT_LIMIT: Final = 1_000_000
+"""Counting a backlog stops here: past it, the gauge reads this much."""
 COLUMNS: Final = (
     "id",
     "occurred_at",
@@ -146,17 +175,54 @@ def anchor_key(database: str) -> bytes:
     return f"domainkit/audit/{database}".encode()
 
 
-async def seal(database: str, *, batch: int = BATCH) -> int:
-    """Seal the rows of ``database``'s trail not sealed yet; count them."""
+async def seal(
+    database: str,
+    *,
+    batch: int = BATCH,
+    batches: int | None = None,
+    late_window: timedelta | None = None,
+) -> int:
+    """Seal the rows of ``database``'s trail not sealed yet; count them.
+
+    At most ``batches`` transactions of ``batch`` rows (default:
+    ``AUDIT.SEAL_BATCHES``); late rows are looked for ``late_window``
+    before the newest sealed row (default: ``AUDIT.SEAL_LATE_WINDOW``).
+    """
+    config = registry.settings(AuditSettings)
+    batches = config.SEAL_BATCHES if batches is None else batches
+    late_window = config.SEAL_LATE_WINDOW if late_window is None else late_window
     sealed = 0
-    while True:
+    after: _Mark | None = None
+    for _ in range(batches):
         async with connections.engine(database).begin() as connection:
             if connection.dialect.name == "postgresql":
                 await connection.execute(_LOCK)  # One sealer per database.
-            rows = await _seal_batch(connection, batch)
+            rows, after = await _seal_batch(connection, batch, late_window, after)
         sealed += rows
         if rows < batch:
+            _observe_backlog(database, 0)
             return sealed
+    await _report_backlog(database, late_window, config.SEAL_BACKLOG_WARNING)
+    return sealed
+
+
+async def unsealed_backlog(database: str, late_window: timedelta) -> int:
+    """Rows sealing would still seal now: unsealed, within reach of the window.
+
+    Counted up to ``BACKLOG_COUNT_LIMIT``.
+    """
+    async with connections.engine(database).connect() as connection:
+        head = await _head(connection)
+        waiting = _unsealed_rows().with_only_columns(audit_log.c.id)
+        horizon = await _horizon(connection, head, clock.now(), late_window)
+        if horizon is not None:
+            waiting = waiting.where(audit_log.c.occurred_at >= horizon)
+        count = await connection.scalar(
+            select(func.count()).select_from(
+                waiting.limit(BACKLOG_COUNT_LIMIT).subquery()
+            )
+        )
+    return int(count or 0)
 
 
 async def anchor(
@@ -190,10 +256,16 @@ async def anchor(
 
 
 async def seal_all() -> dict[str, tuple[int, Anchor | None]]:
-    """Seal, then anchor, every audited database; what each one got."""
+    """Seal, then anchor, every audited database; what each one got.
+
+    First it makes the keys of today's and tomorrow's anonymous callers, so
+    at midnight no audited request waits for another's insert of the day's
+    key (see ``prepare_anonymous_keys``).
+    """
     config = registry.settings(AuditSettings)
     done: dict[str, tuple[int, Anchor | None]] = {}
     for database in audited_databases():
+        await prepare_anonymous_keys(database)
         sealed = await seal(database)
         anchored = None
         if config.LEDGER is not None:
@@ -258,20 +330,39 @@ async def verify(
     return report
 
 
-async def _seal_batch(connection: AsyncConnection, batch: int) -> int:
-    """Seal up to ``batch`` rows after the head, oldest first."""
+type _Mark = tuple[datetime, UUID]
+"""A row's place in sealing order: ``(occurred_at, id)``."""
+
+
+async def _seal_batch(
+    connection: AsyncConnection,
+    batch: int,
+    late_window: timedelta,
+    after: _Mark | None,
+) -> tuple[int, _Mark | None]:
+    """Seal up to ``batch`` rows after the head, oldest first; where it stopped.
+
+    The first batch of a run looks from ``late_window`` before the head's
+    row; the next ones from the last row sealed (``after``), since every
+    unsealed row before it was sealed by then.
+    """
     head = await _head(connection)
     sealed_at = clock.now()
-    horizon = await _horizon(connection, head, sealed_at)
-    unsealed = (
-        select(*(audit_log.c[name] for name in COLUMNS))
-        .outerjoin(audit_seals, audit_seals.c.entry_id == audit_log.c.id)
-        .where(audit_seals.c.entry_id.is_(None))
-        .order_by(audit_log.c.occurred_at, audit_log.c.id)
-        .limit(batch)
-    )
-    if horizon is not None:
-        unsealed = unsealed.where(audit_log.c.occurred_at >= horizon)
+    unsealed = _unsealed_rows().limit(batch)
+    if after is not None:
+        occurred_at, entry_id = after
+        place = tuple_(audit_log.c.occurred_at, audit_log.c.id)
+        unsealed = unsealed.where(
+            place
+            > tuple_(
+                literal(occurred_at, audit_log.c.occurred_at.type),
+                literal(entry_id, audit_log.c.id.type),
+            )
+        )
+    else:
+        horizon = await _horizon(connection, head, sealed_at, late_window)
+        if horizon is not None:
+            unsealed = unsealed.where(audit_log.c.occurred_at >= horizon)
     rows = (await connection.execute(unsealed)).mappings().all()
     previous = head or Head(0, GENESIS)
     seals = []
@@ -287,9 +378,34 @@ async def _seal_batch(connection: AsyncConnection, batch: int) -> int:
                 "sealed_at": sealed_at,
             }
         )
-    if seals:
-        await connection.execute(insert(audit_seals), seals)
-    return len(seals)
+    if not seals:
+        return 0, after
+    await connection.execute(insert(audit_seals), seals)
+    return len(seals), (rows[-1]["occurred_at"], rows[-1]["id"])
+
+
+def _unsealed_rows() -> Select[Any]:
+    """Rows of the trail without a seal, in sealing order."""
+    return (
+        select(*(audit_log.c[name] for name in COLUMNS))
+        .outerjoin(audit_seals, audit_seals.c.entry_id == audit_log.c.id)
+        .where(audit_seals.c.entry_id.is_(None))
+        .order_by(audit_log.c.occurred_at, audit_log.c.id)
+    )
+
+
+async def _report_backlog(database: str, late_window: timedelta, warn: int) -> None:
+    """Count what a run that hit its bound left; warn past ``warn`` rows."""
+    left = await unsealed_backlog(database, late_window)
+    _observe_backlog(database, left)
+    if left > warn:
+        logger.warning(
+            "Audit sealing of %r is behind: %d rows wait to be sealed. Raise "
+            "AUDIT.SEAL_BATCHES or seal more often; until sealed, rows can "
+            "be changed unnoticed",
+            database,
+            left,
+        )
 
 
 async def _head(connection: AsyncConnection) -> Head | None:
@@ -305,12 +421,16 @@ async def _head(connection: AsyncConnection) -> Head | None:
 
 
 async def _horizon(
-    connection: AsyncConnection, head: Head | None, now: datetime
+    connection: AsyncConnection,
+    head: Head | None,
+    now: datetime,
+    late_window: timedelta,
 ) -> datetime | None:
-    """Where to look for unsealed rows: ``LOOKBACK`` before the head's row.
+    """Where to look for unsealed rows: ``late_window`` before the head's row.
 
-    A head's row dated after ``now`` (a clock running ahead) counts as
-    ``now``, so it cannot leave the rows written before it unsealable.
+    The head's row, the last one sealed, is the high-water mark. One dated
+    after ``now`` (a clock running ahead) counts as ``now``, so it cannot
+    leave the rows written before it unsealable.
     """
     if head is None:
         return None
@@ -319,7 +439,7 @@ async def _horizon(
         .join(audit_seals, audit_seals.c.entry_id == audit_log.c.id)
         .where(audit_seals.c.seq == head.seq)
     )
-    return None if newest is None else min(newest, now) - LOOKBACK
+    return None if newest is None else min(newest, now) - late_window
 
 
 async def _unsealed(connection: AsyncConnection, now: datetime) -> int:

@@ -6,6 +6,76 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `domainkit.tasks`: `spawn(coro, name=...)` starts a background task in a
+  clean context, keeps it, logs its failure once (`tasks_failed_total`),
+  and stops it at shutdown; `supervise(factory, name=...)` restarts work
+  that crashes, after a jittered backoff, until shutdown
+  (`tasks_restarted_total`). Each event loop owns its tasks, and a closed
+  loop is never kept alive by them (`docs/runtime.md`; ADR 0045).
+- `SHUTDOWN_TIMEOUT` (15 s): one budget for the whole shutdown, split into
+  phases (domain hooks, work in flight, background tasks, connections, and
+  a final flush), each with a share no other phase can take.
+  `lifecycle.register(name, close, phase=...)` adds closers, and
+  management commands run them too (R22, N13; ADR 0046).
+- `EVENT_HANDLER_TIMEOUT` (10 s), and `event_bus.subscribe(..., timeout=...)`
+  per handler: an in-process handler still running then is cancelled,
+  logged, and reported as `HandlerTimedOut`, and the request goes on
+  (ASYNC-26).
+- `AUDIT.SEAL_LATE_WINDOW`, `AUDIT.SEAL_BATCHES`, and
+  `AUDIT.SEAL_BACKLOG_WARNING`, and the `audit_unsealed_rows` gauge: a
+  sealing run is bounded, and a backlog is counted and logged (N6).
+- `AUTH.HASHING_RESERVED` (1): places of the hashing queue kept for
+  signed-in users changing their password and staff setting one, so a
+  flood of logins cannot lock them out; `acheck_password`, `amake_password`,
+  and `UserRepository.set_password` take `priority=True` (N7).
+- `docs/runtime.md`: how domainkit runs async work.
+
+### Changed
+
+- Background work runs in a clean context: a `get_or_set` (or `@cached`)
+  computation, a readiness round, and settling an `Idempotency-Key` no
+  longer carry the first caller's request, actor, language, span, or key
+  (FX-03, N2). A cached factory that read `current_request()` or the active
+  language must now take them as arguments, in the key. `@cache_page` still
+  runs the endpoint as the caller, whose user and language its key holds.
+- Resource kinds, and the items of each kind, close at once at shutdown, so
+  one that hangs keeps no other open; domain shutdown hooks run within a
+  share of the budget, and one that overruns is cut off with a
+  `TimeoutError` naming it. `DomainRegistry.lifespan` takes `stop_within`.
+- `/ready` checks domains, databases, ledgers, and caches at once: a round
+  takes one `READINESS_TIMEOUT` at worst, not four (ASYNC-16).
+- Audit sealing looks for late rows `AUDIT.SEAL_LATE_WINDOW` (15 minutes)
+  before the newest sealed row instead of a day, so its cost follows what
+  is new, not how long the trail is: sealing 10 rows after 320k sealed over
+  a day went from 493 to 15 ms on SQLite (FX-04, N6; ADR 0047). A row that
+  commits later than the window stays unsealed, and `auditverify` reports
+  it; raise the window if your transactions run that long. The chain and
+  `auditverify` are unchanged.
+- A refused password check's `Retry-After` is the time the hashing queue
+  takes to drain, jittered, from 1 to 60 seconds, instead of always 1.
+
+### Fixed
+
+- A keyed request cancelled by a cancel scope (anyio's level-triggered
+  cancellation) or a deadline kept its `Idempotency-Key` until the lease
+  ran out, since its release was cancelled too. The response is now stored,
+  or the key released, in a task of its own, within 5 seconds (R03).
+- Without messaging, concurrent claims of new idempotency keys queued on one
+  another's purge of the same expired keys; the purge now skips keys
+  another request is deleting (`SKIP LOCKED` on PostgreSQL) (N14).
+- At midnight UTC, every anonymous audited request waited for the first
+  one's insert of the new day's pseudonym key. Sealing now makes the keys
+  of today and tomorrow ahead of time, in a transaction of its own (N10).
+- A password check whose caller was cancelled freed its place in the
+  hashing pool while its thread still hashed, so the work in flight could
+  exceed `HASHING_THREADS + HASHING_QUEUE`; a call now keeps its place
+  until its hash is done (N7).
+- After a lull, the in-memory rate limiter forgot every idle caller in one
+  request: 100,000 of them cost that request 32 ms. It forgets at most 64
+  per request now (IND-RL).
+
 ## [0.7.0] - 2026-10-20
 
 ### Added

@@ -10,12 +10,16 @@ and runs (see ``operations``). A client that disconnects before sending its
 whole body claims no key and runs nothing.
 
 A request that fails or is refused (a 4xx) before committing anything, or
-that raises, releases its key, so it can be retried. Once a SQL unit of
-work commits during the request, the key is never released (see
-``operations``): if the response cannot be kept (a server error after the
-commit, an exception, a body over ``MAX_RESPONSE_BYTES``, or one marked
-``Cache-Control: no-store``, such as new tokens), a retry gets a 409
-``idempotency_response_unavailable`` instead of running the changes again.
+that raises, releases its key, so it can be retried. The response is stored,
+or the key released, in a task of its own within ``SETTLE_TIMEOUT``, so a
+request cancelled meanwhile (its client gone, a deadline, a cancel scope)
+still lets go of its key instead of holding it until the lease runs out.
+Once a SQL unit of work commits during the request, the key is never
+released (see ``operations``): if the response cannot be kept (a server
+error after the commit, an exception, a body over ``MAX_RESPONSE_BYTES``,
+or one marked ``Cache-Control: no-store``, such as new tokens), a retry
+gets a 409 ``idempotency_response_unavailable`` instead of running the
+changes again.
 Only commits through a unit of work are seen: call payment providers and
 other services from deferred tasks, not from the handler.
 
@@ -28,7 +32,9 @@ List the middleware after ``RequestContextMiddleware`` and
 ``RequestBodyLimitMiddleware`` (it reads the whole body).
 """
 
+import asyncio
 import hashlib
+import logging
 import secrets
 from datetime import datetime, timedelta
 from typing import Any, Final
@@ -44,14 +50,24 @@ from domainkit.apps import registry
 from domainkit.context import current_request
 from domainkit.db import connections
 from domainkit.http.errors import error_response
+from domainkit.tasks import spawn
 
 from .operations import Operation, run_operation
 from .settings import IdempotencySettings
 from .tables import idempotency_keys
 
+logger = logging.getLogger(__name__)
+
 MESSAGING: Final = "domainkit.contrib.messaging"
 PURGE_BATCH: Final = 100
-"""Expired keys deleted with each claim when no worker purges them hourly."""
+"""Expired keys deleted with each claim when no worker purges them hourly.
+
+Rows another claim is deleting are skipped (``SKIP LOCKED`` on PostgreSQL),
+so concurrent claims never queue behind one another's purge.
+"""
+SETTLE_TIMEOUT: Final = 5.0
+"""Seconds to store a response or release a key, whatever befalls the request."""
+SETTLE_TASK: Final = "domainkit.idempotency.settle"
 HEADER: Final = "idempotency-key"
 REPLAYED: Final = "Idempotent-Replayed"
 _STORED_HEADERS: Final = frozenset({"content-type", "location", "content-language"})
@@ -125,10 +141,15 @@ class IdempotencyMiddleware:
                 )
             )
             if not registry.is_installed(MESSAGING):  # No hourly purge: sweep a few.
-                oldest = select(idempotency_keys.c.key_hash).where(expired)
+                oldest = (
+                    select(idempotency_keys.c.key_hash)
+                    .where(expired)
+                    .limit(PURGE_BATCH)
+                    .with_for_update(skip_locked=True)
+                )
                 await connection.execute(
                     delete(idempotency_keys).where(
-                        idempotency_keys.c.key_hash.in_(oldest.limit(PURGE_BATCH))
+                        idempotency_keys.c.key_hash.in_(oldest.scalar_subquery())
                     )
                 )
         try:
@@ -255,7 +276,7 @@ class IdempotencyMiddleware:
             try:
                 await self.app(scope, receive, capture)
             except BaseException:
-                await _finish(config, operation, started, None)
+                await _settle(config, operation, started, None)
                 raise
         code = started.get("status", status.HTTP_500_INTERNAL_SERVER_ERROR)
         kept = (
@@ -263,7 +284,56 @@ class IdempotencyMiddleware:
             and size <= config.MAX_RESPONSE_BYTES
             and not _no_store(started)
         )
-        await _finish(config, operation, started, b"".join(chunks) if kept else None)
+        await _settle(config, operation, started, b"".join(chunks) if kept else None)
+
+
+async def _settle(
+    config: IdempotencySettings,
+    operation: Operation,
+    started: dict[str, Any],
+    body: bytes | None,
+) -> None:
+    """``_finish`` in a task of its own, bounded by ``SETTLE_TIMEOUT``, and wait.
+
+    The task is shielded from this request: cancelled here, even by a
+    cancel scope that cancels every wait, the request leaves at once and
+    the task still stores the response or releases the key, then logs what
+    went wrong, since no one is left to raise it to. (``asyncio.wait``
+    rather than ``asyncio.shield``, which on Python 3.14 logs that failure
+    a second time.)
+    """
+    task = spawn(
+        _finish_within(config, operation, started, body),
+        name=SETTLE_TASK,
+        log_errors=False,
+    )
+    try:
+        await asyncio.wait([task])
+    except asyncio.CancelledError:
+        task.add_done_callback(_log_unsettled)
+        raise
+    task.result()  # Its failure, raised to the request.
+
+
+async def _finish_within(
+    config: IdempotencySettings,
+    operation: Operation,
+    started: dict[str, Any],
+    body: bytes | None,
+) -> None:
+    """``_finish``, given up after ``SETTLE_TIMEOUT``: the lease then applies."""
+    async with asyncio.timeout(SETTLE_TIMEOUT):
+        await _finish(config, operation, started, body)
+
+
+def _log_unsettled(task: asyncio.Task[None]) -> None:
+    """Log why a cancelled request's key could not be settled, if it could not."""
+    if not task.cancelled() and (exc := task.exception()) is not None:
+        logger.error(
+            "Could not store the response of a cancelled request or release its "
+            "Idempotency-Key; the key is held until its lease runs out",
+            exc_info=exc,
+        )
 
 
 async def _finish(

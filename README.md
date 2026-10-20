@@ -45,6 +45,9 @@ pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, m
   resource routes, commands and queries, derived schemas, partial changes,
   ETags and conditional writes, field policies, nesting, the generators,
   and the generic admin
+- [docs/runtime.md](https://github.com/karimmattar/domainkit/blob/main/docs/runtime.md): how async work runs:
+  background tasks, clean contexts, the shutdown budget, readiness, and
+  event-handler timeouts
 - [docs/cache.md](https://github.com/karimmattar/domainkit/blob/main/docs/cache.md): caches in memory, Redis, and Valkey,
   and shared rate limits
 - [docs/contrib.md](https://github.com/karimmattar/domainkit/blob/main/docs/contrib.md): messaging (and workers on RabbitMQ),

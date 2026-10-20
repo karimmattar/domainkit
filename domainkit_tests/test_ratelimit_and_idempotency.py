@@ -1,11 +1,14 @@
 """Rate limiting and Idempotency-Key replay."""
 
 import asyncio
+import logging
+import os
 import secrets
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
+import anyio
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Table, false, insert, select
@@ -26,16 +29,22 @@ from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.http.ratelimit import (
+    EVICTIONS_PER_HIT,
     Decision,
     MemoryBackend,
     RateLimitMiddleware,
     _caller,
     client_group,
 )
+from domainkit.tasks import owned, shutdown
 from domainkit.utils.rates import parse_rate
 from domainkit_tests import sample_routes
+from domainkit_tests.conftest import POSTGRES_VARIABLE
 from domainkit_tests.test_http import headerless, started
 
+postgres_only = pytest.mark.skipif(
+    not os.environ.get(POSTGRES_VARIABLE), reason=f"set {POSTGRES_VARIABLE}"
+)
 BASE_MIDDLEWARE = [
     "domainkit.http.middleware.RequestContextMiddleware",
     "domainkit.http.middleware.RequestBodyLimitMiddleware",
@@ -126,6 +135,33 @@ def test_memory_backend_forgets_idle_callers() -> None:
     hit("f", 1, 1)
     # "e" refilled at this very moment: forgotten too.
     assert list(backend._callers) == ["f"]
+
+
+def test_memory_backend_forgets_a_crowd_of_idle_callers_a_few_at_a_time() -> None:
+    """After a lull, each request forgets at most ``EVICTIONS_PER_HIT`` (IND-RL)."""
+    clock = [0.0]
+    backend = MemoryBackend(clock=lambda: clock[0])
+    crowd = 3 * EVICTIONS_PER_HIT + 10
+
+    async def lull_then_hits() -> list[int]:
+        for caller in range(crowd):
+            await backend.hit(f"ip:{caller}", 300, 60)
+        clock[0] = 1000.0  # Every one of them is full again.
+        left = []
+        for _ in range(5):
+            await backend.hit("ip:new", 300, 60)
+            left.append(len(backend._callers))
+        return left
+
+    assert EVICTIONS_PER_HIT == 64
+    assert asyncio.run(lull_then_hits()) == [
+        crowd - 64 + 1,
+        crowd - 128 + 1,
+        crowd - 192 + 1,
+        1,
+        1,
+    ]
+    assert list(backend._callers) == ["ip:new"]
 
 
 def test_memory_backend_refills_callers_it_still_remembers() -> None:
@@ -1065,6 +1101,157 @@ def run_raw(app: ASGIApp, *incoming: Message) -> list[Message]:
         return sent
 
     return asyncio.run(scenario())
+
+
+KEYED_POST: Scope = {
+    "type": "http",
+    "method": "POST",
+    "path": "/raw",
+    "headers": [(b"idempotency-key", b"raw")],
+}
+
+
+async def receive_empty_body() -> Message:
+    """The body of a keyed POST: empty, in one message."""
+    return {"type": "http.request"}
+
+
+async def discard(message: Message) -> None:
+    """Send nowhere."""
+
+
+async def cancel_while_running(*, settle: bool = True) -> None:
+    """Send a keyed POST, then cancel it as anyio does, mid-request.
+
+    A cancelled cancel scope cancels every wait inside it until the scope
+    exits (level-triggered), the cleanup's too. With ``settle``, wait for
+    the key's own task to finish afterwards.
+    """
+    running = asyncio.Event()
+
+    async def handler(scope: Scope, receive: Receive, send: Send) -> None:
+        running.set()
+        await asyncio.Event().wait()
+
+    async with anyio.create_task_group() as group:
+        group.start_soon(
+            idempotency.IdempotencyMiddleware(handler),
+            KEYED_POST,
+            receive_empty_body,
+            discard,
+        )
+        await running.wait()
+        group.cancel_scope.cancel()
+    if settle and (settling := owned()):
+        await asyncio.wait(settling, timeout=5)
+
+
+@pytest.mark.usefixtures("idempotent")
+def test_a_request_cancelled_by_a_cancel_scope_releases_its_key() -> None:
+    """Its key is free for a retry at once, not after the lease (R03)."""
+
+    async def scenario() -> None:
+        await cancel_while_running()
+        await connections.close_all()
+
+    asyncio.run(scenario())
+    assert stored_keys() == []
+
+
+@pytest.mark.parametrize("failure", ["raises", "hangs"])
+@pytest.mark.usefixtures("idempotent")
+def test_a_key_a_cancelled_request_could_not_settle_is_logged(
+    failure: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """No one is left to raise to, so the failure is logged; the lease applies."""
+
+    async def finish(*args: object) -> None:
+        await asyncio.sleep(0)
+        if failure == "raises":
+            raise RuntimeError("database gone")
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(idempotency, "_finish", finish)
+    monkeypatch.setattr(idempotency, "SETTLE_TIMEOUT", 0.01)
+
+    async def scenario() -> None:
+        await cancel_while_running()
+        await asyncio.sleep(0)  # Done callbacks run on the next loop pass.
+        await connections.close_all()
+
+    with caplog.at_level(logging.ERROR, "domainkit.contrib.idempotency"):
+        asyncio.run(scenario())
+
+    (record,) = caplog.records
+    assert record.getMessage().startswith("Could not store the response of a cancelled")
+    assert record.exc_info
+    expected = RuntimeError if failure == "raises" else TimeoutError
+    assert type(record.exc_info[1]) is expected
+    assert len(stored_keys()) == 1  # Held until its lease runs out.
+
+
+@pytest.mark.usefixtures("idempotent")
+def test_a_key_left_settling_at_shutdown_is_stopped_quietly(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Shutdown cancels the settling task like any other, within its budget."""
+
+    async def finish(*args: object) -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(idempotency, "_finish", finish)
+
+    async def scenario() -> list[str]:
+        await cancel_while_running(settle=False)
+        (settling,) = owned()
+        assert settling.get_name() == "domainkit.idempotency.settle"
+        stuck = await shutdown(asyncio.get_running_loop().time() + 5)
+        await asyncio.sleep(0)
+        await connections.close_all()
+        return stuck
+
+    with caplog.at_level(logging.ERROR, "domainkit.contrib.idempotency"):
+        assert asyncio.run(scenario()) == []
+    assert caplog.records == []
+
+
+@postgres_only
+def test_claims_skip_the_expired_keys_another_claim_is_purging(
+    idempotent: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without a worker, concurrent claims do not queue on one purge (N14)."""
+    gone = datetime.now(UTC) - timedelta(seconds=1)
+    for key in ("old-1", "old-2"):
+        plant(key, expires_at=gone)
+    monkeypatch.setattr(idempotency, "MESSAGING", "not.installed")
+
+    async def created(scope: Scope, receive: Receive, send: Send) -> None:
+        await send({"type": "http.response.start", "status": 201, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    async def scenario() -> list[Message]:
+        sent: list[Message] = []
+
+        async def send(message: Message) -> None:
+            sent.append(message)
+
+        async with connections.engine().connect() as purging:
+            await purging.begin()
+            await purging.execute(
+                select(idempotency_keys)
+                .where(idempotency_keys.c.expires_at < datetime.now(UTC))
+                .with_for_update()
+            )
+            async with asyncio.timeout(5):  # Without SKIP LOCKED: waits for ever.
+                await idempotency.IdempotencyMiddleware(created)(
+                    KEYED_POST, receive_empty_body, send
+                )
+            await purging.rollback()
+        await connections.close_all()
+        return sent
+
+    assert asyncio.run(scenario())[0]["status"] == 201
+    assert len(stored_keys()) == 3  # The two expired keys, locked, and "raw".
 
 
 async def clear_keys() -> None:

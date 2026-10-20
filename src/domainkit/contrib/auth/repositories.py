@@ -183,12 +183,19 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
             fields.setdefault("is_staff", True)
         return await self.create_user(username, password, **fields)
 
-    async def set_password(self, user: AbstractBaseUser, password: str | None) -> None:
-        """Hash and store a new password; None makes it unusable."""
+    async def set_password(
+        self, user: AbstractBaseUser, password: str | None, *, priority: bool = False
+    ) -> None:
+        """Hash and store a new password; None makes it unusable.
+
+        ``priority`` hashes in the places ``AUTH.HASHING_RESERVED`` keeps,
+        for signed-in users changing a password.
+        """
         if password is None:
             user.set_unusable_password()
         else:
-            user.set_password(PasswordHash(await amake_password(password)))
+            hashed = await amake_password(password, priority=priority)
+            user.set_password(PasswordHash(hashed))
 
     def listing(self, search: str | None = None) -> Query:
         """Users by username; ``search`` keeps those whose name contains it."""
