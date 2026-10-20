@@ -1,0 +1,1 @@
+"""Adapters of the shop domain: persistence and other I/O."""

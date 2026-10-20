@@ -1,0 +1,48 @@
+"""Tables of the shop domain, derived from the model and mapped onto it.
+
+``table_for`` reads each class's fields, so a field is declared once and the
+model stays free of SQLAlchemy. Notes are child entities: their table holds
+the foreign key, and they load, save, and go with the product.
+"""
+
+from sqlalchemy import Column, ForeignKey, Index
+
+from domainkit.db import children, map_imperatively, table_for
+from gen.shop.domain.model import Category, Product, ProductNote
+
+products = table_for(
+    Product,
+    "shop_products",
+    Index("ix_shop_products_name_id", "name", "id"),  # Listings by name.
+    domain="shop",
+)
+product_notes = table_for(
+    ProductNote,
+    "shop_products_notes",
+    Column(
+        "product_id",
+        ForeignKey("shop_products.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    ),
+    domain="shop",
+)
+
+
+def start_mappers() -> None:
+    """Map the aggregates and their children onto their tables (idempotent)."""
+    map_imperatively(ProductNote, product_notes)
+    map_imperatively(
+        Product,
+        products,
+        properties={
+            "notes": children(
+                ProductNote,
+                order_by=[product_notes.c.added_at, product_notes.c.id],
+            )
+        },
+    )
+    map_imperatively(Category, categories)
+
+
+categories = table_for(Category, "shop_categories", domain="shop")

@@ -1,0 +1,37 @@
+"""``EveryCategory``: its handler, and its route."""
+
+import pytest
+from gen.shop.application import queries
+from gen.shop.application.queries import EveryCategory
+
+from domainkit.testing import TestClient
+
+from .fakes import FakeShopUnitOfWork, new_category, new_category_request
+
+URL = "/api/v1/shop/categories"
+
+
+@pytest.mark.anyio
+async def test_every_category_finds_what_it_asks_for() -> None:
+    """The category that matches the query is found."""
+    uow = FakeShopUnitOfWork()
+    category = new_category()
+    async with uow:
+        await uow.categories.add(category)
+        await uow.commit()
+
+    found = await queries.every_category(EveryCategory(), uow)
+
+    assert found == [category]
+
+
+def test_every_category_route(admin_client: TestClient) -> None:
+    """``GET /every`` answers the query's categories."""
+    created = admin_client.post(URL, json=new_category_request())
+    assert created.status_code == 201, created.json()
+    body = created.json()
+
+    answer = admin_client.get(f"{URL}/every")
+
+    assert answer.status_code == 200, answer.json()
+    assert [each["id"] for each in answer.json()["items"]] == [body["id"]]

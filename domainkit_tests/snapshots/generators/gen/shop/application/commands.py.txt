@@ -1,0 +1,71 @@
+"""Requests to change products, built by the API from validated input."""
+
+from datetime import datetime
+from decimal import Decimal
+from uuid import UUID
+
+from domainkit.ddd import UNSET, Command, Unset
+
+
+class CreateProduct(Command):
+    """Create a product called ``name``, owned by ``owner_id``."""
+
+    name: str
+    owner_id: UUID
+
+
+class UpdateProduct(Command):
+    """Change what was sent of a product; the rest stays (``PATCH``)."""
+
+    product_id: UUID
+    name: str | Unset = UNSET
+
+
+class ArchiveProduct(Command):
+    """Make a product read-only."""
+
+    product_id: UUID
+
+
+class AddProductNote(Command):
+    """Add a note to a product."""
+
+    product_id: UUID
+    text: str
+
+
+class DeleteProduct(Command):
+    """Delete a product and its notes."""
+
+    product_id: UUID
+
+
+class CreateCategory(Command):
+    """Create a category."""
+
+    title: str
+    parent: UUID | None = None
+    price: Decimal
+
+
+class DeleteCategory(Command):
+    """Delete a category."""
+
+    category_id: UUID
+
+
+class PublishProduct(Command):
+    """Publish a product."""
+
+    product_id: UUID
+    at: datetime
+    note: str | None = None
+
+
+class RetitleCategory(Command):
+    """Retitle a category."""
+
+    category_id: UUID
+    title: str
+    parent: UUID | None = None
+    rank: int

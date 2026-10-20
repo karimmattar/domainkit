@@ -1,0 +1,107 @@
+"""Unit tests of the Product aggregate: no I/O, no framework."""
+
+from uuid import uuid4
+
+import pytest
+from gen.shop.domain.events import (
+    ProductArchived,
+    ProductCreated,
+    ProductDeleted,
+    ProductNoteAdded,
+    ProductRenamed,
+)
+from gen.shop.domain.model import (
+    NAME_LENGTH,
+    InvalidProductName,
+    OwnerId,
+    Product,
+    ProductIsArchived,
+    ProductName,
+)
+
+OWNER = OwnerId(uuid4())
+
+
+def make(name: str = "First") -> Product:
+    """A new product, its creation event already taken."""
+    product = Product.create(ProductName(name), OWNER)
+    product.pull_events()
+    return product
+
+
+def test_create_records_event() -> None:
+    """A new product records ProductCreated with its id and name."""
+    product = Product.create(ProductName("First"), OWNER)
+
+    (event,) = product.pull_events()
+    assert isinstance(event, ProductCreated)
+    assert (event.product_id, event.name) == (product.id, "First")
+    assert (product.owner_id, product.archived, product.notes) == (OWNER, False, [])
+
+
+@pytest.mark.parametrize("raw", ["", "   ", "x" * (NAME_LENGTH + 1)])
+def test_invalid_names_are_rejected(raw: str) -> None:
+    """Blank and overlong names cannot exist."""
+    with pytest.raises(InvalidProductName):
+        ProductName(raw)
+
+
+def test_names_are_trimmed_and_compared_by_value() -> None:
+    """Value objects normalize their input and compare by value."""
+    assert ProductName("  Spaced  ") == ProductName("Spaced")
+
+
+def test_rename_records_event_only_on_change() -> None:
+    """Renaming to the current name records nothing."""
+    product = make("Old")
+
+    product.rename(ProductName("Old"))
+    product.rename(ProductName("New"))
+
+    (event,) = product.pull_events()
+    assert isinstance(event, ProductRenamed)
+    assert product.name == ProductName("New")
+
+
+def test_notes_are_child_entities() -> None:
+    """Each note gets an id and a time; the aggregate records it."""
+    product = make()
+
+    note = product.add_note("Remember this")
+
+    assert product.notes == [note]
+    assert note.text == "Remember this"
+    (event,) = product.pull_events()
+    assert isinstance(event, ProductNoteAdded)
+    assert event.note_id == note.id
+
+
+def test_archived_products_are_read_only() -> None:
+    """Archiving records an event; later changes are refused."""
+    product = make()
+    product.archive()
+
+    assert isinstance(product.pull_events()[-1], ProductArchived)
+    with pytest.raises(ProductIsArchived):
+        product.rename(ProductName("Again"))
+    with pytest.raises(ProductIsArchived):
+        product.add_note("Too late")
+    with pytest.raises(ProductIsArchived):
+        product.archive()
+
+
+def test_delete_records_event() -> None:
+    """Deleting records ProductDeleted; the repository removes it."""
+    product = make()
+
+    product.delete()
+
+    assert [type(event) for event in product.pull_events()] == [ProductDeleted]
+
+
+def test_identity_defines_equality() -> None:
+    """Two products are equal only when their ids match."""
+    first, second = make("Same"), make("Same")
+
+    assert first != second
+    assert first == Product(id=first.id, name=ProductName("Other"), owner_id=OWNER)

@@ -1,0 +1,49 @@
+{
+ "help": "Add an aggregate to a domain made by startdomain: every layer, and tests.",
+ "arguments": [
+  [
+   [],
+   "domain",
+   "the domain's package name, e.g. catalog",
+   "None"
+  ],
+  [
+   [],
+   "aggregate",
+   "the aggregate's class, e.g. Product",
+   "None"
+  ],
+  [
+   [
+    "--plural"
+   ],
+   "plural",
+   "the aggregate's snake_case plural, for tables and URLs",
+   "None"
+  ],
+  [
+   [
+    "--parent"
+   ],
+   "parent",
+   "package that holds the domains",
+   "domains"
+  ],
+  [
+   [
+    "--tests-dir"
+   ],
+   "tests_dir",
+   "the domain's tests (default: tests/...)",
+   "None"
+  ],
+  [
+   [
+    "--field"
+   ],
+   "fields",
+   "name:kind[:options][?] (? may be None), repeated; kinds: bool (Boolean), date (Date), datetime (UTCDateTime), decimal (ExactDecimal(precision, scale)), float (Double), int (BigInteger), ref (Uuid, indexed), str (String(length)), text (Text), uuid (Uuid)",
+   "[]"
+  ]
+ ]
+}

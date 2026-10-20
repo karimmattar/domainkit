@@ -1,0 +1,62 @@
+"""``RetitleCategory``: its use case, and its route."""
+
+from uuid import UUID
+
+import pytest
+from gen.shop.application import services
+from gen.shop.application.commands import RetitleCategory
+from gen.shop.domain.events import CategoryRetitled
+
+from domainkit.ddd import DomainEvent, EventBus
+from domainkit.testing import TestClient
+
+from .fakes import FakeShopUnitOfWork, new_category, new_category_request
+
+URL = "/api/v1/shop/categories"
+
+
+@pytest.mark.anyio
+async def test_retitle_category_publishes_category_retitled() -> None:
+    """The use case changes the category and commits; CategoryRetitled follows."""
+    published: list[DomainEvent] = []
+    bus = EventBus()
+
+    async def collect(event: CategoryRetitled) -> None:
+        published.append(event)
+
+    bus.subscribe(CategoryRetitled, collect)
+    uow = FakeShopUnitOfWork(bus)
+    category = new_category()
+    async with uow:
+        await uow.categories.add(category)
+        await uow.commit()
+
+    await services.retitle_category(
+        RetitleCategory(
+            category_id=category.id, title="text", parent=UUID(int=1), rank=1
+        ),
+        uow,
+    )
+
+    assert uow.commits == 2
+    assert [type(each) for each in published] == [CategoryRetitled]
+
+
+def test_retitle_category_route(admin_client: TestClient) -> None:
+    """``POST .../retitle`` runs the command on the category the path names."""
+    created = admin_client.post(URL, json=new_category_request())
+    assert created.status_code == 201, created.json()
+    item = created.headers["location"]
+
+    answer = admin_client.post(
+        f"{item}/retitle",
+        json={
+            "title": "text",
+            "parent": "00000000-0000-0000-0000-000000000001",
+            "rank": 1,
+        },
+        headers={"If-Match": created.headers["etag"]},
+    )
+
+    assert answer.status_code == 200, answer.json()
+    assert answer.json()["id"] == created.json()["id"]

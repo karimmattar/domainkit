@@ -1,0 +1,22 @@
+"""``on_product_restocked``: the reaction to ``ProductRestocked``."""
+
+import logging
+from datetime import UTC, datetime
+from uuid import UUID
+
+import pytest
+from gen.shop.application import handlers
+from gen.shop.domain.events import ProductRestocked
+
+
+@pytest.mark.anyio
+async def test_on_product_restocked(caplog: pytest.LogCaptureFixture) -> None:
+    """The handler reacts to the event."""
+    event = ProductRestocked(
+        product_id=UUID(int=1), quantity=1, at=datetime(2026, 1, 2, tzinfo=UTC)
+    )
+
+    with caplog.at_level(logging.INFO, logger=handlers.__name__):
+        await handlers.on_product_restocked(event)
+
+    assert "ProductRestocked 00000000-0000-0000-0000-000000000001" in caplog.text

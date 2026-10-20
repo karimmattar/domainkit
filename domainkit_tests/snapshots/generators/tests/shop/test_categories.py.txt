@@ -1,0 +1,59 @@
+"""The Category aggregate: its model, its use cases, and its resource."""
+
+from decimal import Decimal
+from uuid import UUID
+
+import pytest
+from gen.shop.application import services
+from gen.shop.application.commands import CreateCategory, DeleteCategory
+from gen.shop.domain.events import CategoryCreated, CategoryDeleted
+from gen.shop.domain.model import Category, CategoryId, CategoryNotFound
+
+from domainkit.testing import TestClient
+
+from .fakes import FakeShopUnitOfWork, new_category_request
+
+URL = "/api/v1/shop/categories"
+
+
+def test_create_and_delete_record_events() -> None:
+    """A new category records CategoryCreated; deleting it, CategoryDeleted."""
+    category = Category.create(
+        title="text", parent=CategoryId(UUID(int=1)), price=Decimal("1.50")
+    )
+    category.delete()
+
+    created, deleted = category.pull_events()
+    assert isinstance(created, CategoryCreated)
+    assert isinstance(deleted, CategoryDeleted)
+    assert created.category_id == deleted.category_id == category.id
+
+
+@pytest.mark.anyio
+async def test_use_cases_store_and_remove() -> None:
+    """Creating stores and commits; deleting removes; a missing one is not found."""
+    uow = FakeShopUnitOfWork()
+
+    category = await services.create_category(
+        CreateCategory(title="text", parent=UUID(int=1), price=Decimal("1.50")), uow
+    )
+    assert uow.categories.items == {category.id: category}
+    await services.delete_category(DeleteCategory(category_id=category.id), uow)
+
+    assert uow.categories.items == {}
+    with pytest.raises(CategoryNotFound):
+        await services.delete_category(DeleteCategory(category_id=category.id), uow)
+
+
+def test_resource(admin_client: TestClient) -> None:
+    """Create, read, list, and delete over HTTP."""
+    created = admin_client.post(URL, json=new_category_request())
+    assert created.status_code == 201, created.json()
+    item = created.headers["location"]
+
+    assert admin_client.get(item).json() == created.json()
+    assert [each["id"] for each in admin_client.get(URL).json()["items"]] == [
+        created.json()["id"]
+    ]
+    assert admin_client.delete(item).status_code == 204
+    assert admin_client.get(item).status_code == 404

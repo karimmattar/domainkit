@@ -1,8 +1,10 @@
 """Resources: aggregates listed, read, and changed over REST by ``ResourceRouter``."""
 
 import asyncio
+import dataclasses
 import json
 from collections.abc import Callable
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Annotated, Any, Final
@@ -1761,3 +1763,125 @@ def test_routes_of_your_own_fetch_as_the_resource_does(
     assert client.get(f"/gadgets/{by_name['a'].id}/name").status_code == 404
     with pytest.raises(TypeError, match="not nested"):
         asyncio.run(nested.fetch(Mock(), Mock(), uuid4()))
+
+
+class Receipt(BaseModel):
+    """An answer whose JSON needs the JSON mode: an id and a time."""
+
+    id: UUID
+    at: datetime
+
+
+async def receipt(command: MakeGadget, uow: FakeGadgetsUnitOfWork) -> Receipt:
+    """Answer with a receipt, storing nothing."""
+    return Receipt(id=UUID(int=7), at=datetime(2026, 1, 2, tzinfo=UTC))
+
+
+async def shadow(command: RenameGadget, uow: FakeGadgetsUnitOfWork) -> object:
+    """Answer with an object shaped as the gadget, but not one."""
+    async with uow:
+        gadget = await uow.gadgets.get(GadgetId(command.gadget_id))
+    return SimpleNamespace(
+        **{
+            field.name: getattr(gadget, field.name)
+            for field in dataclasses.fields(gadget)
+        }
+    )
+
+
+def test_answers_keep_their_status_media_type_and_root_path(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """Other schemas keep the status; reads are JSON; ``Location`` has the root."""
+    use_auth()
+    resource = gadgets(store)
+    resource.command_route(MakeGadget, service=receipt, body=MakeIn, returns=Receipt)
+    resource.command_route(MakeGadget, service=make, body=MakeIn, path="/made")
+    resource.command_route(RenameGadget, service=shadow, body=RenameIn, path="/shadow")
+    client = TestClient(client_of(resource).app, root_path="/api")
+    gadget = next(iter(store.items.values()))
+    body = {"name": "n", "price": "1.00"}
+
+    receipted = client.post("/gadgets", json=body, headers=as_("adder"))
+    made = client.post("/gadgets/made", json=body, headers=as_("adder"))
+    shadowed = client.post(
+        f"{LOCATION}{gadget.id}/shadow", json={"name": "s"}, headers=as_("changer")
+    )
+    read = client.get(f"{LOCATION}{gadget.id}", headers=as_("viewer"))
+
+    assert (receipted.status_code, receipted.json()) == (
+        201,
+        {"id": str(UUID(int=7)), "at": "2026-01-02T00:00:00Z"},
+    )
+    assert made.headers["location"] == f"/api{LOCATION}{made.json()['id']}"
+    assert shadowed.json()["id"] == str(gadget.id)
+    assert read.headers["content-type"] == "application/json"
+    not_modified = client.get(
+        f"{LOCATION}{gadget.id}",
+        headers=as_("viewer", **{"If-None-Match": read.headers["etag"]}),
+    )
+    assert not_modified.headers["etag"] == read.headers["etag"]
+
+
+class EditReview(Command):
+    """Edit a review of a gadget."""
+
+    review_id: UUID
+    gadget: UUID
+    text: str
+
+
+def test_commands_on_nested_items_stay_under_their_parent(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """The item's id and the parent's both come from the path; others are 404."""
+    use_auth()
+    gadget, other = list(store.items.values())[:2]
+    mine = Review(id=uuid4(), gadget=gadget.id, text="good")
+    theirs = Review(id=uuid4(), gadget=other.id, text="bad")
+    reviews = InMemoryRepository[Review, UUID]([mine, theirs])
+    edited: list[EditReview] = []
+
+    class Reviews(UnitOfWork):
+        def __init__(self) -> None:
+            super().__init__(events=EventBus())
+            self.reviews = reviews
+
+        async def _commit(self) -> None:
+            """Nothing to write."""
+
+        async def _rollback(self) -> None:
+            """Nothing to undo."""
+
+    async def edit(command: EditReview, uow: Reviews) -> Review:
+        edited.append(command)
+        async with uow:
+            review = await uow.reviews.get(command.review_id)
+            review.text = command.text
+            await uow.commit()
+        return review
+
+    nested = ResourceRouter(
+        "/reviews",
+        model=Review,
+        unit_of_work=Reviews,
+        repository=lambda uow: uow.reviews,
+        parent=gadgets(store),
+        parent_field="gadget",
+        rule=IsAuthenticated(),
+    )
+    nested.command_route(EditReview, service=edit, body=ReviewIn, path="/edit")
+    client = client_of(nested.parent, nested)  # type: ignore[arg-type]
+    base = f"/gadgets/{gadget.id}/reviews"
+
+    own = client.post(
+        f"{base}/{mine.id}/edit", json={"text": "great"}, headers=as_("viewer")
+    )
+    foreign = client.post(
+        f"{base}/{theirs.id}/edit", json={"text": "x"}, headers=as_("viewer")
+    )
+
+    assert (own.status_code, own.json()["text"]) == (200, "great")
+    assert edited == [EditReview(review_id=mine.id, gadget=gadget.id, text="great")]
+    assert foreign.status_code == 404
+    assert theirs.text == "bad"

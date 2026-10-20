@@ -1,6 +1,7 @@
 """The generators: aggregates, commands, queries, and events added to a domain."""
 
 import io
+import json
 import os
 import subprocess
 import sys
@@ -12,7 +13,7 @@ import pytest
 
 import domainkit
 from domainkit.architecture import check_domain
-from domainkit.management import CommandError, call_command
+from domainkit.management import CommandError, call_command, load_command
 from domainkit.management import generators as generators_module
 from domainkit.management.commands import startdomain
 from domainkit.management.commands.addcommand import past_tense, verb_of
@@ -722,3 +723,70 @@ def test_install_needs_both_files(tmp_path: Path) -> None:
     (root / URLS_FILE).unlink()
 
     assert install("domains.catalog", "catalog", root) == []
+
+
+SNAPSHOTS = Path(__file__).parent / "snapshots" / "generators"
+"""What the generators write, file by file; regenerate with UPDATE_SNAPSHOTS=1."""
+
+
+@pytest.mark.skipif(find_spec("ruff") is None, reason="needs ruff to format")
+def test_generators_write_what_their_snapshots_hold(shop: Shop) -> None:
+    """Every generated file, and every generator's arguments, as reviewed."""
+    shop(
+        "startaggregate",
+        "Category",
+        fields=["title:str:100", "parent:ref:Category?", "price:decimal:10:2"],
+    )
+    shop(
+        "addcommand",
+        "Product",
+        "PublishProduct",
+        fields=["at:datetime", "note:str:50?"],
+    )
+    shop(
+        "addcommand",
+        "Category",
+        "RetitleCategory",
+        fields=["title:str:100", "parent:ref:Category?", "rank:int"],
+    )
+    shop("addquery", "Product", "ProductsByOwner", by=["owner_id", "name"])
+    shop("addquery", "Category", "EveryCategory", path="/every")
+    shop(
+        "addevent",
+        "Product",
+        "ProductRestocked",
+        fields=["quantity:int", "at:datetime"],
+    )
+    written = {
+        path.relative_to(shop.root).as_posix(): path.read_text(encoding="utf-8")
+        for path in [*shop.package.rglob("*.py"), *shop.tests.rglob("*.py")]
+    }
+    for name in ("startaggregate", "addcommand", "addquery", "addevent"):
+        command = load_command(name)
+        parser = command.create_parser("manage.py", name)
+        written[f"help/{name}"] = json.dumps(
+            {
+                "help": command.help,
+                "arguments": [
+                    [each.option_strings, each.dest, each.help, str(each.default)]
+                    for each in parser._actions
+                    if each.dest != "help"
+                ],
+            },
+            indent=1,
+        )
+
+    if os.environ.get("UPDATE_SNAPSHOTS"):
+        for relative, text in written.items():
+            target = SNAPSHOTS / f"{relative}.txt"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+    expected = {
+        path.relative_to(SNAPSHOTS).as_posix().removesuffix(".txt"): path.read_text(
+            encoding="utf-8"
+        )
+        for path in SNAPSHOTS.rglob("*.txt")
+    }
+    assert sorted(written) == sorted(expected)
+    for relative, text in written.items():
+        assert text == expected[relative], relative

@@ -1,0 +1,58 @@
+"""``PublishProduct``: its use case, and its route."""
+
+from datetime import UTC, datetime
+
+import pytest
+from gen.shop.application import services
+from gen.shop.application.commands import PublishProduct
+from gen.shop.domain.events import ProductPublished
+
+from domainkit.ddd import DomainEvent, EventBus
+from domainkit.testing import TestClient
+
+from .fakes import FakeShopUnitOfWork, new_product, new_product_request
+
+URL = "/api/v1/shop/products"
+
+
+@pytest.mark.anyio
+async def test_publish_product_publishes_product_published() -> None:
+    """The use case changes the product and commits; ProductPublished follows."""
+    published: list[DomainEvent] = []
+    bus = EventBus()
+
+    async def collect(event: ProductPublished) -> None:
+        published.append(event)
+
+    bus.subscribe(ProductPublished, collect)
+    uow = FakeShopUnitOfWork(bus)
+    product = new_product()
+    async with uow:
+        await uow.products.add(product)
+        await uow.commit()
+
+    await services.publish_product(
+        PublishProduct(
+            product_id=product.id, at=datetime(2026, 1, 2, tzinfo=UTC), note="text"
+        ),
+        uow,
+    )
+
+    assert uow.commits == 2
+    assert [type(each) for each in published] == [ProductPublished]
+
+
+def test_publish_product_route(admin_client: TestClient) -> None:
+    """``POST .../publish`` runs the command on the product the path names."""
+    created = admin_client.post(URL, json=new_product_request())
+    assert created.status_code == 201, created.json()
+    item = created.headers["location"]
+
+    answer = admin_client.post(
+        f"{item}/publish",
+        json={"at": "2026-01-02T03:04:05Z", "note": "text"},
+        headers={"If-Match": created.headers["etag"]},
+    )
+
+    assert answer.status_code == 200, answer.json()
+    assert answer.json()["id"] == created.json()["id"]

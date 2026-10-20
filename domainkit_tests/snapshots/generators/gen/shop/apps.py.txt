@@ -1,0 +1,18 @@
+"""Installation hooks for the shop domain (Django's ``AppConfig``)."""
+
+from domainkit.apps import DomainConfig
+from domainkit.ddd import event_bus
+from gen.shop.application.handlers import log_product_created, on_product_restocked
+from gen.shop.domain.events import ProductCreated, ProductRestocked
+from gen.shop.infrastructure.orm import start_mappers
+
+
+class ShopConfig(DomainConfig):
+    """Map the shop tables and subscribe its event handlers."""
+
+    def ready(self) -> None:
+        """Connect the layers once settings are loaded."""
+        start_mappers()
+        # Durable: stored with the commit, run (and retried) by the worker.
+        event_bus.subscribe(ProductCreated, log_product_created, durable=True)
+        event_bus.subscribe(ProductRestocked, on_product_restocked, durable=True)
