@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import re
 import stat
 import uuid
 from collections.abc import Iterator
@@ -54,6 +55,7 @@ ODDITIES: Final = "domainkit_tests.sample_domains.oddities"
 NOW: Final = datetime(2026, 10, 19, 12, tzinfo=UTC)
 ANN: Final = uuid.UUID("00000000-0000-4000-8000-00000000000a")
 BOB: Final = uuid.UUID("00000000-0000-4000-8000-00000000000b")
+ARABIC_INDIC: Final = "\u0660\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668\u0669"
 SUBJECT_MESSAGE: Final = r"^A subject is 1 to 255 characters, without control codes\.$"
 REASON_MESSAGE: Final = r"^A reason is 1 to 255 characters, without control codes\.$"
 
@@ -345,12 +347,96 @@ def test_subject_values_follow_their_column() -> None:
             "number": Column("number", String(10)),
             "id": tables.cards.c.id,
             "blob": Column("blob", PickleType),
+            "patient_id": tables.visits.c.patient_id,
         },
     )
     assert operations._subject_value(model, "id", "12") == 12
+    assert operations._subject_value(model, "id", "-12") == -12
     assert operations._subject_value(model, "id", "x") is operations._NO_MATCH
     assert operations._subject_value(model, "number", "12") == "12"
     assert operations._subject_value(model, "blob", "12") == "12"
+    assert operations._subject_value(model, "patient_id", str(ANN)) == ANN
+    assert operations._subject_value(model, "patient_id", "x") is operations._NO_MATCH
+
+
+def written_otherwise(subject: uuid.UUID | int) -> list[str]:
+    """Spellings Python reads as ``subject``, but that are not how it prints."""
+    if isinstance(subject, int):
+        digits = str(subject)
+        arabic = digits.translate(str.maketrans("0123456789", ARABIC_INDIC))
+        return [f" {digits}", f"0{digits}", f"+{digits}", arabic, "_".join(digits)]
+    return [str(subject).upper(), f"{{{subject}}}", subject.hex, subject.urn]
+
+
+def test_subject_values_match_only_as_they_print() -> None:
+    """Other spellings of an id match nothing, as in text columns.
+
+    ``3F2A...`` once matched a person's UUID columns but not the same id in
+    their text columns or audit keys, so an erasure stopped half way.
+    """
+    model = PersonalModel(
+        "d",
+        "m",
+        object,
+        {},
+        {"id": tables.cards.c.id, "patient_id": tables.visits.c.patient_id},
+    )
+    for subject in written_otherwise(42):
+        assert operations._subject_value(model, "id", subject) is operations._NO_MATCH
+    for subject in written_otherwise(ANN):
+        assert operations._subject_value(model, "patient_id", subject) is (
+            operations._NO_MATCH
+        )
+
+
+def test_ids_written_otherwise_are_refused_and_nothing_changes(clinic: str) -> None:
+    """A UUID written otherwise is refused, naming the form to use; data stays."""
+
+    async def attempt() -> list[str]:
+        await fill()
+        await record("clinic.viewed", personal={"name": "Ann"}, subject=str(ANN))
+        refusals = []
+        for subject in written_otherwise(ANN):
+            for operation in (export_subject, erase_subject):
+                with pytest.raises(ValueError, match="Write the subject") as refused:
+                    await operation(subject)
+                refusals.append(str(refused.value))
+        return refusals
+
+    refusals = run_async(attempt())
+
+    assert set(refusals) == {f"Write the subject as its id prints: {ANN}."}
+    assert [p["name"] for p in run_async(rows_of(tables.patients))] == ["Ann", "Bob"]
+    assert [c["nickname"] for c in run_async(rows_of(tables.cards))] == ["Annie", "Nan"]
+    assert [b["born_on"] for b in run_async(rows_of(tables.badges))] == [
+        date(1990, 5, 17)
+    ]
+    assert run_async(pseudonym_of(str(ANN), "name", "Ann")) is not None
+    assert run_async(audited("privacy.erase")) == []
+    assert run_async(audited("privacy.export")) == []
+    with pytest.raises(CommandError, match=f"^{re.escape(refusals[0])}$"):
+        run("erase", "--subject", str(ANN).upper(), "--noinput")
+    with pytest.raises(CommandError, match="Write the subject"):
+        run("export", "--subject", ANN.hex)
+
+
+def test_only_types_some_subject_has_are_checked(
+    clinic: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``042`` is text unless a domain names subjects by integer, then it is 42."""
+    assert check_subject("042") == "042"  # The clinic's subjects: UUIDs and text.
+    assert check_subject("dr-who") == "dr-who"
+    numbered = PersonalModel("d", "m", object, {"id": ()}, {"id": tables.cards.c.id})
+    monkeypatch.setattr(operations, "personal_models", lambda: [numbered])
+
+    for subject in written_otherwise(42):
+        with pytest.raises(
+            ValueError, match=r"^Write the subject as its id prints: 42\.$"
+        ):
+            check_subject(subject)
+    assert check_subject("42") == "42"
+    assert check_subject("-42") == "-42"
+    assert check_subject(str(ANN).upper()) == str(ANN).upper()  # No UUID subjects.
 
 
 # Erasure ---------------------------------------------------------------------------

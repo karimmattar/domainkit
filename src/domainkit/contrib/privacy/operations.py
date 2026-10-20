@@ -51,16 +51,34 @@ REFUSALS: Final = {
 }
 """SQLSTATEs that stop a purge of one table, and what they mean."""
 _NO_MATCH: Final = object()
+_KINDS: Final = (uuid.UUID, int)
+"""Column types a subject is read as; columns of other types compare it as text."""
 
 
 def check_subject(subject: str) -> str:
-    """Return ``subject`` if it can name someone: 1 to 255 printable characters.
+    """Return ``subject`` if it can name someone, written as its id prints.
+
+    A subject is 1 to 255 printable characters. Where an installed domain
+    names subjects by UUID or integer columns, a subject that reads as one
+    must be written as Python prints it (``str(uuid)``, ``str(number)``),
+    the form text columns and the audit trail hold: ``3F2A...``,
+    ``{3f2a...}``, ``urn:uuid:3f2a...``, ``042`` or ``+42`` is refused,
+    so a person is never exported or erased in part.
 
     Raises:
-        ValueError: It cannot.
+        ValueError: It cannot; for an id written otherwise, the message
+            gives the form to use.
+        ImproperlyConfigured: A ``Personal`` marker cannot be followed.
     """
     if not _TEXT.fullmatch(subject):
         raise ValueError("A subject is 1 to 255 characters, without control codes.")
+    kinds = {
+        _python_type(model, of) for model in personal_models() for of in model.subjects
+    }
+    for kind in _KINDS:
+        value = _parse(kind, subject)
+        if kind in kinds and value is not _NO_MATCH and str(value) != subject:
+            raise ValueError(f"Write the subject as its id prints: {value}.")
     return subject
 
 
@@ -83,7 +101,8 @@ async def export_subject(subject: str) -> dict[str, Any]:
     trail, with how many records it holds.
 
     Raises:
-        ValueError: ``subject`` is not 1 to 255 printable characters.
+        ValueError: ``subject`` is not 1 to 255 printable characters, or is
+            an id not written as it prints (see ``check_subject``).
     """
     check_subject(subject)
     domains: dict[str, dict[str, dict[str, dict[str, object]]]] = {}
@@ -137,7 +156,8 @@ async def erase_subject(subject: str, *, reason: str = REQUEST) -> int:
 
     Raises:
         ValueError: ``subject`` or ``reason`` is not 1 to 255 printable
-            characters.
+            characters, or ``subject`` is an id not written as it prints
+            (see ``check_subject``).
     """
     check_subject(subject)
     check_reason(reason)
@@ -239,16 +259,24 @@ def _erase_fields(
 
 
 def _subject_value(model: PersonalModel, of: str, subject: str) -> object:
-    """``subject`` as the type of the ``of`` column (``_NO_MATCH`` if it cannot be)."""
+    """``subject`` as the type of the ``of`` column.
+
+    ``_NO_MATCH`` if it is not one, or is not written as one prints: the
+    columns of one person must all match the same text.
+    """
     kind = _python_type(model, of)
+    if kind not in _KINDS:
+        return subject
+    value = _parse(kind, subject)
+    return value if str(value) == subject else _NO_MATCH  # _NO_MATCH either way.
+
+
+def _parse(kind: type, subject: str) -> object:
+    """``subject`` read as a ``kind`` (a UUID or an integer), else ``_NO_MATCH``."""
     try:
-        if kind is uuid.UUID:
-            return uuid.UUID(subject)
-        if kind is int:
-            return int(subject)
+        return kind(subject)
     except ValueError:
         return _NO_MATCH
-    return subject
 
 
 def _python_type(model: PersonalModel, name: str) -> object:

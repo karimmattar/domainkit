@@ -330,6 +330,13 @@ All notable changes to domainkit. The format follows
 - Clients from `client_for` and `admin_client` run on the `client`
   fixture's event loop. Each of their requests started an event loop of its
   own, with a database engine nothing closed (ASYNC-24).
+- `privacy export` and `privacy erase` (and `export_subject`,
+  `erase_subject`) refuse an id spelled otherwise than it prints where
+  domains name people by UUID or integer: an upper-case or braced UUID, one
+  without dashes or with `urn:uuid:`, or `042`, `+42`, ` 42`. Such a subject
+  matched the person's UUID or integer columns but not the same id in text
+  columns or audit keys, and the erasure still reported success. The
+  message gives the form to use.
 
 ## [0.6.2] - 2026-10-19
 
