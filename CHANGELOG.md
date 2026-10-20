@@ -60,6 +60,15 @@ All notable changes to domainkit. The format follows
   connection. Redis connections share one context instead of building
   their own at each connect (ASYNC-21; `docs/runtime.md`, "TLS contexts").
   A process uses renewed certificate files after a restart.
+- Relationships given to `map_imperatively` that leave `lazy` at
+  SQLAlchemy's default (`"select"`), and the backrefs they make, now raise
+  on an unloaded access (`lazy="raise"`) instead of trying a lazy load,
+  which async sessions cannot do and which failed later with
+  `MissingGreenlet` (ASYNC-22, R19; ADR 0054). `children`, `child`, and
+  every relationship that names its `lazy` are unchanged. To upgrade, load
+  such a relationship in the query (`selectinload`), pass
+  `lazy="selectin"`, or keep lazy loading on purpose with `lazy=True`
+  (for `AsyncAttrs.awaitable_attrs` or `run_sync`).
 
 ## [0.7.0] - 2026-10-20
 

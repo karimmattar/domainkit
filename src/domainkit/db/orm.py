@@ -15,6 +15,14 @@ aggregate's, and are mapped as relationships of the aggregate::
 
 ``children`` and ``child`` load them with the aggregate and save and delete
 them with it. Other aggregates are referenced by id, not by relationship.
+
+Any other relationship that leaves ``lazy`` at SQLAlchemy's default
+(``"select"``, a load on first access) raises on access instead
+(``lazy="raise"``), and so does the reverse side its ``backref`` makes:
+a lazy load needs I/O, which an attribute access in async code cannot do,
+so it would fail elsewhere with ``MissingGreenlet``. Load it in the query
+(``selectinload``), or ask for lazy loading on purpose with ``lazy=True``,
+for ``AsyncAttrs.awaitable_attrs`` or ``run_sync``.
 """
 
 from typing import Any, Final
@@ -24,6 +32,9 @@ from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import RelationshipProperty, registry, relationship
 
 from domainkit.ddd import AggregateRoot
+
+DEFAULT_LAZY: Final = "select"
+"""SQLAlchemy's default ``lazy``, which ``map_imperatively`` makes raise."""
 
 NAMING_CONVENTION: Final = {
     "ix": "ix_%(column_0_label)s",
@@ -44,13 +55,31 @@ def map_imperatively(class_: type, table: Table, **options: Any) -> None:  # noq
     """Map ``class_`` to ``table`` once; later calls are ignored.
 
     An aggregate whose table has a ``version`` column gets optimistic locking:
-    every UPDATE and DELETE checks and bumps the version.
+    every UPDATE and DELETE checks and bumps the version. Relationships in
+    ``properties`` that leave ``lazy`` at its default raise on an unloaded
+    access, their backrefs too (see the module's docstring).
     """
     if sa_inspect(class_, raiseerr=False) is not None:
         return
     if "version" in table.c and issubclass(class_, AggregateRoot):
         options.setdefault("version_id_col", table.c.version)
+    for prop in dict(options.get("properties") or {}).values():
+        if isinstance(prop, RelationshipProperty):
+            _raise_on_lazy_loads(prop)
     mapper_registry.map_imperatively(class_, table, **options)
+
+
+def _raise_on_lazy_loads(prop: RelationshipProperty[Any]) -> None:
+    """Make ``prop``, and the backref it makes, raise where they would lazy load."""
+    if prop.lazy == DEFAULT_LAZY:
+        prop.lazy = "raise"
+        # SQLAlchemy picks the loader by this key, as it does for its own
+        # changes to ``lazy`` (a ``WriteOnlyMapped`` annotation).
+        prop.strategy_key = (("lazy", prop.lazy),)
+    if isinstance(prop.backref, str):
+        prop.backref = (prop.backref, {"lazy": "raise"})
+    elif prop.backref is not None:
+        prop.backref[1].setdefault("lazy", "raise")
 
 
 def children(entity: type, **options: Any) -> RelationshipProperty[Any]:  # noqa: ANN401 - relationship() options.

@@ -381,9 +381,15 @@ def start_mappers() -> None:
   one entity. Pass `order_by` for a stable order, `collection_class=set`
   for a `set[...]` field, or any other `relationship()` option.
 - Another aggregate is referenced by its id, not by a relationship, so
-  each loads and locks on its own. If you map a read-only reference anyway,
-  give it `lazy="raise"`, so an unloaded access fails loudly instead of
-  needing I/O.
+  each loads and locks on its own.
+- Any other relationship given to `map_imperatively` that leaves `lazy` at
+  SQLAlchemy's default, and the reverse side its `backref` makes, raises on
+  an unloaded access (`lazy="raise"`): `'Order.customer' is not available
+  due to lazy='raise'`. A lazy load needs I/O, which an attribute access in
+  async code cannot do, so it would otherwise fail later with
+  `MissingGreenlet`. Load it in the query (`selectinload(Order.customer)`),
+  or pass `lazy="selectin"`. `lazy=True` asks for lazy loading on purpose,
+  for `AsyncAttrs.awaitable_attrs` or code run with `session.run_sync`.
 - `ON DELETE CASCADE` matters to bulk deletes (`delete_rows`) on
   PostgreSQL; SQLite enforces foreign keys only with `PRAGMA foreign_keys`.
 - Queries reach into children with dotted names: `F("lines.sku") == "A-1"`.
