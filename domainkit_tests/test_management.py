@@ -181,6 +181,30 @@ def test_check_lists_weak_deployment_choices() -> None:
         )
 
 
+def test_check_lists_the_domains_warnings_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each installed domain may add warnings of its own settings."""
+    from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
+
+    monkeypatch.setattr(
+        AlphaConfig, "deployment_warnings", lambda self: ["ALPHA is weak here."]
+    )
+    with override_settings(ENVIRONMENT="production", API_DOCS=False):
+        output = run("check")
+
+    assert output.startswith(
+        "System check identified no issues and 3 warnings. Domains: alpha.\n"
+    )
+    assert output.endswith("  Warning: ALPHA is weak here.\n")
+
+
+def test_check_takes_one_migration_head_per_database(auth_project: str) -> None:
+    """A history with one head is what ``check`` expects; more is a problem."""
+    with override_settings(ROOT_ROUTER=None):
+        assert run("check").startswith("System check identified no issues")
+
+
 def test_check_without_domains() -> None:
     """A project with no domains is valid."""
     with override_settings(INSTALLED_DOMAINS=[], ALPHA=UNSET, ROOT_ROUTER=None):

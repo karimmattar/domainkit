@@ -16,7 +16,12 @@ from domainkit import setup
 from domainkit.conf.env import Env
 from domainkit.management.base import BaseCommand, CommandError, run_async
 
-from ...exceptions import InvalidPassword, InvalidUsername, UsernameTaken
+from ...exceptions import (
+    InvalidEmail,
+    InvalidPassword,
+    InvalidUsername,
+    UsernameTaken,
+)
 from ...uow import AuthUnitOfWork
 from ...users import get_user_model
 from ...validators import validate_password
@@ -62,7 +67,7 @@ class Command(BaseCommand):
             raise CommandError("Operation cancelled.") from None
         try:
             run_async(self._create(values, password))
-        except (UsernameTaken, InvalidUsername) as exc:
+        except (UsernameTaken, InvalidUsername, InvalidEmail) as exc:
             raise CommandError(exc.message) from None
         self.write("Superuser created successfully.")
 

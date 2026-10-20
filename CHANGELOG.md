@@ -40,18 +40,31 @@ All notable changes to domainkit. The format follows
     the address changes. Run `makemigrations` and `migrate` for the new
     column.
   - `POST /auth/signup`, off until `AUTH.SIGNUP_ENABLED`, checks the fields
-    and password rules at once, then answers 202 and tells the address by
-    mail when the username or address is taken.
+    and password rules at once, then answers 202 and mails the address a
+    link (`AUTH.SIGNUP_URL`), or word that the username or address is
+    taken. `POST /auth/signup/confirm` with the link's token makes the
+    account, its address verified: until then no account exists, so no
+    one but the address's owner learns whether it has one, and a pending
+    signup reserves no username. Pending signups, with the password's
+    hash, wait in the new `domainkit_pending_signups` table (run
+    `makemigrations` and `migrate`), never in the outbox or in fixtures,
+    and expired ones are purged hourly.
   - Requests that send mail count against the new `AUTH.EMAIL_RATE`, and
     token checks against `AUTH.LOGIN_RATE`; resets, verifications,
     signups, and refusals are audited.
 - Browser sessions in cookies (DJ-43): `CookieAuthentication` reads an
   opaque token from an HttpOnly, Secure, SameSite cookie that
-  `POST /auth/session` sets and `DELETE /auth/session` clears. Unsafe
+  `POST /auth/session` sets and `DELETE /auth/session` clears. The
+  session and CSRF cookies are named `__Host-dk_session` and
+  `__Host-dk_csrf` wherever the prefix holds, so a sibling subdomain
+  cannot plant either; names a project sets are kept, and `check` warns
+  in staging and production about one without the prefix. Unsafe
   requests it authenticates must come from a trusted origin (their own,
   `ALLOWED_HOSTS`, or `AUTH.CSRF_TRUSTED_ORIGINS`) and send a CSRF token
-  signed for the session (`X-CSRF-Token`); others get `403 csrf_failed`.
-  Header-token clients are unaffected.
+  signed for the session (`X-CSRF-Token`); others get `403 csrf_failed`,
+  which never counts against `RATE_LIMIT` as refused credentials do, so
+  another site cannot hold a browser's address. Header-token clients are
+  unaffected.
 - Two-factor logins (DJ-41; `docs/auth.md`, "Two-factor logins"; the `mfa`
   extra): an authenticator app (TOTP) and single-use recovery codes, from
   `domainkit.contrib.auth.mfa`. Once on, `/login` and `/auth/session`
@@ -75,17 +88,20 @@ All notable changes to domainkit. The format follows
   digest that creating a user or signing up checks.
 - Scoped personal tokens (DJ-33): `domainkit.contrib.auth.personal_tokens`
   lets users list, create, and revoke their own tokens at `/auth/tokens`,
-  shown once and limited to scopes (permission keys they hold) if they
-  wish. Permission rules allow a scoped token only what both its user and
-  its scopes allow; `HasScope` and `IsUnscoped` are new rules, and
+  shown once (marked `no-store`, so no idempotency key replays one) and
+  limited to scopes (permission keys they hold) if they wish. Permission
+  rules allow a scoped token only what both its user and its scopes
+  allow; `HasScope` and `IsUnscoped` are new rules, and
   `createtoken --scope` makes scoped tokens. Tokens record when they were
   last used, at most every five minutes. Run `makemigrations` and
   `migrate` for the tokens' new columns.
 - Client certificates (DJ-44): `ClientCertificateAuthentication` logs in
   the user a certificate names, by its SHA-256 (`addcertificate`) or by its
   subject's common name. The certificate comes from the ASGI TLS extension,
-  or from `AUTH.CLIENT_CERT.HEADER`, believed only from `TRUSTED_PROXIES`
-  (`docs/auth.md`, "Client certificates", has an nginx example).
+  or from `AUTH.CLIENT_CERT.HEADER`, believed only from the addresses in
+  `AUTH.CLIENT_CERT.PROXIES`, never from all of `TRUSTED_PROXIES`; staging
+  and production take single addresses there (`docs/auth.md`, "Client
+  certificates", has an nginx example).
   `ProxyHeadersMiddleware` keeps the proxy's address in
   `scope["domainkit.peer"]` for this.
 - Migration tooling (`docs/reference.md`, "Commands"):
@@ -168,7 +184,8 @@ All notable changes to domainkit. The format follows
   resolve only to public addresses, and the checked address is the one
   connected to. Staff manage subscriptions through an admin API; secrets
   are shown once, in answers marked `no-store` that neither caches nor
-  idempotency keys keep, and stored encrypted under a key derived from
+  idempotency keys keep, never in reprs (nor are URLs, which may hold
+  tokens), and stored encrypted under a key derived from
   `SECRET_KEY`, which webhooks require (ADR 0036). Install
   `domainkit[webhooks]`, which brings httpx2 and cryptography.
 - `domainkit.http.ratelimit.Throttle`, a FastAPI dependency that limits one
@@ -333,6 +350,29 @@ All notable changes to domainkit. The format follows
   is now 4,096 characters (from 2,048): three text fields of
   `MaxLength(150)`, in any script. `cursor_length(ordering, model)` gives
   the bound of any ordering (ADR 0023).
+- **Email addresses are checked** wherever one is taken: creating a user
+  (the admin API, `create_user`, `createsuperuser`), changing one, signing
+  up, and asking for a reset. An address is one plain ASCII address,
+  `user@example.com`, without a display name, comment, or list; anything
+  else is refused with `422 invalid_email` (`InvalidEmail`), so mail goes
+  to exactly the address an account shows. Addresses compare by their
+  ASCII letters alone: on PostgreSQL, a look-alike (the KELVIN SIGN, which
+  `lower()` makes a `k`) no longer takes another's signup or reset, and a
+  reset skips, and logs by user id, a stored address that cannot take mail
+  rather than failing for every account of it. Addresses stored before
+  stay as they are.
+- `check` also lists warnings that installed domains return from the new
+  `DomainConfig.deployment_warnings()`, in staging and production.
+- Usernames that start with `erased-`, in any case, are kept for accounts
+  privacy erased: signing up, the admin API, `createsuperuser`, and
+  `create_user` with any user model refuse them (`422 invalid_username`),
+  and erasing a user whose name only starts with `erased-` erases it too.
+- `/auth/me` with a token limited to scopes lists only the permissions
+  both its user and its scopes allow, and `/auth/email-verification`
+  refuses scoped tokens (403).
+- Staging and production refuse `AUTH.PASSWORD_RESET_URL`,
+  `EMAIL_VERIFICATION_URL`, and `SIGNUP_URL` over `http://`, and `check`
+  warns there when `AUTH.LOGIN_RATE` or `AUTH.MFA.RATE` is `None`.
 
 ### Fixed
 

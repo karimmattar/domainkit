@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from starlette.websockets import WebSocketDisconnect
 
+from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.contrib.auth.cookies import CookieAuthentication, csrf_token
 from domainkit.contrib.auth.settings import AuthSettings, CookieSettings
@@ -26,6 +27,9 @@ from domainkit_tests.test_auth_http import (
 
 SITE = "https://testserver"
 TRUSTED = {"Origin": SITE}
+SESSION = "__Host-dk_session"
+CSRF = "__Host-dk_csrf"
+"""The cookies' names over HTTPS: only this host may set them."""
 
 
 def browser(identity: Api, **auth: Any) -> TestClient:  # noqa: ANN401 - AUTH keys.
@@ -69,21 +73,97 @@ def test_a_session_lives_in_an_http_only_cookie(identity: Api) -> None:
     assert response.headers["Cache-Control"] == "no-store"
     csrf = response.json()["csrf_token"]
     cookies = set_cookies(response)
-    session = cookies["dk_session"]
+    session = cookies[SESSION]
     assert "HttpOnly" in session
     assert "Secure" in session
     assert "SameSite=lax" in session
     assert "Path=/" in session
     assert f"Max-Age={14 * 24 * 3600}" in session
-    assert f"dk_csrf={csrf};" in cookies["dk_csrf"]
-    assert "HttpOnly" not in cookies["dk_csrf"]
-    assert "Secure" in cookies["dk_csrf"]
-    assert client.cookies["dk_session"].startswith("dkt_")
+    assert f"{CSRF}={csrf};" in cookies[CSRF]
+    assert "HttpOnly" not in cookies[CSRF]
+    assert "Secure" in cookies[CSRF]
+    assert client.cookies[SESSION].startswith("dkt_")
     (token,) = stored_tokens(alice)
     assert (token["kind"], token["name"]) == ("session", "browser")
     assert client.get("/whoami").json() == {"user": "alice", "scheme": "cookie"}
     (logged_in,) = audited("auth.user_logged_in")
     assert logged_in["actor"] == str(alice)
+
+
+def test_cookies_tossed_by_another_host_are_ignored(identity: Api) -> None:
+    """A sibling subdomain can set ``dk_session`` for the site, not ``__Host-``.
+
+    An attacker logged in themselves, then planted their session in the
+    victim's browser under the unprefixed name: the victim's requests ran
+    as the attacker (login CSRF), and so would their CSRF token.
+    """
+    create_user("mallory")
+    attacker = browser(identity)
+    csrf = start(attacker, "mallory")
+    tossed = {"dk_session": attacker.cookies[SESSION], "dk_csrf": csrf}
+
+    victim = TestClient(attacker.app, base_url=SITE, cookies=tossed)
+
+    assert victim.get("/whoami").json() == {"user": "", "scheme": None}
+    response = victim.post("/notes", headers={**TRUSTED, "X-CSRF-Token": csrf})
+    assert response.status_code == 401
+
+
+def test_names_a_project_sets_are_kept(identity: Api) -> None:
+    """``COOKIE.NAME`` and ``CSRF_NAME`` win, prefixed or not."""
+    create_user("alice")
+    client = browser(identity, COOKIE={"NAME": "sid", "CSRF_NAME": "__Host-csrf"})
+
+    csrf = start(client)
+
+    assert set(client.cookies.keys()) == {"sid", "__Host-csrf"}
+    assert client.post("/notes", headers={**TRUSTED, "X-CSRF-Token": csrf}).json() == {
+        "user": "alice",
+        "scheme": "cookie",
+    }
+
+
+@pytest.mark.parametrize("environment", ["staging", "production"])
+def test_deployments_warn_of_names_without_the_prefix(
+    use_auth: UseAuth, environment: str
+) -> None:
+    """Where ``__Host-`` could hold, a name without it is a warning."""
+    deployed = {"ENVIRONMENT": environment, "ALLOWED_HOSTS": ["api.example.com"]}
+    hashers = ["domainkit.contrib.auth.hashers.PBKDF2PasswordHasher"]
+    classes = [
+        "domainkit.contrib.auth.authentication.TokenAuthentication",
+        "domainkit.contrib.auth.cookies.CookieAuthentication",
+    ]
+
+    def warnings(**cookie: str) -> list[str]:
+        use_auth(
+            settings=deployed,
+            PASSWORD_HASHERS=hashers,
+            AUTHENTICATION_CLASSES=classes,
+            COOKIE=cookie,
+        )
+        return registry.get_domain_config("auth").deployment_warnings()
+
+    assert warnings(NAME="sid", CSRF_NAME="csrftoken") == [
+        (
+            "AUTH.COOKIE.NAME 'sid' lacks the __Host- prefix, so another host of "
+            "the site (a subdomain) can set it in browsers; name it __Host-sid, or "
+            "leave NAME out."
+        ),
+        (
+            "AUTH.COOKIE.CSRF_NAME 'csrftoken' lacks the __Host- prefix, so another "
+            "host of the site (a subdomain) can set it in browsers; name it "
+            "__Host-csrftoken, or leave CSRF_NAME out."
+        ),
+    ]
+    assert warnings() == []
+    assert warnings(NAME="__Host-sid") == []
+    assert warnings(NAME="sid", DOMAIN="example.com") == []  # It cannot hold.
+    assert warnings(NAME="sid", PATH="/api") == []
+    use_auth(settings=deployed, PASSWORD_HASHERS=hashers, COOKIE={"NAME": "sid"})
+    assert registry.get_domain_config("auth").deployment_warnings() == []
+    use_auth(settings={"ENVIRONMENT": "test"}, COOKIE={"NAME": "sid"})
+    assert registry.get_domain_config("auth").deployment_warnings() == []
 
 
 def test_both_cookies_take_the_cookie_settings(identity: Api) -> None:
@@ -105,6 +185,7 @@ def test_both_cookies_take_the_cookie_settings(identity: Api) -> None:
         headers=TRUSTED,
     )
 
+    assert set(set_cookies(response)) == {"dk_session", "dk_csrf"}  # No __Host-.
     for cookie in set_cookies(response).values():
         attributes = {part.strip() for part in cookie.split(";")[1:]}
         assert {
@@ -151,6 +232,36 @@ def test_unsafe_methods_need_a_trusted_origin_and_the_token(identity: Api) -> No
     assert client.get("/whoami").json()["scheme"] == "cookie"
 
 
+def test_csrf_refusals_never_hold_the_address(identity: Api) -> None:
+    """Another site can make a browser fail the CSRF checks at will.
+
+    Those 403s are not counted against ``RATE_LIMIT`` as refused
+    credentials (401s) are, so they cannot hold the browser's address: its
+    session, and other users behind the same address, are served as before.
+    """
+    create_user("alice")
+    create_user("bob")
+    guess = bearer("dkt_" + "A" * 43)
+    with override_settings(RATE_LIMIT="10/minute"):
+        victim = browser(identity)
+        csrf = start(victim)
+        forged = [
+            victim.post("/notes", headers={"Origin": "https://evil.example"})
+            for _ in range(11)
+        ]
+        after = victim.post("/notes", headers={**TRUSTED, "X-CSRF-Token": csrf})
+        read = victim.get("/whoami")
+        bob = bearer(login(TestClient(victim.app), "bob")["access_token"])
+        other = TestClient(victim.app, base_url=SITE).get("/whoami", headers=bob)
+        guesses = [victim.get("/whoami", headers=guess) for _ in range(11)]
+
+    assert {(r.status_code, r.json()["code"]) for r in forged} == {(403, "csrf_failed")}
+    assert after.json() == read.json() == {"user": "alice", "scheme": "cookie"}
+    assert other.json() == {"user": "bob", "scheme": "token"}
+    # Tokens that do not hold still count: the tenth refusal is the last.
+    assert [r.status_code for r in guesses] == [401] * 10 + [429]
+
+
 def test_csrf_tokens_belong_to_one_session(identity: Api) -> None:
     """Another session's token, even in both places, is refused."""
     create_user("alice")
@@ -160,7 +271,7 @@ def test_csrf_tokens_belong_to_one_session(identity: Api) -> None:
     bob = TestClient(alice.app, base_url=SITE)
     bobs = start(bob, "bob")
 
-    alice.cookies.set("dk_csrf", bobs)
+    alice.cookies.set(CSRF, bobs)
     response = alice.post("/notes", headers={**TRUSTED, "X-CSRF-Token": bobs})
 
     assert (response.status_code, response.json()["code"]) == (403, "csrf_failed")
@@ -176,7 +287,7 @@ def test_tokens_must_be_signed_by_this_service(identity: Api) -> None:
         SECRET_KEY="another-0123456789-abcdefghijklmnopqrstuvwxyz-XYZ"
     ):
         forged = csrf_token(session)
-    client.cookies.set("dk_csrf", forged)
+    client.cookies.set(CSRF, forged)
 
     response = client.post("/notes", headers={**TRUSTED, "X-CSRF-Token": forged})
 
@@ -188,7 +299,7 @@ def stored_tokens_of_cookie(client: TestClient) -> str:
     """The digest of the client's session cookie."""
     from domainkit.contrib.auth.tokens import token_digest
 
-    return token_digest(client.cookies["dk_session"])
+    return token_digest(client.cookies[SESSION])
 
 
 @pytest.mark.parametrize(
@@ -284,6 +395,8 @@ def test_plain_http_in_development_needs_only_the_token(identity: Api) -> None:
             "/auth/session", json={"username": "alice", "password": PASSWORD}
         )
         csrf = response.json()["csrf_token"]
+        # Browsers refuse __Host- cookies that are not Secure.
+        assert set(set_cookies(response)) == {"dk_session", "dk_csrf"}
         assert "Secure" not in set_cookies(response)["dk_session"]
 
         assert client.post("/notes", headers={"X-CSRF-Token": csrf}).status_code == 200
@@ -325,7 +438,7 @@ def test_session_tokens_never_work_as_bearer_tokens(identity: Api) -> None:
     create_user("alice")
     client = browser(identity)
     start(client)
-    raw = client.cookies["dk_session"]
+    raw = client.cookies[SESSION]
 
     response = TestClient(client.app).get("/whoami", headers=bearer(raw))
 
@@ -337,7 +450,7 @@ def test_logging_out_ends_the_session_and_clears_the_cookies(identity: Api) -> N
     alice = create_user("alice")
     client = browser(identity)
     csrf = start(client)
-    session = client.cookies["dk_session"]
+    session = client.cookies[SESSION]
 
     refused = client.delete("/auth/session", headers=TRUSTED)
     response = client.delete("/auth/session", headers={**TRUSTED, "X-CSRF-Token": csrf})
@@ -345,13 +458,13 @@ def test_logging_out_ends_the_session_and_clears_the_cookies(identity: Api) -> N
     assert refused.status_code == 403
     assert response.status_code == 204
     cleared = set_cookies(response)
-    assert set(cleared) == {"dk_session", "dk_csrf"}
+    assert set(cleared) == {SESSION, CSRF}
     assert all("Max-Age=0" in header for header in cleared.values())
     assert stored_tokens(alice) == []
     (logged_out,) = audited("auth.user_logged_out")
     assert logged_out["details"] == {"user_id": str(alice), "everywhere": False}
 
-    stale = TestClient(client.app, base_url=SITE, cookies={"dk_session": session})
+    stale = TestClient(client.app, base_url=SITE, cookies={SESSION: session})
     assert stale.get("/whoami").json() == {"user": "", "scheme": None}
     assert stale.post("/notes").status_code == 401  # Anonymous: no CSRF check.
     assert stale.delete("/auth/session").status_code == 204
@@ -379,7 +492,7 @@ def test_sessions_of_inactive_or_expired_users_are_anonymous(
     deactivate("off")
     assert off.get("/whoami").json()["user"] == ""
     for cookie in ("dkt_short", "not-a-token"):
-        odd = TestClient(client.app, base_url=SITE, cookies={"dk_session": cookie})
+        odd = TestClient(client.app, base_url=SITE, cookies={SESSION: cookie})
         assert odd.get("/whoami").json()["user"] == ""
 
 
@@ -407,7 +520,7 @@ def test_the_csrf_token_can_be_asked_for_again(identity: Api) -> None:
     response = client.get("/auth/session")
 
     fresh = response.json()["csrf_token"]
-    assert client.cookies["dk_csrf"] == fresh
+    assert client.cookies[CSRF] == fresh
     assert (
         client.post("/notes", headers={**TRUSTED, "X-CSRF-Token": fresh}).status_code
         == 200
@@ -449,7 +562,7 @@ def test_websockets_with_the_cookie_need_a_trusted_origin(identity: Api) -> None
     client = browser(identity)
     start(client)
 
-    cookie = {"Cookie": f"dk_session={client.cookies['dk_session']}"}
+    cookie = {"Cookie": f"{SESSION}={client.cookies[SESSION]}"}
 
     # TestClient opens sockets over ws://, which pages over http:// may use.
     same_site = {"Origin": "http://testserver"}

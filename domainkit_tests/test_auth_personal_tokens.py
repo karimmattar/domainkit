@@ -7,11 +7,14 @@ from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from domainkit.clock import freeze_time
 from domainkit.contrib.auth import AuthUnitOfWork, Credentials, User
 from domainkit.contrib.auth.tables import tokens
 from domainkit.contrib.auth.tokens import LAST_USED_EVERY
+from domainkit.contrib.idempotency.tables import idempotency_keys
+from domainkit.db import connections
 from domainkit.management import call_command
 from domainkit.management.base import CommandError, run_async
 from domainkit.testing import TestClient as ClockedClient
@@ -79,6 +82,43 @@ def test_tokens_are_shown_once_and_listed_without_their_value(identity: Api) -> 
     assert client.get("/whoami", headers=bearer(body["token"])).json()["user"] == (
         "alice"
     )
+
+
+def test_new_tokens_are_kept_by_no_cache_and_no_idempotency_key(
+    identity: Api,
+) -> None:
+    """``no-store``: ``IdempotencyMiddleware`` keeps no copy to replay.
+
+    A retry with the same key gets 409, not the token a second time, and
+    the idempotency table never holds a working token.
+    """
+    create_user("alice")
+    client = identity()
+    headers = {**user_session(client), "Idempotency-Key": "k-1"}
+
+    first = make(client, headers)
+    again = make(client, headers)
+
+    assert first.status_code == 201
+    assert first.headers["Cache-Control"] == "no-store"
+    raw = first.json()["token"]
+    assert (again.status_code, again.json()["code"]) == (
+        409,
+        "idempotency_response_unavailable",
+    )
+    assert raw not in again.text
+    assert [raw.encode() in (body or b"") for body in idempotency_bodies()] == [False]
+
+
+def idempotency_bodies() -> list[bytes | None]:
+    """The response bodies the idempotency table keeps."""
+
+    async def read() -> list[bytes | None]:
+        async with connections.engine().connect() as connection:
+            rows = await connection.execute(select(idempotency_keys.c.body))
+            return [row.body for row in rows]
+
+    return run_async(read())
 
 
 def test_scopes_narrow_what_a_token_may_do(identity: Api) -> None:
@@ -462,11 +502,37 @@ def test_scoped_tokens_cannot_change_the_account(identity: Api) -> None:
         client.get("/auth/mfa", headers=scoped),
         client.post("/auth/mfa/totp", json={"password": PASSWORD}, headers=scoped),
         client.get("/scoped/staff", headers=scoped),
+        client.post("/auth/email-verification", headers=scoped),
     ]
 
-    assert [response.status_code for response in refused] == [403] * 5
+    assert [response.status_code for response in refused] == [403] * 6
+    assert client.post("/auth/email-verification", headers=headers).status_code == 202
     assert client.get("/scoped/staff", headers=headers).status_code == 200
     assert client.get("/auth/me", headers=headers).status_code == 200
     assert client.post("/auth/logout", headers=scoped).status_code == 204
     assert client.get("/whoami", headers=scoped).status_code == 401
     assert client.get("/auth/me", headers=headers).status_code == 200
+
+
+def test_me_lists_what_the_credentials_may_do(identity: Api) -> None:
+    """With scopes, only the permissions both the user and the scopes allow."""
+    create_user("alice")
+    create_user("root", is_superuser=True)
+    grant("alice", VIEW, DELETE)
+    client = identity()
+    alice = user_session(client)
+    root = user_session(client, "root")
+
+    def permissions(headers: dict[str, str], **body: Any) -> list[str]:  # noqa: ANN401
+        if body:
+            headers = bearer(make(client, headers, **body).json()["token"])
+        listed: list[str] = client.get("/auth/me", headers=headers).json()[
+            "permissions"
+        ]
+        return listed
+
+    assert permissions(alice) == [DELETE, VIEW]
+    assert permissions(alice, scopes=[VIEW]) == [VIEW]
+    assert permissions(alice, scopes=[]) == []
+    assert {VIEW, DELETE} < set(permissions(root))  # Every permission there is.
+    assert permissions(root, scopes=[DELETE]) == [DELETE]

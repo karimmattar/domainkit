@@ -9,7 +9,10 @@ Mount the router next to the one that logs in::
 - ``GET /tokens`` lists the user's tokens, newest first, by pages: logins,
   browser sessions, and personal tokens, each with when it was last used.
 - ``POST /tokens`` makes an opaque token for a script, limited to
-  ``scopes`` (permission keys the user has) if given, and shows it once.
+  ``scopes`` (permission keys the user has) if given, and shows it once:
+  the answer is marked ``Cache-Control: no-store``, so neither caches nor
+  ``IdempotencyMiddleware`` keep it, and a retry with its idempotency key
+  gets 409 rather than the token again.
 - ``DELETE /tokens/{id}`` revokes one of the user's tokens (a JWT login's
   refresh token takes its login with it).
 
@@ -24,7 +27,7 @@ keeps, never by their value.
 from datetime import datetime, timedelta
 from typing import Annotated, Final
 
-from fastapi import APIRouter, Depends, Path, Query, Request, status
+from fastapi import APIRouter, Depends, Path, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from domainkit.http.errors import APIError
@@ -37,7 +40,7 @@ from domainkit.http.pagination import (
 )
 
 from .access import IsAuthenticated, IsUnscoped, Require
-from .api import _credentials, _errors
+from .api import _credentials, _errors, _no_store
 from .backends import get_all_permissions
 from .events import TokenCreated, TokenRevoked
 from .models import UserId
@@ -132,8 +135,9 @@ async def list_tokens(
     status_code=status.HTTP_201_CREATED,
     responses=_errors(status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN),
 )
-async def create_token(body: TokenIn, request: Request) -> NewToken:
+async def create_token(body: TokenIn, request: Request, response: Response) -> NewToken:
     """Make a personal token, limited to ``scopes`` if given; it is shown once."""
+    _no_store(response)
     user = _credentials(request).user
     scopes = None if body.scopes is None else frozenset(body.scopes)
     if scopes is not None and (

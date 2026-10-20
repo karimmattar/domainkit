@@ -76,7 +76,8 @@ class SubscriptionIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    url: str = Field(max_length=MAX_URL_LENGTH)
+    url: str = Field(max_length=MAX_URL_LENGTH, repr=False)
+    """Hidden from ``repr``, as the subscription's: URLs may hold tokens."""
     event_types: EventTypes
     description: str = Field(default="", max_length=MAX_DESCRIPTION)
     active: bool = True
@@ -87,7 +88,7 @@ class SubscriptionPatch(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    url: str | None = Field(default=None, max_length=MAX_URL_LENGTH)
+    url: str | None = Field(default=None, max_length=MAX_URL_LENGTH, repr=False)
     event_types: EventTypes | None = None
     description: str | None = Field(default=None, max_length=MAX_DESCRIPTION)
     active: bool | None = None
@@ -97,7 +98,7 @@ class SubscriptionOut(BaseModel):
     """A subscription, without its secret."""
 
     id: UUID
-    url: str
+    url: str = Field(repr=False)
     event_types: list[str]
     active: bool
     description: str
@@ -122,13 +123,13 @@ class SubscriptionOut(BaseModel):
 class NewSubscriptionOut(SubscriptionOut):
     """A new subscription and its secret, shown this once."""
 
-    secret: str
+    secret: str = Field(repr=False)
 
 
 class SecretOut(BaseModel):
     """A new secret, shown this once."""
 
-    secret: str
+    secret: str = Field(repr=False)
     previous_valid_until: datetime | None
     """Until then, deliveries carry a signature with the old secret too."""
 

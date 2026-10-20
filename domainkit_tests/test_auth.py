@@ -35,6 +35,7 @@ from domainkit.contrib.auth import (
     BaseBackend,
     GroupNameTaken,
     InvalidPassword,
+    InvalidUsername,
     ModelBackend,
     PasswordHash,
     UnknownPermission,
@@ -626,6 +627,66 @@ def test_deployments_refuse_test_hashers(use_auth: UseAuth) -> None:
     )
 
 
+@pytest.mark.parametrize("environment", ["staging", "production"])
+def test_deployments_refuse_links_over_plain_http(
+    use_auth: UseAuth, environment: str
+) -> None:
+    """Reset, verification, and signup links carry tokens: https only."""
+    deployed = {"ENVIRONMENT": environment, "ALLOWED_HOSTS": ["api.example.com"]}
+    hashers = [f"{AUTH}.hashers.PBKDF2PasswordHasher"]
+    plain = "HTTP://app.example.com/link?token={token}"
+
+    with pytest.raises(ImproperlyConfigured) as refused:
+        use_auth(
+            settings=deployed,
+            PASSWORD_HASHERS=hashers,
+            PASSWORD_RESET_URL=plain,
+            SIGNUP_URL=plain,
+        )
+    for key in ("EMAIL_VERIFICATION_URL", "SIGNUP_URL"):
+        with pytest.raises(ImproperlyConfigured, match=rf"AUTH\.{key} send"):
+            use_auth(settings=deployed, PASSWORD_HASHERS=hashers, **{key: plain})
+    secure = "https://app.example.com/link?token={token}"
+    use_auth(
+        settings=deployed,
+        PASSWORD_HASHERS=hashers,
+        PASSWORD_RESET_URL=secure,
+        EMAIL_VERIFICATION_URL=secure,
+        SIGNUP_URL=secure,
+    )
+    use_auth(settings={"ENVIRONMENT": "test"}, PASSWORD_RESET_URL=plain)
+
+    assert str(refused.value) == (
+        "AUTH.PASSWORD_RESET_URL, AUTH.SIGNUP_URL send links with their tokens "
+        f"over plain HTTP; use https:// in {environment}."
+    )
+
+
+def test_deployments_warn_of_guesses_without_limit(use_auth: UseAuth) -> None:
+    """``LOGIN_RATE`` and ``MFA.RATE`` set to None are warnings there."""
+    deployed = {"ENVIRONMENT": "production", "ALLOWED_HOSTS": ["api.example.com"]}
+    hashers = [f"{AUTH}.hashers.PBKDF2PasswordHasher"]
+
+    use_auth(
+        settings=deployed, PASSWORD_HASHERS=hashers, LOGIN_RATE=None, MFA={"RATE": None}
+    )
+    unlimited = registry.get_domain_config("auth").deployment_warnings()
+    use_auth(settings=deployed, PASSWORD_HASHERS=hashers)
+    limited = registry.get_domain_config("auth").deployment_warnings()
+
+    assert unlimited == [
+        (
+            "AUTH.LOGIN_RATE is None, so passwords can be guessed without limit; "
+            'set it, such as "10/minute".'
+        ),
+        (
+            "AUTH.MFA.RATE is None, so one-time codes can be guessed without "
+            'limit; set it, such as "10/hour".'
+        ),
+    ]
+    assert limited == []
+
+
 def test_declared_permissions_are_checked(monkeypatch: pytest.MonkeyPatch) -> None:
     """Malformed codenames, long names, and clashing keys stop startup."""
 
@@ -845,6 +906,20 @@ def test_users_can_log_in_with_their_email(members: None) -> None:
     again = run(authenticate(username="boss@example.org", password=PASSWORD))
     assert again is not None
     assert again.id == boss.id
+
+
+def test_names_kept_for_erasure_are_refused_for_any_user_model(members: None) -> None:
+    """A model without ``validate_username`` cannot take ``erased-`` names either."""
+
+    async def create(name: str) -> None:
+        async with AuthUnitOfWork() as uow:
+            await uow.users.create_user(name, PASSWORD)
+            await uow.commit()
+
+    for name in ("erased-boss@example.org", "ERASED-boss@example.org"):
+        with pytest.raises(InvalidUsername, match="kept for erased accounts"):
+            run(create(name))
+    run(create("unerased-boss@example.org"))
 
 
 def test_logins_that_rehash_at_once_never_conflict(auth_project: str) -> None:

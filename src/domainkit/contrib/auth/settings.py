@@ -9,6 +9,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    IPvAnyNetwork,
     SecretStr,
     field_validator,
     model_validator,
@@ -88,10 +89,13 @@ class CookieSettings(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
-    NAME: str = Field(default="dk_session", pattern=COOKIE_NAME)
-    """The session cookie: HttpOnly, so scripts never read it."""
-    CSRF_NAME: str = Field(default="dk_csrf", pattern=COOKIE_NAME)
-    """The cookie that hands scripts the CSRF token."""
+    NAME: str | None = Field(default=None, pattern=COOKIE_NAME)
+    """The session cookie: HttpOnly, so scripts never read it. None:
+    ``__Host-dk_session`` where browsers take the prefix (``SECURE``, no
+    ``DOMAIN``, the ``PATH`` ``/``), ``dk_session`` elsewhere."""
+    CSRF_NAME: str | None = Field(default=None, pattern=COOKIE_NAME)
+    """The cookie that hands scripts the CSRF token. None: ``__Host-dk_csrf``
+    or ``dk_csrf``, as ``NAME``."""
     CSRF_HEADER: str = Field(default="X-CSRF-Token", pattern=r"^[A-Za-z0-9-]{1,64}$")
     """The header scripts send the CSRF token back in."""
     SAMESITE: Literal["lax", "strict", "none"] = "lax"
@@ -108,7 +112,7 @@ class CookieSettings(BaseModel):
         """Keep the rules browsers apply to ``__Host-`` and ``SameSite=None``."""
         if self.SAMESITE == "none" and self.SECURE is False:
             raise ValueError('SAMESITE "none" needs SECURE cookies')
-        for name in (self.NAME, self.CSRF_NAME):
+        for name in (self.NAME or "", self.CSRF_NAME or ""):
             if name.startswith("__Host-") and (
                 self.SECURE is False or self.DOMAIN is not None or self.PATH != "/"
             ):
@@ -154,11 +158,16 @@ class ClientCertSettings(BaseModel):
     """Find the user by the certificate's SHA-256 (``addcertificate``), or by
     its subject's common name as the username."""
     HEADER: str | None = Field(default=None, pattern=HEADER_NAME)
-    """The header a trusted proxy puts the URL-encoded PEM in; None: only
-    certificates the server itself checked (the ASGI TLS extension)."""
+    """The header a proxy of ``PROXIES`` puts the URL-encoded PEM in; None:
+    only certificates the server itself checked (the ASGI TLS extension)."""
     VERIFY_HEADER: str | None = Field(default=None, pattern=HEADER_NAME)
     """The header in which the proxy says ``SUCCESS`` if it checked the
     certificate (nginx's ``$ssl_client_verify``)."""
+    PROXIES: tuple[IPvAnyNetwork, ...] = ()
+    """The addresses of the proxies that check certificates and set
+    ``HEADER``: only connections from them may send it. Not
+    ``TRUSTED_PROXIES``, which may hold whole networks: staging and
+    production take single addresses here (``/32``, ``/128``)."""
 
 
 class AuthSettings(BaseModel):
@@ -236,6 +245,9 @@ class AuthSettings(BaseModel):
     """The page that takes a verification link's ``{token}``."""
     SIGNUP_ENABLED: bool = False
     """Let anyone create an account at ``/signup`` (``auth.signup.router``)."""
+    SIGNUP_URL: str | None = None
+    """The page that takes a signup link's ``{token}``; it works for
+    ``EMAIL_VERIFICATION_TIMEOUT``."""
     COOKIE: CookieSettings = CookieSettings()
     """Browser sessions in cookies (``CookieAuthentication``)."""
     MFA: MfaSettings = MfaSettings()
@@ -265,7 +277,7 @@ class AuthSettings(BaseModel):
                 )
         return value
 
-    @field_validator("PASSWORD_RESET_URL", "EMAIL_VERIFICATION_URL")
+    @field_validator("PASSWORD_RESET_URL", "EMAIL_VERIFICATION_URL", "SIGNUP_URL")
     @classmethod
     def _check_link(cls, value: str | None) -> str | None:
         """A link must say where its token goes."""

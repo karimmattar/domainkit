@@ -567,3 +567,15 @@ msgstr ""
 msgctxt "validation"
 msgid "Unable to extract tag using discriminator {discriminator}"
 msgstr ""
+
+#. domainkit.contrib.auth: identity checks
+msgid "Enter one email address, such as user@example.com, without a name."
+msgstr ""
+
+msgid ""
+"An account already uses this username or this address; sign up again "
+"with another username, or log in."
+msgstr ""
+
+msgid "Usernames that start with erased- are kept for erased accounts."
+msgstr ""

@@ -15,12 +15,12 @@ List the class after the classes that read headers, and mount the router::
 
     router.include_router(session_router, prefix="/auth")
 
-``POST /session`` logs in, sets the session cookie (``AUTH.COOKIE.NAME``:
+``POST /session`` logs in, sets the session cookie (``__Host-dk_session``:
 HttpOnly, Secure unless ``DEBUG``, ``SameSite``) and the CSRF cookie
-(readable by scripts), and returns the CSRF token; with a second factor
-it answers 202 with a challenge, and ``POST /session/mfa`` with a code
-finishes. ``GET /session`` returns the token again, and ``DELETE /session``
-logs out and clears both.
+(``__Host-dk_csrf``, readable by scripts), and returns the CSRF token;
+with a second factor it answers 202 with a challenge, and
+``POST /session/mfa`` with a code finishes. ``GET /session`` returns the
+token again, and ``DELETE /session`` logs out and clears both.
 
 A request the session cookie authenticates, with a method other than
 ``GET``, ``HEAD``, or ``OPTIONS``, must come from a trusted origin (its
@@ -33,6 +33,13 @@ Otherwise it gets ``403 csrf_failed``. A WebSocket handshake with the
 cookie must come from a trusted origin. Requests with an ``Authorization``
 header are left to the classes that read it, and a session that ended
 leaves the request anonymous, so a stale cookie never stops a login.
+
+The cookies' names take the ``__Host-`` prefix unless ``AUTH.COOKIE``
+names them, or the prefix cannot hold (cookies that are not Secure, as
+over plain HTTP in ``DEBUG``, or that have a ``DOMAIN`` or another
+``PATH``): browsers then accept them only from this very host, over
+HTTPS, so a sibling subdomain cannot plant a session or a CSRF token
+(cookie tossing).
 """
 
 import secrets
@@ -69,6 +76,10 @@ from .uow import AuthUnitOfWork
 SCHEME: Final = "cookie"
 """``request.auth.scheme`` of requests a session cookie authenticates."""
 WEB_SCHEMES: Final = {"ws": "http", "wss": "https"}
+HOST_PREFIX: Final = "__Host-"
+"""Browsers take a cookie so named only from its host, Secure, on ``/``."""
+SESSION_COOKIE: Final = "dk_session"
+CSRF_COOKIE: Final = "dk_csrf"
 
 router = APIRouter(tags=["auth"])
 
@@ -98,7 +109,7 @@ class CookieAuthentication(BaseAuthentication):
         """
         if "authorization" in connection.headers:
             return None
-        raw = connection.cookies.get(auth_settings().COOKIE.NAME)
+        raw = connection.cookies.get(cookie_names()[0])
         if raw is None or not well_formed(raw, auth_settings().TOKEN_PREFIX):
             return None
         async with AuthUnitOfWork() as uow:
@@ -184,9 +195,8 @@ def check_token(connection: HTTPConnection, session: str) -> None:
     Raises:
         CSRFFailed: It does not.
     """
-    config = auth_settings().COOKIE
-    sent = connection.headers.get(config.CSRF_HEADER)
-    cookie = connection.cookies.get(config.CSRF_NAME)
+    sent = connection.headers.get(auth_settings().COOKIE.CSRF_HEADER)
+    cookie = connection.cookies.get(cookie_names()[1])
     if sent and cookie is not None and constant_time_compare(sent, cookie):
         try:
             _csrf_signer(session).unsign(sent)
@@ -289,7 +299,8 @@ async def log_out(request: Request, response: Response) -> None:
             stored.record(UserLoggedOut(user_id=stored.id, everywhere=False))
             await uow.commit()
     config = auth_settings().COOKIE
-    for name, http_only in ((config.NAME, True), (config.CSRF_NAME, False)):
+    session, csrf = cookie_names()
+    for name, http_only in ((session, True), (csrf, False)):
         response.delete_cookie(
             name,
             path=config.PATH,
@@ -313,7 +324,7 @@ async def start_session(user: AbstractBaseUser, response: Response) -> CsrfOut:
             await uow.commit()
     token = csrf_token(token_digest(raw))
     response.set_cookie(
-        config.NAME,
+        cookie_names()[0],
         raw,
         max_age=int(config.TTL.total_seconds()),
         path=config.PATH,
@@ -330,7 +341,7 @@ def _set_csrf_cookie(response: Response, token: str) -> None:
     """Hand scripts the CSRF token: same scope, readable, for the session's life."""
     config = auth_settings().COOKIE
     response.set_cookie(
-        config.CSRF_NAME,
+        cookie_names()[1],
         token,
         max_age=int(config.TTL.total_seconds()),
         path=config.PATH,
@@ -339,6 +350,27 @@ def _set_csrf_cookie(response: Response, token: str) -> None:
         httponly=False,
         samesite=config.SAMESITE,
     )
+
+
+def cookie_names() -> tuple[str, str]:
+    """The names of the session cookie and the CSRF cookie.
+
+    ``AUTH.COOKIE.NAME`` and ``CSRF_NAME`` when set; otherwise ``dk_session``
+    and ``dk_csrf``, with the ``__Host-`` prefix where it holds
+    (``host_only``).
+    """
+    config = auth_settings().COOKIE
+    prefix = HOST_PREFIX if host_only() else ""
+    return (
+        config.NAME or prefix + SESSION_COOKIE,
+        config.CSRF_NAME or prefix + CSRF_COOKIE,
+    )
+
+
+def host_only() -> bool:
+    """Whether the cookies may take ``__Host-``: Secure, no ``DOMAIN``, ``/``."""
+    config = auth_settings().COOKIE
+    return _secure() and config.DOMAIN is None and config.PATH == "/"
 
 
 def _secure() -> bool:

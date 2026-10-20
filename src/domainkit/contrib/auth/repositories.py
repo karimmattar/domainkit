@@ -34,10 +34,19 @@ from .models import (
     PasswordHash,
     Permission,
     UserId,
+    check_not_reserved,
     erased_username,
+    same_email,
 )
 from .settings import auth_settings
-from .tables import groups, mfa_devices, permissions, recovery_codes, tokens
+from .tables import (
+    groups,
+    mfa_devices,
+    pending_signups,
+    permissions,
+    recovery_codes,
+    tokens,
+)
 from .tokens import (
     LAST_USED_EVERY,
     AuthToken,
@@ -98,25 +107,38 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         """Store a new user, unless privacy erased its username from another.
 
         Raises:
+            InvalidUsername: The name starts with ``erased-``, which erasure
+                keeps for itself (for user models of any kind).
             UsernameTaken: It did: the name stays taken, as a live one is.
         """
+        check_not_reserved(aggregate.get_username())
         if await self.username_erased(aggregate.get_username()):
             field = self.model.USERNAME_FIELD
             raise UsernameTaken(f"The {field} is already taken.", fields=(field,))
         await super()._add(aggregate)
 
     async def find_by_email(self, email: str) -> list[AbstractBaseUser]:
-        """Users whose ``EMAIL_FIELD`` is ``email``, in any case; none without one."""
+        """Users whose ``EMAIL_FIELD`` is ``email``, in any case; none without one.
+
+        Only ASCII letters fold (``same_email``). SQL's ``lower()``, on both
+        sides, finds the candidates: PostgreSQL's folds more than ASCII
+        (the KELVIN SIGN onto ``k``), SQLite's ASCII alone, so the
+        candidates are then compared one by one, the same way everywhere.
+        """
         field = self.model.EMAIL_FIELD
         if field is None or not email.strip():
             return []
         column = get_user_table().c[field]
         statement = (
             select(self.model)
-            .where(func.lower(column) == email.strip().lower())
+            .where(func.lower(column) == func.lower(email.strip()))
             .order_by(get_user_table().c.id)
         )
-        users = list(await self.session.scalars(statement))
+        users = [
+            user
+            for user in await self.session.scalars(statement)
+            if same_email(getattr(user, field), email)
+        ]
         for user in users:
             self._track(user)
         return users
@@ -630,6 +652,87 @@ class MfaStore:
             recovery_codes.c.user_id == user_id, recovery_codes.c.used_at.is_(None)
         )
         return int(await self.session.scalar(statement) or 0)
+
+
+@dataclass(frozen=True, slots=True)
+class PendingSignup:
+    """An account someone asked for at ``/signup``, not made yet.
+
+    Its ``repr`` names its id alone: the rest is personal data, and a hash.
+    """
+
+    id: UUID
+    username: str = dataclasses.field(repr=False)
+    email: str = dataclasses.field(repr=False)
+    password: PasswordHash = dataclasses.field(repr=False)
+    created_at: datetime = dataclasses.field(repr=False)
+    expires_at: datetime = dataclasses.field(repr=False)
+
+    def expired(self, now: datetime | None = None) -> bool:
+        """Whether its link no longer works."""
+        return self.expires_at <= (now or utc_now())
+
+
+class SignupStore:
+    """Pending signups, by id; nothing here makes or reserves an account."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Work in ``session``."""
+        self.session = session
+
+    async def add(
+        self,
+        *,
+        username: str,
+        email: str,
+        password: PasswordHash,
+        ttl: timedelta,
+        now: datetime | None = None,
+    ) -> PendingSignup:
+        """Store an account to make once ``email`` is confirmed, for ``ttl``."""
+        moment = now or utc_now()
+        pending = PendingSignup(
+            id=uuid.uuid4(),
+            username=username,
+            email=email,
+            password=password,
+            created_at=moment,
+            expires_at=moment + ttl,
+        )
+        await self.session.execute(
+            insert(pending_signups).values(
+                {
+                    field.name: getattr(pending, field.name)
+                    for field in dataclasses.fields(pending)
+                }
+            )
+        )
+        return pending
+
+    async def get(self, signup_id: UUID) -> PendingSignup | None:
+        """The pending signup ``signup_id``, expired or not."""
+        row = (
+            await self.session.execute(
+                select(pending_signups).where(pending_signups.c.id == signup_id)
+            )
+        ).first()
+        return None if row is None else PendingSignup(**row._mapping)
+
+    async def remove(self, signup_id: UUID) -> bool:
+        """Delete the pending signup; False if it was gone (taken by another)."""
+        result = await self.session.execute(
+            delete(pending_signups).where(pending_signups.c.id == signup_id)
+        )
+        return _count(result) == 1
+
+    async def clear_expired(self, now: datetime | None = None) -> int:
+        """Delete pending signups whose link no longer works; return how many."""
+        result = await self.session.execute(
+            delete(pending_signups).where(
+                pending_signups.c.expires_at <= (now or utc_now())
+            )
+        )
+        return _count(result)
 
 
 def _count(result: Any) -> int:  # noqa: ANN401 - a CursorResult.
