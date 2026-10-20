@@ -2,6 +2,7 @@
 
 import json
 import logging
+import sys
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
@@ -19,7 +20,8 @@ from domainkit.contrib.messaging.tables import DONE, messages
 from domainkit.contrib.messaging.testing import drain
 from domainkit.contrib.webhooks import delivery as delivery_module
 from domainkit.contrib.webhooks import expose, queue_deliveries, verify
-from domainkit.contrib.webhooks.models import Subscription
+from domainkit.contrib.webhooks.delivery import KEY_LOST
+from domainkit.contrib.webhooks.models import Subscription, SubscriptionId, secret_box
 from domainkit.contrib.webhooks.tables import (
     CANCELLED,
     FAILED,
@@ -50,6 +52,10 @@ SETTINGS: dict[str, Any] = {
     "RETRY_MAX_SECONDS": 0.001,
     "MAX_ATTEMPTS": 3,
 }
+
+
+OLD_KEY = "old-0123456789-abcdefghijklmnopqrstuvwxyz-ABCDEFGHIJ"
+NEW_KEY = "new-0123456789-abcdefghijklmnopqrstuvwxyz-ABCDEFGHIJ"
 
 
 class NoteArchived(NoteWritten):
@@ -87,13 +93,17 @@ async def hooks(webhooks: None) -> AsyncIterator[Receiver]:
     await connections.close_all()
 
 
-async def subscribe(url: str, *event_types: str, active: bool = True) -> Subscription:
-    """Store a subscription."""
-    subscription = Subscription.create(url, "127.0.0.1", event_types, active=active)
+async def subscribe(
+    url: str, *event_types: str, active: bool = True
+) -> tuple[Subscription, str]:
+    """Store a subscription; return it and its secret."""
+    subscription, secret = Subscription.create(
+        url, "127.0.0.1", event_types, active=active
+    )
     async with WebhooksUnitOfWork() as uow:
         await uow.subscriptions.add(subscription)
         await uow.commit()
-    return subscription
+    return subscription, secret
 
 
 async def write_note(event: NoteWritten | None = None) -> NoteWritten:
@@ -115,8 +125,8 @@ async def rows(table: Any) -> list[Any]:  # noqa: ANN401 - a table.
 
 async def test_committed_events_reach_their_subscribers(hooks: Receiver) -> None:
     """One signed delivery per subscription that wants the event, logged."""
-    named = await subscribe(hooks.url("/named"), "note.written")
-    everything = await subscribe(hooks.url("/all"), "*")
+    _, named = await subscribe(hooks.url("/named"), "note.written")
+    _, everything = await subscribe(hooks.url("/all"), "*")
     await subscribe(hooks.url("/other"), "invoice.paid")
     await subscribe(hooks.url("/off"), "*", active=False)
     event = await write_note()
@@ -128,7 +138,7 @@ async def test_committed_events_reach_their_subscribers(hooks: Receiver) -> None
 
     assert drained.failures == []
     assert sorted(request.target for request in hooks.requests) == ["/all", "/named"]
-    secrets = {"/named": named.secret, "/all": everything.secret}
+    secrets = {"/named": named, "/all": everything}
     found = await rows(deliveries)
     assert {row.status for row in found} == {SUCCEEDED}
     ids = {f"msg_{row.id.hex}" for row in found}
@@ -213,10 +223,15 @@ async def test_a_delivery_that_keeps_failing_is_marked_failed(
     assert row.finished_at is not None
     task_rows = [r for r in await rows(messages) if r.kind == "task"]
     assert [r.status for r in task_rows] == [DONE]
-    assert caplog.messages[-1] == (
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "domainkit.contrib.webhooks.delivery"
+    ] == [
         f"Webhook delivery {row.id} to subscription {row.subscription_id} failed "
-        "(attempt 3; giving up): HTTP 500."
-    )
+        f"(attempt {number}; {verdict}): HTTP 500."
+        for number, verdict in ((1, "retrying"), (2, "retrying"), (3, "giving up"))
+    ]
     assert "T0K3N" not in caplog.text
 
 
@@ -243,8 +258,8 @@ async def test_inactive_or_deleted_subscriptions_cancel_their_deliveries(
     hooks: Receiver,
 ) -> None:
     """A delivery whose subscription is off or gone when its turn comes is dropped."""
-    off = await subscribe(hooks.url("/off"), "note.written")
-    gone = await subscribe(hooks.url("/gone"), "note.written")
+    off, _ = await subscribe(hooks.url("/off"), "note.written")
+    gone, _ = await subscribe(hooks.url("/gone"), "note.written")
     await write_note()
     await Worker(queues=["default"]).run_once()  # The fan-out; deliveries wait.
     async with WebhooksUnitOfWork() as uow:
@@ -399,8 +414,7 @@ async def test_a_direct_call_makes_one_final_attempt(hooks: Receiver) -> None:
 
 async def test_rotated_secrets_sign_side_by_side(hooks: Receiver) -> None:
     """During the overlap, deliveries carry both signatures."""
-    subscription = await subscribe(hooks.url(), "note.written")
-    old = subscription.secret
+    subscription, old = await subscribe(hooks.url(), "note.written")
     async with WebhooksUnitOfWork() as uow:
         stored = await uow.subscriptions.get(subscription.id)
         new = stored.rotate_secret(timedelta(hours=1))
@@ -413,6 +427,247 @@ async def test_rotated_secrets_sign_side_by_side(hooks: Receiver) -> None:
     assert len(request.headers["webhook-signature"].split()) == 2
     for secret in (old, new):
         verify(secret, request.headers, request.body)
+
+
+async def stored_secrets(subscription_id: uuid.UUID) -> tuple[bytes, bytes | None]:
+    """The secret and previous secret a subscription's row holds."""
+    async with connections.engine().connect() as connection:
+        row = (
+            await connection.execute(
+                select(subscriptions.c.secret, subscriptions.c.previous_secret).where(
+                    subscriptions.c.id == subscription_id
+                )
+            )
+        ).one()
+    return row.secret, row.previous_secret
+
+
+async def rotate(subscription_id: SubscriptionId) -> str:
+    """Rotate a subscription's secret, with an hour of overlap; return the new one."""
+    async with WebhooksUnitOfWork() as uow:
+        stored = await uow.subscriptions.get(subscription_id)
+        secret = stored.rotate_secret(timedelta(hours=1))
+        await uow.commit()
+    return secret
+
+
+async def test_secrets_are_stored_encrypted(hooks: Receiver) -> None:
+    """The row holds ciphertext bound to it; a delivery decrypts it to sign."""
+    subscription, secret = await subscribe(hooks.url(), "note.written")
+    sealed, previous = await stored_secrets(subscription.id)
+    await write_note()
+
+    await drain(delayed=True)
+
+    (request,) = hooks.requests
+    verify(secret, request.headers, request.body)
+    assert previous is None
+    assert secret.encode() not in sealed
+    assert secret_box().decrypt(sealed, associated=subscription.id.bytes) == (
+        secret.encode(),
+        True,
+    )
+    assert await stored_secrets(subscription.id) == (sealed, None)  # Left as it is.
+
+
+async def test_secrets_no_key_decrypts_fail_their_deliveries(
+    hooks: Receiver, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A tampered secret, or one copied from another row: nothing is sent."""
+    tampered, _ = await subscribe(hooks.url("/tampered"), "note.written")
+    copied, _ = await subscribe(hooks.url("/copied"), "note.written")
+    rotating, _ = await subscribe(hooks.url("/rotating"), "note.written")
+    donor, donor_secret = await subscribe(hooks.url("/donor"), "note.written")
+    await rotate(rotating.id)
+    sealed, _ = await stored_secrets(tampered.id)
+    donor_sealed, _ = await stored_secrets(donor.id)
+    _, previous = await stored_secrets(rotating.id)
+    assert previous is not None
+    async with connections.engine().begin() as connection:
+        for subscription_id, column, value in (
+            (tampered.id, "secret", sealed[:-1] + bytes([sealed[-1] ^ 1])),
+            (copied.id, "secret", donor_sealed),
+            (rotating.id, "previous_secret", previous[:-1] + b"\0"),
+        ):
+            await connection.execute(
+                update(subscriptions)
+                .where(subscriptions.c.id == subscription_id)
+                .values({column: value})
+            )
+    await write_note()
+
+    with caplog.at_level(logging.INFO, "domainkit.contrib.webhooks.delivery"):
+        drained = await drain(delayed=True)
+
+    assert drained.failures == []
+    (request,) = hooks.requests
+    assert request.target == "/donor"
+    verify(donor_secret, request.headers, request.body)
+    found = {row.subscription_id: row for row in await rows(deliveries)}
+    assert found.pop(donor.id).status == SUCCEEDED
+    assert {(row.status, row.attempts, row.last_error) for row in found.values()} == {
+        (FAILED, 0, KEY_LOST)
+    }
+    assert all(row.finished_at is not None for row in found.values())
+    assert len(await rows(attempts)) == 1
+    assert KEY_LOST == (
+        "No key decrypts the subscription's secret: SECRET_KEY changed without "
+        "the old key in SECRET_KEY_FALLBACKS. Put it back, or rotate the secret, "
+        "then replay. Nothing was sent."
+    )
+    assert sorted(str(context["subscription_id"]) for _, context in reported) == sorted(
+        str(subscription_id) for subscription_id in found
+    )
+    assert {text for text, _ in reported} == {"No key decrypts the value."}
+    delivered = {row.id: row.subscription_id for row in await rows(deliveries)}
+    assert sorted(caplog.messages) == sorted(
+        f"Webhook delivery {delivery_id} to subscription {subscription_id} "
+        f"failed: {KEY_LOST}"
+        for delivery_id, subscription_id in delivered.items()
+        if subscription_id != donor.id
+    )
+    assert {record.levelno for record in caplog.records} == {logging.ERROR}
+
+
+async def test_deliveries_encrypt_fallback_key_secrets_again(
+    hooks: Receiver, caplog: pytest.LogCaptureFixture
+) -> None:
+    """After SECRET_KEY changes, with the old key in fallbacks, deliveries verify.
+
+    And move the secrets under the new key, so they outlive the fallback.
+    """
+    with override_settings(SECRET_KEY=OLD_KEY):
+        subscription, old = await subscribe(hooks.url(), "note.written")
+        new = await rotate(subscription.id)
+        before = await stored_secrets(subscription.id)
+    with (
+        override_settings(SECRET_KEY=NEW_KEY, SECRET_KEY_FALLBACKS=[OLD_KEY]),
+        caplog.at_level(logging.DEBUG, "domainkit"),
+    ):
+        await write_note()
+        await drain(delayed=True)
+        after = await stored_secrets(subscription.id)
+        await write_note()
+        await drain(delayed=True)
+        assert await stored_secrets(subscription.id) == after  # Done once.
+    with override_settings(SECRET_KEY=NEW_KEY):  # The fallback is gone.
+        await write_note()
+        await drain(delayed=True)
+        for sealed, secret in zip(after, (new, old), strict=True):
+            assert sealed is not None
+            assert secret_box().decrypt(sealed, associated=subscription.id.bytes) == (
+                secret.encode(),
+                True,
+            )
+
+    assert after[0] != before[0]
+    assert after[1] != before[1]
+    assert len(hooks.requests) == 3
+    for request in hooks.requests:
+        assert len(request.headers["webhook-signature"].split()) == 2
+        for secret in (new, old):
+            verify(secret, request.headers, request.body)
+    assert {row.status for row in await rows(deliveries)} == {SUCCEEDED}
+    assert (
+        f"Encrypted the secrets of webhook subscription {subscription.id} again, "
+        "under SECRET_KEY."
+    ) in caplog.messages
+    for secret in (old, new):
+        assert secret not in caplog.text
+        assert secret.removeprefix("whsec_") not in caplog.text
+
+
+async def test_expired_previous_secrets_are_left_alone(hooks: Receiver) -> None:
+    """A previous secret that no longer signs is neither decrypted nor rewritten."""
+    with override_settings(SECRET_KEY=OLD_KEY):
+        subscription, _ = await subscribe(hooks.url(), "note.written")
+        new = await rotate(subscription.id)
+    async with connections.engine().begin() as connection:
+        await connection.execute(
+            update(subscriptions).values(
+                previous_secret=b"unreadable",
+                previous_secret_expires_at=datetime.now(UTC),
+            )
+        )
+    with override_settings(SECRET_KEY=NEW_KEY, SECRET_KEY_FALLBACKS=[OLD_KEY]):
+        await write_note()
+        await drain(delayed=True)
+
+    (request,) = hooks.requests
+    assert len(request.headers["webhook-signature"].split()) == 1
+    verify(new, request.headers, request.body)
+    assert (await stored_secrets(subscription.id))[1] == b"unreadable"
+
+
+async def test_a_lost_key_fails_deliveries_until_the_secret_is_rotated(
+    hooks: Receiver,
+) -> None:
+    """SECRET_KEY changed with no fallback: deliveries fail, and nothing is sent.
+
+    A rotation drops the secret no key decrypts; a replay then goes out.
+    """
+    with override_settings(SECRET_KEY=OLD_KEY):
+        subscription, _ = await subscribe(hooks.url(), "note.written")
+    await write_note()  # Under the tests' SECRET_KEY: OLD_KEY is lost.
+
+    await drain(delayed=True)
+
+    (failed,) = await rows(deliveries)
+    assert (failed.status, failed.attempts, failed.last_error) == (
+        FAILED,
+        0,
+        KEY_LOST,
+    )
+    assert hooks.requests == []
+    secret = await rotate(subscription.id)
+    assert (await stored_secrets(subscription.id))[1] is None
+    assert await delivery_module.replay([failed.id]) == [failed.id]
+    await drain(delayed=True)
+    (request,) = hooks.requests
+    assert len(request.headers["webhook-signature"].split()) == 1
+    verify(secret, request.headers, request.body)
+    assert (await rows(deliveries))[0].status == SUCCEEDED
+
+
+async def test_reencryption_leaves_secrets_a_rotation_replaced(hooks: Receiver) -> None:
+    """Only the value that was decrypted is replaced, in its own row."""
+    subscription, _ = await subscribe(hooks.url(), "*")
+    other, _ = await subscribe(hooks.url(), "*")
+    sealed, _ = await stored_secrets(subscription.id)
+    engine = connections.engine()
+    async with engine.begin() as connection:  # A copy, which would not decrypt.
+        await connection.execute(
+            update(subscriptions)
+            .where(subscriptions.c.id == other.id)
+            .values(secret=sealed)
+        )
+
+    await delivery_module._reseal(engine, subscription.id, {"secret": (b"x", b"new")})
+    assert await stored_secrets(subscription.id) == (sealed, None)
+    await delivery_module._reseal(engine, subscription.id, {"secret": (sealed, b"new")})
+    assert await stored_secrets(subscription.id) == (b"new", None)
+    assert await stored_secrets(other.id) == (sealed, None)
+
+
+async def test_finishing_a_delivery_closes_that_pending_one_only(
+    hooks: Receiver,
+) -> None:
+    """Other deliveries, and finished ones, are left as they are."""
+    await subscribe(hooks.url(), "*")
+    await subscribe(hooks.url(), "*")
+    await queue_deliveries("x", {}, key="k", occurred_at=datetime.now(UTC))
+    first, second = (row.id for row in await rows(deliveries))
+    engine = connections.engine()
+    async with engine.begin() as connection:
+        await connection.execute(
+            update(deliveries).where(deliveries.c.id == second).values(status=SUCCEEDED)
+        )
+
+    await delivery_module._finish(engine, second, CANCELLED, "late")
+    await delivery_module._finish(engine, first, CANCELLED, "gone")
+
+    found = {row.id: (row.status, row.last_error) for row in await rows(deliveries)}
+    assert found == {first: (CANCELLED, "gone"), second: (SUCCEEDED, None)}
 
 
 async def test_old_finished_deliveries_are_purged(
@@ -477,6 +732,40 @@ def test_webhooks_need_messaging(database_url: str) -> None:
     ):
         setup()
     registry.clear()
+
+
+def test_webhooks_need_a_secret_key_and_cryptography(
+    database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Subscription secrets are encrypted under a key derived from SECRET_KEY."""
+    installed = {
+        "INSTALLED_DOMAINS": [MESSAGING, WEBHOOKS],
+        "DATABASES": {"default": {"URL": database_url}},
+        "ALPHA": UNSET,
+    }
+    registry.clear()
+    with (
+        override_settings(**installed, SECRET_KEY=None),
+        pytest.raises(ImproperlyConfigured) as no_key,
+    ):
+        setup()
+    registry.clear()
+    monkeypatch.setitem(sys.modules, "cryptography", None)
+    with (
+        override_settings(**installed),
+        pytest.raises(ImproperlyConfigured) as no_cryptography,
+    ):
+        setup()
+    registry.clear()
+
+    assert str(no_key.value) == (
+        "domainkit.contrib.webhooks encrypts subscription secrets under a key "
+        "derived from SECRET_KEY: set SECRET_KEY."
+    )
+    assert str(no_cryptography.value) == (
+        "domainkit.contrib.webhooks encrypts subscription secrets with "
+        'cryptography: pip install "domainkit[webhooks]".'
+    )
 
 
 DEPLOYED: dict[str, Any] = {

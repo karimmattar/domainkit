@@ -1,7 +1,10 @@
 """Subscriptions: where events are sent, which ones, and the secret that signs them.
 
 The secret never appears in a repr, an event, a log line, or a listing: it
-is shown once, when it is made.
+is shown once, when it is made. The table holds it encrypted
+(``domainkit.encryption``, under a key derived from ``SECRET_KEY``) and
+bound to its subscription's id, so a value copied to another row does not
+decrypt. Deliveries decrypt it to sign; a rotation, to carry it over.
 """
 
 import re
@@ -13,6 +16,7 @@ from uuid import UUID, uuid4
 
 from domainkit import clock
 from domainkit.ddd import AggregateRoot, BusinessRuleViolation, DomainEvent, NotFound
+from domainkit.encryption import DecryptionFailed, SecretBox
 
 from .signing import new_secret
 
@@ -23,6 +27,8 @@ ALL_EVENTS: Final = "*"
 EVENT_TYPE: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 MAX_EVENT_TYPES: Final = 50
 MAX_DESCRIPTION: Final = 255
+SECRET_PURPOSE: Final = "domainkit.webhooks.secret"  # noqa: S105 - a purpose.
+"""What the key that encrypts subscription secrets is derived for."""
 
 
 class SubscriptionNotFound(NotFound):
@@ -85,16 +91,22 @@ def _now() -> datetime:
     return clock.now()
 
 
+def secret_box() -> SecretBox:
+    """The box subscription secrets are encrypted in (needs ``SECRET_KEY``)."""
+    return SecretBox(SECRET_PURPOSE)
+
+
 class Subscription(AggregateRoot[SubscriptionId]):
     """A URL that receives the events it names, signed with its secret."""
 
     url: str
     event_types: list[str]
-    secret: str = field(repr=False)
+    secret: bytes = field(repr=False)
+    """The signing secret, encrypted and bound to the id (``secret_box``)."""
     active: bool = True
     description: str = ""
-    previous_secret: str | None = field(default=None, repr=False)
-    """The secret before the last rotation, still used until it expires."""
+    previous_secret: bytes | None = field(default=None, repr=False)
+    """The secret before the last rotation, encrypted; it signs until it expires."""
     previous_secret_expires_at: datetime | None = None
     created_at: datetime = field(default_factory=_now)
 
@@ -107,13 +119,21 @@ class Subscription(AggregateRoot[SubscriptionId]):
         description: str = "",
         *,
         active: bool = True,
-    ) -> Self:
-        """Subscribe ``url`` (checked by the caller) with a new secret."""
+    ) -> tuple[Self, str]:
+        """Subscribe ``url`` (checked by the caller) with a new secret.
+
+        Returns:
+            The subscription, and its secret: shown this once, stored encrypted.
+        """
+        subscription_id = SubscriptionId(uuid4())
+        secret = new_secret()
         subscription = cls(
-            id=SubscriptionId(uuid4()),
+            id=subscription_id,
             url=url,
             event_types=checked_event_types(event_types),
-            secret=new_secret(),
+            secret=secret_box().encrypt(
+                secret.encode(), associated=subscription_id.bytes
+            ),
             active=active,
             description=_description(description),
         )
@@ -124,7 +144,7 @@ class Subscription(AggregateRoot[SubscriptionId]):
                 event_types=tuple(subscription.event_types),
             )
         )
-        return subscription
+        return subscription, secret
 
     def wants(self, event_type: str) -> bool:
         """Whether this subscription receives ``event_type`` events."""
@@ -162,19 +182,33 @@ class Subscription(AggregateRoot[SubscriptionId]):
             )
 
     def rotate_secret(self, overlap: timedelta) -> str:
-        """Make a new secret and return it; the old one signs for ``overlap`` more."""
-        self.previous_secret = self.secret if overlap > timedelta(0) else None
-        self.previous_secret_expires_at = (
-            _now() + overlap if overlap > timedelta(0) else None
-        )
-        self.secret = new_secret()
-        self.record(SubscriptionSecretRotated(subscription_id=self.id))
-        return self.secret
+        """Make a new secret and return it; the old one signs for ``overlap`` more.
 
-    def signing_secrets(self, now: datetime) -> list[str]:
-        """The secrets a delivery made at ``now`` is signed with."""
-        return signing_secrets(
-            self.secret, self.previous_secret, self.previous_secret_expires_at, now
+        The old secret is encrypted again, under the current key. One that no
+        longer decrypts (``SECRET_KEY`` changed with no fallback) is dropped:
+        nothing can sign with it.
+        """
+        box = secret_box()
+        associated = self.id.bytes
+        previous = None
+        if overlap > timedelta(0):
+            try:
+                old, _ = box.decrypt(self.secret, associated=associated)
+            except DecryptionFailed:
+                pass  # Lost with its key.
+            else:
+                previous = box.encrypt(old, associated=associated)
+        self.previous_secret = previous
+        self.previous_secret_expires_at = None if previous is None else _now() + overlap
+        secret = new_secret()
+        self.secret = box.encrypt(secret.encode(), associated=associated)
+        self.record(SubscriptionSecretRotated(subscription_id=self.id))
+        return secret
+
+    def rotating(self, now: datetime) -> bool:
+        """Whether the previous secret still signs deliveries made at ``now``."""
+        return previous_signs(
+            self.previous_secret, self.previous_secret_expires_at, now
         )
 
     def delete(self) -> None:
@@ -182,20 +216,15 @@ class Subscription(AggregateRoot[SubscriptionId]):
         self.record(SubscriptionDeleted(subscription_id=self.id))
 
 
-def signing_secrets(
-    secret: str,
-    previous: str | None,
-    previous_expires_at: datetime | None,
-    now: datetime,
-) -> list[str]:
-    """The current secret, and the previous one until it expires."""
-    if (
+def previous_signs(
+    previous: bytes | None, previous_expires_at: datetime | None, now: datetime
+) -> bool:
+    """Whether a previous secret signs, beside the current one, at ``now``."""
+    return (
         previous is not None
         and previous_expires_at is not None
         and now < previous_expires_at
-    ):
-        return [secret, previous]
-    return [secret]
+    )
 
 
 def _description(text: str) -> str:

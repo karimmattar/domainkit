@@ -7,6 +7,10 @@ one ``deliver`` task each, in a single transaction. Each attempt signs the
 body anew and is logged (status code, latency, error). A failed attempt is
 retried with the task's backoff, up to ``WEBHOOKS.MAX_ATTEMPTS``; then the
 delivery is marked failed, and ``webhooks replay`` can send it again.
+
+Each attempt decrypts the secrets it signs with, and stores again those a
+key in ``SECRET_KEY_FALLBACKS`` encrypted, under ``SECRET_KEY``. A secret
+no key decrypts fails the delivery: nothing is sent unsigned.
 """
 
 import json
@@ -18,7 +22,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
 from pydantic_core import to_jsonable_python
-from sqlalchemy import Executable, delete, insert, select, update
+from sqlalchemy import Executable, Row, delete, insert, select, update
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -37,11 +41,12 @@ from domainkit.contrib.messaging.settings import MessagingSettings
 from domainkit.db import connections
 from domainkit.db.routing import router
 from domainkit.ddd import DomainEvent, EventBus, event_bus
+from domainkit.encryption import DecryptionFailed
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.reporting import report_error
 
 from . import client
-from .models import ALL_EVENTS, EVENT_TYPE, signing_secrets
+from .models import ALL_EVENTS, EVENT_TYPE, previous_signs, secret_box
 from .settings import WebhookSettings
 from .signing import signed_headers
 from .tables import (
@@ -65,6 +70,11 @@ DATABASE_MARGIN: Final = 30.0
 NAMESPACE: Final = uuid.UUID("5d0a6c2e-6a43-4e58-9a59-5f1e3c3bd2a1")
 """Delivery ids are derived from the event and subscription in this namespace."""
 PURGE_BATCH: Final = 1000
+KEY_LOST: Final = (
+    "No key decrypts the subscription's secret: SECRET_KEY changed without the "
+    "old key in SECRET_KEY_FALLBACKS. Put it back, or rotate the secret, then "
+    "replay. Nothing was sent."
+)
 
 type Payload = Callable[[Any], Mapping[str, Any]]
 
@@ -281,17 +291,23 @@ async def deliver(delivery_id: uuid.UUID) -> None:
         )
         return
     started = _now()
+    try:
+        secrets, stale = _unsealed(subscription, started)
+    except DecryptionFailed as exc:  # Never send it unsigned.
+        await _finish(engine, delivery_id, FAILED, KEY_LOST)
+        logger.error(
+            "Webhook delivery %s to subscription %s failed: %s",
+            delivery_id,
+            subscription.id,
+            KEY_LOST,
+        )
+        report_error(exc, subscription_id=str(subscription.id))
+        return
+    if stale:
+        await _reseal(engine, subscription.id, stale)
     body = delivery.body.encode()
     headers = signed_headers(
-        signing_secrets(
-            subscription.secret,
-            subscription.previous_secret,
-            subscription.previous_secret_expires_at,
-            started,
-        ),
-        f"msg_{delivery_id.hex}",
-        int(started.timestamp()),
-        body,
+        secrets, f"msg_{delivery_id.hex}", int(started.timestamp()), body
     )
     outcome = await client.post(
         subscription.url, body, headers, config, allow_http=settings.DEBUG
@@ -312,6 +328,57 @@ async def deliver(delivery_id: uuid.UUID) -> None:
     )
     if not final:
         raise DeliveryFailed(outcome.error or "The attempt failed.")
+
+
+def _unsealed(
+    subscription: Row[Any], now: datetime
+) -> tuple[list[str], dict[str, tuple[bytes, bytes]]]:
+    """Decrypt the secrets a delivery made at ``now`` is signed with.
+
+    Returns:
+        The secrets, and for each column a fallback key encrypted, its value
+        and the value encrypted again under ``SECRET_KEY``.
+
+    Raises:
+        DecryptionFailed: no key decrypts one of them.
+    """
+    box = secret_box()
+    associated = subscription.id.bytes
+    columns = ["secret"]
+    if previous_signs(
+        subscription.previous_secret, subscription.previous_secret_expires_at, now
+    ):
+        columns.append("previous_secret")
+    secrets: list[str] = []
+    stale: dict[str, tuple[bytes, bytes]] = {}
+    for column in columns:
+        sealed = subscription._mapping[column]
+        plaintext, current = box.decrypt(sealed, associated=associated)
+        secrets.append(plaintext.decode())
+        if not current:
+            stale[column] = (sealed, box.encrypt(plaintext, associated=associated))
+    return secrets, stale
+
+
+async def _reseal(
+    engine: AsyncEngine,
+    subscription_id: uuid.UUID,
+    stale: Mapping[str, tuple[bytes, bytes]],
+) -> None:
+    """Store secrets encrypted again, unless a rotation replaced them meanwhile."""
+    async with engine.begin() as connection:
+        await connection.execute(
+            update(subscriptions)
+            .where(
+                subscriptions.c.id == subscription_id,
+                *(subscriptions.c[column] == old for column, (old, _) in stale.items()),
+            )
+            .values({column: new for column, (_, new) in stale.items()})
+        )
+    logger.info(
+        "Encrypted the secrets of webhook subscription %s again, under SECRET_KEY.",
+        subscription_id,
+    )
 
 
 async def _record(
@@ -355,7 +422,7 @@ async def _record(
 async def _finish(
     engine: AsyncEngine, delivery_id: uuid.UUID, status: str, error: str
 ) -> None:
-    """Close a pending delivery without an attempt."""
+    """Close a pending delivery without sending it."""
     async with engine.begin() as connection:
         await connection.execute(
             update(deliveries)
