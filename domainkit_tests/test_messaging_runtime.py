@@ -10,6 +10,7 @@ regression fails instead of hanging.
 import asyncio
 import gc
 import io
+import json
 import logging
 import uuid
 import weakref
@@ -19,7 +20,7 @@ from typing import Any, Final
 
 import pytest
 from prometheus_client import REGISTRY
-from sqlalchemy import event, update
+from sqlalchemy import event, select, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -515,7 +516,9 @@ async def test_a_cut_short_publication_gives_its_messages_back_at_once() -> None
     await within(broker.arrived.wait())
 
     (row,) = await rows()
-    assert 0 < seconds_left(row) <= broker.publish_timeout + LEASE_MARGIN
+    # Longer than the publication may take, so it never expires under way.
+    assert broker.publish_timeout < seconds_left(row)
+    assert seconds_left(row) <= broker.publish_timeout + LEASE_MARGIN
     relaying.cancel()
     with pytest.raises(asyncio.CancelledError):
         await within(relaying)
@@ -523,6 +526,28 @@ async def test_a_cut_short_publication_gives_its_messages_back_at_once() -> None
     (row,) = await rows()
     assert (row["lock_id"], row["locked_until"]) == (None, None)
     assert await Worker().relay(MemoryBroker(), 10) == 1
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_round_never_unlocks_a_message_a_consumer_took_over() -> None:
+    """Delivered, then refused: the consumer's lock stays, only the relay's goes."""
+    await enqueue(remember, value=uuid.uuid4())
+    worker = Worker()
+    taken: list[Claimed | None] = []
+
+    class Unconfirmed(MemoryBroker):
+        async def publish(self, queue: str, body: bytes, *, message_id: str) -> None:
+            pointer = json.loads(body)
+            message, lock = uuid.UUID(pointer["id"]), uuid.UUID(pointer["lock"])
+            taken.append(await worker.take_over(message, lock))  # A fast consumer.
+            raise BrokerUnavailable("no confirmation")
+
+    assert await within(worker.relay(Unconfirmed(), 10)) == 0
+
+    (claimed,) = taken
+    assert claimed is not None
+    (row,) = await rows()
+    assert row["lock_id"] == claimed.lock_id
 
 
 @pytest.mark.usefixtures("tables")
@@ -620,7 +645,8 @@ async def test_a_give_back_that_fails_leaves_the_lease_to_expire(
     assert cause is not None
     assert cause[0] is (ConnectionError if failure == "error" else TimeoutError)
     (row,) = await rows()
-    assert 0 < seconds_left(row) <= MemoryBroker.publish_timeout + LEASE_MARGIN
+    lease = MemoryBroker.publish_timeout + LEASE_MARGIN
+    assert MemoryBroker.publish_timeout < seconds_left(row) <= lease
 
 
 # Chunked rounds -------------------------------------------------------------------
@@ -1423,7 +1449,13 @@ async def test_cleanup_runs_on_its_own_schedule_and_outlives_failures(
 ) -> None:
     """Failures are logged and retried; a run that works says so, and stops on stop."""
     await finished_long_ago(1)
-    monkeypatch.setattr(worker_module._random, "uniform", lambda low, high: low)
+    jitters: list[tuple[float, float]] = []
+
+    def lowest(low: float, high: float) -> float:
+        jitters.append((low, high))
+        return low
+
+    monkeypatch.setattr(worker_module._random, "uniform", lowest)
     config = {**FAST, "POLL_INTERVAL": 0.01, "CLEANUP_INTERVAL": 0.01}
     worker = Worker(MessagingSettings(**config))
     stop = asyncio.Event()
@@ -1457,6 +1489,7 @@ async def test_cleanup_runs_on_its_own_schedule_and_outlives_failures(
         "Cleaning up the outbox of 'default' works again after 2 failures",
         "Deleted 1 finished message(s) from the outbox of 'default'",
     ]
+    assert jitters == [(0.5, 1.0)]  # The first run: half to all of its wait.
 
 
 @pytest.mark.usefixtures("tables")
@@ -1630,6 +1663,43 @@ async def test_a_lost_listener_listens_again(caplog: pytest.LogCaptureFixture) -
         "polling until listening again in 0.01s"
     )
     assert back == "Listening for new messages in 'default' again after 1 failures"
+
+
+@pytest.mark.usefixtures("tables")
+async def test_an_idle_worker_claims_only_when_woken(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wake-up costs one claim, then the worker waits again: it never spins."""
+    if not postgres():
+        return  # Only a poll or the stop wakes it; see the PostgreSQL run.
+    claims = 0
+    claim = Worker.claim
+    listening = asyncio.Event()
+    recovered = worker_module.Outage.recovered
+
+    async def counting(self: Worker, limit: int) -> list[Claimed]:
+        nonlocal claims
+        claims += 1
+        return await claim(self, limit)
+
+    def heard(self: worker_module.Outage) -> None:
+        if self.doing.startswith("listen"):
+            listening.set()  # Then the listener wakes the worker once.
+        recovered(self)
+
+    monkeypatch.setattr(Worker, "claim", counting)
+    monkeypatch.setattr(worker_module.Outage, "recovered", heard)
+    worker = Worker(MessagingSettings(**{**FAST, "POLL_INTERVAL": 120}))
+    stop = asyncio.Event()
+    running = asyncio.create_task(worker.run(stop))
+    await within(listening.wait())
+    async with connections.engine().connect() as connection:
+        for _ in range(100):  # Time passes, as round trips; nothing commits.
+            await connection.execute(select(1))
+    stop.set()
+    await within(running)
+
+    assert claims <= 2  # On starting, and on the listener's first wake-up.
 
 
 @pytest.mark.usefixtures("tables")
@@ -1898,6 +1968,35 @@ async def test_a_relay_that_will_not_stop_is_cancelled(
 
     (row,) = await rows()
     assert (row["lock_id"], row["locked_until"]) == (None, None)
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_stopping_worker_lets_its_cleanup_finish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stop gives the worker's helpers HELPER_GRACE to finish, uncancelled."""
+    await finished_long_ago(3)
+    monkeypatch.setattr(worker_module, "CLEANUP_START", 0.0)
+    config = {**FAST, "CLEANUP_BATCH_SIZE": 1, "POLL_INTERVAL": 30}
+    worker = Worker(MessagingSettings(**config))
+    stop, winding = asyncio.Event(), asyncio.Event()
+    clean = worker._clean
+    wind_down = worker_module.wind_down
+
+    async def under_way(stopping: asyncio.Event | None) -> int:
+        stop.set()
+        await winding.wait()
+        return await clean(None)  # A step that started before the stop.
+
+    async def watched(tasks: Any, grace: float) -> None:  # noqa: ANN401
+        winding.set()
+        await wind_down(tasks, grace)
+
+    monkeypatch.setattr(worker, "_clean", under_way)
+    monkeypatch.setattr(worker_module, "wind_down", watched)
+    await within(worker.run(stop))
+
+    assert await rows() == []
 
 
 @pytest.mark.usefixtures("tables")
