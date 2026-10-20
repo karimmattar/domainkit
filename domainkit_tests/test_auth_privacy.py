@@ -1,5 +1,7 @@
 """Users' data out of the service: fixtures never hold secrets; privacy requests."""
 
+import hashlib
+import hmac
 import io
 import json
 from collections.abc import Iterator
@@ -254,8 +256,11 @@ def test_an_erased_username_stays_taken(private: Api) -> None:
     alice = create_user("alice", email="alice@example.com")
     run_async(erase_subject(str(alice)))
 
-    with pytest.raises(UsernameTaken, match=r"^The username is already taken\.$"):
+    with pytest.raises(
+        UsernameTaken, match=r"^The username is already taken\.$"
+    ) as refused:
         create_user("alice")
+    assert refused.value.fields == ("username",)
     with pytest.raises(UsernameTaken):
         create_user("ALICE")
 
@@ -280,6 +285,8 @@ def test_erased_usernames_are_keyed_digests() -> None:
 
     erased = erased_username("Alice", key=key)
 
+    digest = hmac.new(key, b"alice", hashlib.sha256).hexdigest()
+    assert erased == f"erased-{digest[:32]}"
     assert erased == erased_username("alice", key=key)
     assert erased == erased_username("\uff41lice", key=key)  # Full-width a.
     assert erased != erased_username("alice", key=other)
