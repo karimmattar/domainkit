@@ -41,7 +41,9 @@ every database the settings name, so they refuse settings whose
 
 The async fixtures need async tests run by AnyIO (``pytest.mark.anyio``).
 Memory caches (``memory://``) are emptied before every test, so no test
-sees what another one cached. Redis caches are left alone.
+sees what another one cached. Redis caches are left alone. Error reports
+and queued logs are sent before the next test starts; call
+``domainkit.reporting.flush_reports()`` before checking what a test reported.
 """
 
 import os
@@ -55,7 +57,9 @@ from domainkit.clock import FrozenClock, Moment, freeze_time
 from domainkit.conf.env import project_prefix
 from domainkit.db.snapshots import Snapshot, restore_snapshot, take_snapshot
 from domainkit.http import get_asgi_application
+from domainkit.log import flush_logs
 from domainkit.management.base import run_async
+from domainkit.reporting import flush_reports
 
 from .clients import AsyncTestClient, TestClient, user_token
 from .databases import IN_MEMORY, migrated_database, worker_id
@@ -113,6 +117,18 @@ def pytest_configure(config: pytest.Config) -> None:
 def empty_memory_caches() -> None:
     """Start every test with empty memory caches."""
     caches.reset()
+
+
+@pytest.fixture(autouse=True)
+def reports_and_logs_written() -> Iterator[None]:
+    """Send a test's error reports, and write its logs, before the next test.
+
+    Reporters and log handlers run on threads of their own; this keeps what
+    one test reported out of the next one's assertions.
+    """
+    yield
+    flush_reports()
+    flush_logs()
 
 
 @pytest.fixture(scope="session")

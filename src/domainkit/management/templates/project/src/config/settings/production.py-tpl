@@ -13,7 +13,10 @@ the key, move the old one to {{ prefix }}SECRET_KEY_FALLBACKS until what it
 signed has expired. The API docs
 are off, browsers are told to use HTTPS only, and callers are rate limited;
 {{ prefix }}API_DOCS, {{ prefix }}SECURE_HSTS_SECONDS, and {{ prefix }}RATE_LIMIT change that.
+Logs are JSON lines on stdout, at {{ prefix }}LOG_LEVEL (INFO unless set).
 """
+
+from domainkit.log import build_logging_config
 
 from config.settings.base import *
 from config.settings.base import env
@@ -33,3 +36,4 @@ SECURE_HSTS_SECONDS = env.int("SECURE_HSTS_SECONDS", 31_536_000)  # A year.
 # Counted per process; behind several replicas, count in Redis:
 # RATE_LIMIT_BACKEND = "domainkit.http.ratelimit.RedisBackend"
 RATE_LIMIT = env.str("RATE_LIMIT", "300/minute")
+LOGGING = build_logging_config(log_format="json", level=env.str("LOG_LEVEL", "INFO"))

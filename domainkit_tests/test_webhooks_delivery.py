@@ -35,6 +35,7 @@ from domainkit.contrib.webhooks.uow import WebhooksUnitOfWork
 from domainkit.db import connections
 from domainkit.ddd import DomainEvent
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.reporting import flush_reports
 from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork, NoteWritten, notes
 from domainkit_tests.test_messaging import FAST, reported
 from domainkit_tests.test_webhooks import FakeResolver, Receiver
@@ -307,6 +308,7 @@ async def test_oversized_events_are_reported_and_dropped(
 
     assert await rows(deliveries) == []
     assert {row.status for row in await rows(messages)} == {DONE}
+    flush_reports()  # Reporters run on their own thread.
     ((text, context),) = reported
     assert text.startswith("The note.written webhook body has 300")
     assert context == {"event_type": "note.written"}
@@ -515,6 +517,7 @@ async def test_secrets_no_key_decrypts_fail_their_deliveries(
         "the old key in SECRET_KEY_FALLBACKS. Put it back, or rotate the secret, "
         "then replay. Nothing was sent."
     )
+    flush_reports()  # Reporters run on their own thread.
     assert sorted(str(context["subscription_id"]) for _, context in reported) == sorted(
         str(subscription_id) for subscription_id in found
     )

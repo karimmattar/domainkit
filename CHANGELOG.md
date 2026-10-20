@@ -13,6 +13,29 @@ All notable changes to domainkit. The format follows
   `EVENT_LOOP` (`auto`, `asyncio`, `uvloop`) chooses, and
   `domainkit.utils.loops.loop_factory` gives other entry points the same
   loop (ASYNC-25).
+- `domainkit.log.BackgroundHandler` and `BackgroundListener`: log records
+  go on a bounded queue and a thread writes them, so a blocked stdout,
+  file, or socket never stops the event loop. A full queue drops records
+  and counts them, and says how many once there is room. `flush_logs()`
+  waits for what is queued (ASYNC-10; ADR 0051).
+- `domainkit.reporting.flush_reports()` waits for error reports still
+  waiting for the reporting thread, as tests do before checking what a
+  reporter received; the pytest plugin calls it, and `flush_logs()`,
+  after every test.
+
+### Changed
+
+- `build_logging_config` writes through `BackgroundHandler`, with a queue
+  of 10,000 records (`queue_size`; `None` keeps writing on the caller's
+  thread), and the settings `init` writes now configure logging with it:
+  text lines, JSON lines in production, at `<PREFIX>LOG_LEVEL`. Lines are
+  written a moment after the call; shutdown waits up to 5 seconds for
+  them.
+- Error reporters run on a reporting thread, in a copy of the caller's
+  context, instead of inside the request: `report_error` returns at once,
+  and at most 100 reports wait (more are dropped and counted). Shutdown
+  waits up to 5 seconds for them. Tests that check a reporter call
+  `flush_reports()` first (ASYNC-10).
 
 ## [0.7.0] - 2026-10-20
 

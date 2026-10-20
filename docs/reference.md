@@ -46,8 +46,8 @@ URLs; an unreadable port is refused without quoting the URL.
 | `ROOT_ROUTER` | `None` | Dotted path to the `APIRouter` that mounts every route (Django's `ROOT_URLCONF`). |
 | `ASGI_APPLICATION` | `None` | `module:attribute` that `runserver` serves. |
 | `EVENT_LOOP` | `"auto"` | The event loop of `runserver` and of commands with an `async` handle (`runworker` among them): uvloop when the `uvloop` extra is installed (`auto`), always asyncio's own (`asyncio`), or uvloop or a configuration error (`uvloop`). |
-| `LOGGING` | minimal | A `logging.config.dictConfig` mapping, applied by `setup()`. |
-| `ERROR_REPORTERS` | `()` | Callables `(exc, context) -> None` by dotted path, called for every unexpected error (500s, dead-lettered messages). A reporter that raises is logged and skipped. |
+| `LOGGING` | minimal | A `logging.config.dictConfig` mapping, applied by `setup()`. `domainkit.log.build_logging_config(log_format="json", level="INFO")` makes one that writes from a thread, through a bounded queue ([runtime.md](runtime.md#logging-and-error-reports)); the settings `init` writes use it. |
+| `ERROR_REPORTERS` | `()` | Callables `(exc, context) -> None` by dotted path, called for every unexpected error (500s, dead-lettered messages), on a reporting thread and in the caller's context; 100 reports may wait, and more are dropped and counted. A reporter that raises is logged and skipped. |
 
 ### Databases and migrations
 
@@ -525,6 +525,9 @@ Times need a time zone; a date means midnight UTC.
 
 **Logs** are JSON lines with `request_id`, and with `trace_id` and `span_id`
 when a span is active. Query strings and bound SQL values are never logged.
+They are written by a thread, never by the event loop; a burst past the
+queue's 10,000 records is dropped and counted, never waited for
+([runtime.md](runtime.md#logging-and-error-reports)).
 
 **Metrics** (`domainkit[metrics]`, mounted at `/metrics`):
 

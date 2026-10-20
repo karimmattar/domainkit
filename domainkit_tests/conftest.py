@@ -33,6 +33,7 @@ from domainkit.contrib.messaging import registry as task_registry
 from domainkit.ddd import event_bus
 from domainkit.http import get_asgi_application, metrics
 from domainkit.management import call_command
+from domainkit.reporting import flush_reports
 from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
 
 type MakePackage = Callable[[str, dict[str, str]], Path]
@@ -181,12 +182,22 @@ def on_server(url: str, statement: str) -> None:
 
 @pytest.fixture
 def restore_logging() -> Iterator[None]:
-    """Undo ``dictConfig`` changes to the root logger."""
+    """Undo ``dictConfig`` changes to the root logger, and end its threads."""
     root = logging.getLogger()
     handlers, level = root.handlers[:], root.level
     yield
+    for handler in root.handlers:
+        if handler not in handlers:
+            handler.close()
     root.handlers[:] = handlers
     root.setLevel(level)
+
+
+@pytest.fixture(autouse=True)
+def reports_sent() -> Iterator[None]:
+    """Send a test's error reports before the next test starts."""
+    yield
+    flush_reports()
 
 
 CONTENTTYPES: Final = "domainkit.contrib.contenttypes"

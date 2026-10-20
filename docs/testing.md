@@ -43,6 +43,31 @@ Memory caches are emptied before every test, so no test sees what another
 cached. Redis caches are left alone: give the test settings their own
 `KEY_PREFIX`.
 
+Error reporters (`ERROR_REPORTERS`) and the logging thread work in the
+background ([runtime.md](runtime.md#logging-and-error-reports)): what a test
+reported is sent, and what it logged is written, before the next test
+starts. To check what a reporter received inside the test, call
+`domainkit.reporting.flush_reports()` first:
+
+```python
+# tests/test_reports.py
+from domainkit.conf import override_settings
+from domainkit.reporting import flush_reports, report_error
+
+seen = []
+
+
+def remember(exc, context):
+    seen.append(str(exc))
+
+
+def test_reports_reach_the_reporter():
+    with override_settings(ERROR_REPORTERS=["tests.test_reports.remember"]):
+        report_error(ValueError("boom"))
+    flush_reports()
+    assert seen == ["boom"]
+```
+
 Fixtures for domain events and background work come with messaging's own
 plugin, `-p domainkit.contrib.messaging.testing`, which projects made by
 `domainkit init` enable too: `captured_events`, `outbox` (assert what was
