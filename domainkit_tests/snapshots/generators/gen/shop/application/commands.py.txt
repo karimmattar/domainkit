@@ -69,3 +69,9 @@ class RetitleCategory(Command):
     title: str
     parent: UUID | None = None
     rank: int
+
+
+class LockProduct(Command):
+    """Lock a product."""
+
+    product_id: UUID

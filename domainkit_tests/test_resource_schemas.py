@@ -442,8 +442,10 @@ def test_field_policies_name_only_known_fields() -> None:
     policy.check(["code", "count"], "OrderOut")
     with pytest.raises(TypeError, match=r"OrderOut lacks: \['count'\]"):
         policy.check(["code"], "OrderOut")
-    with pytest.raises(ValueError, match="read-only and editable: code"):
-        FieldPolicy(read_only=["code"], editable={"code": "x.y"})
+    with pytest.raises(ValueError, match="read-only and editable: code, count"):
+        FieldPolicy(
+            read_only=["code", "count"], editable={"code": "x.y", "count": "x.z"}
+        )
 
 
 def test_field_policies_tell_openapi_what_they_do() -> None:
@@ -535,3 +537,10 @@ def test_loosely_hinted_sets_show_as_lists() -> None:
 
     assert properties["anything"] == {"items": {}, "title": "Anything", "type": "array"}
     assert properties["later"]["anyOf"][0]["items"] == {"type": "string"}
+
+
+def test_write_schemas_nest_write_schemas_of_children() -> None:
+    """A child in a write schema takes the child's write schema, by its name."""
+    schema = schema_for(Order, write=True, include=["lines"]).model_json_schema()
+
+    assert schema["properties"]["lines"]["items"] == {"$ref": "#/$defs/LineIn"}

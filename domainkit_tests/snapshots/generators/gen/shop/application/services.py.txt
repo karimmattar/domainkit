@@ -12,6 +12,7 @@ from gen.shop.application.commands import (
     CreateProduct,
     DeleteCategory,
     DeleteProduct,
+    LockProduct,
     PublishProduct,
     RetitleCategory,
     UpdateProduct,
@@ -115,3 +116,12 @@ async def retitle_category(command: RetitleCategory, uow: ShopUnitOfWork) -> Cat
         )
         await uow.commit()
     return category
+
+
+async def lock_product(command: LockProduct, uow: ShopUnitOfWork) -> Product:
+    """Lock a product."""
+    async with uow:
+        product = await uow.products.get(ProductId(command.product_id))
+        product.lock()
+        await uow.commit()
+    return product

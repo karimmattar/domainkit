@@ -1,19 +1,26 @@
 """The generic admin: registered aggregates over REST, and ``/admin/meta``."""
 
+import json
+import os
 import uuid
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import BaseModel
 
 from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.contrib import admin
 from domainkit.contrib.admin import AdminSite
+from domainkit.contrib.audit import api as audit_api
+from domainkit.contrib.audit.api import HistoryPageOut
 from domainkit.contrib.auth import AnyUser
-from domainkit.http import FilterSet, get_asgi_application
+from domainkit.ddd.query import F
+from domainkit.http import FilterSet, Pagination, get_asgi_application
 from domainkit.http.errors import install_exception_handlers
 from domainkit.resources import FieldPolicy
 from domainkit_tests.conftest import UseAuth
@@ -22,12 +29,14 @@ from domainkit_tests.test_audit_history import note, project
 from domainkit_tests.test_auth_access import user
 from domainkit_tests.test_auth_admin import staff
 from domainkit_tests.test_resources import (
+    DropGadget,
     GadgetFilters,
     GadgetsLabelled,
     RenameGadget,
     RenameIn,
     Users,
     as_,
+    drop,
     labelled,
     rename,
 )
@@ -134,10 +143,10 @@ def test_search_and_ordering_make_filters(
     client = client_of(site_of(store, search=["name"], ordering=["price"]))
 
     found = client.get(GADGETS, params={"search": "b"}, headers=as_("viewer"))
-    ordered = client.get(GADGETS, params={"ordering": "-price"}, headers=as_("viewer"))
+    ordered = client.get(GADGETS, params={"ordering": "price"}, headers=as_("viewer"))
 
     assert [each["name"] for each in found.json()["items"]] == ["b"]
-    assert [each["name"] for each in ordered.json()["items"]] == ["a", "b", "c"]
+    assert [each["name"] for each in ordered.json()["items"]] == ["c", "b", "a"]
 
 
 def test_queries_answer_through_their_handlers(
@@ -211,6 +220,7 @@ def test_meta_describes_what_the_caller_may_use(
     ]
     assert viewed["operations"][0]["parameters"]["required"] == ["label"]
     rename_operation = changed["operations"][0]
+    assert rename_operation["summary"] == "Rename a gadget."
     assert rename_operation["name"] == "admin_shop_rename_gadget"
     assert rename_operation["path"] == f"{GADGETS}/{{gadget_id}}/rename"
     assert rename_operation["body"]["properties"]["name"]["maxLength"] == 30
@@ -319,3 +329,123 @@ def test_items_have_their_history(admin_client: TestClient, note: uuid.UUID) -> 
     assert missing.status_code == 404
     assert meta[0]["history_path"] == "/admin/alpha/notes/{note_id}/history"
     assert admin_client.get(url, headers=staff("plain")).status_code == 403
+
+
+class Brief(BaseModel):
+    """What the admin shows of a gadget."""
+
+    id: uuid.UUID
+    name: str
+
+
+def test_registrations_pass_their_options_to_the_resource(
+    store: InMemoryGadgets, use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Schema, presenter, pagination, scope, plural, filters, and history."""
+    use_auth()
+    monkeypatch.setattr(registry, "is_installed", lambda name: True)
+    shown: list[str] = []
+
+    def present(gadget: Gadget) -> Brief:
+        shown.append(gadget.name)
+        return Brief(id=gadget.id, name=gadget.name.upper())
+
+    async def without_a(request: Any) -> Any:  # noqa: ANN401 - criteria.
+        return F("name") != request.headers.get("x-hide", "a")
+
+    asked: list[dict[str, Any]] = []
+
+    async def read_history(actor: AnyUser, **query: Any) -> HistoryPageOut:  # noqa: ANN401 - its query.
+        asked.append({"actor": actor.is_superuser, **query})
+        return HistoryPageOut(items=[], next_cursor=None)
+
+    monkeypatch.setattr(audit_api, "read_history", read_history)
+
+    site = site_of(
+        store,
+        schema=Brief,
+        present=present,
+        pagination=Pagination(default_limit=1),
+        scope=without_a,
+        plural="things",
+        filters=GadgetFilters,
+        history_field="thing_id",
+        commands=[admin.command(DropGadget, service=drop, method="DELETE")],
+    )
+    client = TestClient(client_of(site).app, root_path="/api")
+    by_name = {gadget.name: gadget for gadget in store.items.values()}
+    things = "/admin/shop/things"
+
+    page = client.get(things, headers=as_("root")).json()
+    blue = client.get(things, params={"color": "blue"}, headers=as_("root")).json()
+    hidden = client.get(f"{things}/{by_name['a'].id}", headers=as_("root"))
+    history = client.get(f"{things}/{by_name['a'].id}/history", headers=as_("root"))
+    read = client.get(f"{things}/{by_name['b'].id}/history", headers=as_("root"))
+    (meta,) = client.get("/admin/meta", headers=as_("root")).json()["resources"]
+    dropped = client.delete(f"{things}/{by_name['c'].id}", headers=as_("root"))
+
+    b = str(by_name["b"].id)
+    assert page["items"] == [
+        {"id": b, "name": "B", "links": {"self": f"/api{things}/{b}"}}
+    ]
+    assert blue["items"] == []
+    assert (hidden.status_code, history.status_code) == (404, 404)
+    assert meta["path"] == "/api/admin/shop/things"
+    assert meta["history_path"] == "/api/admin/shop/things/{gadget_id}/history"
+    assert dropped.status_code == 204
+    assert read.json() == {"items": [], "next_cursor": None}
+    assert asked == [
+        {
+            "actor": True,
+            "target": None,
+            "field": "thing_id",
+            "id": str(by_name["b"].id),
+            "limit": 50,
+            "cursor": None,
+        }
+    ]
+    assert "b" in shown
+
+
+def test_histories_take_bounded_pages(
+    store: InMemoryGadgets, use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``limit`` is 1 to 200 and the cursor is checked, before any read."""
+    use_auth()
+    monkeypatch.setattr(registry, "is_installed", lambda name: True)
+    client = client_of(site_of(store))
+    gadget = next(iter(store.items.values()))
+    url = f"{GADGETS}/{gadget.id}/history"
+
+    for params in (
+        {"limit": 0},
+        {"limit": 201},
+        {"cursor": "!"},
+        {"cursor": "a" * 2049},
+    ):
+        answer = client.get(url, params=params, headers=as_("historian"))
+        assert answer.status_code == 422, params
+    assert client.get(url, headers=as_("viewer")).status_code == 403
+
+
+def test_the_admin_is_described_in_openapi_as_reviewed(
+    store: InMemoryGadgets, use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Paths, answers, and errors of a site; UPDATE_SNAPSHOTS=1 rewrites."""
+    use_auth()
+    monkeypatch.setattr(registry, "is_installed", lambda name: True)
+    site = site_of(
+        store,
+        list_display=["name"],
+        commands=[
+            admin.command(RenameGadget, service=rename, body=RenameIn, path="/rename")
+        ],
+        queries=[admin.query(GadgetsLabelled, handler=labelled, path="/labelled")],
+    )
+    document = client_of(site).get("/openapi.json").json()
+    text = json.dumps(document, indent=1, sort_keys=True) + "\n"
+    snapshot = Path(__file__).parent / "snapshots" / "openapi" / "admin.json"
+    if os.environ.get("UPDATE_SNAPSHOTS"):
+        snapshot.write_text(text, encoding="utf-8")
+
+    assert text == snapshot.read_text(encoding="utf-8")

@@ -1,0 +1,29 @@
+"""Routes."""
+
+from decimal import Decimal
+from uuid import UUID
+
+from pydantic import AwareDatetime, BaseModel, Field
+
+from minimal.things.application import queries, services
+from minimal.things.application.commands import ShipThing
+from minimal.things.application.queries import ThingsNamed
+
+router = APIRouter()
+
+
+class ShipThingIn(BaseModel):
+    """What ``ShipThing`` takes."""
+
+    at: AwareDatetime
+    cost: Decimal = Field(max_digits=8, decimal_places=2)
+    to: UUID
+    code: UUID
+
+
+things = ResourceRouter("/things")
+things.command_route(
+    ShipThing, service=services.ship_thing, body=ShipThingIn, path="/ship"
+)
+things.query_route(ThingsNamed, handler=queries.things_named, path="/named")
+router.include_router(things)

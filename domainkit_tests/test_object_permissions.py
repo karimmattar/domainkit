@@ -47,7 +47,14 @@ from domainkit.ddd.fields import InvalidQuery
 from domainkit.ddd.query import F
 from domainkit.management import call_command
 from domainkit.management.base import run_async
-from domainkit_tests.conftest import ALPHA, AUTH, CONTENTTYPES, FAST_HASHER, SHOP
+from domainkit_tests.conftest import (
+    ALPHA,
+    AUTH,
+    CONTENTTYPES,
+    FAST_HASHER,
+    SHOP,
+    UseAuth,
+)
 from domainkit_tests.sample_domains.shop.models import Product, ProductId
 from domainkit_tests.test_auth_admin import join, make_group
 from domainkit_tests.test_auth_http import create_user, grant
@@ -303,7 +310,7 @@ def grant_of(permission: str, product: Product, **whom: Any) -> ObjectPermission
     )
 
 
-def test_visible_to_reads_grants_in_memory(use_auth: Any) -> None:  # noqa: ANN401 - the fixture.
+def test_visible_to_reads_grants_in_memory(use_auth: UseAuth) -> None:
     """With ``grants=``, in-memory repositories filter as SQL does."""
     use_auth(
         settings={
@@ -341,7 +348,9 @@ def test_visible_to_reads_grants_in_memory(use_auth: Any) -> None:  # noqa: ANN4
     assert names((F("name") == "a") & VisibleTo("view", ada, grants=grants)) == ["a"]
 
 
-def test_scopes_narrow_resources_to_what_each_caller_may_see(use_auth: Any) -> None:  # noqa: ANN401 - the fixture.
+def test_scopes_narrow_resources_to_what_each_caller_may_see(
+    use_auth: UseAuth,
+) -> None:
     """``visible_scope`` reads the caller; holders of the model's see everything."""
     from starlette.requests import Request
 
@@ -497,3 +506,110 @@ async def test_sql_compares_ids_in_their_own_column(tmp_path: Path) -> None:
     await engine.dispose()
 
     assert found == [[2], ["b"], []]
+
+
+def test_grants_and_revocations_stay_with_their_object_permission_and_grantee(
+    project: str,
+) -> None:
+    """Each grant is about one object, one permission, and one user or group."""
+    first, second = products("first", "second")
+    root = person("root", is_superuser=True)
+    make_group("editors")
+    person("ada")
+    join("ada", "editors")
+    ada = reload("ada")
+    editors = next(iter(ada.groups)).id
+    seen: list[DomainEvent] = []
+
+    async def collect(event: DomainEvent) -> None:
+        seen.append(event)
+
+    event_bus.subscribe(ObjectPermissionGranted, collect)
+    event_bus.subscribe(ObjectPermissionRevoked, collect)
+    try:
+        run(grant_permission(root, CHANGE, first, user=ada.id))
+        run(grant_permission(root, CHANGE, second, user=ada.id))
+        run(grant_permission(root, VIEW, first, user=ada.id))
+        run(grant_permission(root, VIEW, second, group=editors))
+        run(revoke_permission(root, CHANGE, second, user=ada.id))
+        run(revoke_permission(root, CHANGE, first, user=ada.id))
+        after = (
+            run(has_perm(ada, VIEW, first)),
+            run(has_perm(ada, VIEW, second)),
+            run(has_perm(ada, CHANGE, first)),
+        )
+        removed = run(revoke_permission(root, VIEW, second, group=editors))
+        on_first = run(grants_on(first))
+    finally:
+        event_bus.unsubscribe(ObjectPermissionGranted, collect)
+        event_bus.unsubscribe(ObjectPermissionRevoked, collect)
+
+    assert after == (True, True, False)
+    assert removed == 1
+    assert [(grant.permission, grant.user_id) for grant in on_first] == [(VIEW, ada.id)]
+    group_grant = seen[3]
+    assert isinstance(group_grant, ObjectPermissionGranted)
+    assert (
+        group_grant.content_type,
+        group_grant.permission,
+        group_grant.group_id,
+        group_grant.user_id,
+    ) == ("shop.product", VIEW, editors, None)
+    revoked = seen[4]
+    assert isinstance(revoked, ObjectPermissionRevoked)
+    assert (
+        revoked.content_type,
+        revoked.object_id,
+        revoked.permission,
+        revoked.user_id,
+        revoked.group_id,
+        revoked.by,
+    ) == ("shop.product", str(second.id), CHANGE, ada.id, None, root.id)
+    assert revoked.grant_id == seen[1].grant_id  # type: ignore[attr-defined]
+
+
+def test_holders_of_a_grant_on_the_object_may_revoke_it(project: str) -> None:
+    """The ceiling counts what an actor holds on the object itself."""
+    (product,) = products("one")
+    root = person("root", is_superuser=True)
+    keeper = person("keeper", "objectpermissions.delete_objectpermission")
+    ada = person("ada")
+    run(grant_permission(root, CHANGE, product, user=keeper.id))
+    run(grant_permission(root, CHANGE, product, user=ada.id))
+
+    assert run(revoke_permission(keeper, CHANGE, product, user=ada.id)) == 1
+
+
+def test_inactive_users_see_nothing_through_grants(project: str) -> None:
+    """``visible_to`` gives an inactive user's own grants no weight."""
+    (product,) = products("one")
+    root = person("root", is_superuser=True)
+    ada = person("ada")
+    run(grant_permission(root, VIEW, product, user=ada.id))
+    ada.is_active = False
+
+    async def names() -> list[str]:
+        criteria = await visible_to(ada, "view", Product)
+        async with ShopUnitOfWork() as uow:
+            return [each.name for each in await uow.products.filter(criteria)]
+
+    assert run_async(names()) == []
+
+
+def test_grants_live_where_their_objects_do(use_auth: UseAuth) -> None:
+    """The unit of work opens on the routing target of the object's domain."""
+    from domainkit.contrib.objectpermissions.services import unit_of_work_for
+
+    use_auth(
+        settings={
+            "INSTALLED_DOMAINS": [CONTENTTYPES, AUTH, OBJECTPERMISSIONS, SHOP, ALPHA],
+            "DATABASES": {
+                "default": {"URL": "sqlite+aiosqlite:///:memory:"},
+                "elsewhere": {"URL": "sqlite+aiosqlite:///:memory:"},
+            },
+            "DATABASE_ROUTING": {"shop": "elsewhere"},
+        }
+    )
+
+    assert unit_of_work_for("shop.product").alias == "elsewhere"
+    assert unit_of_work_for("alpha.thing").alias == "default"

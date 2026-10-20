@@ -71,6 +71,12 @@ class CategoryRetitled(DomainEvent):
     rank: int
 
 
+class ProductLocked(DomainEvent):
+    """A product was locked."""
+
+    product_id: UUID
+
+
 class ProductRestocked(DomainEvent):
     """Product restocked."""
 

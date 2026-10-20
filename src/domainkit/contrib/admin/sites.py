@@ -349,7 +349,7 @@ class FilterOut(BaseModel):
     """A query parameter that filters lists."""
 
     parameter: str
-    field: str
+    field: str | None
     lookup: str
 
 
@@ -389,12 +389,12 @@ async def _describe(request: Request, admin: ModelAdmin) -> ResourceOut | None:
         return None
     hidden = await resource.policy.hidden(request) if resource.policy else frozenset()
     schema = resource.schema.model_json_schema()
+    # The policy made each field it may hide optional: none is in "required".
     schema["properties"] = {
         name: value
         for name, value in schema["properties"].items()
         if name not in hidden
     }
-    schema["required"] = [name for name in schema["required"] if name not in hidden]
     filters = admin.filters
     history = admin.history_route
     listing = f"{resource.name_prefix}list_{resource.plural}"
@@ -414,7 +414,6 @@ async def _describe(request: Request, admin: ModelAdmin) -> ResourceOut | None:
         for each in resource.operations
         if each.name not in standard and await allowed(each.rules)
     ]
-    history_rules = (*rules_for(resource.rule, VIEW), HasPermissions(VIEW_HISTORY))
     return ResourceOut(
         label=".".join(content_type_of(admin.label or admin.model)),
         path=_path(request, _operation(resource, listing)),
@@ -424,7 +423,7 @@ async def _describe(request: Request, admin: ModelAdmin) -> ResourceOut | None:
         filters=[]
         if filters is None
         else [
-            FilterOut(parameter=parameter, field=each.field or "", lookup=lookup)
+            FilterOut(parameter=parameter, field=each.field, lookup=lookup)
             for parameter, (each, lookup, _) in filters.filters.items()
         ],
         ordering=[] if filters is None else list(filters.ordering_fields),
@@ -433,7 +432,7 @@ async def _describe(request: Request, admin: ModelAdmin) -> ResourceOut | None:
         operations=operations,
         history_path=(
             _path(request, _operation(resource, history))
-            if history is not None and await allowed(history_rules)
+            if history is not None and await allowed([HasPermissions(VIEW_HISTORY)])
             else None
         ),
     )

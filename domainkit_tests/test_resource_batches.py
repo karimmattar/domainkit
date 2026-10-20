@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import HTTPException
 from pydantic import BaseModel
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 
 from domainkit.ddd import Command, NotFound
 from domainkit.ddd.query import F
@@ -290,8 +291,18 @@ def test_refusals_become_results_and_bugs_do_not() -> None:
     assert plain is not None
     assert plain.error is not None
     assert (plain.status, plain.error.code) == (418, "http_error")
+    assert plain.error.detail == "Teapot."
+    busy = failure(PoolTimeout())
+    assert busy is not None
+    assert busy.error is not None
+    assert (busy.status, busy.error.code) == (503, "database_busy")
     assert failure(ValueError("bug")) is None
-    assert not_applied().status == 424
+    undone = not_applied()
+    assert undone.status == 424
+    assert undone.error is not None
+    assert undone.error.detail == (
+        "Another item of the batch failed, so nothing was applied."
+    )
 
 
 @pytest.mark.anyio

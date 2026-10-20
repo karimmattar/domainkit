@@ -21,11 +21,16 @@ from gen.shop.application.commands import (
     CreateProduct,
     DeleteCategory,
     DeleteProduct,
+    LockProduct,
     PublishProduct,
     RetitleCategory,
     UpdateProduct,
 )
-from gen.shop.application.queries import EveryCategory, ProductsByOwner
+from gen.shop.application.queries import (
+    CategoriesTitled,
+    EveryCategory,
+    ProductsByOwner,
+)
 from gen.shop.application.unit_of_work import ShopUnitOfWork
 from gen.shop.domain.model import NAME_LENGTH, NOTE_LENGTH, Category, Product
 from gen.shop.infrastructure.unit_of_work import SqlAlchemyShopUnitOfWork
@@ -109,6 +114,7 @@ products.command_route(
 products.query_route(
     ProductsByOwner, handler=queries.products_by_owner, path="/by-owner"
 )
+products.command_route(LockProduct, service=services.lock_product, path="/lock")
 router.include_router(products)
 
 
@@ -143,4 +149,7 @@ categories.command_route(
     path="/retitle",
 )
 categories.query_route(EveryCategory, handler=queries.every_category, path="/every")
+categories.query_route(
+    CategoriesTitled, handler=queries.categories_titled, path="/titled"
+)
 router.include_router(categories)

@@ -362,7 +362,9 @@ router.include_router(reviews)
 Its routes are `/products/{product_id}/reviews` and
 `/products/{product_id}/reviews/{review_id}`: lists hold the parent's
 reviews only, another product's review is `404`, and a command's
-`product_id` comes from the path. `links=True` adds `links` to each
+`product_id` comes from the path. With `crud=True`, `product_id` is in
+neither request body: a review is created under the product its path
+names, and no change moves it to another. `links=True` adds `links` to each
 representation: `self`, and `parent` for a nested one, as paths of this
 API.
 
@@ -388,7 +390,7 @@ python manage.py makemigrations -m "catalog" && python manage.py migrate
 | Generator | Writes |
 | --- | --- |
 | `startaggregate` | The aggregate, its id, not-found error, and repository port; created and deleted events; create and delete commands and use cases; its table (`table_for`), mapping, and repository; its resource; an in-memory repository; `test_<plural>.py`. |
-| `addcommand` | The aggregate's method, which records the event (the rule and the change are yours to write); the command and its use case; `POST /<plural>/{id}/<verb>` with its body; `test_<command>.py`. |
+| `addcommand` | The aggregate's method, which records the event (the rule and the change are yours to write); the command and its use case; `POST /<plural>/{id}/<verb>` with its body; `test_<command>.py`. The event is the aggregate and the verb with `-ed` added (`ProductPublished`); name irregular ones with `--event` (`ShipProduct --event ProductShipped`). |
 | `addquery` | A `Query` and its handler in `application/queries.py`, finding the first 100 aggregates whose `--by` fields equal the query's, typed as the aggregate types them; `GET /<plural>/<path>` (`query_route`); `test_<query>.py`. |
 | `addevent` | The event, carrying the aggregate's id; a durable handler, subscribed in `apps.py` (`--no-handler` leaves it out); `test_on_<event>.py`. |
 

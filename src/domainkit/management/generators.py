@@ -221,7 +221,7 @@ class Source:
         found = [n for n, row in enumerate(rows) if row.startswith(pattern)]
         if not found:
             raise CommandError(f"{self.path} has no line starting {pattern!r}.")
-        self._insert_lines(found[-1], lines, blank=False)
+        self._insert_lines(found[-1], lines)
 
     def save(self) -> bool:
         """Write the file if it changed; return whether it did."""
@@ -246,13 +246,10 @@ class Source:
                 return node  # type: ignore[return-value]
         raise CommandError(f"{self.path} has no {name}; was it renamed?")
 
-    def _insert_lines(
-        self, after: int, lines: Sequence[str], *, blank: bool = False
-    ) -> None:
+    def _insert_lines(self, after: int, lines: Sequence[str]) -> None:
         """Insert ``lines`` after line ``after`` (1-based; 0 is the top)."""
         rows = self.text.splitlines()
-        added = ["", *lines] if blank else list(lines)
-        rows[after:after] = added
+        rows[after:after] = lines
         self.text = "\n".join(rows) + "\n"
 
 
@@ -289,8 +286,6 @@ def install(package: str, domain: str, root: Path) -> list[str]:
     it was not safe, in which case the caller explains the steps instead.
     """
     settings_path, urls_path = root / SETTINGS_FILE, root / URLS_FILE
-    if not (settings_path.is_file() and urls_path.is_file()):
-        return []
     try:
         settings, urls = Source.read(settings_path), Source.read(urls_path)
     except CommandError:
@@ -323,15 +318,32 @@ def _add_installed(settings: Source, package: str) -> bool:
         ):
             return False
         names = [item.value for item in items]  # type: ignore[attr-defined]
-        segment = ast.get_source_segment(settings.text, node.value) or ""
-        if package in names or "#" in segment:
+        start, end = _span(settings.text, node.value)
+        if package in names or "#" in settings.text[start:end]:
             return False
         rendered = (
             "[\n" + "".join(f'    "{name}",\n' for name in [*names, package]) + "]"
         )
-        settings.text = settings.text.replace(segment, rendered, 1)
+        settings.text = settings.text[:start] + rendered + settings.text[end:]
         return True
     return False
+
+
+def _span(text: str, node: ast.expr) -> tuple[int, int]:
+    """Where ``node`` starts and ends in ``text``, as character offsets.
+
+    ``ast`` counts columns in UTF-8 bytes; each line is measured as such.
+    """
+    lines = text.splitlines(keepends=True)
+
+    def offset(line: int, column: int) -> int:
+        before = sum(len(each) for each in lines[: line - 1])
+        return before + len(lines[line - 1].encode()[:column].decode())
+
+    return (
+        offset(node.lineno, node.col_offset),
+        offset(node.end_lineno or node.lineno, node.end_col_offset or 0),
+    )
 
 
 def _mount(urls: Source, package: str, domain: str) -> bool:
@@ -680,7 +692,6 @@ class Domain:
     package: str
     directory: Path
     tests: Path
-    root: Path
     sources: dict[Path, Source] = field(default_factory=dict)
     created: dict[Path, str] = field(default_factory=dict)
 
@@ -729,7 +740,7 @@ class Domain:
         package = ".".join(
             directory.resolve().relative_to(_source_root(directory)).parts
         )
-        return cls(name, package, directory, tests, root)
+        return cls(name, package, directory, tests)
 
     @property
     def camel(self) -> str:

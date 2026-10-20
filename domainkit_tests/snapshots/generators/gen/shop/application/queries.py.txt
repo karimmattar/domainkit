@@ -4,7 +4,9 @@ Each query is a message, answered by the handler of its name in snake case;
 ``api/routes.py`` serves them (``query_route``).
 """
 
-from domainkit.ddd import Query, Reference
+from typing import Annotated
+
+from domainkit.ddd import MaxLength, Query, Reference
 from domainkit.ddd.query import F
 from gen.shop.application.unit_of_work import ShopUnitOfWork
 from gen.shop.domain.model import Category, OwnerId, Product, ProductName
@@ -36,4 +38,19 @@ async def every_category(query: EveryCategory, uow: ShopUnitOfWork) -> list[Cate
     """The first 100 categories."""
     async with uow:
         page = await uow.categories.paginate(None, limit=100)
+    return page.items
+
+
+class CategoriesTitled(Query):
+    """Categories titled."""
+
+    title: Annotated[str, MaxLength(100)]
+
+
+async def categories_titled(
+    query: CategoriesTitled, uow: ShopUnitOfWork
+) -> list[Category]:
+    """The first 100 categories with the query's title."""
+    async with uow:
+        page = await uow.categories.paginate(F("title") == query.title, limit=100)
     return page.items

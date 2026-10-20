@@ -1,0 +1,17 @@
+"""Commands."""
+
+from datetime import datetime
+from decimal import Decimal
+from uuid import UUID
+
+from domainkit.ddd import Command
+
+
+class ShipThing(Command):
+    """Ship a thing."""
+
+    thing_id: UUID
+    at: datetime
+    cost: Decimal
+    to: UUID
+    code: UUID

@@ -25,6 +25,7 @@ from gen.shop.domain.events import (
     ProductArchived,
     ProductCreated,
     ProductDeleted,
+    ProductLocked,
     ProductNoteAdded,
     ProductPublished,
     ProductRenamed,
@@ -122,6 +123,10 @@ class Product(AggregateRoot[ProductId]):
     def publish(self, *, at: datetime, note: str | None = None) -> None:
         """Publish the product."""
         self.record(ProductPublished(product_id=self.id, at=at, note=note))
+
+    def lock(self) -> None:
+        """Lock the product."""
+        self.record(ProductLocked(product_id=self.id))
 
 
 class ProductRepository(Repository[Product, ProductId]):

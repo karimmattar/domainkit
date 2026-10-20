@@ -1,0 +1,26 @@
+"""Events."""
+
+from datetime import datetime
+from decimal import Decimal
+from uuid import UUID
+
+from domainkit.ddd import DomainEvent
+
+
+class ThingSent(DomainEvent):
+    """A thing was sent."""
+
+    thing_id: UUID
+    at: datetime
+    cost: Decimal
+    to: UUID
+    code: UUID
+
+
+class ThingShipped(DomainEvent):
+    """Thing shipped."""
+
+    thing_id: UUID
+    at: datetime
+    code: UUID
+    cost: Decimal

@@ -15,6 +15,7 @@ from domainkit.resources.renderers import (
     NotAcceptable,
     cell,
     guarded,
+    ndjson_lines,
     negotiate,
 )
 from domainkit_tests.conftest import UseAuth
@@ -97,6 +98,9 @@ def test_lists_answer_ndjson_and_json_by_preference(
     assert unsaid.headers["content-type"] == JSON
     assert unsaid.headers["vary"] == "Accept"
     assert (refused.status_code, refused.json()["code"]) == (406, "not_acceptable")
+    assert refused.json()["detail"] == (
+        "This resource cannot answer in a media type the request accepts."
+    )
     assert refused.headers["accept"] == f"{JSON}, {NDJSON}"
 
 
@@ -118,6 +122,9 @@ def test_exports_are_bounded_streamed_in_chunks_and_hide_fields(
     assert "price" in costs[0]
     assert len(viewer) == len(costs) == 4
     assert (too_many.status_code, too_many.json()["code"]) == (422, "export_too_large")
+    assert too_many.json()["detail"] == (
+        "This export would be too large; narrow it with filters."
+    )
 
 
 def test_exports_stop_at_their_bound_even_if_more_arrive(
@@ -163,6 +170,9 @@ def test_exports_are_declared_and_documented(store: InMemoryGadgets) -> None:
         ("text/csv;level=1", CSV),
         ("*/*;q=0.1, text/csv;q=0", JSON),
         ("text/csv;q=0.2, */*", JSON),
+        ("application/json;q=1, text/csv", JSON),
+        ("text/csv;q=7, application/json", JSON),
+        ("text/csv;q=0, text/csv, application/json;q=0.5", JSON),
     ],
 )
 def test_negotiation_takes_the_most_specific_preference(
@@ -170,6 +180,12 @@ def test_negotiation_takes_the_most_specific_preference(
 ) -> None:
     """Quality by the most specific range; ties go to the order offered."""
     assert negotiate(accept, (JSON, CSV)) == chosen
+
+
+def test_negotiation_weighs_ranges_by_how_specific_they_are() -> None:
+    """A subtype beats its type's range, which beats ``*/*``, wherever it is."""
+    assert negotiate("text/*, text/csv;q=0.2", (CSV, "text/plain")) == "text/plain"
+    assert negotiate("*/*, text/*;q=0.3", (CSV, JSON)) == JSON
 
 
 def test_negotiation_refuses_what_nothing_offered_matches() -> None:
@@ -191,6 +207,8 @@ def test_cells_are_safe_from_formulas() -> None:
         "x",
     ]
     assert cell({"a": "=1"}) == '{"a": "=1"}'
+    assert cell({"é": "ü"}) == '{"é": "ü"}'
+    assert ndjson_lines([{"é": 1, "b": [1, 2]}]) == '{"é":1,"b":[1,2]}\n'
     assert cell(["@x"]) == '["@x"]'
     assert [guarded(text) for text in ("=1+1", "+1", "@SUM(A1)", "\tx", "\rx")] == [
         "'=1+1",
@@ -206,3 +224,49 @@ def test_cells_are_safe_from_formulas() -> None:
         "'-2+3",
         "'-",
     ]
+
+
+def test_exports_count_what_the_filters_keep_and_leave_links_out(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """The bound counts matches; CSV has no links; NDJSON has the list's fields."""
+    use_auth()
+    client = client_of(
+        gadgets(
+            store,
+            exports=("csv", "ndjson"),
+            filters=GadgetFilters,
+            max_export=1,
+            links=True,
+            list_fields=["name"],
+        )
+    )
+    one = {"search": "plain"}
+
+    table = client.get("/gadgets", params=one, headers=as_("viewer", Accept=CSV))
+    lines = client.get("/gadgets", params=one, headers=as_("viewer", Accept=NDJSON))
+
+    assert rows(table.text) == [["name"], ["plain"]]
+    (document,) = [json.loads(line) for line in lines.text.splitlines()]
+    assert sorted(document) == ["links", "name"]
+
+
+def test_exports_stop_at_their_bound_across_chunks(
+    store: InMemoryGadgets, use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each chunk asks only for what the bound leaves."""
+    use_auth()
+    store.items.update(
+        {gadget.id: gadget for gadget in (make_gadget("d"), make_gadget("e"))}
+    )
+
+    async def fewer(*args: object, **options: object) -> int:
+        return 3
+
+    monkeypatch.setattr(store, "count", fewer)
+    monkeypatch.setattr(routing, "EXPORT_CHUNK", 2)
+    client = client_of(gadgets(store, exports=("ndjson",), max_export=3))
+
+    lines = client.get("/gadgets", headers=as_("viewer", Accept=NDJSON)).text
+
+    assert len(lines.splitlines()) == 3

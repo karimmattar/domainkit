@@ -272,9 +272,10 @@ All notable changes to domainkit. The format follows
   lists an aggregate (with a `FilterSet` and `Pagination`) and reads one,
   and `command_route(Command, service=..., body=...)` runs a command
   through an application service, answering `201` with `Location` when it
-  creates one. Resources nest (`parent=`), narrow what each caller reaches
-  (`scope=`), and, for reference data only, offer generic create, change,
-  and delete (`crud=True`), which record `RecordCreated`, `RecordChanged`,
+  creates one. Resources nest (`parent=`; the path gives a nested
+  aggregate's parent, which no `crud` write changes), narrow what each
+  caller reaches (`scope=`), and, for reference data only, offer generic
+  create, change, and delete (`crud=True`), which record `RecordCreated`, `RecordChanged`,
   and `RecordDeleted`. `ModelActions(Model)` asks for the model permission
   of each route's action, so a command needs `change`, not `add`. A
   resource without a rule fails the deny-by-default check.

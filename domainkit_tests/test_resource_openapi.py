@@ -6,14 +6,21 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
-from domainkit.contrib.auth import IsAuthenticated
+from domainkit.contrib.auth import IsAuthenticated, Public
 from domainkit.ddd import EventBus, InMemoryRepository, UnitOfWork
 from domainkit.ddd.query import F
 from domainkit.http import Pagination
 from domainkit.resources import FieldPolicy, ResourceRouter
-from domainkit_tests.gadgets import InMemoryGadgets, make_gadget
+from domainkit_tests.gadgets import (
+    FakeGadgetsUnitOfWork,
+    Gadget,
+    InMemoryGadgets,
+    make_gadget,
+)
 from domainkit_tests.test_resources import (
+    Dearest,
     DropGadget,
+    EditReview,
     GadgetFilters,
     GadgetsLabelled,
     MakeGadget,
@@ -22,8 +29,10 @@ from domainkit_tests.test_resources import (
     RenameIn,
     Review,
     ReviewIn,
+    Summary,
     WriteReview,
     client_of,
+    dearest,
     drop,
     gadgets,
     labelled,
@@ -58,6 +67,15 @@ async def write(command: WriteReview, uow: Reviews) -> Review:
     return review
 
 
+async def edit(command: EditReview, uow: Reviews) -> Review:
+    """Edit a review."""
+    async with uow:
+        review = await uow.reviews.get(command.review_id)
+        review.text = command.text
+        await uow.commit()
+    return review
+
+
 async def everything(request: Any) -> Any:  # noqa: ANN401 - a connection, criteria.
     """No narrowing at all, but a scope all the same."""
     return F("name") != ""
@@ -83,6 +101,22 @@ def test_openapi_describes_every_option_as_reviewed() -> None:
     resource.command_route(DropGadget, service=drop, method="DELETE", path="/drop")
     resource.query_route(GadgetsLabelled, handler=labelled, path="/labelled")
     resource.batch_route(RenameGadget, service=rename, body=RenameIn)
+    resource.command_route(
+        RenameGadget, service=rename, body=RenameIn, path="/brief", returns=Summary
+    )
+    resource.query_route(Dearest, handler=dearest, path="/dearest")
+    open_to_all = ResourceRouter(
+        "/open",
+        model=Gadget,
+        unit_of_work=lambda: FakeGadgetsUnitOfWork(store),
+        repository=lambda uow: uow.gadgets,
+        dependencies=[Public],
+        exports=("csv",),
+        name_prefix="open_",
+    )
+    open_to_all.command_route(
+        RenameGadget, service=rename, body=RenameIn, path="/rename"
+    )
     nested = ResourceRouter(
         "/reviews",
         model=Review,
@@ -94,8 +128,9 @@ def test_openapi_describes_every_option_as_reviewed() -> None:
         links=True,
     )
     nested.command_route(WriteReview, service=write, body=ReviewIn)
+    nested.command_route(EditReview, service=edit, body=ReviewIn, path="/edit")
 
-    document = client_of(resource, nested).get("/openapi.json").json()
+    document = client_of(resource, nested, open_to_all).get("/openapi.json").json()
     text = json.dumps(document, indent=1, sort_keys=True) + "\n"
     if os.environ.get("UPDATE_SNAPSHOTS"):
         SNAPSHOT.parent.mkdir(parents=True, exist_ok=True)

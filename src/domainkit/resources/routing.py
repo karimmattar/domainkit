@@ -64,6 +64,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Body, Depends, Header, Path, Request, Response, status
 from fastapi import Query as QueryParameters
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field, create_model
 from starlette.requests import HTTPConnection
 from starlette.routing import BaseRoute
@@ -405,7 +406,7 @@ class ResourceRouter(APIRouter):
             method,
             run,
             name=name or snake_case(command.__name__),
-            summary=summary or _first_line(command.__doc__),
+            summary=summary or _summary_of(command),
             action=verb,
             rule=rule,
             detail=detail,
@@ -480,13 +481,7 @@ class ResourceRouter(APIRouter):
         verb = action or (CHANGE if detail else ADD)
         if returns is DEFAULT and verb == DELETE:
             returns = None
-        code = (
-            status.HTTP_204_NO_CONTENT
-            if returns is None
-            else status.HTTP_200_OK
-            if detail
-            else status.HTTP_201_CREATED
-        )
+        code = status.HTTP_200_OK if detail else status.HTTP_201_CREATED
         item = _batch_item(command, body, self.lookup, self.id_type, detail)
         batch = create_model(
             f"{command.__name__}Batch",
@@ -557,7 +552,7 @@ class ResourceRouter(APIRouter):
                 ),
             )
             return JSONResponse(
-                answer.model_dump(mode="json", exclude_none=True),
+                answer.model_dump(exclude_none=True),
                 status_code=status.HTTP_207_MULTI_STATUS,
             )
 
@@ -566,8 +561,7 @@ class ResourceRouter(APIRouter):
             "POST",
             run,
             name=name or f"{snake_case(command.__name__)}_batch",
-            summary=summary
-            or f"{_first_line(command.__doc__) or command.__name__}, for many",
+            summary=summary or f"{_summary_of(command) or command.__name__}, for many",
             action=verb,
             rule=rule,
             body=batch,
@@ -680,12 +674,7 @@ class ResourceRouter(APIRouter):
         if self.parent_field is not None and self.parent_field in fields:
             from_path.add(self.parent_field)
         asked = (
-            schema_for(
-                query,
-                write=True,
-                exclude=sorted(from_path),
-                name=f"{query.__name__}Parameters",
-            )
+            schema_for(query, write=True, exclude=sorted(from_path))
             if set(fields) - from_path
             else None
         )
@@ -731,7 +720,7 @@ class ResourceRouter(APIRouter):
             "GET",
             run,
             name=name or snake_case(query.__name__),
-            summary=summary or _first_line(query.__doc__),
+            summary=summary or _summary_of(query),
             action=action,
             rule=rule,
             detail=detail,
@@ -754,12 +743,9 @@ class ResourceRouter(APIRouter):
         """
         item = f"{self.prefix}/{{{self.lookup}}}"
         first = next(
-            (
-                index
-                for index, each in enumerate(self.routes)
-                if getattr(each, "path", "").startswith(item)
-            ),
-            len(self.routes),
+            index
+            for index, each in enumerate(self.routes)
+            if isinstance(each, APIRoute) and each.path.startswith(item)
         )
         self.routes.insert(first, route)
 
@@ -838,11 +824,17 @@ class ResourceRouter(APIRouter):
         fields = fields_of(model)
         read_only = self.policy.read_only if self.policy is not None else frozenset()
         relations = [name for name, field in fields.items() if field.entity is not None]
-        create = create or schema_for(model, write=True, exclude=relations)
+        # The parent's field: the path gives it, and no write moves it.
+        pinned = [self.parent_field] if self.parent_field is not None else []
+        create = create or schema_for(model, write=True, exclude=[*relations, *pinned])
         update = update or schema_for(  # type: ignore[assignment]
             model,
             partial=True,
-            exclude=[*relations, *(name for name in read_only if name in fields)],
+            exclude=[
+                *relations,
+                *pinned,
+                *(name for name in read_only if name in fields),
+            ],
         )
         assert update is not None  # noqa: S101 - for the type checker.
         for schema in (create, update):
@@ -851,6 +843,7 @@ class ResourceRouter(APIRouter):
                 for name in schema.model_fields
                 if name not in fields
                 or name in GENERATED
+                or name in pinned
                 or fields[name].entity is not None
             ):
                 raise TypeError(
@@ -862,7 +855,7 @@ class ResourceRouter(APIRouter):
             for field in dataclasses.fields(model)
             if field.default is dataclasses.MISSING
             and field.default_factory is dataclasses.MISSING
-            and field.name != "id"
+            and field.name not in {"id", *pinned}
         }
         if missing := sorted(needed - set(create.model_fields)):
             raise TypeError(
@@ -873,6 +866,7 @@ class ResourceRouter(APIRouter):
         async def created(values: Values) -> Response:
             payload: BaseModel = values["body"]
             given = payload.model_dump()
+            given |= {name: values[self._path_name(name)] for name in pinned}
             aggregate = model(
                 id=new_id(),
                 **{
@@ -1346,11 +1340,7 @@ class ResourceRouter(APIRouter):
         headers = {"Vary": "Accept"}
         if media == CSV:
             headers["Content-Disposition"] = f'attachment; filename="{self.plural}.csv"'
-        return StreamingResponse(
-            body(),
-            media_type=f"{media}; charset=utf-8" if media == CSV else media,
-            headers=headers,
-        )
+        return StreamingResponse(body(), media_type=media, headers=headers)
 
     async def _tagged(
         self, request: Request, values: Values, aggregate: Aggregate
@@ -1706,6 +1696,14 @@ def _returns_many(handler: Handler) -> bool:
 def _label_of(function: Callable[..., object]) -> str:
     """A function's name, for messages."""
     return getattr(function, "__qualname__", repr(function))
+
+
+def _summary_of(message: type) -> str | None:
+    """A message's summary: its docstring's first line, not the one dataclass writes."""
+    text = message.__doc__
+    if text is not None and text.startswith(f"{message.__name__}("):
+        return None
+    return _first_line(text)
 
 
 def _first_line(text: str | None) -> str | None:

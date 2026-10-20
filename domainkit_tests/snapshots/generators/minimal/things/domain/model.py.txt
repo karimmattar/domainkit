@@ -1,0 +1,21 @@
+"""Things."""
+
+from datetime import datetime
+from decimal import Decimal
+from typing import NewType
+from uuid import UUID
+
+from domainkit.ddd import AggregateRoot
+from minimal.things.domain.events import ThingSent
+
+ThingId = NewType("ThingId", UUID)
+
+
+class Thing(AggregateRoot[ThingId]):
+    """A thing."""
+
+    name: str
+
+    def ship(self, *, at: datetime, cost: Decimal, to: ThingId, code: UUID) -> None:
+        """Ship the thing."""
+        self.record(ThingSent(thing_id=self.id, at=at, cost=cost, to=to, code=code))

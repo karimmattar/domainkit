@@ -1,0 +1,23 @@
+"""Queries of the things domain: questions that change nothing.
+
+Each query is a message, answered by the handler of its name in snake case;
+``api/routes.py`` serves them (``query_route``).
+"""
+
+from domainkit.ddd import Query
+from domainkit.ddd.query import F
+from minimal.things.application.unit_of_work import ThingsUnitOfWork
+from minimal.things.domain.model import Thing
+
+
+class ThingsNamed(Query):
+    """Things named."""
+
+    name: str
+
+
+async def things_named(query: ThingsNamed, uow: ThingsUnitOfWork) -> list[Thing]:
+    """The first 100 things with the query's name."""
+    async with uow:
+        page = await uow.things.paginate(F("name") == query.name, limit=100)
+    return page.items

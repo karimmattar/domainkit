@@ -29,7 +29,9 @@ from domainkit.management.generators import (
     Source,
     enumeration,
     install,
+    package_directory,
     register_field_type,
+    top_level_names,
 )
 from domainkit_tests.conftest import MakePackage
 
@@ -442,7 +444,7 @@ def test_domains_outside_the_project_are_refused(
 
 def test_new_python_files_are_planned_once(tmp_path: Path) -> None:
     """``start`` refuses a file that exists, or one already planned."""
-    domain = Domain("shop", "shop", tmp_path, tmp_path, tmp_path)
+    domain = Domain("shop", "shop", tmp_path, tmp_path)
     (tmp_path / "taken.py").write_text("", encoding="utf-8")
 
     domain.start(tmp_path / "new.py", '"""New."""\n')
@@ -538,12 +540,9 @@ def test_names_and_words() -> None:
         "order line",
     )
     assert verb_of("ShipOrderLine", "OrderLine") == "Ship"
-    assert [past_tense(verb) for verb in ("Publish", "Archive", "Copy", "Play")] == [
-        "Published",
-        "Archived",
-        "Copied",
-        "Played",
-    ]
+    assert [
+        past_tense(verb) for verb in ("Publish", "Archive", "Copy", "Play", "Destroy")
+    ] == ["Published", "Archived", "Copied", "Played", "Destroyed"]
     assert default_path("OrderLinesByOwner", names) == "/by-owner"
     assert default_path("OrderLines", names) == "/order-lines"
     assert default_path("EveryOrderLine", names) == "/every-order-line"
@@ -725,6 +724,44 @@ def test_install_needs_both_files(tmp_path: Path) -> None:
     assert install("domains.catalog", "catalog", root) == []
 
 
+MINIMAL = {
+    "__init__.py": "",
+    "domain/__init__.py": "",
+    "domain/model.py": (
+        '"""Things."""\n\nfrom typing import NewType\nfrom uuid import UUID\n\n'
+        "from domainkit.ddd import AggregateRoot\n\n"
+        'ThingId = NewType("ThingId", UUID)\n\n\n'
+        'class Thing(AggregateRoot[ThingId]):\n    """A thing."""\n\n    name: str\n'
+    ),
+    "domain/events.py": '"""Events."""\n',
+    "application/__init__.py": "",
+    "application/commands.py": '"""Commands."""\n',
+    "application/services.py": '"""Services."""\n',
+    "application/handlers.py": '"""Handlers."""\n',
+    "api/__init__.py": "",
+    "api/routes.py": (
+        '"""Routes."""\n\nrouter = APIRouter()\n'
+        'things = ResourceRouter("/things")\nrouter.include_router(things)\n'
+    ),
+    "apps.py": (
+        '"""Apps."""\n\n\nclass ThingsConfig:\n    """Config."""\n\n'
+        '    def ready(self) -> None:\n        """Ready."""\n'
+    ),
+}
+"""A domain the generators did not make: nothing imported that they need."""
+
+
+def make_minimal(root: Path) -> Path:
+    """Write ``minimal.things`` under ``root``; return the ``minimal`` directory."""
+    for relative, text in MINIMAL.items():
+        path = root / "minimal" / "things" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    (root / "minimal" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "minimal" / "tests").mkdir()
+    return root / "minimal"
+
+
 SNAPSHOTS = Path(__file__).parent / "snapshots" / "generators"
 """What the generators write, file by file; regenerate with UPDATE_SNAPSHOTS=1."""
 
@@ -751,15 +788,50 @@ def test_generators_write_what_their_snapshots_hold(shop: Shop) -> None:
     )
     shop("addquery", "Product", "ProductsByOwner", by=["owner_id", "name"])
     shop("addquery", "Category", "EveryCategory", path="/every")
+    shop("addquery", "Category", "CategoriesTitled", by=["title"])
+    shop("addcommand", "Product", "LockProduct")
     shop(
         "addevent",
         "Product",
         "ProductRestocked",
         fields=["quantity:int", "at:datetime"],
     )
+    minimal = make_minimal(shop.root)
+    run(
+        "addcommand",
+        "things",
+        "Thing",
+        "ShipThing",
+        fields=["at:datetime", "cost:decimal:8:2", "to:ref:Thing", "code:uuid"],
+        event="ThingSent",
+        parent="minimal",
+        tests_dir=minimal / "tests",
+    )
+    run(
+        "addquery",
+        "things",
+        "Thing",
+        "ThingsNamed",
+        by=["name"],
+        parent="minimal",
+        tests_dir=minimal / "tests",
+    )
+    run(
+        "addevent",
+        "things",
+        "Thing",
+        "ThingShipped",
+        fields=["at:datetime", "code:uuid", "cost:decimal"],
+        parent="minimal",
+        tests_dir=minimal / "tests",
+    )
     written = {
         path.relative_to(shop.root).as_posix(): path.read_text(encoding="utf-8")
-        for path in [*shop.package.rglob("*.py"), *shop.tests.rglob("*.py")]
+        for path in [
+            *shop.package.rglob("*.py"),
+            *shop.tests.rglob("*.py"),
+            *minimal.rglob("*.py"),
+        ]
     }
     for name in ("startaggregate", "addcommand", "addquery", "addevent"):
         command = load_command(name)
@@ -790,3 +862,180 @@ def test_generators_write_what_their_snapshots_hold(shop: Shop) -> None:
     assert sorted(written) == sorted(expected)
     for relative, text in written.items():
         assert text == expected[relative], relative
+
+
+def test_sources_edit_exactly_where_they_say(tmp_path: Path) -> None:
+    """Imports after imports; classes and functions from their own scope."""
+    source = Source(
+        tmp_path / "module.py",
+        '"""Doc."""\n\nimport os\nfrom x import y as z\n\nVALUE = 1\n\n\n'
+        'class A:\n    """A."""\n\n    def f(self) -> None:\n        pass\n\n\n'
+        "class B:\n    def f(self) -> None:\n        one = 1\n        two = 2\n\n\n"
+        "class C:\n    pass\n",
+    )
+
+    source.add_imports(["import sys"])
+    source.add_to_function("B.f", ["three = 3"])
+    source.add_to_class("A", ["", "x = 1"])
+    source.add_attribute("C", "y: int")
+    source.insert_before_class("B", "D = 4")
+    source.append("E = 5\n\n")
+
+    assert source.text == (
+        '"""Doc."""\n\nimport os\nfrom x import y as z\nimport sys\n\nVALUE = 1\n\n\n'
+        'class A:\n    """A."""\n\n    def f(self) -> None:\n        pass\n\n'
+        "    x = 1\n\n\n"
+        "D = 4\n\n\n"
+        "class B:\n    def f(self) -> None:\n        one = 1\n        two = 2\n"
+        "        three = 3\n\n\n"
+        "class C:\n    pass\n    y: int\n\n\nE = 5\n"
+    )
+    assert top_level_names(source.tree()) == {
+        "os",
+        "z",
+        "sys",
+        "VALUE",
+        "A",
+        "B",
+        "C",
+        "D",
+        "E",
+    }
+
+
+def test_sources_place_attributes_after_a_docstring(tmp_path: Path) -> None:
+    """A class without attributes gets one after its docstring; one statement bodies."""
+    source = Source(
+        tmp_path / "module.py",
+        'class A:\n    """A."""\n\n\ndef g() -> None:\n    return None\n',
+    )
+
+    source.add_attribute("A", "x: int")
+    source.add_to_function("g", ["# done"])
+
+    assert source.text == (
+        'class A:\n    """A."""\n    x: int\n\n\ndef g() -> None:\n    return None\n'
+        "    # done\n"
+    )
+    empty = Source(tmp_path / "empty.py", "")
+    empty.insert_after_imports(["import os"])
+    assert empty.text == "import os\n"
+
+
+def test_install_finds_the_list_after_other_settings(tmp_path: Path) -> None:
+    """Other assignments come first; a same-looking list elsewhere stays."""
+    root = project(
+        tmp_path,
+        'DEBUG = True\nOTHER = [\n    "domains.shop",\n]\n'
+        'INSTALLED_DOMAINS = [\n    "domains.shop",\n]\n',
+    )
+
+    assert install("domains.catalog", "catalog", root)
+    assert (root / SETTINGS_FILE).read_text(encoding="utf-8") == (
+        'DEBUG = True\nOTHER = [\n    "domains.shop",\n]\n'
+        'INSTALLED_DOMAINS = [\n    "domains.shop",\n    "domains.catalog",\n]\n'
+    )
+
+
+def test_parent_packages_must_be_importable() -> None:
+    """A missing package, or one inside a missing package, is refused."""
+    for name in ("no_such_parent", "no_such_parent.child", "os"):
+        with pytest.raises(CommandError, match=f"Parent package '{name}' cannot be"):
+            package_directory(name)
+
+
+@pytest.mark.parametrize(
+    "spec",
+    ["price:decimal:38:2", "price:decimal:4:4", "code:str:1", "code:str:10000000"],
+)
+def test_field_options_reach_their_bounds(spec: str) -> None:
+    """The bounds themselves are allowed."""
+    assert FieldSpec.parse(spec).options
+
+
+@pytest.mark.parametrize("spec", ["class", "class:int", "if:str"])
+def test_keywords_are_not_field_names(spec: str) -> None:
+    """A Python keyword cannot name a field."""
+    with pytest.raises(CommandError, match="snake_case field name"):
+        FieldSpec.parse(spec)
+
+
+def test_generators_read_their_command_lines(
+    shop: Shop, make_package: MakePackage
+) -> None:
+    """Repeated options, and paths given as text, as a shell passes them."""
+    output = run(
+        "startaggregate",
+        "shop",
+        "Box",
+        "--field",
+        "width:int",
+        "--field",
+        "depth:int",
+        "--parent",
+        "gen",
+        "--tests-dir",
+        str(shop.tests),
+    )
+    run(
+        "addquery",
+        "shop",
+        "Box",
+        "BoxesSized",
+        "--by",
+        "width",
+        "--by",
+        "depth",
+        "--parent",
+        "gen",
+        "--tests-dir",
+        str(shop.tests),
+    )
+
+    assert "    width: int\n    depth: int\n" in shop.read("domain/model.py")
+    assert '(F("width") == query.width) & (F("depth") == query.depth)' in shop.read(
+        "application/queries.py"
+    )
+    assert output.splitlines()[1:] == [
+        f"  {shop.tests / 'test_boxes.py'}",
+        *(
+            f"  {shop.package / relative}"
+            for relative in (
+                "domain/model.py",
+                "domain/events.py",
+                "application/commands.py",
+                "application/services.py",
+                "application/unit_of_work.py",
+                "infrastructure/orm.py",
+                "infrastructure/unit_of_work.py",
+                "api/routes.py",
+            )
+        ),
+        f"  {shop.tests / 'fakes.py'}",
+        'Next: python manage.py makemigrations -m "create boxes", then migrate.',
+    ]
+
+
+def test_tests_go_under_tests_by_default_and_their_directory_is_made(
+    shop: Shop,
+) -> None:
+    """Without ``--tests-dir``, ``tests/<parent>/<domain>``, made if missing."""
+    output = run("addcommand", "shop", "Product", "HoldProduct", parent="gen")
+
+    assert (shop.root / "tests" / "gen" / "shop" / "test_hold_product.py").is_file()
+    assert output.startswith("Added HoldProduct to gen.shop:\n")
+    assert f"  {shop.package / 'domain' / 'model.py'}" in output.splitlines()
+
+
+def test_queries_refuse_optional_annotations(shop: Shop) -> None:
+    """``Optional[X]`` may be None as ``X | None`` may."""
+    (shop.package / "domain" / "model.py").write_text(
+        shop.read("domain/model.py").replace(
+            "    archived: bool = False\n",
+            "    archived: bool = False\n    hint: Optional[str] = None\n",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CommandError, match="fields of one value"):
+        shop("addquery", "Product", "ProductsHinted", by=["hint"])

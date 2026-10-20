@@ -1,0 +1,13 @@
+"""Apps."""
+
+from domainkit.ddd import event_bus
+from minimal.things.application.handlers import on_thing_shipped
+from minimal.things.domain.events import ThingShipped
+
+
+class ThingsConfig:
+    """Config."""
+
+    def ready(self) -> None:
+        """Ready."""
+        event_bus.subscribe(ThingShipped, on_thing_shipped, durable=True)

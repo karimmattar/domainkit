@@ -1,0 +1,16 @@
+"""Services."""
+
+from minimal.things.application.commands import ShipThing
+from minimal.things.application.unit_of_work import ThingsUnitOfWork
+from minimal.things.domain.model import Thing, ThingId
+
+
+async def ship_thing(command: ShipThing, uow: ThingsUnitOfWork) -> Thing:
+    """Ship a thing."""
+    async with uow:
+        thing = await uow.things.get(ThingId(command.thing_id))
+        thing.ship(
+            at=command.at, cost=command.cost, to=ThingId(command.to), code=command.code
+        )
+        await uow.commit()
+    return thing

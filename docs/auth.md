@@ -300,7 +300,11 @@ after auth, add its backend after `ModelBackend`, then `makemigrations`
 and `migrate`:
 
 ```python
-INSTALLED_DOMAINS = [..., "domainkit.contrib.auth", "domainkit.contrib.objectpermissions"]
+INSTALLED_DOMAINS = [
+    ...,
+    "domainkit.contrib.auth",
+    "domainkit.contrib.objectpermissions",
+]
 AUTH = {
     "BACKENDS": [
         "domainkit.contrib.auth.backends.ModelBackend",
