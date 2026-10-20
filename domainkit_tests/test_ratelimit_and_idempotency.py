@@ -29,6 +29,7 @@ from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.http.ratelimit import (
+    EVICTIONS_PER_HIT,
     Decision,
     MemoryBackend,
     RateLimitMiddleware,
@@ -134,6 +135,33 @@ def test_memory_backend_forgets_idle_callers() -> None:
     hit("f", 1, 1)
     # "e" refilled at this very moment: forgotten too.
     assert list(backend._callers) == ["f"]
+
+
+def test_memory_backend_forgets_a_crowd_of_idle_callers_a_few_at_a_time() -> None:
+    """After a lull, each request forgets at most ``EVICTIONS_PER_HIT`` (IND-RL)."""
+    clock = [0.0]
+    backend = MemoryBackend(clock=lambda: clock[0])
+    crowd = 3 * EVICTIONS_PER_HIT + 10
+
+    async def lull_then_hits() -> list[int]:
+        for caller in range(crowd):
+            await backend.hit(f"ip:{caller}", 300, 60)
+        clock[0] = 1000.0  # Every one of them is full again.
+        left = []
+        for _ in range(5):
+            await backend.hit("ip:new", 300, 60)
+            left.append(len(backend._callers))
+        return left
+
+    assert EVICTIONS_PER_HIT == 64
+    assert asyncio.run(lull_then_hits()) == [
+        crowd - 64 + 1,
+        crowd - 128 + 1,
+        crowd - 192 + 1,
+        1,
+        1,
+    ]
+    assert list(backend._callers) == ["ip:new"]
 
 
 def test_memory_backend_refills_callers_it_still_remembers() -> None:
