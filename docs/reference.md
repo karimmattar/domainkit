@@ -628,7 +628,10 @@ State is never dumped or loaded: the audit trail (a copy of its keys would
 outlive `auditforget`), tokens, the outbox, idempotency keys, webhook
 subscriptions (they hold signing secrets: set them up in each environment)
 and deliveries, and any table with `info={"fixtures": False}`. A fixture can still hold personal data and
-password hashes: keep it as safe as the database.
+password hashes: keep it as safe as the database. `dumpdata --output`
+writes a new file only its owner can read (mode `0600`), and refuses a
+path that exists, a symbolic link too, so a link planted in a shared
+directory cannot redirect it: delete an old fixture before dumping again.
 
 `flush` keeps append-only tables, those with `info={"append_only": True}`
 or, on PostgreSQL, triggers of their own, and those with

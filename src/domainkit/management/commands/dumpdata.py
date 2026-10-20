@@ -1,6 +1,7 @@
 """``dumpdata``: write a database's rows as a fixture (JSON, parents first)."""
 
 import asyncio
+import os
 from argparse import ArgumentParser
 from pathlib import Path
 
@@ -15,6 +16,8 @@ class Command(BaseCommand):
     State is left out: the audit trail, tokens, the outbox, idempotency
     keys, and tables marked ``info={"fixtures": False}``. A fixture can hold
     personal data and password hashes; keep it as safe as the database.
+    ``--output`` writes a new file only its owner can read, and refuses a
+    path that exists, a symbolic link too.
     """
 
     help = "Write rows as a JSON fixture: every table, or the tables or domains named."
@@ -31,7 +34,10 @@ class Command(BaseCommand):
             "--database", default=DEFAULT_DB_ALIAS, help="the alias to read"
         )
         parser.add_argument(
-            "-o", "--output", type=Path, help="write the fixture here, not to stdout"
+            "-o",
+            "--output",
+            type=Path,
+            help="a new file to write it to (mode 0600); default: standard output",
         )
         parser.add_argument(
             "--indent", type=int, default=2, help="spaces per level (default: 2)"
@@ -56,6 +62,25 @@ class Command(BaseCommand):
         if output is None:
             self.write(text)
             return
-        await asyncio.to_thread(output.write_text, f"{text}\n", encoding="utf-8")
+        try:
+            await asyncio.to_thread(_write_new, output, f"{text}\n")
+        except FileExistsError:
+            raise CommandError(f"{output} exists; name a new file.") from None
         rows = sum(len(entry["rows"]) for entry in document["tables"])
         self.write(f"Wrote {rows} row(s) of {len(tables)} table(s) to {output}.")
+
+
+def _write_new(path: Path, text: str) -> None:
+    """Write ``text`` to a new file at ``path`` that only its owner can read.
+
+    Nothing may be there, not even a symbolic link, so a link planted in a
+    shared directory cannot send the fixture to another file, and the
+    umask cannot make it readable by others.
+
+    Raises:
+        FileExistsError: Something is at ``path`` already.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+        file.write(text)

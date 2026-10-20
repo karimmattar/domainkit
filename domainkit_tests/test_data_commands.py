@@ -4,7 +4,9 @@ import asyncio
 import enum
 import io
 import json
+import os
 import re
+import stat
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, date, datetime, time, timedelta
@@ -575,6 +577,38 @@ def test_dump_options_on_the_command_line(project: str, tmp_path: Path) -> None:
     )
     assert path.read_text(encoding="utf-8") == printed
     assert run("dumpdata", kinds.name, "--indent", "4").startswith('{\n    "format": ')
+
+
+def test_dumps_go_to_new_files_only_their_owner_reads(
+    project: str, tmp_path: Path
+) -> None:
+    """Mode 0600 whatever the umask; an existing path, or a planted link, is refused.
+
+    ``-o`` wrote with the umask's mode (0644, for a fixture of personal data
+    and password hashes) and followed a link planted where it would go.
+    """
+    path = tmp_path / "kinds.json"
+    victim = tmp_path / "victim.txt"
+    victim.write_text("operator's file\n", encoding="utf-8")
+    planted = tmp_path / "planted.json"
+    planted.symlink_to(victim)
+    dangling = tmp_path / "dangling.json"
+    dangling.symlink_to(tmp_path / "nowhere.json")
+    umask = os.umask(0o022)
+    try:
+        written = run("dumpdata", kinds.name, "-o", str(path))
+    finally:
+        os.umask(umask)
+
+    assert written == f"Wrote 1 row(s) of 1 table(s) to {path}.\n"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    for taken in (path, planted, dangling):
+        message = f"^{re.escape(str(taken))} exists; name a new file\\.$"
+        with pytest.raises(CommandError, match=message):
+            run("dumpdata", kinds.name, "-o", str(taken))
+    assert victim.read_text(encoding="utf-8") == "operator's file\n"
+    assert json.loads(path.read_text(encoding="utf-8"))["tables"][0]["rows"]
+    assert not (tmp_path / "nowhere.json").exists()
 
 
 def test_loading_updates_stored_rows(project: str, tmp_path: Path) -> None:

@@ -371,6 +371,12 @@ All notable changes to domainkit. The format follows
   more places, such as zero at eight (`0E-8`), were written with an
   exponent, which decoding refused, so the page after one was a 422
   `invalid_cursor`.
+- `dumpdata --output` writes a new file only its owner can read (mode
+  `0600`), and refuses a path that exists, a symbolic link too, as
+  `privacy export --output` does. It wrote with the umask's mode (`0644`
+  usually) a fixture that can hold personal data and password hashes, and
+  followed a link planted where it would go. Delete an old fixture before
+  dumping again.
 
 ## [0.6.2] - 2026-10-19
 
