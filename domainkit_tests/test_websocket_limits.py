@@ -526,6 +526,43 @@ async def test_route_limits_reach_the_middleware_through_a_copied_scope() -> Non
 
 
 @pytest.mark.anyio
+async def test_the_frameworks_close_outlives_a_cancellation() -> None:
+    """A close frame on its way is not cut off by a shutdown."""
+    server = Server(
+        {"type": "websocket.receive", "text": "x"},
+        {"type": "websocket.receive", "text": "y"},
+    )
+    closing, release = anyio.Event(), anyio.Event()
+    delivered: list[Message] = []
+    send = server.send
+
+    async def slow_close(message: Message) -> None:
+        if message["type"] == "websocket.close":
+            closing.set()
+            await release.wait()
+            delivered.append(message)
+        await send(message)
+
+    server.send = slow_close  # type: ignore[method-assign]
+    shutdown = anyio.CancelScope()
+
+    async def serve() -> None:
+        with shutdown:
+            await server.serve(echo_app)
+
+    with override_settings(WEBSOCKET_MESSAGE_RATE="1/minute"):
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(serve)
+            await closing.wait()
+            shutdown.cancel()
+            release.set()
+
+    assert delivered == [
+        {"type": "websocket.close", "code": 1008, "reason": "Too many messages."}
+    ]
+
+
+@pytest.mark.anyio
 async def test_the_handshake_is_answered_directly() -> None:
     """A refusal before the accept is the application's, untouched."""
     server = Server()
