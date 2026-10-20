@@ -1,9 +1,11 @@
-"""Closing what a process opened: caches, databases, ledgers, and brokers.
+"""Closing what a process opened: tasks, caches, databases, ledgers, and brokers.
 
 The application lifespan and management commands end with ``close_resources``.
-Caches close first, since their computations use the others. Each kind gets
-``CLOSE_TIMEOUT`` seconds; one that fails or hangs is logged, and the rest
-still close, so a broken backend never keeps the others open.
+The loop's background tasks (``domainkit.tasks``) are cancelled first, since
+they use the rest, then caches close, since their computations use the
+others. Each step gets ``CLOSE_TIMEOUT`` seconds; one that fails or hangs is
+logged, and the rest still close, so a broken backend never keeps the
+others open.
 """
 
 import asyncio
@@ -11,6 +13,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Final
 
+from domainkit import tasks
 from domainkit.broker import brokers
 from domainkit.cache import caches
 from domainkit.db.connections import connections
@@ -23,7 +26,14 @@ CLOSE_TIMEOUT: Final = 5.0
 
 
 async def close_resources() -> None:
-    """Close the caches, databases, ledgers, and brokers, in that order."""
+    """Stop the loop's tasks, then close caches, databases, ledgers, and brokers."""
+    loop = asyncio.get_running_loop()
+    if stuck := await tasks.shutdown(loop.time() + CLOSE_TIMEOUT):
+        logger.error(
+            "Background tasks still running after %.1fs: %s",
+            CLOSE_TIMEOUT,
+            ", ".join(stuck),
+        )
     closers: dict[str, Callable[[], Awaitable[None]]] = {
         "caches": caches.close_all,
         "databases": connections.close_all,
