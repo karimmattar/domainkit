@@ -988,6 +988,33 @@ async def test_a_caller_cancelled_while_its_cache_closes_stays_cancelled() -> No
     assert factory.calls == 1
 
 
+async def test_a_failure_after_a_caller_gave_up_reaches_only_the_others(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The error goes to the callers still waiting; asyncio logs nothing."""
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def factory() -> int:
+        started.set()
+        await release.wait()
+        raise RuntimeError("factory broke")
+
+    cache = make_cache()
+    with caplog.at_level(logging.DEBUG):
+        gave_up = asyncio.create_task(cache.get_or_set("k", factory, int))
+        waiting = asyncio.create_task(cache.get_or_set("k", factory, int))
+        await started.wait()
+        gave_up.cancel()
+        await asyncio.wait([gave_up], timeout=5)
+        release.set()
+        with pytest.raises(RuntimeError, match="factory broke"):
+            await waiting
+        await asyncio.sleep(0)  # Done callbacks run on the next loop pass.
+
+    assert gave_up.cancelled()
+    assert [r.getMessage() for r in caplog.records if r.name == "asyncio"] == []
+
+
 def test_caches_close_before_what_their_computations_use(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

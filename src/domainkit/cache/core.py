@@ -395,12 +395,15 @@ class Cache:
             self._computing[full] = task
             task.add_done_callback(lambda done: self._forget(full, done))
         try:
-            return await asyncio.shield(task)
+            # Waiting does not cancel the computation, which goes on for the
+            # other callers (asyncio.shield would, on 3.14, log its failure).
+            await asyncio.wait([task])
+            return task.result()
         except asyncio.CancelledError:
             caller = asyncio.current_task()
             if caller is None or caller.cancelling():
                 raise
-            # Not cancelled itself, so close() stopped the computation.
+            # Not cancelled itself, so shutdown or close() stopped the computation.
             return encode(await factory())
 
     def _forget(self, full: str, task: asyncio.Task[bytes]) -> None:

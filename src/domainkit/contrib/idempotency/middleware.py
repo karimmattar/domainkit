@@ -298,7 +298,9 @@ async def _settle(
     The task is shielded from this request: cancelled here, even by a
     cancel scope that cancels every wait, the request leaves at once and
     the task still stores the response or releases the key, then logs what
-    went wrong, since no one is left to raise it to.
+    went wrong, since no one is left to raise it to. (``asyncio.wait``
+    rather than ``asyncio.shield``, which on Python 3.14 logs that failure
+    a second time.)
     """
     task = spawn(
         _finish_within(config, operation, started, body),
@@ -306,10 +308,11 @@ async def _settle(
         log_errors=False,
     )
     try:
-        await asyncio.shield(task)
+        await asyncio.wait([task])
     except asyncio.CancelledError:
         task.add_done_callback(_log_unsettled)
         raise
+    task.result()  # Its failure, raised to the request.
 
 
 async def _finish_within(
