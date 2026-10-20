@@ -318,7 +318,11 @@ async def test_a_stream_ends_when_the_client_leaves(
     }
     assert client.scope[LONG_LIVED] is True
     assert client.scope["app"].state.live_slots.open == 0
-    assert "Ended an event stream: Client gone." in caplog.messages
+    assert [
+        r.levelname
+        for r in caplog.records
+        if r.getMessage() == "Ended an event stream: Client gone."
+    ] == ["INFO"]
 
 
 @pytest.mark.anyio
@@ -414,11 +418,12 @@ async def test_a_client_gone_before_the_start_is_not_streamed_to() -> None:
     """The source is closed unread, and nothing is raised."""
     client = Client()
     client.gone = lambda message: True
-    source = Source("never")
+    source = Closable(1)
 
-    await client.serve(EventSourceResponse(source()))
+    await client.serve(EventSourceResponse(source))
 
     assert client.sent == []
+    assert (source.count, source.closed) == (1, True)
     assert client.scope["app"].state.live_slots.open == 0
 
 
@@ -439,7 +444,9 @@ async def test_a_request_that_fails_to_read_ends_the_stream(
     await client.serve(EventSourceResponse(source()))
 
     assert source.closed
-    assert "Ended an event stream whose request failed" in caplog.messages
+    [failed] = [r for r in caplog.records if r.getMessage().endswith("request failed")]
+    assert failed.exc_info is not None
+    assert isinstance(failed.exc_info[1], RequestBodyTooLarge)
 
 
 @pytest.mark.anyio
@@ -545,6 +552,30 @@ async def test_background_tasks_run_once_the_stream_ends(refused: bool) -> None:
 
     assert ran == [client.body().decode()]
     assert ran[0].startswith("{") is refused
+
+
+class Closable:
+    """A source that is not a generator, but can be closed."""
+
+    def __init__(self, count: int) -> None:
+        """Count down from ``count``; not closed yet."""
+        self.count = count
+        self.closed = False
+
+    def __aiter__(self) -> "Closable":
+        """Itself."""
+        return self
+
+    async def __anext__(self) -> str:
+        """The next number, until zero."""
+        if self.count == 0:
+            raise StopAsyncIteration
+        self.count -= 1
+        return str(self.count)
+
+    async def aclose(self) -> None:
+        """Remember being closed."""
+        self.closed = True
 
 
 class Countdown:
