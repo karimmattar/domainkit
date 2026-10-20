@@ -37,6 +37,7 @@ from domainkit.http.live import TOO_SLOW, Closed
 from domainkit.http.live_events import (
     EventRule,
     LiveEvents,
+    _send_all,
     _Subscriber,
     live_events,
     payload,
@@ -429,6 +430,26 @@ async def test_a_forwarded_socket_that_falls_behind_is_closed() -> None:
         "code": 1013,
         "reason": "Client too slow.",
     }
+
+
+@pytest.mark.anyio
+async def test_a_source_that_ends_ends_the_sending() -> None:
+    """Sending stops, without a closure, when its events run out."""
+    me = Someone()
+    socket = Socket(me)
+    event = granted(me.id)
+
+    async def two() -> AsyncIterator[DomainEvent]:
+        yield event
+        yield event
+
+    await socket.websocket.accept()
+    closure = await _send_all(socket.websocket, two(), lambda e: {"n": 1})
+
+    assert closure is None
+    assert [message["text"] for message in socket.sent[1:]] == [
+        f'{{"event":"UserPermissionGranted","id":"{event.event_id}","data":{{"n":1}}}}'
+    ] * 2
 
 
 @pytest.mark.anyio
