@@ -10,7 +10,7 @@ from urllib.parse import unquote
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from domainkit import setup, signing
 from domainkit.apps import registry
@@ -22,8 +22,14 @@ from domainkit.contrib.auth.onetime import (
     email_verification_tokens,
     password_reset_tokens,
 )
-from domainkit.contrib.auth.recovery import describe
+from domainkit.contrib.auth.recovery import (
+    describe,
+    send_email_verification,
+    send_password_reset,
+)
+from domainkit.contrib.auth.repositories import UserRepository
 from domainkit.contrib.auth.settings import AuthSettings
+from domainkit.contrib.auth.tables import users
 from domainkit.contrib.messaging import Worker
 from domainkit.contrib.messaging.tables import messages
 from domainkit.db import connections
@@ -500,8 +506,6 @@ def test_verification_needs_a_user_and_an_address(identity: Api) -> None:
 
 def test_verification_skips_gone_or_inactive_users(identity: Api) -> None:
     """A user deleted or deactivated before the worker runs gets nothing."""
-    from domainkit.contrib.auth.recovery import send_email_verification
-
     gone = uuid.uuid4()
     off = create_user("off", email="off@example.com", is_active=False)
 
@@ -662,8 +666,6 @@ def test_unmounted_routers_need_nothing(api: Api) -> None:
 
 def test_reset_tasks_need_mail_installed(identity: Api) -> None:
     """A link the worker cannot mail fails the task, to be retried."""
-    from domainkit.contrib.auth.recovery import send_password_reset
-
     create_user("alice", email="alice@example.com")
     identity()
     with (
@@ -696,7 +698,16 @@ def test_addresses_are_looked_up_only_where_they_can_match(identity: Api) -> Non
 
 
 @pytest.mark.parametrize(
-    "email", ["a\x00@example.com", "a@exam\x7fple.com", "a@b@c", "no-at", "a b@c.d"]
+    "email",
+    [
+        "a\x00@example.com",
+        "a@exam\x7fple.com",
+        "a@b@c",
+        "no-at",
+        "a b@c.d",
+        "x0<victim@example.com>",  # Display names would count apart.
+        "\u212aelly@corp.example",  # The KELVIN SIGN.
+    ],
 )
 def test_addresses_that_cannot_be_one_are_refused_at_once(
     identity: Api, email: str
@@ -706,3 +717,65 @@ def test_addresses_that_cannot_be_one_are_refused_at_once(
 
     assert response.status_code == 422
     assert outbox_payloads() == []
+
+
+def set_email(username: str, email: str) -> None:
+    """Store ``email`` for the user as it is, unchecked (as before the checks)."""
+
+    async def store() -> None:
+        async with connections.engine().begin() as connection:
+            await connection.execute(
+                update(users).where(users.c.username == username).values(email=email)
+            )
+
+    run_async(store())
+
+
+def test_look_alike_addresses_are_other_addresses(identity: Api) -> None:
+    """Only ASCII letters fold, in Python and in SQL alike.
+
+    PostgreSQL's ``lower()`` makes the KELVIN SIGN a ``k``: the look-alike's
+    account was found for kelly's address, and its address, which no mail
+    can take, stopped the task before kelly's link went out.
+    """
+    create_user("eve", email="eve@corp.example")
+    set_email("eve", "\u212aelly@corp.example")
+    create_user("kelly", email="kelly@corp.example")
+    client = identity()
+
+    async def found() -> list[str]:
+        async with AuthUnitOfWork() as uow:
+            users = await uow.users.find_by_email("KELLY@corp.example")
+        return [user.get_username() for user in users]
+
+    reset(client, "kelly@corp.example")
+    run_worker()
+
+    assert run_async(found()) == ["kelly"]
+    (message,) = mail.outbox
+    assert message.to == ("kelly@corp.example",)
+    assert message.body.startswith("Hello kelly,")
+
+
+def test_addresses_that_cannot_take_mail_are_skipped(
+    identity: Api, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """One stored before the checks is logged by user id; the others get links."""
+    eve = create_user("eve", email="eve@corp.example")
+    set_email("eve", "eve@-corp.example")
+    create_user("kelly", email="kelly@corp.example")
+    identity()
+    find = UserRepository.find_by_email
+
+    async def both(self: UserRepository, email: str) -> list[AbstractBaseUser]:
+        return [*await find(self, "eve@-corp.example"), *await find(self, email)]
+
+    monkeypatch.setattr(UserRepository, "find_by_email", both)
+    with caplog.at_level("WARNING", "domainkit.contrib.auth.recovery"):
+        run_async(send_password_reset("kelly@corp.example"))
+        run_async(send_email_verification(eve))
+
+    (message,) = mail.outbox
+    assert message.to == ("kelly@corp.example",)
+    assert caplog.messages == [f"User {eve} has an address that cannot take mail."] * 2
+    assert "corp.example" not in caplog.text

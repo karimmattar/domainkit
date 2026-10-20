@@ -573,3 +573,7 @@ msgstr "الوسم '{tag}' لا يطابق أيًا من الوسوم المتو
 msgctxt "validation"
 msgid "Unable to extract tag using discriminator {discriminator}"
 msgstr "تعذّر استخراج الوسم باستخدام {discriminator}"
+
+#. domainkit.contrib.auth: identity checks
+msgid "Enter one email address, such as user@example.com, without a name."
+msgstr "أدخل عنوان بريد إلكتروني واحدًا، مثل user@example.com، بلا اسم."

@@ -25,14 +25,15 @@ the rate, resets, and verifications go to the audit trail. Links are made
 in the worker, so no token is ever stored, not even in the outbox.
 """
 
+import logging
 import math
 from datetime import timedelta
-from typing import Final, cast
+from typing import Annotated, Final, cast
 from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import APIRouter, Request, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from domainkit.contrib.mail import deliver, render_mail
 from domainkit.contrib.messaging import enqueue, task
@@ -41,7 +42,14 @@ from domainkit.http.errors import APIError
 from .access import AuthenticatedUser, Public
 from .api import PASSWORD_MAX_LENGTH, _errors
 from .events import PasswordReset, PasswordResetRequested
-from .models import AbstractBaseUser, AbstractUser, UserId
+from .exceptions import InvalidEmail
+from .models import (
+    EMAIL_MAX_LENGTH,
+    AbstractBaseUser,
+    AbstractUser,
+    UserId,
+    validate_email,
+)
 from .onetime import (
     TOKEN_MAX_LENGTH,
     UserTokenGenerator,
@@ -55,11 +63,28 @@ from .uow import AuthUnitOfWork
 from .validators import validate_password
 
 EMAIL_PATTERN: Final = r"^[^@\s\x00-\x1f\x7f]{1,64}@[^@\s\x00-\x1f\x7f]{1,253}$"
-"""An address to look up; anything that cannot be one is refused at once."""
+"""The shape of an address, checked first; ``EmailAddress`` checks the rest."""
 RESET_TASK: Final = "domainkit.auth.send_password_reset"
 VERIFICATION_TASK: Final = "domainkit.auth.send_email_verification"
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["auth"])
+
+
+def _plain_address(value: str) -> str:
+    """``validate_email``, for pydantic: a refusal is a ``ValueError``."""
+    try:
+        return validate_email(value)
+    except InvalidEmail as exc:
+        raise ValueError(exc.message) from None
+
+
+EmailAddress = Annotated[
+    str,
+    Field(max_length=EMAIL_MAX_LENGTH, pattern=EMAIL_PATTERN),
+    AfterValidator(_plain_address),
+]
+"""One plain address, trimmed (``validate_email``): no display name, ASCII."""
 
 
 class PasswordResetIn(BaseModel):
@@ -67,7 +92,7 @@ class PasswordResetIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    email: str = Field(max_length=254, pattern=EMAIL_PATTERN)
+    email: EmailAddress
 
 
 class PasswordResetConfirmIn(BaseModel):
@@ -115,7 +140,7 @@ async def request_password_reset(
     body: PasswordResetIn, request: Request
 ) -> AcceptedOut:
     """Mail a reset link to the accounts that use the address, if any."""
-    email = body.email.strip()
+    email = body.email
     await _limit_mail(request, "password-reset", email_key("password-reset", email))
     await enqueue(send_password_reset, email=email)
     return AcceptedOut(
@@ -195,7 +220,9 @@ async def send_password_reset(email: str) -> None:
     """Mail a reset link to each active user of ``email`` who has a password.
 
     The ``domainkit.auth.send_password_reset`` task. Nobody uses the
-    address: nothing is sent.
+    address: nothing is sent. A user whose stored address cannot take mail
+    (from before addresses were checked) is skipped, and logged by id, so
+    the others still get their links.
     """
     config = auth_settings()
     async with AuthUnitOfWork() as uow:
@@ -203,6 +230,8 @@ async def send_password_reset(email: str) -> None:
         for user in await uow.users.find_by_email(email):
             address = email_of(user)
             if address is None or not (user.is_active and user.has_usable_password()):
+                continue
+            if not _mailable(user, address):
                 continue
             token = password_reset_tokens.make_token(user)
             context = _context(
@@ -226,13 +255,27 @@ async def send_email_verification(user_id: UUID) -> None:
     if user is None or not user.is_active or getattr(user, "email_verified", True):
         return
     address = email_of(user)
-    if address is None:
+    if address is None or not _mailable(user, address):
         return
     token = email_verification_tokens.make_token(user)
     context = _context(
         user, config.EMAIL_VERIFICATION_URL, token, config.EMAIL_VERIFICATION_TIMEOUT
     )
     await deliver([render_mail("auth/email_verification", context, to=[address])])
+
+
+def _mailable(user: AbstractBaseUser, address: str) -> bool:
+    """Whether ``address`` can take mail; a warning names the user if not.
+
+    The warning gives the user's id, never the address: logs keep no
+    personal data.
+    """
+    try:
+        validate_email(address)
+    except InvalidEmail:
+        logger.warning("User %s has an address that cannot take mail.", user.id)
+        return False
+    return True
 
 
 def register_tasks() -> None:

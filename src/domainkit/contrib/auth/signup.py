@@ -32,7 +32,7 @@ from .api import PASSWORD_MAX_LENGTH, _errors
 from .events import UserSignedUp
 from .hashers import amake_password
 from .models import USERNAME_MAX_LENGTH, PasswordHash
-from .recovery import EMAIL_PATTERN, AcceptedOut, send_email_verification
+from .recovery import AcceptedOut, EmailAddress, send_email_verification
 from .settings import auth_settings
 from .throttling import address_key, email_key, throttle
 from .uow import AuthUnitOfWork
@@ -50,7 +50,7 @@ class SignupIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     username: str = Field(min_length=1, max_length=USERNAME_MAX_LENGTH)
-    email: str = Field(max_length=254, pattern=EMAIL_PATTERN)
+    email: EmailAddress
     password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH)
 
 
@@ -69,7 +69,7 @@ async def signup(body: SignupIn, request: Request) -> AcceptedOut:
     config = auth_settings()
     if not config.SIGNUP_ENABLED:
         raise APIError(status.HTTP_404_NOT_FOUND, "Not Found", code="not_found")
-    email = body.email.strip()
+    email = body.email
     await throttle(
         request,
         config.EMAIL_RATE,

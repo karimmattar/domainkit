@@ -10,6 +10,7 @@ from domainkit.contrib.auth import (
     AbstractBaseUser,
     AnonymousUser,
     Group,
+    InvalidEmail,
     InvalidGroupName,
     InvalidUsername,
     PasswordHash,
@@ -25,7 +26,7 @@ from domainkit.contrib.auth.events import (
     UserPermissionRevoked,
     UserStatusChanged,
 )
-from domainkit.contrib.auth.models import normalize_email
+from domainkit.contrib.auth.models import normalize_email, same_email, validate_email
 from domainkit.contrib.contenttypes import ContentType
 from domainkit.ddd import DomainEvent
 
@@ -108,6 +109,54 @@ def test_creating_users_checks_and_tidies_names() -> None:
     assert User.create(password=HASH, username="x" * 150).email == ""
     assert normalize_email("not-an-email ") == "not-an-email"
     assert normalize_email("Q@Q@EXAMPLE.COM") == "Q@Q@example.com"
+
+
+NOT_PLAIN: list[str] = [
+    "ceo\uff20corp.example<eve@evil.example>",  # A display name: mail goes to eve.
+    "Boss <boss@example.com>",
+    "<boss@example.com>",
+    "boss@example.com (Boss)",
+    "a@example.com, b@example.com",
+    "\u212aelly@corp.example",  # The KELVIN SIGN, which lower() makes a k.
+    "kelly@\u212aorp.example",
+    "j\u00f6rg@example.com",
+    "jo@b\u00fccher.example",
+    "not-an-email",
+    "a@b@example.com",
+    "a@-example.com",
+    "line\n@break.example",
+    "x" * 65 + "@example.com",
+]
+
+
+@pytest.mark.parametrize("email", NOT_PLAIN)
+def test_users_have_plain_addresses_only(email: str) -> None:
+    """One ASCII address alone, the one mail goes to: as created, as changed."""
+    message = "Enter one email address, such as user@example.com, without a name."
+    with pytest.raises(InvalidEmail) as refused:
+        new_user(email=email)
+    assert refused.value.message == message
+    user = new_user(email="a@example.com")
+    with pytest.raises(InvalidEmail):
+        user.update(email=email)
+    assert user.email == "a@example.com"
+    with pytest.raises(InvalidEmail):
+        validate_email(email)
+
+
+def test_plain_addresses_are_trimmed_and_compared_by_ascii_letters() -> None:
+    """``same_email`` folds ASCII letters only: no look-alike is another's."""
+    assert validate_email(" kelly+tag@xn--bcher-kva.example ") == (
+        "kelly+tag@xn--bcher-kva.example"
+    )
+    assert new_user(email="").email == ""  # No address at all.
+    user = new_user(email="a@example.com")
+    user.update(email=" ")
+    assert user.email == ""
+    assert same_email(" Kelly@Corp.Example", "kelly@corp.example ")
+    assert not same_email("\u212aelly@corp.example", "kelly@corp.example")
+    assert "\u212aelly@corp.example".lower() == "kelly@corp.example"  # Python's.
+    assert not same_email("kelly@corp.example", "kelly@corp.example.org")
 
 
 def test_passwords_and_logins() -> None:

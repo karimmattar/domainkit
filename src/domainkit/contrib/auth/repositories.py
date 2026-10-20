@@ -35,6 +35,7 @@ from .models import (
     Permission,
     UserId,
     erased_username,
+    same_email,
 )
 from .settings import auth_settings
 from .tables import groups, mfa_devices, permissions, recovery_codes, tokens
@@ -106,17 +107,27 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         await super()._add(aggregate)
 
     async def find_by_email(self, email: str) -> list[AbstractBaseUser]:
-        """Users whose ``EMAIL_FIELD`` is ``email``, in any case; none without one."""
+        """Users whose ``EMAIL_FIELD`` is ``email``, in any case; none without one.
+
+        Only ASCII letters fold (``same_email``). SQL's ``lower()``, on both
+        sides, finds the candidates: PostgreSQL's folds more than ASCII
+        (the KELVIN SIGN onto ``k``), SQLite's ASCII alone, so the
+        candidates are then compared one by one, the same way everywhere.
+        """
         field = self.model.EMAIL_FIELD
         if field is None or not email.strip():
             return []
         column = get_user_table().c[field]
         statement = (
             select(self.model)
-            .where(func.lower(column) == email.strip().lower())
+            .where(func.lower(column) == func.lower(email.strip()))
             .order_by(get_user_table().c.id)
         )
-        users = list(await self.session.scalars(statement))
+        users = [
+            user
+            for user in await self.session.scalars(statement)
+            if same_email(getattr(user, field), email)
+        ]
         for user in users:
             self._track(user)
         return users

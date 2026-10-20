@@ -9,6 +9,10 @@ class InvalidUsername(BusinessRuleViolation):
     """The username is empty, too long, or uses characters it may not."""
 
 
+class InvalidEmail(BusinessRuleViolation):
+    """The email address is not one plain address mail can go to."""
+
+
 class UsernameTaken(DuplicateValue):
     """Another user has that username."""
 

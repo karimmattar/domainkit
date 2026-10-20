@@ -105,13 +105,27 @@ permissions.
 | `id` | UUID | |
 | `username` | text, unique | 1 to 150 letters, digits, and `@ . + - _`; NFKC-normalized. |
 | `password` | `PasswordHash` | Never a raw password; see below. |
-| `email`, `first_name`, `last_name` | text | The email's domain is lower-cased. |
+| `email`, `first_name`, `last_name` | text | The email is one plain address or empty, with its domain lower-cased (see below). |
 | `email_verified` | bool | Whether the user proved they read mail at `email`; a new address clears it. |
 | `is_active` | bool | Inactive users cannot log in and have no permissions. |
 | `is_staff` | bool | May use the admin API (with its permissions). |
 | `is_superuser` | bool | Has every permission without grants. |
 | `last_login`, `date_joined` | UTC timestamps | |
 | `groups`, `user_permissions` | sets | Grants, through link tables. |
+
+An email address is one address alone, in ASCII, checked as
+`domainkit.contrib.mail` checks the addresses it sends to:
+`user@example.com`, never `Name <user@example.com>`, a comment, or a list,
+and an internationalized domain in its `xn--` form. Creating a user,
+changing the email (the admin API, `update`), signing up, and asking for
+a reset all refuse anything else (`InvalidEmail`, a 422 `invalid_email`),
+so the address mail goes to is the whole stored value, and no display
+name reaches a mail's text. `validate_email(text)` checks one. Addresses
+compare by their ASCII letters in any case and by nothing else
+(`same_email`): `find_by_email` never takes a look-alike, such as one
+with the KELVIN SIGN, which SQL's `lower()` makes a `k` on PostgreSQL,
+for another's address. Rows stored before these checks keep their
+address; the worker skips one that cannot take mail (below).
 
 A `Group` has a unique name and a set of permissions; members have them
 all. `AnonymousUser` stands for requests without credentials: no id, no
@@ -752,11 +766,15 @@ router.include_router(recovery_router, prefix="/auth")
 | `POST /email-verification/confirm` | anyone | `{"token"}` | `204`; `400 invalid_token`. |
 
 A reset request answers `202` whether or not an account uses the address,
-with the same body, in the same time: it only queues a task. The worker
-looks the address up, in any case, and mails every active user of it who
-has a usable password a link, `PASSWORD_RESET_URL` with the token in place
+with the same body, in the same time: it only queues a task (an address
+that is not one plain address gets `422` at once). The worker looks the
+address up, in any case, and mails every active user of it who has a
+usable password a link, `PASSWORD_RESET_URL` with the token in place
 of `{token}` (the token alone without one), which works for
-`PASSWORD_RESET_TIMEOUT` (an hour). Your page posts the token and the new
+`PASSWORD_RESET_TIMEOUT` (an hour). A user whose stored address cannot
+take mail, from before addresses were checked, is skipped with a warning
+that names the user's id, never the address, and the others still get
+their links; verification links skip such a user the same way. Your page posts the token and the new
 password to `/password-reset/confirm`. The new password is checked by the
 validators, and every session of the user ends.
 

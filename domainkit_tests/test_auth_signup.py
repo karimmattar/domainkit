@@ -2,6 +2,7 @@
 
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from domainkit.contrib import mail
@@ -127,6 +128,33 @@ def test_fields_and_password_rules_are_checked_at_once(identity: Api) -> None:
     assert "username has 1 to 150" in bad_name.json()["detail"]
     assert "too similar to the username" in weak.json()["detail"]
     assert no_address.status_code == extra.status_code == 422
+    assert outbox_payloads() == []
+
+
+@pytest.mark.parametrize(
+    "email",
+    [
+        "ceo\uff20corp.example<eve@evil.example>",  # Mail would go to eve.
+        "x0<victim@example.com>",  # Each name would get its own EMAIL_RATE count.
+        "\u212aelly@corp.example",  # The KELVIN SIGN, a k to lower().
+        "kelly@corp.example(Kelly)",
+    ],
+)
+def test_signups_take_plain_addresses_only(identity: Api, email: str) -> None:
+    """One ASCII address alone, which mail goes to as the account shows it."""
+    client = identity(SIGNUP_ENABLED=True)
+
+    response = signup(client, email=email)
+
+    assert response.status_code == 422
+    (refused,) = response.json()["errors"]
+    assert (refused["loc"], refused["msg"]) == (
+        ["body", "email"],
+        (
+            "Value error, Enter one email address, such as user@example.com, "
+            "without a name."
+        ),
+    )
     assert outbox_payloads() == []
 
 

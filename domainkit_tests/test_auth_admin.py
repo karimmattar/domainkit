@@ -425,6 +425,8 @@ def test_staff_change_users(api: Api) -> None:
     def refused_with(target: str, body: dict[str, Any], status: int) -> tuple[str, str]:
         return error(client.patch(target, json=body, headers=headers), status)
 
+    root_headers = staff("adder", "auth.add_user")
+
     assert refused_with(url, {"fields": {"username": "robert"}}, 422) == (
         "unknown_user_field",
         "These user fields cannot be changed here: username.",
@@ -434,6 +436,17 @@ def test_staff_change_users(api: Api) -> None:
             "invalid_user_field",
             "email: Input should be a valid string.",
         )
+    for address in ("Bob <bob@example.com>", "\u212aelly@corp.example"):
+        assert refused_with(url, {"fields": {"email": address}}, 422) == (
+            "invalid_email",
+            "Enter one email address, such as user@example.com, without a name.",
+        )
+        created = client.post(
+            f"{ADMIN}/users",
+            json={"username": "carol", "fields": {"email": address}},
+            headers=root_headers,
+        )
+        assert error(created, 422)[0] == "invalid_email"
     assert client.get(url, headers=headers).json()["fields"]["email"] == (
         "Bob@example.com"
     )

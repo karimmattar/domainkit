@@ -169,6 +169,17 @@ def test_createsuperuser_takes_options(auth_project: str, prompts: Prompts) -> N
         call_command("createsuperuser", "--username", "root", stdout=io.StringIO())
     with pytest.raises(CommandError, match=r"^The username cannot be blank\.$"):
         call_command("createsuperuser", "--username", " ", stdout=io.StringIO())
+    prompts(createsuperuser.Command, secret=[STRONG, STRONG])
+    with pytest.raises(CommandError, match=r"^Enter one email address, such as"):
+        call_command(
+            "createsuperuser",
+            "--username",
+            "boss",
+            "--email",
+            "Boss <boss@x.org>",
+            stdout=io.StringIO(),
+        )
+    assert stored("boss") is None
 
 
 def test_createsuperuser_usage(auth_project: str) -> None:

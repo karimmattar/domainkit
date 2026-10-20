@@ -567,3 +567,7 @@ msgstr ""
 msgctxt "validation"
 msgid "Unable to extract tag using discriminator {discriminator}"
 msgstr ""
+
+#. domainkit.contrib.auth: identity checks
+msgid "Enter one email address, such as user@example.com, without a name."
+msgstr ""

@@ -324,6 +324,17 @@ All notable changes to domainkit. The format follows
   frozen clock reaches the application.
 - JWTs' `exp`, `iat`, and `nbf` are checked by domainkit, on
   `domainkit.clock`, as PyJWT checked them on the host's clock.
+- **Email addresses are checked** wherever one is taken: creating a user
+  (the admin API, `create_user`, `createsuperuser`), changing one, signing
+  up, and asking for a reset. An address is one plain ASCII address,
+  `user@example.com`, without a display name, comment, or list; anything
+  else is refused with `422 invalid_email` (`InvalidEmail`), so mail goes
+  to exactly the address an account shows. Addresses compare by their
+  ASCII letters alone: on PostgreSQL, a look-alike (the KELVIN SIGN, which
+  `lower()` makes a `k`) no longer takes another's signup or reset, and a
+  reset skips, and logs by user id, a stored address that cannot take mail
+  rather than failing for every account of it. Addresses stored before
+  stay as they are.
 
 ### Fixed
 
