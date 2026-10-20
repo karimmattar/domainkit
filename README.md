@@ -58,6 +58,8 @@ pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, m
   time zones, and number and date formats
 - [docs/uploads.md](https://github.com/karimmattar/domainkit/blob/main/docs/uploads.md): file storages, receiving uploads,
   and serving files
+- [docs/live.md](https://github.com/karimmattar/domainkit/blob/main/docs/live.md): WebSockets and Server-Sent Events,
+  bounded and re-authorized while open, and committed events streamed live
 - [docs/privacy.md](https://github.com/karimmattar/domainkit/blob/main/docs/privacy.md): exporting and erasing a person's
   data, and retention
 - [docs/testing.md](https://github.com/karimmattar/domainkit/blob/main/docs/testing.md): the pytest plugin: test databases,

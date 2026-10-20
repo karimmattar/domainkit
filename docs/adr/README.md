@@ -48,3 +48,6 @@ accepted record: supersede it with a new one and link both ways.
 | [0039](0039-translate-messages-at-the-boundary.md) | Translate messages at the HTTP boundary, from gettext catalogs compiled in Python | Accepted |
 | [0040](0040-store-files-under-random-names.md) | Store files under random names; trust only their content | Accepted |
 | [0041](0041-privacy-through-personal-markers.md) | Answer privacy requests from Personal markers, through units of work | Accepted |
+| [0055](0055-bound-live-connections.md) | Bound every live connection: caps, a send queue, a message rate, and clocks | Accepted |
+| [0056](0056-reauthorize-open-connections.md) | Re-authorize open connections on a timer, and close them when that fails | Accepted |
+| [0057](0057-live-committed-events-in-process.md) | Stream committed events to clients in process, filtered per event by an access rule | Accepted |
