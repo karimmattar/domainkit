@@ -49,9 +49,10 @@ Amendment: cursors were refused on the way out when longer than the
   (its `max_ordering` roomiest `ordering_fields`, descending), whose
   cursor could be longer than the cap. A stored value longer than its
   field declares still gets a cursor, which is logged and refused when
-  it comes back. Raising the cap instead would not bound anything: text
+  it comes back. Raising the cap alone would bound nothing, since text
   without `MaxLength` has no limit, and URLs past about 8 KB are refused
-  by common proxies. (Amended 2026-10-20.)
+  by common proxies; it rose from 2,048 so that three text fields of
+  `MaxLength(150)` fit. (Amended 2026-10-20.)
 - Offsets are a separate mode, bounded by `max_offset` (10,000). Counts
   are optional (`count=True`), as each costs a query.
 - `FilterSet` allowlists lookups per field, the ordering fields, and the

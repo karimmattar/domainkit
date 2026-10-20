@@ -231,10 +231,10 @@ with its type, an enum's values, the ordering choices, and the bounds, and
 FastAPI answers a wrong type with 422 `validation_error`. So is a value
 the field cannot hold: an integer past 64 bits, or an amount past its
 `Digits` (`Digits(10, 2)` takes 8 digits, then 2; without `Digits`, 40
-either side of the point), so `1e999999999` never reaches the database. The class is
-checked when it is declared, so a mistake fails at import: a lookup that
-does not fit its field (`gt` on a list, `icontains` on an amount) is a
-`TypeError`, and a field the model lacks an `UnknownField`.
+either side of the point), so `1e999999999` never reaches the database.
+The class is checked when it is declared, so a mistake fails at import: a
+lookup that does not fit its field (`gt` on a list, `icontains` on an
+amount) is a `TypeError`, and a field the model lacks an `UnknownField`.
 
 Its orderings must fit a cursor, so a page can always say where the next
 one starts. Each field of `ordering_fields` and `default_ordering` needs a
@@ -259,9 +259,9 @@ or search words than `max_search_words` (5), and values a value object
 refuses. Other parameters (`limit`, `cursor`, the route's own, and
 `<name>__<lookup>` for a name the set does not filter, a field of the
 model or not) are left alone, so answers tell clients nothing of the
-model's other fields. The other
-bounds are `max_values` (50 values in an `__in`), `max_length` per filter
-(200 characters), `max_search_length` (100), and `max_ordering` (3 fields).
+model's other fields. The other bounds are `max_values` (50 values in an
+`__in`), `max_length` per filter (200 characters), `max_search_length`
+(100), and `max_ordering` (3 fields).
 
 ## Several aggregates at once
 
