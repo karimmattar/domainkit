@@ -12,7 +12,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Final
 
@@ -22,6 +22,7 @@ from prometheus_client import REGISTRY
 from pydantic import BaseModel, ValidationError
 from redis.asyncio import Redis
 
+from domainkit import clock
 from domainkit.broker import brokers
 from domainkit.cache import (
     Cache,
@@ -38,6 +39,12 @@ from domainkit.cache import (
 from domainkit.cache.core import split
 from domainkit.cache.redis import RedisStore, create_client
 from domainkit.conf import CacheConfig, Settings, override_settings
+from domainkit.context import RequestContext, bind_request, current_request
+from domainkit.contrib.idempotency.operations import (
+    Operation,
+    run_operation,
+    running_operation,
+)
 from domainkit.db.connections import connections
 from domainkit.ddd import DomainEvent, EventBus
 from domainkit.exceptions import ImproperlyConfigured
@@ -46,9 +53,13 @@ from domainkit.http.ratelimit import RedisBackend
 from domainkit.ledger import ledgers
 from domainkit.management import call_command
 from domainkit.management.base import CommandError, run_async
+from domainkit.tasks import owned
+from domainkit.tracing import current_ids, remote_parent
 from domainkit_tests.settings import SECRET_KEY
 
 pytestmark = pytest.mark.anyio
+
+TRACEPARENT: Final = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
 
 CLOSED: Final = "redis://127.0.0.1:9/0"
 """A Redis URL nothing listens on (port 9, discard): a cache that is down."""
@@ -980,7 +991,7 @@ async def test_a_caller_cancelled_while_its_cache_closes_stays_cancelled() -> No
 def test_caches_close_before_what_their_computations_use(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """At shutdown, cache computations stop before databases and brokers close."""
+    """At shutdown, cache computations stop before caches and databases close."""
     closed: list[str] = []
     handlers = {
         "caches": caches,
@@ -999,9 +1010,45 @@ def test_caches_close_before_what_their_computations_use(
         pass
     assert closed == ["caches", "connections", "ledgers", "brokers"]
 
+    async def compute_then_stop() -> None:  # A management command.
+        factory = Stuck(on_cancel=lambda: closed.append("computation"))
+        asyncio.create_task(make_cache().get_or_set("k", factory, int))  # noqa: RUF006
+        await factory.started.wait()
+
     closed.clear()
-    run_async(asyncio.sleep(0))  # Management commands.
-    assert closed == ["caches", "connections", "ledgers", "brokers"]
+    run_async(compute_then_stop())
+    assert closed == ["computation", "caches", "connections", "ledgers", "brokers"]
+
+
+async def test_computations_run_in_a_clean_context_as_owned_tasks() -> None:
+    """The first caller's request, operation, and span stay with that caller."""
+    seen: list[object] = []
+    computing = asyncio.Event()
+    release = asyncio.Event()
+
+    async def factory() -> int:
+        seen.extend([current_request(), running_operation(), current_ids()])
+        seen.append(clock.now())
+        computing.set()
+        await release.wait()
+        return 7
+
+    cache = make_cache()
+    frozen_at = datetime(2026, 1, 1, tzinfo=UTC)
+    with (
+        bind_request(RequestContext("req-first", None, "GET", "/", actor="u1")),
+        run_operation(Operation("key-hash", "token")),
+        remote_parent({"traceparent": TRACEPARENT}),
+        clock.freeze_time(frozen_at),
+    ):
+        first = asyncio.create_task(cache.get_or_set("k", factory, int))
+        await computing.wait()
+        (task,) = owned()
+        assert task.get_name() == "domainkit.cache.compute"
+        release.set()
+        assert await first == 7
+
+    assert seen == [None, None, None, frozen_at]  # A test's frozen clock carries.
 
 
 def test_readiness_checks_only_caches_that_ask_for_it() -> None:

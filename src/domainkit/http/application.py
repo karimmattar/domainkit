@@ -20,7 +20,7 @@ from domainkit.http.openapi import (
     operation_id,
 )
 from domainkit.http.versioning import DeprecationHeadersMiddleware
-from domainkit.lifecycle import close_resources
+from domainkit.lifecycle import serving
 from domainkit.utils.module_loading import import_string
 
 logger = logging.getLogger(__name__)
@@ -36,12 +36,9 @@ FRAMEWORK_ERRORS: Final = {
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Start the domains, then stop them and close what they opened."""
-    try:
-        async with registry.lifespan():
-            yield
-    finally:
-        await close_resources()
+    """Start the domains; then stop them, and close what they opened, in budget."""
+    async with serving():
+        yield
 
 
 def get_asgi_application() -> FastAPI:

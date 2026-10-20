@@ -28,10 +28,12 @@ unless ``max_age`` says otherwise. Each answer has an ``ETag``, and a
 request whose ``If-None-Match`` names it gets 304 without a body.
 """
 
+import asyncio
 import hashlib
 import inspect
 import json
 from collections.abc import Awaitable, Callable, Sequence
+from contextvars import copy_context
 from functools import update_wrapper
 from typing import Any, Final, get_type_hints
 
@@ -104,10 +106,16 @@ def cache_page(
             ):
                 return await endpoint(*args, **kwargs)
             key = _key(prefix, request, headers, user)
+            caller = copy_context()
 
             async def compute() -> Any:  # noqa: ANN401 - the endpoint's.
+                # Computations run in a clean context; the endpoint runs as
+                # the caller, whose user and language the key holds, so every
+                # caller sharing the entry shares them.
+                result = await asyncio.get_running_loop().create_task(
+                    endpoint(*args, **kwargs), context=caller
+                )
                 # Typed now, so fields the return type leaves out are not cached.
-                result = await endpoint(*args, **kwargs)
                 return adapter(returns).validate_python(result, from_attributes=True)
 
             value = await caches[cache].get_or_set(key, compute, returns, ttl)

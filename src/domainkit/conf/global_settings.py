@@ -514,6 +514,15 @@ class Settings(BaseModel):
     """File storages by alias (``domainkit.storage``); none unless set."""
     LOGGING: dict[str, Any] = Field(default_factory=_minimal_logging)
     """``logging.config.dictConfig`` mapping applied by ``setup()``."""
+    EVENT_HANDLER_TIMEOUT: float = Field(default=10.0, gt=0, le=3600)
+    """Seconds an in-process event handler may run before it is cut off."""
+    SHUTDOWN_TIMEOUT: float = Field(default=15.0, gt=0, le=300)
+    """Seconds a shutdown may take in all, split across its phases.
+
+    Domain hooks, work in flight, background tasks, then connections (see
+    ``domainkit.lifecycle``). With the server's own graceful shutdown, keep
+    it under the orchestrator's grace period (30 s in Kubernetes).
+    """
 
     ALLOWED_HOSTS: tuple[str, ...] = ("localhost", "127.0.0.1", "[::1]")
     """Accepted ``Host`` header values; ``*.example.com`` matches subdomains."""
