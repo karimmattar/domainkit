@@ -172,7 +172,8 @@ All notable changes to domainkit. The format follows
   resolve only to public addresses, and the checked address is the one
   connected to. Staff manage subscriptions through an admin API; secrets
   are shown once, in answers marked `no-store` that neither caches nor
-  idempotency keys keep, and stored encrypted under a key derived from
+  idempotency keys keep, never in reprs (nor are URLs, which may hold
+  tokens), and stored encrypted under a key derived from
   `SECRET_KEY`, which webhooks require (ADR 0036). Install
   `domainkit[webhooks]`, which brings httpx2 and cryptography.
 - `domainkit.http.ratelimit.Throttle`, a FastAPI dependency that limits one

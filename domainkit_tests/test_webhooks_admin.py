@@ -19,6 +19,13 @@ from domainkit.conf import override_settings
 from domainkit.contrib.auth import open_routes
 from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.contrib.webhooks import queue_deliveries
+from domainkit.contrib.webhooks.admin import (
+    NewSubscriptionOut,
+    SecretOut,
+    SubscriptionIn,
+    SubscriptionOut,
+    SubscriptionPatch,
+)
 from domainkit.contrib.webhooks.models import (
     SubscriptionChanged,
     SubscriptionCreated,
@@ -169,6 +176,17 @@ def test_staff_create_subscriptions_and_see_the_secret_once(
     (event,) = [e for e in recorded if isinstance(e, SubscriptionCreated)]
     assert (event.host, event.event_types) == ("hooks.example.com", ("invoice.paid",))
     assert "T0K3N" not in repr(recorded)
+    body = SubscriptionIn.model_validate(NEW)
+    for model in (
+        body,
+        SubscriptionPatch(url=NEW["url"]),
+        SubscriptionOut.model_validate(created),
+        NewSubscriptionOut.model_validate({**created, "secret": secret}),
+        SecretOut(secret=secret, previous_valid_until=None),
+    ):
+        assert "T0K3N" not in repr(model)
+        assert secret not in repr(model)
+    assert body.url == NEW["url"]
 
 
 def test_subscriptions_are_paged(client: TestClient, admin: Headers) -> None:
