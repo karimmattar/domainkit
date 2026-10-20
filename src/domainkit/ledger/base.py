@@ -23,6 +23,10 @@ class LedgerKeyExists(LedgerError):
     """``create`` found the key already written."""
 
 
+class LedgerChanged(LedgerError):
+    """``append(..., unchanged_since=...)`` found a later revision of the key."""
+
+
 class LedgerTampered(LedgerError):
     """A proof or a server signature did not verify: do not trust the ledger."""
 
@@ -54,8 +58,17 @@ class Ledger(ABC):
     """An append-only key-value store with verified reads and writes."""
 
     @abstractmethod
-    async def append(self, key: bytes, value: bytes) -> LedgerWrite:
-        """Write a new revision of ``key``, verified."""
+    async def append(
+        self, key: bytes, value: bytes, *, unchanged_since: int | None = None
+    ) -> LedgerWrite:
+        """Write a new revision of ``key``, verified.
+
+        With ``unchanged_since``, the transaction of the revision the caller
+        read (0 for a key it found unwritten), the write happens only if no
+        revision came after it; otherwise ``LedgerChanged`` is raised. The
+        check and the write are one step in the ledger, so a retry, or a
+        write that outlived a caller who gave up on it, lands at most once.
+        """
 
     @abstractmethod
     async def create(self, key: bytes, value: bytes) -> LedgerWrite:

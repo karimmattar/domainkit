@@ -34,7 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from domainkit import clock
 from domainkit.apps import registry
 from domainkit.db import connections
-from domainkit.ledger import Ledger, LedgerKeyNotFound, ledgers
+from domainkit.ledger import Ledger, LedgerChanged, LedgerKeyNotFound, ledgers
 
 from .personal import audited_databases
 from .settings import AuditSettings
@@ -170,6 +170,9 @@ async def anchor(
 
     A head is anchored at most once per ``every``, and never twice. An anchor
     dated after ``now`` (written by a clock running ahead) holds none back.
+    The write lands only if no anchor came after the one read here: another
+    sealer, or a write that outlived a caller who gave up on it, may have
+    anchored in between, and then there is nothing new.
     """
     now = now or clock.now()
     async with connections.engine(database).connect() as connection:
@@ -177,15 +180,22 @@ async def anchor(
     if head is None:
         return None
     try:
-        latest = Anchor.decode((await ledger.read(anchor_key(database))).value)
+        entry = await ledger.read(anchor_key(database))
     except LedgerKeyNotFound:
-        latest = None
+        latest, read_at = None, 0
+    else:
+        latest, read_at = Anchor.decode(entry.value), entry.transaction
     if latest is not None and (
         latest.seq == head.seq or timedelta(0) <= now - latest.anchored_at < every
     ):
         return None
     written = Anchor(head.seq, head.link, now)
-    await ledger.append(anchor_key(database), written.encode())
+    try:
+        await ledger.append(
+            anchor_key(database), written.encode(), unchanged_since=read_at
+        )
+    except LedgerChanged:
+        return None
     return written
 
 

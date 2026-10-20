@@ -41,7 +41,7 @@ from domainkit.contrib.audit.seals import (
 )
 from domainkit.contrib.audit.tables import audit_keys, audit_log, audit_seals
 from domainkit.db import connections
-from domainkit.ledger import MemoryLedger, ledgers
+from domainkit.ledger import LedgerEntry, MemoryLedger, ledgers
 from domainkit.management import CommandError, call_command
 from domainkit_tests.conftest import POSTGRES_VARIABLE
 from domainkit_tests.test_postgres import Migration
@@ -499,6 +499,34 @@ async def test_an_anchor_from_a_clock_ahead_holds_none_back(tables: None) -> Non
     assert caught_up is not None
     assert (caught_up.seq, caught_up.anchored_at) == (2, now)
     assert same_instant is None
+
+
+async def test_an_anchor_written_meanwhile_is_not_written_again(
+    tables: None,
+) -> None:
+    """Another sealer, or a late write, anchors between the read and the write."""
+
+    class Raced(MemoryLedger):
+        """Another writer anchors right after each read."""
+
+        async def read(self, key: bytes, revision: int | None = None) -> LedgerEntry:
+            found = await super().read(key, revision)
+            await self.append(key, found.value)
+            return found
+
+    ledger = Raced()
+    now = datetime(2026, 10, 18, 9, 0, tzinfo=UTC)
+    every = timedelta(hours=1)
+    await add(now)
+    await seal("default")
+    old = Anchor(0, "0" * 64, now - 2 * every)  # Due for a new one.
+    await ledger.append(anchor_key("default"), old.encode())
+
+    raced = await anchor("default", ledger, every=every, now=now)
+
+    assert raced is None
+    # The old anchor, and the other writer's; this one did not land.
+    assert await ledger.revision_count(anchor_key("default"), limit=5) == 2
 
 
 async def test_seals_left_unanchored_are_reported(tables: None) -> None:

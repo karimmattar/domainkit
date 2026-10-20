@@ -32,6 +32,10 @@ All notable changes to domainkit. The format follows
     domains written as `def`, which FastAPI runs on its thread pool;
     `domainkit.http.blocking.allow_sync` marks one that must stay sync;
   - projects made by `init` turn on Ruff's `ASYNC` rules.
+- `Ledger.append(key, value, unchanged_since=...)` writes only if no
+  revision of the key came after the one read, in one step in the ledger
+  (immudb's `keyNotModifiedAfterTX` precondition), and raises the new
+  `LedgerChanged` otherwise.
 - CI runs the suite on free-threaded Python 3.14 (3.14t), without the
   immudb extra, whose grpcio has no free-threaded build yet (R11).
 - `domainkit.contrib.auth.acurrent_user`, the dependency behind
@@ -60,6 +64,13 @@ All notable changes to domainkit. The format follows
   refused-credential holds, and the password hashing pool's count take a
   lock, so event loops on several threads, as free-threaded Python runs
   them, share them safely (ASYNC-23).
+- immudb ledgers answer readiness probes on a thread and a client of their
+  own, so a probe no longer waits behind a slow write and reports the
+  ledger unready; `close()` waits at most `TIMEOUT` for a busy client,
+  which closes when its call returns, and no longer leaves a thread open
+  when shutdown cuts it short. Audit anchors are written with
+  `unchanged_since`, so a retried anchor, or one that landed after its
+  caller gave up, is written at most once (ASYNC-13; ADR 0052).
 - TLS contexts are built once per process for each set of TLS settings,
   never on the event loop while it serves: databases' when the application
   is built, RabbitMQ's and Redis's on a worker thread at the first
