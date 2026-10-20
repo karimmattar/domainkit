@@ -16,10 +16,22 @@ from fastapi.dependencies.models import Dependant
 
 from domainkit.conf import UNSET, override_settings
 from domainkit.http.application import get_asgi_application
-from domainkit.http.blocking import _calls, allow_sync, sync_calls, watch_event_loop
+from domainkit.http.blocking import (
+    _calls,
+    _listed,
+    allow_sync,
+    sync_calls,
+    watch_event_loop,
+)
 from domainkit.management import call_command
 from domainkit.testing import AsyncTestClient
-from domainkit.testing.blocking import DEBUG_VARIABLE
+from domainkit.testing.blocking import (
+    DEBUG_VARIABLE,
+    BlockingDetector,
+    SlowSteps,
+    configure,
+    seconds,
+)
 from domainkit_tests.conftest import MakePackage
 
 HERE = __name__
@@ -170,6 +182,10 @@ def build_app() -> FastAPI:
     app = FastAPI()
     router = APIRouter(prefix="/included")
 
+    @allow_sync  # Marked as the app is built, as a project's import would.
+    def marked_here() -> int:
+        return 1
+
     @app.get("/sync-handler")
     def sync_handler(
         a: Annotated[int, Depends(sync_dependency)],
@@ -188,8 +204,10 @@ def build_app() -> FastAPI:
         c: Annotated[int, Depends(AllowedCallable())],
         d: Annotated[int, Depends(functools.partial(partial_of, 2))],
         e: Annotated[int, Depends(wrapped_sync)],
+        f: Annotated[int, Depends(functools.partial(sync_on_purpose))],
+        g: Annotated[int, Depends(marked_here)],
     ) -> int:
-        return a + b + c + d + e
+        return a + b + c + d + e + f + g
 
     @router.get("/reused", dependencies=[Depends(sync_dependency)])
     async def reused(a: Annotated[int, Depends(sync_dependency)]) -> int:
@@ -200,6 +218,13 @@ def build_app() -> FastAPI:
         """A sync WebSocket handler."""
 
     app.include_router(router)
+    live = APIRouter()
+
+    @live.websocket("/live")
+    async def live_socket(websocket: WebSocket) -> None:  # pragma: no cover
+        """Never served: included with a prefix and a sync dependency."""
+
+    app.include_router(live, prefix="/v1", dependencies=[Depends(sync_generator)])
     for number in range(4):
         app.add_api_route(f"/more/{number}", sync_dependency)
     inner = FastAPI()
@@ -225,12 +250,41 @@ def test_sync_handlers_and_dependencies_are_named_with_their_routes() -> None:
             "sync_dependency",
             "GET /sync-handler, GET /included/reused, GET /more/0 and 4 more",
         ),
-        named("sync_generator", "GET /sync-handler"),
+        named("sync_generator", "GET /sync-handler, WEBSOCKET /v1/live"),
         named("SyncCallable", "GET /async-handler"),
         named("partial_of", "GET /async-handler"),
         named("wrapped_sync", "GET /async-handler"),
         named("build_app.<locals>.socket", "WEBSOCKET /included/socket"),
     ]
+
+
+def test_mounted_and_hosted_routes_are_named_by_their_whole_path() -> None:
+    """Routes under a mount, a mount within it, and a host keep their full path."""
+    deeper = FastAPI()
+    deeper.add_api_route("/deep", sync_dependency)
+    inner = FastAPI()
+    inner.add_api_route("/inner", sync_dependency, methods=["POST", "GET"])
+    inner.mount("/deeper", deeper)
+    hosted = FastAPI()
+    hosted.add_api_route("/hosted", sync_dependency)
+    app = FastAPI()
+    app.mount("/mounted", inner)
+    app.host("api.example.com", hosted)
+
+    assert sync_calls(app, [HERE]) == [
+        (
+            f"{HERE}.sync_dependency is a def, so FastAPI calls it on its thread "
+            "pool for GET POST /mounted/inner, GET /mounted/deeper/deep, GET "
+            "/hosted; make it async def, or mark it with "
+            "domainkit.http.blocking.allow_sync."
+        )
+    ]
+
+
+def test_routes_past_the_third_are_counted() -> None:
+    """Three routes are named; from four on, the rest are counted."""
+    assert _listed(["a", "b", "c"]) == "a, b, c"
+    assert _listed(["a", "b", "c", "d"]) == "a, b, c and 1 more"
 
 
 def test_dependants_without_a_call_are_walked_through() -> None:
@@ -395,3 +449,65 @@ def test_detection_restores_a_debug_variable_already_set(
     run_inner(blocking_tests, "--detect-blocking").assert_outcomes(passed=2, failed=2)
 
     assert os.environ[DEBUG_VARIABLE] == "x"
+
+
+def test_the_least_threshold_is_asyncios_own() -> None:
+    """``--blocking-seconds 0.1`` is allowed: it is what asyncio reports."""
+    assert seconds("0.1") == 0.1
+
+
+def test_a_step_exactly_at_the_threshold_counts() -> None:
+    """A step that took the threshold itself is reported; a faster one is not."""
+    steps = SlowSteps(0.25)
+    for took in (0.25, 0.249):
+        steps.emit(
+            logging.LogRecord(
+                "asyncio",
+                logging.WARNING,
+                __file__,
+                1,
+                "Executing %s took %.3f seconds",
+                ("<Task>", took),
+                None,
+            )
+        )
+
+    assert steps.found == ["Executing <Task> took 0.250 seconds"]
+
+
+def test_the_detector_is_registered_by_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``--detect-blocking`` registers one named plugin, with its threshold."""
+    monkeypatch.delenv(DEBUG_VARIABLE, raising=False)
+    registered: list[tuple[object, str]] = []
+
+    class Plugins:
+        def register(self, plugin: object, name: str) -> None:
+            registered.append((plugin, name))
+
+    class Config:
+        pluginmanager = Plugins()
+
+        def getoption(self, name: str) -> object:
+            return {"detect_blocking": True, "blocking_seconds": 0.3}[name]
+
+    configure(Config())  # type: ignore[arg-type]
+
+    ((detector, name),) = registered
+    assert name == "domainkit-detect-blocking"
+    assert isinstance(detector, BlockingDetector)
+    assert detector.seconds == 0.3
+    detector.pytest_unconfigure()
+    assert DEBUG_VARIABLE not in os.environ
+
+
+def test_unconfiguring_after_the_variable_went_is_harmless(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Should something else remove ``PYTHONASYNCIODEBUG``, nothing fails."""
+    monkeypatch.delenv(DEBUG_VARIABLE, raising=False)
+    detector = BlockingDetector(0.1)
+    del os.environ[DEBUG_VARIABLE]
+
+    detector.pytest_unconfigure()
+
+    assert DEBUG_VARIABLE not in os.environ

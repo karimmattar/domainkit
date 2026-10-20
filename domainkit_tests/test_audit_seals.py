@@ -41,7 +41,7 @@ from domainkit.contrib.audit.seals import (
 )
 from domainkit.contrib.audit.tables import audit_keys, audit_log, audit_seals
 from domainkit.db import connections
-from domainkit.ledger import LedgerEntry, MemoryLedger, ledgers
+from domainkit.ledger import LedgerEntry, LedgerKeyNotFound, MemoryLedger, ledgers
 from domainkit.management import CommandError, call_command
 from domainkit_tests.conftest import POSTGRES_VARIABLE
 from domainkit_tests.test_postgres import Migration
@@ -527,6 +527,32 @@ async def test_an_anchor_written_meanwhile_is_not_written_again(
     assert raced is None
     # The old anchor, and the other writer's; this one did not land.
     assert await ledger.revision_count(anchor_key("default"), limit=5) == 2
+
+
+async def test_a_first_anchor_written_meanwhile_is_not_written_again(
+    tables: None,
+) -> None:
+    """The same race, when the read found no anchor at all."""
+
+    class Raced(MemoryLedger):
+        """Another writer anchors first, right after a read that found none."""
+
+        async def read(self, key: bytes, revision: int | None = None) -> LedgerEntry:
+            try:
+                return await super().read(key, revision)
+            except LedgerKeyNotFound:
+                await self.append(key, b"another sealer's anchor")
+                raise
+
+    ledger = Raced()
+    now = datetime(2026, 10, 18, 9, 0, tzinfo=UTC)
+    await add(now)
+    await seal("default")
+
+    raced = await anchor("default", ledger, every=timedelta(hours=1), now=now)
+
+    assert raced is None
+    assert await ledger.revision_count(anchor_key("default"), limit=5) == 1
 
 
 async def test_seals_left_unanchored_are_reported(tables: None) -> None:

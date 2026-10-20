@@ -300,7 +300,7 @@ async def test_immudb_appends_after_a_revision_are_conditional() -> None:
     await ledger.append(b"k", b"one")
     read = await ledger.read(b"k")
     after = await ledger.append(b"k", b"two", unchanged_since=read.transaction)
-    with pytest.raises(LedgerChanged, match="later revision") as late:
+    with pytest.raises(LedgerChanged) as late:
         await ledger.append(b"k", b"late", unchanged_since=read.transaction)
     fresh = await ledger.append(b"new", b"one", unchanged_since=0)
     with pytest.raises(LedgerChanged):
@@ -308,6 +308,7 @@ async def test_immudb_appends_after_a_revision_are_conditional() -> None:
     await ledger.close()
 
     assert (after, fresh) == (LedgerWrite(b"k", 12), LedgerWrite(b"new", 11))
+    assert str(late.value) == "The ledger has a later revision of this key."
     assert isinstance(late.value.__cause__, LedgerKeyExists)
     assert client.values == {b"k": [b"one", b"two"], b"new": [b"one"]}
 
@@ -358,7 +359,10 @@ async def test_closing_a_busy_ledger_waits_at_most_its_timeout(
     await ledger.close()
 
     assert not client.closed
-    assert "domainkit-ledger thread is busy" in caplog.text
+    assert (
+        "The ledger's domainkit-ledger thread is busy; its client closes when "
+        "the call returns."
+    ) in caplog.messages
     client.resume.set()
     assert await asyncio.to_thread(client.shut.wait, 10)
     assert client.values == {b"k": [b"v"]}  # The late write landed, then it closed.
@@ -438,12 +442,15 @@ def test_conditional_sets_carry_their_precondition(
     client = SimpleNamespace(_stub=Stub(), _rs="trusted state", _vk="signing key")
 
     results = [
-        verified_create(client, b"k", b"v"),
-        verified_append_after(client, b"k", b"v", 0),
-        verified_append_after(client, b"k", b"v", 42),
+        verified_create(client, b"k", b"first"),
+        verified_append_after(client, b"k", b"second", 0),
+        verified_append_after(client, b"k", b"third", 42),
     ]
 
     assert results == ["verified"] * 3
+    assert [
+        [(kv.key, kv.value) for kv in request.setRequest.KVs] for request in sent
+    ] == [[(b"k", b"first")], [(b"k", b"second")], [(b"k", b"third")]]
     (new,), (still_new,), (unchanged,) = (
         list(request.setRequest.preconditions) for request in sent
     )

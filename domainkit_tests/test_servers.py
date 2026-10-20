@@ -56,6 +56,11 @@ GRANIAN_NO_WS = ServerLimits("granian", False, None)
             ServerLimits("uvicorn", True, 2048),
         ),
         (["manage.py", "check"], {"UVICORN_PORT": "80"}, DEFAULT_UVICORN),
+        (
+            ["manage.py"],
+            {"UVICORN_WS": "none"},
+            ServerLimits("uvicorn", False, MiB * 16),
+        ),
         ([GRANIAN, "--interface", "asgi"], {}, GRANIAN_WS),
         (["/lib/granian/__main__.py", "--no-ws"], {}, GRANIAN_NO_WS),
         (["manage.py"], {"GRANIAN_WEBSOCKETS": "false"}, GRANIAN_NO_WS),

@@ -89,6 +89,27 @@ def test_reporters_run_on_their_thread_in_the_callers_context() -> None:
         ("first", "req-7", "domainkit-reporting"),
         ("second", "req-7", "domainkit-reporting"),
     ]
+    assert reporting._reports._worker is not None
+    assert reporting._reports._worker.daemon  # Never holds up an exit.
+
+
+def test_a_failing_reporter_is_named_and_the_others_still_run(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One reporter's failure is logged with its name; the next one still runs."""
+    seen: list[str] = []
+
+    def broken(exc: BaseException, context: Mapping[str, object]) -> None:
+        raise RuntimeError("down")
+
+    def kept(exc: BaseException, context: Mapping[str, object]) -> None:
+        seen.append(str(exc))
+
+    with caplog.at_level("ERROR", "domainkit.reporting"):
+        reporting._report((broken, kept), ValueError("boom"), {})
+
+    assert caplog.messages == [f"Error reporter {broken!r} failed"]
+    assert seen == ["boom"]
 
 
 def test_a_full_queue_drops_reports_and_logs_the_count(
@@ -101,15 +122,17 @@ def test_a_full_queue_drops_reports_and_logs_the_count(
     assert worker.submit(lambda: ran.append("a"))
     assert worker.submit(lambda: ran.append("b"))
     assert not worker.submit(lambda: ran.append("lost"))
-    assert worker.dropped == 1
+    assert not worker.submit(lambda: ran.append("lost too"))
+    assert worker.dropped == 2
     resume.set()
     assert worker.flush(10)
     with caplog.at_level("WARNING", "domainkit.reporting"):
         assert worker.submit(lambda: ran.append("c"))
+        assert worker.submit(lambda: ran.append("d"))  # Reported once only.
     assert worker.flush(10)
 
-    assert ran == ["a", "b", "c"]
-    assert caplog.messages == ["Dropped 1 error reports: the reporting queue was full"]
+    assert ran == ["a", "b", "c", "d"]
+    assert caplog.messages == ["Dropped 2 error reports: the reporting queue was full"]
 
 
 def test_flush_gives_up_after_its_timeout(worker: _ReportingThread) -> None:
@@ -140,7 +163,8 @@ def test_the_thread_survives_calls_that_fail(
     assert worker.submit(lambda: ran.append("after"))
     assert worker.flush(10)
 
-    assert "Error reporting failed" in caplog.text
+    logged = [r.getMessage() for r in caplog.records if r.name == reporting.__name__]
+    assert logged == ["Error reporting failed"]
     assert ran == ["after"]
 
 
@@ -204,3 +228,24 @@ async def test_shutdown_sends_waiting_reports(
     await close_resources()
 
     assert ran == ["waiting"]
+
+
+@pytest.mark.anyio
+async def test_flushes_wait_as_long_as_asked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both flushes hand on their timeout, ``FLUSH_TIMEOUT`` unless told."""
+    waited: list[float] = []
+
+    class Recording(_ReportingThread):
+        def flush(self, timeout: float) -> bool:
+            waited.append(timeout)
+            return True
+
+    worker = Recording(1)
+    assert worker.submit(lambda: None)  # Started: aflush_reports waits for it.
+    monkeypatch.setattr(reporting, "_reports", worker)
+
+    assert flush_reports(1.5)
+    await reporting.aflush_reports(2.5)
+    await reporting.aflush_reports()
+
+    assert waited == [1.5, 2.5, reporting.FLUSH_TIMEOUT]

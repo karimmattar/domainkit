@@ -136,11 +136,25 @@ def test_logging_without_a_queue_writes_on_the_callers_thread(
 
 @pytest.mark.parametrize("size", [0, -1])
 def test_the_logging_queue_needs_room(size: int) -> None:
-    """A queue size below 1 is refused; a handler needs a bounded queue."""
+    """A queue size below 1 is refused; 1 is the least."""
     with pytest.raises(ImproperlyConfigured, match="queue_size must be 1 or more"):
         build_logging_config(log_format="json", level="INFO", queue_size=size)
-    with pytest.raises(ImproperlyConfigured, match="needs a bounded queue"):
-        BackgroundHandler(queue.Queue())
+
+    least = build_logging_config(log_format="json", level="INFO", queue_size=1)
+
+    assert least["handlers"]["background"]["queue"]["maxsize"] == 1
+
+
+@pytest.mark.parametrize("records", [queue.Queue(), queue.SimpleQueue()])
+def test_a_handler_needs_a_bounded_queue(records: Any) -> None:  # noqa: ANN401 - any queue.
+    """An unbounded queue, or one with no size at all, is refused."""
+    with pytest.raises(ImproperlyConfigured) as refused:
+        BackgroundHandler(records)
+
+    assert str(refused.value) == (
+        "BackgroundHandler needs a bounded queue, such as "
+        '{"()": "queue.Queue", "maxsize": 10000}.'
+    )
 
 
 class Collect(logging.Handler):
@@ -208,10 +222,13 @@ def test_records_are_written_in_order_by_the_logging_thread(collect: Collect) ->
     assert handler.listener is not None
     handler.listener.start()  # Running already: no second thread.
     assert handler.wait_written(10)
+    threads = [t for t in threading.enumerate() if t.name == "domainkit-logging"]
     handler.close()
 
     assert collect.lines == [f"line {number}" for number in range(50)]
     assert collect.threads == {"domainkit-logging"}
+    assert threads
+    assert all(thread.daemon for thread in threads)  # Never holds up an exit.
 
 
 def test_a_full_queue_drops_and_counts_without_waiting(held: Collect) -> None:
@@ -306,6 +323,7 @@ def test_closing_writes_the_queue_then_writes_on_the_caller(collect: Collect) ->
 def test_handlers_without_a_listener_write_nothing() -> None:
     """A handler made without ``handlers`` drops records, and waits for none."""
     handler = BackgroundHandler(queue.Queue(5))
+    assert handler.listener is None
 
     handler.handle(record("nowhere"))
 
@@ -335,6 +353,23 @@ def test_stopping_gives_up_on_a_stuck_handler(held: Collect) -> None:
     other.resume.set()
 
 
+def test_flushing_and_closing_give_up_on_a_stuck_handler(
+    held: Collect, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``flush`` and ``close`` wait ``FLUSH_TIMEOUT`` each, not for the stream."""
+    monkeypatch.setattr(log, "FLUSH_TIMEOUT", 0.01)
+    handler = BackgroundHandler.writing_to(held, maxsize=5)
+    handler.handle(record("held"))
+    assert held.entered.wait(10)
+    handler.handle(record("queued"))
+
+    handler.flush()
+    handler.close()
+
+    assert held.lines == []  # Both returned while the stream was still stuck.
+    held.resume.set()
+
+
 def test_a_failing_handler_does_not_stop_the_thread(collect: Collect) -> None:
     """A handler that raises is reported by its handleError; the rest still write."""
     failures: list[str] = []
@@ -356,24 +391,36 @@ def test_a_failing_handler_does_not_stop_the_thread(collect: Collect) -> None:
 
 
 @pytest.mark.parametrize(
-    ("respect", "written"), [(True, ["loud"]), (False, ["quiet", "loud"])]
+    ("respect", "written"),
+    [
+        ({}, ["warned", "loud"]),
+        ({"respect_handler_level": True}, ["warned", "loud"]),
+        ({"respect_handler_level": False}, ["quiet", "warned", "loud"]),
+    ],
 )
-def test_handler_levels_are_respected(respect: bool, written: list[str]) -> None:
-    """A handler's level filters what the thread writes to it, unless told not to."""
+def test_handler_levels_are_respected(
+    respect: dict[str, bool], written: list[str]
+) -> None:
+    """A handler's level filters what the thread writes to it, unless told not to.
+
+    A record at the level itself is written, and a handler that skips a
+    record leaves it to the others.
+    """
     warnings = Collect(level=logging.WARNING)
+    everything = Collect()
     records: queue.Queue[Any] = queue.Queue(5)
     handler = BackgroundHandler(records)
-    handler.listener = BackgroundListener(
-        records, warnings, respect_handler_level=respect
-    )
+    handler.listener = BackgroundListener(records, warnings, everything, **respect)
 
     handler.handle(record("quiet"))
-    loud = record("loud")
-    loud.levelno = logging.ERROR
+    warned, loud = record("warned"), record("loud")
+    warned.levelno, loud.levelno = logging.WARNING, logging.ERROR
+    handler.handle(warned)
     handler.handle(loud)
     handler.close()
 
     assert warnings.lines == written
+    assert everything.lines == ["quiet", "warned", "loud"]
 
 
 def test_records_carry_what_the_caller_saw(collect: Collect) -> None:
@@ -439,10 +486,15 @@ def test_forked_children_start_over(
     assert handler.listener is not None
     assert handler.listener.queue is handler.queue
     assert not handler.listener.running
+    handler._count_dropped(2)  # As if the child's own queue had been full.
     handler.handle(record("child"))
     handler.close()
     parents.put(log._STOP)  # End the parent's thread, which this test left.
-    assert collect.lines == ["parent", "child"]
+    assert collect.lines == [
+        "parent",
+        "Dropped 2 log records: the logging queue was full",
+        "child",
+    ]
     assert unwired.queue.maxsize == 3
     assert unwired.listener is None
 
@@ -491,3 +543,20 @@ async def test_shutdown_writes_queued_records(
     monkeypatch.setattr(log, "_live_handlers", list)
     monkeypatch.setattr(log, "flush_logs", lambda timeout: pytest.fail("no wait"))
     await log.aflush_logs()
+
+
+@pytest.mark.anyio
+async def test_shutdown_waits_for_logs_as_long_as_asked(
+    collect: Collect, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``aflush_logs`` waits the seconds it is given, ``FLUSH_TIMEOUT`` by default."""
+    waited: list[float] = []
+    handler = BackgroundHandler.writing_to(collect)
+    monkeypatch.setattr(log, "_live_handlers", lambda: [handler])
+    monkeypatch.setattr(log, "flush_logs", waited.append)
+
+    await log.aflush_logs(1.5)
+    await log.aflush_logs()
+
+    assert waited == [1.5, log.FLUSH_TIMEOUT]
+    handler.close()

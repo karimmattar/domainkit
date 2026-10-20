@@ -119,3 +119,49 @@ async def test_backrefs_follow_the_same_rule(session: AsyncSession) -> None:
     with pytest.raises(InvalidRequestError, match=LAZY):
         _ = book.eager_shelf
     assert book.selected_shelf.id == 1
+
+
+def test_relationships_are_set_to_raise_as_they_are_mapped() -> None:
+    """``map_imperatively`` changes the relationships it maps, and their backrefs.
+
+    The classes above are mapped on import; these are mapped here, so the
+    change itself is seen.
+    """
+    metadata = MetaData()
+    parents = Table(
+        "framework_test_parents", metadata, Column("id", Integer, primary_key=True)
+    )
+    kids = Table(
+        "framework_test_kids",
+        metadata,
+        Column("id", Integer, primary_key=True),
+        Column("parent_id", ForeignKey("framework_test_parents.id")),
+    )
+
+    class Parent:
+        """Has kids, three ways."""
+
+    class Kid:
+        """Belongs to a parent."""
+
+    default = relationship(Kid, backref="parent")
+    viewed = relationship(Kid, viewonly=True, backref=backref("viewer", viewonly=True))
+    kept = relationship(
+        Kid,
+        lazy="selectin",
+        viewonly=True,
+        backref=backref("keeper", lazy="selectin", viewonly=True),
+    )
+    map_imperatively(Kid, kids)
+    map_imperatively(
+        Parent, parents, properties={"kids": default, "viewed": viewed, "kept": kept}
+    )
+
+    assert (default.lazy, default.strategy_key) == ("raise", (("lazy", "raise"),))
+    assert default.backref == ("parent", {"lazy": "raise"})
+    assert viewed.lazy == "raise"
+    assert viewed.backref == ("viewer", {"viewonly": True, "lazy": "raise"})
+    assert (kept.lazy, kept.backref) == (
+        "selectin",
+        ("keeper", {"lazy": "selectin", "viewonly": True}),
+    )

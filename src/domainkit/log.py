@@ -248,7 +248,8 @@ class BackgroundHandler(logging.handlers.QueueHandler):
         """Records dropped on a full queue since the handler was made."""
         self._unreported = 0
         self._counting = threading.Lock()
-        self._closed = False
+        # Not ``_closed``: ``logging.Handler`` has its own, which it sets.
+        self._stopped = False
         _remember(self)
 
     @property
@@ -287,7 +288,7 @@ class BackgroundHandler(logging.handlers.QueueHandler):
     def enqueue(self, record: logging.LogRecord) -> None:
         """Queue ``record`` without waiting; on a full queue, drop and count it."""
         listener = self._listener
-        if listener is None or self._closed:
+        if listener is None or self._stopped:
             self._write_here(record)
             return
         if not listener.running:
@@ -324,9 +325,9 @@ class BackgroundHandler(logging.handlers.QueueHandler):
 
         Later records are written on the caller's thread.
         """
-        if not self._closed:
+        if not self._stopped:
             self.wait_written(FLUSH_TIMEOUT)
-            self._closed = True
+            self._stopped = True
             if self._listener is not None:
                 self._listener.stop(FLUSH_TIMEOUT)
         super().close()
