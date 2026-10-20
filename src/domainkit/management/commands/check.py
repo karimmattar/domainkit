@@ -3,10 +3,12 @@
 from domainkit.apps import registry
 from domainkit.architecture import check_domains
 from domainkit.conf import settings
+from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db import migrations
 from domainkit.http import get_asgi_application
 from domainkit.http.application import application_problems
 from domainkit.http.blocking import sync_calls
+from domainkit.http.servers import limit_warnings, server_limits
 from domainkit.management.base import BaseCommand, CommandError
 
 
@@ -44,6 +46,9 @@ class Command(BaseCommand):
         warnings += [
             found for config in registry for found in config.deployment_warnings()
         ]
+        if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
+            limits = server_limits()
+            warnings += limit_warnings(settings.MAX_REQUEST_BODY_SIZE, limits)
         warnings += sync_calls(app, _project_domains())
         plural = "s" if len(warnings) > 1 else ""
         found = f" and {len(warnings)} warning{plural}" if warnings else ""

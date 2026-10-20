@@ -107,7 +107,7 @@ jobs:
       - run: poetry env use python3.14t
       - run: >-
           poetry sync --with dev --extras "postgres sqlite metrics tracing argon2
-          jwt mfa rabbitmq redis uploads testing webhooks tzdata uvloop"
+          jwt mfa rabbitmq redis uploads testing webhooks tzdata uvloop granian"
       - run: poetry run python -c "import sys; assert not sys._is_gil_enabled()"
       - env:
           PYTHON_GIL: "0"

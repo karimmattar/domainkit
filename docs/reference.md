@@ -209,23 +209,61 @@ See [i18n.md](i18n.md).
 
 The application limits bodies, WebSocket messages, and request rates. Slow
 and oversized requests are the server's to stop, before the application
-sees them. Run uvicorn behind a reverse proxy or load balancer that limits
-header size and the time to send headers and body (nginx:
+sees them. Run the server behind a reverse proxy or load balancer that
+limits header size and the time to send headers and body (nginx:
 `large_client_header_buffers`, `client_header_timeout`,
-`client_body_timeout`), and set uvicorn's own limits:
+`client_body_timeout`), and set the server's own limits. domainkit runs on
+[uvicorn](https://www.uvicorn.org/) or [Granian](https://github.com/emmett-framework/granian)
+(`pip install 'domainkit[granian]'`); [runtime.md](runtime.md#servers)
+compares them.
+
+uvicorn, one process per core:
 
 ```bash
-uvicorn config.asgi:application --limit-concurrency 200 --timeout-keep-alive 5 \
+uvicorn config.asgi:application --workers 4 --loop uvloop \
+  --limit-concurrency 200 --backlog 2048 --timeout-keep-alive 5 \
+  --timeout-graceful-shutdown 20 \
   --h11-max-incomplete-event-size 16384 --ws-max-size 1048576 \
   --no-proxy-headers --no-server-header
 ```
 
+Granian, the same:
+
+```bash
+granian --interface asgi config.asgi:application --host 0.0.0.0 --port 8000 \
+  --workers 4 --loop uvloop --backpressure 200 --backlog 2048 \
+  --http1-header-read-timeout 5000 --workers-kill-timeout 20 \
+  --respawn-failed-workers --no-ws
+```
+
+| Concern | uvicorn | Granian |
+| --- | --- | --- |
+| Requests at once, per process | `--limit-concurrency` (more get 503) | `--backpressure` |
+| Idle keep-alive connections | `--timeout-keep-alive` seconds | `--http1-keep-alive` / `--no-http1-keep-alive` |
+| Slow headers | the proxy | `--http1-header-read-timeout` milliseconds |
+| Request line and headers | `--h11-max-incomplete-event-size` (16 KiB) | `--http1-buffer-size` |
+| WebSocket message | `--ws-max-size` bytes (16 MiB unless set) | no setting: `--no-ws` if unused, else the proxy |
+| Graceful shutdown | `--timeout-graceful-shutdown` seconds, then open connections are closed | `--workers-kill-timeout` seconds, then workers are killed |
+
+Keep the shutdown timeout below the orchestrator's grace period (30
+seconds on Kubernetes) less the time the application takes to close its
+resources, so a stop never ends in `SIGKILL`.
+
 `--ws-max-size` stops a WebSocket message before it is read whole;
 `MAX_REQUEST_BODY_SIZE` then closes the connection on one that got through.
+`check` warns, in staging and production, when the server reads WebSocket
+messages larger than `MAX_REQUEST_BODY_SIZE`: uvicorn without
+`--ws-max-size` (or with a larger one), or Granian with WebSockets on. It
+reads the server's environment variables (`UVICORN_WS_MAX_SIZE`,
+`GRANIAN_WEBSOCKETS`, which both servers accept in place of options); a
+deployed application logs the same warning when it starts, from the
+server's own command line.
+
 `--no-proxy-headers` leaves `X-Forwarded-*` to `TRUSTED_PROXIES`: uvicorn
 otherwise reads them itself, from `127.0.0.1` or from whatever
 `FORWARDED_ALLOW_IPS` allows (`*` lets any client choose its address, and
-so its rate limit and login throttle). `runserver` runs this way.
+so its rate limit and login throttle). Granian reads none. `runserver`
+runs this way, with either server.
 
 ### Debug toolbar
 
@@ -604,7 +642,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `squashmigrations` | `[end]`, `--start`, `--database`, `-m/--message` | Replace a target's revisions, `--start` (default: the first) to `end` (default: the head), with one; see [Squashing migrations](#squashing-migrations). |
 | `showmigrations` | `--database` | Applied and pending revisions; a shard group lists each database. |
 | `partitions` | `--database`, `--prune`, `--dry-run` | Create the current and upcoming partitions of partitioned tables; `--prune` drops those past `retain`. |
-| `runserver` | `[addr:port]`, `--noreload` | Development server. Production runs uvicorn directly. |
+| `runserver` | `[addr:port]`, `--noreload`, `--server uvicorn\|granian` | Development server, on uvicorn or Granian (the `granian` extra). Production runs the server directly ([Server limits](#server-limits)). |
 | `shell` | `-c/--command`, `--no-imports` | An asyncio Python console, where `await` works at the top level, with settings, the registry, connections, `asyncio`, and every installed domain's models, repositories, and units of work by name (unless `--no-imports`). `-c` runs code and exits. |
 | `dbshell` | `--database`, `--owner`, `--allow-production`, `-- [ARG ...]` | Open `psql` or `sqlite3` on an alias, as its `URL`'s user (`--owner`: `MIGRATION_URL`'s). The connection and password reach `psql` in libpq's environment variables, never on its command line; TLS follows `SSLMODE` and its files. Production refuses without `--allow-production`. Arguments after `--` go to the client. |
 | `diffsettings` | `--all` | The settings that differ from the defaults; `--all` lists every one, defaults marked `###`. Secrets stay hidden as in `repr(settings)`, and so do entries of free-form settings named like secrets (`password`, `token`, `key`, ...) and passwords in URLs. |

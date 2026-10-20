@@ -17,9 +17,10 @@ when it is installed: `pip install 'domainkit[uvloop]'` (uvicorn's
 | `"asyncio"` | always asyncio's own: rule uvloop out when chasing a bug |
 | `"uvloop"` | uvloop, or a configuration error when it is missing |
 
-Production servers pick their own loop: uvicorn and Granian take
-`--loop uvloop` (both default to `auto`). Code that starts a loop of its own
-can follow the setting:
+`runserver` follows it on uvicorn and on Granian. Production servers pick
+their own loop: uvicorn and Granian take `--loop uvloop` (both default to
+`auto`, and Granian's `auto` takes rloop first when it is installed). Code
+that starts a loop of its own can follow the setting:
 
 ```python
 import asyncio
@@ -178,3 +179,26 @@ never across an `await`:
 A project's own module-level state needs the same care: a dict two threads
 change at once needs a `threading.Lock` on free-threaded Python, as it would
 with threads anywhere.
+
+## Servers
+
+domainkit is an ASGI application, served by
+[uvicorn](https://www.uvicorn.org/) (a dependency) or
+[Granian](https://github.com/emmett-framework/granian) (the `granian`
+extra). `manage.py runserver --server granian` develops on Granian;
+[reference.md](reference.md#server-limits) gives a production command and
+the limits for each.
+
+- **uvicorn** is Python on uvloop and httptools. It answers 503 past
+  `--limit-concurrency`, limits WebSocket messages (`--ws-max-size`), and
+  closes connections left open past `--timeout-graceful-shutdown`.
+- **Granian** is an HTTP server in Rust that runs the same ASGI
+  application, lifespan included (`--interface asgi`). It parses HTTP/1
+  and HTTP/2 outside Python, bounds requests in flight per worker
+  (`--backpressure`), times out slow headers, and restarts workers that
+  die (`--respawn-failed-workers`). It has no WebSocket message limit: turn
+  WebSockets off (`--no-ws`) when the API has none.
+
+Both run one event loop per worker process; run one worker per core. The
+test suite serves the application with Granian in a subprocess, so a
+change that breaks it fails CI.

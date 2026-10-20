@@ -36,6 +36,16 @@ All notable changes to domainkit. The format follows
   revision of the key came after the one read, in one step in the ledger
   (immudb's `keyNotModifiedAfterTX` precondition), and raises the new
   `LedgerChanged` otherwise.
+- Granian as a supported server: the new `granian` extra, `runserver
+  --server granian`, and production commands and limits for uvicorn and
+  Granian side by side in `docs/reference.md` ("Server limits"), with
+  `--timeout-graceful-shutdown` and keep-alive (ASYNC-27, R12).
+- In staging and production, `check` warns when the server reads WebSocket
+  messages larger than `MAX_REQUEST_BODY_SIZE` before the application can
+  refuse them: uvicorn without a small enough `--ws-max-size`, or Granian
+  with WebSockets on. It reads the server's `UVICORN_*` and `GRANIAN_*`
+  variables, and a deployed application logs the same warning from the
+  server's command line when it starts.
 - CI runs the suite on free-threaded Python 3.14 (3.14t), without the
   immudb extra, whose grpcio has no free-threaded build yet (R11).
 - `domainkit.contrib.auth.acurrent_user`, the dependency behind

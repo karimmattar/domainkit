@@ -21,6 +21,7 @@ from domainkit.http.openapi import (
     install_openapi,
     operation_id,
 )
+from domainkit.http.servers import limit_warnings, server_limits
 from domainkit.http.versioning import DeprecationHeadersMiddleware
 from domainkit.lifecycle import close_resources
 from domainkit.utils.module_loading import import_string
@@ -95,6 +96,10 @@ def get_asgi_application() -> FastAPI:
         if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
             raise ImproperlyConfigured(f"The application has problems:\n{listed}")
         logger.warning("The application has problems:\n%s", listed)
+    if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
+        limits = server_limits()  # The server's own command line, here.
+        for warning in limit_warnings(settings.MAX_REQUEST_BODY_SIZE, limits):
+            logger.warning(warning)
     return app
 
 
