@@ -89,7 +89,7 @@ async def test_repositories_answer_queries() -> None:
     uow = Fake{{ Domain }}UnitOfWork()
     for name in ("c", "a", "b"):
         await create(uow, name)
-    query = Query(F("archived") == False, ordering=["name"])  # noqa: E712
+    query = Query(F("archived").lookup("exact", False), ordering=["name"])
 
     first = await uow.{{ aggregates }}.paginate(query, limit=2)
     second = await uow.{{ aggregates }}.paginate(query, limit=2, after=first.next_position)

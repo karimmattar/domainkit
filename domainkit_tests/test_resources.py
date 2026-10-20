@@ -36,6 +36,7 @@ from domainkit.ddd import (
     UnitOfWork,
     Unset,
 )
+from domainkit.ddd import Query as QueryMessage
 from domainkit.ddd.fields import fields_of
 from domainkit.ddd.query import F
 from domainkit.ddd.query import Query as Listing
@@ -1474,3 +1475,215 @@ def test_dependencies_provide_command_fields(store: InMemoryGadgets) -> None:
         resource.command_route(Tag, service=tag, body=RenameIn, provide={"nope": who})
     with pytest.raises(TypeError, match="Nothing gives Tag's who"):
         resource.command_route(Tag, service=tag, body=RenameIn)
+
+
+class GadgetsLabelled(QueryMessage):
+    """Gadgets with one label."""
+
+    label: Label
+    most: int = 10
+
+
+class GadgetAgain(QueryMessage):
+    """One gadget, by its id."""
+
+    gadget_id: UUID
+
+
+class Dearest(QueryMessage):
+    """The dearest gadget."""
+
+
+async def labelled(query: GadgetsLabelled, uow: FakeGadgetsUnitOfWork) -> list[Gadget]:
+    """Up to ``most`` gadgets with the label."""
+    async with uow:
+        page = await uow.gadgets.paginate(F("label") == query.label, limit=query.most)
+    return page.items
+
+
+async def again(query: GadgetAgain, uow: FakeGadgetsUnitOfWork) -> Gadget:
+    """The gadget named."""
+    async with uow:
+        return await uow.gadgets.get(GadgetId(query.gadget_id))
+
+
+async def dearest(query: Dearest, uow: FakeGadgetsUnitOfWork) -> Gadget:
+    """The gadget with the highest price."""
+    async with uow:
+        found = await uow.gadgets.first(Listing(ordering=["-price"]))
+    assert found is not None
+    return found
+
+
+def test_query_routes_answer_queries(store: InMemoryGadgets, use_auth: UseAuth) -> None:
+    """Fields from the query string or the path; one aggregate, or items."""
+    use_auth()
+    resource = gadgets(store)
+    resource.query_route(GadgetsLabelled, handler=labelled, path="/labelled")
+    resource.query_route(GadgetAgain, handler=again, path="/again")
+    client = client_of(resource)
+    gadget = next(item for item in store.items.values() if item.name == "b")
+    viewer = as_("viewer")
+
+    found = client.get("/gadgets/labelled?label=B", headers=viewer)
+    none = client.get("/gadgets/labelled?label=Z", headers=viewer)
+    unknown = client.get("/gadgets/labelled?label=B&color=red", headers=viewer)
+    long = client.get(f"/gadgets/labelled?label={'x' * 21}", headers=viewer)
+    one = client.get(f"{LOCATION}{gadget.id}/again", headers=viewer)
+    same = client.get(
+        f"{LOCATION}{gadget.id}/again",
+        headers=as_("viewer", **{"If-None-Match": one.headers["etag"]}),
+    )
+    missing = client.get(f"{LOCATION}{uuid4()}/again", headers=viewer)
+
+    assert found.status_code == 200
+    assert [item["name"] for item in found.json()["items"]] == ["b"]
+    assert none.json() == {"items": []}
+    assert (unknown.status_code, long.status_code) == (422, 422)
+    assert (one.json()["name"], one.headers["etag"]) == (
+        "b",
+        client.get(f"{LOCATION}{gadget.id}", headers=viewer).headers["etag"],
+    )
+    assert same.status_code == 304
+    assert missing.status_code == 404
+    assert client.get("/gadgets/labelled?label=B").status_code == 401
+    assert (
+        client.get("/gadgets/labelled?label=B", headers=as_("adder")).status_code == 403
+    )
+
+
+def test_query_routes_keep_scopes_policies_and_actions(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """Out of scope is left out, or 404; hidden fields too; actions ask their own."""
+    use_auth()
+
+    async def cheap_only(request: HTTPConnection) -> Any:  # noqa: ANN401 - criteria.
+        return (
+            F("price") < Decimal("2.50")
+            if request.headers["x-user"] == "viewer"
+            else None
+        )
+
+    async def everything(
+        query: GadgetsLabelled, uow: FakeGadgetsUnitOfWork
+    ) -> tuple[Gadget, ...]:
+        async with uow:
+            return tuple(await uow.gadgets.filter(None))
+
+    resource = gadgets(
+        store, scope=cheap_only, policy=FieldPolicy(visible={"price": "shop.view_cost"})
+    )
+    resource.query_route(GadgetsLabelled, handler=everything, path="/all")
+    resource.query_route(Dearest, handler=dearest, path="/dearest")
+    resource.query_route(
+        Dearest, handler=dearest, path="/export", action="export", name="export"
+    )
+    client = client_of(resource)
+
+    seen = client.get("/gadgets/all?label=A", headers=as_("viewer")).json()["items"]
+    shown = client.get("/gadgets/dearest", headers=as_("costs")).json()
+
+    assert sorted(item["name"] for item in seen) == ["b", "c"]
+    assert all("price" not in item for item in seen)
+    assert client.get("/gadgets/dearest", headers=as_("viewer")).status_code == 404
+    assert (shown["name"], shown["price"]) == ("a", "3.00")
+    assert client.get("/gadgets/export", headers=as_("costs")).status_code == 403
+
+
+def test_query_routes_on_nested_resources_take_the_parent_from_the_path(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """A parent field comes from the path, and other parents' items are left out."""
+    use_auth()
+    gadget, other = list(store.items.values())[:2]
+    reviews = InMemoryRepository[Review, UUID](
+        [
+            Review(id=uuid4(), gadget=gadget.id, text="good"),
+            Review(id=uuid4(), gadget=other.id, text="bad"),
+        ]
+    )
+    asked: list[object] = []
+
+    class Reviews(UnitOfWork):
+        def __init__(self) -> None:
+            super().__init__(events=EventBus())
+            self.reviews = reviews
+
+        async def _commit(self) -> None:
+            """Nothing to write."""
+
+        async def _rollback(self) -> None:
+            """Nothing to undo."""
+
+    class ReviewsOf(QueryMessage):
+        """Every review, whatever the gadget."""
+
+        gadget: UUID
+
+    async def careless(query: ReviewsOf, uow: Reviews) -> list[Review]:
+        asked.append(query.gadget)
+        async with uow:
+            return await uow.reviews.filter(None)
+
+    nested = ResourceRouter(
+        "/reviews",
+        model=Review,
+        unit_of_work=Reviews,
+        repository=lambda uow: uow.reviews,
+        parent=gadgets(store),
+        parent_field="gadget",
+        rule=IsAuthenticated(),
+    )
+    nested.query_route(ReviewsOf, handler=careless, path="/all")
+    client = client_of(nested.parent, nested)  # type: ignore[arg-type]
+
+    answer = client.get(f"/gadgets/{gadget.id}/reviews/all", headers=as_("viewer"))
+
+    assert [item["text"] for item in answer.json()["items"]] == ["good"]
+    assert asked == [gadget.id]
+
+
+def test_query_route_declarations_are_checked(store: InMemoryGadgets) -> None:
+    """A path is needed; so is what the handler returns; and it must be an aggregate."""
+    resource = gadgets(store, rule=None, dependencies=[Public])
+
+    async def unannotated(query: Dearest, uow: FakeGadgetsUnitOfWork):  # type: ignore[no-untyped-def]  # noqa: ANN202
+        return None
+
+    async def text(query: Dearest, uow: FakeGadgetsUnitOfWork) -> str:
+        return "text"
+
+    with pytest.raises(TypeError, match="starts with /"):
+        resource.query_route(Dearest, handler=dearest, path="")
+    with pytest.raises(TypeError, match=r"Annotate what .*unannotated returns"):
+        resource.query_route(Dearest, handler=unannotated, path="/x")
+    resource.query_route(Dearest, handler=text, path="/text")
+    client = client_of(resource)
+
+    with pytest.raises(RuntimeError, match="text answered str, not a Gadget"):
+        client.get("/gadgets/text")
+
+
+def test_query_routes_are_documented(store: InMemoryGadgets) -> None:
+    """Their parameters, answers, and errors are in OpenAPI."""
+    resource = gadgets(store)
+    resource.query_route(GadgetsLabelled, handler=labelled, path="/labelled")
+    resource.query_route(Dearest, handler=dearest, path="/dearest")
+    document = client_of(resource).get("/openapi.json").json()
+
+    listing = document["paths"]["/gadgets/labelled"]["get"]
+    single = document["paths"]["/gadgets/dearest"]["get"]
+    assert listing["operationId"].startswith("gadgets_labelled")
+    assert [(each["name"], each["in"]) for each in listing["parameters"]] == [
+        ("label", "query"),
+        ("most", "query"),
+    ]
+    assert sorted(listing["responses"]) == ["200", "401", "403", "422"]
+    assert listing["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/GadgetsLabelledAnswer"
+    }
+    assert "parameters" not in single or all(
+        each["in"] == "header" for each in single["parameters"]
+    )
+    assert {"200", "304", "401", "403"} <= set(single["responses"])

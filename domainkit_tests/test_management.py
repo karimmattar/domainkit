@@ -29,6 +29,9 @@ from domainkit_tests.conftest import MakePackage
 from domainkit_tests.test_db import test_metadata
 
 BUILTINS = {
+    "addcommand",
+    "addevent",
+    "addquery",
     "broker",
     "cache",
     "check",
@@ -48,6 +51,7 @@ BUILTINS = {
     "shell",
     "showmigrations",
     "squashmigrations",
+    "startaggregate",
     "startdomain",
 }
 

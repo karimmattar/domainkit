@@ -29,7 +29,18 @@ from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 from functools import cache
-from typing import Annotated, Any, ClassVar, Final, Self, get_type_hints
+from types import UnionType
+from typing import (
+    Annotated,
+    Any,
+    ClassVar,
+    Final,
+    Self,
+    Union,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, create_model
 
@@ -79,18 +90,19 @@ class PatchModel(BaseModel):
             TypeError: A field declares a default of its own.
         """
         super().__pydantic_init_subclass__(**kwargs)
-        changed = False
-        for name, field in cls.__pydantic_fields__.items():
-            if field.default_factory is _unset:
-                continue
+        declared = {
+            name: field
+            for name, field in cls.__pydantic_fields__.items()
+            if field.default_factory is not _unset
+        }
+        for name, field in declared.items():
             if not field.is_required():
                 raise TypeError(
                     f"{cls.__name__}.{name}: a PatchModel field has no default; "
                     "one the request leaves out is UNSET."
                 )
             field.default_factory = _unset
-            changed = True
-        if changed:
+        if declared:
             cls.model_rebuild(force=True)
 
     def changes(self) -> dict[str, Any]:
@@ -179,11 +191,15 @@ def schema_for(
 
 
 def _hints(model: type) -> dict[str, object]:
-    """``model``'s type hints, type parameters bound, aliases expanded."""
+    """``model``'s type hints, type parameters bound, aliases expanded.
+
+    The domain's ``Annotated`` metadata (``MaxLength``) stays where a hint has
+    it: pydantic leaves metadata it does not know alone.
+    """
     bound = type_arguments(model)
     return {
         name: unaliased(bound.get(hint, hint))
-        for name, hint in get_type_hints(model, include_extras=True).items()
+        for name, hint in get_type_hints(model).items()
     }
 
 
@@ -205,7 +221,7 @@ def _shape(field: FieldInfo, hint: object, *, write: bool) -> tuple[Any, Present
             return list[nested], _each(_shown(nested))  # type: ignore[valid-type]
         return nested, _shown(nested)
     if kind is None:
-        return _plain(hint), _same
+        return hint, _same
     if issubclass(kind, Enum):
         return kind, _same
     if (inner := wrapped_field(kind)) is not None:
@@ -216,9 +232,7 @@ def _shape(field: FieldInfo, hint: object, *, write: bool) -> tuple[Any, Present
         nested = _nested(kind, write)
         return nested, _shown(nested)
     if kind in {set, frozenset}:
-        if write:
-            return _plain(hint), _same
-        return _as_list(hint), _sorted
+        return (hint, _same) if write else (_as_list(hint), _sorted)
     return _scalar(field, kind, hint, write=write), _same
 
 
@@ -235,25 +249,17 @@ def _scalar(field: FieldInfo, kind: type, hint: object, *, write: bool) -> Any: 
         return Annotated[int, Field(ge=-INT64, lt=INT64)]
     if write and kind is datetime:
         return AwareDatetime
-    if kind in {list, tuple, dict}:
-        return _plain(hint)
-    return kind
-
-
-def _plain(hint: object) -> Any:  # noqa: ANN401 - a type.
-    """``hint`` without the domain's ``Annotated`` metadata."""
-    return getattr(hint, "__origin__", hint) if _annotated(hint) else hint
-
-
-def _annotated(hint: object) -> bool:
-    """Whether ``hint`` is ``Annotated[...]``."""
-    return hasattr(hint, "__metadata__")
+    return hint if kind in {list, tuple, dict} else kind
 
 
 def _as_list(hint: object) -> Any:  # noqa: ANN401 - a type.
-    """``list[X]`` for ``set[X]``: sets are shown as sorted lists."""
-    (item,) = getattr(_plain(hint), "__args__", (Any,))
-    return list[item]  # type: ignore[valid-type]
+    """``list[X]`` for ``set[X]`` (or ``set[X] | None``): sets show as sorted lists."""
+    members = get_args(hint) if get_origin(hint) in {Union, UnionType} else (hint,)
+    for member in members:
+        if get_origin(member) in {set, frozenset}:
+            (item,) = get_args(member)
+            return list[item]  # type: ignore[valid-type]
+    return list[Any]
 
 
 @cache

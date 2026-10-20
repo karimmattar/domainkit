@@ -10,13 +10,12 @@ resource, and tests, ready to rename and grow. In a project laid out as
 import keyword
 import re
 from argparse import ArgumentParser
-from importlib.util import find_spec
 from pathlib import Path
 from typing import Final
 
 from domainkit.conf.env import project_root
 from domainkit.management.base import BaseCommand, CommandError
-from domainkit.management.generators import install
+from domainkit.management.generators import install, package_directory
 from domainkit.utils.formatting import format_python
 from domainkit.utils.text import camel_case, pluralize, snake_case
 
@@ -81,17 +80,6 @@ def render(source: Path, target: Path, context: dict[str, str]) -> list[Path]:
         destination.write_text(content, encoding="utf-8")
         created.append(destination)
     return created
-
-
-def package_directory(package: str) -> Path:
-    """Return the directory of the importable package ``package``."""
-    try:
-        spec = find_spec(package)
-    except ModuleNotFoundError:
-        spec = None
-    if spec is None or not spec.submodule_search_locations:
-        raise CommandError(f"Parent package {package!r} cannot be imported.")
-    return Path(next(iter(spec.submodule_search_locations)))
 
 
 class Command(BaseCommand):

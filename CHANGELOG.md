@@ -218,6 +218,19 @@ All notable changes to domainkit. The format follows
   `table_for` indexes its column, and `schema_for` describes it.
 - `domainkit.http.error_responses(*codes)`, the OpenAPI entries of the
   errors a route answers with.
+- `query_route(Query, handler=..., path=...)` serves a CQRS query on a
+  resource: its fields from the query string (bounded, unknown parameters
+  refused), one aggregate or `{"items": [...]}` back, and what the caller
+  may not reach or see left out.
+- Generators (DJ-01; `docs/resources.md`, "Generators"): `startaggregate`
+  adds an aggregate to a domain, every layer and its tests, with fields
+  from a registry of kinds (`--field price:decimal:10:2`, `--field
+  parent:ref:Category?`; `register_field_type` adds kinds); `addcommand`
+  adds a task command (method, event, use case, route, tests), `addquery`
+  a query by fields (handler, route, tests), and `addevent` an event with a
+  durable handler. Names are checked, files are edited where their syntax
+  tree says, and nothing is written unless every edit fits. What they
+  generate passes ruff, `mypy --strict`, and its own tests.
 
 ### Changed
 

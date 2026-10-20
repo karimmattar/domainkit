@@ -67,7 +67,7 @@ pip install "domainkit[postgres,sqlite,testing]"
 domainkit init billingAPI billing     # the name sets the variable prefix: BILLING_API_*
 cd billing
 python manage.py check
-python manage.py startdomain invoices --aggregate Invoice   # prints how to install it
+python manage.py startdomain invoices --aggregate Invoice   # installs and mounts it
 python manage.py makemigrations -m "create invoices" && python manage.py migrate
 python manage.py createsuperuser
 pytest

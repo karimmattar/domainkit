@@ -98,6 +98,47 @@ fields directly, without the aggregate's methods, and record
 `create=` and `update=` replace the schemas; `new_id=` makes ids
 (`uuid4`).
 
+## Queries
+
+A question beyond the listing's filters is a `Query` message (from
+`domainkit.ddd`), answered by a handler as a command is by a service:
+
+```python
+class ProductsByOwner(Query):
+    """The first products of one owner."""
+
+    owner_id: UUID
+
+
+async def products_by_owner(
+    query: ProductsByOwner, uow: CatalogUnitOfWork
+) -> list[Product]:
+    async with uow:
+        page = await uow.products.paginate(F("owner_id") == query.owner_id, limit=100)
+    return page.items
+
+
+products.query_route(
+    ProductsByOwner, handler=queries.products_by_owner, path="/by-owner"
+)
+```
+
+- `GET /products/by-owner?owner_id=...` builds the query from the query
+  string, described by `schema_for(query, write=True)`: bounded as bodies
+  are, and an unknown parameter is `422`. A query with the resource's id
+  field asks about one aggregate: `GET /products/{product_id}/<path>`.
+- A handler that returns an aggregate answers as a read does, with its
+  `ETag` (and `304`). One whose return annotation is a list, or another
+  sequence, answers `{"items": [...]}`. Bound what it returns: the route
+  sends all of it.
+- What the caller may not reach or see is left out even if the handler
+  returns it: each aggregate is checked against `scope` and the parent,
+  and one out of reach is `404`; field policies hide fields as in reads.
+  Filter in the handler all the same; the check is a safety net.
+- `action` names the permission `ModelActions` asks for (`view`), and
+  `rule` adds one, as for commands; `name` defaults to the query's, in
+  snake case.
+
 ## Schemas from the domain
 
 `schema_for` derives pydantic schemas from an aggregate's fields, so a
@@ -266,6 +307,60 @@ reviews only, another product's review is `404`, and a command's
 `product_id` comes from the path. `links=True` adds `links` to each
 representation: `self`, and `parent` for a nested one, as paths of this
 API.
+
+## Generators
+
+`startdomain` writes a domain on this kit: an aggregate with a value
+object, a collection of child entities, and an id-only reference; its
+filters, `PATCH`, commands, and `DELETE`; and tests at every layer. In a
+project laid out as `init` makes it, it also installs the domain and
+mounts its router. Then the generators add to it, every layer at once,
+with tests:
+
+```bash
+python manage.py startdomain catalog --aggregate Product
+python manage.py startaggregate catalog Category \
+    --field title:str:100 --field parent:ref:Category? --field price:decimal
+python manage.py addcommand catalog Product PublishProduct --field at:datetime
+python manage.py addquery catalog Product ProductsByOwner --by owner_id
+python manage.py addevent catalog Product ProductRestocked --field quantity:int
+python manage.py makemigrations -m "catalog" && python manage.py migrate
+```
+
+| Generator | Writes |
+| --- | --- |
+| `startaggregate` | The aggregate, its id, not-found error, and repository port; created and deleted events; create and delete commands and use cases; its table (`table_for`), mapping, and repository; its resource; an in-memory repository; `test_<plural>.py`. |
+| `addcommand` | The aggregate's method, which records the event (the rule and the change are yours to write); the command and its use case; `POST /<plural>/{id}/<verb>` with its body; `test_<command>.py`. |
+| `addquery` | A `Query` and its handler in `application/queries.py`, finding the first 100 aggregates whose `--by` fields equal the query's, typed as the aggregate types them; `GET /<plural>/<path>` (`query_route`); `test_<query>.py`. |
+| `addevent` | The event, carrying the aggregate's id; a durable handler, subscribed in `apps.py` (`--no-handler` leaves it out); `test_on_<event>.py`. |
+
+Each `--field` is `name:kind[:options]`, with `?` for a field that may be
+None:
+
+| Kind | In the aggregate | Column | In request bodies |
+| --- | --- | --- | --- |
+| `str[:length]` (200) | `Annotated[str, MaxLength(length)]` | `String(length)` | at most `length` characters |
+| `text` | `str` | `Text` | |
+| `int` | `int` | `BigInteger` | 64 bits |
+| `bool`, `float` | `bool`, `float` | `Boolean`, `Double` | |
+| `decimal[:precision:scale]` (12, 2) | `Annotated[Decimal, Digits(p, s)]` | `ExactDecimal(p, s)` | those digits |
+| `date`, `datetime` | `date`, `datetime` | `Date`, `UTCDateTime` | a datetime has a time zone |
+| `uuid` | `UUID` | `Uuid` | |
+| `ref:Aggregate` | `Reference[AggregateId]` | `Uuid`, indexed | a UUID |
+
+`register_field_type("email", FieldType(...))`, from
+`domainkit.management.generators`, adds a kind for code that runs the
+generators itself, such as a project command that registers its kinds and
+then calls `call_command("startaggregate", ...)`.
+
+The generators check every name (snake_case or CamelCase identifiers, no
+keywords, nothing already defined), find what they edit by its syntax
+tree, and plan every edit in memory: a file changed beyond recognition is
+refused, and then nothing is written. They format what they wrote with
+ruff. `fakes.py` gains `new_<name>()`, a valid aggregate, and
+`new_<name>_request()`, a valid body to create one, which the tests of
+later generators start from. What they generate passes ruff, `mypy
+--strict`, and its own tests, as the generators' own test checks.
 
 ## The admin APIs
 

@@ -55,6 +55,14 @@ its repository, or an expectation the repository checks by itself.
 - Partial changes are `PatchModel`s whose fields default to `UNSET`, so
   absent and null differ (RFC 7396), and commands take `UNSET` for what
   was not sent.
+- Queries get routes too: `query_route` builds a CQRS `Query` from the
+  query string and answers with what its handler returns, an aggregate
+  or a list of them, each checked again against the caller's scope and
+  the parent, since a handler is free to ignore them.
+- The generators (`startaggregate`, `addcommand`, `addquery`,
+  `addevent`) write onto this kit and edit existing files only where
+  their syntax tree shows what the generators made: every edit is planned
+  in memory first, and one that does not fit refuses the whole run.
 
 ## Consequences
 
@@ -67,3 +75,7 @@ moved onto the kit (and gained tags) without other changes to their
 answers; the webhooks admin keeps its listing, whose answer is a bare
 array, not a page. Clients that build tags from a body's `version` get
 the same checks as those that echo the `ETag`.
+
+Because the generated code is small and regular, the generators add to
+it without a templating language of their own. Hand-edited files stay
+safe: an edit that cannot find its place is refused, never guessed.

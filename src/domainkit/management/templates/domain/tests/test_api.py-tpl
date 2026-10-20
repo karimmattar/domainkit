@@ -20,11 +20,12 @@ URL = "/api/v1/{{ domain }}/{{ aggregates }}"
 VIEW = "{{ domain }}.view_{{ model }}"
 
 
-def create(client: TestClient, name: str) -> Any:  # noqa: ANN401 - JSON.
+def create(client: TestClient, name: str) -> dict[str, Any]:
     """Create a {{ aggregate }}; return its JSON."""
     created = client.post(URL, json={"name": name})
     assert created.status_code == 201, created.json()
-    return created.json()
+    body: dict[str, Any] = created.json()
+    return body
 
 
 def test_callers_need_the_permissions(client: TestClient, client_for: ClientFor) -> None:

@@ -95,6 +95,8 @@ class Order(AggregateRoot[OrderId]):
     first: Line | None = None
     alias: Code | None = None
     discount: Annotated[Decimal, Digits(4, 2)] = Decimal(0)
+    mixed: set[int | str] = field(default_factory=set)
+    maybe: set[str] | None = None
 
 
 def make_order(**fields: Any) -> Order:  # noqa: ANN401 - Order's fields.
@@ -110,6 +112,8 @@ def make_order(**fields: Any) -> Order:  # noqa: ANN401 - Order's fields.
         "lines": [Line(id=2, sku="s2", quantity=1), Line(id=1, sku="s1", quantity=3)],
         "notes": {Note(id=2, text="two"), Note(id=1, text="one")},
         "first": Line(id=9, sku="s9", quantity=9),
+        "mixed": {"b", 2, "a", 1},
+        "maybe": {"y", "x"},
     }
     return Order(**{**values, **fields})
 
@@ -467,3 +471,67 @@ def test_field_policies_tell_openapi_what_they_do() -> None:
     )
     assert FieldPolicy().document(Out) is Out
     assert FieldPolicy().describe_changes(Out) is Out
+
+
+def test_schemas_keep_the_types_inside_containers() -> None:
+    """Lists, dicts, and sets keep their items' types; sets show sorted."""
+    properties = schema_for(Order).model_json_schema()["properties"]
+
+    assert properties["sizes"]["items"] == {"type": "integer"}
+    assert properties["extra"]["additionalProperties"] == {"type": "string"}
+    assert properties["mixed"]["items"] == {
+        "anyOf": [{"type": "integer"}, {"type": "string"}]
+    }
+    assert properties["maybe"]["anyOf"][0]["items"] == {"type": "string"}
+    shown = schema_for(Order).from_domain(make_order())  # type: ignore[attr-defined]
+    assert (shown.mixed, shown.maybe) == ([1, 2, "a", "b"], ["x", "y"])
+    assert schema_for(Order).from_domain(make_order(maybe=None)).maybe is None  # type: ignore[attr-defined]
+    written = schema_for(Order, write=True, include=["mixed"]).model_validate(
+        {"mixed": [1, "1", 1]}
+    )
+    assert written.mixed == {1, "1"}  # type: ignore[attr-defined]
+
+
+def test_children_in_sets_show_in_the_order_of_their_ids() -> None:
+    """However the set iterates, the representation is the same."""
+    notes = {Note(id=number, text=str(number)) for number in (5, 3, 6, 1, 4, 2)}
+
+    shown = schema_for(Order).from_domain(make_order(notes=notes))  # type: ignore[attr-defined]
+
+    assert [note.id for note in shown.notes] == [1, 2, 3, 4, 5, 6]
+
+
+def test_write_schemas_bound_amounts_and_integers_both_ways() -> None:
+    """An amount has its digits, an integer fits 64 bits, low and high."""
+    schema = schema_for(Order, write=True, include=["discount", "count"])
+
+    assert schema.model_validate({"discount": "12.34"}).discount == Decimal("12.34")  # type: ignore[attr-defined]
+    for body in (
+        {"discount": "123.4"},
+        {"discount": "1.234"},
+        {"count": -(2**63) - 1},
+        {"count": 2**63},
+    ):
+        with pytest.raises(ValidationError):
+            schema.model_validate(body)
+
+
+def test_unknown_fields_are_named_together() -> None:
+    """Every unknown name is listed in the refusal."""
+    with pytest.raises(TypeError, match=r"^Order has no field gone, nope\.$"):
+        schema_for(Order, include=["nope"], exclude=["gone"])
+
+
+class Loose(AggregateRoot[UUID]):
+    """Sets hinted loosely: without their items' type, or None first."""
+
+    anything: set  # type: ignore[type-arg]
+    later: None | set[str] = None  # noqa: RUF036 - None first is the point.
+
+
+def test_loosely_hinted_sets_show_as_lists() -> None:
+    """A set without an item type holds anything; None may come first."""
+    properties = schema_for(Loose).model_json_schema()["properties"]
+
+    assert properties["anything"] == {"items": {}, "title": "Anything", "type": "array"}
+    assert properties["later"]["anyOf"][0]["items"] == {"type": "string"}

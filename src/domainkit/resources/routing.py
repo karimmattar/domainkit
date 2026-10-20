@@ -35,6 +35,9 @@ That gives:
   mandatory (``428`` without).
 - ``DELETE /products/{product_id}``: ``204``.
 
+``query_route`` answers a ``Query`` message through its handler:
+``GET /products/by-owner?owner_id=...``, from the query string.
+
 Task-based commands are the norm: each request is one use case. For
 reference data, ``crud=True`` adds a generic ``POST``, ``PATCH`` (a
 ``PatchModel``; JSON or ``application/merge-patch+json``), and ``DELETE``
@@ -54,14 +57,16 @@ permission. ``parent`` nests a resource: ``/orders/{order_id}/invoices``.
 
 import dataclasses
 import inspect
-from collections.abc import Awaitable, Callable, Mapping
-from typing import Annotated, Any, Final, Literal
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from typing import Annotated, Any, Final, Literal, get_origin, get_type_hints
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Body, Depends, Header, Path, Request, Response, status
+from fastapi import Query as QueryParameters
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, create_model
 from starlette.requests import HTTPConnection
+from starlette.routing import BaseRoute
 
 from domainkit.contrib.auth.access import (
     AllOf,
@@ -74,9 +79,10 @@ from domainkit.contrib.auth.access import (
 )
 from domainkit.ddd.fields import FieldInfo, fields_of, wrapped_field
 from domainkit.ddd.messages import Command
+from domainkit.ddd.messages import Query as QueryMessage
 from domainkit.ddd.model import AggregateRoot, ValueObject
 from domainkit.ddd.preconditions import expect_version
-from domainkit.ddd.query import CriteriaLike, F, Query, as_query
+from domainkit.ddd.query import CriteriaLike, F, Query, as_criteria, as_query
 from domainkit.ddd.repository import Repository
 from domainkit.ddd.uow import UnitOfWork
 from domainkit.http.errors import error_responses
@@ -103,6 +109,7 @@ RESERVED: Final = frozenset(
         "body",
         "if_match",
         "if_none_match",
+        "parameters",
     }
 )
 """Parameter names the generated endpoints use themselves."""
@@ -113,6 +120,7 @@ type UnitOfWorkFactory = Callable[[], UnitOfWork]
 type RepositoryOf = Callable[[Any], Repository[Any, Any]]
 type Scope = Callable[[HTTPConnection], Awaitable[CriteriaLike | None]]
 type Service = Callable[[Any, Any], Awaitable[Any]]
+type Handler = Callable[[Any, Any], Awaitable[Any]]
 type Values = dict[str, Any]
 type Aggregate = AggregateRoot[Any]
 
@@ -344,6 +352,126 @@ class ResourceRouter(APIRouter):
             provided=provided,
         )
 
+    def query_route(
+        self,
+        query: type[QueryMessage],
+        *,
+        handler: Handler,
+        path: str,
+        action: str = VIEW,
+        rule: Rule | None = None,
+        name: str | None = None,
+        summary: str | None = None,
+    ) -> None:
+        """Add a ``GET`` route that answers ``query`` with ``handler(query, uow)``.
+
+        The query's fields come from the query string, as
+        ``schema_for(query, write=True)`` describes them (bounded; unknown
+        parameters are refused), and the resource's ids from the path: a
+        query with the ``lookup`` field asks about one aggregate, at
+        ``/{product_id}{path}``. The handler returns an aggregate, answered
+        as a read is, with its ``ETag``; or, as its return annotation
+        says, a sequence of them, answered as ``{"items": [...]}``. Either
+        way, what the caller may not reach (``scope``, ``parent``) or see
+        (``policy``) is left out. ``action`` names the permission
+        ``ModelActions`` asks for (``view``); ``rule`` adds one.
+
+        Raises:
+            TypeError: The path is empty, or does not start with ``/``; the
+                handler does not annotate what it returns.
+        """
+        if not path.startswith("/"):
+            raise TypeError(f"A query route's path starts with /, not {path!r}.")
+        many = _returns_many(handler)
+        fields = fields_of(query)
+        detail = self.lookup in fields
+        from_path = {self.lookup} if detail else set()
+        if self.parent_field is not None and self.parent_field in fields:
+            from_path.add(self.parent_field)
+        asked = (
+            schema_for(
+                query,
+                write=True,
+                exclude=sorted(from_path),
+                name=f"{query.__name__}Parameters",
+            )
+            if set(fields) - from_path
+            else None
+        )
+
+        async def run(values: Values) -> Response:
+            request: Request = values["request"]
+            given: BaseModel | None = values.get("parameters")
+            arguments = {
+                name: to_domain(fields[name], value)
+                for name, value in (given.model_dump() if given else {}).items()
+            }
+            arguments |= {name: values[self._path_name(name)] for name in from_path}
+            uow = values["uow"]
+            if detail:
+                await self._precheck(uow, request, values, action)
+            result = await handler(query(**arguments), uow)
+            criteria = [
+                as_criteria(each) for each in await self._criteria(request, values)
+            ]
+            if many:
+                hidden = await self._hidden(request)
+                items = [
+                    self._dump(request, values, item, hidden)
+                    for item in result
+                    if all(each.matches(item) for each in criteria)
+                ]
+                return JSONResponse({"items": items})
+            if not isinstance(result, AggregateRoot):
+                raise RuntimeError(
+                    f"{_label_of(handler)} answered {type(result).__name__}, not "
+                    f"a {self.model.__name__}."
+                )
+            if not all(each.matches(result) for each in criteria):
+                missing = self.missing or self.repository(uow).not_found
+                raise missing(result.id)
+            await self._check_object(request, result, action)
+            return await self._respond(
+                request, values, result, if_none_match=values.get("if_none_match")
+            )
+
+        self._route(
+            f"/{{{self.lookup}}}{path}" if detail else path,
+            "GET",
+            run,
+            name=name or snake_case(query.__name__),
+            summary=summary or _first_line(query.__doc__),
+            action=action,
+            rule=rule,
+            detail=detail,
+            reads=not many,
+            asked=asked,
+            returns=(
+                create_model(f"{query.__name__}Answer", items=(list[self.schema], ...))  # type: ignore[name-defined]
+                if many
+                else self.schema
+            ),
+        )
+        if not detail:
+            self._before_items(self.routes.pop())
+
+    def _before_items(self, route: BaseRoute) -> None:
+        """Put ``route`` before the routes of one item, so its path matches first.
+
+        ``/products/by-owner`` would otherwise be read as the id of
+        ``/products/{product_id}``.
+        """
+        item = f"{self.prefix}/{{{self.lookup}}}"
+        first = next(
+            (
+                index
+                for index, each in enumerate(self.routes)
+                if getattr(each, "path", "").startswith(item)
+            ),
+            len(self.routes),
+        )
+        self.routes.insert(first, route)
+
     def _add_list(self) -> None:
         """``GET`` the collection: one page."""
 
@@ -560,6 +688,7 @@ class ResourceRouter(APIRouter):
         rule: Rule | None = None,
         detail: bool = False,
         body: type[BaseModel] | None = None,
+        asked: type[BaseModel] | None = None,
         returns: type[BaseModel] | _Default | None = None,
         status_code: int = status.HTTP_200_OK,
         listing: bool = False,
@@ -627,6 +756,10 @@ class ResourceRouter(APIRouter):
             )
         if body is not None:
             parameters.append(_parameter("body", Annotated[body, Body()]))
+        if asked is not None:
+            parameters.append(
+                _parameter("parameters", Annotated[asked, QueryParameters()])
+            )
         parameters.extend(
             _parameter(f"{PROVIDED}{name}", Annotated[Any, Depends(dependency)])
             for name, dependency in (provided or {}).items()
@@ -643,7 +776,7 @@ class ResourceRouter(APIRouter):
             codes.append(status.HTTP_412_PRECONDITION_FAILED)
             if self.require_if_match:
                 codes.append(status.HTTP_428_PRECONDITION_REQUIRED)
-        if listing:
+        if listing or asked is not None:
             codes.append(status.HTTP_422_UNPROCESSABLE_CONTENT)
         responses: dict[int | str, dict[str, Any]] = dict(error_responses(*codes))
         if reads:
@@ -1068,6 +1201,26 @@ def _checks_objects(rule: Rule) -> bool:
     if isinstance(rule, Not):
         return _checks_objects(rule.rule)
     return type(rule).has_object_permission is not BasePermission.has_object_permission
+
+
+def _returns_many(handler: Handler) -> bool:
+    """Whether ``handler`` returns a sequence (of aggregates), as annotated.
+
+    Raises:
+        TypeError: It does not annotate what it returns.
+    """
+    returned = get_type_hints(handler).get("return")
+    if returned is None:
+        raise TypeError(
+            f"Annotate what {_label_of(handler)} returns: an aggregate, or a list."
+        )
+    origin = get_origin(returned)
+    return isinstance(origin, type) and issubclass(origin, Sequence)
+
+
+def _label_of(function: Callable[..., object]) -> str:
+    """A function's name, for messages."""
+    return getattr(function, "__qualname__", repr(function))
 
 
 def _first_line(text: str | None) -> str | None:

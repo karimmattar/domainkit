@@ -1,8 +1,20 @@
-"""In-memory adapters: test the domain and use cases without a database."""
+"""In-memory adapters, and examples: test the domain without a database.
+
+``new_<name>()`` is a valid aggregate and ``new_<name>_request()`` a valid
+body to create one; the generators' tests start from them.
+"""
+
+from uuid import uuid4
 
 from domainkit.ddd import EventBus, InMemoryRepository
 from {{ package }}.application.unit_of_work import {{ Domain }}UnitOfWork
-from {{ package }}.domain.model import {{ Aggregate }}, {{ Aggregate }}Id, {{ Aggregate }}Repository
+from {{ package }}.domain.model import (
+    OwnerId,
+    {{ Aggregate }},
+    {{ Aggregate }}Id,
+    {{ Aggregate }}Name,
+    {{ Aggregate }}Repository,
+)
 
 
 class InMemory{{ Aggregate }}Repository(
@@ -28,3 +40,15 @@ class Fake{{ Domain }}UnitOfWork({{ Domain }}UnitOfWork):
 
     async def _rollback(self) -> None:
         """Nothing to undo: the repositories are the state."""
+
+
+def new_{{ aggregate }}() -> {{ Aggregate }}:
+    """A valid {{ aggregate }}, its creation event taken: tests start from it."""
+    {{ aggregate }} = {{ Aggregate }}.create({{ Aggregate }}Name("First"), OwnerId(uuid4()))
+    {{ aggregate }}.pull_events()
+    return {{ aggregate }}
+
+
+def new_{{ aggregate }}_request() -> dict[str, object]:
+    """A valid body of ``POST /{{ aggregates }}``."""
+    return {"name": "First"}
