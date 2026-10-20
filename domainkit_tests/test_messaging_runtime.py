@@ -1769,3 +1769,48 @@ async def test_a_count_cancelled_at_shutdown_ends_its_scrapes(
     with pytest.raises(asyncio.CancelledError):
         await within(scrape)
     assert dict(metrics_module._counting) == {}
+
+
+@pytest.mark.usefixtures("broker_tables")
+async def test_a_breaker_opening_mid_round_leaves_the_rest_to_the_relay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Once open, the round's remaining batches are left; nothing more is locked."""
+    down = Down()
+    monkeypatch.setattr(BrokerHandler, "__getitem__", lambda self, alias: down)
+    with override_settings(
+        MESSAGING={**BROKERED, "PUBLISH_ON_COMMIT": False, "BATCH_SIZE": 1}
+    ):
+        for _ in range(3):
+            await enqueue(remember, value=uuid.uuid4())
+    with override_settings(MESSAGING={**BROKERED, "BREAKER_FAILURES": 1}):
+        config = registry.settings(MessagingSettings).model_copy(
+            update={"BATCH_SIZE": 1}
+        )
+        publisher = CommitPublisher(config)
+        before = left("breaker")
+        publisher.submit("default", [row["id"] for row in await rows()])
+        await published(publisher)
+
+    assert publisher.breaker.state == "open"
+    assert left("breaker") == before + 2
+    assert all(row["lock_id"] is None for row in await rows())
+
+
+@pytest.mark.usefixtures("tables")
+async def test_commits_to_other_queues_do_not_wake_a_worker() -> None:
+    """A worker of some queues hears every commit, and wakes only for its own."""
+    if not postgres():
+        return  # Nothing listens on SQLite; see test_commits_wake_idle_workers.
+    worker = Worker(MessagingSettings(**FAST), queues=["emails"])
+    stop, wake = asyncio.Event(), asyncio.Event()
+    listening = asyncio.create_task(worker.listen(stop, wake))
+    await within(wake.wait())
+    wake.clear()
+    from domainkit_tests.test_messaging import send_email
+
+    await enqueue(remember, value=uuid.uuid4())  # Heard first, and ignored.
+    await enqueue(send_email, to="ada@example.com")
+    await within(wake.wait())
+    stop.set()
+    await within(listening)
