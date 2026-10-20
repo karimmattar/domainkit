@@ -171,8 +171,9 @@ async def send_signup_link(signup_id: UUID) -> None:
     """Mail the address a link that makes the account, or say it is taken.
 
     The ``domainkit.auth.send_signup_link`` task. A pending signup whose
-    username or address is taken is deleted, and its address told; one
-    gone or expired is left alone.
+    username or address is taken is deleted once its address is told, so
+    a retry after a failed delivery tells it still; one gone or expired is
+    left alone.
     """
     config = auth_settings()
     async with AuthUnitOfWork() as uow:
@@ -180,9 +181,6 @@ async def send_signup_link(signup_id: UUID) -> None:
         if pending is None or pending.expired():
             return
         taken = await _taken(uow, pending)
-        if taken:
-            await uow.signups.remove(pending.id)
-            await uow.commit()
     if taken:
         context: dict[str, object] = {"email": pending.email}
         template = "auth/signup_exists"
@@ -200,6 +198,10 @@ async def send_signup_link(signup_id: UUID) -> None:
         }
         template = "auth/signup_confirm"
     await deliver([render_mail(template, context, to=[pending.email])])
+    if taken:
+        async with AuthUnitOfWork() as uow:
+            await uow.signups.remove(pending.id)
+            await uow.commit()
 
 
 def signup_token(signup_id: UUID) -> str:

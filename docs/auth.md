@@ -868,9 +868,9 @@ answers `409` too. A link works once; a wrong, used, or expired one gets
 Pending signups keep the username, the address, and the password's hash
 in `domainkit_pending_signups` (run `makemigrations` and `migrate`),
 which is never in fixtures. The outbox holds only a pending signup's id.
-A row goes when its link is used, when the worker finds the name or the
-address taken, or, past `EMAIL_VERIFICATION_TIMEOUT`, with the hourly
-purge of expired tokens. Signups count against `EMAIL_RATE` per client
+A row goes when its link is used, when the worker has told its address
+that the name or the address is taken, or, past
+`EMAIL_VERIFICATION_TIMEOUT`, with the hourly purge of expired tokens. Signups count against `EMAIL_RATE` per client
 address and per email address, links checked against `LOGIN_RATE` per
 client address, and new accounts are audited as `auth.user_signed_up`.
 Two links for one new address used at the same moment can both make an

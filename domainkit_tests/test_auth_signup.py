@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select, update
 
 from domainkit import signing
+from domainkit.conf import override_settings
 from domainkit.contrib import mail
 from domainkit.contrib.auth import AuthUnitOfWork
 from domainkit.contrib.auth.repositories import PendingSignup, SignupStore
@@ -21,6 +22,7 @@ from domainkit.contrib.auth.signup import (
 from domainkit.contrib.auth.tables import pending_signups
 from domainkit.contrib.auth.tokens import utc_now
 from domainkit.db import connections
+from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import Api
 from domainkit_tests.test_auth_http import audited, bearer, create_user, login
@@ -387,6 +389,27 @@ def test_the_worker_skips_signups_gone_or_expired(identity: Api) -> None:
     assert confirm(client, signup_token(stored["id"])).json()["code"] == (
         "invalid_token"
     )
+
+
+def test_a_taken_address_is_told_even_after_a_failed_delivery(
+    identity: Api,
+) -> None:
+    """The pending signup goes once the mail went, so a retry still tells."""
+    create_user("alice", email="alice@example.com")
+    client = identity(SIGNUP_ENABLED=True)
+    signup(client, username="x")
+    (stored,) = pending()
+
+    with (
+        override_settings(MAIL={"BACKEND": "domainkit_tests.test_auth_signup.Nope"}),
+        pytest.raises(ImproperlyConfigured),
+    ):
+        run_async(send_signup_link(stored["id"]))
+    assert len(pending()) == 1
+    run_async(send_signup_link(stored["id"]))
+
+    assert mails() == [(EXISTS, "alice@example.com")]
+    assert pending() == []
 
 
 def test_links_point_to_the_signup_page(identity: Api) -> None:
