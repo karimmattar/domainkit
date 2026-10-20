@@ -38,7 +38,7 @@ FORMULA: Final = (
     "\u2212",  # The minus sign.
 )
 """What starts a formula; spreadsheets skip the spaces before it."""
-LEADING: Final = re.compile(r"[\s\ufeff\u200b\u200c\u200d\u2060]*")
+LEADING: Final = re.compile(r"^[\s\ufeff\u200b\u200c\u200d\u2060]+")
 """Spaces, and characters that show nothing, which spreadsheets skip."""
 NUMBER: Final = re.compile(r"-?\d+(\.\d+)?([eE][-+]?\d+)?", re.ASCII)
 LINE_BREAKS: Final = {"\u0085": "\\u0085", "\u2028": "\\u2028", "\u2029": "\\u2029"}
@@ -142,7 +142,7 @@ def cell(value: object) -> str:
 
 def guarded(text: str) -> str:
     """``text``, with an apostrophe first if a spreadsheet would run it."""
-    head = LEADING.sub("", text, count=1)
+    head = LEADING.sub("", text)
     if (text.startswith(FORMULA) or head.startswith(FORMULA)) and not (
         NUMBER.fullmatch(head)
     ):

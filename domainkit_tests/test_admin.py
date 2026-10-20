@@ -599,3 +599,20 @@ def test_meta_leaves_out_the_definitions_of_hidden_fields(
 
     assert sorted(viewed["item_schema"]["$defs"]) == ["Color", "Size"]
     assert sorted(costed["item_schema"]["$defs"]) == ["Color", "PartOut", "Size"]
+
+
+def test_definitions_are_kept_as_far_as_references_reach() -> None:
+    """Through nested definitions and lists of alternatives; the rest goes."""
+    from domainkit.contrib.admin.sites import _prune
+
+    schema: dict[str, Any] = {
+        "properties": {"a": {"anyOf": [{"$ref": "#/$defs/A"}, {"type": "null"}]}},
+        "$defs": {"A": {"properties": {"b": {"$ref": "#/$defs/B"}}}, "B": {}, "C": {}},
+    }
+    bare: dict[str, Any] = {"properties": {"x": {"type": "string"}}}
+
+    _prune(schema)
+    _prune(bare)
+
+    assert sorted(schema["$defs"]) == ["A", "B"]
+    assert "$defs" not in bare

@@ -671,11 +671,16 @@ def test_scoped_credentials_see_only_what_their_scopes_cover(project: str) -> No
 
 def test_grants_go_with_the_object_they_are_about(project: str) -> None:
     """A hard delete takes its grants: an object with the same id starts bare."""
+    from domainkit_tests.sample_domains.shop.models import StockLevel
+
     kept, gone = products("kept", "gone")
     root = person("root", is_superuser=True)
     ada = person("ada")
     for product in (kept, gone):
         run(grant_permission(root, VIEW, product, user=ada.id))
+    # Another model's object with the same id keeps its own grants.
+    stock = StockLevel(id=gone.id)
+    run(grant_permission(root, "shop.view_stocklevel", stock, user=ada.id))
 
     async def delete() -> None:
         async with ShopUnitOfWork() as uow:
@@ -686,6 +691,7 @@ def test_grants_go_with_the_object_they_are_about(project: str) -> None:
 
     assert [grant.object_id for grant in run(grants_on(kept))] == [kept.id]
     assert run(grants_on(gone)) == []
+    assert [grant.object_id for grant in run(grants_on(stock))] == [gone.id]
 
 
 def test_deletes_leave_grants_alone_where_nothing_is_granted(

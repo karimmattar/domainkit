@@ -20,7 +20,7 @@ from domainkit.contrib.auth import (
 from domainkit.contrib.auth.access import current_user
 from domainkit.ddd import Query as QueryMessage
 from domainkit.ddd.query import F
-from domainkit.resources import FieldPolicy, ModelActions, ResourceRouter
+from domainkit.resources import FieldPolicy, ModelActions, ResourceRouter, schema_for
 from domainkit_tests.conftest import UseAuth
 from domainkit_tests.gadgets import (
     FakeGadgetsUnitOfWork,
@@ -288,3 +288,54 @@ def test_an_unchecked_if_match_commits_nothing(
         )
 
     assert sum(unit.commits for unit in units) == 0
+
+
+class NoRequests(BasePermission):
+    """Refuses every request; has nothing against any object."""
+
+    async def has_permission(self, request: HTTPConnection, user: AnyUser) -> bool:
+        """No."""
+        return False
+
+
+def test_a_routes_own_rule_is_asked_about_the_request_too(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """``rule=`` that refuses every request refuses commands, batches, queries."""
+    use_auth()
+    resource = gadgets(store)
+    resource.command_route(
+        RenameGadget, service=rename, body=RenameIn, path="/rename", rule=NoRequests()
+    )
+    resource.batch_route(RenameGadget, service=rename, body=RenameIn, rule=NoRequests())
+    resource.query_route(GadgetAgain, handler=again, path="/again", rule=NoRequests())
+    client = client_of(resource)
+    gadget = next(iter(store.items.values()))
+    item = f"{LOCATION}{gadget.id}"
+
+    renamed = client.post(f"{item}/rename", json={"name": "x"}, headers=as_("root"))
+    batch = client.post(
+        "/gadgets/batch",
+        json={"items": [{"gadget_id": str(gadget.id), "name": "x"}]},
+        headers=as_("root"),
+    )
+    asked = client.get(f"{item}/again", headers=as_("root"))
+
+    assert (renamed.status_code, batch.status_code, asked.status_code) == (
+        403,
+        403,
+        403,
+    )
+
+
+def test_write_bodies_name_every_permission_a_field_needs() -> None:
+    """A field both guarded and hidden needs both permissions to be set."""
+    policy = FieldPolicy(
+        editable={"stock": "shop.change_stock"}, visible={"stock": "shop.view_cost"}
+    )
+
+    described = policy.describe_changes(schema_for(Gadget, partial=True))
+
+    assert described.model_fields["stock"].description == (
+        "Changed only by users granted shop.change_stock and shop.view_cost."
+    )

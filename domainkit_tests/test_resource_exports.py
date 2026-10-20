@@ -257,6 +257,7 @@ def test_formulas_behind_spaces_or_in_other_widths_are_guarded(text: str) -> Non
 def test_numbers_behind_spaces_stay_numbers() -> None:
     """A number with spaces before it is still a number."""
     assert [guarded(text) for text in (" -1", "\u00a0-2.5")] == [" -1", "\u00a0-2.5"]
+    assert [guarded(text) for text in ("-1 2", " -1 2")] == ["'-1 2", "' -1 2"]
 
 
 def test_ndjson_lines_end_only_at_their_newline() -> None:
