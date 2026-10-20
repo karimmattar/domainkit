@@ -212,10 +212,12 @@ async def test_shutdown_names_tasks_that_will_not_stop() -> None:
     await asyncio.sleep(0)
     loop = asyncio.get_running_loop()
 
-    assert await shutdown(loop.time() + 0.01) == ["test.stubborn"]
-    assert await shutdown(loop.time()) == ["test.stubborn"]  # Past: no wait.
-    release.set()
-    await wait_for(task)
+    try:
+        assert await shutdown(loop.time() + 0.01) == ["test.stubborn"]
+        assert await shutdown(loop.time()) == ["test.stubborn"]  # Past: no wait.
+    finally:
+        release.set()  # Fail fast, not hang, if an assertion fails.
+        await wait_for(task)
 
 
 async def test_shutdown_leaves_the_task_that_calls_it_alone() -> None:
