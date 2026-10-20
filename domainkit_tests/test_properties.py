@@ -17,7 +17,12 @@ from domainkit.conf.env import Env, prefix_for
 from domainkit.db import UTCDateTime
 from domainkit.ddd import ValueObject
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.http import InvalidCursor, decode_cursor, encode_cursor
+from domainkit.http import (
+    MAX_CURSOR_LENGTH,
+    InvalidCursor,
+    decode_cursor,
+    encode_cursor,
+)
 from domainkit.http.middleware import host_allowed
 from domainkit.http.ratelimit import Decision, MemoryBackend
 from domainkit.utils.rates import PERIODS, parse_rate
@@ -208,4 +213,4 @@ def test_the_longest_names_fit_in_a_cursor() -> None:
 
     assert decode_cursor(encode_cursor(values), 2) == values
     with pytest.raises(ValueError, match="too long"):
-        encode_cursor(["x" * 2000])
+        encode_cursor(["x" * MAX_CURSOR_LENGTH])
