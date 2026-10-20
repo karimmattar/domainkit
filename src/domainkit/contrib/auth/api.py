@@ -31,7 +31,7 @@ from domainkit import clock
 from domainkit.apps import registry
 from domainkit.conf import settings
 from domainkit.context import bind_request, current_request
-from domainkit.http.errors import APIError, ErrorResponse
+from domainkit.http.errors import APIError, error_responses
 from domainkit.http.ratelimit import Backend, client_group
 from domainkit.utils.module_loading import import_string
 from domainkit.utils.rates import parse_rate
@@ -114,9 +114,8 @@ class UserOut(BaseModel):
     permissions: list[str]
 
 
-def _errors(*codes: int) -> dict[int | str, dict[str, object]]:
-    """OpenAPI entries for the error statuses an endpoint returns."""
-    return {code: {"model": ErrorResponse} for code in codes}
+_errors = error_responses
+"""OpenAPI entries for the error statuses an endpoint returns."""
 
 
 @router.post(

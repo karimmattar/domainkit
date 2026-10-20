@@ -620,6 +620,10 @@ Staff hand out only what they have:
 - The last active superuser cannot be demoted, deactivated, or deleted
   (`409 last_superuser`): make another one first.
 
+The listings and reads are resources ([resources.md](resources.md)):
+`limit` and `cursor` page them, and a user or group carries an `ETag`,
+so `If-None-Match` answers `304` while it is unchanged.
+
 Changes are recorded as events (`UserUpdated`, `UserDeleted`,
 `UserStatusChanged`, `UserJoinedGroup`, `GroupDeleted`, and the others),
 so with `domainkit.contrib.audit` installed the audit trail names who

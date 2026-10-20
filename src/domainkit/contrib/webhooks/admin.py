@@ -30,7 +30,7 @@ from domainkit.contrib.auth import AnyUser
 from domainkit.contrib.auth.admin import staff
 from domainkit.db import connections
 from domainkit.ddd import NotFound
-from domainkit.http import ErrorResponse
+from domainkit.http import error_responses
 
 from .delivery import replay, webhooks_alias
 from .guard import MAX_URL_LENGTH, checked_url
@@ -61,9 +61,8 @@ class DeliveryNotFound(NotFound):
     code = "webhook_delivery_not_found"
 
 
-def _errors(*codes: int) -> dict[int | str, dict[str, object]]:
-    """OpenAPI entries for the error statuses an endpoint returns."""
-    return {code: {"model": ErrorResponse} for code in codes}
+_errors = error_responses
+"""OpenAPI entries for the error statuses an endpoint returns."""
 
 
 def _staff(action: str) -> Any:  # noqa: ANN401 - Depends.
