@@ -162,9 +162,11 @@ certificate files.
 ## Free-threaded Python
 
 domainkit runs on free-threaded CPython 3.14 (`python3.14t`, without the
-GIL), and CI runs the suite there. Importing domainkit and its runtime
-dependencies keeps the GIL off; the `immudb` extra is the exception, since
-grpcio publishes no free-threaded build yet.
+GIL), and CI runs the suite there with the GIL off throughout. Importing
+domainkit and its runtime dependencies keeps the GIL off; the `immudb`
+extra is the exception, since grpcio publishes no free-threaded build yet.
+The job also leaves out the Redis tests that run Lua in fakeredis: lupa
+turns the GIL back on, and forcing it off (`PYTHON_GIL=0`) crashed the run.
 
 Most state lives in one event loop and needs no lock. What event loops on
 several threads can share (a server with a loop per thread, or threads that

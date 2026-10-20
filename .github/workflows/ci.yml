@@ -88,10 +88,10 @@ jobs:
   # really run at once. Every dependency ships free-threaded wheels but
   # grpcio, which the immudb extra needs: that extra and its two test
   # modules are left out (docs/runtime.md). lupa, fakeredis's Lua and a test
-  # dependency only, would turn the GIL back on for the whole run, so pytest
-  # runs with PYTHON_GIL=0; test_free_threading checks, in a child without
-  # it, that importing domainkit keeps the GIL off. Coverage comes from the
-  # other jobs.
+  # dependency only, would turn the GIL back on, and forced off with
+  # PYTHON_GIL=0 it crashes the run, so the two Redis test modules that load
+  # it are left out too. With every warning an error, a module that turned
+  # the GIL back on would fail the job. Coverage comes from the other jobs.
   free-threaded:
     name: test (3.14t)
     runs-on: ubuntu-24.04
@@ -109,11 +109,11 @@ jobs:
           poetry sync --with dev --extras "postgres sqlite metrics tracing argon2
           jwt mfa rabbitmq redis uploads testing webhooks tzdata uvloop granian"
       - run: poetry run python -c "import sys; assert not sys._is_gil_enabled()"
-      - env:
-          PYTHON_GIL: "0"
-        run: >-
+      - run: >-
           poetry run pytest -p no:cov --ignore=domainkit_tests/test_immudb.py
           --ignore=domainkit_tests/test_ledger.py
+          --ignore=domainkit_tests/test_redis.py
+          --ignore=domainkit_tests/test_redis_topologies.py
 
   # The suite again against real servers: PostgreSQL (row locks, the audit
   # triggers, timeouts, partitions, migrations), immudb with TLS and a

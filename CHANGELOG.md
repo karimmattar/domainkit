@@ -46,8 +46,10 @@ All notable changes to domainkit. The format follows
   with WebSockets on. It reads the server's `UVICORN_*` and `GRANIAN_*`
   variables, and a deployed application logs the same warning from the
   server's command line when it starts.
-- CI runs the suite on free-threaded Python 3.14 (3.14t), without the
-  immudb extra, whose grpcio has no free-threaded build yet (R11).
+- CI runs the suite on free-threaded Python 3.14 (3.14t), with the GIL
+  off throughout, without the immudb extra, whose grpcio has no
+  free-threaded build yet, and without the two Redis test modules, whose
+  fakeredis runs Lua through lupa, which turns the GIL back on (R11).
 - `domainkit.contrib.auth.acurrent_user`, the dependency behind
   `CurrentUser`, which FastAPI awaits instead of calling on its thread
   pool (ASYNC-09). `current_user` stays a plain function.
