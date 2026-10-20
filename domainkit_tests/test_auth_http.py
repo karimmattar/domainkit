@@ -258,6 +258,34 @@ def test_logins_answer_503_when_hashing_is_saturated(
         assert refused.headers["Retry-After"] == "1"
 
 
+def test_signed_in_users_change_passwords_while_logins_fill_the_pool(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reserved place takes a password change; a login is refused (N7)."""
+    create_user("alice")
+    client = api()
+    alice = bearer(login(client, "alice")["access_token"])
+    busy = HashingPool(threads=1, queue=1, reserved=1)
+    busy.pending = busy.capacity - busy.reserved  # Logins took every other place.
+    monkeypatch.setattr(hashers, "_pool", lambda: busy)
+
+    refused = client.post(
+        "/auth/login", json={"username": "alice", "password": PASSWORD}
+    )
+    changed = client.post(
+        "/auth/password",
+        headers=alice,
+        json={"old_password": PASSWORD, "new_password": "n3w-Passw0rd!"},
+    )
+
+    assert (refused.status_code, refused.json()["code"]) == (
+        503,
+        "password_checks_busy",
+    )
+    assert changed.status_code == 204
+    assert busy.pending == 1
+
+
 def test_logins_are_throttled_per_address_and_per_username(api: Api) -> None:
     """``AUTH.LOGIN_RATE`` counts attempts from an address, and for a name."""
     create_user("alice")

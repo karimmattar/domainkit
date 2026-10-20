@@ -385,7 +385,7 @@ async def set_password(
         await _may_change(actor, user)
         if body.password is not None:
             validate_password(body.password, user)
-        await uow.users.set_password(user, body.password)
+        await uow.users.set_password(user, body.password, priority=True)
         await uow.tokens.revoke_user(user.id)
         await uow.commit()
 
