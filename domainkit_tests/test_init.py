@@ -5,6 +5,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import tomllib
 from importlib.metadata import entry_points
 from pathlib import Path
 
@@ -105,6 +106,27 @@ def test_init_creates_a_project_that_passes_check_and_its_tests(
     tested = run(project, "-m", "pytest", "-q", "-p", "no:cacheprovider")
     assert tested.returncode == 0, tested.stdout + tested.stderr
     assert "3 passed" in tested.stdout
+
+
+def test_generated_code_never_blocks_the_event_loop(tmp_path: Path) -> None:
+    """Ruff's ASYNC rules are on, and generated routes need no thread pool."""
+    project = tmp_path / "billing"
+    init("billingAPI", str(project))
+    started = run(
+        project, "manage.py", "startdomain", "invoices", "--aggregate", "Invoice"
+    )
+    assert started.returncode == 0, started.stderr
+
+    linted = run(project, "-m", "ruff", "check", "--no-cache", ".")
+    checked = run(project, "manage.py", "check")
+
+    pyproject = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))
+    assert pyproject["tool"]["ruff"]["lint"]["extend-select"] == ["ASYNC"]
+    assert linted.returncode == 0, linted.stdout + linted.stderr
+    assert checked.stdout == (
+        "System check identified no issues. "
+        "Domains: messaging, contenttypes, auth, invoices.\n"
+    )
 
 
 def test_production_settings_come_from_the_environment(tmp_path: Path) -> None:

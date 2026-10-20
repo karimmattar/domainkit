@@ -39,6 +39,9 @@ every database the settings name, so they refuse settings whose
     ``with assert_num_queries(3):``: fail unless the block runs exactly
     three SQL statements (at most three), listing those it ran.
 
+``pytest --detect-blocking`` fails a test that holds its event loop for
+``--blocking-seconds`` (0.1) or more in one step (``domainkit.testing.blocking``).
+
 The async fixtures need async tests run by AnyIO (``pytest.mark.anyio``).
 Memory caches (``memory://``) are emptied before every test, so no test
 sees what another one cached. Redis caches are left alone. Error reports
@@ -61,6 +64,7 @@ from domainkit.log import flush_logs
 from domainkit.management.base import run_async
 from domainkit.reporting import flush_reports
 
+from . import blocking
 from .clients import AsyncTestClient, TestClient, user_token
 from .databases import IN_MEMORY, migrated_database, worker_id
 from .factories import Factory, LazyAttribute, LazyFunction, Sequence, SubFactory
@@ -95,14 +99,16 @@ type FreezeTime = Callable[..., FrozenClock]
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
-    """Declare the ``domainkit_settings`` ini option and ``--keepdb``."""
+    """Declare ``domainkit_settings``, ``--keepdb``, and ``--detect-blocking``."""
     parser.addini(SETTINGS_INI, "Settings module for the tests (config.settings.test)")
-    parser.getgroup("domainkit").addoption(
+    group = parser.getgroup("domainkit")
+    group.addoption(
         "--keepdb",
         action="store_true",
         help="Keep the PostgreSQL test databases for the next run, and only "
         "migrate them up.",
     )
+    blocking.add_options(group)
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -111,6 +117,7 @@ def pytest_configure(config: pytest.Config) -> None:
     if module := config.getini(SETTINGS_INI):
         os.environ[f"{prefix}SETTINGS_MODULE"] = str(module)
     os.environ[f"{prefix}ENV_FILE"] = ""
+    blocking.configure(config)
 
 
 @pytest.fixture(autouse=True)

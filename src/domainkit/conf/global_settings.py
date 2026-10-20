@@ -477,6 +477,8 @@ class Settings(BaseModel):
     ENVIRONMENT: Environment = "local"
     """Staging and production get the deployment checks below."""
     DEBUG: bool = False
+    SLOW_CALLBACK_DURATION: float | None = Field(default=0.1, gt=0)
+    """With ``DEBUG``: log loop steps this slow (asyncio debug mode); None: off."""
     PROJECT_NAME: str = "API"
     VERSION: str = "0.1.0"
 

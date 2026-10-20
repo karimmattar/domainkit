@@ -22,6 +22,19 @@ All notable changes to domainkit. The format follows
   waiting for the reporting thread, as tests do before checking what a
   reporter received; the pytest plugin calls it, and `flush_logs()`,
   after every test.
+- Blocking code is found before production (ASYNC-14, R07;
+  `docs/runtime.md`, "Finding blocking code"):
+  - with `DEBUG`, the application's loop runs in asyncio's debug mode and
+    logs every step that holds it for `SLOW_CALLBACK_DURATION` (0.1 s);
+  - `pytest --detect-blocking` fails a test that holds its loop that long
+    (`--blocking-seconds` to raise the bar);
+  - `check` warns about route handlers and dependencies of the installed
+    domains written as `def`, which FastAPI runs on its thread pool;
+    `domainkit.http.blocking.allow_sync` marks one that must stay sync;
+  - projects made by `init` turn on Ruff's `ASYNC` rules.
+- `domainkit.contrib.auth.acurrent_user`, the dependency behind
+  `CurrentUser`, which FastAPI awaits instead of calling on its thread
+  pool (ASYNC-09). `current_user` stays a plain function.
 
 ### Changed
 
@@ -36,6 +49,11 @@ All notable changes to domainkit. The format follows
   and at most 100 reports wait (more are dropped and counted). Shutdown
   waits up to 5 seconds for them. Tests that check a reporter call
   `flush_reports()` first (ASYNC-10).
+- `CurrentUser`, a `ResourceRouter`'s unit of work and `FilterSet`, and the
+  auth admin's user and group listings no longer hop to FastAPI's thread
+  pool on every request: they are awaited, or built, on the loop.
+  Domains made by `startdomain` declare `get_unit_of_work` and `caller` as
+  `async def`; existing ones keep working, and `check` names them.
 
 ## [0.7.0] - 2026-10-20
 

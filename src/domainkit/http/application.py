@@ -1,5 +1,6 @@
 """Build the FastAPI application from settings (Django's ``get_asgi_application``)."""
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -13,6 +14,7 @@ from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db.drivers import connect_args
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.http.blocking import watch_event_loop
 from domainkit.http.errors import ErrorResponse, install_exception_handlers
 from domainkit.http.openapi import (
     duplicate_operation_ids,
@@ -36,12 +38,23 @@ FRAMEWORK_ERRORS: Final = {
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Start the domains, then stop them and close what they opened."""
+    """Start the domains, then stop them and close what they opened.
+
+    With ``DEBUG``, the loop logs steps that hold it for
+    ``SLOW_CALLBACK_DURATION`` (``domainkit.http.blocking``) while the
+    application runs.
+    """
+    loop = asyncio.get_running_loop()
+    debug, slow = loop.get_debug(), loop.slow_callback_duration
+    if settings.DEBUG and settings.SLOW_CALLBACK_DURATION is not None:
+        watch_event_loop(loop, settings.SLOW_CALLBACK_DURATION)
     try:
         async with registry.lifespan():
             yield
     finally:
         await close_resources()
+        loop.set_debug(debug)
+        loop.slow_callback_duration = slow
 
 
 def get_asgi_application() -> FastAPI:

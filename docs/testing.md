@@ -306,6 +306,16 @@ and permissions), so prefer `assert_max_queries` for whole requests and
 `assert_num_queries` for code you call directly. Without the fixtures,
 import them from `domainkit.testing`.
 
+## Blocking the event loop
+
+`pytest --detect-blocking` fails a test that holds its event loop for 0.1
+seconds or more in one step (`--blocking-seconds` raises the bar): a sync
+HTTP client, `time.sleep`, or a CPU-heavy loop inside `async def`. Every
+loop the tests start runs in asyncio's debug mode, the test's async loop
+and the clients' alike; fixtures are not timed. The failure quotes
+asyncio's report of the slow step. See
+[runtime.md](runtime.md#finding-blocking-code).
+
 ## In generated projects
 
 `domainkit init` writes `tests/test_health.py` with a sync and an async

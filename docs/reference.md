@@ -37,6 +37,7 @@ URLs; an unreadable port is refused without quoting the URL.
 | `BASE_DIR` | the project root | The directory holding `pyproject.toml`. |
 | `ENVIRONMENT` | `"local"` | `local`, `test`, `staging`, or `production`. Staging and production get the [deployment checks](#deployment-checks). |
 | `DEBUG` | `False` | Development conveniences; refused in staging and production. |
+| `SLOW_CALLBACK_DURATION` | `0.1` | With `DEBUG`, the application's loop runs in asyncio's debug mode and logs each step that holds it this many seconds or more ([runtime.md](runtime.md#finding-blocking-code)); `None` turns it off. |
 | `PROJECT_NAME` | `"API"` | The OpenAPI title. |
 | `VERSION` | `"0.1.0"` | The OpenAPI version. |
 | `SECRET_KEY` | `None` | Signs what the service hands out: reset links, cookies, MFA challenges ([Signing](#signing)). Required in staging and production, with 50 random characters or more; shown as `**********`. |
@@ -572,8 +573,9 @@ It selects the test settings, never reads `.env`, and refuses settings whose
 application to sync and async tests (`client`, `client_for`, `admin_client`,
 `async_client`, `async_client_for`, `async_admin_client`). It also brings
 factories, a clock to freeze (`freeze_time`), and query-count assertions
-(`assert_num_queries`, `assert_max_queries`). [docs/testing.md](testing.md)
-covers them all.
+(`assert_num_queries`, `assert_max_queries`). `--detect-blocking` fails
+tests that hold their event loop. [docs/testing.md](testing.md) covers them
+all.
 
 Fixtures for published events and queued work (`captured_events`,
 `outbox`, `execute_deferred`) come with messaging's own plugin
@@ -588,7 +590,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | Command | Options | Purpose |
 | --- | --- | --- |
 | `init` | `name`, `[directory]` | Create a project: base, local, test, and production settings, routes, `manage.py`, `.env`, and a first test. The name sets the environment prefix; the directory (default `./<name>`) must be empty or missing. |
-| `check` | | Settings, domains, routes and their access rules, middleware, layer rules, and a single migration head. In staging and production it also lists [weak choices](#deployment-checks) as warnings. |
+| `check` | | Settings, domains, routes and their access rules, middleware, layer rules, and a single migration head. It warns about route handlers and dependencies of the installed domains written as `def`, which run on FastAPI's thread pool ([runtime.md](runtime.md#finding-blocking-code)); in staging and production it also lists [weak choices](#deployment-checks) as warnings. |
 | `broker` | `check\|declare`, `[ALIAS ...]` | Connect to brokers (all by default), or declare the exchange and every queue the worker's tasks use on `MESSAGING.BROKER`. |
 | `compilemessages` | `[DIRECTORY ...]`, `-l/--locale`, `--check` | Compile translation catalogs (`.po`) to `.mo` files: in the directories named, or in `LOCALE_PATHS` and each installed domain's `locale` directory. `--check` writes nothing and fails if one is missing or out of date ([i18n.md](i18n.md)). |
 | `cache` | `check\|clear`, `[ALIAS ...]`, `--all` | Ping caches (all by default), or delete every key of the named caches, all versions, in their namespace only. Clearing needs aliases or `--all`. |

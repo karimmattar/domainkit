@@ -13,6 +13,11 @@ pythonpath = ["src"]
 addopts = "-p domainkit.testing -p domainkit.contrib.messaging.testing"
 domainkit_settings = "config.settings.test"
 
+[tool.ruff.lint]
+# Ruff's defaults, and blocking calls in async code (time.sleep, open(),
+# subprocess, a sync HTTP client): each one holds the event loop.
+extend-select = ["ASYNC"]
+
 [tool.ruff.lint.per-file-ignores]
 # Each settings module builds on base.py with a star import.
 "src/config/settings/*.py" = ["F403", "F405"]

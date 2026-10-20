@@ -38,12 +38,12 @@ from gen.shop.infrastructure.unit_of_work import SqlAlchemyShopUnitOfWork
 router = APIRouter(tags=["shop"])
 
 
-def get_unit_of_work() -> ShopUnitOfWork:
+async def get_unit_of_work() -> ShopUnitOfWork:
     """A unit of work on the database; tests may override this dependency."""
     return SqlAlchemyShopUnitOfWork()
 
 
-def caller(user: AuthenticatedUser) -> UUID:
+async def caller(user: AuthenticatedUser) -> UUID:
     """The caller's id: who creates a product owns it."""
     return user.id
 
