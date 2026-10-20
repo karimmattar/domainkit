@@ -1,7 +1,8 @@
-"""Close every item of a collection, even after one fails."""
+"""Close every item of a collection, even after one fails or hangs."""
 
+import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -9,18 +10,82 @@ logger = logging.getLogger(__name__)
 async def close_each[T](
     items: Iterable[T], close: Callable[[T], Awaitable[object]]
 ) -> None:
-    """Close every item in order, then raise the first failure.
+    """Close every item at once; when all are done, raise the first failure.
 
-    Later failures are logged, since only one can be raised.
+    Items close concurrently, so one that hangs holds up none of the others.
+    The first failure in ``items`` order is raised and later ones are
+    logged, since only one can be raised. If the wait is cancelled (a
+    deadline passed), the items still closing are named in the log and
+    cancelled, and the cancellation goes on.
     """
-    first: Exception | None = None
-    for item in items:
+    items = list(items)
+
+    async def run(item: T) -> None:
+        await close(item)
+
+    closing = [asyncio.ensure_future(run(item)) for item in items]
+    if not closing:
+        return
+    try:
+        await asyncio.wait(closing)
+    except asyncio.CancelledError:
+        for item, task in zip(items, closing, strict=True):
+            if not task.done():
+                task.cancel()
+                logger.error("Gave up closing %r", item)
+        raise
+    _raise_first(
+        items,
+        [
+            asyncio.CancelledError() if task.cancelled() else task.exception()
+            for task in closing
+        ],
+    )
+
+
+async def close_in_turn[T](
+    items: Sequence[T],
+    close: Callable[[T], Awaitable[object]],
+    *,
+    within: float | None = None,
+) -> None:
+    """Close the items one after another, in order; then raise the first failure.
+
+    With ``within``, the items share that many seconds: each may take what
+    is left divided by the items left, so time one does not use goes to the
+    rest, and one that hangs is cut off (``TimeoutError``) without taking
+    the others' share. Every item is tried; later failures are logged.
+    """
+    loop = asyncio.get_running_loop()
+    end = None if within is None else loop.time() + within
+    failures: list[BaseException | None] = []
+    for done, item in enumerate(items):
+        share = None if end is None else (end - loop.time()) / (len(items) - done)
         try:
-            await close(item)
-        except Exception as exc:
-            if first is None:
-                first = exc
-            else:
-                logger.error("Could not close %r", item, exc_info=exc)
+            async with asyncio.timeout(share) as limit:
+                await close(item)
+        except Exception as exc:  # noqa: BLE001 - raised or logged below.
+            failures.append(
+                TimeoutError(f"{item!r} did not close within {share:.2f}s")
+                if limit.expired()
+                else exc
+            )
+        else:
+            failures.append(None)
+    _raise_first(items, failures)
+
+
+def _raise_first[T](
+    items: Sequence[T], failures: Sequence[BaseException | None]
+) -> None:
+    """Log every failure but the first, then raise the first, if any."""
+    first: BaseException | None = None
+    for item, failure in zip(items, failures, strict=True):
+        if failure is None:
+            continue
+        if first is None:
+            first = failure
+        else:
+            logger.error("Could not close %r", item, exc_info=failure)
     if first is not None:
         raise first

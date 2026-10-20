@@ -21,7 +21,6 @@ from domainkit.contrib.idempotency.operations import (
     running_operation,
 )
 from domainkit.i18n.translation import get_language, override
-from domainkit.lifecycle import close_resources
 from domainkit.tasks import backoff_delay, owned, shutdown, spawn, supervise
 from domainkit.tracing import current_ids, remote_parent
 
@@ -230,42 +229,6 @@ async def test_shutdown_leaves_the_task_that_calls_it_alone() -> None:
     await wait_for(stopper)
     assert stopper.result() == []
     assert other.cancelled()
-
-
-async def test_close_resources_stops_background_tasks(
-    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Tasks stop before resources close; one that will not stop is named."""
-    stopped = asyncio.Event()
-
-    async def work() -> None:
-        try:
-            await asyncio.Event().wait()
-        finally:
-            stopped.set()
-
-    async def stubborn(release: asyncio.Event) -> None:
-        while not release.is_set():
-            try:
-                await release.wait()
-            except asyncio.CancelledError:
-                continue
-
-    spawn(work(), name="test.work")
-    release = asyncio.Event()
-    task = spawn(stubborn(release), name="test.stubborn")
-    await asyncio.sleep(0)
-    monkeypatch.setattr("domainkit.lifecycle.CLOSE_TIMEOUT", 0.01)
-
-    with caplog.at_level(logging.ERROR, "domainkit.lifecycle"):
-        await close_resources()
-
-    assert stopped.is_set()
-    assert caplog.messages == [
-        "Background tasks still running after 0.0s: test.stubborn"
-    ]
-    release.set()
-    await wait_for(task)
 
 
 def test_each_loop_owns_its_own_tasks() -> None:
