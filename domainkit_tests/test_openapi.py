@@ -357,7 +357,9 @@ def test_openapi_diff_fails_on_breaking_changes(tmp_path: Path) -> None:
         ("{", "is not a JSON document"),
         ("[1]", "is not an OpenAPI schema"),
         ('{"paths": []}', "is not an OpenAPI schema"),
-        ("[" * 100_000 + "]" * 100_000, "is not a JSON document"),
+        ("[" * 100_000 + "]" * 100_000, "nests deeper than 256"),
+        ("[" * 257 + "]" * 257, "nests deeper than 256"),
+        ("[" * 256 + "]" * 256, "is not an OpenAPI schema"),
     ],
 )
 def test_openapi_diff_refuses_what_is_not_a_schema(
@@ -370,6 +372,15 @@ def test_openapi_diff_refuses_what_is_not_a_schema(
 
     with pytest.raises(CommandError, match=message):
         run("--diff", str(path))
+
+
+def test_brackets_in_strings_do_not_count_as_nesting(tmp_path: Path) -> None:
+    """Only arrays and objects nest; text that holds brackets does not."""
+    path = tmp_path / "old.json"
+    brackets = '[{\\"' * 300
+    path.write_text(f'{{"paths": {{}}, "info": {{"title": "{brackets}"}}}}', "utf-8")
+
+    assert run("--diff", str(path)).startswith("No breaking changes since")
 
 
 def test_openapi_diff_refuses_huge_files(
