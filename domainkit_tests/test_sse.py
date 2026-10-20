@@ -66,7 +66,7 @@ def test_event_fields_cannot_break_the_stream(
     fields: dict[str, Any], message: str
 ) -> None:
     """A line break would start another field; a NUL makes the id ignored."""
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError, match=rf"^A server-sent event's {message}\.$"):
         ServerSentEvent("data", **fields)
 
 
@@ -119,7 +119,7 @@ def test_a_negative_retry_is_refused() -> None:
     async def nothing() -> AsyncIterator[str]:
         yield "never"
 
-    with pytest.raises(ValueError, match="retry cannot be negative"):
+    with pytest.raises(ValueError, match=r"^retry cannot be negative\.$"):
         EventSourceResponse(nothing(), retry=-5)
 
 
