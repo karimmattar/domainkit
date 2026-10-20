@@ -115,7 +115,7 @@ class SubscriptionOut(BaseModel):
             active=subscription.active,
             description=subscription.description,
             created_at=subscription.created_at,
-            rotating=len(subscription.signing_secrets(clock.now())) > 1,
+            rotating=subscription.rotating(clock.now()),
         )
 
 
@@ -237,14 +237,14 @@ async def create_subscription(
     """
     _no_store(response)
     host = _checked(body.url)
-    subscription = Subscription.create(
+    subscription, secret = Subscription.create(
         body.url, host, body.event_types, body.description, active=body.active
     )
     async with WebhooksUnitOfWork() as uow:
         await uow.subscriptions.add(subscription)
         await uow.commit()
     return NewSubscriptionOut(
-        **SubscriptionOut.of(subscription).model_dump(), secret=subscription.secret
+        **SubscriptionOut.of(subscription).model_dump(), secret=secret
     )
 
 
@@ -289,7 +289,8 @@ async def rotate_secret(
     """Give a subscription a new secret, shown once.
 
     The old one also signs deliveries for ``WEBHOOKS.SECRET_OVERLAP_SECONDS``,
-    so receivers can switch without missing any.
+    so receivers can switch without missing any; unless no key decrypts it
+    any more (``previous_valid_until`` is then null).
     """
     _no_store(response)
     overlap = timedelta(

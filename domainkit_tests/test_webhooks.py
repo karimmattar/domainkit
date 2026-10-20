@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
+from domainkit.conf import override_settings
 from domainkit.contrib.webhooks import client, guard, signing
 from domainkit.contrib.webhooks.guard import (
     UnsafeTarget,
@@ -25,6 +26,7 @@ from domainkit.contrib.webhooks.guard import (
     refusal,
 )
 from domainkit.contrib.webhooks.models import (
+    SECRET_PURPOSE,
     InvalidEventTypes,
     Subscription,
     SubscriptionChanged,
@@ -32,10 +34,13 @@ from domainkit.contrib.webhooks.models import (
     SubscriptionDeleted,
     SubscriptionSecretRotated,
     checked_event_types,
+    previous_signs,
+    secret_box,
 )
 from domainkit.contrib.webhooks.settings import WebhookSettings
 from domainkit.contrib.webhooks.signing import InvalidSignature, sign, verify
 from domainkit.ddd import BusinessRuleViolation
+from domainkit.encryption import DecryptionFailed, SecretBox
 
 pytestmark = pytest.mark.anyio
 
@@ -46,6 +51,8 @@ SPEC_TIME = 1614265330
 SPEC_BODY = b'{"test": 2432232314}'
 SPEC_SIGNATURE = "v1,g0hM9SsE+OTPJTGt/tmIKtSyZlE3uFJELVlNIOLJ1OE="
 LOCAL = (ipaddress.ip_network("127.0.0.0/8"),)
+OLD_KEY = "old-0123456789-abcdefghijklmnopqrstuvwxyz-ABCDEFGHIJ"
+NEW_KEY = "new-0123456789-abcdefghijklmnopqrstuvwxyz-ABCDEFGHIJ"
 
 
 # Signatures ---------------------------------------------------------------------
@@ -182,11 +189,10 @@ def test_verify_uses_the_clock_by_default() -> None:
 
 def test_subscriptions_record_their_changes_without_secrets() -> None:
     """Events name the host and the fields changed; reprs hide secrets."""
-    subscription = Subscription.create(
+    subscription, secret = Subscription.create(
         "https://hooks.example.com/t/SECRET-TOKEN", "hooks.example.com", ["a", "a", "b"]
     )
     created = subscription.pull_events()
-    secret = subscription.secret
 
     assert subscription.event_types == ["a", "b"]
     assert created == [
@@ -221,19 +227,22 @@ def test_subscriptions_record_their_changes_without_secrets() -> None:
     assert (subscription.active, subscription.description) == (False, "d")
 
     now = datetime.now(UTC)
+    sealed = subscription.secret
     new = subscription.rotate_secret(timedelta(hours=1))
-    assert (new, subscription.previous_secret) == (subscription.secret, secret)
-    assert subscription.signing_secrets(now) == [new, secret]
-    assert subscription.signing_secrets(now + timedelta(hours=2)) == [new]
+    assert new != secret
+    assert unsealed(subscription.secret, subscription) == (new, True)
+    assert unsealed(subscription.previous_secret, subscription) == (secret, True)
+    assert subscription.previous_secret != sealed  # Encrypted again.
+    assert subscription.rotating(now)
+    assert not subscription.rotating(now + timedelta(hours=2))
     expires = subscription.previous_secret_expires_at
     assert expires is not None
-    assert subscription.signing_secrets(expires - timedelta(microseconds=1)) == [
-        new,
-        secret,
-    ]
-    assert subscription.signing_secrets(expires) == [new]  # Expired at that moment.
+    assert now + timedelta(hours=1) <= expires <= datetime.now(UTC) + timedelta(hours=1)
+    assert subscription.rotating(expires - timedelta(microseconds=1))
+    assert not subscription.rotating(expires)  # Expired at that moment.
     newest = subscription.rotate_secret(timedelta(0))
-    assert subscription.signing_secrets(now) == [newest]
+    assert unsealed(subscription.secret, subscription) == (newest, True)
+    assert not subscription.rotating(now)
     assert subscription.previous_secret is None
     assert subscription.previous_secret_expires_at is None
     subscription.delete()
@@ -241,13 +250,70 @@ def test_subscriptions_record_their_changes_without_secrets() -> None:
     assert isinstance(rotated, SubscriptionSecretRotated)
     assert isinstance(deleted, SubscriptionDeleted)
     assert rotated.subscription_id == deleted.subscription_id == subscription.id
-    assert new not in repr(subscription)
+    for shown in (secret, new, newest):
+        assert shown not in repr(subscription)
+        assert shown.encode() not in subscription.secret
+
+
+def unsealed(sealed: bytes | None, subscription: Subscription) -> tuple[str, bool]:
+    """Decrypt one of ``subscription``'s secrets, as a delivery would."""
+    assert sealed is not None
+    plaintext, current = secret_box().decrypt(sealed, associated=subscription.id.bytes)
+    return plaintext.decode(), current
+
+
+def test_secrets_are_encrypted_for_their_own_subscription() -> None:
+    """A round trip works; a tampered value, or another row's, does not decrypt."""
+    first, secret = Subscription.create("https://a.example/", "a.example", ["x"])
+    second, _ = Subscription.create("https://a.example/", "a.example", ["x"])
+
+    assert repr(secret_box()) == f"SecretBox(purpose={SECRET_PURPOSE!r})"
+    assert SECRET_PURPOSE == "domainkit.webhooks.secret"
+    assert unsealed(first.secret, first) == (secret, True)
+    with pytest.raises(DecryptionFailed):
+        SecretBox("other").decrypt(first.secret, associated=first.id.bytes)
+    tampered = first.secret[:-1] + bytes([first.secret[-1] ^ 1])
+    with pytest.raises(DecryptionFailed):
+        unsealed(tampered, first)
+    with pytest.raises(DecryptionFailed):  # Copied to another row.
+        unsealed(first.secret, second)
+
+
+def test_rotations_encrypt_the_old_secret_again_under_the_current_key() -> None:
+    """A fallback key's value moves under SECRET_KEY; a lost one is dropped."""
+    with override_settings(SECRET_KEY=OLD_KEY):
+        subscription, old = Subscription.create(
+            "https://a.example/", "a.example", ["x"]
+        )
+    with override_settings(SECRET_KEY=NEW_KEY, SECRET_KEY_FALLBACKS=[OLD_KEY]):
+        assert unsealed(subscription.secret, subscription) == (old, False)
+        new = subscription.rotate_secret(timedelta(hours=1))
+        assert unsealed(subscription.previous_secret, subscription) == (old, True)
+    with override_settings(SECRET_KEY=NEW_KEY):
+        assert unsealed(subscription.secret, subscription) == (new, True)
+        assert unsealed(subscription.previous_secret, subscription) == (old, True)
+    with override_settings(SECRET_KEY=OLD_KEY):  # NEW_KEY is lost.
+        newest = subscription.rotate_secret(timedelta(hours=1))
+        assert unsealed(subscription.secret, subscription) == (newest, True)
+    assert subscription.previous_secret is None
+    assert subscription.previous_secret_expires_at is None
+    assert not subscription.rotating(datetime.now(UTC))
+
+
+def test_a_previous_secret_signs_until_it_expires() -> None:
+    """Both the value and its expiry are needed."""
+    now = datetime.now(UTC)
+    later = now + timedelta(seconds=1)
+    assert previous_signs(b"x", later, now)
+    assert not previous_signs(None, later, now)
+    assert not previous_signs(b"x", None, now)
+    assert not previous_signs(b"x", now, now)
 
 
 def test_subscriptions_want_their_event_types() -> None:
     """A type it names, or any with '*', while active."""
-    named = Subscription.create("https://a.example/", "a.example", ["invoice.paid"])
-    everything = Subscription.create(
+    named, _ = Subscription.create("https://a.example/", "a.example", ["invoice.paid"])
+    everything, _ = Subscription.create(
         "https://a.example/", "a.example", ["*"], active=False
     )
 
@@ -286,7 +352,9 @@ def test_good_event_types_pass() -> None:
     assert checked_event_types(names) == names
     with pytest.raises(BusinessRuleViolation, match="at most 255 characters"):
         Subscription.create("https://a.example/", "a.example", ["x"], "d" * 256)
-    longest = Subscription.create("https://a.example/", "a.example", ["x"], "d" * 255)
+    longest, _ = Subscription.create(
+        "https://a.example/", "a.example", ["x"], "d" * 255
+    )
     assert len(longest.description) == 255
 
 

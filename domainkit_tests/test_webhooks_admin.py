@@ -24,6 +24,7 @@ from domainkit.contrib.webhooks.models import (
     SubscriptionCreated,
     SubscriptionDeleted,
     SubscriptionSecretRotated,
+    secret_box,
 )
 from domainkit.contrib.webhooks.tables import FAILED, deliveries, subscriptions
 from domainkit.db import connections
@@ -425,7 +426,7 @@ def test_the_command_lists_and_replays(client: TestClient, admin: Headers) -> No
 def test_subscription_rows_hold_no_extra_secrets(
     client: TestClient, admin: Headers
 ) -> None:
-    """The secret column holds the current secret only, until a rotation."""
+    """The secret column holds the current secret only, encrypted, until a rotation."""
     created = create(client, admin)
 
     async def read() -> Any:  # noqa: ANN401
@@ -433,7 +434,12 @@ def test_subscription_rows_hold_no_extra_secrets(
             return (await connection.execute(select(subscriptions))).one()
 
     row = run_async(read())
-    assert (row.secret, row.previous_secret) == (created["secret"], None)
+    assert row.previous_secret is None
+    assert created["secret"].encode() not in row.secret
+    assert secret_box().decrypt(row.secret, associated=row.id.bytes) == (
+        created["secret"].encode(),
+        True,
+    )
 
 
 NO_STORE = {"cache-control": "no-store", "pragma": "no-cache"}

@@ -49,7 +49,12 @@ the target is checked:
   check. Redirects are not followed and environment proxies are ignored.
   Each attempt has one deadline and reads a bounded answer.
 - The client is httpx2, the library the `testing` extra already brings, in
-  a new `webhooks` extra.
+  a new `webhooks` extra, with cryptography for the secrets.
+- Secrets are stored encrypted with `domainkit.encryption.SecretBox`
+  (ADR 0030), for the purpose `domainkit.webhooks.secret`, and bound to the
+  subscription's id. A delivery decrypts the secrets it signs with; a
+  rotation, the old secret it keeps. Values a fallback key encrypted are
+  encrypted again under `SECRET_KEY` by the next delivery or rotation.
 - Staff manage subscriptions through an admin API guarded by model
   permissions on `webhooks.subscription`; the secret is shown when made
   or rotated, and nowhere else. Those two answers are marked
@@ -61,10 +66,19 @@ the target is checked:
 
 - An event is sent only if its change commits, at least once; receivers
   must deduplicate by `webhook-id`.
-- Secrets are stored in the clear in the subscriptions table, because
-  signing needs them; database access is enough to forge deliveries. This
-  is the one accepted risk left: the secrets can move to encryption at rest
-  once domainkit has an encryption helper derived from `SECRET_KEY`.
+- The subscriptions table alone is not enough to forge deliveries: that
+  also takes `SECRET_KEY` (or a fallback), and a secret copied to another
+  row does not decrypt. Webhooks therefore need `SECRET_KEY` in every
+  environment, and refuse to start without it; staging and production
+  already require a strong one.
+- `SECRET_KEY` can be replaced with the old key in `SECRET_KEY_FALLBACKS`:
+  deliveries keep verifying and move secrets under the new key. A
+  subscription with no delivery or rotation meanwhile still needs the
+  fallback, so dropping it early loses that secret.
+- A secret no key decrypts fails its deliveries at once, unsent, with the
+  reason logged, reported, and kept as `last_error`; nothing is sent
+  unsigned. A rotation drops such a secret (there is nothing to overlap
+  with), and the failed deliveries can then be replayed.
 - Deliveries cannot reach internal services unless a network is allowed by
   name, and never through an egress proxy; a deployment that requires one
   needs a change here.
