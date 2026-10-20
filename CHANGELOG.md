@@ -377,6 +377,10 @@ All notable changes to domainkit. The format follows
   usually) a fixture that can hold personal data and password hashes, and
   followed a link planted where it would go. Delete an old fixture before
   dumping again.
+- `FilterSet` bounds amounts by their field's `Digits` (40 digits either
+  side of the point without), so an amount out of range is a 422
+  `validation_error`. `?price__gte=1e999999999` reached the database
+  driver, which could not send it to PostgreSQL: a 500.
 
 ## [0.6.2] - 2026-10-19
 

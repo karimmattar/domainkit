@@ -228,7 +228,10 @@ case. `range` is not offered: use `gte` and `lte`.
 
 The parameters are typed from the model's fields, so OpenAPI documents each
 with its type, an enum's values, the ordering choices, and the bounds, and
-FastAPI answers a wrong type with 422 `validation_error`. The class is
+FastAPI answers a wrong type with 422 `validation_error`. So is a value
+the field cannot hold: an integer past 64 bits, or an amount past its
+`Digits` (`Digits(10, 2)` takes 8 digits, then 2; without `Digits`, 40
+either side of the point), so `1e999999999` never reaches the database. The class is
 checked when it is declared, so a mistake fails at import: a lookup that
 does not fit its field (`gt` on a list, `icontains` on an amount) is a
 `TypeError`, and a field the model lacks an `UnknownField`.

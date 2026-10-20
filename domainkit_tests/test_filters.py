@@ -10,7 +10,7 @@ import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
-from domainkit.ddd import AggregateRoot, MaxLength, ValueObject
+from domainkit.ddd import AggregateRoot, Digits, MaxLength, ValueObject
 from domainkit.ddd.query import F, Ordering, Query
 from domainkit.http.errors import install_exception_handlers
 from domainkit.http.filters import Filter, FilterSet, InvalidFilter
@@ -208,6 +208,10 @@ def test_what_fastapi_cannot_see_is_refused(
         {"ordering": ["name", "price", "made_at", "-name"]},
         {"search": "x" * 101},
         {"active": "maybe"},
+        {"price__gte": "1e999999999"},  # Digits(10, 2): 8 digits, then 2.
+        {"price__gte": "1e-999999999"},
+        {"price__lte": "100000000"},
+        {"price__gte": "0.001"},
     ],
 )
 def test_values_of_the_wrong_type_or_size_are_validation_errors(
@@ -215,6 +219,59 @@ def test_values_of_the_wrong_type_or_size_are_validation_errors(
 ) -> None:
     """FastAPI checks types, enums, and bounds: 422 ``validation_error``."""
     assert refusal(client, **params)[0] == "validation_error"
+
+
+def test_amounts_up_to_the_fields_digits_are_taken(client: TestClient) -> None:
+    """The widest amounts of a ``Digits(10, 2)`` field are filters like others."""
+    widest = {"price__gte": "-99999999.99", "price__lte": "99999999.99"}
+    assert names(client, **widest) == ["beta", "gamma", "alpha"]
+    assert names(client, price__gte="9.5") == ["gamma"]
+
+
+class Cost(ValueObject):
+    """An amount of a value object, whose own field has ``Digits``."""
+
+    value: Annotated[Decimal, Digits(5, 1)]
+
+
+class Priced(AggregateRoot[int]):
+    """Amounts with and without ``Digits``."""
+
+    amount: Decimal
+    cost: Cost
+
+
+def test_amounts_are_bounded_without_digits_too() -> None:
+    """40 digits either side of the point; a value object's ``Digits`` apply."""
+
+    class PricedFilters(FilterSet):
+        model = Priced
+        amount = Filter("gte")
+        cost = Filter("lte")
+
+    app = FastAPI()
+    install_exception_handlers(app)
+
+    @app.get("/priced")
+    async def priced(filters: Annotated[PricedFilters, Depends()]) -> str:
+        return str(filters.criteria)
+
+    client = TestClient(app)
+    for params in (
+        {"amount__gte": "9" * 40 + "." + "9" * 40},
+        {"amount__gte": "0." + "0" * 39 + "1"},
+        {"cost__lte": "9999.9"},
+    ):
+        assert client.get("/priced", params=params).status_code == 200, params
+    for params in (
+        {"amount__gte": "9" * 41},
+        {"amount__gte": "1e40"},
+        {"amount__gte": "1e-41"},
+        {"cost__lte": "99999"},
+        {"cost__lte": "0.01"},
+    ):
+        refused = client.get("/priced", params=params)
+        assert refused.json()["code"] == "validation_error", params
 
 
 def test_lookups_are_unknown_only_for_filtered_names(client: TestClient) -> None:

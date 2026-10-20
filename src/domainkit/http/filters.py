@@ -23,7 +23,8 @@ search in one of the search fields. ``__in`` and ``ordering`` repeat:
 
 Parameters are typed from the model's fields, so OpenAPI lists each with
 its type (and an enum's values), and FastAPI answers a value of the wrong
-type with 422 ``validation_error``. What FastAPI cannot see (an unknown
+type, or out of the field's bounds (an amount past its ``Digits``), with
+422 ``validation_error``. What FastAPI cannot see (an unknown
 lookup such as ``total__regex``, a filter given twice, a repeated ordering
 field, or more conditions, values, or search words than the bounds allow)
 is refused with 422 ``invalid_filter``. Values only ever reach SQL as bound
@@ -32,6 +33,7 @@ parameters.
 
 from collections.abc import Iterable, Mapping
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 from inspect import Parameter, Signature
 from typing import Annotated, Any, ClassVar, Final, Literal
@@ -41,7 +43,14 @@ from fastapi import Request, status
 from pydantic import AwareDatetime, Field
 
 from domainkit.ddd.exceptions import DomainError
-from domainkit.ddd.fields import FieldInfo, InvalidQuery, base_type, fields_of
+from domainkit.ddd.fields import (
+    Digits,
+    FieldInfo,
+    InvalidQuery,
+    base_field,
+    base_type,
+    fields_of,
+)
 from domainkit.ddd.query import (
     ORDERING_LOOKUPS,
     TEXT_LOOKUPS,
@@ -68,6 +77,10 @@ ORDERING: Final = "ordering"
 SEARCH: Final = "search"
 REQUEST: Final = "_request"
 _INT64: Final = 2**63
+_ANY_AMOUNT: Final = Digits(80, 40)
+"""The bounds of amounts filtered on a field without ``Digits``: 40 digits
+either side of the point, as in cursors; past any column's, with no
+exponent that costs the database anything."""
 _DESCRIPTIONS: Final = {
     Lookup.EXACT: "is this",
     Lookup.IEXACT: "is this, ignoring case",
@@ -392,6 +405,12 @@ def _annotation(
         kind = Annotated[str, Field(max_length=each.max_length)]
     elif kind is int:  # What a 64-bit column holds.
         kind = Annotated[int, Field(ge=-_INT64, lt=_INT64)]
+    elif kind is Decimal:  # What the column holds: 1e999999999 is no amount.
+        digits = base_field(field).marker(Digits) or _ANY_AMOUNT
+        kind = Annotated[
+            Decimal,
+            Field(max_digits=digits.precision, decimal_places=digits.scale),
+        ]
     if lookup is Lookup.IN:
         return Annotated[
             list[kind] | None,

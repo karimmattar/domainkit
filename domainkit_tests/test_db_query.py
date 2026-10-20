@@ -5,10 +5,11 @@ import os
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, NewType
+from typing import Annotated, Any, NewType
 from uuid import uuid4
 
 import pytest
+from fastapi import Depends, FastAPI
 from sqlalchemy import (
     Column,
     Integer,
@@ -36,7 +37,9 @@ from domainkit.ddd import (
     UnknownField,
 )
 from domainkit.ddd.query import Criteria, F, Ordering, Query, RowLock
-from domainkit.testing import assert_num_queries
+from domainkit.http.errors import install_exception_handlers
+from domainkit.http.filters import Filter, FilterSet
+from domainkit.testing import AsyncTestClient, assert_num_queries
 from domainkit_tests.conftest import POSTGRES_VARIABLE
 from domainkit_tests.gadgets import (
     MADE,
@@ -188,6 +191,38 @@ async def test_sql_answers_as_the_fake_does(tables: None) -> None:
             paged = await uow.gadgets.paginate(query, limit=2, count=True)
             assert [each.id for each in paged.items] == expected[:2]
             assert paged.total == len(expected)
+
+
+async def test_filters_refuse_amounts_past_the_columns_digits(tables: None) -> None:
+    """``1e999999999`` is a 422 before any SQL; the widest amounts compare.
+
+    The driver could not send such an amount to PostgreSQL: a 500.
+    """
+    await store(*dataset())
+
+    class Priced(FilterSet):
+        model = Gadget
+        price = Filter("gte", "lte")
+
+    app = FastAPI()
+    install_exception_handlers(app)
+
+    @app.get("/gadgets")
+    async def listing(filters: Annotated[Priced, Depends()]) -> list[str]:
+        async with GadgetsUnitOfWork() as uow:
+            return [each.name for each in await uow.gadgets.filter(filters.query())]
+
+    async with AsyncTestClient(app, lifespan=False) as client:
+        for amount in ("1e999999999", "1e-999999999", "1e100000", "1e8", "0.001"):
+            refused = await client.get("/gadgets", params={"price__gte": amount})
+            assert refused.status_code == 422, amount
+            assert refused.json()["code"] == "validation_error"
+        widest = await client.get(
+            "/gadgets",
+            params={"price__gte": "-99999999.99", "price__lte": "99999999.99"},
+        )
+
+    assert sorted(widest.json()) == sorted(each.name for each in dataset())
 
 
 async def test_results_are_tracked_and_relations_loaded(tables: None) -> None:
