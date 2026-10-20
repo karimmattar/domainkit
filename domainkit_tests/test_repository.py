@@ -1,6 +1,7 @@
 """In-memory repositories and units of work: queries, locks, soft delete, savepoints."""
 
 import asyncio
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -10,16 +11,19 @@ from domainkit.clock import freeze_time
 from domainkit.ddd import (
     AggregateRoot,
     DomainEvent,
+    Entity,
     EventBus,
     InMemoryRepository,
     LockNotAvailable,
     NotFound,
     ReadOnlyError,
+    Repository,
     RowLocks,
     SoftDeletable,
     UnitOfWork,
 )
 from domainkit.ddd.query import F, Query, RowLock
+from domainkit.ddd.repository import LOCK_TIMEOUT
 from domainkit_tests.gadgets import (
     Color,
     FakeGadgetsUnitOfWork,
@@ -28,6 +32,7 @@ from domainkit_tests.gadgets import (
     GadgetMade,
     InMemoryGadgets,
     make_gadget,
+    make_maker,
     make_part,
 )
 
@@ -236,8 +241,9 @@ async def test_locks_time_out_and_skipped_rows_do_not_count() -> None:
 
     (locked,) = await holder.filter(query.replace(lock=RowLock()))
     assert locked.name == "a"
-    with pytest.raises(LockNotAvailable):
-        await other.filter(query.replace(lock=RowLock()))
+    async with asyncio.timeout(1):  # Fails rather than hangs if the wait is endless.
+        with pytest.raises(LockNotAvailable):
+            await other.filter(query.replace(lock=RowLock()))
     skipping = await other.filter(
         query.replace(limit=2, lock=RowLock(skip_locked=True))
     )
@@ -373,3 +379,249 @@ async def test_units_of_work_without_repositories_have_savepoints() -> None:
         async with uow.savepoint():
             pass
         await uow.commit()
+
+
+async def test_errors_name_the_missing_aggregate_and_the_refused_lock() -> None:
+    """Both get and get_for_update name the id; a refused lock says try again."""
+    repository = stocked("a")
+    (gadget,) = repository.items.values()
+    other = InMemoryGadgets(locks=repository.locks)
+    other.items = repository.items
+    missing = GadgetId(make_gadget().id)
+
+    with pytest.raises(NotFound, match=re.escape(f"No aggregate has id {missing}.")):
+        await repository.get(missing)
+    with pytest.raises(NotFound, match=re.escape(f"No aggregate has id {missing}.")):
+        await repository.get_for_update(missing)
+    await repository.get_for_update(gadget.id)
+    message = "The data is being changed by another request; try again."
+    with pytest.raises(LockNotAvailable, match=f"^{re.escape(message)}$"):
+        await other.get_for_update(gadget.id, nowait=True)
+
+
+async def test_a_lock_is_waited_for_until_the_timeout_only() -> None:
+    """LOCK_TIMEOUT seconds unless given; then the waiter gives up."""
+    locks = RowLocks(timeout=0.01)
+    holder = stocked("a")
+    holder.locks = locks
+    waiter = InMemoryGadgets(locks=locks)
+    waiter.items = holder.items
+    (gadget,) = holder.items.values()
+
+    assert RowLocks().timeout == LOCK_TIMEOUT == 10.0
+    assert locks.timeout == 0.01
+    await holder.get_for_update(gadget.id)
+    async with asyncio.timeout(1):  # Fails rather than hangs if the wait is endless.
+        with pytest.raises(LockNotAvailable):
+            await waiter.get_for_update(gadget.id)
+    assert locks.holder(gadget.id) is holder
+
+
+async def test_bulk_removes_mark_soft_deletable_aggregates_unless_hard() -> None:
+    """remove_all marks, as remove does, and keeps the aggregates stored."""
+    repository = stocked("a", "b")
+    both = list(repository.items.values())
+
+    await repository.remove_all(both)
+    assert all(each.is_deleted for each in both)
+    assert set(repository.items) == {each.id for each in both}
+    assert await repository.count() == 0
+    assert await repository.count(include_deleted=True) == 2
+
+
+async def test_first_reads_and_locks_one_aggregate_only() -> None:
+    """The others it might have matched are neither tracked nor locked."""
+    repository = stocked("a", "b", "c")
+
+    first = await repository.first(Query(ordering=["name"], lock=RowLock()))
+    assert first is not None
+    assert first.name == "a"
+    assert repository.seen == (first,)
+    locked = [key for key in repository.items if repository.locks.holder(key)]
+    assert locked == [first.id]
+
+
+async def test_a_page_reads_one_aggregate_past_its_end_and_no_further() -> None:
+    """The one past the end says whether more follow; the rest stay unread."""
+    repository = stocked(*"abcde")
+
+    page = await repository.paginate(Query(ordering=["name"]), limit=2)
+    assert [each.name for each in page.items] == ["a", "b"]
+    assert page.has_more is True
+    assert [each.name for each in repository.seen] == ["a", "b", "c"]
+
+
+async def test_page_totals_count_deleted_aggregates_when_the_query_does() -> None:
+    """The total follows the query's include_deleted, as its items do."""
+    repository = stocked("a", "b", "c")
+    await repository.remove(next(iter(repository.items.values())))
+
+    every = await repository.paginate(Query(include_deleted=True), limit=1, count=True)
+    assert every.total == 3
+    live = await repository.paginate(Query(), limit=1, count=True)
+    assert live.total == 2
+
+
+async def test_adapters_are_told_whether_deleted_aggregates_are_wanted() -> None:
+    """The bound query handed to _filter keeps the query's include_deleted."""
+
+    class Recording(InMemoryGadgets):
+        """Keeps each bound query it is asked."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.queries: list[Query] = []
+
+        async def _filter(self, query: Query) -> list[Gadget]:
+            self.queries.append(query)
+            return await super()._filter(query)
+
+    repository = Recording()
+    await repository.filter(Query(include_deleted=True))
+    await repository.filter()
+    assert [each.include_deleted for each in repository.queries] == [True, False]
+
+
+async def test_a_failed_savepoint_forgets_all_it_added_and_keeps_earlier_events() -> (
+    None
+):
+    """Every aggregate added inside is untracked; earlier events stay as they were."""
+    uow = FakeGadgetsUnitOfWork(stocked("a"))
+    one, two = make_gadget("one"), make_gadget("two")
+
+    async def undone() -> None:
+        async with uow.savepoint():
+            await uow.gadgets.add_all([one, two])
+            a.rename("during")
+            raise RuntimeError("undone")
+
+    async with uow:
+        (a,) = await uow.gadgets.filter()
+        a.rename("before")
+        (before,) = a.pending_events
+        with pytest.raises(RuntimeError, match="undone"):
+            await undone()
+        assert uow.gadgets.seen == (a,)
+        assert a.pending_events == (before,)
+        assert set(uow.gadgets.items) == {a.id}
+
+
+class Line(Entity[int]):
+    """A child entity no table maps."""
+
+    quantity: int
+
+
+class Order(AggregateRoot[int]):
+    """An aggregate whose child entities live in memory only."""
+
+    lines: list[Line]
+
+
+async def test_a_failed_savepoint_undoes_changes_inside_child_entities() -> None:
+    """The snapshot copies fields deeply, so a line changed in place comes back."""
+    order = Order(id=1, lines=[Line(id=1, quantity=1)])
+
+    class Orders(UnitOfWork):
+        """Orders in memory."""
+
+        def __init__(self) -> None:
+            super().__init__(events=EventBus())
+            self.orders = InMemoryRepository[Order, int]([order])
+
+        async def _commit(self) -> None: ...
+
+        async def _rollback(self) -> None: ...
+
+    uow = Orders()
+
+    async def undone() -> None:
+        async with uow.savepoint():
+            order.lines[0].quantity = 9
+            raise RuntimeError("undone")
+
+    async with uow:
+        with pytest.raises(RuntimeError, match="undone"):
+            await undone()
+    assert [line.quantity for line in order.lines] == [1]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AttributeError,
+    reason=(
+        "Bug: InMemoryRepository._snapshot deep-copies mapped child entities. "
+        "The maker's SQLAlchemy InstanceState lists the gadget's as a parent, "
+        "so deepcopy walks into the gadget and its parts and rebuilds an "
+        "InstanceState before its obj is set: AttributeError on savepoint entry."
+    ),
+)
+async def test_a_savepoint_begins_over_mapped_child_entities() -> None:
+    """A gadget with a part and a maker can be snapshot, and comes back."""
+    gadget = make_gadget("a", parts=[make_part("P", weight=1)], maker=make_maker("A"))
+    uow = FakeGadgetsUnitOfWork(InMemoryGadgets([gadget]))
+
+    async def undone() -> None:
+        async with uow.savepoint():
+            gadget.parts[0].weight = 9
+            raise RuntimeError("undone")
+
+    async with uow:
+        with pytest.raises(RuntimeError, match="undone"):
+            await undone()
+    assert [part.weight for part in gadget.parts] == [1]
+
+
+async def test_an_added_aggregate_is_found_as_it_was_added() -> None:
+    """Adding stores the aggregate itself, under its id."""
+    repository = InMemoryGadgets()
+    gadget = make_gadget()
+
+    await repository.add(gadget)
+    assert repository.items == {gadget.id: gadget}
+    assert await repository.get(gadget.id) is gadget
+
+
+async def test_removing_an_aggregate_twice_is_harmless() -> None:
+    """A second hard remove does nothing, as in an SQL unit of work."""
+    repository = stocked("a")
+    (gadget,) = repository.items.values()
+
+    await repository.remove(gadget, hard=True)
+    await repository.remove(gadget, hard=True)
+    assert repository.items == {}
+
+
+async def test_repositories_that_cannot_query_say_so() -> None:
+    """Only _add, _get, and _remove are required; queries then name the class."""
+
+    class Minimal(Repository[Note, int]):
+        """Stores nothing, and answers no queries."""
+
+        async def _add(self, aggregate: Note) -> None: ...
+
+        async def _get(self, id_: int) -> Note | None:
+            return None
+
+        async def _remove(self, aggregate: Note) -> None: ...
+
+    repository = Minimal()
+    with pytest.raises(NotImplementedError, match=r"^Minimal cannot filter\.$"):
+        await repository.filter()
+    with pytest.raises(NotImplementedError, match=r"^Minimal cannot count\.$"):
+        await repository.count()
+    with pytest.raises(NotImplementedError, match=r"^Minimal cannot count\.$"):
+        await repository.exists()
+
+
+class Tagged[T]:
+    """A generic mixin whose type argument is not the stored aggregate."""
+
+
+async def test_only_repository_type_arguments_name_the_aggregate() -> None:
+    """Another generic base naming an aggregate first is passed by."""
+
+    class TaggedGadgets(Tagged[Note], InMemoryRepository[Gadget, GadgetId]):
+        """Gadgets, with a mixin that names notes."""
+
+    assert TaggedGadgets().aggregate_type is Gadget

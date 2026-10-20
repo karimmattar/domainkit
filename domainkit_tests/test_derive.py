@@ -1,6 +1,7 @@
 """Tables derived from domain classes, and child entities mapped onto them."""
 
 import io
+import re
 from datetime import date, datetime, time
 from decimal import Decimal
 from enum import Enum, IntEnum, StrEnum
@@ -26,6 +27,7 @@ from sqlalchemy import (
     Uuid,
     create_engine,
 )
+from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.types import TypeEngine
 
 from domainkit import setup
@@ -52,6 +54,7 @@ from domainkit_tests.conftest import ALPHA
 from domainkit_tests.gadgets import Color, Gadget, Label, Part, Size, gadgets
 
 SQLITE = create_engine("sqlite://").dialect
+POSTGRES = create_async_engine("postgresql+asyncpg://app@db/app").dialect
 ShelfId = NewType("ShelfId", int)
 
 
@@ -321,3 +324,93 @@ def test_children_load_with_and_belong_to_their_aggregate() -> None:
     assert one.cascade.delete_orphan
     assert fields_of(Gadget)["parts"].entity is Part
     assert isinstance(Entity, type)
+
+
+def test_integers_are_big_except_on_sqlite() -> None:
+    """BIGINT, but INTEGER on SQLite, whose auto-incremented keys must be INTEGER."""
+    types = types_of(table_for(Shelf, "framework_test_shelves", metadata=MetaData()))
+
+    assert types["count"].compile(dialect=SQLITE) == "INTEGER"
+    assert types["count"].compile(dialect=POSTGRES) == "BIGINT"
+    assert types["version"].compile(dialect=POSTGRES) == "INTEGER"
+
+
+def test_given_columns_take_the_place_of_the_derived_ones() -> None:
+    """A Column given for a field keeps its position; the fields after it follow."""
+    table = table_for(
+        Shelf,
+        "framework_test_shelves",
+        Column("title", String(10)),
+        Column("extra", Integer),
+        metadata=MetaData(),
+    )
+
+    assert list(types_of(table)) == [
+        "id", "version", "count", "title", "notes", "open", "ratio", "price",
+        "since", "on", "at", "ref", "color", "size", "label", "code", "extra",
+    ]  # fmt: skip
+
+
+class Crate(AggregateRoot[int]):
+    """Child entities before an ordinary field."""
+
+    parts: list[Part]
+    title: Annotated[str, MaxLength(40)]
+
+
+def test_fields_after_child_entities_are_columns_too() -> None:
+    """A child entity is passed by, not the end of the fields."""
+    table = table_for(Crate, "framework_test_crates", metadata=MetaData())
+
+    assert list(types_of(table)) == ["id", "version", "title"]
+
+
+class Amount(ValueObject):
+    """One field of an amount whose digits are not stated."""
+
+    value: Decimal
+
+
+def test_refusals_name_the_field_and_say_what_to_do() -> None:
+    """Each message ends with the fix; a value object's field is named as its own."""
+
+    class Untyped(AggregateRoot[int]):
+        amount: Decimal
+
+    class Valued(AggregateRoot[int]):
+        money: Money
+
+    class Till(AggregateRoot[int]):
+        amount: Amount
+
+    digits = (
+        "say how many digits it holds, as Annotated[Decimal, Digits(precision, scale)]."
+    )
+    with pytest.raises(TypeError, match=f"^{re.escape(f'Untyped.amount: {digits}')}$"):
+        table_for(Untyped, "untyped", metadata=MetaData())
+    with pytest.raises(TypeError, match=f"^{re.escape(f'Amount.value: {digits}')}$"):
+        table_for(Till, "till", metadata=MetaData())
+    unknown = (
+        "Valued.money: no column type for Money; pass a Column for it, or call "
+        "register_column_type."
+    )
+    with pytest.raises(TypeError, match=f"^{re.escape(unknown)}$"):
+        table_for(Valued, "valued", metadata=MetaData())
+    several = (
+        "Money is not a value object with one field; register a column type for it."
+    )
+    with pytest.raises(TypeError, match=f"^{re.escape(several)}$"):
+        ValueObjectType(Money, String())
+
+
+def test_value_object_types_keep_their_arguments_for_statement_caching() -> None:
+    """SQLAlchemy keys cached statements on attributes named after the arguments.
+
+    With ``cache_ok``, a type missing ``inner`` would share compiled SQL with
+    the same value object in another column type.
+    """
+    inner = String(20)
+    labels = ValueObjectType(Label, inner)
+
+    assert labels.cls is Label
+    assert labels.inner is inner
