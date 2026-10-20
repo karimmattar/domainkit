@@ -394,6 +394,25 @@ def test_runworker_shares_one_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     assert budgets[0].size == registry.settings(MessagingSettings).CONCURRENCY
 
 
+@pytest.mark.usefixtures("brokered")
+def test_runworker_shares_its_budget_with_its_broker_consumers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On a broker, deliveries draw from the outbox workers' budget, not a second."""
+    shared: list[tuple[Budget, list[Budget]]] = []
+
+    async def stopped_at_once(self: BrokerWorkers, stop: asyncio.Event) -> None:
+        shared.append((self.budget, [worker.budget for worker in self.workers]))
+
+    monkeypatch.setattr(BrokerWorkers, "run", stopped_at_once)
+    call_command("runworker", stdout=io.StringIO())
+
+    ((budget, workers),) = shared
+    assert workers
+    assert all(each is budget for each in workers)
+    assert budget.size == registry.settings(MessagingSettings).CONCURRENCY
+
+
 # The database's clock --------------------------------------------------------------
 
 
@@ -823,6 +842,7 @@ async def test_a_failing_broker_trips_the_publishers_breaker(
         await enqueue(remember, value=uuid.uuid4())
         await published(publisher)
         assert (publisher.breaker.state, len(rounds)) == ("open", 2)
+        assert left("breaker") == before + 2
 
         publisher.breaker.opened_at -= cooldown
         current[0] = memory
@@ -1208,6 +1228,36 @@ async def test_a_lost_or_stalled_broker_neither_skips_nor_holds_the_drain(
 
 
 @pytest.mark.usefixtures("broker_tables")
+async def test_a_stop_that_outlasts_shutdown_timeout_leaves_no_grace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SHUTDOWN_TIMEOUT counts from the stop: a stop that used it all leaves none."""
+    broker = Unstoppable(None)
+    monkeypatch.setattr(BrokerHandler, "__getitem__", lambda self, alias: broker)
+    monkeypatch.setattr(dispatch, "STOP_CONSUMING_TIMEOUT", 0.2)
+    graces: list[float] = []
+    finish = dispatch.finish
+
+    async def spy(running: set[asyncio.Task[None]], grace: float) -> None:
+        graces.append(grace)
+        await finish(running, grace)
+
+    monkeypatch.setattr(dispatch, "finish", spy)
+    await enqueue(at_gate, name="running")
+    config = MessagingSettings(**{**BROKERED, **SLOW, "SHUTDOWN_TIMEOUT": 0.05})
+    stop = asyncio.Event()
+    running = asyncio.create_task(
+        BrokerWorkers([Worker(config)], ["default"], config).run(stop)
+    )
+    await gate.until(lambda: gate.started == ["running"])
+    stop.set()
+    await within(running)
+
+    assert graces == [0.0]
+    assert gate.finished == []  # Cancelled at once: no time was left.
+
+
+@pytest.mark.usefixtures("broker_tables")
 async def test_deliveries_that_arrive_while_stopping_are_given_back() -> None:
     """A delivery waiting for a slot when the worker stops is requeued, not run."""
     memory = work_broker()
@@ -1488,6 +1538,29 @@ async def test_commits_notify_the_queues_of_messages_due_at_once() -> None:
         assert notified == []
 
 
+@pytest.mark.usefixtures("tables")
+async def test_domain_commits_notify_and_clamp_as_enqueue_does() -> None:
+    """A unit of work's messages are written the same way: NOTIFY, LEAST (PG)."""
+    from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork
+    from domainkit_tests.test_messaging import send_email
+
+    seen = statements(connections.engine())
+    async with NotesUnitOfWork() as uow:
+        await uow.notes.add(Note(id=NoteId(uuid.uuid4()), text="t"))
+        uow.defer(send_email, to="ada@example.com")
+        await uow.commit()
+
+    notified = [tuple(parameters) for text, parameters in seen if "pg_notify" in text]
+    clamped = [
+        text for text, _ in seen if text.startswith("INSERT") and "least(" in text
+    ]
+    if postgres():
+        assert notified == [("domainkit_messages", "emails")]
+        assert len(clamped) == 1
+    else:
+        assert (notified, clamped) == ([], [])
+
+
 def test_workers_wake_only_for_their_queues() -> None:
     """A worker of some queues ignores commits to the others."""
     config = MessagingSettings()
@@ -1572,6 +1645,45 @@ async def test_an_idle_worker_starts_committed_work_at_once() -> None:
     stop.set()
 
     await within(running)
+
+
+@pytest.mark.usefixtures("broker_tables")
+async def test_an_idle_relay_publishes_a_commit_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without publish-on-commit, a commit still wakes the relay (PostgreSQL).
+
+    The commit lands once the relay is idle: after its first round and the
+    one the listener asks for once listening (two rounds, on PostgreSQL).
+    """
+    rounds = 0
+    relayed = asyncio.Event()
+    relay = Worker.relay
+
+    async def counting(self: Worker, broker: Broker, limit: int) -> int:
+        nonlocal rounds
+        sent = await relay(self, broker, limit)
+        rounds += 1
+        relayed.set()
+        return sent
+
+    monkeypatch.setattr(Worker, "relay", counting)
+    poll = 120 if postgres() else 0.01
+    settings = {**BROKERED, **SLOW, "PUBLISH_ON_COMMIT": False, "POLL_INTERVAL": poll}
+    with override_settings(MESSAGING=settings):
+        config = registry.settings(MessagingSettings)
+        stop = asyncio.Event()
+        running = asyncio.create_task(
+            BrokerWorkers([Worker(config)], ["default"], config).run(stop)
+        )
+        while rounds < (2 if postgres() else 1):
+            relayed.clear()
+            await within(relayed.wait())
+        await enqueue(at_gate, name="woken")
+        gate.open()
+        await gate.until(lambda: gate.finished == ["woken"])
+        stop.set()
+        await within(running)
 
 
 # The outbox gauges ------------------------------------------------------------------
