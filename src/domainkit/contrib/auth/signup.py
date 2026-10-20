@@ -7,26 +7,29 @@ and mail, and mount the router::
 
     router.include_router(signup_router, prefix="/auth")
 
-``POST /signup`` (anyone) takes a username, an email address, and a
-password. The fields and the password rules (``AUTH.PASSWORD_VALIDATORS``)
-are checked at once: a refusal there says nothing about other accounts.
-Then the request is kept as a pending signup, and it answers 202, doing the
-same work whatever accounts exist. The worker mails the address: a link
-that makes the account (``AUTH.SIGNUP_URL``), or, when the username or the
-address is taken, word that it is. ``POST /signup/confirm`` (anyone) takes
-the link's token and makes the account, its address verified.
+``POST /signup`` (anyone) takes a username and an email address, and no
+password. The fields are checked at once: a refusal there says nothing
+about other accounts. Then the request is kept as a pending signup, and
+it answers 202, doing the same work whatever accounts exist. The worker
+mails the address: a link (``AUTH.SIGNUP_URL``), or, when the username or
+the address is taken, word that it is. ``POST /signup/confirm`` (anyone)
+takes the link's token and a password, checked by
+``AUTH.PASSWORD_VALIDATORS``, and makes the account, its address verified.
 
-No account exists until its address is confirmed, so nothing anyone else
-can see differs between an address that has an account and one that has
-none: whether it has one is told only to whoever reads its mail. A
-pending signup reserves nothing: several may name one username, and the
-first confirmed gets it; the others' links then answer 409. A username
-taken is told to whoever gives their own address, as any signup must.
-Attempts count against ``AUTH.EMAIL_RATE`` per client address and per
-email address, links checked against ``AUTH.LOGIN_RATE`` per client
-address. Pending signups, with the password's hash, are kept in a table of
-their own, never in the outbox or in fixtures, and deleted once used, when
-the address is taken, or hourly once their link has expired.
+Whoever reads the mail chooses the password, so whoever asked with
+someone else's address gains nothing: the account made is the address
+owner's, with a password only they know (no pre-account hijacking). No
+account exists until then, so nothing anyone else can see differs
+between an address that has an account and one that has none: whether
+it has one is told only to whoever reads its mail. A pending signup
+reserves nothing: several may name one username, and the first confirmed
+gets it; the others' links then answer 409. A username taken is told to
+whoever gives their own address, as any signup must. Attempts count
+against ``AUTH.EMAIL_RATE`` per client address and per email address,
+links checked against ``AUTH.LOGIN_RATE`` per client address. Pending
+signups (a username and an address, no password) are kept in a table of
+their own, never in fixtures, and deleted once used, when the address is
+taken, or hourly once their link has expired.
 """
 
 import re
@@ -46,7 +49,12 @@ from .access import Public
 from .api import PASSWORD_MAX_LENGTH, _errors
 from .events import UserSignedUp
 from .hashers import amake_password
-from .models import USERNAME_MAX_LENGTH, AbstractUser, PasswordHash
+from .models import (
+    USERNAME_MAX_LENGTH,
+    AbstractBaseUser,
+    AbstractUser,
+    PasswordHash,
+)
 from .recovery import AcceptedOut, EmailAddress, InvalidLink, TokenIn, describe
 from .repositories import PendingSignup
 from .settings import TOKEN_PLACEHOLDER, AuthSettings, auth_settings
@@ -64,12 +72,20 @@ router = APIRouter(tags=["auth"])
 
 
 class SignupIn(BaseModel):
-    """The account to ask for: its username, email address, and password."""
+    """The account to ask for: its username and email address.
+
+    No password: whoever reads the mail chooses it (``SignupConfirmIn``).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     username: str = Field(min_length=1, max_length=USERNAME_MAX_LENGTH)
     email: EmailAddress
+
+
+class SignupConfirmIn(TokenIn):
+    """A signup link's token, and the password of the account it makes."""
+
     password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH)
 
 
@@ -97,7 +113,7 @@ class SignupTaken(APIError):
     ),
 )
 async def signup(body: SignupIn, request: Request) -> AcceptedOut:
-    """Check the account's fields and password; keep it until its link is used."""
+    """Check the account's fields; keep it until its link is used."""
     config = _enabled()
     email = body.email
     await throttle(
@@ -112,13 +128,10 @@ async def signup(body: SignupIn, request: Request) -> AcceptedOut:
     fields = {model.USERNAME_FIELD: body.username, cast(str, model.EMAIL_FIELD): email}
     # Builds a user the way confirming will, so its fields are checked now.
     candidate = model.create(password=PasswordHash.unusable(), **fields)
-    validate_password(body.password, candidate)
-    password = PasswordHash(await amake_password(body.password))
     async with AuthUnitOfWork() as uow:
         pending = await uow.signups.add(
             username=candidate.get_username(),
             email=getattr(candidate, cast(str, model.EMAIL_FIELD)),
-            password=password,
             ttl=config.EMAIL_VERIFICATION_TIMEOUT,
         )
         uow.defer(send_signup_link, signup_id=pending.id)
@@ -134,11 +147,17 @@ async def signup(body: SignupIn, request: Request) -> AcceptedOut:
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_404_NOT_FOUND,
         status.HTTP_409_CONFLICT,
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
         status.HTTP_429_TOO_MANY_REQUESTS,
+        status.HTTP_503_SERVICE_UNAVAILABLE,
     ),
 )
-async def confirm_signup(body: TokenIn, request: Request) -> None:
-    """Make the account a signup link names; its address is verified."""
+async def confirm_signup(body: SignupConfirmIn, request: Request) -> None:
+    """Make the account a signup link names, with the password chosen now.
+
+    A password the validators refuse leaves the link working, to try
+    another; the address is verified by the link.
+    """
     config = _enabled()
     await throttle(
         request,
@@ -151,18 +170,19 @@ async def confirm_signup(body: TokenIn, request: Request) -> None:
     signup_id = signup_of(body.token)
     async with AuthUnitOfWork() as uow:
         pending = None if signup_id is None else await uow.signups.get(signup_id)
-        # Removed first: of two requests with one link, one goes on.
-        if (
-            pending is not None
-            and not pending.expired()
-            and await uow.signups.remove(pending.id)
-        ):
-            if await _taken(uow, pending):
+    if pending is not None and not pending.expired():
+        account = _account(get_user_model(), pending, PasswordHash.unusable())
+        validate_password(body.password, account)
+        password = PasswordHash(await amake_password(body.password))
+        async with AuthUnitOfWork() as uow:
+            # Removed first: of two requests with one link, one goes on.
+            if await uow.signups.remove(pending.id):
+                if await _taken(uow, pending):
+                    await uow.commit()
+                    raise SignupTaken
+                await _make_account(uow, pending, password)
                 await uow.commit()
-                raise SignupTaken
-            await _make_account(uow, pending)
-            await uow.commit()
-            return
+                return
     await audit_refusal("auth.signup", "invalid_token")
     raise InvalidLink
 
@@ -244,14 +264,22 @@ async def _taken(uow: AuthUnitOfWork, pending: PendingSignup) -> bool:
     )
 
 
-async def _make_account(uow: AuthUnitOfWork, pending: PendingSignup) -> None:
-    """Add the user the signup asked for, its address verified by the link."""
-    model = uow.users.model
+def _account(
+    model: type[AbstractBaseUser], pending: PendingSignup, password: PasswordHash
+) -> AbstractBaseUser:
+    """The user the signup asks for, with ``password``."""
     fields = {
         model.USERNAME_FIELD: pending.username,
         cast(str, model.EMAIL_FIELD): pending.email,
     }
-    user = model.create(password=pending.password, **fields)
+    return model.create(password=password, **fields)
+
+
+async def _make_account(
+    uow: AuthUnitOfWork, pending: PendingSignup, password: PasswordHash
+) -> None:
+    """Add the user the signup asked for, its address verified by the link."""
+    user = _account(uow.users.model, pending, password)
     # Startup checks that the user model can (AbstractUser can).
     cast(AbstractUser, user).verify_email()
     await uow.users.add(user)

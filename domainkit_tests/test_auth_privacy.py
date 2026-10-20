@@ -158,12 +158,12 @@ def test_fixtures_hold_no_secret_and_no_one_time_state(
     )
     asked = client.post(
         "/auth/signup",
-        json={"username": "carol", "email": "c@example.com", "password": PASSWORD},
+        json={"username": "carol", "email": "c@example.com"},
     )
     assert asked.status_code == 202
     assert rows(mfa_devices)
     assert rows(recovery_codes)
-    (waiting,) = rows(pending_signups)
+    assert len(rows(pending_signups)) == 1
 
     raw = run("dumpdata")
 
@@ -178,7 +178,6 @@ def test_fixtures_hold_no_secret_and_no_one_time_state(
     assert not names & hidden
     (device,) = rows(mfa_devices)
     assert token not in raw
-    assert waiting["password"].value not in raw
     assert "c@example.com" not in raw
     assert browser.cookies["__Host-dk_session"] not in raw
     for secret in (device["secret"], device["id"]):
@@ -291,7 +290,7 @@ def test_an_erased_username_stays_taken(private: Api) -> None:
     assert not run_async(taken("alicia"))
     signed = client.post(
         "/auth/signup",
-        json={"username": "alice", "email": "new@example.com", "password": PASSWORD},
+        json={"username": "alice", "email": "new@example.com"},
     )
     assert signed.status_code == 202
     run_worker()  # The worker tells the address that the name is taken.

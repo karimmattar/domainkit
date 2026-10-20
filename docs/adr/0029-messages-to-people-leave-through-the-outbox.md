@@ -41,13 +41,15 @@ Messages to people are tasks in the outbox (option c).
 - Work that already runs in the worker, such as the task that makes a
   password reset link, sends with `deliver`, skipping the outbox, so
   secrets the message holds are never stored there.
-- Signing up queues only the id of a pending signup. The username, the
-  address, and the password's hash wait in `domainkit_pending_signups`,
-  a table of their own that is never in fixtures and is purged once the
-  link expires, and the account is made only when the link the worker
-  mails is used. (A first version made the account in the worker at once,
-  from a payload that held the hash; logging in with the username chosen
-  then told anyone whether the address already had an account.)
+- Signing up queues only the id of a pending signup. The username and
+  the address wait in `domainkit_pending_signups`, a table of their own
+  that is never in fixtures and is purged once the link expires, and the
+  account is made only when the link the worker mails is used, with the
+  password chosen then. (A first version made the account in the worker
+  at once, from a payload that held the hash; logging in with the
+  username chosen then told anyone whether the address already had an
+  account. A second took the password when asking: an owner who used the
+  link made an account whose password the asker had chosen.)
 - Messages are validated when they are built: no header injection, bounded
   recipients and sizes; their `repr` shows only their id, and delivery
   errors name codes, never addresses.
@@ -66,7 +68,10 @@ Messages to people are tasks in the outbox (option c).
 - An account asked for at `/signup` exists only once its address is
   confirmed, so whether an address has an account is told to whoever
   reads its mail and to no one else; a pending signup reserves no name,
-  and the first link used for a name gets it.
+  and the first link used for a name gets it. Whoever reads the mail
+  chooses the password, so asking with another's address gains nothing;
+  the page behind the link must ask for the password, an extra step for
+  people who sign up.
 - Templates are files rendered by a small substitution helper (values only,
   escaped in HTML), not a template engine: there is no new dependency, and
   no logic in templates to review.

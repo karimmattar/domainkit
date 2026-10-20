@@ -41,13 +41,15 @@ EXISTS = "Your sign-up"
 
 def signup(client: TestClient, **fields: str) -> Any:  # noqa: ANN401 - a response.
     """Ask for an account; ``fields`` replace alice's."""
-    body = {"username": "alice", "email": "alice@example.com", "password": PASSWORD}
+    body = {"username": "alice", "email": "alice@example.com"}
     return client.post("/auth/signup", json={**body, **fields})
 
 
-def confirm(client: TestClient, token: str) -> Any:  # noqa: ANN401 - a response.
-    """Use a signup link's token."""
-    return client.post("/auth/signup/confirm", json={"token": token})
+def confirm(client: TestClient, token: str, password: str = PASSWORD) -> Any:  # noqa: ANN401 - a response.
+    """Use a signup link's token, choosing ``password``."""
+    return client.post(
+        "/auth/signup/confirm", json={"token": token, "password": password}
+    )
 
 
 def usernames() -> list[str]:
@@ -105,8 +107,8 @@ def test_an_account_is_made_when_its_address_is_confirmed(identity: Api) -> None
     assert response.status_code == 202
     assert response.json() == {"detail": "Check your email to finish signing up."}
     (stored,) = pending()
+    assert set(stored) == {"id", "username", "email", "created_at", "expires_at"}
     assert (stored["username"], stored["email"]) == ("Alice", "alice@example.com")
-    assert stored["password"].value.startswith("pbkdf2_sha256$1$")
     assert stored["expires_at"] - stored["created_at"] == timedelta(days=3)
     # The outbox holds the pending signup's id alone: no hash, no address.
     assert outbox_payloads() == [{"signup_id": str(stored["id"])}]
@@ -114,7 +116,7 @@ def test_an_account_is_made_when_its_address_is_confirmed(identity: Api) -> None
     run_worker()
     (message,) = mail.outbox
     assert (message.subject, message.to) == (CONFIRM, ("alice@example.com",))
-    assert "within 3 days" in message.body
+    assert "choose your password within 3 days" in message.body
     assert "Alice" not in message.body  # A name the address's owner never chose.
     assert usernames() == []  # No account until the link is used.
     refused = client.post(
@@ -206,30 +208,74 @@ def test_taken_usernames_and_addresses_answer_the_same(identity: Api) -> None:
     assert usernames() == ["alice", "bob"]
 
 
-def test_fields_and_password_rules_are_checked_at_once(identity: Api) -> None:
-    """Refusals that say nothing about other accounts come back as 422."""
+def test_fields_are_checked_at_once(identity: Api) -> None:
+    """Refusals that say nothing about other accounts come back as 422.
+
+    A password is not taken here: whoever reads the mail chooses it.
+    """
     client = identity(SIGNUP_ENABLED=True)
 
     bad_name = signup(client, username="no spaces allowed")
     kept = signup(client, username="Erased-0123456789abcdef0123456789abcdef")
-    weak = signup(client, password="alice")
     no_address = signup(client, email="not-an-address")
-    extra = client.post(
-        "/auth/signup",
-        json={
-            "username": "a",
-            "email": "a@example.com",
-            "password": PASSWORD,
-            "is_superuser": True,
-        },
-    )
+    with_password = signup(client, password=PASSWORD)
+    extra = signup(client, is_superuser="true")
 
-    assert bad_name.status_code == weak.status_code == 422
+    assert bad_name.status_code == 422
     assert "username has 1 to 150" in bad_name.json()["detail"]
     assert (kept.status_code, kept.json()["code"]) == (422, "invalid_username")
-    assert "too similar to the username" in weak.json()["detail"]
-    assert no_address.status_code == extra.status_code == 422
+    assert no_address.status_code == with_password.status_code == 422
+    assert extra.status_code == 422
+    assert with_password.json()["errors"][0]["loc"] == ["body", "password"]
     assert outbox_payloads() == []
+
+
+def test_the_password_is_chosen_and_checked_when_confirming(identity: Api) -> None:
+    """The validators check it against the account; a refusal keeps the link."""
+    client = identity(SIGNUP_ENABLED=True)
+    signup(client)
+    run_worker()
+    token = link_to("alice@example.com")
+
+    weak = confirm(client, token, password="alice")
+    empty = client.post("/auth/signup/confirm", json={"token": token})
+    chosen = confirm(client, token, password=PASSWORD)
+
+    assert (weak.status_code, weak.json()["code"]) == (422, "invalid_password")
+    assert "too similar to the username" in weak.json()["detail"]
+    assert empty.status_code == 422
+    assert chosen.status_code == 204
+    assert login(client, "alice", PASSWORD)["access_token"]
+
+
+def test_whoever_asks_with_another_address_gains_nothing(identity: Api) -> None:
+    """No pre-account hijacking: the address's owner chooses the password.
+
+    An attacker asked for an account with the victim's address and a
+    password of their own; when the victim used the link mailed to them,
+    the account was made with the attacker's password, which the attacker
+    then logged in with. Now no password is taken when asking, and the
+    victim chooses it with the link.
+    """
+    client = identity(SIGNUP_ENABLED=True)
+    guess = "Attacker-pass-91"
+    attacker = from_address(client, "203.0.113.66")
+
+    with_password = signup(
+        attacker, username="victim", email="victim@example.com", password=guess
+    )
+    asked = signup(attacker, username="victim", email="victim@example.com")
+    run_worker()
+    confirmed = confirm(client, link_to("victim@example.com"), password=PASSWORD)
+    attempts = [
+        attacker.post("/auth/login", json={"username": "victim", "password": guess}),
+        client.post("/auth/login", json={"username": "victim", "password": PASSWORD}),
+    ]
+
+    assert with_password.status_code == 422
+    assert asked.status_code == 202
+    assert confirmed.status_code == 204
+    assert [response.status_code for response in attempts] == [401, 200]
 
 
 @pytest.mark.parametrize(

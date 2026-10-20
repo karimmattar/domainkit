@@ -838,19 +838,28 @@ until `AUTH.SIGNUP_ENABLED` is on:
 
 | Endpoint | Who | Body | Answer |
 | --- | --- | --- | --- |
-| `POST /signup` | anyone | `{"username", "email", "password"}` | `202`; `422` for fields or a password the validators refuse; `429 throttled`. |
-| `POST /signup/confirm` | anyone | `{"token"}` | `204`: the account is made; `400 invalid_token`; `409 signup_taken`; `429 throttled`. |
+| `POST /signup` | anyone | `{"username", "email"}` | `202`; `422` for fields that do not fit; `429 throttled`. |
+| `POST /signup/confirm` | anyone | `{"token", "password"}` | `204`: the account is made; `400 invalid_token`; `409 signup_taken`; `422` for a password the validators refuse; `429 throttled`; `503 password_checks_busy`. |
 
-The fields and the password validators are checked at once (`422`), which
-tells nothing about other accounts. Then the request is kept as a pending
+The fields are checked at once (`422`), which tells nothing about other
+accounts; no password is taken. Then the request is kept as a pending
 signup, and it answers `202`, doing the same work whatever accounts
 exist. The worker mails the address: when neither the username (in any
 case) nor the address has an account, a link (`AUTH.SIGNUP_URL` with the
 token in place of `{token}`, the token alone without one) that works for
 `EMAIL_VERIFICATION_TIMEOUT`; otherwise, word that an account uses the
 address or the username, and the pending signup is dropped. Your page
-posts the token to `/signup/confirm`, which makes the account, its
-address verified, and the user can log in.
+asks for a password and posts it with the token to `/signup/confirm`,
+which checks it with `AUTH.PASSWORD_VALIDATORS` (a refusal leaves the
+link working, to try another), makes the account with it, its address
+verified, and the user can log in.
+
+Whoever reads the mail chooses the password, so asking for an account
+with someone else's address gains nothing (pre-account hijacking): if
+the address's owner uses the link, the account is theirs, with a
+password only they know. Were a password taken when asking, as in
+Django-style forms, the person who asked would set it, and an owner who
+used the link would make an account its asker can log in to.
 
 No account exists before its address is confirmed. So nothing anyone else
 can see differs between an address that has an account and one that has
@@ -870,9 +879,10 @@ another name). A link for an address that got an account meanwhile
 answers `409` too. A link works once; a wrong, used, or expired one gets
 `400 invalid_token`, audited as `auth.signup`.
 
-Pending signups keep the username, the address, and the password's hash
-in `domainkit_pending_signups` (run `makemigrations` and `migrate`),
-which is never in fixtures. The outbox holds only a pending signup's id.
+Pending signups keep the username and the address, and no password, in
+`domainkit_pending_signups` (run `makemigrations` and `migrate`), which
+is never in fixtures: it holds the addresses of people who may never
+have asked. The outbox holds only a pending signup's id.
 A row goes when its link is used, when the worker has told its address
 that the name or the address is taken, or, past
 `EMAIL_VERIFICATION_TIMEOUT`, with the hourly purge of expired tokens.

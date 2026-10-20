@@ -246,11 +246,11 @@ pending_signups = Table(
     # Neither unique: a pending signup reserves no name and no address.
     Column("username", String(USERNAME_MAX_LENGTH), nullable=False),
     Column("email", String(EMAIL_MAX_LENGTH), nullable=False),
-    Column("password", PasswordHashType, nullable=False),
+    # No password: whoever reads the mail chooses it, when confirming.
     Column("created_at", UTCDateTime, nullable=False),
     Column("expires_at", UTCDateTime, nullable=False),
     Index("ix_domainkit_pending_signups_expires_at", "expires_at"),
-    # Password hashes: never in fixtures (dumpdata, loaddata).
+    # Addresses of people who may never have asked: never in fixtures.
     info={"domain": "auth", "fixtures": False},
 )
 """Accounts asked for at ``/signup``, made once their address is confirmed."""
