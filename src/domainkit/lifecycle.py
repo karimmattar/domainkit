@@ -1,4 +1,4 @@
-"""Closing what a process opened: caches, databases, ledgers, and brokers.
+"""Closing what a process opened: caches, HTTP clients, databases, ledgers, brokers.
 
 The application lifespan and management commands end with ``close_resources``.
 Caches close first, since their computations use the others. Each kind gets
@@ -8,6 +8,7 @@ still close, so a broken backend never keeps the others open.
 
 import asyncio
 import logging
+import sys
 from collections.abc import Awaitable, Callable
 from typing import Final
 
@@ -23,9 +24,10 @@ CLOSE_TIMEOUT: Final = 5.0
 
 
 async def close_resources() -> None:
-    """Close the caches, databases, ledgers, and brokers, in that order."""
+    """Close the caches, HTTP clients, databases, ledgers, and brokers, in order."""
     closers: dict[str, Callable[[], Awaitable[None]]] = {
         "caches": caches.close_all,
+        "HTTP clients": close_http_clients,
         "databases": connections.close_all,
         "ledgers": ledgers.close_all,
         "brokers": brokers.close_all,
@@ -36,3 +38,13 @@ async def close_resources() -> None:
                 await close_all()
         except Exception:
             logger.exception("Could not close the %s; closing the rest", name)
+
+
+async def close_http_clients() -> None:
+    """Close ``domainkit.http.client``'s pools, if anything imported it.
+
+    Looked up, not imported, so the lifespan needs no ``httpclient`` extra.
+    """
+    client = sys.modules.get("domainkit.http.client")
+    if client is not None:
+        await client.close_all()
