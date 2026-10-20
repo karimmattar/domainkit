@@ -486,6 +486,20 @@ def test_errors_are_answered_in_the_callers_language(client: TestClient) -> None
     assert english.headers["Content-Language"] == "en"
 
 
+def test_problem_details_are_answered_in_the_callers_language(
+    client: TestClient,
+) -> None:
+    """With ``ERROR_FORMAT = "problem+json"``, ``detail`` is translated too."""
+    with override_settings(ERROR_FORMAT="problem+json"):
+        missing = client.get("/missing-user", headers={"Accept-Language": "ar"})
+        english = client.get("/missing-user")
+
+    assert missing.headers["content-type"] == "application/problem+json"
+    assert missing.json()["detail"] == "لا يوجد مستخدم كهذا."
+    assert missing.json()["code"] == english.json()["code"]
+    assert english.json()["detail"] == "No such user."
+
+
 def test_the_request_is_served_in_its_language(client: TestClient) -> None:
     """Endpoints, and WebSocket connections, see the negotiated language."""
     served = client.get("/language", headers={"Accept-Language": "fr, ar;q=0.3"})
