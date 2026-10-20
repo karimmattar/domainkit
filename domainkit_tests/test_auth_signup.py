@@ -19,7 +19,6 @@ from domainkit.contrib.auth.signup import (
     signup_token,
 )
 from domainkit.contrib.auth.tables import pending_signups
-from domainkit.contrib.auth.tasks import clear_expired_tokens
 from domainkit.contrib.auth.tokens import utc_now
 from domainkit.db import connections
 from domainkit.management.base import run_async
@@ -417,6 +416,9 @@ def test_expired_signups_are_purged_hourly(identity: Api) -> None:
     signup(client, username="bob", email="bob@example.com")
     first, second = sorted(pending(), key=lambda row: row["username"])
     run_async(_set_expiry(first["id"], utc_now()))
+
+    # Imported here: importing at collection would register the task early.
+    from domainkit.contrib.auth.tasks import clear_expired_tokens
 
     run_async(clear_expired_tokens())
 

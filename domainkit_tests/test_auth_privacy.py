@@ -21,7 +21,12 @@ from domainkit.contrib import mail
 from domainkit.contrib.auth import AuthUnitOfWork, UsernameTaken, erasure
 from domainkit.contrib.auth.erasure import forget_credentials
 from domainkit.contrib.auth.models import ERASED_USERNAME, erased_username
-from domainkit.contrib.auth.tables import mfa_devices, recovery_codes, users
+from domainkit.contrib.auth.tables import (
+    mfa_devices,
+    pending_signups,
+    recovery_codes,
+    users,
+)
 from domainkit.contrib.privacy import (
     PersonalDataErased,
     erase_subject,
@@ -141,8 +146,8 @@ def alice_with_everything(client: TestClient, clock: list[float]) -> tuple[UUID,
 def test_fixtures_hold_no_secret_and_no_one_time_state(
     private: Api, clock: list[float]
 ) -> None:
-    """Tokens, sessions, certificates, second factors: never dumped or loaded."""
-    client = private()
+    """Tokens, sessions, certificates, second factors, signups: never in fixtures."""
+    client = private(SIGNUP_ENABLED=True)
     _, token = alice_with_everything(client, clock)
     create_user("bob")
     browser = TestClient(client.app, base_url="https://testserver")
@@ -151,20 +156,34 @@ def test_fixtures_hold_no_secret_and_no_one_time_state(
         json={"username": "bob", "password": PASSWORD},
         headers={"Origin": "https://testserver"},
     )
+    asked = client.post(
+        "/auth/signup",
+        json={"username": "carol", "email": "c@example.com", "password": PASSWORD},
+    )
+    assert asked.status_code == 202
     assert rows(mfa_devices)
     assert rows(recovery_codes)
+    (waiting,) = rows(pending_signups)
 
     raw = run("dumpdata")
 
     names = {entry["table"] for entry in json.loads(raw)["tables"]}
     assert users.name in names
-    assert not names & {"domainkit_tokens", mfa_devices.name, recovery_codes.name}
+    hidden = {
+        "domainkit_tokens",
+        mfa_devices.name,
+        recovery_codes.name,
+        pending_signups.name,
+    }
+    assert not names & hidden
     (device,) = rows(mfa_devices)
     assert token not in raw
+    assert waiting["password"].value not in raw
+    assert "c@example.com" not in raw
     assert browser.cookies["__Host-dk_session"] not in raw
     for secret in (device["secret"], device["id"]):
         assert str(secret) not in raw
-    for table in (mfa_devices.name, recovery_codes.name, "domainkit_tokens"):
+    for table in sorted(hidden):
         with pytest.raises(CommandError, match="names no fixture"):
             run("dumpdata", table)
 
