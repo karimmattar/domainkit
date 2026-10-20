@@ -60,7 +60,10 @@ GROUP_NAME_MAX_LENGTH: Final = 150
 EMAIL_MAX_LENGTH: Final = 254
 _USERNAME: Final = re.compile(r"[\w.@+-]+")
 ERASED_USERNAME: Final = "erased-"
-"""How a username that privacy erased starts (``erased_username``)."""
+"""How a username that privacy erased starts (``erased_username``).
+
+Reserved: nobody picks a username that starts with it, in any case."""
+_ERASED: Final = re.compile(r"erased-[0-9a-f]{32}")
 ERASED_USERNAME_PURPOSE: Final = "domainkit.auth.erased_username"
 """What the key of ``erased_username`` is derived from ``SECRET_KEY`` for."""
 _HASH: Final = re.compile(r"[a-z][a-z0-9_]*\$.+")
@@ -463,13 +466,15 @@ class AbstractUser(AbstractBaseUser):
 
         The username becomes ``erased_username`` of itself: unique, and it
         keeps the old name taken, so nobody else can become the person by
-        signing up with it. The email and names become empty, and the
+        signing up with it. A name of that form is left as it is; any other,
+        one that only starts with ``erased-`` included (from before the
+        prefix was reserved), is erased. The email and names become empty, and the
         address unverified. The account no longer logs in: it is deactivated
         and its password made unusable, in the same commit; its tokens and
         second factor are deleted right after (``erasure``). Erasing again
         changes nothing.
         """
-        if "username" in fields and not self.username.startswith(ERASED_USERNAME):
+        if "username" in fields and not _ERASED.fullmatch(self.username):
             self.username = erased_username(self.username)
         for name in ("email", "first_name", "last_name"):
             if name in fields:
@@ -558,13 +563,41 @@ def erased_username(username: str, *, key: bytes | None = None) -> str:
 
 
 def validate_username(username: str) -> str:
-    """Return ``username`` if it is 1 to 150 of letters, digits, and ``@.+-_``."""
+    """Return ``username`` if it is 1 to 150 of letters, digits, and ``@.+-_``.
+
+    Raises:
+        InvalidUsername: It is not, or it is reserved (``reserved_username``).
+    """
     if len(username) > USERNAME_MAX_LENGTH or not _USERNAME.fullmatch(username):
         raise InvalidUsername(
             f"A username has 1 to {USERNAME_MAX_LENGTH} letters, digits, and "
             "@ . + - _ characters."
         )
+    check_not_reserved(username)
     return username
+
+
+def reserved_username(username: str) -> bool:
+    """Whether ``username`` starts with ``erased-``, as lookups fold it.
+
+    Those names are what privacy erasure leaves (``erased_username``): one
+    a person picked could pass for an erased account, or keep its own name
+    when erased.
+    """
+    folded = unicodedata.normalize("NFKC", username).lower()
+    return folded.startswith(ERASED_USERNAME)
+
+
+def check_not_reserved(username: str) -> None:
+    """Refuse a username ``reserved_username`` keeps for erasure.
+
+    Raises:
+        InvalidUsername: It starts with ``erased-``.
+    """
+    if reserved_username(username):
+        raise InvalidUsername(
+            "Usernames that start with erased- are kept for erased accounts."
+        )
 
 
 def normalize_email(email: str) -> str:

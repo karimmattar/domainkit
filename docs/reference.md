@@ -277,9 +277,10 @@ With `ENVIRONMENT` set to `staging` or `production`, startup fails on:
 
 Installed contrib apps add their own:
 
-- auth: a password hasher made for tests in `AUTH.PASSWORD_HASHERS`, and
-  a network rather than one address in `AUTH.CLIENT_CERT.PROXIES`
-  ([auth.md](auth.md))
+- auth: a password hasher made for tests in `AUTH.PASSWORD_HASHERS`, a
+  network rather than one address in `AUTH.CLIENT_CERT.PROXIES`, and
+  `http://` in `AUTH.PASSWORD_RESET_URL`, `EMAIL_VERIFICATION_URL`, or
+  `SIGNUP_URL` ([auth.md](auth.md))
 - evidence: no `EVIDENCE.SUBJECT_KEY`
   ([contrib.md](contrib.md#evidence-records-that-provably-never-change))
 - mail: the console or memory backend; and in any environment without
@@ -299,8 +300,10 @@ passes, so an API that is public on purpose can keep them:
 - no `RATE_LIMIT`, or `RateLimitMiddleware` missing from `MIDDLEWARE`
 - a rate limit with no `TRUSTED_PROXIES`: behind a load balancer, every
   caller would share its address and its count
-- auth: a session or CSRF cookie name without the `__Host-` prefix where
-  the prefix could hold ([auth.md](auth.md#browser-sessions-in-cookies))
+- auth: `AUTH.LOGIN_RATE` or `AUTH.MFA.RATE` set to `None` (guesses
+  without limit), and a session or CSRF cookie name without the `__Host-`
+  prefix where the prefix could hold
+  ([auth.md](auth.md#browser-sessions-in-cookies))
 
 The production settings that `init` create avoid the first three, and ask
 for `TRUSTED_PROXIES`: leave it empty only when callers connect directly.

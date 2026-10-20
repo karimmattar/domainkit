@@ -502,11 +502,37 @@ def test_scoped_tokens_cannot_change_the_account(identity: Api) -> None:
         client.get("/auth/mfa", headers=scoped),
         client.post("/auth/mfa/totp", json={"password": PASSWORD}, headers=scoped),
         client.get("/scoped/staff", headers=scoped),
+        client.post("/auth/email-verification", headers=scoped),
     ]
 
-    assert [response.status_code for response in refused] == [403] * 5
+    assert [response.status_code for response in refused] == [403] * 6
+    assert client.post("/auth/email-verification", headers=headers).status_code == 202
     assert client.get("/scoped/staff", headers=headers).status_code == 200
     assert client.get("/auth/me", headers=headers).status_code == 200
     assert client.post("/auth/logout", headers=scoped).status_code == 204
     assert client.get("/whoami", headers=scoped).status_code == 401
     assert client.get("/auth/me", headers=headers).status_code == 200
+
+
+def test_me_lists_what_the_credentials_may_do(identity: Api) -> None:
+    """With scopes, only the permissions both the user and the scopes allow."""
+    create_user("alice")
+    create_user("root", is_superuser=True)
+    grant("alice", VIEW, DELETE)
+    client = identity()
+    alice = user_session(client)
+    root = user_session(client, "root")
+
+    def permissions(headers: dict[str, str], **body: Any) -> list[str]:  # noqa: ANN401
+        if body:
+            headers = bearer(make(client, headers, **body).json()["token"])
+        listed: list[str] = client.get("/auth/me", headers=headers).json()[
+            "permissions"
+        ]
+        return listed
+
+    assert permissions(alice) == [DELETE, VIEW]
+    assert permissions(alice, scopes=[VIEW]) == [VIEW]
+    assert permissions(alice, scopes=[]) == []
+    assert {VIEW, DELETE} < set(permissions(root))  # Every permission there is.
+    assert permissions(root, scopes=[DELETE]) == [DELETE]

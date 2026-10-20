@@ -103,7 +103,7 @@ permissions.
 | Field | Type | Notes |
 | --- | --- | --- |
 | `id` | UUID | |
-| `username` | text, unique | 1 to 150 letters, digits, and `@ . + - _`; NFKC-normalized. |
+| `username` | text, unique | 1 to 150 letters, digits, and `@ . + - _`; NFKC-normalized. Names that start with `erased-`, in any case, are kept for erased accounts. |
 | `password` | `PasswordHash` | Never a raw password; see below. |
 | `email`, `first_name`, `last_name` | text | The email is one plain address or empty, with its domain lower-cased (see below). |
 | `email_verified` | bool | Whether the user proved they read mail at `email`; a new address clears it. |
@@ -260,7 +260,13 @@ Erasing a user (`privacy erase --subject <user id>`) runs
   signing up with it, in any case, is refused as a taken username, so
   nobody else can become the person erased. The key's fallbacks are
   checked too; a name erased under a key dropped from
-  `SECRET_KEY_FALLBACKS` is free again;
+  `SECRET_KEY_FALLBACKS` is free again. Names that start with `erased-`
+  are kept for this: signing up, creating a user (with any user model:
+  the repository checks), and `validate_username` refuse them
+  (`InvalidUsername`), so no one can pass for an erased account. A name
+  stored before that, which only starts with `erased-`, is erased like
+  any other; one already of the erased form is left as it is, so erasing
+  twice changes nothing;
 - the email and names become empty, and the address unverified;
 - the account ends in the same commit: it is deactivated and its password
   made unusable (both audited). Right after, every token of the user
@@ -422,9 +428,11 @@ check both; `HasScope(*keys)` checks the scopes alone (credentials without
 scopes allow every one); `IsAdminUser` and `IsSuperuser` refuse scoped
 credentials, since staff and superusers hold more than any scope names;
 and `IsUnscoped` keeps a route to credentials without scopes. These
-routes, the admin API, `/password`, the second-factor routes, and
-`/logout` with `everywhere` take only those, so a scoped token can neither
-make a token with more, grant anything, nor change or lock its account. `createtoken --scope KEY` makes scoped tokens
+routes, the admin API, `/password`, the second-factor routes,
+`/email-verification`, and `/logout` with `everywhere` take only those,
+so a scoped token can neither make a token with more, grant anything,
+nor change or lock its account. `/me` with a scoped token lists, in
+`permissions`, only those both the user and the scopes allow. `createtoken --scope KEY` makes scoped tokens
 from the command line. Creating and revoking are audited
 (`auth.token_created` with the scopes, `auth.token_revoked`).
 
@@ -643,7 +651,7 @@ error body.
 | `POST /login` | `{"username", "password"}` | `200` with tokens; `401 invalid_credentials`; `429 login_throttled`. |
 | `POST /refresh` | `{"refresh_token"}` | `200` with new tokens; `401` for a used, expired, or unknown refresh token; `400 refresh_not_supported` with opaque tokens. |
 | `POST /logout` | optional `{"everywhere": true}` | `204`: this session's tokens end, or every token of the user. |
-| `GET /me` | | The user: `id`, `username`, `email`, `email_verified`, `is_staff`, `is_superuser`, `last_login`, `groups`, and `permissions`. |
+| `GET /me` | | The user: `id`, `username`, `email`, `email_verified`, `is_staff`, `is_superuser`, `last_login`, `groups`, and `permissions` (with a scoped token, those its scopes allow). |
 | `POST /password` | `{"old_password", "new_password"}` | `204`: every other session of the user ends; `400 wrong_password`; `422` if a validator refuses the new password. |
 
 `username` is the user model's `USERNAME_FIELD` (the email, for `Member`).
@@ -774,7 +782,7 @@ router.include_router(recovery_router, prefix="/auth")
 | --- | --- | --- | --- |
 | `POST /password-reset` | anyone | `{"email"}` | Always `202`; `429 throttled`. |
 | `POST /password-reset/confirm` | anyone | `{"token", "new_password"}` | `204`; `400 invalid_token`; `422` if a validator refuses the password. |
-| `POST /email-verification` | a user | | `202`; `429 throttled`. |
+| `POST /email-verification` | a user, unscoped | | `202`; `403` for credentials limited to scopes; `429 throttled`. |
 | `POST /email-verification/confirm` | anyone | `{"token"}` | `204`; `400 invalid_token`. |
 
 A reset request answers `202` whether or not an account uses the address,
@@ -1067,7 +1075,7 @@ changed what.
 | `LOGIN_RATE` | `"10/minute"` | Login and password-change attempts per client address and per username, and checks of link tokens per client address; `None` for no limit. |
 | `EMAIL_RATE` | `"5/hour"` | Requests that send mail (resets, verifications, signups) per client address and per email address or user. |
 | `PASSWORD_RESET_TIMEOUT` | 1 hour | How long a reset link works. |
-| `PASSWORD_RESET_URL` | `None` | Your page that takes a reset token: `{token}` marks where. |
+| `PASSWORD_RESET_URL` | `None` | Your page that takes a reset token: `{token}` marks where. Staging and production refuse `http://`, here and in the other link URLs. |
 | `EMAIL_VERIFICATION_TIMEOUT` | 3 days | How long a verification link works. |
 | `EMAIL_VERIFICATION_URL` | `None` | Your page that takes a verification token. |
 | `SIGNUP_ENABLED` | `False` | Let anyone ask for an account at `/signup`. |

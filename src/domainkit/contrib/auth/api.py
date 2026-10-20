@@ -217,10 +217,16 @@ async def logout(
 
 
 @router.get("/me", responses=_errors(status.HTTP_401_UNAUTHORIZED))
-async def me(user: AuthenticatedUser) -> UserOut:
-    """The user who sent the request."""
+async def me(request: Request, user: AuthenticatedUser) -> UserOut:
+    """The user who sent the request, and what these credentials may do.
+
+    Credentials limited to scopes list only the permissions both the user
+    and the scopes allow, as the rules check them.
+    """
     field = user.EMAIL_FIELD
     email = getattr(user, field, None) if field else None
+    permissions = await get_all_permissions(user)
+    scopes = _credentials(request).scopes
     return UserOut(
         id=user.id,
         username=user.get_username(),
@@ -230,7 +236,7 @@ async def me(user: AuthenticatedUser) -> UserOut:
         is_superuser=user.is_superuser,
         last_login=user.last_login,
         groups=sorted(group.name for group in user.groups),
-        permissions=sorted(await get_all_permissions(user)),
+        permissions=sorted(permissions if scopes is None else permissions & scopes),
     )
 
 

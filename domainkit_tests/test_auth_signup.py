@@ -208,6 +208,7 @@ def test_fields_and_password_rules_are_checked_at_once(identity: Api) -> None:
     client = identity(SIGNUP_ENABLED=True)
 
     bad_name = signup(client, username="no spaces allowed")
+    kept = signup(client, username="Erased-0123456789abcdef0123456789abcdef")
     weak = signup(client, password="alice")
     no_address = signup(client, email="not-an-address")
     extra = client.post(
@@ -222,6 +223,7 @@ def test_fields_and_password_rules_are_checked_at_once(identity: Api) -> None:
 
     assert bad_name.status_code == weak.status_code == 422
     assert "username has 1 to 150" in bad_name.json()["detail"]
+    assert (kept.status_code, kept.json()["code"]) == (422, "invalid_username")
     assert "too similar to the username" in weak.json()["detail"]
     assert no_address.status_code == extra.status_code == 422
     assert outbox_payloads() == []

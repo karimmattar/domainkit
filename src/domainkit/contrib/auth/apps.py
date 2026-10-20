@@ -157,12 +157,26 @@ class AuthConfig(DomainConfig):
         return problems
 
     def deployment_warnings(self) -> list[str]:
-        """Weak choices in staging and production: cookies without ``__Host-``."""
+        """Weak choices in staging and production.
+
+        Login and code checks without a rate, and cookies without
+        ``__Host-`` where it could hold.
+        """
         if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
             return []
         config = auth_settings()
         cookie = config.COOKIE
         warnings: list[str] = []
+        if config.LOGIN_RATE is None:
+            warnings.append(
+                "AUTH.LOGIN_RATE is None, so passwords can be guessed without "
+                'limit; set it, such as "10/minute".'
+            )
+        if config.MFA.RATE is None:
+            warnings.append(
+                "AUTH.MFA.RATE is None, so one-time codes can be guessed without "
+                'limit; set it, such as "10/hour".'
+            )
         if (
             COOKIE_AUTHENTICATION in config.AUTHENTICATION_CLASSES
             and cookie.DOMAIN is None
@@ -213,7 +227,8 @@ class AuthConfig(DomainConfig):
         """Refuse settings that cannot hold anywhere, and unsafe ones where deployed.
 
         Staging and production refuse hashers made for tests, plain
-        cookies, and certificate proxies given as networks.
+        cookies, certificate proxies given as networks, and links sent by
+        mail over plain HTTP.
         """
         if config.CLIENT_CERT.HEADER is not None and not config.CLIENT_CERT.PROXIES:
             raise ImproperlyConfigured(
@@ -242,6 +257,20 @@ class AuthConfig(DomainConfig):
             raise ImproperlyConfigured(
                 f"AUTH.COOKIE.SECURE = False sends session cookies over plain HTTP; "
                 f"remove it in {settings.ENVIRONMENT}."
+            )
+        links = {
+            "PASSWORD_RESET_URL": config.PASSWORD_RESET_URL,
+            "EMAIL_VERIFICATION_URL": config.EMAIL_VERIFICATION_URL,
+            "SIGNUP_URL": config.SIGNUP_URL,
+        }
+        if plain := [
+            key
+            for key, url in links.items()
+            if url is not None and url.lower().startswith("http://")
+        ]:
+            raise ImproperlyConfigured(
+                f"AUTH.{', AUTH.'.join(plain)} send links with their tokens over "
+                f"plain HTTP; use https:// in {settings.ENVIRONMENT}."
             )
         if networks := [
             str(network)

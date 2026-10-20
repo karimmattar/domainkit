@@ -345,6 +345,10 @@ def test_staff_create_users(api: Api) -> None:
     }
     assert refused_with(named, 422)[0] == "invalid_password"
     assert refused_with({"username": "newbie"}, 409)[0] == "username_taken"
+    assert refused_with({"username": "erased-newbie"}, 422) == (
+        "invalid_username",
+        "Usernames that start with erased- are kept for erased accounts.",
+    )
     assert refused_with({"username": "x", "fields": {"password": "x"}}, 422) == (
         "unknown_user_field",
         "These user fields cannot be changed here: password.",

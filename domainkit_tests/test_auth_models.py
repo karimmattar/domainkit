@@ -26,7 +26,13 @@ from domainkit.contrib.auth.events import (
     UserPermissionRevoked,
     UserStatusChanged,
 )
-from domainkit.contrib.auth.models import normalize_email, same_email, validate_email
+from domainkit.contrib.auth.models import (
+    erased_username,
+    normalize_email,
+    reserved_username,
+    same_email,
+    validate_email,
+)
 from domainkit.contrib.contenttypes import ContentType
 from domainkit.ddd import DomainEvent
 
@@ -109,6 +115,35 @@ def test_creating_users_checks_and_tidies_names() -> None:
     assert User.create(password=HASH, username="x" * 150).email == ""
     assert normalize_email("not-an-email ") == "not-an-email"
     assert normalize_email("Q@Q@EXAMPLE.COM") == "Q@Q@example.com"
+
+
+@pytest.mark.parametrize(
+    "name", ["erased-x", "Erased-bob", "ERASED-0123", "\uff45rased-x", "erased-"]
+)
+def test_names_erasure_leaves_are_kept_for_it(name: str) -> None:
+    """Nobody picks a name that starts with ``erased-``, in any case or width."""
+    with pytest.raises(InvalidUsername) as refused:
+        new_user(username=name)
+
+    assert refused.value.message == (
+        "Usernames that start with erased- are kept for erased accounts."
+    )
+    assert reserved_username(name)
+    assert not reserved_username("unerased-x")
+    assert new_user(username="erasedx").username == "erasedx"
+
+
+def test_erasing_renames_names_that_only_look_erased() -> None:
+    """One picked before the prefix was kept is erased too; erasing twice is one."""
+    user = new_user(email="eve@example.com")
+    user.username = "erased-eve"  # Stored before the prefix was reserved.
+
+    user.erase_personal_data(frozenset({"username", "email"}))
+    renamed = user.username
+    user.erase_personal_data(frozenset({"username", "email"}))
+
+    assert renamed == erased_username("erased-eve")
+    assert user.username == renamed
 
 
 NOT_PLAIN: list[str] = [

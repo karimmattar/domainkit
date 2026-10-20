@@ -576,3 +576,6 @@ msgid ""
 "An account already uses this username or this address; sign up again "
 "with another username, or log in."
 msgstr ""
+
+msgid "Usernames that start with erased- are kept for erased accounts."
+msgstr ""

@@ -348,6 +348,16 @@ All notable changes to domainkit. The format follows
   stay as they are.
 - `check` also lists warnings that installed domains return from the new
   `DomainConfig.deployment_warnings()`, in staging and production.
+- Usernames that start with `erased-`, in any case, are kept for accounts
+  privacy erased: signing up, the admin API, `createsuperuser`, and
+  `create_user` with any user model refuse them (`422 invalid_username`),
+  and erasing a user whose name only starts with `erased-` erases it too.
+- `/auth/me` with a token limited to scopes lists only the permissions
+  both its user and its scopes allow, and `/auth/email-verification`
+  refuses scoped tokens (403).
+- Staging and production refuse `AUTH.PASSWORD_RESET_URL`,
+  `EMAIL_VERIFICATION_URL`, and `SIGNUP_URL` over `http://`, and `check`
+  warns there when `AUTH.LOGIN_RATE` or `AUTH.MFA.RATE` is `None`.
 
 ### Fixed
 

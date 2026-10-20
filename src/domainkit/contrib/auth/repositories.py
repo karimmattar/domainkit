@@ -34,6 +34,7 @@ from .models import (
     PasswordHash,
     Permission,
     UserId,
+    check_not_reserved,
     erased_username,
     same_email,
 )
@@ -106,8 +107,11 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         """Store a new user, unless privacy erased its username from another.
 
         Raises:
+            InvalidUsername: The name starts with ``erased-``, which erasure
+                keeps for itself (for user models of any kind).
             UsernameTaken: It did: the name stays taken, as a live one is.
         """
+        check_not_reserved(aggregate.get_username())
         if await self.username_erased(aggregate.get_username()):
             field = self.model.USERNAME_FIELD
             raise UsernameTaken(f"The {field} is already taken.", fields=(field,))

@@ -13,7 +13,8 @@ mount the router next to the one that logs in::
   a link (``AUTH.PASSWORD_RESET_URL``).
 - ``POST /password-reset/confirm`` (anyone) takes the link's token and a
   new password; every session of the user ends.
-- ``POST /email-verification`` (a user) mails a link to the user's address.
+- ``POST /email-verification`` (a user, with credentials not limited to
+  scopes) mails a link to the user's address.
 - ``POST /email-verification/confirm`` (anyone) takes the link's token.
 
 Requests that send mail count against ``AUTH.EMAIL_RATE`` per client
@@ -32,14 +33,14 @@ from typing import Annotated, Final, cast
 from urllib.parse import quote
 from uuid import UUID
 
-from fastapi import APIRouter, Request, status
+from fastapi import APIRouter, Depends, Request, status
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from domainkit.contrib.mail import deliver, render_mail
 from domainkit.contrib.messaging import enqueue, task
 from domainkit.http.errors import APIError
 
-from .access import AuthenticatedUser, Public
+from .access import AuthenticatedUser, IsUnscoped, Public, Require
 from .api import PASSWORD_MAX_LENGTH, _errors
 from .events import PasswordReset, PasswordResetRequested
 from .exceptions import InvalidEmail
@@ -181,7 +182,12 @@ async def confirm_password_reset(
 @router.post(
     "/email-verification",
     status_code=status.HTTP_202_ACCEPTED,
-    responses=_errors(status.HTTP_401_UNAUTHORIZED, status.HTTP_429_TOO_MANY_REQUESTS),
+    dependencies=[Depends(Require(IsUnscoped()))],
+    responses=_errors(
+        status.HTTP_401_UNAUTHORIZED,
+        status.HTTP_403_FORBIDDEN,
+        status.HTTP_429_TOO_MANY_REQUESTS,
+    ),
 )
 async def request_email_verification(
     request: Request, user: AuthenticatedUser
