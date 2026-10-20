@@ -1,6 +1,0 @@
-# Test values gitleaks takes for secrets. Each line is a finding's
-# fingerprint (commit:file:rule:line) from `gitleaks git`.
-# A made-up JWT signing key for the test application:
-ea5a3e0bef7bd2a0b1f7624a3ec3f6a47bed5364:domainkit_tests/test_secret_responses.py:generic-api-key:147
-# The Standard Webhooks specification's published test vector secret:
-9f8e03f2206cca3f7011304bc2dcbd9e7e9e646d:domainkit_tests/test_webhooks.py:generic-api-key:42

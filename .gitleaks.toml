@@ -1,0 +1,16 @@
+# gitleaks reads this from the repository root: its default rules, plus the
+# test values below, which are not secrets. They are allowed by value and
+# path, not by commit, so the allowance survives squash merges and rebases.
+title = "domainkit"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Made-up test keys, and the Standard Webhooks specification's published test vector"
+condition = "AND"
+paths = ['''^domainkit_tests/''']
+regexes = [
+  '''^jwt-key-0123456789abcdefghijklmnopqrstuv$''',
+  '''^whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw$''',
+]
