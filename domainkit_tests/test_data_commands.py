@@ -787,3 +787,34 @@ def test_null_values_load_as_null(project: str, tmp_path: Path) -> None:
 
     stored = asyncio.run(_scalar(select(kinds.c.day).where(kinds.c.id == 3)))
     assert stored is None
+
+
+def test_serial_ids_continue_after_a_load(project: str, tmp_path: Path) -> None:
+    """New rows get ids after the highest loaded, past tables without serials."""
+    path = tmp_path / "ids.json"
+    path.write_text(
+        json.dumps(
+            {
+                "format": "domainkit.fixture",
+                "version": 1,
+                "tables": [
+                    {"table": kind_notes.name, "rows": [{"text": "first"}]},
+                    {"table": kinds.name, "rows": [{"id": 5, "label": "five"}]},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    run("loaddata", str(path))
+
+    async def add() -> int:
+        try:
+            async with connections.engine().begin() as connection:
+                added = await connection.execute(
+                    insert(kinds).values(label="next").returning(kinds.c.id)
+                )
+                return int(added.scalar_one())
+        finally:
+            await connections.close_all()
+
+    assert asyncio.run(add()) == 6
