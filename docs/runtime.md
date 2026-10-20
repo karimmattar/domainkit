@@ -260,7 +260,10 @@ messages to the broker without ever holding up a commit:
 seconds, even from a broker that is lost or stalled, and logs it if it
 could not. Running deliveries still get `SHUTDOWN_TIMEOUT`, counted from
 the stop; a delivery that arrives meanwhile is given back to the broker,
-not run. A second signal stops everything at once, as before.
+not run. Relays, cleanup, and the listener of a stopping worker finish the
+step they are on, for up to five seconds, so a round under way is
+published rather than given back. A second signal stops everything at
+once, as before.
 
 **Cleanup.** Each polling and relaying worker deletes finished messages
 older than `RETENTION_SECONDS` in a task of its own, every
