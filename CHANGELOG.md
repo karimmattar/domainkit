@@ -6,6 +6,550 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `SECRET_KEY` and `SECRET_KEY_FALLBACKS`, and `domainkit.signing`, Django's
+  `signing`: `Signer`, `TimestampSigner`, and `dumps`/`loads` for compact,
+  URL-safe, signed JSON, with HMAC-SHA256 under a key derived for each salt
+  and constant-time checks. A new key signs while the old ones still verify,
+  so a key can be replaced without logging anyone out. `derive_key` gives
+  other uses a key of their own (`docs/reference.md`, "Signing"; ADR 0028).
+- `domainkit.contrib.mail`, Django's `django.core.mail` through the outbox:
+  `send_mail` and `EmailMessage(...).send(uow)` queue a task with the
+  change, so a message goes out if and only if it commits, and the worker
+  sends it, retrying up to `MAIL.MAX_ATTEMPTS`. Backends send over SMTP
+  (STARTTLS or TLS, with the certificate checked, and timeouts), to the
+  console, or to `mail.outbox` for tests. Messages refuse header injection
+  and are bounded (DJ-48; `docs/mail.md`; ADR 0029).
+- Mail templates: `render_mail("billing/invoice", context, to=[...])` reads a
+  subject, a text body, and an optional HTML body from `templates/mail/` in
+  domain packages or `MAIL.TEMPLATE_DIRS`, and escapes values in the HTML
+  (DJ-49).
+- `domainkit.contrib.notifications`: text messages and push notifications
+  queued the same way, with `SmsBackend` and `PushBackend` ports for a
+  project's provider, and console and memory backends (DJ-50).
+- Password reset, email verification, and signing up (DJ-38;
+  `docs/auth.md`, "Password reset"), with `domainkit.contrib.auth.recovery`
+  and `domainkit.contrib.auth.signup` routers to mount:
+  - `POST /auth/password-reset` always answers 202, in the same time,
+    whether or not an account uses the address; the worker mails a link
+    whose token is signed, expires (`AUTH.PASSWORD_RESET_TIMEOUT`), and
+    ends once used or once the user logs in. Confirming it ends every
+    session.
+  - `AbstractUser.email_verified`, set by a mailed link and cleared when
+    the address changes. Run `makemigrations` and `migrate` for the new
+    column.
+  - `POST /auth/signup`, off until `AUTH.SIGNUP_ENABLED`, takes a username
+    and an address, no password, checks them at once, then answers 202
+    and mails the address a link (`AUTH.SIGNUP_URL`), or word that the
+    username or address is taken. `POST /auth/signup/confirm` with the
+    link's token and a password, checked by the validators, makes the
+    account, its address verified: until then no account exists, so no
+    one but the address's owner learns whether it has one, and whoever
+    reads the mail chooses the password, so asking with someone else's
+    address gains nothing. A pending signup reserves no username; pending
+    signups wait in the new `domainkit_pending_signups` table (run
+    `makemigrations` and `migrate`), never in fixtures, and expired ones
+    are purged hourly.
+  - Requests that send mail count against the new `AUTH.EMAIL_RATE`, and
+    token checks against `AUTH.LOGIN_RATE`; resets, verifications,
+    signups, and refusals are audited.
+- Browser sessions in cookies (DJ-43): `CookieAuthentication` reads an
+  opaque token from an HttpOnly, Secure, SameSite cookie that
+  `POST /auth/session` sets and `DELETE /auth/session` clears. The
+  session and CSRF cookies are named `__Host-dk_session` and
+  `__Host-dk_csrf` wherever the prefix holds, so a sibling subdomain
+  cannot plant either; names a project sets are kept, and `check` warns
+  in staging and production about one without the prefix. Unsafe
+  requests it authenticates must come from a trusted origin (their own,
+  `ALLOWED_HOSTS`, or `AUTH.CSRF_TRUSTED_ORIGINS`) and send a CSRF token
+  signed for the session (`X-CSRF-Token`); others get `403 csrf_failed`,
+  which never counts against `RATE_LIMIT` as refused credentials do, so
+  another site cannot hold a browser's address. Header-token clients are
+  unaffected.
+- Two-factor logins (DJ-41; `docs/auth.md`, "Two-factor logins"; the `mfa`
+  extra): an authenticator app (TOTP) and single-use recovery codes, from
+  `domainkit.contrib.auth.mfa`. Once on, `/login` and `/auth/session`
+  answer 202 with a signed challenge that `/auth/mfa/login` (or
+  `/auth/session/mfa`) takes with a code. Codes work once, checks are
+  throttled per user, turning it off needs the password and a code, and
+  secrets are stored encrypted with AES-GCM under a key derived from
+  `SECRET_KEY` (ADR 0030). `resetmfa` turns it off for a user who lost it.
+  Run `makemigrations` and `migrate` for the new tables. Their tables are
+  never in fixtures.
+- `domainkit.encryption.SecretBox(purpose)`: AES-256-GCM under a key
+  derived from `SECRET_KEY` for each purpose, bound to the value's owner,
+  for secrets the database must give back (`docs/reference.md`,
+  "Encryption"; the `mfa` extra). Values under a fallback key still
+  decrypt, and say so, to be encrypted again.
+- Privacy covers users (`docs/auth.md`, "Users' personal data"):
+  `AbstractUser`'s username, email, and names are marked `Personal`, so
+  `privacy export` and `privacy erase` reach them. Erasing a user also
+  deactivates the account, makes its password unusable, deletes its tokens
+  and second factor, and keeps its username taken: the name becomes a keyed
+  digest that creating a user or signing up checks.
+- Scoped personal tokens (DJ-33): `domainkit.contrib.auth.personal_tokens`
+  lets users list, create, and revoke their own tokens at `/auth/tokens`,
+  shown once (marked `no-store`, so no idempotency key replays one) and
+  limited to scopes (permission keys they hold) if they wish. Permission
+  rules allow a scoped token only what both its user and its scopes
+  allow; `HasScope` and `IsUnscoped` are new rules, and
+  `createtoken --scope` makes scoped tokens. Tokens record when they were
+  last used, at most every five minutes. Run `makemigrations` and
+  `migrate` for the tokens' new columns.
+- Client certificates (DJ-44): `ClientCertificateAuthentication` logs in
+  the user a certificate names, by its SHA-256 (`addcertificate`) or by its
+  subject's common name. The certificate comes from the ASGI TLS extension,
+  or from `AUTH.CLIENT_CERT.HEADER`, believed only from the addresses in
+  `AUTH.CLIENT_CERT.PROXIES`, never from all of `TRUSTED_PROXIES`; staging
+  and production take single addresses there (`docs/auth.md`, "Client
+  certificates", has an nginx example).
+  `ProxyHeadersMiddleware` keeps the proxy's address in
+  `scope["domainkit.peer"]` for this.
+- Migration tooling (`docs/reference.md`, "Commands"):
+  `makemigrations --empty` writes a revision to fill in by hand, for data
+  migrations; `migrate --plan` lists what would run, `--sql` prints it as
+  SQL, rendered offline by Alembic, and `--fake` records a revision without
+  running it; `squashmigrations` replaces a run of revisions with one that
+  keeps the newest id and both directions, and refuses runs it cannot copy
+  correctly (branches, helper code, irreversible downgrades) or that a
+  database is in the middle of.
+- `dumpdata`, `loaddata`, and `flush`, with JSON fixtures written table by
+  table, parents first. State never goes in a fixture (the audit trail,
+  tokens, the outbox, idempotency keys, webhook subscriptions with their
+  signing secrets, and deliveries), `flush` keeps the audit trail,
+  and both `loaddata` and `flush` say what they will replace or delete,
+  and refuse in staging and production without `--force`. `seed` runs the
+  new `DomainConfig.seed()` hook of each installed domain.
+- `dbshell` opens `psql` or `sqlite3` on an alias, with the password in
+  `PGPASSWORD`, never on the command line, and refuses production without
+  `--allow-production`. `diffsettings` lists the settings that differ from
+  the defaults, secrets hidden.
+- `openapi` prints or writes the OpenAPI schema, and `openapi --diff
+  OLD.json` lists the changes that break clients (removed operations or
+  success statuses, new required parameters or fields, narrower request
+  values, removed or wider response fields) and exits 1 if there are any. With
+  `OPENAPI_OPERATION_IDS = "route_name"`, which new projects set, operation
+  ids are route names, stable when routers move (ADR 0031).
+- API versions and deprecations (`domainkit.http.versioning`):
+  `versioned_router("v1")`, and `Deprecation(since=..., sunset=...,
+  link=...)` for routers and routes, which sends `Deprecation`, `Sunset`,
+  and `Link` headers (RFC 9745, RFC 8594) on every response of those
+  routes and marks them deprecated in OpenAPI.
+- `ERROR_FORMAT = "problem+json"` answers every error as RFC 9457 problem
+  details, with `code`, `request_id`, and `errors` kept as extension
+  members, and documents it in OpenAPI (ADR 0032). The default body is
+  unchanged.
+- `domainkit.debug.DebugToolbarMiddleware`, for development: each response
+  gets `Server-Timing` with its SQL time and count, a statement repeated
+  `DEBUG_TOOLBAR.REPEATED_QUERIES` times in one request is logged as a
+  likely N+1 (its shape only, never values), and a request sent with
+  `X-Debug-Profile: 1` can leave a cProfile file. Staging and production
+  refuse to start with it; new projects list it in their local settings.
+- `domainkit.contrib.flags`: feature flags on for everyone, no one, listed
+  users or groups, or a stable percentage of users, and typed dynamic
+  settings, stored in the database and cached (ADR 0033). Check them with
+  `flag_enabled` or `RequireFlag`, and change them with `manage.py flags`
+  or a staff API guarded by permissions; every change is audited.
+- Records' history from the audit trail (`docs/contrib.md`, "History"):
+  `history(target=...)` or `history(aggregate=("product_id", id))`, with
+  each entry's field changes; `auditlog --target` and `--aggregate`; and
+  `GET /history` for staff with the new `audit.view_history` permission.
+  Personal values stay pseudonyms, also for people who were forgotten.
+- Cron schedules: `@periodic(cron="0 3 * * 1-5", tz="Africa/Cairo")` runs
+  a task at wall-clock times in a time zone, with a parser of our own
+  (lists, ranges, steps, names, macros). Daylight saving time never runs a
+  time twice or skips one: a skipped time runs at the end of the gap, a
+  repeated one once (ADR 0034). On Windows, install `domainkit[tzdata]`.
+- Tasks set their own `timeout`, `max_attempts`, `backoff` (`Backoff`,
+  exponential or fixed, capped, with jitter), `retry_on`, and
+  `dont_retry_on`, over `MESSAGING`'s (DJ-52). `current_attempt()` tells a
+  task which run it is.
+- Task `priority` (-100 to 100, higher first, as in Django's tasks),
+  `chain(a, b)` to run a task after another succeeds with its result, and
+  a per-task `rate` ("10/minute") counted by `RATE_LIMIT_BACKEND` (ADR
+  0035).
+- `messages --pending`, `--locked`, and `--queue` list waiting, running,
+  and published messages; `messages --cancel ID` cancels one no worker
+  runs; `messages` shows each queue's lag, and so does the new
+  `messaging_outbox_lag_seconds` gauge (DJ-53).
+- Outbox messages carry the W3C trace context of their commit, and the
+  worker's span continues it; malformed `traceparent` and `tracestate`
+  values are dropped (`domainkit.tracing.trace_headers`, `remote_parent`).
+- `domainkit.contrib.messaging.testing`, a pytest plugin with
+  `captured_events`, `outbox` (`assert_queued`, `run_queued` and
+  `arun_queued`), and `execute_deferred`, for sync and async tests.
+- `domainkit.contrib.webhooks` sends exposed domain events to subscribed
+  URLs through the outbox, so only committed changes are sent. Deliveries
+  are signed as Standard Webhooks, retried with backoff, logged per
+  attempt, and replayable (`webhooks replay`). URLs must be https and
+  resolve only to public addresses, and the checked address is the one
+  connected to. Staff manage subscriptions through an admin API; secrets
+  are shown once, in answers marked `no-store` that neither caches nor
+  idempotency keys keep, never in reprs (nor are URLs, which may hold
+  tokens), and stored encrypted under a key derived from
+  `SECRET_KEY`, which webhooks require (ADR 0036). Install
+  `domainkit[webhooks]`, which brings httpx2 and cryptography.
+- `domainkit.http.ratelimit.Throttle`, a FastAPI dependency that limits one
+  route, or the routes of one scope, per user, per address, or per key a
+  function returns, apart from `RATE_LIMIT` and with the same backends. Over
+  the rate, the route answers 429 `throttled` with `Retry-After` (DJ-25;
+  `docs/cache.md`, "Throttles for one route").
+- `@cache_page` caches what a GET endpoint returns, keyed by path, query,
+  language, and the headers it lists, with an `ETag` and 304s for
+  `If-None-Match`. Callers with credentials are never served shared
+  answers; `vary_on_user=True` keeps an entry per user. Cached pages
+  replace the `no-store` default with `Cache-Control` of their own
+  (DJ-57; `docs/cache.md`, "Caching whole responses").
+- Caches and rate limits on a Redis Sentinel group
+  (`redis+sentinel://host-1,host-2/mymaster/0`) or a Redis Cluster
+  (`redis+cluster://node-1,node-2`), `rediss+` for TLS, with
+  `SENTINEL_PASSWORD` for Sentinels that ask for one. The deployment checks
+  hold them to the rules for one server (DJ-58; `docs/cache.md`).
+- Error details and validation messages in the caller's language
+  (DJ-59; `docs/i18n.md`, ADR 0039): `LocaleMiddleware` picks a language of
+  `LANGUAGES` from `Accept-Language` and answers with `Content-Language`;
+  domainkit ships English and Arabic. Projects mark their own text with
+  `gettext`, `ngettext`, `pgettext`, and their lazy variants
+  (`domainkit.i18n`), keep catalogs per domain or in `LOCALE_PATHS`, and
+  compile them with `manage.py compilemessages`, which needs no GNU tools
+  and checks them (`--check` in CI). New projects install the middleware.
+- File storage and uploads (DJ-27; `docs/uploads.md`, ADR 0040):
+  `domainkit.storage`, with `FileSystemStorage` and `MemoryStorage`
+  configured in `STORAGES`, stores files under random names it makes,
+  writes them atomically, and never follows symbolic links.
+  `domainkit.http.uploads.save_upload` stores a FastAPI `UploadFile` only
+  if its first bytes are of a type the route accepts, stops it at
+  `max_size` while it streams, and cleans the client's file name;
+  `serve` streams a stored file from a guarded route as a sandboxed
+  download. FastAPI's form parser comes with the new `uploads` extra.
+- `TIME_ZONE`, with `localtime()`, `localdate()`, and `timezone.override()`
+  to show stored UTC times where the business is, and `number_format`,
+  `date_format`, `time_format`, and `datetime_format` that write numbers
+  and dates as English and Arabic do (DJ-60; `docs/i18n.md`).
+- `domainkit.contrib.privacy` (DJ-69; `docs/privacy.md`, ADR 0041) answers
+  privacy requests across every installed domain from `Personal` markers
+  on aggregate fields: `manage.py privacy export` writes what is held about
+  a subject, `privacy erase` erases it through units of work, with a
+  `PersonalDataErased` event, and forgets the subject in the audit trail,
+  and `privacy purge` applies the retention policies domains declare in
+  `DomainConfig.RETENTION`, never on append-only tables. Every operation is
+  audited.
+- Repositories answer queries (`docs/queries.md`, ADR 0022):
+  `filter`, `first`, `count`, `exists`, and `paginate` take criteria built
+  from fields, `(F("status") == "open") & (F("total") >= 10)`, with
+  Django's lookups, orderings, and named `Specification`s. In-memory fakes
+  evaluate them exactly as SQL does (missing values, NULL ordering, the id
+  as tie-breaker, exact amounts), and unknown fields or ill-typed values
+  fail before any SQL runs (DJ-11).
+- `Pagination` and `PageRequest` page any repository over HTTP with
+  versioned, typed cursors, or with bounded offsets, and optional counts;
+  a tampered cursor is a 422 `invalid_cursor` (DJ-21, ADR 0023).
+- `FilterSet` turns `?status=open&total__gte=10&ordering=-placed_at&search=acme`
+  into a query, with lookups allowed per field, typed and documented in
+  OpenAPI, and bounded; anything else is a 422 `invalid_filter` (DJ-20).
+- `add_all` and `remove_all` on repositories, and `update_rows` and
+  `delete_rows` on the SQL adapter for changes that deliberately bypass
+  aggregates and their events (DJ-14).
+- Soft delete: aggregates that inherit `SoftDeletable` are marked deleted by
+  `remove`, left out of reads unless `include_deleted=True`, and brought
+  back with `restore` (DJ-15).
+- `get_for_update(id, nowait=..., skip_locked=...)` and `RowLock` lock rows
+  until the commit (`FOR UPDATE` on PostgreSQL, emulated by in-memory
+  repositories), and `UnitOfWork.savepoint()` undoes part of a unit of work
+  that fails (DJ-18).
+- Read replicas: a `DATABASES` entry names its `REPLICAS`, and read-only
+  units of work (`readonly=True`) read from them while writes stay on the
+  primary (DJ-17, ADR 0024).
+- `table_for` derives a table from an aggregate's fields and type hints,
+  with `MaxLength` and `Digits` for lengths and amounts, enums stored by
+  value, and single-field value objects stored as what they wrap; `children`
+  and `child` map the child entities an aggregate owns (DJ-10, DJ-12).
+- `AsyncTestClient`, which serves the application in the test's own event
+  loop, with its lifespan, and the `async_client`, `async_client_for`, and
+  `async_admin_client` fixtures, for async tests (DJ-62). New projects'
+  tests show one.
+- Factories for aggregates in `domainkit.testing` (DJ-63): `Factory`, with
+  `Sequence`, `LazyFunction`, `LazyAttribute`, `SubFactory`, and
+  overrides (`price__amount=`). `build()` makes an object in memory;
+  `await create()` stores it through a unit of work, in memory or SQL, and
+  commits.
+- `domainkit.clock` (DJ-64, ADR 0037): `now()`, `today()`, and
+  `monotonic()`, the one clock the framework reads, and `freeze_time`, a
+  context manager and fixture that stops it or moves it. Token expiry (JWTs
+  included), idempotency leases, rate windows counted in the process,
+  memory cache lifetimes, and the timestamps of audit entries, events,
+  messages, and evidence all follow it. Domain code may import it. The
+  database's own `now()` is not frozen.
+- `assert_num_queries` and `assert_max_queries` (DJ-65), context managers
+  and fixtures that count the SQL statements a block runs, and list them
+  when the count is wrong.
+- PostgreSQL test databases of their own (N-02, ADR 0038): the plugin
+  creates `test_<name>` (or the entry's new `TEST_NAME`), migrates it,
+  and drops it after the run; `--keepdb` keeps it for the next one, and
+  each pytest-xdist worker gets its own (`test_<name>_gw0`).
+- `docs/testing.md`, on the plugin and everything above.
+- Resources (DJ-19, ADR 0025; `docs/resources.md`): `ResourceRouter`
+  lists an aggregate (with a `FilterSet` and `Pagination`) and reads one,
+  and `command_route(Command, service=..., body=...)` runs a command
+  through an application service, answering `201` with `Location` when it
+  creates one. Resources nest (`parent=`; the path gives a nested
+  aggregate's parent, which no `crud` write changes), narrow what each
+  caller reaches (`scope=`), and, for reference data only, offer generic
+  create, change, and delete (`crud=True`), which record `RecordCreated`, `RecordChanged`,
+  and `RecordDeleted`. `ModelActions(Model)` asks for the model permission
+  of each route's action, so a command needs `change`, not `add`. A
+  resource without a rule fails the deny-by-default check.
+- `schema_for(Aggregate, include=, exclude=, name=, write=, partial=)`
+  derives request and response schemas from the domain class, with
+  `from_domain` (DJ-22): value objects become what they wrap, ids and
+  `Reference[XId]` their id type, children nest.
+- Partial changes (DJ-23): `PatchModel` fields default to `UNSET`, so a
+  field left out differs from one set to null, and `PATCH` routes take
+  `application/merge-patch+json`. Commands take `UNSET` for what was not
+  sent.
+- ETags and conditional requests (DJ-24, N-05): an aggregate's answer has
+  `ETag: W/"<version>-<digest>"`, `If-None-Match` answers `304`, and a
+  write whose `If-Match` names another version is `412
+  precondition_failed`, checked in the transaction that makes the change.
+  A resource may require `If-Match` (`428 precondition_required`).
+- Field policies (DJ-31): `FieldPolicy(read_only=, visible=, editable=)`
+  shows a field, or lets a partial change set it, only for callers granted
+  its permission, and OpenAPI says so.
+- `Reference[CustomerId]`, an id-only reference to another aggregate:
+  `table_for` indexes its column, and `schema_for` describes it.
+- `domainkit.http.error_responses(*codes)`, the OpenAPI entries of the
+  errors a route answers with.
+- `query_route(Query, handler=..., path=...)` serves a CQRS query on a
+  resource: its fields from the query string (bounded, unknown parameters
+  refused), one aggregate or `{"items": [...]}` back, and what the caller
+  may not reach or see left out.
+- Batches (DJ-35, ADR 0027): `batch_route(Command, service=...)` serves
+  `POST /<plural>/batch` for up to `max_items` items, answering `207` with
+  each item's result; `"atomic": true` runs them in one transaction and
+  undoes them all if one fails.
+- Exports (DJ-34): `ResourceRouter(..., exports=("csv", "ndjson"))` answers
+  listings as CSV or NDJSON by `Accept` (`406` when nothing fits), every
+  match streamed up to `max_export`; CSV cells that could run as formulas
+  are neutralised.
+- `domainkit.contrib.objectpermissions` (DJ-30, ADR 0026; `docs/auth.md`,
+  "Grants on single objects"): grants of one permission on one object to a
+  user or a group, as audited events; `ObjectPermissionBackend` for
+  `has_perm(user, perm, obj)` and `HasObjectPermissions`; `grant_permission`
+  and `revoke_permission` within what the actor holds; and `VisibleTo`,
+  criteria the SQL repositories compile to `EXISTS` and in-memory ones
+  read from the grants they are given, with `visible_scope` for resources.
+- `domainkit.db.query.register_compiler` compiles criteria of your own.
+- `domainkit.contrib.admin` (DJ-46; `docs/resources.md`, "The generic
+  admin"): `admin.register(Product, ..., list_display=, filters=, search=,
+  commands=[admin.command(...)])` serves a model under the admin's prefix,
+  for staff with its model permissions: lists, reads with tags, commands
+  run by application services (never raw field edits), queries, and each
+  item's history from the audit trail. `GET /admin/meta` describes the
+  models, fields, filters, and commands the caller may use, as JSON
+  Schema. Users, groups, and permissions keep their own admin.
+- `ResourceRouter` takes `list_fields=` (lists show only those fields) and
+  `name_prefix=` (route names, hence operation ids), records its
+  `operations`, and offers `fetch()` for routes of your own.
+- Generators (DJ-01; `docs/resources.md`, "Generators"): `startaggregate`
+  adds an aggregate to a domain, every layer and its tests, with fields
+  from a registry of kinds (`--field price:decimal:10:2`, `--field
+  parent:ref:Category?`; `register_field_type` adds kinds); `addcommand`
+  adds a task command (method, event, use case, route, tests), `addquery`
+  a query by fields (handler, route, tests), and `addevent` an event with a
+  durable handler. Names are checked, files are edited where their syntax
+  tree says, and nothing is written unless every edit fits. What they
+  generate passes ruff, `mypy --strict`, and its own tests.
+
+### Changed
+
+- **Staging and production need `SECRET_KEY`** (DJ-37): startup fails
+  without one, or with one shorter than 50 characters, with fewer than 5
+  different ones, or starting with `domainkit-insecure-` or
+  `django-insecure-`. Fallbacks are held to the same rules, and the errors
+  never quote a key. The production settings that `init` creates read it
+  from `<PREFIX>SECRET_KEY`; set it before upgrading a deployment.
+- `/auth/me` and the admin API show `email_verified`.
+- `IsAdminUser` and `IsSuperuser` refuse credentials limited to scopes,
+  and the admin API, `/auth/password`, and `/auth/logout` with
+  `everywhere` refuse them altogether: what staff grant is bounded by
+  their permissions, never by a token's scopes, and a scoped key must not
+  change or lock its account.
+- Integrity errors other than a taken value no longer answer 500: a broken
+  foreign key is 409 `referenced`, a NULL in a NOT NULL column 422
+  `missing_value`, and a refused CHECK constraint 422 `check_violation`,
+  on PostgreSQL and on SQLite. A taken value outside a unit of work is a
+  409 too. Fields are named, values never are.
+- A `DuplicateValue` answers with one `errors` entry per field
+  (`loc: ["body", "<field>"]`), and its `fields` are the names the API
+  uses: a column's `info={"field": ...}`, else the attribute a mapped class
+  keeps it in, else the column's name.
+- `shell` is an asyncio console where `await` works at the top level, and
+  it imports each installed domain's models, repositories, and units of
+  work; `-c` runs code and exits.
+- The audit trail gained an index on `target`, for histories. Run
+  `makemigrations` and `migrate` in projects that install audit.
+- `check` and startup report operation ids that two routes share.
+- The outbox has `priority` and `started_at` columns, an index, and a
+  `cancelled` status: run `makemigrations` and `migrate` in projects that
+  install messaging before deploying.
+- `MESSAGING.RETRY_BASE_SECONDS` and `RETRY_MAX_SECONDS` are at most a
+  year, and a retry delay no longer overflows after a thousand attempts.
+- `messages` prints a `cancelled` count and each queue's lag after the
+  counts by status.
+- The auth admin's `/users` and `/groups` listings use the new paginator:
+  cursors issued before the upgrade are refused once with
+  `invalid_cursor`, and the client starts again.
+- **On PostgreSQL, the test fixtures no longer use the database the test
+  settings name**: they create `test_<name>` on the same server and drop it
+  after the run, so the test role needs `CREATEDB`. A role without it can
+  create the database once and run with `--keepdb`. SQLite is unchanged.
+- The `client` fixture is a `domainkit.testing.TestClient`, a subclass of
+  Starlette's whose requests see the caller's context variables, so a
+  frozen clock reaches the application.
+- JWTs' `exp`, `iat`, and `nbf` are checked by domainkit, on
+  `domainkit.clock`, as PyJWT checked them on the host's clock.
+- Repositories check the version a request expects (`If-Match`) when they
+  hand out an aggregate; outside a resource's route nothing is expected,
+  so nothing changes.
+- The auth admin's user and group listings and reads are resources: reads
+  answer with an `ETag` and `304` for `If-None-Match`. Their bodies are
+  unchanged.
+- `startdomain` generates a domain on the resource kit (DJ-12): 15 files
+  instead of 24, and an API layer of about 90 lines instead of 210. The
+  aggregate has a child-entity collection (notes, with `children()`) and an
+  id-only reference to its owner (`Reference[OwnerId]`); its tables come
+  from `table_for`; its resource pages, filters, and searches the listing,
+  tags reads, and takes `PATCH` (a merge patch), `DELETE`, and commands
+  that answer with `Location` and honour `If-Match`. The example management
+  command and domain settings are gone. In a project laid out as `init`
+  makes it, `startdomain` also adds the domain to `INSTALLED_DOMAINS` and
+  mounts its router (`--manual` prints the steps instead).
+- **Startup refuses `AuthenticationMiddleware` without
+  `RequestContextMiddleware`** listed before it, as it already refused the
+  two in the wrong order: without a request context no actor is bound, and
+  rate limits, idempotency keys, the audit trail, and `@cache_page` could
+  not tell users apart. Add `domainkit.http.middleware.RequestContextMiddleware`
+  ahead of it (projects from `init` have it).
+- **`FilterSet` refuses orderings whose cursors could be too long**, when
+  declared: each field of `ordering_fields` and `default_ordering` needs a
+  bound (`Annotated[str, MaxLength(n)]` on text, `Digits` on amounts), and
+  the default ordering, and the `max_ordering` fields that take most room,
+  must fit in `MAX_CURSOR_LENGTH`. The error says what to declare. The cap
+  is now 4,096 characters (from 2,048): three text fields of
+  `MaxLength(150)`, in any script. `cursor_length(ordering, model)` gives
+  the bound of any ordering (ADR 0023).
+- **Email addresses are checked** wherever one is taken: creating a user
+  (the admin API, `create_user`, `createsuperuser`), changing one, signing
+  up, and asking for a reset. An address is one plain ASCII address,
+  `user@example.com`, without a display name, comment, or list; anything
+  else is refused with `422 invalid_email` (`InvalidEmail`), so mail goes
+  to exactly the address an account shows. Addresses compare by their
+  ASCII letters alone: on PostgreSQL, a look-alike (the KELVIN SIGN, which
+  `lower()` makes a `k`) no longer takes another's signup or reset, and a
+  reset skips, and logs by user id, a stored address that cannot take mail
+  rather than failing for every account of it. Addresses stored before
+  stay as they are.
+- `check` also lists warnings that installed domains return from the new
+  `DomainConfig.deployment_warnings()`, in staging and production.
+- Usernames that start with `erased-`, in any case, are kept for accounts
+  privacy erased: signing up, the admin API, `createsuperuser`, and
+  `create_user` with any user model refuse them (`422 invalid_username`),
+  and erasing a user whose name only starts with `erased-` erases it too.
+- `/auth/me` with a token limited to scopes lists only the permissions
+  both its user and its scopes allow, and `/auth/email-verification`
+  refuses scoped tokens (403).
+- Staging and production refuse `AUTH.PASSWORD_RESET_URL`,
+  `EMAIL_VERIFICATION_URL`, and `SIGNUP_URL` over `http://`, and `check`
+  warns there when `AUTH.LOGIN_RATE` or `AUTH.MFA.RATE` is `None`.
+
+### Fixed
+
+- Autogenerated revisions keep SQLAlchemy's own `Interval` and `PickleType`
+  columns as they are. An `Interval` was written as `DateTime`, a timestamp
+  on PostgreSQL instead of an `INTERVAL`.
+- `client_for` and `admin_client` work in async tests. They called
+  `asyncio.run`, which fails inside a running event loop (N-01).
+- Clients from `client_for` and `admin_client` run on the `client`
+  fixture's event loop. Each of their requests started an event loop of its
+  own, with a database engine nothing closed (ASYNC-24).
+- `privacy export` and `privacy erase` (and `export_subject`,
+  `erase_subject`) refuse an id spelled otherwise than it prints where
+  domains name people by UUID or integer: an upper-case or braced UUID, one
+  without dashes or with `urn:uuid:`, or `042`, `+42`, ` 42`. Such a subject
+  matched the person's UUID or integer columns but not the same id in text
+  columns or audit keys, and the erasure still reported success. The
+  message gives the form to use.
+- `@cache_page` keys entries by the scheme and host too, as Django's
+  `cache_page` keys absolute URLs. A page whose answer depends on the host
+  (a tenant chosen by `Host`, a link built with `url_for`) was served to
+  every host and scheme from the entry the first request filled.
+- `@cache_page` counts the credentials an authentication middleware
+  accepted (`request.auth`) even when no actor is bound. A user logged in
+  by a cookie or a client certificate, behind `AuthenticationMiddleware`
+  without `RequestContextMiddleware`, sent no `Authorization` header and
+  had no actor, so a page without `vary_on_user` stored their answer as
+  public and served it to everyone.
+- A page always answers with its cursor. One sort value longer than about
+  1,500 bytes (an 800-letter Arabic title) made `encode_position` refuse
+  the cursor, so every page that ended on it was a 500. Cursors going out
+  are no longer refused; `FilterSet` bounds them when declared instead
+  (see Changed), and one that is still too long, from a value longer than
+  its field declares, is logged and refused when it comes back.
+- Amounts in cursors are written in plain notation. Amounts of seven or
+  more places, such as zero at eight (`0E-8`), were written with an
+  exponent, which decoding refused, so the page after one was a 422
+  `invalid_cursor`.
+- `dumpdata --output` writes a new file only its owner can read (mode
+  `0600`), and refuses a path that exists, a symbolic link too, as
+  `privacy export --output` does. It wrote with the umask's mode (`0644`
+  usually) a fixture that can hold personal data and password hashes, and
+  followed a link planted where it would go. Delete an old fixture before
+  dumping again.
+- `FilterSet` bounds amounts by their field's `Digits` (40 digits either
+  side of the point without), so an amount out of range is a 422
+  `validation_error`. `?price__gte=1e999999999` reached the database
+  driver, which could not send it to PostgreSQL: a 500.
+- `FilterSet` leaves `<name>__<lookup>` alone for every name it does not
+  filter, as it leaves other parameters. A field of the model it did not
+  filter was a 422 naming the field, and an unknown name passed, so a
+  client could list the model's fields (`password`, `deleted_at`) one
+  guess at a time.
+- A route's own `rule=` that looks at objects (`HasObjectPermissions`, a
+  rule with `has_object_permission`) is asked about the aggregate, on
+  command, batch, and query routes and the admin's commands and queries.
+  It was asked only whether the request may proceed, so any logged-in
+  user ran the command on any object. A query answering several
+  aggregates leaves out those the rule refuses.
+- `visible_scope` (and `visible_to(..., request=)`) matches nothing for
+  credentials whose scopes leave the permission out. A token scoped to
+  something else saw every object its user may see.
+- `crud=True` creates keep to the `FieldPolicy`: `read_only` fields are
+  not in the body, and fields in `editable` need their permission, as in
+  a `PATCH`. A caller allowed to add set protected fields.
+- `crud=True` creates and changes stay in the caller's `scope`: one that
+  would put the aggregate out of the caller's reach (another tenant's) is
+  `403 permission_denied`, and the transaction rolls back.
+- Fields hidden from a caller by `visible` are not theirs to set, by
+  `PATCH`, a `PatchModel` command, or a generic create (`403
+  field_not_editable`); they could overwrite what they could not see.
+- A use case that commits without loading the aggregate `If-Match` names
+  writes nothing: the unit of work refuses the commit. The request failed
+  after the commit, with the stale write stored.
+- The generic admin refuses any user model (a subclass of
+  `AbstractBaseUser`), `Group`, and `Permission`, whatever the `label=`,
+  and a `label=` that names another model than the class's. A swapped
+  user model registered and showed its password hash and permissions.
+  `schema_for` refuses fields holding a password hash unless excluded.
+- CSV exports guard formulas behind spaces of any kind, line breaks, and
+  invisible characters, and in full-width and small forms (`＝`, `﹣`).
+  NDJSON escapes U+0085, U+2028, and U+2029, which split a line for some
+  readers.
+- Deleting an object's row deletes the grants on it, so an object stored
+  later with the same id does not inherit them. `delete_rows` still
+  leaves them (docs/auth.md).
+- `/admin/meta` leaves out the nested schemas only hidden fields used.
+
 ## [0.6.2] - 2026-10-19
 
 ### Added

@@ -19,15 +19,19 @@ it (``accounts_users_groups``, ``accounts_users_permissions``).
 from typing import Any
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Column,
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Table,
+    Text,
     UniqueConstraint,
     Uuid,
+    false,
 )
 from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import relationship
@@ -40,6 +44,7 @@ from domainkit.db import UTCDateTime, map_imperatively, metadata
 
 from .exceptions import GroupNameTaken, UsernameTaken
 from .models import (
+    EMAIL_MAX_LENGTH,
     GROUP_NAME_MAX_LENGTH,
     USERNAME_MAX_LENGTH,
     AbstractBaseUser,
@@ -69,6 +74,25 @@ class PasswordHashType(TypeDecorator[PasswordHash]):
         return None if value is None else PasswordHash(value)
 
 
+class ScopesType(TypeDecorator[frozenset[str]]):
+    """Store a token's scopes as permission keys separated by spaces."""
+
+    impl = Text
+    cache_ok = True
+
+    def process_bind_param(
+        self, value: frozenset[str] | None, dialect: Dialect
+    ) -> str | None:
+        """Join the keys, sorted; None (no limit) stays None."""
+        return None if value is None else " ".join(sorted(value))
+
+    def process_result_value(
+        self, value: str | None, dialect: Dialect
+    ) -> frozenset[str] | None:
+        """Split the stored keys."""
+        return None if value is None else frozenset(value.split())
+
+
 def abstract_base_user_columns() -> list[Column[Any]]:
     """New columns for the fields of ``AbstractBaseUser``."""
     return [
@@ -94,6 +118,8 @@ def abstract_user_columns() -> list[Column[Any]]:
             info={"duplicate": UsernameTaken},
         ),
         Column("email", String(254), nullable=False),
+        # Existing rows start unverified when the column is added.
+        Column("email_verified", Boolean, nullable=False, server_default=false()),
         Column("first_name", String(150), nullable=False),
         Column("last_name", String(150), nullable=False),
         Column("is_staff", Boolean, nullable=False),
@@ -173,12 +199,61 @@ tokens = Table(
     Column("created_at", UTCDateTime, nullable=False),
     Column("expires_at", UTCDateTime),
     Column("used_at", UTCDateTime),
+    # Permission keys the token is limited to; NULL: every one of its user's.
+    Column("scopes", ScopesType),
+    Column("last_used_at", UTCDateTime),
     Index("ix_domainkit_tokens_user_id", "user_id"),
     Index("ix_domainkit_tokens_family", "family"),
     Index("ix_domainkit_tokens_expires_at", "expires_at"),
     info={"domain": "auth"},
 )
 """Opaque access tokens and refresh tokens, by digest."""
+
+mfa_devices = Table(
+    "domainkit_mfa_devices",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    # One authenticator per user; no foreign key, as for tokens.
+    Column("user_id", Uuid, nullable=False, unique=True),
+    # Encrypted (domainkit.encryption.SecretBox), bound to the user's id.
+    Column("secret", LargeBinary(256), nullable=False),
+    Column("created_at", UTCDateTime, nullable=False),
+    Column("confirmed_at", UTCDateTime),
+    # The step of the last code accepted: no code is accepted twice.
+    Column("last_step", BigInteger),
+    # Secrets: never in fixtures (dumpdata, loaddata).
+    info={"domain": "auth", "fixtures": False},
+)
+"""TOTP authenticators; unconfirmed until a first code proves the app has it."""
+
+recovery_codes = Table(
+    "domainkit_recovery_codes",
+    metadata,
+    # SHA-256 of the user's id and the code: the table holds no working code.
+    Column("id", String(64), primary_key=True),
+    Column("user_id", Uuid, nullable=False),
+    Column("used_at", UTCDateTime),
+    Index("ix_domainkit_recovery_codes_user_id", "user_id"),
+    info={"domain": "auth", "fixtures": False},
+)
+"""Single-use codes that stand in for a lost authenticator."""
+
+pending_signups = Table(
+    "domainkit_pending_signups",
+    metadata,
+    # Random: the signup link carries it signed, so the id alone opens nothing.
+    Column("id", Uuid, primary_key=True),
+    # Neither unique: a pending signup reserves no name and no address.
+    Column("username", String(USERNAME_MAX_LENGTH), nullable=False),
+    Column("email", String(EMAIL_MAX_LENGTH), nullable=False),
+    # No password: whoever reads the mail chooses it, when confirming.
+    Column("created_at", UTCDateTime, nullable=False),
+    Column("expires_at", UTCDateTime, nullable=False),
+    Index("ix_domainkit_pending_signups_expires_at", "expires_at"),
+    # Addresses of people who may never have asked: never in fixtures.
+    info={"domain": "auth", "fixtures": False},
+)
+"""Accounts asked for at ``/signup``, made once their address is confirmed."""
 
 
 def user_link_tables(user_table: Table) -> tuple[Table, Table]:

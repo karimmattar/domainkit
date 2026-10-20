@@ -39,6 +39,9 @@ class Command(BaseCommand):
             )
         labels = ", ".join(config.label for config in registry) or "none"
         warnings = settings.deployment_warnings()
+        warnings += [
+            found for config in registry for found in config.deployment_warnings()
+        ]
         plural = "s" if len(warnings) > 1 else ""
         found = f" and {len(warnings)} warning{plural}" if warnings else ""
         self.write(f"System check identified no issues{found}. Domains: {labels}.")

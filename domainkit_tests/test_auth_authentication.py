@@ -301,15 +301,34 @@ def test_throttled_counts_are_remembered_within_a_bound(
     from fastapi import FastAPI
     from starlette.requests import Request
 
-    from domainkit.contrib.auth import api
+    from domainkit.contrib.auth import throttling
 
-    monkeypatch.setattr(api, "MAX_REFUSALS", 1)
+    monkeypatch.setattr(throttling, "MAX_REFUSALS", 1)
     request = Request({"type": "http", "headers": [], "app": FastAPI()})
 
-    assert api._first_refusal(request, "a", 60)
-    assert not api._first_refusal(request, "a", 60)
-    assert api._first_refusal(request, "b", 60)
-    assert api._first_refusal(request, "a", 60)  # Let go when "b" came.
+    assert throttling.first_refusal(request, "a", 60)
+    assert not throttling.first_refusal(request, "a", 60)
+    assert throttling.first_refusal(request, "b", 60)
+    assert throttling.first_refusal(request, "a", 60)  # Let go when "b" came.
+
+
+def test_a_refusal_is_audited_again_once_its_period_is_over(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Within the period, once; a full period later, again."""
+    from fastapi import FastAPI
+    from starlette.requests import Request
+
+    from domainkit import clock
+    from domainkit.contrib.auth import throttling
+
+    request = Request({"type": "http", "headers": [], "app": FastAPI()})
+    readings = iter([1000.0, 1059.5, 1060.0])
+    monkeypatch.setattr(clock, "monotonic", lambda: next(readings))
+
+    assert throttling.first_refusal(request, "a", 60)
+    assert not throttling.first_refusal(request, "a", 60)
+    assert throttling.first_refusal(request, "a", 60)
 
 
 def test_logins_from_unknown_addresses_are_throttled_together(

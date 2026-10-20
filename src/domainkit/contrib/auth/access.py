@@ -23,9 +23,14 @@ dependency that returns the user::
 
 A refused anonymous caller gets 401, so it knows to log in; a refused user
 gets 403. ``AuthenticationMiddleware`` must be installed.
+
+Credentials may be limited to scopes, permission keys (a token made with
+``scopes``): the permission rules then allow only what both the user and
+the scopes allow, ``IsAdminUser`` and ``IsSuperuser`` refuse them, and
+``IsUnscoped`` keeps a route to credentials without a limit.
 """
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from typing import Annotated, Any, ClassVar, Final, cast
 
 from fastapi import Depends, FastAPI, Request, status
@@ -214,19 +219,50 @@ class IsAuthenticatedOrReadOnly(BasePermission):
 
 
 class IsAdminUser(BasePermission):
-    """Staff users (``is_staff``)."""
+    """Staff users (``is_staff``), with credentials that are not limited to scopes."""
 
     async def has_permission(self, request: HTTPConnection, user: AnyUser) -> bool:
-        """The user is staff."""
-        return user.is_authenticated and getattr(user, "is_staff", False) is True
+        """The user is staff; scopes name permissions, and staff hold more."""
+        return (
+            user.is_authenticated
+            and getattr(user, "is_staff", False) is True
+            and scopes_of(request) is None
+        )
 
 
 class IsSuperuser(BasePermission):
-    """Active superusers."""
+    """Active superusers, with credentials that are not limited to scopes."""
 
     async def has_permission(self, request: HTTPConnection, user: AnyUser) -> bool:
-        """The user is an active superuser."""
-        return user.is_active and user.is_superuser
+        """The user is an active superuser, and holds every permission here."""
+        return user.is_active and user.is_superuser and scopes_of(request) is None
+
+
+class IsUnscoped(BasePermission):
+    """Users whose credentials are not limited to scopes (a login, not a key).
+
+    For what scopes cannot bound, such as managing users or tokens.
+    """
+
+    message: ClassVar[str] = "Credentials limited to scopes cannot do this."
+
+    async def has_permission(self, request: HTTPConnection, user: AnyUser) -> bool:
+        """A user, with credentials that carry no scopes."""
+        return user.is_authenticated and scopes_of(request) is None
+
+
+class HasScope(BasePermission):
+    """Users whose credentials allow every scope named; unscoped ones allow all."""
+
+    def __init__(self, *scopes: str) -> None:
+        """Require ``scopes`` (permission keys)."""
+        if not scopes:
+            raise ImproperlyConfigured("HasScope needs at least one scope.")
+        self.scopes = scopes
+
+    async def has_permission(self, request: HTTPConnection, user: AnyUser) -> bool:
+        """A user whose credentials cover the scopes."""
+        return user.is_authenticated and _within(request, self.scopes)
 
 
 class HasPermissions(BasePermission):
@@ -239,8 +275,8 @@ class HasPermissions(BasePermission):
         self.perms = perms
 
     async def has_permission(self, request: HTTPConnection, user: AnyUser) -> bool:
-        """The backends grant every permission."""
-        return await has_perms(user, self.perms)
+        """The backends grant every permission, and the scopes allow them."""
+        return _within(request, self.perms) and await has_perms(user, self.perms)
 
 
 class HasObjectPermissions(HasPermissions):
@@ -258,8 +294,8 @@ class HasObjectPermissions(HasPermissions):
     async def has_object_permission(
         self, request: HTTPConnection, user: AnyUser, obj: object
     ) -> bool:
-        """The backends grant every permission on ``obj``."""
-        return await has_perms(user, self.perms, obj)
+        """The backends grant every permission on ``obj``, within the scopes."""
+        return _within(request, self.perms) and await has_perms(user, self.perms, obj)
 
 
 class ModelPermissions(BasePermission):
@@ -288,7 +324,8 @@ class ModelPermissions(BasePermission):
         if action is None:
             return False
         domain, model = self._content_type()
-        return await has_perms(user, [f"{domain}.{action}_{model}"])
+        perm = f"{domain}.{action}_{model}"
+        return _within(request, [perm]) and await has_perms(user, [perm])
 
     def _content_type(self) -> tuple[str, str]:
         """``(domain, model)`` of the model."""
@@ -503,6 +540,19 @@ def _rule(rule: Rule) -> BasePermission:
             "IsAdminUser() | IsSuperuser()."
         )
     return instance
+
+
+def scopes_of(connection: HTTPConnection) -> frozenset[str] | None:
+    """The scopes the request's credentials are limited to; None: no limit."""
+    credentials = connection.scope.get("auth")
+    scopes: frozenset[str] | None = getattr(credentials, "scopes", None)
+    return scopes
+
+
+def _within(connection: HTTPConnection, perms: Iterable[str]) -> bool:
+    """Whether the request's scopes, if any, cover every one of ``perms``."""
+    scopes = scopes_of(connection)
+    return scopes is None or scopes.issuperset(perms)
 
 
 def _method(request: HTTPConnection) -> str:

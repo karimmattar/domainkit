@@ -29,6 +29,7 @@ from sqlalchemy import Column, Connection, Date, DateTime, Table, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.types import TypeEngine
 
+from domainkit import clock
 from domainkit.db.connections import connections, create_owner_engine
 from domainkit.db.orm import metadata
 from domainkit.db.routing import router
@@ -283,9 +284,7 @@ async def maintain(
                 existing = await _partitions_of(connection, table)
                 if existing is None:
                     continue
-                maintenance = plan(
-                    table, existing, now or datetime.now(UTC), prune=prune
-                )
+                maintenance = plan(table, existing, now or clock.now(), prune=prune)
                 for sql in _statements(connection, maintenance):
                     statements.append(sql)
                     if not dry_run:

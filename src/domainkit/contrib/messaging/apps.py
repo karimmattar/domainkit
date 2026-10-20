@@ -1,10 +1,9 @@
 """Install ``domainkit.contrib.messaging`` to get the outbox and the worker."""
 
-import uuid
 from collections.abc import Sequence
 from importlib import import_module
 from importlib.util import find_spec
-from typing import cast
+from typing import Any, cast
 from weakref import WeakKeyDictionary
 
 from domainkit.apps import DomainConfig, registry
@@ -13,11 +12,11 @@ from domainkit.db import SqlAlchemyUnitOfWork
 from domainkit.db.routing import DatabaseRouter, router
 from domainkit.ddd import DeferredTask, DomainEvent, UnitOfWork
 
-from .dispatch import close_publishers, publish_committed
-from .outbox import rows_for, write
+from .dispatch import close_publishers
+from .outbox import notify_committed, rows_for, write
 from .settings import MessagingSettings
 
-_committing: WeakKeyDictionary[UnitOfWork, list[uuid.UUID]] = WeakKeyDictionary()
+_committing: WeakKeyDictionary[UnitOfWork, list[dict[str, Any]]] = WeakKeyDictionary()
 """Messages each unit of work wrote, to publish once it commits."""
 
 
@@ -51,13 +50,13 @@ class MessagingConfig(DomainConfig):
         session = sql_uow.session
         dialect = session.get_bind().dialect.name
         await write(session, dialect, rows)
-        _committing.setdefault(uow, []).extend(row["id"] for row in rows)
+        _committing.setdefault(uow, []).extend(rows)
 
     async def committed(self, uow: UnitOfWork) -> None:
         """Hand the messages the unit of work wrote to the background publisher."""
-        ids = _committing.pop(uow, [])
+        rows = _committing.pop(uow, [])
         sql_uow = cast(SqlAlchemyUnitOfWork, uow)
-        publish_committed(self.get_settings(), sql_uow.alias, ids)
+        await notify_committed(self.get_settings(), sql_uow.alias, rows)
 
     async def shutdown(self) -> None:
         """Let the background publisher finish, for a few seconds at most."""

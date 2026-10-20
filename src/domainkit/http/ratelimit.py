@@ -16,27 +16,39 @@ whole /64, and could otherwise change address to escape the limit.
 The default backend lives in process memory, so each replica counts on its
 own. Behind several replicas, use ``RedisBackend``: one count per caller in
 the Redis cache ``RATE_LIMIT_CACHE``, shared by every replica (ADR 0013).
+
+``Throttle`` limits one route (or a group of routes) on its own, on top of
+the global limit, with the same backends::
+
+    @router.post("/exports", dependencies=[Require(), Depends(Throttle("5/hour"))])
+    async def export(...): ...
 """
 
+import hashlib
+import inspect
 import ipaddress
 import logging
 import math
+import re
 import time
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Final, Protocol
+from typing import Final, Literal, Protocol
 
 from fastapi import status
 from starlette.datastructures import MutableHeaders
+from starlette.exceptions import WebSocketException
+from starlette.requests import HTTPConnection
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from domainkit.cache import CacheError, CacheUnavailable, caches
+from domainkit.clock import monotonic
 from domainkit.conf import settings
 from domainkit.conf.global_settings import REDIS_SCHEMES
 from domainkit.context import current_request
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.http.errors import error_response
+from domainkit.http.errors import APIError, error_response
 from domainkit.utils.module_loading import import_string
 from domainkit.utils.rates import parse_rate
 
@@ -74,7 +86,7 @@ class MemoryBackend:
     """
 
     def __init__(
-        self, max_keys: int = 100_000, clock: Callable[[], float] = time.monotonic
+        self, max_keys: int = 100_000, clock: Callable[[], float] = monotonic
     ) -> None:
         """Keep at most ``max_keys`` callers; ``clock`` reads seconds."""
         self.max_keys = max_keys
@@ -187,8 +199,20 @@ class RedisBackend:
         )
 
 
+def load_backend() -> Backend:
+    """A new instance of the ``RATE_LIMIT_BACKEND`` class."""
+    try:
+        backend = import_string(settings.RATE_LIMIT_BACKEND)
+    except ImportError as exc:
+        raise ImproperlyConfigured(f"RATE_LIMIT_BACKEND: {exc}") from exc
+    instance: Backend = backend()
+    return instance
+
+
 TRY_AGAIN_LATER: Final = 1013
 """WebSocket close code for a handshake refused because of the rate limit."""
+TOO_MANY_REQUESTS: Final = "Too many requests; slow down."
+"""The detail of every 429 a limit answers with."""
 _DENIAL: Final = "websocket.http.response"
 """The ASGI extension that lets a WebSocket handshake be refused with a 429."""
 
@@ -206,11 +230,7 @@ class RateLimitMiddleware:
         self.app = app
         self.rate = parse_rate(settings.RATE_LIMIT) if settings.RATE_LIMIT else None
         self.exempt = frozenset(settings.RATE_LIMIT_EXEMPT_PATHS)
-        try:
-            backend = import_string(settings.RATE_LIMIT_BACKEND)
-        except ImportError as exc:
-            raise ImproperlyConfigured(f"RATE_LIMIT_BACKEND: {exc}") from exc
-        self.backend: Backend = backend()
+        self.backend = load_backend()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Count the request; answer 429 or add the quota headers."""
@@ -245,9 +265,7 @@ async def refuse(
         await send({"type": "websocket.close", "code": TRY_AGAIN_LATER})
         return
     response = error_response(
-        status.HTTP_429_TOO_MANY_REQUESTS,
-        "Too many requests; slow down.",
-        code="rate_limited",
+        status.HTTP_429_TOO_MANY_REQUESTS, TOO_MANY_REQUESTS, code="rate_limited"
     )
     response.headers.update(
         {**_quota(limit, decision), "Retry-After": str(math.ceil(decision.retry_after))}
@@ -294,3 +312,125 @@ def client_group(host: str) -> str:
         prefix = settings.RATE_LIMIT_IPV6_PREFIX
         return str(ipaddress.IPv6Interface((address, prefix)).network)
     return str(address)
+
+
+_SCOPE: Final = re.compile(r"[A-Za-z0-9_.-]{1,128}")
+"""A throttle's scope: part of every key it counts under."""
+
+type ThrottleKey = (
+    Literal["user", "address"]
+    | Callable[[HTTPConnection], str | None]
+    | Callable[[HTTPConnection], Awaitable[str | None]]
+)
+"""Who a throttle counts: the user, the address, or what a function returns."""
+
+
+class Throttled(APIError):
+    """A caller went over a route's ``Throttle`` (429, with ``Retry-After``)."""
+
+    def __init__(self, limit: int, decision: Decision) -> None:
+        """Answer 429 ``throttled`` with the quota headers of ``decision``."""
+        super().__init__(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            TOO_MANY_REQUESTS,
+            code="throttled",
+            headers={
+                **_quota(limit, decision),
+                "Retry-After": str(math.ceil(decision.retry_after)),
+            },
+        )
+
+
+class Throttle:
+    """A FastAPI dependency: at most ``rate`` requests per caller to a route.
+
+    It counts separately from ``RATE_LIMIT``, with the ``RATE_LIMIT_BACKEND``
+    (one per application), so a costly route can have a tighter limit than
+    the rest::
+
+        export_limit = Throttle("5/hour")
+
+        @router.post("/exports", dependencies=[Require(), Depends(export_limit)])
+        async def export(...): ...
+
+    ``key`` says who is counted: ``"user"`` (the actor, or the address of
+    anonymous callers), ``"address"`` (the client address, IPv6 per
+    network, even for users), or a function of the request, sync or async,
+    returning a key (hashed before it is stored) or None for the address.
+    ``scope`` names the count: routes with the same scope share it. By
+    default each route counts on its own. A refused request gets 429
+    ``throttled`` with ``Retry-After``; a refused WebSocket handshake is
+    closed with 1013 (try again later).
+
+    A throttle is not an access rule: the route still needs ``Require(...)``
+    or ``Public``.
+    """
+
+    def __init__(
+        self,
+        rate: str,
+        *,
+        key: ThrottleKey = "user",
+        scope: str | None = None,
+        backend: Backend | None = None,
+    ) -> None:
+        """Allow ``rate`` (``"10/minute"``) per caller, counted in ``backend``."""
+        self.limit, self.period = parse_rate(rate)
+        if not callable(key) and key not in {"user", "address"}:
+            raise ValueError(
+                f"Throttle key {key!r} must be 'user', 'address', or a function."
+            )
+        if scope is not None and not _SCOPE.fullmatch(scope):
+            raise ValueError(
+                f"Throttle scope {scope!r} must be 1 to 128 letters, digits, or _.-"
+            )
+        self.key = key
+        self.scope = scope
+        self.backend = backend
+
+    async def __call__(self, connection: HTTPConnection) -> None:
+        """Count the request; refuse it over the rate.
+
+        Raises:
+            Throttled: An HTTP request went over the rate.
+            WebSocketException: A WebSocket handshake went over the rate.
+        """
+        backend = self.backend or _app_backend(connection)
+        key = f"throttle:{self.scope or _view(connection)}:"
+        key += await self._caller(connection)
+        decision = await backend.hit(key, self.limit, self.period)
+        if decision.allowed:
+            return
+        if connection.scope["type"] == "websocket":
+            raise WebSocketException(TRY_AGAIN_LATER)
+        raise Throttled(self.limit, decision)
+
+    async def _caller(self, connection: HTTPConnection) -> str:
+        """The part of the key that names the caller."""
+        if isinstance(self.key, str):
+            if self.key == "user":
+                return _caller(connection.scope)
+            return address_key(connection.scope)
+        found = self.key(connection)
+        if inspect.isawaitable(found):
+            found = await found
+        if found is None:
+            return address_key(connection.scope)
+        return f"key:{hashlib.sha256(found.encode()).hexdigest()[:32]}"
+
+
+def _app_backend(connection: HTTPConnection) -> Backend:
+    """The application's throttle backend (``RATE_LIMIT_BACKEND``), made once."""
+    state = connection.app.state
+    backend: Backend | None = getattr(state, "throttle_backend", None)
+    if backend is None:
+        backend = state.throttle_backend = load_backend()
+    return backend
+
+
+def _view(connection: HTTPConnection) -> str:
+    """The default scope: the import path of the route's endpoint."""
+    endpoint = connection.scope.get("endpoint")
+    if endpoint is None:
+        raise ImproperlyConfigured("Throttle without a scope must guard a route.")
+    return f"{endpoint.__module__}.{endpoint.__qualname__}"

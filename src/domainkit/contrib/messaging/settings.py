@@ -6,6 +6,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from domainkit.conf import DEFAULT_DB_ALIAS
 
+from .retry import MAX_DELAY
+
 
 class MessagingSettings(BaseModel):
     """Delivery, retry, and worker options; every key is optional."""
@@ -16,9 +18,9 @@ class MessagingSettings(BaseModel):
     """Alias holding the outbox; units of work that defer tasks must use it."""
     MAX_ATTEMPTS: int = Field(default=10, ge=1)
     """Runs before a message is dead-lettered (``@task`` may override it)."""
-    RETRY_BASE_SECONDS: float = Field(default=2.0, gt=0)
+    RETRY_BASE_SECONDS: float = Field(default=2.0, gt=0, le=MAX_DELAY)
     """First retry delay; it doubles per attempt, with jitter."""
-    RETRY_MAX_SECONDS: float = Field(default=3600.0, gt=0)
+    RETRY_MAX_SECONDS: float = Field(default=3600.0, gt=0, le=MAX_DELAY)
     TASK_TIMEOUT: float = Field(default=240.0, gt=0)
     """Seconds one handler or task may run before it counts as failed."""
     VISIBILITY_TIMEOUT: float = Field(default=300.0, gt=0)

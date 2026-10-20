@@ -103,9 +103,15 @@ def make_package(
         return root
 
     yield make
-    for module in list(sys.modules):
-        if module.partition(".")[0] in roots:
-            del sys.modules[module]
+    # Forget what came from here, by name or by place: a test may write more
+    # packages under tmp_path (a generator's project) that later tests reuse.
+    here = str(tmp_path)
+    for name, module in list(sys.modules.items()):
+        places = [getattr(module, "__file__", None), *getattr(module, "__path__", ())]
+        if name.partition(".")[0] in roots or any(
+            isinstance(place, str) and place.startswith(here) for place in places
+        ):
+            del sys.modules[name]
 
 
 @pytest.fixture
@@ -319,3 +325,63 @@ class ExitStackClients:
         client.__enter__()
         self._exits.append(lambda: client.__exit__(None, None, None))
         return client
+
+
+IDENTITY_DOMAINS: Final = [
+    CONTENTTYPES,
+    AUTH,
+    "domainkit.contrib.audit",
+    "domainkit.contrib.idempotency",
+    "domainkit.contrib.messaging",
+    "domainkit.contrib.mail",
+    SHOP,
+    ALPHA,
+]
+MEMORY_MAIL: Final = {"BACKEND": "domainkit.contrib.mail.backends.MemoryBackend"}
+IDENTITY_AUTHENTICATION: Final = [
+    "domainkit.contrib.auth.authentication.TokenAuthentication",
+    "domainkit.contrib.auth.cookies.CookieAuthentication",
+]
+
+
+@pytest.fixture
+def identity(database_url: str, tmp_path: Path) -> Iterator[Api]:
+    """``api`` with messaging, and mail kept in memory: resets, signup, MFA.
+
+    ``identity(**AUTH)`` returns a client; ``ROOT_ROUTER`` mounts the
+    routers the identity tests need.
+    """
+    from domainkit.contrib import mail
+
+    registry.clear()
+    mail.outbox.clear()
+    auth: dict[str, Any] = {
+        "PASSWORD_HASHERS": [FAST_HASHER],
+        "AUTHENTICATION_CLASSES": IDENTITY_AUTHENTICATION,
+    }
+    with override_settings(
+        INSTALLED_DOMAINS=IDENTITY_DOMAINS,
+        DATABASES={"default": {"URL": database_url}},
+        MIGRATIONS_DIR=tmp_path / "migrations",
+        ROOT_ROUTER="domainkit_tests.sample_identity_routes.router",
+        MIDDLEWARE=MIDDLEWARE,
+        MAIL=MEMORY_MAIL,
+        AUTH=auth,
+    ):
+        setup()
+        call_command("makemigrations", "-m", "identity", stdout=io.StringIO())
+        call_command("migrate", stdout=io.StringIO())
+        with ExitStackClients() as clients:
+
+            def make(
+                *,
+                client: tuple[str, int] = ("testclient", 50000),
+                **options: Any,  # noqa: ANN401 - AUTH keys.
+            ) -> TestClient:
+                if options:
+                    clients.enter(override_settings(AUTH={**auth, **options}))
+                return clients.client(client)
+
+            yield make
+    registry.clear()
+    mail.outbox.clear()

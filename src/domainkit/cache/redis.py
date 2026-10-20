@@ -4,6 +4,13 @@ Each event loop gets its own client (the cache handler sees to it), with a
 bounded pool, short timeouts, and one retry: a slow cache is worse than no
 cache, and ``Cache`` falls back to computing values when this one fails.
 Valkey speaks the same protocol, so the same URLs and client work for it.
+
+A Sentinel group (``redis+sentinel://``) gives the address of the current
+primary, and the client follows failovers. A Cluster (``redis+cluster://``)
+spreads keys over its nodes by hash slot; every operation here touches one
+key per command, or splits its keys by slot, so none is refused as crossing
+slots. The rate limiter's script reads and writes one key, so it runs on
+the node that holds it.
 """
 
 import re
@@ -11,14 +18,17 @@ from collections.abc import Awaitable, Mapping, Sequence
 from typing import Any, Final, cast
 
 from redis.asyncio import BlockingConnectionPool, Redis
+from redis.asyncio.cluster import ClusterNode, RedisCluster
 from redis.asyncio.retry import Retry
+from redis.asyncio.sentinel import Sentinel, SentinelConnectionPool
 from redis.backoff import ExponentialWithJitterBackoff
 from redis.exceptions import ConnectionError as RedisConnectionError
-from redis.exceptions import RedisError
+from redis.exceptions import RedisClusterException, RedisError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from domainkit.cache.base import CacheError, CacheUnavailable, Store
 from domainkit.conf import CacheConfig
+from domainkit.utils.redis_urls import CLUSTER_SCHEMES, RedisTarget, parse_redis_url
 
 _CLEAR_BATCH: Final = 500
 
@@ -56,40 +66,133 @@ large clock readings, and keeps each caller only until its quota is full.
 """
 
 
+class BlockingSentinelPool(SentinelConnectionPool, BlockingConnectionPool):
+    """Sentinel's pool that waits for a free connection, as the server's pool does.
+
+    Sentinel's own pool refuses a command at once when every connection is
+    busy, which a burst of requests would turn into a cache outage.
+    """
+
+
+type Client = Redis | RedisCluster
+
+
 def create_client(config: CacheConfig) -> Redis:
-    """Build a client: bounded pool, short timeouts, ``RETRIES`` quick retries."""
-    options: dict[str, Any] = {
+    """Build a client: bounded pool, short timeouts, ``RETRIES`` quick retries.
+
+    A Sentinel URL gives a client of the primary the Sentinels name. For a
+    Cluster, use ``create_cluster_client``.
+    """
+    target = parse_redis_url(config.URL.get_secret_value())
+    if target.kind == "cluster":
+        raise ValueError("A Cluster needs create_cluster_client().")
+    options = {**_options(config), "timeout": config.CONNECT_TIMEOUT}
+    tls = _tls_options(config)
+    if target.kind == "sentinel":
+        return _primary(config, target, options, tls)
+    tls.pop("ssl", None)  # The scheme says it.
+    pool = BlockingConnectionPool.from_url(
+        config.URL.get_secret_value(), **options, **tls
+    )
+    return Redis.from_pool(pool)
+
+
+def create_cluster_client(config: CacheConfig) -> RedisCluster:
+    """Build a Cluster client from its seed nodes; it finds the others itself."""
+    target = parse_redis_url(config.URL.get_secret_value())
+    return RedisCluster(
+        startup_nodes=[ClusterNode(host, port) for host, port in target.hosts],
+        username=target.username,
+        password=target.password,
+        **_options(config),
+        **_tls_options(config),
+    )
+
+
+def _options(config: CacheConfig) -> dict[str, Any]:
+    """The pool size, the timeouts, and the retries every client takes."""
+    return {
         "max_connections": config.MAX_CONNECTIONS,
-        "timeout": config.CONNECT_TIMEOUT,
         "socket_timeout": config.SOCKET_TIMEOUT,
         "socket_connect_timeout": config.CONNECT_TIMEOUT,
-        "retry": Retry(
-            ExponentialWithJitterBackoff(cap=0.1, base=0.01), config.RETRIES
-        ),
+        "retry": _retry(config),
     }
+
+
+def _retry(config: CacheConfig) -> Retry:
+    """``RETRIES`` quick retries: a slow cache is worse than none."""
+    return Retry(ExponentialWithJitterBackoff(cap=0.1, base=0.01), config.RETRIES)
+
+
+def _tls_options(config: CacheConfig) -> dict[str, Any]:
+    """redis-py's TLS arguments: on for ``rediss`` schemes, with the CA and cert."""
+    if not config.uses_tls():
+        return {}
+    options: dict[str, Any] = {"ssl": True}
     if config.TLS_CA is not None:
         options["ssl_ca_certs"] = str(config.TLS_CA)
     if config.TLS_CERT is not None and config.TLS_KEY is not None:
         options["ssl_certfile"] = str(config.TLS_CERT)
         options["ssl_keyfile"] = str(config.TLS_KEY)
-    pool = BlockingConnectionPool.from_url(config.URL.get_secret_value(), **options)
-    return Redis.from_pool(pool)
+    return options
+
+
+def _primary(
+    config: CacheConfig,
+    target: RedisTarget,
+    options: dict[str, Any],
+    tls: dict[str, Any],
+) -> Redis:
+    """A client of the primary the Sentinels name, following failovers.
+
+    The Sentinels get the same timeouts and TLS, and ``SENTINEL_PASSWORD``.
+    """
+    sentinel_options: dict[str, Any] = {
+        "socket_timeout": config.SOCKET_TIMEOUT,
+        "socket_connect_timeout": config.CONNECT_TIMEOUT,
+        "retry": _retry(config),
+        **tls,
+    }
+    if config.SENTINEL_PASSWORD is not None:
+        sentinel_options["password"] = config.SENTINEL_PASSWORD.get_secret_value()
+    sentinel = Sentinel(  # type: ignore[no-untyped-call]  # redis-py leaves it untyped.
+        list(target.hosts), sentinel_kwargs=sentinel_options
+    )
+    client: Redis = sentinel.master_for(
+        target.service or "",
+        connection_pool_class=BlockingSentinelPool,
+        username=target.username,
+        password=target.password,
+        db=target.db,
+        **options,
+        **tls,
+    )
+    return client
 
 
 async def _run[T](command: Awaitable[T]) -> T:
-    """Await a Redis command, translating its errors to cache errors."""
+    """Await a Redis command, translating its errors to cache errors.
+
+    A Cluster that cannot be reached, or with slots no node serves, raises
+    an error outside redis-py's own hierarchy: it counts as unavailable.
+    """
     try:
         return await command
-    except (RedisConnectionError, RedisTimeoutError, OSError) as exc:
+    except (
+        RedisConnectionError,
+        RedisTimeoutError,
+        RedisClusterException,
+        OSError,
+    ) as exc:
         raise CacheUnavailable(f"Redis is unavailable: {exc}") from exc
     except RedisError as exc:
         raise CacheError(f"Redis refused the command: {exc}") from exc
 
 
 class RedisStore(Store):
-    """A store on one Redis or Valkey server (or a managed endpoint)."""
+    """A store on one Redis or Valkey server, or the primary Sentinel names."""
 
-    def __init__(self, client: Redis) -> None:
+    def __init__(self, client: Client) -> None:
         """Use ``client``; the store closes it."""
         self.client = client
         self._incr = client.register_script(_INCR)
@@ -98,6 +201,8 @@ class RedisStore(Store):
     @classmethod
     def from_config(cls, config: CacheConfig) -> "RedisStore":
         """Connect as ``config`` says (lazily: the first command connects)."""
+        if config.scheme in CLUSTER_SCHEMES:
+            return ClusterStore(create_cluster_client(config))
         return cls(create_client(config))
 
     async def get_many(self, keys: Sequence[str]) -> list[bytes | None]:
@@ -172,5 +277,20 @@ class RedisStore(Store):
         await _run(self.client.ping())
 
     async def close(self) -> None:
-        """Close the client and its pool."""
-        await self.client.aclose()
+        """Close the client and its pool, then the Sentinels' connections."""
+        pool = getattr(self.client, "connection_pool", None)
+        try:
+            await self.client.aclose()
+        finally:
+            if isinstance(pool, SentinelConnectionPool):
+                await pool.sentinel_manager.aclose()
+
+
+class ClusterStore(RedisStore):
+    """A store on a Redis or Valkey Cluster: keys spread over nodes by slot."""
+
+    async def get_many(self, keys: Sequence[str]) -> list[bytes | None]:
+        """``MGET`` the keys of each slot (one ``MGET`` would cross slots)."""
+        client = cast("RedisCluster", self.client)
+        values = await _run(client.mget_nonatomic(list(keys)))
+        return cast("list[bytes | None]", values)

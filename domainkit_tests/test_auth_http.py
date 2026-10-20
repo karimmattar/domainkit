@@ -168,6 +168,7 @@ def test_logins_return_opaque_tokens(api: Api) -> None:
         "id": str(alice),
         "username": "alice",
         "email": "alice@example.com",
+        "email_verified": False,
         "is_staff": False,
         "is_superuser": False,
         "groups": [],
@@ -1023,6 +1024,10 @@ def test_forged_jwts_are_refused(api: Api) -> None:
             [MIDDLEWARE[2], MIDDLEWARE[0]],
             (f"MIDDLEWARE: list {MIDDLEWARE[0]} before {MIDDLEWARE[2]}."),
         ),
+        (  # Without a context, no actor: users would look anonymous.
+            [MIDDLEWARE[1], MIDDLEWARE[2]],
+            (f"MIDDLEWARE: list {MIDDLEWARE[0]} before {MIDDLEWARE[2]}."),
+        ),
         (
             [MIDDLEWARE[0], MIDDLEWARE[3], MIDDLEWARE[2]],
             (
@@ -1047,8 +1052,8 @@ def test_the_middleware_order_is_checked(
         use_auth(settings={"MIDDLEWARE": middleware})
     assert str(refused.value) == message
     use_auth(settings={"MIDDLEWARE": [MIDDLEWARE[0], MIDDLEWARE[2], *MIDDLEWARE[3:]]})
-    use_auth(settings={"MIDDLEWARE": [MIDDLEWARE[2]]})
     use_auth(settings={"MIDDLEWARE": [MIDDLEWARE[0]]})
+    use_auth(settings={"MIDDLEWARE": []})
 
 
 def test_users_without_a_request_context(api: Api) -> None:
@@ -1208,7 +1213,7 @@ def test_token_commands_are_audited(api: Api) -> None:
     (created,) = audited("auth.token_created")
     assert (created["actor"], created["details"]) == (
         "system",
-        {"user_id": str(alice), "name": "ci"},
+        {"user_id": str(alice), "name": "ci", "scopes": None},
     )
     (logged_out,) = audited("auth.user_logged_out")
     assert logged_out["details"] == {"user_id": str(alice), "everywhere": True}

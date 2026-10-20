@@ -5,12 +5,14 @@ from importlib import import_module
 from typing import Final, cast
 
 from domainkit.apps import DomainConfig, registry
-from domainkit.db import SqlAlchemyUnitOfWork
+from domainkit.db import SqlAlchemyUnitOfWork, map_imperatively
 from domainkit.db.routing import DatabaseRouter, router
 from domainkit.ddd import DeferredTask, DomainEvent, UnitOfWork
 
+from .models import AuditEntry
 from .recorder import event_rows, write
 from .settings import AuditSettings
+from .tables import audit_log
 
 MESSAGING: Final = "domainkit.contrib.messaging"
 
@@ -23,9 +25,13 @@ class AuditConfig(DomainConfig):
     settings_class = AuditSettings
 
     def ready(self) -> None:
-        """Check where explicit records go; seal on a schedule with messaging."""
+        """Check where explicit records go; seal on a schedule with messaging.
+
+        ``AuditEntry`` is mapped so content types give it its permission.
+        """
         config = registry.settings(AuditSettings)
         router.require_standalone(config.DATABASE, "AUDIT.DATABASE")
+        map_imperatively(AuditEntry, audit_log)
         if registry.is_installed(MESSAGING):
             import_module(f"{self.name}.tasks")
 

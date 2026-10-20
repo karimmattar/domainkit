@@ -65,7 +65,7 @@ _MISS: Final = object()
 
 
 @cache
-def _adapter(type_: TypeForm) -> TypeAdapter[Any]:
+def adapter(type_: TypeForm) -> TypeAdapter[Any]:
     """Build (once) the validator that turns JSON into ``type_``."""
     return TypeAdapter(type_)
 
@@ -85,7 +85,7 @@ def decode(payload: bytes, type_: TypeForm) -> Any:  # noqa: ANN401 - as type_.
     """Parse JSON, validated as ``type_`` unless it is None."""
     if type_ is None:
         return from_json(payload)
-    return _adapter(type_).validate_json(payload)
+    return adapter(type_).validate_json(payload)
 
 
 def split(raw: bytes) -> tuple[bytes, float | None, float]:

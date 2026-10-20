@@ -1,0 +1,47 @@
+"""Commands."""
+
+from datetime import datetime
+from decimal import Decimal
+from uuid import UUID
+
+from domainkit.ddd import Command
+
+
+class CreateWidget(Command):
+    """Create a widget."""
+
+    title: str
+    owner: UUID
+    body: str | None = None
+
+
+class DeleteWidget(Command):
+    """Delete a widget."""
+
+    widget_id: UUID
+
+
+class CreateTag(Command):
+    """Create a tag."""
+
+
+class DeleteTag(Command):
+    """Delete a tag."""
+
+    tag_id: UUID
+
+
+class ShipThing(Command):
+    """Ship a thing."""
+
+    thing_id: UUID
+    at: datetime
+    cost: Decimal
+    to: UUID
+    code: UUID
+
+
+class PackUpThing(Command):
+    """Pack up a thing."""
+
+    thing_id: UUID

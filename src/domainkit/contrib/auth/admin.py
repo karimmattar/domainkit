@@ -35,19 +35,17 @@ from pydantic import (
     ValidationError,
 )
 from pydantic_core import to_jsonable_python
-from starlette.requests import HTTPConnection
 
 from domainkit.ddd import PermissionDenied
-from domainkit.http import (
-    CURSOR_PATTERN,
-    MAX_CURSOR_LENGTH,
-    ErrorResponse,
-    decode_cursor,
-    encode_cursor,
-)
+from domainkit.ddd.query import F
+from domainkit.ddd.query import Query as Listing
+from domainkit.http import Pagination, error_responses
+from domainkit.resources import HasModelPermission as HasModelPermission
+from domainkit.resources import ModelActions, ResourceRouter
+from domainkit.resources.access import ModelLike
 
-from .access import BasePermission, IsAdminUser, IsSuperuser, Require
-from .backends import ModelBackend, get_all_permissions, get_backends, has_perms
+from .access import IsAdminUser, IsSuperuser, IsUnscoped, Require
+from .backends import ModelBackend, get_all_permissions, get_backends
 from .events import UserLoggedOut
 from .exceptions import (
     GroupNotFound,
@@ -57,6 +55,7 @@ from .exceptions import (
     UserNotFound,
 )
 from .models import AbstractBaseUser, AnyUser, Group, GroupId, Permission, UserId
+from .repositories import GroupRepository
 from .uow import AuthUnitOfWork
 from .users import get_user_model
 from .validators import validate_password
@@ -69,29 +68,23 @@ HIDDEN_FIELDS: Final = frozenset(
 """Fields ``/users`` never shows among ``fields`` (``last_login`` has its own key)."""
 
 router = APIRouter(tags=["auth admin"])
+pages = Pagination(default_limit=PAGE_SIZE, max_limit=MAX_PAGE_SIZE)
+_errors = error_responses
+"""OpenAPI entries for the error statuses an endpoint returns."""
 
 
-class HasModelPermission(BasePermission):
-    """Users granted ``<domain>.<action>_<model>`` on the model ``model()`` returns."""
+def staff_rules(model: ModelLike) -> ModelActions:
+    """Staff (``is_staff``) or superusers, with the model permission of each action.
 
-    def __init__(self, action: str, model: Callable[[], type]) -> None:
-        """Check ``action`` on ``model()``, resolved on each request."""
-        self.action = action
-        self.model = model
-
-    async def has_permission(self, request: HTTPConnection, user: AnyUser) -> bool:
-        """The backends grant the permission."""
-        from domainkit.contrib.contenttypes import content_type_key
-
-        domain, name = content_type_key(self.model())
-        return await has_perms(user, [f"{domain}.{self.action}_{name}"])
+    Credentials limited to scopes are refused: what staff grant is bounded
+    by their permissions, never by a token's scopes.
+    """
+    return ModelActions(model, IsUnscoped(), IsAdminUser() | IsSuperuser())
 
 
 def staff(action: str, model: Callable[[], type]) -> Any:  # noqa: ANN401 - Depends.
     """The dependency of an admin endpoint: staff with ``action`` on the model."""
-    return Depends(
-        Require(IsAdminUser() | IsSuperuser(), HasModelPermission(action, model))
-    )
+    return Depends(Require(*staff_rules(model).rules_for(action)))
 
 
 def _users(action: str) -> Any:  # noqa: ANN401 - Depends.
@@ -244,37 +237,58 @@ class PermissionOut(BaseModel):
     content_type: str
 
 
-def _errors(*codes: int) -> dict[int | str, dict[str, object]]:
-    """OpenAPI entries for the error statuses an endpoint returns."""
-    return {code: {"model": ErrorResponse} for code in codes}
-
-
 COMMON: Final = (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN)
 ONE: Final = (*COMMON, status.HTTP_404_NOT_FOUND)
 CHANGE: Final = (*ONE, status.HTTP_409_CONFLICT, status.HTTP_422_UNPROCESSABLE_CONTENT)
 
-PageSize = Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)]
-Cursor = Annotated[
-    str | None, Query(max_length=MAX_CURSOR_LENGTH, pattern=CURSOR_PATTERN)
-]
+
+def user_listing(
+    search: Annotated[
+        str | None,
+        Query(max_length=150, description="Part of the username, in any case."),
+    ] = None,
+) -> Listing:
+    """Users by username; ``search`` keeps those whose name contains it."""
+    name = F(get_user_model().USERNAME_FIELD)
+    return Listing(name.icontains(search) if search else None, ordering=[name])
 
 
-@router.get("/users", responses=_errors(*COMMON, status.HTTP_422_UNPROCESSABLE_CONTENT))
-async def list_users(
-    actor: Annotated[AnyUser, _users("view")],
-    limit: PageSize = PAGE_SIZE,
-    cursor: Cursor = None,
-    search: Annotated[str | None, Query(max_length=150)] = None,
-) -> UserPage:
-    """Users by username; ``search`` matches part of it, in any case."""
-    async with AuthUnitOfWork() as uow:
-        page = await uow.users.page(limit=limit, after=_position(cursor), search=search)
-    items = [AdminUserOut.of(user) for user in page.items]
-    last = items[-1] if page.has_more else None
-    return UserPage(
-        items=items,
-        next_cursor=None if last is None else encode_cursor([last.username]),
-    )
+def group_listing() -> Listing:
+    """Groups by name (unique)."""
+    return GroupRepository.LISTING
+
+
+users = ResourceRouter(
+    "/users",
+    model=get_user_model,
+    basename="user",
+    schema=AdminUserOut,
+    present=AdminUserOut.of,
+    page_schema=UserPage,
+    unit_of_work=AuthUnitOfWork,
+    repository=lambda uow: uow.users,
+    not_found=lambda _: UserNotFound("No such user."),
+    filters=user_listing,
+    pagination=pages,
+    rule=staff_rules(get_user_model),
+)
+"""``GET /users`` (by username; ``search`` matches part of it) and ``/users/{id}``."""
+groups = ResourceRouter(
+    "/groups",
+    model=Group,
+    schema=GroupOut,
+    present=GroupOut.of,
+    page_schema=GroupPage,
+    unit_of_work=AuthUnitOfWork,
+    repository=lambda uow: uow.groups,
+    not_found=lambda _: GroupNotFound("No such group."),
+    filters=group_listing,
+    pagination=pages,
+    rule=staff_rules(lambda: Group),
+)
+"""``GET /groups`` (by name) and ``/groups/{id}``."""
+router.include_router(users)
+router.include_router(groups)
 
 
 @router.post("/users", status_code=status.HTTP_201_CREATED, responses=_errors(*CHANGE))
@@ -303,15 +317,6 @@ async def create_user(
         )
         await uow.commit()
     return AdminUserOut.of(user)
-
-
-@router.get("/users/{user_id}", responses=_errors(*ONE))
-async def read_user(
-    user_id: UUID, actor: Annotated[AnyUser, _users("view")]
-) -> AdminUserOut:
-    """One user."""
-    async with AuthUnitOfWork() as uow:
-        return AdminUserOut.of(await _user(uow, user_id))
 
 
 @router.patch("/users/{user_id}", responses=_errors(*CHANGE))
@@ -442,25 +447,6 @@ async def set_user_permissions(
     return AdminUserOut.of(user)
 
 
-@router.get(
-    "/groups", responses=_errors(*COMMON, status.HTTP_422_UNPROCESSABLE_CONTENT)
-)
-async def list_groups(
-    actor: Annotated[AnyUser, _groups("view")],
-    limit: PageSize = PAGE_SIZE,
-    cursor: Cursor = None,
-) -> GroupPage:
-    """Groups by name."""
-    async with AuthUnitOfWork() as uow:
-        page = await uow.groups.page(limit=limit, after=_position(cursor))
-    items = [GroupOut.of(group) for group in page.items]
-    last = items[-1] if page.has_more else None
-    return GroupPage(
-        items=items,
-        next_cursor=None if last is None else encode_cursor([last.name]),
-    )
-
-
 @router.post("/groups", status_code=status.HTTP_201_CREATED, responses=_errors(*CHANGE))
 async def create_group(
     body: GroupIn, actor: Annotated[AnyUser, _groups("add")]
@@ -473,15 +459,6 @@ async def create_group(
         group.grant(*permissions)
         await uow.commit()
     return GroupOut.of(group)
-
-
-@router.get("/groups/{group_id}", responses=_errors(*ONE))
-async def read_group(
-    group_id: UUID, actor: Annotated[AnyUser, _groups("view")]
-) -> GroupOut:
-    """One group."""
-    async with AuthUnitOfWork() as uow:
-        return GroupOut.of(await _group(uow, group_id))
 
 
 @router.patch("/groups/{group_id}", responses=_errors(*CHANGE))
@@ -572,11 +549,6 @@ async def _group(uow: AuthUnitOfWork, group_id: UUID) -> Group:
     if group is None:
         raise GroupNotFound("No such group.")
     return group
-
-
-def _position(cursor: str | None) -> str | None:
-    """The name a cursor continues after."""
-    return None if cursor is None else decode_cursor(cursor, 1)[0]
 
 
 def _superusers_only(actor: AnyUser, message: str) -> None:

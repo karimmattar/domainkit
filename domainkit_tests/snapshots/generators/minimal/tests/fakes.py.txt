@@ -1,0 +1,63 @@
+"""Fakes."""
+
+from uuid import UUID
+
+from minimal.things.domain.model import (
+    Tag,
+    TagId,
+    TagRepository,
+    ThingId,
+    Widget,
+    WidgetId,
+    WidgetRepository,
+)
+
+from domainkit.ddd import InMemoryRepository
+
+
+class InMemoryWidgetRepository(InMemoryRepository[Widget, WidgetId], WidgetRepository):
+    """Dictionary-backed ``WidgetRepository``; it answers queries as SQL does."""
+
+
+class InMemoryTagRepository(InMemoryRepository[Tag, TagId], TagRepository):
+    """Dictionary-backed ``TagRepository``; it answers queries as SQL does."""
+
+
+class FakeThingsUnitOfWork:
+    """Fake."""
+
+    widgets: InMemoryWidgetRepository
+    tags: InMemoryTagRepository
+
+    def __init__(self) -> None:
+        """Fake."""
+        self.widgets = InMemoryWidgetRepository()
+        self.tags = InMemoryTagRepository()
+
+
+def new_widget() -> Widget:
+    """A valid widget, its creation event taken: tests start from it."""
+    widget = Widget.create(title="text", owner=ThingId(UUID(int=1)), body="text")
+    widget.pull_events()
+    return widget
+
+
+def new_widget_request() -> dict[str, object]:
+    """A valid body of ``POST /widgets``."""
+    return {
+        "title": "text",
+        "owner": "00000000-0000-0000-0000-000000000001",
+        "body": "text",
+    }
+
+
+def new_tag() -> Tag:
+    """A valid tag, its creation event taken: tests start from it."""
+    tag = Tag.create()
+    tag.pull_events()
+    return tag
+
+
+def new_tag_request() -> dict[str, object]:
+    """A valid body of ``POST /tags``."""
+    return {}

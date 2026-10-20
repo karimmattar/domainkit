@@ -7,11 +7,15 @@ configured by one setting, a dictionary whose keys are all optional.
 | App | Setting | Tables |
 | --- | --- | --- |
 | `domainkit.contrib.messaging` | `MESSAGING` | `domainkit_messages` |
+| `domainkit.contrib.webhooks` | `WEBHOOKS` | `domainkit_webhook_subscriptions`, `_deliveries`, `_attempts` |
 | `domainkit.contrib.audit` | `AUDIT` | `domainkit_audit_log` |
 | `domainkit.contrib.idempotency` | `IDEMPOTENCY` | `domainkit_idempotency_keys` |
 | `domainkit.contrib.evidence` | `EVIDENCE` | none: records live on a ledger |
 | `domainkit.contrib.contenttypes` | none | `domainkit_content_types` |
 | `domainkit.contrib.auth` | `AUTH` | users, groups, permissions; see [auth.md](auth.md) |
+| `domainkit.contrib.privacy` | none | none: exports, erases, and purges domains' rows; see [privacy.md](privacy.md) |
+| `domainkit.contrib.flags` | `FLAGS` | `domainkit_flags`, `domainkit_dynamic_settings` |
+| `domainkit.contrib.objectpermissions` | none | `domainkit_object_permissions`, in every database that hosts a domain; see [auth.md](auth.md#grants-on-single-objects) |
 
 With several databases ([databases.md](databases.md)), the outbox and the
 audit trail commit with business data, so their tables are created in every
@@ -28,7 +32,7 @@ change**. A worker process (`python manage.py runworker`) runs it.
 from domainkit.contrib.messaging import periodic, task
 
 
-@task  # or @task(name=..., max_attempts=..., queue="emails")
+@task  # or @task(name=..., max_attempts=..., queue="emails"), see below
 async def send_welcome(user_id: UUID) -> None: ...
 
 
@@ -44,6 +48,10 @@ event_bus.subscribe(UserCreated, notify_crm, durable=True)
 
 @periodic(every=timedelta(hours=1))  # once per interval across all workers
 async def purge_expired() -> None: ...
+
+
+@periodic(cron="0 3 * * 1-5", tz="Africa/Cairo")  # 03:00 on weekdays, Cairo time
+async def nightly_report() -> None: ...
 ```
 
 A durable handler runs only for the events it is subscribed to (or their
@@ -227,6 +235,323 @@ the relay publishes such a message again after `REPUBLISH_AFTER`.
 `default`). Run `python manage.py makemigrations` and `migrate` in each
 project that installs messaging.
 
+**Upgrading to 0.7.** The outbox gained `priority` and `started_at`
+columns, an index, and a `cancelled` status. Run `makemigrations` and
+`migrate` before deploying the new code.
+
+### Task options
+
+Every option of `MESSAGING` that concerns one task can be set on the task
+itself, and wins over the setting:
+
+```python
+from domainkit.contrib.messaging import Backoff, current_attempt, task
+
+
+@task(
+    timeout=30,  # seconds per run (MESSAGING.TASK_TIMEOUT)
+    max_attempts=5,  # (MESSAGING.MAX_ATTEMPTS)
+    backoff=Backoff(base=1, cap=60),  # or Backoff.fixed(30); jitter=False
+    retry_on=(httpx2.TransportError,),  # only these are retried
+    dont_retry_on=(InvoiceVoided,),  # these dead-letter at once
+    priority=10,  # -100 to 100; higher runs first
+    rate="20/minute",  # at most 20 runs a minute
+)
+async def push_invoice(invoice_id: UUID) -> None:
+    attempt = current_attempt()  # .number, .max_attempts, .last
+```
+
+- **Backoff** waits `base` seconds before the first retry; exponential
+  backoff doubles that after each attempt, up to `cap` (an hour by
+  default). With jitter (the default), each delay is drawn between half
+  and all of it, so failures that happened together are retried apart.
+  Delays are at most a year.
+- **Retries.** `dont_retry_on` wins over `retry_on`; without `retry_on`,
+  every error is retried. A run past its timeout raises `TimeoutError`.
+- **Timeouts** must stay under `VISIBILITY_TIMEOUT`, or the worker refuses
+  to start: a claim that ends while the task still runs would run it twice.
+- **Priorities** order the due messages of a queue: higher first, then the
+  oldest. They do not reorder queues; give urgent work a queue of its own.
+  On a broker, the relay publishes each round in priority order, but
+  RabbitMQ delivers in queue order, so priorities count only while
+  messages wait in the outbox.
+- **Rates** are counted by `RATE_LIMIT_BACKEND`: the memory backend counts
+  in each worker process, `RedisBackend` across all of them. A message
+  over the rate goes back to the outbox, without spending an attempt, and
+  comes due when the rate allows; held messages are spaced one interval
+  apart.
+
+Durable event handlers use the `MESSAGING` settings.
+
+### Schedules
+
+`@periodic(every=timedelta(...))` runs a task once per interval, at the
+start of each. `@periodic(cron="...", tz="...")` runs it at the wall-clock
+times of a five-field cron expression in an IANA time zone (UTC by default):
+
+| Field | Values |
+| --- | --- |
+| minute | 0-59 |
+| hour | 0-23 |
+| day of month | 1-31 |
+| month | 1-12 or `JAN`-`DEC` |
+| day of week | 0-7 (0 and 7 are Sunday) or `SUN`-`SAT` |
+
+Each field is `*`, a value, a range (`1-5`), a step (`*/15`, `0-30/10`, or
+`5/15`, from 5 to the end), or a list of these (`1,15`). `@hourly`,
+`@daily` (`@midnight`), `@weekly`, `@monthly`, and `@yearly`
+(`@annually`) stand for the usual expressions. As in cron, when both day
+fields are restricted, a day matches either: `0 0 1 * MON` runs on the
+first of the month and on Mondays. An expression that never runs (`0 0 30
+2 *`) is refused at startup.
+
+**Daylight saving time** never runs a time twice and never skips one:
+
+- A time that a spring-forward gap skips (02:30 when clocks jump from
+  02:00 to 03:00) runs once, at the end of the gap (03:00).
+- A time that a fall-back repeats (01:30 when clocks go back from 02:00 to
+  01:00) runs once, at its first occurrence. When the hour field starts
+  with `*` (`*/15 * * * *`), times in the repeated hour run in both passes,
+  so the schedule keeps its pace in elapsed time.
+
+The worker of the home outbox queues each cron task's next run ahead of
+time, under a key derived from its time, so all workers share one row per
+run. A run whose time passes while every worker is down still runs once
+one is back; earlier missed runs are not made up. A changed schedule takes
+effect after the run already queued. Time zones come from the system;
+Windows has none, so install `domainkit[tzdata]` there.
+
+### Chains
+
+`chain(a, b, c)` runs `a`, then `b` once `a` succeeds, then `c`. Defer it
+like a task; the keyword arguments go to the first step:
+
+```python
+from domainkit.contrib.messaging import chain
+
+
+@task
+async def charge(order_id: UUID) -> dict[str, str]:
+    ...
+    return {"order_id": str(order_id), "charge_id": charge.id}
+
+
+@task
+async def send_receipt(order_id: UUID, charge_id: str) -> None: ...
+
+
+uow.defer(chain(charge, send_receipt), order_id=order.id)
+```
+
+Each next step gets the previous step's result as its keyword arguments.
+A step that returns `None` passes its own arguments on, and any other
+value is passed as `result=`. Results must be JSON-friendly; one that is
+not fails the step. The next step is written in the transaction that marks
+the previous one done, so a crash between them loses or repeats nothing.
+It runs on its own queue, with its own options, and under the request id,
+actor, and trace of the chain's start. A step that is dead-lettered ends
+the chain.
+
+### Inspecting and cancelling
+
+`python manage.py messages` counts messages by status and shows each
+queue's lag: how long its oldest due message has waited for a worker. Its
+options list messages without their arguments:
+
+- `--pending`: messages waiting, in the order workers take them (`due` or
+  `scheduled`);
+- `--locked`: messages a worker is running (`running`) or a relay has
+  handed to the broker (`published`);
+- `--dead`: dead letters; `--retry ID` (or `all`) queues them again;
+- `--queue NAME` and `--limit N` narrow a listing.
+
+`messages --cancel ID` cancels a message no worker is running: a waiting
+one, or one on its way through the broker (its delivery is then skipped).
+A running message is refused. A cancelled message never runs, nor does the
+rest of its chain; it is kept as `cancelled` and deleted after
+`RETENTION_SECONDS`. `domainkit.contrib.messaging.admin` has the same
+operations for your own tools: `list_messages`, `cancel`, `queue_counts`,
+`queue_lag`, `retry_dead`.
+
+With Prometheus, `messaging_outbox_lag_seconds` (per queue) is the same
+lag, next to `messaging_outbox_messages`; alert when it grows.
+
+### Traces
+
+A message carries the W3C trace context (`traceparent`, `tracestate`) of
+the span that was active when it was written: the unit of work's commit,
+or the request. With the `tracing` extra, the worker's `message.process`
+span continues that trace, so a request and the work it queued show as one
+trace. A context that does not follow the W3C format is dropped, and the
+message starts a trace of its own. Without the extra, nothing is written.
+
+### Testing
+
+`domainkit.contrib.messaging.testing` is a pytest plugin, like
+`domainkit.testing`; enable both:
+
+```toml
+[tool.pytest.ini_options]
+addopts = "-p domainkit.testing -p domainkit.contrib.messaging.testing"
+```
+
+Its fixtures work in sync and async tests:
+
+| Fixture | Gives |
+| --- | --- |
+| `captured_events` | The domain events published after commits: `captured_events.of_type(UserCreated)`, `.assert_published(UserCreated, username="ann")`, `.assert_not_published(...)`. |
+| `outbox` | The messages committed during the test: `outbox.queued(send_welcome)`, `.assert_queued(send_welcome, user_id=user.id)`, `.assert_not_queued(...)`. `outbox.run_queued()`, or `await outbox.arun_queued()`, runs the due ones here as a worker would, chained steps included, until none is left; `delayed=True` runs delayed messages and retries too. A failed run raises `QueuedWorkFailed`. |
+| `execute_deferred` | Each commit's messages run right after it commits, before `commit()` returns. Failures are kept in `execute_deferred.failures` and fail the test at its end unless the test clears them. |
+
+```python
+async def test_signup_welcomes(db, outbox, captured_events):
+    user = await sign_up("ann@example.com")
+
+    outbox.assert_queued(send_welcome, user_id=user.id)
+    captured_events.assert_published(UserCreated, user_id=user.id)
+    await outbox.arun_queued()
+```
+
+## Webhooks: signed events for other services
+
+`domainkit.contrib.webhooks` sends domain events to URLs that staff
+subscribe. Install it with messaging and the `webhooks` extra
+(`domainkit[webhooks]`, which brings httpx2 and cryptography), set
+`SECRET_KEY` (subscription secrets are encrypted under a key derived from
+it; webhooks refuse to start without it), then expose the events:
+
+```python
+INSTALLED_DOMAINS = ["domainkit.contrib.messaging", "domainkit.contrib.webhooks", ...]
+
+# In a DomainConfig.ready():
+from domainkit.contrib.webhooks import expose
+
+expose(
+    InvoicePaid, "invoice.paid", payload=lambda event: {"invoice_id": event.invoice_id}
+)
+```
+
+Without `payload`, every field of the event is sent: leave personal data
+out. Subclasses of an exposed event are sent too. A receiver gets a `POST`
+with a JSON body:
+
+```json
+{"type": "invoice.paid", "timestamp": "2026-10-19T12:00:00.123456Z", "data": {"invoice_id": "..."}}
+```
+
+**Delivery** goes through the outbox, so nothing is sent unless the change
+commits. A committed exposed event becomes a durable handler call; the
+worker then writes one delivery per active subscription that wants the
+event type (or `*`), and a task for each, in one transaction. Deliveries
+run on the `webhooks` queue (`QUEUE`), so slow receivers hold up no other
+work. Any answer but 2xx fails the attempt, redirects included (they are
+not followed). A failed attempt is retried with exponential backoff and
+jitter, up to `MAX_ATTEMPTS`; then the delivery is marked failed. Receivers
+must accept duplicates: delivery is at least once.
+
+**Signatures** follow [Standard Webhooks](https://www.standardwebhooks.com):
+each attempt carries `webhook-id` (the delivery's id, the same on retries
+and replays), `webhook-timestamp`, and `webhook-signature`, `v1,` and the
+base64 HMAC-SHA256 of `<id>.<timestamp>.<body>` keyed with the secret's
+bytes. Secrets look like `whsec_` and 32 random bytes in base64; their
+libraries verify them. In Python, `domainkit.contrib.webhooks.verify(secret,
+headers, body)` checks one in constant time and refuses timestamps more
+than five minutes away. After a rotation, deliveries carry a second
+signature with the old secret for `SECRET_OVERLAP_SECONDS`.
+
+**What may be called.** Before every attempt, and when a subscription is
+saved:
+
+- the URL must use `https` (`http` only while `DEBUG` is on), and have no
+  user name, password, or fragment; it is at most 2048 characters;
+- `localhost`, `*.localhost`, and cloud metadata names are refused;
+- every address the host resolves to must be public. Private, loopback,
+  link-local, shared (CGNAT), reserved, multicast, and unspecified
+  addresses are refused, in IPv4 and IPv6, and so are IPv4 addresses
+  inside IPv6 ones (`::ffff:10.0.0.1`, NAT64). Cloud metadata addresses
+  (`169.254.169.254`, `fd00:ec2::254`, `168.63.129.16`, and others) are
+  always refused.
+- The connection goes to the address that was checked, never to a second
+  lookup, so a host that answers differently a moment later (DNS
+  rebinding) gains nothing. The host name still serves for the `Host`
+  header and for TLS: the certificate is checked against it.
+- Proxies from the environment are not used. An attempt has `TIMEOUT`
+  seconds in all, and at most `MAX_RESPONSE_BYTES` of the answer are read.
+
+`ALLOWED_PRIVATE_NETWORKS` lets receivers in named private networks
+through (`["10.20.0.0/16"]`); staging and production refuse loopback and
+link-local networks there. A refused URL fails the delivery at once.
+
+**Staff** manage subscriptions over the admin API, with
+`domainkit.contrib.auth` installed:
+
+```python
+from domainkit.contrib.webhooks.admin import router as webhooks_admin
+
+router.include_router(webhooks_admin, prefix="/admin/webhooks")
+```
+
+| Method and path | Permission | Does |
+| --- | --- | --- |
+| `GET /subscriptions` | `webhooks.view_subscription` | List subscriptions (`limit`, `offset`). |
+| `POST /subscriptions` | `webhooks.add_subscription` | Subscribe a URL to `event_types`; the answer holds the secret, shown this once (`no-store`). |
+| `GET /subscriptions/{id}` | `view` | One subscription. |
+| `PATCH /subscriptions/{id}` | `change` | Change `url`, `event_types`, `description`, or `active`. |
+| `POST /subscriptions/{id}/rotate-secret` | `change` | A new secret, shown once (`no-store`). |
+| `DELETE /subscriptions/{id}` | `delete` | Delete it; its pending deliveries are cancelled. |
+| `GET /subscriptions/{id}/deliveries` | `view` | Its deliveries, newest first (`status`, `limit`, `offset`). |
+| `GET /deliveries/{id}` | `view` | A delivery, its body, and every attempt (status code, latency, error). |
+| `POST /deliveries/{id}/replay` | `change` | Send a finished delivery again. |
+
+Each endpoint also needs a staff user or a superuser. Secrets never appear
+in listings, logs, events, or reprs; changes are recorded as events
+(`SubscriptionCreated` and others), which the audit trail keeps, with the
+URL's host only, since URLs may hold tokens. For the same reason, neither
+a `Subscription`'s `repr` nor those of the admin API's bodies show its
+URL. The two answers that hold a secret are marked `Cache-Control:
+no-store`: no cache keeps them, and
+`IdempotencyMiddleware` stores no copy, so a retry with the same
+`Idempotency-Key` gets a 409 rather than the secret again.
+
+**Secrets at rest.** The subscriptions table holds the current secret, and
+the previous one during an overlap, encrypted with
+`domainkit.encryption.SecretBox` (AES-256-GCM, purpose
+`domainkit.webhooks.secret`) and bound to the subscription's id: the table
+alone signs nothing, and a value copied to another row does not decrypt.
+Deliveries decrypt the secrets they sign with, and a rotation the old
+secret it keeps; nothing else does. To replace `SECRET_KEY`, put the old
+key in `SECRET_KEY_FALLBACKS`: deliveries still verify, and each one
+encrypts its subscription's secrets again under the new key (a rotation
+does too). Drop the old key once every active subscription has had a
+delivery or a rotation since. If no key decrypts a secret (`SECRET_KEY`
+changed without the old one in `SECRET_KEY_FALLBACKS`), its deliveries
+fail at once, unsent, with that reason in `last_error` and the error
+log, and are reported: never sent unsigned. Put the old key back, or
+rotate the secret (a rotation drops one no key decrypts, so there is no
+overlap) and give receivers the new one; then `webhooks replay --failed`.
+
+`python manage.py webhooks subscriptions` lists subscriptions (host only),
+`webhooks deliveries [--status S] [--subscription ID]` the latest
+deliveries, and `webhooks replay ID ...` (or `--failed`) sends finished
+deliveries again under the same `webhook-id`. Finished deliveries and their
+attempts are deleted after `RETENTION_SECONDS`.
+
+| `WEBHOOKS` key | Default | Meaning |
+| --- | --- | --- |
+| `QUEUE` | `"webhooks"` | The messaging queue of deliveries. |
+| `MAX_ATTEMPTS` | `12` | Attempts before a delivery is marked failed. |
+| `RETRY_BASE_SECONDS` | `30.0` | First retry delay; it doubles per attempt, with jitter. |
+| `RETRY_MAX_SECONDS` | `21600.0` | Cap on the retry delay (six hours). |
+| `TIMEOUT` | `15.0` | Seconds an attempt may take in all (at most 120). Delivery tasks get 30 more for their database work, which must stay under `MESSAGING.VISIBILITY_TIMEOUT`. |
+| `CONNECT_TIMEOUT` | `5.0` | Seconds to connect; at most `TIMEOUT`. |
+| `MAX_RESPONSE_BYTES` | `65536` | Most bytes of an answer read. |
+| `MAX_PAYLOAD_BYTES` | `262144` | Largest body; a larger event is reported and not sent. |
+| `ALLOWED_PRIVATE_NETWORKS` | `()` | Private networks receivers may be in. |
+| `CA_BUNDLE` | `None` | Certificates to trust instead of the system's. |
+| `SECRET_OVERLAP_SECONDS` | `86400.0` | How long the old secret still signs after a rotation. |
+| `RETENTION_SECONDS` | `2592000.0` | How long finished deliveries are kept (30 days). |
+| `USER_AGENT` | `"domainkit-webhooks"` | The `User-Agent` of deliveries. |
+
 ## Audit: who did what, when, from where
 
 Every committed domain event becomes a row in `domainkit_audit_log`, written
@@ -297,6 +622,9 @@ answers "did this happen to this person?":
 to look for, or None once the person is forgotten. Each database keeps its
 own keys, so look in the one that recorded the rows (`database=`, by
 default `AUDIT.DATABASE`). A row whose personal value is None stores None.
+The same markers on aggregate fields let `domainkit.contrib.privacy`
+export and erase what the domains' own tables hold about a person
+([privacy.md](privacy.md)).
 
 To honour an erasure request, delete the person's key, in every database
 that holds an audit trail:
@@ -394,6 +722,67 @@ def downgrade() -> None:
 | `LEDGER` | `None` | `LEDGERS` alias to anchor each chain's head on; `None` seals without anchoring. |
 | `ANCHOR_EVERY` | 1 hour | Anchor a new head at most this often. |
 | `SEAL_EVERY` | 5 minutes | How often the worker seals new rows. |
+
+### History
+
+A record's history is the rows about it, newest first, from every audited
+database (Django admin's "History"). Rows name what they are about in two
+ways:
+
+- an explicit record has a `target`: `record("report.viewed", target="r-1")`;
+- a committed event holds its aggregate's id in a field of `details`, such
+  as `product_id`; give events the id of the aggregate they are about, as
+  `startdomain` does.
+
+```python
+from domainkit.contrib.audit.history import history
+
+entries = await history(target="r-1")
+entries = await history(aggregate=("product_id", str(product.id)), limit=20)
+older = await history(target="r-1", before=entries[-1].position)
+```
+
+Each entry lists its `changes`, where the details allow. An explicit record
+can say what changed, with `before` and `after` mappings:
+`record("report.renamed", target="r-1", before={"name": "Q1"}, after={"name": "Q2"})`.
+They are kept as written, so never put personal data in them; pass it as
+`personal=`. Otherwise each field is compared with the newest older entry of the
+history that has it, on the same page or the one entry fetched past it, so
+events read best when they carry the fields they change
+(`ProductRenamed(product_id=..., name=...)`). A field nothing older has is
+new (`before` is None).
+
+Personal values stay the pseudonyms the trail holds, also for people who
+were forgotten: reading a history reads no keys. An aggregate's id is
+matched as text, so query by ids, never by personal fields (they are
+pseudonyms).
+
+From the command line, each change under its entry:
+
+```shell
+python manage.py auditlog --target r-1
+python manage.py auditlog --aggregate product_id=6f1c7e6a-...
+```
+
+Staff read histories over HTTP, with `audit.view_history` (a permission
+`migrate` creates for the trail's `AuditEntry` model) and `is_staff`, or as
+superusers. Mount the router next to the admin API:
+
+```python
+from domainkit.contrib.audit.api import router as audit_router
+
+router.include_router(audit_router, prefix="/admin/audit")
+```
+
+`GET /admin/audit/history?target=r-1` and
+`GET /admin/audit/history?field=product_id&id=...` answer pages of up to
+`limit` (50, at most 200) entries, with `next_cursor`. Entries leave out
+the client's address. The permission opens every record's history, and
+querying by a field reads the whole trail: grant it as you would read
+access to the trail.
+
+**Upgrading.** The trail gained an index on `target`, for histories. Run
+`makemigrations` and `migrate` in each project that installs audit.
 
 ## Idempotency: safe retries of unsafe requests
 
@@ -546,3 +935,109 @@ receipts always work.
 | `NAMESPACE` | `"evidence"` | Key prefix, so projects or environments can share one ledger. |
 | `MAX_BYTES` | `262144` | Largest record; keep documents elsewhere and record their digests. |
 | `SUBJECT_KEY` | `None` | Secret for the subject digests in keys, 32 characters or more. Required in staging and production; elsewhere a public development key is used. Keep it for as long as the evidence: a new key hides earlier records from `for_subject`, though the keys in their receipts still work. |
+
+## Flags: feature flags and dynamic settings
+
+A flag turns a feature on for everyone, for no one, or for some users, in
+the database, without a deployment:
+
+- `everyone`: `True` is on for all, `False` off for all; unset (`None`), the
+  rules below decide;
+- `users`: user ids it is on for;
+- `groups`: group names it is on for;
+- `percentage`: a share of the other users, 0 to 100. A user's place comes
+  from a hash of the flag's name and the user's id, so they stay in or out
+  while the percentage stays, and stay in as it grows.
+
+Anonymous callers get a flag only when `everyone` is on. A flag nobody
+created is off.
+
+```python
+from fastapi import Depends
+
+from domainkit.contrib.auth import Public
+from domainkit.contrib.flags import RequireFlag, flag_enabled
+
+if await flag_enabled("new_checkout", user=user):
+    ...
+
+
+@router.get("/beta", dependencies=[Depends(RequireFlag("beta")), Public])
+async def beta() -> ...: ...
+```
+
+`flag_enabled` takes the request's user (`domainkit.contrib.auth`), or any
+object with an `id` and, optionally, `groups` with names. `RequireFlag`
+answers 404 while the flag is off for the caller, so the route looks
+absent. It is not an access rule: the route still needs `Require(...)` or
+`Public`.
+
+A dynamic setting is a value staff change at runtime, typed and validated
+by pydantic. Declare it in code, with its default:
+
+```python
+from typing import Annotated
+
+from pydantic import Field
+
+from domainkit.contrib.flags import dynamic_setting
+
+MAX_ITEMS = dynamic_setting(
+    "checkout.max_items",
+    Annotated[int, Field(ge=1, le=100)],
+    default=10,
+    description="Items per order.",
+)
+
+limit = await MAX_ITEMS.get()
+```
+
+`get()` returns the stored value, or the default when none is stored. A
+stored value the type no longer accepts (the declaration changed) gives the
+default, and a warning in the log. Never keep secrets in dynamic settings:
+the audit trail records their values.
+
+Change both from the command line, or through the staff API:
+
+```shell
+python manage.py flags                                    # every flag
+python manage.py flags set beta --percentage 10 --groups staff
+python manage.py flags set beta --everyone on            # on, off, or rules
+python manage.py flags delete beta
+python manage.py flags settings                           # every dynamic setting
+python manage.py flags setting checkout.max_items 25      # the value, as JSON
+python manage.py flags setting checkout.max_items --reset
+```
+
+```python
+from domainkit.contrib.flags.admin import router as flags_router
+
+router.include_router(flags_router, prefix="/admin/flags")
+```
+
+| Endpoint | Permission |
+| --- | --- |
+| `GET /flags` | `flags.view_flag` |
+| `POST /flags` | `flags.add_flag`; a taken name is 409 |
+| `PUT /flags/{name}` | `flags.change_flag` |
+| `DELETE /flags/{name}` | `flags.delete_flag` |
+| `GET /settings` | `flags.view_dynamicsetting`: values, defaults, descriptions, and JSON schemas |
+| `PUT /settings/{key}` | `flags.change_dynamicsetting`; a value the type refuses is 422 |
+| `DELETE /settings/{key}` | `flags.change_dynamicsetting`: back to the default |
+
+Every endpoint also needs a staff user (`is_staff`) or a superuser. Each
+change, from the API or the command, is a domain event (`FlagChanged`,
+`FlagDeleted`, `SettingChanged`, `SettingReset`), so the audit trail records
+who changed what, and `auditlog --aggregate name=beta` shows a flag's
+history.
+
+Every flag and stored setting is read in one query and cached as one entry
+in `FLAGS.CACHE`. A change drops the entry once it commits, so this process,
+and every process sharing a Redis cache, see it at once. Processes with
+their own memory cache see it when their entry expires, within
+`FLAGS.CACHE_TTL`.
+
+| `FLAGS` key | Default | Meaning |
+| --- | --- | --- |
+| `CACHE` | `"default"` | The cache alias holding the flags and settings. |
+| `CACHE_TTL` | `30.0` | Seconds a cached copy lives: how long other processes with a memory cache may see an old value. |

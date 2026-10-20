@@ -53,6 +53,12 @@ class Credentials:
     """The digest of the opaque token used, which logging out revokes."""
     session: UUID | None = None
     """The login a JWT descends from, whose refresh tokens logging out revokes."""
+    scopes: frozenset[str] | None = None
+    """The permission keys the credentials are limited to; None: no limit."""
+
+    def allows(self, *perms: str) -> bool:
+        """Whether the credentials' scopes cover every one of ``perms``."""
+        return self.scopes is None or self.scopes.issuperset(perms)
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,13 +72,17 @@ class IssuedTokens:
 
 
 class AuthenticationFailed(APIError):
-    """Credentials were presented and do not hold (401)."""
+    """Credentials were presented and do not hold (401, unless a subclass says)."""
 
-    def __init__(self, detail: str) -> None:
-        """Use status 401 and the code ``authentication_failed``."""
-        super().__init__(
-            status.HTTP_401_UNAUTHORIZED, detail, code="authentication_failed"
-        )
+    def __init__(
+        self,
+        detail: str,
+        *,
+        status_code: int = status.HTTP_401_UNAUTHORIZED,
+        code: str = "authentication_failed",
+    ) -> None:
+        """Use status 401 and the code ``authentication_failed`` by default."""
+        super().__init__(status_code, detail, code=code)
 
 
 class RefreshNotSupported(APIError):
@@ -146,7 +156,9 @@ class TokenAuthentication(BaseAuthentication):
             if token.expired():
                 raise AuthenticationFailed("Token expired.")
             user = await active_user(uow, token.user_id)
-        return Credentials(user, scheme="token", token_id=token.id)
+            if await uow.tokens.touch(token):
+                await uow.commit()
+        return Credentials(user, scheme="token", token_id=token.id, scopes=token.scopes)
 
     async def issue(self, uow: AuthUnitOfWork, user: AbstractBaseUser) -> IssuedTokens:
         """One access token for ``AUTH.TOKEN_TTL``."""
@@ -282,13 +294,17 @@ class JWTAuthentication(BaseAuthentication):
                 algorithms=[self.config.ALGORITHM],
                 audience=self.config.AUDIENCE,
                 issuer=self.config.ISSUER,
-                leeway=self.config.LEEWAY,
-                options={"require": required},
+                # The times are checked below, on domainkit's clock.
+                options={
+                    "require": required,
+                    "verify_exp": False,
+                    "verify_iat": False,
+                    "verify_nbf": False,
+                },
             )
-        except self.jwt.ExpiredSignatureError:
-            raise AuthenticationFailed("Token expired.") from None
         except self.jwt.InvalidTokenError:
             raise AuthenticationFailed("Invalid token.") from None
+        _check_times(claims, self.config.LEEWAY)
         return claims
 
     def _pair(
@@ -379,6 +395,28 @@ def _keys(config: JWTSettings) -> tuple[bytes | str, bytes | str]:
             f"{config.ALGORITHM}."
         )
     return secret, config.VERIFYING_KEY
+
+
+def _check_times(claims: dict[str, Any], leeway: timedelta) -> None:
+    """Check ``iat``, ``nbf``, and ``exp`` on domainkit's clock, as PyJWT would.
+
+    PyJWT reads the host's clock, which a frozen clock (``domainkit.clock``)
+    does not move; the tokens are issued on domainkit's.
+
+    Raises:
+        AuthenticationFailed: The token is malformed, not valid yet, or expired.
+    """
+    now = utc_now().timestamp()
+    slack = leeway.total_seconds()
+    try:
+        issued, expires = int(claims["iat"]), int(claims["exp"])
+        starts = int(claims.get("nbf", issued))
+    except (TypeError, ValueError, OverflowError):
+        raise AuthenticationFailed("Invalid token.") from None
+    if max(issued, starts) > now + slack:
+        raise AuthenticationFailed("Invalid token.")
+    if expires <= now - slack:
+        raise AuthenticationFailed("Token expired.")
 
 
 def _uuid(value: object) -> UUID:

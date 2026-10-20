@@ -1,0 +1,12 @@
+"""Handlers."""
+
+import logging
+
+from minimal.things.domain.events import ThingShipped
+
+logger = logging.getLogger(__name__)
+
+
+async def on_thing_shipped(event: ThingShipped) -> None:
+    """React to thing shipped: idempotently, as it may run more than once."""
+    logger.info("ThingShipped %s", event.thing_id)

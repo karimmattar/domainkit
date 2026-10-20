@@ -1,10 +1,18 @@
-"""SQLAlchemy adapter for ``{{ Domain }}UnitOfWork``."""
+"""The {{ domain }} unit of work on the database, and its repositories."""
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from domainkit.db import SqlAlchemyUnitOfWork
+from domainkit.db import SqlAlchemyRepository, SqlAlchemyUnitOfWork
 from {{ package }}.application.unit_of_work import {{ Domain }}UnitOfWork
-from {{ package }}.infrastructure.repositories import SqlAlchemy{{ Aggregate }}Repository
+from {{ package }}.domain.model import {{ Aggregate }}, {{ Aggregate }}Id, {{ Aggregate }}Repository
+
+
+class SqlAlchemy{{ Aggregate }}Repository(
+    SqlAlchemyRepository[{{ Aggregate }}, {{ Aggregate }}Id], {{ Aggregate }}Repository
+):
+    """{{ Aggregate }} storage in the ``{{ table }}`` table."""
+
+    model = {{ Aggregate }}
 
 
 class SqlAlchemy{{ Domain }}UnitOfWork(SqlAlchemyUnitOfWork, {{ Domain }}UnitOfWork):

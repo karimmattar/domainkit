@@ -10,6 +10,7 @@ from domainkit.contrib.auth import (
     AbstractBaseUser,
     AnonymousUser,
     Group,
+    InvalidEmail,
     InvalidGroupName,
     InvalidUsername,
     PasswordHash,
@@ -25,7 +26,13 @@ from domainkit.contrib.auth.events import (
     UserPermissionRevoked,
     UserStatusChanged,
 )
-from domainkit.contrib.auth.models import normalize_email
+from domainkit.contrib.auth.models import (
+    erased_username,
+    normalize_email,
+    reserved_username,
+    same_email,
+    validate_email,
+)
 from domainkit.contrib.contenttypes import ContentType
 from domainkit.ddd import DomainEvent
 
@@ -108,6 +115,83 @@ def test_creating_users_checks_and_tidies_names() -> None:
     assert User.create(password=HASH, username="x" * 150).email == ""
     assert normalize_email("not-an-email ") == "not-an-email"
     assert normalize_email("Q@Q@EXAMPLE.COM") == "Q@Q@example.com"
+
+
+@pytest.mark.parametrize(
+    "name", ["erased-x", "Erased-bob", "ERASED-0123", "\uff45rased-x", "erased-"]
+)
+def test_names_erasure_leaves_are_kept_for_it(name: str) -> None:
+    """Nobody picks a name that starts with ``erased-``, in any case or width."""
+    with pytest.raises(InvalidUsername) as refused:
+        new_user(username=name)
+
+    assert refused.value.message == (
+        "Usernames that start with erased- are kept for erased accounts."
+    )
+    assert reserved_username(name)
+    assert not reserved_username("unerased-x")
+    assert new_user(username="erasedx").username == "erasedx"
+
+
+def test_erasing_renames_names_that_only_look_erased() -> None:
+    """One picked before the prefix was kept is erased too; erasing twice is one."""
+    user = new_user(email="eve@example.com")
+    user.username = "erased-eve"  # Stored before the prefix was reserved.
+
+    user.erase_personal_data(frozenset({"username", "email"}))
+    renamed = user.username
+    user.erase_personal_data(frozenset({"username", "email"}))
+
+    assert renamed == erased_username("erased-eve")
+    assert user.username == renamed
+
+
+NOT_PLAIN: list[str] = [
+    "ceo\uff20corp.example<eve@evil.example>",  # A display name: mail goes to eve.
+    "Boss <boss@example.com>",
+    "<boss@example.com>",
+    "boss@example.com (Boss)",
+    "a@example.com, b@example.com",
+    "\u212aelly@corp.example",  # The KELVIN SIGN, which lower() makes a k.
+    "kelly@\u212aorp.example",
+    "j\u00f6rg@example.com",
+    "jo@b\u00fccher.example",
+    "not-an-email",
+    "a@b@example.com",
+    "a@-example.com",
+    "line\n@break.example",
+    "x" * 65 + "@example.com",
+]
+
+
+@pytest.mark.parametrize("email", NOT_PLAIN)
+def test_users_have_plain_addresses_only(email: str) -> None:
+    """One ASCII address alone, the one mail goes to: as created, as changed."""
+    message = "Enter one email address, such as user@example.com, without a name."
+    with pytest.raises(InvalidEmail) as refused:
+        new_user(email=email)
+    assert refused.value.message == message
+    user = new_user(email="a@example.com")
+    with pytest.raises(InvalidEmail):
+        user.update(email=email)
+    assert user.email == "a@example.com"
+    with pytest.raises(InvalidEmail):
+        validate_email(email)
+
+
+def test_plain_addresses_are_trimmed_and_compared_by_ascii_letters() -> None:
+    """``same_email`` folds ASCII letters only: no look-alike is another's."""
+    assert validate_email(" kelly+tag@xn--bcher-kva.example ") == (
+        "kelly+tag@xn--bcher-kva.example"
+    )
+    assert new_user(email="").email == ""  # No address at all.
+    user = new_user(email="a@example.com")
+    user.update(email=" ")
+    assert user.email == ""
+    assert same_email(" Kelly@Corp.Example", "kelly@corp.example ")
+    assert not same_email("\u212aelly@corp.example", "kelly@corp.example")
+    assert "\u212aelly@corp.example".lower() == "kelly@corp.example"  # Python's.
+    assert not same_email("kelly@corp.example", "kelly@corp.example.org")
 
 
 def test_passwords_and_logins() -> None:
@@ -296,7 +380,13 @@ class Overreaching(Unlisted):
 def test_staff_see_and_change_only_the_fields_a_model_names() -> None:
     """Allowlists, never the username or protected fields; nothing by default."""
     assert User.editable_fields() == {"email", "first_name", "last_name"}
-    assert User.admin_fields() == {"email", "first_name", "last_name", "date_joined"}
+    assert User.admin_fields() == {
+        "email",
+        "email_verified",
+        "first_name",
+        "last_name",
+        "date_joined",
+    }
     assert Badge.admin_fields() == {"nickname", "issued"}
     assert Unlisted.editable_fields() == Unlisted.admin_fields() == frozenset()
     assert Overreaching.editable_fields() == {"nickname"}

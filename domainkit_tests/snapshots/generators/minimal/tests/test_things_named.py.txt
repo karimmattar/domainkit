@@ -1,0 +1,37 @@
+"""``ThingsNamed``: its handler, and its route."""
+
+import pytest
+from minimal.things.application import queries
+from minimal.things.application.queries import ThingsNamed
+
+from domainkit.testing import TestClient
+
+from .fakes import FakeThingsUnitOfWork, new_thing, new_thing_request
+
+URL = "/api/v1/things/things"
+
+
+@pytest.mark.anyio
+async def test_things_named_finds_what_it_asks_for() -> None:
+    """The thing that matches the query is found."""
+    uow = FakeThingsUnitOfWork()
+    thing = new_thing()
+    async with uow:
+        await uow.things.add(thing)
+        await uow.commit()
+
+    found = await queries.things_named(ThingsNamed(name=thing.name), uow)
+
+    assert found == [thing]
+
+
+def test_things_named_route(admin_client: TestClient) -> None:
+    """``GET /named`` answers the query's things."""
+    created = admin_client.post(URL, json=new_thing_request())
+    assert created.status_code == 201, created.json()
+    body = created.json()
+
+    answer = admin_client.get(f"{URL}/named", params={"name": body["name"]})
+
+    assert answer.status_code == 200, answer.json()
+    assert [each["id"] for each in answer.json()["items"]] == [body["id"]]

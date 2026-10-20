@@ -12,7 +12,7 @@ import pytest
 
 from domainkit.apps import registry
 from domainkit.architecture import check_domain
-from domainkit.conf import UNSET, override_settings, settings, use_settings
+from domainkit.conf import UNSET, override_settings, use_settings
 from domainkit.conf.env import project_prefix
 from domainkit.conf.global_settings import DEFAULT_MIDDLEWARE, RATE_LIMIT_MIDDLEWARE
 from domainkit.db import migrations as migrations_module
@@ -29,16 +29,29 @@ from domainkit_tests.conftest import MakePackage
 from domainkit_tests.test_db import test_metadata
 
 BUILTINS = {
+    "addcommand",
+    "addevent",
+    "addquery",
     "broker",
     "cache",
     "check",
+    "compilemessages",
+    "dbshell",
+    "diffsettings",
+    "dumpdata",
+    "flush",
     "init",
+    "loaddata",
     "makemigrations",
     "migrate",
+    "openapi",
     "partitions",
     "runserver",
+    "seed",
     "shell",
     "showmigrations",
+    "squashmigrations",
+    "startaggregate",
     "startdomain",
 }
 
@@ -172,6 +185,30 @@ def test_check_lists_weak_deployment_choices() -> None:
         )
 
 
+def test_check_lists_the_domains_warnings_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each installed domain may add warnings of its own settings."""
+    from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
+
+    monkeypatch.setattr(
+        AlphaConfig, "deployment_warnings", lambda self: ["ALPHA is weak here."]
+    )
+    with override_settings(ENVIRONMENT="production", API_DOCS=False):
+        output = run("check")
+
+    assert output.startswith(
+        "System check identified no issues and 3 warnings. Domains: alpha.\n"
+    )
+    assert output.endswith("  Warning: ALPHA is weak here.\n")
+
+
+def test_check_takes_one_migration_head_per_database(auth_project: str) -> None:
+    """A history with one head is what ``check`` expects; more is a problem."""
+    with override_settings(ROOT_ROUTER=None):
+        assert run("check").startswith("System check identified no issues")
+
+
 def test_check_without_domains() -> None:
     """A project with no domains is valid."""
     with override_settings(INSTALLED_DOMAINS=[], ALPHA=UNSET, ROOT_ROUTER=None):
@@ -215,20 +252,6 @@ def test_runserver_starts_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
     assert options["log_config"] is None
     with pytest.raises(CommandError, match="ASGI_APPLICATION"):
         run("runserver")
-
-
-def test_shell_exposes_the_project(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The console starts with settings, the registry, and connections."""
-    seen: dict[str, object] = {}
-
-    def interact(*, banner: str, local: dict[str, object]) -> None:
-        seen.update(local, banner=banner)
-
-    monkeypatch.setattr("code.interact", interact)
-    run("shell")
-
-    assert seen["settings"] is settings
-    assert "domainkit_tests.settings" in str(seen["banner"])
 
 
 @pytest.fixture
@@ -329,36 +352,6 @@ def test_startdomain_refuses_bad_targets(
         run("startdomain", "shop", parent="taken_parent", tests_dir=tmp_path)
 
 
-@pytest.mark.parametrize(
-    ("name", "plural", "command"),
-    [
-        ("partition", None, "partitions"),  # Built in.
-        ("message", None, "messages"),  # Messaging's, installed or not.
-        ("shop", "check", "check"),
-    ],
-)
-def test_startdomain_never_replaces_a_command(
-    make_package: MakePackage,
-    tmp_path: Path,
-    name: str,
-    plural: str | None,
-    command: str,
-) -> None:
-    """The generated command is named after the plural; it may not take another's."""
-    parent = make_package("fresh_parent", {})
-    tests = tmp_path / "generated_tests"
-
-    with pytest.raises(CommandError) as refused:
-        run("startdomain", name, plural=plural, parent="fresh_parent", tests_dir=tests)
-
-    assert str(refused.value) == (
-        f"The domain's command would be {command!r}, which already names a command "
-        "and would replace it; pass --plural with another name."
-    )
-    assert [path.name for path in parent.iterdir()] == ["__init__.py"]
-    assert not tests.exists()
-
-
 def test_startdomain_generates_a_working_domain(
     make_package: MakePackage, tmp_path: Path
 ) -> None:
@@ -384,10 +377,28 @@ def test_startdomain_generates_a_working_domain(
         '       router.include_router(shop_router, prefix="/api/v1/shop")\n'
         '  3. python manage.py makemigrations -m "create shop"\n'
         "  4. python manage.py migrate\n"
-        "  5. Grant shop.view_orderline (and add_, change_) to the users or "
-        "groups that need them; superusers have them.\n"
+        "  5. Grant shop.view_orderline (and add_, change_, delete_) to the users "
+        "or groups that need them; superusers have them.\n"
     )
-    assert (package / "management" / "commands" / "order_lines.py").is_file()
+    assert sorted(
+        path.relative_to(package).as_posix() for path in package.rglob("*.py")
+    ) == [
+        "__init__.py",
+        "api/__init__.py",
+        "api/routes.py",
+        "application/__init__.py",
+        "application/commands.py",
+        "application/handlers.py",
+        "application/services.py",
+        "application/unit_of_work.py",
+        "apps.py",
+        "domain/__init__.py",
+        "domain/events.py",
+        "domain/model.py",
+        "infrastructure/__init__.py",
+        "infrastructure/orm.py",
+        "infrastructure/unit_of_work.py",
+    ]
     generated = [*package.rglob("*.py"), *(tests_dir / "shop").rglob("*.py")]
     assert not [path for path in generated if "{{" in path.read_text(encoding="utf-8")]
     assert check_domain("generated.shop") == []
@@ -404,7 +415,7 @@ def test_startdomain_generates_a_working_domain(
             str(tests_dir / "shop" / "test_services.py"),
         ],
         cwd=tmp_path,
-        env={**os.environ, "PYTHONPATH": str(tmp_path)},
+        env={**os.environ, "PYTHONPATH": os.pathsep.join([str(tmp_path), *sys.path])},
         capture_output=True,
         text=True,
         check=False,

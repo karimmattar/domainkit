@@ -4,6 +4,7 @@ from config.settings.base import *
 
 ENVIRONMENT = "test"
 ALLOWED_HOSTS = ["testserver"]
+SECRET_KEY = "domainkit-insecure-test-key"
 DATABASES = {"default": {"URL": "sqlite+aiosqlite:///:memory:"}}
 # One hash iteration: fast tests. Staging and production refuse it.
 AUTH = {"PASSWORD_HASHERS": ["domainkit.contrib.auth.hashers.FastPBKDF2PasswordHasher"]}

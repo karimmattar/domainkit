@@ -54,7 +54,7 @@ python manage.py createsuperuser
 | App | Tables |
 | --- | --- |
 | `domainkit.contrib.contenttypes` | `domainkit_content_types` |
-| `domainkit.contrib.auth` | `domainkit_users`, `domainkit_groups`, `domainkit_permissions`, `domainkit_group_permissions`, `domainkit_users_groups`, `domainkit_users_permissions`, `domainkit_tokens` |
+| `domainkit.contrib.auth` | `domainkit_users`, `domainkit_groups`, `domainkit_permissions`, `domainkit_group_permissions`, `domainkit_users_groups`, `domainkit_users_permissions`, `domainkit_tokens`, `domainkit_mfa_devices`, `domainkit_recovery_codes` |
 
 Users, groups, permissions, and content types are joined by foreign keys,
 so they must live in one database: route `auth`, `contenttypes`, and a
@@ -103,14 +103,29 @@ permissions.
 | Field | Type | Notes |
 | --- | --- | --- |
 | `id` | UUID | |
-| `username` | text, unique | 1 to 150 letters, digits, and `@ . + - _`; NFKC-normalized. |
+| `username` | text, unique | 1 to 150 letters, digits, and `@ . + - _`; NFKC-normalized. Names that start with `erased-`, in any case, are kept for erased accounts. |
 | `password` | `PasswordHash` | Never a raw password; see below. |
-| `email`, `first_name`, `last_name` | text | The email's domain is lower-cased. |
+| `email`, `first_name`, `last_name` | text | The email is one plain address or empty, with its domain lower-cased (see below). |
+| `email_verified` | bool | Whether the user proved they read mail at `email`; a new address clears it. |
 | `is_active` | bool | Inactive users cannot log in and have no permissions. |
 | `is_staff` | bool | May use the admin API (with its permissions). |
 | `is_superuser` | bool | Has every permission without grants. |
 | `last_login`, `date_joined` | UTC timestamps | |
 | `groups`, `user_permissions` | sets | Grants, through link tables. |
+
+An email address is one address alone, in ASCII, checked as
+`domainkit.contrib.mail` checks the addresses it sends to:
+`user@example.com`, never `Name <user@example.com>`, a comment, or a list,
+and an internationalized domain in its `xn--` form. Creating a user,
+changing the email (the admin API, `update`), signing up, and asking for
+a reset all refuse anything else (`InvalidEmail`, a 422 `invalid_email`),
+so the address mail goes to is the whole stored value, and no display
+name reaches a mail's text. `validate_email(text)` checks one. Addresses
+compare by their ASCII letters in any case and by nothing else
+(`same_email`): `find_by_email` never takes a look-alike, such as one
+with the KELVIN SIGN, which SQL's `lower()` makes a `k` on PostgreSQL,
+for another's address. Rows stored before these checks keep their
+address; the worker skips one that cannot take mail (below).
 
 A `Group` has a unique name and a set of permissions; members have them
 all. `AnonymousUser` stands for requests without credentials: no id, no
@@ -227,6 +242,45 @@ user = await authenticate(email="boss@example.org", password=password)
 `get_user_model()` returns the class in use, and `get_user_table()` its
 table.
 
+### Users' personal data
+
+`AbstractUser` marks `username`, `email`, `first_name`, and `last_name`
+`Personal(of="id")`, so `domainkit.contrib.privacy` exports them
+(`privacy export --subject <user id>`) and erases them. Mark the personal
+fields of a custom model too (a `Member`'s `email` above), and give it an
+`erase_personal_data` method if they cannot be erased by default
+([privacy.md](privacy.md)).
+
+Erasing a user (`privacy erase --subject <user id>`) runs
+`AbstractUser.erase_personal_data`:
+
+- the username becomes `erased-` and 32 hex digits: an HMAC-SHA256 of the
+  name (folded as lookups fold it) under a key derived from `SECRET_KEY`.
+  It stays unique, and the old name stays taken: creating a user or
+  signing up with it, in any case, is refused as a taken username, so
+  nobody else can become the person erased. The key's fallbacks are
+  checked too; a name erased under a key dropped from
+  `SECRET_KEY_FALLBACKS` is free again. Names that start with `erased-`
+  are kept for this: signing up, creating a user (with any user model:
+  the repository checks), and `validate_username` refuse them
+  (`InvalidUsername`), so no one can pass for an erased account. A name
+  stored before that, which only starts with `erased-`, is erased like
+  any other; one already of the erased form is left as it is, so erasing
+  twice changes nothing;
+- the email and names become empty, and the address unverified;
+- the account ends in the same commit: it is deactivated and its password
+  made unusable (both audited). Right after, every token of the user
+  (logins, browser sessions, personal tokens, client certificates) and
+  their second factor (secret and recovery codes) are deleted.
+
+The row stays, with its id, so what refers to the user still does.
+Erasing again changes nothing.
+
+Fixtures (`dumpdata`, `loaddata`) never hold tokens, sessions,
+certificates, TOTP secrets, or recovery codes: their tables are state
+(`info={"fixtures": False}`). A fixture of users still holds password
+hashes: keep it as safe as the database.
+
 ## Backends
 
 `AUTH.BACKENDS` lists backend classes, asked in order. `authenticate`
@@ -257,6 +311,79 @@ AUTH = {
     ]
 }
 ```
+
+### Grants on single objects
+
+`domainkit.contrib.objectpermissions` stores grants of one permission on
+one object, to a user or to a group (django-guardian's model). Install it
+after auth, add its backend after `ModelBackend`, then `makemigrations`
+and `migrate`:
+
+```python
+INSTALLED_DOMAINS = [
+    ...,
+    "domainkit.contrib.auth",
+    "domainkit.contrib.objectpermissions",
+]
+AUTH = {
+    "BACKENDS": [
+        "domainkit.contrib.auth.backends.ModelBackend",
+        "domainkit.contrib.objectpermissions.ObjectPermissionBackend",
+    ]
+}
+```
+
+```python
+from domainkit.contrib.objectpermissions import (
+    grant_permission,
+    revoke_permission,
+    visible_scope,
+)
+
+await grant_permission(actor, "catalog.change_product", product, user=ada.id)
+await grant_permission(actor, "catalog.view_product", product, group=editors.id)
+await revoke_permission(actor, "catalog.change_product", product, user=ada.id)
+
+# Rules that look at objects now see the grants:
+products = ResourceRouter(
+    ...,
+    rule=AllOf(IsAuthenticated(), HasObjectPermissions("catalog.change_product")),
+    scope=visible_scope("view", Product),
+)
+```
+
+- Granting and revoking stay within what the actor holds: they need the
+  permission itself, on the model or on the object, and
+  `objectpermissions.add_objectpermission` to grant
+  (`delete_objectpermission` to revoke); superusers have both. No one
+  grants to themselves, and a permission of another model is refused
+  (`InvalidGrant`). Granting twice changes nothing.
+- Each grant and revocation is an event (`ObjectPermissionGranted`,
+  `ObjectPermissionRevoked`) naming who gave what to whom, so the audit
+  trail records it.
+- `visible_scope("view", Product)` is a resource's `scope`: callers who
+  hold `catalog.view_product` see every product; others see those granted
+  to them or to one of their groups, filtered in SQL with an `EXISTS` on
+  the grants, so pages, counts, and cursors never see the rest; anonymous
+  and inactive callers see none, and neither do credentials limited to
+  scopes that leave the permission out. `visible_to(user, "view",
+  Product, request=request)` gives the same criteria (`VisibleTo`) for
+  queries of your own; without `request`, scopes are not consulted.
+- In memory, `VisibleTo` reads the grants it is given:
+  `visible_scope("view", Product, grants=InMemoryObjectPermissions(...))`
+  in tests with fake repositories.
+- Grants are stored in the database of the objects they are about, in
+  `domainkit_object_permissions`, which every database hosting a domain
+  gets. Ids may be UUIDs, integers, or text, each in a column of its type.
+  User and group ids are not foreign keys: deleting a user leaves their
+  grants unused, never reused.
+- Grants go with their object: when the ORM deletes an object's row (a
+  repository's `remove`), the grants on it are deleted in the same
+  transaction, so an object stored later with the same id (a slug, or an
+  integer the database hands out again) starts without them. A soft
+  delete keeps them, for a restore. Bulk deletes (`delete_rows`) bypass
+  the ORM and leave grants behind: remove such objects one by one, or
+  delete their grants in the same transaction.
 
 ## Passwords
 
@@ -321,7 +448,10 @@ counts or records it. It tries `AUTH.AUTHENTICATION_CLASSES` in order:
 - the user becomes `request.user` (`AnonymousUser` without credentials),
   and the `Credentials` used become `request.auth`;
 - the user's id becomes the request's actor, so rate limits, idempotency
-  keys, logs, and the audit trail are per user, not per address;
+  keys, logs, and the audit trail are per user, not per address. The actor
+  lives in the context `RequestContextMiddleware` makes, so startup
+  refuses a `MIDDLEWARE` without it, or with it listed after
+  `AuthenticationMiddleware`;
 - credentials a class recognizes but that do not hold (an unknown,
   expired, or revoked token; an inactive user) get a 401 with
   `WWW-Authenticate: Bearer realm="api", error="invalid_token"`, even on
@@ -347,6 +477,45 @@ request looks its token up: logging out, a password change, or
 `AUTH.TOKEN_TTL` (14 days); `createtoken` makes longer-lived ones for
 scripts and other services. The prefix lets secret scanners and people
 recognize a leaked token.
+
+### Personal tokens and scopes
+
+`domainkit.contrib.auth.personal_tokens.router` lets users manage their
+own tokens, like GitHub's personal access tokens:
+
+```python
+from domainkit.contrib.auth.personal_tokens import router as tokens_router
+
+router.include_router(tokens_router, prefix="/auth")
+```
+
+| Endpoint | Body | Answer |
+| --- | --- | --- |
+| `GET /tokens` | `?limit=50&cursor=` | The user's tokens, newest first: `id` (the digest), `name`, `kind` (`access`, `session`, `refresh`), `scopes`, `created_at`, `expires_at`, `last_used_at`, and `current` for the one this request uses; `next_cursor`. |
+| `POST /tokens` | `{"name", "scopes", "expires_in_days"}` | `201`, with `token`: the value, shown this once and marked `Cache-Control: no-store`, so no cache or idempotency key keeps it (a retry with the key gets `409`). `expires_in_days` is 90 by default (1 to 3650), `null` for no end. `403 scope_not_held` for a scope the user lacks. |
+| `DELETE /tokens/{id}` | | `204`; `404 token_not_found` for a token that is not the user's. A refresh token takes its JWT login with it. |
+
+A token's scopes are permission keys (`shop.view_product`), at most 100,
+each one the user holds when the token is made. They only narrow: a
+request with a scoped token may do what both its user and its scopes
+allow, so a permission taken from the user later is gone from the token
+too. `HasPermissions`, `ModelPermissions`, and `HasObjectPermissions`
+check both; `HasScope(*keys)` checks the scopes alone (credentials without
+scopes allow every one); `IsAdminUser` and `IsSuperuser` refuse scoped
+credentials, since staff and superusers hold more than any scope names;
+and `IsUnscoped` keeps a route to credentials without scopes. These
+routes, the admin API, `/password`, the second-factor routes,
+`/email-verification`, and `/logout` with `everywhere` take only those,
+so a scoped token can neither make a token with more, grant anything,
+nor change or lock its account. `/me` with a scoped token lists, in
+`permissions`, only those both the user and the scopes allow.
+`createtoken --scope KEY` makes scoped tokens from the command line.
+Creating and revoking are audited (`auth.token_created` with the scopes,
+`auth.token_revoked`).
+
+Every token records when it last authenticated a request
+(`last_used_at`), written at most once every five minutes, so a key no one
+uses shows up without a write per request.
 
 ### JSON Web Tokens
 
@@ -377,6 +546,151 @@ AUTH = {
   `SIGNING_KEY` to the private key and `VERIFYING_KEY` to the public key,
   in PEM; other services can then check access tokens with the public key
   alone. Startup signs and verifies a token, so wrong keys fail early.
+
+### Browser sessions in cookies
+
+Browser apps should not keep tokens where scripts can read them.
+`CookieAuthentication` keeps the session in an HttpOnly cookie instead,
+and guards it against cross-site request forgery (CSRF):
+
+```python
+AUTH = {
+    "AUTHENTICATION_CLASSES": [
+        "domainkit.contrib.auth.authentication.TokenAuthentication",
+        "domainkit.contrib.auth.cookies.CookieAuthentication",
+    ],
+    "CSRF_TRUSTED_ORIGINS": ["https://app.example.com"],
+}
+```
+
+```python
+from domainkit.contrib.auth.cookies import router as session_router
+
+router.include_router(session_router, prefix="/auth")
+```
+
+| Endpoint | Body | Answer |
+| --- | --- | --- |
+| `POST /session` | `{"username", "password"}` | `200 {"csrf_token"}`, and two cookies: the session (`__Host-dk_session`) and the CSRF token (`__Host-dk_csrf`); `401`, `403 csrf_failed`, and `429` as for `/login`. |
+| `GET /session` | | `200 {"csrf_token"}`: a new token for this session, also in its cookie; `400 no_session` without a session cookie. |
+| `DELETE /session` | | `204`: the session ends and both cookies are cleared. |
+
+The session cookie is HttpOnly, `Secure` unless `DEBUG` (staging and
+production refuse `COOKIE.SECURE = False`), `SameSite=Lax` by default,
+and holds an opaque token of the kind `session`, stored as a digest like
+the others: it never works in an `Authorization` header, and logging out,
+a password change, or `cleartokens --user` ends it. A request the session
+authenticates with a method other than `GET`, `HEAD`, or `OPTIONS` must:
+
+- come from a trusted origin: its `Origin` header (or `Referer`, without
+  one) is the request's own origin, a host in `ALLOWED_HOSTS` with the
+  request's scheme (a wildcard `*` trusts none), or one of
+  `AUTH.CSRF_TRUSTED_ORIGINS` (`https://*.example.com` for subdomains). An
+  HTTPS request that names neither is refused, as browsers always send one;
+- send the CSRF token in `X-CSRF-Token` (`COOKIE.CSRF_HEADER`), equal to
+  the CSRF cookie and signed with `SECRET_KEY` for this session, so a token
+  set by another site or subdomain, or taken from another session, fails.
+
+Anything else gets `403 csrf_failed`. Logging in at `/session` checks the
+origin too. A WebSocket handshake with the session cookie must come from a
+trusted origin (cross-site WebSocket hijacking). Requests with an
+`Authorization` header ignore the cookie, so header-token clients are
+unaffected. A session that ended, expired, or belongs to an inactive user
+leaves the request anonymous rather than refused, so a stale cookie never
+stops the browser from logging in again.
+
+The cookies are named `__Host-dk_session` and `__Host-dk_csrf`. Browsers
+take a cookie with the `__Host-` prefix only from the very host that sets
+it, `Secure`, without `Domain`, on the path `/`: a page on a sibling
+subdomain (`evil.example.com` beside `api.example.com`) cannot plant its
+own session or CSRF token in the browser (cookie tossing), so it can
+neither log the browser in as someone else nor fix its session. Where
+the prefix cannot hold, because the cookies are not `Secure` (plain HTTP
+under `DEBUG`), or have a `DOMAIN` or another `PATH`, they are
+`dk_session` and `dk_csrf`. `COOKIE.NAME` and `COOKIE.CSRF_NAME` set the
+names outright; in staging and production, `check` warns about a name
+without the prefix where it could hold.
+
+A single-page app on another origin needs CORS with credentials:
+`CORS_ALLOWED_ORIGINS = ["https://app.example.com"]`,
+`CORS_ALLOW_CREDENTIALS = True`, and `X-CSRF-Token` in
+`CORS_ALLOWED_HEADERS`. `check` reports the router mounted without
+`CookieAuthentication` in `AUTHENTICATION_CLASSES`. List it after the
+classes that read headers: it issues no tokens for `/login`.
+
+### Client certificates (mutual TLS)
+
+Services that call the API can prove who they are with a client
+certificate instead of a token. `ClientCertificateAuthentication` takes
+the certificate from one of two places, and only these:
+
+- the ASGI TLS extension, when the ASGI server terminates TLS and checked
+  the certificate itself (`scope["extensions"]["tls"]`; a certificate it
+  says did not verify gets 401);
+- the header `AUTH.CLIENT_CERT.HEADER`, holding the URL-encoded PEM, only
+  on connections from `AUTH.CLIENT_CERT.PROXIES`, and only with
+  `VERIFY_HEADER` saying `SUCCESS` when that is set. The proxy's own
+  address counts, not the client's that `ProxyHeadersMiddleware` puts in
+  its place. A request from anyone else that sends the header gets 401: a
+  client could otherwise name any certificate. Startup refuses `HEADER`
+  without `PROXIES`.
+
+`PROXIES` lists the exact addresses of the proxies that check
+certificates, and nothing else. It is not `TRUSTED_PROXIES`, which often
+holds a whole network (every pod of a cluster) and only decides whose
+`X-Forwarded-For` is believed: any host of such a network could send the
+header with its own `SUCCESS` and log in as anyone. Staging and
+production refuse networks in `PROXIES`: each entry is one address (`/32`
+or `/128`).
+
+```python
+AUTH = {
+    "AUTHENTICATION_CLASSES": [
+        "domainkit.contrib.auth.authentication.TokenAuthentication",
+        "domainkit.contrib.auth.certificates.ClientCertificateAuthentication",
+    ],
+    "CLIENT_CERT": {
+        "HEADER": "X-Client-Cert",
+        "VERIFY_HEADER": "X-Client-Verify",
+        "PROXIES": ["10.0.3.7"],  # the nginx host that checks certificates
+    },
+}
+TRUSTED_PROXIES = ["10.0.3.7"]  # whose X-Forwarded-For is believed
+```
+
+The proxy must strip whatever a client sent in both headers, on every
+request: `proxy_set_header` below replaces them with its own values (and
+drops them when no certificate came). A proxy that passes a client's
+headers through (a `location` without these lines, or another proxy in
+front that forwards them) lets clients choose their certificate.
+
+```nginx
+server {
+    listen 443 ssl;
+    ssl_client_certificate /etc/nginx/clients-ca.pem;   # the CA that signs clients
+    ssl_verify_client on;                               # or optional, with VERIFY_HEADER
+    location / {
+        # Set, never pass on: whatever the client sent in these is replaced.
+        proxy_set_header X-Client-Cert   $ssl_client_escaped_cert;
+        proxy_set_header X-Client-Verify $ssl_client_verify;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_pass http://api;
+    }
+}
+```
+
+With `MATCH = "fingerprint"` (the default), a certificate logs in as the
+user `addcertificate <username> <cert.pem>` registered it for, by its
+SHA-256; `cleartokens --user` and `DELETE /tokens/{id}` remove it, and
+so does whatever ends every token of the user (a new password, a reset,
+logging out everywhere): register it again then. With
+`MATCH = "subject"`, the subject's common name is the username: everything
+the CA signs logs in as someone, so use it only with a CA of your own (it
+needs `cryptography`, the `mfa` extra). Through `HEADER` it also needs
+`VERIFY_HEADER`, which startup checks: a proxy that passes on certificates
+it did not verify would let a self-signed one name any user. Neither domainkit nor this class
+checks the chain or the dates: the server or the proxy must, against the
+CA you trust. Requests get `request.auth.scheme == "certificate"`.
 
 ### Other credentials
 
@@ -414,7 +728,7 @@ error body.
 | `POST /login` | `{"username", "password"}` | `200` with tokens; `401 invalid_credentials`; `429 login_throttled`. |
 | `POST /refresh` | `{"refresh_token"}` | `200` with new tokens; `401` for a used, expired, or unknown refresh token; `400 refresh_not_supported` with opaque tokens. |
 | `POST /logout` | optional `{"everywhere": true}` | `204`: this session's tokens end, or every token of the user. |
-| `GET /me` | | The user: `id`, `username`, `email`, `is_staff`, `is_superuser`, `last_login`, `groups`, and `permissions`. |
+| `GET /me` | | The user: `id`, `username`, `email`, `email_verified`, `is_staff`, `is_superuser`, `last_login`, `groups`, and `permissions` (with a scoped token, those its scopes allow). |
 | `POST /password` | `{"old_password", "new_password"}` | `204`: every other session of the user ends; `400 wrong_password`; `422` if a validator refuses the new password. |
 
 `username` is the user model's `USERNAME_FIELD` (the email, for `Member`).
@@ -447,7 +761,10 @@ before any lookup until `Retry-After` has passed. Credentials in another
 header than `Authorization`, which only a class of your own reads (an
 `X-API-Key`), are read, and refused with the same 429 even when they hold,
 so a guess that works never stands out. An opaque token that does not have
-the form of an issued one is refused without a lookup.
+the form of an issued one is refused without a lookup. Only credentials
+that do not hold (401) count: a cookie request refused by the CSRF checks
+(403) is one any other site can make a browser send, and counting it
+would let that site lock out everyone behind the browser's address.
 
 The count per account is what stops guessing one user's password from many
 addresses, and it also lets anyone hold that user's logins back: attempts
@@ -455,6 +772,208 @@ for a name count whoever sends them, so a caller who keeps sending
 `LOGIN_RATE` wrong passwords for it leaves its user few attempts of their
 own. Sessions already open are not affected, and password changes have
 their own count. The audited `throttled` refusals show such a flood.
+
+## Two-factor logins
+
+`domainkit.contrib.auth.mfa` adds a second factor: an authenticator app
+(TOTP, RFC 6238) and single-use recovery codes. It needs the `mfa` extra
+(`pip install "domainkit[mfa]"`) and `SECRET_KEY`:
+
+```python
+from domainkit.contrib.auth.mfa import router as mfa_router
+
+router.include_router(mfa_router, prefix="/auth")
+```
+
+| Endpoint | Who | Body | Answer |
+| --- | --- | --- | --- |
+| `GET /mfa` | a user | | `{"enabled", "recovery_codes_left"}`. |
+| `POST /mfa/totp` | a user | `{"password"}` | `{"secret", "otpauth_uri"}`: the secret in base 32, and the URI for a QR code; `400 wrong_password`; `409 mfa_enabled`. |
+| `POST /mfa/totp/confirm` | a user | `{"code"}` | `{"recovery_codes"}`, shown once: the second factor is on; `401 invalid_code`; `400 no_enrolment`. |
+| `POST /mfa/totp/disable` | a user | `{"password", "code"}` | `204`: it is off. |
+| `POST /mfa/recovery-codes` | a user | `{"password", "code"}` | `{"recovery_codes"}`: new codes replace the old ones. |
+| `POST /mfa/login` | anyone | `{"mfa_token", "code"}` | The tokens `/login` would have returned; `400 invalid_token`; `401 invalid_code`; `429 throttled`. |
+
+Once it is on, `/login` checks the password as before, then answers `202`
+with `{"mfa_required": true, "mfa_token", "expires_in"}` instead of
+tokens. The token is a challenge signed with `SECRET_KEY`: it works for
+`MFA.CHALLENGE_TTL` (5 minutes), and ends once the login is done or the
+password changes. `/mfa/login` takes it with a code from the app, or a
+recovery code (in any case, with or without its dashes), and returns the
+tokens. Browser sessions do the same: `POST /session` answers `202`, and
+`POST /session/mfa` sets the cookies.
+
+- A code from the current 30-second step, or `MFA.WINDOW` steps either
+  side, is accepted once: the step is recorded, and a code of that step or
+  an earlier one is refused, so a code seen over a shoulder cannot be
+  replayed.
+- Code checks count against `MFA.RATE` (10 an hour) per user, wherever
+  they come from, and per client address at `/mfa/login`: a guesser who
+  has the password gets a few hundred tries a day at a one-in-a-million
+  code. At `/mfa/login` an attempt counts for the user only once its
+  challenge holds, so a forged challenge cannot use up the count; anyone
+  with the password can, and hold the user's logins back for the hour.
+  The audited `throttled` refusals show it.
+- Turning it off, and new recovery codes, need the password and a code:
+  a stolen session cannot remove the factor.
+- Secrets are stored encrypted with AES-256-GCM under a key derived from
+  `SECRET_KEY`, bound to the user's id ([ADR 0030](adr/0030-encrypt-totp-secrets-under-a-derived-key.md)).
+  Recovery codes (10 of 80 random bits, `MFA.RECOVERY_CODES`) are stored
+  as digests. When `SECRET_KEY` is replaced, keep the old key in
+  `SECRET_KEY_FALLBACKS` until every user with a second factor has logged
+  in: each login moves their secret to the new key. Without it, those
+  users cannot log in.
+- `resetmfa <username>` turns it off for a user who lost the app and the
+  codes, and ends their sessions; check who is asking first.
+
+The audit trail records `auth.mfa_enabled`, `auth.mfa_disabled`,
+`auth.recovery_codes_regenerated`, `auth.recovery_code_used` (with the
+codes left), and refusals as `auth.mfa` (`invalid_token`, `invalid_code`,
+`throttled`). Run `makemigrations` and `migrate` for the tables
+`domainkit_mfa_devices` and `domainkit_recovery_codes`.
+
+## Password reset
+
+People who forgot their password ask for a link by mail, and choose a new
+one with it. Install messaging and mail (`docs/mail.md`), and mount the
+router that has these endpoints next to the one that logs in:
+
+```python
+INSTALLED_DOMAINS = [
+    "domainkit.contrib.messaging",
+    "domainkit.contrib.mail",
+    "domainkit.contrib.contenttypes",
+    "domainkit.contrib.auth",
+    ...,
+]
+AUTH = {"PASSWORD_RESET_URL": "https://app.example.com/reset-password?token={token}"}
+```
+
+```python
+from domainkit.contrib.auth.recovery import router as recovery_router
+
+router.include_router(recovery_router, prefix="/auth")
+```
+
+| Endpoint | Who | Body | Answer |
+| --- | --- | --- | --- |
+| `POST /password-reset` | anyone | `{"email"}` | Always `202`; `429 throttled`. |
+| `POST /password-reset/confirm` | anyone | `{"token", "new_password"}` | `204`; `400 invalid_token`; `422` if a validator refuses the password. |
+| `POST /email-verification` | a user, unscoped | | `202`; `403` for credentials limited to scopes; `429 throttled`. |
+| `POST /email-verification/confirm` | anyone | `{"token"}` | `204`; `400 invalid_token`. |
+
+A reset request answers `202` whether or not an account uses the address,
+with the same body, in the same time: it only queues a task (an address
+that is not one plain address gets `422` at once). The worker looks the
+address up, in any case, and mails every active user of it who has a
+usable password a link, `PASSWORD_RESET_URL` with the token in place
+of `{token}` (the token alone without one), which works for
+`PASSWORD_RESET_TIMEOUT` (an hour). A user whose stored address cannot
+take mail, from before addresses were checked, is skipped with a warning
+that names the user's id, never the address, and the others still get
+their links; verification links skip such a user the same way. Your page
+posts the token and the new password to `/password-reset/confirm`. The
+new password is checked by the validators, and every session of the
+user ends.
+
+Reset tokens are signed with `SECRET_KEY` and never stored, not even in
+the outbox: the worker makes them as it mails them. A token rests on the
+user's password hash, last login, email, and status, so it stops working
+once it is used, once the user logs in, or once any of those changes. A
+wrong token, a used or expired one, and one for no user all get the same
+`400 invalid_token`. Requests for mail count against `EMAIL_RATE` (5 an
+hour) per client address and per email address; token checks count
+against `LOGIN_RATE` per client address. They are not counted per user:
+a signature cannot be guessed, and a count that anyone could use up with
+forged tokens would lock the user out of the link they were sent.
+
+The audit trail records `auth.password_reset_requested` for each link
+mailed, `auth.password_reset` for a reset (and `denied`, with the reason
+`invalid_token` or `throttled`, for refusals), and `auth.password_changed`.
+
+### Email verification
+
+`AbstractUser` has `email_verified`, false for new users and for existing
+ones once the column is added (run `makemigrations` and `migrate`). A user
+asks for a link at `/email-verification`; the worker mails it to their
+address, unless it is verified, and `/email-verification/confirm` with its
+token sets `email_verified`. The link works once, for
+`EMAIL_VERIFICATION_TIMEOUT` (three days), and only for the address it went
+to: changing the email clears `email_verified` and ends the links sent
+before. Staff cannot set it in the admin API, where it is read-only.
+`user.verify_email()` sets it in code. Verifications are audited as
+`auth.email_verified`.
+
+### Signing up
+
+`domainkit.contrib.auth.signup.router` has two routes, which answer 404
+until `AUTH.SIGNUP_ENABLED` is on:
+
+| Endpoint | Who | Body | Answer |
+| --- | --- | --- | --- |
+| `POST /signup` | anyone | `{"username", "email"}` | `202`; `422` for fields that do not fit; `429 throttled`. |
+| `POST /signup/confirm` | anyone | `{"token", "password"}` | `204`: the account is made; `400 invalid_token`; `409 signup_taken`; `422` for a password the validators refuse; `429 throttled`; `503 password_checks_busy`. |
+
+The fields are checked at once (`422`), which tells nothing about other
+accounts; no password is taken. Then the request is kept as a pending
+signup, and it answers `202`, doing the same work whatever accounts
+exist. The worker mails the address: when neither the username (in any
+case) nor the address has an account, a link (`AUTH.SIGNUP_URL` with the
+token in place of `{token}`, the token alone without one) that works for
+`EMAIL_VERIFICATION_TIMEOUT`; otherwise, word that an account uses the
+address or the username, and the pending signup is dropped. Your page
+asks for a password and posts it with the token to `/signup/confirm`,
+which checks it with `AUTH.PASSWORD_VALIDATORS` (a refusal leaves the
+link working, to try another), makes the account with it, its address
+verified, and the user can log in.
+
+Whoever reads the mail chooses the password, so asking for an account
+with someone else's address gains nothing (pre-account hijacking): if
+the address's owner uses the link, the account is theirs, with a
+password only they know. Were a password taken when asking, as in
+Django-style forms, the person who asked would set it, and an owner who
+used the link would make an account its asker can log in to.
+
+No account exists before its address is confirmed. So nothing anyone else
+can see differs between an address that has an account and one that has
+none: an attacker who asks for an account with someone's address, then
+tries to log in with the username they chose, gets `401` either way, and
+can sign up with that username again either way. Whether an address has
+an account is told only to whoever reads mail at it. Usernames are not
+secret that way: someone who signs up with their own address learns from
+the mail that a username is taken, as any signup form must tell;
+`EMAIL_RATE` bounds how fast.
+
+A pending signup reserves nothing, neither its username nor its address,
+so one that is never confirmed blocks no one. Several may name the same
+username: each address gets its link, the first link used gets the name,
+and the others answer `409 signup_taken` (the person signs up again with
+another name). A link for an address that got an account meanwhile
+answers `409` too. A link works once; a wrong, used, or expired one gets
+`400 invalid_token`, audited as `auth.signup`.
+
+Pending signups keep the username and the address, and no password, in
+`domainkit_pending_signups` (run `makemigrations` and `migrate`), which
+is never in fixtures: it holds the addresses of people who may never
+have asked. The outbox holds only a pending signup's id.
+A row goes when its link is used, when the worker has told its address
+that the name or the address is taken, or, past
+`EMAIL_VERIFICATION_TIMEOUT`, with the hourly purge of expired tokens.
+Signups count against `EMAIL_RATE` per client address and per email
+address, links checked against `LOGIN_RATE` per client address, and new
+accounts are audited as `auth.user_signed_up`.
+Two links for one new address used at the same moment can both make an
+account: email addresses are not unique in the user table.
+
+The worker renders the mail from the templates `auth/password_reset`,
+`auth/email_verification`, `auth/signup_confirm`, and
+`auth/signup_exists` (plain text). Replace them from `MAIL.TEMPLATE_DIRS`;
+the first two are given `user`, `username`, `link`, and `valid_for`
+(`1 hour`), `auth/signup_confirm` only `link` and `valid_for` (the
+username was chosen by whoever asked, maybe not the address's owner), and
+`auth/signup_exists` only `email`. `check` reports
+these routes mounted without messaging and mail, or with a user model
+without `EMAIL_FIELD` and `email_verified`.
 
 ## Protecting routes
 
@@ -486,11 +1005,13 @@ async def greeting(user: CurrentUser): ...               # anyone; AnonymousUser
 | `AllowAny` | Anyone. |
 | `IsAuthenticated` | Users who logged in. |
 | `IsAuthenticatedOrReadOnly` | Anyone for `GET`, `HEAD`, `OPTIONS`; users otherwise. A WebSocket handshake is a `GET`, so anyone may open one: guard sockets that take writes with `IsAuthenticated`. |
-| `IsAdminUser` | Staff users (`is_staff`). |
-| `IsSuperuser` | Active superusers. |
+| `IsAdminUser` | Staff users (`is_staff`), with credentials that carry no scopes. |
+| `IsSuperuser` | Active superusers, with credentials that carry no scopes. |
 | `HasPermissions(*keys)` | Users granted every permission (by any backend). |
 | `ModelPermissions(model)` | Django's model permissions by method: `GET`/`HEAD` need `view`, `POST` `add`, `PUT`/`PATCH` `change`, `DELETE` `delete`; `OPTIONS` needs a user, and a WebSocket handshake `view`. `model` is a mapped class or `"<domain>.<model>"`. |
 | `HasObjectPermissions(*keys)` | Users granted every permission on the object, by a backend with object permissions. The request itself needs an active user who logged in; check each object with `check_object_permissions`. |
+| `HasScope(*keys)` | Users whose credentials' scopes cover every key; credentials without scopes cover all. |
+| `IsUnscoped` | Users whose credentials carry no scopes (a login, not a scoped token). |
 
 Combine rule instances with `&`, `|`, and `~`:
 `Require(IsAdminUser() | HasPermissions("billing.view_invoice"))`. A rule of
@@ -596,8 +1117,8 @@ custom user), `auth.*_group`, or `auth.view_permission`.
 A user is shown with `id`, `username`, `is_active`, `is_staff`,
 `is_superuser`, `last_login`, `groups`, the `permissions` granted directly,
 and `fields`: the ones the model lists in `EDITABLE_FIELDS` and
-`READ_ONLY_FIELDS` (`email`, `first_name`, `last_name`, and `date_joined`
-for `AbstractUser`). `fields` in a request changes only those in
+`READ_ONLY_FIELDS` (`email`, `first_name`, `last_name`, `date_joined`, and
+`email_verified` for `AbstractUser`). `fields` in a request changes only those in
 `EDITABLE_FIELDS` (`editable_fields()`); naming any other field answers
 `422 unknown_user_field`. Values are checked against the
 field's type annotation (`422 invalid_user_field`), and `clean_field(name,
@@ -620,6 +1141,10 @@ Staff hand out only what they have:
 - The last active superuser cannot be demoted, deactivated, or deleted
   (`409 last_superuser`): make another one first.
 
+The listings and reads are resources ([resources.md](resources.md)):
+`limit` and `cursor` page them, and a user or group carries an `ETag`,
+so `If-None-Match` answers `304` while it is unchanged.
+
 Changes are recorded as events (`UserUpdated`, `UserDeleted`,
 `UserStatusChanged`, `UserJoinedGroup`, `GroupDeleted`, and the others),
 so with `domainkit.contrib.audit` installed the audit trail names who
@@ -640,9 +1165,46 @@ changed what.
 | `AUTHENTICATION_EXEMPT_PATHS` | `["/health", "/ready", "/metrics"]` | Paths served without looking at credentials. |
 | `TOKEN_TTL` | 14 days | How long a login's opaque token works; `None` until revoked. |
 | `TOKEN_PREFIX` | `"dkt_"` | Starts every opaque token; changing it invalidates existing tokens. |
-| `LOGIN_RATE` | `"10/minute"` | Login and password-change attempts per client address and per username; `None` for no limit. |
+| `LOGIN_RATE` | `"10/minute"` | Login and password-change attempts per client address and per username, and checks of link tokens per client address; `None` for no limit. |
+| `EMAIL_RATE` | `"5/hour"` | Requests that send mail (resets, verifications, signups) per client address and per email address or user. |
+| `PASSWORD_RESET_TIMEOUT` | 1 hour | How long a reset link works. |
+| `PASSWORD_RESET_URL` | `None` | Your page that takes a reset token: `{token}` marks where. Staging and production refuse `http://`, here and in the other link URLs. |
+| `EMAIL_VERIFICATION_TIMEOUT` | 3 days | How long a verification link works. |
+| `EMAIL_VERIFICATION_URL` | `None` | Your page that takes a verification token. |
+| `SIGNUP_ENABLED` | `False` | Let anyone ask for an account at `/signup`. |
+| `SIGNUP_URL` | `None` | Your page that takes a signup link's token: `{token}` marks where. |
+| `COOKIE` | see below | Browser sessions, for `CookieAuthentication`. |
+| `MFA` | see below | Second factors (`auth.mfa`). |
+| `CLIENT_CERT` | see below | Client certificates, for `ClientCertificateAuthentication`. |
+| `CSRF_TRUSTED_ORIGINS` | `()` | Origins (`https://app.example.com`, `https://*.example.com`) whose pages may send cookie requests, besides the request's own and `ALLOWED_HOSTS`. |
 | `REQUIRE_ROUTE_RULES` | `True` | Every route must say who may call it (`Require`, a user parameter, or `Public`); see "Deny by default". |
 | `JWT` | see below | JSON Web Tokens, for `JWTAuthentication`. |
+
+| `AUTH["COOKIE"]` key | Default | Meaning |
+| --- | --- | --- |
+| `NAME` | `None`: `"__Host-dk_session"` | The session cookie (HttpOnly). By default `__Host-dk_session` where the prefix holds (Secure, no `DOMAIN`, the `PATH` `/`), else `dk_session`. `__Host-` names need `SECURE`, no `DOMAIN`, and the `PATH` `/`. |
+| `CSRF_NAME` | `None`: `"__Host-dk_csrf"` | The cookie scripts read the CSRF token from; `__Host-dk_csrf` or `dk_csrf`, as `NAME`. |
+| `CSRF_HEADER` | `"X-CSRF-Token"` | The header they send it back in. |
+| `SAMESITE` | `"lax"` | `lax`, `strict`, or `none` (which needs `SECURE`). |
+| `SECURE` | `None` | HTTPS only; `None` means unless `DEBUG`. `False` is refused in staging and production. |
+| `DOMAIN` | `None` | `None` keeps the cookies to this host. |
+| `PATH` | `"/"` | |
+| `TTL` | 14 days | How long a browser session works. |
+
+| `AUTH["MFA"]` key | Default | Meaning |
+| --- | --- | --- |
+| `ISSUER` | `None` | The name authenticator apps show; `PROJECT_NAME` when `None`. |
+| `CHALLENGE_TTL` | 5 minutes | How long the step between the password and the code may take (an hour at most). |
+| `RECOVERY_CODES` | `10` | Recovery codes each user gets (1 to 50). |
+| `WINDOW` | `1` | Steps of 30 seconds either side of now whose codes count (0 to 10). |
+| `RATE` | `"10/hour"` | Codes checked per user, and per client address at `/mfa/login`; `None` for no limit. |
+
+| `AUTH["CLIENT_CERT"]` key | Default | Meaning |
+| --- | --- | --- |
+| `MATCH` | `"fingerprint"` | `fingerprint`: the users `addcertificate` registered; `subject`: the common name is the username. |
+| `HEADER` | `None` | The header a proxy of `PROXIES` sets to the URL-encoded PEM; `None` takes certificates from the ASGI TLS extension only. Needs `PROXIES`. |
+| `VERIFY_HEADER` | `None` | The header in which the proxy says `SUCCESS` (nginx's `$ssl_client_verify`). Required with `HEADER` and `MATCH = "subject"`. |
+| `PROXIES` | `()` | The addresses of the proxies that check certificates and set `HEADER`; requests from anywhere else that send it get 401. Single addresses in staging and production. |
 
 | `AUTH["JWT"]` key | Default | Meaning |
 | --- | --- | --- |
@@ -661,8 +1223,10 @@ changed what.
 | --- | --- | --- |
 | `createsuperuser` | `--<USERNAME_FIELD>`, `--<field>` per `REQUIRED_FIELDS`, `--noinput` | Create a superuser (and staff), asking for what the options leave out. With `--noinput`, values come from `<PREFIX>SUPERUSER_<FIELD>` (or a `_FILE`), and the password from `<PREFIX>SUPERUSER_PASSWORD`, which must pass the validators; without one the password is unusable. |
 | `changepassword` | `[username]` | Ask twice for a new password that passes the validators; three tries. The default user is your login name. Every token of the user ends. |
-| `createtoken` | `username`, `--name`, `--days` (90), `--no-expiry` | Print a new opaque token for the user's scripts; it is shown once. |
+| `createtoken` | `username`, `--name`, `--days` (90), `--no-expiry`, `--scope` | Print a new opaque token for the user's scripts; it is shown once. Each `--scope KEY` limits it to that permission, which the user must have. |
 | `cleartokens` | `--user` | Delete expired tokens (hourly with `domainkit.contrib.messaging`), or every token of one user. |
+| `addcertificate` | `username`, `certificate`, `--name` | Let a client certificate (a PEM file) log in as the user, by its SHA-256; prints the fingerprint. |
+| `resetmfa` | `username` | Turn a user's second factor off and end their sessions, for a user who lost the app and the recovery codes. |
 
 Code that sets passwords itself ends the user's sessions with
 `await uow.tokens.revoke_user(user.id)`.

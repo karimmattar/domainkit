@@ -13,10 +13,11 @@ from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.contrib.contenttypes.sync import has_tables
 from domainkit.db import metadata
 from domainkit.db.routing import router
+from domainkit.ddd import event_bus
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.utils.module_loading import import_string
 
-from .access import routes_need_users, unguarded_routes
+from .access import _routes, routes_need_users, unguarded_routes
 from .authentication import get_authenticators
 from .backends import get_backends
 from .hashers import insecure_hashers
@@ -28,6 +29,11 @@ from .validators import get_password_validators
 
 CONTENTTYPES = "domainkit.contrib.contenttypes"
 MESSAGING = "domainkit.contrib.messaging"
+MAIL = "domainkit.contrib.mail"
+PRIVACY = "domainkit.contrib.privacy"
+MAILING_ROUTERS = ("recovery", "signup")
+"""Modules whose routes send mail, and need a user model with an address."""
+COOKIE_AUTHENTICATION = "domainkit.contrib.auth.cookies.CookieAuthentication"
 AUTHENTICATION_MIDDLEWARE = "domainkit.contrib.auth.middleware.AuthenticationMiddleware"
 OUTSIDE_AUTHENTICATION = ("domainkit.http.middleware.RequestContextMiddleware",)
 """Middleware that must run before ``AuthenticationMiddleware``."""
@@ -74,7 +80,7 @@ class AuthConfig(DomainConfig):
         self.user_model = _user_model(config.USER_MODEL)
         self.user_table = _user_table(config, self.user_model)
         self._check_routing()
-        self._check_hashers(config)
+        self._check_deployment(config)
         _check_middleware()
         get_backends()
         get_authenticators()
@@ -83,6 +89,14 @@ class AuthConfig(DomainConfig):
         declared_permissions()
         if registry.is_installed(MESSAGING):
             import_module(f"{self.name}.tasks")
+            for module in MAILING_ROUTERS:
+                import_module(f"{self.name}.{module}").register_tasks()
+        if registry.is_installed(PRIVACY):
+            from domainkit.contrib.privacy import PersonalDataErased
+
+            from .erasure import forget_credentials
+
+            event_bus.subscribe(PersonalDataErased, forget_credentials)
 
     def check_application(self, app: FastAPI) -> list[str]:
         """Routes that declare no rule, and rules no middleware can answer."""
@@ -103,7 +117,82 @@ class AuthConfig(DomainConfig):
                 "call it."
                 for route, takes_rules in unguarded_routes(app)
             )
+        problems.extend(self._mailing_problems(app))
+        if (
+            self._mounted(app, "cookies")
+            and COOKIE_AUTHENTICATION not in auth_settings().AUTHENTICATION_CLASSES
+        ):
+            problems.append(
+                f"Routes of {self.name}.cookies start browser sessions, but "
+                f"AUTH.AUTHENTICATION_CLASSES lacks {COOKIE_AUTHENTICATION}."
+            )
         return problems
+
+    def _mounted(self, app: FastAPI, name: str) -> bool:
+        """Whether a route of the router in module ``name`` is served by ``app``."""
+        called = {dependant.call for _, dependant in _routes(app.routes) if dependant}
+        module = import_module(f"{self.name}.{name}")
+        return bool(called & {route.endpoint for route in module.router.routes})
+
+    def _mailing_problems(self, app: FastAPI) -> list[str]:
+        """What routes that send mail lack: the apps, or an address to send to."""
+        problems = []
+        for name in MAILING_ROUTERS:
+            if not self._mounted(app, name):
+                continue
+            module = f"{self.name}.{name}"
+            installed = registry.is_installed
+            if missing := [name for name in (MESSAGING, MAIL) if not installed(name)]:
+                problems.append(
+                    f"Routes of {module} send mail: add {', '.join(missing)} "
+                    "to INSTALLED_DOMAINS."
+                )
+            if self.user_model.EMAIL_FIELD is None or not hasattr(
+                self.user_model, "verify_email"
+            ):
+                problems.append(
+                    f"Routes of {module} need a user model with an "
+                    "EMAIL_FIELD and email_verified, as AbstractUser has."
+                )
+        return problems
+
+    def deployment_warnings(self) -> list[str]:
+        """Weak choices in staging and production.
+
+        Login and code checks without a rate, and cookies without
+        ``__Host-`` where it could hold.
+        """
+        if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
+            return []
+        config = auth_settings()
+        cookie = config.COOKIE
+        warnings: list[str] = []
+        if config.LOGIN_RATE is None:
+            warnings.append(
+                "AUTH.LOGIN_RATE is None, so passwords can be guessed without "
+                'limit; set it, such as "10/minute".'
+            )
+        if config.MFA.RATE is None:
+            warnings.append(
+                "AUTH.MFA.RATE is None, so one-time codes can be guessed without "
+                'limit; set it, such as "10/hour".'
+            )
+        if (
+            COOKIE_AUTHENTICATION in config.AUTHENTICATION_CLASSES
+            and cookie.DOMAIN is None
+            and cookie.PATH == "/"
+        ):
+            warnings.extend(
+                f"AUTH.COOKIE.{key} {name!r} lacks the __Host- prefix, so another "
+                f"host of the site (a subdomain) can set it in browsers; name it "
+                f"__Host-{name}, or leave {key} out."
+                for key, name in (
+                    ("NAME", cookie.NAME),
+                    ("CSRF_NAME", cookie.CSRF_NAME),
+                )
+                if name is not None and not name.startswith("__Host-")
+            )
+        return warnings
 
     def holds_table(self, table: Table) -> bool:
         """The default user's tables, unless a custom user replaces them."""
@@ -134,24 +223,81 @@ class AuthConfig(DomainConfig):
                 f"(foreign keys join them): {where}."
             )
 
-    def _check_hashers(self, config: AuthSettings) -> None:
-        """Staging and production refuse hashers made for tests."""
+    def _check_deployment(self, config: AuthSettings) -> None:
+        """Refuse settings that cannot hold anywhere, and unsafe ones where deployed.
+
+        Staging and production refuse hashers made for tests, plain
+        cookies, certificate proxies given as networks, and links sent by
+        mail over plain HTTP.
+        """
+        if config.CLIENT_CERT.HEADER is not None and not config.CLIENT_CERT.PROXIES:
+            raise ImproperlyConfigured(
+                "AUTH.CLIENT_CERT.HEADER is believed only from "
+                "AUTH.CLIENT_CERT.PROXIES; list the address of the proxy that "
+                "sets it."
+            )
+        if (
+            config.CLIENT_CERT.HEADER is not None
+            and config.CLIENT_CERT.MATCH == "subject"
+            and config.CLIENT_CERT.VERIFY_HEADER is None
+        ):
+            raise ImproperlyConfigured(
+                'AUTH.CLIENT_CERT: MATCH = "subject" through HEADER needs '
+                "VERIFY_HEADER, or anyone could sign a certificate naming any user."
+            )
         insecure = insecure_hashers(config.PASSWORD_HASHERS)
-        if insecure and settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
+        if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
+            return
+        if insecure:
             raise ImproperlyConfigured(
                 f"AUTH.PASSWORD_HASHERS {insecure} are for tests; remove them in "
                 f"{settings.ENVIRONMENT}."
             )
+        if config.COOKIE.SECURE is False:
+            raise ImproperlyConfigured(
+                f"AUTH.COOKIE.SECURE = False sends session cookies over plain HTTP; "
+                f"remove it in {settings.ENVIRONMENT}."
+            )
+        links = {
+            "PASSWORD_RESET_URL": config.PASSWORD_RESET_URL,
+            "EMAIL_VERIFICATION_URL": config.EMAIL_VERIFICATION_URL,
+            "SIGNUP_URL": config.SIGNUP_URL,
+        }
+        if plain := [
+            key
+            for key, url in links.items()
+            if url is not None and url.lower().startswith("http://")
+        ]:
+            raise ImproperlyConfigured(
+                f"AUTH.{', AUTH.'.join(plain)} send links with their tokens over "
+                f"plain HTTP; use https:// in {settings.ENVIRONMENT}."
+            )
+        if networks := [
+            str(network)
+            for network in config.CLIENT_CERT.PROXIES
+            if network.num_addresses > 1
+        ]:
+            raise ImproperlyConfigured(
+                f"AUTH.CLIENT_CERT.PROXIES must list single addresses (/32 or "
+                f"/128) in {settings.ENVIRONMENT}, not networks "
+                f"({', '.join(networks)}): any host there could name any user."
+            )
 
 
 def _check_middleware() -> None:
-    """``AuthenticationMiddleware`` sets the actor others read: order matters."""
+    """``AuthenticationMiddleware`` sets the actor others read: order matters.
+
+    It binds the actor to the context ``RequestContextMiddleware`` makes, so
+    that one must be listed, and first: without it no actor is bound, and
+    what reads one (the audit trail, rate limits, idempotency keys,
+    ``@cache_page``) cannot tell users apart.
+    """
     order = list(settings.MIDDLEWARE)
     if AUTHENTICATION_MIDDLEWARE not in order:
         return
     position = order.index(AUTHENTICATION_MIDDLEWARE)
     for path in OUTSIDE_AUTHENTICATION:
-        if path in order and order.index(path) > position:
+        if path not in order or order.index(path) > position:
             raise ImproperlyConfigured(
                 f"MIDDLEWARE: list {path} before {AUTHENTICATION_MIDDLEWARE}."
             )

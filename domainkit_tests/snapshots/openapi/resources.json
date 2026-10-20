@@ -1,0 +1,2978 @@
+{
+ "components": {
+  "schemas": {
+   "BatchAnswer": {
+    "description": "One result per item, in order, and how many failed.",
+    "properties": {
+     "failed": {
+      "description": "How many items failed, not counting 424s.",
+      "title": "Failed",
+      "type": "integer"
+     },
+     "results": {
+      "items": {
+       "$ref": "#/components/schemas/BatchResult"
+      },
+      "title": "Results",
+      "type": "array"
+     }
+    },
+    "required": [
+     "results",
+     "failed"
+    ],
+    "title": "BatchAnswer",
+    "type": "object"
+   },
+   "BatchError": {
+    "description": "Why one item failed, as a request of its own would have been told.",
+    "properties": {
+     "code": {
+      "title": "Code",
+      "type": "string"
+     },
+     "detail": {
+      "title": "Detail",
+      "type": "string"
+     }
+    },
+    "required": [
+     "code",
+     "detail"
+    ],
+    "title": "BatchError",
+    "type": "object"
+   },
+   "BatchResult": {
+    "description": "What became of one item.",
+    "properties": {
+     "error": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/BatchError"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "etag": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Etag"
+     },
+     "item": {
+      "anyOf": [
+       {
+        "additionalProperties": {
+         "$ref": "#/components/schemas/JsonValue"
+        },
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Item"
+     },
+     "location": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Location"
+     },
+     "status": {
+      "title": "Status",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "status"
+    ],
+    "title": "BatchResult",
+    "type": "object"
+   },
+   "Color": {
+    "description": "Text values.",
+    "enum": [
+     "red",
+     "green",
+     "blue"
+    ],
+    "title": "Color",
+    "type": "string"
+   },
+   "ErrorResponse": {
+    "description": "Body of every error response; also the schema documented in OpenAPI.",
+    "properties": {
+     "code": {
+      "title": "Code",
+      "type": "string"
+     },
+     "detail": {
+      "title": "Detail",
+      "type": "string"
+     },
+     "errors": {
+      "anyOf": [
+       {
+        "items": {
+         "$ref": "#/components/schemas/FieldError"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Errors"
+     },
+     "request_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Request Id"
+     }
+    },
+    "required": [
+     "detail",
+     "code"
+    ],
+    "title": "ErrorResponse",
+    "type": "object"
+   },
+   "FieldError": {
+    "description": "One invalid part of a request; the submitted value is left out.",
+    "properties": {
+     "loc": {
+      "items": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "integer"
+        }
+       ]
+      },
+      "title": "Loc",
+      "type": "array"
+     },
+     "msg": {
+      "title": "Msg",
+      "type": "string"
+     },
+     "type": {
+      "title": "Type",
+      "type": "string"
+     }
+    },
+    "required": [
+     "loc",
+     "msg",
+     "type"
+    ],
+    "title": "FieldError",
+    "type": "object"
+   },
+   "GadgetIn": {
+    "additionalProperties": false,
+    "properties": {
+     "color": {
+      "$ref": "#/components/schemas/Color",
+      "default": "red"
+     },
+     "label": {
+      "maxLength": 20,
+      "title": "Label",
+      "type": "string"
+     },
+     "made_at": {
+      "format": "date-time",
+      "title": "Made At",
+      "type": "string"
+     },
+     "name": {
+      "maxLength": 30,
+      "title": "Name",
+      "type": "string"
+     },
+     "price": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "string"
+       }
+      ],
+      "title": "Price"
+     },
+     "size": {
+      "$ref": "#/components/schemas/Size",
+      "default": 2
+     },
+     "stock": {
+      "anyOf": [
+       {
+        "exclusiveMaximum": 9.223372036854776e+18,
+        "minimum": -9.223372036854776e+18,
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "Changed only by users granted shop.view_cost.",
+      "title": "Stock"
+     }
+    },
+    "required": [
+     "name",
+     "label",
+     "price",
+     "made_at"
+    ],
+    "title": "GadgetIn",
+    "type": "object"
+   },
+   "GadgetPatch": {
+    "additionalProperties": false,
+    "properties": {
+     "color": {
+      "$ref": "#/components/schemas/Color"
+     },
+     "label": {
+      "maxLength": 20,
+      "title": "Label",
+      "type": "string"
+     },
+     "made_at": {
+      "format": "date-time",
+      "title": "Made At",
+      "type": "string"
+     },
+     "name": {
+      "maxLength": 30,
+      "title": "Name",
+      "type": "string"
+     },
+     "price": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "string"
+       }
+      ],
+      "title": "Price"
+     },
+     "size": {
+      "$ref": "#/components/schemas/Size"
+     },
+     "stock": {
+      "anyOf": [
+       {
+        "exclusiveMaximum": 9.223372036854776e+18,
+        "minimum": -9.223372036854776e+18,
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "Changed only by users granted shop.view_cost.",
+      "title": "Stock"
+     }
+    },
+    "title": "GadgetPatch",
+    "type": "object"
+   },
+   "GadgetSummary": {
+    "properties": {
+     "name": {
+      "maxLength": 30,
+      "title": "Name",
+      "type": "string"
+     },
+     "price": {
+      "title": "Price",
+      "type": "string"
+     },
+     "stock": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "Shown only to users granted shop.view_cost.",
+      "title": "Stock"
+     }
+    },
+    "required": [
+     "name",
+     "price"
+    ],
+    "title": "GadgetSummary",
+    "type": "object"
+   },
+   "GadgetsLabelledAnswer": {
+    "properties": {
+     "items": {
+      "items": {
+       "$ref": "#/components/schemas/domainkit__resources__routing__GadgetOut"
+      },
+      "title": "Items",
+      "type": "array"
+     }
+    },
+    "required": [
+     "items"
+    ],
+    "title": "GadgetsLabelledAnswer",
+    "type": "object"
+   },
+   "HTTPValidationError": {
+    "properties": {
+     "detail": {
+      "items": {
+       "$ref": "#/components/schemas/ValidationError"
+      },
+      "title": "Detail",
+      "type": "array"
+     }
+    },
+    "title": "HTTPValidationError",
+    "type": "object"
+   },
+   "JsonValue": {},
+   "MakeIn": {
+    "description": "A new gadget's fields.",
+    "properties": {
+     "name": {
+      "maxLength": 30,
+      "title": "Name",
+      "type": "string"
+     },
+     "price": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "string"
+       }
+      ],
+      "title": "Price"
+     }
+    },
+    "required": [
+     "name",
+     "price"
+    ],
+    "title": "MakeIn",
+    "type": "object"
+   },
+   "MakerOut": {
+    "properties": {
+     "id": {
+      "format": "uuid",
+      "title": "Id",
+      "type": "string"
+     },
+     "name": {
+      "maxLength": 20,
+      "title": "Name",
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "name"
+    ],
+    "title": "MakerOut",
+    "type": "object"
+   },
+   "PartOut": {
+    "properties": {
+     "id": {
+      "format": "uuid",
+      "title": "Id",
+      "type": "string"
+     },
+     "sku": {
+      "maxLength": 10,
+      "title": "Sku",
+      "type": "string"
+     },
+     "weight": {
+      "title": "Weight",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "id",
+     "sku",
+     "weight"
+    ],
+    "title": "PartOut",
+    "type": "object"
+   },
+   "RenameGadgetBatch": {
+    "additionalProperties": false,
+    "properties": {
+     "atomic": {
+      "default": false,
+      "description": "All items, or none of them.",
+      "title": "Atomic",
+      "type": "boolean"
+     },
+     "items": {
+      "items": {
+       "$ref": "#/components/schemas/RenameGadgetItem"
+      },
+      "maxItems": 100,
+      "minItems": 1,
+      "title": "Items",
+      "type": "array"
+     }
+    },
+    "required": [
+     "items"
+    ],
+    "title": "RenameGadgetBatch",
+    "type": "object"
+   },
+   "RenameGadgetItem": {
+    "properties": {
+     "gadget_id": {
+      "description": "The aggregate it acts on.",
+      "format": "uuid",
+      "title": "Gadget Id",
+      "type": "string"
+     },
+     "if_match": {
+      "anyOf": [
+       {
+        "maxLength": 4096,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "The ETag of the version it changes; 412 if it changed.",
+      "title": "If Match"
+     },
+     "name": {
+      "maxLength": 30,
+      "title": "Name",
+      "type": "string"
+     }
+    },
+    "required": [
+     "name",
+     "gadget_id"
+    ],
+    "title": "RenameGadgetItem",
+    "type": "object"
+   },
+   "RenameIn": {
+    "description": "A new name.",
+    "properties": {
+     "name": {
+      "maxLength": 30,
+      "title": "Name",
+      "type": "string"
+     }
+    },
+    "required": [
+     "name"
+    ],
+    "title": "RenameIn",
+    "type": "object"
+   },
+   "ReviewIn": {
+    "description": "A review's text.",
+    "properties": {
+     "text": {
+      "title": "Text",
+      "type": "string"
+     }
+    },
+    "required": [
+     "text"
+    ],
+    "title": "ReviewIn",
+    "type": "object"
+   },
+   "ReviewOut": {
+    "properties": {
+     "gadget": {
+      "description": "The id of another aggregate.",
+      "format": "uuid",
+      "title": "Gadget",
+      "type": "string"
+     },
+     "id": {
+      "format": "uuid",
+      "title": "Id",
+      "type": "string"
+     },
+     "links": {
+      "additionalProperties": {
+       "type": "string"
+      },
+      "description": "URLs: self, and parent for a nested resource.",
+      "title": "Links",
+      "type": "object"
+     },
+     "text": {
+      "title": "Text",
+      "type": "string"
+     },
+     "version": {
+      "title": "Version",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "id",
+     "version",
+     "gadget",
+     "text",
+     "links"
+    ],
+    "title": "ReviewOut",
+    "type": "object"
+   },
+   "ReviewPage": {
+    "properties": {
+     "items": {
+      "items": {
+       "$ref": "#/components/schemas/ReviewOut"
+      },
+      "title": "Items",
+      "type": "array"
+     },
+     "next_cursor": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "Pass back as cursor.",
+      "title": "Next Cursor"
+     }
+    },
+    "required": [
+     "items"
+    ],
+    "title": "ReviewPage",
+    "type": "object"
+   },
+   "Size": {
+    "description": "Integer values that sort differently as text (10 < 2).",
+    "enum": [
+     2,
+     10
+    ],
+    "title": "Size",
+    "type": "integer"
+   },
+   "Summary": {
+    "description": "Another answer than the resource's schema.",
+    "properties": {
+     "name": {
+      "title": "Name",
+      "type": "string"
+     }
+    },
+    "required": [
+     "name"
+    ],
+    "title": "Summary",
+    "type": "object"
+   },
+   "ValidationError": {
+    "properties": {
+     "ctx": {
+      "title": "Context",
+      "type": "object"
+     },
+     "input": {
+      "title": "Input"
+     },
+     "loc": {
+      "items": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "integer"
+        }
+       ]
+      },
+      "title": "Location",
+      "type": "array"
+     },
+     "msg": {
+      "title": "Message",
+      "type": "string"
+     },
+     "type": {
+      "title": "Error Type",
+      "type": "string"
+     }
+    },
+    "required": [
+     "loc",
+     "msg",
+     "type"
+    ],
+    "title": "ValidationError",
+    "type": "object"
+   },
+   "domainkit__resources__routing__GadgetOut": {
+    "properties": {
+     "active": {
+      "title": "Active",
+      "type": "boolean"
+     },
+     "color": {
+      "$ref": "#/components/schemas/Color"
+     },
+     "deleted_at": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Deleted At"
+     },
+     "id": {
+      "format": "uuid",
+      "title": "Id",
+      "type": "string"
+     },
+     "label": {
+      "maxLength": 20,
+      "title": "Label",
+      "type": "string"
+     },
+     "links": {
+      "additionalProperties": {
+       "type": "string"
+      },
+      "description": "URLs: self, and parent for a nested resource.",
+      "title": "Links",
+      "type": "object"
+     },
+     "made_at": {
+      "format": "date-time",
+      "title": "Made At",
+      "type": "string"
+     },
+     "maker": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/MakerOut"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "name": {
+      "maxLength": 30,
+      "title": "Name",
+      "type": "string"
+     },
+     "parts": {
+      "items": {
+       "$ref": "#/components/schemas/PartOut"
+      },
+      "title": "Parts",
+      "type": "array"
+     },
+     "price": {
+      "title": "Price",
+      "type": "string"
+     },
+     "size": {
+      "$ref": "#/components/schemas/Size"
+     },
+     "stock": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "Shown only to users granted shop.view_cost.",
+      "title": "Stock"
+     },
+     "version": {
+      "title": "Version",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "id",
+     "version",
+     "deleted_at",
+     "name",
+     "label",
+     "price",
+     "made_at",
+     "active",
+     "color",
+     "size",
+     "parts",
+     "maker",
+     "links"
+    ],
+    "title": "GadgetOut",
+    "type": "object"
+   },
+   "domainkit__resources__routing__GadgetPage__1": {
+    "properties": {
+     "items": {
+      "items": {
+       "$ref": "#/components/schemas/GadgetSummary"
+      },
+      "title": "Items",
+      "type": "array"
+     },
+     "next_offset": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "Pass back as offset.",
+      "title": "Next Offset"
+     },
+     "total": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "Every match.",
+      "title": "Total"
+     }
+    },
+    "required": [
+     "items"
+    ],
+    "title": "GadgetPage",
+    "type": "object"
+   },
+   "domainkit__resources__routing__GadgetPage__2": {
+    "properties": {
+     "items": {
+      "items": {
+       "$ref": "#/components/schemas/domainkit__resources__schemas__GadgetOut"
+      },
+      "title": "Items",
+      "type": "array"
+     },
+     "next_cursor": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "Pass back as cursor.",
+      "title": "Next Cursor"
+     }
+    },
+    "required": [
+     "items"
+    ],
+    "title": "GadgetPage",
+    "type": "object"
+   },
+   "domainkit__resources__schemas__GadgetOut": {
+    "properties": {
+     "active": {
+      "title": "Active",
+      "type": "boolean"
+     },
+     "color": {
+      "$ref": "#/components/schemas/Color"
+     },
+     "deleted_at": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Deleted At"
+     },
+     "id": {
+      "format": "uuid",
+      "title": "Id",
+      "type": "string"
+     },
+     "label": {
+      "maxLength": 20,
+      "title": "Label",
+      "type": "string"
+     },
+     "made_at": {
+      "format": "date-time",
+      "title": "Made At",
+      "type": "string"
+     },
+     "maker": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/MakerOut"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "name": {
+      "maxLength": 30,
+      "title": "Name",
+      "type": "string"
+     },
+     "parts": {
+      "items": {
+       "$ref": "#/components/schemas/PartOut"
+      },
+      "title": "Parts",
+      "type": "array"
+     },
+     "price": {
+      "title": "Price",
+      "type": "string"
+     },
+     "size": {
+      "$ref": "#/components/schemas/Size"
+     },
+     "stock": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Stock"
+     },
+     "version": {
+      "title": "Version",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "id",
+     "version",
+     "deleted_at",
+     "name",
+     "label",
+     "price",
+     "made_at",
+     "stock",
+     "active",
+     "color",
+     "size",
+     "parts",
+     "maker"
+    ],
+    "title": "GadgetOut",
+    "type": "object"
+   }
+  },
+  "securitySchemes": {
+   "Token": {
+    "description": "A token from logging in: `Authorization: Bearer <token>`.",
+    "scheme": "bearer",
+    "type": "http"
+   }
+  }
+ },
+ "info": {
+  "title": "FastAPI",
+  "version": "0.1.0"
+ },
+ "openapi": "3.1.0",
+ "paths": {
+  "/gadgets": {
+   "get": {
+    "description": "List gadgets",
+    "operationId": "list_gadgets_gadgets_get",
+    "parameters": [
+     {
+      "description": "Items per page.",
+      "in": "query",
+      "name": "limit",
+      "required": false,
+      "schema": {
+       "default": 50,
+       "description": "Items per page.",
+       "maximum": 200,
+       "minimum": 1,
+       "title": "Limit",
+       "type": "integer"
+      }
+     },
+     {
+      "description": "Items to skip.",
+      "in": "query",
+      "name": "offset",
+      "required": false,
+      "schema": {
+       "default": 0,
+       "description": "Items to skip.",
+       "maximum": 10000,
+       "minimum": 0,
+       "title": "Offset",
+       "type": "integer"
+      }
+     },
+     {
+      "description": "Only items whose color is this.",
+      "in": "query",
+      "name": "color",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "$ref": "#/components/schemas/Color"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Only items whose color is this.",
+       "title": "Color"
+      }
+     },
+     {
+      "description": "Only items whose color is one of these.",
+      "in": "query",
+      "name": "color__in",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "items": {
+          "$ref": "#/components/schemas/Color"
+         },
+         "maxItems": 50,
+         "type": "array"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Only items whose color is one of these.",
+       "title": "Color  In"
+      }
+     },
+     {
+      "description": "Order by these fields; - for descending.",
+      "in": "query",
+      "name": "ordering",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "items": {
+          "enum": [
+           "name",
+           "-name",
+           "price",
+           "-price"
+          ],
+          "type": "string"
+         },
+         "maxItems": 3,
+         "type": "array"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Order by these fields; - for descending.",
+       "title": "Ordering"
+      }
+     },
+     {
+      "description": "Words to find in name, ignoring case.",
+      "in": "query",
+      "name": "search",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 100,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Words to find in name, ignoring case.",
+       "title": "Search"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/domainkit__resources__routing__GadgetPage__1"
+        }
+       },
+       "application/x-ndjson": {
+        "schema": {
+         "type": "string"
+        }
+       },
+       "text/csv": {
+        "schema": {
+         "type": "string"
+        }
+       }
+      },
+      "description": "A page as JSON; every match as text/csv or application/x-ndjson, by Accept, up to 10000."
+     },
+     "401": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unauthorized"
+     },
+     "403": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Forbidden"
+     },
+     "406": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Not Acceptable"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unprocessable Content"
+     }
+    },
+    "security": [
+     {
+      "Token": []
+     }
+    ],
+    "summary": "List gadgets"
+   },
+   "post": {
+    "description": "Create a gadget",
+    "operationId": "create_gadget_gadgets_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/GadgetIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "201": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/domainkit__resources__routing__GadgetOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "401": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unauthorized"
+     },
+     "403": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Forbidden"
+     },
+     "409": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Conflict"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unprocessable Content"
+     }
+    },
+    "security": [
+     {
+      "Token": []
+     }
+    ],
+    "summary": "Create a gadget"
+   }
+  },
+  "/gadgets/batch": {
+   "post": {
+    "description": "Rename a gadget., for many",
+    "operationId": "rename_gadget_batch_gadgets_batch_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/RenameGadgetBatch"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "207": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/BatchAnswer"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "401": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unauthorized"
+     },
+     "403": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Forbidden"
+     },
+     "409": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Conflict"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unprocessable Content"
+     }
+    },
+    "security": [
+     {
+      "Token": []
+     }
+    ],
+    "summary": "Rename a gadget., for many"
+   }
+  },
+  "/gadgets/dearest": {
+   "get": {
+    "description": "The dearest gadget.",
+    "operationId": "dearest_gadgets_dearest_get",
+    "parameters": [
+     {
+      "description": "The ETag you hold: 304 if it is current.",
+      "in": "header",
+      "name": "If-None-Match",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 4096,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "The ETag you hold: 304 if it is current.",
+       "title": "If-None-Match"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/domainkit__resources__routing__GadgetOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "304": {
+      "description": "The ETag sent is still current."
+     },
+     "401": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unauthorized"
+     },
+     "403": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Forbidden"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "security": [
+     {
+      "Token": []
+     }
+    ],
+    "summary": "The dearest gadget."
+   }
+  },
+  "/gadgets/labelled": {
+   "get": {
+    "description": "Gadgets with one label.",
+    "operationId": "gadgets_labelled_gadgets_labelled_get",
+    "parameters": [
+     {
+      "in": "query",
+      "name": "label",
+      "required": true,
+      "schema": {
+       "maxLength": 20,
+       "title": "Label",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "most",
+      "required": false,
+      "schema": {
+       "default": 10,
+       "exclusiveMaximum": 9223372036854775808,
+       "minimum": -9223372036854775808,
+       "title": "Most",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/GadgetsLabelledAnswer"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "401": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unauthorized"
+     },
+     "403": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Forbidden"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unprocessable Content"
+     }
+    },
+    "security": [
+     {
+      "Token": []
+     }
+    ],
+    "summary": "Gadgets with one label."
+   }
+  },
+  "/gadgets/made": {
+   "post": {
+    "description": "Make a gadget.",
+    "operationId": "make_gadget_gadgets_made_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/MakeIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "201": {
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      },
+      "description": "Successful Response"
+     },
+     "401": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unauthorized"
+     },
+     "403": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Forbidden"
+     },
+     "409": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Conflict"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unprocessable Content"
+     }
+    },
+    "security": [
+     {
+      "Token": []
+     }
+    ],
+    "summary": "Make a gadget."
+   }
+  },
+  "/gadgets/{gadget_id}": {
+   "delete": {
+    "description": "Delete a gadget",
+    "operationId": "delete_gadget_gadgets__gadget_id__delete",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "gadget_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Gadget Id",
+       "type": "string"
+      }
+     },
+     {
+      "description": "Required: the ETag of the version you change; 412 if it changed since.",
+      "in": "header",
+      "name": "If-Match",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 4096,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Required: the ETag of the version you change; 412 if it changed since.",
+       "title": "If-Match"
+      }
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     },
+     "401": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unauthorized"
+     },
+     "403": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Forbidden"
+     },
+     "404": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Not Found"
+     },
+     "409": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Conflict"
+     },
+     "412": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Precondition Failed"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unprocessable Content"
+     },
+     "428": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Precondition Required"
+     }
+    },
+    "security": [
+     {
+      "Token": []
+     }
+    ],
+    "summary": "Delete a gadget"
+   },
+   "get": {
+    "description": "Read a gadget",
+    "operationId": "read_gadget_gadgets__gadget_id__get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "gadget_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Gadget Id",
+       "type": "string"
+      }
+     },
+     {
+      "description": "The ETag you hold: 304 if it is current.",
+      "in": "header",
+      "name": "If-None-Match",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 4096,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "The ETag you hold: 304 if it is current.",
+       "title": "If-None-Match"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/domainkit__resources__routing__GadgetOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "304": {
+      "description": "The ETag sent is still current."
+     },
+     "401": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unauthorized"
+     },
+     "403": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Forbidden"
+     },
+     "404": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Not Found"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "security": [
+     {
+      "Token": []
+     }
+    ],
+    "summary": "Read a gadget"
+   },
+   "patch": {
+    "description": "Change fields of a gadget",
+    "operationId": "update_gadget_gadgets__gadget_id__patch",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "gadget_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Gadget Id",
+       "type": "string"
+      }
+     },
+     {
+      "description": "Required: the ETag of the version you change; 412 if it changed since.",
+      "in": "header",
+      "name": "If-Match",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 4096,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Required: the ETag of the version you change; 412 if it changed since.",
+       "title": "If-Match"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/GadgetPatch"
+       }
+      },
+      "application/merge-patch+json": {
+       "schema": {
+        "additionalProperties": false,
+        "properties": {
+         "color": {
+          "$ref": "#/components/schemas/Color"
+         },
+         "label": {
+          "maxLength": 20,
+          "title": "Label",
+          "type": "string"
+         },
+         "made_at": {
+          "format": "date-time",
+          "title": "Made At",
+          "type": "string"
+         },
+         "name": {
+          "maxLength": 30,
+          "title": "Name",
+          "type": "string"
+         },
+         "price": {
+          "anyOf": [
+           {
+            "type": "number"
+           },
+           {
+            "type": "string"
+           }
+          ],
+          "title": "Price"
+         },
+         "size": {
+          "$ref": "#/components/schemas/Size"
+         },
+         "stock": {
+          "anyOf": [
+           {
+            "exclusiveMaximum": 9223372036854775808,
+            "minimum": -9223372036854775808,
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "description": "Changed only by users granted shop.view_cost.",
+          "title": "Stock"
+         }
+        },
+        "title": "GadgetPatch",
+        "type": "object"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/domainkit__resources__routing__GadgetOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "401": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unauthorized"
+     },
+     "403": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Forbidden"
+     },
+     "404": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Not Found"
+     },
+     "409": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Conflict"
+     },
+     "412": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Precondition Failed"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unprocessable Content"
+     },
+     "428": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Precondition Required"
+     }
+    },
+    "security": [
+     {
+      "Token": []
+     }
+    ],
+    "summary": "Change fields of a gadget"
+   }
+  },
+  "/gadgets/{gadget_id}/brief": {
+   "post": {
+    "description": "Rename a gadget.",
+    "operationId": "rename_gadget_gadgets__gadget_id__brief_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "gadget_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Gadget Id",
+       "type": "string"
+      }
+     },
+     {
+      "description": "Required: the ETag of the version you change; 412 if it changed since.",
+      "in": "header",
+      "name": "If-Match",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 4096,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Required: the ETag of the version you change; 412 if it changed since.",
+       "title": "If-Match"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/RenameIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Summary"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "401": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unauthorized"
+     },
+     "403": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Forbidden"
+     },
+     "404": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Not Found"
+     },
+     "409": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Conflict"
+     },
+     "412": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Precondition Failed"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unprocessable Content"
+     },
+     "428": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Precondition Required"
+     }
+    },
+    "security": [
+     {
+      "Token": []
+     }
+    ],
+    "summary": "Rename a gadget."
+   }
+  },
+  "/gadgets/{gadget_id}/drop": {
+   "delete": {
+    "description": "Delete a gadget.",
+    "operationId": "drop_gadget_gadgets__gadget_id__drop_delete",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "gadget_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Gadget Id",
+       "type": "string"
+      }
+     },
+     {
+      "description": "Required: the ETag of the version you change; 412 if it changed since.",
+      "in": "header",
+      "name": "If-Match",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 4096,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Required: the ETag of the version you change; 412 if it changed since.",
+       "title": "If-Match"
+      }
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     },
+     "401": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unauthorized"
+     },
+     "403": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Forbidden"
+     },
+     "404": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Not Found"
+     },
+     "409": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Conflict"
+     },
+     "412": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Precondition Failed"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unprocessable Content"
+     },
+     "428": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Precondition Required"
+     }
+    },
+    "security": [
+     {
+      "Token": []
+     }
+    ],
+    "summary": "Delete a gadget."
+   }
+  },
+  "/gadgets/{gadget_id}/rename": {
+   "post": {
+    "description": "Rename a gadget.",
+    "operationId": "rename_gadget_gadgets__gadget_id__rename_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "gadget_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Gadget Id",
+       "type": "string"
+      }
+     },
+     {
+      "description": "Required: the ETag of the version you change; 412 if it changed since.",
+      "in": "header",
+      "name": "If-Match",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 4096,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "Required: the ETag of the version you change; 412 if it changed since.",
+       "title": "If-Match"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/RenameIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      },
+      "description": "Successful Response"
+     },
+     "401": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unauthorized"
+     },
+     "403": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Forbidden"
+     },
+     "404": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Not Found"
+     },
+     "409": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Conflict"
+     },
+     "412": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Precondition Failed"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unprocessable Content"
+     },
+     "428": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Precondition Required"
+     }
+    },
+    "security": [
+     {
+      "Token": []
+     }
+    ],
+    "summary": "Rename a gadget."
+   }
+  },
+  "/gadgets/{gadget_id}/reviews": {
+   "get": {
+    "description": "List reviews",
+    "operationId": "list_reviews_gadgets__gadget_id__reviews_get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "gadget_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Gadget Id",
+       "type": "string"
+      }
+     },
+     {
+      "description": "Items per page.",
+      "in": "query",
+      "name": "limit",
+      "required": false,
+      "schema": {
+       "default": 50,
+       "description": "Items per page.",
+       "maximum": 200,
+       "minimum": 1,
+       "title": "Limit",
+       "type": "integer"
+      }
+     },
+     {
+      "description": "The previous page's next_cursor.",
+      "in": "query",
+      "name": "cursor",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 4096,
+         "pattern": "^[A-Za-z0-9_-]+$",
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "The previous page's next_cursor.",
+       "title": "Cursor"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ReviewPage"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "401": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unauthorized"
+     },
+     "403": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Forbidden"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unprocessable Content"
+     }
+    },
+    "security": [
+     {
+      "Token": []
+     }
+    ],
+    "summary": "List reviews"
+   },
+   "post": {
+    "description": "Review a gadget.",
+    "operationId": "write_review_gadgets__gadget_id__reviews_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "gadget_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Gadget Id",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ReviewIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "201": {
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      },
+      "description": "Successful Response"
+     },
+     "401": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unauthorized"
+     },
+     "403": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Forbidden"
+     },
+     "409": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Conflict"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unprocessable Content"
+     }
+    },
+    "security": [
+     {
+      "Token": []
+     }
+    ],
+    "summary": "Review a gadget."
+   }
+  },
+  "/gadgets/{gadget_id}/reviews/{review_id}": {
+   "get": {
+    "description": "Read a review",
+    "operationId": "read_review_gadgets__gadget_id__reviews__review_id__get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "gadget_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Gadget Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "path",
+      "name": "review_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Review Id",
+       "type": "string"
+      }
+     },
+     {
+      "description": "The ETag you hold: 304 if it is current.",
+      "in": "header",
+      "name": "If-None-Match",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 4096,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "The ETag you hold: 304 if it is current.",
+       "title": "If-None-Match"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ReviewOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "304": {
+      "description": "The ETag sent is still current."
+     },
+     "401": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unauthorized"
+     },
+     "403": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Forbidden"
+     },
+     "404": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Not Found"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "security": [
+     {
+      "Token": []
+     }
+    ],
+    "summary": "Read a review"
+   }
+  },
+  "/gadgets/{gadget_id}/reviews/{review_id}/edit": {
+   "post": {
+    "description": "Edit a review of a gadget.",
+    "operationId": "edit_review_gadgets__gadget_id__reviews__review_id__edit_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "gadget_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Gadget Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "path",
+      "name": "review_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Review Id",
+       "type": "string"
+      }
+     },
+     {
+      "description": "The ETag of the version you change; 412 if it changed since.",
+      "in": "header",
+      "name": "If-Match",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 4096,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "The ETag of the version you change; 412 if it changed since.",
+       "title": "If-Match"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ReviewIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      },
+      "description": "Successful Response"
+     },
+     "401": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unauthorized"
+     },
+     "403": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Forbidden"
+     },
+     "404": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Not Found"
+     },
+     "409": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Conflict"
+     },
+     "412": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Precondition Failed"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unprocessable Content"
+     }
+    },
+    "security": [
+     {
+      "Token": []
+     }
+    ],
+    "summary": "Edit a review of a gadget."
+   }
+  },
+  "/open": {
+   "get": {
+    "description": "List gadgets",
+    "operationId": "open_list_gadgets_open_get",
+    "parameters": [
+     {
+      "description": "Items per page.",
+      "in": "query",
+      "name": "limit",
+      "required": false,
+      "schema": {
+       "default": 50,
+       "description": "Items per page.",
+       "maximum": 200,
+       "minimum": 1,
+       "title": "Limit",
+       "type": "integer"
+      }
+     },
+     {
+      "description": "The previous page's next_cursor.",
+      "in": "query",
+      "name": "cursor",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 4096,
+         "pattern": "^[A-Za-z0-9_-]+$",
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "The previous page's next_cursor.",
+       "title": "Cursor"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/domainkit__resources__routing__GadgetPage__2"
+        }
+       },
+       "text/csv": {
+        "schema": {
+         "type": "string"
+        }
+       }
+      },
+      "description": "A page as JSON; every match as text/csv, by Accept, up to 10000."
+     },
+     "406": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Not Acceptable"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unprocessable Content"
+     }
+    },
+    "summary": "List gadgets"
+   }
+  },
+  "/open/{gadget_id}": {
+   "get": {
+    "description": "Read a gadget",
+    "operationId": "open_read_gadget_open__gadget_id__get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "gadget_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Gadget Id",
+       "type": "string"
+      }
+     },
+     {
+      "description": "The ETag you hold: 304 if it is current.",
+      "in": "header",
+      "name": "If-None-Match",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 4096,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "The ETag you hold: 304 if it is current.",
+       "title": "If-None-Match"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/domainkit__resources__schemas__GadgetOut"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "304": {
+      "description": "The ETag sent is still current."
+     },
+     "404": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Not Found"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Read a gadget"
+   }
+  },
+  "/open/{gadget_id}/rename": {
+   "post": {
+    "description": "Rename a gadget.",
+    "operationId": "open_rename_gadget_open__gadget_id__rename_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "gadget_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Gadget Id",
+       "type": "string"
+      }
+     },
+     {
+      "description": "The ETag of the version you change; 412 if it changed since.",
+      "in": "header",
+      "name": "If-Match",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "maxLength": 4096,
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "The ETag of the version you change; 412 if it changed since.",
+       "title": "If-Match"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/RenameIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      },
+      "description": "Successful Response"
+     },
+     "404": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Not Found"
+     },
+     "409": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Conflict"
+     },
+     "412": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Precondition Failed"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ErrorResponse"
+        }
+       }
+      },
+      "description": "Unprocessable Content"
+     }
+    },
+    "summary": "Rename a gadget."
+   }
+  }
+ }
+}

@@ -26,6 +26,7 @@ from domainkit.db.routing import (
 )
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit_tests.conftest import MakePackage
+from domainkit_tests.settings import SECRET_KEY
 from domainkit_tests.test_db import NotesUnitOfWork
 
 SQLITE = "sqlite+aiosqlite:///:memory:"
@@ -255,6 +256,7 @@ def test_deployments_need_verified_ledgers(
         validate(
             ENVIRONMENT="production",
             ALLOWED_HOSTS=["api.example.com"],
+            SECRET_KEY=SECRET_KEY,
             DATABASES={"default": database},
             LEDGERS={"evidence": ledger},
         )
@@ -268,6 +270,7 @@ def test_verified_ledgers_pass_the_deployment_checks() -> None:
     current = validate(
         ENVIRONMENT="production",
         ALLOWED_HOSTS=["api.example.com"],
+        SECRET_KEY=SECRET_KEY,
         DATABASES={"default": database},
         LEDGERS={"evidence": ledger},
     )

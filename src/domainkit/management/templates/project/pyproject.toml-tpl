@@ -9,7 +9,8 @@ dev = ["domainkit[testing]"]                # pytest and httpx2, for the fixture
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
-addopts = "-p domainkit.testing"           # the database and client fixtures
+# The database and client fixtures, and those for events and queued work.
+addopts = "-p domainkit.testing -p domainkit.contrib.messaging.testing"
 domainkit_settings = "config.settings.test"
 
 [tool.ruff.lint.per-file-ignores]

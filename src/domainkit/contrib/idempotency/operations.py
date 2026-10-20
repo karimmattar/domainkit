@@ -19,11 +19,11 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Final
 
 from sqlalchemy import ColumnElement, Update, and_, update
 
+from domainkit import clock
 from domainkit.ddd import ConcurrentUpdate
 
 from .tables import idempotency_keys
@@ -87,5 +87,5 @@ def mark_committed(operation: Operation) -> Update:
     return (
         update(idempotency_keys)
         .where(operation.holds_key())
-        .values(committed_at=datetime.now(UTC))
+        .values(committed_at=clock.now())
     )

@@ -1,0 +1,41 @@
+"""``ProductsByOwner``: its handler, and its route."""
+
+import pytest
+from gen.shop.application import queries
+from gen.shop.application.queries import ProductsByOwner
+
+from domainkit.testing import TestClient
+
+from .fakes import FakeShopUnitOfWork, new_product, new_product_request
+
+URL = "/api/v1/shop/products"
+
+
+@pytest.mark.anyio
+async def test_products_by_owner_finds_what_it_asks_for() -> None:
+    """The product that matches the query is found."""
+    uow = FakeShopUnitOfWork()
+    product = new_product()
+    async with uow:
+        await uow.products.add(product)
+        await uow.commit()
+
+    found = await queries.products_by_owner(
+        ProductsByOwner(owner_id=product.owner_id, name=product.name), uow
+    )
+
+    assert found == [product]
+
+
+def test_products_by_owner_route(admin_client: TestClient) -> None:
+    """``GET /by-owner`` answers the query's products."""
+    created = admin_client.post(URL, json=new_product_request())
+    assert created.status_code == 201, created.json()
+    body = created.json()
+
+    answer = admin_client.get(
+        f"{URL}/by-owner", params={"owner_id": body["owner_id"], "name": body["name"]}
+    )
+
+    assert answer.status_code == 200, answer.json()
+    assert [each["id"] for each in answer.json()["items"]] == [body["id"]]

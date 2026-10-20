@@ -22,6 +22,7 @@ from pydantic_core import to_jsonable_python
 from sqlalchemy import insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
+from domainkit import clock
 from domainkit.apps import registry
 from domainkit.context import SYSTEM_ACTOR, current_request
 from domainkit.db import connections
@@ -110,7 +111,7 @@ def audit_row(
     one, to the day's anonymous callers.
     """
     request = current_request()
-    occurred_at = occurred_at or datetime.now(UTC)
+    occurred_at = occurred_at or clock.now()
     actor = request.actor if request else None
     caller = (
         actor

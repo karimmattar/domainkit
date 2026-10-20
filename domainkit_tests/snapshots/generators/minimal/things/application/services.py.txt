@@ -1,0 +1,70 @@
+"""Services."""
+
+from minimal.things.application.commands import (
+    CreateTag,
+    CreateWidget,
+    DeleteTag,
+    DeleteWidget,
+    PackUpThing,
+    ShipThing,
+)
+from minimal.things.application.unit_of_work import ThingsUnitOfWork
+from minimal.things.domain.model import Tag, TagId, Thing, ThingId, Widget, WidgetId
+
+
+async def create_widget(command: CreateWidget, uow: ThingsUnitOfWork) -> Widget:
+    """Create and store a widget."""
+    widget = Widget.create(
+        title=command.title, owner=ThingId(command.owner), body=command.body
+    )
+    async with uow:
+        await uow.widgets.add(widget)
+        await uow.commit()
+    return widget
+
+
+async def delete_widget(command: DeleteWidget, uow: ThingsUnitOfWork) -> None:
+    """Delete a widget."""
+    async with uow:
+        widget = await uow.widgets.get(WidgetId(command.widget_id))
+        widget.delete()
+        await uow.widgets.remove(widget)
+        await uow.commit()
+
+
+async def create_tag(command: CreateTag, uow: ThingsUnitOfWork) -> Tag:
+    """Create and store a tag."""
+    tag = Tag.create()
+    async with uow:
+        await uow.tags.add(tag)
+        await uow.commit()
+    return tag
+
+
+async def delete_tag(command: DeleteTag, uow: ThingsUnitOfWork) -> None:
+    """Delete a tag."""
+    async with uow:
+        tag = await uow.tags.get(TagId(command.tag_id))
+        tag.delete()
+        await uow.tags.remove(tag)
+        await uow.commit()
+
+
+async def ship_thing(command: ShipThing, uow: ThingsUnitOfWork) -> Thing:
+    """Ship a thing."""
+    async with uow:
+        thing = await uow.things.get(ThingId(command.thing_id))
+        thing.ship(
+            at=command.at, cost=command.cost, to=ThingId(command.to), code=command.code
+        )
+        await uow.commit()
+    return thing
+
+
+async def pack_up_thing(command: PackUpThing, uow: ThingsUnitOfWork) -> Thing:
+    """Pack up a thing."""
+    async with uow:
+        thing = await uow.things.get(ThingId(command.thing_id))
+        thing.pack_up()
+        await uow.commit()
+    return thing

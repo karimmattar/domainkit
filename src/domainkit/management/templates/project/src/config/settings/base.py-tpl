@@ -17,6 +17,7 @@ ROOT_ROUTER = "config.urls.router"
 # Every request is authenticated; routes say who may call them (docs/auth.md).
 MIDDLEWARE = [
     "domainkit.http.middleware.ProxyHeadersMiddleware",
+    "domainkit.http.locale.LocaleMiddleware",  # Answers in LANGUAGES (docs/i18n.md).
     "domainkit.http.middleware.SecurityHeadersMiddleware",
     "domainkit.http.middleware.RequestContextMiddleware",
     "domainkit.http.middleware.AllowedHostsMiddleware",
@@ -25,3 +26,11 @@ MIDDLEWARE = [
     "domainkit.http.middleware.RequestBodyLimitMiddleware",
 ]
 ASGI_APPLICATION = "config.asgi:application"
+# Error messages in the caller's language; dates shown in TIME_ZONE, stored in UTC.
+LANGUAGE_CODE = "en"
+LANGUAGES = [("en", "English"), ("ar", "Arabic")]
+TIME_ZONE = "UTC"
+
+# Operation ids are route names, so generated clients keep their method
+# names when routers move (docs/reference.md, "The API surface").
+OPENAPI_OPERATION_IDS = "route_name"
