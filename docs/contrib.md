@@ -676,7 +676,15 @@ rewrite.
   digest). The worker seals every `AUDIT.SEAL_EVERY` when
   `domainkit.contrib.messaging` is installed; otherwise run
   `python manage.py auditseal` on a schedule. Each database's trail is its
-  own chain.
+  own chain. The newest sealed row is a high-water mark: a run looks for
+  rows from `AUDIT.SEAL_LATE_WINDOW` before it (rows that committed late),
+  so its cost follows what is new, not how long the trail is. A run seals
+  `AUDIT.SEAL_BATCHES` batches at most and leaves the rest for the next;
+  the `audit_unsealed_rows` gauge says how many it left, and a warning is
+  logged past `AUDIT.SEAL_BACKLOG_WARNING`. Sealing also makes the keys of
+  today's and tomorrow's anonymous callers ahead of time, so at midnight
+  (UTC) audited requests do not queue behind one insert of the new day's
+  key.
 - **Anchoring.** With `AUDIT.LEDGER` naming a ledger in `LEDGERS` (immudb),
   sealing also writes each chain's head (its number and link) there, at
   most once per `AUDIT.ANCHOR_EVERY`, as a new revision of
@@ -722,6 +730,9 @@ def downgrade() -> None:
 | `LEDGER` | `None` | `LEDGERS` alias to anchor each chain's head on; `None` seals without anchoring. |
 | `ANCHOR_EVERY` | 1 hour | Anchor a new head at most this often. |
 | `SEAL_EVERY` | 5 minutes | How often the worker seals new rows. |
+| `SEAL_LATE_WINDOW` | 15 minutes | How far before the newest sealed row a run looks for rows that committed late, up to a day. A row later than this stays unsealed, and `auditverify` reports it once it is a day old: keep it above your longest transaction plus the clock skew between hosts. |
+| `SEAL_BATCHES` | `100` | Batches of 1,000 rows one run seals at most (1 to 10,000); the rest wait for the next run. |
+| `SEAL_BACKLOG_WARNING` | `100000` | Rows a run leaves unsealed past which it logs a warning. |
 
 ### History
 

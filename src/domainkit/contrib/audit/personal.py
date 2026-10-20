@@ -19,7 +19,7 @@ import hmac
 import json
 import secrets
 from collections.abc import Collection
-from datetime import date
+from datetime import date, timedelta
 from typing import Final
 
 from pydantic_core import to_jsonable_python
@@ -125,6 +125,20 @@ async def forget_anonymous(before: date) -> int:
         audit_keys.c.subject.startswith(ANONYMOUS)
         & (audit_keys.c.subject < anonymous_subject(before))
     )
+
+
+async def prepare_anonymous_keys(database: str) -> None:
+    """Make the keys of today's and tomorrow's anonymous callers, if missing.
+
+    Each audited request without an actor needs its day's key (UTC). Made by
+    the first such request of the day, inside its transaction, it would
+    make every concurrent one wait for that transaction (on PostgreSQL), so
+    the seal task makes them ahead, in a short transaction of its own.
+    """
+    today = clock.today()
+    days = (today, today + timedelta(days=1))
+    async with connections.engine(database).begin() as connection:
+        await subject_keys(connection, [anonymous_subject(day) for day in days])
 
 
 def audited_databases() -> tuple[str, ...]:

@@ -2,7 +2,7 @@
 
 from datetime import timedelta
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from domainkit.conf import DEFAULT_DB_ALIAS
 
@@ -24,3 +24,13 @@ class AuditSettings(BaseModel):
     """Anchor a new head at most this often (the window a rewrite can hide in)."""
     SEAL_EVERY: timedelta = timedelta(minutes=5)
     """How often the worker seals new rows (with ``domainkit.contrib.messaging``)."""
+    SEAL_LATE_WINDOW: timedelta = Field(
+        default=timedelta(minutes=15), gt=timedelta(0), le=timedelta(days=1)
+    )
+    """How far before the newest sealed row sealing looks for rows that
+    committed late. A row later than this stays unsealed, and ``auditverify``
+    reports it; keep it above the longest transaction and the clock skew."""
+    SEAL_BATCHES: int = Field(default=100, ge=1, le=10_000)
+    """Batches of 1,000 rows one run seals at most; the rest wait for the next."""
+    SEAL_BACKLOG_WARNING: int = Field(default=100_000, ge=1)
+    """Rows left unsealed after a run past which it logs a warning."""
