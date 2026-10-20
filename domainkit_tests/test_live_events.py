@@ -14,6 +14,7 @@ import anyio
 import pytest
 from starlette.datastructures import State
 from starlette.requests import HTTPConnection
+from starlette.testclient import WebSocketDenialResponse
 from starlette.types import Message, Scope
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
@@ -665,6 +666,28 @@ def test_an_expired_token_closes_its_websocket(live_client: MakeClient) -> None:
             socket.receive_text()
 
     assert closed.value.code == 1008
+
+
+def test_each_user_has_a_cap_of_their_own(live_client: MakeClient) -> None:
+    """Users behind one address are counted apart, by who they are."""
+    client = live_client()
+    alice = client.authenticated(username="alice")
+    bob = client.authenticated(username="bob")
+
+    with (
+        override_settings(LIVE_MAX_CONNECTIONS_PER_CALLER=1),
+        alice.websocket_connect("/live/echo"),
+    ):
+        with (
+            pytest.raises(WebSocketDenialResponse) as refused,
+            alice.websocket_connect("/live/echo"),
+        ):
+            pass
+        with bob.websocket_connect("/live/echo") as socket:
+            socket.send_text("mine")
+            assert socket.receive_text() == "mine"
+
+    assert refused.value.status_code == 503
 
 
 def test_a_recheck_reloads_the_user(

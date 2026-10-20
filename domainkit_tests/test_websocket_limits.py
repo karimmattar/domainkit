@@ -4,6 +4,7 @@ import logging
 import math
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any, Final
 
@@ -21,6 +22,7 @@ from starlette.websockets import WebSocketDisconnect
 from domainkit.clock import freeze_time, monotonic
 from domainkit.conf import override_settings, settings
 from domainkit.conf.global_settings import Settings
+from domainkit.context import RequestContext, bind_request
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application, live, websockets
 from domainkit.http.live import (
@@ -507,9 +509,16 @@ async def test_other_requests_pass_through() -> None:
 
 
 @pytest.mark.anyio
-async def test_a_full_process_closes_handshakes_it_cannot_answer() -> None:
+@pytest.mark.parametrize("extensions", ["none", "other"])
+async def test_a_full_process_closes_handshakes_it_cannot_answer(
+    extensions: str,
+) -> None:
     """Without the denial extension, a refused handshake is closed with 1013."""
     server = Server()
+    if extensions == "none":
+        del server.scope["extensions"]  # ASGI makes the key optional.
+    else:
+        server.scope["extensions"] = {"websocket.http.other": {}}
     slots = Slots(total=1, per_caller=1)
     slots.acquire("someone")
     server.scope["app"].state.live_slots = slots
@@ -711,6 +720,18 @@ def test_slots_count_per_process_and_per_caller() -> None:
     slots.release("a")
     slots.release("b")
     assert (slots.open, slots.callers) == (0, {})
+
+
+def test_connections_are_held_by_their_actor_or_address() -> None:
+    """A user counts as itself, wherever it connects from; others by address."""
+    scope = {"client": ("203.0.113.5", 1234)}
+    context = RequestContext(request_id="r", client_ip=None, method="WS", path="/")
+
+    assert live.caller_of(scope) == "ip:203.0.113.5"
+    with bind_request(context):
+        assert live.caller_of(scope) == "ip:203.0.113.5"
+    with bind_request(replace(context, actor="42")):
+        assert live.caller_of(scope) == "actor:42"
 
 
 def test_the_applications_slots_are_made_once() -> None:
