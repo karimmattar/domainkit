@@ -10,7 +10,15 @@ import pytest
 from pydantic import ValidationError
 
 from domainkit.conf import DatabaseConfig, override_settings
-from domainkit.db.drivers import client_ssl_context, connect_args
+from domainkit.db.drivers import (
+    DEADLINE_SLACK,
+    client_ssl_context,
+    command_timeout,
+    connect_args,
+    statement_name,
+    transaction_settings,
+)
+from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 
@@ -100,20 +108,21 @@ def test_asyncpg_arguments() -> None:
         "statement_timeout": "30000",
         "idle_in_transaction_session_timeout": "60000",
     }
+    assert (args["timeout"], args["command_timeout"]) == (10.0, 35.0)
     assert connect_args(config(SSLMODE="disable"))["ssl"] is False
     plain = connect_args(
         config(
             STATEMENT_TIMEOUT=None, LOCK_TIMEOUT=None, IDLE_IN_TRANSACTION_TIMEOUT=None
         )
     )
-    assert plain == {}
+    assert plain == {"timeout": 10.0}
 
 
 def test_migrations_skip_timeouts() -> None:
-    """Migrations keep TLS but may run longer than requests."""
+    """Migrations keep TLS and the connect timeout, but may run long."""
     args = connect_args(config(SSLMODE="disable"), timeouts=False)
 
-    assert args == {"ssl": False}
+    assert args == {"ssl": False, "timeout": 10.0}
 
 
 def test_psycopg_arguments(client_certificate: tuple[Path, Path]) -> None:
@@ -137,8 +146,12 @@ def test_psycopg_arguments(client_certificate: tuple[Path, Path]) -> None:
         "-c statement_timeout=30000 -c lock_timeout=10000 "
         "-c idle_in_transaction_session_timeout=60000"
     )
-    assert connect_args(config("postgresql+psycopg://a@b/c"), timeouts=False) == {}
+    assert args["connect_timeout"] == 10
+    assert connect_args(config("postgresql+psycopg://a@b/c"), timeouts=False) == {
+        "connect_timeout": 10
+    }
     assert connect_args(config("postgresql+psycopg://a@b/c", SSLMODE="require")) == {
+        "connect_timeout": 10,
         "sslmode": "require",
         "options": (
             "-c statement_timeout=30000 -c lock_timeout=10000 "
@@ -170,7 +183,10 @@ def test_connect_args_add_to_the_derived_ones() -> None:
     args = connect_args(
         config(
             SSLMODE="verify-full",
-            CONNECT_ARGS={"command_timeout": 5, "server_settings": {"jit": "off"}},
+            CONNECT_ARGS={
+                "max_cached_statement_lifetime": 5,
+                "server_settings": {"jit": "off"},
+            },
         )
     )
     libpq = connect_args(
@@ -182,9 +198,10 @@ def test_connect_args_add_to_the_derived_ones() -> None:
     )
 
     assert isinstance(args["ssl"], ssl.SSLContext)
-    assert args["command_timeout"] == 5
+    assert args["max_cached_statement_lifetime"] == 5
     assert args["server_settings"] == {**TIMEOUTS, "jit": "off"}
     assert libpq == {
+        "connect_timeout": 10,
         "options": (
             "-c statement_timeout=30000 -c lock_timeout=10000 "
             "-c idle_in_transaction_session_timeout=60000 -c jit=off"
@@ -192,7 +209,7 @@ def test_connect_args_add_to_the_derived_ones() -> None:
         "application_name": "a",
     }
     # Without derived timeouts (migrations), nothing is replaced.
-    assert migrating == {"server_settings": {"statement_timeout": "0"}}
+    assert migrating == {"server_settings": {"statement_timeout": "0"}, "timeout": 10}
     # Without SSLMODE nothing is derived for TLS, so CONNECT_ARGS may set it.
     assert connect_args(config(CONNECT_ARGS={"ssl": True}))["ssl"] is True
 
@@ -306,3 +323,116 @@ def test_applications_refuse_bad_driver_arguments() -> None:
         pytest.raises(ImproperlyConfigured, match=r"ssl \(from SSLMODE\)"),
     ):
         get_asgi_application()
+
+
+# Client-side timeouts and PgBouncer ---------------------------------------------
+
+
+def test_the_driver_waits_a_bounded_time_to_connect_and_per_statement() -> None:
+    """CONNECT_TIMEOUT, and COMMAND_TIMEOUT or STATEMENT_TIMEOUT plus a margin."""
+    assert connect_args(config(CONNECT_TIMEOUT=2.5))["timeout"] == 2.5
+    assert connect_args(config(COMMAND_TIMEOUT=7.0))["command_timeout"] == 7.0
+    assert connect_args(config(STATEMENT_TIMEOUT=60.0))["command_timeout"] == 65.0
+    assert "command_timeout" not in connect_args(config(STATEMENT_TIMEOUT=None))
+    assert command_timeout(config(STATEMENT_TIMEOUT=None, COMMAND_TIMEOUT=3.0)) == 3.0
+    assert connect_args(config(PSYCOPG, CONNECT_TIMEOUT=2.5))["connect_timeout"] == 3
+
+
+def test_timeouts_of_a_millisecond_or_less_never_become_zero() -> None:
+    """PostgreSQL reads 0 as no timeout at all."""
+    args = connect_args(config(STATEMENT_TIMEOUT=0.0001, LOCK_TIMEOUT=0.0004))
+
+    assert args["server_settings"]["statement_timeout"] == "1"
+    assert args["server_settings"]["lock_timeout"] == "1"
+
+
+@pytest.mark.parametrize("name", ["timeout", "command_timeout"])
+def test_connect_args_still_set_the_client_timeouts_deprecated(name: str) -> None:
+    """They were driver arguments before they were settings; they warn now."""
+    with pytest.warns(DomainkitDeprecationWarning, match=f"CONNECT_ARGS\\['{name}'\\]"):
+        args = connect_args(config(CONNECT_ARGS={name: 99}))
+
+    assert args[name] == 99
+    with pytest.warns(DomainkitDeprecationWarning, match="CONNECT_TIMEOUT instead"):
+        libpq = connect_args(config(PSYCOPG, CONNECT_ARGS={"connect_timeout": 9}))
+    assert libpq["connect_timeout"] == 9
+
+
+def test_pgbouncer_mode_keeps_nothing_in_the_session() -> None:
+    """No statement cache, unique statement names, and no startup settings."""
+    args = connect_args(config(PGBOUNCER=True, SSLMODE="disable"))
+    libpq = connect_args(config(PSYCOPG, PGBOUNCER=True))
+
+    assert args["statement_cache_size"] == 0
+    assert args["prepared_statement_cache_size"] == 0
+    name = args["prepared_statement_name_func"]
+    assert name is statement_name
+    assert name() != name()
+    assert name().startswith("__domainkit_")
+    assert "server_settings" not in args
+    assert args["command_timeout"] == 35.0
+    assert libpq == {"connect_timeout": 10, "prepare_threshold": None}
+    migrating = connect_args(config(PGBOUNCER=True), timeouts=False)
+    assert migrating["statement_cache_size"] == 0
+    assert "command_timeout" not in migrating
+
+
+@pytest.mark.parametrize(
+    ("url", "argument"),
+    [
+        (POSTGRES, "statement_cache_size"),
+        (POSTGRES, "prepared_statement_cache_size"),
+        (POSTGRES, "prepared_statement_name_func"),
+        (PSYCOPG, "prepare_threshold"),
+    ],
+)
+def test_pgbouncer_arguments_cannot_be_replaced(url: str, argument: str) -> None:
+    """Turning the statement cache back on would break transaction pooling."""
+    with pytest.raises(ImproperlyConfigured, match=f"{argument} \\(from PGBOUNCER\\)"):
+        connect_args(config(url, PGBOUNCER=True, CONNECT_ARGS={argument: 100}))
+
+
+def test_pgbouncer_needs_postgresql() -> None:
+    """SQLite has no PgBouncer."""
+    with pytest.raises(ValidationError, match="PGBOUNCER needs a postgresql:// URL"):
+        config("sqlite+aiosqlite:///x.db", PGBOUNCER=True)
+    assert config(PSYCOPG, PGBOUNCER=True).PGBOUNCER
+
+
+def test_transactions_set_the_time_left_and_pgbouncers_timeouts() -> None:
+    """statement_timeout drops to the deadline; under PgBouncer, all are set."""
+    plain = config()
+    pooled = config(PGBOUNCER=True)
+
+    assert transaction_settings(plain, None) == {}
+    assert transaction_settings(plain, 5.0) == {"statement_timeout": "5000"}
+    assert transaction_settings(plain, 0.0004) == {"statement_timeout": "1"}
+    # Within DEADLINE_SLACK of STATEMENT_TIMEOUT: the server's own will do.
+    assert transaction_settings(plain, 30.0 - DEADLINE_SLACK) == {
+        "statement_timeout": "29000"
+    }
+    assert transaction_settings(plain, 29.5) == {}
+    # A passed deadline changes nothing: cleanup after it must still run.
+    assert transaction_settings(plain, 0.0) == {}
+    assert transaction_settings(config(STATEMENT_TIMEOUT=None), 120.0) == {
+        "statement_timeout": "120000"
+    }
+    assert transaction_settings(pooled, None) == TIMEOUTS
+    assert transaction_settings(pooled, 29.5) == {
+        **TIMEOUTS,
+        "statement_timeout": "29500",
+    }
+    assert transaction_settings(pooled, 0.0) == TIMEOUTS
+
+
+def test_some_databases_look_like_pgbouncer() -> None:
+    """Port 6432, or a statement cache turned off by hand."""
+    assert config("postgresql+asyncpg://app@pool:6432/app").looks_pooled()
+    assert config(CONNECT_ARGS={"statement_cache_size": 0}).looks_pooled()
+    assert config(PSYCOPG, CONNECT_ARGS={"prepare_threshold": None}).looks_pooled()
+    assert not config(CONNECT_ARGS={"statement_cache_size": 100}).looks_pooled()
+    assert not config().looks_pooled()
+    assert not config(
+        "postgresql+asyncpg://app@pool:6432/app", PGBOUNCER=True
+    ).looks_pooled()
+    assert not config("postgresql+asyncpg://app@db:port/app").looks_pooled()

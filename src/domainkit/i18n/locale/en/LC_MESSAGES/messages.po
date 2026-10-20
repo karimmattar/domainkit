@@ -618,3 +618,10 @@ msgstr ""
 
 msgid "Usernames that start with erased- are kept for erased accounts."
 msgstr ""
+
+#. domainkit.http: deadlines and load shedding
+msgid "The request took too long; try again shortly."
+msgstr ""
+
+msgid "The server is busy; try again shortly."
+msgstr ""

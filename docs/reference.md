@@ -73,11 +73,14 @@ Each `DATABASES` entry:
 | `STATEMENT_TIMEOUT` | `30.0` | Seconds; PostgreSQL cancels longer statements. Migrations are exempt. |
 | `LOCK_TIMEOUT` | `10.0` | Seconds a statement waits for a lock. Migrations are exempt. |
 | `IDLE_IN_TRANSACTION_TIMEOUT` | `60.0` | Seconds before PostgreSQL ends a session idling inside a transaction. |
+| `CONNECT_TIMEOUT` | `10.0` | Seconds to open a connection (asyncpg's `timeout`; libpq's `connect_timeout`, in whole seconds), migrations included. A request that needs a new connection waits this long at most, after its `POOL_TIMEOUT`. |
+| `COMMAND_TIMEOUT` | `STATEMENT_TIMEOUT` plus 5 | Seconds asyncpg waits for one statement before giving up on it (a network or server that stopped answering). Longer than `STATEMENT_TIMEOUT`, so the server ends a slow statement first, with an error that keeps the connection. None without `STATEMENT_TIMEOUT`; migrations are exempt. |
+| `PGBOUNCER` | `False` | The database is reached through PgBouncer's transaction pooling: no statement cache, a unique name for every prepared statement, and the timeouts above set in each transaction (`SET LOCAL`) rather than for the session. PostgreSQL URLs only ([runtime.md](runtime.md#database-timeouts-and-pgbouncer)). |
 | `POOL_SIZE`, `MAX_OVERFLOW`, `POOL_RECYCLE` | SQLAlchemy's | Connection pool sizing. |
 | `POOL_TIMEOUT` | `10.0` for network databases, else SQLAlchemy's | Seconds a request waits for a connection; past it the request gets 503 `database_busy`. |
 | `POOL_PRE_PING` | `True` | Test connections before use, so database restarts are survived. |
 | `TEST_NAME` | `None` | The PostgreSQL database `domainkit.testing` creates for the tests, and drops after them; `test_<name>` when unset. It must start with `test_` ([docs/testing.md](testing.md)). |
-| `CONNECT_ARGS` | `{}` | Extra driver arguments, added to those derived from the options above. asyncpg's `server_settings` and libpq's `options` are merged with the timeouts. Setting what the options above already set (TLS, a timeout) is refused when the application is built, however the server setting is spelled (`STATEMENT_TIMEOUT`, `--statement-timeout=`); change that option instead. |
+| `CONNECT_ARGS` | `{}` | Extra driver arguments, added to those derived from the options above. asyncpg's `server_settings` and libpq's `options` are merged with the timeouts. Setting what the options above already set (TLS, a timeout, PgBouncer's statement cache) is refused when the application is built, however the server setting is spelled (`STATEMENT_TIMEOUT`, `--statement-timeout=`); change that option instead. `timeout`, `command_timeout`, and `connect_timeout` still replace `CONNECT_TIMEOUT` and `COMMAND_TIMEOUT`, with a `DomainkitDeprecationWarning`; they are refused from 0.9. |
 | `REPLICAS` | `()` | Aliases of read replicas of this database; read-only units of work take turns on them ([databases.md](databases.md#read-replicas)). Each is an alias of its own, other than `default`, of one primary, outside every shard group, with no replicas of its own, and never a routing target. |
 
 Each `LEDGERS` entry:
@@ -171,6 +174,12 @@ Each `BROKERS` entry:
 | `ERROR_FORMAT` | `"domainkit"` | `"problem+json"`: errors are RFC 9457 problem details (see [Errors](#errors)). |
 | `ERROR_TYPE_BASE_URL` | `None` | With problem details, each code's `type` is this absolute URL plus the code (`https://errors.example.com/` gives `https://errors.example.com/not_found`); unset, it is `about:blank`. |
 | `MAX_REQUEST_BODY_SIZE` | `1048576` | Bytes; larger bodies get 413, whether declared or streamed. A larger WebSocket message, text counted in UTF-8 bytes, closes the connection with 1009. |
+| `REQUEST_TIMEOUT` | `30.0` | Seconds an HTTP request may take until its response starts (`DeadlineMiddleware`); past it the work is cancelled and answered 503 `deadline_exceeded`. A route sets its own with `RequestTimeout`. `None`: no deadline ([runtime.md](runtime.md#request-deadlines)). |
+| `MAX_CONCURRENT_REQUESTS` | `1000` | HTTP requests each process works on at once (`ConcurrencyLimitMiddleware`); `None`: no cap ([runtime.md](runtime.md#load-shedding)). |
+| `MAX_QUEUED_REQUESTS` | `100` | Requests past the cap that may wait for a slot; the next are answered 503 `overloaded` at once. |
+| `REQUEST_QUEUE_TIMEOUT` | `1.0` | Seconds (at most 60) a request past the cap waits for a slot before it is answered 503 `overloaded`. |
+| `CONCURRENCY_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths never counted against the cap, so probes and scrapes are never refused. |
+| `HTTP_CLIENT` | see [Outgoing HTTP calls](#outgoing-http-calls) | Defaults of outgoing calls through `domainkit.http.client`. |
 | `READINESS_TIMEOUT` | `5.0` | Seconds each readiness check may take. |
 | `READINESS_CACHE_SECONDS` | `1.0` | How long a `/ready` result is reused, from when its checks ended; probes that come while checks run wait for them, so probe floods cannot load the database. |
 | `READINESS_DETAILS` | `False` | Name failing components in `/ready` responses (always logged). |
@@ -192,6 +201,27 @@ Each `BROKERS` entry:
 | `CORS_ALLOWED_HEADERS` | `Authorization Content-Type X-Request-ID` | |
 | `CORS_ALLOW_CREDENTIALS` | `False` | Cannot be combined with origin `*`. |
 
+### Outgoing HTTP calls
+
+`HTTP_CLIENT` keys: the defaults of every `domainkit.http.client.HttpClient`
+(the `httpclient` extra), which may change its own timeout and retries. See
+[runtime.md](runtime.md#outgoing-http-calls).
+
+| `HTTP_CLIENT` key | Default | Meaning |
+| --- | --- | --- |
+| `TIMEOUT` | `10.0` | Seconds one call may take, its retries included, and never past the deadline of the work it serves. |
+| `CONNECT_TIMEOUT` | `5.0` | Seconds to open a connection. |
+| `RETRIES` | `2` | Retries (0 to 10) of a call that failed in a way worth trying again. |
+| `BACKOFF` | `0.1` | Seconds before the first retry; the bound doubles for each next one, and the wait is random below it. |
+| `MAX_BACKOFF` | `2.0` | The longest wait before a retry; a longer `Retry-After` ends the retries. |
+| `BREAKER_FAILURES` | `5` | Failures in a row that open a host's circuit: its calls then fail at once with `CircuitOpen`. |
+| `BREAKER_COOLDOWN` | `30.0` | Seconds a host's circuit stays open; then one call at a time tries it. |
+| `MAX_CONNECTIONS` | `100` | Connections per client and event loop. |
+| `MAX_KEEPALIVE_CONNECTIONS` | `20` | Idle connections each client keeps for the next calls. |
+| `MAX_RESPONSE_BYTES` | `10485760` | The largest answer read, counted after decompression; a longer one raises `ResponseTooLarge`. |
+| `USER_AGENT` | `"domainkit"` | The `User-Agent` of every call (printable ASCII). |
+| `CA_BUNDLE` | `None` | CA certificates of the servers called; the system's (or httpx2's) when unset. |
+
 ### Languages and time zones
 
 See [i18n.md](i18n.md).
@@ -205,18 +235,28 @@ See [i18n.md](i18n.md).
 
 ### Server limits
 
-The application limits bodies, WebSocket messages, and request rates. Slow
-and oversized requests are the server's to stop, before the application
-sees them. Run uvicorn behind a reverse proxy or load balancer that limits
-header size and the time to send headers and body (nginx:
+The application limits bodies, WebSocket messages, request rates, how long
+a request may take (`REQUEST_TIMEOUT`), and how many it works on at once
+(`MAX_CONCURRENT_REQUESTS`). Slow and oversized requests are the server's
+to stop, before the application sees them. Run uvicorn behind a reverse
+proxy or load balancer that limits header size and the time to send
+headers and body (nginx:
 `large_client_header_buffers`, `client_header_timeout`,
 `client_body_timeout`), and set uvicorn's own limits:
 
 ```bash
-uvicorn config.asgi:application --limit-concurrency 200 --timeout-keep-alive 5 \
+uvicorn config.asgi:application --limit-concurrency 1200 --timeout-keep-alive 5 \
   --h11-max-incomplete-event-size 16384 --ws-max-size 1048576 \
   --no-proxy-headers --no-server-header
 ```
+
+Keep `--limit-concurrency` above `MAX_CONCURRENT_REQUESTS` plus
+`MAX_QUEUED_REQUESTS`, and the WebSockets you expect: it is the backstop.
+The application refuses first, with a JSON 503 and `Retry-After`, and never
+refuses the probes in `CONCURRENCY_EXEMPT_PATHS`; uvicorn's 503 is plain, and
+refuses probes too. Keep `REQUEST_TIMEOUT` below the load balancer's idle
+timeout (60 seconds on most), so a slow request gets the application's 503,
+not a 504 from the balancer.
 
 `--ws-max-size` stops a WebSocket message before it is read whole;
 `MAX_REQUEST_BODY_SIZE` then closes the connection on one that got through.
@@ -300,6 +340,10 @@ passes, so an API that is public on purpose can keep them:
 - no `RATE_LIMIT`, or `RateLimitMiddleware` missing from `MIDDLEWARE`
 - a rate limit with no `TRUSTED_PROXIES`: behind a load balancer, every
   caller would share its address and its count
+- no `REQUEST_TIMEOUT`, or `DeadlineMiddleware` missing from `MIDDLEWARE`;
+  no `MAX_CONCURRENT_REQUESTS`, or `ConcurrencyLimitMiddleware` missing
+- a database that seems to go through PgBouncer (port 6432, or a statement
+  cache turned off in `CONNECT_ARGS`) without `PGBOUNCER = True`
 - auth: `AUTH.LOGIN_RATE` or `AUTH.MFA.RATE` set to `None` (guesses
   without limit), and a session or CSRF cookie name without the `__Host-`
   prefix where the prefix could hold
@@ -321,6 +365,8 @@ first:
 | `domainkit.http.locale.LocaleMiddleware` | Picks the request's language from `Accept-Language`, before anything below answers, so their errors are translated; adds `Content-Language` and `Vary: Accept-Language` ([i18n.md](i18n.md)). |
 | `domainkit.http.middleware.CORSMiddleware` | Answers preflights before any work. |
 | `domainkit.http.middleware.RequestContextMiddleware` | Request id (`X-Request-ID`), access log, the context that logs and audit rows read. WebSocket connections get one too: method `WS`, the request id sent with the accept, one access log line when the connection ends (101 if accepted, 403 if closed first). |
+| `domainkit.http.deadlines.DeadlineMiddleware` | Starts the request's deadline (`REQUEST_TIMEOUT`) before any work, and answers 503 `deadline_exceeded` when it passes; lifted once the response starts ([runtime.md](runtime.md#request-deadlines)). |
+| `domainkit.http.shedding.ConcurrencyLimitMiddleware` | Sheds requests past `MAX_CONCURRENT_REQUESTS` with 503 `overloaded`, before authentication looks anything up; never the probes ([runtime.md](runtime.md#load-shedding)). |
 | `domainkit.http.middleware.AllowedHostsMiddleware` | Refuses unknown `Host` headers with 400. |
 | `domainkit.contrib.auth.middleware.AuthenticationMiddleware` | Finds the user from the request's token and makes it the actor, so what follows counts users (auth; see [auth.md](auth.md)). |
 | `domainkit.http.ratelimit.RateLimitMiddleware` | Counts per actor, or per client address (IPv6: per /64). A WebSocket handshake counts once; over the limit it gets the 429, or a 1013 close where the server cannot send one. |
@@ -333,8 +379,8 @@ innermost, that adds the headers of [deprecated
 routes](#versions-and-deprecations).
 
 `DEFAULT_MIDDLEWARE` (proxy headers, security headers, request context,
-allowed hosts, body limit) applies when a settings module sets no
-`MIDDLEWARE`.
+deadlines, the concurrency cap, allowed hosts, body limit) applies when a
+settings module sets no `MIDDLEWARE`.
 
 ## Signing
 
@@ -444,6 +490,9 @@ See ADR 0032.
 | a NOT NULL column (23502) | 422 | `missing_value`, with the field in `errors` |
 | a CHECK constraint (23514) | 422 | `check_violation`, with the fields of the columns it names |
 | a unique constraint outside a unit of work (23505) | 409 | as `DuplicateValue` |
+| a request past its deadline (`REQUEST_TIMEOUT`, or the route's `RequestTimeout`) | 503 | `deadline_exceeded`, with `Retry-After: 1`; logged once, as a warning |
+| no slot under `MAX_CONCURRENT_REQUESTS`: the queue was full, or the wait ran out | 503 | `overloaded`, with `Retry-After: 1`; warned about at most every 10 seconds |
+| a URL a guarded `HttpClient` may not call, or one that leaves a client's base URL | 422 | `unsafe_url` ([runtime.md](runtime.md#outgoing-http-calls)) |
 | unexpected exception | 500 | `internal_error`; logged and sent to `ERROR_REPORTERS` |
 
 WebSockets the database refuses are closed with 1013 (busy) or 1007 (a
@@ -533,6 +582,10 @@ when a span is active. Query strings and bound SQL values are never logged.
 | `http_request_duration_seconds` | `method`, `route` |
 | `http_requests_in_progress` | `method` |
 | `db_pool_connections` | `database`, `state` |
+| `http_requests_admitted` | (requests holding a slot under `MAX_CONCURRENT_REQUESTS`) |
+| `http_requests_queued` | (requests waiting for a slot) |
+| `http_requests_shed_total` | `reason` (`queue_full`, `queue_timeout`) |
+| `http_request_deadlines_exceeded_total` | |
 | `messaging_messages_total` | `kind`, `outcome` |
 | `messaging_message_duration_seconds` | `kind` |
 | `messaging_outbox_messages` | `status` |

@@ -456,6 +456,66 @@ def test_deployments_are_warned_about_weak_choices(
     assert Settings.model_validate(values).deployment_warnings() == warnings
 
 
+DEADLINE_WARNING = (
+    "Requests have no deadline, so a slow one holds its resources for as long "
+    "as it takes; set REQUEST_TIMEOUT and list "
+    "domainkit.http.deadlines.DeadlineMiddleware in MIDDLEWARE."
+)
+SHEDDING_WARNING = (
+    "Requests are not shed under load, so they queue without end; set "
+    "MAX_CONCURRENT_REQUESTS and list "
+    "domainkit.http.shedding.ConcurrencyLimitMiddleware in MIDDLEWARE."
+)
+POOLED_WARNING = (
+    "DATABASES ['default'] seem to go through PgBouncer (port 6432, or a "
+    "statement cache turned off in CONNECT_ARGS); set PGBOUNCER = True, so "
+    "timeouts hold per transaction and prepared statements do not clash."
+)
+POOLED = "postgresql+asyncpg://app@pool.internal:6432/app"
+
+
+@pytest.mark.parametrize(
+    ("change", "warnings"),
+    [
+        ({"REQUEST_TIMEOUT": None}, [DEADLINE_WARNING]),
+        ({"MAX_CONCURRENT_REQUESTS": None}, [SHEDDING_WARNING]),
+        (
+            {
+                "MIDDLEWARE": [
+                    name
+                    for name in [*DEFAULT_MIDDLEWARE, RATE_LIMIT_MIDDLEWARE]
+                    if "deadlines" not in name and "shedding" not in name
+                ]
+            },
+            [DEADLINE_WARNING, SHEDDING_WARNING],
+        ),
+        (
+            {"DATABASES": {"default": {"URL": POOLED, "SSLMODE": "verify-full"}}},
+            [POOLED_WARNING],
+        ),
+        (
+            {
+                "DATABASES": {
+                    "default": {
+                        "URL": POOLED,
+                        "SSLMODE": "verify-full",
+                        "PGBOUNCER": True,
+                    }
+                }
+            },
+            [],
+        ),
+    ],
+)
+def test_deployments_are_warned_without_deadlines_shedding_or_pgbouncer(
+    change: dict[str, object], warnings: list[str]
+) -> None:
+    """No deadline, no shedding, or PgBouncer used unsaid, are named in deployments."""
+    values = {**HARDENED, **change}
+
+    assert Settings.model_validate(values).deployment_warnings() == warnings
+
+
 @pytest.mark.parametrize("environment", ["local", "test"])
 def test_only_deployments_are_warned(environment: str) -> None:
     """Development keeps its docs and plain HTTP without being warned."""
