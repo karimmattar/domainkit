@@ -253,11 +253,13 @@ Three text fields of `MaxLength(150)` fit together, in any script, with a
 UUID id; for longer ones, lower `max_ordering`.
 
 What FastAPI cannot see is a 422 `invalid_filter`: a lookup the set does
-not offer on a field it filters, or on a field of the model
-(`?total__regex=`), a filter given twice, an ordering field named twice,
-more conditions than `max_conditions` (10) or search words than
-`max_search_words` (5), and values a value object refuses. Other
-parameters (`limit`, `cursor`, the route's own) are left alone. The other
+not offer on a field it filters (`?total__regex=`), a filter given twice,
+an ordering field named twice, more conditions than `max_conditions` (10)
+or search words than `max_search_words` (5), and values a value object
+refuses. Other parameters (`limit`, `cursor`, the route's own, and
+`<name>__<lookup>` for a name the set does not filter, a field of the
+model or not) are left alone, so answers tell clients nothing of the
+model's other fields. The other
 bounds are `max_values` (50 values in an `__in`), `max_length` per filter
 (200 characters), `max_search_length` (100), and `max_ordering` (3 fields).
 

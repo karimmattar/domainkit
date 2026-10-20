@@ -381,6 +381,11 @@ All notable changes to domainkit. The format follows
   side of the point without), so an amount out of range is a 422
   `validation_error`. `?price__gte=1e999999999` reached the database
   driver, which could not send it to PostgreSQL: a 500.
+- `FilterSet` leaves `<name>__<lookup>` alone for every name it does not
+  filter, as it leaves other parameters. A field of the model it did not
+  filter was a 422 naming the field, and an unknown name passed, so a
+  client could list the model's fields (`password`, `deleted_at`) one
+  guess at a time.
 
 ## [0.6.2] - 2026-10-19
 

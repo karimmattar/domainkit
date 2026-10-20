@@ -49,7 +49,6 @@ from domainkit.ddd.fields import (
     InvalidQuery,
     base_field,
     base_type,
-    fields_of,
 )
 from domainkit.ddd.query import (
     ORDERING_LOOKUPS,
@@ -267,7 +266,9 @@ class FilterSet:
         """Refuse lookups this set does not offer, and filters given twice.
 
         Messages name only the filters the set declares, never what the
-        client sent.
+        client sent. Other parameters are left alone, ``x__y`` too, whether
+        or not the model has a field ``x``: answers tell nothing of the
+        fields the set does not filter.
         """
         offered: dict[str, list[str]] = {}
         for name in self.filters:
@@ -283,8 +284,6 @@ class FilterSet:
                 raise InvalidFilter(
                     f"Unknown lookup on {base}; it offers {', '.join(offered[base])}."
                 )
-            elif separator and base in fields_of(self.model):
-                raise InvalidFilter(f"The listing cannot be filtered on {base}.")
 
 
 def _checked(model: type, each: Filter, lookup: Lookup) -> FieldInfo:

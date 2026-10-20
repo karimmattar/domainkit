@@ -167,7 +167,6 @@ def test_filters_narrow_and_order_the_listing(
             {"name__contains": "a"},
             "Unknown lookup on name; it offers name, name__icontains",
         ),
-        ({"version__gt": 1}, "The listing cannot be filtered on version."),
         ({"price__gte__x": 1}, "Unknown lookup on price; it offers"),
         ({"name": ["a", "b"]}, "Give the name filter once."),
         ({"ordering": ["name", "-name"]}, "Name each field once in the ordering."),
@@ -277,6 +276,20 @@ def test_amounts_are_bounded_without_digits_too() -> None:
 def test_lookups_are_unknown_only_for_filtered_names(client: TestClient) -> None:
     """Parameters of other names, the route's own, pass by."""
     assert names(client, other__thing="x", unrelated="y") == ["beta", "gamma", "alpha"]
+
+
+def test_answers_tell_nothing_of_fields_the_set_does_not_filter(
+    client: TestClient,
+) -> None:
+    """A field of the model the set does not filter is any other name.
+
+    ``?version__gt=1`` was a 422 naming ``version`` while ``?nosuch__gt=1``
+    passed: a client could list the model's fields, one guess at a time.
+    """
+    unfiltered = client.get("/gadgets")
+    for probe in ("version__gt", "deleted_at__isnull", "parts__x", "nosuch__gt"):
+        answer = client.get("/gadgets", params={probe: "1"})
+        assert (answer.status_code, answer.json()) == (200, unfiltered.json()), probe
 
 
 def test_openapi_documents_each_parameter_with_its_type(
