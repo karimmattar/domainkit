@@ -573,20 +573,21 @@ class Answers:
 
 @pytest.mark.anyio
 async def test_credentials_are_checked_again_while_the_socket_is_open(
-    caplog: pytest.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Every LIVE_REAUTH_INTERVAL; once they fail, closed with 1008."""
+    monkeypatch.setattr("domainkit.http.live.random.uniform", lambda low, high: high)
     server = Server()
     reauthenticate = Answers(True, False)
     server.scope[REAUTHENTICATE] = reauthenticate
     with freeze_time() as clock, override_settings(LIVE_REAUTH_INTERVAL=60):
         async with anyio.create_task_group() as tasks:
             await open_raw(server, echo_app, tasks)
-            clock.tick(44)  # Never before three quarters of the interval.
+            clock.tick(59)  # Not yet: the spread is at its longest here.
             server.push({"type": "websocket.receive", "text": "still allowed"})
             await server.wait_sent(2)
             assert reauthenticate.asked == []
-            clock.tick(16)
+            clock.tick(1)  # Exactly the interval.
             await reauthenticate.wait(1)
             clock.tick(60)
 
@@ -667,6 +668,37 @@ async def test_a_check_that_hangs_is_cut_off(
 
     assert server.sent[-1]["code"] == 1013
     assert "Re-checking an open connection took over 0s" in caplog.messages
+
+
+@pytest.mark.anyio
+async def test_a_check_in_flight_is_not_cut_off(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A client that leaves mid-check: the check runs on, to its own end."""
+    monkeypatch.setattr(live, "REAUTH_TIMEOUT", 0.5)
+    server = Server()
+    started = anyio.Event()
+
+    async def reauthenticate(scope: Scope) -> bool:
+        started.set()
+        await anyio.sleep_forever()
+        raise AssertionError
+
+    server.scope[REAUTHENTICATE] = reauthenticate
+    with freeze_time() as clock:
+        async with anyio.create_task_group() as tasks:
+            await open_raw(server, echo_app, tasks)
+            clock.tick(60)
+            await started.wait()
+            server.push({"type": "websocket.disconnect", "code": 1000})
+
+    # It ended at its own deadline, not when the client left.
+    assert "Re-checking an open connection took over 0s" in caplog.messages
+    assert server.sent[-1] == {
+        "type": "websocket.close",
+        "code": 1013,
+        "reason": "Authorization not confirmed.",
+    }
 
 
 @pytest.mark.anyio
