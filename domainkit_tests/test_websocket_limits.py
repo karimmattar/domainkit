@@ -107,8 +107,11 @@ def test_websockets_echo_under_the_limits(make_client: MakeClient) -> None:
             assert text(socket) == word
 
 
-def test_an_idle_websocket_is_closed(make_client: MakeClient) -> None:
+def test_an_idle_websocket_is_closed(
+    make_client: MakeClient, caplog: pytest.LogCaptureFixture
+) -> None:
     """No message either way for WEBSOCKET_IDLE_TIMEOUT: closed with 1001."""
+    caplog.set_level(logging.INFO, logger="domainkit.http.websockets")
     client = make_client(WEBSOCKET_IDLE_TIMEOUT=30)
 
     with freeze_time() as clock, client.websocket_connect("/live/echo") as socket:
@@ -120,6 +123,12 @@ def test_an_idle_websocket_is_closed(make_client: MakeClient) -> None:
         assert text(socket) == "and here"
         clock.tick(30)
         assert closed_by(socket) == (1001, "Idle for too long.")
+
+    assert [
+        (r.name, r.levelname)
+        for r in caplog.records
+        if r.getMessage() == "Closed a WebSocket (1001): Idle for too long."
+    ] == [("domainkit.http.websockets", "INFO")]
 
 
 def test_a_websocket_ends_at_its_lifetime(make_client: MakeClient) -> None:
@@ -173,7 +182,11 @@ def test_too_many_messages_close_the_websocket(
         socket.send_text("x")
         assert closed_by(socket) == (1008, "Too many messages.")
 
-    assert "Closed a WebSocket (1008): Too many messages." in caplog.messages
+    assert [
+        (r.name, r.levelname)
+        for r in caplog.records
+        if r.getMessage() == "Closed a WebSocket (1008): Too many messages."
+    ] == [(SECURITY_LOGGER, "WARNING")]
 
 
 def test_messages_are_not_limited_without_a_rate(make_client: MakeClient) -> None:
@@ -348,7 +361,11 @@ async def test_a_client_that_stops_reading_is_closed_as_too_slow(
         *sends("0"),
         {"type": "websocket.close", "code": 1013, "reason": "Client too slow."},
     ]
-    assert "Closed a WebSocket (1013): Client too slow." in caplog.messages
+    assert [
+        (r.name, r.levelname)
+        for r in caplog.records
+        if r.getMessage() == "Closed a WebSocket (1013): Client too slow."
+    ] == [("domainkit.http.websockets", "WARNING")]
 
 
 @pytest.mark.anyio
@@ -459,6 +476,53 @@ async def test_the_frameworks_close_is_bounded(monkeypatch: pytest.MonkeyPatch) 
         await server.serve(app)
 
     assert server.sent[-1]["type"] == "websocket.close"
+
+
+@pytest.mark.anyio
+async def test_a_client_leaving_is_not_a_message() -> None:
+    """Its disconnect reaches the application as is, outside the message rate."""
+    server = Server(
+        {"type": "websocket.receive", "text": "x"},
+        {"type": "websocket.disconnect", "code": 1000},
+    )
+    told: list[Message] = []
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        await receive()
+        await send(ACCEPT)
+        told.extend([await receive(), await receive()])
+
+    with override_settings(WEBSOCKET_MESSAGE_RATE="1/minute"):
+        await server.serve(app)
+
+    assert told[1] == {"type": "websocket.disconnect", "code": 1000}
+    assert server.sent == [ACCEPT]
+
+
+@pytest.mark.anyio
+async def test_route_limits_reach_the_middleware_through_a_copied_scope() -> None:
+    """Middleware below may copy the scope: the route's limits still apply."""
+    server = Server(
+        {"type": "websocket.receive", "text": "x"},
+        {"type": "websocket.receive", "text": "y"},
+        {"type": "websocket.disconnect", "code": 1000},
+    )
+
+    async def route(scope: Scope, receive: Receive, send: Send) -> None:
+        await LiveLimits(message_rate="1/minute")(HTTPConnection(scope))
+        await echo_app(scope, receive, send)
+
+    async def copying(scope: Scope, receive: Receive, send: Send) -> None:
+        await route(dict(scope), receive, send)
+
+    await server.serve(copying)  # The default rate would take both messages.
+
+    assert server.sent[-1] == {
+        "type": "websocket.close",
+        "code": 1008,
+        "reason": "Too many messages.",
+    }
+    assert sends("y")[0] not in server.sent
 
 
 @pytest.mark.anyio
