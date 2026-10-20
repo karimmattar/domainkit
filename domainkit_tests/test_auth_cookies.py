@@ -151,6 +151,36 @@ def test_unsafe_methods_need_a_trusted_origin_and_the_token(identity: Api) -> No
     assert client.get("/whoami").json()["scheme"] == "cookie"
 
 
+def test_csrf_refusals_never_hold_the_address(identity: Api) -> None:
+    """Another site can make a browser fail the CSRF checks at will.
+
+    Those 403s are not counted against ``RATE_LIMIT`` as refused
+    credentials (401s) are, so they cannot hold the browser's address: its
+    session, and other users behind the same address, are served as before.
+    """
+    create_user("alice")
+    create_user("bob")
+    guess = bearer("dkt_" + "A" * 43)
+    with override_settings(RATE_LIMIT="10/minute"):
+        victim = browser(identity)
+        csrf = start(victim)
+        forged = [
+            victim.post("/notes", headers={"Origin": "https://evil.example"})
+            for _ in range(11)
+        ]
+        after = victim.post("/notes", headers={**TRUSTED, "X-CSRF-Token": csrf})
+        read = victim.get("/whoami")
+        bob = bearer(login(TestClient(victim.app), "bob")["access_token"])
+        other = TestClient(victim.app, base_url=SITE).get("/whoami", headers=bob)
+        guesses = [victim.get("/whoami", headers=guess) for _ in range(11)]
+
+    assert {(r.status_code, r.json()["code"]) for r in forged} == {(403, "csrf_failed")}
+    assert after.json() == read.json() == {"user": "alice", "scheme": "cookie"}
+    assert other.json() == {"user": "bob", "scheme": "token"}
+    # Tokens that do not hold still count: the tenth refusal is the last.
+    assert [r.status_code for r in guesses] == [401] * 10 + [429]
+
+
 def test_csrf_tokens_belong_to_one_session(identity: Api) -> None:
     """Another session's token, even in both places, is refused."""
     create_user("alice")

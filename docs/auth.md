@@ -650,7 +650,10 @@ before any lookup until `Retry-After` has passed. Credentials in another
 header than `Authorization`, which only a class of your own reads (an
 `X-API-Key`), are read, and refused with the same 429 even when they hold,
 so a guess that works never stands out. An opaque token that does not have
-the form of an issued one is refused without a lookup.
+the form of an issued one is refused without a lookup. Only credentials
+that do not hold (401) count: a cookie request refused by the CSRF checks
+(403) is one any other site can make a browser send, and counting it
+would let that site lock out everyone behind the browser's address.
 
 The count per account is what stops guessing one user's password from many
 addresses, and it also lets anyone hold that user's logins back: attempts

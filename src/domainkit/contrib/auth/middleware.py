@@ -25,6 +25,10 @@ address gets 429, and its requests with an ``Authorization`` header are
 refused before any lookup until ``Retry-After`` has passed. Credentials in
 other headers, which only a project's own class reads, are refused too,
 once read, even when they hold: a guess that works gets the same 429.
+Only credentials that do not hold (401) count: a refusal of credentials
+that do, such as a cookie request that fails its CSRF checks (403), is a
+request another site can make a browser send, and counting it would let
+that site lock everyone behind the browser's address out.
 """
 
 import logging
@@ -125,10 +129,12 @@ class AuthenticationMiddleware:
     ) -> None:
         """Answer 401 with the class's challenge (a WebSocket is closed).
 
-        Past ``RATE_LIMIT`` for the address, answer 429 instead.
+        A 401 counts against ``RATE_LIMIT`` for the address, and past it is
+        a 429 instead; other refusals (a 403 for CSRF) are not counted.
         """
         security_logger.warning("Refused credentials: %s", refused.error.detail)
-        if self.rate is not None and self.limiter is not None:
+        unauthorized = refused.error.status_code == status.HTTP_401_UNAUTHORIZED
+        if unauthorized and self.rate is not None and self.limiter is not None:
             limit, period = self.rate
             address = address_key(scope)
             decision = await self.limiter.hit(f"refused:{address}", limit, period)
@@ -144,7 +150,7 @@ class AuthenticationMiddleware:
             str(refused.error.detail),
             code=refused.error.code,
         )
-        if refused.error.status_code == status.HTTP_401_UNAUTHORIZED:
+        if unauthorized:
             response.headers["WWW-Authenticate"] = refused.authenticator.challenge(
                 "invalid_token"
             )

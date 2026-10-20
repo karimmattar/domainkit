@@ -50,8 +50,10 @@ All notable changes to domainkit. The format follows
   `POST /auth/session` sets and `DELETE /auth/session` clears. Unsafe
   requests it authenticates must come from a trusted origin (their own,
   `ALLOWED_HOSTS`, or `AUTH.CSRF_TRUSTED_ORIGINS`) and send a CSRF token
-  signed for the session (`X-CSRF-Token`); others get `403 csrf_failed`.
-  Header-token clients are unaffected.
+  signed for the session (`X-CSRF-Token`); others get `403 csrf_failed`,
+  which never counts against `RATE_LIMIT` as refused credentials do, so
+  another site cannot hold a browser's address. Header-token clients are
+  unaffected.
 - Two-factor logins (DJ-41; `docs/auth.md`, "Two-factor logins"; the `mfa`
   extra): an authenticator app (TOTP) and single-use recovery codes, from
   `domainkit.contrib.auth.mfa`. Once on, `/login` and `/auth/session`
