@@ -396,7 +396,7 @@ router.include_router(tokens_router, prefix="/auth")
 | Endpoint | Body | Answer |
 | --- | --- | --- |
 | `GET /tokens` | `?limit=50&cursor=` | The user's tokens, newest first: `id` (the digest), `name`, `kind` (`access`, `session`, `refresh`), `scopes`, `created_at`, `expires_at`, `last_used_at`, and `current` for the one this request uses; `next_cursor`. |
-| `POST /tokens` | `{"name", "scopes", "expires_in_days"}` | `201`, with `token`: the value, shown this once. `expires_in_days` is 90 by default (1 to 3650), `null` for no end. `403 scope_not_held` for a scope the user lacks. |
+| `POST /tokens` | `{"name", "scopes", "expires_in_days"}` | `201`, with `token`: the value, shown this once and marked `Cache-Control: no-store`, so no cache or idempotency key keeps it (a retry with the key gets `409`). `expires_in_days` is 90 by default (1 to 3650), `null` for no end. `403 scope_not_held` for a scope the user lacks. |
 | `DELETE /tokens/{id}` | | `204`; `404 token_not_found` for a token that is not the user's. A refresh token takes its JWT login with it. |
 
 A token's scopes are permission keys (`shop.view_product`), at most 100,
