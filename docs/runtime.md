@@ -157,3 +157,24 @@ while it serves:
 
 A process keeps its contexts until it ends: restart it to use renewed
 certificate files.
+
+## Free-threaded Python
+
+domainkit runs on free-threaded CPython 3.14 (`python3.14t`, without the
+GIL), and CI runs the suite there. Importing domainkit and its runtime
+dependencies keeps the GIL off; the `immudb` extra is the exception, since
+grpcio publishes no free-threaded build yet.
+
+Most state lives in one event loop and needs no lock. What event loops on
+several threads can share (a server with a loop per thread, or threads that
+start their own) is guarded by a lock, held only for plain Python work,
+never across an `await`:
+
+- the in-memory rate limiter (`MemoryBackend`) and its callers;
+- `AuthenticationMiddleware`'s refused-credential holds;
+- the password hashing pool's count of pending calls;
+- the logging and reporting queues, and memory caches (`cache/memory.py`).
+
+A project's own module-level state needs the same care: a dict two threads
+change at once needs a `threading.Lock` on free-threaded Python, as it would
+with threads anywhere.

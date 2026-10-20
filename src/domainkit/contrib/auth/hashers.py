@@ -20,6 +20,7 @@ import hmac
 import math
 import secrets
 import string
+import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -358,6 +359,9 @@ class HashingPool:
         self._executor = ThreadPoolExecutor(
             max_workers=threads, thread_name_prefix="domainkit-hashing"
         )
+        # Every change of ``pending`` holds it: event loops on several
+        # threads (free-threaded Python) count in the same pool.
+        self._counting = threading.Lock()
 
     async def run[T](self, function: Callable[..., T], *args: object) -> T:
         """Call ``function(*args)`` on a hashing thread.
@@ -365,14 +369,16 @@ class HashingPool:
         Raises:
             PasswordChecksBusy: ``threads + queue`` calls are already pending.
         """
-        if self.pending >= self.capacity:
-            raise PasswordChecksBusy
-        self.pending += 1
+        with self._counting:
+            if self.pending >= self.capacity:
+                raise PasswordChecksBusy
+            self.pending += 1
         try:
             loop = asyncio.get_running_loop()
             return await loop.run_in_executor(self._executor, partial(function, *args))
         finally:
-            self.pending -= 1
+            with self._counting:
+                self.pending -= 1
 
 
 @cache

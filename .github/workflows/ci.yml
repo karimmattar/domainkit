@@ -82,6 +82,39 @@ jobs:
           include-hidden-files: true
           retention-days: 1
 
+  # Free-threaded Python (3.14t, no GIL): the locks around state that event
+  # loops on several threads share (rate limits, refused-credential holds,
+  # the hashing pool, the logging and reporting queues) meet threads that
+  # really run at once. Every dependency ships free-threaded wheels but
+  # grpcio, which the immudb extra needs: that extra and its two test
+  # modules are left out (docs/runtime.md). lupa, fakeredis's Lua and a test
+  # dependency only, would turn the GIL back on for the whole run, so pytest
+  # runs with PYTHON_GIL=0; test_free_threading checks, in a child without
+  # it, that importing domainkit keeps the GIL off. Coverage comes from the
+  # other jobs.
+  free-threaded:
+    name: test (3.14t)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14t"
+      - run: pipx install "poetry==${POETRY_VERSION}"
+      - run: poetry env use python3.14t
+      - run: >-
+          poetry sync --with dev --extras "postgres sqlite metrics tracing argon2
+          jwt mfa rabbitmq redis uploads testing webhooks tzdata uvloop"
+      - run: poetry run python -c "import sys; assert not sys._is_gil_enabled()"
+      - env:
+          PYTHON_GIL: "0"
+        run: >-
+          poetry run pytest -p no:cov --ignore=domainkit_tests/test_immudb.py
+          --ignore=domainkit_tests/test_ledger.py
+
   # The suite again against real servers: PostgreSQL (row locks, the audit
   # triggers, timeouts, partitions, migrations), immudb with TLS and a
   # signing key (verified ledgers, evidence), Redis (plain and TLS) and

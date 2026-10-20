@@ -32,6 +32,8 @@ All notable changes to domainkit. The format follows
     domains written as `def`, which FastAPI runs on its thread pool;
     `domainkit.http.blocking.allow_sync` marks one that must stay sync;
   - projects made by `init` turn on Ruff's `ASYNC` rules.
+- CI runs the suite on free-threaded Python 3.14 (3.14t), without the
+  immudb extra, whose grpcio has no free-threaded build yet (R11).
 - `domainkit.contrib.auth.acurrent_user`, the dependency behind
   `CurrentUser`, which FastAPI awaits instead of calling on its thread
   pool (ASYNC-09). `current_user` stays a plain function.
@@ -54,6 +56,10 @@ All notable changes to domainkit. The format follows
   pool on every request: they are awaited, or built, on the loop.
   Domains made by `startdomain` declare `get_unit_of_work` and `caller` as
   `async def`; existing ones keep working, and `check` names them.
+- The in-memory rate limiter, `AuthenticationMiddleware`'s
+  refused-credential holds, and the password hashing pool's count take a
+  lock, so event loops on several threads, as free-threaded Python runs
+  them, share them safely (ASYNC-23).
 - TLS contexts are built once per process for each set of TLS settings,
   never on the event loop while it serves: databases' when the application
   is built, RabbitMQ's and Redis's on a worker thread at the first
