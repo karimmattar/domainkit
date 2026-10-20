@@ -1,7 +1,6 @@
 """Reactions to domain events; ``apps.py`` subscribes them.
 
 Durable handlers run in the worker, at least once: make them idempotent.
-
 Replace the example with real reactions: projections, notifications, or
 integration events for other bounded contexts.
 """

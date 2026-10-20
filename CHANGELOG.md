@@ -138,6 +138,36 @@ All notable changes to domainkit. The format follows
   and drops it after the run; `--keepdb` keeps it for the next one, and
   each pytest-xdist worker gets its own (`test_<name>_gw0`).
 - `docs/testing.md`, on the plugin and everything above.
+- Resources (DJ-19, ADR 0025; `docs/resources.md`): `ResourceRouter`
+  lists an aggregate (with a `FilterSet` and `Pagination`) and reads one,
+  and `command_route(Command, service=..., body=...)` runs a command
+  through an application service, answering `201` with `Location` when it
+  creates one. Resources nest (`parent=`), narrow what each caller reaches
+  (`scope=`), and, for reference data only, offer generic create, change,
+  and delete (`crud=True`), which record `RecordCreated`, `RecordChanged`,
+  and `RecordDeleted`. `ModelActions(Model)` asks for the model permission
+  of each route's action, so a command needs `change`, not `add`. A
+  resource without a rule fails the deny-by-default check.
+- `schema_for(Aggregate, include=, exclude=, name=, write=, partial=)`
+  derives request and response schemas from the domain class, with
+  `from_domain` (DJ-22): value objects become what they wrap, ids and
+  `Reference[XId]` their id type, children nest.
+- Partial changes (DJ-23): `PatchModel` fields default to `UNSET`, so a
+  field left out differs from one set to null, and `PATCH` routes take
+  `application/merge-patch+json`. Commands take `UNSET` for what was not
+  sent.
+- ETags and conditional requests (DJ-24, N-05): an aggregate's answer has
+  `ETag: W/"<version>-<digest>"`, `If-None-Match` answers `304`, and a
+  write whose `If-Match` names another version is `412
+  precondition_failed`, checked in the transaction that makes the change.
+  A resource may require `If-Match` (`428 precondition_required`).
+- Field policies (DJ-31): `FieldPolicy(read_only=, visible=, editable=)`
+  shows a field, or lets a partial change set it, only for callers granted
+  its permission, and OpenAPI says so.
+- `Reference[CustomerId]`, an id-only reference to another aggregate:
+  `table_for` indexes its column, and `schema_for` describes it.
+- `domainkit.http.error_responses(*codes)`, the OpenAPI entries of the
+  errors a route answers with.
 
 ### Changed
 
@@ -160,6 +190,22 @@ All notable changes to domainkit. The format follows
   frozen clock reaches the application.
 - JWTs' `exp`, `iat`, and `nbf` are checked by domainkit, on
   `domainkit.clock`, as PyJWT checked them on the host's clock.
+- Repositories check the version a request expects (`If-Match`) when they
+  hand out an aggregate; outside a resource's route nothing is expected,
+  so nothing changes.
+- The auth admin's user and group listings and reads are resources: reads
+  answer with an `ETag` and `304` for `If-None-Match`. Their bodies are
+  unchanged.
+- `startdomain` generates a domain on the resource kit (DJ-12): 15 files
+  instead of 24, and an API layer of about 90 lines instead of 210. The
+  aggregate has a child-entity collection (notes, with `children()`) and an
+  id-only reference to its owner (`Reference[OwnerId]`); its tables come
+  from `table_for`; its resource pages, filters, and searches the listing,
+  tags reads, and takes `PATCH` (a merge patch), `DELETE`, and commands
+  that answer with `Location` and honour `If-Match`. The example management
+  command and domain settings are gone. In a project laid out as `init`
+  makes it, `startdomain` also adds the domain to `INSTALLED_DOMAINS` and
+  mounts its router (`--manual` prints the steps instead).
 
 ### Fixed
 

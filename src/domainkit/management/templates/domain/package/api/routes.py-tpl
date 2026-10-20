@@ -1,102 +1,90 @@
-"""HTTP routes of the {{ domain }} domain.
+"""HTTP resources of the {{ domain }} domain (docs/resources.md).
 
-Changes are task-based commands (``/rename``, ``/archive``) rather than
-generic updates, so each request maps to one use case. Each route names
-the permission it needs (``{{ domain }}.view_{{ model }}`` and the others);
-grant them to users or groups.
+Reads are generic; each change is a command, one use case. Every route
+needs its model permission: ``{{ domain }}.view_{{ model }}`` to read, and
+``add_``, ``change_``, or ``delete_`` to change; superusers have them all.
 """
 
-from typing import Any, Final
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter
+from pydantic import BaseModel, Field
 
-from domainkit.contrib.auth import HasPermissions, Require
-from domainkit.http import ErrorResponse
-from {{ package }}.api.dependencies import PageSizeDep, PositionDep, UnitOfWorkDep
-from {{ package }}.api.schemas import (
-    {{ Aggregate }}In,
-    {{ Aggregate }}Out,
-    {{ Aggregate }}Page,
-    Rename{{ Aggregate }}In,
-)
+from domainkit.contrib.auth import AuthenticatedUser
+from domainkit.http import Filter, FilterSet, Pagination
+from domainkit.resources import ModelActions, PatchModel, ResourceRouter, schema_for
 from {{ package }}.application import services
 from {{ package }}.application.commands import (
+    Add{{ Aggregate }}Note,
     Archive{{ Aggregate }},
     Create{{ Aggregate }},
-    Rename{{ Aggregate }},
+    Delete{{ Aggregate }},
+    Update{{ Aggregate }},
 )
+from {{ package }}.application.unit_of_work import {{ Domain }}UnitOfWork
+from {{ package }}.domain.model import NAME_LENGTH, NOTE_LENGTH, {{ Aggregate }}
+from {{ package }}.infrastructure.unit_of_work import SqlAlchemy{{ Domain }}UnitOfWork
 
-# 422 is documented for every route by the application.
-REFUSED: Final[dict[int | str, dict[str, Any]]] = {
-    status.HTTP_401_UNAUTHORIZED: {"model": ErrorResponse},
-    status.HTTP_403_FORBIDDEN: {"model": ErrorResponse},
-}
-NOT_FOUND: Final[dict[int | str, dict[str, Any]]] = {
-    **REFUSED,
-    status.HTTP_404_NOT_FOUND: {"model": ErrorResponse},
-}
-CHANGE_ERRORS: Final[dict[int | str, dict[str, Any]]] = {
-    **NOT_FOUND,
-    status.HTTP_409_CONFLICT: {"model": ErrorResponse},
-}
-
-router = APIRouter(prefix="/{{ aggregates }}", tags=["{{ domain }}"])
+router = APIRouter(tags=["{{ domain }}"])
 
 
-def allowed(action: str) -> Any:  # noqa: ANN401 - a FastAPI dependency.
-    """Users granted ``{{ domain }}.<action>_{{ model }}`` (superusers have it)."""
-    return Depends(Require(HasPermissions(f"{{ domain }}.{action}_{{ model }}")))
+def get_unit_of_work() -> {{ Domain }}UnitOfWork:
+    """A unit of work on the database; tests may override this dependency."""
+    return SqlAlchemy{{ Domain }}UnitOfWork()
 
 
-@router.post(
-    "",
-    status_code=status.HTTP_201_CREATED,
-    responses=REFUSED,
-    dependencies=[allowed("add")],
+def caller(user: AuthenticatedUser) -> UUID:
+    """The caller's id: who creates a {{ aggregate }} owns it."""
+    return user.id
+
+
+class {{ Aggregate }}Filters(FilterSet):
+    """``?archived=``, ``?owner_id=``, ``?search=``, and ``?ordering=-name``."""
+
+    model = {{ Aggregate }}
+    archived = Filter()
+    owner_id = Filter()
+    ordering_fields = ("name",)
+    default_ordering = ("name",)
+    search_fields = ("name",)
+
+
+{{ Aggregate }}In = schema_for({{ Aggregate }}, write=True, include=["name"])
+
+
+class {{ Aggregate }}Patch(PatchModel):
+    """What a ``PATCH`` may change; what it leaves out stays."""
+
+    name: str = Field(max_length=NAME_LENGTH)
+
+
+class NoteIn(BaseModel):
+    """A note's text."""
+
+    text: str = Field(min_length=1, max_length=NOTE_LENGTH)
+
+
+{{ aggregates }} = ResourceRouter(
+    "/{{ aggregates }}",
+    model={{ Aggregate }},
+    unit_of_work=get_unit_of_work,
+    repository=lambda uow: uow.{{ aggregates }},
+    filters={{ Aggregate }}Filters,
+    pagination=Pagination(max_limit=100),
+    rule=ModelActions({{ Aggregate }}),
 )
-async def create_{{ aggregate }}(body: {{ Aggregate }}In, uow: UnitOfWorkDep) -> {{ Aggregate }}Out:
-    """Create a {{ aggregate }}."""
-    {{ aggregate }} = await services.create_{{ aggregate }}(Create{{ Aggregate }}(name=body.name), uow)
-    return {{ Aggregate }}Out.from_domain({{ aggregate }})
-
-
-@router.get("", responses=REFUSED, dependencies=[allowed("view")])
-async def list_{{ aggregates }}(
-    uow: UnitOfWorkDep, limit: PageSizeDep, after: PositionDep
-) -> {{ Aggregate }}Page:
-    """List {{ aggregates_title }} by name; pass ``next_cursor`` as ``cursor`` for more."""
-    page = await services.list_{{ aggregates }}(uow, limit=limit, after=after)
-    return {{ Aggregate }}Page.from_domain(page)
-
-
-@router.get(
-    "/{{{ aggregate }}_id}", responses=NOT_FOUND, dependencies=[allowed("view")]
+{{ aggregates }}.command_route(
+    Create{{ Aggregate }},
+    service=services.create_{{ aggregate }},
+    body={{ Aggregate }}In,
+    provide={"owner_id": caller},
 )
-async def get_{{ aggregate }}({{ aggregate }}_id: UUID, uow: UnitOfWorkDep) -> {{ Aggregate }}Out:
-    """Return one {{ aggregate }}."""
-    return {{ Aggregate }}Out.from_domain(await services.get_{{ aggregate }}(uow, {{ aggregate }}_id))
-
-
-@router.post(
-    "/{{{ aggregate }}_id}/rename",
-    responses=CHANGE_ERRORS,
-    dependencies=[allowed("change")],
+{{ aggregates }}.command_route(
+    Update{{ Aggregate }}, service=services.update_{{ aggregate }}, body={{ Aggregate }}Patch, method="PATCH"
 )
-async def rename_{{ aggregate }}(
-    {{ aggregate }}_id: UUID, body: Rename{{ Aggregate }}In, uow: UnitOfWorkDep
-) -> {{ Aggregate }}Out:
-    """Rename a {{ aggregate }}."""
-    command = Rename{{ Aggregate }}({{ aggregate }}_id={{ aggregate }}_id, name=body.name)
-    return {{ Aggregate }}Out.from_domain(await services.rename_{{ aggregate }}(command, uow))
-
-
-@router.post(
-    "/{{{ aggregate }}_id}/archive",
-    responses=CHANGE_ERRORS,
-    dependencies=[allowed("change")],
+{{ aggregates }}.command_route(Archive{{ Aggregate }}, service=services.archive_{{ aggregate }}, path="/archive")
+{{ aggregates }}.command_route(
+    Add{{ Aggregate }}Note, service=services.add_{{ aggregate }}_note, body=NoteIn, path="/notes"
 )
-async def archive_{{ aggregate }}({{ aggregate }}_id: UUID, uow: UnitOfWorkDep) -> {{ Aggregate }}Out:
-    """Archive a {{ aggregate }}; it becomes read-only."""
-    command = Archive{{ Aggregate }}({{ aggregate }}_id={{ aggregate }}_id)
-    return {{ Aggregate }}Out.from_domain(await services.archive_{{ aggregate }}(command, uow))
+{{ aggregates }}.command_route(Delete{{ Aggregate }}, service=services.delete_{{ aggregate }}, method="DELETE")
+router.include_router({{ aggregates }})

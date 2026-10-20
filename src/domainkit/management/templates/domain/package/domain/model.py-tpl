@@ -1,63 +1,94 @@
-"""The ``{{ Aggregate }}`` aggregate and its value objects."""
+"""The ``{{ Aggregate }}`` aggregate: its values, its notes, its rules, its storage port."""
 
-from typing import ClassVar, NewType, Self
+from dataclasses import field
+from datetime import datetime
+from typing import Annotated, Final, NewType, Self
 from uuid import UUID, uuid4
 
-from domainkit.ddd import AggregateRoot, ValueObject
+from domainkit.clock import now
+from domainkit.ddd import (
+    AggregateRoot,
+    BusinessRuleViolation,
+    Entity,
+    MaxLength,
+    NotFound,
+    Reference,
+    Repository,
+    ValueObject,
+)
 from {{ package }}.domain.events import (
     {{ Aggregate }}Archived,
     {{ Aggregate }}Created,
+    {{ Aggregate }}Deleted,
+    {{ Aggregate }}NoteAdded,
     {{ Aggregate }}Renamed,
 )
-from {{ package }}.domain.exceptions import Invalid{{ Aggregate }}Name, {{ Aggregate }}IsArchived
 
 {{ Aggregate }}Id = NewType("{{ Aggregate }}Id", UUID)
+{{ Aggregate }}NoteId = NewType("{{ Aggregate }}NoteId", UUID)
+OwnerId = NewType("OwnerId", UUID)
+"""A user's id: another aggregate, referenced by id only."""
+NAME_LENGTH: Final = 200
+NOTE_LENGTH: Final = 2000
 
 
-def new_{{ aggregate }}_id() -> {{ Aggregate }}Id:
-    """Create an identity in the domain, before anything is stored."""
-    return {{ Aggregate }}Id(uuid4())
+class {{ Aggregate }}NotFound(NotFound):
+    """No {{ aggregate }} has the requested id."""
+
+
+class Invalid{{ Aggregate }}Name(BusinessRuleViolation):
+    """The name breaks the naming rules."""
+
+
+class {{ Aggregate }}IsArchived(BusinessRuleViolation):
+    """Archived {{ aggregates_title }} cannot change."""
 
 
 class {{ Aggregate }}Name(ValueObject):
-    """A display name: trimmed, not blank, at most ``MAX_LENGTH`` characters."""
+    """A display name: trimmed, not blank, at most ``NAME_LENGTH`` characters."""
 
-    MAX_LENGTH: ClassVar[int] = 200
-
-    value: str
+    value: Annotated[str, MaxLength(NAME_LENGTH)]
 
     def __post_init__(self) -> None:
         """Normalize the name, or reject it."""
         value = self.value.strip()
         if not value:
             raise Invalid{{ Aggregate }}Name("The name must not be blank.")
-        if len(value) > self.MAX_LENGTH:
+        if len(value) > NAME_LENGTH:
             raise Invalid{{ Aggregate }}Name(
-                f"The name must be at most {self.MAX_LENGTH} characters."
+                f"The name must be at most {NAME_LENGTH} characters."
             )
         object.__setattr__(self, "value", value)
+
+
+class {{ Aggregate }}Note(Entity[{{ Aggregate }}NoteId]):
+    """A note on a {{ aggregate }}: a child entity, stored and deleted with it."""
+
+    text: Annotated[str, MaxLength(NOTE_LENGTH)]
+    added_at: datetime
 
 
 class {{ Aggregate }}(AggregateRoot[{{ Aggregate }}Id]):
     """Consistency boundary for one {{ aggregate }}; change it only through methods."""
 
     name: {{ Aggregate }}Name
+    owner_id: Reference[OwnerId]
     archived: bool = False
+    notes: list[{{ Aggregate }}Note] = field(default_factory=list)
 
     @classmethod
-    def create(cls, name: {{ Aggregate }}Name) -> Self:
+    def create(cls, name: {{ Aggregate }}Name, owner_id: OwnerId) -> Self:
         """Start a new {{ aggregate }} and record that it was created."""
-        {{ aggregate }} = cls(id=new_{{ aggregate }}_id(), name=name)
+        {{ aggregate }} = cls(id={{ Aggregate }}Id(uuid4()), name=name, owner_id=owner_id)
         {{ aggregate }}.record({{ Aggregate }}Created({{ aggregate }}_id={{ aggregate }}.id, name=name.value))
         return {{ aggregate }}
 
     def rename(self, name: {{ Aggregate }}Name) -> None:
         """Change the name; renaming to the current name changes nothing."""
         self._ensure_active()
-        if name == self.name:
-            return
-        self.name = name
-        self.record({{ Aggregate }}Renamed({{ aggregate }}_id=self.id, name=name.value))
+        if name != self.name:
+            self.name = name
+            self.record({{ Aggregate }}Renamed({{ aggregate }}_id=self.id, name=name.value))
 
     def archive(self) -> None:
         """Make the {{ aggregate }} read-only."""
@@ -65,7 +96,27 @@ class {{ Aggregate }}(AggregateRoot[{{ Aggregate }}Id]):
         self.archived = True
         self.record({{ Aggregate }}Archived({{ aggregate }}_id=self.id))
 
+    def add_note(self, text: str) -> {{ Aggregate }}Note:
+        """Add a note, stamped with the time."""
+        self._ensure_active()
+        note = {{ Aggregate }}Note(id={{ Aggregate }}NoteId(uuid4()), text=text, added_at=now())
+        self.notes.append(note)
+        self.record({{ Aggregate }}NoteAdded({{ aggregate }}_id=self.id, note_id=note.id))
+        return note
+
+    def delete(self) -> None:
+        """Record that the {{ aggregate }} goes; the repository removes it."""
+        self.record({{ Aggregate }}Deleted({{ aggregate }}_id=self.id))
+
     def _ensure_active(self) -> None:
         """Refuse changes to an archived {{ aggregate }}."""
         if self.archived:
             raise {{ Aggregate }}IsArchived(f"{{ Aggregate }} {self.id} is archived.")
+
+
+class {{ Aggregate }}Repository(Repository[{{ Aggregate }}, {{ Aggregate }}Id]):
+    """Every {{ aggregate }}: ``get``, ``filter``, ``paginate``, ... (a port)."""
+
+    def not_found(self, id_: {{ Aggregate }}Id) -> {{ Aggregate }}NotFound:
+        """Report a missing {{ aggregate }}."""
+        return {{ Aggregate }}NotFound(f"{{ Aggregate }} {id_} does not exist.")

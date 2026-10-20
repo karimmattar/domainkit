@@ -5,18 +5,28 @@ from uuid import uuid4
 import pytest
 
 from domainkit.ddd import DomainEvent, EventBus
+from domainkit.ddd.query import F, Query
 from {{ package }}.application import services
 from {{ package }}.application.commands import (
+    Add{{ Aggregate }}Note,
     Archive{{ Aggregate }},
     Create{{ Aggregate }},
-    Rename{{ Aggregate }},
+    Delete{{ Aggregate }},
+    Update{{ Aggregate }},
 )
 from {{ package }}.domain.events import {{ Aggregate }}Created
-from {{ package }}.domain.exceptions import {{ Aggregate }}NotFound
+from {{ package }}.domain.model import {{ Aggregate }}, {{ Aggregate }}NotFound
 
 from .fakes import Fake{{ Domain }}UnitOfWork
 
 pytestmark = pytest.mark.anyio
+OWNER = uuid4()
+
+
+async def create(uow: Fake{{ Domain }}UnitOfWork, name: str = "First") -> {{ Aggregate }}:
+    """Create a {{ aggregate }} through its use case."""
+    command = Create{{ Aggregate }}(name=name, owner_id=OWNER)
+    return await services.create_{{ aggregate }}(command, uow)
 
 
 async def test_create_commits_and_publishes() -> None:
@@ -30,42 +40,59 @@ async def test_create_commits_and_publishes() -> None:
     bus.subscribe({{ Aggregate }}Created, collect)
     uow = Fake{{ Domain }}UnitOfWork(bus)
 
-    {{ aggregate }} = await services.create_{{ aggregate }}(Create{{ Aggregate }}(name="First"), uow)
+    {{ aggregate }} = await create(uow)
 
     assert uow.commits == 1
     assert uow.{{ aggregates }}.items == { {{ aggregate }}.id: {{ aggregate }} }
     assert [type(event) for event in published] == [{{ Aggregate }}Created]
 
 
-async def test_rename_and_archive() -> None:
+async def test_update_changes_only_what_was_sent() -> None:
+    """A field left UNSET stays as it is."""
+    uow = Fake{{ Domain }}UnitOfWork()
+    {{ aggregate }} = await create(uow, "Old")
+
+    await services.update_{{ aggregate }}(Update{{ Aggregate }}({{ aggregate }}_id={{ aggregate }}.id), uow)
+    assert {{ aggregate }}.name.value == "Old"
+    command = Update{{ Aggregate }}({{ aggregate }}_id={{ aggregate }}.id, name="New")
+    await services.update_{{ aggregate }}(command, uow)
+
+    assert {{ aggregate }}.name.value == "New"
+
+
+async def test_archive_add_notes_and_delete() -> None:
     """Changes go through the aggregate and are committed."""
     uow = Fake{{ Domain }}UnitOfWork()
-    {{ aggregate }} = await services.create_{{ aggregate }}(Create{{ Aggregate }}(name="Old"), uow)
+    {{ aggregate }} = await create(uow)
 
-    await services.rename_{{ aggregate }}(Rename{{ Aggregate }}({{ aggregate }}_id={{ aggregate }}.id, name="New"), uow)
-    archived = await services.archive_{{ aggregate }}(Archive{{ Aggregate }}({{ aggregate }}_id={{ aggregate }}.id), uow)
+    note = Add{{ Aggregate }}Note({{ aggregate }}_id={{ aggregate }}.id, text="Hello")
+    await services.add_{{ aggregate }}_note(note, uow)
+    await services.archive_{{ aggregate }}(Archive{{ Aggregate }}({{ aggregate }}_id={{ aggregate }}.id), uow)
+    await services.delete_{{ aggregate }}(Delete{{ Aggregate }}({{ aggregate }}_id={{ aggregate }}.id), uow)
 
-    assert (archived.name.value, archived.archived) == ("New", True)
-    assert uow.commits == 3
+    assert [each.text for each in {{ aggregate }}.notes] == ["Hello"]
+    assert {{ aggregate }}.archived
+    assert uow.{{ aggregates }}.items == {}
+    assert uow.commits == 4
 
 
 async def test_missing_{{ aggregate }}_raises_not_found() -> None:
     """Unknown ids raise the domain's NotFound error."""
+    command = Archive{{ Aggregate }}({{ aggregate }}_id=uuid4())
+
     with pytest.raises({{ Aggregate }}NotFound):
-        await services.get_{{ aggregate }}(Fake{{ Domain }}UnitOfWork(), uuid4())
+        await services.archive_{{ aggregate }}(command, Fake{{ Domain }}UnitOfWork())
 
 
-async def test_list_pages_by_name() -> None:
-    """Listing is ordered by name and continues after the last position."""
+async def test_repositories_answer_queries() -> None:
+    """The fake pages and filters as the database does."""
     uow = Fake{{ Domain }}UnitOfWork()
     for name in ("c", "a", "b"):
-        await services.create_{{ aggregate }}(Create{{ Aggregate }}(name=name), uow)
+        await create(uow, name)
+    query = Query(F("archived") == False, ordering=["name"])  # noqa: E712
 
-    first = await services.list_{{ aggregates }}(uow, limit=2)
-    last = first.items[-1]
-    second = await services.list_{{ aggregates }}(uow, limit=2, after=(last.name.value, last.id))
+    first = await uow.{{ aggregates }}.paginate(query, limit=2)
+    second = await uow.{{ aggregates }}.paginate(query, limit=2, after=first.next_position)
 
     assert [item.name.value for item in first.items] == ["a", "b"]
-    assert first.has_more is True
     assert [item.name.value for item in second.items] == ["c"]
-    assert second.has_more is False

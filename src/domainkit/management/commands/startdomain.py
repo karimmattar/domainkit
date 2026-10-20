@@ -1,22 +1,22 @@
 """``startdomain``: create a bounded context from the domain template.
 
 Like Django's ``startapp``, but the result is a layered package (``domain``,
-``application``, ``infrastructure``, ``api``) with a working aggregate, its
-persistence, its HTTP API, and tests, ready to rename and grow.
+``application``, ``infrastructure``, ``api``) with a working aggregate (a
+child entity, and a reference to another aggregate), its tables, its HTTP
+resource, and tests, ready to rename and grow. In a project laid out as
+``init`` makes it, the domain is also installed and its router mounted.
 """
 
 import keyword
-import pkgutil
 import re
 from argparse import ArgumentParser
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Final
 
-import domainkit.contrib
 from domainkit.conf.env import project_root
-from domainkit.management import get_commands
 from domainkit.management.base import BaseCommand, CommandError
+from domainkit.management.generators import install
 from domainkit.utils.formatting import format_python
 from domainkit.utils.text import camel_case, pluralize, snake_case
 
@@ -118,6 +118,11 @@ class Command(BaseCommand):
             type=Path,
             help="directory for the tests (default: tests/<parent path>)",
         )
+        parser.add_argument(
+            "--manual",
+            action="store_true",
+            help="neither install the domain nor mount its router; print how",
+        )
 
     def handle(
         self,
@@ -127,15 +132,11 @@ class Command(BaseCommand):
         plural: str | None,
         parent: str,
         tests_dir: Path | None,
+        manual: bool = False,
         **options: object,
     ) -> None:
-        """Render the package and its tests, then print the next steps."""
+        """Render the package and its tests, install it if safe, print what is left."""
         context = template_context(name, parent, aggregate, plural)
-        if (command := context["aggregates"]) in existing_commands():
-            raise CommandError(
-                f"The domain's command would be {command!r}, which already names "
-                "a command and would replace it; pass --plural with another name."
-            )
         package_dir = package_directory(parent) / name
         root = project_root()
         tests_root = tests_dir or root / "tests" / Path(*parent.split("."))
@@ -151,42 +152,41 @@ class Command(BaseCommand):
                 init.write_text(f'"""Tests of {directory.name}."""\n', encoding="utf-8")
             directory = directory.parent
         format_python([package_dir, tests_root / name])
-        self.write(_next_steps(context, package_dir, tests_root / name))
+        done = [] if manual else install(context["package"], name, root)
+        self.write(_next_steps(context, package_dir, tests_root / name, done))
 
 
-def existing_commands() -> set[str]:
-    """Built-in commands, installed domains', and every contrib app's.
-
-    The domain's generated command (``manage.py <aggregates>``) would
-    replace any of them, the last also once that app is installed.
-    """
-    contrib = [
-        str(commands)
-        for package in domainkit.contrib.__path__
-        for commands in Path(package).glob("*/management/commands")
-    ]
-    return set(get_commands()) | {name for _, name, _ in pkgutil.iter_modules(contrib)}
-
-
-def _next_steps(context: dict[str, str], package_dir: Path, tests_dir: Path) -> str:
-    """Explain how to install the generated domain."""
+def _next_steps(
+    context: dict[str, str], package_dir: Path, tests_dir: Path, done: list[str]
+) -> str:
+    """Say what was done, and explain what is left to do."""
     package, domain = context["package"], context["domain"]
-    return "\n".join(
-        [
-            f"Created {package_dir} and {tests_dir}.",
-            "Next steps:",
-            f"  1. Add {package!r} to INSTALLED_DOMAINS in your settings.",
+    steps = (
+        []
+        if done
+        else [
+            f"Add {package!r} to INSTALLED_DOMAINS in your settings.",
             (
-                "  2. Mount its router in your ROOT_ROUTER module:\n"
+                "Mount its router in your ROOT_ROUTER module:\n"
                 f"       from {package}.api.routes import router as {domain}_router\n"
                 f"       router.include_router({domain}_router, "
                 f'prefix="/api/v1/{domain}")'
             ),
-            f'  3. python manage.py makemigrations -m "create {domain}"',
-            "  4. python manage.py migrate",
-            (
-                f"  5. Grant {domain}.view_{context['model']} (and add_, change_) "
-                "to the users or groups that need them; superusers have them."
-            ),
+        ]
+    )
+    steps += [
+        f'python manage.py makemigrations -m "create {domain}"',
+        "python manage.py migrate",
+        (
+            f"Grant {domain}.view_{context['model']} (and add_, change_, delete_) to "
+            "the users or groups that need them; superusers have them."
+        ),
+    ]
+    return "\n".join(
+        [
+            f"Created {package_dir} and {tests_dir}.",
+            *done,
+            "Next steps:",
+            *(f"  {number}. {step}" for number, step in enumerate(steps, 1)),
         ]
     )

@@ -8,24 +8,26 @@ permissions; ``client`` anonymously. Each test starts from the database as
 
 import io
 import logging
+from typing import Any
 from uuid import uuid4
 
 import pytest
 
-from fastapi.testclient import TestClient
-
-from domainkit.conf import override_settings
-from domainkit.http import encode_cursor
 from domainkit.management import call_command
-from domainkit.testing import ClientFor
+from domainkit.testing import ClientFor, TestClient
 
 URL = "/api/v1/{{ domain }}/{{ aggregates }}"
 VIEW = "{{ domain }}.view_{{ model }}"
 
 
-def test_callers_need_the_permissions(
-    client: TestClient, client_for: ClientFor
-) -> None:
+def create(client: TestClient, name: str) -> Any:  # noqa: ANN401 - JSON.
+    """Create a {{ aggregate }}; return its JSON."""
+    created = client.post(URL, json={"name": name})
+    assert created.status_code == 201, created.json()
+    return created.json()
+
+
+def test_callers_need_the_permissions(client: TestClient, client_for: ClientFor) -> None:
     """Anonymous callers get 401; users without the permission get 403."""
     assert client.get(URL).status_code == 401
     viewer = client_for(VIEW)
@@ -36,43 +38,51 @@ def test_callers_need_the_permissions(
 
 
 def test_lifecycle(admin_client: TestClient) -> None:
-    """Create, read, rename, and archive one {{ aggregate }}."""
+    """Create, read, change on the version read, archive, and delete."""
     created = admin_client.post(URL, json={"name": "  First  "})
-    assert created.status_code == 201
     body = created.json()
-    assert (body["name"], body["archived"], body["version"]) == ("First", False, 1)
-    item = f"{URL}/{body['id']}"
+    item = created.headers["location"]
+    assert created.status_code == 201
+    assert (body["name"], body["archived"], body["version"], body["notes"]) == ("First", False, 1, [])
+    assert item == f"{URL}/{body['id']}"
 
-    assert admin_client.get(item).json() == body
-    renamed = admin_client.post(f"{item}/rename", json={"name": "Second"})
+    read = admin_client.get(item)
+    assert read.json() == body
+    assert admin_client.get(item, headers={"If-None-Match": read.headers["etag"]}).status_code == 304
+    renamed = admin_client.patch(item, json={"name": "Second"}, headers={"If-Match": read.headers["etag"]})
     assert (renamed.json()["name"], renamed.json()["version"]) == ("Second", 2)
+    stale = admin_client.patch(item, json={"name": "Third"}, headers={"If-Match": read.headers["etag"]})
+    assert (stale.status_code, stale.json()["code"]) == (412, "precondition_failed")
+
+    noted = admin_client.post(f"{item}/notes", json={"text": "Hello"})
+    assert [note["text"] for note in noted.json()["notes"]] == ["Hello"]
     archived = admin_client.post(f"{item}/archive")
-    assert (archived.json()["archived"], archived.json()["version"]) == (True, 3)
+    assert archived.json()["archived"] is True
+    assert admin_client.delete(item).status_code == 204
+    assert admin_client.get(item).status_code == 404
 
 
 def test_business_rules_map_to_http_errors(admin_client: TestClient) -> None:
     """Domain errors become 404/422 responses with a machine-readable code."""
     missing = admin_client.get(f"{URL}/{uuid4()}")
-    assert missing.status_code == 404
-    assert missing.json()["code"] == "{{ aggregate }}_not_found"
+    assert (missing.status_code, missing.json()["code"]) == (404, "{{ aggregate }}_not_found")
 
     blank = admin_client.post(URL, json={"name": "   "})
-    assert blank.status_code == 422
-    assert blank.json()["code"] == "invalid_{{ aggregate }}_name"
+    assert (blank.status_code, blank.json()["code"]) == (422, "invalid_{{ aggregate }}_name")
 
-    item = f"{URL}/{admin_client.post(URL, json={'name': 'Frozen'}).json()['id']}"
+    item = f"{URL}/{create(admin_client, 'Frozen')['id']}"
     admin_client.post(f"{item}/archive")
-    refused = admin_client.post(f"{item}/rename", json={"name": "Thawed"})
-    assert refused.status_code == 422
-    assert refused.json()["code"] == "{{ aggregate }}_is_archived"
+    refused = admin_client.patch(item, json={"name": "Thawed"})
+    assert (refused.status_code, refused.json()["code"]) == (422, "{{ aggregate }}_is_archived")
 
 
-def test_cursor_pagination_walks_every_page(admin_client: TestClient) -> None:
-    """``next_cursor`` leads through all {{ aggregates_title }} in name order."""
-    names = ["Cherry", "Apple", "Banana"]
-    created = [admin_client.post(URL, json={"name": name}).json() for name in names]
+def test_listings_filter_order_and_page(admin_client: TestClient) -> None:
+    """``next_cursor`` walks every page; filters and search narrow them."""
+    for name in ("Cherry", "Apple", "Banana"):
+        create(admin_client, name)
+    admin_client.post(f"{URL}/{create(admin_client, 'Date')['id']}/archive")
     seen: list[str] = []
-    params: dict[str, str | int] = {"limit": 2}
+    params: dict[str, Any] = {"limit": 2, "archived": False}
     while True:
         page = admin_client.get(URL, params=params).json()
         seen += [item["name"] for item in page["items"]]
@@ -80,40 +90,18 @@ def test_cursor_pagination_walks_every_page(admin_client: TestClient) -> None:
             break
         params["cursor"] = page["next_cursor"]
 
-    assert seen == sorted(item["name"] for item in created)
-
-
-def test_page_size_and_cursor_validation(admin_client: TestClient) -> None:
-    """Limits follow the settings; forged cursors are rejected with a code."""
-    for name in ("size-a", "size-b", "size-c"):
-        admin_client.post(URL, json={"name": name})
-
-    with override_settings({{ DOMAIN }}={"PAGE_SIZE": 2, "MAX_PAGE_SIZE": 2}):
-        assert len(admin_client.get(URL).json()["items"]) == 2
-        assert len(admin_client.get(URL, params={"limit": 50}).json()["items"]) == 2
-
-    malformed = admin_client.get(URL, params={"cursor": "not base64!"})
-    assert (malformed.status_code, malformed.json()["code"]) == (422, "validation_error")
-    for cursor in ("bm90LWpzb24", encode_cursor(["name", "not-a-uuid"])):
-        forged = admin_client.get(URL, params={"cursor": cursor})
-        assert (forged.status_code, forged.json()["code"]) == (422, "invalid_cursor")
-
-
-def test_management_command_lists_{{ aggregates }}(admin_client: TestClient) -> None:
-    """The domain's ``{{ aggregates }}`` command prints stored {{ aggregates_title }}."""
-    admin_client.post(URL, json={"name": "Listed"})
-    output = io.StringIO()
-
-    call_command("{{ aggregates }}", stdout=output)
-
-    assert "Listed" in output.getvalue()
+    assert seen == ["Apple", "Banana", "Cherry"]
+    found = admin_client.get(URL, params={"search": "an", "ordering": "-name"}).json()
+    assert [item["name"] for item in found["items"]] == ["Banana"]
+    for params in ({"limit": 101}, {"cursor": "bm90LWpzb24"}, {"name__regex": "x"}):
+        assert admin_client.get(URL, params=params).status_code == 422
 
 
 def test_durable_handler_runs_in_the_worker(
     admin_client: TestClient, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Creating a {{ aggregate }} queues the durable handler; the worker runs it."""
-    created = admin_client.post(URL, json={"name": "Queued"}).json()
+    created = create(admin_client, "Queued")
     caplog.set_level(logging.INFO, logger="{{ package }}.application.handlers")
 
     call_command("runworker", "--once", stdout=io.StringIO())

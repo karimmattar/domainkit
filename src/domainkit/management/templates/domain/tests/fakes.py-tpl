@@ -1,31 +1,14 @@
 """In-memory adapters: test the domain and use cases without a database."""
 
 from domainkit.ddd import EventBus, InMemoryRepository
-
 from {{ package }}.application.unit_of_work import {{ Domain }}UnitOfWork
-from {{ package }}.domain.model import {{ Aggregate }}, {{ Aggregate }}Id
-from {{ package }}.domain.repositories import {{ Aggregate }}Position, {{ Aggregate }}Repository
-
-
-def _sort_key({{ aggregate }}: {{ Aggregate }}) -> tuple[str, str]:
-    """Order like the SQL adapter: name, then id (as stored hex)."""
-    return {{ aggregate }}.name.value, {{ aggregate }}.id.hex
+from {{ package }}.domain.model import {{ Aggregate }}, {{ Aggregate }}Id, {{ Aggregate }}Repository
 
 
 class InMemory{{ Aggregate }}Repository(
     InMemoryRepository[{{ Aggregate }}, {{ Aggregate }}Id], {{ Aggregate }}Repository
 ):
-    """Dictionary-backed ``{{ Aggregate }}Repository``."""
-
-    async def _page(
-        self, *, limit: int, after: {{ Aggregate }}Position | None
-    ) -> list[{{ Aggregate }}]:
-        """Seek past ``after`` in the SQL adapter's order."""
-        ordered = sorted(self.items.values(), key=_sort_key)
-        if after is not None:
-            start = (after[0].value, after[1].hex)
-            ordered = [item for item in ordered if _sort_key(item) > start]
-        return ordered[:limit]
+    """Dictionary-backed ``{{ Aggregate }}Repository``; it answers queries as SQL does."""
 
 
 class Fake{{ Domain }}UnitOfWork({{ Domain }}UnitOfWork):
@@ -44,4 +27,4 @@ class Fake{{ Domain }}UnitOfWork({{ Domain }}UnitOfWork):
         self.commits += 1
 
     async def _rollback(self) -> None:
-        """Nothing to undo: the repository is the state."""
+        """Nothing to undo: the repositories are the state."""

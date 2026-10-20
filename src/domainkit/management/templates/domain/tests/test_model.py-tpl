@@ -1,27 +1,46 @@
 """Unit tests of the {{ Aggregate }} aggregate: no I/O, no framework."""
 
+from uuid import uuid4
+
 import pytest
 
 from {{ package }}.domain.events import (
     {{ Aggregate }}Archived,
     {{ Aggregate }}Created,
+    {{ Aggregate }}Deleted,
+    {{ Aggregate }}NoteAdded,
     {{ Aggregate }}Renamed,
 )
-from {{ package }}.domain.exceptions import Invalid{{ Aggregate }}Name, {{ Aggregate }}IsArchived
-from {{ package }}.domain.model import {{ Aggregate }}, {{ Aggregate }}Name
+from {{ package }}.domain.model import (
+    NAME_LENGTH,
+    Invalid{{ Aggregate }}Name,
+    OwnerId,
+    {{ Aggregate }},
+    {{ Aggregate }}IsArchived,
+    {{ Aggregate }}Name,
+)
+
+OWNER = OwnerId(uuid4())
+
+
+def make(name: str = "First") -> {{ Aggregate }}:
+    """A new {{ aggregate }}, its creation event already taken."""
+    {{ aggregate }} = {{ Aggregate }}.create({{ Aggregate }}Name(name), OWNER)
+    {{ aggregate }}.pull_events()
+    return {{ aggregate }}
 
 
 def test_create_records_event() -> None:
     """A new {{ aggregate }} records {{ Aggregate }}Created with its id and name."""
-    {{ aggregate }} = {{ Aggregate }}.create({{ Aggregate }}Name("First"))
+    {{ aggregate }} = {{ Aggregate }}.create({{ Aggregate }}Name("First"), OWNER)
 
     (event,) = {{ aggregate }}.pull_events()
     assert isinstance(event, {{ Aggregate }}Created)
     assert (event.{{ aggregate }}_id, event.name) == ({{ aggregate }}.id, "First")
-    assert {{ aggregate }}.pull_events() == []
+    assert ({{ aggregate }}.owner_id, {{ aggregate }}.archived, {{ aggregate }}.notes) == (OWNER, False, [])
 
 
-@pytest.mark.parametrize("raw", ["", "   ", "x" * ({{ Aggregate }}Name.MAX_LENGTH + 1)])
+@pytest.mark.parametrize("raw", ["", "   ", "x" * (NAME_LENGTH + 1)])
 def test_invalid_names_are_rejected(raw: str) -> None:
     """Blank and overlong names cannot exist."""
     with pytest.raises(Invalid{{ Aggregate }}Name):
@@ -35,8 +54,7 @@ def test_names_are_trimmed_and_compared_by_value() -> None:
 
 def test_rename_records_event_only_on_change() -> None:
     """Renaming to the current name records nothing."""
-    {{ aggregate }} = {{ Aggregate }}.create({{ Aggregate }}Name("Old"))
-    {{ aggregate }}.pull_events()
+    {{ aggregate }} = make("Old")
 
     {{ aggregate }}.rename({{ Aggregate }}Name("Old"))
     {{ aggregate }}.rename({{ Aggregate }}Name("New"))
@@ -46,22 +64,45 @@ def test_rename_records_event_only_on_change() -> None:
     assert {{ aggregate }}.name == {{ Aggregate }}Name("New")
 
 
+def test_notes_are_child_entities() -> None:
+    """Each note gets an id and a time; the aggregate records it."""
+    {{ aggregate }} = make()
+
+    note = {{ aggregate }}.add_note("Remember this")
+
+    assert {{ aggregate }}.notes == [note]
+    assert note.text == "Remember this"
+    (event,) = {{ aggregate }}.pull_events()
+    assert isinstance(event, {{ Aggregate }}NoteAdded)
+    assert event.note_id == note.id
+
+
 def test_archived_{{ aggregates }}_are_read_only() -> None:
     """Archiving records an event; later changes are refused."""
-    {{ aggregate }} = {{ Aggregate }}.create({{ Aggregate }}Name("Done"))
+    {{ aggregate }} = make()
     {{ aggregate }}.archive()
 
     assert isinstance({{ aggregate }}.pull_events()[-1], {{ Aggregate }}Archived)
     with pytest.raises({{ Aggregate }}IsArchived):
         {{ aggregate }}.rename({{ Aggregate }}Name("Again"))
     with pytest.raises({{ Aggregate }}IsArchived):
+        {{ aggregate }}.add_note("Too late")
+    with pytest.raises({{ Aggregate }}IsArchived):
         {{ aggregate }}.archive()
+
+
+def test_delete_records_event() -> None:
+    """Deleting records {{ Aggregate }}Deleted; the repository removes it."""
+    {{ aggregate }} = make()
+
+    {{ aggregate }}.delete()
+
+    assert [type(event) for event in {{ aggregate }}.pull_events()] == [{{ Aggregate }}Deleted]
 
 
 def test_identity_defines_equality() -> None:
     """Two {{ aggregates_title }} are equal only when their ids match."""
-    first = {{ Aggregate }}.create({{ Aggregate }}Name("Same"))
-    second = {{ Aggregate }}.create({{ Aggregate }}Name("Same"))
+    first, second = make("Same"), make("Same")
 
     assert first != second
-    assert first == {{ Aggregate }}(id=first.id, name={{ Aggregate }}Name("Other"))
+    assert first == {{ Aggregate }}(id=first.id, name={{ Aggregate }}Name("Other"), owner_id=OWNER)
