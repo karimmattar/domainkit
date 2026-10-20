@@ -174,6 +174,7 @@ async def test_a_subscriber_that_falls_behind_is_closed_as_too_slow() -> None:
                 await anext(events)
 
     assert closed.value.closure is TOO_SLOW
+    assert str(closed.value) == "Client too slow."
 
 
 def test_a_subscription_names_types_and_needs_users() -> None:
@@ -185,6 +186,21 @@ def test_a_subscription_names_types_and_needs_users() -> None:
     anonymous = HTTPConnection({"type": "http", "headers": []})
     with pytest.raises(ImproperlyConfigured, match="AuthenticationMiddleware"):
         hub.stream(anonymous, UserCreated, rule=AllowAny())
+
+
+@pytest.mark.anyio
+async def test_a_subscription_is_checked_however_it_is_made() -> None:
+    """``subscribe`` itself refuses no types, and connections without a user."""
+    hub = LiveEvents(EventBus())
+    anonymous = HTTPConnection({"type": "websocket", "headers": []})
+
+    with pytest.raises(ImproperlyConfigured, match="Name the event types"):
+        async with hub.subscribe(connection(), rule=AllowAny()):
+            pass
+    with pytest.raises(ImproperlyConfigured, match="AuthenticationMiddleware"):
+        async with hub.subscribe(anonymous, UserCreated, rule=AllowAny()):
+            pass
+    assert hub._subscribers == set()
 
 
 @pytest.mark.anyio

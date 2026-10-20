@@ -845,6 +845,33 @@ async def test_sleep_until_follows_a_frozen_clock() -> None:
     await sleep_until(monotonic() + 0.001)  # Real time, unfrozen.
 
 
+@pytest.mark.anyio
+async def test_sleep_until_sleeps_once_unless_the_clock_is_frozen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One sleep to the deadline; under a frozen clock, steps no longer than one."""
+    now = [10.0]
+    slept: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        now[0] += seconds
+
+    monkeypatch.setattr(live, "monotonic", lambda: now[0])
+    monkeypatch.setattr(live, "anyio", SimpleNamespace(sleep=sleep))
+    monkeypatch.setattr(live, "FROZEN_STEP", 0.25)
+    monkeypatch.setattr(live, "frozen", lambda: None)
+    await sleep_until(10.5)
+    assert (slept, now) == ([0.5], [10.5])
+
+    slept.clear()
+    monkeypatch.setattr(live, "frozen", lambda: object())
+    await sleep_until(11.125)
+    assert (slept, now) == ([0.25, 0.25, 0.125], [11.125])
+    await sleep_until(11.0)
+    assert slept == [0.25, 0.25, 0.125]
+
+
 def test_text_is_measured_in_utf8_without_a_copy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
