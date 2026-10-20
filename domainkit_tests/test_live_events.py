@@ -58,6 +58,13 @@ LIVE_MIDDLEWARE: Final = [
 ]
 
 
+NO_TYPES: Final = r"^Name the event types to subscribe to\.$"
+NO_USERS: Final = (
+    r"^Live events are filtered per user: add domainkit\.contrib\.auth\."
+    r"middleware\.AuthenticationMiddleware to MIDDLEWARE\.$"
+)
+
+
 class Someone:
     """A user who logged in, as the access rules see one."""
 
@@ -190,10 +197,10 @@ def test_a_subscription_names_types_and_needs_users() -> None:
     """Nothing to hear, or nobody to check, is a configuration error."""
     hub = LiveEvents()
 
-    with pytest.raises(ImproperlyConfigured, match="Name the event types"):
+    with pytest.raises(ImproperlyConfigured, match=NO_TYPES):
         hub.stream(connection(), rule=AllowAny())
     anonymous = HTTPConnection({"type": "http", "headers": []})
-    with pytest.raises(ImproperlyConfigured, match="AuthenticationMiddleware"):
+    with pytest.raises(ImproperlyConfigured, match=NO_USERS):
         hub.stream(anonymous, UserCreated, rule=AllowAny())
 
 
@@ -203,10 +210,10 @@ async def test_a_subscription_is_checked_however_it_is_made() -> None:
     hub = LiveEvents(EventBus())
     anonymous = HTTPConnection({"type": "websocket", "headers": []})
 
-    with pytest.raises(ImproperlyConfigured, match="Name the event types"):
+    with pytest.raises(ImproperlyConfigured, match=NO_TYPES):
         async with hub.subscribe(connection(), rule=AllowAny()):
             pass
-    with pytest.raises(ImproperlyConfigured, match="AuthenticationMiddleware"):
+    with pytest.raises(ImproperlyConfigured, match=NO_USERS):
         async with hub.subscribe(anonymous, UserCreated, rule=AllowAny()):
             pass
     assert hub._subscribers == set()
