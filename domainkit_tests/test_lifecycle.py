@@ -173,15 +173,17 @@ async def test_a_hung_phase_leaves_the_later_phases_their_share(
     register("stubborn", ignores_cancellation, phase=Phase.DRAIN)
     register("logs", partial(note, "logs"), phase=Phase.FLUSH)
 
-    with caplog.at_level(logging.ERROR, "domainkit.lifecycle"):
-        async with asyncio.timeout(5):
-            await close_resources(Budget.begin(0.05))
+    try:
+        with caplog.at_level(logging.ERROR, "domainkit.lifecycle"):
+            async with asyncio.timeout(5):
+                await close_resources(Budget.begin(0.05))
+    finally:
+        release.set()  # Fail fast, not hang, if anything above goes wrong.
 
     assert closed == ["stubborn", "caches", "databases", "ledgers", "brokers", "logs"]
     assert caplog.messages == [
         "Could not close the stubborn within the shutdown budget; closing the rest"
     ]
-    release.set()
 
 
 async def test_tasks_that_will_not_stop_are_named(
@@ -198,19 +200,22 @@ async def test_tasks_that_will_not_stop_are_named(
             except asyncio.CancelledError:
                 continue
 
-    task = spawn(stubborn(), name="test.stubborn")
+    stuck = [spawn(stubborn(), name=f"test.stubborn{n}") for n in (1, 2)]
     await asyncio.sleep(0)
-    with caplog.at_level(logging.ERROR, "domainkit.lifecycle"):
-        await close_resources(Budget.begin(0.02))
+    try:
+        with caplog.at_level(logging.ERROR, "domainkit.lifecycle"):
+            async with asyncio.timeout(5):
+                await close_resources(Budget.begin(0.02))
+    finally:
+        release.set()
+        await asyncio.wait(stuck, timeout=5)
 
     assert caplog.messages == [
         (
             "Background tasks still running at the end of their shutdown phase: "
-            "test.stubborn"
+            "test.stubborn1, test.stubborn2"
         )
     ]
-    release.set()
-    await asyncio.wait([task], timeout=5)
 
 
 def test_each_phase_ends_at_its_share_of_the_budget() -> None:
@@ -455,6 +460,9 @@ async def test_close_each_closes_the_others_while_one_hangs(
 
     assert closed == ["first", "last"]
     assert caplog.messages == ["Could not close 'fails'", "Gave up closing 'hung'"]
+    cause = caplog.records[0].exc_info
+    assert cause
+    assert str(cause[1]) == "fails"
 
 
 async def test_closes_given_up_on_end_without_an_unretrieved_error() -> None:
@@ -470,14 +478,36 @@ async def test_closes_given_up_on_end_without_an_unretrieved_error() -> None:
     assert failed._log_traceback is False
 
 
-async def test_close_each_raises_a_close_cancelled_on_its_own() -> None:
-    """An item whose close was cancelled by something else is a failure too."""
+async def test_close_each_raises_a_close_cancelled_on_its_own(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A close cancelled by something else is a failure too, and hides no other."""
 
     async def close(item: str) -> None:
-        raise asyncio.CancelledError
+        if item == "cancelled":
+            raise asyncio.CancelledError
+        if item == "fails":
+            raise RuntimeError("fails")
 
-    with pytest.raises(asyncio.CancelledError):
-        await close_each(["a"], close)
+    with (
+        caplog.at_level(logging.ERROR, "domainkit.utils.closing"),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await close_each(["fine", "cancelled", "fails"], close)
+    assert caplog.messages == ["Could not close 'fails'"]
+
+
+async def test_failures_after_a_close_that_worked_are_raised() -> None:
+    """Items that closed are passed over, not the end of the search."""
+
+    async def close(item: str) -> None:
+        if item == "fails":
+            raise RuntimeError("fails after one that closed")
+
+    with pytest.raises(RuntimeError, match="after one that closed"):
+        await close_each(["fine", "fails"], close)
+    with pytest.raises(RuntimeError, match="after one that closed"):
+        await close_in_turn(["fine", "fails"], close)
 
 
 async def test_close_in_turn_shares_the_time_and_tries_every_item(
@@ -497,9 +527,13 @@ async def test_close_in_turn_shares_the_time_and_tries_every_item(
         caplog.at_level(logging.ERROR, "domainkit.utils.closing"),
         pytest.raises(TimeoutError, match=r"^'hung' did not close within 0\.0\d*s$"),
     ):
-        await close_in_turn(["hung", "fails", "last"], close, within=0.03)
+        async with asyncio.timeout(5):
+            await close_in_turn(["hung", "fails", "last"], close, within=0.03)
     assert closed == ["hung", "fails", "last"]
     assert caplog.messages == ["Could not close 'fails'"]
+    cause = caplog.records[0].exc_info
+    assert cause
+    assert type(cause[1]) is RuntimeError  # Only overruns become TimeoutErrors.
 
     closed.clear()
     await close_in_turn(["a", "b"], close)  # No limit: in order.
@@ -517,10 +551,37 @@ async def test_close_in_turn_lets_one_item_use_most_of_the_time() -> None:
 
     # Two items: an equal split would cut "slow" at 0.20 s.
     with pytest.raises(TimeoutError, match=r"^'slow' did not close within 0\.35s$"):
-        await close_in_turn(["slow", "quick"], close, within=0.4)
+        async with asyncio.timeout(5):
+            await close_in_turn(["slow", "quick"], close, within=0.4)
     assert closed == ["quick"]
     assert RESERVED_SHARE == 0.25
     await close_in_turn([], close, within=1)  # Nothing to close.
+
+
+async def test_close_in_turn_keeps_only_the_later_items_reserves(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The last item may use all that is left: no reserve is kept after it."""
+    loop = asyncio.get_running_loop()
+    started: dict[str, float] = {}
+
+    async def hangs(item: str) -> None:
+        started[item] = loop.time()
+        await asyncio.Event().wait()
+
+    end = loop.time() + 0.4
+    with (
+        caplog.at_level(logging.ERROR, "domainkit.utils.closing"),
+        pytest.raises(TimeoutError, match=r"^'first' did not close"),
+    ):
+        async with asyncio.timeout(5):
+            await close_in_turn(["first", "last"], hangs, within=0.4)
+
+    cause = caplog.records[0].exc_info
+    assert cause
+    reported = float(str(cause[1]).removeprefix("'last' did not close within ")[:-1])
+    # Measured from when "last" started, so a slow machine changes nothing.
+    assert reported == pytest.approx(end - started["last"], abs=0.02)
 
 
 async def test_the_domain_lifespan_without_a_limit_waits_for_hooks() -> None:

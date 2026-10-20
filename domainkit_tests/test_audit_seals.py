@@ -25,6 +25,7 @@ from domainkit.conf import override_settings, settings
 from domainkit.context import RequestContext, bind_request
 from domainkit.contrib.audit import apps as audit_apps
 from domainkit.contrib.audit import record
+from domainkit.contrib.audit import seals as seals_module
 from domainkit.contrib.audit.management.commands.auditverify import (
     Command as VerifyCommand,
 )
@@ -573,6 +574,30 @@ async def test_a_run_goes_on_from_the_last_row_it_sealed(tables: None) -> None:
     assert (await verify("default")).intact
 
 
+async def test_rows_of_one_instant_split_across_batches_are_all_sealed(
+    tables: None,
+) -> None:
+    """A batch goes on past the last row's id too, not only its time."""
+    now = datetime.now(UTC)
+    async with connections.engine().begin() as connection:
+        for n in (1, 2, 3):
+            await connection.execute(
+                insert(audit_log).values(
+                    id=uuid.UUID(int=n),
+                    occurred_at=now,
+                    actor="system",
+                    action="test.added",
+                    outcome="success",
+                    details={},
+                )
+            )
+
+    assert await seal("default", batch=1) == 3
+    assert [each["entry_id"] for each in await seals()] == [
+        uuid.UUID(int=n) for n in (1, 2, 3)
+    ]
+
+
 def unsealed_gauge() -> float | None:
     """The backlog gauge of ``default``."""
     return REGISTRY.get_sample_value("audit_unsealed_rows", {"database": "default"})
@@ -604,11 +629,13 @@ async def test_a_run_seals_its_batches_at_most_and_counts_what_is_left(
         assert unsealed_gauge() == 0
         assert caplog.messages == []
 
-    with override_settings(AUDIT={"LEDGER": "audit", "SEAL_BACKLOG_WARNING": 5}):
-        await add(start + timedelta(seconds=10))
-        await add(start + timedelta(seconds=11))
+    with override_settings(AUDIT={"LEDGER": "audit", "SEAL_BACKLOG_WARNING": 2}):
+        for n in range(10, 13):
+            await add(start + timedelta(seconds=n))
         assert await seal("default", batch=1, batches=1) == 1
-        assert unsealed_gauge() == 1
+        assert unsealed_gauge() == 2  # At the threshold: quiet.
+        assert await seal("default", batch=3, batches=1) == 2  # Caught up.
+        assert unsealed_gauge() == 0
     assert caplog.messages == []
     assert (await verify("default")).intact
 
@@ -654,6 +681,30 @@ async def test_the_backlog_is_what_sealing_could_still_reach(tables: None) -> No
     await add(now - 2 * WINDOW)  # Too late: verify's to report.
     await add(now + timedelta(seconds=9))
     assert await unsealed_backlog("default", WINDOW) == 1
+
+
+async def test_the_backlog_counts_from_the_windows_first_instant(
+    tables: None,
+) -> None:
+    """A row exactly ``late_window`` before the head's is still within reach."""
+    head = datetime.now(UTC) - timedelta(minutes=1)  # In the past: the mark.
+    await add(head)
+    await seal("default")
+    await add(head - WINDOW)
+    await add(head - WINDOW - timedelta(microseconds=1))
+
+    assert await unsealed_backlog("default", WINDOW) == 1
+
+
+async def test_counting_a_backlog_stops_at_its_limit(
+    tables: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Past ``BACKLOG_COUNT_LIMIT`` rows the count reads the limit."""
+    monkeypatch.setattr(seals_module, "BACKLOG_COUNT_LIMIT", 2)
+    now = datetime.now(UTC)
+    for n in range(3):
+        await add(now + timedelta(seconds=n))
+    assert await unsealed_backlog("default", WINDOW) == 2
 
 
 @pytest.mark.parametrize(

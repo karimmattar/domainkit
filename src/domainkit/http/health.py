@@ -76,12 +76,17 @@ async def _failing_checks(request: Request) -> list[str]:
 async def _check(state: State) -> list[str]:
     """Run every check; keep the result, timed from when the round ended."""
     seconds = settings.READINESS_TIMEOUT
-    groups = await asyncio.gather(
+    groups = await asyncio.gather(  # Each bounded: wait for all, leave none running.
         registry.check(seconds),
         connections.check_all(seconds),
         ledgers.check_all(seconds),
         caches.check_all(seconds),
+        return_exceptions=True,
     )
-    failing = [name for group in groups for name in group]
+    failing: list[str] = []
+    for group in groups:
+        if isinstance(group, BaseException):
+            raise group
+        failing.extend(group)
     state.readiness = (time.monotonic(), failing)
     return failing

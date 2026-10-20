@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 from prometheus_client import REGISTRY
 
-from domainkit import clock
+from domainkit import clock, tasks
 from domainkit import context as request_context
 from domainkit.context import RequestContext, bind_request, current_request
 from domainkit.contrib.idempotency.operations import (
@@ -212,10 +212,13 @@ async def test_shutdown_names_tasks_that_will_not_stop() -> None:
     await asyncio.sleep(0)
     loop = asyncio.get_running_loop()
 
-    assert await shutdown(loop.time() + 0.01) == ["test.stubborn"]
-    assert await shutdown(loop.time()) == ["test.stubborn"]  # Past: no wait.
-    release.set()
-    await wait_for(task)
+    try:
+        async with asyncio.timeout(5):  # A shutdown that waits for ever fails.
+            assert await shutdown(loop.time() + 0.01) == ["test.stubborn"]
+            assert await shutdown(loop.time()) == ["test.stubborn"]  # Past: no wait.
+    finally:
+        release.set()  # Fail fast, not hang, if an assertion fails.
+        await wait_for(task)
 
 
 async def test_shutdown_leaves_the_task_that_calls_it_alone() -> None:
@@ -474,6 +477,115 @@ def test_backoff_doubles_up_to_its_bound_with_jitter(
 def test_backoff_never_overflows() -> None:
     """However many crashes, the wait stays within ``max_backoff``."""
     assert 30.0 <= backoff_delay(10**6, 1.0, 60.0) <= 60.0
+
+
+class Crashes(logging.Handler):
+    """Collect the supervisor's crash messages; signal each as it comes."""
+
+    def __init__(self) -> None:
+        """Start with none."""
+        super().__init__(logging.ERROR)
+        self.messages: list[str] = []
+        self.logged = asyncio.Event()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Keep the message and wake whoever waits for it."""
+        self.messages.append(record.getMessage())
+        self.logged.set()
+
+    async def next(self) -> str:
+        """Wait for the next crash message (at most 5 seconds)."""
+        async with asyncio.timeout(5):
+            await self.logged.wait()
+        self.logged.clear()
+        return self.messages[-1]
+
+
+async def test_supervision_backs_off_from_a_second_to_a_minute_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Half a second at the least jitter; a run of a minute counts as healthy."""
+    monkeypatch.setattr(tasks._random, "uniform", lambda low, high: low)
+    crashes = Crashes()
+    logging.getLogger("domainkit.tasks").addHandler(crashes)
+
+    async def crash() -> None:
+        raise RuntimeError("down")
+
+    async def crash_after_a_minute() -> None:
+        frozen.tick(60)
+        raise RuntimeError("down after a minute")
+
+    async def wait() -> None:
+        await asyncio.Event().wait()
+
+    calls: list[int] = []
+    try:
+        with clock.freeze_time() as frozen:
+            supervisor = supervise(
+                lambda: run_n(calls, [crash, crash_after_a_minute, wait]),
+                name="test.defaults",
+            )
+            first = await crashes.next()
+            second = await crashes.next()  # After the first's 0.5 s backoff.
+    finally:
+        logging.getLogger("domainkit.tasks").removeHandler(crashes)
+    supervisor.cancel()
+    await wait_for(supervisor)
+
+    assert first.endswith("restarting it in 0.5s (1 in a row)")
+    assert second.endswith("restarting it in 0.5s (1 in a row)")
+
+
+async def test_supervisor_and_runs_carry_the_name() -> None:
+    """Both show up under the name given, in tasks and logs; one bound is fine."""
+    names: list[str] = []
+
+    async def run() -> None:
+        current = asyncio.current_task()
+        assert current is not None
+        names.append(current.get_name())
+
+    supervisor = supervise(run, name="test.named", backoff=1.0, max_backoff=1.0)
+    assert supervisor.get_name() == "test.named"
+    await wait_for(supervisor)
+    assert names == ["test.named"]
+
+
+async def test_a_run_that_lasted_exactly_max_backoff_was_healthy(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The count of crashes starts again from a run of ``max_backoff`` or more."""
+    bound = 2.0**-7  # Exact in binary: the frozen clock adds it exactly.
+
+    async def crash() -> None:
+        raise RuntimeError("down")
+
+    async def crash_on_the_bound() -> None:
+        frozen.tick(bound)
+        raise RuntimeError("down again")
+
+    async def stop() -> None:
+        return None
+
+    calls: list[int] = []
+    behaviours = [crash, crash_on_the_bound, stop]
+    with (
+        clock.freeze_time() as frozen,
+        caplog.at_level(logging.ERROR, "domainkit.tasks"),
+    ):
+        supervisor = supervise(
+            lambda: run_n(calls, behaviours),
+            name="test.bound",
+            backoff=bound / 2,
+            max_backoff=bound,
+        )
+        await wait_for(supervisor)
+
+    assert [message[-12:] for message in caplog.messages] == [
+        "(1 in a row)",
+        "(1 in a row)",
+    ]
 
 
 @pytest.mark.parametrize(("backoff", "max_backoff"), [(0.0, 1.0), (2.0, 1.0)])

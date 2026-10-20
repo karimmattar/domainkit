@@ -1183,7 +1183,10 @@ def test_a_key_a_cancelled_request_could_not_settle_is_logged(
         asyncio.run(scenario())
 
     (record,) = caplog.records
-    assert record.getMessage().startswith("Could not store the response of a cancelled")
+    assert record.getMessage() == (
+        "Could not store the response of a cancelled request or release its "
+        "Idempotency-Key; the key is held until its lease runs out"
+    )
     assert record.exc_info
     expected = RuntimeError if failure == "raises" else TimeoutError
     assert type(record.exc_info[1]) is expected

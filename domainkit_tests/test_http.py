@@ -35,6 +35,7 @@ from domainkit.http.middleware import (
 )
 from domainkit.ledger import ledgers
 from domainkit.log import SECURITY_LOGGER
+from domainkit.tasks import owned
 from domainkit.tracing import current_ids, remote_parent
 from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
 
@@ -602,10 +603,12 @@ def test_readiness_checks_every_kind_at_once(monkeypatch: pytest.MonkeyPatch) ->
     started: list[float] = []
     contexts: list[object] = []
     everyone: list[asyncio.Event] = []  # Made in the probe's loop.
+    rounds: set[str] = set()
 
     async def check(seconds: float) -> list[str]:
         started.append(seconds)
         contexts.append((current_request(), running_operation(), current_ids()))
+        rounds.update(task.get_name() for task in owned())
         if len(started) == 4:
             everyone[0].set()
         await everyone[0].wait()
@@ -631,6 +634,42 @@ def test_readiness_checks_every_kind_at_once(monkeypatch: pytest.MonkeyPatch) ->
         assert asyncio.run(probe()) == ["failing4"] * 4
     assert started == [5.0] * 4
     assert contexts == [(None, None, None)] * 4  # The probe's request stays its own.
+    assert rounds == {"domainkit.readiness"}
+
+
+def test_a_round_that_fails_is_raised_to_its_probes_not_logged_twice(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The other checks finish first; the round's own task logs nothing."""
+    finished: list[str] = []
+
+    async def broken(seconds: float) -> list[str]:
+        raise RuntimeError("checks broke")
+
+    async def slower(seconds: float) -> list[str]:
+        for _ in range(50):  # Many loop passes: longer than the error takes.
+            await asyncio.sleep(0)
+        finished.append("databases")
+        return []
+
+    async def quick(seconds: float) -> list[str]:
+        return []
+
+    monkeypatch.setattr(registry, "check", broken)
+    monkeypatch.setattr(connections, "check_all", slower)
+    for checked in (ledgers, caches):
+        monkeypatch.setattr(checked, "check_all", quick)
+    request = SimpleNamespace(app=SimpleNamespace(state=State()))
+
+    async def probe() -> None:
+        with pytest.raises(RuntimeError, match="checks broke"):
+            await health._failing_checks(request)  # type: ignore[arg-type]
+        assert finished == ["databases"]  # None left running behind.
+        await asyncio.sleep(0)  # Done callbacks run on the next loop pass.
+
+    with caplog.at_level(logging.DEBUG, "domainkit.tasks"):
+        asyncio.run(probe())
+    assert [r for r in caplog.records if r.name == "domainkit.tasks"] == []
 
 
 def test_a_round_left_on_another_loop_is_not_awaited(
