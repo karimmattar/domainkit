@@ -296,7 +296,13 @@ class Overreaching(Unlisted):
 def test_staff_see_and_change_only_the_fields_a_model_names() -> None:
     """Allowlists, never the username or protected fields; nothing by default."""
     assert User.editable_fields() == {"email", "first_name", "last_name"}
-    assert User.admin_fields() == {"email", "first_name", "last_name", "date_joined"}
+    assert User.admin_fields() == {
+        "email",
+        "email_verified",
+        "first_name",
+        "last_name",
+        "date_joined",
+    }
     assert Badge.admin_fields() == {"nickname", "issued"}
     assert Unlisted.editable_fields() == Unlisted.admin_fields() == frozenset()
     assert Overreaching.editable_fields() == {"nickname"}

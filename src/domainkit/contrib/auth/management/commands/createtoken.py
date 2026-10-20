@@ -5,6 +5,7 @@ from datetime import timedelta
 
 from domainkit.management.base import BaseCommand, CommandError, run_async
 
+from ...backends import get_all_permissions
 from ...events import TokenCreated
 from ...settings import AUTHENTICATION, auth_settings
 from ...uow import AuthUnitOfWork
@@ -23,6 +24,14 @@ class Command(BaseCommand):
         """The user, a name for the token, and its lifetime."""
         parser.add_argument("username", help="whose token")
         parser.add_argument("--name", default="cli", help="what it is for (cli)")
+        parser.add_argument(
+            "--scope",
+            dest="scopes",
+            action="append",
+            metavar="PERMISSION",
+            help="limit it to this permission key (repeat for more); the user "
+            "must have it",
+        )
         lifetime = parser.add_mutually_exclusive_group()
         lifetime.add_argument("--days", type=int, default=90, help="days it works (90)")
         lifetime.add_argument(
@@ -32,7 +41,15 @@ class Command(BaseCommand):
             help="works until revoked (cleartokens --user)",
         )
 
-    def handle(self, *, username: str, name: str, days: int, expires: bool) -> None:
+    def handle(
+        self,
+        *,
+        username: str,
+        name: str,
+        days: int,
+        expires: bool,
+        scopes: list[str] | None,
+    ) -> None:
         """Store the token and print it."""
         if expires and days < 1:
             raise CommandError("--days must be at least 1.")
@@ -44,15 +61,34 @@ class Command(BaseCommand):
                 f"{TOKEN_AUTHENTICATION}; requests cannot use this token yet.\n"
             )
         ttl = timedelta(days=days) if expires else None
-        self.write(run_async(self._create(username, name, ttl)))
+        limit = None if scopes is None else frozenset(scopes)
+        self.write(run_async(self._create(username, name, ttl, limit)))
 
-    async def _create(self, username: str, name: str, ttl: timedelta | None) -> str:
+    async def _create(
+        self,
+        username: str,
+        name: str,
+        ttl: timedelta | None,
+        scopes: frozenset[str] | None,
+    ) -> str:
         """Issue the token; record ``TokenCreated``."""
         async with AuthUnitOfWork() as uow:
             user = await uow.users.get_by_natural_key(username)
             if user is None:
                 raise CommandError(f"User {username!r} does not exist.")
-            raw = await uow.tokens.issue(user.id, ttl=ttl, name=name)
-            user.record(TokenCreated(user_id=user.id, name=name))
+            if scopes is not None and (
+                missing := sorted(scopes - await get_all_permissions(user))
+            ):
+                raise CommandError(
+                    f"{username!r} lacks these permissions: {', '.join(missing)}."
+                )
+            raw = await uow.tokens.issue(user.id, ttl=ttl, name=name, scopes=scopes)
+            user.record(
+                TokenCreated(
+                    user_id=user.id,
+                    name=name,
+                    scopes=None if scopes is None else tuple(sorted(scopes)),
+                )
+            )
             await uow.commit()
         return raw

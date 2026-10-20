@@ -1,4 +1,7 @@
-"""``makemigrations``: write revisions for model changes, per target."""
+"""``makemigrations``: write revisions for model changes, per target.
+
+``--empty`` writes a revision with nothing in it, for a data migration.
+"""
 
 from argparse import ArgumentParser
 
@@ -31,6 +34,11 @@ class Command(BaseCommand):
             action="store_true",
             help="join the heads that two branches left behind",
         )
+        mode.add_argument(
+            "--empty",
+            action="store_true",
+            help="write an empty revision to fill in (a data migration)",
+        )
 
     def handle(
         self,
@@ -39,6 +47,7 @@ class Command(BaseCommand):
         database: str | None,
         check: bool,
         merge: bool,
+        empty: bool,
         **options: object,
     ) -> None:
         """Write revisions, merge revisions, or only report with ``--check``."""
@@ -47,6 +56,8 @@ class Command(BaseCommand):
         except ValueError as exc:
             raise CommandError(str(exc)) from None
         targets = (database,) if database else migrations.migration_targets()
+        if empty:
+            targets = (self._one(targets),)
         if merge:
             merged = [
                 path for target in targets if (path := migrations.make_merge(target))
@@ -61,6 +72,10 @@ class Command(BaseCommand):
                     f"The migration history of {target!r} has {len(heads)} heads; "
                     "run 'manage.py makemigrations --merge' first."
                 )
+        if empty:
+            path = migrations.make_empty_migration(message, targets[0])
+            self.write(f"Created {path}.")
+            return
         try:
             if check:
                 self._check(targets)
@@ -75,6 +90,15 @@ class Command(BaseCommand):
         self.write(
             "\n".join(f"Created {path}." for path in created) or "No changes detected."
         )
+
+    def _one(self, targets: tuple[str, ...]) -> str:
+        """The target an empty revision is for; several need ``--database``."""
+        if len(targets) != 1:
+            names = ", ".join(map(repr, targets)) or "none"
+            raise CommandError(
+                f"Name the target of the empty revision with --database ({names})."
+            )
+        return targets[0]
 
     def _check(self, targets: tuple[str, ...]) -> None:
         """Fail if any target has model changes without a revision."""

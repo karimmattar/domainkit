@@ -1,0 +1,575 @@
+# domainkit's messages in Arabic.
+# Compile with: domainkit compilemessages src/domainkit/i18n/locale
+msgid ""
+msgstr ""
+"Project-Id-Version: domainkit\n"
+"Language: ar\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=6; plural=n==0 ? 0 : n==1 ? 1 : n==2 ? 2 : n%100>=3 && n%100<=10 ? 3 : n%100>=11 ? 4 : 5;\n"
+
+#. domainkit.http: request errors
+msgid "The request is invalid."
+msgstr "الطلب غير صالح."
+
+msgid "The database is busy; try again shortly."
+msgstr "قاعدة البيانات مشغولة؛ أعد المحاولة بعد قليل."
+
+msgid ""
+"A value cannot be stored: it is too long, out of range, or holds a "
+"character the database refuses."
+msgstr ""
+"تعذّر حفظ إحدى القيم: فهي أطول من المسموح، أو خارج النطاق، أو تحتوي "
+"على محرف ترفضه قاعدة البيانات."
+
+msgid "Request body too large."
+msgstr "جسم الطلب أكبر من المسموح."
+
+msgid "Invalid host header."
+msgstr "ترويسة Host غير صالحة."
+
+msgid "Internal server error."
+msgstr "حدث خطأ داخلي في الخادم."
+
+msgid "Invalid Content-Length header."
+msgstr "ترويسة Content-Length غير صالحة."
+
+msgid "A valid metrics token is required."
+msgstr "يلزم رمز وصول صالح للاطلاع على المقاييس."
+
+msgid "Set METRICS_TOKEN to expose metrics in staging and production."
+msgstr "اضبط METRICS_TOKEN لإتاحة المقاييس في بيئتي ما قبل الإنتاج والإنتاج."
+
+msgid "The cursor is invalid; start again without one."
+msgstr "المؤشر غير صالح؛ ابدأ من جديد من دونه."
+
+msgid "Too many requests; slow down."
+msgstr "طلبات كثيرة جدًا؛ تمهّل قليلًا."
+
+msgid ""
+"The data changed while this request was running; reload it and try "
+"again."
+msgstr "تغيّرت البيانات أثناء تنفيذ هذا الطلب؛ أعد تحميلها ثم حاول مرة أخرى."
+
+msgid "This value is already taken."
+msgstr "هذه القيمة مستخدمة بالفعل."
+
+#. HTTP status phrases: the details of errors raised without one
+msgid "Bad Request"
+msgstr "طلب غير صالح"
+
+msgid "Unauthorized"
+msgstr "غير مصرّح"
+
+msgid "Forbidden"
+msgstr "محظور"
+
+msgid "Not Found"
+msgstr "غير موجود"
+
+msgid "Method Not Allowed"
+msgstr "الطريقة غير مسموح بها"
+
+msgid "Not Acceptable"
+msgstr "غير مقبول"
+
+msgid "Conflict"
+msgstr "تعارض"
+
+msgid "Content Too Large"
+msgstr "المحتوى أكبر من المسموح"
+
+msgid "Unsupported Media Type"
+msgstr "نوع الوسائط غير مدعوم"
+
+msgid "Unprocessable Content"
+msgstr "محتوى لا يمكن معالجته"
+
+msgid "Too Many Requests"
+msgstr "طلبات كثيرة جدًا"
+
+msgid "Internal Server Error"
+msgstr "خطأ داخلي في الخادم"
+
+msgid "Service Unavailable"
+msgstr "الخدمة غير متاحة"
+
+#. domainkit.contrib.auth
+msgid "Authentication credentials were not provided."
+msgstr "لم تُقدَّم بيانات اعتماد للمصادقة."
+
+msgid "You do not have permission to perform this action."
+msgstr "ليست لديك صلاحية لتنفيذ هذا الإجراء."
+
+msgid "Unable to log in with the given credentials."
+msgstr "تعذّر تسجيل الدخول ببيانات الاعتماد المقدَّمة."
+
+msgid "Your old password was entered incorrectly."
+msgstr "كلمة المرور القديمة التي أدخلتها غير صحيحة."
+
+msgid "Too many login attempts; try again later."
+msgstr "محاولات تسجيل دخول كثيرة جدًا؛ حاول مرة أخرى لاحقًا."
+
+msgid "Tokens are not refreshed here; log in again."
+msgstr "لا تُجدَّد الرموز هنا؛ سجّل الدخول مرة أخرى."
+
+msgid "User inactive or deleted."
+msgstr "المستخدم غير نشط أو محذوف."
+
+msgid "Invalid token."
+msgstr "الرمز غير صالح."
+
+msgid "Invalid refresh token."
+msgstr "رمز التجديد غير صالح."
+
+msgid "Refresh token reused; log in again."
+msgstr "أُعيد استخدام رمز التجديد؛ سجّل الدخول مرة أخرى."
+
+msgid "Token expired."
+msgstr "انتهت صلاحية الرمز."
+
+msgid "Session ended; log in again."
+msgstr "انتهت الجلسة؛ سجّل الدخول مرة أخرى."
+
+msgid "Too many password checks at once; try again in a moment."
+msgstr "عمليات تحقق كثيرة من كلمات المرور في آن واحد؛ حاول مرة أخرى بعد لحظات."
+
+msgid "No such user."
+msgstr "لا يوجد مستخدم كهذا."
+
+msgid "No such group."
+msgstr "لا توجد مجموعة كهذه."
+
+msgid "Credentials limited to scopes cannot do this."
+msgstr "لا يمكن لبيانات الاعتماد المقيَّدة بنطاقات القيام بهذا."
+
+msgid "Credentials limited to scopes end only themselves."
+msgstr "بيانات الاعتماد المقيَّدة بنطاقات لا تُنهي إلا نفسها."
+
+msgid "Your password was entered incorrectly."
+msgstr "كلمة المرور التي أدخلتها غير صحيحة."
+
+msgid "Too many attempts; try again later."
+msgstr "محاولات كثيرة جدًا؛ حاول مرة أخرى لاحقًا."
+
+msgid "Too many requests for mail; try again later."
+msgstr "طلبات بريد كثيرة جدًا؛ حاول مرة أخرى لاحقًا."
+
+msgid "The link is invalid or has expired."
+msgstr "الرابط غير صالح أو انتهت صلاحيته."
+
+msgid "The request names no origin (Origin or Referer)."
+msgstr "لا يذكر الطلب مصدره (Origin أو Referer)."
+
+msgid "The request comes from an origin that is not trusted."
+msgstr "الطلب صادر عن مصدر غير موثوق."
+
+msgid "The CSRF token is missing or wrong."
+msgstr "رمز CSRF مفقود أو غير صحيح."
+
+msgid "This request has no browser session."
+msgstr "لا توجد جلسة متصفح لهذا الطلب."
+
+msgid "A second factor is on; turn it off first."
+msgstr "التحقق بخطوتين مفعَّل؛ أوقفه أولًا."
+
+msgid "No enrolment is waiting for a code; start one first."
+msgstr "لا يوجد تسجيل ينتظر رمزًا؛ ابدأ تسجيلًا أولًا."
+
+msgid "The login has expired; log in again."
+msgstr "انتهت مهلة تسجيل الدخول؛ سجّل الدخول مرة أخرى."
+
+msgid "The code is wrong, or was used already."
+msgstr "الرمز غير صحيح، أو استُخدم من قبل."
+
+msgid "No such token."
+msgstr "لا يوجد رمز كهذا."
+
+msgid "Client certificates in headers are taken from trusted proxies only."
+msgstr "لا تُقبَل شهادات العميل في الترويسات إلا من الوسطاء الموثوقين."
+
+msgid "The client certificate did not verify."
+msgstr "تعذّر التحقق من شهادة العميل."
+
+msgid "The proxy did not verify the client certificate."
+msgstr "لم يتحقق الوسيط من شهادة العميل."
+
+msgid "Malformed client certificate."
+msgstr "شهادة العميل غير سليمة البنية."
+
+msgid "Unknown client certificate."
+msgstr "شهادة العميل غير معروفة."
+
+msgid "The value is not one SecretBox encrypted."
+msgstr "هذه القيمة لم تُشفَّر بواسطة SecretBox."
+
+msgid "No key decrypts the value."
+msgstr "لا يوجد مفتاح يفك تشفير هذه القيمة."
+
+#. domainkit.contrib.idempotency
+msgid "Idempotency-Key must be 1 to 255 printable ASCII characters."
+msgstr ""
+"يجب أن تتكوّن قيمة Idempotency-Key من ١ إلى ٢٥٥ محرفًا من محارف ASCII "
+"القابلة للطباعة."
+
+msgid "This Idempotency-Key was used for a different request."
+msgstr "استُخدمت قيمة Idempotency-Key هذه لطلب مختلف."
+
+msgid "A request with this Idempotency-Key is still in progress."
+msgstr "لا يزال طلب بقيمة Idempotency-Key هذه قيد التنفيذ."
+
+#. domainkit.http.uploads and domainkit.storage
+msgid "The file is too large."
+msgstr "الملف أكبر من المسموح."
+
+msgid "This type of file is not accepted."
+msgstr "هذا النوع من الملفات غير مقبول."
+
+msgid "The file is empty."
+msgstr "الملف فارغ."
+
+msgid "No file has that name."
+msgstr "لا يوجد ملف بهذا الاسم."
+
+#. Pydantic's validation messages, by their templates; the error's context fills the {names}
+msgid "A required value is missing."
+msgstr "قيمة مطلوبة غير موجودة."
+
+msgid "A value breaks a rule of the data: it is out of the range or set the database accepts."
+msgstr "قيمة تخالف قاعدة من قواعد البيانات: إنها خارج النطاق أو المجموعة التي تقبلها قاعدة البيانات."
+
+msgid "Name revisions, not 'base'."
+msgstr "اذكر مراجعات بأسمائها، لا 'base'."
+
+msgid "Squashing needs at least two revisions."
+msgstr "الدمج يحتاج إلى مراجعتين على الأقل."
+
+msgid "The squashed revision does not join the history."
+msgstr "المراجعة المدمجة لا تتصل بسجل المراجعات."
+
+msgctxt "validation"
+msgid "Field required"
+msgstr "هذا الحقل مطلوب"
+
+msgctxt "validation"
+msgid "Extra inputs are not permitted"
+msgstr "لا يُسمح بمدخلات إضافية"
+
+msgctxt "validation"
+msgid "Field is frozen"
+msgstr "لا يمكن تغيير هذا الحقل"
+
+msgctxt "validation"
+msgid "Input should be None"
+msgstr "يجب أن تكون القيمة فارغة (null)"
+
+msgctxt "validation"
+msgid "Input should be greater than {gt}"
+msgstr "يجب أن تكون القيمة أكبر من {gt}"
+
+msgctxt "validation"
+msgid "Input should be greater than or equal to {ge}"
+msgstr "يجب ألا تقل القيمة عن {ge}"
+
+msgctxt "validation"
+msgid "Input should be less than {lt}"
+msgstr "يجب أن تكون القيمة أصغر من {lt}"
+
+msgctxt "validation"
+msgid "Input should be less than or equal to {le}"
+msgstr "يجب ألا تزيد القيمة على {le}"
+
+msgctxt "validation"
+msgid "Input should be a multiple of {multiple_of}"
+msgstr "يجب أن تكون القيمة من مضاعفات {multiple_of}"
+
+msgctxt "validation"
+msgid "Input should be a finite number"
+msgstr "يجب أن تكون القيمة عددًا منتهيًا"
+
+msgctxt "validation"
+msgid ""
+"{field_type} should have at least {min_length} item{expected_plural} "
+"after validation, not {actual_length}"
+msgstr "يجب ألا يقل عدد العناصر عن {min_length}، وعددها {actual_length}"
+
+msgctxt "validation"
+msgid ""
+"{field_type} should have at most {max_length} item{expected_plural} "
+"after validation, not {actual_length}"
+msgstr "يجب ألا يزيد عدد العناصر على {max_length}، وعددها {actual_length}"
+
+msgctxt "validation"
+msgid "Input should be iterable"
+msgstr "يجب أن تكون القيمة تسلسلًا من العناصر"
+
+msgctxt "validation"
+msgid "Input should be a valid string"
+msgstr "يجب أن تكون القيمة نصًا صالحًا"
+
+msgctxt "validation"
+msgid ""
+"Input should be a valid string, unable to parse raw data as a unicode "
+"string"
+msgstr ""
+"يجب أن تكون القيمة نصًا صالحًا؛ تعذّرت قراءة البيانات نصًا بترميز "
+"يونيكود"
+
+msgctxt "validation"
+msgid "String should have at least {min_length} character{expected_plural}"
+msgstr "يجب ألا يقل عدد الأحرف عن {min_length}"
+
+msgctxt "validation"
+msgid "String should have at most {max_length} character{expected_plural}"
+msgstr "يجب ألا يزيد عدد الأحرف على {max_length}"
+
+msgctxt "validation"
+msgid "String should match pattern '{pattern}'"
+msgstr "يجب أن يطابق النص النمط '{pattern}'"
+
+msgctxt "validation"
+msgid "String should contain only ASCII characters"
+msgstr "يجب أن يقتصر النص على محارف ASCII"
+
+msgctxt "validation"
+msgid "Input should be {expected}"
+msgstr "يجب أن تكون القيمة إحدى القيم: {expected}"
+
+msgctxt "validation"
+msgid "Input should be a valid dictionary"
+msgstr "يجب أن تكون القيمة كائنًا صالحًا"
+
+msgctxt "validation"
+msgid "Input should be a valid dictionary or instance of {class_name}"
+msgstr "يجب أن تكون القيمة كائنًا صالحًا"
+
+msgctxt "validation"
+msgid "Input should be a valid dictionary or object to extract fields from"
+msgstr "يجب أن تكون القيمة كائنًا صالحًا"
+
+msgctxt "validation"
+msgid "Input should be a dictionary or an instance of {class_name}"
+msgstr "يجب أن تكون القيمة كائنًا صالحًا"
+
+msgctxt "validation"
+msgid "Keys should be strings"
+msgstr "يجب أن تكون المفاتيح نصوصًا"
+
+msgctxt "validation"
+msgid "Input should be a valid list"
+msgstr "يجب أن تكون القيمة قائمة صالحة"
+
+msgctxt "validation"
+msgid "Input should be a valid tuple"
+msgstr "يجب أن تكون القيمة قائمة صالحة"
+
+msgctxt "validation"
+msgid "Input should be a valid set"
+msgstr "يجب أن تكون القيمة مجموعة صالحة"
+
+msgctxt "validation"
+msgid "Input should be a valid frozenset"
+msgstr "يجب أن تكون القيمة مجموعة صالحة"
+
+msgctxt "validation"
+msgid "Input should be a valid boolean"
+msgstr "يجب أن تكون القيمة منطقية (true أو false)"
+
+msgctxt "validation"
+msgid "Input should be a valid boolean, unable to interpret input"
+msgstr "يجب أن تكون القيمة منطقية (true أو false)؛ تعذّر تفسيرها"
+
+msgctxt "validation"
+msgid "Input should be a valid integer"
+msgstr "يجب أن تكون القيمة عددًا صحيحًا"
+
+msgctxt "validation"
+msgid "Input should be a valid integer, unable to parse string as an integer"
+msgstr "يجب أن تكون القيمة عددًا صحيحًا؛ تعذّرت قراءة النص عددًا صحيحًا"
+
+msgctxt "validation"
+msgid "Unable to parse input string as an integer, exceeded maximum size"
+msgstr "تعذّرت قراءة النص عددًا صحيحًا لأنه يتجاوز الحجم الأقصى"
+
+msgctxt "validation"
+msgid "Input should be a valid integer, got a number with a fractional part"
+msgstr "يجب أن تكون القيمة عددًا صحيحًا، لا عددًا بكسر عشري"
+
+msgctxt "validation"
+msgid "Input should be a valid number"
+msgstr "يجب أن تكون القيمة عددًا صالحًا"
+
+msgctxt "validation"
+msgid "Input should be a valid number, unable to parse string as a number"
+msgstr "يجب أن تكون القيمة عددًا صالحًا؛ تعذّرت قراءة النص عددًا"
+
+msgctxt "validation"
+msgid "Input should be a valid bytes"
+msgstr "يجب أن تكون القيمة بيانات ثنائية صالحة"
+
+msgctxt "validation"
+msgid "Data should have at least {min_length} byte{expected_plural}"
+msgstr "يجب ألا يقل حجم البيانات عن {min_length} بايت"
+
+msgctxt "validation"
+msgid "Data should have at most {max_length} byte{expected_plural}"
+msgstr "يجب ألا يزيد حجم البيانات على {max_length} بايت"
+
+msgctxt "validation"
+msgid "Value error, {error}"
+msgstr "قيمة غير صالحة: {error}"
+
+msgctxt "validation"
+msgid "Assertion failed, {error}"
+msgstr "لم يتحقق الشرط: {error}"
+
+msgctxt "validation"
+msgid "Input should be a valid date"
+msgstr "يجب أن تكون القيمة تاريخًا صالحًا"
+
+msgctxt "validation"
+msgid "Input should be a valid date in the format YYYY-MM-DD, {error}"
+msgstr "يجب أن تكون القيمة تاريخًا صالحًا بالصيغة YYYY-MM-DD"
+
+msgctxt "validation"
+msgid "Input should be a valid date or datetime, {error}"
+msgstr "يجب أن تكون القيمة تاريخًا، أو تاريخًا ووقتًا، صالحًا"
+
+msgctxt "validation"
+msgid ""
+"Datetimes provided to dates should have zero time - e.g. be exact "
+"dates"
+msgstr "يجب أن يكون الوقت صفرًا حين يُقدَّم تاريخ ووقت في مكان تاريخ"
+
+msgctxt "validation"
+msgid "Date should be in the past"
+msgstr "يجب أن يكون التاريخ في الماضي"
+
+msgctxt "validation"
+msgid "Date should be in the future"
+msgstr "يجب أن يكون التاريخ في المستقبل"
+
+msgctxt "validation"
+msgid "Input should be a valid time"
+msgstr "يجب أن تكون القيمة وقتًا صالحًا"
+
+msgctxt "validation"
+msgid "Input should be in a valid time format, {error}"
+msgstr "يجب أن تكون القيمة وقتًا بصيغة صالحة"
+
+msgctxt "validation"
+msgid "Input should be a valid datetime"
+msgstr "يجب أن تكون القيمة تاريخًا ووقتًا صالحين"
+
+msgctxt "validation"
+msgid "Input should be a valid datetime, {error}"
+msgstr "يجب أن تكون القيمة تاريخًا ووقتًا صالحين"
+
+msgctxt "validation"
+msgid "Input should be a valid datetime or date, {error}"
+msgstr "يجب أن تكون القيمة تاريخًا ووقتًا، أو تاريخًا، صالحًا"
+
+msgctxt "validation"
+msgid "Input should be in the past"
+msgstr "يجب أن تكون القيمة في الماضي"
+
+msgctxt "validation"
+msgid "Input should be in the future"
+msgstr "يجب أن تكون القيمة في المستقبل"
+
+msgctxt "validation"
+msgid "Input should not have timezone info"
+msgstr "يجب ألا تتضمن القيمة منطقة زمنية"
+
+msgctxt "validation"
+msgid "Input should have timezone info"
+msgstr "يجب أن تتضمن القيمة منطقة زمنية"
+
+msgctxt "validation"
+msgid "Timezone offset of {tz_expected} required, got {tz_actual}"
+msgstr "يلزم فرق توقيت قدره {tz_expected} ثانية، والمقدَّم {tz_actual}"
+
+msgctxt "validation"
+msgid "Input should be a valid timedelta"
+msgstr "يجب أن تكون القيمة مدة زمنية صالحة"
+
+msgctxt "validation"
+msgid "Input should be a valid timedelta, {error}"
+msgstr "يجب أن تكون القيمة مدة زمنية صالحة"
+
+msgctxt "validation"
+msgid "Input should be a valid UUID, {error}"
+msgstr "يجب أن تكون القيمة معرّف UUID صالحًا"
+
+msgctxt "validation"
+msgid "UUID input should be a string, bytes or UUID object"
+msgstr "يجب أن يكون معرّف UUID نصًا"
+
+msgctxt "validation"
+msgid "UUID version {expected_version} expected"
+msgstr "يجب أن يكون معرّف UUID من الإصدار {expected_version}"
+
+msgctxt "validation"
+msgid "Input should be a valid decimal"
+msgstr "يجب أن تكون القيمة عددًا عشريًا صالحًا"
+
+msgctxt "validation"
+msgid "Decimal input should be an integer, float, string or Decimal object"
+msgstr "يجب أن تكون القيمة العشرية عددًا أو نصًا"
+
+msgctxt "validation"
+msgid ""
+"Decimal input should have no more than {max_digits} "
+"digit{expected_plural} in total"
+msgstr "يجب ألا يزيد عدد خانات القيمة على {max_digits}"
+
+msgctxt "validation"
+msgid ""
+"Decimal input should have no more than {decimal_places} decimal "
+"place{expected_plural}"
+msgstr "يجب ألا يزيد عدد الخانات بعد الفاصلة العشرية على {decimal_places}"
+
+msgctxt "validation"
+msgid ""
+"Decimal input should have no more than {whole_digits} "
+"digit{expected_plural} before the decimal point"
+msgstr "يجب ألا يزيد عدد الخانات قبل الفاصلة العشرية على {whole_digits}"
+
+msgctxt "validation"
+msgid "Input should be a valid URL, {error}"
+msgstr "يجب أن تكون القيمة عنوان URL صالحًا"
+
+msgctxt "validation"
+msgid "URL input should be a string or URL"
+msgstr "يجب أن يكون عنوان URL نصًا"
+
+msgctxt "validation"
+msgid "Input violated strict URL syntax rules, {error}"
+msgstr "تخالف القيمة قواعد صياغة عناوين URL"
+
+msgctxt "validation"
+msgid "URL should have at most {max_length} character{expected_plural}"
+msgstr "يجب ألا يزيد عدد أحرف عنوان URL على {max_length}"
+
+msgctxt "validation"
+msgid "URL scheme should be {expected_schemes}"
+msgstr "يجب أن يكون مخطط عنوان URL أحد المخططات: {expected_schemes}"
+
+msgctxt "validation"
+msgid "Invalid JSON: {error}"
+msgstr "صيغة JSON غير صالحة"
+
+msgctxt "validation"
+msgid "JSON input should be string, bytes or bytearray"
+msgstr "يجب أن تكون مدخلات JSON نصًا أو بيانات ثنائية"
+
+msgctxt "validation"
+msgid ""
+"Input tag '{tag}' found using {discriminator} does not match any of "
+"the expected tags: {expected_tags}"
+msgstr "الوسم '{tag}' لا يطابق أيًا من الوسوم المتوقعة: {expected_tags}"
+
+msgctxt "validation"
+msgid "Unable to extract tag using discriminator {discriminator}"
+msgstr "تعذّر استخراج الوسم باستخدام {discriminator}"

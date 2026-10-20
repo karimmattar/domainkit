@@ -40,12 +40,17 @@ argon2 = ["argon2-cffi (>=25.1.0,<26.0.0)"]
 # JSON Web Tokens for domainkit.contrib.auth (JWTAuthentication), with the
 # RSA, ECDSA, and EdDSA algorithms.
 jwt = ["pyjwt[crypto] (>=2.10.1,<3.0.0)"]
+# Second factors for domainkit.contrib.auth: AES-GCM for the TOTP secrets
+# it stores (auth.mfa).
+mfa = ["cryptography (>=50.0.2,<51.0.0)"]
 # Ledgers for evidence (WORM): immudb's SDK, with its verified operations.
 immudb = ["immudb-py (>=1.5.0,<1.6.0)"]
 # A message broker for the worker: RabbitMQ, through aio-pika.
 rabbitmq = ["aio-pika (>=10.1.0,<11.0.0)"]
 # Shared caches and rate limits: Redis or Valkey, through redis-py.
 redis = ["redis (>=8.1.0,<9.0.0)"]
+# File uploads (domainkit.http.uploads): FastAPI reads multipart forms with it.
+uploads = ["python-multipart (>=0.0.32,<0.1.0)"]
 # The domainkit.testing pytest plugin; Starlette's TestClient needs httpx2.
 testing = ["pytest (>=9.1.1,<10.0.0)", "httpx2 (>=2.13.0,<3.0.0)"]
 # Outgoing webhooks (domainkit.contrib.webhooks) send with httpx2.

@@ -53,6 +53,12 @@ class Credentials:
     """The digest of the opaque token used, which logging out revokes."""
     session: UUID | None = None
     """The login a JWT descends from, whose refresh tokens logging out revokes."""
+    scopes: frozenset[str] | None = None
+    """The permission keys the credentials are limited to; None: no limit."""
+
+    def allows(self, *perms: str) -> bool:
+        """Whether the credentials' scopes cover every one of ``perms``."""
+        return self.scopes is None or self.scopes.issuperset(perms)
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,13 +72,17 @@ class IssuedTokens:
 
 
 class AuthenticationFailed(APIError):
-    """Credentials were presented and do not hold (401)."""
+    """Credentials were presented and do not hold (401, unless a subclass says)."""
 
-    def __init__(self, detail: str) -> None:
-        """Use status 401 and the code ``authentication_failed``."""
-        super().__init__(
-            status.HTTP_401_UNAUTHORIZED, detail, code="authentication_failed"
-        )
+    def __init__(
+        self,
+        detail: str,
+        *,
+        status_code: int = status.HTTP_401_UNAUTHORIZED,
+        code: str = "authentication_failed",
+    ) -> None:
+        """Use status 401 and the code ``authentication_failed`` by default."""
+        super().__init__(status_code, detail, code=code)
 
 
 class RefreshNotSupported(APIError):
@@ -146,7 +156,9 @@ class TokenAuthentication(BaseAuthentication):
             if token.expired():
                 raise AuthenticationFailed("Token expired.")
             user = await active_user(uow, token.user_id)
-        return Credentials(user, scheme="token", token_id=token.id)
+            if await uow.tokens.touch(token):
+                await uow.commit()
+        return Credentials(user, scheme="token", token_id=token.id, scopes=token.scopes)
 
     async def issue(self, uow: AuthUnitOfWork, user: AbstractBaseUser) -> IssuedTokens:
         """One access token for ``AUTH.TOKEN_TTL``."""

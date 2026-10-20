@@ -223,6 +223,7 @@ def test_users_are_listed_by_username_in_pages(api: Api) -> None:
     assert bob["fields"].pop("date_joined")
     assert bob["fields"] == {
         "email": "bob@example.com",
+        "email_verified": False,
         "first_name": "",
         "last_name": "",
     }
@@ -302,7 +303,12 @@ def test_staff_create_users(api: Api) -> None:
         "last_login": None,
         "groups": [],
         "permissions": [],
-        "fields": {"email": "New@example.com", "first_name": "New", "last_name": ""},
+        "fields": {
+            "email": "New@example.com",
+            "email_verified": False,
+            "first_name": "New",
+            "last_name": "",
+        },
     }
     assert login(client, "newbie")["access_token"]
     created = audited("auth.user_created")[-1]
@@ -1063,6 +1069,7 @@ def test_custom_user_fields(swapped: TestClient) -> None:
     assert made["fields"]["phone"] == "+20 100"
     assert set(made["fields"]) == {
         "email",
+        "email_verified",
         "first_name",
         "last_name",
         "date_joined",
@@ -1155,3 +1162,22 @@ def test_pages_read_one_row_more_and_track_what_they_load(auth_project: str) -> 
         event.remove(Engine, "before_cursor_execute", record)
     assert len(limits) == 2
     assert all(3 in each and 4 not in each for each in limits)
+
+
+def test_pages_continue_after_a_name_and_search(auth_project: str) -> None:
+    """``after`` and ``search`` narrow the users; groups page from the start."""
+    for name in ("amy", "bob", "cat"):
+        create_user(name)
+        make_group(name)
+
+    async def scenario() -> tuple[list[str], list[str], bool]:
+        async with AuthUnitOfWork() as uow:
+            users = await uow.users.page(limit=5, after="amy", search="B")
+            groups = await uow.groups.page(limit=2)
+        return (
+            [user.get_username() for user in users.items],
+            [group.name for group in groups.items],
+            groups.has_more,
+        )
+
+    assert run_async(scenario()) == (["bob"], ["amy", "bob"], True)

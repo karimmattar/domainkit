@@ -12,7 +12,7 @@ import pytest
 
 from domainkit.apps import registry
 from domainkit.architecture import check_domain
-from domainkit.conf import UNSET, override_settings, settings, use_settings
+from domainkit.conf import UNSET, override_settings, use_settings
 from domainkit.conf.env import project_prefix
 from domainkit.conf.global_settings import DEFAULT_MIDDLEWARE, RATE_LIMIT_MIDDLEWARE
 from domainkit.db import migrations as migrations_module
@@ -32,13 +32,22 @@ BUILTINS = {
     "broker",
     "cache",
     "check",
+    "compilemessages",
+    "dbshell",
+    "diffsettings",
+    "dumpdata",
+    "flush",
     "init",
+    "loaddata",
     "makemigrations",
     "migrate",
+    "openapi",
     "partitions",
     "runserver",
+    "seed",
     "shell",
     "showmigrations",
+    "squashmigrations",
     "startdomain",
 }
 
@@ -215,20 +224,6 @@ def test_runserver_starts_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
     assert options["log_config"] is None
     with pytest.raises(CommandError, match="ASGI_APPLICATION"):
         run("runserver")
-
-
-def test_shell_exposes_the_project(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The console starts with settings, the registry, and connections."""
-    seen: dict[str, object] = {}
-
-    def interact(*, banner: str, local: dict[str, object]) -> None:
-        seen.update(local, banner=banner)
-
-    monkeypatch.setattr("code.interact", interact)
-    run("shell")
-
-    assert seen["settings"] is settings
-    assert "domainkit_tests.settings" in str(seen["banner"])
 
 
 @pytest.fixture

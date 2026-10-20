@@ -26,6 +26,7 @@ from domainkit.conf.global_settings import (
     LedgerConfig,
     Settings,
     ShardConfig,
+    StorageConfig,
 )
 from domainkit.conf.lazy import (
     SETTINGS_MODULE_VARIABLE,
@@ -57,6 +58,7 @@ __all__ = [
     "LedgerConfig",
     "Settings",
     "ShardConfig",
+    "StorageConfig",
     "configure",
     "describe_errors",
     "load_settings",

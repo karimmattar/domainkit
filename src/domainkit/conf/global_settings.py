@@ -6,10 +6,12 @@ the framework does not declare must belong to an installed domain (see
 so a misspelled setting fails at startup instead of being silently ignored.
 """
 
-from collections.abc import Callable, Iterator
+import re
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any, Final, Literal, Self
 from urllib.parse import SplitResult, parse_qs, urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import (
     BaseModel,
@@ -24,6 +26,8 @@ from pydantic import (
 
 from domainkit.conf.env import project_root
 from domainkit.utils.rates import parse_rate
+from domainkit.utils.redis_urls import REDIS_SCHEMES as REDIS_SCHEMES
+from domainkit.utils.redis_urls import SENTINEL_SCHEMES, parse_redis_url
 
 DEFAULT_DB_ALIAS: Final = "default"
 HIDDEN: Final = "**********"
@@ -33,7 +37,17 @@ Environment = Literal["local", "test", "staging", "production"]
 DEPLOYED_ENVIRONMENTS: Final = frozenset({"staging", "production"})
 """Environments held to the deployment checks in ``Settings``."""
 
+SECRET_KEY_MIN_LENGTH: Final = 50
+SECRET_KEY_MIN_CHARACTERS: Final = 5
+"""Different characters a deployed ``SECRET_KEY`` needs, at the least."""
+DEVELOPMENT_KEY_PREFIXES: Final = ("domainkit-insecure-", "django-insecure-")
+"""Start keys made for development; staging and production refuse them."""
+LANGUAGE_PATTERN: Final = r"^[a-z]{2,3}(-[a-z0-9]{2,8})*$"
+"""A language code in settings: lower case, as ``ar`` or ``pt-br``."""
+
 RATE_LIMIT_MIDDLEWARE: Final = "domainkit.http.ratelimit.RateLimitMiddleware"
+DEBUG_TOOLBAR_MIDDLEWARE: Final = "domainkit.debug.DebugToolbarMiddleware"
+"""Development middleware: SQL per request, N+1 warnings, profiles."""
 DEFAULT_MIDDLEWARE: Final = (
     "domainkit.http.middleware.ProxyHeadersMiddleware",
     "domainkit.http.middleware.SecurityHeadersMiddleware",
@@ -98,6 +112,8 @@ class DatabaseConfig(BaseModel):
     POOL_PRE_PING: bool = True
     CONNECT_ARGS: dict[str, Any] = Field(default_factory=dict)
     """Extra driver arguments; they may not replace TLS or the timeouts above."""
+    REPLICAS: tuple[str, ...] = ()
+    """Aliases of read replicas of this database; read-only work goes there."""
     TEST_NAME: str | None = None
     """The PostgreSQL database the tests create (``test_<name>`` when None)."""
 
@@ -228,9 +244,8 @@ class ShardConfig(BaseModel):
 
 
 DEFAULT_CACHE_ALIAS: Final = "default"
-CACHE_SCHEMES: Final = frozenset({"memory", "dummy", "redis", "rediss"})
-"""URL schemes of caches (``CACHES``)."""
-REDIS_SCHEMES: Final = frozenset({"redis", "rediss"})
+CACHE_SCHEMES: Final = frozenset({"memory", "dummy"}) | REDIS_SCHEMES
+"""URL schemes of caches (``CACHES``): Redis's include Sentinel and Cluster."""
 LOCAL_HOSTS: Final = frozenset({"localhost", "127.0.0.1", "::1"})
 _UNVERIFIED_TLS: Final = {
     "ssl_cert_reqs": frozenset({"none", "optional"}),
@@ -249,7 +264,11 @@ class CacheConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     URL: SecretStr = SecretStr("memory://")
-    """``memory://`` (this process), ``redis://``/``rediss://`` (Redis, Valkey), ``dummy://``."""
+    """``memory://`` (this process), ``redis://``/``rediss://`` (Redis, Valkey), ``dummy://``.
+
+    ``redis+sentinel://`` and ``redis+cluster://`` (``rediss`` for TLS) name a
+    Sentinel group or a Cluster by several addresses.
+    """
     TTL: float | None = Field(default=300.0, gt=0)
     """Seconds an entry lives unless a call says otherwise; None keeps entries."""
     KEY_PREFIX: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]{1,64}$")
@@ -277,40 +296,51 @@ class CacheConfig(BaseModel):
     TLS_KEY: Path | None = None
     READINESS: bool = False
     """Fail ``/ready`` while this cache is unreachable (off: the service copes)."""
+    SENTINEL_PASSWORD: SecretStr | None = None
+    """``redis+sentinel://``: the Sentinels' own password, if they ask for one."""
 
     @model_validator(mode="after")
     def check_url(self) -> Self:
         """Accept cache URLs; Redis needs a host and a key prefix of its own."""
-        parts = urlsplit(self.URL.get_secret_value())
-        if parts.scheme not in CACHE_SCHEMES:
+        scheme = self.scheme
+        if scheme not in CACHE_SCHEMES:
             raise ValueError(
-                "a cache URL starts with memory://, redis://, rediss://, or dummy://"
+                "a cache URL starts with memory://, redis://, rediss://, "
+                "redis+sentinel://, redis+cluster://, or dummy://"
             )
-        _check_port(parts)
-        if parts.scheme in REDIS_SCHEMES:
-            if not parts.hostname:
-                raise ValueError("a Redis URL needs a host: redis://host:6379/0")
+        if scheme in REDIS_SCHEMES:
+            parse_redis_url(self.URL.get_secret_value())
             if self.KEY_PREFIX is None:
                 raise ValueError(
                     "Redis caches need a KEY_PREFIX, unique among the services "
                     "that share the server"
                 )
+        else:
+            _check_port(urlsplit(self.URL.get_secret_value()))
         tls = (self.TLS_CA, self.TLS_CERT, self.TLS_KEY)
-        if parts.scheme != "rediss" and any(tls):
+        if not scheme.startswith("rediss") and any(tls):
             raise ValueError("TLS_CA, TLS_CERT and TLS_KEY need a rediss:// URL")
         if (self.TLS_CERT is None) != (self.TLS_KEY is None):
             raise ValueError("TLS_CERT and TLS_KEY go together")
+        if self.SENTINEL_PASSWORD is not None and scheme not in SENTINEL_SCHEMES:
+            raise ValueError("SENTINEL_PASSWORD needs a redis+sentinel:// URL")
         return self
 
     @property
     def scheme(self) -> str:
-        """``memory``, ``dummy``, ``redis``, or ``rediss``."""
-        return urlsplit(self.URL.get_secret_value()).scheme
+        """``memory``, ``dummy``, ``redis``, ``rediss``, or a Sentinel or Cluster's."""
+        return self.URL.get_secret_value().partition("://")[0].lower()
 
     def is_network(self) -> bool:
         """Report whether this cache is a Redis server on another host."""
-        host = urlsplit(self.URL.get_secret_value()).hostname
-        return self.scheme in REDIS_SCHEMES and host not in LOCAL_HOSTS
+        if self.scheme not in REDIS_SCHEMES:
+            return False
+        hosts = parse_redis_url(self.URL.get_secret_value()).hosts
+        return any(host not in LOCAL_HOSTS for host, _ in hosts)
+
+    def uses_tls(self) -> bool:
+        """Report whether connections to this Redis use TLS (a ``rediss`` scheme)."""
+        return self.scheme.startswith("rediss")
 
     def verifies_tls(self) -> bool:
         """Report whether the URL leaves redis-py's certificate checks on."""
@@ -323,8 +353,11 @@ class CacheConfig(BaseModel):
 
     def has_credentials(self) -> bool:
         """Report whether the cache authenticates: a password or a certificate."""
-        parts = urlsplit(self.URL.get_secret_value())
-        return bool(parts.password) or self.TLS_CERT is not None
+        if self.TLS_CERT is not None:
+            return True
+        if self.scheme not in REDIS_SCHEMES:
+            return False
+        return bool(parse_redis_url(self.URL.get_secret_value()).password)
 
 
 BROKER_SCHEMES: Final = frozenset({"amqp", "amqps", "memory"})
@@ -401,6 +434,38 @@ class BrokerConfig(BaseModel):
         return user not in {"", "guest"}
 
 
+MEMORY_STORAGE: Final = "domainkit.storage.MemoryStorage"
+
+
+class StorageConfig(BaseModel):
+    """One ``STORAGES`` entry: a ``Storage`` class and its arguments (Django's)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    BACKEND: str = "domainkit.storage.FileSystemStorage"
+    """Dotted path to a ``domainkit.storage.Storage`` class."""
+    OPTIONS: dict[str, Any] = Field(default_factory=dict)
+    """Keyword arguments of the class, such as ``{"location": "/srv/files"}``."""
+
+
+class DebugToolbarConfig(BaseModel):
+    """``DEBUG_TOOLBAR``: what ``DebugToolbarMiddleware`` adds while ``DEBUG``."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    REPEATED_QUERIES: int = Field(default=5, ge=2)
+    """A statement run this often in one request is logged as a likely N+1."""
+    HEADERS: bool = False
+    """Add ``X-Debug-Queries``, ``-Query-Time``, and ``-Repeated-Queries``."""
+    PROFILE_DIR: Path | None = None
+    """Where requests sent with ``X-Debug-Profile: 1`` leave a cProfile file;
+    None turns profiling off."""
+
+
+ABSOLUTE_URI: Final = r"^[A-Za-z][A-Za-z0-9+.-]*:[^\s]+$"
+"""An absolute URI without whitespace (``https://...``, ``urn:...``)."""
+
+
 class Settings(BaseModel):
     """Validated, read-only settings; extra names are checked at ``setup()``."""
 
@@ -414,6 +479,11 @@ class Settings(BaseModel):
     DEBUG: bool = False
     PROJECT_NAME: str = "API"
     VERSION: str = "0.1.0"
+
+    SECRET_KEY: SecretStr | None = Field(default=None, min_length=1)
+    """Signs what the service hands out (``domainkit.signing``); hidden in reprs."""
+    SECRET_KEY_FALLBACKS: tuple[SecretStr, ...] = ()
+    """Earlier keys: what they signed still verifies, while ``SECRET_KEY`` signs."""
 
     INSTALLED_DOMAINS: tuple[str, ...] = ()
     """Domain packages, started in order and stopped in reverse order."""
@@ -440,6 +510,8 @@ class Settings(BaseModel):
     """Caches by alias; ``default`` is required (``memory://`` unless set)."""
     BROKERS: dict[str, BrokerConfig] = Field(default_factory=dict)
     """Message brokers by alias; ``MESSAGING.BROKER`` names the worker's."""
+    STORAGES: dict[str, StorageConfig] = Field(default_factory=dict)
+    """File storages by alias (``domainkit.storage``); none unless set."""
     LOGGING: dict[str, Any] = Field(default_factory=_minimal_logging)
     """``logging.config.dictConfig`` mapping applied by ``setup()``."""
 
@@ -447,6 +519,14 @@ class Settings(BaseModel):
     """Accepted ``Host`` header values; ``*.example.com`` matches subdomains."""
     API_DOCS: bool = True
     """Serve ``/docs``, ``/redoc``, and ``/openapi.json``."""
+    OPENAPI_OPERATION_IDS: Literal["fastapi", "route_name"] = "fastapi"
+    """Operation ids: FastAPI's (name, path, and method), or the route's name."""
+    ERROR_FORMAT: Literal["domainkit", "problem+json"] = "domainkit"
+    """Error bodies: ``{"detail", "code", ...}``, or RFC 9457 problem details."""
+    ERROR_TYPE_BASE_URL: str | None = Field(default=None, pattern=ABSOLUTE_URI)
+    """Problem details: each code's ``type`` is this URL plus the code."""
+    DEBUG_TOOLBAR: DebugToolbarConfig = Field(default_factory=DebugToolbarConfig)
+    """Options of ``DebugToolbarMiddleware`` (development only)."""
     MAX_REQUEST_BODY_SIZE: int = Field(default=1_048_576, ge=1)
     """Largest accepted request body in bytes; larger requests get 413."""
     READINESS_TIMEOUT: float = Field(default=5.0, gt=0)
@@ -490,6 +570,15 @@ class Settings(BaseModel):
     )
     CORS_ALLOW_CREDENTIALS: bool = False
 
+    LANGUAGE_CODE: str = Field(default="en", pattern=LANGUAGE_PATTERN)
+    """The language of responses when the caller asks for none of ``LANGUAGES``."""
+    LANGUAGES: tuple[tuple[str, str], ...] = (("en", "English"), ("ar", "Arabic"))
+    """``(code, name)`` of each language responses may be in (``LocaleMiddleware``)."""
+    LOCALE_PATHS: tuple[Path, ...] = ()
+    """Directories of ``<locale>/LC_MESSAGES/messages.mo``, ahead of the domains'."""
+    TIME_ZONE: str = "UTC"
+    """The zone dates are shown in (``localtime``); they are stored in UTC."""
+
     def __repr_args__(self) -> Iterator[tuple[str | None, Any]]:
         """Show declared settings; domain settings, which may hold keys, hidden."""
         domain = self.model_extra or {}
@@ -519,6 +608,7 @@ class Settings(BaseModel):
             raise ValueError("CORS_ALLOW_CREDENTIALS cannot be used with origin '*'")
         if self.RATE_LIMIT is not None:
             parse_rate(self.RATE_LIMIT)
+        self._check_i18n()
         if self.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
             self._check_deployment()
         return self
@@ -543,13 +633,63 @@ class Settings(BaseModel):
                         f"{alias!r} is in shard groups {sharded[alias]!r} and {group!r}"
                     )
                 sharded[alias] = group
+        replicas = self._check_replicas(sharded)
         for label, target in self.DATABASE_ROUTING.items():
-            if target in self.SHARDS or (target in sql and target not in sharded):
+            if target in self.SHARDS or (
+                target in sql and target not in sharded and target not in replicas
+            ):
                 continue
             raise ValueError(
                 f"DATABASE_ROUTING[{label!r}] = {target!r} must name a shard group "
-                "or a SQL alias outside the shard groups"
+                "or a SQL alias outside the shard groups that is not a replica"
             )
+
+    def _check_i18n(self) -> None:
+        """Languages are codes like ``pt-br``, listed once; the zone exists."""
+        codes = [code for code, _ in self.LANGUAGES]
+        if not codes:
+            raise ValueError("LANGUAGES must list at least one language")
+        if bad := [code for code in codes if not re.fullmatch(LANGUAGE_PATTERN, code)]:
+            raise ValueError(
+                f"LANGUAGES codes are lower case, as 'ar' or 'pt-br', not {bad}"
+            )
+        if len(set(codes)) != len(codes):
+            raise ValueError("LANGUAGES lists a language twice")
+        if self.LANGUAGE_CODE not in codes:
+            raise ValueError(
+                f"LANGUAGE_CODE {self.LANGUAGE_CODE!r} is not in LANGUAGES"
+            )
+        try:
+            ZoneInfo(self.TIME_ZONE)
+        except (ValueError, ZoneInfoNotFoundError):
+            raise ValueError(
+                f"TIME_ZONE {self.TIME_ZONE!r} is not a time zone, such as "
+                "'Africa/Cairo' or 'UTC' (install tzdata if the system has none)"
+            ) from None
+
+    def _check_replicas(self, sharded: Mapping[str, str]) -> dict[str, str]:
+        """Each replica is another alias, of one primary, and nothing more.
+
+        A replica is not ``default``, in no shard group, and has no replicas
+        of its own, so nothing ever writes to or migrates it.
+        """
+        replicas: dict[str, str] = {}
+        for primary, config in self.DATABASES.items():
+            for alias in config.REPLICAS:
+                if alias not in self.DATABASES or alias in {primary, DEFAULT_DB_ALIAS}:
+                    raise ValueError(
+                        f"DATABASES[{primary!r}].REPLICAS: {alias!r} must be "
+                        f"another SQL alias in DATABASES, not {DEFAULT_DB_ALIAS!r}"
+                    )
+                if alias in replicas or alias in sharded:
+                    raise ValueError(
+                        f"{alias!r} is a replica of {primary!r}, so it cannot also "
+                        "be another's replica or in a shard group"
+                    )
+                if self.DATABASES[alias].REPLICAS:
+                    raise ValueError(f"replica {alias!r} cannot have REPLICAS")
+                replicas[alias] = primary
+        return replicas
 
     def deployment_warnings(self) -> list[str]:
         """Weak but valid choices in staging and production; ``check`` lists them.
@@ -583,11 +723,42 @@ class Settings(BaseModel):
             )
         return warnings
 
+    def _check_secret_keys(self, where: str) -> None:
+        """Refuse a missing, short, simple, or development ``SECRET_KEY``.
+
+        Fallbacks are held to the same rules: they still verify signatures.
+        The errors never quote a key.
+        """
+        if self.SECRET_KEY is None:
+            raise ValueError(
+                f"SECRET_KEY is required {where}: it signs reset links, cookies, "
+                "and other values the service hands out"
+            )
+        keys = [("SECRET_KEY", self.SECRET_KEY)]
+        keys += [("SECRET_KEY_FALLBACKS", key) for key in self.SECRET_KEY_FALLBACKS]
+        for name, key in keys:
+            value = key.get_secret_value()
+            if value.startswith(DEVELOPMENT_KEY_PREFIXES):
+                raise ValueError(f"{name} holds a development key {where}")
+            if (
+                len(value) < SECRET_KEY_MIN_LENGTH
+                or len(set(value)) < SECRET_KEY_MIN_CHARACTERS
+            ):
+                raise ValueError(
+                    f"{name} must be random, with at least {SECRET_KEY_MIN_LENGTH} "
+                    f"characters, {where}"
+                )
+
     def _check_deployment(self) -> None:
         """Enforce the security baseline for staging and production."""
         where = f"in {self.ENVIRONMENT}"
         if self.DEBUG:
             raise ValueError(f"DEBUG must be False {where}")
+        if DEBUG_TOOLBAR_MIDDLEWARE in self.MIDDLEWARE:
+            raise ValueError(
+                f"{DEBUG_TOOLBAR_MIDDLEWARE} is for development; remove it from "
+                f"MIDDLEWARE {where}"
+            )
         if "*" in self.ALLOWED_HOSTS:
             raise ValueError(f"ALLOWED_HOSTS must list real host names {where}")
         if any(network.prefixlen == 0 for network in self.TRUSTED_PROXIES):
@@ -623,7 +794,7 @@ class Settings(BaseModel):
                 raise ValueError(f"{message} {where} for LEDGERS {aliases}")
         cache_rules: dict[str, Callable[[CacheConfig], bool]] = {
             "network caches need rediss:// (TLS)": lambda cache: (
-                cache.is_network() and cache.scheme != "rediss"
+                cache.is_network() and not cache.uses_tls()
             ),
             "caches must verify the server certificate": lambda cache: (
                 not cache.verifies_tls()
@@ -654,3 +825,14 @@ class Settings(BaseModel):
             brokers = self.BROKERS.items()
             if aliases := sorted(a for a, b in brokers if violates_broker(b)):
                 raise ValueError(f"{message} {where} for BROKERS {aliases}")
+        if aliases := sorted(
+            alias
+            for alias, storage in self.STORAGES.items()
+            if storage.BACKEND == MEMORY_STORAGE
+        ):
+            raise ValueError(
+                f"memory storages keep files in one process, until it ends; use "
+                f"FileSystemStorage or a storage of your own {where} for "
+                f"STORAGES {aliases}"
+            )
+        self._check_secret_keys(where)

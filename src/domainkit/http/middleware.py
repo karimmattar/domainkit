@@ -25,7 +25,6 @@ from typing import Final
 from uuid import uuid4
 
 from fastapi import status
-from sqlalchemy.exc import DBAPIError
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.middleware import cors
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -36,7 +35,7 @@ from domainkit.http.errors import (
     APIError,
     database_refusal,
     error_response,
-    sqlstate,
+    refusal_reason,
 )
 from domainkit.log import ACCESS_LOGGER, SECURITY_LOGGER
 from domainkit.reporting import report_error
@@ -59,6 +58,9 @@ access_logger = logging.getLogger(ACCESS_LOGGER)
 security_logger = logging.getLogger(SECURITY_LOGGER)
 logger = logging.getLogger(__name__)
 
+PEER: Final = "domainkit.peer"
+"""Scope key: the socket peer (a trusted proxy) whose headers replaced ``client``."""
+
 TRY_AGAIN_LATER: Final = 1013
 """WebSocket close code: the server is busy."""
 INVALID_DATA: Final = 1007
@@ -77,8 +79,10 @@ class ProxyHeadersMiddleware:
     line of a header counts (some proxies add a line instead of extending
     one), in order. The scheme is the ``X-Forwarded-Proto`` value at the
     client's place, counted from the right as its address was, or the last
-    value when there are fewer. Without trusted proxies this middleware does
-    nothing.
+    value when there are fewer. The proxy's own address stays in
+    ``scope["domainkit.peer"]`` (``PEER``), for what only a trusted proxy may
+    say (a client certificate it checked). Without trusted proxies this
+    middleware does nothing.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -96,6 +100,7 @@ class ProxyHeadersMiddleware:
             and self.trusted(client[0])
         ):
             scope = dict(scope)
+            scope[PEER] = client
             headers = Headers(scope=scope)
             place = 1  # From the right: the hop the scheme describes.
             if found := self.client_hop(_values(headers, "x-forwarded-for")):
@@ -301,9 +306,7 @@ class RequestContextMiddleware:
                         context.method,
                         context.path,
                         refusal.code,
-                        f"SQLSTATE {sqlstate(exc)}"
-                        if isinstance(exc, DBAPIError)
-                        else type(exc).__name__,
+                        refusal_reason(exc),
                     )
                     await self._refuse(refusal, scope, receive, send_with_id)
                     return
@@ -338,7 +341,10 @@ class RequestContextMiddleware:
             await send({"type": "websocket.close", "code": code})
             return
         response = error_response(
-            refusal.status_code, str(refusal.detail), code=refusal.code
+            refusal.status_code,
+            str(refusal.detail),
+            code=refusal.code,
+            errors=refusal.errors,
         )
         response.headers.update(refusal.headers or {})
         await response(scope, receive, send)

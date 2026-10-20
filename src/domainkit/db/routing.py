@@ -8,10 +8,15 @@ are always in the same place.
 Inside a shard group a shard key picks one database: it hashes to one of
 ``BUCKETS`` buckets (BLAKE2b, so every process agrees), and each bucket
 belongs to one alias. ``PINNED`` keys skip the hash. See ADRs 0008 and 0009.
+
+An alias may name read replicas (``REPLICAS``): read-only units of work
+take turns on them, and everything else uses the alias itself, the primary.
+A replica is never a target: nothing writes to it or migrates it (ADR 0024).
 """
 
 import asyncio
 import hashlib
+import itertools
 import uuid
 from bisect import bisect_right
 from collections.abc import Awaitable, Callable, Iterable
@@ -83,6 +88,9 @@ class ShardMap:
 class DatabaseRouter:
     """Answer where data lives, from ``DATABASES``, ``SHARDS``, and routing."""
 
+    _turns: Final = itertools.count()
+    """Read-only units of work take turns on an alias's replicas."""
+
     def target_for(self, label: str) -> str:
         """The target holding the tables and sessions of domain ``label``."""
         return settings.DATABASE_ROUTING.get(label, DEFAULT_DB_ALIAS)
@@ -113,14 +121,36 @@ class DatabaseRouter:
             raise ImproperlyConfigured(f"SHARDS has no {group!r} group.") from None
 
     def aliases_of(self, target: str) -> tuple[str, ...]:
-        """The SQL aliases behind ``target``: the group's, or the alias itself."""
+        """The SQL aliases behind ``target``: the group's, or the alias itself.
+
+        A replica is no target: what is written or migrated goes to its primary.
+        """
         if self.is_shard_group(target):
             return self.shards(target).aliases
         if target not in settings.DATABASES:
             raise ImproperlyConfigured(
                 f"{target!r} is neither a SQL alias in DATABASES nor a shard group."
             )
+        if (primary := self.primary_of(target)) is not None:
+            raise ImproperlyConfigured(
+                f"{target!r} is a read replica of {primary!r}; use {primary!r}, "
+                "with readonly=True to read from the replica."
+            )
         return (target,)
+
+    def primary_of(self, alias: str) -> str | None:
+        """The alias whose ``REPLICAS`` list ``alias``; None for a primary."""
+        for primary, config in settings.DATABASES.items():
+            if alias in config.REPLICAS:
+                return primary
+        return None
+
+    def read_alias(self, alias: str) -> str:
+        """Where read-only work on ``alias`` goes: its replicas in turn, or itself."""
+        replicas = settings.DATABASES[alias].REPLICAS
+        if not replicas:
+            return alias
+        return replicas[next(self._turns) % len(replicas)]
 
     def target_of_alias(self, alias: str) -> str:
         """The target an alias belongs to: its shard group, or itself."""
