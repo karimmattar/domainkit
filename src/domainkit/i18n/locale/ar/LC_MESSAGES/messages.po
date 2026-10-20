@@ -167,6 +167,18 @@ msgid "No file has that name."
 msgstr "لا يوجد ملف بهذا الاسم."
 
 #. Pydantic's validation messages, by their templates; the error's context fills the {names}
+msgid "This was changed since you read it; read it again before changing it."
+msgstr "تغيّر هذا منذ قرأته؛ اقرأه مرة أخرى قبل أن تغيّره."
+
+msgid "Send If-Match with the ETag of the version you are changing."
+msgstr "أرسل الترويسة If-Match مع قيمة ETag للنسخة التي تغيّرها."
+
+msgid "Some of these fields cannot be changed."
+msgstr "بعض هذه الحقول لا يمكن تغييرها."
+
+msgid "You do not have permission to change some of these fields."
+msgstr "ليست لديك صلاحية تغيير بعض هذه الحقول."
+
 msgctxt "validation"
 msgid "Field required"
 msgstr "هذا الحقل مطلوب"

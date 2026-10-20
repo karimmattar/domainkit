@@ -307,6 +307,9 @@ are in the request's language; `code` and `type` never change
 | request validation | 422 | `validation_error` |
 | a cursor this API did not issue for the request's ordering, or one that was altered | 422 | `invalid_cursor` ([queries.md](queries.md#pages)) |
 | a filter a `FilterSet` does not offer, given twice, or over its bounds | 422 | `invalid_filter` ([queries.md](queries.md#filters-over-http)) |
+| `PreconditionFailed`: a write whose `If-Match` names another version than the stored one | 412 | `precondition_failed` ([resources.md](resources.md#versions-and-conditional-requests)) |
+| a write without `If-Match` to a resource that requires it | 428 | `precondition_required` |
+| a partial change of a field the caller may not change (`FieldNotEditable`) | 403 | `field_not_editable` ([resources.md](resources.md#field-policies)) |
 | no pooled connection within `POOL_TIMEOUT`, or a statement cancelled by `STATEMENT_TIMEOUT` or `LOCK_TIMEOUT`, or lost to a deadlock or a serialization failure | 503 | `database_busy`, with `Retry-After: 1`; logged as a warning, not reported |
 | a value the database refuses (SQLSTATE class 22: a NUL character, text too long, a number out of range) | 422 | `invalid_value`; logged as a warning, not reported |
 | unexpected exception | 500 | `internal_error`; logged and sent to `ERROR_REPORTERS` |
