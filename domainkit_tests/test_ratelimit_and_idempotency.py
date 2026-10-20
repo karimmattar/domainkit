@@ -117,15 +117,41 @@ def test_memory_backend_forgets_idle_callers() -> None:
     clock[0] = 2
     hit("d", 1, 1)
     # "a" is full again and goes; "b" is not, so "c" waits behind it.
-    assert list(backend._arrival) == ["b", "c", "d"]
+    assert list(backend._callers) == ["b", "c", "d"]
     assert hit("b", 1, 100).allowed is False
     clock[0] = 200
     hit("e", 1, 1)
-    assert list(backend._arrival) == ["e"]
+    assert list(backend._callers) == ["e"]
     clock[0] = 201
     hit("f", 1, 1)
     # "e" refilled at this very moment: forgotten too.
-    assert list(backend._arrival) == ["f"]
+    assert list(backend._callers) == ["f"]
+
+
+def test_memory_backend_refills_callers_it_still_remembers() -> None:
+    """A caller kept behind a busier one still finds its quota full again."""
+    clock = [0.0]
+    backend = MemoryBackend(clock=lambda: clock[0])
+
+    asyncio.run(backend.hit("busy", 1, 100))
+    asyncio.run(backend.hit("k", 1, 1))
+    clock[0] = 5
+    again = asyncio.run(backend.hit("k", 1, 1))
+
+    assert list(backend._callers) == ["busy", "k"]
+    assert again == Decision(allowed=True, remaining=0, reset_after=1, retry_after=0)
+
+
+def test_memory_backend_carries_what_a_caller_owes_across_a_rate_change() -> None:
+    """A key counted at a new rate owes the same seconds it owed at the old one."""
+    clock = [0.0]
+    backend = MemoryBackend(clock=lambda: clock[0])
+
+    asyncio.run(backend.hit("k", 2, 60))  # 30 seconds owed.
+    clock[0] = 10
+    faster = asyncio.run(backend.hit("k", 6, 60))  # 20 owed: two intervals.
+
+    assert faster == Decision(allowed=True, remaining=3, reset_after=30, retry_after=0)
 
 
 def test_memory_backend_keeps_at_most_max_keys_callers() -> None:
@@ -143,10 +169,10 @@ def test_memory_backend_keeps_at_most_max_keys_callers() -> None:
         True,
     ]
     # The refusal counted as seeing "a", so "b" was the one forgotten.
-    assert list(backend._arrival) == ["a", "c"]
+    assert list(backend._callers) == ["a", "c"]
     assert hit("a").allowed is False
     assert hit("b").allowed is True
-    assert list(backend._arrival) == ["a", "b"]
+    assert list(backend._callers) == ["a", "b"]
 
 
 def test_ipv6_clients_are_counted_per_network() -> None:

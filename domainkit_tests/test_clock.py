@@ -1,6 +1,7 @@
 """``domainkit.clock``: the one clock the framework reads, and freezing it."""
 
 import asyncio
+import math
 import time
 from collections.abc import Callable
 from contextvars import copy_context
@@ -289,6 +290,33 @@ async def test_a_memory_rate_window_follows_a_frozen_clock() -> None:
         assert not (await backend.hit("k", 2, 60)).allowed
         frozen_clock.tick(30)
         assert (await backend.hit("k", 2, 60)).allowed
+
+
+@pytest.mark.parametrize("reading", [4056.123456789, 4086.123456789, 8187.0000001])
+@pytest.mark.anyio
+async def test_a_frozen_rate_window_is_exact_wherever_the_real_count_stands(
+    monkeypatch: pytest.MonkeyPatch, reading: float
+) -> None:
+    """The frozen count starts on a whole second; ticks of seconds add exactly.
+
+    From these readings, adding 30 or 60 seconds crosses a power of two and
+    rounds: the second request was refused, or the window stayed shut after
+    the tick.
+    """
+    monkeypatch.setattr(clock, "time", SimpleNamespace(monotonic=lambda: reading))
+    backend = MemoryBackend()
+    with freeze_time(NEW_YEAR) as frozen_clock:
+        start = clock.monotonic()
+        assert [(await backend.hit("k", 2, 60)).allowed for _ in range(3)] == [
+            True,
+            True,
+            False,
+        ]
+        frozen_clock.tick(30)
+        assert (await backend.hit("k", 2, 60)).allowed
+        frozen_clock.tick(30)
+        assert clock.monotonic() - start == 60
+    assert start == math.ceil(reading)
 
 
 def test_tokens_and_the_audit_trail_follow_a_frozen_clock(api: Api) -> None:

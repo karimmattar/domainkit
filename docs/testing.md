@@ -245,8 +245,10 @@ def test_tokens_expire(freeze_time: FreezeTime, client_for: ClientFor) -> None:
   `server_default`, and shared rate limits counted on the Redis server are
   never frozen. Do not compare them with the frozen clock.
 - `monotonic()` stands still with a frozen clock and moves forward with it,
-  never back. Intervals measured across the end of a freeze are
-  meaningless.
+  never back. Its frozen count starts at a whole second, so ticks of whole
+  seconds add exactly, and a rate limit counted in this process lets
+  exactly its limit through at one frozen moment. Intervals measured across
+  the start or end of a freeze are meaningless.
 
 ## Counting queries
 

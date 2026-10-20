@@ -75,6 +75,18 @@ class Backend(Protocol):
         ...
 
 
+@dataclass(frozen=True, slots=True)
+class _Caller:
+    """A caller's GCRA state: requests not yet refilled, as of a reading."""
+
+    seen: float
+    """The clock when the caller was last let through."""
+    owed: float
+    """Requests not yet refilled then, in emission intervals."""
+    interval: float
+    """The emission interval (``period / limit``) they were counted in."""
+
+
 class MemoryBackend:
     """GCRA state in this process, for at most ``max_keys`` callers.
 
@@ -91,45 +103,52 @@ class MemoryBackend:
         """Keep at most ``max_keys`` callers; ``clock`` reads seconds."""
         self.max_keys = max_keys
         self.clock = clock
-        self._arrival: OrderedDict[str, float] = OrderedDict()
+        self._callers: OrderedDict[str, _Caller] = OrderedDict()
 
     async def hit(self, key: str, limit: int, period: float) -> Decision:
-        """Apply GCRA: allow if the theoretical arrival time is within the burst."""
+        """Apply GCRA: allow if the requests owed stay within the burst."""
         now = self.clock()
         self._forget_idle(now)
         interval = period / limit
-        tolerance = period - interval
-        arrival = max(self._arrival.get(key, now), now)
-        # Compare the time already spent, not now with now + interval - period:
-        # that sum rounds up whenever now + interval crosses a power of two,
-        # which refused new callers at a limit of 1.
-        debt = arrival - now
-        if debt > tolerance:
-            self._arrival.move_to_end(key)
+        burst = limit - 1
+        # Count what the caller owes in requests, not in seconds of the
+        # clock: requests at one reading (a frozen clock) then add whole
+        # numbers, and exactly ``limit`` pass. Seconds added to the reading
+        # round with its magnitude and with ``period / limit``, which let
+        # 8 of 9 a second through, or 1 of 2 near a power of two.
+        owed = 0.0
+        caller = self._callers.get(key)
+        if caller is not None:
+            owed = caller.owed
+            if caller.interval != interval:  # The key's rate changed.
+                owed = owed * caller.interval / interval
+            owed = max(owed - (now - caller.seen) / interval, 0.0)
+        if owed > burst:
+            self._callers.move_to_end(key)
             return Decision(
                 allowed=False,
                 remaining=0,
-                reset_after=debt,
-                retry_after=debt - tolerance,
+                reset_after=owed * interval,
+                retry_after=(owed - burst) * interval,
             )
-        self._arrival[key] = arrival + interval
-        self._arrival.move_to_end(key)
-        if len(self._arrival) > self.max_keys:
-            del self._arrival[next(iter(self._arrival))]  # The longest unseen.
+        self._callers[key] = _Caller(now, owed + 1, interval)
+        self._callers.move_to_end(key)
+        if len(self._callers) > self.max_keys:
+            del self._callers[next(iter(self._callers))]  # The longest unseen.
         return Decision(
             allowed=True,
-            remaining=math.floor((tolerance - debt) / interval),
-            reset_after=debt + interval,
+            remaining=math.floor(burst - owed),
+            reset_after=(owed + 1) * interval,
             retry_after=0.0,
         )
 
     def _forget_idle(self, now: float) -> None:
         """Forget the longest-unseen callers while their quota is full again."""
-        while self._arrival:
-            key, arrival = next(iter(self._arrival.items()))
-            if arrival > now:
+        while self._callers:
+            key, caller = next(iter(self._callers.items()))
+            if caller.seen + caller.owed * caller.interval > now:
                 return
-            del self._arrival[key]
+            del self._callers[key]
 
 
 class RedisBackend:
