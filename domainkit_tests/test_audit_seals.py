@@ -574,6 +574,30 @@ async def test_a_run_goes_on_from_the_last_row_it_sealed(tables: None) -> None:
     assert (await verify("default")).intact
 
 
+async def test_rows_of_one_instant_split_across_batches_are_all_sealed(
+    tables: None,
+) -> None:
+    """A batch goes on past the last row's id too, not only its time."""
+    now = datetime.now(UTC)
+    async with connections.engine().begin() as connection:
+        for n in (1, 2, 3):
+            await connection.execute(
+                insert(audit_log).values(
+                    id=uuid.UUID(int=n),
+                    occurred_at=now,
+                    actor="system",
+                    action="test.added",
+                    outcome="success",
+                    details={},
+                )
+            )
+
+    assert await seal("default", batch=1) == 3
+    assert [each["entry_id"] for each in await seals()] == [
+        uuid.UUID(int=n) for n in (1, 2, 3)
+    ]
+
+
 def unsealed_gauge() -> float | None:
     """The backlog gauge of ``default``."""
     return REGISTRY.get_sample_value("audit_unsealed_rows", {"database": "default"})
@@ -610,7 +634,8 @@ async def test_a_run_seals_its_batches_at_most_and_counts_what_is_left(
             await add(start + timedelta(seconds=n))
         assert await seal("default", batch=1, batches=1) == 1
         assert unsealed_gauge() == 2  # At the threshold: quiet.
-        assert await seal("default", batch=2, batches=1) == 2
+        assert await seal("default", batch=3, batches=1) == 2  # Caught up.
+        assert unsealed_gauge() == 0
     assert caplog.messages == []
     assert (await verify("default")).intact
 
