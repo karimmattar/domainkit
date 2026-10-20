@@ -515,6 +515,40 @@ All notable changes to domainkit. The format follows
   filter was a 422 naming the field, and an unknown name passed, so a
   client could list the model's fields (`password`, `deleted_at`) one
   guess at a time.
+- A route's own `rule=` that looks at objects (`HasObjectPermissions`, a
+  rule with `has_object_permission`) is asked about the aggregate, on
+  command, batch, and query routes and the admin's commands and queries.
+  It was asked only whether the request may proceed, so any logged-in
+  user ran the command on any object. A query answering several
+  aggregates leaves out those the rule refuses.
+- `visible_scope` (and `visible_to(..., request=)`) matches nothing for
+  credentials whose scopes leave the permission out. A token scoped to
+  something else saw every object its user may see.
+- `crud=True` creates keep to the `FieldPolicy`: `read_only` fields are
+  not in the body, and fields in `editable` need their permission, as in
+  a `PATCH`. A caller allowed to add set protected fields.
+- `crud=True` creates and changes stay in the caller's `scope`: one that
+  would put the aggregate out of the caller's reach (another tenant's) is
+  `403 permission_denied`, and the transaction rolls back.
+- Fields hidden from a caller by `visible` are not theirs to set, by
+  `PATCH`, a `PatchModel` command, or a generic create (`403
+  field_not_editable`); they could overwrite what they could not see.
+- A use case that commits without loading the aggregate `If-Match` names
+  writes nothing: the unit of work refuses the commit. The request failed
+  after the commit, with the stale write stored.
+- The generic admin refuses any user model (a subclass of
+  `AbstractBaseUser`), `Group`, and `Permission`, whatever the `label=`,
+  and a `label=` that names another model than the class's. A swapped
+  user model registered and showed its password hash and permissions.
+  `schema_for` refuses fields holding a password hash unless excluded.
+- CSV exports guard formulas behind spaces of any kind, line breaks, and
+  invisible characters, and in full-width and small forms (`＝`, `﹣`).
+  NDJSON escapes U+0085, U+2028, and U+2029, which split a line for some
+  readers.
+- Deleting an object's row deletes the grants on it, so an object stored
+  later with the same id does not inherit them. `delete_rows` still
+  leaves them (docs/auth.md).
+- `/admin/meta` leaves out the nested schemas only hidden fields used.
 
 ## [0.6.2] - 2026-10-19
 

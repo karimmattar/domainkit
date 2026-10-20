@@ -194,11 +194,6 @@
    "GadgetIn": {
     "additionalProperties": false,
     "properties": {
-     "active": {
-      "default": true,
-      "title": "Active",
-      "type": "boolean"
-     },
      "color": {
       "$ref": "#/components/schemas/Color",
       "default": "red"
@@ -244,6 +239,7 @@
         "type": "null"
        }
       ],
+      "description": "Changed only by users granted shop.view_cost.",
       "title": "Stock"
      }
     },
@@ -259,16 +255,17 @@
    "GadgetPatch": {
     "additionalProperties": false,
     "properties": {
-     "active": {
-      "title": "Active",
-      "type": "boolean"
-     },
      "color": {
       "$ref": "#/components/schemas/Color"
      },
      "label": {
       "maxLength": 20,
       "title": "Label",
+      "type": "string"
+     },
+     "made_at": {
+      "format": "date-time",
+      "title": "Made At",
       "type": "string"
      },
      "name": {
@@ -301,6 +298,7 @@
         "type": "null"
        }
       ],
+      "description": "Changed only by users granted shop.view_cost.",
       "title": "Stock"
      }
     },
@@ -1772,16 +1770,17 @@
        "schema": {
         "additionalProperties": false,
         "properties": {
-         "active": {
-          "title": "Active",
-          "type": "boolean"
-         },
          "color": {
           "$ref": "#/components/schemas/Color"
          },
          "label": {
           "maxLength": 20,
           "title": "Label",
+          "type": "string"
+         },
+         "made_at": {
+          "format": "date-time",
+          "title": "Made At",
           "type": "string"
          },
          "name": {
@@ -1814,6 +1813,7 @@
             "type": "null"
            }
           ],
+          "description": "Changed only by users granted shop.view_cost.",
           "title": "Stock"
          }
         },

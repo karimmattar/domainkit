@@ -365,8 +365,10 @@ products = ResourceRouter(
   hold `catalog.view_product` see every product; others see those granted
   to them or to one of their groups, filtered in SQL with an `EXISTS` on
   the grants, so pages, counts, and cursors never see the rest; anonymous
-  and inactive callers see none. `visible_to(user, "view", Product)`
-  gives the same criteria (`VisibleTo`) for queries of your own.
+  and inactive callers see none, and neither do credentials limited to
+  scopes that leave the permission out. `visible_to(user, "view",
+  Product, request=request)` gives the same criteria (`VisibleTo`) for
+  queries of your own; without `request`, scopes are not consulted.
 - In memory, `VisibleTo` reads the grants it is given:
   `visible_scope("view", Product, grants=InMemoryObjectPermissions(...))`
   in tests with fake repositories.
@@ -375,6 +377,13 @@ products = ResourceRouter(
   gets. Ids may be UUIDs, integers, or text, each in a column of its type.
   User and group ids are not foreign keys: deleting a user leaves their
   grants unused, never reused.
+- Grants go with their object: when the ORM deletes an object's row (a
+  repository's `remove`), the grants on it are deleted in the same
+  transaction, so an object stored later with the same id (a slug, or an
+  integer the database hands out again) starts without them. A soft
+  delete keeps them, for a restore. Bulk deletes (`delete_rows`) bypass
+  the ORM and leave grants behind: remove such objects one by one, or
+  delete their grants in the same transaction.
 
 ## Passwords
 

@@ -11,6 +11,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
+from starlette.requests import HTTPConnection
 
 from domainkit.apps import registry
 from domainkit.conf import override_settings
@@ -18,24 +19,28 @@ from domainkit.contrib import admin
 from domainkit.contrib.admin import AdminSite
 from domainkit.contrib.audit import api as audit_api
 from domainkit.contrib.audit.api import HistoryPageOut
-from domainkit.contrib.auth import AnyUser
+from domainkit.contrib.auth import AnyUser, BasePermission, Group, Permission, User
 from domainkit.ddd import AggregateRoot
 from domainkit.ddd.query import F
 from domainkit.http import FilterSet, Pagination, get_asgi_application
 from domainkit.http.errors import install_exception_handlers
-from domainkit.resources import FieldPolicy
-from domainkit_tests.conftest import UseAuth
+from domainkit.resources import FieldPolicy, schema_for
+from domainkit_tests.conftest import ALPHA, AUTH, CONTENTTYPES, SHOP, UseAuth
 from domainkit_tests.gadgets import FakeGadgetsUnitOfWork, Gadget, InMemoryGadgets
+from domainkit_tests.sample_domains.accounts.models import Account
+from domainkit_tests.sample_domains.shop.models import Product, StockLevel
 from domainkit_tests.test_audit_history import note, project
 from domainkit_tests.test_auth_access import user
 from domainkit_tests.test_auth_admin import staff
 from domainkit_tests.test_resources import (
     DropGadget,
+    GadgetAgain,
     GadgetFilters,
     GadgetsLabelled,
     RenameGadget,
     RenameIn,
     Users,
+    again,
     as_,
     drop,
     labelled,
@@ -45,6 +50,7 @@ from domainkit_tests.test_resources import (
 __all__ = ["note", "project"]
 
 GADGETS = "/admin/shop/gadgets"
+ACCOUNTS = "domainkit_tests.sample_domains.accounts"
 
 
 def staff_users() -> dict[str, AnyUser]:
@@ -481,3 +487,115 @@ def test_the_admin_is_described_in_openapi_as_reviewed(
         snapshot.write_text(text, encoding="utf-8")
 
     assert text == snapshot.read_text(encoding="utf-8")
+
+
+def test_users_groups_and_permissions_are_refused_whatever_their_label(
+    use_auth: UseAuth,
+) -> None:
+    """A swapped user model, or a label that names another model, is refused."""
+    use_auth(
+        settings={
+            "INSTALLED_DOMAINS": [CONTENTTYPES, AUTH, ACCOUNTS, SHOP, ALPHA],
+        },
+        USER_MODEL="domainkit_tests.sample_domains.accounts.models.Account",
+        USER_TABLE="domainkit_tests.sample_domains.accounts.tables.accounts",
+    )
+    refused: tuple[tuple[type, str | None], ...] = (
+        (Account, None),
+        (Account, "alpha.note"),
+        (User, None),
+        (Group, "shop.group"),
+        (Permission, None),
+    )
+    for model, label in refused:
+        with pytest.raises(TypeError, match="admin of its own"):
+            AdminSite().register(
+                model,
+                unit_of_work=FakeGadgetsUnitOfWork,
+                repository=lambda uow: uow,
+                label=label,
+            )
+    mapped = AdminSite()
+    served: tuple[tuple[type, str | None], ...] = (
+        (Product, None),
+        (StockLevel, "shop.stocklevel"),
+    )
+    for model, label in served:
+        mapped.register(
+            model,
+            unit_of_work=FakeGadgetsUnitOfWork,
+            repository=lambda uow: uow,
+            label=label,
+        )
+    assert mapped.router is mapped.router
+    mislabelled = AdminSite()
+    mislabelled.register(
+        Product,
+        unit_of_work=FakeGadgetsUnitOfWork,
+        repository=lambda uow: uow,
+        label="shop.gadget",
+    )
+    with pytest.raises(TypeError, match=r"shop\.product, not shop\.gadget"):
+        mislabelled.router  # noqa: B018 - built.
+
+
+def test_schemas_never_show_password_hashes() -> None:
+    """A schema of a model with a password hash must leave the hash out."""
+    with pytest.raises(TypeError, match="password"):
+        schema_for(Account)
+
+    shown = schema_for(Account, exclude=["password"])
+
+    assert "password" not in shown.model_fields
+
+
+class Ask(BasePermission):
+    """Lets the request through; refuses every object."""
+
+    async def has_object_permission(
+        self, request: HTTPConnection, user: AnyUser, obj: object
+    ) -> bool:
+        """No object."""
+        return False
+
+
+def test_commands_and_queries_ask_their_rules_about_the_object(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """``admin.command(rule=)`` and ``admin.query(rule=)`` look at the item."""
+    use_auth()
+    site = site_of(
+        store,
+        commands=[
+            admin.command(
+                RenameGadget, service=rename, body=RenameIn, path="/rename", rule=Ask()
+            )
+        ],
+        queries=[admin.query(GadgetAgain, handler=again, path="/again", rule=Ask())],
+    )
+    client = client_of(site)
+    gadget = next(iter(store.items.values()))
+    item = f"{GADGETS}/{gadget.id}"
+
+    renamed = client.post(f"{item}/rename", json={"name": "x"}, headers=as_("root"))
+    asked = client.get(f"{item}/again", headers=as_("root"))
+
+    assert (renamed.status_code, asked.status_code) == (403, 403)
+    assert gadget.name != "x"
+
+
+def test_meta_leaves_out_the_definitions_of_hidden_fields(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """Nested schemas only hidden fields use go with them."""
+    use_auth()
+    policy = FieldPolicy(
+        visible={"maker": "shop.view_maker", "parts": "shop.view_cost"}
+    )
+    client = client_of(site_of(store, policy=policy))
+
+    (viewed,) = client.get("/admin/meta", headers=as_("viewer")).json()["resources"]
+    (costed,) = client.get("/admin/meta", headers=as_("costs")).json()["resources"]
+
+    assert sorted(viewed["item_schema"]["$defs"]) == ["Color", "Size"]
+    assert sorted(costed["item_schema"]["$defs"]) == ["Color", "PartOut", "Size"]

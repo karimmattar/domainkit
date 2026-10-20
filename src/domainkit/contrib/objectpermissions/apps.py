@@ -15,9 +15,10 @@ class ObjectPermissionsConfig(DomainConfig):
     verbose_name = "Object permissions"
 
     def ready(self) -> None:
-        """Map the aggregate; register ``VisibleTo``'s compiler."""
+        """Map the aggregate; compile ``VisibleTo``; delete grants with objects."""
         start_mappers()
         import_module(f"{self.name}.criteria")
+        import_module(f"{self.name}.deletions").listen()
 
     def databases(self, router: DatabaseRouter) -> frozenset[str]:
         """Every hosting target: grants live beside the objects they are about."""

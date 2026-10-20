@@ -259,3 +259,44 @@ async def test_exports_page_through_the_database(
     header, *rows = list(csv.reader(io.StringIO(answer.text)))
     assert header[:3] == ["id", "version", "deleted_at"]
     assert sorted(row[0] for row in rows) == sorted(str(each) for each in ids)
+
+
+async def red_only(request: Any) -> Any:  # noqa: ANN401 - criteria.
+    """Everyone's scope: red gadgets."""
+    return F("color") == "red"
+
+
+async def test_generic_writes_out_of_scope_roll_back(database: str) -> None:
+    """A create or change that leaves the scope is refused, and nothing stays."""
+    async with connections.engine().begin() as connection:
+        await connection.run_sync(metadata.create_all)
+    first = make_gadget("first")
+    async with GadgetsUnitOfWork() as uow:
+        await uow.gadgets.add(first)
+        await uow.commit()
+    resource = ResourceRouter(
+        "/gadgets",
+        model=Gadget,
+        unit_of_work=GadgetsUnitOfWork,
+        repository=lambda uow: uow.gadgets,
+        dependencies=[Public],
+        scope=red_only,
+        crud=True,
+    )
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.include_router(resource)
+    body = {"name": "n", "label": "L", "price": "1.00", "made_at": "2026-01-01T00:00Z"}
+    async with AsyncTestClient(app) as client:
+        planted = await client.post("/gadgets", json={**body, "color": "blue"})
+        moved = await client.patch(f"/gadgets/{first.id}", json={"color": "blue"})
+        kept = await client.post("/gadgets", json={**body, "color": "red"})
+    async with GadgetsUnitOfWork() as uow:
+        stored = await uow.gadgets.filter(None)
+    await connections.close_all()
+
+    assert (planted.status_code, moved.status_code, kept.status_code) == (403, 403, 201)
+    assert sorted((each.name, each.color) for each in stored) == [
+        ("first", "red"),
+        ("n", "red"),
+    ]

@@ -626,3 +626,94 @@ def test_grants_live_where_their_objects_do(use_auth: UseAuth) -> None:
 
     assert unit_of_work_for("shop.product").alias == "elsewhere"
     assert unit_of_work_for("alpha.thing").alias == "default"
+
+
+def test_scoped_credentials_see_only_what_their_scopes_cover(project: str) -> None:
+    """A token not scoped to the permission sees nothing, model's or granted."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from domainkit.contrib.auth import IsAuthenticated
+    from domainkit.http.errors import install_exception_handlers
+    from domainkit.resources import ResourceRouter
+    from domainkit_tests.test_resources import Users
+
+    first, _, _ = products("a", "b", "c")
+    root = person("root", is_superuser=True)
+    ada = person("ada", VIEW)
+    bob = person("bob")
+    run(grant_permission(root, VIEW, first, user=bob.id))
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.include_router(
+        ResourceRouter(
+            "/products",
+            model=Product,
+            unit_of_work=ShopUnitOfWork,
+            repository=lambda uow: uow.products,
+            rule=IsAuthenticated(),
+            scope=visible_scope("view", Product),
+        )
+    )
+    app.add_middleware(Users, users={"ada": ada, "bob": bob})
+    client = TestClient(app)
+
+    def seen(who: str, *scopes: str) -> list[str]:
+        headers = {"X-User": who, **({"X-Scopes": " ".join(scopes)} if scopes else {})}
+        items = client.get("/products", headers=headers).json()["items"]
+        return sorted(item["name"] for item in items)
+
+    assert (seen("ada"), seen("bob")) == (["a", "b", "c"], ["a"])
+    assert (seen("ada", VIEW), seen("bob", VIEW)) == (["a", "b", "c"], ["a"])
+    elsewhere = "billing.view_invoice"
+    assert (seen("ada", elsewhere), seen("bob", elsewhere)) == ([], [])
+
+
+def test_grants_go_with_the_object_they_are_about(project: str) -> None:
+    """A hard delete takes its grants: an object with the same id starts bare."""
+    kept, gone = products("kept", "gone")
+    root = person("root", is_superuser=True)
+    ada = person("ada")
+    for product in (kept, gone):
+        run(grant_permission(root, VIEW, product, user=ada.id))
+
+    async def delete() -> None:
+        async with ShopUnitOfWork() as uow:
+            await uow.products.remove(await uow.products.get(gone.id))
+            await uow.commit()
+
+    run(delete())
+
+    assert [grant.object_id for grant in run(grants_on(kept))] == [kept.id]
+    assert run(grants_on(gone)) == []
+
+
+def test_deletes_leave_grants_alone_where_nothing_is_granted(
+    use_auth: UseAuth,
+) -> None:
+    """Without the app, for grants themselves, and for objects grants cannot name."""
+    from unittest.mock import Mock
+
+    from sqlalchemy import event
+    from sqlalchemy.orm import Mapper, class_mapper
+
+    from domainkit.contrib.objectpermissions import deletions
+
+    connection = Mock()
+    rows = Mock(local_table=None)
+    product = Product(id=ProductId(uuid4()), name="a")
+
+    use_auth()
+    deletions.forget_grants(rows, connection, product)
+    use_auth(
+        settings={
+            "INSTALLED_DOMAINS": [CONTENTTYPES, AUTH, OBJECTPERMISSIONS, SHOP, ALPHA]
+        }
+    )
+    deletions.forget_grants(class_mapper(ObjectPermission), connection, product)
+    deletions.forget_grants(rows, connection, Keyed(id="k", name="x"))
+    deletions.forget_grants(rows, connection, Product(id=1.5, name="b"))  # type: ignore[arg-type]
+    deletions.listen()
+
+    assert connection.execute.call_count == 0
+    assert event.contains(Mapper, "after_delete", deletions.forget_grants)

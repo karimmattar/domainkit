@@ -95,7 +95,10 @@ fields directly, without the aggregate's methods, and record
 `RecordCreated`, `RecordChanged` (with the fields that changed), and
 `RecordDeleted`, so the audit trail still shows who changed what.
 `create=` and `update=` replace the schemas; `new_id=` makes ids
-(`uuid4`).
+(`uuid4`). Both writes keep to the resource's field policy (a create, as
+a partial change does) and to the caller's `scope`: a create or a change
+that would leave the aggregate where the caller could not reach it is
+`403 permission_denied`, and nothing is written.
 
 ## Queries
 
@@ -194,8 +197,12 @@ apply.
 - CSV has the list's fields (`list_fields`, or all), less those the
   caller may not see; nested values are JSON. A text cell that a
   spreadsheet would run as a formula (starting with `=`, `+`, `-`, `@`,
-  a tab, or a carriage return) gets an apostrophe first; numbers, such
-  as `-1.50`, stay as they are.
+  a tab, or a carriage return, also behind spaces of any kind or
+  invisible characters, and in the full-width and small forms of those
+  signs) gets an apostrophe first; numbers, such as `-1.50`, stay as they
+  are.
+- NDJSON has one document per line: the separators that would split a
+  line elsewhere (U+0085, U+2028, U+2029) are escaped, as JSON allows.
 
 ## Schemas from the domain
 
@@ -286,7 +293,8 @@ transaction that changes it: `get`, `find`, `filter`, `first`, and
 refuses a change that lands after the check, with `409
 concurrent_update`. A service that never loads the aggregate through its
 repository cannot honour `If-Match`; such a request fails with a
-`RuntimeError` rather than succeed unchecked.
+`RuntimeError` rather than succeed unchecked: the unit of work refuses
+to commit before the aggregate is loaded, so nothing is written.
 
 ## Who may call it
 
@@ -305,8 +313,10 @@ start. Pass `dependencies=[Public]` for a resource anyone may call.
 
 Rules that look at objects (`HasObjectPermissions`, a rule of your own
 with `has_object_permission`) are asked about the aggregate itself before
-it is read or a command runs on it. `scope` narrows what a caller may reach
-to criteria of their own:
+it is read or a command runs on it: the resource's rules, and the route's
+own `rule=` (of a command, a batch, a query, or the admin's). A query
+that answers several aggregates leaves out those the rules refuse.
+`scope` narrows what a caller may reach to criteria of their own:
 
 ```python
 async def own_orders(request: HTTPConnection) -> Criteria | None:
@@ -339,10 +349,13 @@ invoices = ResourceRouter("/invoices", ..., policy=policy, crud=True)
 - A field in `visible` is shown only to callers granted its permission;
   others get the representation without the key. OpenAPI marks it
   optional and names the permission.
-- A partial change that sets a field in `editable` needs its permission
-  (`403 field_not_editable`), and one that sets a `read_only` field is
-  refused. Task commands are not partial changes: what a command changes
-  is the domain's business.
+- A partial change, or a generic create, that sets a field in
+  `editable` needs its permission (`403 field_not_editable`); one that
+  sets a field in `visible` needs that permission too, since what a
+  caller may not see they may not overwrite blind. A `read_only` field
+  is in neither body: it keeps its default, so give one (or a `create=`
+  schema of your own). Task commands are not partial changes: what a
+  command changes is the domain's business.
 - Fields left out of the schema are neither shown nor changed at all,
   which keeps protected fields protected.
 
@@ -477,14 +490,19 @@ router.include_router(admin.site.router, prefix="/admin")
   sets fields itself, so the domain's rules and events hold.
 - `schema=`, `present=`, `policy=`, `scope=`, and `pagination=` are the
   resource's; `label=` names the content type when the class is not
-  mapped in an installed domain; `history_field=` names the events' field
+  mapped in an installed domain, and is refused when it names another
+  model than the class's own; `history_field=` names the events' field
   that holds the id (`product_id`).
 - Route names start with `admin_<domain>_`, so the admin and the domain's
   own API can serve one model in one application.
 - Users, groups, and permissions keep their own admin at `/admin/auth`,
   whose grant ceilings and last-superuser lock the generic admin could not
-  keep: registering them is refused. Their listings and reads there are
-  resources too, with tags ([auth.md](auth.md)).
+  keep: registering them is refused, a swapped user model (any
+  `AbstractBaseUser`) too, whatever its label. Their listings and reads
+  there are resources too, with tags ([auth.md](auth.md)). No schema
+  `schema_for` derives shows a password hash: name it in `exclude=`.
+- `/meta` describes the fields each caller may see, and the nested
+  schemas those fields use, no others.
 - Register before the router is mounted (from the modules your routes
   import, or `DomainConfig.ready()`); a later `register` fails.
 

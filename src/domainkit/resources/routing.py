@@ -74,10 +74,12 @@ from domainkit.contrib.auth.access import (
     AnyOf,
     BasePermission,
     Not,
+    NotAuthenticated,
     Require,
     Rule,
     check_object_permissions,
 )
+from domainkit.ddd.exceptions import PermissionDenied
 from domainkit.ddd.fields import FieldInfo, fields_of, wrapped_field
 from domainkit.ddd.messages import Command
 from domainkit.ddd.messages import Query as QueryMessage
@@ -295,8 +297,6 @@ class ResourceRouter(APIRouter):
         self.read_name = f"{name_prefix}read_{self.basename}"
         self.operations: list[Operation] = []
         """Every route, in the order declared."""
-        self._checks_objects: dict[str, bool] = {}
-        """Per action, whether its rules look at the aggregate itself."""
         self._add_list()
         self._add_read()
         if crud:
@@ -380,6 +380,7 @@ class ResourceRouter(APIRouter):
         partial = body is not None and issubclass(body, PatchModel)
         if partial and self.policy is not None:
             body = self.policy.describe_changes(body)  # type: ignore[arg-type]
+        rules = self._rules_of(verb, rule)
 
         async def run(values: Values) -> Response:
             request: Request = values["request"]
@@ -397,7 +398,7 @@ class ResourceRouter(APIRouter):
             if not detail:
                 result = await service(built, uow)
             else:
-                await self._precheck(uow, request, values, verb)
+                await self._precheck(uow, request, values, rules)
                 result = await self._conditionally(values, lambda: service(built, uow))
             return await self._answer(request, values, result, returns, code)
 
@@ -483,6 +484,7 @@ class ResourceRouter(APIRouter):
             returns = None
         code = status.HTTP_200_OK if detail else status.HTTP_201_CREATED
         item = _batch_item(command, body, self.lookup, self.id_type, detail)
+        rules = self._rules_of(verb, rule)
         batch = create_model(
             f"{command.__name__}Batch",
             __config__=ConfigDict(extra="forbid"),
@@ -518,7 +520,7 @@ class ResourceRouter(APIRouter):
                 )
                 scoped = {**values, **own}
                 if detail:
-                    await self._precheck(work, request, scoped, verb)
+                    await self._precheck(work, request, scoped, rules)
                     result = await self._conditionally(
                         scoped, lambda: service(built, work)
                     )
@@ -678,6 +680,7 @@ class ResourceRouter(APIRouter):
             if set(fields) - from_path
             else None
         )
+        rules = self._rules_of(action, rule)
 
         async def run(values: Values) -> Response:
             request: Request = values["request"]
@@ -689,7 +692,7 @@ class ResourceRouter(APIRouter):
             arguments |= {name: values[self._path_name(name)] for name in from_path}
             uow = values["uow"]
             if detail:
-                await self._precheck(uow, request, values, action)
+                await self._precheck(uow, request, values, rules)
             result = await handler(query(**arguments), uow)
             criteria = [
                 as_criteria(each) for each in await self._criteria(request, values)
@@ -700,6 +703,7 @@ class ResourceRouter(APIRouter):
                     self._dump(request, values, item, hidden)
                     for item in result
                     if all(each.matches(item) for each in criteria)
+                    and await self._allows(request, item, rules)
                 ]
                 return JSONResponse({"items": items})
             if not isinstance(result, AggregateRoot):
@@ -710,7 +714,7 @@ class ResourceRouter(APIRouter):
             if not all(each.matches(result) for each in criteria):
                 missing = self.missing or self.repository(uow).not_found
                 raise missing(result.id)
-            await self._check_object(request, result, action)
+            await self._check_object(request, result, rules)
             return await self._respond(
                 request, values, result, if_none_match=values.get("if_none_match")
             )
@@ -796,7 +800,7 @@ class ResourceRouter(APIRouter):
             request: Request = values["request"]
             async with values["uow"] as uow:
                 aggregate = await self._load(uow, request, values)
-            await self._check_object(request, aggregate, VIEW)
+            await self._check_object(request, aggregate, self._rules_of(VIEW))
             return await self._respond(
                 request, values, aggregate, if_none_match=values["if_none_match"]
             )
@@ -826,15 +830,10 @@ class ResourceRouter(APIRouter):
         relations = [name for name, field in fields.items() if field.entity is not None]
         # The parent's field: the path gives it, and no write moves it.
         pinned = [self.parent_field] if self.parent_field is not None else []
-        create = create or schema_for(model, write=True, exclude=[*relations, *pinned])
+        fixed = [*relations, *pinned, *(name for name in read_only if name in fields)]
+        create = create or schema_for(model, write=True, exclude=fixed)
         update = update or schema_for(  # type: ignore[assignment]
-            model,
-            partial=True,
-            exclude=[
-                *relations,
-                *pinned,
-                *(name for name in read_only if name in fields),
-            ],
+            model, partial=True, exclude=fixed
         )
         assert update is not None  # noqa: S101 - for the type checker.
         for schema in (create, update):
@@ -864,7 +863,10 @@ class ResourceRouter(APIRouter):
         label = _label(model)
 
         async def created(values: Values) -> Response:
+            request: Request = values["request"]
             payload: BaseModel = values["body"]
+            if self.policy is not None:
+                await self.policy.check_changes(request, payload.model_fields_set)
             given = payload.model_dump()
             given |= {name: values[self._path_name(name)] for name in pinned}
             aggregate = model(
@@ -881,10 +883,9 @@ class ResourceRouter(APIRouter):
             )
             async with values["uow"] as uow:
                 await self.repository(uow).add(aggregate)
+                await self._keep_in_reach(uow, request, values, aggregate.id)
                 await uow.commit()
-            return await self._answer(
-                values["request"], values, aggregate, DEFAULT, 201
-            )
+            return await self._answer(request, values, aggregate, DEFAULT, 201)
 
         async def changed(values: Values) -> Response:
             request: Request = values["request"]
@@ -895,7 +896,7 @@ class ResourceRouter(APIRouter):
             async def apply() -> AggregateRoot[Any]:
                 async with values["uow"] as uow:
                     aggregate = await self._load(uow, request, values)
-                    await self._check_object(request, aggregate, CHANGE)
+                    await self._check_object(request, aggregate, self._rules_of(CHANGE))
                     names = []
                     for name, value in changes.items():
                         new = to_domain(fields[name], value)
@@ -910,6 +911,7 @@ class ResourceRouter(APIRouter):
                                 fields=tuple(names),
                             )
                         )
+                        await self._keep_in_reach(uow, request, values, aggregate.id)
                     await uow.commit()
                 return aggregate
 
@@ -922,7 +924,7 @@ class ResourceRouter(APIRouter):
             async def apply() -> None:
                 async with values["uow"] as uow:
                     aggregate = await self._load(uow, request, values)
-                    await self._check_object(request, aggregate, DELETE)
+                    await self._check_object(request, aggregate, self._rules_of(DELETE))
                     aggregate.record(
                         RecordDeleted(model=label, record_id=str(aggregate.id))
                     )
@@ -942,7 +944,7 @@ class ResourceRouter(APIRouter):
             name=f"create_{self.basename}",
             summary=f"Create a {self.basename.replace('_', ' ')}",
             action=ADD,
-            body=create,
+            body=self.policy.describe_changes(create) if self.policy else create,
             returns=self.schema,
             status_code=status.HTTP_201_CREATED,
             writes=True,
@@ -1061,7 +1063,7 @@ class ResourceRouter(APIRouter):
             _parameter(f"{PROVIDED}{name}", Annotated[Any, Depends(dependency)])
             for name, dependency in (provided or {}).items()
         )
-        rules = (*rules_for(self.rule, action), *([rule] if rule is not None else []))
+        rules = self._rules_of(action, rule)
         codes = (
             [status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN] if rules else []
         )
@@ -1118,7 +1120,6 @@ class ResourceRouter(APIRouter):
             dependencies=[Depends(Require(*rules))] if rules else None,
             openapi_extra=extra,
         )
-        self._checks_objects[action] = any(_checks_objects(each) for each in rules)
         self.operations.append(
             Operation(
                 name=name,
@@ -1160,7 +1161,7 @@ class ResourceRouter(APIRouter):
             )
         async with uow:
             aggregate = await self._load(uow, request, {self.lookup: id_})
-        await self._check_object(request, aggregate, action)
+        await self._check_object(request, aggregate, self._rules_of(action))
         return aggregate
 
     async def _check_parent(self, values: Values) -> None:
@@ -1174,7 +1175,7 @@ class ResourceRouter(APIRouter):
         request: Request = values["request"]
         async with values["parent_uow"] as uow:
             aggregate = await parent._load(uow, request, values)
-        await parent._check_object(request, aggregate, VIEW)
+        await parent._check_object(request, aggregate, parent._rules_of(VIEW))
 
     async def _criteria(
         self, request: HTTPConnection, values: Values
@@ -1210,23 +1211,64 @@ class ResourceRouter(APIRouter):
             raise missing(id_)
         return found
 
+    def _rules_of(self, action: str, rule: Rule | None = None) -> tuple[Rule, ...]:
+        """What a route of ``action`` checks: the resource's rules, then its own."""
+        return (*rules_for(self.rule, action), *([rule] if rule is not None else []))
+
     async def _precheck(
-        self, uow: UnitOfWork, request: HTTPConnection, values: Values, action: str
+        self,
+        uow: UnitOfWork,
+        request: HTTPConnection,
+        values: Values,
+        rules: Sequence[Rule],
     ) -> None:
         """Before a command: refuse an aggregate the caller may not reach or act on."""
-        if not (self.parent or self.scope or self._checks_objects.get(action)):
+        if not (self.parent or self.scope or _asks_objects(rules)):
             return
         async with uow:
             aggregate = await self._load(uow, request, values)
-        await self._check_object(request, aggregate, action)
+        await self._check_object(request, aggregate, rules)
 
     async def _check_object(
-        self, request: HTTPConnection, aggregate: object, action: str
+        self, request: HTTPConnection, aggregate: object, rules: Sequence[Rule]
     ) -> None:
-        """Ask the rules about the aggregate itself, where a rule checks objects."""
-        if self._checks_objects.get(action):
-            rules = rules_for(self.rule, action)
+        """Ask a route's rules about the aggregate itself, if one looks at objects.
+
+        Raises:
+            NotAuthenticated: An anonymous caller was refused.
+            PermissionDenied: A rule refuses the caller this aggregate.
+        """
+        if _asks_objects(rules):
             await check_object_permissions(request, aggregate, *rules)
+
+    async def _allows(
+        self, request: HTTPConnection, aggregate: object, rules: Sequence[Rule]
+    ) -> bool:
+        """Whether a route's rules let the caller have the aggregate."""
+        try:
+            await self._check_object(request, aggregate, rules)
+        except (NotAuthenticated, PermissionDenied):
+            return False
+        return True
+
+    async def _keep_in_reach(
+        self, uow: UnitOfWork, request: HTTPConnection, values: Values, id_: object
+    ) -> None:
+        """Before a generic write commits: refuse one that leaves the caller's reach.
+
+        The aggregate is read again, as written, with the caller's scope.
+
+        Raises:
+            PermissionDenied: The caller could not reach it afterwards.
+        """
+        criteria = await self._criteria(request, values)
+        if not criteria:
+            return
+        query = Query(F("id") == id_).where(*criteria)
+        if await self.repository(uow).first(query) is None:
+            raise PermissionDenied(
+                "You cannot create or move a record outside what you may reach."
+            )
 
     async def _conditionally[T](
         self, values: Values, change: Callable[[], Awaitable[T]]
@@ -1610,6 +1652,11 @@ def _check_filters(filters: object, policy: FieldPolicy) -> None:
             f"{filters.__name__} filters, orders, or searches fields some callers "
             f"may not see: {', '.join(hidden)}."
         )
+
+
+def _asks_objects(rules: Sequence[Rule]) -> bool:
+    """Whether any of ``rules`` looks at objects."""
+    return any(_checks_objects(each) for each in rules)
 
 
 def _checks_objects(rule: Rule) -> bool:

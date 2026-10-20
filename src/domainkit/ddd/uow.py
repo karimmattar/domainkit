@@ -37,6 +37,7 @@ from types import TracebackType
 from typing import Any, Self
 
 from domainkit.ddd.events import DomainEvent, EventBus, event_bus
+from domainkit.ddd.preconditions import check_loaded
 from domainkit.ddd.repository import Repository
 
 
@@ -118,7 +119,8 @@ class UnitOfWork(ABC):
 
         Raises:
             ReadOnlyError: The unit of work is read-only.
-            RuntimeError: A savepoint is still open.
+            RuntimeError: A savepoint is still open, or an aggregate that
+                ``If-Match`` names was not loaded yet (``preconditions``).
         """
         if self.readonly:
             raise ReadOnlyError(
@@ -127,6 +129,7 @@ class UnitOfWork(ABC):
             )
         if self._savepoints:
             raise RuntimeError("Leave every savepoint before committing.")
+        check_loaded()
         events = self.collect_new_events()
         deferred, self._deferred = self._deferred, []
         await self._stage(events, deferred)

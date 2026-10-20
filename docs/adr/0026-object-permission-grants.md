@@ -37,7 +37,15 @@ hand out a permission they lack can hand it to themselves.
   and compiles it to `EXISTS` on the grants, correlated with the row's id;
   in memory it reads the grants it is given. `visible_to` returns no
   criteria for users who hold the permission on the model, so they see
-  everything.
+  everything; given the request, it first asks the credentials' scopes,
+  as `HasPermissions` does, and matches nothing when they leave the
+  permission out.
+- Grants go with their object. A listener on every mapper's
+  `after_delete` deletes the grants about a row the ORM deletes, in the
+  same transaction, while the app is installed. A database foreign key
+  cannot do it (the grants table refers to rows of every table), and a
+  domain event would arrive after the commit, too late for ids the
+  database reuses.
 - Ceilings, as in the auth admin: granting or revoking a permission needs
   the permission itself (on the model or on that object) and the model
   permission to manage grants. No one grants to themselves, which would
@@ -50,4 +58,8 @@ one indexed `EXISTS`. User and group ids are not foreign keys, since auth
 may be in another database: a deleted user's grants stay, unused. Objects
 of sharded domains are not supported yet, and a grant is about one object,
 not about a query. Tests with fake repositories pass the grants to
-`visible_scope` themselves.
+`visible_scope` themselves. Bulk deletes (`delete_rows`) bypass the ORM
+and leave the grants of their rows: projects that delete objects in bulk
+delete the grants too, in the same transaction. A security review found
+that scoped credentials saw what their user may, and that grants
+outlived their objects; both have regression tests.

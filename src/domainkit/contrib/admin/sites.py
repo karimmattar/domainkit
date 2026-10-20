@@ -2,7 +2,7 @@
 
 import inspect
 import re
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Final
 
@@ -22,6 +22,7 @@ from domainkit.contrib.auth.access import (
     Rule,
     current_user,
 )
+from domainkit.contrib.auth.models import AbstractBaseUser, Group, Permission
 from domainkit.ddd.messages import Command, Query
 from domainkit.http import CURSOR_PATTERN, MAX_CURSOR_LENGTH, error_responses
 from domainkit.http.filters import FilterSet
@@ -46,6 +47,8 @@ STAFF: Final = (IsUnscoped(), IsAdminUser() | IsSuperuser())
 """Who may use the admin at all: staff, or superusers, without scoped credentials."""
 OWN_ADMINS: Final = frozenset({"auth"})
 """Domains whose models have an admin of their own, which keeps their rules."""
+OWN_MODELS: Final = (AbstractBaseUser, Group, Permission)
+"""Users (any user model), groups, and permissions: auth's admin serves them."""
 VIEW_HISTORY: Final = "audit.view_history"
 """The permission histories need, as ``contrib.audit`` names it."""
 
@@ -176,13 +179,27 @@ class ModelAdmin:
         return list(self.resource.schema.model_fields)
 
     def _build(self) -> ResourceRouter:
-        """The resource: lists, reads, commands, queries, and history."""
+        """The resource: lists, reads, commands, queries, and history.
+
+        Raises:
+            TypeError: The model is auth's, or its label names another model.
+        """
         domain, name = content_type_of(self.label or self.model)
         if domain in OWN_ADMINS:
             raise TypeError(
                 f"{domain}.{name} has an admin of its own (/admin/{domain}), "
                 "which keeps its rules: grant ceilings, the last superuser."
             )
+        if self.label is not None:
+            try:
+                mapped = ".".join(content_type_of(self.model))
+            except LookupError:
+                mapped = self.label
+            if mapped != self.label:
+                raise TypeError(
+                    f"{self.model.__name__} is {mapped}, not {self.label}: a label "
+                    "names a model that is not mapped, never another one."
+                )
         basename = snake_case(self.model.__name__)
         resource = ResourceRouter(
             f"/{domain}/{self.plural or pluralize(basename)}",
@@ -251,8 +268,9 @@ class AdminSite:
 
         Raises:
             RuntimeError: The site's router is mounted already.
-            TypeError: The model is registered already, or ``search`` or
-                ``ordering`` come with a ``FilterSet``.
+            TypeError: The model is registered already, is a user, group,
+                or permission, or ``search`` or ``ordering`` come with a
+                ``FilterSet``.
         """
         if self._router is not None:
             raise RuntimeError(
@@ -261,6 +279,11 @@ class AdminSite:
             )
         if model in self.admins:
             raise TypeError(f"{model.__name__} is registered in the admin already.")
+        if issubclass(model, OWN_MODELS):
+            raise TypeError(
+                f"{model.__name__} has an admin of its own (/admin/auth), which "
+                "keeps its rules: grant ceilings, the last superuser, its fields."
+            )
         if filters is not None and (search or ordering):
             raise TypeError("Declare search and ordering in the FilterSet given.")
         if filters is None and (search or ordering):
@@ -395,6 +418,7 @@ async def _describe(request: Request, admin: ModelAdmin) -> ResourceOut | None:
         for name, value in schema["properties"].items()
         if name not in hidden
     }
+    _prune(schema)
     filters = admin.filters
     history = admin.history_route
     listing = f"{resource.name_prefix}list_{resource.plural}"
@@ -436,6 +460,34 @@ async def _describe(request: Request, admin: ModelAdmin) -> ResourceOut | None:
             else None
         ),
     )
+
+
+def _prune(schema: dict[str, Any]) -> None:
+    """Drop the ``$defs`` that what is left of ``schema`` no longer refers to.
+
+    A nested schema that only hidden fields use would describe them still.
+    """
+    definitions: dict[str, Any] = schema.pop("$defs", {})
+    reached: set[str] = set()
+    pending = set(_refs(schema))
+    while pending:
+        name = pending.pop()
+        reached.add(name)
+        pending |= set(_refs(definitions[name])) - reached
+    if reached:
+        schema["$defs"] = {name: definitions[name] for name in sorted(reached)}
+
+
+def _refs(node: object) -> Iterator[str]:
+    """The names of the ``$defs`` that ``node`` refers to, at any depth."""
+    if isinstance(node, dict):
+        if "$ref" in node:
+            yield str(node["$ref"]).removeprefix("#/$defs/")
+        for value in node.values():
+            yield from _refs(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _refs(value)
 
 
 def _operation(resource: ResourceRouter, name: str) -> Operation:
