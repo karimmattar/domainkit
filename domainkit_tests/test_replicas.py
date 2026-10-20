@@ -18,6 +18,7 @@ from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import CommandError, call_command
 from domainkit_tests.conftest import MakeDatabase
 from domainkit_tests.gadgets import GadgetsUnitOfWork, make_gadget, metadata
+from domainkit_tests.settings import SECRET_KEY
 
 pytestmark = pytest.mark.anyio
 LOCAL = "sqlite+aiosqlite:///x.sqlite3"
@@ -89,7 +90,11 @@ def test_replicas_are_never_targets() -> None:
 
 def test_deployments_hold_replicas_to_the_tls_rules() -> None:
     """A replica on the network needs verify-full like any database."""
-    deployed = {"ENVIRONMENT": "production", "ALLOWED_HOSTS": ["api.example.com"]}
+    deployed = {
+        "ENVIRONMENT": "production",
+        "ALLOWED_HOSTS": ["api.example.com"],
+        "SECRET_KEY": SECRET_KEY,
+    }
     primary = {"URL": NETWORK, "SSLMODE": "verify-full", "REPLICAS": ["copy"]}
     with pytest.raises(ValidationError, match=r"verify-full.*\['copy'\]"):
         Settings.model_validate(
