@@ -444,7 +444,8 @@ async def test_a_request_that_fails_to_read_ends_the_stream(
     await client.serve(EventSourceResponse(source()))
 
     assert source.closed
-    [failed] = [r for r in caplog.records if r.getMessage().endswith("request failed")]
+    failed_read = "Ended an event stream whose request failed"
+    [failed] = [r for r in caplog.records if r.getMessage() == failed_read]
     assert failed.exc_info is not None
     assert isinstance(failed.exc_info[1], RequestBodyTooLarge)
 
