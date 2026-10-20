@@ -440,3 +440,14 @@ def test_empty_revisions_go_to_the_named_target(two_targets: Path) -> None:
 
     revision = Path(output.strip().removeprefix("Created ").removesuffix("."))
     assert revision.parent == two_targets / "reports"
+
+
+def test_fakes_record_each_target(two_targets: Path) -> None:
+    """``--fake`` records every database at its own head."""
+    run("makemigrations", "-m", "initial")
+
+    run("migrate", "--fake")
+
+    for alias in ("default", "reports"):
+        assert run("showmigrations", "--database", alias).startswith("[X]")
+    assert tables_in("reports") == set()
