@@ -189,6 +189,15 @@ msgstr ""
 msgid "That permission is not one of the object's model."
 msgstr ""
 
+msgid "This resource cannot answer in a media type the request accepts."
+msgstr ""
+
+msgid "This export would be too large; narrow it with filters."
+msgstr ""
+
+msgid "Another item of the batch failed, so nothing was applied."
+msgstr ""
+
 #. Pydantic's validation messages, by their templates; the error's context fills the {names}
 msgid "A required value is missing."
 msgstr ""

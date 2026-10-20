@@ -193,6 +193,15 @@ msgstr "حدّد مستخدمًا أو مجموعة، لا كليهما ولا �
 msgid "That permission is not one of the object's model."
 msgstr "هذه الصلاحية ليست من صلاحيات نموذج الكائن."
 
+msgid "This resource cannot answer in a media type the request accepts."
+msgstr "لا يستطيع هذا المورد الرد بنوع وسائط يقبله الطلب."
+
+msgid "This export would be too large; narrow it with filters."
+msgstr "سيكون هذا التصدير كبيرًا جدًا؛ ضيّقه بالمرشحات."
+
+msgid "Another item of the batch failed, so nothing was applied."
+msgstr "فشل عنصر آخر من الدفعة، فلم يُطبَّق شيء."
+
 #. Pydantic's validation messages, by their templates; the error's context fills the {names}
 msgid "A required value is missing."
 msgstr "قيمة مطلوبة غير موجودة."

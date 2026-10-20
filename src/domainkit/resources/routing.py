@@ -57,14 +57,14 @@ permission. ``parent`` nests a resource: ``/orders/{order_id}/invoices``.
 
 import dataclasses
 import inspect
-from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import Annotated, Any, Final, Literal, get_origin, get_type_hints
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from typing import Annotated, Any, Final, Literal, cast, get_origin, get_type_hints
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Body, Depends, Header, Path, Request, Response, status
 from fastapi import Query as QueryParameters
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, create_model
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field, create_model
 from starlette.requests import HTTPConnection
 from starlette.routing import BaseRoute
 
@@ -92,9 +92,28 @@ from domainkit.utils.headers import none_match
 from domainkit.utils.text import pluralize, snake_case
 
 from .access import ADD, CHANGE, DELETE, VIEW, Actions, rules_for
+from .batches import (
+    MAX_ITEMS,
+    NOT_APPLIED,
+    BatchAnswer,
+    BatchResult,
+    Enlisted,
+    Undo,
+    failure,
+    not_applied,
+)
 from .conditional import PreconditionRequired, entity_tag, expected_versions
 from .events import RecordChanged, RecordCreated, RecordDeleted
 from .policies import FieldPolicy
+from .renderers import (
+    CSV,
+    FORMATS,
+    JSON,
+    ExportTooLarge,
+    csv_rows,
+    ndjson_lines,
+    negotiate,
+)
 from .schemas import GENERATED, DomainSchema, PatchModel, schema_for
 
 MERGE_PATCH: Final = "application/merge-patch+json"
@@ -113,6 +132,8 @@ RESERVED: Final = frozenset(
     }
 )
 """Parameter names the generated endpoints use themselves."""
+EXPORT_CHUNK: Final = 500
+"""How many aggregates an export reads per query."""
 PROVIDED: Final = "provided__"
 """Starts the parameters of a command's ``provide`` dependencies."""
 
@@ -185,6 +206,8 @@ class ResourceRouter(APIRouter):
         not_found: Callable[[Any], Exception] | None = None,
         list_fields: Sequence[str] | None = None,
         name_prefix: str = "",
+        exports: Sequence[str] = (),
+        max_export: int = 10_000,
         **options: Any,  # noqa: ANN401 - APIRouter's options (tags, dependencies).
     ) -> None:
         """Declare the resource and add its list and read routes.
@@ -202,6 +225,9 @@ class ResourceRouter(APIRouter):
         ``list_fields`` keeps only those fields of the schema in lists.
         ``name_prefix`` starts every route's name, hence its operation id,
         so two resources of one model can live in one application.
+        ``exports`` (``"csv"``, ``"ndjson"``) lets the listing answer in
+        those media types, by ``Accept``: every match, up to ``max_export``
+        of them, streamed.
 
         Raises:
             TypeError: A declaration does not fit the model.
@@ -255,6 +281,14 @@ class ResourceRouter(APIRouter):
         self.present = present or _presenter(given)
         self.list_fields = _listed(self.schema, list_fields)
         """The fields lists show; None: all of them."""
+        if unknown := sorted(set(exports) - set(FORMATS)):
+            raise TypeError(
+                f"Resources export {', '.join(sorted(FORMATS))}, not "
+                f"{', '.join(unknown)}."
+            )
+        self.media_types = (JSON, *(FORMATS[name] for name in exports))
+        """What the listing answers in, by ``Accept``; JSON first."""
+        self.max_export = max_export
         self.page_schema = page_schema or self._page_schema()
         self.name_prefix = name_prefix
         self.read_name = f"{name_prefix}read_{self.basename}"
@@ -382,6 +416,233 @@ class ResourceRouter(APIRouter):
             provided=provided,
         )
 
+    def batch_route(
+        self,
+        command: type[Command],
+        *,
+        service: Service,
+        body: type[BaseModel] | None = None,
+        path: str = "/batch",
+        action: str | None = None,
+        rule: Rule | None = None,
+        returns: type[BaseModel] | _Default | None = DEFAULT,
+        max_items: int = MAX_ITEMS,
+        name: str | None = None,
+        summary: str | None = None,
+        provide: Mapping[str, Callable[..., Any]] | None = None,
+    ) -> None:
+        """Add ``POST <path>``: ``command`` for each of many items, ``207``.
+
+        Each item is ``body``'s fields, and, for a command with the
+        resource's ``lookup`` field, the id of the aggregate it acts on
+        (and an ``if_match`` of its own). The request holds 1 to
+        ``max_items`` items and ``atomic`` (default false); see
+        ``domainkit.resources.batches`` for what each answers. ``action``
+        defaults to ``change`` for commands on one aggregate and ``add``
+        for the others; pass ``action="delete"`` for deletions, which
+        answer ``204`` per item unless ``returns`` says otherwise.
+
+        Raises:
+            TypeError: The path, the bound, or the body does not fit the command.
+        """
+        if not path.startswith("/") or max_items < 1:
+            raise TypeError(
+                "A batch's path starts with /, and it takes 1 item or more."
+            )
+        if body is not None and issubclass(body, PatchModel):
+            raise TypeError("Batches take whole bodies, not partial changes.")
+        names = {field.name for field in dataclasses.fields(command)}
+        detail = self.lookup in names
+        from_path = (
+            {self.parent_field}
+            if self.parent_field is not None and self.parent_field in names
+            else set()
+        )
+        given = set(body.model_fields) if body is not None else set()
+        if detail and given & {self.lookup, "if_match"}:
+            raise TypeError(
+                f"Items name their aggregate by {self.lookup}; leave it, and "
+                "if_match, out of the body."
+            )
+        provided = dict(provide or {})
+        if extra := sorted((given | set(provided)) - names):
+            raise TypeError(f"{command.__name__} has no field {', '.join(extra)}.")
+        required = {
+            field.name
+            for field in dataclasses.fields(command)
+            if field.default is dataclasses.MISSING
+            and field.default_factory is dataclasses.MISSING
+        }
+        if missing := sorted(
+            required - given - set(provided) - from_path - ({self.lookup} & names)
+        ):
+            raise TypeError(f"Nothing gives {command.__name__}'s {', '.join(missing)}.")
+        verb = action or (CHANGE if detail else ADD)
+        if returns is DEFAULT and verb == DELETE:
+            returns = None
+        code = (
+            status.HTTP_204_NO_CONTENT
+            if returns is None
+            else status.HTTP_200_OK
+            if detail
+            else status.HTTP_201_CREATED
+        )
+        item = _batch_item(command, body, self.lookup, self.id_type, detail)
+        batch = create_model(
+            f"{command.__name__}Batch",
+            __config__=ConfigDict(extra="forbid"),
+            items=(list[item], Field(min_length=1, max_length=max_items)),  # type: ignore[valid-type]
+            atomic=(
+                bool,
+                Field(default=False, description="All items, or none of them."),
+            ),
+        )
+
+        async def run(values: Values) -> Response:
+            request: Request = values["request"]
+            uow: UnitOfWork = values["uow"]
+            fixed = {
+                **{name: values[f"{PROVIDED}{name}"] for name in provided},
+                **{name: values[self._path_name(name)] for name in from_path},
+            }
+
+            async def attempt(
+                each: BaseModel, work: UnitOfWork
+            ) -> Callable[[], Awaitable[BatchResult]]:
+                arguments = _changes(each)
+                own = {
+                    self.lookup: arguments.pop(self.lookup, None),
+                    "if_match": arguments.pop("if_match", None),
+                }
+                built = command(
+                    **{
+                        **arguments,
+                        **fixed,
+                        **({self.lookup: own[self.lookup]} if detail else {}),
+                    }
+                )
+                scoped = {**values, **own}
+                if detail:
+                    await self._precheck(work, request, scoped, verb)
+                    result = await self._conditionally(
+                        scoped, lambda: service(built, work)
+                    )
+                else:
+                    result = await service(built, work)
+                return lambda: self._result(request, scoped, result, returns, code)
+
+            async def settle(
+                each: BaseModel, work: UnitOfWork
+            ) -> Callable[[], Awaitable[BatchResult]]:
+                try:
+                    return await attempt(each, work)
+                except Exception as exc:
+                    refused = failure(exc)
+                    if refused is None:
+                        raise
+                    return _settled(refused)
+
+            payload: Any = values["body"]
+            if not payload.atomic:
+                renders = [await settle(each, uow) for each in payload.items]
+                results = [await render() for render in renders]
+            else:
+                results = await self._atomically(uow, payload.items, settle)
+            answer = BatchAnswer(
+                results=results,
+                failed=sum(
+                    1
+                    for each in results
+                    if each.error is not None and each.error.code != NOT_APPLIED
+                ),
+            )
+            return JSONResponse(
+                answer.model_dump(mode="json", exclude_none=True),
+                status_code=status.HTTP_207_MULTI_STATUS,
+            )
+
+        self._route(
+            path,
+            "POST",
+            run,
+            name=name or f"{snake_case(command.__name__)}_batch",
+            summary=summary
+            or f"{_first_line(command.__doc__) or command.__name__}, for many",
+            action=verb,
+            rule=rule,
+            body=batch,
+            returns=BatchAnswer,
+            status_code=status.HTTP_207_MULTI_STATUS,
+            writes=True,
+            provided=provided,
+        )
+        self._before_items(self.routes.pop())
+
+    async def _atomically(
+        self,
+        uow: UnitOfWork,
+        items: Sequence[BaseModel],
+        settle: Callable[
+            [BaseModel, UnitOfWork], Awaitable[Callable[[], Awaitable[BatchResult]]]
+        ],
+    ) -> list[BatchResult]:
+        """Run every item in one transaction; the first failure undoes them all."""
+        renders: list[Callable[[], Awaitable[BatchResult]]] = []
+        failed: BatchResult | None = None
+        async with uow:
+            try:
+                async with uow.savepoint():
+                    lent = cast(UnitOfWork, Enlisted(uow))
+                    for each in items:
+                        render = await settle(each, lent)
+                        renders.append(render)
+                        if isinstance(render, _Settled):
+                            failed = render.result
+                            raise Undo
+            except Undo:
+                pass
+            if failed is None:
+                await uow.commit()
+        if failed is None:
+            return [await render() for render in renders]
+        return [
+            failed if index == len(renders) - 1 else not_applied()
+            for index in range(len(items))
+        ]
+
+    async def _result(
+        self,
+        request: Request,
+        values: Values,
+        result: object,
+        returns: type[BaseModel] | _Default | None,
+        status_code: int,
+    ) -> BatchResult:
+        """One item's result: the aggregate (tagged), another schema, or none.
+
+        Raises:
+            RuntimeError: The service returned nothing to answer with.
+        """
+        if returns is None:
+            return BatchResult(status=status.HTTP_204_NO_CONTENT)
+        if result is None:
+            raise RuntimeError("The service returned nothing; set returns=None.")
+        if (returns is DEFAULT or returns is self.source_schema) and isinstance(
+            result, AggregateRoot
+        ):
+            document, _, etag = await self._tagged(request, values, result)
+            location = (
+                self._url(request, values, self.read_name, result.id)
+                if status_code == status.HTTP_201_CREATED
+                else None
+            )
+            return BatchResult(
+                status=status_code, item=document, etag=etag, location=location
+            )
+        schema = self.source_schema if returns is DEFAULT else returns
+        shown = _presenter(schema)(result)  # type: ignore[arg-type]
+        return BatchResult(status=status_code, item=shown.model_dump(mode="json"))
+
     def query_route(
         self,
         query: type[QueryMessage],
@@ -508,7 +769,15 @@ class ResourceRouter(APIRouter):
         async def run(values: Values) -> Response:
             request: Request = values["request"]
             page: PageRequest = values["page"]
+            exporting = len(self.media_types) > 1
+            media = (
+                negotiate(request.headers.get("accept"), self.media_types)
+                if exporting
+                else JSON
+            )
             query = await self._list_query(request, values)
+            if media != JSON:
+                return await self._export(request, values, query, media)
             async with values["uow"] as uow:
                 found = await page.fetch(self.repository(uow), query)
             hidden = await self._hidden(request)
@@ -521,7 +790,7 @@ class ResourceRouter(APIRouter):
             for name in self.page_schema.model_fields:
                 if name != "items":
                     body[name] = getattr(out, name)
-            return JSONResponse(body)
+            return JSONResponse(body, headers={"Vary": "Accept"} if exporting else None)
 
         self._route(
             "",
@@ -810,9 +1079,22 @@ class ResourceRouter(APIRouter):
             codes.append(status.HTTP_412_PRECONDITION_FAILED)
             if self.require_if_match:
                 codes.append(status.HTTP_428_PRECONDITION_REQUIRED)
+        exporting = listing and len(self.media_types) > 1
         if listing or asked is not None:
             codes.append(status.HTTP_422_UNPROCESSABLE_CONTENT)
+        if exporting:
+            codes.append(status.HTTP_406_NOT_ACCEPTABLE)
         responses: dict[int | str, dict[str, Any]] = dict(error_responses(*codes))
+        if exporting:
+            responses[status.HTTP_200_OK] = {
+                "content": {
+                    media: {"schema": {"type": "string"}}
+                    for media in self.media_types[1:]
+                },
+                "description": "A page as JSON; every match as "
+                + " or ".join(self.media_types[1:])
+                + f", by Accept, up to {self.max_export}.",
+            }
         if reads:
             responses[status.HTTP_304_NOT_MODIFIED] = {
                 "description": "The ETag sent is still current."
@@ -1010,6 +1292,75 @@ class ResourceRouter(APIRouter):
         shown = _presenter(schema)(result)  # type: ignore[arg-type]
         return JSONResponse(shown.model_dump(mode="json"), status_code=status_code)
 
+    async def _export(
+        self, request: Request, values: Values, query: Query, media: str
+    ) -> Response:
+        """Every match of ``query``, streamed as CSV or NDJSON.
+
+        Raises:
+            ExportTooLarge: More than ``max_export`` match.
+        """
+        async with values["uow"] as uow:
+            total = await self.repository(uow).count(
+                query.criteria, include_deleted=query.include_deleted
+            )
+        if total > self.max_export:
+            raise ExportTooLarge
+        hidden = await self._hidden(request)
+        columns = [
+            name
+            for name in self.schema.model_fields
+            if name not in hidden
+            and name != "links"
+            and (self.list_fields is None or name in self.list_fields)
+        ]
+
+        async def body() -> AsyncIterator[str]:
+            if media == CSV:
+                yield csv_rows([columns])
+            after: Sequence[object] | None = None
+            sent = 0
+            while sent < self.max_export:
+                async with values["uow"] as uow:
+                    page = await self.repository(uow).paginate(
+                        query,
+                        limit=min(EXPORT_CHUNK, self.max_export - sent),
+                        after=after,
+                    )
+                documents = [
+                    self._dump(request, values, item, hidden, self.list_fields)
+                    for item in page.items
+                ]
+                sent += len(documents)
+                yield (
+                    csv_rows(
+                        [[each.get(name) for name in columns] for each in documents]
+                    )
+                    if media == CSV
+                    else ndjson_lines(documents)
+                )
+                if not page.has_more:
+                    break
+                after = page.next_position
+
+        headers = {"Vary": "Accept"}
+        if media == CSV:
+            headers["Content-Disposition"] = f'attachment; filename="{self.plural}.csv"'
+        return StreamingResponse(
+            body(),
+            media_type=f"{media}; charset=utf-8" if media == CSV else media,
+            headers=headers,
+        )
+
+    async def _tagged(
+        self, request: Request, values: Values, aggregate: Aggregate
+    ) -> tuple[dict[str, Any], bytes, str]:
+        """An aggregate's JSON for this caller, its bytes, and its ``ETag``."""
+        hidden = await self._hidden(request)
+        document = self._dump(request, values, aggregate, hidden)
+        body = bytes(JSONResponse(document).body)
+        return document, body, entity_tag(aggregate.version, body)
+
     async def _respond(
         self,
         request: Request,
@@ -1021,10 +1372,7 @@ class ResourceRouter(APIRouter):
         if_none_match: str | None = None,
     ) -> Response:
         """One aggregate as JSON, tagged; ``304`` if ``If-None-Match`` names the tag."""
-        hidden = await self._hidden(request)
-        document = self._dump(request, values, aggregate, hidden)
-        body = bytes(JSONResponse(document).body)
-        etag = entity_tag(aggregate.version, body)
+        _, body, etag = await self._tagged(request, values, aggregate)
         if none_match(if_none_match, etag):
             return Response(
                 status_code=status.HTTP_304_NOT_MODIFIED, headers={"ETag": etag}
@@ -1283,6 +1631,48 @@ def _checks_objects(rule: Rule) -> bool:
     if isinstance(rule, Not):
         return _checks_objects(rule.rule)
     return type(rule).has_object_permission is not BasePermission.has_object_permission
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _Settled:
+    """An item's result known already: it failed, so there is nothing to render."""
+
+    result: BatchResult
+
+    async def __call__(self) -> BatchResult:
+        """The result."""
+        return self.result
+
+
+def _settled(result: BatchResult) -> Callable[[], Awaitable[BatchResult]]:
+    """A render of an item that failed."""
+    return _Settled(result)
+
+
+def _batch_item(
+    command: type[Command],
+    body: type[BaseModel] | None,
+    lookup: str,
+    id_type: type,
+    detail: bool,
+) -> type[BaseModel]:
+    """``<Command>Item``: the body's fields, and the aggregate's id and If-Match."""
+    fields: dict[str, Any] = {}
+    if detail:
+        fields[lookup] = (id_type, Field(description="The aggregate it acts on."))
+        fields["if_match"] = (
+            str | None,
+            Field(
+                default=None,
+                max_length=4096,
+                description="The ETag of the version it changes; 412 if it changed.",
+            ),
+        )
+    if body is None:
+        return create_model(
+            f"{command.__name__}Item", __config__=ConfigDict(extra="forbid"), **fields
+        )
+    return create_model(f"{command.__name__}Item", __base__=body, **fields)
 
 
 def _listed(schema: type[BaseModel], fields: Sequence[str] | None) -> set[str] | None:

@@ -222,6 +222,14 @@ All notable changes to domainkit. The format follows
   resource: its fields from the query string (bounded, unknown parameters
   refused), one aggregate or `{"items": [...]}` back, and what the caller
   may not reach or see left out.
+- Batches (DJ-35, ADR 0027): `batch_route(Command, service=...)` serves
+  `POST /<plural>/batch` for up to `max_items` items, answering `207` with
+  each item's result; `"atomic": true` runs them in one transaction and
+  undoes them all if one fails.
+- Exports (DJ-34): `ResourceRouter(..., exports=("csv", "ndjson"))` answers
+  listings as CSV or NDJSON by `Accept` (`406` when nothing fits), every
+  match streamed up to `max_export`; CSV cells that could run as formulas
+  are neutralised.
 - `domainkit.contrib.objectpermissions` (DJ-30, ADR 0026; `docs/auth.md`,
   "Grants on single objects"): grants of one permission on one object to a
   user or a group, as audited events; `ObjectPermissionBackend` for

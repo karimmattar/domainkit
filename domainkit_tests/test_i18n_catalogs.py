@@ -332,6 +332,7 @@ EXTRA_MESSAGES: Final = {
     "You do not have permission to change some of these fields.",  # The same.
     "This value is already taken.",  # db.errors, when no field is known.
     "Too many requests; slow down.",  # http.ratelimit.TOO_MANY_REQUESTS
+    "Another item of the batch failed, so nothing was applied.",  # resources.batches
 }
 """Framework messages the scan below cannot see: constants and returns."""
 SCANNED: Final = (

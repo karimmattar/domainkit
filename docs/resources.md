@@ -139,6 +139,65 @@ products.query_route(
   `rule` adds one, as for commands; `name` defaults to the query's, in
   snake case.
 
+## Batches
+
+`batch_route` runs one command for many items in one request:
+
+```python
+products.batch_route(RenameProduct, service=services.rename_product, body=RenameIn)
+products.batch_route(
+    DeleteProduct, service=services.delete_product, path="/deletions", action="delete"
+)
+```
+
+`POST /products/batch` takes `{"items": [...], "atomic": false}`: 1 to
+`max_items` (100) items, all validated before any runs. Each item is the
+body's fields and, for a command on one product, its `product_id` and an
+`if_match` of its own. The answer is `207`, one result per item, in order:
+
+```json
+{
+  "results": [
+    {"status": 200, "item": {"id": "...", "name": "New"}, "etag": "W/\"2-...\""},
+    {"status": 404, "error": {"code": "not_found", "detail": "..."}}
+  ],
+  "failed": 1
+}
+```
+
+- Each item answers as its own request would: `200` (`201` with
+  `location` for creations, `204` with `returns=None` and for
+  `action="delete"`), or the error's status, code, and detail. The
+  caller's scope and rules on objects apply to each item.
+- Without `atomic`, each item is a use case of its own: a failure leaves
+  the others done. With `"atomic": true`, all run in one transaction:
+  each service's own commit waits for the batch's, events are published
+  once at the end, and the first failure undoes everything, every other
+  item answering `424 not_applied`.
+- Bugs are not results: an unexpected exception fails the request with
+  `500`, as it would for one item.
+- `action` defaults to `change` for commands on one aggregate and `add`
+  for the others; the route needs that permission once, for the batch.
+
+## Exports
+
+`exports=("csv", "ndjson")` lets the listing answer by `Accept`: JSON
+pages, `text/csv`, or `application/x-ndjson` (one JSON document per
+line). An export holds every match of the filters and the scope, in the
+listing's order, read in chunks and streamed; `limit` and `cursor` do not
+apply.
+
+- More than `max_export` matches (10,000) is `422 export_too_large`:
+  narrow it with filters.
+- A request that accepts none of the offered types is `406
+  not_acceptable`, with `Accept` naming them; without `Accept`, JSON.
+  Answers say `Vary: Accept`, for caches.
+- CSV has the list's fields (`list_fields`, or all), less those the
+  caller may not see; nested values are JSON. A text cell that a
+  spreadsheet would run as a formula (starting with `=`, `+`, `-`, `@`,
+  a tab, or a carriage return) gets an apostrophe first; numbers, such
+  as `-1.50`, stay as they are.
+
 ## Schemas from the domain
 
 `schema_for` derives pydantic schemas from an aggregate's fields, so a
