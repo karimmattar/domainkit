@@ -118,7 +118,7 @@ def test_a_reset_link_sets_a_new_password_and_ends_every_session(
     assert outbox_payloads() == [{"email": "alice@EXAMPLE.com"}]
     assert outbox_targets() == ["domainkit.auth.send_password_reset"]
     assert mail.outbox == []
-    assert run_worker() == 1
+    run_worker()  # Periodic tasks may run too: count the mail.
     (message,) = mail.outbox
     assert message.to == ("Alice@example.com",)
     assert message.subject == "Reset your password"
