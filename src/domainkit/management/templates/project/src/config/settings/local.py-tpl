@@ -1,9 +1,12 @@
 """Settings for development on this machine (selected by .env)."""
 
 from config.settings.base import *
-from config.settings.base import BASE_DIR, env
+from config.settings.base import BASE_DIR, MIDDLEWARE, env
 
 DEBUG = True
+# SQL per request and likely N+1 queries in the log and in Server-Timing
+# (docs/reference.md, "Debug toolbar"); staging and production refuse it.
+MIDDLEWARE = [*MIDDLEWARE, "domainkit.debug.DebugToolbarMiddleware"]
 DATABASES = {
     "default": {
         "URL": env.str("DATABASE_URL", f"sqlite+aiosqlite:///{BASE_DIR / 'db.sqlite3'}")

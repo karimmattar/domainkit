@@ -21,8 +21,8 @@ A Django-style framework for domain-driven FastAPI services. It provides:
   and a swappable user model; token or JWT authentication, and route rules
   as in Django REST framework
 - optional apps for reliable messaging, audit trails, idempotent requests,
-  tamper-evident evidence, signed outgoing webhooks, and privacy requests
-  (export, erasure, and retention)
+  tamper-evident evidence, signed outgoing webhooks, feature flags, and privacy
+  requests (export, erasure, and retention)
 
 ```bash
 pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, immudb, redis, rabbitmq, metrics, tracing, uploads, testing, webhooks, tzdata
@@ -31,7 +31,8 @@ pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, i
 ## Documentation
 
 - [docs/reference.md](https://github.com/karimmattar/domainkit/blob/main/docs/reference.md): settings, middleware, errors,
-  observability, testing, commands, and extension points
+  the API surface (OpenAPI, versions, deprecations), observability,
+  testing, commands, and extension points
 - [docs/databases.md](https://github.com/karimmattar/domainkit/blob/main/docs/databases.md): several databases, routing,
   sharding, partitioning, and ledgers
 - [docs/queries.md](https://github.com/karimmattar/domainkit/blob/main/docs/queries.md): querying repositories,
@@ -39,7 +40,8 @@ pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, i
 - [docs/cache.md](https://github.com/karimmattar/domainkit/blob/main/docs/cache.md): caches in memory, Redis, and Valkey,
   and shared rate limits
 - [docs/contrib.md](https://github.com/karimmattar/domainkit/blob/main/docs/contrib.md): messaging (and workers on RabbitMQ),
-  webhooks, audit, idempotency, and evidence
+  webhooks, audit and records' history, idempotency, evidence, and
+  feature flags
 - [docs/auth.md](https://github.com/karimmattar/domainkit/blob/main/docs/auth.md): users, groups, permissions, content
   types, passwords, backends, tokens, route rules, and the admin API
 - [docs/i18n.md](https://github.com/karimmattar/domainkit/blob/main/docs/i18n.md): responses in the caller's language,

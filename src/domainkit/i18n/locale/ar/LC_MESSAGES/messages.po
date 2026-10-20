@@ -167,6 +167,21 @@ msgid "No file has that name."
 msgstr "لا يوجد ملف بهذا الاسم."
 
 #. Pydantic's validation messages, by their templates; the error's context fills the {names}
+msgid "A required value is missing."
+msgstr "قيمة مطلوبة غير موجودة."
+
+msgid "A value breaks a rule of the data: it is out of the range or set the database accepts."
+msgstr "قيمة تخالف قاعدة من قواعد البيانات: إنها خارج النطاق أو المجموعة التي تقبلها قاعدة البيانات."
+
+msgid "Name revisions, not 'base'."
+msgstr "اذكر مراجعات بأسمائها، لا 'base'."
+
+msgid "Squashing needs at least two revisions."
+msgstr "الدمج يحتاج إلى مراجعتين على الأقل."
+
+msgid "The squashed revision does not join the history."
+msgstr "المراجعة المدمجة لا تتصل بسجل المراجعات."
+
 msgctxt "validation"
 msgid "Field required"
 msgstr "هذا الحقل مطلوب"

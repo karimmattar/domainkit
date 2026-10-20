@@ -41,6 +41,8 @@ LANGUAGE_PATTERN: Final = r"^[a-z]{2,3}(-[a-z0-9]{2,8})*$"
 """A language code in settings: lower case, as ``ar`` or ``pt-br``."""
 
 RATE_LIMIT_MIDDLEWARE: Final = "domainkit.http.ratelimit.RateLimitMiddleware"
+DEBUG_TOOLBAR_MIDDLEWARE: Final = "domainkit.debug.DebugToolbarMiddleware"
+"""Development middleware: SQL per request, N+1 warnings, profiles."""
 DEFAULT_MIDDLEWARE: Final = (
     "domainkit.http.middleware.ProxyHeadersMiddleware",
     "domainkit.http.middleware.SecurityHeadersMiddleware",
@@ -441,6 +443,24 @@ class StorageConfig(BaseModel):
     """Keyword arguments of the class, such as ``{"location": "/srv/files"}``."""
 
 
+class DebugToolbarConfig(BaseModel):
+    """``DEBUG_TOOLBAR``: what ``DebugToolbarMiddleware`` adds while ``DEBUG``."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    REPEATED_QUERIES: int = Field(default=5, ge=2)
+    """A statement run this often in one request is logged as a likely N+1."""
+    HEADERS: bool = False
+    """Add ``X-Debug-Queries``, ``-Query-Time``, and ``-Repeated-Queries``."""
+    PROFILE_DIR: Path | None = None
+    """Where requests sent with ``X-Debug-Profile: 1`` leave a cProfile file;
+    None turns profiling off."""
+
+
+ABSOLUTE_URI: Final = r"^[A-Za-z][A-Za-z0-9+.-]*:[^\s]+$"
+"""An absolute URI without whitespace (``https://...``, ``urn:...``)."""
+
+
 class Settings(BaseModel):
     """Validated, read-only settings; extra names are checked at ``setup()``."""
 
@@ -489,6 +509,14 @@ class Settings(BaseModel):
     """Accepted ``Host`` header values; ``*.example.com`` matches subdomains."""
     API_DOCS: bool = True
     """Serve ``/docs``, ``/redoc``, and ``/openapi.json``."""
+    OPENAPI_OPERATION_IDS: Literal["fastapi", "route_name"] = "fastapi"
+    """Operation ids: FastAPI's (name, path, and method), or the route's name."""
+    ERROR_FORMAT: Literal["domainkit", "problem+json"] = "domainkit"
+    """Error bodies: ``{"detail", "code", ...}``, or RFC 9457 problem details."""
+    ERROR_TYPE_BASE_URL: str | None = Field(default=None, pattern=ABSOLUTE_URI)
+    """Problem details: each code's ``type`` is this URL plus the code."""
+    DEBUG_TOOLBAR: DebugToolbarConfig = Field(default_factory=DebugToolbarConfig)
+    """Options of ``DebugToolbarMiddleware`` (development only)."""
     MAX_REQUEST_BODY_SIZE: int = Field(default=1_048_576, ge=1)
     """Largest accepted request body in bytes; larger requests get 413."""
     READINESS_TIMEOUT: float = Field(default=5.0, gt=0)
@@ -690,6 +718,11 @@ class Settings(BaseModel):
         where = f"in {self.ENVIRONMENT}"
         if self.DEBUG:
             raise ValueError(f"DEBUG must be False {where}")
+        if DEBUG_TOOLBAR_MIDDLEWARE in self.MIDDLEWARE:
+            raise ValueError(
+                f"{DEBUG_TOOLBAR_MIDDLEWARE} is for development; remove it from "
+                f"MIDDLEWARE {where}"
+            )
         if "*" in self.ALLOWED_HOSTS:
             raise ValueError(f"ALLOWED_HOSTS must list real host names {where}")
         if any(network.prefixlen == 0 for network in self.TRUSTED_PROXIES):
