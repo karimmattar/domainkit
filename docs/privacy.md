@@ -46,6 +46,12 @@ class Order(AggregateRoot[OrderId]):
 - The subject is the value of the `of` field, as text: a user id, a
   customer id. Requests name people by these internal ids, never by an
   email address.
+- Write an id as Python prints it, the form text columns and the audit
+  trail hold: a UUID in lower case with dashes, a number without a sign,
+  spaces, or leading zeros. Where domains name people by UUID or integer,
+  other spellings (`3F2A...`, `{3f2a...}`, `urn:uuid:3f2a...`, `042`,
+  `+42`) are refused with the form to use, so a person is never exported
+  or erased in part.
 - Mark the whole field: a marker inside a value object or a list is
   refused, as for events.
 - `manage.py check` lists markers privacy cannot follow, and staging and

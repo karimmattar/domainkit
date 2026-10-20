@@ -19,6 +19,7 @@ from domainkit.contrib.admin import AdminSite
 from domainkit.contrib.audit import api as audit_api
 from domainkit.contrib.audit.api import HistoryPageOut
 from domainkit.contrib.auth import AnyUser
+from domainkit.ddd import AggregateRoot
 from domainkit.ddd.query import F
 from domainkit.http import FilterSet, Pagination, get_asgi_application
 from domainkit.http.errors import install_exception_handlers
@@ -147,6 +148,23 @@ def test_search_and_ordering_make_filters(
 
     assert [each["name"] for each in found.json()["items"]] == ["b"]
     assert [each["name"] for each in ordered.json()["items"]] == ["c", "b", "a"]
+
+
+class Memo(AggregateRoot[uuid.UUID]):
+    """An aggregate with text of any length."""
+
+    text: str
+
+
+def test_ordering_needs_bounded_fields() -> None:
+    """A cursor holds the sort values: text without a ``MaxLength`` is refused."""
+    with pytest.raises(TypeError, match=r"Memo.text .* MaxLength"):
+        AdminSite().register(
+            Memo,
+            unit_of_work=FakeGadgetsUnitOfWork,
+            repository=lambda uow: uow.gadgets,
+            ordering=["text"],
+        )
 
 
 def test_queries_answer_through_their_handlers(

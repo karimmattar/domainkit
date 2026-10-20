@@ -2,7 +2,18 @@
 
 from typing import Final
 
-from sqlalchemy import JSON, Boolean, Column, Index, Integer, String, Table, Text, Uuid
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    Index,
+    Integer,
+    LargeBinary,
+    String,
+    Table,
+    Text,
+    Uuid,
+)
 
 from domainkit.db import UTCDateTime, map_imperatively, metadata
 
@@ -22,8 +33,9 @@ subscriptions = Table(
     Column("id", Uuid, primary_key=True),
     Column("url", String(2048), nullable=False),
     Column("event_types", JSON, nullable=False),
-    Column("secret", String(100), nullable=False),
-    Column("previous_secret", String(100)),
+    # Encrypted (models.secret_box), bound to the subscription's id.
+    Column("secret", LargeBinary(256), nullable=False),
+    Column("previous_secret", LargeBinary(256)),
     Column("previous_secret_expires_at", UTCDateTime),
     Column("active", Boolean, nullable=False),
     Column("description", String(255), nullable=False),

@@ -8,16 +8,19 @@ so ``response_model`` filtering always applies::
     @cache_page(ttl=60)
     async def list_products(category: str | None = None) -> list[ProductOut]: ...
 
-Entries are keyed by the endpoint, the path, the query, the request's
-language, and the headers listed in ``vary``. Route dependencies (rules,
+Entries are keyed by the endpoint, the URL (scheme, host, and path, as
+Django's absolute URIs), the query, the request's language, and the
+headers listed in ``vary``. Route dependencies (rules,
 throttles) run first, on every request, so a cached answer never reaches a
 caller who may not see it.
 
 A response depends on who asks unless proven otherwise, so requests that
 carry credentials are never served from, or stored in, the cache, unless
 the page varies on the user: ``vary_on_user=True`` keys entries by actor
-and marks them ``private``. Requests with credentials no middleware
-accepted (no actor) are never cached.
+and marks them ``private``. Credentials are the actor, the ``Credentials``
+an authentication middleware accepted (``request.auth``: a token, a
+cookie, a client certificate), or an ``Authorization`` header. Requests
+with credentials but no actor or user id are never cached.
 
 Cached pages override the framework's ``Cache-Control: no-store`` on
 purpose: clients may keep them, and must revalidate them (``no-cache``)
@@ -136,20 +139,34 @@ _UNCHECKED: Final = ""
 
 
 def _user(request: Request) -> str | None:
-    """The actor, ``""`` for credentials without one, or None for anonymous callers."""
+    """The actor, ``""`` for credentials without one, or None for anonymous callers.
+
+    Without an actor (no ``RequestContextMiddleware``), credentials that
+    middleware accepted (``request.auth``) still count, by their user's id:
+    a cookie or a client certificate sends no ``Authorization`` header.
+    """
     context = current_request()
     if context is not None and context.actor:
         return context.actor
+    credentials = request.scope.get("auth")
+    if credentials is not None:
+        user_id = getattr(getattr(credentials, "user", None), "id", None)
+        return _UNCHECKED if user_id is None else str(user_id)
     return _UNCHECKED if "authorization" in request.headers else None
 
 
 def _key(
     prefix: str, request: Request, headers: Sequence[str], user: str | None
 ) -> str:
-    """The entry for this request: path, query, language, headers, and user."""
+    """The entry for this request: URL, query, language, headers, and user.
+
+    The URL has the scheme and the host, so tenants chosen by ``Host``, and
+    answers that link to themselves, never share an entry.
+    """
     query = sorted(request.query_params.multi_items(), key=lambda item: item[0])
+    url = request.url
     parts = [
-        request.url.path,
+        f"{url.scheme}://{url.netloc}{url.path}",
         query,
         get_language(),
         [request.headers.get(header) for header in headers],

@@ -419,7 +419,10 @@ counts or records it. It tries `AUTH.AUTHENTICATION_CLASSES` in order:
 - the user becomes `request.user` (`AnonymousUser` without credentials),
   and the `Credentials` used become `request.auth`;
 - the user's id becomes the request's actor, so rate limits, idempotency
-  keys, logs, and the audit trail are per user, not per address;
+  keys, logs, and the audit trail are per user, not per address. The actor
+  lives in the context `RequestContextMiddleware` makes, so startup
+  refuses a `MIDDLEWARE` without it, or with it listed after
+  `AuthenticationMiddleware`;
 - credentials a class recognizes but that do not hold (an unknown,
   expired, or revoked token; an inactive user) get a 401 with
   `WWW-Authenticate: Bearer realm="api", error="invalid_token"`, even on

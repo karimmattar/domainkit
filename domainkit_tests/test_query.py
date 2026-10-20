@@ -17,6 +17,7 @@ from domainkit.ddd.fields import (
     InvalidQuery,
     MaxLength,
     UnknownField,
+    base_field,
     base_type,
     describe,
     fields_of,
@@ -268,6 +269,11 @@ def test_value_objects_are_compared_by_what_they_wrap() -> None:
     assert wrapped_field(Pair) is None
     assert wrapped_field(int) is None
     assert wrapped_field(Label) == fields_of(Label)["value"]
+    wrapper, pair, unknown = (
+        FieldInfo("x", Thing, kind) for kind in (Wrapper, Pair, None)
+    )
+    assert base_field(wrapper) == fields_of(Label)["value"]  # Its MaxLength(20).
+    assert (base_field(pair), base_field(unknown)) == (pair, unknown)
 
 
 def test_field_names_must_be_names() -> None:

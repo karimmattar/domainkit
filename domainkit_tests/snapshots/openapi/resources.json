@@ -2337,7 +2337,7 @@
       "schema": {
        "anyOf": [
         {
-         "maxLength": 2048,
+         "maxLength": 4096,
          "pattern": "^[A-Za-z0-9_-]+$",
          "type": "string"
         },
@@ -2750,7 +2750,7 @@
       "schema": {
        "anyOf": [
         {
-         "maxLength": 2048,
+         "maxLength": 4096,
          "pattern": "^[A-Za-z0-9_-]+$",
          "type": "string"
         },

@@ -1,6 +1,7 @@
 """Outgoing webhooks: committed events, signed and delivered to subscribed URLs.
 
-Install it with messaging, and the ``webhooks`` extra (httpx2)::
+Install it with messaging, and the ``webhooks`` extra (httpx2, cryptography),
+and set ``SECRET_KEY``: subscription secrets are stored encrypted::
 
     INSTALLED_DOMAINS = [
         "domainkit.contrib.messaging",

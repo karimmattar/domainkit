@@ -10,15 +10,18 @@ from typing import Any, Final
 import pytest
 from fastapi import FastAPI, Request, Response
 from fastapi.testclient import TestClient
+from starlette.authentication import AuthCredentials
 
 from domainkit.cache import cache_page, caches
-from domainkit.cache.pages import REQUEST, RESPONSE, _matches, _signature
+from domainkit.cache.pages import REQUEST, RESPONSE, _matches, _signature, _user
 from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
+from domainkit.contrib.auth.authentication import Credentials
 from domainkit.http import get_asgi_application
 from domainkit.testing import TestClient as DomainkitTestClient
 from domainkit_tests import sample_platform_routes
-from domainkit_tests.conftest import MakePackage
+from domainkit_tests.conftest import MakePackage, UseAuth
+from domainkit_tests.sample_platform_routes import COOKIE_USERS
 
 MIDDLEWARE: Final = [
     "domainkit.http.locale.LocaleMiddleware",
@@ -96,6 +99,32 @@ def test_entries_are_kept_per_path_query_header_and_language(
     assert (english, arabic) == ({"language": "en"}, {"language": "ar"})
 
 
+def test_entries_are_kept_per_scheme_and_host(computed: list[str]) -> None:
+    """Hosts and schemes never share an entry, as Django's absolute URLs do not.
+
+    A page whose answer depends on the host (a tenant chosen by ``Host``, a
+    link to itself) was served to every host from the first one's entry.
+    """
+    bases = (
+        "https://a.example",
+        "http://a.example",
+        "https://b.example",
+        "https://b.example:8443",
+        "https://a.example",
+    )
+    with override_settings(ROOT_ROUTER=PAGES, MIDDLEWARE=MIDDLEWARE):
+        app = get_asgi_application()
+        answers = [TestClient(app, base_url=b).get("/here").json() for b in bases]
+
+    assert answers == [{"url": f"{base}/here"} for base in bases]
+    assert computed == [
+        "here:a.example",
+        "here:a.example",
+        "here:b.example",
+        "here:b.example",
+    ]
+
+
 def test_declared_headers_and_ages_reach_the_client(client: TestClient) -> None:
     """``vary`` and ``max_age`` become ``Vary`` and ``Cache-Control``."""
     response = client.get("/products/5", headers={"X-Tenant": "one"})
@@ -134,6 +163,62 @@ def test_users_are_never_served_shared_answers(
     assert alice.headers["Cache-Control"] == "no-store"
     assert "ETag" not in again.headers
     assert unchecked.status_code == 200
+
+
+def test_users_without_an_actor_are_never_served_shared_answers(
+    use_auth: UseAuth, computed: list[str]
+) -> None:
+    """A cookie's user is a user, though no ``RequestContextMiddleware`` binds them.
+
+    Such a user sent no ``Authorization`` header and had no actor, so a page
+    that forgot ``vary_on_user`` was stored for, and served to, everyone.
+    """
+    use_auth(
+        AUTHENTICATION_CLASSES=["domainkit_tests.sample_platform_routes.SessionCookie"]
+    )
+    middleware = [
+        MIDDLEWARE[1],
+        "domainkit.contrib.auth.middleware.AuthenticationMiddleware",
+    ]
+    with override_settings(ROOT_ROUTER=PAGES, MIDDLEWARE=middleware):
+        app = get_asgi_application()  # Startup refuses this list; mounts may not.
+        alice = TestClient(app, cookies={"session": "alice"})
+        bob = TestClient(app, cookies={"session": "bob"})
+        anonymous = TestClient(app)
+        names = [alice.get("/me/name"), anonymous.get("/me/name")]
+        greetings = [
+            alice.get("/me/greeting"),
+            alice.get("/me/greeting"),
+            bob.get("/me/greeting"),
+            anonymous.get("/me/greeting"),
+        ]
+
+    assert [r.json() for r in names] == [{"you": "alice"}, {"you": "anonymous"}]
+    assert names[0].headers["Cache-Control"] == "no-store"
+    assert [r.json()["hello"] for r in greetings] == [
+        "alice",
+        "alice",
+        "bob",
+        "anonymous",
+    ]
+    assert greetings[0].headers["Cache-Control"] == "private, no-cache"
+    assert computed == [
+        "name:alice",
+        "name:anonymous",
+        "greeting:alice",
+        "greeting:bob",
+        "greeting:anonymous",
+    ]
+
+
+def test_credentials_without_a_user_id_are_never_cached() -> None:
+    """Another middleware's credentials name no user: whose they are is unknown."""
+    other = {"type": "http", "headers": [], "auth": AuthCredentials(["authenticated"])}
+    accepted = {**other, "auth": Credentials(user=COOKIE_USERS["bob"], scheme="x")}  # type: ignore[arg-type]
+
+    assert _user(Request(other)) == ""
+    assert _user(Request(accepted)) == str(COOKIE_USERS["bob"].id)
+    assert _user(Request({**other, "auth": None})) is None
 
 
 def test_pages_that_vary_on_the_user_keep_an_entry_each(

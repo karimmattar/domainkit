@@ -311,6 +311,18 @@ def wrapped_field(cls: type) -> FieldInfo | None:
     return next(iter(fields.values())) if len(fields) == 1 else None
 
 
+def base_field(field: FieldInfo) -> FieldInfo:
+    """The field whose ``Annotated`` metadata bounds what ``field`` holds.
+
+    For a single-field value object, the field it wraps, followed down as
+    ``base_type`` follows types (and as ``table_for`` derives the column):
+    its ``MaxLength`` or ``Digits`` apply. For any other field, ``field``.
+    """
+    while field.kind is not None and (inner := wrapped_field(field.kind)) is not None:
+        field = inner
+    return field
+
+
 def base_type(kind: type | None) -> type | None:
     """The type values are compared as: what single-field value objects wrap."""
     while kind is not None and (inner := wrapped_field(kind)) is not None:

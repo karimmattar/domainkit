@@ -4,7 +4,9 @@ import asyncio
 import enum
 import io
 import json
+import os
 import re
+import stat
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, date, datetime, time, timedelta
@@ -25,6 +27,7 @@ from sqlalchemy import (
     String,
     Table,
     Time,
+    UniqueConstraint,
     Uuid,
     func,
     insert,
@@ -577,6 +580,38 @@ def test_dump_options_on_the_command_line(project: str, tmp_path: Path) -> None:
     assert run("dumpdata", kinds.name, "--indent", "4").startswith('{\n    "format": ')
 
 
+def test_dumps_go_to_new_files_only_their_owner_reads(
+    project: str, tmp_path: Path
+) -> None:
+    """Mode 0600 whatever the umask; an existing path, or a planted link, is refused.
+
+    ``-o`` wrote with the umask's mode (0644, for a fixture of personal data
+    and password hashes) and followed a link planted where it would go.
+    """
+    path = tmp_path / "kinds.json"
+    victim = tmp_path / "victim.txt"
+    victim.write_text("operator's file\n", encoding="utf-8")
+    planted = tmp_path / "planted.json"
+    planted.symlink_to(victim)
+    dangling = tmp_path / "dangling.json"
+    dangling.symlink_to(tmp_path / "nowhere.json")
+    umask = os.umask(0o022)
+    try:
+        written = run("dumpdata", kinds.name, "-o", str(path))
+    finally:
+        os.umask(umask)
+
+    assert written == f"Wrote 1 row(s) of 1 table(s) to {path}.\n"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    for taken in (path, planted, dangling):
+        message = f"^{re.escape(str(taken))} exists; name a new file\\.$"
+        with pytest.raises(CommandError, match=message):
+            run("dumpdata", kinds.name, "-o", str(taken))
+    assert victim.read_text(encoding="utf-8") == "operator's file\n"
+    assert json.loads(path.read_text(encoding="utf-8"))["tables"][0]["rows"]
+    assert not (tmp_path / "nowhere.json").exists()
+
+
 def test_loading_updates_stored_rows(project: str, tmp_path: Path) -> None:
     """Rows with a stored key replace the stored values, several at a time."""
     path = tmp_path / "kinds.json"
@@ -818,3 +853,44 @@ def test_serial_ids_continue_after_a_load(project: str, tmp_path: Path) -> None:
             await connections.close_all()
 
     assert asyncio.run(add()) == 6
+
+
+def test_tables_that_are_all_key_still_refuse_other_duplicates(
+    project: str, tmp_path: Path
+) -> None:
+    """Only a row stored under the same key is kept; another unique value is not."""
+    pairs = Table(
+        "framework_test_kind_pairs",
+        metadata,
+        Column("kind", Integer, primary_key=True),
+        Column("tag", String(20), primary_key=True),
+        UniqueConstraint("tag"),
+        info={"domain": "kinds"},
+    )
+    path = tmp_path / "pairs.json"
+    path.write_text(
+        json.dumps(
+            {
+                "format": "domainkit.fixture",
+                "version": 1,
+                "tables": [{"table": pairs.name, "rows": [{"kind": 2, "tag": "x"}]}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    async def create() -> None:
+        async with connections.engine().begin() as connection:
+            await connection.run_sync(pairs.create)
+            await connection.execute(insert(pairs).values(kind=1, tag="x"))
+        await connections.close_all()
+
+    try:
+        asyncio.run(create())
+        with pytest.raises(CommandError, match="the database refused the rows"):
+            run("loaddata", str(path))
+        stored = asyncio.run(_scalars(select(pairs.c.kind)))
+    finally:
+        metadata.remove(pairs)
+
+    assert stored == [1]

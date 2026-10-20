@@ -53,8 +53,9 @@ redis = ["redis (>=8.1.0,<9.0.0)"]
 uploads = ["python-multipart (>=0.0.32,<0.1.0)"]
 # The domainkit.testing pytest plugin; Starlette's TestClient needs httpx2.
 testing = ["pytest (>=9.1.1,<10.0.0)", "httpx2 (>=2.13.0,<3.0.0)"]
-# Outgoing webhooks (domainkit.contrib.webhooks) send with httpx2.
-webhooks = ["httpx2 (>=2.13.0,<3.0.0)"]
+# Outgoing webhooks (domainkit.contrib.webhooks) send with httpx2 and encrypt
+# subscription secrets with AES-GCM.
+webhooks = ["httpx2 (>=2.13.0,<3.0.0)", "cryptography (>=50.0.2,<51.0.0)"]
 # The IANA time zones for cron schedules where the system has none (Windows).
 tzdata = ["tzdata (>=2025.2)"]
 
@@ -160,3 +161,6 @@ exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError"]
 source_paths = ["src"]
 also_copy = ["domainkit_tests/", "docs/"]
 pytest_add_cli_args_test_selection = ["domainkit_tests/", "-p", "no:randomly"]
+# Fork from a clean server: children forked after the suite ran hang on
+# database tests, which mutmut would count as killed by timeout.
+process_isolation = "forkserver"

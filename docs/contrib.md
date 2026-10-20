@@ -416,7 +416,9 @@ async def test_signup_welcomes(db, outbox, captured_events):
 
 `domainkit.contrib.webhooks` sends domain events to URLs that staff
 subscribe. Install it with messaging and the `webhooks` extra
-(`domainkit[webhooks]`, which brings httpx2), then expose the events:
+(`domainkit[webhooks]`, which brings httpx2 and cryptography), set
+`SECRET_KEY` (subscription secrets are encrypted under a key derived from
+it; webhooks refuse to start without it), then expose the events:
 
 ```python
 INSTALLED_DOMAINS = ["domainkit.contrib.messaging", "domainkit.contrib.webhooks", ...]
@@ -507,10 +509,24 @@ in listings, logs, events, or reprs; changes are recorded as events
 URL's host only, since URLs may hold tokens. The two answers that hold a
 secret are marked `Cache-Control: no-store`: no cache keeps them, and
 `IdempotencyMiddleware` stores no copy, so a retry with the same
-`Idempotency-Key` gets a 409 rather than the secret again. Secrets are
-stored as they are in the subscriptions table, since signing needs them:
-whoever reads that table can sign as you. They will move to encryption at
-rest once domainkit has an encryption helper derived from `SECRET_KEY`.
+`Idempotency-Key` gets a 409 rather than the secret again.
+
+**Secrets at rest.** The subscriptions table holds the current secret, and
+the previous one during an overlap, encrypted with
+`domainkit.encryption.SecretBox` (AES-256-GCM, purpose
+`domainkit.webhooks.secret`) and bound to the subscription's id: the table
+alone signs nothing, and a value copied to another row does not decrypt.
+Deliveries decrypt the secrets they sign with, and a rotation the old
+secret it keeps; nothing else does. To replace `SECRET_KEY`, put the old
+key in `SECRET_KEY_FALLBACKS`: deliveries still verify, and each one
+encrypts its subscription's secrets again under the new key (a rotation
+does too). Drop the old key once every active subscription has had a
+delivery or a rotation since. If no key decrypts a secret (`SECRET_KEY`
+changed without the old one in `SECRET_KEY_FALLBACKS`), its deliveries
+fail at once, unsent, with that reason in `last_error` and the error
+log, and are reported: never sent unsigned. Put the old key back, or
+rotate the secret (a rotation drops one no key decrypts, so there is no
+overlap) and give receivers the new one; then `webhooks replay --failed`.
 
 `python manage.py webhooks subscriptions` lists subscriptions (host only),
 `webhooks deliveries [--status S] [--subscription ID]` the latest

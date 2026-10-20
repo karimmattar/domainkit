@@ -3,11 +3,12 @@
 import base64
 import inspect
 import json
+import logging
 import re
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from enum import StrEnum
-from typing import Annotated, Any
+from typing import Annotated, Any, Final
 from uuid import UUID
 
 import pytest
@@ -16,10 +17,20 @@ from fastapi.testclient import TestClient
 from hypothesis import given
 from hypothesis import strategies as st
 
-from domainkit.ddd import AggregateRoot, InvalidQuery, Page, UnknownField
-from domainkit.ddd.query import F, Ordering, Query
+from domainkit.ddd import (
+    AggregateRoot,
+    Digits,
+    InMemoryRepository,
+    InvalidQuery,
+    MaxLength,
+    Page,
+    UnknownField,
+    ValueObject,
+)
+from domainkit.ddd.query import F, Ordering, Query, total_ordering
 from domainkit.http import InvalidCursor, decode_cursor, encode_cursor
 from domainkit.http.errors import install_exception_handlers
+from domainkit.http.filters import FilterSet
 from domainkit.http.pagination import (
     CURSOR_PATTERN,
     CURSOR_VERSION,
@@ -27,8 +38,10 @@ from domainkit.http.pagination import (
     PageOut,
     PageRequest,
     Pagination,
+    cursor_length,
     decode_position,
     encode_position,
+    longest_ordering,
 )
 from domainkit_tests.gadgets import Color, InMemoryGadgets, Label, Size, make_gadget
 
@@ -210,9 +223,14 @@ def test_values_that_do_not_fit_their_field_are_refused(
 def test_cursors_hold_any_base64url_text_and_nothing_else() -> None:
     """Cursors up to the longest round-trip; a character outside base64url fails."""
     ordering = (Ordering("count"), Ordering("id"))
-    longest = encode_cursor(["x" * 1532])
+    text = "x" * (MAX_CURSOR_LENGTH * 3 // 4 - len('[""]'))
+    longest = encode_cursor([text])
     assert len(longest) == MAX_CURSOR_LENGTH
-    assert decode_cursor(longest, 1) == ["x" * 1532]
+    assert decode_cursor(longest, 1) == [text]
+    with pytest.raises(
+        ValueError, match=r"^Sort key too long for a cursor \(4100 chars\)\.$"
+    ):
+        encode_cursor([f"{text}xyz"])
     cursor = encode_position((1, UUID(int=1)), ordering)
     with pytest.raises(InvalidCursor):
         decode_position(cursor[:4] + "...." + cursor[4:], ordering, Record)
@@ -227,13 +245,58 @@ def test_missing_values_fit_only_nullable_fields() -> None:
 
 
 def test_some_values_have_no_cursor_form() -> None:
-    """Lists, non-finite floats, and overlong keys are refused when encoding."""
+    """Lists and non-finite floats are refused when encoding."""
     with pytest.raises(TypeError, match="list values cannot be put in a cursor"):
         encode_position((["a"],), (Ordering("tags"),))
     with pytest.raises(TypeError, match="float values cannot be put"):
         encode_position((float("nan"),), (Ordering("ratio"),))
-    with pytest.raises(ValueError, match="too long"):
-        encode_position(("x" * 2000,), (Ordering("text"),))
+
+
+def test_positions_are_never_refused_for_their_length(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A page always answers; a cursor too long to come back is logged.
+
+    Only a value longer than its field declares, or an ordering no
+    ``FilterSet`` checked, makes one: it is refused when it comes back.
+    """
+    ordering = (Ordering("text"), Ordering("id"))
+    with caplog.at_level(logging.WARNING, logger="domainkit.http.pagination"):
+        # 3,017 characters, with [1,"text,id",...] and the id: 3,072 bytes.
+        fits = encode_position(("x" * 3017, UUID(int=1)), ordering)
+        too_long = encode_position(("x" * 3100, UUID(int=1)), ordering)
+
+    assert len(fits) == MAX_CURSOR_LENGTH < len(too_long)
+    assert caplog.messages == [
+        (
+            f"A cursor for the ordering text,id took {len(too_long)} characters, "
+            "more than MAX_CURSOR_LENGTH: a value is longer than its field declares."
+        )
+    ]
+    assert decode_position(fits, ordering, Record)[0] == "x" * 3017
+    with pytest.raises(InvalidCursor):
+        decode_position(too_long, ordering, Record)
+
+
+def test_amounts_are_written_without_exponents() -> None:
+    """``0E-8``, as zero comes back at eight places, was refused coming back."""
+    ordering = (Ordering("amount"), Ordering("id"))
+    for amount in (
+        Decimal("0E-8"),
+        Decimal("1E-7"),
+        Decimal("1E+2"),
+        Decimal("-0.50"),
+        Decimal("9E+39"),
+        Decimal("-1E-40"),
+    ):
+        cursor = encode_position((amount, UUID(int=1)), ordering)
+        assert decode_position(cursor, ordering, Record) == (amount, UUID(int=1))
+        assert "E" not in json.loads(base64.urlsafe_b64decode(cursor + "==="))[2]
+    for odd in map(Decimal, ("1E+40", "1E-41", "1E+999999999", "NaN", "-Infinity")):
+        cursor = encode_position((odd, UUID(int=1)), ordering)  # Not a gigabyte.
+        assert json.loads(base64.urlsafe_b64decode(cursor + "==="))[2] == str(odd)
+        with pytest.raises(InvalidCursor):
+            decode_position(cursor, ordering, Record)
 
 
 def test_cursors_name_fields_of_the_aggregate() -> None:
@@ -364,3 +427,204 @@ def test_offset_pages_over_http() -> None:
     offset_parameter = next(p for p in spec["parameters"] if p["name"] == "offset")
     assert offset_parameter["description"] == "Items to skip."
     assert offset_parameter["schema"]["minimum"] == 0
+
+
+class Title(ValueObject):
+    """A single-field value object around bounded text."""
+
+    value: Annotated[str, MaxLength(4)]
+
+
+class Bounded(AggregateRoot[UUID]):
+    """An aggregate whose every field has a bound in a cursor."""
+
+    name: Annotated[str, MaxLength(5)]
+    title: Title
+    count: int
+    flag: bool
+    ratio: float
+    price: Annotated[Decimal, Digits(10, 2)]
+    share: Annotated[Decimal, Digits(3, 3)]
+    units: Annotated[Decimal, Digits(4, 0)]
+    when: datetime
+    day: date
+    moment: time
+    color: Color
+    size: Size
+    maybe: Size | None
+    single: Single
+
+
+ODD: Final = timezone(timedelta(hours=5, minutes=30, seconds=15, microseconds=1))
+"""An offset with every part isoformat writes."""
+LONGEST: Final[dict[str, object]] = {
+    "name": "\x1f" * 5,  # JSON writes each as \u001f: six bytes.
+    "title": Title("\x00" * 4),
+    "count": 1 - 2**63,
+    "flag": False,
+    "ratio": -2.2250738585072014e-308,
+    "price": Decimal("-12345678.91"),
+    "share": Decimal("-0.123"),
+    "units": Decimal("-1234"),
+    "when": datetime(1, 1, 1, 0, 0, 0, 1, tzinfo=ODD),
+    "day": date(1, 1, 1),
+    "moment": time(0, 0, 0, 1, tzinfo=ODD),
+    "color": Color.GREEN,
+    "size": Size.LARGE,
+    "maybe": None,
+    "single": Single.ONLY,
+    "id": UUID(int=0),
+}
+"""The value of each field of ``Bounded`` that takes most room in a cursor."""
+
+
+@pytest.mark.parametrize("name", list(LONGEST))
+def test_cursor_lengths_are_those_of_the_longest_values(name: str) -> None:
+    """The bound is exact: the longest value of each type reaches it."""
+    ordering = (Ordering(name, descending=True),)
+    complete = total_ordering(ordering)
+    position = tuple(LONGEST[item.field] for item in complete)
+
+    cursor = encode_position(position, complete)
+
+    assert len(cursor) == cursor_length(ordering, Bounded)
+    assert decode_position(cursor, complete, Bounded) == position
+
+
+def test_cursor_lengths_need_bounded_fields() -> None:
+    """Text needs ``MaxLength``, amounts ``Digits``; some types have no cursor."""
+    refusals = {
+        "text": (
+            r"^Record\.text holds text of any length, which no cursor can bound: "
+            r"declare its MaxLength\(n\), as Annotated\[str, MaxLength\(n\)\], or "
+            r"do not order by it\.$"
+        ),
+        "amount": (
+            r"^Record\.amount holds amounts of any size, which no cursor can bound: "
+            r"declare its Digits\(precision, scale\), as Annotated\[Decimal, "
+            r"Digits\(precision, scale\)\], or do not order by it\.$"
+        ),
+        "anything": (
+            r"^Record\.anything holds values of no known type, which a cursor "
+            r"cannot hold: do not order by it\.$"
+        ),
+        "label": None,
+    }
+    for name, refusal in refusals.items():
+        if refusal is None:
+            assert cursor_length((Ordering(name),), Record) > 0
+            continue
+        with pytest.raises(TypeError, match=refusal):
+            cursor_length((Ordering(name),), Record)
+    with pytest.raises(TypeError, match=r"^Unbounded\.slug holds Slug, which"):
+        cursor_length((Ordering("slug"),), Unbounded)
+    with pytest.raises(InvalidQuery, match="cannot be ordered by"):
+        cursor_length((Ordering("tags"),), Record)
+
+
+class Slug(str):
+    """Text of a class of its own, which cursors do not read back."""
+
+    __slots__ = ()
+
+
+class Unbounded(AggregateRoot[int]):
+    """An aggregate ordered by something a cursor cannot hold."""
+
+    slug: Slug
+
+
+def test_the_longest_ordering_takes_the_roomiest_fields() -> None:
+    """Up to ``count`` fields, longest names and values first, each descending."""
+    assert longest_ordering(("count", "name", "flag", "day"), Bounded, 2) == (
+        Ordering("name", descending=True),
+        Ordering("count", descending=True),
+    )
+    assert longest_ordering(("flag", "flag", "id"), Bounded, 3) == (
+        Ordering("flag", descending=True),
+        Ordering("id", descending=True),
+    )
+    assert longest_ordering(("flag", "count", "id"), Bounded, 2) == (
+        Ordering("count", descending=True),
+        Ordering("flag", descending=True),
+    )
+    assert longest_ordering((), Bounded, 3) == ()
+    assert longest_ordering(("id",), Bounded, 0) == ()
+    by_id = total_ordering(longest_ordering(("id",), Bounded, 1))
+    assert len(encode_position((UUID(int=0),), by_id)) == cursor_length(by_id, Bounded)
+
+
+class Nothing(StrEnum):
+    """An enum without members: no value to put in a cursor."""
+
+
+class Hollow(AggregateRoot[int]):
+    """An aggregate ordered by such an enum."""
+
+    nothing: Nothing
+
+
+def test_an_enum_without_members_takes_no_room() -> None:
+    """[1,"nothing,id", no value, an int id]: 16 + 1 + 21 bytes of JSON."""
+    assert cursor_length((Ordering("nothing"),), Hollow) == (4 * 38 + 2) // 3
+
+
+class Book(AggregateRoot[UUID]):
+    """Three text fields as long as ``MAX_CURSOR_LENGTH`` allows them together."""
+
+    title: Annotated[str, MaxLength(150)]
+    subtitle: Annotated[str, MaxLength(150)]
+    author: Annotated[str, MaxLength(150)]
+
+
+class Books(InMemoryRepository[Book, UUID]):
+    """Books in memory."""
+
+
+def test_three_text_fields_of_the_widest_characters_always_page() -> None:
+    """Control characters, astral and Arabic letters: every cursor comes back."""
+    widest = ("\x1f", "\U0001d538", "\u0628", "\x00")
+    books = [
+        Book(
+            id=UUID(int=number),
+            title=character * 150,
+            subtitle=character * 149 + str(number),
+            author=widest[number % 4] * 150,
+        )
+        for number, character in enumerate(widest * 2)
+    ]
+
+    class BookFilters(FilterSet):
+        model = Book
+        ordering_fields = ("title", "subtitle", "author")
+
+    app = FastAPI()
+    install_exception_handlers(app)
+    pages = Pagination(default_limit=1, max_limit=1)
+
+    @app.get("/books")
+    async def listing(
+        filters: Annotated[BookFilters, Depends()],
+        page: Annotated[PageRequest, Depends(pages)],
+    ) -> PageOut[int]:
+        query = filters.query()
+        found = await page.fetch(Books(books), query)
+        return page.respond(found, [each.id.int for each in found.items], query)
+
+    client = TestClient(app)
+    ordering = ["-author", "-subtitle", "-title"]
+    seen: list[int] = []
+    cursors: list[str] = []
+    params: dict[str, Any] = {"ordering": ordering}
+    while True:
+        answer = client.get("/books", params=params)
+        assert answer.status_code == 200, answer.text
+        seen += answer.json()["items"]
+        if answer.json()["next_cursor"] is None:
+            break
+        cursors.append(answer.json()["next_cursor"])
+        params = {"ordering": ordering, "cursor": cursors[-1]}
+
+    assert sorted(seen) == list(range(8))
+    bound = cursor_length(longest_ordering(BookFilters.ordering_fields, Book, 3), Book)
+    assert max(map(len, cursors)) <= bound <= MAX_CURSOR_LENGTH
