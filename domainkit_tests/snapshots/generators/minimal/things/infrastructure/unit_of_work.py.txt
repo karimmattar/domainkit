@@ -1,0 +1,34 @@
+"""Adapter."""
+
+from domainkit.db import SqlAlchemyRepository
+from minimal.things.domain.model import (
+    Tag,
+    TagId,
+    TagRepository,
+    Widget,
+    WidgetId,
+    WidgetRepository,
+)
+
+
+class SqlAlchemyThingsUnitOfWork:
+    """Adapter."""
+
+    def create_repositories(self, session: object) -> None:
+        """Repositories."""
+        self.widgets = SqlAlchemyWidgetRepository(session)
+        self.tags = SqlAlchemyTagRepository(session)
+
+
+class SqlAlchemyWidgetRepository(
+    SqlAlchemyRepository[Widget, WidgetId], WidgetRepository
+):
+    """Widget storage in the ``things_widgets`` table."""
+
+    model = Widget
+
+
+class SqlAlchemyTagRepository(SqlAlchemyRepository[Tag, TagId], TagRepository):
+    """Tag storage in the ``things_tags`` table."""
+
+    model = Tag

@@ -4,12 +4,14 @@
   [
    [],
    "domain",
+   "_StoreAction",
    "the domain's package name, e.g. catalog",
    "None"
   ],
   [
    [],
    "aggregate",
+   "_StoreAction",
    "the aggregate's class, e.g. Product",
    "None"
   ],
@@ -18,6 +20,7 @@
     "--plural"
    ],
    "plural",
+   "_StoreAction",
    "the aggregate's snake_case plural, for tables and URLs",
    "None"
   ],
@@ -26,6 +29,7 @@
     "--parent"
    ],
    "parent",
+   "_StoreAction",
    "package that holds the domains",
    "domains"
   ],
@@ -34,12 +38,14 @@
     "--tests-dir"
    ],
    "tests_dir",
+   "_StoreAction",
    "the domain's tests (default: tests/...)",
    "None"
   ],
   [
    [],
    "query",
+   "_StoreAction",
    "the query's class, e.g. ProductsByOwner",
    "None"
   ],
@@ -48,6 +54,7 @@
     "--by"
    ],
    "by",
+   "_AppendAction",
    "a field of the aggregate it must equal, repeated",
    "[]"
   ],
@@ -56,6 +63,7 @@
     "--path"
    ],
    "path",
+   "_StoreAction",
    "the route's path (default: e.g. /by-owner)",
    "None"
   ]

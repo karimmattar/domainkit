@@ -3,13 +3,27 @@
 from decimal import Decimal
 from uuid import UUID
 
+import fastapi
 from pydantic import AwareDatetime, BaseModel, Field
 
+from domainkit.resources import ModelActions, ResourceRouter, schema_for
 from minimal.things.application import queries, services
-from minimal.things.application.commands import ShipThing
+from minimal.things.application.commands import (
+    CreateTag,
+    CreateWidget,
+    DeleteTag,
+    DeleteWidget,
+    PackUpThing,
+    ShipThing,
+)
 from minimal.things.application.queries import ThingsNamed
+from minimal.things.domain.model import Tag, Widget
 
-router = APIRouter()
+router = fastapi.APIRouter()
+
+
+def get_unit_of_work() -> None:
+    """The unit of work."""
 
 
 class ShipThingIn(BaseModel):
@@ -25,5 +39,32 @@ things = ResourceRouter("/things")
 things.command_route(
     ShipThing, service=services.ship_thing, body=ShipThingIn, path="/ship"
 )
+things.command_route(PackUpThing, service=services.pack_up_thing, path="/pack-up")
 things.query_route(ThingsNamed, handler=queries.things_named, path="/named")
 router.include_router(things)
+
+
+WidgetIn = schema_for(Widget, write=True)
+widgets = ResourceRouter(
+    "/widgets",
+    model=Widget,
+    unit_of_work=get_unit_of_work,
+    repository=lambda uow: uow.widgets,
+    rule=ModelActions(Widget),
+)
+widgets.command_route(CreateWidget, service=services.create_widget, body=WidgetIn)
+widgets.command_route(DeleteWidget, service=services.delete_widget, method="DELETE")
+router.include_router(widgets)
+
+
+TagIn = schema_for(Tag, write=True)
+tags = ResourceRouter(
+    "/tags",
+    model=Tag,
+    unit_of_work=get_unit_of_work,
+    repository=lambda uow: uow.tags,
+    rule=ModelActions(Tag),
+)
+tags.command_route(CreateTag, service=services.create_tag, body=TagIn)
+tags.command_route(DeleteTag, service=services.delete_tag, method="DELETE")
+router.include_router(tags)

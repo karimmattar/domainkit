@@ -464,7 +464,7 @@ map_imperatively(Keyed, keyed)
 
 @pytest.mark.anyio
 async def test_sql_compares_ids_in_their_own_column(tmp_path: Path) -> None:
-    """Integer and text ids meet the grants' integer and text columns."""
+    """Integer and text ids meet the grants' columns, of their content type."""
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'ids.db'}")
     ada = uuid4()
     async with engine.begin() as connection:
@@ -476,13 +476,18 @@ async def test_sql_compares_ids_in_their_own_column(tmp_path: Path) -> None:
         await connection.execute(
             keyed.insert(), [{"id": k, "name": k, "version": 1} for k in ("a", "b")]
         )
-        for column, value in (("object_int", 2), ("object_text", "b")):
+        # The grant on x.z's 1 says nothing about x.y's 1.
+        for content_type, column, value in (
+            ("x.y", "object_int", 2),
+            ("x.y", "object_text", "b"),
+            ("x.z", "object_int", 1),
+        ):
             await connection.execute(
                 object_permissions.insert(),
                 {
                     "id": uuid4(),
                     "version": 1,
-                    "content_type": "x.y",
+                    "content_type": content_type,
                     "permission": "x.view_y",
                     column: value,
                     "user_id": ada,
@@ -538,8 +543,10 @@ def test_grants_and_revocations_stay_with_their_object_permission_and_grantee(
             run(has_perm(ada, VIEW, second)),
             run(has_perm(ada, CHANGE, first)),
         )
-        removed = run(revoke_permission(root, VIEW, second, group=editors))
+        run(grant_permission(root, VIEW, second, user=ada.id))
         on_first = run(grants_on(first))
+        removed = run(revoke_permission(root, VIEW, second, group=editors))
+        on_second = run(grants_on(second))
     finally:
         event_bus.unsubscribe(ObjectPermissionGranted, collect)
         event_bus.unsubscribe(ObjectPermissionRevoked, collect)
@@ -547,6 +554,12 @@ def test_grants_and_revocations_stay_with_their_object_permission_and_grantee(
     assert after == (True, True, False)
     assert removed == 1
     assert [(grant.permission, grant.user_id) for grant in on_first] == [(VIEW, ada.id)]
+    assert [(grant.permission, grant.user_id) for grant in on_second] == [
+        (VIEW, ada.id)
+    ]
+    group_revoked = seen[-1]
+    assert isinstance(group_revoked, ObjectPermissionRevoked)
+    assert (group_revoked.group_id, group_revoked.user_id) == (editors, None)
     group_grant = seen[3]
     assert isinstance(group_grant, ObjectPermissionGranted)
     assert (

@@ -23,7 +23,7 @@ from domainkit.ddd import (
 )
 from domainkit.ddd import Query as QueryMessage
 from domainkit.ddd.query import F
-from domainkit.http import FilterSet
+from domainkit.http import Filter, FilterSet
 from domainkit.resources import (
     FieldPolicy,
     ModelActions,
@@ -55,7 +55,9 @@ from domainkit_tests.test_resources import (
     RenameGadget,
     RenameIn,
     Review,
+    ReviewIn,
     Summary,
+    WriteReview,
     as_,
     client_of,
     dearest,
@@ -153,9 +155,33 @@ def test_every_route_asks_the_scope_and_the_rules_about_its_aggregate(
         headers=root,
     )
     assert [each["status"] for each in batch.json()["results"]] == [200, 404, 403]
-    assert [status("DELETE", name) for name in "bc"] == [404, 403]
+    assert [status("DELETE", name) for name in "abc"] == [204, 404, 403]
     missing = client.get(f"{LOCATION}{(unknown := uuid4())}", headers=root)
     assert str(unknown) in missing.json()["detail"]
+
+
+class ObjectsWhenDeleting:
+    """Any authenticated user; deleting also asks ``NotC`` about the gadget."""
+
+    def rules_for(self, action: str) -> tuple[Any, ...]:
+        """``NotC`` for ``delete`` only."""
+        return (
+            (IsAuthenticated(), NotC()) if action == "delete" else (IsAuthenticated(),)
+        )
+
+
+def test_objects_are_asked_the_rules_of_the_routes_action(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """A rule on objects for one action leaves the others alone."""
+    use_auth()
+    client = client_of(gadgets(store, rule=ObjectsWhenDeleting(), crud=True))
+    known = ids(store)
+
+    read = client.get(f"{LOCATION}{known['c']}", headers=as_("root"))
+    deleted = client.delete(f"{LOCATION}{known['c']}", headers=as_("root"))
+
+    assert (read.status_code, deleted.status_code) == (200, 403)
 
 
 async def again_or_first(query: GadgetAgain, uow: FakeGadgetsUnitOfWork) -> Gadget:
@@ -242,6 +268,15 @@ def test_nested_routes_keep_to_their_parent_and_link_to_it(
     nested.query_route(ReviewAgain, handler=again, path="/again")
     nested.query_route(ReviewsBy, handler=by_text, path="/by-text")
     nested.batch_route(PolishReview, service=polish, path="/polish-all")
+
+    async def write(command: WriteReview, uow: Any) -> Review:  # noqa: ANN401 - the unit.
+        review = Review(id=uuid4(), gadget=GadgetId(command.gadget), text=command.text)
+        async with uow:
+            await uow.reviews.add(review)
+            await uow.commit()
+        return review
+
+    nested.batch_route(WriteReview, service=write, body=ReviewIn, path="/write-all")
     client = client_of(parent, nested)
     gadget = mine.gadget
     base = f"/gadgets/{gadget}/reviews"
@@ -265,6 +300,9 @@ def test_nested_routes_keep_to_their_parent_and_link_to_it(
         json={"items": [{"review_id": str(mine.id)}, {"review_id": str(theirs.id)}]},
         headers=viewer,
     )
+    written = client.post(
+        f"{base}/write-all", json={"items": [{"text": "many"}]}, headers=viewer
+    )
     lines = client.get(base, headers=as_("root", Accept="application/x-ndjson"))
     hidden_parent = client.get(f"/gadgets/{ids(store)['b']}/reviews", headers=viewer)
 
@@ -280,6 +318,10 @@ def test_nested_routes_keep_to_their_parent_and_link_to_it(
     assert [each["links"] for each in found.json()["items"]] == [links]
     assert [each["status"] for each in batch.json()["results"]] == [200, 404]
     assert batch.json()["results"][0]["item"]["links"] == links
+    assert "location" not in batch.json()["results"][0]
+    (made,) = written.json()["results"]
+    assert (made["status"], made["item"]["gadget"]) == (201, str(gadget))
+    assert made["location"] == f"{base}/{made['item']['id']}"
     exported = [json.loads(line) for line in lines.text.splitlines()]
     assert links in [each["links"] for each in exported]
     assert hidden_parent.status_code == 404
@@ -490,12 +532,22 @@ def test_declarations_name_what_is_wrong(store: InMemoryGadgets) -> None:
         )
     with pytest.raises(TypeError, match="GadgetOut"):
         gadgets(store, policy=FieldPolicy(visible={"nope": "x.y"}))
-    with pytest.raises(TypeError, match="may not see: stock"):
-        gadgets(
-            store,
-            filters=Hidden,
-            policy=FieldPolicy(visible={"stock": "shop.view_cost"}),
-        )
+
+    class SortedByIt(FilterSet):
+        model = Gadget
+        default_ordering = ("-stock",)
+
+    class ByPart(FilterSet):
+        model = Gadget
+        sku = Filter(field="parts.sku")
+
+    for filters, field in ((Hidden, "stock"), (SortedByIt, "stock"), (ByPart, "parts")):
+        with pytest.raises(TypeError, match=f"may not see: {field}"):
+            gadgets(
+                store,
+                filters=filters,
+                policy=FieldPolicy(visible={field: "shop.view_cost"}),
+            )
     with pytest.raises(TypeError, match="1 item or more"):
         gadgets(store).batch_route(RenameGadget, service=rename, max_items=0)
     gadgets(store).batch_route(RenameGadget, service=rename, body=RenameIn, max_items=1)

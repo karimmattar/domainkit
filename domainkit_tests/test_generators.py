@@ -1,5 +1,8 @@
 """The generators: aggregates, commands, queries, and events added to a domain."""
 
+import ast
+import gc
+import importlib
 import io
 import json
 import os
@@ -728,27 +731,49 @@ MINIMAL = {
     "__init__.py": "",
     "domain/__init__.py": "",
     "domain/model.py": (
-        '"""Things."""\n\nfrom typing import NewType\nfrom uuid import UUID\n\n'
-        "from domainkit.ddd import AggregateRoot\n\n"
-        'ThingId = NewType("ThingId", UUID)\n\n\n'
-        'class Thing(AggregateRoot[ThingId]):\n    """A thing."""\n\n    name: str\n'
+        '"""Things."""\n\nimport typing\nimport uuid\n\nimport domainkit.ddd\n\n'
+        'ThingId = typing.NewType("ThingId", uuid.UUID)\n'
+        'BoxId = typing.NewType("BoxId", uuid.UUID)\n\n\n'
+        "class Thing(domainkit.ddd.AggregateRoot[ThingId]):\n"
+        '    """A thing."""\n\n    name: str\n\n\n'
+        "class Box(domainkit.ddd.AggregateRoot[BoxId]):\n"
+        '    """What things go in."""\n'
     ),
     "domain/events.py": '"""Events."""\n',
     "application/__init__.py": "",
     "application/commands.py": '"""Commands."""\n',
     "application/services.py": '"""Services."""\n',
     "application/handlers.py": '"""Handlers."""\n',
+    "application/unit_of_work.py": (
+        '"""Port."""\n\n\nclass ThingsUnitOfWork:\n    """Port."""\n'
+    ),
+    "infrastructure/__init__.py": "",
+    "infrastructure/orm.py": (
+        '"""Tables."""\n\n\ndef start_mappers() -> None:\n    """Map."""\n'
+    ),
+    "infrastructure/unit_of_work.py": (
+        '"""Adapter."""\n\n\nclass SqlAlchemyThingsUnitOfWork:\n'
+        '    """Adapter."""\n\n'
+        "    def create_repositories(self, session: object) -> None:\n"
+        '        """Repositories."""\n'
+    ),
     "api/__init__.py": "",
     "api/routes.py": (
-        '"""Routes."""\n\nrouter = APIRouter()\n'
-        'things = ResourceRouter("/things")\nrouter.include_router(things)\n'
+        '"""Routes."""\n\nimport fastapi\n\n'
+        "from domainkit.resources import ResourceRouter\n\n"
+        "router = fastapi.APIRouter()\n\n\n"
+        'def get_unit_of_work() -> None:\n    """The unit of work."""\n\n\n'
+        'things = ResourceRouter("/things")\n'
+        "router.include_router(things)\n"
     ),
     "apps.py": (
-        '"""Apps."""\n\n\nclass ThingsConfig:\n    """Config."""\n\n'
+        '"""Apps."""\n\n\nclass Helper:\n    """Not the domain\'s config."""\n\n'
+        '    def ready(self) -> None:\n        """Not called."""\n\n\n'
+        'class ThingsConfig:\n    """Config."""\n\n'
         '    def ready(self) -> None:\n        """Ready."""\n'
     ),
 }
-"""A domain the generators did not make: nothing imported that they need."""
+"""A domain the generators did not make: it imports nothing they need by name."""
 
 
 def make_minimal(root: Path) -> Path:
@@ -759,7 +784,94 @@ def make_minimal(root: Path) -> Path:
         path.write_text(text, encoding="utf-8")
     (root / "minimal" / "__init__.py").write_text("", encoding="utf-8")
     (root / "minimal" / "tests").mkdir()
+    (root / "minimal" / "tests" / "fakes.py").write_text(
+        '"""Fakes."""\n\n\nclass FakeThingsUnitOfWork:\n    """Fake."""\n\n'
+        '    def __init__(self) -> None:\n        """Fake."""\n',
+        encoding="utf-8",
+    )
     return root / "minimal"
+
+
+def contents(directory: Path) -> dict[Path, str]:
+    """Every Python file under ``directory``, by path."""
+    return {path: path.read_text(encoding="utf-8") for path in directory.rglob("*.py")}
+
+
+@pytest.mark.skipif(find_spec("ruff") is None, reason="needs ruff to check")
+@pytest.mark.parametrize(
+    ("command", "args", "options"),
+    [
+        (
+            "startaggregate",
+            ("Widget",),
+            {"fields": ["title:str:100", "box:ref:Box", "at:datetime"]},
+        ),
+        ("startaggregate", ("Tag",), {}),
+        (
+            "addcommand",
+            ("Thing", "BoxThing"),
+            {"fields": ["into:ref:Box", "cost:decimal:8:2"]},
+        ),
+        ("addcommand", ("Thing", "PackUpThing"), {"event": "ThingPacked"}),
+        ("addquery", ("Thing", "ThingsNamed"), {"by": ["name"]}),
+        ("addevent", ("Thing", "ThingSeen"), {"fields": ["at:datetime"]}),
+    ],
+)
+def test_each_generator_imports_what_it_writes(
+    shop: Shop, command: str, args: tuple[str, ...], options: dict[str, Any]
+) -> None:
+    """Alone, on a domain it did not make; it lists exactly the files it wrote."""
+    minimal = make_minimal(shop.root)
+    before = contents(minimal)
+
+    output = run(
+        command,
+        "things",
+        *args,
+        parent="minimal",
+        tests_dir=minimal / "tests",
+        **options,
+    )
+
+    after = contents(minimal)
+    changed = sorted(str(path) for path in after if after[path] != before.get(path))
+    assert output.splitlines()[0] == f"Added {args[-1]} to minimal.things:"
+    listed = sorted(
+        line.strip() for line in output.splitlines() if line.startswith("  ")
+    )
+    assert listed == changed
+    undefined = subprocess.run(  # noqa: S603 - this interpreter's ruff.
+        [
+            *(sys.executable, "-m", "ruff", "check", "--no-cache", "--isolated"),
+            *("--select", "F821,F811", str(minimal)),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert undefined.returncode == 0, undefined.stdout
+    # The modules they import from exist: the layers that only declare things.
+    try:
+        for layer in ("domain.events", "domain.model", "application.commands"):
+            importlib.import_module(f"minimal.things.{layer}")
+    finally:
+        for name in [name for name in sys.modules if name.startswith("minimal")]:
+            del sys.modules[name]
+        gc.collect()  # Its event classes leave DomainEvent.__subclasses__().
+
+
+def test_startaggregate_refuses_a_name_half_taken(shop: Shop) -> None:
+    """An id type alone is enough to refuse: the aggregate would redefine it."""
+    minimal = make_minimal(shop.root)
+    model = minimal / "things" / "domain" / "model.py"
+    model.write_text(
+        model.read_text(encoding="utf-8")
+        + 'CrateId = typing.NewType("CrateId", uuid.UUID)\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CommandError, match="Crate"):
+        run("startaggregate", "things", "Crate", parent="minimal")
 
 
 SNAPSHOTS = Path(__file__).parent / "snapshots" / "generators"
@@ -798,12 +910,32 @@ def test_generators_write_what_their_snapshots_hold(shop: Shop) -> None:
     )
     minimal = make_minimal(shop.root)
     run(
+        "startaggregate",
+        "things",
+        "Widget",
+        fields=["title:str:100", "owner:ref:Thing", "body:text?"],
+        parent="minimal",
+        tests_dir=minimal / "tests",
+    )
+    run(
+        "startaggregate", "things", "Tag", parent="minimal", tests_dir=minimal / "tests"
+    )
+    run(
         "addcommand",
         "things",
         "Thing",
         "ShipThing",
         fields=["at:datetime", "cost:decimal:8:2", "to:ref:Thing", "code:uuid"],
         event="ThingSent",
+        parent="minimal",
+        tests_dir=minimal / "tests",
+    )
+    run(
+        "addcommand",
+        "things",
+        "Thing",
+        "PackUpThing",
+        event="ThingPacked",
         parent="minimal",
         tests_dir=minimal / "tests",
     )
@@ -840,7 +972,13 @@ def test_generators_write_what_their_snapshots_hold(shop: Shop) -> None:
             {
                 "help": command.help,
                 "arguments": [
-                    [each.option_strings, each.dest, each.help, str(each.default)]
+                    [
+                        each.option_strings,
+                        each.dest,
+                        type(each).__name__,
+                        each.help,
+                        str(each.default),
+                    ]
                     for each in parser._actions
                     if each.dest != "help"
                 ],
@@ -890,6 +1028,7 @@ def test_sources_edit_exactly_where_they_say(tmp_path: Path) -> None:
         "        three = 3\n\n\n"
         "class C:\n    pass\n    y: int\n\n\nE = 5\n"
     )
+    assert top_level_names(ast.parse("import os.path\nimport a.b as c")) == {"os", "c"}
     assert top_level_names(source.tree()) == {
         "os",
         "z",
@@ -923,17 +1062,17 @@ def test_sources_place_attributes_after_a_docstring(tmp_path: Path) -> None:
 
 
 def test_install_finds_the_list_after_other_settings(tmp_path: Path) -> None:
-    """Other assignments come first; a same-looking list elsewhere stays."""
+    """Other assignments come first and after; a same-looking list elsewhere stays."""
+    before = 'import os\n\nos.environ["A"] = "b"\nOTHER = [\n    "domains.shop",\n]\n'
     root = project(
         tmp_path,
-        'DEBUG = True\nOTHER = [\n    "domains.shop",\n]\n'
-        'INSTALLED_DOMAINS = [\n    "domains.shop",\n]\n',
+        f'{before}INSTALLED_DOMAINS = [\n    "domains.shop",\n]\nLAST = 1\n',
     )
 
     assert install("domains.catalog", "catalog", root)
     assert (root / SETTINGS_FILE).read_text(encoding="utf-8") == (
-        'DEBUG = True\nOTHER = [\n    "domains.shop",\n]\n'
-        'INSTALLED_DOMAINS = [\n    "domains.shop",\n    "domains.catalog",\n]\n'
+        f"{before}INSTALLED_DOMAINS = [\n"
+        '    "domains.shop",\n    "domains.catalog",\n]\nLAST = 1\n'
     )
 
 
@@ -1025,6 +1164,17 @@ def test_tests_go_under_tests_by_default_and_their_directory_is_made(
     assert (shop.root / "tests" / "gen" / "shop" / "test_hold_product.py").is_file()
     assert output.startswith("Added HoldProduct to gen.shop:\n")
     assert f"  {shop.package / 'domain' / 'model.py'}" in output.splitlines()
+
+
+def test_tests_of_nested_packages_go_under_each_package(shop: Shop) -> None:
+    """``tests/<parent>/<subpackage>/<domain>`` for a parent of several parts."""
+    make_minimal(shop.root / "outer")
+    (shop.root / "outer" / "__init__.py").write_text("", encoding="utf-8")
+
+    run("addevent", "things", "Thing", "ThingSeen", parent="outer.minimal")
+
+    tests = shop.root / "tests" / "outer" / "minimal" / "things"
+    assert (tests / "test_on_thing_seen.py").is_file()
 
 
 def test_queries_refuse_optional_annotations(shop: Shop) -> None:

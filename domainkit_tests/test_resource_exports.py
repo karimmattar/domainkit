@@ -7,6 +7,7 @@ from uuid import UUID
 
 import pytest
 
+from domainkit.ddd.query import F
 from domainkit.resources import FieldPolicy, routing
 from domainkit.resources.renderers import (
     CSV,
@@ -270,3 +271,32 @@ def test_exports_stop_at_their_bound_across_chunks(
     lines = client.get("/gadgets", headers=as_("viewer", Accept=NDJSON)).text
 
     assert len(lines.splitlines()) == 3
+
+
+def test_exports_keep_to_the_callers_scope_and_filters(
+    store: InMemoryGadgets, use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every chunk is of the list's query: out of scope and filtered out stay out."""
+    use_auth()
+    monkeypatch.setattr(routing, "EXPORT_CHUNK", 1)
+
+    async def not_plain(request: object) -> object:
+        return F("name") != "plain"
+
+    client = client_of(
+        gadgets(
+            store,
+            exports=("csv",),
+            filters=GadgetFilters,
+            scope=not_plain,
+            list_fields=["name"],
+        )
+    )
+
+    every = client.get("/gadgets", headers=as_("viewer", Accept=CSV))
+    some = client.get(
+        "/gadgets", params={"search": "5"}, headers=as_("viewer", Accept=CSV)
+    )
+
+    assert sorted(rows(every.text)[1:]) == [["'=cmd|calc"], ["-5"]]
+    assert rows(some.text) == [["name"], ["-5"]]

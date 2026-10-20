@@ -5,6 +5,13 @@ from minimal.things.application.handlers import on_thing_shipped
 from minimal.things.domain.events import ThingShipped
 
 
+class Helper:
+    """Not the domain's config."""
+
+    def ready(self) -> None:
+        """Not called."""
+
+
 class ThingsConfig:
     """Config."""
 

@@ -1,17 +1,28 @@
 """Things."""
 
+import typing
+import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import NewType
-from uuid import UUID
+from typing import Annotated, NewType, Self
+from uuid import UUID, uuid4
 
-from domainkit.ddd import AggregateRoot
-from minimal.things.domain.events import ThingSent
+import domainkit.ddd
+from domainkit.ddd import AggregateRoot, MaxLength, NotFound, Reference, Repository
+from minimal.things.domain.events import (
+    TagCreated,
+    TagDeleted,
+    ThingPacked,
+    ThingSent,
+    WidgetCreated,
+    WidgetDeleted,
+)
 
-ThingId = NewType("ThingId", UUID)
+ThingId = typing.NewType("ThingId", uuid.UUID)
+BoxId = typing.NewType("BoxId", uuid.UUID)
 
 
-class Thing(AggregateRoot[ThingId]):
+class Thing(domainkit.ddd.AggregateRoot[ThingId]):
     """A thing."""
 
     name: str
@@ -19,3 +30,75 @@ class Thing(AggregateRoot[ThingId]):
     def ship(self, *, at: datetime, cost: Decimal, to: ThingId, code: UUID) -> None:
         """Ship the thing."""
         self.record(ThingSent(thing_id=self.id, at=at, cost=cost, to=to, code=code))
+
+    def pack_up(self) -> None:
+        """Pack up the thing."""
+        self.record(ThingPacked(thing_id=self.id))
+
+
+class Box(domainkit.ddd.AggregateRoot[BoxId]):
+    """What things go in."""
+
+
+WidgetId = NewType("WidgetId", UUID)
+
+
+class WidgetNotFound(NotFound):
+    """No widget has the requested id."""
+
+
+class Widget(AggregateRoot[WidgetId]):
+    """Consistency boundary for one widget; change it only through methods."""
+
+    title: Annotated[str, MaxLength(100)]
+    owner: Reference[ThingId]
+    body: str | None = None
+
+    @classmethod
+    def create(cls, *, title: str, owner: ThingId, body: str | None = None) -> Self:
+        """Start a new widget and record that it was created."""
+        widget = cls(id=WidgetId(uuid4()), title=title, owner=owner, body=body)
+        widget.record(WidgetCreated(widget_id=widget.id))
+        return widget
+
+    def delete(self) -> None:
+        """Record that the widget goes; the repository removes it."""
+        self.record(WidgetDeleted(widget_id=self.id))
+
+
+class WidgetRepository(Repository[Widget, WidgetId]):
+    """Every widget: ``get``, ``filter``, ``paginate``, ... (a port)."""
+
+    def not_found(self, id_: WidgetId) -> WidgetNotFound:
+        """Report a missing widget."""
+        return WidgetNotFound(f"Widget {id_} does not exist.")
+
+
+TagId = NewType("TagId", UUID)
+
+
+class TagNotFound(NotFound):
+    """No tag has the requested id."""
+
+
+class Tag(AggregateRoot[TagId]):
+    """Consistency boundary for one tag; change it only through methods."""
+
+    @classmethod
+    def create(cls) -> Self:
+        """Start a new tag and record that it was created."""
+        tag = cls(id=TagId(uuid4()))
+        tag.record(TagCreated(tag_id=tag.id))
+        return tag
+
+    def delete(self) -> None:
+        """Record that the tag goes; the repository removes it."""
+        self.record(TagDeleted(tag_id=self.id))
+
+
+class TagRepository(Repository[Tag, TagId]):
+    """Every tag: ``get``, ``filter``, ``paginate``, ... (a port)."""
+
+    def not_found(self, id_: TagId) -> TagNotFound:
+        """Report a missing tag."""
+        return TagNotFound(f"Tag {id_} does not exist.")

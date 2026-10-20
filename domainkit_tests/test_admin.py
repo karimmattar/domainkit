@@ -56,6 +56,7 @@ def staff_users() -> dict[str, AnyUser]:
         "changer": user("shop.view_gadget", "shop.change_gadget", is_staff=True),
         "costs": user("shop.view_gadget", "shop.view_cost", is_staff=True),
         "historian": user("shop.view_gadget", "audit.view_history", is_staff=True),
+        "archivist": user("audit.view_history", is_staff=True),
         "root": user(is_superuser=True),
     }
 
@@ -410,6 +411,7 @@ def test_registrations_pass_their_options_to_the_resource(
     assert (hidden.status_code, history.status_code) == (404, 404)
     assert meta["path"] == "/api/admin/shop/things"
     assert meta["history_path"] == "/api/admin/shop/things/{gadget_id}/history"
+    assert meta["item_schema"]["title"] == "Brief"
     assert dropped.status_code == 204
     assert read.json() == {"items": [], "next_cursor": None}
     assert asked == [
@@ -431,7 +433,8 @@ def test_histories_take_bounded_pages(
     """``limit`` is 1 to 200 and the cursor is checked, before any read."""
     use_auth()
     monkeypatch.setattr(registry, "is_installed", lambda name: True)
-    client = client_of(site_of(store))
+    site = site_of(store)
+    client = client_of(site)
     gadget = next(iter(store.items.values()))
     url = f"{GADGETS}/{gadget.id}/history"
 
@@ -443,7 +446,18 @@ def test_histories_take_bounded_pages(
     ):
         answer = client.get(url, params=params, headers=as_("historian"))
         assert answer.status_code == 422, params
+    # A history tells what the item held: its view permission comes first.
     assert client.get(url, headers=as_("viewer")).status_code == 403
+    assert client.get(url, headers=as_("archivist")).status_code == 403
+    (resource,) = [each.resource for each in site.admins.values()]
+    (history,) = [each for each in resource.operations if each.name.endswith("history")]
+    assert (history.method, history.action, history.detail) == ("GET", "view", True)
+    assert [type(rule).__name__ for rule in history.rules] == [
+        "IsUnscoped",
+        "AnyOf",
+        "HasModelPermission",
+        "HasPermissions",
+    ]
 
 
 def test_the_admin_is_described_in_openapi_as_reviewed(

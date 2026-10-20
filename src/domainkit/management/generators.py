@@ -733,7 +733,6 @@ class Domain:
         Raises:
             CommandError: It is outside the project, or not a domain package.
         """
-        snake_name(name, "domain name")
         within(directory, root, "domain")
         if not (directory / "domain" / "model.py").is_file():
             raise CommandError(f"{directory} is not a domain made by startdomain.")

@@ -7,6 +7,30 @@ from uuid import UUID
 from domainkit.ddd import DomainEvent
 
 
+class WidgetCreated(DomainEvent):
+    """A widget was created."""
+
+    widget_id: UUID
+
+
+class WidgetDeleted(DomainEvent):
+    """A widget was deleted."""
+
+    widget_id: UUID
+
+
+class TagCreated(DomainEvent):
+    """A tag was created."""
+
+    tag_id: UUID
+
+
+class TagDeleted(DomainEvent):
+    """A tag was deleted."""
+
+    tag_id: UUID
+
+
 class ThingSent(DomainEvent):
     """A thing was sent."""
 
@@ -15,6 +39,12 @@ class ThingSent(DomainEvent):
     cost: Decimal
     to: UUID
     code: UUID
+
+
+class ThingPacked(DomainEvent):
+    """A thing was packed."""
+
+    thing_id: UUID
 
 
 class ThingShipped(DomainEvent):
