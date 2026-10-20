@@ -50,4 +50,5 @@ accepted record: supersede it with a new one and link both ways.
 | [0041](0041-privacy-through-personal-markers.md) | Answer privacy requests from Personal markers, through units of work | Accepted |
 | [0051](0051-logs-and-error-reports-leave-the-loop.md) | Write logs and error reports from threads, dropping what does not fit | Accepted |
 | [0052](0052-keep-the-immudb-sdk-on-threads.md) | Keep immudb's SDK, on threads, rather than an async-native client | Accepted |
+| [0053](0053-stay-on-fastapi.md) | Stay on FastAPI and Starlette | Accepted |
 | [0054](0054-relationships-raise-instead-of-loading-lazily.md) | Make relationships raise instead of loading lazily | Accepted |

@@ -96,6 +96,9 @@ All notable changes to domainkit. The format follows
   such a relationship in the query (`selectinload`), pass
   `lazy="selectin"`, or keep lazy loading on purpose with `lazy=True`
   (for `AsyncAttrs.awaitable_attrs` or `run_sync`).
+- ADR 0053 records why domainkit stays on FastAPI and Starlette rather
+  than Litestar or plain Starlette, with what each costs a request, and
+  what would change the decision (R16).
 
 ## [0.7.0] - 2026-10-20
 
