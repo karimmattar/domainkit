@@ -25,6 +25,7 @@ from sqlalchemy import (
     String,
     Table,
     Time,
+    UniqueConstraint,
     Uuid,
     func,
     insert,
@@ -818,3 +819,44 @@ def test_serial_ids_continue_after_a_load(project: str, tmp_path: Path) -> None:
             await connections.close_all()
 
     assert asyncio.run(add()) == 6
+
+
+def test_tables_that_are_all_key_still_refuse_other_duplicates(
+    project: str, tmp_path: Path
+) -> None:
+    """Only a row stored under the same key is kept; another unique value is not."""
+    pairs = Table(
+        "framework_test_kind_pairs",
+        metadata,
+        Column("kind", Integer, primary_key=True),
+        Column("tag", String(20), primary_key=True),
+        UniqueConstraint("tag"),
+        info={"domain": "kinds"},
+    )
+    path = tmp_path / "pairs.json"
+    path.write_text(
+        json.dumps(
+            {
+                "format": "domainkit.fixture",
+                "version": 1,
+                "tables": [{"table": pairs.name, "rows": [{"kind": 2, "tag": "x"}]}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    async def create() -> None:
+        async with connections.engine().begin() as connection:
+            await connection.run_sync(pairs.create)
+            await connection.execute(insert(pairs).values(kind=1, tag="x"))
+        await connections.close_all()
+
+    try:
+        asyncio.run(create())
+        with pytest.raises(CommandError, match="the database refused the rows"):
+            run("loaddata", str(path))
+        stored = asyncio.run(_scalars(select(pairs.c.kind)))
+    finally:
+        metadata.remove(pairs)
+
+    assert stored == [1]

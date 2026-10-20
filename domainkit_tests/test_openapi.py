@@ -1232,3 +1232,19 @@ def test_statuses_without_json_before_are_skipped() -> None:
     )
 
     assert changes(old, new) == ["POST /things/{thing_id} 200: removed field 'x'"]
+
+
+def test_hidden_routes_neither_clash_nor_end_the_check() -> None:
+    """A route left out of the schema is skipped; the routes after it are checked."""
+    with override_settings(OPENAPI_OPERATION_IDS="route_name"):
+        app = FastAPI(generate_unique_id_function=openapi_module.operation_id)
+        app.add_api_route("/hidden", same, methods=["GET"], include_in_schema=False)
+        app.add_api_route("/a", same, methods=["GET"])
+        app.add_api_route("/b", same, methods=["GET"])
+
+        assert duplicate_operation_ids(app) == [
+            (
+                "Operation id 'same' names GET /a and GET /b; give the routes "
+                "distinct names (name=...)."
+            )
+        ]

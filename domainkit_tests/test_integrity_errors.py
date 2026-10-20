@@ -627,3 +627,34 @@ def test_field_names_look_at_every_mapper_of_a_table(
     monkeypatch.setattr(errors_module, "mapper_registry", mappers)
 
     assert field_name(labels.c.code) == "label"
+
+
+async def test_tables_with_dots_in_their_names_are_found(database_url: str) -> None:
+    """SQLite writes ``table.column``; the column is after the last dot."""
+    local = MetaData(naming_convention=NAMING_CONVENTION)
+    dotted = Table(
+        "framework_test.dotted",
+        local,
+        Column("id", Integer, primary_key=True),
+        Column("code", String(10), nullable=False, unique=True),
+    )
+    with override_settings(DATABASES={"default": {"URL": database_url}}):
+        engine = create_engine(connections.config("default"))
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(local.create_all)
+                await connection.execute(insert(dotted).values(id=1, code="A"))
+            taken = await refused(engine, insert(dotted).values(id=2, code="A"))
+            missing = await refused(engine, insert(dotted).values(id=3, code=None))
+        finally:
+            await engine.dispose()
+
+    duplicate = duplicate_value(taken, local)
+    assert duplicate is not None
+    assert (duplicate.fields, duplicate.message) == (
+        ("code",),
+        "The code is already taken.",
+    )
+    assert integrity_violation(missing, local) == IntegrityViolation(
+        "not_null", None, ("code",)
+    )

@@ -19,9 +19,11 @@ from domainkit.apps import registry
 from domainkit.cache import caches
 from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
+from domainkit.contrib.audit.tables import audit_log
 from domainkit.contrib.auth.models import AnonymousUser
 from domainkit.contrib.flags import (
     Flag,
+    FlagsUnitOfWork,
     InvalidFlag,
     InvalidSettingValue,
     dynamic_setting,
@@ -36,7 +38,14 @@ from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.management import CommandError, call_command
 from domainkit.management.base import run_async
-from domainkit_tests.conftest import ALPHA, AUTH, CONTENTTYPES, FAST_HASHER, SHOP
+from domainkit_tests.conftest import (
+    ALPHA,
+    AUTH,
+    CONTENTTYPES,
+    FAST_HASHER,
+    SHOP,
+    MakeDatabase,
+)
 from domainkit_tests.test_auth_admin import staff
 from domainkit_tests.test_auth_http import audited
 
@@ -633,3 +642,113 @@ def test_flagged_routes_ask_about_the_caller(client: TestClient) -> None:
         "not_found",
         "Not found.",
     )
+
+
+def test_out_of_range_percentages_say_the_range() -> None:
+    """The refusal says what a rollout may be."""
+    with pytest.raises(InvalidFlag) as refused:
+        Flag(id="x").configure(
+            everyone=None, percentage=101, users=[], groups=[], note=""
+        )
+
+    assert refused.value.message == "A rollout percentage is 0 to 100."
+
+
+def test_flags_are_read_where_they_are_routed(
+    project: None, make_database: MakeDatabase
+) -> None:
+    """With ``DATABASE_ROUTING['flags']``, flags are written and read there."""
+    with override_settings(
+        DATABASES={
+            "default": {"URL": connections.config().URL.get_secret_value()},
+            "flags_db": {"URL": make_database("flags")},
+        },
+        DATABASE_ROUTING={"flags": "flags_db"},
+    ):
+
+        async def create() -> None:
+            async with connections.engine("flags_db").begin() as connection:
+                await connection.run_sync(flags.create)
+                await connection.run_sync(dynamic_settings.create)
+                await connection.run_sync(audit_log.create)  # Changes are audited.
+            await connections.close_all()
+
+        asyncio.run(create())
+        run("flags", "set", "beta", "--everyone", "on")
+
+        assert enabled("beta")
+
+
+def test_a_shard_group_is_refused_by_the_setting_that_names_it(
+    project: None, tmp_path: Path
+) -> None:
+    """The refusal names ``DATABASE_ROUTING['flags']`` and its value."""
+    shards = {
+        f"shard_{n}": {"URL": f"sqlite+aiosqlite:///{tmp_path / f'{n}.db'}"}
+        for n in range(2)
+    }
+    registry.clear()
+    with (
+        override_settings(
+            DATABASES={"default": {"URL": "sqlite+aiosqlite:///:memory:"}, **shards},
+            SHARDS={"group": {"DATABASES": list(shards)}},
+            DATABASE_ROUTING={"flags": "group"},
+        ),
+        pytest.raises(
+            ImproperlyConfigured,
+            match=r"^DATABASE_ROUTING\['flags'\] = 'group' must name a SQL alias",
+        ),
+    ):
+        setup()
+
+
+def test_staff_see_every_rule_of_a_flag(client: TestClient) -> None:
+    """The users and the note are part of what is created and listed."""
+    headers = staff("ops", *FLAG_PERMISSIONS)
+    rules = {
+        "name": "beta",
+        "everyone": None,
+        "percentage": 0,
+        "users": ["u2", "u1"],
+        "groups": [],
+        "note": "for the beta testers",
+    }
+
+    created = client.post(f"{ADMIN}/flags", json=rules, headers=headers)
+
+    expected = {**rules, "users": ["u1", "u2"]}
+    assert created.json() == expected
+    assert client.get(f"{ADMIN}/flags", headers=headers).json() == [expected]
+
+
+def test_the_staff_api_documents_its_errors(client: TestClient) -> None:
+    """Each endpoint documents its error statuses with the error body."""
+    schema = client.get("/openapi.json").json()
+
+    responses = schema["paths"][f"{ADMIN}/flags/{{name}}"]["put"]["responses"]
+    for code in ("401", "403", "404", "409", "422"):
+        assert responses[code]["content"]["application/json"]["schema"] == {
+            "$ref": "#/components/schemas/ErrorResponse"
+        }
+
+
+def test_flags_changed_after_listing_are_recorded(project: None) -> None:
+    """Flags read with ``all()`` are tracked: their changes are events."""
+    run("flags", "set", "beta", "--everyone", "off")
+    assert not enabled("beta")
+
+    async def everyone_on() -> None:
+        async with FlagsUnitOfWork() as uow:
+            for flag in await uow.flags.all():
+                flag.configure(
+                    everyone=True, percentage=0, users=[], groups=[], note=""
+                )
+            await uow.commit()
+
+    run_async(everyone_on())
+
+    assert enabled("beta")  # The cached copy was dropped at once.
+    assert [row["details"]["everyone"] for row in audited("flags.flag_changed")] == [
+        False,
+        True,
+    ]

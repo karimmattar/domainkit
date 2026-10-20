@@ -34,6 +34,7 @@ from domainkit.ddd import DomainEvent, Personal
 from domainkit.http import get_asgi_application
 from domainkit.management import CommandError, call_command
 from domainkit.management.base import run_async
+from domainkit.testing import CapturedQueries
 from domainkit_tests.conftest import ALPHA, AUTH, CONTENTTYPES, FAST_HASHER
 from domainkit_tests.test_auth_admin import staff
 from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork, notes
@@ -517,3 +518,53 @@ def test_auditlog_reads_aggregate_ids_after_the_first_equals(project: None) -> N
     with pytest.raises(CommandError) as refused:
         run("auditlog", "--aggregate", "code=")
     assert str(refused.value) == "--aggregate takes FIELD=ID, as product_id=42."
+
+
+def test_history_pages_hold_fifty_entries_by_default(project: None) -> None:
+    """Without ``limit``, a page is fifty entries, and says that more follow."""
+    rows: list[tuple[datetime, int, dict[str, Any]]] = [
+        (EARLIER + timedelta(seconds=n), n + 1, {}) for n in range(51)
+    ]
+    asyncio.run(write_rows(*rows))
+
+    page = run_async(history_page(target="t-1"))
+
+    assert (len(page.entries), page.more) == (50, True)
+    assert ids(page.entries)[0] == 51
+
+
+def test_each_database_is_asked_for_one_page_only(project: None) -> None:
+    """The page is cut by the query, not after reading the whole history."""
+    rows: list[tuple[datetime, int, dict[str, Any]]] = [
+        (EARLIER + timedelta(seconds=n), n + 1, {}) for n in range(3)
+    ]
+    asyncio.run(write_rows(*rows))
+
+    with CapturedQueries() as queries:
+        page = run_async(history_page(target="t-1", limit=1))
+
+    (query,) = [each for each in queries.statements if audit_log.name in each]
+    assert "LIMIT" in query.upper()
+    assert (ids(page.entries), page.more) == ([3], True)
+
+
+def test_staff_see_what_an_entry_is_about(client: TestClient) -> None:
+    """An explicit record's target and request id reach the client."""
+
+    async def viewed() -> None:
+        context = RequestContext("req-9", "203.0.113.5", "GET", "/reports/r-1", "u1")
+        with bind_request(context):
+            await record("report.viewed", target="r-1")
+        await connections.close_all()
+
+    asyncio.run(viewed())
+    headers = staff("auditor", "audit.view_history")
+
+    body = client.get(HISTORY, params={"target": "r-1"}, headers=headers).json()
+
+    (item,) = body["items"]
+    assert (item["target"], item["request_id"], item["actor"]) == (
+        "r-1",
+        "req-9",
+        "u1",
+    )

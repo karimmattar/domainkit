@@ -6,7 +6,9 @@ from typing import Any
 
 import pytest
 from fastapi import APIRouter
+from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
+from starlette.exceptions import HTTPException
 
 from domainkit.conf import override_settings
 from domainkit.context import RequestContext, bind_request
@@ -34,6 +36,24 @@ async def refuse() -> None:
         code="taken",
         errors=[FieldError(loc=["body", "slug"], msg="Pick another.", type="taken")],
     )
+
+
+@router.get("/answers")
+async def list_answers() -> list[str]:
+    """Read the answers: a second route on the same path."""
+    return []
+
+
+@router.get("/unchanged")
+async def unchanged() -> None:
+    """Answer 304 as a conditional GET does, keeping its validator."""
+    raise HTTPException(304, headers={"ETag": '"v1"'})
+
+
+@router.post("/checked")
+async def checked() -> None:
+    """Refuse with a validation error that names neither a place nor a type."""
+    raise RequestValidationError([{"msg": "Pick one."}])
 
 
 PROBLEMS = {"ERROR_FORMAT": "problem+json"}
@@ -229,3 +249,40 @@ def test_errors_raised_by_routes_keep_their_fields(
     assert response.json()["errors"] == [
         {"loc": ["body", "slug"], "msg": "Pick another.", "type": "taken"}
     ]
+
+
+ROUTES = "domainkit_tests.test_problem_details.router"
+
+
+@pytest.mark.parametrize("problems", [False, True])
+def test_wrong_methods_list_every_route_of_the_path(
+    make_client: MakeClient, problems: bool
+) -> None:
+    """``Allow`` names the methods of each route on the path, not the first's."""
+    settings = PROBLEMS if problems else {}
+    client = make_client(ROOT_ROUTER=ROUTES, **settings)
+
+    refused = client.delete("/answers")
+    served = client.get("/answers")
+
+    assert (refused.status_code, refused.json()["code"]) == (405, "method_not_allowed")
+    assert refused.headers["Allow"] == "GET, POST"
+    assert "Allow" not in served.headers
+
+
+def test_bodiless_statuses_keep_their_headers(make_client: MakeClient) -> None:
+    """A 304 raised by a route has no body, but keeps the headers it was given."""
+    response = make_client(ROOT_ROUTER=ROUTES).get("/unchanged")
+
+    assert (response.status_code, response.content) == (304, b"")
+    assert response.headers["ETag"] == '"v1"'
+
+
+def test_validation_errors_may_lack_a_place_and_a_type(
+    make_client: MakeClient,
+) -> None:
+    """An error raised by hand without ``loc`` or ``type`` gets empty ones."""
+    response = make_client(ROOT_ROUTER=ROUTES).post("/checked")
+
+    assert (response.status_code, response.json()["code"]) == (422, "validation_error")
+    assert response.json()["errors"] == [{"loc": [], "msg": "Pick one.", "type": ""}]
