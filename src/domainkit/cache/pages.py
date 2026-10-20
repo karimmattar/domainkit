@@ -17,8 +17,10 @@ caller who may not see it.
 A response depends on who asks unless proven otherwise, so requests that
 carry credentials are never served from, or stored in, the cache, unless
 the page varies on the user: ``vary_on_user=True`` keys entries by actor
-and marks them ``private``. Requests with credentials no middleware
-accepted (no actor) are never cached.
+and marks them ``private``. Credentials are the actor, the ``Credentials``
+an authentication middleware accepted (``request.auth``: a token, a
+cookie, a client certificate), or an ``Authorization`` header. Requests
+with credentials but no actor or user id are never cached.
 
 Cached pages override the framework's ``Cache-Control: no-store`` on
 purpose: clients may keep them, and must revalidate them (``no-cache``)
@@ -137,10 +139,19 @@ _UNCHECKED: Final = ""
 
 
 def _user(request: Request) -> str | None:
-    """The actor, ``""`` for credentials without one, or None for anonymous callers."""
+    """The actor, ``""`` for credentials without one, or None for anonymous callers.
+
+    Without an actor (no ``RequestContextMiddleware``), credentials that
+    middleware accepted (``request.auth``) still count, by their user's id:
+    a cookie or a client certificate sends no ``Authorization`` header.
+    """
     context = current_request()
     if context is not None and context.actor:
         return context.actor
+    credentials = request.scope.get("auth")
+    if credentials is not None:
+        user_id = getattr(getattr(credentials, "user", None), "id", None)
+        return _UNCHECKED if user_id is None else str(user_id)
     return _UNCHECKED if "authorization" in request.headers else None
 
 

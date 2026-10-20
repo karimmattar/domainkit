@@ -319,6 +319,12 @@ All notable changes to domainkit. The format follows
   frozen clock reaches the application.
 - JWTs' `exp`, `iat`, and `nbf` are checked by domainkit, on
   `domainkit.clock`, as PyJWT checked them on the host's clock.
+- **Startup refuses `AuthenticationMiddleware` without
+  `RequestContextMiddleware`** listed before it, as it already refused the
+  two in the wrong order: without a request context no actor is bound, and
+  rate limits, idempotency keys, the audit trail, and `@cache_page` could
+  not tell users apart. Add `domainkit.http.middleware.RequestContextMiddleware`
+  ahead of it (projects from `init` have it).
 
 ### Fixed
 
@@ -341,6 +347,12 @@ All notable changes to domainkit. The format follows
   `cache_page` keys absolute URLs. A page whose answer depends on the host
   (a tenant chosen by `Host`, a link built with `url_for`) was served to
   every host and scheme from the entry the first request filled.
+- `@cache_page` counts the credentials an authentication middleware
+  accepted (`request.auth`) even when no actor is bound. A user logged in
+  by a cookie or a client certificate, behind `AuthenticationMiddleware`
+  without `RequestContextMiddleware`, sent no `Authorization` header and
+  had no actor, so a page without `vary_on_user` stored their answer as
+  public and served it to everyone.
 
 ## [0.6.2] - 2026-10-19
 

@@ -1,7 +1,8 @@
 """Routes exercising throttles, cached pages, uploads, and translations."""
 
-from dataclasses import asdict, replace
-from typing import Annotated, Final
+from dataclasses import asdict, dataclass, replace
+from typing import Annotated, Final, cast
+from uuid import UUID
 
 from fastapi import (
     APIRouter,
@@ -20,6 +21,8 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from domainkit.cache import cache_page
 from domainkit.context import bind_request, current_request
+from domainkit.contrib.auth.authentication import BaseAuthentication, Credentials
+from domainkit.contrib.auth.models import AbstractBaseUser
 from domainkit.ddd import NotFound
 from domainkit.http.ratelimit import Throttle
 from domainkit.http.uploads import IMAGES, PDF, save_upload, serve
@@ -47,6 +50,33 @@ class ActorFromHeader:
             return
         with bind_request(replace(context, actor=actor)):
             await self.app(scope, receive, send)
+
+
+@dataclass(frozen=True)
+class CookieUser:
+    """A user a session cookie names (``SessionCookie``)."""
+
+    id: UUID
+    username: str
+    is_authenticated: bool = True
+    is_active: bool = True
+
+
+COOKIE_USERS: Final = {
+    name: CookieUser(UUID(int=number), name)
+    for number, name in enumerate(("alice", "bob"), start=1)
+}
+
+
+class SessionCookie(BaseAuthentication):
+    """A project's own cookie authentication: ``session=<username>``."""
+
+    async def authenticate(self, connection: HTTPConnection) -> Credentials | None:
+        """The user the ``session`` cookie names, if any."""
+        user = COOKIE_USERS.get(connection.cookies.get("session", ""))
+        if user is None:
+            return None
+        return Credentials(user=cast("AbstractBaseUser", user), scheme="cookie")
 
 
 def api_key(connection: HTTPConnection) -> str | None:
@@ -227,6 +257,22 @@ def page_routes() -> APIRouter:
         """This page's absolute URL, as a tenant chosen by host would see it."""
         computed.append(f"here:{request.url.hostname}")
         return {"url": str(request.url_for("here"))}
+
+    @pages.get("/me/name")
+    @cache_page(ttl=60)
+    async def my_name(request: Request) -> dict[str, str]:
+        """Who the caller is; a page that forgot ``vary_on_user``."""
+        name = getattr(request.scope.get("user"), "username", "anonymous")
+        computed.append(f"name:{name}")
+        return {"you": name}
+
+    @pages.get("/me/greeting")
+    @cache_page(ttl=60, vary_on_user=True)
+    async def my_greeting(request: Request) -> dict[str, str]:
+        """A greeting for the caller, cached per user."""
+        name = getattr(request.scope.get("user"), "username", "anonymous")
+        computed.append(f"greeting:{name}")
+        return {"hello": name}
 
     @pages.post("/products")
     @cache_page(ttl=60)

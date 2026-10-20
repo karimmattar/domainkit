@@ -198,11 +198,13 @@ async def my_basket(user: CurrentUser) -> BasketOut: ...
   are.
 - **Who asks.** The route's dependencies run on every request, the cached
   ones too, so rules (`Require`) and throttles still decide first. A
-  request with credentials (an actor, or an `Authorization` header) is
-  never served from, or stored in, the cache, unless the page says
-  `vary_on_user=True`: then each actor has entries of their own, and
-  anonymous callers share theirs. Credentials that no middleware accepted
-  (no actor) are never cached either way.
+  request with credentials (an actor, the `Credentials` an authentication
+  middleware accepted from a token, a cookie, or a client certificate, or
+  an `Authorization` header) is never served from, or stored in, the
+  cache, unless the page says `vary_on_user=True`: then each actor (or,
+  with no actor bound, each user id) has entries of their own, and
+  anonymous callers share theirs. Credentials with neither an actor nor a
+  user id are never cached either way.
 - **Browsers and proxies.** The framework answers `Cache-Control:
   no-store` by default. Cached pages override it on purpose: `public,
   no-cache` (keep it, but ask each time), `private` when they vary on the
