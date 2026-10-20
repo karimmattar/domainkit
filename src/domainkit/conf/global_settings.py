@@ -493,6 +493,8 @@ class Settings(BaseModel):
     """Dotted path to the ``APIRouter`` that mounts every route (``ROOT_URLCONF``)."""
     ASGI_APPLICATION: str | None = None
     """``module:attribute`` that ``runserver`` serves."""
+    EVENT_LOOP: Literal["auto", "asyncio", "uvloop"] = "auto"
+    """Commands' and ``runserver``'s loop: uvloop when installed (``auto``), or not."""
 
     DATABASES: dict[str, DatabaseConfig] = Field(default_factory=dict)
     """SQL databases by alias; if any are set, ``default`` is required."""

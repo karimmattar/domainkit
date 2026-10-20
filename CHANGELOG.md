@@ -6,6 +6,14 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `runserver` and management commands with an `async` handle, `runworker`
+  among them, run on uvloop when the new `uvloop` extra is installed.
+  `EVENT_LOOP` (`auto`, `asyncio`, `uvloop`) chooses, and
+  `domainkit.utils.loops.loop_factory` gives other entry points the same
+  loop (ASYNC-25).
+
 ## [0.7.0] - 2026-10-20
 
 ### Added
