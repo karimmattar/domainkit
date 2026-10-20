@@ -432,9 +432,10 @@ routes, the admin API, `/password`, the second-factor routes,
 `/email-verification`, and `/logout` with `everywhere` take only those,
 so a scoped token can neither make a token with more, grant anything,
 nor change or lock its account. `/me` with a scoped token lists, in
-`permissions`, only those both the user and the scopes allow. `createtoken --scope KEY` makes scoped tokens
-from the command line. Creating and revoking are audited
-(`auth.token_created` with the scopes, `auth.token_revoked`).
+`permissions`, only those both the user and the scopes allow.
+`createtoken --scope KEY` makes scoped tokens from the command line.
+Creating and revoking are audited (`auth.token_created` with the scopes,
+`auth.token_revoked`).
 
 Every token records when it last authenticated a request
 (`last_used_at`), written at most once every five minutes, so a key no one
@@ -794,9 +795,10 @@ of `{token}` (the token alone without one), which works for
 `PASSWORD_RESET_TIMEOUT` (an hour). A user whose stored address cannot
 take mail, from before addresses were checked, is skipped with a warning
 that names the user's id, never the address, and the others still get
-their links; verification links skip such a user the same way. Your page posts the token and the new
-password to `/password-reset/confirm`. The new password is checked by the
-validators, and every session of the user ends.
+their links; verification links skip such a user the same way. Your page
+posts the token and the new password to `/password-reset/confirm`. The
+new password is checked by the validators, and every session of the
+user ends.
 
 Reset tokens are signed with `SECRET_KEY` and never stored, not even in
 the outbox: the worker makes them as it mails them. A token rests on the
@@ -870,9 +872,10 @@ in `domainkit_pending_signups` (run `makemigrations` and `migrate`),
 which is never in fixtures. The outbox holds only a pending signup's id.
 A row goes when its link is used, when the worker has told its address
 that the name or the address is taken, or, past
-`EMAIL_VERIFICATION_TIMEOUT`, with the hourly purge of expired tokens. Signups count against `EMAIL_RATE` per client
-address and per email address, links checked against `LOGIN_RATE` per
-client address, and new accounts are audited as `auth.user_signed_up`.
+`EMAIL_VERIFICATION_TIMEOUT`, with the hourly purge of expired tokens.
+Signups count against `EMAIL_RATE` per client address and per email
+address, links checked against `LOGIN_RATE` per client address, and new
+accounts are audited as `auth.user_signed_up`.
 Two links for one new address used at the same moment can both make an
 account: email addresses are not unique in the user table.
 

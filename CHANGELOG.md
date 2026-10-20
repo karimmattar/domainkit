@@ -89,8 +89,9 @@ All notable changes to domainkit. The format follows
 - Scoped personal tokens (DJ-33): `domainkit.contrib.auth.personal_tokens`
   lets users list, create, and revoke their own tokens at `/auth/tokens`,
   shown once (marked `no-store`, so no idempotency key replays one) and
-  limited to scopes (permission keys they hold) if they wish. Permission rules allow a scoped token only what both its user and
-  its scopes allow; `HasScope` and `IsUnscoped` are new rules, and
+  limited to scopes (permission keys they hold) if they wish. Permission
+  rules allow a scoped token only what both its user and its scopes
+  allow; `HasScope` and `IsUnscoped` are new rules, and
   `createtoken --scope` makes scoped tokens. Tokens record when they were
   last used, at most every five minutes. Run `makemigrations` and
   `migrate` for the tokens' new columns.
