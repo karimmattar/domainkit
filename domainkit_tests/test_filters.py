@@ -525,6 +525,22 @@ def test_orderings_whose_cursors_could_be_too_long_are_refused() -> None:
 
     longest = longest_ordering(Fits.ordering_fields, Article, Fits.max_ordering)
     assert cursor_length(longest, Article) <= MAX_CURSOR_LENGTH
+    # [1,"-ab,id", 6 * 503 + 2 bytes, the id]: 3,072 bytes, 4,096 characters.
+    widest = text_of(503)
+    exact = {"model": widest, "ordering_fields": ("ab",)}
+    assert cursor_length((Ordering("ab", descending=True),), widest) == 4096
+    type("Exact", (FilterSet,), exact)
+    with pytest.raises(TypeError, match="can take 4104 characters"):
+        type("Broken", (FilterSet,), {**exact, "model": text_of(504)})
+
+
+def text_of(length: int) -> type:
+    """An aggregate with a text field ``ab`` of ``MaxLength(length)``."""
+
+    class Texts(AggregateRoot[UUID]):
+        ab: Annotated[str, MaxLength(length)]
+
+    return Texts
 
 
 def test_a_long_sort_value_never_breaks_a_page(

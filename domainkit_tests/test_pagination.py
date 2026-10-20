@@ -261,18 +261,19 @@ def test_positions_are_never_refused_for_their_length(
     ``FilterSet`` checked, makes one: it is refused when it comes back.
     """
     ordering = (Ordering("text"), Ordering("id"))
-    fits = encode_position(("x" * 3000, UUID(int=1)), ordering)
     with caplog.at_level(logging.WARNING, logger="domainkit.http.pagination"):
+        # 3,017 characters, with [1,"text,id",...] and the id: 3,072 bytes.
+        fits = encode_position(("x" * 3017, UUID(int=1)), ordering)
         too_long = encode_position(("x" * 3100, UUID(int=1)), ordering)
 
-    assert len(fits) <= MAX_CURSOR_LENGTH < len(too_long)
+    assert len(fits) == MAX_CURSOR_LENGTH < len(too_long)
     assert caplog.messages == [
         (
             f"A cursor for the ordering text,id took {len(too_long)} characters, "
             "more than MAX_CURSOR_LENGTH: a value is longer than its field declares."
         )
     ]
-    assert decode_position(fits, ordering, Record)[0] == "x" * 3000
+    assert decode_position(fits, ordering, Record)[0] == "x" * 3017
     with pytest.raises(InvalidCursor):
         decode_position(too_long, ordering, Record)
 
@@ -551,6 +552,21 @@ def test_the_longest_ordering_takes_the_roomiest_fields() -> None:
     assert longest_ordering(("id",), Bounded, 0) == ()
     by_id = total_ordering(longest_ordering(("id",), Bounded, 1))
     assert len(encode_position((UUID(int=0),), by_id)) == cursor_length(by_id, Bounded)
+
+
+class Nothing(StrEnum):
+    """An enum without members: no value to put in a cursor."""
+
+
+class Hollow(AggregateRoot[int]):
+    """An aggregate ordered by such an enum."""
+
+    nothing: Nothing
+
+
+def test_an_enum_without_members_takes_no_room() -> None:
+    """[1,"nothing,id", no value, an int id]: 16 + 1 + 21 bytes of JSON."""
+    assert cursor_length((Ordering("nothing"),), Hollow) == (4 * 38 + 2) // 3
 
 
 class Book(AggregateRoot[UUID]):
