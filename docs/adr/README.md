@@ -48,3 +48,6 @@ accepted record: supersede it with a new one and link both ways.
 | [0039](0039-translate-messages-at-the-boundary.md) | Translate messages at the HTTP boundary, from gettext catalogs compiled in Python | Accepted |
 | [0040](0040-store-files-under-random-names.md) | Store files under random names; trust only their content | Accepted |
 | [0041](0041-privacy-through-personal-markers.md) | Answer privacy requests from Personal markers, through units of work | Accepted |
+| [0048](0048-request-deadlines.md) | Give every request a deadline, answer 503 when it passes, and pass it on | Accepted |
+| [0049](0049-shed-load-past-a-concurrency-cap.md) | Shed load in the application: a cap per process, a short queue, and a fast 503 | Accepted |
+| [0050](0050-outgoing-http-client.md) | Call other services through pooled clients that keep to the deadline | Accepted |
