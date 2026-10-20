@@ -1007,9 +1007,10 @@ async def test_the_backlog_is_bounded(
 
     assert stalled.pending("default") == 2
     assert [row["lock_id"] is None for row in await outbox()].count(True) == 1
-    assert "Left 1 committed messages to the relay: 2 are already waiting" in (
-        caplog.messages
-    )
+    assert caplog.messages == [
+        "Left 1 committed messages to the relay: 2 are already waiting (logged "
+        "once until the backlog clears)"
+    ]
 
 
 async def test_shutdown_waits_for_the_publisher_then_stops_it(
@@ -1020,17 +1021,20 @@ async def test_shutdown_waits_for_the_publisher_then_stops_it(
     """Shutdown lets a stuck publish go after CLOSE_TIMEOUT; the relay sends it."""
     stalled = Stalled()
     monkeypatch.setattr(BrokerHandler, "__getitem__", lambda self, alias: stalled)
-    monkeypatch.setattr(dispatch, "CLOSE_TIMEOUT", 0.05)
-    config = registry.settings(MessagingSettings)
-    await enqueue(remember, value=uuid.uuid4())
-    publisher = commit_publisher(config)
+    with override_settings(MESSAGING={**BROKERED, "CLOSE_TIMEOUT": 0.05}):
+        config = registry.settings(MessagingSettings)
+        await enqueue(remember, value=uuid.uuid4())
+        publisher = commit_publisher(config)
 
-    async with asyncio.timeout(1):
-        await close_publishers()
+        async with asyncio.timeout(1):
+            await close_publishers()
 
-    assert "Left 1 committed messages to the relay at shutdown" in caplog.messages
-    assert commit_publisher(config) is not publisher
-    await published(commit_publisher(config))  # A fresh one has nothing to send.
+        assert "Left 1 committed messages to the relay at shutdown" in (caplog.messages)
+        assert commit_publisher(config) is not publisher
+        await published(commit_publisher(config))  # A new one has nothing to send.
+    (row,) = await outbox()
+    # The publication cut short gave its message back: the relay sends it now.
+    assert (row["lock_id"], row["locked_until"]) == (None, None)
 
 
 class RecordingWorker:
@@ -1069,10 +1073,10 @@ async def test_publishers_relay_each_outbox_through_its_own_worker(
     await publisher.close()
 
     assert RecordingWorker.made == [(config, "other")]
-    assert RecordingWorker.relayed == [
-        ("other", broker_tables, [first]),
-        ("other", broker_tables, [second]),
-    ]
+    assert [
+        (database, broker.inner(), ids)  # type: ignore[attr-defined]
+        for database, broker, ids in RecordingWorker.relayed
+    ] == [("other", broker_tables, [first]), ("other", broker_tables, [second])]
     assert publisher.backlog == 0
 
 
@@ -1213,7 +1217,10 @@ async def test_unpublished_messages_are_unlocked(
     worker = Worker()
     with caplog.at_level(logging.WARNING, "domainkit.contrib.messaging.worker"):
         await worker.relay(Unreachable(declare=True), 10)
-    assert caplog.messages == ["Could not declare queues: down"]
+    assert caplog.messages == [
+        "Could not publish 1 of 1 message(s) to the broker (declaring 'default': "
+        "down); they go again on the next round"
+    ]
 
     for broken in (Unreachable(declare=True), Unreachable(declare=False)):
         assert await worker.relay(broken, 10) == 0
@@ -1324,7 +1331,8 @@ async def test_the_relay_works_in_batches_and_counts(
     }
     assert message_id == str(first["id"])
     assert caplog.messages == [
-        f"Could not publish {email['id']} to queue 'emails': no emails"
+        "Could not publish 1 of 2 message(s) to the broker (queue 'emails': no "
+        "emails); they go again on the next round"
     ]
     assert REGISTRY.get_sample_value("messaging_relayed_total", labels) == published + 1
     assert (

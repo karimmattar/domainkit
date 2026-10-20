@@ -15,6 +15,13 @@ A stopping worker gives running messages ``SHUTDOWN_TIMEOUT`` to finish, then
 cancels the rest. A cancelled message goes back to the outbox, due at once,
 and the cut-short run does not count as an attempt.
 
+A worker runs at most its ``Budget`` of messages at once (``CONCURRENCY``),
+a budget ``runworker`` shares between every outbox and queue of the
+process. On PostgreSQL the database's clock decides what is due and when
+locks expire (``dbclock``), and commits wake idle workers through
+``LISTEN``/``NOTIFY``; polling stays as the fallback. Old messages are
+deleted in small batches by a task of their own, never by the claim loop.
+
 Tasks may set their own timeout, retry policy, priority, and rate (see
 ``task``). A task over its rate goes back to the outbox until the rate
 allows it, without spending an attempt. A task in a chain writes the next
@@ -24,18 +31,21 @@ step in the transaction that records it as done.
 import asyncio
 import json
 import logging
+import secrets
 import time
 import uuid
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Coroutine, Iterable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
+from itertools import batched
 from typing import TYPE_CHECKING, Any, Final
 from weakref import WeakKeyDictionary
 
 from pydantic import ValidationError
 from sqlalchemy import delete, or_, select, update
+from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from domainkit import clock
@@ -50,7 +60,9 @@ from domainkit.reporting import report_error
 from domainkit.tracing import remote_parent, span, trace_headers
 from domainkit.utils.module_loading import import_string
 
-from .outbox import message_row, notify_committed, write
+from . import dbclock
+from .budget import Budget
+from .outbox import CHANNEL, message_row, notifies, notify_committed, write
 from .registry import (
     CHAIN,
     TaskSpec,
@@ -91,7 +103,19 @@ UNRECORDED: Final = "unrecorded"
 INTERRUPTED: Final = "interrupted"
 """The outcome of a message cancelled before it finished (a stopping worker)."""
 RELEASE_TIMEOUT: Final = 5.0
-"""Seconds a cancelled message may take to go back to the outbox."""
+"""Seconds a cancelled message may take to go back to the outbox.
+
+Unlocking what a relay could not publish gets as long.
+"""
+LEASE_MARGIN: Final = 5.0
+"""Seconds a relay's lock outlasts its broker's ``publish_timeout``."""
+CLEANUP_START: Final = 60.0
+"""Most seconds a worker waits before its first cleanup (or ``CLEANUP_INTERVAL``).
+
+Workers started together (a deploy) spread their first cleanups over the
+second half of it, and none competes with the first claims for locks.
+"""
+_random = secrets.SystemRandom()
 THROTTLED: Final = "throttled"
 """The outcome of a task held back by its rate; it runs later."""
 
@@ -189,6 +213,30 @@ def _now() -> datetime:
     return clock.now()
 
 
+_settling: set[asyncio.Task[None]] = set()
+"""Shielded clean-ups still running after their caller was cancelled."""
+
+
+async def _shielded(work: Coroutine[Any, Any, None], what: str) -> None:
+    """Run ``work`` to the end within ``RELEASE_TIMEOUT``, even if cancelled.
+
+    The caller's cancellation does not stop it: a lock left behind would
+    hold its messages until it expires. A failure is logged, never raised.
+    """
+
+    async def bounded() -> None:
+        try:
+            async with asyncio.timeout(RELEASE_TIMEOUT):
+                await work
+        except Exception as exc:  # Logged; the locks expire.
+            logger.error("Could not %s; their locks expire", what, exc_info=exc)
+
+    task = asyncio.ensure_future(bounded())
+    _settling.add(task)
+    task.add_done_callback(_settling.discard)
+    await asyncio.shield(task)
+
+
 def backoff(attempts: int, config: MessagingSettings) -> float:
     """Seconds before retrying after ``attempts`` runs: doubling, capped, jittered."""
     return Backoff(config.RETRY_BASE_SECONDS, config.RETRY_MAX_SECONDS).delay(attempts)
@@ -197,10 +245,26 @@ def backoff(attempts: int, config: MessagingSettings) -> float:
 class Outage:
     """Failures in a row to reach one outbox, and the pause before trying again."""
 
-    def __init__(self, database: str, poll_interval: float) -> None:
-        """Pause ``poll_interval`` after the first failure, doubling after each."""
+    def __init__(
+        self,
+        database: str,
+        poll_interval: float,
+        *,
+        doing: str = "reach the outbox of",
+        meanwhile: str = "trying again",
+        back: str = "The outbox of %r answers again",
+    ) -> None:
+        """Pause ``poll_interval`` after the first failure, doubling after each.
+
+        The log says what failed (``Could not <doing> <database>``), what
+        happens ``meanwhile``, and when it works again (``back``, with the
+        database for ``%r``).
+        """
         self.database = database
         self.poll_interval = poll_interval
+        self.doing = doing
+        self.meanwhile = meanwhile
+        self.back = back
         self.failures = 0
 
     def pause(self) -> float:
@@ -212,11 +276,12 @@ class Outage:
         self.failures += 1
         pause = self.pause()
         logger.error(
-            "Could not reach the outbox of %r (%d failure%s in a row); "
-            "trying again in %gs",
+            "Could not %s %r (%d failure%s in a row); %s in %gs",
+            self.doing,
             self.database,
             self.failures,
             "" if self.failures == 1 else "s",
+            self.meanwhile,
             pause,
             exc_info=exc,
         )
@@ -228,16 +293,14 @@ class Outage:
         """Log the end of an outage, if one was going on."""
         if self.failures:
             logger.warning(
-                "The outbox of %r answers again after %d failures",
-                self.database,
-                self.failures,
+                "%s after %d failures", self.back % (self.database,), self.failures
             )
             self.failures = 0
 
 
 async def finish(tasks: set[asyncio.Task[None]], grace: float) -> None:
     """Give ``tasks`` ``grace`` seconds to end, then cancel and await the rest."""
-    if tasks:
+    if tasks and grace > 0:
         await asyncio.wait(tasks, timeout=grace)
     late = [task for task in tasks if not task.done()]
     if late:
@@ -270,20 +333,24 @@ class Worker:
         database: str | None = None,
         bus: EventBus | None = None,
         queues: Iterable[str] | None = None,
+        budget: Budget | None = None,
     ) -> None:
         """Run the outbox of alias ``database`` (default: ``MESSAGING.DATABASE``).
 
         Every database that hosts domains has its own outbox; only the worker
         of ``MESSAGING.DATABASE`` schedules periodic tasks. ``queues`` limits
-        the messages it claims (default: every queue).
+        the messages it claims (default: every queue). Workers of one process
+        share a ``budget`` (default: one of their own, of ``CONCURRENCY``).
         """
         self.config = config or registry.settings(MessagingSettings)
         self.database = database or self.config.DATABASE
         self.bus = bus or event_bus
         self.queues = None if queues is None else frozenset(queues)
+        self.budget = budget or Budget(self.config.CONCURRENCY)
         self._scheduled: dict[str, int] = {}
         self._next_runs: dict[str, datetime] = {}
         self._last_cleanup = float("-inf")
+        self._cleanup_batch = self.config.CLEANUP_BATCH_SIZE
         self._declared: WeakKeyDictionary[Broker, set[str]] = WeakKeyDictionary()
         self._limiter: Backend | None = None
         self._rate_slots: dict[str, float] = {}
@@ -304,6 +371,11 @@ class Worker:
         return connections.engine(self.database)
 
     @property
+    def dialect(self) -> str:
+        """The outbox database's dialect (``postgresql``, ``sqlite``)."""
+        return self.engine.dialect.name
+
+    @property
     def schedules(self) -> bool:
         """Whether this worker queues periodic tasks (the home outbox's does)."""
         return self.database == self.config.DATABASE
@@ -316,53 +388,84 @@ class Worker:
         """Process messages until ``stop`` is set, then finish the running ones.
 
         They get ``SHUTDOWN_TIMEOUT`` seconds; then, or when ``run`` itself is
-        cancelled, the rest are cancelled and go back to the outbox.
+        cancelled, the rest are cancelled and go back to the outbox. Old
+        messages are cleaned up meanwhile, and on PostgreSQL commits wake
+        the worker between polls.
         """
+        wake = asyncio.Event()
         running: set[asyncio.Task[None]] = set()
-        stopping = asyncio.create_task(stop.wait())
         outage = self.outage()
-        try:
-            while not stop.is_set():
-                free = min(
-                    self.config.CONCURRENCY - len(running), self.config.BATCH_SIZE
-                )
-                try:
-                    await self.schedule_periodic()
-                    await self.run_cleanup_when_due()
-                    # A full worker waits for a free slot, so free is at least 1.
-                    claimed = await self.claim(free)
-                except Exception as exc:  # noqa: BLE001 - logged; the loop waits.
-                    await outage.failed(exc, stop)
-                    continue
-                outage.recovered()
-                for message in claimed:
-                    task = asyncio.create_task(self.process(message))
-                    running.add(task)
-                    task.add_done_callback(running.discard)
-                if len(claimed) < free:
-                    # Nothing more is due: poll again later (or stop sooner).
-                    await asyncio.wait({stopping}, timeout=self.config.POLL_INTERVAL)
-                elif len(running) >= self.config.CONCURRENCY:
-                    # Every slot is busy: claim again as soon as one frees up.
-                    await asyncio.wait(
-                        {stopping, *running}, return_when=asyncio.FIRST_COMPLETED
-                    )
-            await finish(running, self.config.SHUTDOWN_TIMEOUT)
-        finally:
-            stopping.cancel()
-            await finish(running, 0)  # Cancelled: stop the running ones now.
+        async with asyncio.TaskGroup() as group:
+            helpers = [
+                group.create_task(set_when(stop, wake)),
+                group.create_task(self.clean_until(stop)),
+                group.create_task(self.listen(stop, wake)),
+            ]
+            try:
+                while not stop.is_set():
+                    try:
+                        await self.schedule_periodic()
+                    except Exception as exc:  # noqa: BLE001 - logged; it waits.
+                        await outage.failed(exc, stop)
+                        continue
+                    slots = await self.budget.acquire(self.config.BATCH_SIZE, stop=stop)
+                    if not slots:
+                        break
+                    wake.clear()  # A commit from here on wakes the next wait.
+                    try:
+                        claimed = await self.claim(slots)
+                    except BaseException as exc:
+                        self.budget.release(slots)
+                        if not isinstance(exc, Exception):
+                            raise
+                        await outage.failed(exc, stop)
+                        continue
+                    outage.recovered()
+                    self.budget.release(slots - len(claimed))
+                    for message in claimed:
+                        task = group.create_task(self._process_holding(message))
+                        running.add(task)
+                        task.add_done_callback(running.discard)
+                    if len(claimed) < slots:
+                        # Nothing more is due: wait for a poll, a commit, or stop.
+                        await pause(wake, self.config.POLL_INTERVAL)
+                await finish(running, self.config.SHUTDOWN_TIMEOUT)
+            finally:
+                for helper in helpers:
+                    helper.cancel()
 
     async def run_once(self) -> int:
-        """Run every message that is due now; return how many ran."""
+        """Run every message that is due now; return how many ran.
+
+        At most ``BATCH_SIZE`` run at once, and no more than the budget
+        allows, so workers sharing it (``runworker --once``) stay within it.
+        """
         await self.schedule_periodic()
         processed = 0
-        while claimed := await self.claim(self.config.BATCH_SIZE):
-            await asyncio.gather(*(self.process(message) for message in claimed))
+        while True:
+            slots = await self.budget.acquire(self.config.BATCH_SIZE)
+            try:
+                claimed = await self.claim(slots)
+            except BaseException:
+                self.budget.release(slots)
+                raise
+            self.budget.release(slots - len(claimed))
+            if not claimed:
+                return processed
+            async with asyncio.TaskGroup() as group:
+                for message in claimed:
+                    group.create_task(self._process_holding(message))
             processed += len(claimed)
-        return processed
+
+    async def _process_holding(self, message: "Claimed") -> None:
+        """Process ``message``, then give back the slot its claim took."""
+        try:
+            await self.process(message)
+        finally:
+            self.budget.release()
 
     def _due(
-        self, now: datetime, limit: int | None, ids: Sequence[uuid.UUID] = ()
+        self, now: dbclock.Moment, limit: int | None, ids: Sequence[uuid.UUID] = ()
     ) -> Any:  # noqa: ANN401 - a subquery.
         """Select due, unlocked messages of this worker's queues (of ``ids``)."""
         due = (
@@ -384,13 +487,14 @@ class Worker:
 
     async def claim(self, limit: int) -> list[Claimed]:
         """Lock up to ``limit`` due messages for this worker."""
-        now = _now()
+        dialect = self.dialect
+        now = dbclock.now(dialect)
         lock_id = uuid.uuid4()
         statement = (
             update(messages)
             .where(messages.c.id.in_(self._due(now, limit)))
             .values(
-                locked_until=now + timedelta(seconds=self.config.VISIBILITY_TIMEOUT),
+                locked_until=dbclock.at(dialect, self.config.VISIBILITY_TIMEOUT),
                 lock_id=lock_id,
                 attempts=messages.c.attempts + 1,
                 started_at=now,
@@ -404,89 +508,141 @@ class Worker:
     async def relay(self, broker: Broker, limit: int) -> int:
         """Publish up to ``limit`` due messages to ``broker``; return how many went.
 
-        Each message is locked for ``REPUBLISH_AFTER`` and published as a
-        pointer: its id, this database, and the lock. Failed publications are
-        unlocked, so the next round tries them again.
+        Each message is published as a pointer: its id, this database, and
+        a lock. The lock is a short lease (the broker's ``publish_timeout``
+        and ``LEASE_MARGIN``) until the broker confirms the message, then
+        lasts ``REPUBLISH_AFTER``. Whatever the broker did not confirm, for
+        any reason (a refusal, its deadline, a cancellation), is unlocked
+        at once, so the next round sends it again.
         """
-        now = _now()
-        return await self._relay(broker, now, self._due(now, limit))
+        return await self._relay(broker, self._due(dbclock.now(self.dialect), limit))
 
     async def relay_ids(self, broker: Broker, ids: Sequence[uuid.UUID]) -> int:
-        """Publish just-committed messages now, those due and not yet taken."""
-        if not ids:
-            return 0
-        now = _now()
-        return await self._relay(broker, now, self._due(now, None, ids))
+        """Publish just-committed messages now, those due and not yet taken.
 
-    async def _relay(self, broker: Broker, now: datetime, due: Any) -> int:  # noqa: ANN401
-        """Lock the ``due`` messages, publish their pointers, unlock failures."""
+        They go ``BATCH_SIZE`` at a time: one lock per batch, and at most
+        a batch of publications in flight.
+        """
+        relayed = 0
+        for chunk in batched(ids, self.config.BATCH_SIZE, strict=False):
+            due = self._due(dbclock.now(self.dialect), None, chunk)
+            relayed += await self._relay(broker, due)
+        return relayed
+
+    async def _relay(self, broker: Broker, due: Any) -> int:  # noqa: ANN401
+        """Lease the ``due`` messages, publish their pointers, settle the leases."""
+        dialect = self.dialect
         lock_id = uuid.uuid4()
+        lease = broker.publish_timeout + LEASE_MARGIN
         statement = (
             update(messages)
             .where(messages.c.id.in_(due))
-            .values(
-                locked_until=now + timedelta(seconds=self.config.REPUBLISH_AFTER),
-                lock_id=lock_id,
-            )
+            .values(locked_until=dbclock.at(dialect, lease), lock_id=lock_id)
             .returning(messages.c.id, messages.c.queue)
         )
         async with self.engine.begin() as connection:
             rows = (await connection.execute(statement)).all()
         if not rows:
             return 0
+        confirmed: list[uuid.UUID] = []
+        failures: list[str] = []
+        try:
+            async with asyncio.timeout(broker.publish_timeout):
+                await self._publish(broker, rows, lock_id, confirmed, failures)
+        except TimeoutError:
+            failures.append(f"no confirmation within {broker.publish_timeout:g}s")
+        finally:
+            # Also when cancelled: a lease left behind holds its messages.
+            await _shielded(
+                self._settle(rows, confirmed, lock_id),
+                f"settle {len(rows)} published message(s)",
+            )
+        if failures:
+            logger.warning(
+                "Could not publish %d of %d message(s) to the broker (%s); they "
+                "go again on the next round",
+                len(rows) - len(confirmed),
+                len(rows),
+                failures[0],
+            )
+        observe_relay("published", len(confirmed))
+        observe_relay("failed", len(rows) - len(confirmed))
+        return len(confirmed)
+
+    async def _publish(
+        self,
+        broker: Broker,
+        rows: Sequence[Row[Any]],
+        lock_id: uuid.UUID,
+        confirmed: list[uuid.UUID],
+        failures: list[str],
+    ) -> None:
+        """Declare new queues, then publish each pointer, all at once.
+
+        The broker's confirmations go to ``confirmed``, its refusals to
+        ``failures``; a queue that failed is declared again next time (it
+        may be gone: deleted, purged).
+        """
         declared = self._declared.setdefault(broker, set())
         if new := {row.queue for row in rows} - declared:
             try:
                 await broker.declare(new)
             except BrokerError as exc:
-                await self._unlock([row.id for row in rows], lock_id, exc)
-                return 0
+                failures.append(f"declaring {', '.join(map(repr, sorted(new)))}: {exc}")
+                return
             declared |= new
-        sent = await asyncio.gather(
-            *(self._publish(broker, row.id, row.queue, lock_id) for row in rows)
-        )
-        failed = [row for row, ok in zip(rows, sent, strict=True) if not ok]
-        if failed:
-            # Declare again next time: the queue may be gone (deleted, purged).
-            declared.difference_update(row.queue for row in failed)
-            await self._unlock([row.id for row in failed], lock_id, None)
-        observe_relay("published", len(rows) - len(failed))
-        return len(rows) - len(failed)
 
-    async def _publish(
-        self, broker: Broker, message_id: uuid.UUID, queue: str, lock_id: uuid.UUID
-    ) -> bool:
-        """Publish one pointer; report whether the broker took it."""
-        pointer = {
-            "id": str(message_id),
-            "database": self.database,
-            "lock": str(lock_id),
-        }
-        try:
-            await broker.publish(
-                queue, json.dumps(pointer).encode(), message_id=str(message_id)
-            )
-        except BrokerError as exc:
-            logger.warning(
-                "Could not publish %s to queue %r: %s", message_id, queue, exc
-            )
-            return False
-        return True
+        async def publish(message_id: uuid.UUID, queue: str) -> None:
+            pointer = {
+                "id": str(message_id),
+                "database": self.database,
+                "lock": str(lock_id),
+            }
+            try:
+                await broker.publish(
+                    queue, json.dumps(pointer).encode(), message_id=str(message_id)
+                )
+            except BrokerError as exc:
+                logger.debug("Could not publish %s to %r: %s", message_id, queue, exc)
+                failures.append(f"queue {queue!r}: {exc}")
+                declared.discard(queue)
+            else:
+                confirmed.append(message_id)
 
-    async def _unlock(
-        self, ids: list[uuid.UUID], lock_id: uuid.UUID, exc: BrokerError | None
+        async with asyncio.TaskGroup() as group:
+            for row in rows:
+                group.create_task(publish(row.id, row.queue))
+
+    async def _settle(
+        self,
+        rows: Sequence[Row[Any]],
+        confirmed: Sequence[uuid.UUID],
+        lock_id: uuid.UUID,
     ) -> None:
-        """Release messages that did not reach the broker."""
-        if exc is not None:
-            logger.warning("Could not declare queues: %s", exc)
-        observe_relay("failed", len(ids))
-        statement = (
-            update(messages)
-            .where(messages.c.id.in_(ids), messages.c.lock_id == lock_id)
-            .values(locked_until=None, lock_id=None)
-        )
+        """Lock the confirmed messages for ``REPUBLISH_AFTER``; unlock the rest.
+
+        Only the relay's own lock changes: a consumer may have taken a
+        message over already.
+        """
+        dialect = self.dialect
+        done = set(confirmed)
+        unsent = [row.id for row in rows if row.id not in done]
+        ours = messages.c.lock_id == lock_id
         async with self.engine.begin() as connection:
-            await connection.execute(statement)
+            if done:
+                await connection.execute(
+                    update(messages)
+                    .where(messages.c.id.in_(done), ours)
+                    .values(
+                        locked_until=dbclock.at(dialect, self.config.REPUBLISH_AFTER)
+                    )
+                )
+            if unsent:
+                await connection.execute(
+                    update(messages)
+                    .where(messages.c.id.in_(unsent), ours)
+                    .values(locked_until=None, lock_id=None)
+                )
 
     async def take_over(
         self, message_id: uuid.UUID, relay_lock: uuid.UUID
@@ -496,7 +652,8 @@ class Worker:
         The delivery must carry the lock the relay published it under, or
         that lock must have expired; anything else is a stale duplicate.
         """
-        now = _now()
+        dialect = self.dialect
+        now = dbclock.now(dialect)
         lock_id = uuid.uuid4()
         statement = (
             update(messages)
@@ -507,7 +664,7 @@ class Worker:
                 or_(messages.c.lock_id == relay_lock, messages.c.locked_until < now),
             )
             .values(
-                locked_until=now + timedelta(seconds=self.config.VISIBILITY_TIMEOUT),
+                locked_until=dbclock.at(dialect, self.config.VISIBILITY_TIMEOUT),
                 lock_id=lock_id,
                 attempts=messages.c.attempts + 1,
                 started_at=now,
@@ -571,7 +728,7 @@ class Worker:
                     message,
                     status=PENDING,
                     attempts=messages.c.attempts - 1,
-                    available_at=_now() + timedelta(seconds=delay),
+                    available_at=dbclock.at(self.dialect, delay),
                     started_at=None,
                 )
                 return THROTTLED
@@ -646,7 +803,12 @@ class Worker:
         statement = (
             update(messages)
             .where(messages.c.id == message.id, messages.c.lock_id == message.lock_id)
-            .values(locked_until=None, lock_id=None, status=DONE, finished_at=_now())
+            .values(
+                locked_until=None,
+                lock_id=None,
+                status=DONE,
+                finished_at=dbclock.now(self.dialect),
+            )
         )
         async with self.engine.begin() as connection:
             released = (await connection.execute(statement)).rowcount
@@ -697,7 +859,10 @@ class Worker:
         error = f"{type(exc).__name__}: {exc}"[:_ERROR_LENGTH]
         if permanent or message.attempts >= message.max_attempts:
             await self._release(
-                message, status=DEAD, finished_at=_now(), last_error=error
+                message,
+                status=DEAD,
+                finished_at=dbclock.now(self.dialect),
+                last_error=error,
             )
             logger.error(
                 "Dead-lettered %s %s after %d attempts",
@@ -715,7 +880,7 @@ class Worker:
         await self._release(
             message,
             status=PENDING,
-            available_at=_now() + timedelta(seconds=delay),
+            available_at=dbclock.at(self.dialect, delay),
             last_error=error,
             started_at=None,
         )
@@ -829,17 +994,166 @@ class Worker:
         )
 
     async def cleanup(self) -> int:
-        """Delete done and cancelled messages older than ``RETENTION_SECONDS``."""
-        cutoff = _now() - timedelta(seconds=self.config.RETENTION_SECONDS)
-        statement = delete(messages).where(
-            messages.c.status.in_((DONE, CANCELLED)), messages.c.finished_at < cutoff
-        )
-        async with self.engine.begin() as connection:
-            result = await connection.execute(statement)
-        return int(result.rowcount)
+        """Delete done and cancelled messages older than ``RETENTION_SECONDS``.
+
+        They go in batches of up to ``CLEANUP_BATCH_SIZE``, each in its own
+        short transaction, skipping rows other workers lock on PostgreSQL;
+        return how many were deleted. A batch that fails halves the next
+        one, down to a single row, so statement timeouts slow cleanup down
+        but never stop it; batches that go through grow back.
+        """
+        dialect = self.dialect
+        deleted = 0
+        while True:
+            size = self._cleanup_batch
+            old = (
+                select(messages.c.id)
+                .where(
+                    messages.c.status.in_((DONE, CANCELLED)),
+                    messages.c.finished_at
+                    < dbclock.at(dialect, -self.config.RETENTION_SECONDS),
+                )
+                .limit(size)
+                .with_for_update(skip_locked=True)
+            )
+            statement = delete(messages).where(messages.c.id.in_(old.scalar_subquery()))
+            try:
+                async with self.engine.begin() as connection:
+                    count = int((await connection.execute(statement)).rowcount)
+            except Exception:
+                self._cleanup_batch = max(size // 2, 1)
+                raise
+            deleted += count
+            if count < size:
+                return deleted
+            self._cleanup_batch = min(size * 2, self.config.CLEANUP_BATCH_SIZE)
 
     async def run_cleanup_when_due(self) -> None:
-        """Run ``cleanup`` every ``CLEANUP_INTERVAL`` seconds."""
-        if time.monotonic() - self._last_cleanup >= self.config.CLEANUP_INTERVAL:
-            self._last_cleanup = time.monotonic()
+        """Run ``cleanup`` every ``CLEANUP_INTERVAL`` seconds.
+
+        ``clean_until`` does this on a schedule of its own; this is for loops
+        of your own.
+        """
+        if clock.monotonic() - self._last_cleanup >= self.config.CLEANUP_INTERVAL:
+            self._last_cleanup = clock.monotonic()
             await self.cleanup()
+
+    async def clean_until(self, stop: asyncio.Event) -> None:
+        """Run ``cleanup`` soon, then every ``CLEANUP_INTERVAL``, until ``stop``.
+
+        The first run comes after ``CLEANUP_START`` (or ``CLEANUP_INTERVAL``,
+        if shorter) times a random factor between one half and one.
+
+        Polling workers and relaying workers run it, each in a task of its
+        own, so claiming never waits for it; consume-only workers never do.
+        A failed run is logged and tried again after ``POLL_INTERVAL``,
+        doubling while it keeps failing, up to ``OUTAGE_MAX_PAUSE``.
+        """
+        failures = Outage(
+            self.database,
+            self.config.POLL_INTERVAL,
+            doing="clean up the outbox of",
+            meanwhile="cleaning up again",
+            back="Cleaning up the outbox of %r works again",
+        )
+        first = min(CLEANUP_START, self.config.CLEANUP_INTERVAL)
+        with suppress(TimeoutError):
+            async with asyncio.timeout(first * _random.uniform(0.5, 1.0)):
+                await stop.wait()
+        while not stop.is_set():
+            try:
+                deleted = await self.cleanup()
+            except Exception as exc:  # noqa: BLE001 - logged; it runs again.
+                await failures.failed(exc, stop)
+                continue
+            failures.recovered()
+            if deleted:
+                logger.info(
+                    "Deleted %d finished message(s) from the outbox of %r",
+                    deleted,
+                    self.database,
+                )
+            with suppress(TimeoutError):
+                async with asyncio.timeout(self.config.CLEANUP_INTERVAL):
+                    await stop.wait()
+
+    async def listen(self, stop: asyncio.Event, wake: asyncio.Event) -> None:
+        """Set ``wake`` each time a commit notifies this outbox, until ``stop``.
+
+        On PostgreSQL with asyncpg, while ``MESSAGING.NOTIFY`` applies (see
+        ``outbox.notifies``); elsewhere it returns at once and polling is
+        all there is. It holds one connection of the pool. A lost connection
+        is opened again after a pause that grows with each failure in a row;
+        meanwhile the worker polls.
+        """
+        engine = self.engine
+        if not (
+            notifies(self.config)
+            and engine.dialect.name == "postgresql"
+            and engine.dialect.driver == "asyncpg"
+        ):
+            return
+        failures = Outage(
+            self.database,
+            self.config.POLL_INTERVAL,
+            doing="listen for new messages in",
+            meanwhile="polling until listening again",
+            back="Listening for new messages in %r again",
+        )
+        while not stop.is_set():
+            try:
+                await self._listen(engine, stop, wake, failures)
+            except Exception as exc:  # noqa: BLE001 - logged; polling goes on.
+                await failures.failed(exc, stop)
+
+    async def _listen(
+        self,
+        engine: AsyncEngine,
+        stop: asyncio.Event,
+        wake: asyncio.Event,
+        failures: Outage,
+    ) -> None:
+        """Listen on one connection until ``stop``, or until it is lost (raise)."""
+        lost = asyncio.Event()
+
+        def notified(*args: object) -> None:
+            payload = args[-1]  # (connection, pid, channel, payload)
+            if self.queues is None or payload in self.queues:
+                wake.set()
+
+        async with engine.connect() as connection:
+            try:
+                raw: Any = (await connection.get_raw_connection()).driver_connection
+                raw.add_termination_listener(lambda _: lost.set())
+                await raw.add_listener(CHANNEL, notified)
+                failures.recovered()
+                wake.set()  # Commits made before this went unheard: look now.
+                await _first(stop, lost)
+            finally:
+                # Never hand a listening connection back to the pool.
+                await connection.invalidate()
+        if lost.is_set() and not stop.is_set():
+            raise ConnectionError("The connection listening for messages was lost.")
+
+
+async def set_when(event: asyncio.Event, then: asyncio.Event) -> None:
+    """Set ``then`` once ``event`` is set."""
+    await event.wait()
+    then.set()
+
+
+async def pause(wake: asyncio.Event, seconds: float) -> None:
+    """Wait ``seconds``, or less if ``wake`` is set meanwhile."""
+    with suppress(TimeoutError):
+        async with asyncio.timeout(seconds):
+            await wake.wait()
+
+
+async def _first(*events: asyncio.Event) -> None:
+    """Wait until any of ``events`` is set."""
+    waiting = [asyncio.ensure_future(event.wait()) for event in events]
+    try:
+        await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for waiter in waiting:
+            waiter.cancel()

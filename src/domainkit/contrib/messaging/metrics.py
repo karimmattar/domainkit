@@ -1,10 +1,21 @@
-"""Outbox and worker metrics, when ``prometheus_client`` is installed."""
+"""Outbox and worker metrics, when ``prometheus_client`` is installed.
 
+The outbox gauges count the table, which grows with retention: they are
+counted at most once per ``METRICS_TTL`` per process, and scrapes that
+arrive while a count runs share it instead of starting their own.
+"""
+
+import asyncio
+import contextvars
 from typing import Final
+from weakref import WeakKeyDictionary
 
 from prometheus_client import Counter, Gauge, Histogram
+from sqlalchemy.ext.asyncio import AsyncEngine
 
+from domainkit import clock
 from domainkit.apps import registry
+from domainkit.db import connections
 from domainkit.http.metrics import register_refresher
 
 from .admin import queue_counts, queue_lag
@@ -33,6 +44,16 @@ SKIPPED: Final = Counter(
     "messaging_deliveries_skipped_total",
     "Broker deliveries not run: duplicates, or messages already done or running.",
 )
+BREAKER: Final = Gauge(
+    "messaging_publisher_breaker_open",
+    "1 while publishing on commit is stopped because the broker keeps failing.",
+    ["broker"],
+)
+LEFT: Final = Counter(
+    "messaging_left_to_relay_total",
+    "Committed messages the publisher left to the relay, by reason.",
+    ["reason"],
+)
 
 
 def observe(kind: str, outcome: str, seconds: float) -> None:
@@ -51,6 +72,56 @@ def observe_skipped() -> None:
     SKIPPED.inc()
 
 
+def observe_breaker(broker: str, *, is_open: bool) -> None:
+    """Record whether the publishing breaker of ``broker`` is open."""
+    BREAKER.labels(broker).set(1 if is_open else 0)
+
+
+def observe_left(reason: str, count: int) -> None:
+    """Record committed messages left to the relay (``breaker``, ``backlog``...)."""
+    LEFT.labels(reason).inc(count)
+
+
+type _Gauges = tuple[dict[str, int], dict[str, float]]
+"""Messages by status, and the lag of each queue."""
+
+_counted: WeakKeyDictionary[AsyncEngine, tuple[float, _Gauges]] = WeakKeyDictionary()
+"""Each outbox's last count, and until when it may be reused (monotonic)."""
+_counting: WeakKeyDictionary[AsyncEngine, asyncio.Task[_Gauges]] = WeakKeyDictionary()
+"""The count under way for each outbox, shared by the scrapes waiting on it."""
+
+
+async def outbox_gauges(config: MessagingSettings) -> _Gauges:
+    """Messages by status and each queue's lag in the home outbox, recently counted.
+
+    A count is reused for ``METRICS_TTL`` seconds. Callers that arrive
+    while one runs wait for it; one that gives up (a scrape cancelled)
+    does not stop it for the others. A failed count is not kept.
+    """
+    engine = connections.engine(config.DATABASE)
+    cached = _counted.get(engine)
+    if cached is not None and clock.monotonic() < cached[0]:
+        return cached[1]
+    counting = _counting.get(engine)
+    if counting is None:
+        expires = clock.monotonic() + config.METRICS_TTL
+        counting = asyncio.get_running_loop().create_task(
+            _count(config, engine, expires), context=contextvars.Context()
+        )
+        _counting[engine] = counting
+        counting.add_done_callback(lambda _: _counting.pop(engine, None))
+    return await asyncio.shield(counting)
+
+
+async def _count(
+    config: MessagingSettings, engine: AsyncEngine, expires: float
+) -> _Gauges:
+    """Count the outbox, and keep the count until ``expires``."""
+    gauges = (await queue_counts(config), await queue_lag(config))
+    _counted[engine] = (expires, gauges)
+    return gauges
+
+
 async def refresh_outbox() -> None:
     """Update the outbox gauges before a scrape (while messaging is installed).
 
@@ -58,11 +129,9 @@ async def refresh_outbox() -> None:
     """
     if not registry.is_installed("domainkit.contrib.messaging"):
         return
-    config = registry.settings(MessagingSettings)
-    counts = await queue_counts(config)
+    counts, lag = await outbox_gauges(registry.settings(MessagingSettings))
     for status in STATUSES:
         QUEUED.labels(status).set(counts.get(status, 0))
-    lag = await queue_lag(config)
     for queue in queues() | lag.keys():
         LAG.labels(queue).set(lag.get(queue, 0.0))
 

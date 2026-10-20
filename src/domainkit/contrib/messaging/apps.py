@@ -11,6 +11,7 @@ from domainkit.broker import brokers
 from domainkit.db import SqlAlchemyUnitOfWork
 from domainkit.db.routing import DatabaseRouter, router
 from domainkit.ddd import DeferredTask, DomainEvent, UnitOfWork
+from domainkit.exceptions import ImproperlyConfigured
 
 from .dispatch import close_publishers
 from .outbox import notify_committed, rows_for, write
@@ -28,11 +29,23 @@ class MessagingConfig(DomainConfig):
     settings_class = MessagingSettings
 
     def ready(self) -> None:
-        """Check the home outbox and broker; expose gauges with Prometheus."""
+        """Check the home outbox and broker; expose gauges with Prometheus.
+
+        Shutdown must give a publication under way the time its broker may
+        take to confirm it: ``CLOSE_TIMEOUT`` covers the broker's
+        ``PUBLISH_TIMEOUT``.
+        """
         config = self.get_settings()
         router.require_standalone(config.DATABASE, "MESSAGING.DATABASE")
         if config.BROKER is not None:
-            brokers.config(config.BROKER)
+            broker = brokers.config(config.BROKER)
+            if config.CLOSE_TIMEOUT < broker.PUBLISH_TIMEOUT:
+                raise ImproperlyConfigured(
+                    f"MESSAGING.CLOSE_TIMEOUT ({config.CLOSE_TIMEOUT:g}s) must be "
+                    f"at least BROKERS[{config.BROKER!r}].PUBLISH_TIMEOUT "
+                    f"({broker.PUBLISH_TIMEOUT:g}s), so shutdown lets a "
+                    "publication under way finish."
+                )
         if find_spec("prometheus_client") is not None:
             import_module(f"{self.name}.metrics")
 

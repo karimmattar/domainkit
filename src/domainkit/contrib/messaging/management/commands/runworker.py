@@ -6,6 +6,7 @@ from argparse import ArgumentParser
 
 from domainkit.apps import registry
 from domainkit.contrib.messaging import registry as tasks
+from domainkit.contrib.messaging.budget import Budget
 from domainkit.contrib.messaging.dispatch import BrokerWorkers
 from domainkit.contrib.messaging.settings import MessagingSettings
 from domainkit.contrib.messaging.worker import Worker
@@ -24,6 +25,8 @@ class Command(BaseCommand):
     all in this process unless ``--database`` picks one target. With
     ``MESSAGING.BROKER``, they relay their outboxes to the broker and run
     what it delivers; ``--once`` always works from the outbox directly.
+    Whatever the source, the process runs at most ``MESSAGING.CONCURRENCY``
+    messages at once: every outbox and queue draws from one ``Budget``.
     """
 
     help = "Run the messaging worker (durable event handlers, background tasks)."
@@ -91,12 +94,17 @@ class Command(BaseCommand):
                 tasks.checked_queue(queue)
         except ImproperlyConfigured as exc:
             raise CommandError(str(exc)) from None
-        workers = [Worker(database=alias, queues=queues) for alias in aliases]
-        if once:
-            counts = await asyncio.gather(*(worker.run_once() for worker in workers))
-            self.write(f"Processed {sum(counts)} message(s).")
-            return
         config = registry.settings(MessagingSettings)
+        budget = Budget(config.CONCURRENCY)
+        workers = [
+            Worker(config, database=alias, queues=queues, budget=budget)
+            for alias in aliases
+        ]
+        if once:
+            async with asyncio.TaskGroup() as group:
+                runs = [group.create_task(worker.run_once()) for worker in workers]
+            self.write(f"Processed {sum(run.result() for run in runs)} message(s).")
+            return
         if config.BROKER is None and not relay:
             raise CommandError("--no-relay needs MESSAGING.BROKER.")
         stop = asyncio.Event()
@@ -116,14 +124,22 @@ class Command(BaseCommand):
         try:
             if config.BROKER is None:
                 self.write("Worker started; press Ctrl+C to stop.")
-                await asyncio.gather(*(worker.run(stop) for worker in workers))
+                async with asyncio.TaskGroup() as group:
+                    polling = [
+                        group.create_task(worker.run(stop)) for worker in workers
+                    ]
+                if any(run.cancelled() for run in polling):
+                    raise asyncio.CancelledError  # Not by a signal: not a stop.
             else:
                 selected = sorted(queues or tasks.queues())
                 self.write(
                     f"Worker started on broker {config.BROKER!r} "
                     f"(queues: {', '.join(selected)}); press Ctrl+C to stop."
                 )
-                await BrokerWorkers(workers, selected, config, relay=relay).run(stop)
+                consumers = BrokerWorkers(
+                    workers, selected, config, relay=relay, budget=budget
+                )
+                await consumers.run(stop)
         except asyncio.CancelledError:
             if not forced or main is None:
                 raise
