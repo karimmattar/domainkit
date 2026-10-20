@@ -111,8 +111,18 @@ async def outbox_gauges(config: MessagingSettings) -> _Gauges:
             log_errors=False,  # The scrapes waiting on it get the error.
         )
         _counting[engine] = counting
-        counting.add_done_callback(lambda _: _counting.pop(engine, None))
-    return await asyncio.shield(counting)
+        counting.add_done_callback(lambda done: _counted_up(engine, done))
+    # Not shield(): a count that fails after this caller gave up is the other
+    # callers' to handle, and shield() would log it as well.
+    await asyncio.wait({counting})
+    return counting.result()
+
+
+def _counted_up(engine: AsyncEngine, counting: asyncio.Task[_Gauges]) -> None:
+    """Forget the count under way; its error is for the callers that waited."""
+    _counting.pop(engine, None)
+    if not counting.cancelled():
+        counting.exception()  # Retrieved: no caller may be left to take it.
 
 
 async def _count(

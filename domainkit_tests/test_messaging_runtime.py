@@ -1545,3 +1545,40 @@ def test_workers_run_on_uvloop() -> None:
 
     with asyncio.Runner(loop_factory=uvloop.new_event_loop) as runner:
         assert runner.run(main()) == [DONE, DONE]
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_count_failing_after_its_scrapes_gave_up_is_not_logged(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The scrapes still waiting get the error; asyncio logs nothing about it."""
+    counting, go_on = asyncio.Event(), asyncio.Event()
+
+    async def failing(config: MessagingSettings, database: str | None = None) -> Any:  # noqa: ANN401
+        counting.set()
+        await go_on.wait()
+        raise ConnectionError("database down")
+
+    monkeypatch.setattr(metrics_module, "queue_counts", failing)
+    with caplog.at_level(logging.DEBUG, "asyncio"):
+        gave_up = asyncio.create_task(refresh_outbox())
+        waiting = asyncio.create_task(refresh_outbox())
+        await within(counting.wait())
+        gave_up.cancel()
+        go_on.set()
+        results = await within(asyncio.gather(gave_up, waiting, return_exceptions=True))
+        counting.clear()
+        go_on.clear()
+        alone = asyncio.create_task(refresh_outbox())  # Then nobody is left.
+        await within(counting.wait())
+        alone.cancel()
+        go_on.set()
+        with pytest.raises(asyncio.CancelledError):
+            await within(alone)
+        if left := list(metrics_module._counting.values()):
+            await within(asyncio.wait(left))
+        gc.collect()
+
+    assert isinstance(results[0], asyncio.CancelledError)
+    assert isinstance(results[1], ConnectionError)
+    assert logged(caplog, "asyncio") == []
