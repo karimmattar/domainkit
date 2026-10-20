@@ -1,0 +1,10 @@
+"""Port."""
+
+from minimal.things.domain.model import TagRepository, WidgetRepository
+
+
+class ThingsUnitOfWork:
+    """Port."""
+
+    widgets: WidgetRepository
+    tags: TagRepository

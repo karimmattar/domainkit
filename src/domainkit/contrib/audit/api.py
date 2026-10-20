@@ -32,10 +32,10 @@ from domainkit.http import (
     CURSOR_PATTERN,
     MAX_CURSOR_LENGTH,
     APIError,
-    ErrorResponse,
     InvalidCursor,
     decode_cursor,
     encode_cursor,
+    error_responses,
 )
 
 from .history import FIELD, MAX_LIMIT, HistoryEntry, Position, history_page
@@ -97,14 +97,11 @@ class HistoryPageOut(BaseModel):
 
 @router.get(
     "/history",
-    responses={
-        code: {"model": ErrorResponse}
-        for code in (
-            status.HTTP_401_UNAUTHORIZED,
-            status.HTTP_403_FORBIDDEN,
-            status.HTTP_422_UNPROCESSABLE_CONTENT,
-        )
-    },
+    responses=error_responses(
+        status.HTTP_401_UNAUTHORIZED,
+        status.HTTP_403_FORBIDDEN,
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+    ),
 )
 async def read_history(
     actor: Annotated[AnyUser, Depends(staff)],

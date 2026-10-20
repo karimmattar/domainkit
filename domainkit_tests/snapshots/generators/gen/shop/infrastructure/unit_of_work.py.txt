@@ -1,0 +1,39 @@
+"""The shop unit of work on the database, and its repositories."""
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from domainkit.db import SqlAlchemyRepository, SqlAlchemyUnitOfWork
+from gen.shop.application.unit_of_work import ShopUnitOfWork
+from gen.shop.domain.model import (
+    Category,
+    CategoryId,
+    CategoryRepository,
+    Product,
+    ProductId,
+    ProductRepository,
+)
+
+
+class SqlAlchemyProductRepository(
+    SqlAlchemyRepository[Product, ProductId], ProductRepository
+):
+    """Product storage in the ``shop_products`` table."""
+
+    model = Product
+
+
+class SqlAlchemyShopUnitOfWork(SqlAlchemyUnitOfWork, ShopUnitOfWork):
+    """One database transaction over the shop repositories."""
+
+    def create_repositories(self, session: AsyncSession) -> None:
+        """Bind the repositories to ``session``."""
+        self.products = SqlAlchemyProductRepository(session)
+        self.categories = SqlAlchemyCategoryRepository(session)
+
+
+class SqlAlchemyCategoryRepository(
+    SqlAlchemyRepository[Category, CategoryId], CategoryRepository
+):
+    """Category storage in the ``shop_categories`` table."""
+
+    model = Category

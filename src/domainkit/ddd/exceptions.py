@@ -57,6 +57,16 @@ class DuplicateValue(Conflict):
         self.fields = tuple(fields)
 
 
+class PreconditionFailed(DomainError):
+    """The caller expected another version of the aggregate than the stored one.
+
+    Raised for a write whose ``If-Match`` names a version that is no longer
+    current: the caller works from a stale copy, so the change is refused
+    rather than applied over someone else's. Read the aggregate again, then
+    decide. (``ConcurrentUpdate`` is the same race, found at commit.)
+    """
+
+
 class BusinessRuleViolation(DomainError):
     """The request is well-formed but breaks an invariant of the model."""
 

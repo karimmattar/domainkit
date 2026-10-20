@@ -15,6 +15,16 @@ Limits that storage needs, and that the domain should state anyway, are
 A value object with a single field (``ProductName(value: str)``) counts as
 that field's value: it is compared, ordered, and searched by it, as the
 column holding it is.
+
+Another aggregate is referenced by its id only, never held as an object
+(each aggregate is its own consistency boundary)::
+
+    class Invoice(AggregateRoot[InvoiceId]):
+        customer_id: Reference[CustomerId]
+
+``Reference[CustomerId]`` is ``CustomerId`` to type checkers; ``fields_of``
+marks the field as a reference, so a derived table indexes its column and a
+derived schema says what it is.
 """
 
 import dataclasses
@@ -30,6 +40,7 @@ from typing import (
     Annotated,
     Any,
     Final,
+    TypeAliasType,
     TypeVar,
     Union,
     cast,
@@ -86,6 +97,17 @@ class Digits:
 
 
 @dataclass(frozen=True, slots=True)
+class AggregateReference:
+    """``Annotated`` metadata: the field holds another aggregate's id."""
+
+
+REFERENCE: Final = AggregateReference()
+
+type Reference[IdT] = Annotated[IdT, REFERENCE]
+"""The id of another aggregate, which is referenced by id only (``Reference[XId]``)."""
+
+
+@dataclass(frozen=True, slots=True)
 class FieldInfo:
     """One field of a domain class, as queries and tables see it."""
 
@@ -107,6 +129,11 @@ class FieldInfo:
         if self.kind is not None and issubclass(self.kind, Entity):
             return self.kind
         return None
+
+    @property
+    def reference(self) -> bool:
+        """Whether the field holds another aggregate's id (``Reference[XId]``)."""
+        return self.marker(AggregateReference) is not None
 
     @property
     def text(self) -> bool:
@@ -253,9 +280,20 @@ def describe(owner: type, name: str, hint: object) -> FieldInfo:
 
 def _annotations(hint: object) -> tuple[tuple[object, ...], object]:
     """The ``Annotated`` metadata of ``hint``, and the type beneath, unaliased."""
+    hint = unaliased(hint)
     if get_origin(hint) is Annotated:
         return hint.__metadata__, _supertype(hint.__origin__)  # type: ignore[attr-defined]
     return (), _supertype(hint)
+
+
+def unaliased(hint: object) -> object:
+    """What a ``type`` alias (``Reference[CustomerId]``) stands for; others as given."""
+    while True:
+        alias = hint if isinstance(hint, TypeAliasType) else get_origin(hint)
+        if not isinstance(alias, TypeAliasType):
+            return hint
+        value: Any = alias.__value__
+        hint = value[get_args(hint)] if alias.__type_params__ else value
 
 
 def _supertype(hint: object) -> object:

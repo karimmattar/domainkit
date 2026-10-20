@@ -43,7 +43,7 @@ from domainkit.cache.handler import caches
 from domainkit.conf import DEFAULT_CACHE_ALIAS
 from domainkit.context import current_request
 from domainkit.i18n.translation import get_language
-from domainkit.utils.headers import patch_vary
+from domainkit.utils.headers import none_match, patch_vary
 
 REQUEST: Final = "_cache_page_request"
 RESPONSE: Final = "_cache_page_response"
@@ -177,15 +177,11 @@ def _key(
 
 
 def _matches(if_none_match: str | None, etag: str) -> bool:
-    """Whether ``If-None-Match`` names ``etag`` (or ``*``), compared weakly."""
-    if not if_none_match:
-        return False
-    wanted = etag.removeprefix("W/")
-    for tag in if_none_match.split(","):
-        tag = tag.strip()
-        if tag == "*" or tag.removeprefix("W/") == wanted:
-            return True
-    return False
+    """Whether ``If-None-Match`` names ``etag`` (or ``*``), compared weakly.
+
+    Resources compare their tags the same way (``utils.headers.none_match``).
+    """
+    return none_match(if_none_match, etag)
 
 
 def _signature(endpoint: Endpoint, hints: dict[str, Any]) -> inspect.Signature:

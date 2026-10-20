@@ -328,8 +328,11 @@ def test_validation_messages_match_pydantics_templates() -> None:
 
 EXTRA_MESSAGES: Final = {
     "You do not have permission to perform this action.",  # BasePermission.message
+    "Some of these fields cannot be changed.",  # resources.policies.FieldNotEditable
+    "You do not have permission to change some of these fields.",  # The same.
     "This value is already taken.",  # db.errors, when no field is known.
     "Too many requests; slow down.",  # http.ratelimit.TOO_MANY_REQUESTS
+    "Another item of the batch failed, so nothing was applied.",  # resources.batches
     "Credentials limited to scopes cannot do this.",  # auth.access.IsUnscoped
     "Too many attempts; try again later.",  # auth.mfa and auth.recovery, by keyword
     "Too many requests for mail; try again later.",  # auth.recovery and auth.signup
@@ -338,9 +341,12 @@ EXTRA_MESSAGES: Final = {
 SCANNED: Final = (
     "http",
     "db",
+    "ddd",
     "storage",
     "contrib/auth",
     "contrib/idempotency",
+    "contrib/objectpermissions",
+    "resources",
 )
 _RAISERS: Final = re.compile(
     r"error_response|APIError|.*(NotFound|Denied|Failed|Conflict|Violation|Missing|Refused)"

@@ -1,0 +1,22 @@
+"""Reactions to domain events; ``apps.py`` subscribes them.
+
+Durable handlers run in the worker, at least once: make them idempotent.
+Replace the example with real reactions: projections, notifications, or
+integration events for other bounded contexts.
+"""
+
+import logging
+
+from gen.shop.domain.events import ProductCreated, ProductRestocked
+
+logger = logging.getLogger(__name__)
+
+
+async def log_product_created(event: ProductCreated) -> None:
+    """Log each new product."""
+    logger.info("Product %s created", event.product_id)
+
+
+async def on_product_restocked(event: ProductRestocked) -> None:
+    """React to product restocked: idempotently, as it may run more than once."""
+    logger.info("ProductRestocked %s", event.product_id)

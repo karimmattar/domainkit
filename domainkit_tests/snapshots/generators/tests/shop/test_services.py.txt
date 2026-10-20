@@ -1,0 +1,98 @@
+"""Use-case tests against in-memory adapters."""
+
+from uuid import uuid4
+
+import pytest
+from gen.shop.application import services
+from gen.shop.application.commands import (
+    AddProductNote,
+    ArchiveProduct,
+    CreateProduct,
+    DeleteProduct,
+    UpdateProduct,
+)
+from gen.shop.domain.events import ProductCreated
+from gen.shop.domain.model import Product, ProductNotFound
+
+from domainkit.ddd import DomainEvent, EventBus
+from domainkit.ddd.query import F, Query
+
+from .fakes import FakeShopUnitOfWork
+
+pytestmark = pytest.mark.anyio
+OWNER = uuid4()
+
+
+async def create(uow: FakeShopUnitOfWork, name: str = "First") -> Product:
+    """Create a product through its use case."""
+    command = CreateProduct(name=name, owner_id=OWNER)
+    return await services.create_product(command, uow)
+
+
+async def test_create_commits_and_publishes() -> None:
+    """Creating stores the product, commits once, then publishes its event."""
+    published: list[DomainEvent] = []
+    bus = EventBus()
+
+    async def collect(event: ProductCreated) -> None:
+        published.append(event)
+
+    bus.subscribe(ProductCreated, collect)
+    uow = FakeShopUnitOfWork(bus)
+
+    product = await create(uow)
+
+    assert uow.commits == 1
+    assert uow.products.items == {product.id: product}
+    assert [type(event) for event in published] == [ProductCreated]
+
+
+async def test_update_changes_only_what_was_sent() -> None:
+    """A field left UNSET stays as it is."""
+    uow = FakeShopUnitOfWork()
+    product = await create(uow, "Old")
+
+    await services.update_product(UpdateProduct(product_id=product.id), uow)
+    assert product.name.value == "Old"
+    command = UpdateProduct(product_id=product.id, name="New")
+    await services.update_product(command, uow)
+
+    assert product.name.value == "New"
+
+
+async def test_archive_add_notes_and_delete() -> None:
+    """Changes go through the aggregate and are committed."""
+    uow = FakeShopUnitOfWork()
+    product = await create(uow)
+
+    note = AddProductNote(product_id=product.id, text="Hello")
+    await services.add_product_note(note, uow)
+    await services.archive_product(ArchiveProduct(product_id=product.id), uow)
+    await services.delete_product(DeleteProduct(product_id=product.id), uow)
+
+    assert [each.text for each in product.notes] == ["Hello"]
+    assert product.archived
+    assert uow.products.items == {}
+    assert uow.commits == 4
+
+
+async def test_missing_product_raises_not_found() -> None:
+    """Unknown ids raise the domain's NotFound error."""
+    command = ArchiveProduct(product_id=uuid4())
+
+    with pytest.raises(ProductNotFound):
+        await services.archive_product(command, FakeShopUnitOfWork())
+
+
+async def test_repositories_answer_queries() -> None:
+    """The fake pages and filters as the database does."""
+    uow = FakeShopUnitOfWork()
+    for name in ("c", "a", "b"):
+        await create(uow, name)
+    query = Query(F("archived").lookup("exact", False), ordering=["name"])
+
+    first = await uow.products.paginate(query, limit=2)
+    second = await uow.products.paginate(query, limit=2, after=first.next_position)
+
+    assert [item.name.value for item in first.items] == ["a", "b"]
+    assert [item.name.value for item in second.items] == ["c"]

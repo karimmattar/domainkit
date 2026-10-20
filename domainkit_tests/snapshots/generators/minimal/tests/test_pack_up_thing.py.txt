@@ -1,0 +1,49 @@
+"""``PackUpThing``: its use case, and its route."""
+
+import pytest
+from minimal.things.application import services
+from minimal.things.application.commands import PackUpThing
+from minimal.things.domain.events import ThingPacked
+
+from domainkit.ddd import DomainEvent, EventBus
+from domainkit.testing import TestClient
+
+from .fakes import FakeThingsUnitOfWork, new_thing, new_thing_request
+
+URL = "/api/v1/things/things"
+
+
+@pytest.mark.anyio
+async def test_pack_up_thing_publishes_thing_packed() -> None:
+    """The use case changes the thing and commits; ThingPacked follows."""
+    published: list[DomainEvent] = []
+    bus = EventBus()
+
+    async def collect(event: ThingPacked) -> None:
+        published.append(event)
+
+    bus.subscribe(ThingPacked, collect)
+    uow = FakeThingsUnitOfWork(bus)
+    thing = new_thing()
+    async with uow:
+        await uow.things.add(thing)
+        await uow.commit()
+
+    await services.pack_up_thing(PackUpThing(thing_id=thing.id), uow)
+
+    assert uow.commits == 2
+    assert [type(each) for each in published] == [ThingPacked]
+
+
+def test_pack_up_thing_route(admin_client: TestClient) -> None:
+    """``POST .../pack-up`` runs the command on the thing the path names."""
+    created = admin_client.post(URL, json=new_thing_request())
+    assert created.status_code == 201, created.json()
+    item = created.headers["location"]
+
+    answer = admin_client.post(
+        f"{item}/pack-up", headers={"If-Match": created.headers["etag"]}
+    )
+
+    assert answer.status_code == 200, answer.json()
+    assert answer.json()["id"] == created.json()["id"]

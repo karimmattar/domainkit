@@ -1,7 +1,13 @@
 """FastAPI integration: application factory, middleware, and error mapping."""
 
 from domainkit.http.application import get_asgi_application
-from domainkit.http.errors import APIError, ErrorResponse, FieldError, error_response
+from domainkit.http.errors import (
+    APIError,
+    ErrorResponse,
+    FieldError,
+    error_response,
+    error_responses,
+)
 from domainkit.http.filters import Filter, FilterSet, InvalidFilter
 from domainkit.http.pagination import (
     CURSOR_PATTERN,
@@ -32,5 +38,6 @@ __all__ = [
     "decode_cursor",
     "encode_cursor",
     "error_response",
+    "error_responses",
     "get_asgi_application",
 ]

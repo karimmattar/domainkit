@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from domainkit.contrib.auth.admin import staff
 from domainkit.contrib.auth.models import AnyUser
-from domainkit.http import ErrorResponse
+from domainkit.http import error_responses
 
 from .exceptions import FlagNotFound
 from .models import DynamicSetting, Flag
@@ -106,9 +106,8 @@ class SettingOut(BaseModel):
         )
 
 
-def _errors(*codes: int) -> dict[int | str, dict[str, Any]]:
-    """OpenAPI entries for the error statuses an endpoint returns."""
-    return {code: {"model": ErrorResponse} for code in codes}
+_errors = error_responses
+"""OpenAPI entries for the error statuses an endpoint returns."""
 
 
 COMMON: Final = (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN)

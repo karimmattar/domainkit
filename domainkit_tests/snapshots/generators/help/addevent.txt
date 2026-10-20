@@ -1,0 +1,71 @@
+{
+ "help": "Add a domain event of an aggregate, and a durable handler of it.",
+ "arguments": [
+  [
+   [],
+   "domain",
+   "_StoreAction",
+   "the domain's package name, e.g. catalog",
+   "None"
+  ],
+  [
+   [],
+   "aggregate",
+   "_StoreAction",
+   "the aggregate's class, e.g. Product",
+   "None"
+  ],
+  [
+   [
+    "--plural"
+   ],
+   "plural",
+   "_StoreAction",
+   "the aggregate's snake_case plural, for tables and URLs",
+   "None"
+  ],
+  [
+   [
+    "--parent"
+   ],
+   "parent",
+   "_StoreAction",
+   "package that holds the domains",
+   "domains"
+  ],
+  [
+   [
+    "--tests-dir"
+   ],
+   "tests_dir",
+   "_StoreAction",
+   "the domain's tests (default: tests/...)",
+   "None"
+  ],
+  [
+   [],
+   "event",
+   "_StoreAction",
+   "the event's class, e.g. ProductRestocked",
+   "None"
+  ],
+  [
+   [
+    "--field"
+   ],
+   "fields",
+   "_AppendAction",
+   "name:kind[:options][?] (? may be None), repeated; kinds: bool (Boolean), date (Date), datetime (UTCDateTime), decimal (ExactDecimal(precision, scale)), float (Double), int (BigInteger), ref (Uuid, indexed), str (String(length)), text (Text), uuid (Uuid)",
+   "[]"
+  ],
+  [
+   [
+    "--no-handler"
+   ],
+   "handler",
+   "_StoreFalseAction",
+   "add the event only, without a handler",
+   "True"
+  ]
+ ]
+}

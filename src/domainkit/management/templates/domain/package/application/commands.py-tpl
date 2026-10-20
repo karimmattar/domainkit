@@ -2,23 +2,37 @@
 
 from uuid import UUID
 
-from domainkit.ddd import Command
+from domainkit.ddd import UNSET, Command, Unset
 
 
 class Create{{ Aggregate }}(Command):
-    """Create a {{ aggregate }} called ``name``."""
+    """Create a {{ aggregate }} called ``name``, owned by ``owner_id``."""
 
     name: str
+    owner_id: UUID
 
 
-class Rename{{ Aggregate }}(Command):
-    """Give a {{ aggregate }} a new name."""
+class Update{{ Aggregate }}(Command):
+    """Change what was sent of a {{ aggregate }}; the rest stays (``PATCH``)."""
 
     {{ aggregate }}_id: UUID
-    name: str
+    name: str | Unset = UNSET
 
 
 class Archive{{ Aggregate }}(Command):
     """Make a {{ aggregate }} read-only."""
+
+    {{ aggregate }}_id: UUID
+
+
+class Add{{ Aggregate }}Note(Command):
+    """Add a note to a {{ aggregate }}."""
+
+    {{ aggregate }}_id: UUID
+    text: str
+
+
+class Delete{{ Aggregate }}(Command):
+    """Delete a {{ aggregate }} and its notes."""
 
     {{ aggregate }}_id: UUID

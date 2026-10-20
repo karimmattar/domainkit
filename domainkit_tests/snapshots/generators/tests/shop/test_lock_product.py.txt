@@ -1,0 +1,49 @@
+"""``LockProduct``: its use case, and its route."""
+
+import pytest
+from gen.shop.application import services
+from gen.shop.application.commands import LockProduct
+from gen.shop.domain.events import ProductLocked
+
+from domainkit.ddd import DomainEvent, EventBus
+from domainkit.testing import TestClient
+
+from .fakes import FakeShopUnitOfWork, new_product, new_product_request
+
+URL = "/api/v1/shop/products"
+
+
+@pytest.mark.anyio
+async def test_lock_product_publishes_product_locked() -> None:
+    """The use case changes the product and commits; ProductLocked follows."""
+    published: list[DomainEvent] = []
+    bus = EventBus()
+
+    async def collect(event: ProductLocked) -> None:
+        published.append(event)
+
+    bus.subscribe(ProductLocked, collect)
+    uow = FakeShopUnitOfWork(bus)
+    product = new_product()
+    async with uow:
+        await uow.products.add(product)
+        await uow.commit()
+
+    await services.lock_product(LockProduct(product_id=product.id), uow)
+
+    assert uow.commits == 2
+    assert [type(each) for each in published] == [ProductLocked]
+
+
+def test_lock_product_route(admin_client: TestClient) -> None:
+    """``POST .../lock`` runs the command on the product the path names."""
+    created = admin_client.post(URL, json=new_product_request())
+    assert created.status_code == 201, created.json()
+    item = created.headers["location"]
+
+    answer = admin_client.post(
+        f"{item}/lock", headers={"If-Match": created.headers["etag"]}
+    )
+
+    assert answer.status_code == 200, answer.json()
+    assert answer.json()["id"] == created.json()["id"]

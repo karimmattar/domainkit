@@ -1,0 +1,181 @@
+"""The ``Product`` aggregate: its values, its notes, its rules, its storage port."""
+
+from dataclasses import field
+from datetime import datetime
+from decimal import Decimal
+from typing import Annotated, Final, NewType, Self
+from uuid import UUID, uuid4
+
+from domainkit.clock import now
+from domainkit.ddd import (
+    AggregateRoot,
+    BusinessRuleViolation,
+    Digits,
+    Entity,
+    MaxLength,
+    NotFound,
+    Reference,
+    Repository,
+    ValueObject,
+)
+from gen.shop.domain.events import (
+    CategoryCreated,
+    CategoryDeleted,
+    CategoryRetitled,
+    ProductArchived,
+    ProductCreated,
+    ProductDeleted,
+    ProductLocked,
+    ProductNoteAdded,
+    ProductPublished,
+    ProductRenamed,
+)
+
+ProductId = NewType("ProductId", UUID)
+ProductNoteId = NewType("ProductNoteId", UUID)
+OwnerId = NewType("OwnerId", UUID)
+"""A user's id: another aggregate, referenced by id only."""
+NAME_LENGTH: Final = 200
+NOTE_LENGTH: Final = 2000
+
+
+class ProductNotFound(NotFound):
+    """No product has the requested id."""
+
+
+class InvalidProductName(BusinessRuleViolation):
+    """The name breaks the naming rules."""
+
+
+class ProductIsArchived(BusinessRuleViolation):
+    """Archived products cannot change."""
+
+
+class ProductName(ValueObject):
+    """A display name: trimmed, not blank, at most ``NAME_LENGTH`` characters."""
+
+    value: Annotated[str, MaxLength(NAME_LENGTH)]
+
+    def __post_init__(self) -> None:
+        """Normalize the name, or reject it."""
+        value = self.value.strip()
+        if not value:
+            raise InvalidProductName("The name must not be blank.")
+        if len(value) > NAME_LENGTH:
+            raise InvalidProductName(
+                f"The name must be at most {NAME_LENGTH} characters."
+            )
+        object.__setattr__(self, "value", value)
+
+
+class ProductNote(Entity[ProductNoteId]):
+    """A note on a product: a child entity, stored and deleted with it."""
+
+    text: Annotated[str, MaxLength(NOTE_LENGTH)]
+    added_at: datetime
+
+
+class Product(AggregateRoot[ProductId]):
+    """Consistency boundary for one product; change it only through methods."""
+
+    name: ProductName
+    owner_id: Reference[OwnerId]
+    archived: bool = False
+    notes: list[ProductNote] = field(default_factory=list)
+
+    @classmethod
+    def create(cls, name: ProductName, owner_id: OwnerId) -> Self:
+        """Start a new product and record that it was created."""
+        product = cls(id=ProductId(uuid4()), name=name, owner_id=owner_id)
+        product.record(ProductCreated(product_id=product.id, name=name.value))
+        return product
+
+    def rename(self, name: ProductName) -> None:
+        """Change the name; renaming to the current name changes nothing."""
+        self._ensure_active()
+        if name != self.name:
+            self.name = name
+            self.record(ProductRenamed(product_id=self.id, name=name.value))
+
+    def archive(self) -> None:
+        """Make the product read-only."""
+        self._ensure_active()
+        self.archived = True
+        self.record(ProductArchived(product_id=self.id))
+
+    def add_note(self, text: str) -> ProductNote:
+        """Add a note, stamped with the time."""
+        self._ensure_active()
+        note = ProductNote(id=ProductNoteId(uuid4()), text=text, added_at=now())
+        self.notes.append(note)
+        self.record(ProductNoteAdded(product_id=self.id, note_id=note.id))
+        return note
+
+    def delete(self) -> None:
+        """Record that the product goes; the repository removes it."""
+        self.record(ProductDeleted(product_id=self.id))
+
+    def _ensure_active(self) -> None:
+        """Refuse changes to an archived product."""
+        if self.archived:
+            raise ProductIsArchived(f"Product {self.id} is archived.")
+
+    def publish(self, *, at: datetime, note: str | None = None) -> None:
+        """Publish the product."""
+        self.record(ProductPublished(product_id=self.id, at=at, note=note))
+
+    def lock(self) -> None:
+        """Lock the product."""
+        self.record(ProductLocked(product_id=self.id))
+
+
+class ProductRepository(Repository[Product, ProductId]):
+    """Every product: ``get``, ``filter``, ``paginate``, ... (a port)."""
+
+    def not_found(self, id_: ProductId) -> ProductNotFound:
+        """Report a missing product."""
+        return ProductNotFound(f"Product {id_} does not exist.")
+
+
+CategoryId = NewType("CategoryId", UUID)
+
+
+class CategoryNotFound(NotFound):
+    """No category has the requested id."""
+
+
+class Category(AggregateRoot[CategoryId]):
+    """Consistency boundary for one category; change it only through methods."""
+
+    title: Annotated[str, MaxLength(100)]
+    parent: Reference[CategoryId] | None = None
+    price: Annotated[Decimal, Digits(10, 2)]
+
+    @classmethod
+    def create(
+        cls, *, title: str, parent: CategoryId | None = None, price: Decimal
+    ) -> Self:
+        """Start a new category and record that it was created."""
+        category = cls(id=CategoryId(uuid4()), title=title, parent=parent, price=price)
+        category.record(CategoryCreated(category_id=category.id))
+        return category
+
+    def delete(self) -> None:
+        """Record that the category goes; the repository removes it."""
+        self.record(CategoryDeleted(category_id=self.id))
+
+    def retitle(
+        self, *, title: str, parent: CategoryId | None = None, rank: int
+    ) -> None:
+        """Retitle the category."""
+        self.record(
+            CategoryRetitled(category_id=self.id, title=title, parent=parent, rank=rank)
+        )
+
+
+class CategoryRepository(Repository[Category, CategoryId]):
+    """Every category: ``get``, ``filter``, ``paginate``, ... (a port)."""
+
+    def not_found(self, id_: CategoryId) -> CategoryNotFound:
+        """Report a missing category."""
+        return CategoryNotFound(f"Category {id_} does not exist.")

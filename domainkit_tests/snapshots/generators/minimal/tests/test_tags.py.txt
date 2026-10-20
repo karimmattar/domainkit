@@ -1,0 +1,52 @@
+"""The Tag aggregate: its model, its use cases, and its resource."""
+
+import pytest
+from minimal.things.application import services
+from minimal.things.application.commands import CreateTag, DeleteTag
+from minimal.things.domain.events import TagCreated, TagDeleted
+from minimal.things.domain.model import Tag, TagNotFound
+
+from domainkit.testing import TestClient
+
+from .fakes import FakeThingsUnitOfWork, new_tag_request
+
+URL = "/api/v1/things/tags"
+
+
+def test_create_and_delete_record_events() -> None:
+    """A new tag records TagCreated; deleting it, TagDeleted."""
+    tag = Tag.create()
+    tag.delete()
+
+    created, deleted = tag.pull_events()
+    assert isinstance(created, TagCreated)
+    assert isinstance(deleted, TagDeleted)
+    assert created.tag_id == deleted.tag_id == tag.id
+
+
+@pytest.mark.anyio
+async def test_use_cases_store_and_remove() -> None:
+    """Creating stores and commits; deleting removes; a missing one is not found."""
+    uow = FakeThingsUnitOfWork()
+
+    tag = await services.create_tag(CreateTag(), uow)
+    assert uow.tags.items == {tag.id: tag}
+    await services.delete_tag(DeleteTag(tag_id=tag.id), uow)
+
+    assert uow.tags.items == {}
+    with pytest.raises(TagNotFound):
+        await services.delete_tag(DeleteTag(tag_id=tag.id), uow)
+
+
+def test_resource(admin_client: TestClient) -> None:
+    """Create, read, list, and delete over HTTP."""
+    created = admin_client.post(URL, json=new_tag_request())
+    assert created.status_code == 201, created.json()
+    item = created.headers["location"]
+
+    assert admin_client.get(item).json() == created.json()
+    assert [each["id"] for each in admin_client.get(URL).json()["items"]] == [
+        created.json()["id"]
+    ]
+    assert admin_client.delete(item).status_code == 204
+    assert admin_client.get(item).status_code == 404

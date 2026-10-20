@@ -228,6 +228,42 @@ msgstr ""
 msgid "No file has that name."
 msgstr ""
 
+msgid "This was changed since you read it; read it again before changing it."
+msgstr ""
+
+msgid "Send If-Match with the ETag of the version you are changing."
+msgstr ""
+
+msgid "Some of these fields cannot be changed."
+msgstr ""
+
+msgid "You do not have permission to change some of these fields."
+msgstr ""
+
+msgid "You may not manage permissions on objects."
+msgstr ""
+
+msgid "You may grant or revoke only permissions you hold on the object."
+msgstr ""
+
+msgid "You cannot grant permissions to yourself."
+msgstr ""
+
+msgid "Name a user or a group, not both or neither."
+msgstr ""
+
+msgid "That permission is not one of the object's model."
+msgstr ""
+
+msgid "This resource cannot answer in a media type the request accepts."
+msgstr ""
+
+msgid "This export would be too large; narrow it with filters."
+msgstr ""
+
+msgid "Another item of the batch failed, so nothing was applied."
+msgstr ""
+
 #. Pydantic's validation messages, by their templates; the error's context fills the {names}
 msgid "A required value is missing."
 msgstr ""

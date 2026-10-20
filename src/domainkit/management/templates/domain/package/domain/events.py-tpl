@@ -26,3 +26,16 @@ class {{ Aggregate }}Archived(DomainEvent):
     """A {{ aggregate }} was archived and became read-only."""
 
     {{ aggregate }}_id: UUID
+
+
+class {{ Aggregate }}NoteAdded(DomainEvent):
+    """A note was added to a {{ aggregate }}."""
+
+    {{ aggregate }}_id: UUID
+    note_id: UUID
+
+
+class {{ Aggregate }}Deleted(DomainEvent):
+    """A {{ aggregate }} was deleted, with its notes."""
+
+    {{ aggregate }}_id: UUID

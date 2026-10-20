@@ -1,0 +1,56 @@
+"""Queries of the shop domain: questions that change nothing.
+
+Each query is a message, answered by the handler of its name in snake case;
+``api/routes.py`` serves them (``query_route``).
+"""
+
+from typing import Annotated
+
+from domainkit.ddd import MaxLength, Query, Reference
+from domainkit.ddd.query import F
+from gen.shop.application.unit_of_work import ShopUnitOfWork
+from gen.shop.domain.model import Category, OwnerId, Product, ProductName
+
+
+class ProductsByOwner(Query):
+    """Products by owner."""
+
+    owner_id: Reference[OwnerId]
+    name: ProductName
+
+
+async def products_by_owner(
+    query: ProductsByOwner, uow: ShopUnitOfWork
+) -> list[Product]:
+    """The first 100 products with the query's owner_id and name."""
+    async with uow:
+        page = await uow.products.paginate(
+            (F("owner_id") == query.owner_id) & (F("name") == query.name), limit=100
+        )
+    return page.items
+
+
+class EveryCategory(Query):
+    """Every category."""
+
+
+async def every_category(query: EveryCategory, uow: ShopUnitOfWork) -> list[Category]:
+    """The first 100 categories."""
+    async with uow:
+        page = await uow.categories.paginate(None, limit=100)
+    return page.items
+
+
+class CategoriesTitled(Query):
+    """Categories titled."""
+
+    title: Annotated[str, MaxLength(100)]
+
+
+async def categories_titled(
+    query: CategoriesTitled, uow: ShopUnitOfWork
+) -> list[Category]:
+    """The first 100 categories with the query's title."""
+    async with uow:
+        page = await uow.categories.paginate(F("title") == query.title, limit=100)
+    return page.items

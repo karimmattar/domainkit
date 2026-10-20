@@ -1,0 +1,155 @@
+"""HTTP resources of the shop domain (docs/resources.md).
+
+Reads are generic; each change is a command, one use case. Every route
+needs its model permission: ``shop.view_product`` to read, and
+``add_``, ``change_``, or ``delete_`` to change; superusers have them all.
+"""
+
+from uuid import UUID
+
+from fastapi import APIRouter
+from pydantic import AwareDatetime, BaseModel, Field
+
+from domainkit.contrib.auth import AuthenticatedUser
+from domainkit.http import Filter, FilterSet, Pagination
+from domainkit.resources import ModelActions, PatchModel, ResourceRouter, schema_for
+from gen.shop.application import queries, services
+from gen.shop.application.commands import (
+    AddProductNote,
+    ArchiveProduct,
+    CreateCategory,
+    CreateProduct,
+    DeleteCategory,
+    DeleteProduct,
+    LockProduct,
+    PublishProduct,
+    RetitleCategory,
+    UpdateProduct,
+)
+from gen.shop.application.queries import (
+    CategoriesTitled,
+    EveryCategory,
+    ProductsByOwner,
+)
+from gen.shop.application.unit_of_work import ShopUnitOfWork
+from gen.shop.domain.model import NAME_LENGTH, NOTE_LENGTH, Category, Product
+from gen.shop.infrastructure.unit_of_work import SqlAlchemyShopUnitOfWork
+
+router = APIRouter(tags=["shop"])
+
+
+def get_unit_of_work() -> ShopUnitOfWork:
+    """A unit of work on the database; tests may override this dependency."""
+    return SqlAlchemyShopUnitOfWork()
+
+
+def caller(user: AuthenticatedUser) -> UUID:
+    """The caller's id: who creates a product owns it."""
+    return user.id
+
+
+class ProductFilters(FilterSet):
+    """``?archived=``, ``?owner_id=``, ``?search=``, and ``?ordering=-name``."""
+
+    model = Product
+    archived = Filter()
+    owner_id = Filter()
+    ordering_fields = ("name",)
+    search_fields = ("name",)
+
+
+ProductIn = schema_for(Product, write=True, include=["name"])
+
+
+class ProductPatch(PatchModel):
+    """What a ``PATCH`` may change; what it leaves out stays."""
+
+    name: str = Field(max_length=NAME_LENGTH)
+
+
+class NoteIn(BaseModel):
+    """A note's text."""
+
+    text: str = Field(min_length=1, max_length=NOTE_LENGTH)
+
+
+class PublishProductIn(BaseModel):
+    """What ``PublishProduct`` takes."""
+
+    at: AwareDatetime
+    note: str | None = Field(default=None, max_length=50)
+
+
+products = ResourceRouter(
+    "/products",
+    model=Product,
+    unit_of_work=get_unit_of_work,
+    repository=lambda uow: uow.products,
+    filters=ProductFilters,
+    pagination=Pagination(max_limit=100),
+    rule=ModelActions(Product),
+)
+products.command_route(
+    CreateProduct,
+    service=services.create_product,
+    body=ProductIn,
+    provide={"owner_id": caller},
+)
+products.command_route(
+    UpdateProduct, service=services.update_product, body=ProductPatch, method="PATCH"
+)
+products.command_route(
+    ArchiveProduct, service=services.archive_product, path="/archive"
+)
+products.command_route(
+    AddProductNote, service=services.add_product_note, body=NoteIn, path="/notes"
+)
+products.command_route(DeleteProduct, service=services.delete_product, method="DELETE")
+products.command_route(
+    PublishProduct,
+    service=services.publish_product,
+    body=PublishProductIn,
+    path="/publish",
+)
+products.query_route(
+    ProductsByOwner, handler=queries.products_by_owner, path="/by-owner"
+)
+products.command_route(LockProduct, service=services.lock_product, path="/lock")
+router.include_router(products)
+
+
+CategoryIn = schema_for(Category, write=True)
+
+
+class RetitleCategoryIn(BaseModel):
+    """What ``RetitleCategory`` takes."""
+
+    title: str = Field(max_length=100)
+    parent: UUID | None = None
+    rank: int = Field(ge=-(2**63), lt=2**63)
+
+
+categories = ResourceRouter(
+    "/categories",
+    model=Category,
+    unit_of_work=get_unit_of_work,
+    repository=lambda uow: uow.categories,
+    rule=ModelActions(Category),
+)
+categories.command_route(
+    CreateCategory, service=services.create_category, body=CategoryIn
+)
+categories.command_route(
+    DeleteCategory, service=services.delete_category, method="DELETE"
+)
+categories.command_route(
+    RetitleCategory,
+    service=services.retitle_category,
+    body=RetitleCategoryIn,
+    path="/retitle",
+)
+categories.query_route(EveryCategory, handler=queries.every_category, path="/every")
+categories.query_route(
+    CategoriesTitled, handler=queries.categories_titled, path="/titled"
+)
+router.include_router(categories)

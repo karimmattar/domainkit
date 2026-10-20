@@ -302,7 +302,13 @@ def test_a_generated_domain_can_live_in_its_own_database(tmp_path: Path) -> None
     project = tmp_path / "billing"
     init("billingAPI", str(project))
     started = run(
-        project, "manage.py", "startdomain", "invoices", "--aggregate", "Invoice"
+        project,
+        "manage.py",
+        "startdomain",
+        "invoices",
+        "--aggregate",
+        "Invoice",
+        "--manual",  # The test installs and mounts it, routed, below.
     )
     assert started.returncode == 0, started.stderr
     settings_dir = project / "src" / "config" / "settings"

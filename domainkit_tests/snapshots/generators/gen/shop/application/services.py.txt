@@ -1,0 +1,127 @@
+"""Use cases: open a unit of work, change one aggregate, commit.
+
+Committing publishes the events the aggregate recorded. A request's
+``If-Match`` is checked as ``get`` loads the aggregate (docs/resources.md).
+"""
+
+from domainkit.ddd import Unset
+from gen.shop.application.commands import (
+    AddProductNote,
+    ArchiveProduct,
+    CreateCategory,
+    CreateProduct,
+    DeleteCategory,
+    DeleteProduct,
+    LockProduct,
+    PublishProduct,
+    RetitleCategory,
+    UpdateProduct,
+)
+from gen.shop.application.unit_of_work import ShopUnitOfWork
+from gen.shop.domain.model import (
+    Category,
+    CategoryId,
+    OwnerId,
+    Product,
+    ProductId,
+    ProductName,
+)
+
+
+async def create_product(command: CreateProduct, uow: ShopUnitOfWork) -> Product:
+    """Create and store a product."""
+    product = Product.create(ProductName(command.name), OwnerId(command.owner_id))
+    async with uow:
+        await uow.products.add(product)
+        await uow.commit()
+    return product
+
+
+async def update_product(command: UpdateProduct, uow: ShopUnitOfWork) -> Product:
+    """Change the fields the command sets."""
+    async with uow:
+        product = await uow.products.get(ProductId(command.product_id))
+        if not isinstance(command.name, Unset):
+            product.rename(ProductName(command.name))
+        await uow.commit()
+    return product
+
+
+async def archive_product(command: ArchiveProduct, uow: ShopUnitOfWork) -> Product:
+    """Archive a product."""
+    async with uow:
+        product = await uow.products.get(ProductId(command.product_id))
+        product.archive()
+        await uow.commit()
+    return product
+
+
+async def add_product_note(command: AddProductNote, uow: ShopUnitOfWork) -> Product:
+    """Add a note to a product."""
+    async with uow:
+        product = await uow.products.get(ProductId(command.product_id))
+        product.add_note(command.text)
+        await uow.commit()
+    return product
+
+
+async def delete_product(command: DeleteProduct, uow: ShopUnitOfWork) -> None:
+    """Delete a product; its notes go with it."""
+    async with uow:
+        product = await uow.products.get(ProductId(command.product_id))
+        product.delete()
+        await uow.products.remove(product)
+        await uow.commit()
+
+
+async def create_category(command: CreateCategory, uow: ShopUnitOfWork) -> Category:
+    """Create and store a category."""
+    category = Category.create(
+        title=command.title,
+        parent=None if command.parent is None else CategoryId(command.parent),
+        price=command.price,
+    )
+    async with uow:
+        await uow.categories.add(category)
+        await uow.commit()
+    return category
+
+
+async def delete_category(command: DeleteCategory, uow: ShopUnitOfWork) -> None:
+    """Delete a category."""
+    async with uow:
+        category = await uow.categories.get(CategoryId(command.category_id))
+        category.delete()
+        await uow.categories.remove(category)
+        await uow.commit()
+
+
+async def publish_product(command: PublishProduct, uow: ShopUnitOfWork) -> Product:
+    """Publish a product."""
+    async with uow:
+        product = await uow.products.get(ProductId(command.product_id))
+        product.publish(at=command.at, note=command.note)
+        await uow.commit()
+    return product
+
+
+async def retitle_category(command: RetitleCategory, uow: ShopUnitOfWork) -> Category:
+    """Retitle a category."""
+    async with uow:
+        category = await uow.categories.get(CategoryId(command.category_id))
+        category.retitle(
+            title=command.title,
+            parent=None if command.parent is None else CategoryId(command.parent),
+            rank=command.rank,
+        )
+        await uow.commit()
+    return category
+
+
+async def lock_product(command: LockProduct, uow: ShopUnitOfWork) -> Product:
+    """Lock a product."""
+    async with uow:
+        product = await uow.products.get(ProductId(command.product_id))
+        product.lock()
+        await uow.commit()
+    return product

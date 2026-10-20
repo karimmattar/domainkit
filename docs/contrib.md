@@ -15,6 +15,7 @@ configured by one setting, a dictionary whose keys are all optional.
 | `domainkit.contrib.auth` | `AUTH` | users, groups, permissions; see [auth.md](auth.md) |
 | `domainkit.contrib.privacy` | none | none: exports, erases, and purges domains' rows; see [privacy.md](privacy.md) |
 | `domainkit.contrib.flags` | `FLAGS` | `domainkit_flags`, `domainkit_dynamic_settings` |
+| `domainkit.contrib.objectpermissions` | none | `domainkit_object_permissions`, in every database that hosts a domain; see [auth.md](auth.md#grants-on-single-objects) |
 
 With several databases ([databases.md](databases.md)), the outbox and the
 audit trail commit with business data, so their tables are created in every

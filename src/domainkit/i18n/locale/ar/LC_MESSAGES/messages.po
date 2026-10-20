@@ -232,6 +232,42 @@ msgstr "الملف فارغ."
 msgid "No file has that name."
 msgstr "لا يوجد ملف بهذا الاسم."
 
+msgid "This was changed since you read it; read it again before changing it."
+msgstr "تغيّر هذا منذ قرأته؛ اقرأه مرة أخرى قبل أن تغيّره."
+
+msgid "Send If-Match with the ETag of the version you are changing."
+msgstr "أرسل الترويسة If-Match مع قيمة ETag للنسخة التي تغيّرها."
+
+msgid "Some of these fields cannot be changed."
+msgstr "بعض هذه الحقول لا يمكن تغييرها."
+
+msgid "You do not have permission to change some of these fields."
+msgstr "ليست لديك صلاحية تغيير بعض هذه الحقول."
+
+msgid "You may not manage permissions on objects."
+msgstr "لا يمكنك إدارة الصلاحيات على الكائنات."
+
+msgid "You may grant or revoke only permissions you hold on the object."
+msgstr "لا يمكنك منح أو سحب إلا الصلاحيات التي تملكها على الكائن."
+
+msgid "You cannot grant permissions to yourself."
+msgstr "لا يمكنك منح صلاحيات لنفسك."
+
+msgid "Name a user or a group, not both or neither."
+msgstr "حدّد مستخدمًا أو مجموعة، لا كليهما ولا أيًّا منهما."
+
+msgid "That permission is not one of the object's model."
+msgstr "هذه الصلاحية ليست من صلاحيات نموذج الكائن."
+
+msgid "This resource cannot answer in a media type the request accepts."
+msgstr "لا يستطيع هذا المورد الرد بنوع وسائط يقبله الطلب."
+
+msgid "This export would be too large; narrow it with filters."
+msgstr "سيكون هذا التصدير كبيرًا جدًا؛ ضيّقه بالمرشحات."
+
+msgid "Another item of the batch failed, so nothing was applied."
+msgstr "فشل عنصر آخر من الدفعة، فلم يُطبَّق شيء."
+
 #. Pydantic's validation messages, by their templates; the error's context fills the {names}
 msgid "A required value is missing."
 msgstr "قيمة مطلوبة غير موجودة."

@@ -31,6 +31,9 @@ accepted record: supersede it with a new one and link both ways.
 | [0022](0022-query-repositories-with-criteria.md) | Query repositories with criteria that fakes evaluate as SQL does | Accepted |
 | [0023](0023-keyset-pages-and-typed-cursors.md) | Keyset pages with versioned, typed cursors; filters declared per field | Accepted |
 | [0024](0024-replicas-and-derived-tables.md) | Read from replicas in read-only work; derive tables from domain classes | Accepted |
+| [0025](0025-resources-commands-and-expected-versions.md) | Serve aggregates as resources; change them by commands, on the version the client read | Accepted |
+| [0026](0026-object-permission-grants.md) | Grant permissions on single objects, beside the objects, within the granter's own | Accepted |
+| [0027](0027-batches-and-exports.md) | Run batches as many use cases, atomic on request; stream exports, bounded | Accepted |
 | [0028](0028-one-secret-key-signs-and-derives.md) | Sign with one `SECRET_KEY`, and derive a key per purpose from it | Accepted |
 | [0029](0029-messages-to-people-leave-through-the-outbox.md) | Send mail, text messages, and push notifications through the outbox | Accepted |
 | [0030](0030-encrypt-totp-secrets-under-a-derived-key.md) | Encrypt TOTP secrets with AES-GCM under a key derived from `SECRET_KEY` | Accepted |

@@ -29,6 +29,7 @@ an ``Enum``                    ``EnumValue``: its values, as text or integers
 a single-field value object    ``ValueObjectType`` around its field's column
 a registered class             ``register_column_type(cls, column_type)``
 ``X | None``                   the same, nullable
+``Reference[XId]``             the id's column, indexed
 =============================  ==========================================
 
 ``id`` is the primary key, and a ``version`` column turns on optimistic
@@ -203,6 +204,7 @@ def table_for(
                 column_type(field),
                 primary_key=field.name == "id",
                 nullable=field.nullable,
+                index=field.reference,
             )
         )
     others = [item for item in extra if not isinstance(item, Column)]

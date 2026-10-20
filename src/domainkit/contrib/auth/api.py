@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from domainkit.context import bind_request, current_request
 from domainkit.ddd import PermissionDenied
-from domainkit.http.errors import APIError, ErrorResponse
+from domainkit.http.errors import APIError, error_responses
 
 from .access import AuthenticatedUser, IsUnscoped, Public, Require
 from .authentication import Credentials, IssuedTokens, get_authenticators
@@ -105,9 +105,8 @@ class UserOut(BaseModel):
     permissions: list[str]
 
 
-def _errors(*codes: int) -> dict[int | str, dict[str, object]]:
-    """OpenAPI entries for the error statuses an endpoint returns."""
-    return {code: {"model": ErrorResponse} for code in codes}
+_errors = error_responses
+"""OpenAPI entries for the error statuses an endpoint returns."""
 
 
 class MfaChallengeOut(BaseModel):

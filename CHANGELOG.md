@@ -289,6 +289,77 @@ All notable changes to domainkit. The format follows
   and drops it after the run; `--keepdb` keeps it for the next one, and
   each pytest-xdist worker gets its own (`test_<name>_gw0`).
 - `docs/testing.md`, on the plugin and everything above.
+- Resources (DJ-19, ADR 0025; `docs/resources.md`): `ResourceRouter`
+  lists an aggregate (with a `FilterSet` and `Pagination`) and reads one,
+  and `command_route(Command, service=..., body=...)` runs a command
+  through an application service, answering `201` with `Location` when it
+  creates one. Resources nest (`parent=`; the path gives a nested
+  aggregate's parent, which no `crud` write changes), narrow what each
+  caller reaches (`scope=`), and, for reference data only, offer generic
+  create, change, and delete (`crud=True`), which record `RecordCreated`, `RecordChanged`,
+  and `RecordDeleted`. `ModelActions(Model)` asks for the model permission
+  of each route's action, so a command needs `change`, not `add`. A
+  resource without a rule fails the deny-by-default check.
+- `schema_for(Aggregate, include=, exclude=, name=, write=, partial=)`
+  derives request and response schemas from the domain class, with
+  `from_domain` (DJ-22): value objects become what they wrap, ids and
+  `Reference[XId]` their id type, children nest.
+- Partial changes (DJ-23): `PatchModel` fields default to `UNSET`, so a
+  field left out differs from one set to null, and `PATCH` routes take
+  `application/merge-patch+json`. Commands take `UNSET` for what was not
+  sent.
+- ETags and conditional requests (DJ-24, N-05): an aggregate's answer has
+  `ETag: W/"<version>-<digest>"`, `If-None-Match` answers `304`, and a
+  write whose `If-Match` names another version is `412
+  precondition_failed`, checked in the transaction that makes the change.
+  A resource may require `If-Match` (`428 precondition_required`).
+- Field policies (DJ-31): `FieldPolicy(read_only=, visible=, editable=)`
+  shows a field, or lets a partial change set it, only for callers granted
+  its permission, and OpenAPI says so.
+- `Reference[CustomerId]`, an id-only reference to another aggregate:
+  `table_for` indexes its column, and `schema_for` describes it.
+- `domainkit.http.error_responses(*codes)`, the OpenAPI entries of the
+  errors a route answers with.
+- `query_route(Query, handler=..., path=...)` serves a CQRS query on a
+  resource: its fields from the query string (bounded, unknown parameters
+  refused), one aggregate or `{"items": [...]}` back, and what the caller
+  may not reach or see left out.
+- Batches (DJ-35, ADR 0027): `batch_route(Command, service=...)` serves
+  `POST /<plural>/batch` for up to `max_items` items, answering `207` with
+  each item's result; `"atomic": true` runs them in one transaction and
+  undoes them all if one fails.
+- Exports (DJ-34): `ResourceRouter(..., exports=("csv", "ndjson"))` answers
+  listings as CSV or NDJSON by `Accept` (`406` when nothing fits), every
+  match streamed up to `max_export`; CSV cells that could run as formulas
+  are neutralised.
+- `domainkit.contrib.objectpermissions` (DJ-30, ADR 0026; `docs/auth.md`,
+  "Grants on single objects"): grants of one permission on one object to a
+  user or a group, as audited events; `ObjectPermissionBackend` for
+  `has_perm(user, perm, obj)` and `HasObjectPermissions`; `grant_permission`
+  and `revoke_permission` within what the actor holds; and `VisibleTo`,
+  criteria the SQL repositories compile to `EXISTS` and in-memory ones
+  read from the grants they are given, with `visible_scope` for resources.
+- `domainkit.db.query.register_compiler` compiles criteria of your own.
+- `domainkit.contrib.admin` (DJ-46; `docs/resources.md`, "The generic
+  admin"): `admin.register(Product, ..., list_display=, filters=, search=,
+  commands=[admin.command(...)])` serves a model under the admin's prefix,
+  for staff with its model permissions: lists, reads with tags, commands
+  run by application services (never raw field edits), queries, and each
+  item's history from the audit trail. `GET /admin/meta` describes the
+  models, fields, filters, and commands the caller may use, as JSON
+  Schema. Users, groups, and permissions keep their own admin.
+- `ResourceRouter` takes `list_fields=` (lists show only those fields) and
+  `name_prefix=` (route names, hence operation ids), records its
+  `operations`, and offers `fetch()` for routes of your own.
+- Generators (DJ-01; `docs/resources.md`, "Generators"): `startaggregate`
+  adds an aggregate to a domain, every layer and its tests, with fields
+  from a registry of kinds (`--field price:decimal:10:2`, `--field
+  parent:ref:Category?`; `register_field_type` adds kinds); `addcommand`
+  adds a task command (method, event, use case, route, tests), `addquery`
+  a query by fields (handler, route, tests), and `addevent` an event with a
+  durable handler. Names are checked, files are edited where their syntax
+  tree says, and nothing is written unless every edit fits. What they
+  generate passes ruff, `mypy --strict`, and its own tests.
 
 ### Changed
 
@@ -338,6 +409,22 @@ All notable changes to domainkit. The format follows
   frozen clock reaches the application.
 - JWTs' `exp`, `iat`, and `nbf` are checked by domainkit, on
   `domainkit.clock`, as PyJWT checked them on the host's clock.
+- Repositories check the version a request expects (`If-Match`) when they
+  hand out an aggregate; outside a resource's route nothing is expected,
+  so nothing changes.
+- The auth admin's user and group listings and reads are resources: reads
+  answer with an `ETag` and `304` for `If-None-Match`. Their bodies are
+  unchanged.
+- `startdomain` generates a domain on the resource kit (DJ-12): 15 files
+  instead of 24, and an API layer of about 90 lines instead of 210. The
+  aggregate has a child-entity collection (notes, with `children()`) and an
+  id-only reference to its owner (`Reference[OwnerId]`); its tables come
+  from `table_for`; its resource pages, filters, and searches the listing,
+  tags reads, and takes `PATCH` (a merge patch), `DELETE`, and commands
+  that answer with `Location` and honour `If-Match`. The example management
+  command and domain settings are gone. In a project laid out as `init`
+  makes it, `startdomain` also adds the domain to `INSTALLED_DOMAINS` and
+  mounts its router (`--manual` prints the steps instead).
 - **Startup refuses `AuthenticationMiddleware` without
   `RequestContextMiddleware`** listed before it, as it already refused the
   two in the wrong order: without a request context no actor is bound, and

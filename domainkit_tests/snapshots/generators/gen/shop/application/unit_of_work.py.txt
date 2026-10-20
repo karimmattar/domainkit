@@ -1,0 +1,13 @@
+"""Transaction boundary of the shop use cases (a port)."""
+
+from abc import ABC
+
+from domainkit.ddd import UnitOfWork
+from gen.shop.domain.model import CategoryRepository, ProductRepository
+
+
+class ShopUnitOfWork(UnitOfWork, ABC):
+    """Repositories the shop use cases may touch in one transaction."""
+
+    products: ProductRepository
+    categories: CategoryRepository

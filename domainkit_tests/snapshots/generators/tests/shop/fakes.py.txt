@@ -1,0 +1,85 @@
+"""In-memory adapters, and examples: test the domain without a database.
+
+``new_<name>()`` is a valid aggregate and ``new_<name>_request()`` a valid
+body to create one; the generators' tests start from them.
+"""
+
+from decimal import Decimal
+from uuid import UUID, uuid4
+
+from gen.shop.application.unit_of_work import ShopUnitOfWork
+from gen.shop.domain.model import (
+    Category,
+    CategoryId,
+    CategoryRepository,
+    OwnerId,
+    Product,
+    ProductId,
+    ProductName,
+    ProductRepository,
+)
+
+from domainkit.ddd import EventBus, InMemoryRepository
+
+
+class InMemoryProductRepository(
+    InMemoryRepository[Product, ProductId], ProductRepository
+):
+    """Dictionary-backed ``ProductRepository``; it answers queries as SQL does."""
+
+
+class InMemoryCategoryRepository(
+    InMemoryRepository[Category, CategoryId], CategoryRepository
+):
+    """Dictionary-backed ``CategoryRepository``; it answers queries as SQL does."""
+
+
+class FakeShopUnitOfWork(ShopUnitOfWork):
+    """Unit of work that records commits instead of writing anywhere."""
+
+    products: InMemoryProductRepository
+    categories: InMemoryCategoryRepository
+
+    def __init__(self, events: EventBus | None = None) -> None:
+        """Start empty; publish to ``events`` (a private bus in tests)."""
+        super().__init__(events=events or EventBus())
+        self.products = InMemoryProductRepository()
+        self.commits = 0
+        self.categories = InMemoryCategoryRepository()
+
+    async def _commit(self) -> None:
+        """Count the commit."""
+        self.commits += 1
+
+    async def _rollback(self) -> None:
+        """Nothing to undo: the repositories are the state."""
+
+
+def new_product() -> Product:
+    """A valid product, its creation event taken: tests start from it."""
+    product = Product.create(ProductName("First"), OwnerId(uuid4()))
+    product.pull_events()
+    return product
+
+
+def new_product_request() -> dict[str, object]:
+    """A valid body of ``POST /products``."""
+    return {"name": "First"}
+
+
+def new_category() -> Category:
+    """A valid category, its creation event taken: tests start from it."""
+    category = Category.create(
+        title="text", parent=CategoryId(UUID(int=1)), price=Decimal("1.50")
+    )
+    category.pull_events()
+    return category
+
+
+def new_category_request() -> dict[str, object]:
+    """A valid body of ``POST /categories``."""
+    return {
+        "title": "text",
+        "parent": "00000000-0000-0000-0000-000000000001",
+        "price": "1.50",
+    }

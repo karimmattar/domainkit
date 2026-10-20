@@ -16,6 +16,7 @@ The compiled SQL keeps the semantics the in-memory repository has:
   ``instr`` and ``substr``. Case-insensitive ones compare ``lower()`` of both.
 """
 
+from collections.abc import Callable
 from typing import Any, Final, cast
 
 from sqlalchemy import ColumnElement, String, and_, func, literal, not_, or_
@@ -50,6 +51,21 @@ _PATTERNS: Final = {
 }
 
 
+type Compiler = Callable[[Any, type, str], ColumnElement[bool]]
+"""Compiles one kind of criteria: ``(criteria, model, dialect)`` to SQL."""
+_COMPILERS: Final[dict[type[Criteria], Compiler]] = {}
+
+
+def register_compiler(kind: type[Criteria], compiler: Compiler) -> None:
+    """Compile criteria of ``kind`` (a ``Criteria`` of your own) with ``compiler``.
+
+    It takes the criteria, bound to the model, the model, and the dialect's
+    name, and returns a condition on the model's table, such as an
+    ``EXISTS`` on another table. Values must be bound parameters.
+    """
+    _COMPILERS[kind] = compiler
+
+
 def mapper_of(model: type) -> Mapper[Any]:
     """The mapper of ``model``.
 
@@ -82,6 +98,9 @@ def compile_criteria(
         return or_(*(compile_criteria(p, model, dialect) for p in criteria.parts))
     if isinstance(criteria, Not):
         return not_(compile_criteria(criteria.part, model, dialect))
+    compiler = _COMPILERS.get(type(criteria))
+    if compiler is not None:
+        return compiler(criteria, model, dialect)
     raise TypeError(f"Cannot compile {type(criteria).__name__}.")
 
 

@@ -50,10 +50,12 @@ from domainkit.ddd.exceptions import (
     DuplicateValue,
     NotFound,
     PermissionDenied,
+    PreconditionFailed,
 )
 from domainkit.i18n import gettext, validation_message
 
 STATUS_CODES: Final[tuple[tuple[type[DomainError], int], ...]] = (
+    (PreconditionFailed, status.HTTP_412_PRECONDITION_FAILED),
     (NotFound, status.HTTP_404_NOT_FOUND),
     (Conflict, status.HTTP_409_CONFLICT),
     (PermissionDenied, status.HTTP_403_FORBIDDEN),
@@ -450,3 +452,13 @@ def install_exception_handlers(app: FastAPI) -> None:
         RequestValidationError,
         validation_error_handler,  # type: ignore[arg-type]
     )
+
+
+def error_responses(*codes: int) -> dict[int | str, dict[str, object]]:
+    """OpenAPI ``responses`` for the error statuses a route may answer with.
+
+    ``@router.get("/x", responses=error_responses(401, 403, 404))`` documents
+    each with the ``ErrorResponse`` body. 400, 413, 422, 429, and 500 are
+    documented on every route by the application already.
+    """
+    return {code: {"model": ErrorResponse} for code in codes}

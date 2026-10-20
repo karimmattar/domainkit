@@ -1,0 +1,85 @@
+"""Facts the shop model records; other domains may subscribe to them.
+
+Events carry plain values, so they stay valid messages as the model evolves.
+"""
+
+from datetime import datetime
+from uuid import UUID
+
+from domainkit.ddd import DomainEvent
+
+
+class ProductCreated(DomainEvent):
+    """A product was created."""
+
+    product_id: UUID
+    name: str
+
+
+class ProductRenamed(DomainEvent):
+    """A product got a new name."""
+
+    product_id: UUID
+    name: str
+
+
+class ProductArchived(DomainEvent):
+    """A product was archived and became read-only."""
+
+    product_id: UUID
+
+
+class ProductNoteAdded(DomainEvent):
+    """A note was added to a product."""
+
+    product_id: UUID
+    note_id: UUID
+
+
+class ProductDeleted(DomainEvent):
+    """A product was deleted, with its notes."""
+
+    product_id: UUID
+
+
+class CategoryCreated(DomainEvent):
+    """A category was created."""
+
+    category_id: UUID
+
+
+class CategoryDeleted(DomainEvent):
+    """A category was deleted."""
+
+    category_id: UUID
+
+
+class ProductPublished(DomainEvent):
+    """A product was published."""
+
+    product_id: UUID
+    at: datetime
+    note: str | None
+
+
+class CategoryRetitled(DomainEvent):
+    """A category was retitled."""
+
+    category_id: UUID
+    title: str
+    parent: UUID | None
+    rank: int
+
+
+class ProductLocked(DomainEvent):
+    """A product was locked."""
+
+    product_id: UUID
+
+
+class ProductRestocked(DomainEvent):
+    """Product restocked."""
+
+    product_id: UUID
+    quantity: int
+    at: datetime

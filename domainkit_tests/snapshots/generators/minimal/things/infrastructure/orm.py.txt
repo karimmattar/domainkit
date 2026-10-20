@@ -1,0 +1,16 @@
+"""Tables."""
+
+from domainkit.db import map_imperatively, table_for
+from minimal.things.domain.model import Tag, Widget
+
+
+def start_mappers() -> None:
+    """Map."""
+    map_imperatively(Widget, widgets)
+    map_imperatively(Tag, tags)
+
+
+widgets = table_for(Widget, "things_widgets", domain="things")
+
+
+tags = table_for(Tag, "things_tags", domain="things")
