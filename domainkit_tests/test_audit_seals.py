@@ -25,6 +25,7 @@ from domainkit.conf import override_settings, settings
 from domainkit.context import RequestContext, bind_request
 from domainkit.contrib.audit import apps as audit_apps
 from domainkit.contrib.audit import record
+from domainkit.contrib.audit import seals as seals_module
 from domainkit.contrib.audit.management.commands.auditverify import (
     Command as VerifyCommand,
 )
@@ -604,11 +605,12 @@ async def test_a_run_seals_its_batches_at_most_and_counts_what_is_left(
         assert unsealed_gauge() == 0
         assert caplog.messages == []
 
-    with override_settings(AUDIT={"LEDGER": "audit", "SEAL_BACKLOG_WARNING": 5}):
-        await add(start + timedelta(seconds=10))
-        await add(start + timedelta(seconds=11))
+    with override_settings(AUDIT={"LEDGER": "audit", "SEAL_BACKLOG_WARNING": 2}):
+        for n in range(10, 13):
+            await add(start + timedelta(seconds=n))
         assert await seal("default", batch=1, batches=1) == 1
-        assert unsealed_gauge() == 1
+        assert unsealed_gauge() == 2  # At the threshold: quiet.
+        assert await seal("default", batch=2, batches=1) == 2
     assert caplog.messages == []
     assert (await verify("default")).intact
 
@@ -654,6 +656,20 @@ async def test_the_backlog_is_what_sealing_could_still_reach(tables: None) -> No
     await add(now - 2 * WINDOW)  # Too late: verify's to report.
     await add(now + timedelta(seconds=9))
     assert await unsealed_backlog("default", WINDOW) == 1
+    head = now + timedelta(seconds=2)
+    await add(head - WINDOW)  # Exactly the window's first instant.
+    assert await unsealed_backlog("default", WINDOW) == 2
+
+
+async def test_counting_a_backlog_stops_at_its_limit(
+    tables: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Past ``BACKLOG_COUNT_LIMIT`` rows the count reads the limit."""
+    monkeypatch.setattr(seals_module, "BACKLOG_COUNT_LIMIT", 2)
+    now = datetime.now(UTC)
+    for n in range(3):
+        await add(now + timedelta(seconds=n))
+    assert await unsealed_backlog("default", WINDOW) == 2
 
 
 @pytest.mark.parametrize(

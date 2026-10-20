@@ -225,7 +225,8 @@ async def _supervised(
     crashes = 0
     while True:
         started = clock.monotonic()
-        run = loop.create_task(factory(), name=name, context=clean_context())
+        # A copy of the supervisor's clean context: a run's changes stay its own.
+        run = loop.create_task(factory(), name=name)
         try:
             await run
         except asyncio.CancelledError:

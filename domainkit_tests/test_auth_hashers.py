@@ -4,10 +4,12 @@ import asyncio
 import base64
 import hashlib
 import threading
+from collections.abc import Callable
 from typing import ClassVar
 
 import pytest
 
+from domainkit.clock import freeze_time
 from domainkit.contrib.auth import hashers
 from domainkit.contrib.auth.hashers import (
     SALT_CHARS,
@@ -427,6 +429,57 @@ def test_the_pool_learns_how_long_a_hash_takes() -> None:
 
     assert asyncio.run(quick()) == "1"
     assert 0.2 <= pool.seconds_per_hash < 0.25  # Pulled toward a quick hash.
+
+
+def test_each_hash_moves_the_average_a_fifth_of_the_way() -> None:
+    """A moving average: 80% of what it was, 20% of the hash just timed."""
+    pool = HashingPool(threads=1, queue=0)
+
+    def one_second() -> str:
+        frozen.tick(1.0)
+        return "hashed"
+
+    with freeze_time() as frozen:
+        assert pool._timed(one_second) == "hashed"
+
+    assert pool.seconds_per_hash == pytest.approx(0.8 * 0.25 + 0.2 * 1.0)
+
+
+def test_a_refusal_says_retry_after_a_second_by_default() -> None:
+    """``PasswordChecksBusy()`` without a wait asks for one second."""
+    assert PasswordChecksBusy().headers == {"Retry-After": "1"}
+    assert PasswordChecksBusy(7).headers == {"Retry-After": "7"}
+
+
+def test_the_a_functions_hash_as_priority_only_when_asked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``priority`` reaches the pool; it is off unless given."""
+    asked: list[bool] = []
+
+    class Recording(HashingPool):
+        async def run[T](
+            self, function: Callable[..., T], *args: object, priority: bool = False
+        ) -> T:
+            asked.append(priority)
+            return function(*args)
+
+    monkeypatch.setattr(hashers, "_pool", lambda: Recording(threads=1, queue=0))
+    monkeypatch.setattr(hashers, "make_password", lambda password: "made")
+    monkeypatch.setattr(
+        hashers, "verify_password", lambda password, encoded: PasswordCheck(True)
+    )
+
+    async def scenario() -> None:
+        await amake_password(PASSWORD)
+        await amake_password(PASSWORD, priority=True)
+        await averify_password(PASSWORD, None)
+        await averify_password(PASSWORD, None, priority=True)
+        await acheck_password(PASSWORD, None)
+        await acheck_password(PASSWORD, None, priority=True)
+
+    asyncio.run(scenario())
+    assert asked == [False, True, False, True, False, True]
 
 
 def test_priority_calls_may_take_the_reserved_places() -> None:

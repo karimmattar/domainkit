@@ -476,6 +476,65 @@ def test_backoff_never_overflows() -> None:
     assert 30.0 <= backoff_delay(10**6, 1.0, 60.0) <= 60.0
 
 
+def test_supervision_backs_off_from_a_second_to_a_minute_by_default() -> None:
+    """The defaults a project gets without choosing."""
+    parameters = inspect.signature(supervise).parameters
+
+    assert parameters["backoff"].default == 1.0
+    assert parameters["max_backoff"].default == 60.0
+
+
+async def test_supervisor_and_runs_carry_the_name() -> None:
+    """Both show up under the name given, in tasks and logs; one bound is fine."""
+    names: list[str] = []
+
+    async def run() -> None:
+        current = asyncio.current_task()
+        assert current is not None
+        names.append(current.get_name())
+
+    supervisor = supervise(run, name="test.named", backoff=1.0, max_backoff=1.0)
+    assert supervisor.get_name() == "test.named"
+    await wait_for(supervisor)
+    assert names == ["test.named"]
+
+
+async def test_a_run_that_lasted_exactly_max_backoff_was_healthy(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The count of crashes starts again from a run of ``max_backoff`` or more."""
+    bound = 2.0**-7  # Exact in binary: the frozen clock adds it exactly.
+
+    async def crash() -> None:
+        raise RuntimeError("down")
+
+    async def crash_on_the_bound() -> None:
+        frozen.tick(bound)
+        raise RuntimeError("down again")
+
+    async def stop() -> None:
+        return None
+
+    calls: list[int] = []
+    behaviours = [crash, crash_on_the_bound, stop]
+    with (
+        clock.freeze_time() as frozen,
+        caplog.at_level(logging.ERROR, "domainkit.tasks"),
+    ):
+        supervisor = supervise(
+            lambda: run_n(calls, behaviours),
+            name="test.bound",
+            backoff=bound / 2,
+            max_backoff=bound,
+        )
+        await wait_for(supervisor)
+
+    assert [message[-12:] for message in caplog.messages] == [
+        "(1 in a row)",
+        "(1 in a row)",
+    ]
+
+
 @pytest.mark.parametrize(("backoff", "max_backoff"), [(0.0, 1.0), (2.0, 1.0)])
 async def test_supervise_refuses_a_backoff_out_of_bounds(
     backoff: float, max_backoff: float

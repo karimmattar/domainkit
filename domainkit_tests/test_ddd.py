@@ -2,6 +2,7 @@
 
 import asyncio
 import dataclasses
+import functools
 import logging
 from typing import NewType
 from uuid import UUID, uuid4
@@ -183,8 +184,8 @@ async def test_a_hung_handler_is_cut_off_logged_and_reported(
     """The handlers after it still run; the request is not held for ever."""
     bus = EventBus(handler_timeout=0.01)
     seen: list[str] = []
-    reported: list[BaseException] = []
-    bus.error_hook = lambda exc, event: reported.append(exc)
+    reported: list[tuple[BaseException, DomainEvent]] = []
+    bus.error_hook = lambda exc, event: reported.append((exc, event))
 
     async def hung(event: OrderPaid) -> None:
         try:
@@ -203,7 +204,8 @@ async def test_a_hung_handler_is_cut_off_logged_and_reported(
             await bus.publish(event)
 
     assert seen == ["hung stopped", "after"]
-    (timed_out,) = reported
+    ((timed_out, about),) = reported
+    assert about is event
     assert isinstance(timed_out, HandlerTimedOut)
     assert isinstance(timed_out, TimeoutError)
     message = (
@@ -260,6 +262,33 @@ async def test_a_handlers_own_timeout_error_is_a_failure(
     ]
 
 
+async def test_handlers_without_a_qualified_name_are_named_as_they_are(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A partial or a callable object is named by its repr in the log."""
+    bus = EventBus()
+
+    async def failing(event: OrderPaid, note: str) -> None:
+        raise RuntimeError(note)
+
+    handler = functools.partial(failing, note="broken")
+    bus.subscribe(OrderPaid, handler)
+    await bus.publish(OrderPaid(order_id=uuid4()))
+
+    assert caplog.messages[0].startswith("Handler functools.partial(")
+
+
+def test_unsubscribing_from_an_event_nothing_handles_does_nothing() -> None:
+    """No subscription, no error."""
+
+    async def handler(event: OrderPaid) -> None:
+        return None
+
+    bus = EventBus()
+    bus.unsubscribe(OrderPaid, handler)
+    assert bus.handlers_for(OrderPaid) == []
+
+
 async def test_cancelling_the_request_still_cancels_its_handlers() -> None:
     """A handler's limit never swallows the request's own cancellation."""
     bus = EventBus()
@@ -289,14 +318,19 @@ def test_subscribe_refuses_a_timeout_it_cannot_apply(
     async def handler(event: OrderPaid) -> None:
         return None
 
-    with pytest.raises(ValueError, match="positive number of seconds"):
+    with pytest.raises(
+        ValueError,
+        match=r"^timeout is a positive number of seconds, for in-process handlers\.$",
+    ):
         EventBus().subscribe(OrderPaid, handler, durable=durable, timeout=timeout)
 
 
 @pytest.mark.parametrize("seconds", [0, -1, float("inf")])
 def test_a_bus_refuses_a_handler_timeout_it_cannot_apply(seconds: float) -> None:
     """Zero would cut off every handler; infinity none."""
-    with pytest.raises(ValueError, match="positive number of seconds"):
+    with pytest.raises(
+        ValueError, match=r"^handler_timeout is a positive number of seconds\.$"
+    ):
         EventBus(handler_timeout=seconds)
 
 
