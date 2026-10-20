@@ -658,13 +658,13 @@ class MfaStore:
 class PendingSignup:
     """An account someone asked for at ``/signup``, not made yet.
 
-    Its ``repr`` names its id alone: the rest is personal data, and a hash.
+    It holds no password: whoever confirms the address chooses one. Its
+    ``repr`` names its id alone: the rest is personal data.
     """
 
     id: UUID
     username: str = dataclasses.field(repr=False)
     email: str = dataclasses.field(repr=False)
-    password: PasswordHash = dataclasses.field(repr=False)
     created_at: datetime = dataclasses.field(repr=False)
     expires_at: datetime = dataclasses.field(repr=False)
 
@@ -685,7 +685,6 @@ class SignupStore:
         *,
         username: str,
         email: str,
-        password: PasswordHash,
         ttl: timedelta,
         now: datetime | None = None,
     ) -> PendingSignup:
@@ -695,7 +694,6 @@ class SignupStore:
             id=uuid.uuid4(),
             username=username,
             email=email,
-            password=password,
             created_at=moment,
             expires_at=moment + ttl,
         )
