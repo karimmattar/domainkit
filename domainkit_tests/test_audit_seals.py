@@ -681,9 +681,19 @@ async def test_the_backlog_is_what_sealing_could_still_reach(tables: None) -> No
     await add(now - 2 * WINDOW)  # Too late: verify's to report.
     await add(now + timedelta(seconds=9))
     assert await unsealed_backlog("default", WINDOW) == 1
-    head = now + timedelta(seconds=2)
-    await add(head - WINDOW)  # Exactly the window's first instant.
-    assert await unsealed_backlog("default", WINDOW) == 2
+
+
+async def test_the_backlog_counts_from_the_windows_first_instant(
+    tables: None,
+) -> None:
+    """A row exactly ``late_window`` before the head's is still within reach."""
+    head = datetime.now(UTC) - timedelta(minutes=1)  # In the past: the mark.
+    await add(head)
+    await seal("default")
+    await add(head - WINDOW)
+    await add(head - WINDOW - timedelta(microseconds=1))
+
+    assert await unsealed_backlog("default", WINDOW) == 1
 
 
 async def test_counting_a_backlog_stops_at_its_limit(

@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 from prometheus_client import REGISTRY
 
-from domainkit import clock
+from domainkit import clock, tasks
 from domainkit import context as request_context
 from domainkit.context import RequestContext, bind_request, current_request
 from domainkit.contrib.idempotency.operations import (
@@ -478,12 +478,62 @@ def test_backoff_never_overflows() -> None:
     assert 30.0 <= backoff_delay(10**6, 1.0, 60.0) <= 60.0
 
 
-def test_supervision_backs_off_from_a_second_to_a_minute_by_default() -> None:
-    """The defaults a project gets without choosing."""
-    parameters = inspect.signature(supervise).parameters
+class Crashes(logging.Handler):
+    """Collect the supervisor's crash messages; signal each as it comes."""
 
-    assert parameters["backoff"].default == 1.0
-    assert parameters["max_backoff"].default == 60.0
+    def __init__(self) -> None:
+        """Start with none."""
+        super().__init__(logging.ERROR)
+        self.messages: list[str] = []
+        self.logged = asyncio.Event()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Keep the message and wake whoever waits for it."""
+        self.messages.append(record.getMessage())
+        self.logged.set()
+
+    async def next(self) -> str:
+        """Wait for the next crash message (at most 5 seconds)."""
+        async with asyncio.timeout(5):
+            await self.logged.wait()
+        self.logged.clear()
+        return self.messages[-1]
+
+
+async def test_supervision_backs_off_from_a_second_to_a_minute_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Half a second at the least jitter; a run of a minute counts as healthy."""
+    monkeypatch.setattr(tasks._random, "uniform", lambda low, high: low)
+    crashes = Crashes()
+    logging.getLogger("domainkit.tasks").addHandler(crashes)
+
+    async def crash() -> None:
+        raise RuntimeError("down")
+
+    async def crash_after_a_minute() -> None:
+        frozen.tick(60)
+        raise RuntimeError("down after a minute")
+
+    async def wait() -> None:
+        await asyncio.Event().wait()
+
+    calls: list[int] = []
+    try:
+        with clock.freeze_time() as frozen:
+            supervisor = supervise(
+                lambda: run_n(calls, [crash, crash_after_a_minute, wait]),
+                name="test.defaults",
+            )
+            first = await crashes.next()
+            second = await crashes.next()  # After the first's 0.5 s backoff.
+    finally:
+        logging.getLogger("domainkit.tasks").removeHandler(crashes)
+    supervisor.cancel()
+    await wait_for(supervisor)
+
+    assert first.endswith("restarting it in 0.5s (1 in a row)")
+    assert second.endswith("restarting it in 0.5s (1 in a row)")
 
 
 async def test_supervisor_and_runs_carry_the_name() -> None:
