@@ -3,7 +3,7 @@
 import asyncio
 import re
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NamedTuple
 
 import pytest
 
@@ -21,6 +21,7 @@ from domainkit.ddd import (
     RowLocks,
     SoftDeletable,
     UnitOfWork,
+    ValueObject,
 )
 from domainkit.ddd.query import F, Query, RowLock
 from domainkit.ddd.repository import LOCK_TIMEOUT
@@ -546,16 +547,107 @@ async def test_a_failed_savepoint_undoes_changes_inside_child_entities() -> None
     assert [line.quantity for line in order.lines] == [1]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AttributeError,
-    reason=(
-        "Bug: InMemoryRepository._snapshot deep-copies mapped child entities. "
-        "The maker's SQLAlchemy InstanceState lists the gadget's as a parent, "
-        "so deepcopy walks into the gadget and its parts and rebuilds an "
-        "InstanceState before its obj is set: AttributeError on savepoint entry."
-    ),
-)
+class Memo(ValueObject):
+    """A value object with a mutable field, copied deeply rather than kept."""
+
+    words: list[str]
+
+
+class Shelf(NamedTuple):
+    """A tuple subclass, copied deeply rather than rebuilt."""
+
+    first: Line
+    second: Line
+
+
+class Slot(Entity[int]):
+    """A child entity that points back at its aggregate."""
+
+    basket: object
+
+
+class Basket(AggregateRoot[int]):
+    """Child entities in every kind of container, and values beside them."""
+
+    lines: list[Line]
+    by_name: dict[str, Line]
+    pair: tuple[Line, Line]
+    shelf: Shelf
+    tags: set[str]
+    kinds: frozenset[str]
+    memo: Memo
+    slots: list[Slot]
+    model: type
+
+
+async def test_a_failed_savepoint_puts_child_entities_back_in_place() -> None:
+    """Entities keep their identity; containers and values are as they were."""
+    one, two, three = (
+        Line(id=1, quantity=1),
+        Line(id=2, quantity=2),
+        Line(id=3, quantity=3),
+    )
+    five = Line(id=5, quantity=5)
+    basket = Basket(
+        id=1,
+        lines=[one, two],
+        by_name={"one": one, "five": five},
+        pair=(one, three),
+        shelf=Shelf(two, three),
+        tags={"a"},
+        kinds=frozenset({"k"}),
+        memo=Memo(words=["w"]),
+        slots=[],
+        model=Line,
+    )
+    basket.slots.append(Slot(id=1, basket=basket))
+
+    class Baskets(UnitOfWork):
+        """Baskets in memory."""
+
+        def __init__(self) -> None:
+            super().__init__(events=EventBus())
+            self.baskets = InMemoryRepository[Basket, int]([basket])
+
+        async def _commit(self) -> None: ...
+
+        async def _rollback(self) -> None: ...
+
+    uow = Baskets()
+
+    async def undone() -> None:
+        async with uow.savepoint():
+            one.quantity, three.quantity, five.quantity = 10, 30, 50
+            basket.lines.append(Line(id=4, quantity=4))
+            basket.lines.remove(two)
+            del basket.by_name["one"]
+            basket.pair = (three, three)
+            basket.tags.add("b")
+            basket.kinds = frozenset()
+            basket.memo.words.append("x")
+            raise RuntimeError("undone")
+
+    async with uow:
+        with pytest.raises(RuntimeError, match="undone"):
+            await undone()
+
+    assert basket.lines == [one, two]
+    assert basket.lines[0] is one
+    assert basket.by_name == {"one": one, "five": five}
+    assert five.quantity == 5
+    assert basket.by_name["one"] is one
+    assert basket.pair == (one, three)
+    assert basket.pair[1] is three
+    assert [line.quantity for line in (one, two, three)] == [1, 2, 3]
+    assert basket.shelf == Shelf(two, three)
+    assert type(basket.shelf) is Shelf
+    assert (basket.tags, basket.kinds) == ({"a"}, frozenset({"k"}))
+    assert (type(basket.tags), type(basket.kinds)) == (set, frozenset)
+    assert basket.memo.words == ["w"]
+    assert basket.slots[0].basket is basket
+    assert basket.model is Line
+
+
 async def test_a_savepoint_begins_over_mapped_child_entities() -> None:
     """A gadget with a part and a maker can be snapshot, and comes back."""
     gadget = make_gadget("a", parts=[make_part("P", weight=1)], maker=make_maker("A"))
