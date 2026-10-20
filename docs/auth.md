@@ -808,31 +808,61 @@ before. Staff cannot set it in the admin API, where it is read-only.
 
 ### Signing up
 
-`domainkit.contrib.auth.signup.router` has `POST /signup` (anyone), with
-`{"username", "email", "password"}`. It answers 404 until
-`AUTH.SIGNUP_ENABLED` is on. The fields and the password validators are
-checked at once (`422`), which tells nothing about other accounts. Then it
-answers `202` whatever happens next, in the same time, and the worker
-either creates the account and mails a verification link, or, when the
-username (in any case) or the address is taken, mails the address given
-that it is. Whether an address has an account is told only to whoever
-reads mail at it. Usernames are not secret that way: someone who signs up
-with their own address learns from the mail that a username is taken, as
-any signup form must tell; `EMAIL_RATE` bounds how fast. Signups count
-against `EMAIL_RATE` per client address and
-per email address, and are audited as `auth.user_signed_up`. The new user
-can log in once the worker has run, before verifying the address: check
-`email_verified` in routes that need it.
+`domainkit.contrib.auth.signup.router` has two routes, which answer 404
+until `AUTH.SIGNUP_ENABLED` is on:
 
-The password's hash travels to the worker in the outbox, kept until
-`MESSAGING.RETENTION_SECONDS` after the account is made. Two signups for
-one new address at the same moment can both succeed: email addresses are
-not unique in the user table.
+| Endpoint | Who | Body | Answer |
+| --- | --- | --- | --- |
+| `POST /signup` | anyone | `{"username", "email", "password"}` | `202`; `422` for fields or a password the validators refuse; `429 throttled`. |
+| `POST /signup/confirm` | anyone | `{"token"}` | `204`: the account is made; `400 invalid_token`; `409 signup_taken`; `429 throttled`. |
+
+The fields and the password validators are checked at once (`422`), which
+tells nothing about other accounts. Then the request is kept as a pending
+signup, and it answers `202`, doing the same work whatever accounts
+exist. The worker mails the address: when neither the username (in any
+case) nor the address has an account, a link (`AUTH.SIGNUP_URL` with the
+token in place of `{token}`, the token alone without one) that works for
+`EMAIL_VERIFICATION_TIMEOUT`; otherwise, word that an account uses the
+address or the username, and the pending signup is dropped. Your page
+posts the token to `/signup/confirm`, which makes the account, its
+address verified, and the user can log in.
+
+No account exists before its address is confirmed. So nothing anyone else
+can see differs between an address that has an account and one that has
+none: an attacker who asks for an account with someone's address, then
+tries to log in with the username they chose, gets `401` either way, and
+can sign up with that username again either way. Whether an address has
+an account is told only to whoever reads mail at it. Usernames are not
+secret that way: someone who signs up with their own address learns from
+the mail that a username is taken, as any signup form must tell;
+`EMAIL_RATE` bounds how fast.
+
+A pending signup reserves nothing, neither its username nor its address,
+so one that is never confirmed blocks no one. Several may name the same
+username: each address gets its link, the first link used gets the name,
+and the others answer `409 signup_taken` (the person signs up again with
+another name). A link for an address that got an account meanwhile
+answers `409` too. A link works once; a wrong, used, or expired one gets
+`400 invalid_token`, audited as `auth.signup`.
+
+Pending signups keep the username, the address, and the password's hash
+in `domainkit_pending_signups` (run `makemigrations` and `migrate`),
+which is never in fixtures. The outbox holds only a pending signup's id.
+A row goes when its link is used, when the worker finds the name or the
+address taken, or, past `EMAIL_VERIFICATION_TIMEOUT`, with the hourly
+purge of expired tokens. Signups count against `EMAIL_RATE` per client
+address and per email address, links checked against `LOGIN_RATE` per
+client address, and new accounts are audited as `auth.user_signed_up`.
+Two links for one new address used at the same moment can both make an
+account: email addresses are not unique in the user table.
 
 The worker renders the mail from the templates `auth/password_reset`,
-`auth/email_verification`, and `auth/signup_exists` (plain text). Replace
-them from `MAIL.TEMPLATE_DIRS`; they are given `user`, `username`, `link`,
-and `valid_for` (`1 hour`), and `email` for the last. `check` reports
+`auth/email_verification`, `auth/signup_confirm`, and
+`auth/signup_exists` (plain text). Replace them from `MAIL.TEMPLATE_DIRS`;
+the first two are given `user`, `username`, `link`, and `valid_for`
+(`1 hour`), `auth/signup_confirm` only `link` and `valid_for` (the
+username was chosen by whoever asked, maybe not the address's owner), and
+`auth/signup_exists` only `email`. `check` reports
 these routes mounted without messaging and mail, or with a user model
 without `EMAIL_FIELD` and `email_verified`.
 
@@ -1028,7 +1058,8 @@ changed what.
 | `PASSWORD_RESET_URL` | `None` | Your page that takes a reset token: `{token}` marks where. |
 | `EMAIL_VERIFICATION_TIMEOUT` | 3 days | How long a verification link works. |
 | `EMAIL_VERIFICATION_URL` | `None` | Your page that takes a verification token. |
-| `SIGNUP_ENABLED` | `False` | Let anyone create an account at `/signup`. |
+| `SIGNUP_ENABLED` | `False` | Let anyone ask for an account at `/signup`. |
+| `SIGNUP_URL` | `None` | Your page that takes a signup link's token: `{token}` marks where. |
 | `COOKIE` | see below | Browser sessions, for `CookieAuthentication`. |
 | `MFA` | see below | Second factors (`auth.mfa`). |
 | `CLIENT_CERT` | see below | Client certificates, for `ClientCertificateAuthentication`. |

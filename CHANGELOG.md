@@ -40,8 +40,15 @@ All notable changes to domainkit. The format follows
     the address changes. Run `makemigrations` and `migrate` for the new
     column.
   - `POST /auth/signup`, off until `AUTH.SIGNUP_ENABLED`, checks the fields
-    and password rules at once, then answers 202 and tells the address by
-    mail when the username or address is taken.
+    and password rules at once, then answers 202 and mails the address a
+    link (`AUTH.SIGNUP_URL`), or word that the username or address is
+    taken. `POST /auth/signup/confirm` with the link's token makes the
+    account, its address verified: until then no account exists, so no
+    one but the address's owner learns whether it has one, and a pending
+    signup reserves no username. Pending signups, with the password's
+    hash, wait in the new `domainkit_pending_signups` table (run
+    `makemigrations` and `migrate`), never in the outbox or in fixtures,
+    and expired ones are purged hourly.
   - Requests that send mail count against the new `AUTH.EMAIL_RATE`, and
     token checks against `AUTH.LOGIN_RATE`; resets, verifications,
     signups, and refusals are audited.

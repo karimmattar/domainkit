@@ -1,6 +1,6 @@
-"""Signing up: anyone may create an account, if ``AUTH.SIGNUP_ENABLED`` says so.
+"""Signing up: anyone may ask for an account, if ``AUTH.SIGNUP_ENABLED`` says so.
 
-Off by default: the route answers 404 until it is on. Install messaging
+Off by default: the routes answer 404 until it is on. Install messaging
 and mail, and mount the router::
 
     from domainkit.contrib.auth.signup import router as signup_router
@@ -10,48 +10,80 @@ and mail, and mount the router::
 ``POST /signup`` (anyone) takes a username, an email address, and a
 password. The fields and the password rules (``AUTH.PASSWORD_VALIDATORS``)
 are checked at once: a refusal there says nothing about other accounts.
-Then it answers 202 whatever happens next, in the same time: the worker
-creates the account and mails a verification link, or, when the username
-or the address is taken, mails the address that it is. Whether an address
-has an account is told only to its owner; a username taken is told to
-whoever gives their own address, as any signup must. Attempts count
-against ``AUTH.EMAIL_RATE`` per client address and per email address.
+Then the request is kept as a pending signup, and it answers 202, doing the
+same work whatever accounts exist. The worker mails the address: a link
+that makes the account (``AUTH.SIGNUP_URL``), or, when the username or the
+address is taken, word that it is. ``POST /signup/confirm`` (anyone) takes
+the link's token and makes the account, its address verified.
+
+No account exists until its address is confirmed, so nothing anyone else
+can see differs between an address that has an account and one that has
+none: whether it has one is told only to whoever reads its mail. A
+pending signup reserves nothing: several may name one username, and the
+first confirmed gets it; the others' links then answer 409. A username
+taken is told to whoever gives their own address, as any signup must.
+Attempts count against ``AUTH.EMAIL_RATE`` per client address and per
+email address, links checked against ``AUTH.LOGIN_RATE`` per client
+address. Pending signups, with the password's hash, are kept in a table of
+their own, never in the outbox or in fixtures, and deleted once used, when
+the address is taken, or hourly once their link has expired.
 """
 
+import re
 from typing import Final, cast
+from urllib.parse import quote
+from uuid import UUID
 
 from fastapi import APIRouter, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from domainkit.contrib.mail import deliver, render_mail
-from domainkit.contrib.messaging import enqueue, task
+from domainkit.contrib.messaging import task
 from domainkit.http.errors import APIError
+from domainkit.signing import BadSignature, TimestampSigner
 
 from .access import Public
 from .api import PASSWORD_MAX_LENGTH, _errors
 from .events import UserSignedUp
 from .hashers import amake_password
-from .models import USERNAME_MAX_LENGTH, PasswordHash
-from .recovery import AcceptedOut, EmailAddress, send_email_verification
-from .settings import auth_settings
-from .throttling import address_key, email_key, throttle
+from .models import USERNAME_MAX_LENGTH, AbstractUser, PasswordHash
+from .recovery import AcceptedOut, EmailAddress, InvalidLink, TokenIn, describe
+from .repositories import PendingSignup
+from .settings import TOKEN_PLACEHOLDER, AuthSettings, auth_settings
+from .throttling import address_key, audit_refusal, email_key, throttle
 from .uow import AuthUnitOfWork
 from .users import get_user_model
 from .validators import validate_password
 
-SIGNUP_TASK: Final = "domainkit.auth.complete_signup"
+SIGNUP_TASK: Final = "domainkit.auth.send_signup_link"
+SALT: Final = "domainkit.auth.signup"
+"""Keeps signup links to their purpose."""
+_SIGNUP: Final = re.compile(r"[0-9a-f]{32}")
 
 router = APIRouter(tags=["auth"])
 
 
 class SignupIn(BaseModel):
-    """The account to create: its username, email address, and password."""
+    """The account to ask for: its username, email address, and password."""
 
     model_config = ConfigDict(extra="forbid")
 
     username: str = Field(min_length=1, max_length=USERNAME_MAX_LENGTH)
     email: EmailAddress
     password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH)
+
+
+class SignupTaken(APIError):
+    """The username or the address got an account before the link was used (409)."""
+
+    def __init__(self) -> None:
+        """Use status 409 and the code ``signup_taken``."""
+        super().__init__(
+            status.HTTP_409_CONFLICT,
+            "An account already uses this username or this address; "
+            "sign up again with another username, or log in.",
+            code="signup_taken",
+        )
 
 
 @router.post(
@@ -65,10 +97,8 @@ class SignupIn(BaseModel):
     ),
 )
 async def signup(body: SignupIn, request: Request) -> AcceptedOut:
-    """Check the account's fields and password, then create it in the worker."""
-    config = auth_settings()
-    if not config.SIGNUP_ENABLED:
-        raise APIError(status.HTTP_404_NOT_FOUND, "Not Found", code="not_found")
+    """Check the account's fields and password; keep it until its link is used."""
+    config = _enabled()
     email = body.email
     await throttle(
         request,
@@ -80,44 +110,147 @@ async def signup(body: SignupIn, request: Request) -> AcceptedOut:
     )
     model = get_user_model()
     fields = {model.USERNAME_FIELD: body.username, cast(str, model.EMAIL_FIELD): email}
-    # Builds a user the way the worker will, so its fields are checked now.
+    # Builds a user the way confirming will, so its fields are checked now.
     candidate = model.create(password=PasswordHash.unusable(), **fields)
     validate_password(body.password, candidate)
-    password_hash = await amake_password(body.password)
-    await enqueue(
-        complete_signup,
-        username=candidate.get_username(),
-        email=email,
-        password_hash=password_hash,
-    )
+    password = PasswordHash(await amake_password(body.password))
+    async with AuthUnitOfWork() as uow:
+        pending = await uow.signups.add(
+            username=candidate.get_username(),
+            email=getattr(candidate, cast(str, model.EMAIL_FIELD)),
+            password=password,
+            ttl=config.EMAIL_VERIFICATION_TIMEOUT,
+        )
+        uow.defer(send_signup_link, signup_id=pending.id)
+        await uow.commit()
     return AcceptedOut(detail="Check your email to finish signing up.")
 
 
-async def complete_signup(username: str, email: str, password_hash: str) -> None:
-    """Create the account and mail a verification link, or say it is taken.
-
-    The ``domainkit.auth.complete_signup`` task. If another signup takes
-    the username first, the commit fails and the next try says it is taken.
-    """
+@router.post(
+    "/signup/confirm",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Public],
+    responses=_errors(
+        status.HTTP_400_BAD_REQUEST,
+        status.HTTP_404_NOT_FOUND,
+        status.HTTP_409_CONFLICT,
+        status.HTTP_429_TOO_MANY_REQUESTS,
+    ),
+)
+async def confirm_signup(body: TokenIn, request: Request) -> None:
+    """Make the account a signup link names; its address is verified."""
+    config = _enabled()
+    await throttle(
+        request,
+        config.LOGIN_RATE,
+        [address_key(request, "signup-confirm")],
+        action="auth.signup",
+        detail="Too many attempts; try again later.",
+        code="throttled",
+    )
+    signup_id = signup_of(body.token)
     async with AuthUnitOfWork() as uow:
-        taken = await uow.users.username_taken(
-            username
-        ) or await uow.users.find_by_email(email)
-        if not taken:
-            model = uow.users.model
-            fields = {
-                model.USERNAME_FIELD: username,
-                cast(str, model.EMAIL_FIELD): email,
-            }
-            user = model.create(password=PasswordHash(password_hash), **fields)
-            await uow.users.add(user)
-            user.record(UserSignedUp(user_id=user.id))
-            uow.defer(send_email_verification, user_id=user.id)
+        pending = None if signup_id is None else await uow.signups.get(signup_id)
+        # Removed first: of two requests with one link, one goes on.
+        if (
+            pending is not None
+            and not pending.expired()
+            and await uow.signups.remove(pending.id)
+        ):
+            if await _taken(uow, pending):
+                await uow.commit()
+                raise SignupTaken
+            await _make_account(uow, pending)
             await uow.commit()
             return
-    await deliver([render_mail("auth/signup_exists", {"email": email}, to=[email])])
+    await audit_refusal("auth.signup", "invalid_token")
+    raise InvalidLink
+
+
+async def send_signup_link(signup_id: UUID) -> None:
+    """Mail the address a link that makes the account, or say it is taken.
+
+    The ``domainkit.auth.send_signup_link`` task. A pending signup whose
+    username or address is taken is deleted, and its address told; one
+    gone or expired is left alone.
+    """
+    config = auth_settings()
+    async with AuthUnitOfWork() as uow:
+        pending = await uow.signups.get(signup_id)
+        if pending is None or pending.expired():
+            return
+        taken = await _taken(uow, pending)
+        if taken:
+            await uow.signups.remove(pending.id)
+            await uow.commit()
+    if taken:
+        context: dict[str, object] = {"email": pending.email}
+        template = "auth/signup_exists"
+    else:
+        token = signup_token(pending.id)
+        url = config.SIGNUP_URL
+        link = (
+            token
+            if url is None
+            else url.replace(TOKEN_PLACEHOLDER, quote(token, safe=""))
+        )
+        context = {
+            "link": link,
+            "valid_for": describe(config.EMAIL_VERIFICATION_TIMEOUT),
+        }
+        template = "auth/signup_confirm"
+    await deliver([render_mail(template, context, to=[pending.email])])
+
+
+def signup_token(signup_id: UUID) -> str:
+    """The token of a signup link: the pending signup's id, signed and dated."""
+    return TimestampSigner(salt=SALT).sign(signup_id.hex)
+
+
+def signup_of(token: str) -> UUID | None:
+    """The pending signup a link's token names, if it is signed and in date."""
+    try:
+        value = TimestampSigner(salt=SALT).unsign(
+            token, max_age=auth_settings().EMAIL_VERIFICATION_TIMEOUT
+        )
+    except BadSignature:
+        return None
+    return UUID(hex=value) if _SIGNUP.fullmatch(value) else None
 
 
 def register_tasks() -> None:
-    """Register the task that creates accounts (with messaging installed)."""
-    task(name=SIGNUP_TASK)(complete_signup)
+    """Register the task that mails signup links (with messaging installed)."""
+    task(name=SIGNUP_TASK)(send_signup_link)
+
+
+def _enabled() -> AuthSettings:
+    """The settings, if signing up is on.
+
+    Raises:
+        APIError: 404, while ``AUTH.SIGNUP_ENABLED`` is off.
+    """
+    config = auth_settings()
+    if not config.SIGNUP_ENABLED:
+        raise APIError(status.HTTP_404_NOT_FOUND, "Not Found", code="not_found")
+    return config
+
+
+async def _taken(uow: AuthUnitOfWork, pending: PendingSignup) -> bool:
+    """Whether an account has the signup's username (in any case) or address."""
+    return await uow.users.username_taken(pending.username) or bool(
+        await uow.users.find_by_email(pending.email)
+    )
+
+
+async def _make_account(uow: AuthUnitOfWork, pending: PendingSignup) -> None:
+    """Add the user the signup asked for, its address verified by the link."""
+    model = uow.users.model
+    fields = {
+        model.USERNAME_FIELD: pending.username,
+        cast(str, model.EMAIL_FIELD): pending.email,
+    }
+    user = model.create(password=pending.password, **fields)
+    # Startup checks that the user model can (AbstractUser can).
+    cast(AbstractUser, user).verify_email()
+    await uow.users.add(user)
+    user.record(UserSignedUp(user_id=user.id))

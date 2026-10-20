@@ -44,6 +44,7 @@ from domainkit.db import UTCDateTime, map_imperatively, metadata
 
 from .exceptions import GroupNameTaken, UsernameTaken
 from .models import (
+    EMAIL_MAX_LENGTH,
     GROUP_NAME_MAX_LENGTH,
     USERNAME_MAX_LENGTH,
     AbstractBaseUser,
@@ -236,6 +237,23 @@ recovery_codes = Table(
     info={"domain": "auth", "fixtures": False},
 )
 """Single-use codes that stand in for a lost authenticator."""
+
+pending_signups = Table(
+    "domainkit_pending_signups",
+    metadata,
+    # Random: the signup link carries it signed, so the id alone opens nothing.
+    Column("id", Uuid, primary_key=True),
+    # Neither unique: a pending signup reserves no name and no address.
+    Column("username", String(USERNAME_MAX_LENGTH), nullable=False),
+    Column("email", String(EMAIL_MAX_LENGTH), nullable=False),
+    Column("password", PasswordHashType, nullable=False),
+    Column("created_at", UTCDateTime, nullable=False),
+    Column("expires_at", UTCDateTime, nullable=False),
+    Index("ix_domainkit_pending_signups_expires_at", "expires_at"),
+    # Password hashes: never in fixtures (dumpdata, loaddata).
+    info={"domain": "auth", "fixtures": False},
+)
+"""Accounts asked for at ``/signup``, made once their address is confirmed."""
 
 
 def user_link_tables(user_table: Table) -> tuple[Table, Table]:

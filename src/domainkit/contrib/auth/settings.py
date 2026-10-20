@@ -242,6 +242,9 @@ class AuthSettings(BaseModel):
     """The page that takes a verification link's ``{token}``."""
     SIGNUP_ENABLED: bool = False
     """Let anyone create an account at ``/signup`` (``auth.signup.router``)."""
+    SIGNUP_URL: str | None = None
+    """The page that takes a signup link's ``{token}``; it works for
+    ``EMAIL_VERIFICATION_TIMEOUT``."""
     COOKIE: CookieSettings = CookieSettings()
     """Browser sessions in cookies (``CookieAuthentication``)."""
     MFA: MfaSettings = MfaSettings()
@@ -271,7 +274,7 @@ class AuthSettings(BaseModel):
                 )
         return value
 
-    @field_validator("PASSWORD_RESET_URL", "EMAIL_VERIFICATION_URL")
+    @field_validator("PASSWORD_RESET_URL", "EMAIL_VERIFICATION_URL", "SIGNUP_URL")
     @classmethod
     def _check_link(cls, value: str | None) -> str | None:
         """A link must say where its token goes."""

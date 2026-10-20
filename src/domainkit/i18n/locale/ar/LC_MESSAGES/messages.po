@@ -577,3 +577,8 @@ msgstr "تعذّر استخراج الوسم باستخدام {discriminator}"
 #. domainkit.contrib.auth: identity checks
 msgid "Enter one email address, such as user@example.com, without a name."
 msgstr "أدخل عنوان بريد إلكتروني واحدًا، مثل user@example.com، بلا اسم."
+
+msgid ""
+"An account already uses this username or this address; sign up again "
+"with another username, or log in."
+msgstr "يستخدم حسابٌ هذا الاسم أو هذا العنوان بالفعل؛ سجِّل من جديد باسم مستخدم آخر، أو سجِّل الدخول."
