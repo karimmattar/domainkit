@@ -54,6 +54,12 @@ All notable changes to domainkit. The format follows
   pool on every request: they are awaited, or built, on the loop.
   Domains made by `startdomain` declare `get_unit_of_work` and `caller` as
   `async def`; existing ones keep working, and `check` names them.
+- TLS contexts are built once per process for each set of TLS settings,
+  never on the event loop while it serves: databases' when the application
+  is built, RabbitMQ's and Redis's on a worker thread at the first
+  connection. Redis connections share one context instead of building
+  their own at each connect (ASYNC-21; `docs/runtime.md`, "TLS contexts").
+  A process uses renewed certificate files after a restart.
 
 ## [0.7.0] - 2026-10-20
 

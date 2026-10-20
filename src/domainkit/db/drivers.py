@@ -9,6 +9,8 @@ replaces these: an override could turn TLS or the timeouts off unseen.
 import re
 import ssl
 from collections.abc import Mapping, Set
+from functools import cache
+from pathlib import Path
 from typing import Any, Final
 
 from sqlalchemy.engine import make_url
@@ -35,23 +37,36 @@ _OPTION: Final = re.compile(r"(?:-c\s*|--)([\w.-]+)=")
 
 
 def client_ssl_context(config: DatabaseConfig) -> ssl.SSLContext | None:
-    """Build a client TLS context for ``SSLMODE``; None means plaintext.
+    """The client TLS context for ``SSLMODE``; None means plaintext.
 
     ``require`` encrypts without verifying anything, ``verify-ca`` checks the
-    certificate chain, and ``verify-full`` also checks the host name.
+    certificate chain, and ``verify-full`` also checks the host name. It is
+    built once per process for each mode and set of files, since reading
+    the system's CA store and the files takes milliseconds:
+    ``get_asgi_application`` builds it before the server's loop serves.
     """
     if config.SSLMODE in {None, "disable"}:
         return None
+    return _ssl_context(
+        config.SSLMODE, config.SSLROOTCERT, config.SSLCERT, config.SSLKEY
+    )
+
+
+@cache
+def _ssl_context(
+    mode: str, rootcert: Path | None, cert: Path | None, key: Path | None
+) -> ssl.SSLContext:
+    """Build the context ``client_ssl_context`` describes (once, then cached)."""
     try:
-        if config.SSLMODE == "require":
+        if mode == "require":
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             context.check_hostname = False
             context.verify_mode = ssl.CERT_NONE
         else:
-            context = ssl.create_default_context(cafile=config.SSLROOTCERT)
-            context.check_hostname = config.SSLMODE == "verify-full"
-        if config.SSLCERT is not None:
-            context.load_cert_chain(config.SSLCERT, config.SSLKEY)
+            context = ssl.create_default_context(cafile=rootcert)
+            context.check_hostname = mode == "verify-full"
+        if cert is not None:
+            context.load_cert_chain(cert, key)
     except OSError as exc:
         raise ImproperlyConfigured(
             f"Cannot load TLS files ({exc.strerror or exc})."

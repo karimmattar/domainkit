@@ -13,6 +13,7 @@ from typing import Any, Final
 import pytest
 from fakeredis import FakeAsyncRedis, FakeServer
 from pydantic import ValidationError
+from redis.asyncio.connection import Connection
 from redis.asyncio.sentinel import (
     SentinelManagedConnection,
     SentinelManagedSSLConnection,
@@ -24,6 +25,8 @@ from domainkit.cache.redis import (
     BlockingSentinelPool,
     ClusterStore,
     RedisStore,
+    SharedTLSConnection,
+    SharedTLSSentinelConnection,
     create_client,
     create_cluster_client,
 )
@@ -260,7 +263,9 @@ def test_sentinel_clients_find_the_primary_through_the_sentinels(
         7,
         0.25,
     )
-    assert pool.connection_class is SentinelManagedSSLConnection
+    # redis-py's TLS connection, sharing one TLS context per process.
+    assert pool.connection_class is SharedTLSSentinelConnection
+    assert issubclass(pool.connection_class, SentinelManagedSSLConnection)
     assert (options["username"], options["password"], options["db"]) == ("app", "pw", 2)
     assert (options["socket_timeout"], options["socket_connect_timeout"]) == (0.5, 0.25)
     assert options["retry"].get_retries() == 0
@@ -299,7 +304,7 @@ def test_sentinel_clients_without_tls_or_a_sentinel_password() -> None:
     assert "ssl_ca_certs" not in pool.connection_kwargs
     sentinel = pool.sentinel_manager.sentinels[0].connection_pool.connection_kwargs
     assert sentinel.get("password") is None
-    assert system_cas.connection_pool.connection_class is SentinelManagedSSLConnection
+    assert system_cas.connection_pool.connection_class is SharedTLSSentinelConnection
     assert "ssl_ca_certs" not in system_cas.connection_pool.connection_kwargs
 
 
@@ -344,8 +349,15 @@ def test_cluster_clients_start_from_the_seed_nodes(tmp_path: Path) -> None:
     assert options["max_connections"] == 9
     assert client.retry.get_retries() == 2
     assert isinstance(RedisStore.from_config(config), ClusterStore)
+    # The seeds, and the nodes found later, share one TLS context.
+    assert options["connection_class"] is SharedTLSConnection
+    assert {node.connection_class for node in client.startup_nodes} == {
+        SharedTLSConnection
+    }
     plain = CacheConfig(URL="redis+cluster://n1", KEY_PREFIX="x")
-    assert "ssl_ca_certs" not in create_cluster_client(plain).connection_kwargs
+    plain_options = create_cluster_client(plain).connection_kwargs
+    assert "ssl_ca_certs" not in plain_options
+    assert plain_options["connection_class"] is Connection
     with pytest.raises(ValueError, match="create_cluster_client"):
         create_client(plain)
 

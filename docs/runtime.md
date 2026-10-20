@@ -140,3 +140,20 @@ found before production:
 - **While writing.** Projects made by `init` turn on Ruff's `ASYNC` rules,
   which catch `time.sleep`, `open()`, `subprocess`, and sync HTTP clients
   inside `async def`.
+
+## TLS contexts
+
+Building a TLS context reads the system's CA store and the certificate and
+key files: milliseconds of blocking work. domainkit builds each one once
+per process, for each set of TLS settings, and never on the event loop
+while it serves:
+
+| Connection | When the context is built |
+| --- | --- |
+| Databases (`SSLMODE`, `SSLROOTCERT`, `SSLCERT`, `SSLKEY`) | by `get_asgi_application`, before the server's loop serves; by a command, at its first connection |
+| RabbitMQ (`TLS_CA`, `TLS_CERT`, `TLS_KEY`) | at the first connection, on a worker thread |
+| Redis and Valkey (`rediss://`, `TLS_CA`, `TLS_CERT`, `TLS_KEY`) | at the first connection, on a worker thread, then shared by every connection of every pool with those settings (servers, Sentinel primaries, and Cluster nodes) |
+| immudb (`TLS_CA`) | on the ledger's own thread |
+
+A process keeps its contexts until it ends: restart it to use renewed
+certificate files.
