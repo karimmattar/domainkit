@@ -15,7 +15,12 @@ from starlette.websockets import WebSocketDisconnect
 from domainkit.apps import registry
 from domainkit.cache import caches
 from domainkit.conf import override_settings
-from domainkit.context import current_request
+from domainkit.context import RequestContext, bind_request, current_request
+from domainkit.contrib.idempotency.operations import (
+    Operation,
+    run_operation,
+    running_operation,
+)
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application, health
@@ -30,6 +35,7 @@ from domainkit.http.middleware import (
 )
 from domainkit.ledger import ledgers
 from domainkit.log import SECURITY_LOGGER
+from domainkit.tracing import current_ids, remote_parent
 from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
 
 type MakeClient = Callable[..., TestClient]
@@ -582,6 +588,49 @@ def test_readiness_probes_share_one_round_of_checks(
     assert rounds == [1]  # One round; cached 0.05 s from its end, not its start.
     assert answers == [[]] * 20
     assert timeouts == [0.5] * 4  # Each kind of check, bounded by the setting.
+
+
+TRACEPARENT = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+
+
+def test_readiness_checks_every_kind_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Domains, databases, ledgers, and caches are checked concurrently.
+
+    Each kind waits until all four have started: run one after another,
+    the first would wait for ever.
+    """
+    started: list[float] = []
+    contexts: list[object] = []
+    everyone: list[asyncio.Event] = []  # Made in the probe's loop.
+
+    async def check(seconds: float) -> list[str]:
+        started.append(seconds)
+        contexts.append((current_request(), running_operation(), current_ids()))
+        if len(started) == 4:
+            everyone[0].set()
+        await everyone[0].wait()
+        return [f"failing{len(started)}"] if len(started) == 4 else []
+
+    monkeypatch.setattr(registry, "check", check)
+    for checked in (connections, ledgers, caches):
+        monkeypatch.setattr(checked, "check_all", check)
+    request = SimpleNamespace(app=SimpleNamespace(state=State()))
+    context = RequestContext("req-probe", None, "GET", "/ready")
+
+    async def probe() -> list[str]:
+        everyone.append(asyncio.Event())
+        with (
+            bind_request(context),
+            run_operation(Operation("hash", "token")),
+            remote_parent({"traceparent": TRACEPARENT}),
+        ):
+            async with asyncio.timeout(5):
+                return await health._failing_checks(request)  # type: ignore[arg-type]
+
+    with override_settings(READINESS_CACHE_SECONDS=0):
+        assert asyncio.run(probe()) == ["failing4"] * 4
+    assert started == [5.0] * 4
+    assert contexts == [(None, None, None)] * 4  # The probe's request stays its own.
 
 
 def test_a_round_left_on_another_loop_is_not_awaited(
