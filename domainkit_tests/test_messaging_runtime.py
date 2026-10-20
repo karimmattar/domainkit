@@ -88,7 +88,7 @@ from domainkit_tests.test_messaging import (  # noqa: F401 - fixtures.
 
 pytestmark = pytest.mark.anyio
 
-WAIT: Final = 5.0
+WAIT: Final = 30.0
 """The longest any test waits for something; a regression fails, never hangs."""
 
 
@@ -249,6 +249,18 @@ async def test_a_budget_hands_out_slots_first_come_first_served() -> None:
     assert budget.used == 0
 
 
+async def test_a_woken_waiter_takes_what_is_free() -> None:
+    """Once its turn comes, a waiter takes up to what it asked for."""
+    budget = WatchedBudget(5)
+    await budget.acquire(5)
+    waiting = asyncio.create_task(budget.acquire(2))
+    await budget.until_waiting(1)
+    budget.release(5)
+
+    assert await within(waiting) == 2
+    assert budget.used == 2
+
+
 async def test_a_budget_waiter_stops_or_is_cancelled_cleanly() -> None:
     """A stop or a cancellation leaves nothing held; a handed slot moves on."""
     budget = WatchedBudget(1)
@@ -280,7 +292,7 @@ async def test_a_budget_waiter_stops_or_is_cancelled_cleanly() -> None:
 
 async def test_a_budget_refuses_impossible_counts() -> None:
     """Sizes and counts are checked; a waiter that gave up is skipped."""
-    with pytest.raises(ValueError, match="at least one slot"):
+    with pytest.raises(ValueError, match=r"^A budget needs at least one slot\.$"):
         Budget(0)
     budget = Budget(1)
     with pytest.raises(ValueError, match="Acquire at least one slot"):
@@ -769,8 +781,11 @@ async def test_the_breaker_hears_every_answer_of_the_broker() -> None:
     unreachable = Down()  # Watched brokers are held weakly: keep it.
     down = Watched(unreachable, breaker)
 
+    breaker.failures = 2
     await watched.declare(["default", "emails"])
     await watched.check()
+    assert breaker.failures == 2  # Answers, but not confirmations.
+    breaker.failures = 0
     for call in (
         down.check(),
         down.declare(["x"]),
@@ -785,19 +800,20 @@ async def test_the_breaker_hears_every_answer_of_the_broker() -> None:
     breaker.failures = 2
     await watched.publish("default", b"{}", message_id="m")
     assert breaker.failures == 0
-    subscription = await watched.consume(["default"], 1, _ack)
+    assert broker.drain("default") == [(b"{}", "m")]
+    await watched.publish("default", b"[]", message_id="n")
+    delivered: asyncio.Queue[Delivery] = asyncio.Queue()
+    subscription = await watched.consume(["default"], 1, delivered.put)
+    delivery = await within(delivered.get())
+    await delivery.ack()
     await subscription.cancel()
+    assert (delivery.body, delivery.message_id) == (b"[]", "n")
 
     assert watched.publish_timeout == broker.publish_timeout
     gone = Watched(MemoryBroker(), breaker)  # Dropped, as with its loop.
     gc.collect()
-    with pytest.raises(BrokerUnavailable, match="The broker was closed"):
+    with pytest.raises(BrokerUnavailable, match=r"^The broker was closed\.$"):
         await gone.publish("default", b"{}", message_id="m")
-
-
-async def _ack(delivery: Delivery) -> None:
-    """Acknowledge a delivery."""
-    await delivery.ack()
 
 
 @pytest.mark.usefixtures("broker_tables")

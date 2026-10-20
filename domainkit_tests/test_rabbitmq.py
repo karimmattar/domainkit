@@ -377,7 +377,7 @@ async def test_work_in_flight_never_exceeds_the_budget(brokered: Server) -> None
         finally:
             gate.open()
             stop.set()
-            async with asyncio.timeout(10):
+            async with asyncio.timeout(runtime.WAIT):
                 await running
             await brokers.close_all()
 

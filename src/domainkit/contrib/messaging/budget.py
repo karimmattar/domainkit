@@ -71,8 +71,9 @@ class Budget:
                 stopping.cancel()
             if waiter in self._waiters:
                 self._waiters.remove(waiter)
-        # One slot came with the wake-up; the rest only if nobody waits.
-        return 1 + (self._take(most - 1) if not self._waiters else 0)
+        # One slot came with the wake-up. Any other free one is free only if
+        # nobody waits: release hands every free slot to the waiters.
+        return 1 + self._take(most - 1)
 
     def release(self, count: int = 1) -> None:
         """Give back ``count`` slots; waiters get them first."""
