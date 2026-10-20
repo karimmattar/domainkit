@@ -124,11 +124,13 @@ class Choosy(BasePermission):
     """Allows the request, the object, both, or neither."""
 
     def __init__(self, request: bool, obj: bool) -> None:
-        """Answer ``request`` and ``obj``."""
+        """Answer ``request`` and ``obj``; remember what each half was asked."""
         self.request, self.obj = request, obj
+        self.asked: list[tuple[object, ...]] = []
 
     async def has_permission(self, request: HTTPConnection, user: Any) -> bool:  # noqa: ANN401
         """The request's answer."""
+        self.asked.append((request, user))
         return self.request
 
     async def has_object_permission(
@@ -138,6 +140,7 @@ class Choosy(BasePermission):
         obj: object,
     ) -> bool:
         """The object's answer."""
+        self.asked.append((request, user, obj))
         return self.obj
 
 
@@ -152,11 +155,15 @@ async def test_both_halves_of_a_rule_must_allow(
     """``has_permission`` and ``has_object_permission`` each filter events."""
     me = Someone()
     rule = Choosy(request_allowed, event_allowed)
-    subscriber = _Subscriber(connection(me), (DomainEvent,), rule)
+    request = connection(me)
+    subscriber = _Subscriber(request, (DomainEvent,), rule)
+    event = granted(me.id)
 
-    allowed = await subscriber._allowed(granted(me.id))
+    allowed = await subscriber._allowed(event)
 
     assert allowed is (request_allowed and event_allowed)
+    asked = [(request, me), (request, me, event)]
+    assert rule.asked == (asked if request_allowed else asked[:1])
 
 
 @pytest.mark.anyio
