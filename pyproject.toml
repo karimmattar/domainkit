@@ -161,3 +161,6 @@ exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError"]
 source_paths = ["src"]
 also_copy = ["domainkit_tests/", "docs/"]
 pytest_add_cli_args_test_selection = ["domainkit_tests/", "-p", "no:randomly"]
+# Fork from a clean server: children forked after the suite ran hang on
+# database tests, which mutmut would count as killed by timeout.
+process_isolation = "forkserver"
