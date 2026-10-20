@@ -8,7 +8,8 @@ one of their groups::
     products = ResourceRouter(..., scope=visible_scope("view", Product))
 
 In SQL, ``VisibleTo`` is an ``EXISTS`` on the grants table, so pages,
-counts, and cursors never see the rest. In memory (``InMemoryRepository``),
+counts, and cursors never see the rest. Credentials limited to scopes see
+nothing unless their scopes hold the permission. In memory (``InMemoryRepository``),
 it reads the grants it is given: ``visible_scope(..., grants=fake_grants)``.
 """
 
@@ -20,7 +21,7 @@ from uuid import UUID
 from sqlalchemy import ColumnElement, and_, exists, false, or_
 from starlette.requests import HTTPConnection
 
-from domainkit.contrib.auth.access import current_user
+from domainkit.contrib.auth.access import current_user, scopes_of
 from domainkit.contrib.auth.backends import has_perm
 from domainkit.contrib.auth.models import AnyUser
 from domainkit.db.query import column_of, mapper_of, register_compiler
@@ -115,14 +116,20 @@ async def visible_to(
     model: type,
     *,
     grants: Grants | None = None,
+    request: HTTPConnection | None = None,
 ) -> Criteria | None:
     """What ``user`` may see of ``model``: None (everything), or ``VisibleTo``.
 
     Users who hold the permission on the model see everything; others see
     what is granted to them or their groups; inactive and anonymous users
-    see nothing.
+    see nothing. With the ``request``, so do credentials whose scopes leave
+    the permission out, as ``HasPermissions`` would refuse them.
     """
     bound = VisibleTo(permission, None, grants=grants).bind(model)
+    if request is not None:
+        scopes = scopes_of(request)
+        if scopes is not None and bound.permission not in scopes:
+            return bound
     if await has_perm(user, bound.permission):
         return None
     if not (user.is_authenticated and user.is_active):
@@ -137,7 +144,9 @@ def visible_scope(
     """A resource's ``scope``: what the caller may see by ``permission``."""
 
     async def scope(request: HTTPConnection) -> Criteria | None:
-        return await visible_to(current_user(request), permission, model, grants=grants)
+        return await visible_to(
+            current_user(request), permission, model, grants=grants, request=request
+        )
 
     return scope
 

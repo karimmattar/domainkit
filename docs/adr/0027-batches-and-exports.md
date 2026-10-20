@@ -37,7 +37,13 @@ be arbitrarily large.
   stream stops at the bound regardless. Negotiation picks the most
   specific `Accept` range per offered type; nothing acceptable is `406`.
   CSV text that starts with `=`, `+`, `-`, `@`, a tab, or a carriage
-  return gets a leading apostrophe, unless it is a plain number.
+  return gets a leading apostrophe, unless it is a plain number; so does
+  text where those signs follow spaces of any kind or invisible
+  characters, which spreadsheets skip, and their full-width and small
+  forms, which some read as the signs. NDJSON escapes U+0085, U+2028,
+  and U+2029, which JSON leaves raw but line readers split on.
+- Each item asks the batch route's own rules about its aggregate, as a
+  command route does.
 
 ## Consequences
 
@@ -47,4 +53,7 @@ the final commit (a constraint checked at commit) fail the whole request
 rather than one item. Items cannot send `If-None-Match`; they send their
 own `if_match`. Exports read in several transactions, so a row changed
 while streaming may appear in its old or new state, once. Spreadsheets
-show the apostrophe of neutralised cells, which is the point.
+show the apostrophe of neutralised cells, which is the point; a cell of
+spaces then a minus sign and text gets one too. A security review found
+the variants the first guard missed, and the batch rules not asked about
+objects; each has a regression test.

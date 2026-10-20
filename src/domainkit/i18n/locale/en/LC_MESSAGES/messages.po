@@ -264,6 +264,9 @@ msgstr ""
 msgid "Another item of the batch failed, so nothing was applied."
 msgstr ""
 
+msgid "You cannot create or move a record outside what you may reach."
+msgstr ""
+
 #. Pydantic's validation messages, by their templates; the error's context fills the {names}
 msgid "A required value is missing."
 msgstr ""

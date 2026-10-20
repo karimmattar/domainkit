@@ -227,6 +227,47 @@ def test_cells_are_safe_from_formulas() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        " =1+1",
+        "  @SUM(1)",
+        "\n=1+1",
+        "\u00a0=1+1",
+        "\u3000=1+1",
+        "\ufeff=1+1",
+        "\uff1d1+1",
+        "\uff0b1",
+        "\uff0d1",
+        "\uff20SUM(1)",
+        "\ufe621",
+        "\ufe631",
+        "\ufe661",
+        "\ufe6bSUM(1)",
+        "\u22121",
+        " -1+1",
+        "-\u0661",
+    ],
+)
+def test_formulas_behind_spaces_or_in_other_widths_are_guarded(text: str) -> None:
+    """Spreadsheets skip leading spaces, and read wide and small signs as signs."""
+    assert guarded(text) == f"'{text}"
+
+
+def test_numbers_behind_spaces_stay_numbers() -> None:
+    """A number with spaces before it is still a number."""
+    assert [guarded(text) for text in (" -1", "\u00a0-2.5")] == [" -1", "\u00a0-2.5"]
+    assert [guarded(text) for text in ("-1 2", " -1 2")] == ["'-1 2", "' -1 2"]
+
+
+def test_ndjson_lines_end_only_at_their_newline() -> None:
+    """Separators that split lines elsewhere are escaped inside a line."""
+    text = ndjson_lines([{"name": 'x\u2028{"id":"forged"}\u2029y\u0085z'}])
+
+    assert text.splitlines() == [text.removesuffix("\n")]
+    assert json.loads(text) == {"name": 'x\u2028{"id":"forged"}\u2029y\u0085z'}
+
+
 def test_exports_count_what_the_filters_keep_and_leave_links_out(
     store: InMemoryGadgets, use_auth: UseAuth
 ) -> None:

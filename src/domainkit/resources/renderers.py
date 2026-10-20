@@ -5,9 +5,12 @@ media type the request prefers: JSON pages as always, or every match,
 streamed, as ``text/csv`` or ``application/x-ndjson``. A request that
 accepts none of them is ``406``.
 
-CSV cells that a spreadsheet would run as a formula (text starting with
-``=``, ``+``, ``-``, ``@``, a tab, or a carriage return) start with an
-apostrophe instead, as OWASP advises; numbers stay numbers.
+CSV cells that a spreadsheet would run as a formula start with an
+apostrophe instead, as OWASP advises: text starting with ``=``, ``+``,
+``-``, ``@``, a tab, or a carriage return, also behind spaces of any kind,
+and in their full-width and small forms (U+FF1D, U+FE62). Numbers stay
+numbers. NDJSON escapes the separators other than its newline that split
+lines (U+0085, U+2028, U+2029), so each document is one line.
 """
 
 import csv
@@ -28,8 +31,18 @@ FORMATS: Final = {"csv": CSV, "ndjson": NDJSON}
 """The export formats a resource may offer, by name."""
 MAX_RANGES: Final = 32
 """The most media ranges of an ``Accept`` header that are read."""
-FORMULA: Final = ("=", "+", "-", "@", "\t", "\r")
-NUMBER: Final = re.compile(r"-?\d+(\.\d+)?([eE][-+]?\d+)?")
+FORMULA: Final = (
+    *("=", "+", "-", "@", "\t", "\r"),
+    *("\uff1d", "\uff0b", "\uff0d", "\uff20"),  # Full-width forms.
+    *("\ufe66", "\ufe62", "\ufe63", "\ufe6b"),  # Small forms.
+    "\u2212",  # The minus sign.
+)
+"""What starts a formula; spreadsheets skip the spaces before it."""
+LEADING: Final = re.compile(r"^[\s\ufeff\u200b\u200c\u200d\u2060]+")
+"""Spaces, and characters that show nothing, which spreadsheets skip."""
+NUMBER: Final = re.compile(r"-?\d+(\.\d+)?([eE][-+]?\d+)?", re.ASCII)
+LINE_BREAKS: Final = {"\u0085": "\\u0085", "\u2028": "\\u2028", "\u2029": "\\u2029"}
+"""What splits lines but JSON leaves unescaped, as JSON escapes it."""
 
 
 class NotAcceptable(APIError):
@@ -129,7 +142,10 @@ def cell(value: object) -> str:
 
 def guarded(text: str) -> str:
     """``text``, with an apostrophe first if a spreadsheet would run it."""
-    if text.startswith(FORMULA) and not NUMBER.fullmatch(text):
+    head = LEADING.sub("", text)
+    if (text.startswith(FORMULA) or head.startswith(FORMULA)) and not (
+        NUMBER.fullmatch(head)
+    ):
         return f"'{text}"
     return text
 
@@ -143,8 +159,16 @@ def csv_rows(rows: Iterable[Sequence[object]]) -> str:
 
 
 def ndjson_lines(documents: Iterable[Mapping[str, Any]]) -> str:
-    """One JSON document per line."""
+    """One JSON document per line, whatever line breaks its text holds."""
     return "".join(
-        json.dumps(document, ensure_ascii=False, separators=(",", ":")) + "\n"
+        _one_line(json.dumps(document, ensure_ascii=False, separators=(",", ":")))
+        + "\n"
         for document in documents
     )
+
+
+def _one_line(text: str) -> str:
+    """JSON ``text`` with the line breaks it leaves raw escaped."""
+    for raw, escaped in LINE_BREAKS.items():
+        text = text.replace(raw, escaped)
+    return text

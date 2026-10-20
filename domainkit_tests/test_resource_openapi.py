@@ -88,7 +88,7 @@ def test_openapi_describes_every_option_as_reviewed() -> None:
         store,
         filters=GadgetFilters,
         pagination=Pagination(offset=True, count=True),
-        policy=FieldPolicy(read_only=["made_at"], visible={"stock": "shop.view_cost"}),
+        policy=FieldPolicy(read_only=["active"], visible={"stock": "shop.view_cost"}),
         crud=True,
         links=True,
         require_if_match=True,

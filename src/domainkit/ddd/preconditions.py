@@ -11,10 +11,11 @@ out, inside the transaction that then changes it::
     assert expected.checked
 
 A stale aggregate raises ``PreconditionFailed`` (412), and the unit of work
-rolls back. Optimistic locking (the ``version`` column) still guards the
-commit against a change that lands after the check. Each expectation is
-checked once, when the aggregate is first loaded, since the use case's own
-changes move the version on afterwards.
+rolls back; a commit before the aggregate was loaded at all is refused, as
+its version could not be checked. Optimistic locking (the ``version``
+column) still guards the commit against a change that lands after the
+check. Each expectation is checked once, when the aggregate is first
+loaded, since the use case's own changes move the version on afterwards.
 """
 
 from collections.abc import Collection, Hashable, Iterator
@@ -78,6 +79,24 @@ def expect_version(
         yield expectation
     finally:
         _expected.reset(token)
+
+
+def check_loaded() -> None:
+    """Refuse to commit before every aggregate expected was loaded and checked.
+
+    Units of work call it before they commit, so a use case that changes
+    an aggregate without reading it through its repository writes nothing.
+
+    Raises:
+        RuntimeError: An expected aggregate was not loaded yet.
+    """
+    for expectation in _expected.get():
+        if not expectation.checked:
+            raise RuntimeError(
+                f"The service did not load {expectation.model.__name__} "
+                f"{expectation.id} through its repository before committing, so "
+                "If-Match could not be checked; nothing was written."
+            )
 
 
 def check_expected(aggregate: object) -> None:

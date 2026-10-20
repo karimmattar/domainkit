@@ -1011,7 +1011,7 @@ def test_field_policies_hide_and_guard_fields(
     """Hidden fields are absent; fields guarded by a permission refuse others."""
     use_auth()
     policy = FieldPolicy(
-        read_only=["made_at"],
+        read_only=["active"],
         visible={"price": "shop.view_cost"},
         editable={"stock": "shop.change_stock"},
     )
@@ -1034,9 +1034,7 @@ def test_field_policies_hide_and_guard_fields(
     renamed = client.patch(
         f"{item}/fields", json={"name": "ok"}, headers=as_("changer")
     )
-    fixed = client.patch(
-        item, json={"made_at": "2026-01-01T00:00:00Z"}, headers=as_("root")
-    )
+    fixed = client.patch(item, json={"active": False}, headers=as_("root"))
 
     assert "price" not in seen
     assert priced["price"] == str(gadget.price)
@@ -1062,7 +1060,11 @@ def test_field_policies_hide_and_guard_fields(
     assert schemas["GadgetPatch"]["properties"]["stock"]["description"] == (
         "Changed only by users granted shop.change_stock."
     )
-    assert "made_at" not in schemas["GadgetPatch"]["properties"]
+    assert "active" not in schemas["GadgetPatch"]["properties"]
+    assert "active" not in schemas["GadgetIn"]["properties"]
+    assert schemas["GadgetPatch"]["properties"]["price"]["description"] == (
+        "Changed only by users granted shop.view_cost."
+    )
 
 
 def test_read_only_fields_cannot_be_patched_by_commands(

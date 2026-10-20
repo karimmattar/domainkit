@@ -32,12 +32,19 @@ its repository, or an expectation the repository checks by itself.
   `command_route` adds routes that build a command from the body and the
   path and await `service(command, uow)`. Generic writes (`crud=True`)
   are opt-in, for reference data, and record `RecordCreated`,
-  `RecordChanged`, and `RecordDeleted`.
+  `RecordChanged`, and `RecordDeleted`. They keep to the field policy (a
+  create as a partial change does; a field hidden from the caller is not
+  theirs to set) and to the caller's scope: the written aggregate is read
+  again, in the same transaction, with the scope, and a write it would
+  leave is refused before the commit.
 - Rules are per route action: `ModelActions(Model)` asks for the model
   permission of the route's action (`view`, `add`, `change`, `delete`),
   not of its method. A resource without a rule declares none, and the
   generated endpoints live outside the framework's own modules, so the
-  deny-by-default check lists them.
+  deny-by-default check lists them. Each route keeps its own rules (the
+  resource's for its action, then its `rule=`), and all of them are asked
+  about the aggregate when one looks at objects; a query answering
+  several leaves out those refused.
 - An aggregate's `ETag` is weak, `W/"<version>-<digest>"`, where the
   digest is of the representation sent: callers who see different fields
   get different tags. `If-None-Match` is compared weakly, by the same
@@ -50,8 +57,9 @@ its repository, or an expectation the repository checks by itself.
   `Repository` checks an aggregate the first time `find` or `filter`
   hands it out: a stale one is `PreconditionFailed`, 412. Optimistic
   locking still guards the commit. A service that never loaded the
-  aggregate fails the request rather than succeed unchecked. Resources
-  may require `If-Match` (428 without).
+  aggregate fails the request rather than succeed unchecked: the unit of
+  work refuses to commit while an expected aggregate is not loaded, so
+  nothing is written. Resources may require `If-Match` (428 without).
 - Partial changes are `PatchModel`s whose fields default to `UNSET`, so
   absent and null differ (RFC 7396), and commands take `UNSET` for what
   was not sent.
@@ -63,7 +71,9 @@ its repository, or an expectation the repository checks by itself.
   resources, not a second kit: its actions are commands, its `/meta`
   is computed per caller from the same rules the routes check, and it
   refuses auth's models, whose own admin keeps rules (grant ceilings,
-  the last superuser) that generic commands could not.
+  the last superuser) that generic commands could not: users of any user
+  model, groups, and permissions, by class, and labels that name another
+  model than the class's. `schema_for` never shows a password hash.
 - The generators (`startaggregate`, `addcommand`, `addquery`,
   `addevent`) write onto this kit and edit existing files only where
   their syntax tree shows what the generators made: every edit is planned
@@ -80,6 +90,13 @@ moved onto the kit (and gained tags) without other changes to their
 answers; the webhooks admin keeps its listing, whose answer is a bare
 array, not a page. Clients that build tags from a body's `version` get
 the same checks as those that echo the `ETag`.
+
+The kit asks more of generic writes than a command route does: a write
+that leaves the caller's scope is read back before the commit, one query
+more, and a create may not set a field the policy guards. A security
+review found these gaps (route rules not asked about objects, scope and
+policy not held by generic writes, a commit before the `If-Match` check);
+each has a regression test.
 
 Because the generated code is small and regular, the generators add to
 it without a templating language of their own. Hand-edited files stay

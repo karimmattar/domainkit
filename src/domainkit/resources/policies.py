@@ -14,14 +14,16 @@ The user model's ``EDITABLE_FIELDS``, ``READ_ONLY_FIELDS``, and
   others get the representation without it (the key is absent). OpenAPI
   marks it optional and names the permission.
 - A field in ``editable`` is changed only by callers granted its
-  permission; a partial change (``PATCH``) that sets it is refused
-  otherwise (403 ``field_not_editable``).
-- A ``read_only`` field is never changed by a partial change.
+  permission; a partial change (``PATCH``) or a generic create that sets
+  it is refused otherwise (403 ``field_not_editable``). So is one that
+  sets a field in ``visible`` the caller may not see.
+- A ``read_only`` field is never set by a partial change or a generic
+  create: it keeps its default.
 
 Fields left out of a schema are neither shown nor changed at all, which
 is how protected fields stay protected. Task commands are not partial
 changes: what a command may change is the command's business, so the
-policy applies only to the ``PATCH`` routes.
+policy applies only to ``PatchModel`` bodies and generic writes.
 """
 
 from collections.abc import Collection, Iterable, Mapping
@@ -88,22 +90,22 @@ class FieldPolicy:
     async def check_changes(
         self, request: HTTPConnection, names: Iterable[str]
     ) -> None:
-        """Refuse a partial change of fields the caller may not change.
+        """Refuse to set fields the caller may not change, or may not see.
 
         Raises:
-            FieldNotEditable: A field is read-only, or needs a permission
-                the caller lacks.
+            FieldNotEditable: A field is read-only, is hidden from the
+                caller, or needs a permission the caller lacks.
         """
         names = set(names)
         if names & self.read_only:
             raise FieldNotEditable("Some of these fields cannot be changed.")
-        needed = [
-            self.editable[name] for name in sorted(names) if name in self.editable
-        ]
-        if not needed:
-            return
+        # What the caller may not see, they may not overwrite blind either.
+        needed = {
+            *(self.editable[name] for name in names if name in self.editable),
+            *(self.visible[name] for name in names if name in self.visible),
+        }
         user = current_user(request)
-        for permission in needed:
+        for permission in sorted(needed):
             if not await HasPermissions(permission).has_permission(request, user):
                 raise FieldNotEditable(
                     "You do not have permission to change some of these fields."
@@ -124,8 +126,19 @@ class FieldPolicy:
         )
 
     def describe_changes(self, schema: type[BaseModel]) -> type[BaseModel]:
-        """A partial change's ``schema``, each field's permission described."""
-        return _described(schema, self.editable, "Changed only by users granted {}.")
+        """A write's ``schema``, with the permissions setting each field needs."""
+        needed = {
+            name: " and ".join(
+                sorted(
+                    {
+                        *([self.editable[name]] if name in self.editable else []),
+                        *([self.visible[name]] if name in self.visible else []),
+                    }
+                )
+            )
+            for name in {*self.editable, *self.visible}
+        }
+        return _described(schema, needed, "Changed only by users granted {}.")
 
 
 def _described(
