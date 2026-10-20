@@ -14,9 +14,16 @@ from domainkit.ddd.exceptions import (
     DuplicateValue,
     NotFound,
     PermissionDenied,
+    PreconditionFailed,
 )
-from domainkit.ddd.fields import Digits, InvalidQuery, MaxLength, UnknownField
-from domainkit.ddd.messages import Command, Query
+from domainkit.ddd.fields import (
+    Digits,
+    InvalidQuery,
+    MaxLength,
+    Reference,
+    UnknownField,
+)
+from domainkit.ddd.messages import UNSET, Command, Query, Unset
 from domainkit.ddd.model import AggregateRoot, Entity, ValueObject
 from domainkit.ddd.pagination import Page
 from domainkit.ddd.personal import Personal
@@ -31,6 +38,7 @@ from domainkit.ddd.repository import (
 from domainkit.ddd.uow import DeferredTask, ReadOnlyError, UnitOfWork
 
 __all__ = [
+    "UNSET",
     "AggregateRoot",
     "BusinessRuleViolation",
     "Command",
@@ -55,8 +63,10 @@ __all__ = [
     "Page",
     "PermissionDenied",
     "Personal",
+    "PreconditionFailed",
     "Query",
     "ReadOnlyError",
+    "Reference",
     "Repository",
     "RowLock",
     "RowLocks",
@@ -64,6 +74,7 @@ __all__ = [
     "Specification",
     "UnitOfWork",
     "UnknownField",
+    "Unset",
     "ValueObject",
     "event_bus",
 ]
