@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/karimmattar/domainkit/main/docs/assets/domainkit-banner.jpg" alt="domainkit, a domain-driven FastAPI framework" width="720">
+</p>
+
 # domainkit
 
 A Django-style framework for domain-driven FastAPI services. It provides:
