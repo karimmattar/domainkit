@@ -1077,7 +1077,13 @@ def test_live_settings_are_checked() -> None:
     """A rate that does not read, or a caller's cap above the process's, is refused."""
     with pytest.raises(ValueError, match="rate"):
         Settings(WEBSOCKET_MESSAGE_RATE="lots")
-    with pytest.raises(ValueError, match="cannot exceed LIVE_MAX_CONNECTIONS"):
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"Value error, LIVE_MAX_CONNECTIONS_PER_CALLER cannot exceed "
+            r"LIVE_MAX_CONNECTIONS \[type"
+        ),
+    ):
         Settings(LIVE_MAX_CONNECTIONS=5, LIVE_MAX_CONNECTIONS_PER_CALLER=6)
     assert Settings(LIVE_MAX_CONNECTIONS=5, LIVE_MAX_CONNECTIONS_PER_CALLER=5)
 

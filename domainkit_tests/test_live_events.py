@@ -811,6 +811,7 @@ async def test_reauthentication_needs_the_same_principal(
 
     if kept and now is not None:
         assert (scope["user"], scope["auth"]) == (users[now], answer)
+        assert scope["auth"] is answer  # The fresh credentials, not equal old ones.
     else:
         assert scope["user"] == "old"
     if now == "refused":
