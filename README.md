@@ -25,7 +25,7 @@ A Django-style framework for domain-driven FastAPI services. It provides:
   requests (export, erasure, and retention)
 
 ```bash
-pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, immudb, redis, rabbitmq, metrics, tracing, uploads, testing, webhooks, tzdata
+pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, mfa, immudb, redis, rabbitmq, metrics, tracing, uploads, testing, webhooks, tzdata
 ```
 
 ## Documentation
@@ -48,6 +48,8 @@ pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, i
   feature flags
 - [docs/auth.md](https://github.com/karimmattar/domainkit/blob/main/docs/auth.md): users, groups, permissions, content
   types, passwords, backends, tokens, route rules, and the admin API
+- [docs/mail.md](https://github.com/karimmattar/domainkit/blob/main/docs/mail.md): email, mail templates, text messages,
+  and push notifications, sent through the outbox
 - [docs/i18n.md](https://github.com/karimmattar/domainkit/blob/main/docs/i18n.md): responses in the caller's language,
   time zones, and number and date formats
 - [docs/uploads.md](https://github.com/karimmattar/domainkit/blob/main/docs/uploads.md): file storages, receiving uploads,

@@ -32,6 +32,7 @@ from collections import OrderedDict
 from dataclasses import replace
 from typing import Final
 
+from fastapi import status
 from starlette.requests import HTTPConnection
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -143,9 +144,10 @@ class AuthenticationMiddleware:
             str(refused.error.detail),
             code=refused.error.code,
         )
-        response.headers["WWW-Authenticate"] = refused.authenticator.challenge(
-            "invalid_token"
-        )
+        if refused.error.status_code == status.HTTP_401_UNAUTHORIZED:
+            response.headers["WWW-Authenticate"] = refused.authenticator.challenge(
+                "invalid_token"
+            )
         await response(scope, receive, send)
 
     def _hold(self, address: str, seconds: float) -> None:

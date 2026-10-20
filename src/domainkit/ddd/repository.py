@@ -534,30 +534,77 @@ class InMemoryRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
         ]
 
     def _snapshot(self) -> object:
-        """The stored aggregates, and a deep copy of each one's fields."""
+        """The stored aggregates, and the fields of each one and its entities."""
         return dict(self.items), {
             key: _fields(aggregate) for key, aggregate in self.items.items()
         }
 
     def _restore(self, snapshot: object) -> None:
-        """Put the stored aggregates, and their fields, back."""
+        """Put the stored aggregates, and their entities' fields, back."""
         items, states = cast(
-            "tuple[dict[IdT, AggregateT], dict[IdT, dict[str, object]]]", snapshot
+            "tuple[dict[IdT, AggregateT], dict[IdT, Fields]]", snapshot
         )
         self.items.clear()
         self.items.update(items)
-        for key, aggregate in items.items():
-            for name, value in states[key].items():
-                setattr(aggregate, name, value)
+        for key in items:
+            for entity, fields in states[key]:
+                for name, value in fields.items():
+                    setattr(entity, name, value)
 
     def _finished(self) -> None:
         """Release this repository's row locks."""
         self.locks.release(self)
 
 
-def _fields(aggregate: object) -> dict[str, object]:
-    """A deep copy of the dataclass fields of ``aggregate``."""
-    return {
-        field.name: copy.deepcopy(getattr(aggregate, field.name))
-        for field in dataclasses.fields(aggregate)  # type: ignore[arg-type]
-    }
+type Fields = list[tuple[object, dict[str, object]]]
+"""Each mutable object of an aggregate, with the values its fields had."""
+
+
+def _fields(aggregate: object) -> Fields:
+    """The fields of ``aggregate`` and of every entity it holds, to put back.
+
+    Entities (mutable dataclasses) are kept by identity and their fields are
+    recorded, so a rewind restores them in place. They are never copied: an
+    entity mapped to a table carries the mapper's state, which a deep copy
+    would corrupt. Lists, tuples, sets, and dicts are copied, as plain ones,
+    around the entities they hold; any other value is deep-copied.
+    """
+    recorded: Fields = []
+    seen: set[int] = set()
+
+    def keep(value: object) -> object:
+        if _is_entity(value):
+            visit(value)
+            return value
+        if isinstance(value, list):
+            return [keep(item) for item in value]
+        if isinstance(value, tuple) and type(value) is tuple:
+            return tuple(keep(item) for item in value)
+        if isinstance(value, frozenset | set):
+            items = (keep(item) for item in value)
+            return frozenset(items) if isinstance(value, frozenset) else set(items)
+        if isinstance(value, dict):
+            return {key: keep(item) for key, item in value.items()}
+        return copy.deepcopy(value)
+
+    def visit(entity: object) -> None:
+        if id(entity) in seen:
+            return
+        seen.add(id(entity))
+        fields = dataclasses.fields(entity)  # type: ignore[arg-type]
+        recorded.append(
+            (
+                entity,
+                {field.name: keep(getattr(entity, field.name)) for field in fields},
+            )
+        )
+
+    visit(aggregate)
+    return recorded
+
+
+def _is_entity(value: object) -> bool:
+    """Whether ``value`` is a mutable dataclass instance, kept by identity."""
+    if isinstance(value, type) or not dataclasses.is_dataclass(value):
+        return False
+    return not cast(Any, type(value)).__dataclass_params__.frozen

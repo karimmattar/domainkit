@@ -338,7 +338,9 @@ forgotten with their events, events recorded inside are dropped, and tasks
 it deferred are discarded; then the error propagates. A unique violation
 inside becomes `DuplicateValue`, as at commit. Savepoints nest; `commit()`
 inside one raises. The in-memory repositories restore their aggregates'
-fields too.
+fields too, and those of the entities they hold, in place: a child entity
+is the same object after the rewind, so one also mapped to a table keeps
+its mapping.
 
 ## Read-only work
 

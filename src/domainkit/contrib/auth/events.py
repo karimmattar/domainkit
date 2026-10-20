@@ -44,10 +44,68 @@ class RefreshTokenReused(DomainEvent):
 
 
 class TokenCreated(DomainEvent):
-    """A long-lived token was made for a user (``createtoken``)."""
+    """A long-lived token was made for a user (``createtoken``, ``/tokens``)."""
 
     user_id: UUID
     name: str
+    scopes: tuple[str, ...] | None = None
+    """The permission keys it is limited to; None: all of the user's."""
+
+
+class MfaEnabled(DomainEvent):
+    """The user confirmed an authenticator: logins now need its codes."""
+
+    user_id: UUID
+
+
+class MfaDisabled(DomainEvent):
+    """The user's authenticator and recovery codes were removed."""
+
+    user_id: UUID
+
+
+class RecoveryCodesRegenerated(DomainEvent):
+    """The user's recovery codes were replaced by new ones."""
+
+    user_id: UUID
+
+
+class RecoveryCodeUsed(DomainEvent):
+    """A recovery code stood in for the authenticator, once."""
+
+    user_id: UUID
+    remaining: int
+
+
+class TokenRevoked(DomainEvent):
+    """A user revoked one of their own tokens."""
+
+    user_id: UUID
+    name: str
+
+
+class PasswordResetRequested(DomainEvent):
+    """A reset link was sent to the user's email address."""
+
+    user_id: UUID
+
+
+class PasswordReset(DomainEvent):
+    """The user chose a new password through a reset link."""
+
+    user_id: UUID
+
+
+class EmailVerified(DomainEvent):
+    """The user proved they read mail at their address."""
+
+    user_id: UUID
+
+
+class UserSignedUp(DomainEvent):
+    """Someone created their own account (``AUTH.SIGNUP_ENABLED``)."""
+
+    user_id: UUID
 
 
 class UserUpdated(DomainEvent):

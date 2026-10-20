@@ -44,7 +44,7 @@ from domainkit.resources import HasModelPermission as HasModelPermission
 from domainkit.resources import ModelActions, ResourceRouter
 from domainkit.resources.access import ModelLike
 
-from .access import IsAdminUser, IsSuperuser, Require
+from .access import IsAdminUser, IsSuperuser, IsUnscoped, Require
 from .backends import ModelBackend, get_all_permissions, get_backends
 from .events import UserLoggedOut
 from .exceptions import (
@@ -74,8 +74,12 @@ _errors = error_responses
 
 
 def staff_rules(model: ModelLike) -> ModelActions:
-    """Staff (``is_staff``) or superusers, with the model permission of each action."""
-    return ModelActions(model, IsAdminUser() | IsSuperuser())
+    """Staff (``is_staff``) or superusers, with the model permission of each action.
+
+    Credentials limited to scopes are refused: what staff grant is bounded
+    by their permissions, never by a token's scopes.
+    """
+    return ModelActions(model, IsUnscoped(), IsAdminUser() | IsSuperuser())
 
 
 def staff(action: str, model: Callable[[], type]) -> Any:  # noqa: ANN401 - Depends.

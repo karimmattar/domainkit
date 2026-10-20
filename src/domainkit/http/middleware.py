@@ -58,6 +58,9 @@ access_logger = logging.getLogger(ACCESS_LOGGER)
 security_logger = logging.getLogger(SECURITY_LOGGER)
 logger = logging.getLogger(__name__)
 
+PEER: Final = "domainkit.peer"
+"""Scope key: the socket peer (a trusted proxy) whose headers replaced ``client``."""
+
 TRY_AGAIN_LATER: Final = 1013
 """WebSocket close code: the server is busy."""
 INVALID_DATA: Final = 1007
@@ -76,8 +79,10 @@ class ProxyHeadersMiddleware:
     line of a header counts (some proxies add a line instead of extending
     one), in order. The scheme is the ``X-Forwarded-Proto`` value at the
     client's place, counted from the right as its address was, or the last
-    value when there are fewer. Without trusted proxies this middleware does
-    nothing.
+    value when there are fewer. The proxy's own address stays in
+    ``scope["domainkit.peer"]`` (``PEER``), for what only a trusted proxy may
+    say (a client certificate it checked). Without trusted proxies this
+    middleware does nothing.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -95,6 +100,7 @@ class ProxyHeadersMiddleware:
             and self.trusted(client[0])
         ):
             scope = dict(scope)
+            scope[PEER] = client
             headers = Headers(scope=scope)
             place = 1  # From the right: the hop the scheme describes.
             if found := self.client_hop(_values(headers, "x-forwarded-for")):

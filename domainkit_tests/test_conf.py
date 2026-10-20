@@ -30,6 +30,7 @@ from domainkit.contrib.idempotency.settings import IdempotencySettings
 from domainkit.contrib.messaging.settings import MessagingSettings
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit_tests.conftest import MakePackage
+from domainkit_tests.settings import SECRET_KEY
 
 
 @pytest.fixture
@@ -381,6 +382,7 @@ def test_production_baseline_passes() -> None:
         {
             "ENVIRONMENT": "production",
             "ALLOWED_HOSTS": ["api.example.com"],
+            "SECRET_KEY": SECRET_KEY,
             "DATABASES": {
                 "default": {
                     "URL": "postgresql+asyncpg://db/app",
@@ -397,6 +399,7 @@ def test_production_baseline_passes() -> None:
 HARDENED = {
     "ENVIRONMENT": "production",
     "ALLOWED_HOSTS": ["api.example.com"],
+    "SECRET_KEY": SECRET_KEY,
     "API_DOCS": False,
     "SECURE_HSTS_SECONDS": 1,
     "RATE_LIMIT": "300/minute",

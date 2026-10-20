@@ -18,11 +18,19 @@ from domainkit.conf.global_settings import (
     StorageConfig,
 )
 from domainkit.contrib.audit.settings import AuditSettings
-from domainkit.contrib.auth.settings import AuthSettings, JWTSettings
+from domainkit.contrib.auth.settings import (
+    AuthSettings,
+    ClientCertSettings,
+    CookieSettings,
+    JWTSettings,
+    MfaSettings,
+)
 from domainkit.contrib.evidence.settings import EvidenceSettings
 from domainkit.contrib.flags.settings import FlagsSettings
 from domainkit.contrib.idempotency.settings import IdempotencySettings
+from domainkit.contrib.mail.settings import MailSettings, SmtpSettings
 from domainkit.contrib.messaging.settings import MessagingSettings
+from domainkit.contrib.notifications.settings import NotificationsSettings
 from domainkit.contrib.webhooks.settings import WebhookSettings
 from domainkit.management import BUILTIN_COMMANDS, _find_commands
 
@@ -63,6 +71,12 @@ def documented(page: str) -> set[str]:
         (WebhookSettings, "contrib.md"),
         (AuthSettings, "auth.md"),
         (JWTSettings, "auth.md"),
+        (CookieSettings, "auth.md"),
+        (MfaSettings, "auth.md"),
+        (ClientCertSettings, "auth.md"),
+        (MailSettings, "mail.md"),
+        (SmtpSettings, "mail.md"),
+        (NotificationsSettings, "mail.md"),
     ],
 )
 def test_every_setting_is_documented(model: type[BaseModel], page: str) -> None:

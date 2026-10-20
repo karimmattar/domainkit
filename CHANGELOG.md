@@ -8,6 +8,86 @@ All notable changes to domainkit. The format follows
 
 ### Added
 
+- `SECRET_KEY` and `SECRET_KEY_FALLBACKS`, and `domainkit.signing`, Django's
+  `signing`: `Signer`, `TimestampSigner`, and `dumps`/`loads` for compact,
+  URL-safe, signed JSON, with HMAC-SHA256 under a key derived for each salt
+  and constant-time checks. A new key signs while the old ones still verify,
+  so a key can be replaced without logging anyone out. `derive_key` gives
+  other uses a key of their own (`docs/reference.md`, "Signing"; ADR 0028).
+- `domainkit.contrib.mail`, Django's `django.core.mail` through the outbox:
+  `send_mail` and `EmailMessage(...).send(uow)` queue a task with the
+  change, so a message goes out if and only if it commits, and the worker
+  sends it, retrying up to `MAIL.MAX_ATTEMPTS`. Backends send over SMTP
+  (STARTTLS or TLS, with the certificate checked, and timeouts), to the
+  console, or to `mail.outbox` for tests. Messages refuse header injection
+  and are bounded (DJ-48; `docs/mail.md`; ADR 0029).
+- Mail templates: `render_mail("billing/invoice", context, to=[...])` reads a
+  subject, a text body, and an optional HTML body from `templates/mail/` in
+  domain packages or `MAIL.TEMPLATE_DIRS`, and escapes values in the HTML
+  (DJ-49).
+- `domainkit.contrib.notifications`: text messages and push notifications
+  queued the same way, with `SmsBackend` and `PushBackend` ports for a
+  project's provider, and console and memory backends (DJ-50).
+- Password reset, email verification, and signing up (DJ-38;
+  `docs/auth.md`, "Password reset"), with `domainkit.contrib.auth.recovery`
+  and `domainkit.contrib.auth.signup` routers to mount:
+  - `POST /auth/password-reset` always answers 202, in the same time,
+    whether or not an account uses the address; the worker mails a link
+    whose token is signed, expires (`AUTH.PASSWORD_RESET_TIMEOUT`), and
+    ends once used or once the user logs in. Confirming it ends every
+    session.
+  - `AbstractUser.email_verified`, set by a mailed link and cleared when
+    the address changes. Run `makemigrations` and `migrate` for the new
+    column.
+  - `POST /auth/signup`, off until `AUTH.SIGNUP_ENABLED`, checks the fields
+    and password rules at once, then answers 202 and tells the address by
+    mail when the username or address is taken.
+  - Requests that send mail count against the new `AUTH.EMAIL_RATE`, and
+    token checks against `AUTH.LOGIN_RATE`; resets, verifications,
+    signups, and refusals are audited.
+- Browser sessions in cookies (DJ-43): `CookieAuthentication` reads an
+  opaque token from an HttpOnly, Secure, SameSite cookie that
+  `POST /auth/session` sets and `DELETE /auth/session` clears. Unsafe
+  requests it authenticates must come from a trusted origin (their own,
+  `ALLOWED_HOSTS`, or `AUTH.CSRF_TRUSTED_ORIGINS`) and send a CSRF token
+  signed for the session (`X-CSRF-Token`); others get `403 csrf_failed`.
+  Header-token clients are unaffected.
+- Two-factor logins (DJ-41; `docs/auth.md`, "Two-factor logins"; the `mfa`
+  extra): an authenticator app (TOTP) and single-use recovery codes, from
+  `domainkit.contrib.auth.mfa`. Once on, `/login` and `/auth/session`
+  answer 202 with a signed challenge that `/auth/mfa/login` (or
+  `/auth/session/mfa`) takes with a code. Codes work once, checks are
+  throttled per user, turning it off needs the password and a code, and
+  secrets are stored encrypted with AES-GCM under a key derived from
+  `SECRET_KEY` (ADR 0030). `resetmfa` turns it off for a user who lost it.
+  Run `makemigrations` and `migrate` for the new tables. Their tables are
+  never in fixtures.
+- `domainkit.encryption.SecretBox(purpose)`: AES-256-GCM under a key
+  derived from `SECRET_KEY` for each purpose, bound to the value's owner,
+  for secrets the database must give back (`docs/reference.md`,
+  "Encryption"; the `mfa` extra). Values under a fallback key still
+  decrypt, and say so, to be encrypted again.
+- Privacy covers users (`docs/auth.md`, "Users' personal data"):
+  `AbstractUser`'s username, email, and names are marked `Personal`, so
+  `privacy export` and `privacy erase` reach them. Erasing a user also
+  deactivates the account, makes its password unusable, deletes its tokens
+  and second factor, and keeps its username taken: the name becomes a keyed
+  digest that creating a user or signing up checks.
+- Scoped personal tokens (DJ-33): `domainkit.contrib.auth.personal_tokens`
+  lets users list, create, and revoke their own tokens at `/auth/tokens`,
+  shown once and limited to scopes (permission keys they hold) if they
+  wish. Permission rules allow a scoped token only what both its user and
+  its scopes allow; `HasScope` and `IsUnscoped` are new rules, and
+  `createtoken --scope` makes scoped tokens. Tokens record when they were
+  last used, at most every five minutes. Run `makemigrations` and
+  `migrate` for the tokens' new columns.
+- Client certificates (DJ-44): `ClientCertificateAuthentication` logs in
+  the user a certificate names, by its SHA-256 (`addcertificate`) or by its
+  subject's common name. The certificate comes from the ASGI TLS extension,
+  or from `AUTH.CLIENT_CERT.HEADER`, believed only from `TRUSTED_PROXIES`
+  (`docs/auth.md`, "Client certificates", has an nginx example).
+  `ProxyHeadersMiddleware` keeps the proxy's address in
+  `scope["domainkit.peer"]` for this.
 - Migration tooling (`docs/reference.md`, "Commands"):
   `makemigrations --empty` writes a revision to fill in by hand, for data
   migrations; `migrate --plan` lists what would run, `--sql` prints it as
@@ -261,6 +341,18 @@ All notable changes to domainkit. The format follows
 
 ### Changed
 
+- **Staging and production need `SECRET_KEY`** (DJ-37): startup fails
+  without one, or with one shorter than 50 characters, with fewer than 5
+  different ones, or starting with `domainkit-insecure-` or
+  `django-insecure-`. Fallbacks are held to the same rules, and the errors
+  never quote a key. The production settings that `init` creates read it
+  from `<PREFIX>SECRET_KEY`; set it before upgrading a deployment.
+- `/auth/me` and the admin API show `email_verified`.
+- `IsAdminUser` and `IsSuperuser` refuse credentials limited to scopes,
+  and the admin API, `/auth/password`, and `/auth/logout` with
+  `everywhere` refuse them altogether: what staff grant is bounded by
+  their permissions, never by a token's scopes, and a scoped key must not
+  change or lock its account.
 - Integrity errors other than a taken value no longer answer 500: a broken
   foreign key is 409 `referenced`, a NULL in a NOT NULL column 422
   `missing_value`, and a refused CHECK constraint 422 `check_violation`,

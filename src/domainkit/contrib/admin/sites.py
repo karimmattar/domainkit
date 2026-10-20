@@ -17,6 +17,7 @@ from domainkit.contrib.auth.access import (
     HasPermissions,
     IsAdminUser,
     IsSuperuser,
+    IsUnscoped,
     Require,
     Rule,
     current_user,
@@ -41,8 +42,8 @@ from domainkit.utils.text import pluralize, snake_case
 AUDIT: Final = "domainkit.contrib.audit"
 HISTORY_PAGE: Final = 50
 PARAMETER: Final = re.compile(r"{(\w+)}")
-STAFF: Final = IsAdminUser() | IsSuperuser()
-"""Who may use the admin at all: staff, or superusers."""
+STAFF: Final = (IsUnscoped(), IsAdminUser() | IsSuperuser())
+"""Who may use the admin at all: staff, or superusers, without scoped credentials."""
 OWN_ADMINS: Final = frozenset({"auth"})
 """Domains whose models have an admin of their own, which keeps their rules."""
 VIEW_HISTORY: Final = "audit.view_history"
@@ -190,7 +191,7 @@ class ModelAdmin:
             repository=self.repository,
             schema=self.schema,
             present=self.present,
-            rule=ModelActions(f"{domain}.{name}", STAFF),
+            rule=ModelActions(f"{domain}.{name}", *STAFF),
             filters=self.filters,
             pagination=self.pagination,
             policy=self.policy,
@@ -311,7 +312,7 @@ class AdminSite:
                 name="admin_meta",
                 summary="What the admin serves, as far as the caller may use it",
                 response_model=AdminMeta,
-                dependencies=[Depends(Require(STAFF))],
+                dependencies=[Depends(Require(*STAFF))],
                 responses=error_responses(
                     status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN
                 ),

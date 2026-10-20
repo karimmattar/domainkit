@@ -8,20 +8,24 @@ Swap the user for one of your own by subclassing ``AbstractUser`` (or
 ``AbstractBaseUser``) and naming it in ``AUTH.USER_MODEL``.
 """
 
+import hashlib
+import hmac
 import re
 import secrets
 import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, ClassVar, Final, NewType, Self
+from typing import Annotated, Any, ClassVar, Final, NewType, Self
 from uuid import UUID, uuid4
 
 from domainkit import clock
 from domainkit.contrib.contenttypes.models import ContentType
-from domainkit.ddd import AggregateRoot, Entity, ValueObject
+from domainkit.ddd import AggregateRoot, Entity, Personal, ValueObject
+from domainkit.signing import derive_key
 
 from .events import (
+    EmailVerified,
     GroupCreated,
     GroupDeleted,
     GroupPermissionGranted,
@@ -47,6 +51,10 @@ UNUSABLE_PASSWORD_PREFIX: Final = "!"  # noqa: S105 - a marker, not a password.
 USERNAME_MAX_LENGTH: Final = 150
 GROUP_NAME_MAX_LENGTH: Final = 150
 _USERNAME: Final = re.compile(r"[\w.@+-]+")
+ERASED_USERNAME: Final = "erased-"
+"""How a username that privacy erased starts (``erased_username``)."""
+ERASED_USERNAME_PURPOSE: Final = "domainkit.auth.erased_username"
+"""What the key of ``erased_username`` is derived from ``SECRET_KEY`` for."""
 _HASH: Final = re.compile(r"[a-z][a-z0-9_]*\$.+")
 
 
@@ -180,6 +188,7 @@ class AbstractBaseUser(AggregateRoot[UserId]):
             "password",
             "last_login",
             "date_joined",
+            "email_verified",
             "is_active",
             "is_staff",
             "is_superuser",
@@ -397,12 +406,16 @@ class AbstractUser(AbstractBaseUser):
     EDITABLE_FIELDS: ClassVar[frozenset[str]] = frozenset(
         {"email", "first_name", "last_name"}
     )
-    READ_ONLY_FIELDS: ClassVar[frozenset[str]] = frozenset({"date_joined"})
+    READ_ONLY_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {"date_joined", "email_verified"}
+    )
 
-    username: str
-    email: str = ""
-    first_name: str = ""
-    last_name: str = ""
+    username: Annotated[str, Personal(of="id")]
+    email: Annotated[str, Personal(of="id")] = ""
+    email_verified: bool = False
+    """Whether the user proved they read mail at ``email``; a new one resets it."""
+    first_name: Annotated[str, Personal(of="id")] = ""
+    last_name: Annotated[str, Personal(of="id")] = ""
     is_staff: bool = False
     date_joined: datetime = field(default_factory=_now)
 
@@ -419,9 +432,43 @@ class AbstractUser(AbstractBaseUser):
         """Let the user into the admin API (or stop it)."""
         self._set_status("is_staff", value)
 
+    def verify_email(self) -> None:
+        """Record that the user reads mail at their current address."""
+        if not self.email_verified:
+            self.email_verified = True
+            self.record(EmailVerified(user_id=self.id))
+
+    def update(self, **fields: object) -> None:
+        """Change editable fields; a new email address is not verified yet."""
+        email = self.email
+        super().update(**fields)
+        if self.email != email:
+            self.email_verified = False
+
     def clean_field(self, name: str, value: object) -> object:
         """Lower-case the email's domain, as on creation."""
         return normalize_email(str(value)) if name == "email" else value
+
+    def erase_personal_data(self, fields: frozenset[str]) -> None:
+        """Erase the personal data (``domainkit.contrib.privacy``); end the account.
+
+        The username becomes ``erased_username`` of itself: unique, and it
+        keeps the old name taken, so nobody else can become the person by
+        signing up with it. The email and names become empty, and the
+        address unverified. The account no longer logs in: it is deactivated
+        and its password made unusable, in the same commit; its tokens and
+        second factor are deleted right after (``erasure``). Erasing again
+        changes nothing.
+        """
+        if "username" in fields and not self.username.startswith(ERASED_USERNAME):
+            self.username = erased_username(self.username)
+        for name in ("email", "first_name", "last_name"):
+            if name in fields:
+                setattr(self, name, "")
+        self.email_verified = False
+        self.set_active(False)
+        if self.has_usable_password():
+            self.set_unusable_password()
 
     def get_full_name(self) -> str:
         """First and last name, separated by a space."""
@@ -485,6 +532,20 @@ class AnonymousUser:
 
 type AnyUser = AbstractBaseUser | AnonymousUser
 """A user that logged in, or the anonymous one."""
+
+
+def erased_username(username: str, *, key: bytes | None = None) -> str:
+    """What erasing ``username`` leaves: ``erased-`` and a keyed digest of it.
+
+    HMAC-SHA256 of the name as lookups fold it (NFKC, lower case), under a
+    key derived from ``SECRET_KEY`` (or ``key``), cut to 128 bits. One name
+    always erases to one value, so the old name can be kept taken; without
+    the key, the value tells nothing about the name.
+    """
+    folded = unicodedata.normalize("NFKC", username).lower()
+    secret = derive_key(ERASED_USERNAME_PURPOSE) if key is None else key
+    digest = hmac.new(secret, folded.encode(), hashlib.sha256).hexdigest()
+    return ERASED_USERNAME + digest[:32]
 
 
 def validate_username(username: str) -> str:

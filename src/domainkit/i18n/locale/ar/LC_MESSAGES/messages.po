@@ -141,6 +141,72 @@ msgstr "لا يوجد مستخدم كهذا."
 msgid "No such group."
 msgstr "لا توجد مجموعة كهذه."
 
+msgid "Credentials limited to scopes cannot do this."
+msgstr "لا يمكن لبيانات الاعتماد المقيَّدة بنطاقات القيام بهذا."
+
+msgid "Credentials limited to scopes end only themselves."
+msgstr "بيانات الاعتماد المقيَّدة بنطاقات لا تُنهي إلا نفسها."
+
+msgid "Your password was entered incorrectly."
+msgstr "كلمة المرور التي أدخلتها غير صحيحة."
+
+msgid "Too many attempts; try again later."
+msgstr "محاولات كثيرة جدًا؛ حاول مرة أخرى لاحقًا."
+
+msgid "Too many requests for mail; try again later."
+msgstr "طلبات بريد كثيرة جدًا؛ حاول مرة أخرى لاحقًا."
+
+msgid "The link is invalid or has expired."
+msgstr "الرابط غير صالح أو انتهت صلاحيته."
+
+msgid "The request names no origin (Origin or Referer)."
+msgstr "لا يذكر الطلب مصدره (Origin أو Referer)."
+
+msgid "The request comes from an origin that is not trusted."
+msgstr "الطلب صادر عن مصدر غير موثوق."
+
+msgid "The CSRF token is missing or wrong."
+msgstr "رمز CSRF مفقود أو غير صحيح."
+
+msgid "This request has no browser session."
+msgstr "لا توجد جلسة متصفح لهذا الطلب."
+
+msgid "A second factor is on; turn it off first."
+msgstr "التحقق بخطوتين مفعَّل؛ أوقفه أولًا."
+
+msgid "No enrolment is waiting for a code; start one first."
+msgstr "لا يوجد تسجيل ينتظر رمزًا؛ ابدأ تسجيلًا أولًا."
+
+msgid "The login has expired; log in again."
+msgstr "انتهت مهلة تسجيل الدخول؛ سجّل الدخول مرة أخرى."
+
+msgid "The code is wrong, or was used already."
+msgstr "الرمز غير صحيح، أو استُخدم من قبل."
+
+msgid "No such token."
+msgstr "لا يوجد رمز كهذا."
+
+msgid "Client certificates in headers are taken from trusted proxies only."
+msgstr "لا تُقبَل شهادات العميل في الترويسات إلا من الوسطاء الموثوقين."
+
+msgid "The client certificate did not verify."
+msgstr "تعذّر التحقق من شهادة العميل."
+
+msgid "The proxy did not verify the client certificate."
+msgstr "لم يتحقق الوسيط من شهادة العميل."
+
+msgid "Malformed client certificate."
+msgstr "شهادة العميل غير سليمة البنية."
+
+msgid "Unknown client certificate."
+msgstr "شهادة العميل غير معروفة."
+
+msgid "The value is not one SecretBox encrypted."
+msgstr "هذه القيمة لم تُشفَّر بواسطة SecretBox."
+
+msgid "No key decrypts the value."
+msgstr "لا يوجد مفتاح يفك تشفير هذه القيمة."
+
 #. domainkit.contrib.idempotency
 msgid "Idempotency-Key must be 1 to 255 printable ASCII characters."
 msgstr ""

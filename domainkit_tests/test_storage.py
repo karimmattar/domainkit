@@ -27,6 +27,7 @@ from domainkit.storage import (
 )
 from domainkit.storage.base import CHUNK_SIZE
 from domainkit.storage.handler import StorageHandler
+from domainkit_tests.settings import SECRET_KEY
 
 pytestmark = pytest.mark.anyio
 
@@ -501,7 +502,11 @@ def test_storage_settings() -> None:
     assert StorageConfig().BACKEND == "domainkit.storage.FileSystemStorage"
     with pytest.raises(ValidationError, match="Extra inputs"):
         StorageConfig.model_validate({"LOCATION": "/srv"})
-    base = {"ENVIRONMENT": "production", "ALLOWED_HOSTS": ["api.example.com"]}
+    base = {
+        "ENVIRONMENT": "production",
+        "ALLOWED_HOSTS": ["api.example.com"],
+        "SECRET_KEY": SECRET_KEY,
+    }
     memory = {"BACKEND": "domainkit.storage.MemoryStorage"}
     with pytest.raises(
         ValidationError, match=r"memory storages .* STORAGES \['scratch'\]"

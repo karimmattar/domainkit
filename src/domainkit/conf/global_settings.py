@@ -37,6 +37,11 @@ Environment = Literal["local", "test", "staging", "production"]
 DEPLOYED_ENVIRONMENTS: Final = frozenset({"staging", "production"})
 """Environments held to the deployment checks in ``Settings``."""
 
+SECRET_KEY_MIN_LENGTH: Final = 50
+SECRET_KEY_MIN_CHARACTERS: Final = 5
+"""Different characters a deployed ``SECRET_KEY`` needs, at the least."""
+DEVELOPMENT_KEY_PREFIXES: Final = ("domainkit-insecure-", "django-insecure-")
+"""Start keys made for development; staging and production refuse them."""
 LANGUAGE_PATTERN: Final = r"^[a-z]{2,3}(-[a-z0-9]{2,8})*$"
 """A language code in settings: lower case, as ``ar`` or ``pt-br``."""
 
@@ -475,6 +480,11 @@ class Settings(BaseModel):
     PROJECT_NAME: str = "API"
     VERSION: str = "0.1.0"
 
+    SECRET_KEY: SecretStr | None = Field(default=None, min_length=1)
+    """Signs what the service hands out (``domainkit.signing``); hidden in reprs."""
+    SECRET_KEY_FALLBACKS: tuple[SecretStr, ...] = ()
+    """Earlier keys: what they signed still verifies, while ``SECRET_KEY`` signs."""
+
     INSTALLED_DOMAINS: tuple[str, ...] = ()
     """Domain packages, started in order and stopped in reverse order."""
     MIDDLEWARE: tuple[str, ...] = DEFAULT_MIDDLEWARE
@@ -713,6 +723,32 @@ class Settings(BaseModel):
             )
         return warnings
 
+    def _check_secret_keys(self, where: str) -> None:
+        """Refuse a missing, short, simple, or development ``SECRET_KEY``.
+
+        Fallbacks are held to the same rules: they still verify signatures.
+        The errors never quote a key.
+        """
+        if self.SECRET_KEY is None:
+            raise ValueError(
+                f"SECRET_KEY is required {where}: it signs reset links, cookies, "
+                "and other values the service hands out"
+            )
+        keys = [("SECRET_KEY", self.SECRET_KEY)]
+        keys += [("SECRET_KEY_FALLBACKS", key) for key in self.SECRET_KEY_FALLBACKS]
+        for name, key in keys:
+            value = key.get_secret_value()
+            if value.startswith(DEVELOPMENT_KEY_PREFIXES):
+                raise ValueError(f"{name} holds a development key {where}")
+            if (
+                len(value) < SECRET_KEY_MIN_LENGTH
+                or len(set(value)) < SECRET_KEY_MIN_CHARACTERS
+            ):
+                raise ValueError(
+                    f"{name} must be random, with at least {SECRET_KEY_MIN_LENGTH} "
+                    f"characters, {where}"
+                )
+
     def _check_deployment(self) -> None:
         """Enforce the security baseline for staging and production."""
         where = f"in {self.ENVIRONMENT}"
@@ -799,3 +835,4 @@ class Settings(BaseModel):
                 f"FileSystemStorage or a storage of your own {where} for "
                 f"STORAGES {aliases}"
             )
+        self._check_secret_keys(where)

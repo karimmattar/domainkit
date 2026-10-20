@@ -467,10 +467,11 @@ router.include_router(admin.site.router, prefix="/admin")
 | `GET /admin/catalog/products/{product_id}/history` | The audit trail's entries about the product, newest first, with what each changed ([contrib.md](contrib.md#history)), when `domainkit.contrib.audit` is installed. |
 | `GET /admin/meta` | Each model the caller may view: its paths, the JSON Schema of an item without the fields the caller may not see, the listed fields, filters, ordering, search, the commands and queries the caller may run (with their bodies' JSON Schemas), and its history's path if the caller may read it. |
 
-- Every route needs staff (`is_staff`) or a superuser, and the model
-  permission of its action: `catalog.view_product` to list, read, and
-  query, `change` for commands (or a command's `action=`), and
-  `audit.view_history` too for histories. `/meta` needs staff.
+- Every route needs staff (`is_staff`) or a superuser, with credentials
+  not limited to scopes, and the model permission of its action:
+  `catalog.view_product` to list, read, and query, `change` for commands
+  (or a command's `action=`), and `audit.view_history` too for histories.
+  `/meta` needs staff.
 - Actions are commands through application services: the admin never
   sets fields itself, so the domain's rules and events hold.
 - `schema=`, `present=`, `policy=`, `scope=`, and `pagination=` are the

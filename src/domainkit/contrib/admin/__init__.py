@@ -25,9 +25,10 @@ may use it, for a generic client to render::
     # config/urls.py, after the modules that register:
     router.include_router(admin.site.router, prefix="/admin")
 
-Every route needs staff (``is_staff``) or a superuser, and the model
-permission of its action (``catalog.view_product`` to list and read,
-``change`` for commands, ``audit.view_history`` too for histories).
+Every route needs staff (``is_staff``) or a superuser, with credentials
+not limited to scopes, and the model permission of its action
+(``catalog.view_product`` to list and read, ``change`` for commands,
+``audit.view_history`` too for histories).
 Actions are commands run by application services: the admin never sets
 fields itself. Users, groups, and permissions keep their own admin
 (``domainkit.contrib.auth.admin``), which keeps grant ceilings and the
