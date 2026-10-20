@@ -45,6 +45,9 @@ msgstr ""
 msgid "Too many requests; slow down."
 msgstr ""
 
+msgid "Too many open connections; try again later."
+msgstr ""
+
 msgid ""
 "The data changed while this request was running; reload it and try "
 "again."

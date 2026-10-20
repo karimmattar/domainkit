@@ -220,10 +220,32 @@ uvicorn config.asgi:application --limit-concurrency 200 --timeout-keep-alive 5 \
 
 `--ws-max-size` stops a WebSocket message before it is read whole;
 `MAX_REQUEST_BODY_SIZE` then closes the connection on one that got through.
+Set `WEBSOCKET_SERVER_MAX_SIZE` to the same number: in staging and
+production, `check` warns when an application that serves WebSockets runs
+under a server that reads larger messages (uvicorn's default is 16 MiB).
 `--no-proxy-headers` leaves `X-Forwarded-*` to `TRUSTED_PROXIES`: uvicorn
 otherwise reads them itself, from `127.0.0.1` or from whatever
 `FORWARDED_ALLOW_IPS` allows (`*` lets any client choose its address, and
 so its rate limit and login throttle). `runserver` runs this way.
+
+### Live connections
+
+WebSockets and Server-Sent Events streams are capped, queued, timed, and
+re-authorized while they stay open; see [live.md](live.md).
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `LIVE_MAX_CONNECTIONS` | `1000` | Open WebSockets and event streams per process; one more is refused with 503 and `Retry-After` (a WebSocket where the server cannot answer a handshake with a status: a 1013 close). |
+| `LIVE_MAX_CONNECTIONS_PER_CALLER` | `10` | The same per user, or per address for anonymous callers (IPv6 per `RATE_LIMIT_IPV6_PREFIX` network). At most `LIVE_MAX_CONNECTIONS`. |
+| `LIVE_SEND_QUEUE` | `64` | Messages or events that may wait for one client (1 to 10,000); a sender waits while they do. |
+| `LIVE_SEND_TIMEOUT` | `10.0` | Seconds one message may take to reach the client; a slower client is closed (1013). |
+| `LIVE_REAUTH_INTERVAL` | `60.0` | Seconds between re-checks of an open connection's credentials and its route's rules (each between three quarters of it and all of it); closed with 1008 when they fail. `None` turns them off; `check` warns about that in staging and production. |
+| `WEBSOCKET_IDLE_TIMEOUT` | `300.0` | Seconds without a message either way before a WebSocket is closed (1001). |
+| `WEBSOCKET_MAX_LIFETIME` | `3600.0` | Seconds a WebSocket may stay open (1001). |
+| `WEBSOCKET_MESSAGE_RATE` | `"20/second"` | Messages a client may send per connection, counted in the process; one more closes it (1008). `None`: any. |
+| `WEBSOCKET_SERVER_MAX_SIZE` | `None` | The server's `--ws-max-size` in bytes, for `check`; `None` means uvicorn's 16 MiB. |
+| `SSE_KEEPALIVE` | `15.0` | Seconds without an event before an event stream sends a keep-alive comment. |
+| `SSE_MAX_LIFETIME` | `3600.0` | Seconds an event stream may stay open. |
 
 ### Debug toolbar
 
@@ -304,6 +326,12 @@ passes, so an API that is public on purpose can keep them:
   without limit), and a session or CSRF cookie name without the `__Host-`
   prefix where the prefix could hold
   ([auth.md](auth.md#browser-sessions-in-cookies))
+- `LIVE_REAUTH_INTERVAL = None`: open WebSockets and event streams keep a
+  revoked token
+- an application that serves WebSockets under a server that reads larger
+  messages than `MAX_REQUEST_BODY_SIZE` (`WEBSOCKET_SERVER_MAX_SIZE`, 16 MiB
+  unless set), or without `WebSocketLimitsMiddleware`
+  ([live.md](live.md#message-size))
 
 The production settings that `init` create avoid the first three, and ask
 for `TRUSTED_PROXIES`: leave it empty only when callers connect directly.
@@ -324,6 +352,7 @@ first:
 | `domainkit.http.middleware.AllowedHostsMiddleware` | Refuses unknown `Host` headers with 400. |
 | `domainkit.contrib.auth.middleware.AuthenticationMiddleware` | Finds the user from the request's token and makes it the actor, so what follows counts users (auth; see [auth.md](auth.md)). |
 | `domainkit.http.ratelimit.RateLimitMiddleware` | Counts per actor, or per client address (IPv6: per /64). A WebSocket handshake counts once; over the limit it gets the 429, or a 1013 close where the server cannot send one. |
+| `domainkit.http.websockets.WebSocketLimitsMiddleware` | Caps open WebSockets per process and per caller, queues what they send, limits their messages, closes idle and old ones, and re-checks their credentials and rules ([live.md](live.md)). After the two above, so it counts users and only handshakes the rate limit let through. |
 | `domainkit.http.middleware.RequestBodyLimitMiddleware` | Refuses bodies over `MAX_REQUEST_BODY_SIZE` with 413, and closes WebSockets with 1009 on a larger message. |
 | `domainkit.contrib.idempotency.middleware.IdempotencyMiddleware` | Last: reads whole bodies, which the limit above has already bounded. |
 | `domainkit.debug.DebugToolbarMiddleware` | Development only: times each request's SQL, from where it is listed inwards (see [Debug toolbar](#debug-toolbar)). |
@@ -333,8 +362,8 @@ innermost, that adds the headers of [deprecated
 routes](#versions-and-deprecations).
 
 `DEFAULT_MIDDLEWARE` (proxy headers, security headers, request context,
-allowed hosts, body limit) applies when a settings module sets no
-`MIDDLEWARE`.
+allowed hosts, WebSocket limits, body limit) applies when a settings module
+sets no `MIDDLEWARE`.
 
 ## Signing
 
