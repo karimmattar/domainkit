@@ -23,6 +23,7 @@ Install it, then run ``python manage.py runworker`` next to the web process::
     async def nightly_report() -> None: ...
 """
 
+from .budget import Budget
 from .outbox import enqueue
 from .registry import Chain, chain, periodic, task
 from .retry import Backoff
@@ -32,6 +33,7 @@ from .worker import Attempt, Worker, current_attempt
 __all__ = [
     "Attempt",
     "Backoff",
+    "Budget",
     "Chain",
     "MessagingSettings",
     "Worker",

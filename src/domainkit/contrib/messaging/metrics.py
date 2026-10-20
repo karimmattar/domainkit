@@ -6,7 +6,6 @@ arrive while a count runs share it instead of starting their own.
 """
 
 import asyncio
-import contextvars
 from typing import Final
 from weakref import WeakKeyDictionary
 
@@ -17,6 +16,7 @@ from domainkit import clock
 from domainkit.apps import registry
 from domainkit.db import connections
 from domainkit.http.metrics import register_refresher
+from domainkit.tasks import spawn
 
 from .admin import queue_counts, queue_lag
 from .registry import queues
@@ -105,8 +105,10 @@ async def outbox_gauges(config: MessagingSettings) -> _Gauges:
     counting = _counting.get(engine)
     if counting is None:
         expires = clock.monotonic() + config.METRICS_TTL
-        counting = asyncio.get_running_loop().create_task(
-            _count(config, engine, expires), context=contextvars.Context()
+        counting = spawn(
+            _count(config, engine, expires),
+            name="messaging.outbox_gauges",
+            log_errors=False,  # The scrapes waiting on it get the error.
         )
         _counting[engine] = counting
         counting.add_done_callback(lambda _: _counting.pop(engine, None))

@@ -1008,8 +1008,10 @@ async def test_the_backlog_is_bounded(
     assert stalled.pending("default") == 2
     assert [row["lock_id"] is None for row in await outbox()].count(True) == 1
     assert caplog.messages == [
-        "Left 1 committed messages to the relay: 2 are already waiting (logged "
-        "once until the backlog clears)"
+        (
+            "Left 1 committed messages to the relay: 2 are already waiting (logged "
+            "once until the backlog clears)"
+        )
     ]
 
 
@@ -1131,17 +1133,25 @@ async def test_commits_hand_over_their_outbox_and_ids(
 async def test_the_messaging_app_closes_the_publishers_at_shutdown(
     brokered: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """MessagingConfig.shutdown flushes and stops the background publishers."""
-    from domainkit.contrib.messaging import apps as messaging_apps
+    """Shutdown's drain phase flushes and stops the background publishers.
+
+    The application and management commands both shut down through
+    ``close_resources``, so commands close their publishers too.
+    """
+    from domainkit import lifecycle
 
     closed: list[bool] = []
 
     async def record() -> None:
         closed.append(True)
 
-    monkeypatch.setattr(messaging_apps, "close_publishers", record)
-    config = next(config for config in registry if config.label == "messaging")
-    await config.shutdown()
+    assert lifecycle._registered[lifecycle.Phase.DRAIN]["publishers"] is (
+        close_publishers
+    )
+    monkeypatch.setitem(
+        lifecycle._registered[lifecycle.Phase.DRAIN], "publishers", record
+    )
+    await lifecycle.close_resources()
 
     assert closed == [True]
 
@@ -1218,8 +1228,10 @@ async def test_unpublished_messages_are_unlocked(
     with caplog.at_level(logging.WARNING, "domainkit.contrib.messaging.worker"):
         await worker.relay(Unreachable(declare=True), 10)
     assert caplog.messages == [
-        "Could not publish 1 of 1 message(s) to the broker (declaring 'default': "
-        "down); they go again on the next round"
+        (
+            "Could not publish 1 of 1 message(s) to the broker (declaring 'default': "
+            "down); they go again on the next round"
+        )
     ]
 
     for broken in (Unreachable(declare=True), Unreachable(declare=False)):
@@ -1331,8 +1343,10 @@ async def test_the_relay_works_in_batches_and_counts(
     }
     assert message_id == str(first["id"])
     assert caplog.messages == [
-        "Could not publish 1 of 2 message(s) to the broker (queue 'emails': no "
-        "emails); they go again on the next round"
+        (
+            "Could not publish 1 of 2 message(s) to the broker (queue 'emails': no "
+            "emails); they go again on the next round"
+        )
     ]
     assert REGISTRY.get_sample_value("messaging_relayed_total", labels) == published + 1
     assert (

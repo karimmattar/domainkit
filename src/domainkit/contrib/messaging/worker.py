@@ -1106,6 +1106,10 @@ class Worker:
             except Exception as exc:  # noqa: BLE001 - logged; polling goes on.
                 await failures.failed(exc, stop)
 
+    def wakes_for(self, queue: str) -> bool:
+        """Report whether a commit to ``queue`` concerns this worker."""
+        return self.queues is None or queue in self.queues
+
     async def _listen(
         self,
         engine: AsyncEngine,
@@ -1117,8 +1121,7 @@ class Worker:
         lost = asyncio.Event()
 
         def notified(*args: object) -> None:
-            payload = args[-1]  # (connection, pid, channel, payload)
-            if self.queues is None or payload in self.queues:
+            if self.wakes_for(str(args[-1])):  # (connection, pid, channel, payload)
                 wake.set()
 
         async with engine.connect() as connection:
