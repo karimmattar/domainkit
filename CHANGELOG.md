@@ -84,8 +84,10 @@ All notable changes to domainkit. The format follows
 - Client certificates (DJ-44): `ClientCertificateAuthentication` logs in
   the user a certificate names, by its SHA-256 (`addcertificate`) or by its
   subject's common name. The certificate comes from the ASGI TLS extension,
-  or from `AUTH.CLIENT_CERT.HEADER`, believed only from `TRUSTED_PROXIES`
-  (`docs/auth.md`, "Client certificates", has an nginx example).
+  or from `AUTH.CLIENT_CERT.HEADER`, believed only from the addresses in
+  `AUTH.CLIENT_CERT.PROXIES`, never from all of `TRUSTED_PROXIES`; staging
+  and production take single addresses there (`docs/auth.md`, "Client
+  certificates", has an nginx example).
   `ProxyHeadersMiddleware` keeps the proxy's address in
   `scope["domainkit.peer"]` for this.
 - Migration tooling (`docs/reference.md`, "Commands"):

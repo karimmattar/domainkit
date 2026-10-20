@@ -277,7 +277,8 @@ With `ENVIRONMENT` set to `staging` or `production`, startup fails on:
 
 Installed contrib apps add their own:
 
-- auth: a password hasher made for tests in `AUTH.PASSWORD_HASHERS`
+- auth: a password hasher made for tests in `AUTH.PASSWORD_HASHERS`, and
+  a network rather than one address in `AUTH.CLIENT_CERT.PROXIES`
   ([auth.md](auth.md))
 - evidence: no `EVIDENCE.SUBJECT_KEY`
   ([contrib.md](contrib.md#evidence-records-that-provably-never-change))

@@ -9,6 +9,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    IPvAnyNetwork,
     SecretStr,
     field_validator,
     model_validator,
@@ -154,11 +155,16 @@ class ClientCertSettings(BaseModel):
     """Find the user by the certificate's SHA-256 (``addcertificate``), or by
     its subject's common name as the username."""
     HEADER: str | None = Field(default=None, pattern=HEADER_NAME)
-    """The header a trusted proxy puts the URL-encoded PEM in; None: only
-    certificates the server itself checked (the ASGI TLS extension)."""
+    """The header a proxy of ``PROXIES`` puts the URL-encoded PEM in; None:
+    only certificates the server itself checked (the ASGI TLS extension)."""
     VERIFY_HEADER: str | None = Field(default=None, pattern=HEADER_NAME)
     """The header in which the proxy says ``SUCCESS`` if it checked the
     certificate (nginx's ``$ssl_client_verify``)."""
+    PROXIES: tuple[IPvAnyNetwork, ...] = ()
+    """The addresses of the proxies that check certificates and set
+    ``HEADER``: only connections from them may send it. Not
+    ``TRUSTED_PROXIES``, which may hold whole networks: staging and
+    production take single addresses here (``/32``, ``/128``)."""
 
 
 class AuthSettings(BaseModel):

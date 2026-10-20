@@ -188,13 +188,14 @@ class AuthConfig(DomainConfig):
     def _check_deployment(self, config: AuthSettings) -> None:
         """Refuse settings that cannot hold anywhere, and unsafe ones where deployed.
 
-        Staging and production refuse hashers made for tests, and plain
-        cookies.
+        Staging and production refuse hashers made for tests, plain
+        cookies, and certificate proxies given as networks.
         """
-        if config.CLIENT_CERT.HEADER is not None and not settings.TRUSTED_PROXIES:
+        if config.CLIENT_CERT.HEADER is not None and not config.CLIENT_CERT.PROXIES:
             raise ImproperlyConfigured(
-                "AUTH.CLIENT_CERT.HEADER is believed only from TRUSTED_PROXIES; "
-                "list the proxy that sets it."
+                "AUTH.CLIENT_CERT.HEADER is believed only from "
+                "AUTH.CLIENT_CERT.PROXIES; list the address of the proxy that "
+                "sets it."
             )
         if (
             config.CLIENT_CERT.HEADER is not None
@@ -217,6 +218,16 @@ class AuthConfig(DomainConfig):
             raise ImproperlyConfigured(
                 f"AUTH.COOKIE.SECURE = False sends session cookies over plain HTTP; "
                 f"remove it in {settings.ENVIRONMENT}."
+            )
+        if networks := [
+            str(network)
+            for network in config.CLIENT_CERT.PROXIES
+            if network.num_addresses > 1
+        ]:
+            raise ImproperlyConfigured(
+                f"AUTH.CLIENT_CERT.PROXIES must list single addresses (/32 or "
+                f"/128) in {settings.ENVIRONMENT}, not networks "
+                f"({', '.join(networks)}): any host there could name any user."
             )
 
 

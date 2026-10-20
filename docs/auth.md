@@ -517,12 +517,20 @@ the certificate from one of two places, and only these:
   the certificate itself (`scope["extensions"]["tls"]`; a certificate it
   says did not verify gets 401);
 - the header `AUTH.CLIENT_CERT.HEADER`, holding the URL-encoded PEM, only
-  on connections from `TRUSTED_PROXIES`, and only with `VERIFY_HEADER`
-  saying `SUCCESS` when that is set. The proxy's own address counts, not
-  the client's that `ProxyHeadersMiddleware` puts in its place. A request
-  from anyone else that sends the header gets 401: a client could
-  otherwise name any certificate. Startup refuses `HEADER` without
-  `TRUSTED_PROXIES`.
+  on connections from `AUTH.CLIENT_CERT.PROXIES`, and only with
+  `VERIFY_HEADER` saying `SUCCESS` when that is set. The proxy's own
+  address counts, not the client's that `ProxyHeadersMiddleware` puts in
+  its place. A request from anyone else that sends the header gets 401: a
+  client could otherwise name any certificate. Startup refuses `HEADER`
+  without `PROXIES`.
+
+`PROXIES` lists the exact addresses of the proxies that check
+certificates, and nothing else. It is not `TRUSTED_PROXIES`, which often
+holds a whole network (every pod of a cluster) and only decides whose
+`X-Forwarded-For` is believed: any host of such a network could send the
+header with its own `SUCCESS` and log in as anyone. Staging and
+production refuse networks in `PROXIES`: each entry is one address (`/32`
+or `/128`).
 
 ```python
 AUTH = {
@@ -530,10 +538,20 @@ AUTH = {
         "domainkit.contrib.auth.authentication.TokenAuthentication",
         "domainkit.contrib.auth.certificates.ClientCertificateAuthentication",
     ],
-    "CLIENT_CERT": {"HEADER": "X-Client-Cert", "VERIFY_HEADER": "X-Client-Verify"},
+    "CLIENT_CERT": {
+        "HEADER": "X-Client-Cert",
+        "VERIFY_HEADER": "X-Client-Verify",
+        "PROXIES": ["10.0.3.7"],  # the nginx host that checks certificates
+    },
 }
-TRUSTED_PROXIES = ["10.0.0.0/8"]  # where nginx runs
+TRUSTED_PROXIES = ["10.0.3.7"]  # whose X-Forwarded-For is believed
 ```
+
+The proxy must strip whatever a client sent in both headers, on every
+request: `proxy_set_header` below replaces them with its own values (and
+drops them when no certificate came). A proxy that passes a client's
+headers through (a `location` without these lines, or another proxy in
+front that forwards them) lets clients choose their certificate.
 
 ```nginx
 server {
@@ -1019,8 +1037,9 @@ changed what.
 | `AUTH["CLIENT_CERT"]` key | Default | Meaning |
 | --- | --- | --- |
 | `MATCH` | `"fingerprint"` | `fingerprint`: the users `addcertificate` registered; `subject`: the common name is the username. |
-| `HEADER` | `None` | The header a trusted proxy sets to the URL-encoded PEM; `None` takes certificates from the ASGI TLS extension only. Needs `TRUSTED_PROXIES`. |
+| `HEADER` | `None` | The header a proxy of `PROXIES` sets to the URL-encoded PEM; `None` takes certificates from the ASGI TLS extension only. Needs `PROXIES`. |
 | `VERIFY_HEADER` | `None` | The header in which the proxy says `SUCCESS` (nginx's `$ssl_client_verify`). Required with `HEADER` and `MATCH = "subject"`. |
+| `PROXIES` | `()` | The addresses of the proxies that check certificates and set `HEADER`; requests from anywhere else that send it get 401. Single addresses in staging and production. |
 
 | `AUTH["JWT"]` key | Default | Meaning |
 | --- | --- | --- |
