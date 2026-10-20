@@ -3,9 +3,12 @@
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Sequence
-from typing import Any
+from typing import Any, Final
 
 logger = logging.getLogger(__name__)
+
+RESERVED_SHARE: Final = 0.25
+"""The part of ``close_in_turn``'s time kept back for the items still to close."""
 
 
 async def close_each[T](
@@ -55,16 +58,19 @@ async def close_in_turn[T](
 ) -> None:
     """Close the items one after another, in order; then raise the first failure.
 
-    With ``within``, the items share that many seconds: each may take what
-    is left divided by the items left, so time one does not use goes to the
-    rest, and one that hangs is cut off (``TimeoutError``) without taking
-    the others' share. Every item is tried; later failures are logged.
+    With ``within``, the items share that many seconds. Each may take what
+    is left, less a reserve kept for every item after it (a quarter of
+    ``within``, split among the items), so one slow close may use most of
+    the time while one that hangs is cut off (``TimeoutError``) before the
+    others' reserves. Every item is tried; later failures are logged.
     """
     loop = asyncio.get_running_loop()
     end = None if within is None else loop.time() + within
+    reserve = 0.0 if within is None else within * RESERVED_SHARE / max(len(items), 1)
     failures: list[BaseException | None] = []
     for done, item in enumerate(items):
-        share = None if end is None else (end - loop.time()) / (len(items) - done)
+        after = len(items) - done - 1
+        share = None if end is None else end - loop.time() - reserve * after
         try:
             async with asyncio.timeout(share) as limit:
                 await close(item)

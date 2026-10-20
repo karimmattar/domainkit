@@ -42,9 +42,14 @@ Options considered:
   end; one still running then is cancelled, logged, and left behind, even
   one that ignores cancellation. Items of a kind close concurrently too
   (`close_each`).
-- Domain hooks must keep their reverse order, so they run in turn, each
-  within a fair share of what is left of the phase (`close_in_turn`); one
-  that overruns is cut off with a `TimeoutError` naming it.
+- Domain hooks must keep their reverse order, so they run in turn
+  (`close_in_turn`). Each may use what is left of the phase, less a reserve
+  kept for every hook still to run (a quarter of the phase, split among
+  the hooks): a slow hook, such as one flushing a publisher, gets most of
+  the phase when the others are quick, and one that hangs is cut off with
+  a `TimeoutError` naming it before the others' reserves. Equal shares
+  were considered and refused: with five domains, the slow hook would get
+  a fifth of the phase however quick the others were.
 - `lifecycle.register(name, close, phase=...)` adds closers to `drain`,
   `resources`, or `flush`. Management commands run the same phases, except
   `domains`, through `close_resources`.

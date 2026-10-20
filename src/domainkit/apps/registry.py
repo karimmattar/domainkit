@@ -100,10 +100,12 @@ class DomainRegistry:
     ) -> AsyncIterator[None]:
         """Start domains in order and stop started ones in reverse, even on failure.
 
-        Stopping takes at most ``stop_within`` seconds (None: no limit), shared
-        out among the domains: one whose ``shutdown`` hangs is cut off, and
-        the domains started before it still stop. Every domain is stopped;
-        the first failure is raised, and later ones are logged.
+        Stopping takes at most ``stop_within`` seconds (None: no limit). A
+        domain may use what is left of them, less a little kept for each
+        domain still to stop (``close_in_turn``): one whose ``shutdown``
+        hangs is cut off, and the domains started before it still stop.
+        Every domain is stopped; the first failure is raised, and later ones
+        are logged.
         """
         started: list[DomainConfig] = []
         try:

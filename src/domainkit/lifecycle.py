@@ -18,8 +18,9 @@ the start of the shutdown (``PHASE_ENDS``: 30%, 50%, 60%, 90%, then 100%),
 so time one phase does not use goes to the next, and every phase keeps its
 own share whatever the ones before it did. Inside a phase, a closer that
 fails or overruns is logged and the others still close: one hung item never
-keeps the rest open. Domain hooks run one after another, each within a fair
-share of what is left of their phase.
+keeps the rest open. Domain hooks run one after another, in reverse order;
+each may use what is left of their phase, less a little kept for each hook
+still to run.
 
 Other parts of the framework add their closers with ``register``::
 

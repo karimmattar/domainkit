@@ -33,7 +33,12 @@ from domainkit.lifecycle import (
 )
 from domainkit.management.base import run_async
 from domainkit.tasks import spawn
-from domainkit.utils.closing import close_each, close_in_turn, forget_outcome
+from domainkit.utils.closing import (
+    RESERVED_SHARE,
+    close_each,
+    close_in_turn,
+    forget_outcome,
+)
 from domainkit_tests.conftest import ALPHA, MakePackage
 from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
 
@@ -499,6 +504,23 @@ async def test_close_in_turn_shares_the_time_and_tries_every_item(
     closed.clear()
     await close_in_turn(["a", "b"], close)  # No limit: in order.
     assert closed == ["a", "b"]
+
+
+async def test_close_in_turn_lets_one_item_use_most_of_the_time() -> None:
+    """Less only the reserves of the items after it, not an equal split."""
+    closed: list[str] = []
+
+    async def close(item: str) -> None:
+        if item == "slow":
+            await asyncio.Event().wait()
+        closed.append(item)
+
+    # Two items: an equal split would cut "slow" at 0.20 s.
+    with pytest.raises(TimeoutError, match=r"^'slow' did not close within 0\.35s$"):
+        await close_in_turn(["slow", "quick"], close, within=0.4)
+    assert closed == ["quick"]
+    assert RESERVED_SHARE == 0.25
+    await close_in_turn([], close, within=1)  # Nothing to close.
 
 
 async def test_the_domain_lifespan_without_a_limit_waits_for_hooks() -> None:

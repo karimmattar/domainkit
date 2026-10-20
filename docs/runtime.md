@@ -104,8 +104,10 @@ phase:
   databases open;
 - a closer still running at the end of its phase is cancelled, named in
   the log, and left behind, even one that ignores cancellation;
-- domain hooks run one after another, in reverse order, each within a fair
-  share of what is left of their phase; one that hangs is cut off with a
+- domain hooks run one after another, in reverse order. Each may use what
+  is left of their phase, less a reserve kept for every hook still to run
+  (a quarter of the phase, split among the hooks), so one slow hook may
+  use most of the phase, while one that hangs is cut off with a
   `TimeoutError` naming the domain, and the others still stop.
 
 Other parts of the framework, and projects, add closers to the `drain`,
