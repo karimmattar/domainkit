@@ -190,10 +190,12 @@ async def my_basket(user: CurrentUser) -> BasketOut: ...
   with the model the response shows. Endpoints that return a `Response`
   cannot be cached this way. Headers an endpoint sets on its `Response`
   are not cached: on a hit, the endpoint does not run.
-- **Entries are keyed** by the endpoint (or `name`), the path, the query
-  (in any order of names), the request's language (see
-  [i18n.md](i18n.md)), and the request headers listed in `vary`. Only GET
-  answers are cached; refusals and errors never are.
+- **Entries are keyed** by the endpoint (or `name`), the URL's scheme,
+  host, and path (as Django keys its absolute URLs, so tenants chosen by
+  `Host` never share entries), the query (in any order of names), the
+  request's language (see [i18n.md](i18n.md)), and the request headers
+  listed in `vary`. Only GET answers are cached; refusals and errors never
+  are.
 - **Who asks.** The route's dependencies run on every request, the cached
   ones too, so rules (`Require`) and throttles still decide first. A
   request with credentials (an actor, or an `Authorization` header) is

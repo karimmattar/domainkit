@@ -3,7 +3,15 @@
 from dataclasses import asdict, replace
 from typing import Annotated, Final
 
-from fastapi import APIRouter, Depends, Query, Response, UploadFile, WebSocket
+from fastapi import (
+    APIRouter,
+    Depends,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    WebSocket,
+)
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.datastructures import Headers
@@ -212,6 +220,13 @@ def page_routes() -> APIRouter:
         """A greeting in the request's language."""
         computed.append(f"greeting:{get_language()}")
         return {"language": get_language()}
+
+    @pages.get("/here")
+    @cache_page(ttl=60)
+    async def here(request: Request) -> dict[str, str]:
+        """This page's absolute URL, as a tenant chosen by host would see it."""
+        computed.append(f"here:{request.url.hostname}")
+        return {"url": str(request.url_for("here"))}
 
     @pages.post("/products")
     @cache_page(ttl=60)

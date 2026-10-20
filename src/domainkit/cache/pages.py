@@ -8,8 +8,9 @@ so ``response_model`` filtering always applies::
     @cache_page(ttl=60)
     async def list_products(category: str | None = None) -> list[ProductOut]: ...
 
-Entries are keyed by the endpoint, the path, the query, the request's
-language, and the headers listed in ``vary``. Route dependencies (rules,
+Entries are keyed by the endpoint, the URL (scheme, host, and path, as
+Django's absolute URIs), the query, the request's language, and the
+headers listed in ``vary``. Route dependencies (rules,
 throttles) run first, on every request, so a cached answer never reaches a
 caller who may not see it.
 
@@ -146,10 +147,15 @@ def _user(request: Request) -> str | None:
 def _key(
     prefix: str, request: Request, headers: Sequence[str], user: str | None
 ) -> str:
-    """The entry for this request: path, query, language, headers, and user."""
+    """The entry for this request: URL, query, language, headers, and user.
+
+    The URL has the scheme and the host, so tenants chosen by ``Host``, and
+    answers that link to themselves, never share an entry.
+    """
     query = sorted(request.query_params.multi_items(), key=lambda item: item[0])
+    url = request.url
     parts = [
-        request.url.path,
+        f"{url.scheme}://{url.netloc}{url.path}",
         query,
         get_language(),
         [request.headers.get(header) for header in headers],

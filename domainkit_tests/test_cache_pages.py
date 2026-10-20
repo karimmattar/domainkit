@@ -96,6 +96,32 @@ def test_entries_are_kept_per_path_query_header_and_language(
     assert (english, arabic) == ({"language": "en"}, {"language": "ar"})
 
 
+def test_entries_are_kept_per_scheme_and_host(computed: list[str]) -> None:
+    """Hosts and schemes never share an entry, as Django's absolute URLs do not.
+
+    A page whose answer depends on the host (a tenant chosen by ``Host``, a
+    link to itself) was served to every host from the first one's entry.
+    """
+    bases = (
+        "https://a.example",
+        "http://a.example",
+        "https://b.example",
+        "https://b.example:8443",
+        "https://a.example",
+    )
+    with override_settings(ROOT_ROUTER=PAGES, MIDDLEWARE=MIDDLEWARE):
+        app = get_asgi_application()
+        answers = [TestClient(app, base_url=b).get("/here").json() for b in bases]
+
+    assert answers == [{"url": f"{base}/here"} for base in bases]
+    assert computed == [
+        "here:a.example",
+        "here:a.example",
+        "here:b.example",
+        "here:b.example",
+    ]
+
+
 def test_declared_headers_and_ages_reach_the_client(client: TestClient) -> None:
     """``vary`` and ``max_age`` become ``Vary`` and ``Cache-Control``."""
     response = client.get("/products/5", headers={"X-Tenant": "one"})

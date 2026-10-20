@@ -337,6 +337,10 @@ All notable changes to domainkit. The format follows
   matched the person's UUID or integer columns but not the same id in text
   columns or audit keys, and the erasure still reported success. The
   message gives the form to use.
+- `@cache_page` keys entries by the scheme and host too, as Django's
+  `cache_page` keys absolute URLs. A page whose answer depends on the host
+  (a tenant chosen by `Host`, a link built with `url_for`) was served to
+  every host and scheme from the entry the first request filled.
 
 ## [0.6.2] - 2026-10-19
 
