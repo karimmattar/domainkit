@@ -34,6 +34,9 @@ accepted record: supersede it with a new one and link both ways.
 | [0028](0028-one-secret-key-signs-and-derives.md) | Sign with one `SECRET_KEY`, and derive a key per purpose from it | Accepted |
 | [0029](0029-messages-to-people-leave-through-the-outbox.md) | Send mail, text messages, and push notifications through the outbox | Accepted |
 | [0030](0030-encrypt-totp-secrets-under-a-derived-key.md) | Encrypt TOTP secrets with AES-GCM under a key derived from `SECRET_KEY` | Accepted |
+| [0031](0031-operation-ids-from-route-names.md) | Operation ids from route names, for new projects | Accepted |
+| [0032](0032-problem-details-as-an-error-format.md) | Offer RFC 9457 problem details as an error format | Accepted |
+| [0033](0033-feature-flags-in-the-database.md) | Keep feature flags and dynamic settings in the database, cached whole | Accepted |
 | [0034](0034-cron-schedules-by-wall-clock-time.md) | Run cron schedules by wall-clock time, queued ahead of each run | Accepted |
 | [0035](0035-task-policies-priorities-chains-in-the-outbox.md) | Keep per-task policies, priorities, chains, and rates in the outbox | Accepted |
 | [0036](0036-webhooks-through-the-outbox.md) | Send webhooks through the outbox, signed, to checked addresses only | Accepted |

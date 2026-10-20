@@ -30,3 +30,7 @@ ASGI_APPLICATION = "config.asgi:application"
 LANGUAGE_CODE = "en"
 LANGUAGES = [("en", "English"), ("ar", "Arabic")]
 TIME_ZONE = "UTC"
+
+# Operation ids are route names, so generated clients keep their method
+# names when routers move (docs/reference.md, "The API surface").
+OPENAPI_OPERATION_IDS = "route_name"

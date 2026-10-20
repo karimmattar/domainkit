@@ -3,6 +3,9 @@
 Personal values in it are pseudonyms, each made with the key of the person
 it is about (the subject). Those keys live in their own table, which is not
 append-only: deleting a subject's key makes their pseudonyms unlinkable.
+
+None of the three is ever in a fixture (a copy of the keys would outlive
+``forget``), and ``flush`` keeps them all.
 """
 
 from sqlalchemy import (
@@ -34,7 +37,8 @@ audit_log = Table(
     Index("ix_domainkit_audit_log_occurred_at", "occurred_at"),
     Index("ix_domainkit_audit_log_actor", "actor", "occurred_at"),
     Index("ix_domainkit_audit_log_action", "action", "occurred_at"),
-    info={"domain": "audit"},
+    Index("ix_domainkit_audit_log_target", "target", "occurred_at"),
+    info={"domain": "audit", "append_only": True, "fixtures": False},
 )
 
 audit_keys = Table(
@@ -43,7 +47,7 @@ audit_keys = Table(
     Column("subject", String(255), primary_key=True),
     Column("key", LargeBinary(32), nullable=False),
     Column("created_at", UTCDateTime, nullable=False),
-    info={"domain": "audit"},
+    info={"domain": "audit", "flush": False, "fixtures": False},
 )
 
 audit_seals = Table(
@@ -54,6 +58,6 @@ audit_seals = Table(
     Column("digest", String(64), nullable=False),
     Column("link", String(64), nullable=False),
     Column("sealed_at", UTCDateTime, nullable=False),
-    info={"domain": "audit"},
+    info={"domain": "audit", "append_only": True, "fixtures": False},
 )
 """Each row's place in the hash chain (see ``seals``); append-only too."""
