@@ -258,6 +258,66 @@ AUTH = {
 }
 ```
 
+### Grants on single objects
+
+`domainkit.contrib.objectpermissions` stores grants of one permission on
+one object, to a user or to a group (django-guardian's model). Install it
+after auth, add its backend after `ModelBackend`, then `makemigrations`
+and `migrate`:
+
+```python
+INSTALLED_DOMAINS = [..., "domainkit.contrib.auth", "domainkit.contrib.objectpermissions"]
+AUTH = {
+    "BACKENDS": [
+        "domainkit.contrib.auth.backends.ModelBackend",
+        "domainkit.contrib.objectpermissions.ObjectPermissionBackend",
+    ]
+}
+```
+
+```python
+from domainkit.contrib.objectpermissions import (
+    grant_permission,
+    revoke_permission,
+    visible_scope,
+)
+
+await grant_permission(actor, "catalog.change_product", product, user=ada.id)
+await grant_permission(actor, "catalog.view_product", product, group=editors.id)
+await revoke_permission(actor, "catalog.change_product", product, user=ada.id)
+
+# Rules that look at objects now see the grants:
+products = ResourceRouter(
+    ...,
+    rule=AllOf(IsAuthenticated(), HasObjectPermissions("catalog.change_product")),
+    scope=visible_scope("view", Product),
+)
+```
+
+- Granting and revoking stay within what the actor holds: they need the
+  permission itself, on the model or on the object, and
+  `objectpermissions.add_objectpermission` to grant
+  (`delete_objectpermission` to revoke); superusers have both. No one
+  grants to themselves, and a permission of another model is refused
+  (`InvalidGrant`). Granting twice changes nothing.
+- Each grant and revocation is an event (`ObjectPermissionGranted`,
+  `ObjectPermissionRevoked`) naming who gave what to whom, so the audit
+  trail records it.
+- `visible_scope("view", Product)` is a resource's `scope`: callers who
+  hold `catalog.view_product` see every product; others see those granted
+  to them or to one of their groups, filtered in SQL with an `EXISTS` on
+  the grants, so pages, counts, and cursors never see the rest; anonymous
+  and inactive callers see none. `visible_to(user, "view", Product)`
+  gives the same criteria (`VisibleTo`) for queries of your own.
+- In memory, `VisibleTo` reads the grants it is given:
+  `visible_scope("view", Product, grants=InMemoryObjectPermissions(...))`
+  in tests with fake repositories.
+- Grants are stored in the database of the objects they are about, in
+  `domainkit_object_permissions`, which every database hosting a domain
+  gets. Ids may be UUIDs, integers, or text, each in a column of its type.
+  User and group ids are not foreign keys: deleting a user leaves their
+  grants unused, never reused.
+
 ## Passwords
 
 A user holds a `PasswordHash`, which only the hashers make, so a raw

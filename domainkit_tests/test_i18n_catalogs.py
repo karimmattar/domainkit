@@ -341,6 +341,7 @@ SCANNED: Final = (
     "storage",
     "contrib/auth",
     "contrib/idempotency",
+    "contrib/objectpermissions",
     "resources",
 )
 _RAISERS: Final = re.compile(

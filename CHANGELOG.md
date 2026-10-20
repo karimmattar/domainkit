@@ -222,6 +222,14 @@ All notable changes to domainkit. The format follows
   resource: its fields from the query string (bounded, unknown parameters
   refused), one aggregate or `{"items": [...]}` back, and what the caller
   may not reach or see left out.
+- `domainkit.contrib.objectpermissions` (DJ-30, ADR 0026; `docs/auth.md`,
+  "Grants on single objects"): grants of one permission on one object to a
+  user or a group, as audited events; `ObjectPermissionBackend` for
+  `has_perm(user, perm, obj)` and `HasObjectPermissions`; `grant_permission`
+  and `revoke_permission` within what the actor holds; and `VisibleTo`,
+  criteria the SQL repositories compile to `EXISTS` and in-memory ones
+  read from the grants they are given, with `visible_scope` for resources.
+- `domainkit.db.query.register_compiler` compiles criteria of your own.
 - `domainkit.contrib.admin` (DJ-46; `docs/resources.md`, "The generic
   admin"): `admin.register(Product, ..., list_display=, filters=, search=,
   commands=[admin.command(...)])` serves a model under the admin's prefix,

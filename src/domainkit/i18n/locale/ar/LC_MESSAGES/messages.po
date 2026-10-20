@@ -178,6 +178,21 @@ msgstr "بعض هذه الحقول لا يمكن تغييرها."
 msgid "You do not have permission to change some of these fields."
 msgstr "ليست لديك صلاحية تغيير بعض هذه الحقول."
 
+msgid "You may not manage permissions on objects."
+msgstr "لا يمكنك إدارة الصلاحيات على الكائنات."
+
+msgid "You may grant or revoke only permissions you hold on the object."
+msgstr "لا يمكنك منح أو سحب إلا الصلاحيات التي تملكها على الكائن."
+
+msgid "You cannot grant permissions to yourself."
+msgstr "لا يمكنك منح صلاحيات لنفسك."
+
+msgid "Name a user or a group, not both or neither."
+msgstr "حدّد مستخدمًا أو مجموعة، لا كليهما ولا أيًّا منهما."
+
+msgid "That permission is not one of the object's model."
+msgstr "هذه الصلاحية ليست من صلاحيات نموذج الكائن."
+
 #. Pydantic's validation messages, by their templates; the error's context fills the {names}
 msgid "A required value is missing."
 msgstr "قيمة مطلوبة غير موجودة."
