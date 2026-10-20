@@ -92,6 +92,7 @@ def test_signup_is_off_by_default(identity: Api) -> None:
     response = signup(identity())
 
     assert (response.status_code, response.json()["code"]) == (404, "not_found")
+    assert response.json()["detail"] == "Not Found"
     assert outbox_payloads() == []
 
 
@@ -450,6 +451,21 @@ def test_expired_signups_are_purged_hourly(identity: Api) -> None:
     assert [row["username"] for row in pending()] == ["bob"]
     assert pending_signups.info == {"domain": "auth", "fixtures": False}
     assert repr(PendingSignup(**second)) == f"PendingSignup(id={second['id']!r})"
+    # A link expires at its moment, not after it.
+    bob = PendingSignup(**second)
+    assert bob.expired(bob.expires_at)
+    assert not bob.expired(bob.expires_at - timedelta(microseconds=1))
+    assert run_async(_clear(bob.expires_at - timedelta(microseconds=1))) == 0
+    assert run_async(_clear(bob.expires_at)) == 1
+    assert pending() == []
+
+
+async def _clear(now: Any) -> int:  # noqa: ANN401 - a moment.
+    """Purge the pending signups expired at ``now``."""
+    async with AuthUnitOfWork() as uow:
+        count = await uow.signups.clear_expired(now)
+        await uow.commit()
+    return count
 
 
 def test_confirming_is_off_with_signups(identity: Api) -> None:

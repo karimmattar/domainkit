@@ -199,6 +199,12 @@ def test_check_lists_the_domains_warnings_too(
     assert output.endswith("  Warning: ALPHA is weak here.\n")
 
 
+def test_check_takes_one_migration_head_per_database(auth_project: str) -> None:
+    """A history with one head is what ``check`` expects; more is a problem."""
+    with override_settings(ROOT_ROUTER=None):
+        assert run("check").startswith("System check identified no issues")
+
+
 def test_check_without_domains() -> None:
     """A project with no domains is valid."""
     with override_settings(INSTALLED_DOMAINS=[], ALPHA=UNSET, ROOT_ROUTER=None):

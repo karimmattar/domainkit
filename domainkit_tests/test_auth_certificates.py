@@ -318,8 +318,12 @@ def test_headers_need_certificate_proxies(use_auth: UseAuth) -> None:
     ``TRUSTED_PROXIES`` is not enough: certificates need proxies of their own.
     """
     header = {"HEADER": "X-Client-Cert"}
-    with pytest.raises(ImproperlyConfigured, match=r"AUTH\.CLIENT_CERT\.PROXIES;"):
+    with pytest.raises(ImproperlyConfigured) as refused:
         use_auth(settings={"TRUSTED_PROXIES": ["10.0.0.0/8"]}, CLIENT_CERT=header)
+    assert str(refused.value) == (
+        "AUTH.CLIENT_CERT.HEADER is believed only from AUTH.CLIENT_CERT.PROXIES; "
+        "list the address of the proxy that sets it."
+    )
     use_auth(CLIENT_CERT={**header, "PROXIES": [PROXY]})
     use_auth(CLIENT_CERT={"PROXIES": [PROXY]})  # Unused without a header.
 
@@ -328,8 +332,12 @@ def test_subjects_through_headers_need_the_proxys_check(use_auth: UseAuth) -> No
     """Without it, a self-signed certificate could name any user."""
     subject = {"HEADER": "X-Client-Cert", "MATCH": "subject", "PROXIES": [PROXY]}
 
-    with pytest.raises(ImproperlyConfigured, match="needs VERIFY_HEADER"):
+    with pytest.raises(ImproperlyConfigured) as refused:
         use_auth(CLIENT_CERT=subject)
+    assert str(refused.value) == (
+        'AUTH.CLIENT_CERT: MATCH = "subject" through HEADER needs VERIFY_HEADER, '
+        "or anyone could sign a certificate naming any user."
+    )
     use_auth(CLIENT_CERT={**subject, "VERIFY_HEADER": "X-Verify"})
     use_auth(CLIENT_CERT={"MATCH": "subject"})  # The server's own check suffices.
 
@@ -347,7 +355,10 @@ def test_deployments_take_single_certificate_proxies(
         use_auth(
             settings=deployed,
             PASSWORD_HASHERS=hashers,
-            CLIENT_CERT={**header, "PROXIES": ["10.0.0.5", "10.0.0.0/8", "fd00::/64"]},
+            CLIENT_CERT={
+                **header,
+                "PROXIES": ["10.0.0.5", "10.0.0.0/8", "fd00::/64", "10.0.1.0/31"],
+            },
         )
     use_auth(
         settings=deployed,
@@ -361,8 +372,8 @@ def test_deployments_take_single_certificate_proxies(
 
     assert str(refused.value) == (
         f"AUTH.CLIENT_CERT.PROXIES must list single addresses (/32 or /128) in "
-        f"{environment}, not networks (10.0.0.0/8, fd00::/64): any host there "
-        "could name any user."
+        f"{environment}, not networks (10.0.0.0/8, fd00::/64, 10.0.1.0/31): any "
+        "host there could name any user."
     )
 
 

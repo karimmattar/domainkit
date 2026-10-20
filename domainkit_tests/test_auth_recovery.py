@@ -757,6 +757,33 @@ def test_look_alike_addresses_are_other_addresses(identity: Api) -> None:
     assert message.body.startswith("Hello kelly,")
 
 
+def test_accounts_of_one_address_come_by_id(identity: Api) -> None:
+    """Accounts that share an address, in any case, come in the order of ids."""
+    from domainkit.contrib.auth import PasswordHash, User
+
+    identity()
+
+    async def scenario() -> list[str]:
+        async with AuthUnitOfWork() as uow:
+            for number, name, email in (
+                (2, "second", "Kelly@corp.example"),
+                (1, "first", "kelly@corp.example"),
+            ):
+                user = User(
+                    id=UserId(uuid.UUID(int=number)),
+                    password=PasswordHash.unusable(),
+                    username=name,
+                    email=email,
+                )
+                await uow.users.add(user)
+            await uow.commit()
+        async with AuthUnitOfWork() as uow:
+            users = await uow.users.find_by_email("KELLY@corp.example")
+        return [user.get_username() for user in users]
+
+    assert run_async(scenario()) == ["first", "second"]
+
+
 def test_addresses_that_cannot_take_mail_are_skipped(
     identity: Api, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
