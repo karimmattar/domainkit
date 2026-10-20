@@ -460,6 +460,9 @@ async def test_close_each_closes_the_others_while_one_hangs(
 
     assert closed == ["first", "last"]
     assert caplog.messages == ["Could not close 'fails'", "Gave up closing 'hung'"]
+    cause = caplog.records[0].exc_info
+    assert cause
+    assert str(cause[1]) == "fails"
 
 
 async def test_closes_given_up_on_end_without_an_unretrieved_error() -> None:
@@ -475,14 +478,36 @@ async def test_closes_given_up_on_end_without_an_unretrieved_error() -> None:
     assert failed._log_traceback is False
 
 
-async def test_close_each_raises_a_close_cancelled_on_its_own() -> None:
-    """An item whose close was cancelled by something else is a failure too."""
+async def test_close_each_raises_a_close_cancelled_on_its_own(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A close cancelled by something else is a failure too, and hides no other."""
 
     async def close(item: str) -> None:
-        raise asyncio.CancelledError
+        if item == "cancelled":
+            raise asyncio.CancelledError
+        if item == "fails":
+            raise RuntimeError("fails")
 
-    with pytest.raises(asyncio.CancelledError):
-        await close_each(["a"], close)
+    with (
+        caplog.at_level(logging.ERROR, "domainkit.utils.closing"),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await close_each(["fine", "cancelled", "fails"], close)
+    assert caplog.messages == ["Could not close 'fails'"]
+
+
+async def test_failures_after_a_close_that_worked_are_raised() -> None:
+    """Items that closed are passed over, not the end of the search."""
+
+    async def close(item: str) -> None:
+        if item == "fails":
+            raise RuntimeError("fails after one that closed")
+
+    with pytest.raises(RuntimeError, match="after one that closed"):
+        await close_each(["fine", "fails"], close)
+    with pytest.raises(RuntimeError, match="after one that closed"):
+        await close_in_turn(["fine", "fails"], close)
 
 
 async def test_close_in_turn_shares_the_time_and_tries_every_item(
