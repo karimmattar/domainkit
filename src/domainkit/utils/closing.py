@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Sequence
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,7 @@ async def close_each[T](
     The first failure in ``items`` order is raised and later ones are
     logged, since only one can be raised. If the wait is cancelled (a
     deadline passed), the items still closing are named in the log and
-    cancelled, and the cancellation goes on.
+    cancelled, those that failed are logged, and the cancellation goes on.
     """
     items = list(items)
 
@@ -32,7 +33,10 @@ async def close_each[T](
         for item, task in zip(items, closing, strict=True):
             if not task.done():
                 task.cancel()
+                task.add_done_callback(forget_outcome)
                 logger.error("Gave up closing %r", item)
+            elif not task.cancelled() and (exc := task.exception()) is not None:
+                logger.error("Could not close %r", item, exc_info=exc)
         raise
     _raise_first(
         items,
@@ -73,6 +77,12 @@ async def close_in_turn[T](
         else:
             failures.append(None)
     _raise_first(items, failures)
+
+
+def forget_outcome(task: "asyncio.Future[Any]") -> None:
+    """Retrieve how a task given up on ended, so asyncio does not log it."""
+    if not task.cancelled():
+        task.exception()
 
 
 def _raise_first[T](

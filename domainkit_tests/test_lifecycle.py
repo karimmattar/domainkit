@@ -33,7 +33,7 @@ from domainkit.lifecycle import (
 )
 from domainkit.management.base import run_async
 from domainkit.tasks import spawn
-from domainkit.utils.closing import close_each, close_in_turn
+from domainkit.utils.closing import close_each, close_in_turn, forget_outcome
 from domainkit_tests.conftest import ALPHA, MakePackage
 from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
 
@@ -437,6 +437,8 @@ async def test_close_each_closes_the_others_while_one_hangs(
     async def close(item: str) -> None:
         if item == "hung":
             await asyncio.Event().wait()
+        if item == "fails":
+            raise RuntimeError("fails")
         closed.append(item)
 
     with (
@@ -444,10 +446,23 @@ async def test_close_each_closes_the_others_while_one_hangs(
         pytest.raises(TimeoutError),
     ):
         async with asyncio.timeout(0.02):
-            await close_each(["first", "hung", "last"], close)
+            await close_each(["first", "fails", "hung", "last"], close)
 
     assert closed == ["first", "last"]
-    assert caplog.messages == ["Gave up closing 'hung'"]
+    assert caplog.messages == ["Could not close 'fails'", "Gave up closing 'hung'"]
+
+
+async def test_closes_given_up_on_end_without_an_unretrieved_error() -> None:
+    """A failure or cancellation after the wait gave up is retrieved quietly."""
+    loop = asyncio.get_running_loop()
+    failed, cancelled = loop.create_future(), loop.create_future()
+    failed.set_exception(RuntimeError("too late"))
+    cancelled.cancel()
+
+    forget_outcome(failed)
+    forget_outcome(cancelled)
+
+    assert failed._log_traceback is False
 
 
 async def test_close_each_raises_a_close_cancelled_on_its_own() -> None:

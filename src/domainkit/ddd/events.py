@@ -76,7 +76,13 @@ class EventBus:
     """
 
     def __init__(self, handler_timeout: float = DEFAULT_HANDLER_TIMEOUT) -> None:
-        """Start with no subscriptions; handlers run ``handler_timeout`` at most."""
+        """Start with no subscriptions; handlers run ``handler_timeout`` at most.
+
+        Raises:
+            ValueError: ``handler_timeout`` is not a positive number of seconds.
+        """
+        if not 0 < handler_timeout < float("inf"):
+            raise ValueError("handler_timeout is a positive number of seconds.")
         self._handlers: dict[type[DomainEvent], list[_Subscription]] = {}
         self.error_hook: Callable[[BaseException, DomainEvent], None] | None = None
         """Called with each in-process handler failure (``setup()`` wires it)."""

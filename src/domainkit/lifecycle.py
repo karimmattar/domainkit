@@ -44,6 +44,7 @@ from domainkit.conf.global_settings import Settings
 from domainkit.db.connections import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.ledger import ledgers
+from domainkit.utils.closing import forget_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +202,7 @@ async def _close_all(closers: Mapping[str, Closer], deadline: float) -> None:
     for name, task in running.items():
         if not task.done():
             task.cancel()
+            task.add_done_callback(forget_outcome)
             logger.error(
                 "Could not close the %s within the shutdown budget; closing the rest",
                 name,

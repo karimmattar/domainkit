@@ -73,7 +73,7 @@ LOOKBACK: Final = timedelta(days=1)
 """Rows this much older than now without a seal count as unsealed (``verify``)."""
 BATCH: Final = 1000
 """Rows sealed per transaction."""
-BACKLOG_COUNT_LIMIT: Final = 10_000_000
+BACKLOG_COUNT_LIMIT: Final = 1_000_000
 """Counting a backlog stops here: past it, the gauge reads this much."""
 COLUMNS: Final = (
     "id",

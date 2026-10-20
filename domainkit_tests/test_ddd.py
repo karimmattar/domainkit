@@ -293,6 +293,13 @@ def test_subscribe_refuses_a_timeout_it_cannot_apply(
         EventBus().subscribe(OrderPaid, handler, durable=durable, timeout=timeout)
 
 
+@pytest.mark.parametrize("seconds", [0, -1, float("inf")])
+def test_a_bus_refuses_a_handler_timeout_it_cannot_apply(seconds: float) -> None:
+    """Zero would cut off every handler; infinity none."""
+    with pytest.raises(ValueError, match="positive number of seconds"):
+        EventBus(handler_timeout=seconds)
+
+
 def test_setup_gives_the_bus_the_handler_timeout_setting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
