@@ -1,17 +1,27 @@
 """FilterSets: typed, bounded filters, ordering, and search from the query string."""
 
+import logging
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Any
+from uuid import UUID
 
 import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
-from domainkit.ddd import AggregateRoot, ValueObject
+from domainkit.ddd import AggregateRoot, MaxLength, ValueObject
 from domainkit.ddd.query import F, Ordering, Query
 from domainkit.http.errors import install_exception_handlers
 from domainkit.http.filters import Filter, FilterSet, InvalidFilter
+from domainkit.http.pagination import (
+    MAX_CURSOR_LENGTH,
+    PageOut,
+    PageRequest,
+    Pagination,
+    cursor_length,
+    longest_ordering,
+)
 from domainkit_tests.gadgets import (
     MADE,
     Color,
@@ -391,6 +401,105 @@ def test_fields_of_no_known_type_are_filtered_as_text() -> None:
         tags = Filter()
 
     assert set(Exact.filters) == {"tags"}
+
+
+def test_orderings_need_fields_a_cursor_can_bound() -> None:
+    """Text without ``MaxLength`` cannot be ordered by, as a cursor holds it.
+
+    A page ending on a long value could not encode its cursor: a 500 for
+    every page that ended there.
+    """
+    for body in (
+        {"ordering_fields": ("code",)},
+        {"default_ordering": ("-code",)},
+    ):
+        with pytest.raises(
+            TypeError,
+            match=(
+                r"^Broken: Coded\.code holds text of any length, which no cursor "
+                r"can bound: declare its MaxLength\(n\)"
+            ),
+        ):
+            type("Broken", (FilterSet,), {"model": Coded, **body})
+
+
+class Article(AggregateRoot[UUID]):
+    """Three text fields too long to order by all at once."""
+
+    title: Annotated[str, MaxLength(200)]
+    subtitle: Annotated[str, MaxLength(200)]
+    author: Annotated[str, MaxLength(200)]
+    lead: Annotated[str, MaxLength(800)]
+
+
+def test_orderings_whose_cursors_could_be_too_long_are_refused() -> None:
+    """Clients' longest ordering, and the default one, must fit a cursor."""
+    fields = ("title", "subtitle", "author")
+    with pytest.raises(TypeError) as refused:
+        type("Broken", (FilterSet,), {"model": Article, "ordering_fields": fields})
+    # [1,"-lead,id", 6 * 800 + 2 bytes, 38 for the id]: 4,856 bytes of JSON.
+    with pytest.raises(TypeError, match=r"ordering -lead,id can take 6475 char"):
+        type("Broken", (FilterSet,), {"model": Article, "default_ordering": ("-lead",)})
+
+    # The longest names first; 3 * (6 * 200 + 2) bytes of text: 3,681 of JSON.
+    assert str(refused.value) == (
+        "Broken: a cursor for the ordering -subtitle,-author,-title,id can take "
+        "4908 characters, more than MAX_CURSOR_LENGTH (4096): lower its text "
+        "fields' MaxLength, or max_ordering."
+    )
+
+    class Fits(FilterSet):
+        model = Article
+        ordering_fields = ("title", "subtitle", "author")
+        max_ordering = 2
+
+    longest = longest_ordering(Fits.ordering_fields, Article, Fits.max_ordering)
+    assert cursor_length(longest, Article) <= MAX_CURSOR_LENGTH
+
+
+def test_a_long_sort_value_never_breaks_a_page(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Pages ending on a value longer than its field declares still answer.
+
+    The in-memory repository keeps names past ``MaxLength(30)``, as SQLite
+    does; such a page was a 500.
+    """
+
+    class Listing(FilterSet):
+        model = Gadget
+        ordering_fields = ("name",)
+        default_ordering = ("name",)
+
+    arabic = make_gadget("b")
+    arabic.name = "b" + "\u0628" * 800  # 1,600 bytes of UTF-8.
+    control = make_gadget("c")
+    control.name = "c" + "\x1f" * 3000  # 18,000 bytes of JSON.
+    repository = InMemoryGadgets([make_gadget("a"), arabic, control, make_gadget("d")])
+    app = FastAPI()
+    install_exception_handlers(app)
+    pages = Pagination(default_limit=1, max_limit=1)
+
+    @app.get("/gadgets")
+    async def listing(
+        filters: Annotated[Listing, Depends()],
+        page: Annotated[PageRequest, Depends(pages)],
+    ) -> PageOut[str]:
+        query = filters.query()
+        found = await page.fetch(repository, query)
+        return page.respond(found, [each.name[0] for each in found.items], query)
+
+    client = TestClient(app)
+    first = client.get("/gadgets").json()
+    second = client.get("/gadgets", params={"cursor": first["next_cursor"]}).json()
+    with caplog.at_level(logging.WARNING, logger="domainkit.http.pagination"):
+        third = client.get("/gadgets", params={"cursor": second["next_cursor"]})
+
+    assert (first["items"], second["items"]) == (["a"], ["b"])
+    assert (third.status_code, third.json()["items"]) == (200, ["c"])
+    assert len(caplog.messages) == 1
+    after = client.get("/gadgets", params={"cursor": third.json()["next_cursor"]})
+    assert (after.status_code, after.json()["code"]) == (422, "validation_error")
 
 
 def test_filter_sets_without_a_model_are_bases() -> None:

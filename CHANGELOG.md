@@ -325,6 +325,14 @@ All notable changes to domainkit. The format follows
   rate limits, idempotency keys, the audit trail, and `@cache_page` could
   not tell users apart. Add `domainkit.http.middleware.RequestContextMiddleware`
   ahead of it (projects from `init` have it).
+- **`FilterSet` refuses orderings whose cursors could be too long**, when
+  declared: each field of `ordering_fields` and `default_ordering` needs a
+  bound (`Annotated[str, MaxLength(n)]` on text, `Digits` on amounts), and
+  the default ordering, and the `max_ordering` fields that take most room,
+  must fit in `MAX_CURSOR_LENGTH`. The error says what to declare. The cap
+  is now 4,096 characters (from 2,048): three text fields of
+  `MaxLength(150)`, in any script. `cursor_length(ordering, model)` gives
+  the bound of any ordering (ADR 0023).
 
 ### Fixed
 
@@ -353,6 +361,16 @@ All notable changes to domainkit. The format follows
   without `RequestContextMiddleware`, sent no `Authorization` header and
   had no actor, so a page without `vary_on_user` stored their answer as
   public and served it to everyone.
+- A page always answers with its cursor. One sort value longer than about
+  1,500 bytes (an 800-letter Arabic title) made `encode_position` refuse
+  the cursor, so every page that ended on it was a 500. Cursors going out
+  are no longer refused; `FilterSet` bounds them when declared instead
+  (see Changed), and one that is still too long, from a value longer than
+  its field declares, is logged and refused when it comes back.
+- Amounts in cursors are written in plain notation. Amounts of seven or
+  more places, such as zero at eight (`0E-8`), were written with an
+  exponent, which decoding refused, so the page after one was a 422
+  `invalid_cursor`.
 
 ## [0.6.2] - 2026-10-19
 

@@ -176,6 +176,18 @@ against its field's type; anything else is a 422 `invalid_cursor`, never a
 500, and the values reach SQL only as bound parameters. A cursor from
 another ordering is refused, so changing `?ordering=` starts again.
 
+Cursors that come in are at most `MAX_CURSOR_LENGTH` (4,096) characters.
+Cursors that go out are never refused, so a page always answers; what an
+ordering can put in one is bounded by its fields instead.
+`cursor_length(ordering, Order)` gives the longest cursor an ordering can
+make: text counts 6 bytes a character (JSON writes control characters as
+`\u001f`) up to its `MaxLength`, amounts their `Digits`, enums their
+longest value, and the id ends every ordering. A `FilterSet` checks its
+orderings when declared (below); an ordering written by hand is yours to
+keep short. A stored value longer than its field declares (SQLite does
+not enforce `MaxLength`) still gets a cursor: it is logged, and refused
+when it comes back.
+
 ## Filters over HTTP
 
 A `FilterSet` declares, per field, which lookups clients may use, and turns
@@ -220,6 +232,22 @@ FastAPI answers a wrong type with 422 `validation_error`. The class is
 checked when it is declared, so a mistake fails at import: a lookup that
 does not fit its field (`gt` on a list, `icontains` on an amount) is a
 `TypeError`, and a field the model lacks an `UnknownField`.
+
+Its orderings must fit a cursor, so a page can always say where the next
+one starts. Each field of `ordering_fields` and `default_ordering` needs a
+bound (`Annotated[str, MaxLength(n)]` on text, `Digits` on amounts), and
+the default ordering, and the longest one clients may ask for (the
+`max_ordering` fields that take most room, descending), must fit in
+`MAX_CURSOR_LENGTH`. Otherwise declaring the class is a `TypeError` that
+says what to change:
+
+```text
+OrderFilters: Order.notes holds text of any length, which no cursor can bound:
+declare its MaxLength(n), as Annotated[str, MaxLength(n)], or do not order by it.
+```
+
+Three text fields of `MaxLength(150)` fit together, in any script, with a
+UUID id; for longer ones, lower `max_ordering`.
 
 What FastAPI cannot see is a 422 `invalid_filter`: a lookup the set does
 not offer on a field it filters, or on a field of the model

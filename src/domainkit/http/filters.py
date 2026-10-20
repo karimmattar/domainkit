@@ -53,8 +53,14 @@ from domainkit.ddd.query import (
     Ordering,
     Query,
     resolve,
+    total_ordering,
 )
 from domainkit.http.errors import APIError
+from domainkit.http.pagination import (
+    MAX_CURSOR_LENGTH,
+    cursor_length,
+    longest_ordering,
+)
 
 SEPARATOR: Final = "__"
 """Between a field and its lookup: ``total__gte``."""
@@ -176,6 +182,7 @@ class FilterSet:
             raise TypeError(f"{cls.__name__}: {names} cannot name a filter.")
         for name in (*cls.ordering_fields, *_fields(cls.default_ordering)):
             _orderable(cls.model, name)
+        _check_cursors(cls)
         for name in cls.search_fields:
             if not resolve(cls.model, name)[-1].text:
                 raise TypeError(f"{cls.__name__}: {name} is not text to search.")
@@ -284,6 +291,35 @@ def _checked(model: type, each: Filter, lookup: Lookup) -> FieldInfo:
 def _orderable(model: type, name: str) -> None:
     """Refuse an ordering field that does not exist or does not sort."""
     Ordering(name).bind(model)
+
+
+def _check_cursors(cls: type[FilterSet]) -> None:
+    """Refuse orderings whose cursors could be longer than ``MAX_CURSOR_LENGTH``.
+
+    The default ordering is checked, and the longest one clients may ask
+    for: the ``max_ordering`` fields of ``ordering_fields`` whose cursors
+    take most room. A field must have a bound in a cursor (``MaxLength`` on
+    text), so a page can always tell clients where the next one starts.
+
+    Raises:
+        TypeError: A field has no bound, or a cursor could be too long.
+    """
+    try:
+        orderings = (
+            tuple(Ordering.parse(item) for item in cls.default_ordering),
+            longest_ordering(cls.ordering_fields, cls.model, cls.max_ordering),
+        )
+        lengths = [(each, cursor_length(each, cls.model)) for each in orderings]
+    except TypeError as exc:
+        raise TypeError(f"{cls.__name__}: {exc}") from None
+    for ordering, length in lengths:
+        if length > MAX_CURSOR_LENGTH:
+            raise TypeError(
+                f"{cls.__name__}: a cursor for the ordering "
+                f"{','.join(map(str, total_ordering(ordering)))} can take {length} "
+                f"characters, more than MAX_CURSOR_LENGTH ({MAX_CURSOR_LENGTH}): "
+                "lower its text fields' MaxLength, or max_ordering."
+            )
 
 
 def _fields(ordering: Iterable[str]) -> list[str]:
