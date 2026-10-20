@@ -15,10 +15,10 @@ from sqlalchemy import select
 from domainkit import signing
 from domainkit.conf import UNSET, override_settings
 from domainkit.contrib.auth import mfa, totp
-from domainkit.contrib.auth.encryption import DecryptionFailed, SecretBox
 from domainkit.contrib.auth.settings import MfaSettings
 from domainkit.contrib.auth.tables import mfa_devices, recovery_codes
 from domainkit.db import connections
+from domainkit.encryption import DecryptionFailed, SecretBox
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import call_command
 from domainkit.management.base import CommandError, run_async

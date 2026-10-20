@@ -60,7 +60,19 @@ All notable changes to domainkit. The format follows
   throttled per user, turning it off needs the password and a code, and
   secrets are stored encrypted with AES-GCM under a key derived from
   `SECRET_KEY` (ADR 0030). `resetmfa` turns it off for a user who lost it.
-  Run `makemigrations` and `migrate` for the new tables.
+  Run `makemigrations` and `migrate` for the new tables. Their tables are
+  never in fixtures.
+- `domainkit.encryption.SecretBox(purpose)`: AES-256-GCM under a key
+  derived from `SECRET_KEY` for each purpose, bound to the value's owner,
+  for secrets the database must give back (`docs/reference.md`,
+  "Encryption"; the `mfa` extra). Values under a fallback key still
+  decrypt, and say so, to be encrypted again.
+- Privacy covers users (`docs/auth.md`, "Users' personal data"):
+  `AbstractUser`'s username, email, and names are marked `Personal`, so
+  `privacy export` and `privacy erase` reach them. Erasing a user also
+  deactivates the account, makes its password unusable, deletes its tokens
+  and second factor, and keeps its username taken: the name becomes a keyed
+  digest that creating a user or signing up checks.
 - Scoped personal tokens (DJ-33): `domainkit.contrib.auth.personal_tokens`
   lets users list, create, and revoke their own tokens at `/auth/tokens`,
   shown once and limited to scopes (permission keys they hold) if they

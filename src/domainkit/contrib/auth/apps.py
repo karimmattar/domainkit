@@ -13,6 +13,7 @@ from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.contrib.contenttypes.sync import has_tables
 from domainkit.db import metadata
 from domainkit.db.routing import router
+from domainkit.ddd import event_bus
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.utils.module_loading import import_string
 
@@ -29,6 +30,7 @@ from .validators import get_password_validators
 CONTENTTYPES = "domainkit.contrib.contenttypes"
 MESSAGING = "domainkit.contrib.messaging"
 MAIL = "domainkit.contrib.mail"
+PRIVACY = "domainkit.contrib.privacy"
 MAILING_ROUTERS = ("recovery", "signup")
 """Modules whose routes send mail, and need a user model with an address."""
 COOKIE_AUTHENTICATION = "domainkit.contrib.auth.cookies.CookieAuthentication"
@@ -89,6 +91,12 @@ class AuthConfig(DomainConfig):
             import_module(f"{self.name}.tasks")
             for module in MAILING_ROUTERS:
                 import_module(f"{self.name}.{module}").register_tasks()
+        if registry.is_installed(PRIVACY):
+            from domainkit.contrib.privacy import PersonalDataErased
+
+            from .erasure import forget_credentials
+
+            event_bus.subscribe(PersonalDataErased, forget_credentials)
 
     def check_application(self, app: FastAPI) -> list[str]:
         """Routes that declare no rule, and rules no middleware can answer."""

@@ -20,7 +20,7 @@ one that logs in::
 
 A code works once: its step is recorded, and an earlier or equal step is
 refused. Recovery codes are stored as digests and work once. Secrets are
-encrypted under a key derived from ``SECRET_KEY`` (``encryption``). Codes
+encrypted under a key derived from ``SECRET_KEY`` (``domainkit.encryption``). Codes
 checked count against ``AUTH.MFA.RATE`` per user and, at ``/mfa/login``,
 per client address (there, per user only once the challenge holds);
 passwords count against ``AUTH.LOGIN_RATE``. Credentials limited to
@@ -39,6 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from domainkit import clock
 from domainkit.conf import settings
+from domainkit.encryption import SecretBox
 from domainkit.http.errors import APIError
 
 from . import totp
@@ -53,7 +54,6 @@ from .api import (
     _token_out,
     issue_login,
 )
-from .encryption import SecretBox
 from .events import MfaDisabled, MfaEnabled, RecoveryCodesRegenerated, RecoveryCodeUsed
 from .hashers import acheck_password
 from .models import AbstractBaseUser, UserId

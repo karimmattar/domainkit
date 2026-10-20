@@ -228,6 +228,39 @@ user = await authenticate(email="boss@example.org", password=password)
 `get_user_model()` returns the class in use, and `get_user_table()` its
 table.
 
+### Users' personal data
+
+`AbstractUser` marks `username`, `email`, `first_name`, and `last_name`
+`Personal(of="id")`, so `domainkit.contrib.privacy` exports them
+(`privacy export --subject <user id>`) and erases them. Mark the personal
+fields of a custom model too (a `Member`'s `email` above), and give it an
+`erase_personal_data` method if they cannot be erased by default
+([privacy.md](privacy.md)).
+
+Erasing a user (`privacy erase --subject <user id>`) runs
+`AbstractUser.erase_personal_data`:
+
+- the username becomes `erased-` and 32 hex digits: an HMAC-SHA256 of the
+  name (folded as lookups fold it) under a key derived from `SECRET_KEY`.
+  It stays unique, and the old name stays taken: creating a user or
+  signing up with it, in any case, is refused as a taken username, so
+  nobody else can become the person erased. The key's fallbacks are
+  checked too; a name erased under a key dropped from
+  `SECRET_KEY_FALLBACKS` is free again;
+- the email and names become empty, and the address unverified;
+- the account ends in the same commit: it is deactivated and its password
+  made unusable (both audited). Right after, every token of the user
+  (logins, browser sessions, personal tokens, client certificates) and
+  their second factor (secret and recovery codes) are deleted.
+
+The row stays, with its id, so what refers to the user still does.
+Erasing again changes nothing.
+
+Fixtures (`dumpdata`, `loaddata`) never hold tokens, sessions,
+certificates, TOTP secrets, or recovery codes: their tables are state
+(`info={"fixtures": False}`). A fixture of users still holds password
+hashes: keep it as safe as the database.
+
 ## Backends
 
 `AUTH.BACKENDS` lists backend classes, asked in order. `authenticate`

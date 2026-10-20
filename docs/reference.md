@@ -366,6 +366,28 @@ once what it signed has expired. A project without `SECRET_KEY` starts
 locally, and fails the first time something signs. See
 [ADR 0028](adr/0028-one-secret-key-signs-and-derives.md).
 
+### Encryption
+
+Secrets the database must give back, such as TOTP secrets or a signing
+secret shared with another service, are kept encrypted with
+`domainkit.encryption.SecretBox` (it needs `cryptography`: the `mfa`
+extra):
+
+```python
+from domainkit.encryption import SecretBox
+
+box = SecretBox("billing.webhook_secret")  # a purpose of its own
+sealed = box.encrypt(secret, associated=subscription_id.bytes)  # bytes to store
+secret, current = box.decrypt(sealed, associated=subscription_id.bytes)
+```
+
+It is AES-256-GCM under a key derived from `SECRET_KEY` for the purpose,
+with a random nonce per value. `associated` binds the value to its owner:
+a value copied to another row does not decrypt. Values encrypted under a
+key now in `SECRET_KEY_FALLBACKS` still decrypt, with `current` False:
+encrypt them again then. Anything else raises `DecryptionFailed`, which
+quotes nothing. See [ADR 0030](adr/0030-encrypt-totp-secrets-under-a-derived-key.md).
+
 ## Errors
 
 Every error response is JSON: `{"detail", "code", "request_id"}`, plus

@@ -214,13 +214,14 @@ mfa_devices = Table(
     Column("id", Uuid, primary_key=True),
     # One authenticator per user; no foreign key, as for tokens.
     Column("user_id", Uuid, nullable=False, unique=True),
-    # Encrypted (encryption.SecretBox), bound to the user's id.
+    # Encrypted (domainkit.encryption.SecretBox), bound to the user's id.
     Column("secret", LargeBinary(256), nullable=False),
     Column("created_at", UTCDateTime, nullable=False),
     Column("confirmed_at", UTCDateTime),
     # The step of the last code accepted: no code is accepted twice.
     Column("last_step", BigInteger),
-    info={"domain": "auth"},
+    # Secrets: never in fixtures (dumpdata, loaddata).
+    info={"domain": "auth", "fixtures": False},
 )
 """TOTP authenticators; unconfirmed until a first code proves the app has it."""
 
@@ -232,7 +233,7 @@ recovery_codes = Table(
     Column("user_id", Uuid, nullable=False),
     Column("used_at", UTCDateTime),
     Index("ix_domainkit_recovery_codes_user_id", "user_id"),
-    info={"domain": "auth"},
+    info={"domain": "auth", "fixtures": False},
 )
 """Single-use codes that stand in for a lost authenticator."""
 

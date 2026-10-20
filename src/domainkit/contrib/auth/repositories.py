@@ -16,15 +16,26 @@ from sqlalchemy import delete, exists, func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
+from domainkit.conf import settings
 from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.db import SqlAlchemyRepository
 from domainkit.ddd import F, Page, RowLock
 from domainkit.ddd.query import Query
+from domainkit.signing import derive_keys
 
 from .events import UserLoggedIn
 from .exceptions import GroupNameTaken, UnknownGroup, UnknownPermission, UsernameTaken
 from .hashers import amake_password
-from .models import AbstractBaseUser, Group, GroupId, PasswordHash, Permission, UserId
+from .models import (
+    ERASED_USERNAME_PURPOSE,
+    AbstractBaseUser,
+    Group,
+    GroupId,
+    PasswordHash,
+    Permission,
+    UserId,
+    erased_username,
+)
 from .settings import auth_settings
 from .tables import groups, mfa_devices, permissions, recovery_codes, tokens
 from .tokens import (
@@ -56,11 +67,43 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         return user
 
     async def username_taken(self, username: str) -> bool:
-        """Whether a user has ``username`` (normalized), in any case."""
+        """Whether a user has ``username`` (normalized), in any case, or had it.
+
+        A username privacy erased stays taken (``username_erased``).
+        """
         column = get_user_table().c[self.model.USERNAME_FIELD]
         name = self.model.normalize_username(username).lower()
         statement = select(exists().where(func.lower(column) == name))
+        return bool(await self.session.scalar(statement)) or (
+            await self.username_erased(name)
+        )
+
+    async def username_erased(self, username: str) -> bool:
+        """Whether privacy erased ``username`` from a user, in any case.
+
+        Erased names are found under ``SECRET_KEY`` and its fallbacks: a name
+        erased under a key no longer listed is taken no more.
+        """
+        if settings.SECRET_KEY is None:
+            return False  # Nothing can have been erased without a key.
+        column = get_user_table().c[self.model.USERNAME_FIELD]
+        names = [
+            erased_username(username, key=key)
+            for key in derive_keys(ERASED_USERNAME_PURPOSE)
+        ]
+        statement = select(exists().where(column.in_(names)))
         return bool(await self.session.scalar(statement))
+
+    async def _add(self, aggregate: AbstractBaseUser) -> None:
+        """Store a new user, unless privacy erased its username from another.
+
+        Raises:
+            UsernameTaken: It did: the name stays taken, as a live one is.
+        """
+        if await self.username_erased(aggregate.get_username()):
+            field = self.model.USERNAME_FIELD
+            raise UsernameTaken(f"The {field} is already taken.", fields=(field,))
+        await super()._add(aggregate)
 
     async def find_by_email(self, email: str) -> list[AbstractBaseUser]:
         """Users whose ``EMAIL_FIELD`` is ``email``, in any case; none without one."""

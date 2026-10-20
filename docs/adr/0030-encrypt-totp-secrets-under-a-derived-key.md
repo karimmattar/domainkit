@@ -40,7 +40,7 @@ ids, and a KMS.
 - `cryptography` is an optional extra, `domainkit[mfa]`, like `jwt` and
   `argon2`; the rest of auth needs nothing new. It is already a dependency
   of `pyjwt[crypto]`.
-- `encryption.SecretBox(purpose)` is the seam: `encrypt(plaintext,
+- `domainkit.encryption.SecretBox(purpose)` is the seam: `encrypt(plaintext,
   associated=)` and `decrypt(value, associated=)`. A key ring or a KMS
   later implements the same two calls behind a new version byte.
 

@@ -1,12 +1,21 @@
 """Secrets the database keeps, encrypted: AES-256-GCM under a key from ``SECRET_KEY``.
 
-TOTP secrets must be read back to check codes, so they cannot be hashed
-like passwords. ``SecretBox`` encrypts them under a key derived for its
-purpose (HKDF-SHA256, ``domainkit.signing.derive_key``), so the database
-alone reveals nothing, and binds each value to what it belongs to (its
-associated data, such as the user's id), so a value moved to another row
-does not decrypt. A value is a version byte, a random 96-bit nonce, and
-the ciphertext with its tag. Values encrypted under a key that is now in
+Some secrets must be read back, so they cannot be hashed like passwords:
+TOTP secrets (``domainkit.contrib.auth.mfa``), signing secrets shared with
+other services. ``SecretBox(purpose)`` encrypts them under a key derived
+for its purpose (HKDF-SHA256, ``domainkit.signing.derive_key``), so the
+database alone reveals nothing, and binds each value to what it belongs
+to (its associated data, such as the owner's id), so a value moved to
+another row does not decrypt::
+
+    box = SecretBox("billing.webhook_secret")
+    sealed = box.encrypt(secret, associated=subscription_id.bytes)
+    secret, current = box.decrypt(sealed, associated=subscription_id.bytes)
+    if not current:
+        ...  # Store box.encrypt(secret, ...) again, under the current key.
+
+A value is a version byte, a random 96-bit nonce, and the ciphertext with
+its tag. Values encrypted under a key that is now in
 ``SECRET_KEY_FALLBACKS`` still decrypt, and ``decrypt`` says so, for the
 caller to encrypt them again. Needs ``cryptography``:
 ``pip install "domainkit[mfa]"``. See ADR 0030.

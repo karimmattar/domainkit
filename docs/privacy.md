@@ -50,6 +50,9 @@ class Order(AggregateRoot[OrderId]):
   refused, as for events.
 - `manage.py check` lists markers privacy cannot follow, and staging and
   production refuse to start with them.
+- Users of `domainkit.contrib.auth` are marked already: erasing one also
+  ends the account and its credentials, and keeps the username taken
+  ([auth.md](auth.md#users-personal-data)).
 
 ## Subject access: `privacy export`
 
