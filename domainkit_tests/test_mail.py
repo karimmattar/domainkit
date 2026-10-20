@@ -291,7 +291,9 @@ def test_mail_needs_messaging(database_url: str) -> None:
     with (
         override_settings(INSTALLED_DOMAINS=[MAIL, ALPHA]),
         pytest.raises(
-            ImproperlyConfigured, match=r"needs 'domainkit\.contrib\.messaging'"
+            ImproperlyConfigured,
+            match=r"needs 'domainkit\.contrib\.messaging' in INSTALLED_DOMAINS: "
+            r"the worker sends the mail\.$",
         ),
     ):
         setup()

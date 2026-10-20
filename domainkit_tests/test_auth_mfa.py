@@ -597,14 +597,17 @@ def test_enrolment_states(identity: Api, clock: list[float]) -> None:
 def test_passwords_checked_again_count_against_the_login_rate(identity: Api) -> None:
     """Per user: a stolen session cannot guess the password through them."""
     create_user("alice")
+    create_user("bob")
     client = identity(LOGIN_RATE="2/minute")
     headers = bearer(login(client, "alice")["access_token"])
+    bob = bearer(login(client, "bob")["access_token"])
     elsewhere = TestClient(client.app, client=("203.0.113.9", 1))
 
-    def guess(caller: TestClient) -> int:
+    def guess(caller: TestClient, user: dict[str, str] = headers) -> int:
         body = {"password": "nope"}
-        return caller.post("/auth/mfa/totp", json=body, headers=headers).status_code
+        return caller.post("/auth/mfa/totp", json=body, headers=user).status_code
 
+    assert [guess(elsewhere, bob), guess(elsewhere, bob)] == [400, 400]
     assert [guess(client), guess(elsewhere), guess(elsewhere)] == [400, 400, 429]
 
 

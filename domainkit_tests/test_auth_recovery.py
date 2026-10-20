@@ -63,6 +63,17 @@ def outbox_payloads() -> list[dict[str, Any]]:
     return run_async(read())
 
 
+def outbox_targets() -> list[str]:
+    """The task each outbox row runs."""
+
+    async def read() -> list[str]:
+        async with connections.engine().connect() as connection:
+            rows = await connection.execute(select(messages.c.target))
+            return [row.target for row in rows]
+
+    return run_async(read())
+
+
 def token_in(message: mail.EmailMessage) -> str:
     """The token in a link message."""
     found = TOKEN.search(unquote(message.body))
@@ -105,6 +116,7 @@ def test_a_reset_link_sets_a_new_password_and_ends_every_session(
         "detail": "If an account uses this address, a reset link is on its way."
     }
     assert outbox_payloads() == [{"email": "alice@EXAMPLE.com"}]
+    assert outbox_targets() == ["domainkit.auth.send_password_reset"]
     assert mail.outbox == []
     assert run_worker() == 1
     (message,) = mail.outbox
@@ -405,6 +417,7 @@ def test_email_verification_marks_the_address_verified(identity: Api) -> None:
     assert response.status_code == 202
     assert response.json() == {"detail": "A link to verify your address is on its way."}
     assert outbox_payloads() == [{"user_id": str(alice)}]
+    assert outbox_targets() == ["domainkit.auth.send_email_verification"]
     run_worker()
     (message,) = mail.outbox
     assert (message.subject, message.to) == (

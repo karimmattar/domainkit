@@ -13,6 +13,7 @@ from domainkit_tests.test_auth_http import audited, bearer, create_user, login
 from domainkit_tests.test_auth_recovery import (
     from_address,
     outbox_payloads,
+    outbox_targets,
     run_worker,
     token_in,
 )
@@ -56,6 +57,7 @@ def test_signing_up_creates_the_account_and_verifies_its_address(
     assert response.status_code == 202
     assert response.json() == {"detail": "Check your email to finish signing up."}
     (payload,) = outbox_payloads()
+    assert outbox_targets() == ["domainkit.auth.complete_signup"]
     assert set(payload) == {"username", "email", "password_hash"}
     assert payload["password_hash"].startswith("pbkdf2_sha256$1$")
     assert PASSWORD not in str(payload)
