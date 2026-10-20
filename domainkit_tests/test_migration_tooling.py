@@ -86,6 +86,7 @@ def test_empty_revisions_are_written_for_data_migrations(project: Path) -> None:
     assert "    pass" in text
     assert run("migrate") == "Database 'default' is at head.\n"
     assert created(run("makemigrations", "--empty", database="default")).exists()
+    assert created(run("makemigrations", "--empty")).name.endswith("_auto.py")
 
 
 def test_empty_revisions_need_one_target(
@@ -143,6 +144,9 @@ def test_plans_and_sql_need_no_consent_in_deployments(
             assert "DROP TABLE" in run("migrate", "base", "--sql", "--downgrade")
             with pytest.raises(CommandError, match="--allow-data-loss"):
                 run("migrate", "base", "--fake", "--downgrade")
+            assert run(
+                "migrate", "base", "--fake", "--downgrade", "--allow-data-loss"
+            ) == ("Database 'default' is recorded at base; nothing ran.\n")
 
 
 def test_sql_is_rendered_offline(project: Path) -> None:
@@ -160,7 +164,7 @@ def test_sql_is_rendered_offline(project: Path) -> None:
     downgrade = run("migrate", "base", "--sql", "--downgrade")
     assert "DROP TABLE framework_test_shelves" in downgrade
     assert first in downgrade
-    with pytest.raises(CommandError, match="--from goes with --sql"):
+    with pytest.raises(CommandError, match=r"^--from goes with --sql\.$"):
         run("migrate", "--from", "base")
 
 

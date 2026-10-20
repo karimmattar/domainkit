@@ -432,3 +432,11 @@ def test_plans_and_sql_follow_each_target(two_targets: Path) -> None:
     sql = run("migrate", "--sql", "--database", "reports")
     assert "CREATE TABLE alpha_things" in sql
     assert notes.name not in sql
+
+
+def test_empty_revisions_go_to_the_named_target(two_targets: Path) -> None:
+    """``--empty --database reports`` writes into the reports history."""
+    output = run("makemigrations", "--empty", "-m", "fill", "--database", "reports")
+
+    revision = Path(output.strip().removeprefix("Created ").removesuffix("."))
+    assert revision.parent == two_targets / "reports"
