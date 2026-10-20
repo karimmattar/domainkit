@@ -1,0 +1,7 @@
+Hello {{ username }},
+
+Confirm that this is your email address within {{ valid_for }}:
+
+{{ link }}
+
+If you did not ask for this, ignore this message.

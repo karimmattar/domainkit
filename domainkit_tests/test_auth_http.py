@@ -168,6 +168,7 @@ def test_logins_return_opaque_tokens(api: Api) -> None:
         "id": str(alice),
         "username": "alice",
         "email": "alice@example.com",
+        "email_verified": False,
         "is_staff": False,
         "is_superuser": False,
         "groups": [],
@@ -1208,7 +1209,7 @@ def test_token_commands_are_audited(api: Api) -> None:
     (created,) = audited("auth.token_created")
     assert (created["actor"], created["details"]) == (
         "system",
-        {"user_id": str(alice), "name": "ci"},
+        {"user_id": str(alice), "name": "ci", "scopes": None},
     )
     (logged_out,) = audited("auth.user_logged_out")
     assert logged_out["details"] == {"user_id": str(alice), "everywhere": True}

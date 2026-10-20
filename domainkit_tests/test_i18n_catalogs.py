@@ -330,6 +330,9 @@ EXTRA_MESSAGES: Final = {
     "You do not have permission to perform this action.",  # BasePermission.message
     "This value is already taken.",  # db.errors, when no field is known.
     "Too many requests; slow down.",  # http.ratelimit.TOO_MANY_REQUESTS
+    "Credentials limited to scopes cannot do this.",  # auth.access.IsUnscoped
+    "Too many attempts; try again later.",  # auth.mfa and auth.recovery, by keyword
+    "Too many requests for mail; try again later.",  # auth.recovery and auth.signup
 }
 """Framework messages the scan below cannot see: constants and returns."""
 SCANNED: Final = (

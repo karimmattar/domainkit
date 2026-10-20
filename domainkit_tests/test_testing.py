@@ -388,6 +388,7 @@ def test_query_counts_are_checked(
 
         def test_counts(client_for, assert_num_queries, assert_max_queries):
             viewer = client_for("shop.view_product")
+            viewer.get("/products")  # A token's first use is recorded, once.
             with assert_max_queries(20) as queries:
                 assert viewer.get("/products").status_code == 200
             with assert_num_queries(len(queries)):

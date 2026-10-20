@@ -31,6 +31,9 @@ accepted record: supersede it with a new one and link both ways.
 | [0022](0022-query-repositories-with-criteria.md) | Query repositories with criteria that fakes evaluate as SQL does | Accepted |
 | [0023](0023-keyset-pages-and-typed-cursors.md) | Keyset pages with versioned, typed cursors; filters declared per field | Accepted |
 | [0024](0024-replicas-and-derived-tables.md) | Read from replicas in read-only work; derive tables from domain classes | Accepted |
+| [0028](0028-one-secret-key-signs-and-derives.md) | Sign with one `SECRET_KEY`, and derive a key per purpose from it | Accepted |
+| [0029](0029-messages-to-people-leave-through-the-outbox.md) | Send mail, text messages, and push notifications through the outbox | Accepted |
+| [0030](0030-encrypt-totp-secrets-under-a-derived-key.md) | Encrypt TOTP secrets with AES-GCM under a key derived from `SECRET_KEY` | Accepted |
 | [0031](0031-operation-ids-from-route-names.md) | Operation ids from route names, for new projects | Accepted |
 | [0032](0032-problem-details-as-an-error-format.md) | Offer RFC 9457 problem details as an error format | Accepted |
 | [0033](0033-feature-flags-in-the-database.md) | Keep feature flags and dynamic settings in the database, cached whole | Accepted |

@@ -223,6 +223,7 @@ def test_users_are_listed_by_username_in_pages(api: Api) -> None:
     assert bob["fields"].pop("date_joined")
     assert bob["fields"] == {
         "email": "bob@example.com",
+        "email_verified": False,
         "first_name": "",
         "last_name": "",
     }
@@ -302,7 +303,12 @@ def test_staff_create_users(api: Api) -> None:
         "last_login": None,
         "groups": [],
         "permissions": [],
-        "fields": {"email": "New@example.com", "first_name": "New", "last_name": ""},
+        "fields": {
+            "email": "New@example.com",
+            "email_verified": False,
+            "first_name": "New",
+            "last_name": "",
+        },
     }
     assert login(client, "newbie")["access_token"]
     created = audited("auth.user_created")[-1]
@@ -1063,6 +1069,7 @@ def test_custom_user_fields(swapped: TestClient) -> None:
     assert made["fields"]["phone"] == "+20 100"
     assert set(made["fields"]) == {
         "email",
+        "email_verified",
         "first_name",
         "last_name",
         "date_joined",

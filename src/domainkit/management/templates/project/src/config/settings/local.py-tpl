@@ -4,6 +4,8 @@ from config.settings.base import *
 from config.settings.base import BASE_DIR, MIDDLEWARE, env
 
 DEBUG = True
+# Signs reset links and cookies here; production needs a key of its own.
+SECRET_KEY = env.str("SECRET_KEY", "domainkit-insecure-local-development-key")
 # SQL per request and likely N+1 queries in the log and in Server-Timing
 # (docs/reference.md, "Debug toolbar"); staging and production refuse it.
 MIDDLEWARE = [*MIDDLEWARE, "domainkit.debug.DebugToolbarMiddleware"]

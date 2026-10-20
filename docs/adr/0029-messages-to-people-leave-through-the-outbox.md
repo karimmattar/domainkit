@@ -1,0 +1,61 @@
+# 0029. Send mail, text messages, and push notifications through the outbox
+
+- Status: Accepted
+- Date: 2026-10-19
+
+## Context
+
+Password resets, email verification, and most domains need to send
+messages to people: email above all, sometimes a text message or a push
+notification. Django's `send_mail` talks to the SMTP server inside the
+request. That couples the request to the server's speed and availability,
+and it gets transactions wrong both ways: a message can go out for a change
+that then rolls back, and a change can commit while its message is lost.
+
+domainkit already has a transactional outbox (ADR 0005) with registered
+tasks, per-task `max_attempts`, queues, and a background publisher. The
+options were: (a) send inside the request, as Django does; (b) send after
+the commit, in the request's process (`on_commit`); (c) store a task in the
+outbox in the transaction of the change, and let the worker send it.
+
+## Decision
+
+Messages to people are tasks in the outbox (option c).
+
+- `domainkit.contrib.mail` and `domainkit.contrib.notifications` register
+  one task each per channel (`domainkit.mail.send`,
+  `domainkit.notifications.send_sms`, `domainkit.notifications.send_push`)
+  when they are ready, with `MAX_ATTEMPTS` and `QUEUE` from their settings.
+  They require `domainkit.contrib.messaging`.
+- `send(message, uow)` defers the task in the unit of work, so the message
+  is stored if and only if the change commits; without a unit of work it is
+  stored at once, in a transaction of its own.
+- Every message gets its id (`Message-ID`, `message_id`) when it is queued,
+  so the retries that at-least-once delivery brings send the same message,
+  which receivers and providers can drop.
+- Backends are ports. Mail ships SMTP (stdlib `smtplib` on a worker
+  thread, TLS required outside `DEBUG`), console, and memory backends; text
+  messages and push notifications ship console and memory only, and
+  projects write the adapter for their provider. Staging and production
+  refuse the development backends.
+- Work that already runs in the worker, such as the task that makes a
+  password reset link, sends with `deliver`, skipping the outbox, so
+  secrets the message holds are never stored there.
+- Messages are validated when they are built: no header injection, bounded
+  recipients and sizes; their `repr` shows only their id, and delivery
+  errors name codes, never addresses.
+
+## Consequences
+
+- A request never waits for a mail server, and a server that is down delays
+  messages instead of failing requests or losing messages.
+- A message is never sent for a change that rolled back, and never lost for
+  one that committed; it may be sent twice when a worker dies after sending
+  and before recording it.
+- Projects that send mail must run a worker, and install messaging.
+- What a queued message holds stays in the outbox table until
+  `RETENTION_SECONDS` after it is sent (dead letters until retried): queue
+  ids and let a task build sensitive messages in the worker, as auth does.
+- Templates are files rendered by a small substitution helper (values only,
+  escaped in HTML), not a template engine: there is no new dependency, and
+  no logic in templates to review.

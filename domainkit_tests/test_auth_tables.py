@@ -47,6 +47,7 @@ def test_user_columns_keep_djangos_lengths() -> None:
         *BASE_USER,
         ("username", "String(length=150)", False, False, True),
         ("email", "String(length=254)", False, False, False),
+        ("email_verified", "Boolean()", False, False, False),
         ("first_name", "String(length=150)", False, False, False),
         ("last_name", "String(length=150)", False, False, False),
         ("is_staff", "Boolean()", False, False, False),
