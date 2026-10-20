@@ -8,6 +8,56 @@ All notable changes to domainkit. The format follows
 
 ### Added
 
+- Migration tooling (`docs/reference.md`, "Commands"):
+  `makemigrations --empty` writes a revision to fill in by hand, for data
+  migrations; `migrate --plan` lists what would run, `--sql` prints it as
+  SQL, rendered offline by Alembic, and `--fake` records a revision without
+  running it; `squashmigrations` replaces a run of revisions with one that
+  keeps the newest id and both directions, and refuses runs it cannot copy
+  correctly (branches, helper code, irreversible downgrades) or that a
+  database is in the middle of.
+- `dumpdata`, `loaddata`, and `flush`, with JSON fixtures written table by
+  table, parents first. State never goes in a fixture (the audit trail,
+  tokens, the outbox, idempotency keys, webhook subscriptions with their
+  signing secrets, and deliveries), `flush` keeps the audit trail,
+  and both `loaddata` and `flush` say what they will replace or delete,
+  and refuse in staging and production without `--force`. `seed` runs the
+  new `DomainConfig.seed()` hook of each installed domain.
+- `dbshell` opens `psql` or `sqlite3` on an alias, with the password in
+  `PGPASSWORD`, never on the command line, and refuses production without
+  `--allow-production`. `diffsettings` lists the settings that differ from
+  the defaults, secrets hidden.
+- `openapi` prints or writes the OpenAPI schema, and `openapi --diff
+  OLD.json` lists the changes that break clients (removed operations or
+  success statuses, new required parameters or fields, narrower request
+  values, removed or wider response fields) and exits 1 if there are any. With
+  `OPENAPI_OPERATION_IDS = "route_name"`, which new projects set, operation
+  ids are route names, stable when routers move (ADR 0031).
+- API versions and deprecations (`domainkit.http.versioning`):
+  `versioned_router("v1")`, and `Deprecation(since=..., sunset=...,
+  link=...)` for routers and routes, which sends `Deprecation`, `Sunset`,
+  and `Link` headers (RFC 9745, RFC 8594) on every response of those
+  routes and marks them deprecated in OpenAPI.
+- `ERROR_FORMAT = "problem+json"` answers every error as RFC 9457 problem
+  details, with `code`, `request_id`, and `errors` kept as extension
+  members, and documents it in OpenAPI (ADR 0032). The default body is
+  unchanged.
+- `domainkit.debug.DebugToolbarMiddleware`, for development: each response
+  gets `Server-Timing` with its SQL time and count, a statement repeated
+  `DEBUG_TOOLBAR.REPEATED_QUERIES` times in one request is logged as a
+  likely N+1 (its shape only, never values), and a request sent with
+  `X-Debug-Profile: 1` can leave a cProfile file. Staging and production
+  refuse to start with it; new projects list it in their local settings.
+- `domainkit.contrib.flags`: feature flags on for everyone, no one, listed
+  users or groups, or a stable percentage of users, and typed dynamic
+  settings, stored in the database and cached (ADR 0033). Check them with
+  `flag_enabled` or `RequireFlag`, and change them with `manage.py flags`
+  or a staff API guarded by permissions; every change is audited.
+- Records' history from the audit trail (`docs/contrib.md`, "History"):
+  `history(target=...)` or `history(aggregate=("product_id", id))`, with
+  each entry's field changes; `auditlog --target` and `--aggregate`; and
+  `GET /history` for staff with the new `audit.view_history` permission.
+  Personal values stay pseudonyms, also for people who were forgotten.
 - Cron schedules: `@periodic(cron="0 3 * * 1-5", tz="Africa/Cairo")` runs
   a task at wall-clock times in a time zone, with a parser of our own
   (lists, ranges, steps, names, macros). Daylight saving time never runs a
@@ -171,6 +221,21 @@ All notable changes to domainkit. The format follows
 
 ### Changed
 
+- Integrity errors other than a taken value no longer answer 500: a broken
+  foreign key is 409 `referenced`, a NULL in a NOT NULL column 422
+  `missing_value`, and a refused CHECK constraint 422 `check_violation`,
+  on PostgreSQL and on SQLite. A taken value outside a unit of work is a
+  409 too. Fields are named, values never are.
+- A `DuplicateValue` answers with one `errors` entry per field
+  (`loc: ["body", "<field>"]`), and its `fields` are the names the API
+  uses: a column's `info={"field": ...}`, else the attribute a mapped class
+  keeps it in, else the column's name.
+- `shell` is an asyncio console where `await` works at the top level, and
+  it imports each installed domain's models, repositories, and units of
+  work; `-c` runs code and exits.
+- The audit trail gained an index on `target`, for histories. Run
+  `makemigrations` and `migrate` in projects that install audit.
+- `check` and startup report operation ids that two routes share.
 - The outbox has `priority` and `started_at` columns, an index, and a
   `cancelled` status: run `makemigrations` and `migrate` in projects that
   install messaging before deploying.
@@ -209,6 +274,9 @@ All notable changes to domainkit. The format follows
 
 ### Fixed
 
+- Autogenerated revisions keep SQLAlchemy's own `Interval` and `PickleType`
+  columns as they are. An `Interval` was written as `DateTime`, a timestamp
+  on PostgreSQL instead of an `INTERVAL`.
 - `client_for` and `admin_client` work in async tests. They called
   `asyncio.run`, which fails inside a running event loop (N-01).
 - Clients from `client_for` and `admin_client` run on the `client`

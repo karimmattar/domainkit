@@ -162,7 +162,6 @@ msgstr ""
 msgid "No file has that name."
 msgstr ""
 
-#. Pydantic's validation messages, by their templates; the error's context fills the {names}
 msgid "This was changed since you read it; read it again before changing it."
 msgstr ""
 
@@ -173,6 +172,22 @@ msgid "Some of these fields cannot be changed."
 msgstr ""
 
 msgid "You do not have permission to change some of these fields."
+msgstr ""
+
+#. Pydantic's validation messages, by their templates; the error's context fills the {names}
+msgid "A required value is missing."
+msgstr ""
+
+msgid "A value breaks a rule of the data: it is out of the range or set the database accepts."
+msgstr ""
+
+msgid "Name revisions, not 'base'."
+msgstr ""
+
+msgid "Squashing needs at least two revisions."
+msgstr ""
+
+msgid "The squashed revision does not join the history."
 msgstr ""
 
 msgctxt "validation"

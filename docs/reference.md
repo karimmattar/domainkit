@@ -165,6 +165,9 @@ Each `BROKERS` entry:
 | --- | --- | --- |
 | `ALLOWED_HOSTS` | `localhost`, `127.0.0.1`, `[::1]` | Accepted `Host` values; `*.example.com` matches subdomains. A `Host` that is not a name, an IPv4 address, or a bracketed IPv6 address (with an optional port) is refused before matching. A wildcard `*` is refused in staging and production. |
 | `API_DOCS` | `True` | Serve `/docs`, `/redoc`, and `/openapi.json`. `check` warns when it is on in staging and production. |
+| `OPENAPI_OPERATION_IDS` | `"fastapi"` | `"route_name"`: each operation id is the route's name, stable when routers move (see [The API surface](#the-api-surface)). `init` sets it for new projects. |
+| `ERROR_FORMAT` | `"domainkit"` | `"problem+json"`: errors are RFC 9457 problem details (see [Errors](#errors)). |
+| `ERROR_TYPE_BASE_URL` | `None` | With problem details, each code's `type` is this absolute URL plus the code (`https://errors.example.com/` gives `https://errors.example.com/not_found`); unset, it is `about:blank`. |
 | `MAX_REQUEST_BODY_SIZE` | `1048576` | Bytes; larger bodies get 413, whether declared or streamed. A larger WebSocket message, text counted in UTF-8 bytes, closes the connection with 1009. |
 | `READINESS_TIMEOUT` | `5.0` | Seconds each readiness check may take. |
 | `READINESS_CACHE_SECONDS` | `1.0` | How long a `/ready` result is reused, from when its checks ended; probes that come while checks run wait for them, so probe floods cannot load the database. |
@@ -220,11 +223,37 @@ otherwise reads them itself, from `127.0.0.1` or from whatever
 `FORWARDED_ALLOW_IPS` allows (`*` lets any client choose its address, and
 so its rate limit and login throttle). `runserver` runs this way.
 
+### Debug toolbar
+
+`DebugToolbarMiddleware` (`domainkit.debug`) shows what each request cost
+the database, while `DEBUG` is on. The local settings `init` creates list
+it last in `MIDDLEWARE`; right after `RequestContextMiddleware`, it also
+counts the queries that authenticate the request.
+
+Every response gets `Server-Timing: db;dur=12.3;desc="7 queries", app;dur=45.6`
+(browsers show it in their network panel). A statement run
+`REPEATED_QUERIES` times or more in one request is logged as a likely N+1,
+by its shape: the SQL with every value and placeholder replaced by `?`.
+Bound values are never read. Staging and production refuse to start with
+it listed.
+
+It counts statements as `assert_num_queries` does
+([testing.md](testing.md#counting-queries)), but only the request's own,
+so concurrent requests do not mix. Find a request's queries with the
+toolbar, then keep them in check with `assert_max_queries` in a test.
+
+| `DEBUG_TOOLBAR` key | Default | Meaning |
+| --- | --- | --- |
+| `REPEATED_QUERIES` | `5` | Runs of one statement shape in one request that log a likely N+1. |
+| `HEADERS` | `False` | Also send `X-Debug-Queries`, `X-Debug-Query-Time` (milliseconds), and `X-Debug-Repeated-Queries`. |
+| `PROFILE_DIR` | `None` | A directory: a request sent with `X-Debug-Profile: 1` leaves a cProfile file there, named in the response's `X-Debug-Profile` (one request at a time; read it with `python -m pstats`). |
+
 ### Deployment checks
 
 With `ENVIRONMENT` set to `staging` or `production`, startup fails on:
 
 - `DEBUG = True`
+- `domainkit.debug.DebugToolbarMiddleware` in `MIDDLEWARE`
 - `*` in `ALLOWED_HOSTS`
 - a `TRUSTED_PROXIES` network that holds every address (`0.0.0.0/0`, `::/0`)
 - `ECHO` or `LOG_PARAMETERS` on any database
@@ -283,6 +312,11 @@ first:
 | `domainkit.http.ratelimit.RateLimitMiddleware` | Counts per actor, or per client address (IPv6: per /64). A WebSocket handshake counts once; over the limit it gets the 429, or a 1013 close where the server cannot send one. |
 | `domainkit.http.middleware.RequestBodyLimitMiddleware` | Refuses bodies over `MAX_REQUEST_BODY_SIZE` with 413, and closes WebSockets with 1009 on a larger message. |
 | `domainkit.contrib.idempotency.middleware.IdempotencyMiddleware` | Last: reads whole bodies, which the limit above has already bounded. |
+| `domainkit.debug.DebugToolbarMiddleware` | Development only: times each request's SQL, from where it is listed inwards (see [Debug toolbar](#debug-toolbar)). |
+
+The application also wraps its routes in a middleware of its own,
+innermost, that adds the headers of [deprecated
+routes](#versions-and-deprecations).
 
 `DEFAULT_MIDDLEWARE` (proxy headers, security headers, request context,
 allowed hosts, body limit) applies when a settings module sets no
@@ -291,15 +325,37 @@ allowed hosts, body limit) applies when a settings module sets no
 ## Errors
 
 Every error response is JSON: `{"detail", "code", "request_id"}`, plus
-`errors` (location, message, type) for validation errors. Submitted values
-are never echoed back. With `LocaleMiddleware`, `detail` and each `msg`
-are in the request's language; `code` and `type` never change
-([i18n.md](i18n.md)).
+`errors` (location, message, type) for validation errors and for values a
+constraint refused. Submitted values are never echoed back. With
+`LocaleMiddleware`, `detail` and each `msg` are in the request's language;
+`code` and `type` never change ([i18n.md](i18n.md)).
+
+With `ERROR_FORMAT = "problem+json"`, every error, the middleware's
+included, is RFC 9457 problem details, as `application/problem+json`:
+
+```json
+{
+  "type": "about:blank",
+  "title": "Not Found",
+  "status": 404,
+  "detail": "No invoice has that id.",
+  "instance": "/invoices/7",
+  "code": "invoice_not_found",
+  "request_id": "6f1c7e6a7d4b4c559f0e1f2a3b4c5d6e"
+}
+```
+
+`instance` is the request's path, without its query. `code`, `request_id`,
+and `errors` are extension members, so clients can switch on `code` either
+way. With `ERROR_TYPE_BASE_URL` each code is a problem type of its own:
+`type` is that URL plus the code, and `title` the code in words; serve a
+page there that describes each code. OpenAPI documents the format in use.
+See ADR 0032.
 
 | Raised | Status | `code` |
 | --- | --- | --- |
 | `NotFound` | 404 | from the class, such as `invoice_not_found` |
-| `Conflict`, `ConcurrentUpdate`, `DuplicateValue`, `LockNotAvailable` | 409 | from the class; a unique constraint may name its own (see [databases.md](databases.md#unique-values)); `lock_not_available` for `get_for_update(nowait=True)` ([queries.md](queries.md#row-locks)) |
+| `Conflict`, `ConcurrentUpdate`, `DuplicateValue`, `LockNotAvailable` | 409 | from the class; a unique constraint may name its own (see [databases.md](databases.md#unique-values)). A `DuplicateValue` adds one entry to `errors` per field, `loc` `["body", <field>]`; `lock_not_available` for `get_for_update(nowait=True)` ([queries.md](queries.md#row-locks)) |
 | `BusinessRuleViolation` | 422 | from the class |
 | `PermissionDenied` | 403 | from the class |
 | other `DomainError` | 400 | from the class |
@@ -312,10 +368,81 @@ are in the request's language; `code` and `type` never change
 | a partial change of a field the caller may not change (`FieldNotEditable`) | 403 | `field_not_editable` ([resources.md](resources.md#field-policies)) |
 | no pooled connection within `POOL_TIMEOUT`, or a statement cancelled by `STATEMENT_TIMEOUT` or `LOCK_TIMEOUT`, or lost to a deadlock or a serialization failure | 503 | `database_busy`, with `Retry-After: 1`; logged as a warning, not reported |
 | a value the database refuses (SQLSTATE class 22: a NUL character, text too long, a number out of range) | 422 | `invalid_value`; logged as a warning, not reported |
+| a foreign key (SQLSTATE 23503, or SQLite's `FOREIGN KEY constraint failed`): the row is still referenced, or refers to one that does not exist | 409 | `referenced`; the detail says which side when the database does (PostgreSQL), and `errors` names the field of a missing reference |
+| a NOT NULL column (23502) | 422 | `missing_value`, with the field in `errors` |
+| a CHECK constraint (23514) | 422 | `check_violation`, with the fields of the columns it names |
+| a unique constraint outside a unit of work (23505) | 409 | as `DuplicateValue` |
 | unexpected exception | 500 | `internal_error`; logged and sent to `ERROR_REPORTERS` |
 
 WebSockets the database refuses are closed with 1013 (busy) or 1007 (a
 value it refuses).
+
+Fields are named as the API knows them: a column's `info={"field": ...}`,
+else the attribute of the class mapped onto its table, else the column's
+name. Constraint errors are logged with their SQLSTATE and the
+constraint's name, never with the row's values. SQLite checks foreign keys
+only on connections that turn `PRAGMA foreign_keys` on.
+
+## The API surface
+
+### Operation ids
+
+FastAPI makes each operation id from the route's name, path, and method
+(`list_products_api_v1_products_get`), so moving a router to another
+prefix renames every method of generated clients. With
+`OPENAPI_OPERATION_IDS = "route_name"`, the id is the route's name alone:
+its function's name, or `name=`. Names must then be unique: `check` lists
+clashes, and staging and production refuse to start with any. A route with
+several methods has one id, as FastAPI makes it (and warns). See ADR 0031.
+
+`python manage.py openapi` prints the schema (`--output openapi.json`
+writes it), and `openapi --diff openapi.json` lists what changed since in
+ways that break clients, and exits 1 if anything did:
+
+- a path or an operation removed, or a success status no longer answered
+  (or no longer answered with JSON);
+- a new required parameter, request body, or body field;
+- a request value accepted before and refused now: a narrower type, fewer
+  enum values, a tighter bound, or fields a closed object no longer takes;
+- a response field removed or no longer always present, or one that may
+  now hold another type or enum value.
+
+Renaming a path parameter breaks nothing. Run it in CI against the schema
+of the last release.
+
+### Versions and deprecations
+
+```python
+from datetime import UTC, datetime
+
+from fastapi import Depends
+
+from domainkit.http.versioning import Deprecation, versioned_router
+
+V1_SUNSET = Deprecation(
+    since=datetime(2026, 11, 1, tzinfo=UTC),
+    sunset=datetime(2027, 5, 1, tzinfo=UTC),
+    link="https://api.example.com/docs/migrate-to-v2",
+)
+v1 = versioned_router("v1", deprecation=V1_SUNSET)  # Served under /v1.
+v1.include_router(products_v1)
+v2 = versioned_router("v2")
+v2.include_router(products_v2)
+
+
+@router.get("/old-report", dependencies=[Depends(V1_SUNSET)])
+async def old_report() -> Report: ...
+```
+
+A version's operation ids are the version and the route's name
+(`v1_list_products`), whatever `OPENAPI_OPERATION_IDS` says, so versions
+can share route names. A `Deprecation` on a router, an `include_router`
+call, or a route makes every response of those routes, errors included,
+carry `Deprecation: @<seconds>` (RFC 9745), `Sunset: <HTTP date>`
+(RFC 8594), and `Link: <...>; rel="deprecation"`; the most specific one
+wins. OpenAPI marks the operations `deprecated`, with the headers on each
+response, `x-deprecated-since`, `x-sunset`, and the link as `externalDocs`.
+Times need a time zone; a date means midnight UTC.
 
 ## Observability
 
@@ -386,16 +513,24 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `compilemessages` | `[DIRECTORY ...]`, `-l/--locale`, `--check` | Compile translation catalogs (`.po`) to `.mo` files: in the directories named, or in `LOCALE_PATHS` and each installed domain's `locale` directory. `--check` writes nothing and fails if one is missing or out of date ([i18n.md](i18n.md)). |
 | `cache` | `check\|clear`, `[ALIAS ...]`, `--all` | Ping caches (all by default), or delete every key of the named caches, all versions, in their namespace only. Clearing needs aliases or `--all`. |
 | `startdomain` | `name`, `--aggregate`, `--plural`, `--parent`, `--tests-dir` | Generate a bounded context and its tests. Its command is named after the plural, which may not name an existing command (built in, installed, or a contrib app's). |
-| `makemigrations` | `-m/--message`, `--check`, `--merge`, `--database` | Write a revision per target with changes; `--check` fails if one is missing; `--merge` joins two heads. Without `--database`, every target. The message is one line, without backslashes or triple quotes. |
-| `migrate` | `[revision]`, `--downgrade`, `--allow-data-loss`, `--database` | Apply revisions (or revert down to one) on every database of every target, then create partitions. A revision id needs `--database` when there are several targets. |
+| `makemigrations` | `-m/--message`, `--check`, `--merge`, `--empty`, `--database` | Write a revision per target with changes; `--check` fails if one is missing; `--merge` joins two heads; `--empty` writes a revision with nothing in it, to fill in by hand (a data migration; it needs `--database` when there are several targets). Without `--database`, every target. The message is one line, without backslashes or triple quotes. |
+| `migrate` | `[revision]`, `--downgrade`, `--allow-data-loss`, `--database`, `--plan`, `--sql`, `--from`, `--fake` | Apply revisions (or revert down to one) on every database of every target, then create partitions. A revision id needs `--database` when there are several targets. `--plan` lists the revisions that would run; `--sql` prints their SQL, rendered offline by Alembic, from the database's revision or `--from`; `--fake` records the revision without running anything, for a schema made by other means. None of the three changes the schema, but `--fake --downgrade` still needs `--allow-data-loss` in staging and production. |
+| `squashmigrations` | `[end]`, `--start`, `--database`, `-m/--message` | Replace a target's revisions, `--start` (default: the first) to `end` (default: the head), with one; see [Squashing migrations](#squashing-migrations). |
 | `showmigrations` | `--database` | Applied and pending revisions; a shard group lists each database. |
 | `partitions` | `--database`, `--prune`, `--dry-run` | Create the current and upcoming partitions of partitioned tables; `--prune` drops those past `retain`. |
 | `runserver` | `[addr:port]`, `--noreload` | Development server. Production runs uvicorn directly. |
-| `shell` | | Python console with settings, the registry, and connections loaded. |
+| `shell` | `-c/--command`, `--no-imports` | An asyncio Python console, where `await` works at the top level, with settings, the registry, connections, `asyncio`, and every installed domain's models, repositories, and units of work by name (unless `--no-imports`). `-c` runs code and exits. |
+| `dbshell` | `--database`, `--owner`, `--allow-production`, `-- [ARG ...]` | Open `psql` or `sqlite3` on an alias, as its `URL`'s user (`--owner`: `MIGRATION_URL`'s). The connection and password reach `psql` in libpq's environment variables, never on its command line; TLS follows `SSLMODE` and its files. Production refuses without `--allow-production`. Arguments after `--` go to the client. |
+| `diffsettings` | `--all` | The settings that differ from the defaults; `--all` lists every one, defaults marked `###`. Secrets stay hidden as in `repr(settings)`, and so do entries of free-form settings named like secrets (`password`, `token`, `key`, ...) and passwords in URLs. |
+| `dumpdata` | `[TABLE_OR_DOMAIN ...]`, `--database`, `--output`, `--indent` | Write rows as a JSON fixture; see [Data: fixtures, flush, and seeds](#data-fixtures-flush-and-seeds). |
+| `loaddata` | `FIXTURE ...`, `--database`, `--dry-run`, `--force` | Load fixtures, saying first what each table gets and how many stored rows it replaces. Staging and production refuse without `--force`. |
+| `flush` | `--database`, `--dry-run`, `--force` | Delete every row but the audit trail's, saying first what goes, then rerun the `migrated` hooks (content types, permissions). Staging and production refuse without `--force`. |
+| `seed` | `[LABEL ...]` | Run installed domains' `DomainConfig.seed` hooks, in `INSTALLED_DOMAINS` order. |
+| `openapi` | `--output`, `--indent`, `--diff OLD` | Print or write the OpenAPI schema; `--diff` lists breaking changes since `OLD` and exits 1 if any (see [The API surface](#the-api-surface)). |
 | `runworker` | `--once`, `--metrics-port`, `--metrics-address`, `--database`, `--queue`, `--no-relay` | Run outbox messages (messaging): one worker per outbox, every hosting database by default; `--queue` (repeatable) limits them to some queues. With `MESSAGING.BROKER`, relay to the broker and run what it delivers; `--no-relay` only consumes. `--once` always works from the outbox. |
 | `messages` | `--pending\|--locked\|--dead`, `--queue`, `--limit`, `--retry ID\|all`, `--cancel ID`, `--database` | Count an outbox's messages and show each queue's lag, list them, requeue dead letters, or cancel a message no worker runs (messaging). |
 | `webhooks` | `subscriptions\|deliveries\|replay`, `[ID ...]`, `--failed`, `--status`, `--subscription`, `--limit` | List webhook subscriptions or deliveries, or send finished deliveries again (webhooks). |
-| `auditlog` | `--actor`, `--action`, `--limit`, `--database` | Read the audit trail (audit). |
+| `auditlog` | `--actor`, `--action`, `--limit`, `--database`, `--target`, `--aggregate FIELD=ID` | Read the audit trail, or one record's history with what each entry changed (audit; see [contrib.md](contrib.md#history)). |
 | `auditseal` | | Seal new audit rows into each database's hash chain and anchor its head on `AUDIT.LEDGER` (audit). |
 | `auditverify` | `--database` | Check the audit trail against its seals and anchors; fails if anything changed (audit). |
 | `auditforget` | `subject ...`, `--anonymous-days` | Make people's pseudonyms in the audit trail unlinkable, in every audited database (audit). |
@@ -405,6 +540,72 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `changepassword` | `[username]` | Set a user's password, asked twice and validated; the user's tokens end (auth). |
 | `createtoken` | `username`, `--name`, `--days`, `--no-expiry` | Print a new token for a user's scripts, shown once (auth). |
 | `cleartokens` | `--user` | Delete expired tokens, or every token of one user (auth). |
+| `flags` | `list`, `set NAME`, `delete NAME`, `settings`, `setting KEY [VALUE] [--reset]` | List and change feature flags and dynamic settings (flags; see [contrib.md](contrib.md#flags-feature-flags-and-dynamic-settings)). |
+
+### Data: fixtures, flush, and seeds
+
+A fixture is one JSON document, its tables parents first:
+
+```json
+{"format": "domainkit.fixture", "version": 1, "tables": [
+  {"table": "shop_products", "rows": [{"id": "6f1c7e6a-...", "name": "Lamp", "version": 1}]}
+]}
+```
+
+Numbers and text are written as they are; decimals, times, durations, ids,
+and enums as text; bytes as base64; JSON columns as JSON. `loaddata`
+converts each value back by its column's type, and refuses one that does
+not fit without quoting it. A row whose primary key is stored replaces the
+stored row. Rows load in one transaction, and on PostgreSQL serial ids then
+continue after the highest one loaded.
+
+State is never dumped or loaded: the audit trail (a copy of its keys would
+outlive `auditforget`), tokens, the outbox, idempotency keys, webhook
+subscriptions (they hold signing secrets: set them up in each environment)
+and deliveries, and any table with `info={"fixtures": False}`. A fixture can still hold personal data and
+password hashes: keep it as safe as the database.
+
+`flush` keeps append-only tables, those with `info={"append_only": True}`
+or, on PostgreSQL, triggers of their own, and those with
+`info={"flush": False}`: the audit trail survives it. Serial ids start
+again on PostgreSQL.
+
+Each command works on one alias (`--database`, default `default`), as the
+schema owner (`MIGRATION_URL` when set).
+
+`seed` calls each installed domain's `async DomainConfig.seed()`: sample
+data for development, or defaults a deployment starts with. Write rows
+through the domain's units of work, and make a second run harmless.
+
+### Squashing migrations
+
+`squashmigrations` writes one revision that does what a run of a target's
+revisions did: its `upgrade` runs each one's `upgrade`, oldest first, and
+its `downgrade` each one's `downgrade`, newest first. Each body is copied
+as written, comments included, into a function of its own, and imports are
+merged. Then the run's files are deleted.
+
+The new revision keeps the id of the newest revision it replaces, and the
+`down_revision` of the oldest. So databases at or past the newest revision,
+and revisions written after it, need nothing. A database at a revision
+inside the run would be at one that no longer exists:
+
+- The command refuses while a database in `DATABASES` is there.
+- It cannot see other environments: deploy the squash only once every
+  database (staging, production, developers' copies) is at or past the
+  newest revision of the run.
+
+It also refuses what it cannot copy and keep correct:
+
+- a merge, a branch, a branch label, or `depends_on` in the run;
+- code outside `upgrade` and `downgrade` other than imports (move helpers
+  into them first), or two revisions importing different things under one
+  name;
+- a `downgrade` that raises: the squashed revision could not be reverted
+  either.
+
+Comments outside the two functions are not kept. Check the result as any
+revision: the test database migrates up, down, and up again.
 
 ## Extension points
 
@@ -418,9 +619,13 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | A check of the built application (routes, middleware) | `DomainConfig.check_application(app)`, returning problems | (called when the app is built and by `check`; staging and production refuse to start with any) |
 | Work staged with each commit | `async DomainConfig.stage(uow, events, tasks)` | (called by the unit of work) |
 | Work after each commit | `async DomainConfig.committed(uow)` | (called by the unit of work; failures are reported, never raised) |
-| Rows after each `migrate` (`post_migrate`) | `async DomainConfig.migrated(connection, database)` | (called by `migrate` for each database it upgraded, in one transaction as the schema owner) |
+| Rows after each `migrate` (`post_migrate`) | `async DomainConfig.migrated(connection, database)` | (called by `migrate` for each database it upgraded, in one transaction as the schema owner, and by `flush`) |
+| Sample or default data | `async DomainConfig.seed()` | (called by `seed`, in `INSTALLED_DOMAINS` order) |
 | How long a domain keeps rows | `DomainConfig.RETENTION`, a sequence of `privacy.Retention` | (checked when the app is built; applied by `privacy purge`; see [privacy.md](privacy.md)) |
 | Erasing a personal field no default fits | `erase_personal_data(fields)` on the aggregate | (called by `privacy erase` and retention erasure) |
+| How errors name a column | `info={"field": "<API name>"}` on the `Column` | (read by unique, foreign key, NOT NULL, and CHECK errors) |
+| A table fixtures or `flush` leave alone | `info={"fixtures": False}`, `{"flush": False}`, or `{"append_only": True}` on the `Table` | (read by `dumpdata`, `loaddata`, and `flush`) |
+| A deprecated route or version | `Depends(Deprecation(...))`, `versioned_router(...)` | `domainkit.http.versioning` |
 | Tables a domain stops using | `DomainConfig.holds_table(table)` | (asked by migrations and content types; a swapped user table answers no) |
 | A user model | a subclass of `AbstractUser` or `AbstractBaseUser`, and its table | `AUTH.USER_MODEL`, `AUTH.USER_TABLE` |
 | An authentication or permission backend | `auth.backends.BaseBackend` | `AUTH.BACKENDS` |

@@ -10,7 +10,16 @@ from uuid import UUID, uuid4
 
 import pytest
 from alembic.util.exc import CommandError as AlembicCommandError
-from sqlalchemy import Column, Integer, MetaData, String, Table, Uuid, inspect
+from sqlalchemy import (
+    Column,
+    Integer,
+    Interval,
+    MetaData,
+    String,
+    Table,
+    Uuid,
+    inspect,
+)
 from sqlalchemy.dialects.postgresql import INET
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.types import TypeDecorator
@@ -235,6 +244,7 @@ def test_render_item_uses_storage_types() -> None:
     assert render_item("type", Code(), context) == "sa.String(length=8)"  # type: ignore[arg-type]
     assert render_item("type", Network(), context) is False  # type: ignore[arg-type]
     assert render_item("type", String(), context) is False  # type: ignore[arg-type]
+    assert render_item("type", Interval(), context) is False  # type: ignore[arg-type]
     assert render_item("column", Code(), context) is False  # type: ignore[arg-type]
 
 
