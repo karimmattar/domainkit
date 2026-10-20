@@ -1,6 +1,7 @@
 """``openapi``: export the OpenAPI schema, or list breaking changes against one."""
 
 import json
+import re
 from argparse import ArgumentParser
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,14 @@ from domainkit.management.base import BaseCommand, CommandError
 
 MAX_SCHEMA_BYTES = 64 * 1024 * 1024
 """The largest schema ``--diff`` reads."""
+MAX_SCHEMA_DEPTH = 256
+"""How deep arrays and objects may nest in a schema file; OpenAPI needs far less.
+
+Deeper files are refused before parsing, so the outcome never depends on
+how much stack the interpreter has left.
+"""
+_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
+_BRACKET = re.compile(r"[\[\]{}]")
 
 
 class Command(BaseCommand):
@@ -74,11 +83,29 @@ def _read(path: Path) -> dict[str, Any]:
     try:
         if path.stat().st_size > MAX_SCHEMA_BYTES:
             raise CommandError(f"{path} is larger than {MAX_SCHEMA_BYTES} bytes.")
-        document = json.loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+        if _depth(text) > MAX_SCHEMA_DEPTH:
+            raise CommandError(
+                f"{path} is not a JSON document we read: it nests deeper than "
+                f"{MAX_SCHEMA_DEPTH}."
+            )
+        document = json.loads(text)
     except OSError as exc:
         raise CommandError(f"Cannot read {path}: {exc.strerror or exc}.") from None
-    except (ValueError, RecursionError):
+    except ValueError:
         raise CommandError(f"{path} is not a JSON document.") from None
     if not isinstance(document, dict) or not isinstance(document.get("paths"), dict):
         raise CommandError(f"{path} is not an OpenAPI schema (it has no paths).")
     return document
+
+
+def _depth(text: str) -> int:
+    """How deep the arrays and objects of the JSON ``text`` nest.
+
+    Brackets inside strings do not count.
+    """
+    deepest = depth = 0
+    for bracket in _BRACKET.findall(_STRING.sub("", text)):
+        depth += 1 if bracket in "[{" else -1
+        deepest = max(deepest, depth)
+    return deepest

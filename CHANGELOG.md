@@ -39,16 +39,18 @@ All notable changes to domainkit. The format follows
   - `AbstractUser.email_verified`, set by a mailed link and cleared when
     the address changes. Run `makemigrations` and `migrate` for the new
     column.
-  - `POST /auth/signup`, off until `AUTH.SIGNUP_ENABLED`, checks the fields
-    and password rules at once, then answers 202 and mails the address a
-    link (`AUTH.SIGNUP_URL`), or word that the username or address is
-    taken. `POST /auth/signup/confirm` with the link's token makes the
+  - `POST /auth/signup`, off until `AUTH.SIGNUP_ENABLED`, takes a username
+    and an address, no password, checks them at once, then answers 202
+    and mails the address a link (`AUTH.SIGNUP_URL`), or word that the
+    username or address is taken. `POST /auth/signup/confirm` with the
+    link's token and a password, checked by the validators, makes the
     account, its address verified: until then no account exists, so no
-    one but the address's owner learns whether it has one, and a pending
-    signup reserves no username. Pending signups, with the password's
-    hash, wait in the new `domainkit_pending_signups` table (run
-    `makemigrations` and `migrate`), never in the outbox or in fixtures,
-    and expired ones are purged hourly.
+    one but the address's owner learns whether it has one, and whoever
+    reads the mail chooses the password, so asking with someone else's
+    address gains nothing. A pending signup reserves no username; pending
+    signups wait in the new `domainkit_pending_signups` table (run
+    `makemigrations` and `migrate`), never in fixtures, and expired ones
+    are purged hourly.
   - Requests that send mail count against the new `AUTH.EMAIL_RATE`, and
     token checks against `AUTH.LOGIN_RATE`; resets, verifications,
     signups, and refusals are audited.

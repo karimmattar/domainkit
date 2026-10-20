@@ -482,6 +482,10 @@ ways that break clients, and exits 1 if anything did:
 Renaming a path parameter breaks nothing. Run it in CI against the schema
 of the last release.
 
+The old schema must be a JSON file of at most 64 MiB whose arrays and
+objects nest at most 256 deep (`MAX_SCHEMA_BYTES`, `MAX_SCHEMA_DEPTH`);
+other files are refused before they are parsed.
+
 ### Versions and deprecations
 
 ```python
