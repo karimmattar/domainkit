@@ -1290,7 +1290,7 @@ class Recording(MemoryBroker):
         """Take every waiting message of ``queue``."""
         waiting = []
         while self.pending(queue):
-            waiting.append(self._queues[queue].get_nowait())
+            waiting.append(self._queues[queue].popleft())
         return waiting
 
 

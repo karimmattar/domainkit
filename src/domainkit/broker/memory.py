@@ -6,7 +6,8 @@ staging and production refuse it.
 """
 
 import asyncio
-from collections.abc import Iterable
+from collections import deque
+from collections.abc import Iterable, Sequence
 
 from domainkit.broker.base import Broker, BrokerRefused, Delivery, Handler, Subscription
 
@@ -14,17 +15,16 @@ type _Message = tuple[bytes, str]
 
 
 class _MemorySubscription(Subscription):
-    """The pumps that hand queued messages to a handler."""
+    """The pump that hands queued messages to a handler."""
 
-    def __init__(self, pumps: list[asyncio.Task[None]]) -> None:
-        """Own ``pumps``."""
-        self._pumps = pumps
+    def __init__(self, pump: asyncio.Task[None]) -> None:
+        """Own ``pump``."""
+        self._pump = pump
 
     async def cancel(self) -> None:
-        """Stop the pumps; handlers already running finish."""
-        for pump in self._pumps:
-            pump.cancel()
-        await asyncio.gather(*self._pumps, return_exceptions=True)
+        """Stop the pump; handlers already running finish."""
+        self._pump.cancel()
+        await asyncio.gather(self._pump, return_exceptions=True)
 
 
 class MemoryBroker(Broker):
@@ -32,53 +32,74 @@ class MemoryBroker(Broker):
 
     def __init__(self) -> None:
         """Start without queues."""
-        self._queues: dict[str, asyncio.Queue[_Message]] = {}
+        self._queues: dict[str, deque[_Message]] = {}
+        self._arrived = asyncio.Event()
         self._handling: set[asyncio.Task[None]] = set()
 
     async def declare(self, queues: Iterable[str]) -> None:
         """Create the missing queues."""
         for queue in queues:
-            self._queues.setdefault(queue, asyncio.Queue())
+            self._queues.setdefault(queue, deque())
 
     async def publish(self, queue: str, body: bytes, *, message_id: str) -> None:
         """Append to ``queue``; refuse queues nobody declared, as RabbitMQ does."""
         if queue not in self._queues:
             raise BrokerRefused(f"No queue {queue!r} takes the message.")
-        self._queues[queue].put_nowait((body, message_id))
+        self._put(queue, (body, message_id))
 
     def pending(self, queue: str) -> int:
         """Messages waiting in ``queue`` (tests); 0 for a queue never declared."""
-        return self._queues[queue].qsize() if queue in self._queues else 0
+        return len(self._queues.get(queue, ()))
 
     async def consume(
         self, queues: Iterable[str], prefetch: int, handler: Handler
     ) -> Subscription:
-        """Pump each queue into ``handler``, at most ``prefetch`` at once."""
+        """Pump the queues into ``handler``, at most ``prefetch`` at once in all."""
         queues = list(queues)
         await self.declare(queues)
-        slots = asyncio.Semaphore(prefetch)
-        pumps = [
-            asyncio.create_task(self._pump(queue, slots, handler)) for queue in queues
-        ]
-        return _MemorySubscription(pumps)
+        pump = asyncio.create_task(
+            self._pump(queues, asyncio.Semaphore(prefetch), handler)
+        )
+        return _MemorySubscription(pump)
+
+    def _put(self, queue: str, message: _Message) -> None:
+        """Queue ``message`` and wake the pumps."""
+        self._queues[queue].append(message)
+        self._arrived.set()
 
     async def _pump(
-        self, queue: str, slots: asyncio.Semaphore, handler: Handler
+        self, queues: Sequence[str], slots: asyncio.Semaphore, handler: Handler
     ) -> None:
-        """Hand out ``queue``'s messages while a slot is free."""
-        source = self._queues[queue]
+        """Hand out the queues' messages, in turn, while a slot is free.
+
+        One pump serves every queue of a subscription, so while it waits for
+        a message it holds one slot, not one per queue: an empty queue never
+        keeps a slot from a busy one.
+        """
+        turn = 0
         while True:
             await slots.acquire()
             try:
-                body, message_id = await source.get()
+                queue, (body, message_id) = await self._next(queues, turn)
             except asyncio.CancelledError:
                 slots.release()
                 raise
+            turn = queues.index(queue) + 1
             task = asyncio.create_task(
                 self._deliver(queue, body, message_id, slots, handler)
             )
             self._handling.add(task)
             task.add_done_callback(self._handling.discard)
+
+    async def _next(self, queues: Sequence[str], turn: int) -> tuple[str, _Message]:
+        """Take the next message, looking at ``queues`` from ``turn`` on."""
+        while True:
+            for offset in range(len(queues)):
+                queue = queues[(turn + offset) % len(queues)]
+                if self._queues[queue]:
+                    return queue, self._queues[queue].popleft()
+            self._arrived.clear()
+            await self._arrived.wait()
 
     async def _deliver(
         self,
@@ -108,6 +129,6 @@ class MemoryBroker(Broker):
 
         async def requeue() -> None:
             if settle():
-                self._queues[queue].put_nowait((body, message_id))
+                self._put(queue, (body, message_id))
 
         await handler(Delivery(queue, body, message_id, ack, requeue))
