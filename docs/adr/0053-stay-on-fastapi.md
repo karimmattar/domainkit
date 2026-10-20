@@ -14,24 +14,24 @@ which FastAPI is built on.
 What a request costs, measured in process without a server (Python 3.13,
 FastAPI 0.141.1, Starlette 1.8.0, Litestar 2.18.0, Pydantic 2.14.1,
 msgspec 0.22.0): the fastest of nine rounds of 10,000 requests, in two
-runs on a shared 4-core Linux container, so the ranges are wide:
+runs on a 4-core Linux container with little else running:
 
 | Request | Starlette | FastAPI | Litestar |
 | --- | --- | --- | --- |
-| `GET`, a small JSON object | 15–18 µs | 67–71 µs | 34–36 µs |
-| `POST`, a path parameter, a validated body, an async dependency | 30–37 µs (by hand) | 155–172 µs | 90–113 µs (Pydantic), 74–92 µs (msgspec) |
-| the same `POST`, its dependency a plain `def` | | 420–455 µs | |
+| `GET`, a small JSON object | 12–13 µs | 39–41 µs | 26 µs |
+| `POST`, a path parameter, a validated body, an async dependency | 22–23 µs (by hand) | 92–93 µs | 62–65 µs (Pydantic), 52–54 µs (msgspec) |
+| the same `POST`, its dependency a plain `def` | | 184–186 µs | |
 
 domainkit's own `GET /health`, through its whole middleware stack, took
-181–222 µs the same way, and one `SELECT 1` through SQLAlchemy on a local
-PostgreSQL took 231–294 µs. The re-audit found where an authenticated
+107–114 µs the same way, and one `SELECT 1` through SQLAlchemy on a local
+PostgreSQL took 123–127 µs. The re-audit found where an authenticated
 request spends its time: a token lookup and the user with groups and
 permissions (4–5 queries), sync dependencies sent to the thread pool
 (`current_user`), logging written on the event loop, and 2–3 extra
 transactions for an idempotency key. One query, or one hop to the thread
-pool (250–300 µs above an async dependency, in the table), costs more than
-FastAPI does over Litestar (35–80 µs a request); logging blocks the loop
-whenever stdout does. None of these goes away with another framework.
+pool (about 90 µs above an async dependency, in the table), costs more
+than FastAPI does over Litestar (15–40 µs a request); logging blocks the
+loop whenever stdout does. None of these goes away with another framework.
 
 What a move would cost:
 
@@ -65,7 +65,7 @@ What a move would cost:
 - Projects keep FastAPI's routes, dependencies, and documentation, and
   domainkit keeps reading FastAPI's dependency tree, so a FastAPI release
   that changes it needs a domainkit release.
-- A request spends 35–80 µs more in the framework than it would on
+- A request spends 15–40 µs more in the framework than it would on
   Litestar. Once the principal is cached, that share grows, and the
   benchmarks in CI (R17) will show by how much.
 - What would change this:
