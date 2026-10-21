@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy import delete, event, insert, text, update
+from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
@@ -65,6 +66,12 @@ WRITE_REFUSED = "25006"
 PROBE = "SELECT set_config('domainkit.probe', 'set', true)"
 """Set a value for the rest of the transaction (``SET LOCAL``)."""
 PROBED = "SELECT current_setting('domainkit.probe', true)"
+COUNT_RUNS = (
+    "SELECT set_config('domainkit.runs', (coalesce(nullif("
+    "current_setting('domainkit.runs', true), ''), '0')::int + 1)::text, false)"
+)
+"""Count, in the session, how many times the server runs this statement."""
+RUNS = "SELECT current_setting('domainkit.runs', true)"
 
 
 @pytest.fixture
@@ -240,10 +247,10 @@ async def test_statements_read_without_a_transaction(tables: None) -> None:
 
     async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
         assert not await in_transaction(uow.session)
-        plain = text("SELECT 'without parameters'")
+        await uow.session.execute(text(COUNT_RUNS))  # Sent once.
         options = {"no_parameters": True}  # Sent as is, through its own path.
-        shown = await uow.session.scalar(plain, execution_options=options)
-        assert shown == "without parameters"
+        await uow.session.execute(text(COUNT_RUNS), execution_options=options)
+        assert await uow.session.scalar(text(RUNS)) == "2"
     for reads in (Reads.TRANSACTION, Reads.SNAPSHOT):
         async with GadgetsUnitOfWork(reads=reads) as uow:
             assert await in_transaction(uow.session)
@@ -613,11 +620,23 @@ async def test_autocommit_through_pgbouncer_is_one_transaction(database: str) ->
 
 @postgres_only
 async def test_statements_on_their_own_set_no_local_timeouts(tables: None) -> None:
-    """``SET LOCAL`` would end with the statement: the session's timeout holds."""
-    with freeze_time("2026-01-01"):
-        async with deadlines.timeout(5.0):
-            async with connections.autocommit() as connection:
-                shown = await connection.scalar(text("SHOW statement_timeout"))
-            async with connections.engine().begin() as connection:
-                lowered = await connection.scalar(text("SHOW statement_timeout"))
+    """``SET LOCAL`` would end with the statement: none is sent; the session's holds."""
+    sent: list[str] = []
+
+    def record(*args: Any) -> None:  # noqa: ANN401 - before_cursor_execute's.
+        sent.append(args[2])
+
+    event.listen(Engine, "before_cursor_execute", record)
+    try:
+        with freeze_time("2026-01-01"):
+            async with deadlines.timeout(5.0):
+                async with connections.autocommit() as connection:
+                    shown = await connection.scalar(text("SHOW statement_timeout"))
+                alone = list(sent)
+                async with connections.engine().begin() as connection:
+                    lowered = await connection.scalar(text("SHOW statement_timeout"))
+    finally:
+        event.remove(Engine, "before_cursor_execute", record)
     assert (shown, lowered) == ("30s", "5s")
+    assert alone == ["SHOW statement_timeout"]
+    assert "set_config('statement_timeout'" in sent[1]  # The transaction's own.

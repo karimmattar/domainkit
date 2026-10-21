@@ -8,18 +8,21 @@ the stored response with two. Claims race safely without a transaction.
 import asyncio
 import os
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from types import TracebackType
 from typing import Any, Self
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import event
+from sqlalchemy import event, insert, select
 from sqlalchemy.engine import Connection, Engine, ExecutionContext
 from sqlalchemy.pool import Pool
 from starlette.types import Message, Receive, Scope, Send
 
 from domainkit.conf import override_settings
 from domainkit.contrib.idempotency import middleware as idempotency
+from domainkit.contrib.idempotency.settings import IdempotencySettings
+from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.db import connections
 from domainkit.db.connections import INTERNAL
 from domainkit_tests.conftest import POSTGRES_VARIABLE
@@ -33,6 +36,7 @@ from domainkit_tests.test_ratelimit_and_idempotency import (
 ON_POSTGRES = bool(os.environ.get(POSTGRES_VARIABLE))
 postgres_only = pytest.mark.skipif(not ON_POSTGRES, reason=f"set {POSTGRES_VARIABLE}")
 RACERS = 5
+CREDENTIALS = IdempotencySettings().CREDENTIAL_HEADERS
 
 
 class Costs:
@@ -195,3 +199,64 @@ def idempotent(database_url: str) -> Iterator[TestClient]:
     """An app with the idempotency app and middleware on an empty database."""
     with idempotent_app({"default": database_url}) as client:
         yield client
+
+
+@pytest.mark.usefixtures("idempotent")
+def test_an_expired_key_is_claimed_with_nothing_of_its_old_row() -> None:
+    """Replaced in place, it is in progress, unpinned, and released if it fails.
+
+    The old row had finished, committed, been pinned, and held another
+    request's fingerprint: none of it may survive the claim.
+    """
+    now = datetime.now(UTC)
+    old = {
+        "key_hash": idempotency._hash(
+            idempotency._caller(KEYED_POST, CREDENTIALS), "raw"
+        ),
+        "fingerprint": "another request",
+        "status_code": 201,
+        "headers": {"content-type": "text/plain"},
+        "body": b"old",
+        "created_at": now - timedelta(days=2),
+        "expires_at": now - timedelta(seconds=1),
+        "committed_at": now - timedelta(days=2),
+        "token": "first",
+        "locked_until": now - timedelta(seconds=1),
+        "pinned": True,
+    }
+    seen: list[dict[str, Any]] = []
+
+    async def failing(scope: Scope, receive: Receive, send: Send) -> None:
+        async with connections.engine().connect() as connection:
+            row = (await connection.execute(select(idempotency_keys))).one()
+        seen.append(dict(row._mapping))
+        await send({"type": "http.response.start", "status": 503, "headers": []})
+        await send({"type": "http.response.body", "body": b"later"})
+
+    async def scenario() -> list[Message]:
+        async with connections.engine().begin() as connection:
+            await connection.execute(insert(idempotency_keys).values(**old))
+        sent: list[Message] = []
+
+        async def send(message: Message) -> None:
+            sent.append(message)
+
+        await idempotency.IdempotencyMiddleware(failing)(
+            KEYED_POST, receive_empty_body, send
+        )
+        await connections.close_all()
+        return sent
+
+    answered = asyncio.run(scenario())
+
+    assert answered[0]["status"] == 503  # It ran: no replay, no mismatch.
+    [claimed] = seen
+    assert claimed["fingerprint"] == idempotency._hash("POST", "/raw", b"", b"")
+    assert (claimed["token"], claimed["pinned"]) != ("first", True)
+    assert claimed["pinned"] is False
+    for gone in ("status_code", "headers", "body", "committed_at"):
+        assert claimed[gone] is None, gone
+    assert claimed["created_at"] > old["created_at"]
+    assert claimed["expires_at"] > now
+    assert claimed["locked_until"] > now
+    assert stored_keys() == []  # Released: the failure committed nothing.

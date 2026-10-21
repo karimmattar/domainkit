@@ -780,26 +780,68 @@ async def test_a_transaction_reads_each_subjects_key_once(tables: None) -> None:
 
 
 async def test_forgetting_drops_the_keys_open_transactions_keep(tables: None) -> None:
-    """A transaction of this process never uses a key forgotten meanwhile."""
+    """A transaction of this process never uses a key forgotten meanwhile.
+
+    The keys of other subjects, and of later anonymous days, stay kept.
+    """
+    subjects = ["ann", "bob", "anonymous:2026-01-01", "anonymous:2026-01-02"]
     async with NotesUnitOfWork() as uow:  # Made and committed beforehand.
-        await subject_keys(uow.session, ["ann", "bob", "anonymous:2026-01-01"])
+        await subject_keys(uow.session, subjects)
         await uow.commit()
     async with NotesUnitOfWork() as uow:
-        kept = await subject_keys(uow.session, ["ann", "bob", "anonymous:2026-01-01"])
+        kept = await subject_keys(uow.session, subjects)
         assert await forget("ann") == 1
         assert await forget_anonymous(date(2026, 1, 2)) == 1
+        with assert_num_queries(0):
+            still = await subject_keys(uow.session, ["bob", "anonymous:2026-01-02"])
         with CapturedQueries() as later:
-            renewed = await subject_keys(
-                uow.session, ["ann", "bob", "anonymous:2026-01-01"]
-            )
+            renewed = await subject_keys(uow.session, ["ann", "anonymous:2026-01-01"])
         await uow.commit()
 
-    assert on_keys(later) == ["SELECT", "INSERT"]  # Ann and the day, made anew.
-    assert renewed["bob"] == kept["bob"]
+    assert on_keys(later) == ["SELECT", "INSERT"]  # Both made anew.
+    assert still == {name: kept[name] for name in ("bob", "anonymous:2026-01-02")}
     for subject in ("ann", "anonymous:2026-01-01"):
         assert renewed[subject] != kept[subject]
     assert await pseudonym_of("ann", "email", "a") == pseudonym(
         renewed["ann"], "email", "a"
+    )
+
+
+async def test_no_transaction_gets_a_key_forgotten_while_it_ran(
+    tables: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Kept before forget began, or read while it deleted: both are dropped.
+
+    One transaction kept the key before; it looks again once the delete
+    committed, before forget returns. Another reads the key while forget
+    deletes it; it looks again once forget returns.
+    """
+    async with NotesUnitOfWork() as uow:
+        [old] = (await subject_keys(uow.session, ["ann"])).values()
+        await uow.commit()
+    delete = personal._delete
+    seen: dict[str, bytes] = {}
+
+    async with NotesUnitOfWork() as before, NotesUnitOfWork() as during:
+        await subject_keys(before.session, ["ann"])
+
+        async def deleting(condition: Any) -> int:  # noqa: ANN401 - a criterion.
+            seen["during, read"] = (await subject_keys(during.session, ["ann"]))["ann"]
+            deleted = await delete(condition)
+            seen["before, again"] = (await subject_keys(before.session, ["ann"]))["ann"]
+            await before.session.rollback()  # Lets the other one write on SQLite.
+            return deleted
+
+        monkeypatch.setattr(personal, "_delete", deleting)
+        assert await forget("ann") == 1
+        seen["during, again"] = (await subject_keys(during.session, ["ann"]))["ann"]
+        await during.commit()
+
+    assert seen["during, read"] == old  # Read before the delete committed.
+    assert seen["before, again"] != old
+    assert seen["during, again"] not in {old, seen["before, again"]}
+    assert await pseudonym_of("ann", "email", "a") == pseudonym(
+        seen["during, again"], "email", "a"
     )
 
 
