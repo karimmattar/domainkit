@@ -53,6 +53,15 @@ uvloop and httptools on one core, 64 connections, best of three runs at a
 load average of 5 to 7), the default middleware served 3,643 requests a
 second with every line on 0.8.0, 3,904 on 0.9, and 5,802 sampling at 0.1.
 
+These counts are on FastAPI 0.141.1. On FastAPI 0.143.1 and SQLAlchemy
+2.1.4 a whole request costs about 3% more (FastAPI's telemetry hooks), and
+the savings hold within 2%: with every access line a request costs 674,619
+instructions on 0.8.0 and 643,267 on 0.9 (the line 181,741 and 156,844),
+505,391 sampling at 0.1, and 486,423 without the log; the page of 50 costs
+1,314,338 instead of 2,168,067. FastAPI 0.143.1 still chooses between
+pydantic's encoder and `jsonable_encoder` as 0.141.1 does, so the bytes are
+the same on both.
+
 ### How it was measured
 
 - **Instructions** are counted by valgrind's callgrind, every thread
