@@ -63,7 +63,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Body, Depends, Header, Path, Request, Response, status
 from fastapi import Query as QueryParameters
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field, create_model
 from starlette.requests import HTTPConnection
@@ -91,6 +91,7 @@ from domainkit.ddd.uow import UnitOfWork
 from domainkit.http.errors import error_responses
 from domainkit.http.filters import FilterSet
 from domainkit.http.pagination import PageRequest, Pagination
+from domainkit.http.responses import JSONResponse
 from domainkit.utils.headers import none_match
 from domainkit.utils.text import pluralize, snake_case
 
