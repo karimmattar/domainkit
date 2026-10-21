@@ -12,9 +12,11 @@ dearer, and pass every other one, on GitHub's shared runners.
 Time is the measure people care about, and the one a shared runner cannot
 give. On the 4-core machine the re-audit used, the same code timed in one
 process spread by 10–15% from run to run, and whole series came in low and
-did not reproduce; the ladder below spread by up to 65% on its cheapest
-rung while other work ran. A gate on time needs a band wider than that, so
-it lets a 10% regression through, and still fails now and then on nothing.
+did not reproduce. Three runs of the ladder below, while other work ran,
+put the best times of one rung up to 79% apart (the 1 µs bare ASGI
+application), and of the others 1–21% apart. A gate on time needs a band
+wider than that, so it lets a 10% regression through, and still fails now
+and then on nothing.
 
 The options:
 
