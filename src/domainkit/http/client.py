@@ -476,9 +476,12 @@ class HttpClient:
 
     def _headers(
         self, config: HttpClientConfig, extra: Mapping[str, str] | None
-    ) -> dict[str, str]:
-        """The call's headers: what it carries along, the client's, then its own."""
-        headers = {"User-Agent": config.USER_AGENT}
+    ) -> httpx2.Headers:
+        """The call's headers: what it carries along, the client's, then its own.
+
+        Each replaces the one before it of the same name, whatever its case.
+        """
+        headers = httpx2.Headers({"User-Agent": config.USER_AGENT})
         if self.guard:
             headers["Accept-Encoding"] = "identity"
         if self.propagate:

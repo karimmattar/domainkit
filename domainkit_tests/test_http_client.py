@@ -136,6 +136,20 @@ async def test_calls_go_to_the_stub_with_what_they_carry() -> None:
     assert 9.0 < timeouts["read"] <= 10.0
 
 
+async def test_headers_replace_others_of_the_same_name_whatever_their_case() -> None:
+    """The client's replace the defaults, and the call's the client's: one each."""
+    upstream = Upstream(status(200))
+    api = HttpClient(headers={"user-agent": "rates/1.0", "X-Client": "rates"})
+    context = RequestContext("req-1", None, "GET", "/")
+    with stub(upstream), bind_request(context):
+        await api.get(URL, headers={"x-client": "mine", "x-request-id": "own"})
+
+    [sent] = upstream.requests
+    assert sent.headers.get_list("user-agent") == ["rates/1.0"]
+    assert sent.headers.get_list("x-client") == ["mine"]
+    assert sent.headers.get_list("x-request-id") == ["own"]
+
+
 async def test_a_base_url_keeps_calls_on_its_origin() -> None:
     """Paths are appended to it; a URL elsewhere is refused, not followed."""
     upstream = Upstream(status(200))
@@ -144,22 +158,34 @@ async def test_a_base_url_keeps_calls_on_its_origin() -> None:
         await api.get("/rates")
         await api.get("rates?day=1")
         await api.get("https://api.example.com/v2/other")
+        await HttpClient(base_url="https://api.example.com/X/").get("X/y")
+        await HttpClient(base_url="http://api.example.com").get(
+            "http://api.example.com:80/z"
+        )
         for elsewhere in (
             "https://evil.example/",
             "//evil.example/x",
             "http://api.example.com/v1/rates",
             "https://api.example.com:8443/v1/rates",
         ):
-            with pytest.raises(UnsafeURL, match="leaves the client's base URL"):
+            with pytest.raises(
+                UnsafeURL, match=r"^The URL leaves the client's base URL\.$"
+            ):
                 await api.get(elsewhere)
 
     assert [str(r.url) for r in upstream.requests] == [
         "https://api.example.com/v1/rates",
         "https://api.example.com/v1/rates?day=1",
         "https://api.example.com/v2/other",
+        "https://api.example.com/X/X/y",
+        "http://api.example.com/z",
     ]
+    message = (
+        r"^A client's base URL names a scheme and a host, and has no query "
+        r"or fragment\.$"
+    )
     for bad in ("/v1", "https://api.example.com/?key=1", "https://a.example/#x"):
-        with pytest.raises(ValueError, match="names a scheme and a host"):
+        with pytest.raises(ValueError, match=message):
             HttpClient(base_url=bad)
 
 
@@ -175,24 +201,27 @@ async def test_calls_carry_the_trace_context() -> None:
 
 
 async def test_every_method_has_a_shortcut() -> None:
-    """get, head, options, post, put, patch, delete, and request itself."""
+    """get, head, options, post, put, patch, delete, and request itself.
+
+    Each passes its options on.
+    """
     upstream = Upstream(status(204))
     api = HttpClient()
+    shortcuts = ("get", "head", "options", "post", "put", "patch", "delete")
     with stub(upstream):
-        for call in (api.get, api.head, api.options, api.post, api.put, api.patch):
-            await call(URL)
-        await api.delete(URL)
+        for name in shortcuts:
+            await getattr(api, name)(URL, headers={"X-Shortcut": name})
         await api.request("trace", URL)
 
-    assert [r.method for r in upstream.requests] == [
-        "GET",
-        "HEAD",
-        "OPTIONS",
-        "POST",
-        "PUT",
-        "PATCH",
-        "DELETE",
-        "TRACE",
+    assert [(r.method, r.headers.get("x-shortcut")) for r in upstream.requests] == [
+        ("GET", "get"),
+        ("HEAD", "head"),
+        ("OPTIONS", "options"),
+        ("POST", "post"),
+        ("PUT", "put"),
+        ("PATCH", "patch"),
+        ("DELETE", "delete"),
+        ("TRACE", None),
     ]
 
 
@@ -230,8 +259,12 @@ async def test_options_are_checked() -> None:
         HttpClient(timeout=0)
     with pytest.raises(ValueError, match="0 to 10 times"):
         HttpClient(retries=11)
-    with pytest.raises(ValueError, match="above 0"):
-        await HttpClient().get(URL, timeout=-1)
+    assert HttpClient(retries=10).retries == 10
+    for refused in (-1, 0):
+        with pytest.raises(ValueError, match="above 0"):
+            await HttpClient().get(URL, timeout=refused)
+    with stub(Upstream(status(200))):
+        assert (await HttpClient().get(URL, timeout=0.5)).status_code == 200
     with pytest.raises(ValidationError, match="USER_AGENT"):
         Settings.model_validate({"HTTP_CLIENT": {"USER_AGENT": "a\r\nX-Evil: 1"}})
 
@@ -302,10 +335,12 @@ async def test_retry_after_is_honoured_up_to_max_backoff(waits: list[float]) -> 
             assert (await HttpClient().get(URL)).status_code == 200
         with stub(Upstream(status(429, **{"Retry-After": "3"}), status(200))):
             assert (await HttpClient().get(URL)).status_code == 429
+        with stub(Upstream(status(429, **{"Retry-After": "2"}), status(200))):
+            assert (await HttpClient().get(URL)).status_code == 200
         with stub(Upstream(status(503, **{"Retry-After": "soon"}), status(200))):
             assert (await HttpClient().get(URL)).status_code == 200
 
-    assert waits == [1.0, 0.0]
+    assert waits == [1.0, 2.0, 0.0]
 
 
 async def test_a_wait_longer_than_the_time_left_is_not_waited(
@@ -317,8 +352,15 @@ async def test_a_wait_longer_than_the_time_left_is_not_waited(
         stub(Upstream(status(503, **{"Retry-After": "2"}), status(200))),
     ):
         response = await HttpClient(timeout=1.0).get(URL)
+    with (
+        options(BACKOFF=0.0, MAX_BACKOFF=5.0),
+        freeze_time("2026-01-01"),
+        stub(Upstream(status(503, **{"Retry-After": "2"}), status(200))),
+    ):
+        exactly = await HttpClient(timeout=2.0).get(URL)  # Nothing left after it.
 
     assert response.status_code == 503
+    assert exactly.status_code == 503
     assert waits == []
 
 
@@ -407,6 +449,31 @@ async def test_the_deadline_bounds_every_call() -> None:
     assert upstream.requests == []
 
 
+async def test_a_call_from_a_task_started_inside_the_deadline_keeps_it() -> None:
+    """The task times itself, and still raises DeadlineExceeded, not CallTimeout."""
+    api = HttpClient(timeout=60.0)
+    with freeze_time("2026-01-01") as clock, stub(hang):
+        async with deadlines.timeout(60.0):
+            clock.tick(59.95)  # 0.05s left, on the clock deadlines read.
+            task = asyncio.create_task(api.get(URL))
+            with pytest.raises(deadlines.DeadlineExceeded):
+                await task
+    assert api.breaker._circuits == {}
+
+
+async def test_a_timeout_error_from_inside_the_call_is_not_its_timeout() -> None:
+    """Raised by the transport, it goes on as it is, and blames no host."""
+
+    def timing_out(request: httpx2.Request) -> httpx2.Response:
+        raise TimeoutError("The transport's own.")
+
+    api = HttpClient(retries=0)
+    with stub(timing_out), pytest.raises(TimeoutError) as raised:
+        await api.get(URL)
+    assert type(raised.value) is TimeoutError
+    assert api.breaker._circuits == {}
+
+
 async def test_each_attempt_is_told_the_time_left() -> None:
     """httpx2's own timeouts never exceed what the deadline leaves."""
     upstream = Upstream(status(200))
@@ -440,8 +507,9 @@ async def test_a_failing_host_trips_its_circuit_then_is_tried_again(
     ):
         assert (await api.get(URL)).status_code == 500
         assert (await api.get(URL)).status_code == 502
-        with pytest.raises(CircuitOpen, match=r"api\.example\.com:443"):
+        with pytest.raises(CircuitOpen, match=r"api\.example\.com:443") as refused:
             await api.get(URL)
+        assert refused.value.request.url == URL
         assert len(upstream.requests) == 2
         assert (await api.get("https://other.example.com/")).status_code == 200
         clock.tick(30)
@@ -455,6 +523,22 @@ async def test_a_failing_host_trips_its_circuit_then_is_tried_again(
             "failures in a row"
         )
     ]
+
+
+async def test_circuits_are_kept_per_origin_with_its_port() -> None:
+    """An http origin's default port is 80 (https's, 443), written or not."""
+    api = HttpClient(retries=0)
+    with options(BREAKER_FAILURES=1), stub(Upstream(status(503))):
+        await api.get("http://api.example.com/")
+        with pytest.raises(
+            CircuitOpen,
+            match=(
+                r"^Calls to http://api\.example\.com:80 fail at once: its circuit "
+                r"is open\.$"
+            ),
+        ):
+            await api.get("http://api.example.com:80/other")
+        assert (await api.get("http://api.example.com:8080/")).status_code == 503
 
 
 async def test_one_trial_at_a_time_and_a_cancelled_trial_frees_the_next() -> None:
@@ -550,13 +634,38 @@ async def test_answers_are_read_up_to_max_response_bytes() -> None:
     assert len(bomb) < 1024
 
 
+async def test_an_answer_too_long_is_not_read_to_its_end() -> None:
+    """Chunks are counted together, and reading stops at the first one too many."""
+    read: list[bytes] = []
+
+    async def body() -> AsyncIterator[bytes]:
+        for _ in range(100):
+            read.append(b"x" * 512)
+            yield read[-1]
+
+    async def chunked(*parts: bytes) -> AsyncIterator[bytes]:
+        for part in parts:
+            yield part
+
+    endless = stub(lambda request: httpx2.Response(200, content=body()))
+    short = stub(lambda request: httpx2.Response(200, content=chunked(b"ab", b"cd")))
+    with options(MAX_RESPONSE_BYTES=1024):
+        with endless, pytest.raises(ResponseTooLarge) as raised:
+            await HttpClient().get(URL)
+        with short:
+            assert (await HttpClient().get(URL)).content == b"abcd"
+
+    assert len(read) == 3
+    assert raised.value.request.url == URL
+
+
 # The guard ----------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     ("url", "error"),
     [
-        ("http://api.example.com/", "must use https."),
+        ("http://api.example.com/", r"must use https\.$"),
         ("https://localhost/", "local or metadata host"),
         ("https://user:pw@api.example.com/", "user name or password"),
         ("https://169.254.169.254/latest", "cloud metadata address"),
@@ -574,6 +683,16 @@ async def test_a_guarded_client_checks_urls_before_calling(
     assert upstream.requests == []
     assert url not in str(refused.value)
     assert refused.value.code == "unsafe_url"
+
+
+async def test_allowed_networks_let_their_addresses_through() -> None:
+    """A private address the client was told it may call."""
+    upstream = Upstream(status(200))
+    inside = HttpClient(
+        guard=True, allowed_networks=[ipaddress.ip_network("10.0.0.0/8")]
+    )
+    with stub(upstream):
+        assert (await inside.get("https://10.1.2.3/")).status_code == 200
 
 
 async def test_a_guarded_client_tells_others_nothing() -> None:
@@ -680,7 +799,12 @@ async def test_a_guarded_client_refuses_addresses_it_may_not_call(
         await api.get("http://local.test/")
     with pytest.raises(httpx2.ConnectError, match="could not be resolved"):
         await api.get("http://missing.test/")
-    with options(CONNECT_TIMEOUT=0.01), pytest.raises(httpx2.ConnectTimeout):
+    with (
+        options(CONNECT_TIMEOUT=0.01),
+        pytest.raises(
+            httpx2.ConnectTimeout, match=r"^Resolving the host took too long\.$"
+        ),
+    ):
         await HttpClient(guard=True, allow_http=True, retries=0).get(
             "http://slow.test/"
         )
@@ -690,9 +814,51 @@ async def test_a_guarded_client_refuses_addresses_it_may_not_call(
 async def test_the_guarded_backend_calls_hosts_only() -> None:
     """Never a local socket; its sleep is the backend's."""
     backend = GuardedBackend(())
-    with pytest.raises(UnsafeURL, match="local socket"):
+    with pytest.raises(UnsafeURL, match=r"^The URL names a local socket\.$"):
         await backend.connect_unix_socket("/run/docker.sock")
     await backend.sleep(0)
+
+
+async def test_the_guarded_backend_connects_as_httpcore2_asks(
+    resolver: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """To the checked address, with the port and options it was given."""
+    resolver["service.test"] = ["127.0.0.1"]
+    calls: list[tuple[str, int, dict[str, Any]]] = []
+    connected = object()
+
+    class Underneath:
+        async def connect_tcp(
+            self,
+            host: str,
+            port: int,
+            **options: Any,  # noqa: ANN401
+        ) -> object:
+            calls.append((host, port, options))
+            return connected
+
+    backend = GuardedBackend(LOCAL)
+    monkeypatch.setattr(backend, "_backend", Underneath())
+    stream = await backend.connect_tcp(
+        "service.test",
+        8080,
+        timeout=3.0,
+        local_address="127.0.0.2",
+        socket_options=[(1, 2, 3)],
+    )
+
+    assert stream is connected
+    assert calls == [
+        (
+            "127.0.0.1",
+            8080,
+            {
+                "timeout": 3.0,
+                "local_address": "127.0.0.2",
+                "socket_options": [(1, 2, 3)],
+            },
+        )
+    ]
 
 
 # Pools, closing, and logs -------------------------------------------------------
@@ -715,6 +881,45 @@ async def test_a_client_pools_connections_until_closed() -> None:
         assert server.connections == 3
         await lifecycle.close_http_clients()
     await api.aclose()  # Nothing left to close.
+
+
+async def test_redirects_are_returned_not_followed() -> None:
+    """A 3xx is the caller's to judge, stubbed or not."""
+    upstream = Upstream(status(302, Location=URL))
+    with stub(upstream):
+        assert (await HttpClient().get(URL)).status_code == 302
+    assert len(upstream.requests) == 1
+
+
+def test_pools_are_built_from_http_client(
+    monkeypatch: pytest.MonkeyPatch,
+    client_certificate: tuple[Path, Path],  # noqa: F811 - the fixture.
+) -> None:
+    """Limits, the CA bundle, no redirects; guarded, no proxy from the environment."""
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:3128")
+    with options(
+        MAX_CONNECTIONS=7,
+        MAX_KEEPALIVE_CONNECTIONS=3,
+        CA_BUNDLE=str(client_certificate[0]),
+    ):
+        config = settings.HTTP_CLIENT
+        plain = HttpClient()._open(config)
+        guarded = HttpClient(guard=True)._open(config)
+    context = tls_context(client_certificate[0])
+
+    for pool in (plain, guarded):
+        assert pool.follow_redirects is False
+        transport = pool._transport
+        assert isinstance(transport, httpx2.AsyncHTTPTransport)
+        connections = transport._pool
+        assert connections._ssl_context is context
+        assert connections._max_connections == 7
+        assert connections._max_keepalive_connections == 3
+        assert connections._keepalive_expiry == 5.0
+    assert plain.trust_env
+    assert plain._mounts
+    assert not guarded.trust_env
+    assert guarded._mounts == {}
 
 
 async def test_the_lifespan_needs_no_client_module(
@@ -764,7 +969,7 @@ async def test_logs_name_the_call_without_secrets(
     secret = {"Authorization": "Bearer SECRET-TOKEN"}
     with options(RETRIES=1, BACKOFF=0.0):
         with stub(Upstream(status(503), status(200))):
-            await HttpClient().get(URL + "?key=SECRET-KEY", headers=secret)
+            await HttpClient().get(URL + "?a=1?key=SECRET-KEY", headers=secret)
         with (
             stub(Upstream(fail(httpx2.ConnectError))),
             pytest.raises(httpx2.ConnectError),
@@ -775,10 +980,32 @@ async def test_logs_name_the_call_without_secrets(
 
     logged = [r.getMessage() for r in caplog.records if r.name == LOGGER]
     assert not [line for line in logged if "SECRET" in line]
+    assert len(logged) == 5
     assert logged[0] == f"Retrying GET {URL} in 0.00s after 503 (attempt 1 of 2)"
     assert logged[1].startswith(f"GET {URL} 200 in ")
-    assert logged[-2] == f"GET {URL} failed (ConnectError) after 2 attempt(s)"
-    assert logged[-1].startswith("GET https://api.example.com 200 in ")
+    assert logged[2] == (
+        f"Retrying GET {URL} in 0.00s after ConnectError (attempt 1 of 2)"
+    )
+    assert logged[3] == f"GET {URL} failed (ConnectError) after 2 attempt(s)"
+    assert logged[4].startswith("GET https://api.example.com 200 in ")
+
+
+async def test_logs_say_how_long_an_answer_took(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """In milliseconds, on the framework's clock."""
+    caplog.set_level(logging.DEBUG, LOGGER)
+    with freeze_time("2026-01-01") as clock:
+
+        def slow(request: httpx2.Request) -> httpx2.Response:
+            clock.tick(0.25)
+            return httpx2.Response(200)
+
+        with stub(slow):
+            await HttpClient().get(URL)
+
+    logged = [r.getMessage() for r in caplog.records if r.name == LOGGER]
+    assert logged == [f"GET {URL} 200 in 250.0ms"]
 
 
 def test_guarded_connections_go_through_httpcore2() -> None:
