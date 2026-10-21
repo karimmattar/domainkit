@@ -125,6 +125,11 @@ All notable changes to domainkit. The format follows
 - `domainkit.contrib.messaging.Budget`, the concurrency budget `Worker` and
   `BrokerWorkers` share through `budget=`.
 - `docs/runtime.md`, "Workers and the outbox".
+- `auditseal --late` (and `seal(..., late=True)` and `seal_all(late=True)`)
+  seals the audit rows that committed later than `AUDIT.SEAL_LATE_WINDOW`,
+  which no run could reach, into the chain, each seal flagged `late`;
+  `auditverify` counts them. It reads the whole trail, so the worker never
+  runs it on its own (ADR 0047).
 
 ### Changed
 
@@ -245,6 +250,9 @@ All notable changes to domainkit. The format follows
   commit on a database other than `IDEMPOTENCY.DATABASE` that raises now
   keeps its key even if nothing was saved, and retries get 409
   `idempotency_response_unavailable` instead of running again (ADR 0020).
+- The audit seals table has a new `late` column: run `makemigrations` and
+  `migrate` in projects that install audit. On PostgreSQL, seals are dated
+  by the database's clock rather than the sealer's.
 
 ### Fixed
 
@@ -290,6 +298,10 @@ All notable changes to domainkit. The format follows
   ended, cancelling its other running messages. RabbitMQ's answers that
   fail now raise `BrokerUnavailable`, and the worker logs any answer that
   fails and leaves the message for RabbitMQ to hand out again.
+- An audit sealer whose clock ran ahead moved the high-water mark past the
+  rows other hosts committed afterwards, which then stayed unsealed, open
+  to change unnoticed. On PostgreSQL the mark is now capped by the
+  database's clock (ADR 0047).
 
 ## [0.7.0] - 2026-10-20
 

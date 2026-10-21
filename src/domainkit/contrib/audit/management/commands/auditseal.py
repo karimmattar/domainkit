@@ -1,5 +1,7 @@
 """``auditseal``: seal new audit rows into the hash chain, and anchor its head."""
 
+from argparse import ArgumentParser
+
 from domainkit.contrib.audit.seals import seal_all
 from domainkit.management import BaseCommand
 
@@ -13,9 +15,20 @@ class Command(BaseCommand):
         "AUDIT.SEAL_EVERY; run this on a schedule without one."
     )
 
-    async def handle(self, **options: object) -> None:
+    def add_arguments(self, parser: ArgumentParser) -> None:
+        """Accept ``--late``."""
+        parser.add_argument(
+            "--late",
+            action="store_true",
+            help=(
+                "also seal rows that committed later than AUDIT.SEAL_LATE_WINDOW, "
+                "flagged as sealed late (reads the whole trail)"
+            ),
+        )
+
+    async def handle(self, *, late: bool, **options: object) -> None:
         """Print what each database got."""
-        for database, (sealed, anchored) in (await seal_all()).items():
+        for database, (sealed, anchored) in (await seal_all(late=late)).items():
             line = f"{database}: sealed {sealed} row{'' if sealed == 1 else 's'}"
             if anchored is not None:
                 line += f", anchored #{anchored.seq}"

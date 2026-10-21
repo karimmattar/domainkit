@@ -18,7 +18,7 @@ from prometheus_client import REGISTRY
 from pydantic import ValidationError
 from sqlalchemy import delete, event, func, insert, select, update
 
-from domainkit import setup
+from domainkit import clock, setup
 from domainkit.apps import registry
 from domainkit.clock import freeze_time
 from domainkit.conf import override_settings, settings
@@ -26,6 +26,9 @@ from domainkit.context import RequestContext, bind_request
 from domainkit.contrib.audit import apps as audit_apps
 from domainkit.contrib.audit import record
 from domainkit.contrib.audit import seals as seals_module
+from domainkit.contrib.audit.management.commands.auditseal import (
+    Command as SealCommand,
+)
 from domainkit.contrib.audit.management.commands.auditverify import (
     Command as VerifyCommand,
 )
@@ -340,6 +343,104 @@ async def test_sealing_goes_on_when_the_newest_sealed_row_is_gone(
     await add(now - 3 * LOOKBACK)
 
     assert await seal("default") == 1
+
+
+async def test_a_sealer_whose_clock_runs_ahead_strands_no_rows(
+    tables: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PostgreSQL's clock caps the mark and dates the seals, not the sealer's host.
+
+    A host 40 minutes ahead seals a row it wrote on its own clock; then hosts
+    with right clocks write on. On SQLite, which lives in the sealer's
+    process, the host's clock is the database's: those rows are out of
+    reach, and only the late pass seals them.
+    """
+    real = clock.now
+    ahead = timedelta(minutes=40)
+    now = real()
+    await add(now - timedelta(minutes=1))
+    await add(now + ahead)  # Written, and then sealed, by the fast host.
+    monkeypatch.setattr(clock, "now", lambda: real() + ahead)
+    await seal("default")
+    monkeypatch.setattr(clock, "now", real)
+    others = [await add(now + timedelta(seconds=n)) for n in (5, 60, 300)]
+    monkeypatch.setattr(clock, "now", lambda: real() + ahead)
+    reachable = await unsealed_backlog("default", WINDOW)
+
+    sealed = await seal("default")
+
+    monkeypatch.setattr(clock, "now", real)
+    chain = await seals()
+    on_postgres = connections.engine().dialect.name == "postgresql"
+    assert (reachable, sealed) == ((3, 3) if on_postgres else (0, 0))
+    stamped = [each["sealed_at"] - real() for each in chain]
+    assert all(
+        stamp < timedelta(minutes=1) if on_postgres else stamp > timedelta(minutes=30)
+        for stamp in stamped
+    )
+    assert await seal("default", late=True) == (0 if on_postgres else 3)
+    assert [each["entry_id"] for each in await seals()][2:] == others
+
+
+async def test_rows_out_of_the_window_are_sealed_late_only_when_asked(
+    tables: None,
+) -> None:
+    """``late=True`` seals them into the chain, flagged; ``verify`` counts them.
+
+    Changing such a row afterwards is found like any other change.
+    """
+    now = datetime.now(UTC)
+    first = await add(now)
+    await seal("default")
+    late = [await add(now - WINDOW - timedelta(hours=n)) for n in (1, 3, 2)]
+    new = await add(now + timedelta(seconds=1))
+
+    assert await seal("default") == 1
+    assert await seal("default", late=True, batch=2) == 3
+
+    chain = await seals()
+    assert [(each["entry_id"], each["late"]) for each in chain] == [
+        (first, False),
+        (new, False),
+        (late[1], True),  # Oldest first.
+        (late[2], True),
+        (late[0], True),
+    ]
+    report = await verify("default", now=now + LOOKBACK + timedelta(hours=4))
+    assert (report.intact, report.unsealed, report.late) == (True, 0, 3)
+    await change(update(audit_log).where(audit_log.c.id == late[0]).values(actor="eve"))
+    report = await verify("default")
+    assert (report.intact, report.changed) == (False, [late[0]])
+
+
+async def test_late_seals_never_move_the_mark_back(tables: None) -> None:
+    """The mark is the newest row sealed in time, whatever was sealed late after it."""
+    now = datetime.now(UTC)
+    await add(now)
+    await seal("default")
+    await add(now - timedelta(days=3))
+    assert await seal("default", late=True) == 1
+    within_window = await add(now - WINDOW + timedelta(seconds=1))
+    await add(now - 2 * WINDOW)  # In reach only from the late row's time.
+
+    assert await seal("default") == 1
+
+    assert [each["entry_id"] for each in await seals()][-1] == within_window
+    assert await unsealed_backlog("default", WINDOW) == 0
+
+
+async def test_a_late_pass_without_a_mark_seals_nothing_more(tables: None) -> None:
+    """With nothing sealed, or the mark's row gone, every row is in reach anyway."""
+    assert await seal("default", late=True) == 0
+
+    now = datetime.now(UTC)
+    newest = await add(now)
+    await seal("default")
+    await change(delete(audit_log).where(audit_log.c.id == newest))
+    await add(now - 3 * LOOKBACK)
+
+    assert await seal("default", late=True) == 1
+    assert [each["late"] for each in await seals()] == [False, False]
 
 
 async def test_only_rows_older_than_the_lookback_count_as_unsealed(
@@ -845,6 +946,7 @@ def test_seal_and_verify_commands(
 
         assert run("auditseal") == "default: sealed 4 rows, anchored #4.\n"
         assert run("auditseal") == "default: sealed 0 rows.\n"
+        assert run("auditseal", "--late") == "default: sealed 0 rows.\n"
         assert run("auditverify") == "default: 4 seals, 1 anchors: intact.\n"
         assert run("auditverify", "--database", "reports") == (
             "reports: 0 seals, 0 anchors: intact.\n"
@@ -887,6 +989,50 @@ def test_auditverify_counts_seals_left_unanchored() -> None:
     """Anchoring that stopped is a problem of its own."""
     assert _summary(Report("default", sealed=5, anchors=1, unanchored=2)) == (
         "default: 5 seals, 1 anchors: NOT INTACT.\n  seals left unanchored: 2"
+    )
+
+
+def test_auditverify_counts_rows_sealed_late() -> None:
+    """Rows sealed late are no problem by themselves, but worth knowing."""
+    assert _summary(Report("default", sealed=5, anchors=1, late=2)) == (
+        "default: 5 seals, 1 anchors: intact.\n"
+        "  rows sealed late (open to change for longer): 2"
+    )
+
+
+def test_auditseal_explains_its_late_option() -> None:
+    """``--help`` says what ``--late`` seals, and what it costs."""
+    usage = SealCommand().create_parser("manage.py", "auditseal").format_help()
+
+    assert (
+        "--late also seal rows that committed later than "
+        "AUDIT.SEAL_LATE_WINDOW, flagged as sealed late (reads the whole trail)"
+    ) in " ".join(usage.split())
+
+
+@pytest.mark.parametrize("late", [False, True])
+def test_auditseal_seals_late_rows_only_with_its_option(
+    audited: str, late: bool
+) -> None:
+    """``auditseal --late`` reaches the rows a plain run leaves alone."""
+
+    async def prepare() -> None:
+        async with connections.engine().begin() as connection:
+            for table in (audit_log, audit_keys, audit_seals):
+                await connection.run_sync(table.create)
+        now = datetime.now(UTC)
+        await add(now)
+        await seal("default")
+        await add(now - 2 * WINDOW)
+        await connections.close_all()
+
+    asyncio.run(prepare())
+    output = io.StringIO()
+    with override_settings(AUDIT={}):  # Seal only: no anchors to count.
+        call_command("auditseal", *(["--late"] if late else []), stdout=output)
+
+    assert (
+        output.getvalue() == f"default: sealed {int(late)} row{'' if late else 's'}.\n"
     )
 
 

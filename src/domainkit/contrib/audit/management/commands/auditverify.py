@@ -56,4 +56,6 @@ def _summary(report: Report) -> str:
         lines.append(f"  seals left unanchored: {report.unanchored}")
     if report.unsealed:
         lines.append(f"  unsealed rows: {report.unsealed}")
+    if report.late:
+        lines.append(f"  rows sealed late (open to change for longer): {report.late}")
     return "\n".join(lines)

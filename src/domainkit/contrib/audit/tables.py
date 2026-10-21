@@ -11,12 +11,14 @@ None of the three is ever in a fixture (a copy of the keys would outlive
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     Column,
     Index,
     LargeBinary,
     String,
     Table,
     Uuid,
+    false,
 )
 
 from domainkit.db import UTCDateTime, metadata
@@ -58,6 +60,11 @@ audit_seals = Table(
     Column("digest", String(64), nullable=False),
     Column("link", String(64), nullable=False),
     Column("sealed_at", UTCDateTime, nullable=False),
+    Column("late", Boolean, nullable=False, server_default=false()),
     info={"domain": "audit", "append_only": True, "fixtures": False},
 )
-"""Each row's place in the hash chain (see ``seals``); append-only too."""
+"""Each row's place in the hash chain (see ``seals``); append-only too.
+
+``late`` marks a row sealed after it fell out of the late window
+(``auditseal --late``): it was open to change unnoticed for longer.
+"""

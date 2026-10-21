@@ -1,7 +1,7 @@
 # 0047. Seal the audit trail from a high-water mark, with a short late window
 
 - Status: Accepted
-- Date: 2026-10-20
+- Date: 2026-10-20; amended 2026-10-21 (the database's clock, sealing late rows)
 
 ## Context
 
@@ -54,3 +54,51 @@ Options considered:
   Projects with long transactions, or hosts with skewed clocks, raise the
   window and pay for it in scan time.
 - A backlog is visible (a gauge and a warning) instead of growing quietly.
+
+## Addendum (2026-10-21): the database's clock, and sealing late rows
+
+Two ways left rows unsealed for good, so they could be rewritten
+unnoticed:
+
+- **A sealer whose clock runs ahead.** The mark was capped at the sealer's
+  own `now`. A host 40 minutes ahead that writes and seals rows moved the
+  mark, and the window, past the rows hosts with right clocks committed
+  afterwards.
+- **Rows later than the window.** Nothing could seal them; `auditverify`
+  reported them a day later, for ever.
+
+Options considered for the late rows:
+
+- **Seal every unsealed row older than the window on every run.** Nothing
+  waits for an operator, but finding them anti-joins the whole trail
+  before the mark on every run, the cost this record removed.
+- **A queue of unsealed ids, or the commit order.** Rejected above.
+- **An explicit pass, `auditseal --late`, with its seals flagged.** The
+  cost is paid when asked; the flag keeps the difference visible.
+
+Decision:
+
+- The mark is capped at the database's present: `statement_timestamp()`
+  on PostgreSQL, the host's clock on SQLite (which lives in the sealer's
+  process). Seals are dated by the same clock. Under `freeze_time` the
+  frozen clock decides, as for the outbox (ADR 0043).
+- `seal(late=True)`, `seal_all(late=True)`, and `auditseal --late` seal
+  the unsealed rows below the window after the usual pass, oldest first,
+  at most `SEAL_BATCHES` batches more, into the same chain. Their seals
+  have `late` set (a new column, so projects run `makemigrations` and
+  `migrate`). The worker never runs this pass.
+- The mark is the newest seal not flagged late, so sealing a row from
+  last week never pulls the window back to last week.
+- Digests, links, anchors, and `verify` are unchanged: late seals are
+  checked like every other. `verify` counts them (`Report.late`), and
+  `auditverify` prints the count; they do not fail it.
+
+Consequences:
+
+- A sealer's clock no longer decides what other hosts' rows are in reach
+  on PostgreSQL. On SQLite, which runs in one process, nothing changes.
+- Every row can be sealed. A row sealed late was open to change for
+  longer, and its seal says so: look into why it was late (a long
+  transaction, a host whose clock runs behind) before sealing it.
+- `auditseal --late` reads the whole trail; run it when `auditverify`
+  reports unsealed rows, not on every schedule.

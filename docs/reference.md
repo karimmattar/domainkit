@@ -684,7 +684,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `messages` | `--pending\|--locked\|--dead`, `--queue`, `--limit`, `--retry ID\|all`, `--cancel ID`, `--database` | Count an outbox's messages and show each queue's lag, list them, requeue dead letters, or cancel a message no worker runs (messaging). |
 | `webhooks` | `subscriptions\|deliveries\|replay`, `[ID ...]`, `--failed`, `--status`, `--subscription`, `--limit` | List webhook subscriptions or deliveries, or send finished deliveries again (webhooks). |
 | `auditlog` | `--actor`, `--action`, `--limit`, `--database`, `--target`, `--aggregate FIELD=ID` | Read the audit trail, or one record's history with what each entry changed (audit; see [contrib.md](contrib.md#history)). |
-| `auditseal` | | Seal new audit rows into each database's hash chain and anchor its head on `AUDIT.LEDGER` (audit). |
+| `auditseal` | `--late` | Seal new audit rows into each database's hash chain and anchor its head on `AUDIT.LEDGER`; `--late` also seals rows that committed later than `AUDIT.SEAL_LATE_WINDOW`, flagged as sealed late (audit). |
 | `auditverify` | `--database` | Check the audit trail against its seals and anchors; fails if anything changed (audit). |
 | `auditforget` | `subject ...`, `--anonymous-days` | Make people's pseudonyms in the audit trail unlinkable, in every audited database (audit). |
 | `privacy` | `export --subject ID [--output FILE]`, `erase --subject ID [--reason] [--noinput]`, `purge [--dry-run]` | Export or erase what every installed domain holds about a person, from `Personal` markers on aggregates, or apply the domains' retention policies; each is audited (privacy; see [privacy.md](privacy.md)). |

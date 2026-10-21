@@ -706,13 +706,24 @@ rewrite.
   `python manage.py auditseal` on a schedule. Each database's trail is its
   own chain. The newest sealed row is a high-water mark: a run looks for
   rows from `AUDIT.SEAL_LATE_WINDOW` before it (rows that committed late),
-  so its cost follows what is new, not how long the trail is. A run seals
+  so its cost follows what is new, not how long the trail is. The mark
+  counts as now at most, by the database's clock on PostgreSQL (the
+  host's on SQLite), which also dates the seals. A run seals
   `AUDIT.SEAL_BATCHES` batches at most and leaves the rest for the next;
   the `audit_unsealed_rows` gauge says how many it left, and a warning is
   logged past `AUDIT.SEAL_BACKLOG_WARNING`. Sealing also makes the keys of
   today's and tomorrow's anonymous callers ahead of time, so at midnight
   (UTC) audited requests do not queue behind one insert of the new day's
   key.
+- **Sealing late rows.** A row that commits later than the window after
+  the mark is out of a run's reach, and `auditverify` reports it as
+  unsealed once it is a day old. Look into why (a transaction that ran
+  that long, a host whose clock runs behind), then run
+  `python manage.py auditseal --late`: it seals such rows into the same
+  chain, each seal flagged `late`, and `auditverify` counts them
+  afterwards ("rows sealed late"). They were open to change unnoticed for
+  longer than the others. Finding them reads the whole trail, so the
+  worker never does it on its own.
 - **Anchoring.** With `AUDIT.LEDGER` naming a ledger in `LEDGERS` (immudb),
   sealing also writes each chain's head (its number and link) there, at
   most once per `AUDIT.ANCHOR_EVERY`, as a new revision of
@@ -728,11 +739,15 @@ rewrite.
 Every row can be sealed, whatever its strings hold (a lone surrogate, which
 JSON can escape, included). A host whose clock runs ahead cannot stop
 sealing or anchoring: a row or an anchor dated in the future counts as
-dated now.
+dated now, and on PostgreSQL "now" is the database's, so a sealer whose
+own clock runs ahead cannot leave other hosts' rows behind.
 
 A row can be changed unnoticed only until it is sealed and its head
 anchored, so anchor as often as you need: the default is hourly. Erasing a
 person (`auditforget`) deletes a key, not a row, so the chain stays intact.
+
+**Upgrading.** The seals table has a new `late` column: run
+`makemigrations` and `migrate` in each project that installs audit.
 
 Protect the seals like the trail, in the revision that creates them:
 
@@ -758,7 +773,7 @@ def downgrade() -> None:
 | `LEDGER` | `None` | `LEDGERS` alias to anchor each chain's head on; `None` seals without anchoring. |
 | `ANCHOR_EVERY` | 1 hour | Anchor a new head at most this often. |
 | `SEAL_EVERY` | 5 minutes | How often the worker seals new rows. |
-| `SEAL_LATE_WINDOW` | 15 minutes | How far before the newest sealed row a run looks for rows that committed late, up to a day. A row later than this stays unsealed, and `auditverify` reports it once it is a day old: keep it above your longest transaction plus the clock skew between hosts. |
+| `SEAL_LATE_WINDOW` | 15 minutes | How far before the newest sealed row a run looks for rows that committed late, up to a day. A row later than this stays unsealed until `auditseal --late`, and `auditverify` reports it once it is a day old: keep it above your longest transaction plus the clock skew between hosts. |
 | `SEAL_BATCHES` | `100` | Batches of 1,000 rows one run seals at most (1 to 10,000); the rest wait for the next run. |
 | `SEAL_BACKLOG_WARNING` | `100000` | Rows a run leaves unsealed past which it logs a warning. |
 
