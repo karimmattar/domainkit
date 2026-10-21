@@ -646,9 +646,11 @@ transactions rarely need to set their own. ADR 0048 explains the choices.
 
 ## Load shedding
 
-`ConcurrencyLimitMiddleware` lets each process (each event loop) work on at
-most `MAX_CONCURRENT_REQUESTS` HTTP requests at once (1000 unless set;
-`None` turns it off). A request past the cap waits for a slot, first come
+`ConcurrencyLimitMiddleware` lets each event loop work on at most
+`MAX_CONCURRENT_REQUESTS` HTTP requests at once (1000 unless set; `None`
+turns it off). A process serves on one loop, so that is the cap per
+process; a server running several loops in one process (free-threaded
+Python, a loop per thread) admits the cap on each. A request past the cap waits for a slot, first come
 first served, for up to `REQUEST_QUEUE_TIMEOUT` seconds (1), behind at most
 `MAX_QUEUED_REQUESTS` others (100). When the queue is full, or the wait
 runs out, it is answered at once:
@@ -662,13 +664,25 @@ Retry-After: 1
 
 - The health and readiness probes and the metrics scrape
   (`CONCURRENCY_EXEMPT_PATHS`) are never counted or refused, so a busy
-  replica is not taken for a dead one.
+  replica is not taken for a dead one; behind `--root-path`, the paths are
+  compared without it.
 - A request holds its slot until its response starts, or until it ends:
   a streamed response, an event stream among them, gives its slot back as
   it starts, and WebSocket connections never take one. A request that is
   cancelled, while it waits or while it runs (its deadline passed, or the
   server cancelled it when the client went away), gives its slot or its
   place back.
+- Time spent waiting on the client is not counted. While the application
+  waits for a chunk of the request's body, its slot is lent to the next
+  request; when the chunk arrives, the request takes a slot back through
+  the queue, as a new request would, and is answered 503 `overloaded` if
+  none frees in time. So clients that send their headers and then their
+  body slowly, or never, hold no slot. `RequestBodyLimitMiddleware` answers
+  them 408 `request_timeout` once the body has taken
+  `REQUEST_BODY_TIMEOUT` seconds (10) in all, and closes the connection.
+  A buffering proxy in front (nginx's `proxy_request_buffering on`) still
+  reads slow bodies before the application sees them
+  ([reference.md](reference.md#server-limits)).
 - Shedding is logged at most every 10 seconds, with a count. With
   `domainkit[metrics]`, `http_requests_admitted` and `http_requests_queued`
   show the slots and the queue, and `http_requests_shed_total` counts
@@ -759,8 +773,21 @@ Make one client per service, at module level. Each keeps one pool of
 connections per process (per event loop), opened by its first call and
 closed with the other resources when the application or a command ends;
 `domainkit.http.client.client` serves one-off calls. A relative URL is
-appended to `base_url`; a URL naming a host must keep to its origin, so a
-path built from someone's input cannot send the call elsewhere.
+appended to `base_url`, and may not climb out of its path: a `.` or `..`
+segment, spelled out or percent-encoded (`%2e%2e`, `..%2f`), raises
+`UnsafeURL`. A URL naming a host must keep to its origin. So a path built
+from someone's input cannot send the call elsewhere.
+
+A client keeps one circuit per host for all its callers (below), so make
+one client per trust domain: a client that calls URLs your users chose
+should not share its circuits with your own services', nor one user's
+failing URLs refuse another's calls. Give such a client `breaker=False`:
+
+```python
+from domainkit.http.client import HttpClient
+
+callbacks = HttpClient(guard=True, breaker=False, retries=0)
+```
 
 Every call:
 
@@ -781,7 +808,8 @@ Every call:
   after `BREAKER_FAILURES` failures in a row (network errors, timeouts, 5xx
   answers) for `BREAKER_COOLDOWN` seconds, after which one call at a time
   tries the host again. A call cut off by the work's deadline is not held
-  against the host. Opening is logged once.
+  against the host. Opening is logged once. A client made with
+  `breaker=False` keeps no circuits.
 - sends the request id (`X-Request-ID`) and the trace context
   (`traceparent`, `tracestate`) of the work it serves.
 - reads at most `MAX_RESPONSE_BYTES` of the answer (10 MiB, counted after
@@ -799,10 +827,18 @@ to public, unless in `allowed_networks`; metadata addresses never are. The
 host is resolved, and every address checked, as each connection opens,
 and the connection goes to an address that was checked, so DNS rebinding
 gains nothing; TLS still checks the certificate against the host name.
-A guarded client ignores proxy settings from the environment, asks for
-uncompressed answers, and sends no request id or trace context unless
-`propagate=True`. A refused URL raises `UnsafeURL`, a 422 `unsafe_url`
-when the request does not catch it.
+A guarded client ignores proxy settings from the environment, and the CAs
+it names (`SSL_CERT_FILE`, `SSL_CERT_DIR`): it trusts `CA_BUNDLE`, or the
+system's CAs. It asks for uncompressed answers, and sends no request id or
+trace context unless `propagate=True`. A refused URL raises `UnsafeURL`, a
+422 `unsafe_url` when the request does not catch it. Host names are looked
+up on threads of the guard's own, never the event loop's default
+executor, which `asyncio.to_thread` and new database connections need: at
+most 4 lookups at once, 2 of one host, and a host whose lookup failed
+fails at once for 5 seconds. A lookup past those bounds fails at once, as
+a connection error, so a host whose DNS never answers costs the other
+calls nothing. A guarded client takes no `transport=`, which would skip
+its address checks; tests use `stub`.
 
 | Raised | When |
 | --- | --- |

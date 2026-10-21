@@ -1,21 +1,32 @@
-"""Load shedding: a cap on the HTTP requests a process works on at once.
+"""Load shedding: a cap on the HTTP requests an event loop works on at once.
 
 ``ConcurrencyLimitMiddleware`` lets at most ``MAX_CONCURRENT_REQUESTS`` HTTP
-requests run at once in each process (each event loop). A request past the
-cap waits for a slot, first come first served, for up to
-``REQUEST_QUEUE_TIMEOUT`` seconds, behind at most ``MAX_QUEUED_REQUESTS``
-others. When the queue is full, or the wait runs out, it is answered at
-once: 503 ``overloaded`` with ``Retry-After``. Shedding is logged at most
-every ``LOG_INTERVAL`` seconds, with a count.
+requests run at once on each event loop: a process serving on one loop
+admits the cap, and one running a loop per thread admits it on each (the
+waiters of a slot belong to one loop). A request past the cap waits for a
+slot, first come first served, for up to ``REQUEST_QUEUE_TIMEOUT`` seconds,
+behind at most ``MAX_QUEUED_REQUESTS`` others. When the queue is full, or
+the wait runs out, it is answered at once: 503 ``overloaded`` with
+``Retry-After``. Shedding is logged at most every ``LOG_INTERVAL`` seconds,
+with a count.
 
 A request holds its slot until its response starts, so a streamed response
 does not keep one, or until it ends. A request cancelled while it waits,
 or while it runs (its deadline passed, or the server cancelled it when the
 client went away), gives its slot back.
 
+Time spent waiting on the client is not counted: while the application
+waits in ``receive()`` for a chunk of the request's body, its slot is lent
+to the next request, and taken back, through the queue, when the chunk
+arrives. So clients that send their headers and then their body slowly, or
+never, hold no slot; ``REQUEST_BODY_TIMEOUT`` answers them 408 (see
+``RequestBodyLimitMiddleware``). A chunk that finds no slot free in time is
+answered 503 ``overloaded``, as a new request would be (``Overloaded``).
+
 Paths in ``CONCURRENCY_EXEMPT_PATHS`` (the health and readiness probes, and
-the metrics scrape) are neither counted nor refused. WebSocket connections
-are not counted: their limits are their own.
+the metrics scrape) are neither counted nor refused, behind a root path
+(``--root-path``) too. WebSocket connections are not counted: their limits
+are their own.
 
 List it after ``DeadlineMiddleware``, so the wait counts against the
 request's deadline, and before ``AuthenticationMiddleware``, so a refused
@@ -27,9 +38,10 @@ request costs no database lookup. With ``domainkit[metrics]`` it exports
 import asyncio
 import logging
 import math
+import threading
 from collections import deque
 from contextlib import suppress
-from typing import Final
+from typing import Any, Final
 from weakref import WeakKeyDictionary
 
 from fastapi import status
@@ -37,7 +49,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from domainkit import clock
 from domainkit.conf import settings
-from domainkit.http.errors import error_response
+from domainkit.http.errors import APIError, error_response
 
 try:
     from domainkit.http.metrics import observe_admitted, observe_queued, observe_shed
@@ -131,6 +143,23 @@ def _handed(waiter: asyncio.Future[None]) -> bool:
     return waiter.done() and not waiter.cancelled()
 
 
+class Overloaded(APIError):
+    """503 ``overloaded``: a request's body arrived, and no slot was free for it.
+
+    Raised from ``receive()``, so FastAPI's body parsing passes it on, and
+    answered as any refused request is, with ``Retry-After``.
+    """
+
+    def __init__(self) -> None:
+        """Use status 503 and the code of every refusal for want of a slot."""
+        super().__init__(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "The server is busy; try again shortly.",
+            code=OVERLOADED,
+            headers={"Retry-After": RETRY_AFTER},
+        )
+
+
 class ConcurrencyLimitMiddleware:
     """Refuse HTTP requests past ``MAX_CONCURRENT_REQUESTS`` with 503."""
 
@@ -148,39 +177,32 @@ class ConcurrencyLimitMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Serve the request in a slot, or refuse it when none frees in time."""
-        if (
-            self.limit is None
-            or scope["type"] != "http"
-            or scope["path"] in self.exempt
-        ):
+        if self.limit is None or scope["type"] != "http" or _path(scope) in self.exempt:
             await self.app(scope, receive, send)
             return
         slots = self.slots(self.limit)
         refused = await slots.acquire(self.wait)
         if refused is not None:
-            observe_shed(refused)
-            self.report.shed(refused)
+            self.refused(refused)
             await _answer(scope, receive, send)
             return
         observe_admitted(1)
-        held = True
-
-        def give_back() -> None:
-            nonlocal held
-            if held:
-                held = False
-                slots.release()
-                observe_admitted(-1)
-
-        async def send_releasing(message: Message) -> None:
-            if message["type"] == "http.response.start":
-                give_back()
-            await send(message)
-
+        hold = _Hold(self, slots, receive, send)
         try:
-            await self.app(scope, receive, send_releasing)
+            await self.app(scope, hold.receive, hold.send)
+        except Overloaded:
+            # Raised outside FastAPI's error handling (a middleware that
+            # reads the body itself): answer for it.
+            if hold.started:
+                raise
+            await _answer(scope, receive, send)
         finally:
-            give_back()
+            hold.give_back()
+
+    def refused(self, reason: str) -> None:
+        """Count and report a request refused for want of a slot."""
+        observe_shed(reason)
+        self.report.shed(reason)
 
     def slots(self, limit: int) -> Slots:
         """The running event loop's slots, ``limit`` of them."""
@@ -190,8 +212,123 @@ class ConcurrencyLimitMiddleware:
         return self._slots[loop]
 
 
+class _Hold:
+    """One request's slot: lent while it waits for its body, then taken back.
+
+    ``receive`` lends the slot when the call has to wait for the client, and
+    takes it back, through the queue, before returning what arrived: the
+    request then works only while it holds a slot. Once the body is in, or
+    the response has started, ``receive`` lends nothing. ``send`` gives the
+    slot back for good when the response starts.
+    """
+
+    def __init__(
+        self,
+        middleware: ConcurrencyLimitMiddleware,
+        slots: Slots,
+        receive: Receive,
+        send: Send,
+    ) -> None:
+        """Hold a slot of ``slots``, taken for the request already."""
+        self.middleware = middleware
+        self.slots = slots
+        self._receive = receive
+        self._send = send
+        self.held = True
+        """Whether the request holds a slot now."""
+        self.lent = False
+        """Whether its slot was lent while it waited, and is owed back."""
+        self.started = False
+        """Whether the response started: the slot is given back for good."""
+        self.body_read = False
+        """Whether the whole body arrived (or the client went away)."""
+
+    async def receive(self) -> Message:
+        """The next message from the client; the slot is lent while it waits.
+
+        A wait that ends in an error (the request was cancelled: its
+        deadline passed, or its client left) takes nothing back.
+
+        Raises:
+            Overloaded: The body arrived, and no slot freed in time for it.
+        """
+        if self.body_read or not self.held:
+            return await self._receive()
+        task = asyncio.current_task()
+        # Runs only if the call below waits for the loop: then it is lent.
+        lending = asyncio.get_running_loop().call_soon(self._lend, task)
+        try:
+            message = await self._receive()
+        finally:
+            lending.cancel()
+        self.body_read = message["type"] != "http.request" or not message.get(
+            "more_body", False
+        )
+        if self.lent:
+            await self._take_back()
+        return message
+
+    async def send(self, message: Message) -> None:
+        """Send ``message``; the response starting gives the slot back."""
+        if message["type"] == "http.response.start":
+            self.give_back()
+        await self._send(message)
+
+    def give_back(self) -> None:
+        """Free the slot for good: the response started, or the request ended."""
+        self.started = True
+        self.lent = False
+        if self.held:
+            self.held = False
+            self.slots.release()
+            observe_admitted(-1)
+
+    def _lend(self, task: "asyncio.Task[Any] | None") -> None:
+        """Lend the slot while the request waits for the client.
+
+        Not when the task is being cancelled (a deadline, or a check for a
+        disconnect that will not wait): it is not waiting for the client.
+        """
+        if self.held and not (task is not None and task.cancelling()):
+            self.held = False
+            self.lent = True
+            self.slots.release()
+            observe_admitted(-1)
+
+    async def _take_back(self) -> None:
+        """Take a slot again, through the queue, as a new request would.
+
+        Raises:
+            Overloaded: The queue was full, or no slot freed in time.
+        """
+        self.lent = False
+        refused = await self.slots.acquire(self.middleware.wait)
+        if self.started:  # The response started meanwhile: no slot is needed.
+            if refused is None:
+                self.slots.release()
+            return
+        if refused is not None:
+            self.middleware.refused(refused)
+            raise Overloaded
+        self.held = True
+        observe_admitted(1)
+
+
+def _path(scope: Scope) -> str:
+    """The request's path, without the root path the application is mounted at."""
+    path: str = scope["path"]
+    root = scope.get("root_path", "").rstrip("/")
+    if root and path.startswith(root):
+        return path[len(root) :]
+    return path
+
+
 class ShedReport:
-    """Warn about shedding at most once per ``LOG_INTERVAL``, with a count."""
+    """Warn about shedding at most once per ``LOG_INTERVAL``, with a count.
+
+    Event loops on several threads share a middleware's report (free-threaded
+    Python), so the count changes only under its lock.
+    """
 
     def __init__(self, limit: int | None) -> None:
         """Name ``limit`` in the warnings."""
@@ -199,21 +336,23 @@ class ShedReport:
         self.count = 0
         """Requests refused since the last warning."""
         self._quiet_until = -math.inf
+        self._lock = threading.Lock()
 
     def shed(self, reason: str) -> None:
         """Count one refused request; warn if the last warning is old enough."""
-        self.count += 1
-        now = clock.monotonic()
-        if now < self._quiet_until:
-            return
+        with self._lock:
+            self.count += 1
+            now = clock.monotonic()
+            if now < self._quiet_until:
+                return
+            count, self.count = self.count, 0
+            self._quiet_until = now + LOG_INTERVAL
         logger.warning(
             "Shed %d request(s) past MAX_CONCURRENT_REQUESTS (%s); the last: %s",
-            self.count,
+            count,
             self.limit,
             reason,
         )
-        self.count = 0
-        self._quiet_until = now + LOG_INTERVAL
 
 
 async def _answer(scope: Scope, receive: Receive, send: Send) -> None:

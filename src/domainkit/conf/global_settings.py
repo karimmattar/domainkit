@@ -92,6 +92,17 @@ PGBOUNCER_CACHE_ARGUMENTS: Final = (
     "prepare_threshold",
 )
 """Driver arguments that turn prepared statements off, as PgBouncer needed."""
+MAX_DATABASE_TIMEOUT: Final = 2_147_483.647
+"""Seconds: PostgreSQL's longest timeout, 2147483647 milliseconds (24.8 days)."""
+MAX_REQUEST_SECONDS: Final = 3600.0
+"""The most seconds a request, its body, an outgoing call, or a circuit's
+cooldown may be given: an hour. Longer work belongs in a task."""
+MAX_BACKOFF_SECONDS: Final = 600.0
+"""The longest wait before an outgoing call's retry: ten minutes."""
+MAX_RESPONSE_SIZE: Final = 1_073_741_824
+"""The largest answer an outgoing call may be allowed to read: 1 GiB."""
+MAX_REQUESTS_AT_ONCE: Final = 100_000
+"""The most requests an event loop may admit, or queue, at once."""
 
 
 class DatabaseConfig(BaseModel):
@@ -116,15 +127,17 @@ class DatabaseConfig(BaseModel):
     """Client certificate for mutual TLS; requires ``SSLKEY``."""
     SSLKEY: Path | None = None
 
-    STATEMENT_TIMEOUT: float | None = Field(default=30.0, gt=0)
+    STATEMENT_TIMEOUT: float | None = Field(default=30.0, gt=0, le=MAX_DATABASE_TIMEOUT)
     """Seconds before PostgreSQL cancels a statement; migrations are exempt."""
-    LOCK_TIMEOUT: float | None = Field(default=10.0, gt=0)
+    LOCK_TIMEOUT: float | None = Field(default=10.0, gt=0, le=MAX_DATABASE_TIMEOUT)
     """Seconds a statement may wait for a lock."""
-    IDLE_IN_TRANSACTION_TIMEOUT: float | None = Field(default=60.0, gt=0)
+    IDLE_IN_TRANSACTION_TIMEOUT: float | None = Field(
+        default=60.0, gt=0, le=MAX_DATABASE_TIMEOUT
+    )
     """Seconds an open transaction may sit idle before the server ends it."""
-    CONNECT_TIMEOUT: float = Field(default=10.0, gt=0)
+    CONNECT_TIMEOUT: float = Field(default=10.0, gt=0, le=MAX_DATABASE_TIMEOUT)
     """Seconds to open a connection (asyncpg's ``timeout``, libpq's)."""
-    COMMAND_TIMEOUT: float | None = Field(default=None, gt=0)
+    COMMAND_TIMEOUT: float | None = Field(default=None, gt=0, le=MAX_DATABASE_TIMEOUT)
     """Seconds asyncpg waits for one statement; None: ``STATEMENT_TIMEOUT`` plus 5."""
     PGBOUNCER: bool = False
     """Connect through PgBouncer's transaction pooling (no session state kept)."""
@@ -520,7 +533,7 @@ class HttpClientConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
-    TIMEOUT: float = Field(default=10.0, gt=0)
+    TIMEOUT: float = Field(default=10.0, gt=0, le=MAX_REQUEST_SECONDS)
     """Seconds one call may take, its retries included, and never past the deadline."""
     CONNECT_TIMEOUT: float = Field(default=5.0, gt=0)
     """Seconds to open a connection."""
@@ -528,17 +541,17 @@ class HttpClientConfig(BaseModel):
     """Retries of a call that failed in a way worth trying again."""
     BACKOFF: float = Field(default=0.1, ge=0)
     """Seconds before the first retry, doubling for each next one, jittered."""
-    MAX_BACKOFF: float = Field(default=2.0, ge=0)
+    MAX_BACKOFF: float = Field(default=2.0, ge=0, le=MAX_BACKOFF_SECONDS)
     """The longest wait before a retry, ``Retry-After`` included."""
     BREAKER_FAILURES: int = Field(default=5, ge=1)
     """Failures in a row that open a host's circuit: its calls then fail at once."""
-    BREAKER_COOLDOWN: float = Field(default=30.0, gt=0)
+    BREAKER_COOLDOWN: float = Field(default=30.0, gt=0, le=MAX_REQUEST_SECONDS)
     """Seconds a host's circuit stays open before one call may try it again."""
     MAX_CONNECTIONS: int = Field(default=100, ge=1)
     """Connections per client and event loop."""
     MAX_KEEPALIVE_CONNECTIONS: int = Field(default=20, ge=0)
     """Idle connections each client keeps open for the next calls."""
-    MAX_RESPONSE_BYTES: int = Field(default=10_485_760, ge=1)
+    MAX_RESPONSE_BYTES: int = Field(default=10_485_760, ge=1, le=MAX_RESPONSE_SIZE)
     """Largest response body read, decompressed; a larger one fails the call."""
     USER_AGENT: str = Field(default="domainkit", pattern=r"^[\x20-\x7e]{1,256}$")
     """The ``User-Agent`` of every call."""
@@ -626,11 +639,15 @@ class Settings(BaseModel):
     """Options of ``DebugToolbarMiddleware`` (development only)."""
     MAX_REQUEST_BODY_SIZE: int = Field(default=1_048_576, ge=1)
     """Largest accepted request body in bytes; larger requests get 413."""
-    REQUEST_TIMEOUT: float | None = Field(default=30.0, gt=0)
+    REQUEST_BODY_TIMEOUT: float = Field(default=10.0, gt=0, le=MAX_REQUEST_SECONDS)
+    """Seconds a request may spend waiting for its body; longer gets 408."""
+    REQUEST_TIMEOUT: float | None = Field(default=30.0, gt=0, le=MAX_REQUEST_SECONDS)
     """Seconds an HTTP request may take until its response starts; None: no limit."""
-    MAX_CONCURRENT_REQUESTS: int | None = Field(default=1000, ge=1)
-    """HTTP requests each process works on at once; None: no cap."""
-    MAX_QUEUED_REQUESTS: int = Field(default=100, ge=0)
+    MAX_CONCURRENT_REQUESTS: int | None = Field(
+        default=1000, ge=1, le=MAX_REQUESTS_AT_ONCE
+    )
+    """HTTP requests each event loop works on at once; None: no cap."""
+    MAX_QUEUED_REQUESTS: int = Field(default=100, ge=0, le=MAX_REQUESTS_AT_ONCE)
     """Requests past the cap that may wait for a slot; more are refused at once."""
     REQUEST_QUEUE_TIMEOUT: float = Field(default=1.0, ge=0, le=60)
     """Seconds a request past the cap waits for a slot before it is refused."""

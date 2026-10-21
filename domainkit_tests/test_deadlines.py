@@ -3,6 +3,7 @@
 import asyncio
 import gc
 import inspect
+import math
 from collections.abc import Generator
 
 import pytest
@@ -347,6 +348,32 @@ async def test_within_discards_what_it_never_awaits() -> None:
             with pytest.raises(DeadlineExceeded):
                 await deadlines.within(Waits())
     gc.collect()  # A coroutine left unclosed would warn, and fail the test.
+
+
+@pytest.mark.parametrize("seconds", [math.nan, math.inf, -math.inf])
+async def test_seconds_that_are_not_a_finite_number_are_refused(
+    seconds: float,
+) -> None:
+    """NaN bounds nothing and infinity overflows: None asks for no bound.
+
+    A deadline, a block, and one await all refuse them, and within() closes
+    the coroutine it was given; 0 and less stay a block with no time.
+    """
+    message = r"^A deadline is a finite number of seconds, or None; not -?(nan|inf)\.$"
+    with pytest.raises(ValueError, match=message):
+        Deadline(seconds)
+    with pytest.raises(ValueError, match=message):
+        Deadline(10.0).reset(seconds)
+    with pytest.raises(ValueError, match=message):
+        deadlines.timeout(seconds)
+    coroutine = forever()
+    with pytest.raises(ValueError, match=message):
+        await deadlines.within(coroutine, seconds)
+    assert inspect.getcoroutinestate(coroutine) == inspect.CORO_CLOSED
+    gc.collect()  # A coroutine left unclosed would warn, and fail the test.
+    with pytest.raises(TimeoutError, match=r"^No time was given\.$"):
+        await deadlines.timeout(-1.0).__aenter__()
+    assert Deadline(1e300).remaining() is not None
 
 
 async def test_the_deadline_is_seen_by_tasks_started_inside() -> None:

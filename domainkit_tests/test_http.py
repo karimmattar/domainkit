@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncGenerator, Callable, Iterator
 from contextlib import ExitStack
 from types import SimpleNamespace
 
@@ -14,6 +14,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from domainkit.apps import registry
 from domainkit.cache import caches
+from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.context import RequestContext, bind_request, current_request
 from domainkit.contrib.idempotency.operations import (
@@ -36,6 +37,7 @@ from domainkit.http.middleware import (
 from domainkit.ledger import ledgers
 from domainkit.log import SECURITY_LOGGER
 from domainkit.tasks import owned
+from domainkit.testing import AsyncTestClient
 from domainkit.tracing import current_ids, remote_parent
 from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
 
@@ -897,6 +899,186 @@ async def test_body_limit_refuses_non_ascii_digits() -> None:
 
     assert sent[0]["status"] == 400
     assert b'"invalid_content_length"' in sent[1]["body"]
+
+
+def http_request(*bodies: Message) -> tuple[Receive, list[Message]]:
+    """A client's ``receive`` sending ``bodies`` in turn, then waiting for good.
+
+    Returns it with the list of what the application sends.
+    """
+    pending = list(bodies)
+    sent: list[Message] = []
+
+    async def receive() -> Message:
+        if pending:
+            return pending.pop(0)
+        await asyncio.Event().wait()  # The rest of the body never comes.
+        raise AssertionError  # pragma: no cover - cut off first.
+
+    return receive, sent
+
+
+async def read_body(scope: Scope, receive: Receive, send: Send) -> None:
+    """An application that reads the whole body, then answers 200."""
+    while (await receive()).get("more_body"):
+        pass
+    await send({"type": "http.response.start", "status": 200, "headers": []})
+    await send({"type": "http.response.body", "body": b"read"})
+
+
+@pytest.mark.anyio
+async def test_a_body_that_does_not_arrive_in_time_gets_408(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Headers, a chunk, then nothing: 408, the connection closed, and logged."""
+    caplog.set_level(logging.WARNING, SECURITY_LOGGER)
+    receive, sent = http_request(
+        {"type": "http.request", "body": b"{", "more_body": True}
+    )
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    with override_settings(REQUEST_BODY_TIMEOUT=0.01):
+        middleware = RequestBodyLimitMiddleware(read_body)
+    async with asyncio.timeout(30):  # Only if the body were not timed.
+        await middleware({"type": "http", "headers": []}, receive, send)
+
+    assert sent[0]["status"] == 408
+    assert (b"connection", b"close") in sent[0]["headers"]
+    assert b'"code":"request_timeout"' in sent[1]["body"]
+    assert b'"The request body took too long to arrive."' in sent[1]["body"]
+    assert [r.getMessage() for r in caplog.records] == [
+        "Rejected request body that took over 0.01s to arrive"
+    ]
+
+
+@pytest.mark.anyio
+async def test_the_body_time_counts_every_wait_and_nothing_else() -> None:
+    """Waits for chunks add up; the application's own work between them does not."""
+    with freeze_time("2026-01-01") as clock:
+
+        def ticking(seconds: float, *, more: bool) -> Receive:
+            async def receive() -> Message:
+                clock.tick(seconds)  # As if the chunk took this long to come.
+                await asyncio.sleep(0)
+                return {"type": "http.request", "body": b"x", "more_body": more}
+
+            return receive
+
+        waits = iter([ticking(1801, more=True), ticking(1801, more=True)])
+
+        async def slow_client() -> Message:
+            try:
+                return await next(waits)()
+            except StopIteration:
+                await asyncio.Event().wait()  # The third chunk never comes.
+                raise AssertionError from None  # pragma: no cover - cut off first.
+
+        sent: list[Message] = []
+
+        async def send(message: Message) -> None:
+            sent.append(message)
+
+        with override_settings(REQUEST_BODY_TIMEOUT=3600.0):
+            middleware = RequestBodyLimitMiddleware(read_body)
+        async with asyncio.timeout(30):  # Only if the waits were not added up.
+            await middleware({"type": "http", "headers": []}, slow_client, send)
+        assert sent[0]["status"] == 408
+
+        working = iter([ticking(0, more=True), ticking(0, more=False)])
+
+        async def busy_app(scope: Scope, receive: Receive, send: Send) -> None:
+            await receive()
+            clock.tick(7200)  # The application works for two hours.
+            await read_body(scope, receive, send)
+
+        sent.clear()
+        with override_settings(REQUEST_BODY_TIMEOUT=3600.0):
+            patient = RequestBodyLimitMiddleware(busy_app)
+        await patient({"type": "http", "headers": []}, lambda: next(working)(), send)
+        assert sent[0]["status"] == 200
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("ending", ["body", "answer", "disconnect"])
+async def test_the_body_time_ends_with_the_body_or_the_response(
+    ending: str,
+) -> None:
+    """Waiting after the body, once answering, or after a disconnect is not timed.
+
+    The first message took longer than the whole budget; the next wait is
+    still not cut off.
+    """
+    answering = ending == "answer"
+    waiting, left = asyncio.Event(), asyncio.Event()
+    told: list[Message] = []
+
+    with freeze_time("2026-01-01") as clock:
+
+        async def receive() -> Message:
+            if not told:
+                clock.tick(20)  # More than the whole budget went on the body.
+                told.append(
+                    {"type": "http.disconnect"}
+                    if ending == "disconnect"
+                    else {"type": "http.request", "body": b"x", "more_body": answering}
+                )
+                return told[-1]
+            waiting.set()
+            await left.wait()
+            return {"type": "http.disconnect"}
+
+        async def app(scope: Scope, receive: Receive, send: Send) -> None:
+            await receive()
+            if answering:
+                await send({"type": "http.response.start", "status": 200})
+            listening = asyncio.ensure_future(receive())
+            await waiting.wait()
+            left.set()
+            told.append(await listening)
+
+        sent: list[Message] = []
+
+        async def send(message: Message) -> None:
+            sent.append(message)
+
+        with override_settings(REQUEST_BODY_TIMEOUT=10.0):
+            middleware = RequestBodyLimitMiddleware(app)
+        await middleware({"type": "http", "headers": []}, receive, send)
+
+    assert len(told) == 2  # The second wait ended with the client, not cut off.
+    assert told[-1] == {"type": "http.disconnect"}
+    assert [message["status"] for message in sent] == ([200] if answering else [])
+
+
+@pytest.mark.anyio
+async def test_a_slow_body_through_the_application_gets_408() -> None:
+    """FastAPI passes the refusal on as it reads the body; the error is the usual."""
+    gate = asyncio.Event()
+
+    async def slowly() -> AsyncGenerator[bytes]:
+        yield b'{"name":'
+        await gate.wait()
+        yield b'"widget"}'  # pragma: no cover - never read.
+
+    body = slowly()
+    with override_settings(
+        ROOT_ROUTER="domainkit_tests.deadline_routes.router", REQUEST_BODY_TIMEOUT=0.01
+    ):
+        async with AsyncTestClient(get_asgi_application(), lifespan=False) as client:
+            response = await client.post(
+                "/echo", content=body, headers={"Content-Type": "application/json"}
+            )
+    await body.aclose()
+
+    assert response.status_code == 408
+    assert response.headers["Connection"] == "close"
+    assert response.json() == {
+        "detail": "The request body took too long to arrive.",
+        "code": "request_timeout",
+        "request_id": response.headers["X-Request-ID"],
+    }
 
 
 def test_http_errors_use_the_common_format(client: TestClient) -> None:

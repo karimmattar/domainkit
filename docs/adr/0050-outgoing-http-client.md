@@ -82,3 +82,33 @@ pooled connections.
   whose logs show only the origin.
 - A client made per call, against the advice, opens a pool per call,
   dropped unclosed when the client is collected.
+
+## Addendum (2026-10-21): what a security review changed
+
+- **Circuits and trust domains.** A client keeps its circuits per host for
+  every caller: one user's failing URLs on a host opened the circuit for
+  every user of a shared guarded client. `HttpClient(breaker=False)` keeps
+  none. Make one client per trust domain, and `breaker=False` for one that
+  calls URLs its users chose.
+- **Lookups on threads of the guard's own.** The guard resolved host
+  names on the loop's default executor, and a timeout only stopped the
+  waiting: names whose DNS never answers held its threads, and with them
+  `asyncio.to_thread` and new database connections. The guard now looks
+  names up on a few threads of its own (4), at most 2 of one host at
+  once, remembers a failure for 5 seconds, and fails a lookup past those
+  bounds at once with an `OSError` (`EAI_AGAIN`), which a call takes as a
+  connect error and webhooks as a failed attempt, never as a refused URL.
+  The threads stop at shutdown, in the resources phase.
+- **TLS trust.** `trust_env=False` was meant to make guarded clients
+  ignore `SSL_CERT_FILE`, but on Linux the system store is OpenSSL's
+  default paths, which follow it. Guarded clients and webhooks now load
+  the CAs where OpenSSL was built to look (or the system's bundle), never
+  where the environment says, unless `CA_BUNDLE` names a bundle; on macOS
+  and Windows the operating system's store is used.
+- **`base_url`.** A relative URL may not hold a `.` or `..` segment,
+  spelled out or percent-encoded, so input in a path cannot climb out of
+  the base path. A guarded client refuses `transport=`, which would skip
+  its address checks; tests use `stub`.
+- **Logs.** httpx2 logs each call's full URL, query string included, at
+  INFO: `build_logging_config` sets its loggers, and httpcore2's, to
+  WARNING.

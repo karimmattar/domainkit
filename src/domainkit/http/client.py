@@ -15,7 +15,10 @@ A client keeps one pool of connections per process (per event loop),
 opened by its first call and closed with the other resources
 (``close_resources``) when the application or a command ends. Make one per
 service called, at module level; ``client`` serves calls that need no
-options of their own. Every call:
+options of their own. A client's circuits are shared by all its callers,
+so make one per trust domain: one that calls URLs your users chose gets
+``breaker=False``, so one user's failing URLs never refuse another's
+calls. Every call:
 
 - is bounded by ``timeout`` (``HTTP_CLIENT.TIMEOUT``), retries included,
   and by the deadline of the work it serves (``domainkit.deadlines``):
@@ -30,34 +33,39 @@ options of their own. Every call:
 - fails at once with ``CircuitOpen`` while its host's circuit is open:
   after ``BREAKER_FAILURES`` failures in a row (network errors, timeouts,
   5xx answers) for ``BREAKER_COOLDOWN`` seconds, after which one call at a
-  time tries the host again;
+  time tries the host again (unless the client has ``breaker=False``);
 - sends the request id (``X-Request-ID``) and the trace context
   (``traceparent``, ``tracestate``) of the work it serves;
 - reads at most ``MAX_RESPONSE_BYTES`` of the answer, decompressed, or
   raises ``ResponseTooLarge``;
 - is logged by method, origin, and path: never a query string, a header,
-  or a body.
+  or a body (``build_logging_config`` quiets httpx2's own lines, which
+  show the whole URL).
 
 A client made with ``guard=True`` calls only public addresses
 (``domainkit.http.guard``): https only (``allow_http=True`` adds http), no
 credentials in the URL, every address of the host public unless in
 ``allowed_networks``, and the connection made to an address that was
 checked, so DNS rebinding gains nothing. It follows no redirects, ignores
-proxy settings from the environment, asks for uncompressed answers, logs
-only the origin, and sends no request id or trace context (unless
-``propagate=True``): use it for URLs that someone else chose. A refused
-URL raises ``UnsafeURL``, a 422 if the request does not catch it.
+proxy settings and CA files (``SSL_CERT_FILE``) from the environment, asks
+for uncompressed answers, logs only the origin, and sends no request id or
+trace context (unless ``propagate=True``): use it for URLs that someone
+else chose. A refused URL raises ``UnsafeURL``, a 422 if the request does
+not catch it.
 
 In tests, ``stub(handler)`` sends every call to ``handler`` through
 httpx2's ``MockTransport``; the handler takes an ``httpx2.Request`` and
 returns an ``httpx2.Response``, or an awaitable of one. A client made with
-``transport=`` always uses that transport.
+``transport=`` always uses that transport; a guarded client takes none.
 """
 
 import asyncio
 import logging
+import math
 import random
+import re
 import ssl
+import threading
 from collections import OrderedDict
 from collections.abc import Callable, Coroutine, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -68,6 +76,7 @@ from email.utils import parsedate_to_datetime
 from functools import cache
 from pathlib import Path
 from typing import Any, Final
+from urllib.parse import unquote_to_bytes
 from weakref import WeakKeyDictionary, WeakSet
 
 import httpcore2
@@ -77,6 +86,7 @@ from domainkit import clock, deadlines
 from domainkit.conf import settings
 from domainkit.conf.global_settings import HttpClientConfig
 from domainkit.context import current_request
+from domainkit.http import guard as guards
 from domainkit.http.guard import Network, UnsafeURL, checked_host, checked_url
 from domainkit.tracing import trace_headers
 from domainkit.utils.closing import close_each
@@ -110,6 +120,10 @@ BREAKER_HOSTS: Final = 1024
 REQUEST_ID_HEADER: Final = "X-Request-ID"
 MAX_RETRIES: Final = 10
 """The most retries a client may make of one call."""
+DOT_SEGMENTS: Final = frozenset({b".", b".."})
+"""Path segments that move a URL up its path; relative URLs may not hold them."""
+_SEGMENTS: Final = re.compile(rb"[/\\]")
+r"""What separates path segments: ``/``, and ``\`` for servers that read it so."""
 
 type Handler = (
     Callable[[httpx2.Request], httpx2.Response]
@@ -151,11 +165,16 @@ class CircuitBreaker:
     success closes the circuit, its failure opens it again, and a call
     that ends neither way (it was cancelled) lets the next call try. Only
     hosts with failures are kept, at most ``BREAKER_HOSTS`` of them.
+
+    Event loops on several threads share a client's breaker (free-threaded
+    Python), so its circuits change only under its lock: one trial at a
+    time holds across them too.
     """
 
     def __init__(self) -> None:
         """Start with every circuit closed."""
         self._circuits: OrderedDict[str, _Circuit] = OrderedDict()
+        self._lock = threading.Lock()
 
     def admits(self, host: str, cooldown: float) -> bool:
         """Whether a call to ``host`` may go now.
@@ -163,39 +182,43 @@ class CircuitBreaker:
         While the circuit is open, no call may until ``cooldown`` seconds
         have passed; then one may, as a trial, and others wait for its end.
         """
-        circuit = self._circuits.get(host)
-        if circuit is None or circuit.opened is None:
+        with self._lock:
+            circuit = self._circuits.get(host)
+            if circuit is None or circuit.opened is None:
+                return True
+            if circuit.trying or clock.monotonic() < circuit.opened + cooldown:
+                return False
+            circuit.trying = True
             return True
-        if circuit.trying or clock.monotonic() < circuit.opened + cooldown:
-            return False
-        circuit.trying = True
-        return True
 
     def succeeded(self, host: str) -> None:
         """Forget the host's failures: its circuit closes."""
-        self._circuits.pop(host, None)
+        with self._lock:
+            self._circuits.pop(host, None)
 
     def failed(self, host: str, failures: int) -> bool:
         """Count a failure; return whether it opened the circuit.
 
         ``failures`` in a row open it, and a failed trial opens it again.
         """
-        circuit = self._circuits.pop(host, None) or _Circuit()
-        self._circuits[host] = circuit
-        if len(self._circuits) > BREAKER_HOSTS:
-            self._circuits.popitem(last=False)
-        circuit.failures += 1
-        circuit.trying = False
-        if circuit.failures < failures:
-            return False
-        circuit.opened = clock.monotonic()
-        return True
+        with self._lock:
+            circuit = self._circuits.pop(host, None) or _Circuit()
+            self._circuits[host] = circuit
+            if len(self._circuits) > BREAKER_HOSTS:
+                self._circuits.popitem(last=False)
+            circuit.failures += 1
+            circuit.trying = False
+            if circuit.failures < failures:
+                return False
+            circuit.opened = clock.monotonic()
+            return True
 
     def abandoned(self, host: str) -> None:
         """A call that neither succeeded nor failed: let the next one try."""
-        circuit = self._circuits.get(host)
-        if circuit is not None:
-            circuit.trying = False
+        with self._lock:
+            circuit = self._circuits.get(host)
+            if circuit is not None:
+                circuit.trying = False
 
 
 _stub: ContextVar[httpx2.AsyncBaseTransport | None] = ContextVar(
@@ -222,6 +245,7 @@ class HttpClient:
         allow_http: bool = False,
         allowed_networks: Sequence[Network] = (),
         propagate: bool | None = None,
+        breaker: bool = True,
         transport: httpx2.AsyncBaseTransport | None = None,
     ) -> None:
         """Make a client; nothing is opened until its first call.
@@ -232,12 +256,27 @@ class HttpClient:
         ``guard`` checks every URL and address (see the module);
         ``allow_http`` and ``allowed_networks`` loosen it. ``propagate``
         sends the request id and trace context (default: unless guarded).
-        ``transport`` replaces the network, as httpx2's ``MockTransport``.
+        ``breaker=False`` keeps no circuits: for a client whose URLs others
+        choose, so one caller's failing URLs never refuse another's calls.
+        ``transport`` replaces the network, as httpx2's ``MockTransport``;
+        a guarded client refuses one, since its checks are made as it
+        connects (tests use ``stub``).
+
+        Raises:
+            ValueError: An option is out of range, or a guarded client was
+                given a transport.
         """
-        if timeout is not None and not timeout > 0:
-            raise ValueError(f"A client's timeout must be above 0, not {timeout!r}.")
+        if timeout is not None and not (math.isfinite(timeout) and timeout > 0):
+            raise ValueError(
+                f"A client's timeout must be a finite number above 0, not {timeout!r}."
+            )
         if retries is not None and not 0 <= retries <= MAX_RETRIES:
             raise ValueError(f"A client retries 0 to 10 times, not {retries!r}.")
+        if guard and transport is not None:
+            raise ValueError(
+                "A guarded client checks each address as it connects, so it "
+                "cannot use a transport of its own; in tests, use stub()."
+            )
         self.base_url = None if base_url is None else _base(base_url)
         self.headers = dict(headers or {})
         self.timeout = timeout
@@ -247,7 +286,8 @@ class HttpClient:
         self.allowed_networks = tuple(allowed_networks)
         self.propagate = not guard if propagate is None else propagate
         self.transport = transport
-        self.breaker = CircuitBreaker()
+        self.breaker = CircuitBreaker() if breaker else None
+        """The client's circuits per host; None with ``breaker=False``."""
         self._pools: WeakKeyDictionary[
             asyncio.AbstractEventLoop, httpx2.AsyncClient
         ] = WeakKeyDictionary()
@@ -307,8 +347,10 @@ class HttpClient:
             UnsafeURL: A guarded client was asked for a URL it may not call.
             httpx2.HTTPError: The call failed on its last try.
         """
-        if timeout is not None and not timeout > 0:
-            raise ValueError(f"A call's timeout must be above 0, not {timeout!r}.")
+        if timeout is not None and not (math.isfinite(timeout) and timeout > 0):
+            raise ValueError(
+                f"A call's timeout must be a finite number above 0, not {timeout!r}."
+            )
         config = settings.HTTP_CLIENT
         method = method.upper()
         target = self._target(url)
@@ -339,8 +381,7 @@ class HttpClient:
         except TimeoutError as exc:
             if isinstance(exc, deadlines.DeadlineExceeded) or not budget.expired():
                 raise
-            if self.breaker.failed(origin, config.BREAKER_FAILURES):
-                _opened(origin, config)
+            self._failed(call, config)
             logger.warning(
                 "%s %s took longer than its %gs", method, call.shown, seconds
             )
@@ -362,8 +403,11 @@ class HttpClient:
         config: HttpClientConfig,
     ) -> httpx2.Response:
         """Try the call until it succeeds, may not be retried, or runs out of time."""
+        breaker = self.breaker
         while True:
-            if not self.breaker.admits(call.origin, config.BREAKER_COOLDOWN):
+            if breaker is not None and not breaker.admits(
+                call.origin, config.BREAKER_COOLDOWN
+            ):
                 raise CircuitOpen(
                     f"Calls to {call.origin} fail at once: its circuit is open.",
                     request=request,
@@ -385,13 +429,14 @@ class HttpClient:
                     raise
                 outcome = type(exc).__name__
             except BaseException:
-                self.breaker.abandoned(call.origin)
+                if breaker is not None:
+                    breaker.abandoned(call.origin)
                 raise
             else:
                 if response.status_code >= SERVER_ERROR:
                     self._failed(call, config)
-                else:
-                    self.breaker.succeeded(call.origin)
+                elif breaker is not None:
+                    breaker.succeeded(call.origin)
                 delay = call.wait_before_retry(response, config)
                 if delay is None:
                     logger.debug(
@@ -441,19 +486,22 @@ class HttpClient:
 
     def _failed(self, call: "_Call", config: HttpClientConfig) -> None:
         """Count a failure against the host; warn once when its circuit opens."""
-        if self.breaker.failed(call.origin, config.BREAKER_FAILURES):
+        breaker = self.breaker
+        if breaker is not None and breaker.failed(call.origin, config.BREAKER_FAILURES):
             _opened(call.origin, config)
 
     def _target(self, url: str) -> httpx2.URL:
         """``url`` under ``base_url``, if the client has one; checked if guarded.
 
-        A relative URL is appended to the base URL's path, as httpx2 does. A
-        URL naming a host must keep to the base URL's origin, so a path built
-        from someone's input cannot send the call elsewhere.
+        A relative URL is appended to the base URL's path, as httpx2 does,
+        and may not climb out of it: a ``.`` or ``..`` segment, spelled out
+        or percent-encoded (``%2e%2e``, ``..%2f``), is refused. A URL naming
+        a host must keep to the base URL's origin. So a path built from
+        someone's input cannot send the call elsewhere.
 
         Raises:
-            UnsafeURL: The URL leaves the base URL's origin, or the guard
-                refuses it.
+            UnsafeURL: The URL leaves the base URL's origin or path, or the
+                guard refuses it.
         """
         target = httpx2.URL(url)
         base = self.base_url
@@ -465,6 +513,8 @@ class HttpClient:
                     base.port,
                 ):
                     raise UnsafeURL("The URL leaves the client's base URL.")
+            elif _climbs(target.raw_path):
+                raise UnsafeURL("The URL leaves the client's base URL.")
             else:
                 path = base.raw_path.rstrip(b"/") + b"/" + target.raw_path.lstrip(b"/")
                 target = base.copy_with(raw_path=path)
@@ -505,8 +555,11 @@ class HttpClient:
         return pool
 
     def _open(self, config: HttpClientConfig) -> httpx2.AsyncClient:
-        """A pool of connections, with the guard's transport if guarded."""
-        verify = tls_context(config.CA_BUNDLE)
+        """A pool of connections, with the guard's transport and TLS if guarded."""
+        if self.guard:
+            verify = guards.tls_context(config.CA_BUNDLE)
+        else:
+            verify = tls_context(config.CA_BUNDLE)
         limits = httpx2.Limits(
             max_connections=config.MAX_CONNECTIONS,
             max_keepalive_connections=config.MAX_KEEPALIVE_CONNECTIONS,
@@ -577,6 +630,20 @@ def _base(url: str) -> httpx2.URL:
             "or fragment."
         )
     return base
+
+
+def _climbs(raw_path: bytes) -> bool:
+    r"""Whether a relative path has a ``.`` or ``..`` segment, however encoded.
+
+    The path is percent-decoded until nothing changes, so a server that
+    decodes it (once, or more) before it resolves dot segments sees no
+    segment this did not; ``\`` separates segments too, as some servers
+    take it.
+    """
+    path = raw_path.split(b"?", 1)[0]
+    while (decoded := unquote_to_bytes(path)) != path:
+        path = decoded
+    return any(segment in DOT_SEGMENTS for segment in _SEGMENTS.split(path))
 
 
 def backoff(attempt: int, base: float, most: float) -> float:

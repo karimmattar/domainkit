@@ -69,6 +69,12 @@ async def hang() -> None:
     await forever()
 
 
+@router.post("/echo")
+async def echo(body: dict[str, Any]) -> dict[str, Any]:
+    """The JSON body it was sent, once all of it arrived."""
+    return body
+
+
 @router.get("/remaining")
 async def remaining() -> dict[str, float | None]:
     """The seconds left before the request's deadline."""
@@ -181,3 +187,12 @@ async def statement_timeout() -> dict[str, str]:
     async with PaymentsUnitOfWork(readonly=True) as uow:
         shown = await uow.session.scalar(text("SHOW statement_timeout"))
     return {"statement_timeout": str(shown)}
+
+
+@router.get(
+    "/month-long-statement-timeout",
+    dependencies=[Depends(RequestTimeout(3_000_000.0))],
+)
+async def month_long_statement_timeout() -> dict[str, str]:
+    """``/statement-timeout`` under a deadline longer than PostgreSQL takes."""
+    return await statement_timeout()

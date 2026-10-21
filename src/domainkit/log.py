@@ -585,6 +585,10 @@ def build_logging_config(
             "uvicorn.access": {"handlers": [], "propagate": False},
             # Autogenerate announces each plugin it loads; keep migrations readable.
             "alembic.runtime.plugins": {"level": "WARNING"},
+            # httpx2 logs each call's full URL, query string and all, at INFO;
+            # domainkit.http.client logs calls without it.
+            "httpx2": {"level": "WARNING"},
+            "httpcore2": {"level": "WARNING"},
         },
     }
 

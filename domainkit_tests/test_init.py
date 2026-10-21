@@ -153,6 +153,13 @@ def test_production_settings_come_from_the_environment(tmp_path: Path) -> None:
     without_key = run(project, "manage.py", "check", env=no_key)
     weak_key = {**no_key, "BILLING_API_SECRET_KEY": "domainkit-insecure-" * 3}
     with_weak_key = run(project, "manage.py", "check", env=weak_key)
+    quiet = run(
+        project / "src",
+        "-c",
+        "from config.settings.production import LOGGING as L; "
+        "print(L['loggers']['httpx2']['level'], L['loggers']['httpcore2']['level'])",
+        env={**production, **database},
+    )
 
     assert missing.returncode == 1
     assert "Set the BILLING_API_DATABASE_URL environment variable." in missing.stderr
@@ -170,6 +177,8 @@ def test_production_settings_come_from_the_environment(tmp_path: Path) -> None:
     assert with_weak_key.returncode == 1
     assert "SECRET_KEY holds a development key in production" in with_weak_key.stderr
     assert "domainkit-insecure-" not in with_weak_key.stderr
+    # httpx2's own lines name whole URLs, query strings included.
+    assert quiet.stdout.split() == ["WARNING", "WARNING"], quiet.stderr
 
 
 def test_production_hardening_can_be_relaxed_from_the_environment(

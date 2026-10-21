@@ -374,6 +374,21 @@ async def test_transactions_run_with_the_time_left(database_url: str) -> None:
     assert await shown(None, statement_timeout=None) == 0
 
 
+@postgres_only
+async def test_a_deadline_longer_than_postgresql_takes_asks_for_the_most(
+    database_url: str,
+) -> None:
+    """35 days without STATEMENT_TIMEOUT: 24.8 days, the most it takes, not an error."""
+    with freeze_time("2026-01-01"):
+        async with paying(
+            database_url, {"STATEMENT_TIMEOUT": None}, REQUEST_TIMEOUT=5.0
+        ) as client:
+            response = await client.get("/month-long-statement-timeout")
+
+    assert response.status_code == 200
+    assert _milliseconds(response.json()["statement_timeout"]) == 2_147_483_647
+
+
 def _milliseconds(value: str) -> int:
     """``5s``, ``4999ms``, or ``0`` as milliseconds."""
     if value.endswith("ms"):
