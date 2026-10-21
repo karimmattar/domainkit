@@ -96,6 +96,7 @@ async def stream() -> StreamingResponse:
     """A response that keeps sending once it has started, without a deadline."""
 
     async def chunks() -> AsyncIterator[bytes]:
+        seen.append(deadlines.remaining())  # The response has started.
         yield b"started;"
         seen.append(deadlines.remaining())
         yield b"finished"

@@ -11,6 +11,7 @@ import pytest
 from prometheus_client import REGISTRY
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from domainkit import deadlines
 from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.conf.global_settings import (
@@ -98,6 +99,7 @@ async def test_slots_refuse_when_the_queue_is_full_or_the_wait_ends(
     await timed.acquire(1.0)
     assert await timed.acquire(0.01) == QUEUE_TIMEOUT
     assert (timed.held, timed.waiting) == (1, 0)
+    assert not timed._waiters  # Nothing left behind to skip later.
     assert queued.value == 0
 
 
@@ -337,6 +339,68 @@ async def test_a_streamed_response_gives_its_slot_back_when_it_starts() -> None:
         assert await other.answered() == 200
         app.gates[0].set()
         assert await streaming.answered() == 200
+
+
+class Live:
+    """Long-lived connections, as ``domainkit.http.live`` serves them.
+
+    ``/events`` starts a response marked long-lived, as an event stream
+    does, and a WebSocket connection opens; both end when the test sets
+    ``gate``. Any other request waits until its deadline cuts it off.
+    """
+
+    def __init__(self) -> None:
+        """Nothing open yet."""
+        self.gate = asyncio.Event()
+        self.left: list[float | None] = []
+        self.opened = Counter()
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Stream, keep a socket open, or hang."""
+        if scope["type"] == "websocket":
+            self.left.append(deadlines.remaining())
+            self.opened.add()
+            await self.gate.wait()
+            return
+        if scope["path"] != "/events":
+            await self.gate.wait()  # Never set before the deadline passes.
+            return  # pragma: no cover - cut off first.
+        scope["domainkit.long_lived"] = True
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"text/event-stream")],
+            }
+        )
+        self.left.append(deadlines.remaining())
+        await self.gate.wait()
+        await send({"type": "http.response.body", "body": b"data: done\n\n"})
+
+
+async def test_long_lived_connections_hold_no_slot_and_have_no_deadline() -> None:
+    """An event stream and a WebSocket outlive REQUEST_TIMEOUT; others get in."""
+    live = Live()
+    with override_settings(
+        REQUEST_TIMEOUT=0.05, MAX_CONCURRENT_REQUESTS=1, MAX_QUEUED_REQUESTS=0
+    ):
+        middleware = ConcurrencyLimitMiddleware(live)
+        app = DeadlineMiddleware(middleware)
+    events = Call(app, "/events")
+    await events.started.wait()
+    socket = asyncio.create_task(
+        app({"type": "websocket", "path": "/socket"}, Call.receive, Call.send)  # type: ignore[arg-type]
+    )
+    await live.opened.reach(1)
+    assert live.left == [None, None]
+    assert middleware.slots(1).held == 0
+    other = Call(app, "/work")  # Admitted, then cut off by its own deadline...
+    assert await other.answered() == 503
+    assert b'"code":"deadline_exceeded"' in other.sent[1]["body"]
+    live.gate.set()  # ...while the stream and the socket, there first, go on.
+    assert await events.answered() == 200
+    assert events.sent[-1]["body"] == b"data: done\n\n"
+    await socket
 
 
 async def test_probes_websockets_and_no_cap_pass_through() -> None:

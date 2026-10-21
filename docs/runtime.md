@@ -47,7 +47,9 @@ The body is read before route dependencies run, so it is read under
 **What has no deadline.** The deadline is lifted as soon as the response
 starts: a streamed response (an export, Server-Sent Events) runs as long
 as it streams, and background tasks that run after the response are not
-cut off. WebSocket connections never get one; their limits are their own.
+cut off. That covers every long-lived response, whether or not it marks
+its scope `domainkit.long_lived`, as an event stream does. WebSocket
+connections never get one; their limits are their own.
 A long-lived endpoint that does slow work before it starts answering uses
 `RequestTimeout(None)`, or a longer deadline. Code can also lift the
 deadline of the work it is doing with
@@ -129,7 +131,8 @@ Retry-After: 1
   (`CONCURRENCY_EXEMPT_PATHS`) are never counted or refused, so a busy
   replica is not taken for a dead one.
 - A request holds its slot until its response starts, or until it ends:
-  a streamed response gives its slot back as it starts. A request that is
+  a streamed response, an event stream among them, gives its slot back as
+  it starts, and WebSocket connections never take one. A request that is
   cancelled, while it waits or while it runs (its deadline passed, or the
   server cancelled it when the client went away), gives its slot or its
   place back.

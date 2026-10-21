@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from domainkit.conf import DatabaseConfig, override_settings
+from domainkit.db import drivers
 from domainkit.db.drivers import (
     DEADLINE_SLACK,
     client_ssl_context,
@@ -349,10 +350,14 @@ def test_timeouts_of_a_millisecond_or_less_never_become_zero() -> None:
 @pytest.mark.parametrize("name", ["timeout", "command_timeout"])
 def test_connect_args_still_set_the_client_timeouts_deprecated(name: str) -> None:
     """They were driver arguments before they were settings; they warn now."""
-    with pytest.warns(DomainkitDeprecationWarning, match=f"CONNECT_ARGS\\['{name}'\\]"):
+    with pytest.warns(
+        DomainkitDeprecationWarning, match=f"CONNECT_ARGS\\['{name}'\\]"
+    ) as warned:
         args = connect_args(config(CONNECT_ARGS={name: 99}))
 
     assert args[name] == 99
+    # Whoever asked for the arguments, not the module that makes them.
+    assert warned[0].filename != drivers.__file__
     with pytest.warns(DomainkitDeprecationWarning, match="CONNECT_TIMEOUT instead"):
         libpq = connect_args(config(PSYCOPG, CONNECT_ARGS={"connect_timeout": 9}))
     assert libpq["connect_timeout"] == 9

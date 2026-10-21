@@ -91,7 +91,7 @@ async def test_the_deadline_is_lifted_when_the_response_starts() -> None:
 
     assert response.status_code == 200
     assert response.text == "started;finished"
-    assert deadline_routes.seen == [None]
+    assert deadline_routes.seen == [None, None]
 
 
 async def test_routes_give_themselves_another_deadline(
@@ -105,12 +105,10 @@ async def test_routes_give_themselves_another_deadline(
     caplog.set_level(logging.WARNING, LOGGER)
     with freeze_time("2026-01-01"):
         async with serving(REQUEST_TIMEOUT=30.0) as client:
-            longer = await client.get("/longer")
-            unbounded = await client.get("/unbounded")
+            assert (await client.get("/longer")).json() == {"remaining": 60.0}
+            assert (await client.get("/unbounded")).json() == {"remaining": None}
             shorter = await client.get("/shorter")
 
-    assert longer.json() == {"remaining": 60.0}
-    assert unbounded.json() == {"remaining": None}
     assert shorter.status_code == 503
     assert warnings_from(caplog) == ["GET /shorter ran past its deadline of 0.05s"]
 
@@ -121,6 +119,7 @@ async def test_route_timeouts_are_checked_and_need_a_deadline() -> None:
         with pytest.raises(ValueError, match="number of seconds above 0"):
             RequestTimeout(bad)
     assert RequestTimeout(None).seconds is None
+    assert RequestTimeout(0.5).seconds == 0.5
     await RequestTimeout(5.0)()
     assert deadlines.remaining() is None
 
@@ -156,6 +155,37 @@ async def test_only_http_requests_get_a_deadline() -> None:
         await middleware({"type": kind}, receive, send)
 
     assert seen == [("websocket", None), ("lifespan", None)]
+
+
+async def test_a_request_arriving_with_no_time_left_is_answered_503(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Served inside work whose deadline has passed, it never runs."""
+    caplog.set_level(logging.WARNING, LOGGER)
+    ran: list[str] = []
+    sent: list[Message] = []
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        ran.append(scope["path"])  # pragma: no cover - never runs.
+
+    async def receive() -> Message:
+        return {"type": "http.request", "body": b""}  # pragma: no cover
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    with override_settings(REQUEST_TIMEOUT=5.0):
+        middleware = DeadlineMiddleware(app)
+    scope = {"type": "http", "method": "GET", "path": "/late", "headers": []}
+    with freeze_time("2026-01-01") as clock:
+        async with deadlines.timeout(1.0):
+            clock.tick(1)
+            await middleware(scope, receive, send)
+
+    assert ran == []
+    assert sent[0]["status"] == 503
+    assert b'"code":"deadline_exceeded"' in sent[1]["body"]
+    assert warnings_from(caplog) == ["GET /late ran past its deadline"]
 
 
 async def test_a_deadline_found_passed_inside_is_answered_503(
@@ -292,6 +322,18 @@ async def test_cancellation_leaves_no_transaction_key_or_connection(
         assert len(await rows(payments)) == 1
         [stored] = await rows(idempotency_keys)
         assert stored.status_code == 201
+
+
+async def test_a_short_deadline_sets_nothing_outside_postgresql(
+    database_url: str,
+) -> None:
+    """Only PostgreSQL transactions set their statement_timeout; all of them write."""
+    deadline_routes.hang_payments[:] = [False]
+    with freeze_time("2026-01-01"):
+        async with paying(database_url, REQUEST_TIMEOUT=5.0) as client:
+            response = await client.post("/slow-pay", json={})
+
+    assert response.status_code == 201
 
 
 @postgres_only

@@ -108,6 +108,7 @@ async def test_the_blocks_own_seconds_raise_timeout_error() -> None:
     with pytest.raises(TimeoutError) as raised:
         await hang_in(bound)
     assert type(raised.value) is TimeoutError
+    assert isinstance(raised.value.__cause__, asyncio.CancelledError)  # Where it was.
     assert bound.expired()
 
     outer, inner = deadlines.timeout(60.0), deadlines.timeout(0.01)
@@ -157,10 +158,53 @@ async def test_a_task_started_inside_gets_deadline_exceeded() -> None:
         async with deadlines.timeout(60.0):
             clock.tick(59.95)  # 0.05s left, on the clock deadlines read.
             task = asyncio.create_task(child())
-            with pytest.raises(DeadlineExceeded) as raised:
+            with pytest.raises(
+                DeadlineExceeded, match=r"^The deadline passed\.$"
+            ) as raised:
                 await task
     assert isinstance(raised.value, TimeoutError)
+    assert isinstance(raised.value.__cause__, TimeoutError)
+    assert isinstance(raised.value.__cause__.__cause__, asyncio.CancelledError)
     assert shared == [False]
+
+
+async def test_a_task_started_in_an_inner_block_times_itself_too() -> None:
+    """The inner block leaves the deadline to the outer timer, of another task."""
+
+    async def child() -> None:
+        await deadlines.within(forever())
+
+    with freeze_time("2026-01-01") as clock:
+        async with deadlines.timeout(1.0), deadlines.timeout():
+            clock.tick(0.95)  # 0.05s left, on the clock deadlines read.
+            task = asyncio.create_task(child())
+            with pytest.raises(DeadlineExceeded):
+                await task
+
+
+async def test_a_deadline_given_later_is_kept_by_the_blocks_inside() -> None:
+    """A block without bounds whose deadline is set later: inner blocks time it."""
+    async with deadlines.timeout() as unbounded:
+        assert unbounded.deadline is not None
+        unbounded.deadline.reset(0.01)  # No timer of its own to move.
+        with pytest.raises(DeadlineExceeded):
+            await hang_in(deadlines.timeout())
+
+
+async def test_an_inner_block_cannot_lift_the_outer_deadline() -> None:
+    """Clearing its own deadline leaves the outer one, and its timer, in force."""
+    outer = deadlines.timeout(0.01)
+
+    async def clear_inside() -> None:
+        async with outer, deadlines.timeout() as inner:
+            assert inner.deadline is not None
+            inner.deadline.clear()
+            assert deadlines.remaining() is None
+            await forever()
+
+    with pytest.raises(TimeoutError):
+        await clear_inside()
+    assert outer.expired()
 
 
 async def test_no_time_left_refuses_the_block_on_entry() -> None:
@@ -169,11 +213,13 @@ async def test_no_time_left_refuses_the_block_on_entry() -> None:
     with freeze_time("2026-01-01") as clock:
         async with deadlines.timeout(60.0):
             clock.tick(60)
-            with pytest.raises(DeadlineExceeded, match="has passed"):
+            with pytest.raises(DeadlineExceeded, match=r"^The deadline has passed\.$"):
                 await refused.__aenter__()
+            with pytest.raises(DeadlineExceeded):  # Both ran out: the deadline did.
+                await deadlines.timeout(0).__aenter__()
     assert refused.deadline is None
     assert not refused.expired()
-    with pytest.raises(TimeoutError, match="No time was given") as zero:
+    with pytest.raises(TimeoutError, match=r"^No time was given\.$") as zero:
         await deadlines.timeout(0).__aenter__()
     assert type(zero.value) is TimeoutError
     await refused.__aexit__(None, None, None)  # Never entered: nothing to undo.
