@@ -454,15 +454,24 @@ async def test_a_read_sharing_a_deadline_is_cut_off_at_it(
 async def test_a_failing_read_under_a_deadline_raises_its_own_error(
     tables: None,
 ) -> None:
-    """The deadline wraps the statement; it does not hide the database's error."""
-    async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
-        await uow.gadgets.filter()  # The pool's connection is made.
-    reading = GadgetsUnitOfWork(reads=Reads.STATEMENTS)
-    with Connects() as connects:
-        async with deadlines.timeout(10.0), reading as uow:
+    """The deadline bounds the statement; it does not hide the database's error.
+
+    In the task whose timer enforces the deadline, and in a task that only
+    shares it, where the statement keeps to the deadline itself.
+    """
+
+    async def read() -> int:
+        async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
             with pytest.raises(DBAPIError, match="division by zero"):
                 await uow.session.execute(text("SELECT 1 / 0"))
-            assert len(await uow.gadgets.filter()) == 1
+            return len(await uow.gadgets.filter())
+
+    async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
+        await uow.gadgets.filter()  # The pool's connection is made.
+    with Connects() as connects:
+        async with deadlines.timeout(10.0):
+            assert await read() == 1
+            assert await asyncio.create_task(read()) == 1
     assert connects.count == 0  # The same connection, kept: no retry.
 
 
