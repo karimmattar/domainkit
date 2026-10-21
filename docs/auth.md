@@ -1163,8 +1163,8 @@ changed what.
 | `USER_MODEL` | `"domainkit.contrib.auth.models.User"` | The user class. |
 | `USER_TABLE` | `None` (the default user's table) | A custom user's `Table`; required with a custom `USER_MODEL`. |
 | `PASSWORD_HASHERS` | PBKDF2, PBKDF2-SHA1, Argon2, scrypt | Hasher classes; the first hashes new passwords. |
-| `HASHING_THREADS` | `1` | Threads per process that hash passwords; each keeps a core busy. One, like a Django worker, so with a process per core hashing never takes the event loops' cores. |
-| `HASHING_QUEUE` | `8` | Hashing calls that may wait for a thread (about 0.4 s each); more answer `503 password_checks_busy`. |
+| `HASHING_THREADS` | `1` | Threads per process that hash passwords; each keeps a core busy. One, like a Django worker, so with a process per core hashing never takes the event loops' cores (at most 1,024). |
+| `HASHING_QUEUE` | `8` | Hashing calls that may wait for a thread (about 0.4 s each); more answer `503 password_checks_busy` (at most 10,000). |
 | `HASHING_RESERVED` | `1` | Places of `HASHING_QUEUE` kept for `POST /auth/password` and the admin's password change; other calls are refused once the rest are taken. More than `HASHING_QUEUE` counts as `HASHING_QUEUE`. |
 | `PASSWORD_VALIDATORS` | the four above | Rules for new passwords; `[]` checks nothing. |
 | `BACKENDS` | `["domainkit.contrib.auth.backends.ModelBackend"]` | Authentication and permission backends, in order. |

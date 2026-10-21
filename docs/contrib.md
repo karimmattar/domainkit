@@ -103,17 +103,17 @@ inspects any outbox.
 | `MAX_ATTEMPTS` | `10` | Runs before dead-lettering, unless the task sets its own. |
 | `RETRY_BASE_SECONDS` | `2.0` | First retry delay; it doubles per attempt. |
 | `RETRY_MAX_SECONDS` | `3600.0` | Cap on the retry delay. |
-| `TASK_TIMEOUT` | `240.0` | Seconds a message may run; longer counts as a failure. |
-| `VISIBILITY_TIMEOUT` | `300.0` | Seconds a claim lasts; must exceed `TASK_TIMEOUT`. |
-| `POLL_INTERVAL` | `1.0` | Seconds an idle worker waits before looking again. |
-| `BATCH_SIZE` | `50` | Most messages claimed at once. |
-| `CONCURRENCY` | `10` | Messages one worker process runs at the same time, from all its outboxes and queues together. |
-| `SHUTDOWN_TIMEOUT` | `20.0` | Seconds a stopping worker lets running messages finish; the rest are stopped and run again. |
-| `RETENTION_SECONDS` | `604800.0` | Finished messages are deleted after this (7 days). |
-| `CLEANUP_INTERVAL` | `3600.0` | Seconds between those deletions. |
+| `TASK_TIMEOUT` | `240.0` | Seconds a message may run; longer counts as a failure (at most a day). |
+| `VISIBILITY_TIMEOUT` | `300.0` | Seconds a claim lasts; must exceed `TASK_TIMEOUT` (at most two days). |
+| `POLL_INTERVAL` | `1.0` | Seconds an idle worker waits before looking again (at most an hour). |
+| `BATCH_SIZE` | `50` | Most messages claimed at once (1 to 10,000). |
+| `CONCURRENCY` | `10` | Messages one worker process runs at the same time, from all its outboxes and queues together (1 to 65,535, RabbitMQ's largest prefetch). |
+| `SHUTDOWN_TIMEOUT` | `20.0` | Seconds a stopping worker lets running messages finish; the rest are stopped and run again (at most an hour). |
+| `RETENTION_SECONDS` | `604800.0` | Finished messages are deleted after this (7 days; at most a year). |
+| `CLEANUP_INTERVAL` | `3600.0` | Seconds between those deletions (at most a day). |
 | `CLEANUP_BATCH_SIZE` | `1000` | Most finished messages one cleanup statement deletes (1 to 100,000). |
 | `BROKER` | `None` | An alias in `BROKERS`: workers take their work from that broker instead of polling the outbox (below). |
-| `REPUBLISH_AFTER` | `3600.0` | With a broker: seconds a published message may wait for a worker before the relay publishes it again, as lost. |
+| `REPUBLISH_AFTER` | `3600.0` | With a broker: seconds a published message may wait for a worker before the relay publishes it again, as lost (at most a week). |
 | `PUBLISH_ON_COMMIT` | `True` | With a broker: the committing process publishes the commit's due messages in the background right away, instead of leaving them to the relays' next poll. |
 | `BREAKER_FAILURES` | `5` | With a broker: failed broker calls in a row after which commits stop publishing and leave their messages to the relays. |
 | `BREAKER_COOLDOWN` | `30.0` | Seconds commits leave their messages to the relays before the publisher tries the broker again. |
@@ -930,8 +930,8 @@ behind one another's purge.
 | `IDEMPOTENCY` key | Default | Meaning |
 | --- | --- | --- |
 | `DATABASE` | `"default"` | Alias holding the keys. |
-| `TTL_SECONDS` | `86400.0` | How long a key is remembered (24 hours). |
-| `LEASE_SECONDS` | `60.0` | How long a request holds its key before a retry may take it over. |
+| `TTL_SECONDS` | `86400.0` | How long a key is remembered (24 hours; at most 30 days). |
+| `LEASE_SECONDS` | `60.0` | How long a request holds its key before a retry may take it over (at most a day). |
 | `METHODS` | `POST`, `PATCH` | Methods that honour the header; others ignore it. |
 | `MAX_RESPONSE_BYTES` | `1048576` | Larger responses are passed through but not stored. |
 | `CREDENTIAL_HEADERS` | `authorization`, `proxy-authorization`, `cookie`, `x-api-key` | Headers that tell callers without an actor apart. |

@@ -253,6 +253,15 @@ All notable changes to domainkit. The format follows
 - The audit seals table has a new `late` column: run `makemigrations` and
   `migrate` in projects that install audit. On PostgreSQL, seals are dated
   by the database's clock rather than the sealer's.
+- Settings that had no upper bound have a generous one, and larger values
+  are refused at startup: in `MESSAGING`, `TASK_TIMEOUT` (a day),
+  `VISIBILITY_TIMEOUT` (two days), `POLL_INTERVAL` (an hour), `BATCH_SIZE`
+  (10,000), `CONCURRENCY` (65,535, the largest prefetch RabbitMQ takes),
+  `SHUTDOWN_TIMEOUT` (an hour), `REPUBLISH_AFTER` (a week),
+  `RETENTION_SECONDS` (a year), and `CLEANUP_INTERVAL` (a day); in
+  `IDEMPOTENCY`, `TTL_SECONDS` (30 days) and `LEASE_SECONDS` (a day); in
+  `AUTH`, `HASHING_THREADS` (1,024) and `HASHING_QUEUE` (10,000); and
+  `READINESS_TIMEOUT` (60 seconds). Defaults are unchanged.
 
 ### Fixed
 
