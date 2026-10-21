@@ -14,7 +14,7 @@ from typing import Any, Final
 from uuid import UUID
 
 from sqlalchemy import (
-    Select,
+    Executable,
     Subquery,
     Table,
     Uuid,
@@ -718,7 +718,7 @@ class PrincipalStore:
 
 
 @cache
-def _user_by_name(user_table: Table, field: str) -> Select[tuple[UUID]]:
+def _user_by_name(user_table: Table, field: str) -> Executable:
     """The id of the user named ``:username`` (built once per table)."""
     return select(user_table.c.id).where(user_table.c[field] == bindparam("username"))
 
@@ -726,7 +726,7 @@ def _user_by_name(user_table: Table, field: str) -> Select[tuple[UUID]]:
 @cache
 def _principal_statement(
     model: type[AbstractBaseUser], user_table: Table, token: bool, username: bool
-) -> Select[Any]:
+) -> Executable:
     """``PrincipalStore.principal``'s statement, built once per model and checks.
 
     It takes ``:user_id``, and ``:token`` and ``:username`` when it checks
