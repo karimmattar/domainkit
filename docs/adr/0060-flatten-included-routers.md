@@ -69,7 +69,7 @@ The options:
 - Each route is matched once per request, at the top, and its handler is
   built once. In the template's routes, a request with no middleware makes
   434 Python calls instead of 1,638; with the template's eleven
-  middleware, 715 instead of 2,019 (with the other changes of the
+  middleware, 711 instead of 2,019 (with the other changes of the
   performance branch to the HTTP stack).
 - What a project can see:
   - `app.routes` lists the routes themselves, with their full paths,

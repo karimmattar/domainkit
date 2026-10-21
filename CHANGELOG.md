@@ -6,6 +6,41 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `domainkit.http.routing.flatten_routes(router)` puts the routes of each
+  router included in `router` in its place, as `get_asgi_application` now
+  does for `ROOT_ROUTER` (ADR 0060). `FLATTEN_ROUTERS = False` keeps
+  FastAPI's nesting.
+
+### Changed
+
+- The routes of the routers that `ROOT_ROUTER` includes are served from the
+  top of the application (PERF-04, N5, FX-18; ADR 0060). FastAPI keeps each
+  `include_router` call nested: it matched a request again at each level,
+  and built the route's handler again for each request. Every route keeps
+  its full path, access rules and other dependencies, tags, responses,
+  response and route classes, and callbacks, and the OpenAPI document is
+  the same byte for byte, on FastAPI 0.141 and 0.158. In the project
+  template's routes, a request makes 434 Python calls instead of 1,638
+  before any middleware. `app.routes` now lists the routes, with their
+  full paths, and `request.scope["route"].path` is the full template. A
+  route added to an included router after the application is built is not
+  served, and a router with frontend routes stays included.
+- Each request does its work once (PERF-05, PERF-06, N1, FX-16). The client
+  address is parsed once per request, for the refused-credential hold and
+  the rate limit together, and the rate-limit groups and the proxy's trust
+  of the latest 4,096 addresses are remembered (an IPv6 group took about
+  25 µs to work out). Security headers are added in one append, request
+  ids come from `os.urandom` (still 32 lowercase hex digits, at a quarter
+  of the cost of `uuid4()`), and `MetricsMiddleware` keeps the handle of
+  each series, for at most 4,096. With the template's eleven middleware a
+  request makes 711 Python calls instead of 2,019, and with
+  `DEFAULT_MIDDLEWARE` 314 instead of 476 (`docs/performance.md`).
+- `MetricsMiddleware` labels a Starlette route or a mount inside an
+  included router as it would one at the top: `unmatched`, or the mounted
+  application's route. Nesting gave them an empty `route` label.
+
 ## [0.8.0] - 2026-10-21
 
 ### Added
