@@ -307,6 +307,11 @@ All notable changes to domainkit. The format follows
   for good, since it ran inline. Each hook now runs as a task, and one cut
   off at its share is cancelled and left behind, so the hooks and phases
   after it still run.
+- Event loops on several threads (free-threaded Python, a loop per thread)
+  raced as each new one dropped the closed loops from the registries of
+  background tasks, commit publishers, and brokers: a loop could fail with
+  a `KeyError`, and on 3.14t the interpreter could crash. Those registries
+  take a lock now.
 
 ## [0.7.0] - 2026-10-20
 

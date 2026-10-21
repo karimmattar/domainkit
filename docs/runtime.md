@@ -366,7 +366,10 @@ never across an `await`:
 - the in-memory rate limiter (`MemoryBackend`) and its callers;
 - `AuthenticationMiddleware`'s refused-credential holds;
 - the password hashing pool's count of pending calls;
-- the logging and reporting queues, and memory caches (`cache/memory.py`).
+- the logging and reporting queues, and memory caches (`cache/memory.py`);
+- the registries that keep each loop's background tasks
+  (`domainkit.tasks`), commit publishers, and brokers, which a new loop
+  walks to let go of the closed ones.
 
 A project's own module-level state needs the same care: a dict two threads
 change at once needs a `threading.Lock` on free-threaded Python, as it would

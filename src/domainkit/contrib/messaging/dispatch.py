@@ -22,6 +22,7 @@ breaker, so commits leave their messages to the relays until it recovers.
 import asyncio
 import json
 import logging
+import threading
 import uuid
 from collections.abc import Iterable, Sequence
 from contextlib import suppress
@@ -491,6 +492,8 @@ class CommitPublisher:
 _publishers: WeakKeyDictionary[
     asyncio.AbstractEventLoop, dict[MessagingSettings, CommitPublisher]
 ] = WeakKeyDictionary()
+_publishers_lock: Final = threading.Lock()
+"""Held to change or walk ``_publishers``: loops on other threads do too."""
 
 
 def commit_publisher(config: MessagingSettings) -> CommitPublisher:
@@ -500,9 +503,10 @@ def commit_publisher(config: MessagingSettings) -> CommitPublisher:
     here; what they had not published is left to the relay.
     """
     loop = asyncio.get_running_loop()
-    for closed in [other for other in _publishers if other.is_closed()]:
-        del _publishers[closed]
-    publishers = _publishers.setdefault(loop, {})
+    with _publishers_lock:
+        for closed in [other for other in _publishers if other.is_closed()]:
+            _publishers.pop(closed, None)
+        publishers = _publishers.setdefault(loop, {})
     if config not in publishers:
         publishers[config] = CommitPublisher(config)
     return publishers[config]
@@ -526,7 +530,8 @@ async def close_publishers(within: float | None = None) -> None:
     phase, and a publication cut short is given back before the phase ends.
     """
     within = drain_time() if within is None else within
-    publishers = _publishers.pop(asyncio.get_running_loop(), {}).values()
+    with _publishers_lock:
+        publishers = _publishers.pop(asyncio.get_running_loop(), {}).values()
     async with asyncio.TaskGroup() as group:
         for publisher in publishers:
             group.create_task(publisher.close(within))
