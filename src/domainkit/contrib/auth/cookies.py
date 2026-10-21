@@ -107,7 +107,8 @@ class CookieAuthentication(BaseAuthentication):
         Raises:
             CSRFFailed: The request does not pass the CSRF checks.
         """
-        if "authorization" in connection.headers:
+        headers = connection.headers
+        if "authorization" in headers or "cookie" not in headers:
             return None
         raw = connection.cookies.get(cookie_names()[0])
         if raw is None or not well_formed(raw, auth_settings().TOKEN_PREFIX):

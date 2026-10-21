@@ -98,7 +98,11 @@ class AuthenticationMiddleware:
             await self.app(scope, receive, send)
             return
         connection = HTTPConnection(scope)
-        held = self._held(address_key(scope))
+        # Nothing held, nothing to look up: most requests skip the address.
+        # The emptiness is read without the lock (a dict's length is atomic,
+        # free-threaded too): a hold set meanwhile applies from the next
+        # request, as if this one had come first.
+        held = self._held(address_key(scope)) if self.held else None
         if held is not None and "authorization" in connection.headers:
             await refuse(scope, receive, send, *held)
             return

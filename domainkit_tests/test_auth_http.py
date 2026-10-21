@@ -40,6 +40,7 @@ from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
+from domainkit.http.ratelimit import address_key
 from domainkit.http.websockets import MIDDLEWARE as WEBSOCKET_LIMITS
 from domainkit.log import SECURITY_LOGGER
 from domainkit.management import call_command
@@ -1262,3 +1263,48 @@ def test_token_commands_are_audited(api: Api) -> None:
     )
     (logged_out,) = audited("auth.user_logged_out")
     assert logged_out["details"] == {"user_id": str(alice), "everywhere": True}
+
+
+def test_nothing_held_means_no_address_is_looked_at(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refused-credential hold reads the address only while one is held."""
+    create_user("alice")
+    client = api()
+    token = bearer(login(client, "alice")["access_token"])
+    looked: list[object] = []
+    real = address_key
+
+    def counted(scope: Any) -> str:  # noqa: ANN401 - an ASGI scope.
+        looked.append(scope)
+        return real(scope)
+
+    monkeypatch.setattr(auth_middleware, "address_key", counted)
+    assert client.get("/whoami", headers=token).json()["user"] == "alice"
+    assert looked == []
+    _find(client.app, AuthenticationMiddleware)._hold("ip:203.0.113.250", 60)
+    assert client.get("/whoami", headers=token).json()["user"] == "alice"
+    assert len(looked) == 1
+
+
+def test_requests_without_a_token_read_no_settings(
+    use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``TokenAuthentication`` and ``CookieAuthentication`` look at headers first."""
+    from domainkit.contrib.auth import cookies
+
+    use_auth()
+    read: list[str] = []
+    monkeypatch.setattr(authentication, "auth_settings", lambda: read.append("t"))
+    monkeypatch.setattr(cookies, "auth_settings", lambda: read.append("c"))
+    scope = {"type": "http", "headers": [(b"accept", b"application/json")]}
+
+    async def anonymous() -> tuple[object, object]:
+        connection = HTTPConnection(scope)
+        return (
+            await authentication.TokenAuthentication().authenticate(connection),
+            await cookies.CookieAuthentication().authenticate(connection),
+        )
+
+    assert run_async(anonymous()) == (None, None)
+    assert read == []

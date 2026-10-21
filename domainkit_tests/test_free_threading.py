@@ -135,6 +135,28 @@ class CheckedPool(HashingPool):
         self._pending = value
 
 
+def test_holds_are_skipped_only_while_none_is_held(use_auth: UseAuth) -> None:
+    """Requests read whether anything is held without the lock, never wrongly.
+
+    Threads hold and let go of addresses while others ask, as each request
+    does, whether to look its address up: an address held for good is
+    found by every thread once it is held.
+    """
+    use_auth(settings={"RATE_LIMIT": "10/minute"})
+    middleware = AuthenticationMiddleware(app=lambda *args: None)  # type: ignore[arg-type]
+    middleware._hold("ip:192.0.2.1", 3600)
+
+    def ask(index: int) -> int:
+        found = 0
+        for round_ in range(500):
+            middleware._hold(f"ip:203.0.113.{index}", -1 if round_ % 2 else 30)
+            held = middleware._held("ip:192.0.2.1") if middleware.held else None
+            found += held is not None
+        return found
+
+    assert on_threads(ask) == [500] * THREADS
+
+
 def test_the_hashing_pool_counts_calls_from_every_thread() -> None:
     """Loops on several threads share one count, changed under its lock."""
     pool = CheckedPool(threads=2, queue=1_000)

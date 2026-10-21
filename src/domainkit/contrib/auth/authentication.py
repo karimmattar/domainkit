@@ -144,8 +144,10 @@ class TokenAuthentication(BaseAuthentication):
     async def authenticate(self, connection: HTTPConnection) -> Credentials | None:
         """The user of a stored, unexpired access token."""
         raw = bearer_token(connection)
+        if raw is None:
+            return None
         prefix = auth_settings().TOKEN_PREFIX
-        if raw is None or not raw.startswith(prefix):
+        if not raw.startswith(prefix):
             return None
         if not well_formed(raw, prefix):  # No database work for a guess.
             raise AuthenticationFailed("Invalid token.")

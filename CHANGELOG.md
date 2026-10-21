@@ -6,6 +6,13 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `AuthenticationMiddleware` looks at the client address only while an
+  address is held for refused credentials, and `TokenAuthentication` and
+  `CookieAuthentication` read no settings for a request without their
+  credentials (FX-16).
+
 ## [0.8.0] - 2026-10-21
 
 ### Added
