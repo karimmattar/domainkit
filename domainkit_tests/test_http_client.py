@@ -3,7 +3,9 @@
 import asyncio
 import gzip
 import ipaddress
+import json
 import logging
+import math
 import socket
 import ssl
 import sys
@@ -40,6 +42,7 @@ from domainkit.http.client import (
     stub,
     tls_context,
 )
+from domainkit.log import build_logging_config, configure_logging, flush_logs
 from domainkit_tests.test_drivers import client_certificate  # noqa: F401 - fixture.
 from domainkit_tests.test_observability import tracer_provider  # noqa: F401 - fixture.
 
@@ -99,6 +102,12 @@ def no_proxies(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
         monkeypatch.delenv(name, raising=False)
         monkeypatch.delenv(name.lower(), raising=False)
+
+
+def circuits(api: HttpClient) -> dict[str, Any]:
+    """The circuits a client keeps, by origin."""
+    assert api.breaker is not None
+    return dict(api.breaker._circuits)
 
 
 def options(**http_client: object) -> Any:  # noqa: ANN401 - a context manager.
@@ -189,6 +198,59 @@ async def test_a_base_url_keeps_calls_on_its_origin() -> None:
             HttpClient(base_url=bad)
 
 
+@pytest.mark.parametrize(
+    "climbing",
+    [
+        "../admin",
+        "./../admin",
+        "rates/../../admin",
+        "..",
+        "rates/.",
+        "%2e%2e/admin",
+        "%2E%2E/admin",
+        ".%2e/admin",
+        "%2e./admin",
+        "%252e%252e/admin",  # Decoded twice by some servers.
+        "..%2fadmin",
+        "rates%2F..%2F..%2Fadmin",
+        "..\\admin",
+        "rates\\..\\..\\admin",
+        "..%5cadmin",
+        "../admin?page=1",
+    ],
+)
+async def test_a_relative_url_may_not_climb_out_of_the_base_path(
+    climbing: str,
+) -> None:
+    """A ``.`` or ``..`` segment, spelled out or percent-encoded, is refused."""
+    upstream = Upstream(status(200))
+    api = HttpClient(base_url="https://api.example.com/v1/accounts/")
+    with (
+        stub(upstream),
+        pytest.raises(UnsafeURL, match=r"^The URL leaves the client's base URL\.$"),
+    ):
+        await api.get(climbing)
+
+    assert upstream.requests == []
+
+
+async def test_relative_urls_without_dot_segments_stay_under_the_base_path() -> None:
+    """Dots inside a segment, or in the query string, are no climb."""
+    upstream = Upstream(status(200))
+    api = HttpClient(base_url="https://api.example.com/v1/accounts/")
+    with stub(upstream):
+        for path in ("42", "a.b/...", "..x/.y", "42?next=../../admin", "%2e%2ex"):
+            await api.get(path)
+
+    assert [r.url.raw_path for r in upstream.requests] == [
+        b"/v1/accounts/42",
+        b"/v1/accounts/a.b/...",
+        b"/v1/accounts/..x/.y",
+        b"/v1/accounts/42?next=../../admin",
+        b"/v1/accounts/%2e%2ex",
+    ]
+
+
 @pytest.mark.usefixtures("tracer_provider")
 async def test_calls_carry_the_trace_context() -> None:
     """The active span's traceparent goes with the call."""
@@ -254,19 +316,48 @@ async def test_async_handlers_and_transports_stub_calls() -> None:
 
 
 async def test_options_are_checked() -> None:
-    """Timeouts above 0, retries from 0 to 10, a printable user agent."""
-    with pytest.raises(ValueError, match="above 0"):
-        HttpClient(timeout=0)
+    """Timeouts finite and above 0, retries from 0 to 10, a printable user agent."""
+    for refused in (0, -1, math.inf, math.nan):
+        with pytest.raises(ValueError, match="a finite number above 0"):
+            HttpClient(timeout=refused)
+        with pytest.raises(ValueError, match="a finite number above 0"):
+            await HttpClient().get(URL, timeout=refused)
     with pytest.raises(ValueError, match="0 to 10 times"):
         HttpClient(retries=11)
     assert HttpClient(retries=10).retries == 10
-    for refused in (-1, 0):
-        with pytest.raises(ValueError, match="above 0"):
-            await HttpClient().get(URL, timeout=refused)
     with stub(Upstream(status(200))):
         assert (await HttpClient().get(URL, timeout=0.5)).status_code == 200
     with pytest.raises(ValidationError, match="USER_AGENT"):
         Settings.model_validate({"HTTP_CLIENT": {"USER_AGENT": "a\r\nX-Evil: 1"}})
+
+
+@pytest.mark.parametrize(
+    ("key", "highest"),
+    [
+        ("TIMEOUT", 3600.0),
+        ("MAX_BACKOFF", 600.0),
+        ("BREAKER_COOLDOWN", 3600.0),
+        ("MAX_RESPONSE_BYTES", 1_073_741_824),
+    ],
+)
+def test_http_client_settings_have_upper_bounds(key: str, highest: float) -> None:
+    """Generous, but bounded; the defaults stay well inside."""
+    assert Settings.model_validate({"HTTP_CLIENT": {key: highest}})
+    with pytest.raises(ValidationError, match=key):
+        Settings.model_validate({"HTTP_CLIENT": {key: highest * 2}})
+
+
+def test_a_guarded_client_takes_no_transport() -> None:
+    """Its address checks are made as it connects; a transport would skip them."""
+    transport = httpx2.MockTransport(lambda request: httpx2.Response(200))
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"^A guarded client checks each address as it connects, so it "
+            r"cannot use a transport of its own; in tests, use stub\(\)\.$"
+        ),
+    ):
+        HttpClient(guard=True, transport=transport)
 
 
 # Retries ------------------------------------------------------------------------
@@ -438,7 +529,7 @@ async def test_the_deadline_bounds_every_call() -> None:
         await call_within_deadline()
     assert type(raised.value) is TimeoutError  # The block that set the deadline.
     assert outer.expired()
-    assert api.breaker._circuits == {}
+    assert circuits(api) == {}
 
     upstream = Upstream(status(200))
     with freeze_time("2026-01-01") as clock, stub(upstream):
@@ -458,7 +549,7 @@ async def test_a_call_from_a_task_started_inside_the_deadline_keeps_it() -> None
             task = asyncio.create_task(api.get(URL))
             with pytest.raises(deadlines.DeadlineExceeded):
                 await task
-    assert api.breaker._circuits == {}
+    assert circuits(api) == {}
 
 
 async def test_a_timeout_error_from_inside_the_call_is_not_its_timeout() -> None:
@@ -471,7 +562,7 @@ async def test_a_timeout_error_from_inside_the_call_is_not_its_timeout() -> None
     with stub(timing_out), pytest.raises(TimeoutError) as raised:
         await api.get(URL)
     assert type(raised.value) is TimeoutError
-    assert api.breaker._circuits == {}
+    assert circuits(api) == {}
 
 
 async def test_each_attempt_is_told_the_time_left() -> None:
@@ -602,13 +693,54 @@ def test_the_breaker_forgets_hosts_that_answer_and_the_oldest() -> None:
     assert breaker.admits("nobody", 30.0)
 
 
+async def test_a_client_without_a_breaker_never_refuses_a_call(
+    waits: list[float],
+) -> None:
+    """One caller's failing URLs on a host never refuse another's calls.
+
+    A guarded client shared by tenants: tenant A's URLs fail, tenant B's
+    call to the same host still goes out. Failures, timeouts, successes,
+    and cancelled calls leave nothing behind.
+    """
+
+    def upstream(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(500 if request.url.path.startswith("/broken") else 200)
+
+    shared = HttpClient(guard=True, retries=0, breaker=False)
+    assert shared.breaker is None
+    with options(BREAKER_FAILURES=1), stub(upstream):
+        for tenant_a in range(5):
+            response = await shared.get(f"https://hooks.example/broken/{tenant_a}")
+            assert response.status_code == 500
+        assert (await shared.post("https://hooks.example/tenant-b")).status_code == 200
+    with options(BREAKER_FAILURES=1):
+        with stub(fail(httpx2.ConnectError)), pytest.raises(httpx2.ConnectError):
+            await shared.get("https://hooks.example/down")
+        with stub(hang), pytest.raises(CallTimeout):
+            await shared.get("https://hooks.example/slow", timeout=0.01)
+        with (
+            stub(lambda request: httpx2.Response(200, content=b"x" * 2048)),
+            options(MAX_RESPONSE_BYTES=1024),
+            pytest.raises(ResponseTooLarge),
+        ):
+            await shared.get("https://hooks.example/large")
+        with stub(Upstream(status(200))):
+            assert (await shared.get("https://hooks.example/")).status_code == 200
+
+    shared_with_breaker = HttpClient(guard=True, retries=0)
+    with options(BREAKER_FAILURES=1), stub(upstream):
+        await shared_with_breaker.get("https://hooks.example/broken/0")
+        with pytest.raises(CircuitOpen):
+            await shared_with_breaker.post("https://hooks.example/tenant-b")
+
+
 async def test_answers_below_500_count_as_success() -> None:
     """A 404 is the host working: it resets the count."""
     api = HttpClient(retries=0)
     with options(BREAKER_FAILURES=2), stub(Upstream(status(500), status(404))):
         await api.get(URL)
         await api.get(URL)
-    assert api.breaker._circuits == {}
+    assert circuits(api) == {}
 
 
 # Bounded answers ----------------------------------------------------------------
@@ -657,6 +789,38 @@ async def test_an_answer_too_long_is_not_read_to_its_end() -> None:
 
     assert len(read) == 3
     assert raised.value.request.url == URL
+
+
+async def test_a_compressed_answer_is_decoded_and_counted_as_it_streams() -> None:
+    """A gzip bomb read through the stub's stream stops at the limit.
+
+    The answer arrives in compressed chunks, as from a socket, and is
+    decompressed a piece at a time: reading stops once the decompressed
+    size passes MAX_RESPONSE_BYTES, long before the end of the stream.
+    """
+    bomb = gzip.compress(b"\0" * (64 * 1024 * 1024), compresslevel=9)
+    chunks = [bomb[start : start + 1024] for start in range(0, len(bomb), 1024)]
+    sent: list[bytes] = []
+
+    async def compressed() -> AsyncIterator[bytes]:
+        for chunk in chunks:
+            sent.append(chunk)
+            yield chunk
+
+    def answer(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            200, headers={"Content-Encoding": "gzip"}, content=compressed()
+        )
+
+    with (
+        options(MAX_RESPONSE_BYTES=1024 * 1024),
+        stub(answer),
+        pytest.raises(ResponseTooLarge, match="1048576 bytes"),
+    ):
+        await HttpClient().get(URL)
+
+    assert len(chunks) > 50
+    assert len(sent) < len(chunks) // 2  # Never decompressed to its end.
 
 
 # The guard ----------------------------------------------------------------------
@@ -990,6 +1154,33 @@ async def test_logs_name_the_call_without_secrets(
     )
     assert logged[3] == f"GET {URL} failed (ConnectError) after 2 attempt(s)"
     assert logged[4].startswith("GET https://api.example.com 200 in ")
+
+
+@pytest.mark.usefixtures("restore_logging")
+async def test_production_logging_keeps_query_strings_out(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """httpx2's and httpcore2's own INFO lines, with the full URL, are not written.
+
+    The configuration production uses, run through a plain and a guarded
+    call: no line names a query string; their warnings still pass.
+    """
+    configure_logging(build_logging_config(log_format="json", level="INFO"))
+    with stub(Upstream(status(200))):
+        await HttpClient(base_url="https://rates.example.com").get(
+            "/v1/rates", params={"api_key": "SECRET-API-KEY"}
+        )
+        await HttpClient(guard=True).get("https://hooks.example/cb?token=SECRET")
+    with stub(Upstream(status(503))):
+        await HttpClient(retries=0).get(URL + "?key=SECRET-KEY")
+    logging.getLogger("httpx2").warning("httpx2 warnings still pass")
+    assert flush_logs()
+
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert not [line for line in lines if "SECRET" in json.dumps(line)]
+    assert [line["logger"] for line in lines] == ["httpx2"]
+    for name in ("httpx2", "httpcore2"):
+        assert logging.getLogger(name).getEffectiveLevel() == logging.WARNING
 
 
 async def test_logs_say_how_long_an_answer_took(

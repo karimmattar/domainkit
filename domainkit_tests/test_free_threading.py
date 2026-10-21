@@ -1,13 +1,16 @@
 """State shared by event loops on several threads stays consistent.
 
 Free-threaded Python (3.14t), and servers that run a loop per thread, share
-one rate limiter, one middleware, and one hashing pool between threads.
-Each test drives them from several threads at once and checks what must
-always hold, and that the state is only touched with the lock held.
+one rate limiter, one middleware, one hashing pool, an HTTP client's
+circuit breaker, and the guard's lookup threads between threads. Each test
+drives them from several threads at once and checks what must always hold,
+and that the state is only touched with the lock held.
 """
 
 import asyncio
 import os
+import random
+import socket
 import subprocess
 import sys
 import sysconfig
@@ -16,10 +19,14 @@ from collections.abc import Callable
 
 import pytest
 
+from domainkit import clock as clock_module
 from domainkit.contrib.auth import middleware as middleware_module
 from domainkit.contrib.auth.hashers import HashingPool
 from domainkit.contrib.auth.middleware import AuthenticationMiddleware
+from domainkit.http.client import BREAKER_HOSTS, CircuitBreaker
+from domainkit.http.guard import GuardResolver
 from domainkit.http.ratelimit import MemoryBackend
+from domainkit.http.shedding import QUEUE_FULL, ShedReport
 from domainkit_tests.conftest import UseAuth
 
 THREADS = 8
@@ -119,6 +126,100 @@ def test_the_hashing_pool_counts_calls_from_every_thread() -> None:
 
     assert results == [[index * 2] * 20 for index in range(THREADS)]
     assert pool.pending == 0
+
+
+def test_a_circuit_lets_one_trial_through_whichever_thread_asks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After the cooldown, threads asking at once let exactly one call try."""
+    breakers: list[CircuitBreaker] = []
+
+    def monotonic() -> float:
+        assert breakers[-1]._lock.locked()  # Circuits are read under the lock.
+        return 1000.0
+
+    def trial(_: int) -> bool:
+        return breakers[-1].admits("api.example.com", 0.0)
+
+    monkeypatch.setattr(clock_module, "monotonic", monotonic)
+    for _ in range(50):
+        breakers.append(CircuitBreaker())
+        breakers[-1].failed("api.example.com", 1)
+        assert sum(on_threads(trial)) == 1
+
+
+def test_the_circuit_breaker_survives_every_thread_at_once() -> None:
+    """Failures, successes, and trials on many hosts: no error, still bounded."""
+    breaker = CircuitBreaker()
+
+    def hammer(seed: int) -> int:
+        chosen = random.Random(seed)  # noqa: S311 - the order of the calls only.
+        for _ in range(2_000):
+            host = f"h{chosen.randrange(BREAKER_HOSTS * 2)}"
+            step = chosen.random()
+            if step < 0.6:
+                breaker.failed(host, 3)
+            elif step < 0.8:
+                breaker.succeeded(host)
+            elif step < 0.95:
+                breaker.admits(host, 0.0)
+            else:
+                breaker.abandoned(host)
+        return 0
+
+    on_threads(hammer)
+
+    assert len(breaker._circuits) <= BREAKER_HOSTS
+
+
+def test_the_shed_report_counts_every_refusal_from_every_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The count is exact; the clock is read under the lock."""
+    report = ShedReport(10)
+    report._quiet_until = float("inf")  # Never warn: only count.
+
+    def monotonic() -> float:
+        assert report._lock.locked()
+        return 1000.0
+
+    monkeypatch.setattr(clock_module, "monotonic", monotonic)
+
+    def shed(_: int) -> None:
+        for _ in range(5_000):
+            report.shed(QUEUE_FULL)
+
+    on_threads(shed)
+
+    assert report.count == THREADS * 5_000
+
+
+def test_the_guards_lookups_are_counted_from_every_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Loops on several threads share the lookup threads; none is lost or leaked."""
+
+    def getaddrinfo(host: str, port: int, **options: object) -> list[object]:
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", port))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    resolver = GuardResolver(threads=3, per_host=2)
+
+    async def lookups(index: int) -> int:
+        found = 0
+        for attempt in range(40):
+            try:
+                await resolver.lookup(f"h{(index + attempt) % 5}.test", 443)
+            except socket.gaierror:
+                continue  # Too many under way: refused at once.
+            found += 1
+        return found
+
+    found = on_threads(lambda index: asyncio.run(lookups(index)))
+    asyncio.run(resolver.close())
+
+    assert sum(found) > 0
+    assert (resolver.running, resolver._running) == (0, {})
 
 
 IMPORT_EVERYTHING = """
