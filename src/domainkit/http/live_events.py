@@ -239,9 +239,11 @@ class LiveEvents:
             ImproperlyConfigured: No types, or no ``AuthenticationMiddleware``.
         """
         _check(connection, types)
-        self.bus.subscribe(DomainEvent, self.publish)
         subscriber = _Subscriber(connection, types, rule)
         with self._lock:
+            # Hear the bus, once: it ignores repeats. Not just at the first
+            # subscription, as a bus may be cleared (tests restore theirs).
+            self.bus.subscribe(DomainEvent, self.publish)
             self._subscribers.add(subscriber)
         try:
             yield subscriber.events()

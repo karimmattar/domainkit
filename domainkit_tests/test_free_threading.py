@@ -1,8 +1,8 @@
 """State shared by event loops on several threads stays consistent.
 
 Free-threaded Python (3.14t), and servers that run a loop per thread, share
-one rate limiter, one middleware, one hashing pool, and one application's
-live connection slots between threads.
+one rate limiter, one middleware, one hashing pool, one application's live
+connection slots, and the event bus between threads.
 Each test drives them from several threads at once and checks what must
 always hold, and that the state is only touched with the lock held.
 """
@@ -13,19 +13,23 @@ import subprocess
 import sys
 import sysconfig
 import threading
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from starlette.datastructures import State
+from starlette.requests import HTTPConnection
 from starlette.types import Message, Receive, Scope, Send
 
+from domainkit.contrib.auth import AllowAny
 from domainkit.contrib.auth import middleware as middleware_module
 from domainkit.contrib.auth.hashers import HashingPool
 from domainkit.contrib.auth.middleware import AuthenticationMiddleware
+from domainkit.ddd import DomainEvent, EventBus
 from domainkit.http import live
 from domainkit.http.live import Slots
+from domainkit.http.live_events import LiveEvents
 from domainkit.http.ratelimit import MemoryBackend
 from domainkit.http.websockets import WebSocketLimitsMiddleware
 from domainkit_tests.conftest import UseAuth
@@ -211,6 +215,107 @@ def test_an_application_gets_one_set_of_slots_from_every_thread() -> None:
 
     assert all(slots is found[0] for slots in found)
     assert scope["app"].state._state == {"live_slots": found[0]}
+
+
+class CheckedList(list[Any]):
+    """One event type's subscriptions, changed only with the bus's lock held."""
+
+    def __init__(self, bus: EventBus) -> None:
+        """No subscriptions yet, of ``bus``."""
+        super().__init__()
+        self.bus = bus
+
+    def append(self, item: Any) -> None:  # noqa: ANN401
+        """Add ``item``, under the bus's lock."""
+        assert self.bus._lock.locked()
+        super().append(item)
+
+    def __setitem__(self, index: Any, value: Any) -> None:  # noqa: ANN401
+        """Replace ``index``, under the bus's lock."""
+        assert self.bus._lock.locked()
+        super().__setitem__(index, value)
+
+
+class CheckedSubscriptions(dict[type[DomainEvent], list[Any]]):
+    """A bus's subscriptions, changed or listed only with the bus's lock held.
+
+    Publishing reads one type's subscriptions without it.
+    """
+
+    def __init__(self, bus: EventBus) -> None:
+        """No subscriptions yet, of ``bus``."""
+        super().__init__()
+        self.bus = bus
+
+    def setdefault(self, key: type[DomainEvent], default: Any = None) -> Any:  # noqa: ANN401
+        """Find or start the subscriptions of ``key``, under the bus's lock."""
+        assert self.bus._lock.locked()
+        return super().setdefault(key, CheckedList(self.bus))
+
+    def items(self) -> Any:  # noqa: ANN401
+        """Every type's subscriptions, under the bus's lock."""
+        assert self.bus._lock.locked()
+        return super().items()
+
+    def clear(self) -> None:
+        """Forget every subscription, under the bus's lock."""
+        assert self.bus._lock.locked()
+        super().clear()
+
+
+def numbered_handler(number: int) -> Callable[[DomainEvent], Awaitable[None]]:
+    """A handler of its own, named after ``number``."""
+
+    async def handle(event: DomainEvent) -> None:
+        """Do nothing."""
+
+    handle.__qualname__ = f"handler_{number}"
+    return handle
+
+
+def test_event_bus_subscriptions_survive_threads() -> None:
+    """Threads that subscribe the same handlers at once subscribe each once.
+
+    Each then unsubscribes every other one, and lists the durable ones:
+    those stay gone, whichever thread subscribed last.
+    """
+    bus = EventBus()
+    bus._handlers = CheckedSubscriptions(bus)
+    handlers = [numbered_handler(number) for number in range(50)]
+
+    def churn(index: int) -> list[Any]:
+        for handler in handlers:
+            bus.subscribe(DomainEvent, handler)
+        for handler in handlers[1::2]:
+            bus.unsubscribe(DomainEvent, handler)
+        return bus.durable_subscriptions()
+
+    durable = on_threads(churn)
+
+    assert bus.handlers_for(DomainEvent) == handlers[::2]
+    assert durable == [[]] * THREADS
+    bus.clear()
+    assert bus.handlers_for(DomainEvent) == []
+
+
+def test_live_events_hook_the_bus_once_from_every_thread() -> None:
+    """Loops on several threads that subscribe at once hook ``publish`` once.
+
+    Hooked twice, every committed event would be sent to each client twice.
+    """
+    bus = EventBus()
+    bus._handlers = CheckedSubscriptions(bus)
+    hub = LiveEvents(bus)
+
+    async def subscribe() -> None:
+        scope = {"type": "http", "headers": [], "user": SimpleNamespace(id=1)}
+        async with hub.subscribe(HTTPConnection(scope), DomainEvent, rule=AllowAny()):
+            pass
+
+    on_threads(lambda _: asyncio.run(subscribe()))
+
+    assert bus.handlers_for(DomainEvent) == [hub.publish]
+    assert hub._subscribers == set()
 
 
 IMPORT_EVERYTHING = """

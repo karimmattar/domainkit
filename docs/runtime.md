@@ -364,7 +364,9 @@ never across an `await`:
 - the password hashing pool's count of pending calls;
 - the logging and reporting queues, and memory caches (`cache/memory.py`);
 - the open live connections counted against `LIVE_MAX_CONNECTIONS` and
-  `LIVE_MAX_CONNECTIONS_PER_CALLER`, and the making of them on first use.
+  `LIVE_MAX_CONNECTIONS_PER_CALLER`, and the making of them on first use;
+- the event bus's subscriptions, so a handler subscribed from several
+  threads at once (live events, as clients connect) is subscribed once.
 
 A project's own module-level state needs the same care: a dict two threads
 change at once needs a `threading.Lock` on free-threaded Python, as it would

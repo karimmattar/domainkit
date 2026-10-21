@@ -287,6 +287,10 @@ All notable changes to domainkit. The format follows
   with a loop per thread), slots leaked until the process refused every
   connection, and closing one could raise `KeyError`. Loops that open an
   application's first connections at once now share one count.
+- `EventBus.subscribe` checks for a repeat and adds the handler under a
+  lock, as do `unsubscribe` and `clear`. Live events subscribed from loops
+  on several threads at once could hook themselves onto the bus twice, and
+  then sent every committed event to each client twice.
 
 ## [0.7.0] - 2026-10-20
 

@@ -393,6 +393,22 @@ async def test_subscribing_hooks_the_bus_once() -> None:
 
     assert bus.handlers_for(DomainEvent) == [hub.publish]
     assert LiveEvents().bus is event_bus
+    await bus.publish(granted(uuid4()))  # Nobody listens: nothing to wait for.
+
+
+@pytest.mark.anyio
+async def test_a_hub_hears_its_bus_again_after_it_was_cleared() -> None:
+    """A cleared bus is hooked again by the next subscription."""
+    bus = EventBus()
+    hub = LiveEvents(bus)
+    me = Someone()
+    event = granted(me.id)
+
+    async with hub.subscribe(connection(me), DomainEvent, rule=AllowAny()):
+        bus.clear()
+    async with hub.subscribe(connection(me), DomainEvent, rule=AllowAny()) as events:
+        await bus.publish(event)
+        assert await anext(events) is event
 
 
 @pytest.mark.anyio
