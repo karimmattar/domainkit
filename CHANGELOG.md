@@ -302,6 +302,11 @@ All notable changes to domainkit. The format follows
   rows other hosts committed afterwards, which then stayed unsealed, open
   to change unnoticed. On PostgreSQL the mark is now capped by the
   database's clock (ADR 0047).
+- A domain shutdown hook that ignored cancellation (a flush behind
+  `asyncio.shield`, a retry loop that catches everything) held shutdown
+  for good, since it ran inline. Each hook now runs as a task, and one cut
+  off at its share is cancelled and left behind, so the hooks and phases
+  after it still run.
 
 ## [0.7.0] - 2026-10-20
 

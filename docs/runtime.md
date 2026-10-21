@@ -110,7 +110,11 @@ phase:
   is left of their phase, less a reserve kept for every hook still to run
   (a quarter of the phase, split among the hooks), so one slow hook may
   use most of the phase, while one that hangs is cut off with a
-  `TimeoutError` naming the domain, and the others still stop.
+  `TimeoutError` naming the domain, and the others still stop. Each hook
+  runs as a task: one cut off is cancelled and left behind, like a closer,
+  so a hook that ignores cancellation (a flush behind `asyncio.shield`, a
+  retry loop that catches everything) holds up neither the hooks after it
+  nor the later phases.
 
 Other parts of the framework, and projects, add closers to the `drain`,
 `resources`, or `flush` phase:

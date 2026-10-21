@@ -1,9 +1,11 @@
 """Shutting down in phases, within one budget: every resource, even when one fails."""
 
 import asyncio
+import importlib
 import logging
 from collections.abc import Iterator
 from functools import partial
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -614,6 +616,157 @@ async def test_close_in_turn_keeps_only_the_later_items_reserves(
     reported = float(str(cause[1]).removeprefix("'last' did not close within ")[:-1])
     # Measured from when "last" started, so a slow machine changes nothing.
     assert reported == pytest.approx(end - started["last"], abs=0.02)
+
+
+class Stubborn:
+    """A close that ignores the first cancellation, then waits to be released.
+
+    As a flush behind ``asyncio.shield`` would. A second cancellation (the
+    test's own deadline) stops it, so a regression fails instead of hanging.
+    """
+
+    def __init__(self) -> None:
+        """Hold no task yet."""
+        self.release = asyncio.Event()
+        self.held = asyncio.Event()
+        self.tasks: list[asyncio.Task[Any]] = []
+
+    async def hold(self) -> None:
+        """Wait until released, whatever cancels it meanwhile."""
+        self.tasks.append(cast("asyncio.Task[Any]", asyncio.current_task()))
+        self.held.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            await self.release.wait()
+
+    async def let_go(self) -> None:
+        """Release it, and wait for the tasks it held to end."""
+        self.release.set()
+        if self.tasks:
+            await asyncio.wait(self.tasks, timeout=5)
+
+
+async def test_close_in_turn_leaves_an_item_that_ignores_cancellation_behind() -> None:
+    """Cut off at its share and cancelled, it holds up none of the later items."""
+    stubborn = Stubborn()
+    closed: list[str] = []
+
+    async def close(item: str) -> None:
+        closed.append(item)
+        if item == "stubborn":
+            await stubborn.hold()
+
+    try:
+        with pytest.raises(
+            TimeoutError, match=r"^'stubborn' did not close within 0\.\d+s$"
+        ):
+            async with asyncio.timeout(5):
+                await close_in_turn(["stubborn", "last"], close, within=0.05)
+        assert closed == ["stubborn", "last"]
+        [held] = stubborn.tasks
+        assert not held.done()  # Left behind, still running.
+        assert held.cancelling()
+    finally:
+        await stubborn.let_go()
+
+
+async def test_close_in_turn_gives_up_the_close_running_when_cancelled(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The close in progress is cancelled too; later items are not started."""
+    stubborn = Stubborn()
+    closed: list[str] = []
+
+    async def close(item: str) -> None:
+        closed.append(item)
+        await stubborn.hold()
+
+    closing = asyncio.create_task(close_in_turn(["first", "second"], close))
+    try:
+        async with asyncio.timeout(5):
+            await stubborn.held.wait()  # Closing "first".
+        with caplog.at_level(logging.ERROR, "domainkit.utils.closing"):
+            closing.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                async with asyncio.timeout(5):
+                    await closing
+        assert closed == ["first"]
+        assert caplog.messages == ["Gave up closing 'first'"]
+        [held] = stubborn.tasks
+        assert held.cancelling()
+    finally:
+        await stubborn.let_go()
+
+
+async def test_close_in_turn_raises_a_close_that_cancelled_itself_last() -> None:
+    """As ``close_each`` does: the later items still close first."""
+    closed: list[str] = []
+
+    async def close(item: str) -> None:
+        closed.append(item)
+        if item == "cancelled":
+            raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await close_in_turn(["cancelled", "last"], close, within=5)
+    assert closed == ["cancelled", "last"]
+
+
+async def test_a_domain_that_ignores_cancellation_cannot_hold_shutdown(
+    make_package: MakePackage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Its hook is cut off at its share; the domains and phases after it run."""
+    make_package(
+        "stubborn",
+        {
+            "apps.py": """
+                import asyncio
+
+                from domainkit.apps import DomainConfig
+                from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
+
+                RELEASE = asyncio.Event()
+                TASKS = []
+
+                class StubbornConfig(DomainConfig):
+                    async def shutdown(self) -> None:
+                        AlphaConfig.calls.append("stubborn shutdown")
+                        TASKS.append(asyncio.current_task())
+                        try:
+                            await RELEASE.wait()
+                        except asyncio.CancelledError:  # Ignored, once.
+                            await RELEASE.wait()
+            """
+        },
+    )
+    domains = DomainRegistry()
+    domains.populate([ALPHA, "stubborn"])
+    monkeypatch.setattr(lifecycle, "registry", domains)
+    closed: list[str] = []
+    record_closes(monkeypatch, closed)
+    hook = importlib.import_module("stubborn.apps")
+
+    try:
+        with (
+            override_settings(SHUTDOWN_TIMEOUT=0.05),
+            pytest.raises(
+                TimeoutError, match=r"<StubbornConfig: stubborn> did not close within"
+            ),
+        ):
+            async with asyncio.timeout(5), serving():
+                pass
+        assert AlphaConfig.calls == [
+            "ready",
+            "startup",
+            "stubborn shutdown",
+            "shutdown",
+        ]
+        assert closed == ["caches", "databases", "ledgers", "brokers"]
+    finally:
+        hook.RELEASE.set()
+        await asyncio.wait(hook.TASKS, timeout=5)
 
 
 async def test_the_domain_lifespan_without_a_limit_waits_for_hooks() -> None:
