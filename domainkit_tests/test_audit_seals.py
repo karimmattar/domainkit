@@ -429,9 +429,53 @@ async def test_late_seals_never_move_the_mark_back(tables: None) -> None:
     assert await unsealed_backlog("default", WINDOW) == 0
 
 
+async def test_a_late_pass_leaves_the_windows_first_instant_alone(
+    tables: None,
+) -> None:
+    """A row exactly ``SEAL_LATE_WINDOW`` before the mark is in reach, not late."""
+    now = datetime.now(UTC)
+    await add(now)
+    await seal("default")
+    edge = await add(now - WINDOW)
+
+    assert await seals_module._seal_pass("default", 10, 1, WINDOW, late=True) == (
+        0,
+        True,
+    )
+    assert await seal("default") == 1
+    assert [(each["entry_id"], each["late"]) for each in await seals()][-1] == (
+        edge,
+        False,
+    )
+
+
+async def test_a_frozen_clock_dates_the_seals_on_every_database(
+    tables: None,
+) -> None:
+    """Under ``freeze_time`` the frozen clock decides, on PostgreSQL too."""
+    with freeze_time("2040-01-01T00:00:00Z"):
+        await add(datetime(2040, 1, 1, tzinfo=UTC))
+        await seal("default")
+
+    assert [each["sealed_at"] for each in await seals()] == [
+        datetime(2040, 1, 1, tzinfo=UTC)
+    ]
+
+
 async def test_a_late_pass_without_a_mark_seals_nothing_more(tables: None) -> None:
-    """With nothing sealed, or the mark's row gone, every row is in reach anyway."""
+    """With nothing sealed, or the mark's row gone, every row is in reach anyway.
+
+    So a late pass then seals nothing, even rows committed since the usual
+    pass: they are not late, and the next usual pass seals them.
+    """
     assert await seal("default", late=True) == 0
+    fresh = await add(datetime.now(UTC))
+    assert await seals_module._seal_pass("default", 10, 1, WINDOW, late=True) == (
+        0,
+        True,
+    )
+    assert await seals() == []
+    await change(delete(audit_log).where(audit_log.c.id == fresh))
 
     now = datetime.now(UTC)
     newest = await add(now)

@@ -632,13 +632,17 @@ class Stubborn:
         self.tasks: list[asyncio.Task[Any]] = []
 
     async def hold(self) -> None:
-        """Wait until released, whatever cancels it meanwhile."""
+        """Wait until released, whatever cancels it meanwhile.
+
+        Released after a cancellation it ignored, it fails: it closed late.
+        """
         self.tasks.append(cast("asyncio.Task[Any]", asyncio.current_task()))
         self.held.set()
         try:
             await self.release.wait()
         except asyncio.CancelledError:
             await self.release.wait()
+            raise RuntimeError("closed too late") from None
 
     async def let_go(self) -> None:
         """Release it, and wait for the tasks it held to end."""
@@ -669,6 +673,8 @@ async def test_close_in_turn_leaves_an_item_that_ignores_cancellation_behind() -
         assert held.cancelling()
     finally:
         await stubborn.let_go()
+    assert held._log_traceback is False  # Its failure is not logged...
+    assert isinstance(held.exception(), RuntimeError)  # ...but it did fail.
 
 
 async def test_close_in_turn_gives_up_the_close_running_when_cancelled(
