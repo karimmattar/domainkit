@@ -17,6 +17,9 @@ All notable changes to domainkit. The format follows
   more round trips than `benchmarks/budgets.toml` allows, and shows CPU
   time beside the base branch's; time is never gated (PERF-09, ASYNC-R17;
   ADR 0064). `--baseline` measures any other commit with the same harness.
+- `docs/performance.md`: what each rung costs, how to run the ladder and
+  update its budgets, the cores 500 million requests a day need, and what
+  makes requests cheaper. The README says to serve one worker per core.
 
 ### Changed
 
