@@ -181,3 +181,12 @@ async def statement_timeout() -> dict[str, str]:
     async with PaymentsUnitOfWork(readonly=True) as uow:
         shown = await uow.session.scalar(text("SHOW statement_timeout"))
     return {"statement_timeout": str(shown)}
+
+
+@router.get(
+    "/month-long-statement-timeout",
+    dependencies=[Depends(RequestTimeout(3_000_000.0))],
+)
+async def month_long_statement_timeout() -> dict[str, str]:
+    """``/statement-timeout`` under a deadline longer than PostgreSQL takes."""
+    return await statement_timeout()

@@ -61,6 +61,9 @@ DEADLINE_SLACK: Final = 1.0
 """Seconds a deadline must undercut ``STATEMENT_TIMEOUT`` by before a
 transaction lowers it. Requests in their first second skip that round trip;
 the server's timeout then ends their statements at most this late."""
+MAX_MILLISECONDS: Final = 2_147_483_647
+"""PostgreSQL's longest timeout, in milliseconds (about 24.8 days): a
+longer one is refused, and the transaction that sets it fails."""
 _OPTION: Final = re.compile(r"(?:-c\s*|--)([\w.-]+)=")
 """A server setting in libpq ``options``, as PostgreSQL's command line takes it."""
 
@@ -262,8 +265,9 @@ def transaction_settings(
 
     ``statement_timeout`` drops to the seconds ``remaining`` before the
     deadline when they are ``DEADLINE_SLACK`` shorter than
-    ``STATEMENT_TIMEOUT``, or more. Under ``PGBOUNCER`` every timeout is
-    set here, as no session keeps it, and the deadline counts to the
+    ``STATEMENT_TIMEOUT``, or more, and at most ``MAX_MILLISECONDS``, the
+    longest PostgreSQL takes. Under ``PGBOUNCER`` every timeout is set
+    here, as no session keeps it, and the deadline counts to the
     millisecond. A deadline that has passed changes nothing: its work is
     being cancelled already, and the cleanup after it must still run.
     """
@@ -273,5 +277,6 @@ def transaction_settings(
     statement = config.STATEMENT_TIMEOUT
     slack = 0.0 if config.PGBOUNCER else DEADLINE_SLACK
     if statement is None or remaining <= statement - slack:
-        values["statement_timeout"] = str(math.ceil(remaining * 1000))
+        milliseconds = min(remaining * 1000, MAX_MILLISECONDS)
+        values["statement_timeout"] = str(math.ceil(milliseconds))
     return values

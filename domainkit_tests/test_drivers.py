@@ -451,6 +451,11 @@ def test_transactions_set_the_time_left_and_pgbouncers_timeouts() -> None:
     assert transaction_settings(config(STATEMENT_TIMEOUT=None), 120.0) == {
         "statement_timeout": "120000"
     }
+    # A deadline longer than PostgreSQL takes (24.8 days) asks for the most.
+    for long in (2_147_483.648, 3_000_000.0, 1e300):
+        assert transaction_settings(config(STATEMENT_TIMEOUT=None), long) == {
+            "statement_timeout": "2147483647"
+        }
     assert transaction_settings(pooled, None) == TIMEOUTS
     assert transaction_settings(pooled, 29.5) == {
         **TIMEOUTS,

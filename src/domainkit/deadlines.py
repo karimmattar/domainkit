@@ -33,6 +33,7 @@ clock.
 """
 
 import asyncio
+import math
 from collections.abc import Awaitable, Coroutine
 from contextvars import ContextVar, Token
 from types import TracebackType
@@ -54,7 +55,12 @@ class Deadline:
     """
 
     def __init__(self, seconds: float | None) -> None:
-        """End ``seconds`` from now; None for no deadline."""
+        """End ``seconds`` from now; None for no deadline.
+
+        Raises:
+            ValueError: ``seconds`` is not a finite number.
+        """
+        _check(seconds)
         self.started = clock.monotonic()
         """When the work started, the reading ``reset`` counts from."""
         self.seconds = seconds
@@ -76,7 +82,12 @@ class Deadline:
         return self.remaining() == 0.0
 
     def reset(self, seconds: float | None) -> None:
-        """End ``seconds`` after the work started instead; None clears it."""
+        """End ``seconds`` after the work started instead; None clears it.
+
+        Raises:
+            ValueError: ``seconds`` is not a finite number.
+        """
+        _check(seconds)
         self.seconds = seconds
         self.at = None if seconds is None else self.started + seconds
         self._reschedule()
@@ -156,7 +167,12 @@ class Timeout:
     """A block bounded by its seconds and the deadline (see ``timeout``)."""
 
     def __init__(self, seconds: float | None) -> None:
-        """Bound the block by ``seconds`` too, unless None."""
+        """Bound the block by ``seconds`` too, unless None.
+
+        Raises:
+            ValueError: ``seconds`` is not a finite number.
+        """
+        _check(seconds)
         self.seconds = seconds
         self.deadline: Deadline | None = None
         """The block's deadline, once entered."""
@@ -231,8 +247,10 @@ def timeout(seconds: float | None = None) -> Timeout:
     up to the block that set the deadline, which raises (a ``timeout``
     block: ``DeadlineExceeded``). Without ``seconds`` and outside any
     deadline, nothing is bounded. If no time is left on entry,
-    ``DeadlineExceeded`` (or, for ``seconds`` of 0, ``TimeoutError``) is
-    raised there, and the block does not run.
+    ``DeadlineExceeded`` (or, for ``seconds`` of 0 or less, ``TimeoutError``)
+    is raised there, and the block does not run. ``seconds`` that are not a
+    finite number (NaN, infinity) are refused with ``ValueError``: None is
+    how a block says it has no bound of its own.
     """
     return Timeout(seconds)
 
@@ -247,14 +265,32 @@ async def within[T](awaitable: Awaitable[T], seconds: float | None = None) -> T:
         DeadlineExceeded: No time was left, or a deadline that no outer
             block enforces ran out.
         TimeoutError: ``seconds`` ran out first.
+        ValueError: ``seconds`` is not a finite number.
     """
-    bound = Timeout(seconds)
+    try:
+        bound = Timeout(seconds)
+    except ValueError:
+        _discard(awaitable)
+        raise
     try:
         async with bound:
             return await awaitable
     finally:
         if bound.deadline is None:  # Refused on entry: never awaited.
             _discard(awaitable)
+
+
+def _check(seconds: float | None) -> None:
+    """Refuse ``seconds`` that are not a finite number: NaN or infinity.
+
+    NaN compares false with everything, so it would bound nothing, and an
+    infinite deadline overflows what is derived from it (PostgreSQL's
+    ``statement_timeout``); None is how to ask for no bound.
+    """
+    if seconds is not None and not math.isfinite(seconds):
+        raise ValueError(
+            f"A deadline is a finite number of seconds, or None; not {seconds!r}."
+        )
 
 
 def _limit(seconds: float | None, left: float | None) -> tuple[float | None, bool]:
