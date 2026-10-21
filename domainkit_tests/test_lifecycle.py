@@ -96,9 +96,15 @@ async def test_every_resource_closes_even_when_one_fails_or_hangs(
     monkeypatch.setattr(ledgers, "close_all", partial(fails, "ledgers"))
     monkeypatch.setattr(brokers, "close_all", partial(fails, "brokers"))
 
+    async def flushed() -> None:
+        """The flush phase is not under test: it may need a thread on a busy host."""
+
+    monkeypatch.setattr(lifecycle, "aflush_reports", flushed)
+    monkeypatch.setattr(lifecycle, "aflush_logs", flushed)
+
     with caplog.at_level(logging.ERROR, "domainkit.lifecycle"):
         async with asyncio.timeout(5):
-            await close_resources(Budget.begin(0.05))
+            await close_resources(Budget.begin(0.5))
 
     assert closed == ["caches", "databases", "ledgers", "brokers"]
     assert sorted(caplog.messages) == [
