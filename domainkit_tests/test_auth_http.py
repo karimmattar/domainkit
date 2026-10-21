@@ -40,6 +40,7 @@ from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
+from domainkit.http.websockets import MIDDLEWARE as WEBSOCKET_LIMITS
 from domainkit.log import SECURITY_LOGGER
 from domainkit.management import call_command
 from domainkit.management.base import run_async
@@ -256,6 +257,34 @@ def test_logins_answer_503_when_hashing_is_saturated(
         assert refused.status_code == 503
         assert refused.json()["code"] == "password_checks_busy"
         assert refused.headers["Retry-After"] == "1"
+
+
+def test_signed_in_users_change_passwords_while_logins_fill_the_pool(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reserved place takes a password change; a login is refused (N7)."""
+    create_user("alice")
+    client = api()
+    alice = bearer(login(client, "alice")["access_token"])
+    busy = HashingPool(threads=1, queue=1, reserved=1)
+    busy.pending = busy.capacity - busy.reserved  # Logins took every other place.
+    monkeypatch.setattr(hashers, "_pool", lambda: busy)
+
+    refused = client.post(
+        "/auth/login", json={"username": "alice", "password": PASSWORD}
+    )
+    changed = client.post(
+        "/auth/password",
+        headers=alice,
+        json={"old_password": PASSWORD, "new_password": "n3w-Passw0rd!"},
+    )
+
+    assert (refused.status_code, refused.json()["code"]) == (
+        503,
+        "password_checks_busy",
+    )
+    assert changed.status_code == 204
+    assert busy.pending == 1
 
 
 def test_logins_are_throttled_per_address_and_per_username(api: Api) -> None:
@@ -1042,6 +1071,13 @@ def test_forged_jwts_are_refused(api: Api) -> None:
                 "counts users rather than client addresses."
             ),
         ),
+        (  # Its caps would count addresses, so users behind one share them.
+            [MIDDLEWARE[0], WEBSOCKET_LIMITS, MIDDLEWARE[2]],
+            (
+                f"MIDDLEWARE: list {MIDDLEWARE[2]} before {WEBSOCKET_LIMITS}, so "
+                "it counts users rather than client addresses."
+            ),
+        ),
     ],
 )
 def test_the_middleware_order_is_checked(
@@ -1051,7 +1087,16 @@ def test_the_middleware_order_is_checked(
     with pytest.raises(ImproperlyConfigured) as refused:
         use_auth(settings={"MIDDLEWARE": middleware})
     assert str(refused.value) == message
-    use_auth(settings={"MIDDLEWARE": [MIDDLEWARE[0], MIDDLEWARE[2], *MIDDLEWARE[3:]]})
+    use_auth(
+        settings={
+            "MIDDLEWARE": [
+                MIDDLEWARE[0],
+                MIDDLEWARE[2],
+                *MIDDLEWARE[3:],
+                WEBSOCKET_LIMITS,
+            ]
+        }
+    )
     use_auth(settings={"MIDDLEWARE": [MIDDLEWARE[0]]})
     use_auth(settings={"MIDDLEWARE": []})
 

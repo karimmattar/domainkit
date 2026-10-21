@@ -5,6 +5,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import tomllib
 from importlib.metadata import entry_points
 from pathlib import Path
 
@@ -107,6 +108,27 @@ def test_init_creates_a_project_that_passes_check_and_its_tests(
     assert "3 passed" in tested.stdout
 
 
+def test_generated_code_never_blocks_the_event_loop(tmp_path: Path) -> None:
+    """Ruff's ASYNC rules are on, and generated routes need no thread pool."""
+    project = tmp_path / "billing"
+    init("billingAPI", str(project))
+    started = run(
+        project, "manage.py", "startdomain", "invoices", "--aggregate", "Invoice"
+    )
+    assert started.returncode == 0, started.stderr
+
+    linted = run(project, "-m", "ruff", "check", "--no-cache", ".")
+    checked = run(project, "manage.py", "check")
+
+    pyproject = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))
+    assert pyproject["tool"]["ruff"]["lint"]["extend-select"] == ["ASYNC"]
+    assert linted.returncode == 0, linted.stdout + linted.stderr
+    assert checked.stdout == (
+        "System check identified no issues. "
+        "Domains: messaging, contenttypes, auth, invoices.\n"
+    )
+
+
 def test_production_settings_come_from_the_environment(tmp_path: Path) -> None:
     """Production starts only with its hosts, database URL, and proxies set."""
     project = tmp_path / "billing"
@@ -131,6 +153,13 @@ def test_production_settings_come_from_the_environment(tmp_path: Path) -> None:
     without_key = run(project, "manage.py", "check", env=no_key)
     weak_key = {**no_key, "BILLING_API_SECRET_KEY": "domainkit-insecure-" * 3}
     with_weak_key = run(project, "manage.py", "check", env=weak_key)
+    quiet = run(
+        project / "src",
+        "-c",
+        "from config.settings.production import LOGGING as L; "
+        "print(L['loggers']['httpx2']['level'], L['loggers']['httpcore2']['level'])",
+        env={**production, **database},
+    )
 
     assert missing.returncode == 1
     assert "Set the BILLING_API_DATABASE_URL environment variable." in missing.stderr
@@ -148,6 +177,8 @@ def test_production_settings_come_from_the_environment(tmp_path: Path) -> None:
     assert with_weak_key.returncode == 1
     assert "SECRET_KEY holds a development key in production" in with_weak_key.stderr
     assert "domainkit-insecure-" not in with_weak_key.stderr
+    # httpx2's own lines name whole URLs, query strings included.
+    assert quiet.stdout.split() == ["WARNING", "WARNING"], quiet.stderr
 
 
 def test_production_hardening_can_be_relaxed_from_the_environment(

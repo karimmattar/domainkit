@@ -82,6 +82,50 @@ jobs:
           include-hidden-files: true
           retention-days: 1
 
+  # Free-threaded Python (3.14t, no GIL): the locks around state that event
+  # loops on several threads share (rate limits, refused-credential holds,
+  # the hashing pool, caches, the logging and reporting queues, live
+  # connection slots, event bus subscriptions) meet threads
+  # that really run at once, and test_free_threading checks that importing
+  # domainkit keeps the GIL off. With every warning an error, a module that
+  # turned the GIL back on would fail the job. Only those tests run: the
+  # whole suite crashes the 3.14.6t interpreter (a segmentation fault in
+  # mimalloc's free, at a different test each run, in the main thread),
+  # already at 0.7.0, so it waits for a fix upstream (docs/runtime.md).
+  # Coverage comes from the other jobs.
+  free-threaded:
+    name: test (3.14t)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    # Poetry 2.2.1 installs the default build's wheels (cp314) on
+    # free-threaded Python, whose extensions 3.14t cannot load (pydantic-core
+    # fails to import); 2.4.3 installs the cp314t wheels from the same lock
+    # file. The other jobs, and the lock check, keep 2.2.1.
+    env:
+      POETRY_VERSION: "2.4.3"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14t"
+      - run: pipx install "poetry==${POETRY_VERSION}"
+      - run: poetry env use python3.14t
+      - run: >-
+          poetry sync --with dev --extras "postgres sqlite metrics tracing argon2
+          jwt mfa rabbitmq redis uploads testing webhooks tzdata uvloop granian"
+      - run: poetry run python -c "import sys; assert not sys._is_gil_enabled()"
+      - run: >-
+          poetry run pytest -p no:cov domainkit_tests/test_free_threading.py
+          domainkit_tests/test_log.py domainkit_tests/test_reporting.py
+          domainkit_tests/test_loops.py domainkit_tests/test_auth_hashers.py
+          domainkit_tests/test_cache.py domainkit_tests/test_throttles.py
+          domainkit_tests/test_ratelimit_and_idempotency.py
+          domainkit_tests/test_proxies_and_reporting.py
+          domainkit_tests/test_blocking.py domainkit_tests/test_servers.py
+          domainkit_tests/test_orm_loading.py
+
   # The suite again against real servers: PostgreSQL (row locks, the audit
   # triggers, timeouts, partitions, migrations), immudb with TLS and a
   # signing key (verified ledgers, evidence), Redis (plain and TLS) and

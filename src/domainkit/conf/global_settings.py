@@ -45,14 +45,24 @@ DEVELOPMENT_KEY_PREFIXES: Final = ("domainkit-insecure-", "django-insecure-")
 LANGUAGE_PATTERN: Final = r"^[a-z]{2,3}(-[a-z0-9]{2,8})*$"
 """A language code in settings: lower case, as ``ar`` or ``pt-br``."""
 
+MAX_REAUTH_INTERVAL: Final = 3600.0
+"""The longest an open live connection may go between re-checks, in seconds."""
+
 RATE_LIMIT_MIDDLEWARE: Final = "domainkit.http.ratelimit.RateLimitMiddleware"
 DEBUG_TOOLBAR_MIDDLEWARE: Final = "domainkit.debug.DebugToolbarMiddleware"
 """Development middleware: SQL per request, N+1 warnings, profiles."""
+DEADLINE_MIDDLEWARE: Final = "domainkit.http.deadlines.DeadlineMiddleware"
+"""Gives each request its ``REQUEST_TIMEOUT`` deadline."""
+CONCURRENCY_MIDDLEWARE: Final = "domainkit.http.shedding.ConcurrencyLimitMiddleware"
+"""Sheds requests past ``MAX_CONCURRENT_REQUESTS``."""
 DEFAULT_MIDDLEWARE: Final = (
     "domainkit.http.middleware.ProxyHeadersMiddleware",
     "domainkit.http.middleware.SecurityHeadersMiddleware",
     "domainkit.http.middleware.RequestContextMiddleware",
+    DEADLINE_MIDDLEWARE,
+    CONCURRENCY_MIDDLEWARE,
     "domainkit.http.middleware.AllowedHostsMiddleware",
+    "domainkit.http.websockets.WebSocketLimitsMiddleware",
     "domainkit.http.middleware.RequestBodyLimitMiddleware",
 )
 
@@ -74,6 +84,25 @@ def is_network_database(url: str) -> bool:
 LEDGER_SCHEMES: Final = frozenset({"immudb", "memory"})
 """URL schemes of ledgers (``LEDGERS``); ``DATABASES`` refuses them."""
 IMMUDB_PORT: Final = 3322
+PGBOUNCER_PORT: Final = 6432
+"""The port PgBouncer listens on unless told otherwise."""
+PGBOUNCER_CACHE_ARGUMENTS: Final = (
+    "statement_cache_size",
+    "prepared_statement_cache_size",
+    "prepare_threshold",
+)
+"""Driver arguments that turn prepared statements off, as PgBouncer needed."""
+MAX_DATABASE_TIMEOUT: Final = 2_147_483.647
+"""Seconds: PostgreSQL's longest timeout, 2147483647 milliseconds (24.8 days)."""
+MAX_REQUEST_SECONDS: Final = 3600.0
+"""The most seconds a request, its body, an outgoing call, or a circuit's
+cooldown may be given: an hour. Longer work belongs in a task."""
+MAX_BACKOFF_SECONDS: Final = 600.0
+"""The longest wait before an outgoing call's retry: ten minutes."""
+MAX_RESPONSE_SIZE: Final = 1_073_741_824
+"""The largest answer an outgoing call may be allowed to read: 1 GiB."""
+MAX_REQUESTS_AT_ONCE: Final = 100_000
+"""The most requests an event loop may admit, or queue, at once."""
 
 
 class DatabaseConfig(BaseModel):
@@ -98,12 +127,20 @@ class DatabaseConfig(BaseModel):
     """Client certificate for mutual TLS; requires ``SSLKEY``."""
     SSLKEY: Path | None = None
 
-    STATEMENT_TIMEOUT: float | None = Field(default=30.0, gt=0)
+    STATEMENT_TIMEOUT: float | None = Field(default=30.0, gt=0, le=MAX_DATABASE_TIMEOUT)
     """Seconds before PostgreSQL cancels a statement; migrations are exempt."""
-    LOCK_TIMEOUT: float | None = Field(default=10.0, gt=0)
+    LOCK_TIMEOUT: float | None = Field(default=10.0, gt=0, le=MAX_DATABASE_TIMEOUT)
     """Seconds a statement may wait for a lock."""
-    IDLE_IN_TRANSACTION_TIMEOUT: float | None = Field(default=60.0, gt=0)
+    IDLE_IN_TRANSACTION_TIMEOUT: float | None = Field(
+        default=60.0, gt=0, le=MAX_DATABASE_TIMEOUT
+    )
     """Seconds an open transaction may sit idle before the server ends it."""
+    CONNECT_TIMEOUT: float = Field(default=10.0, gt=0, le=MAX_DATABASE_TIMEOUT)
+    """Seconds to open a connection (asyncpg's ``timeout``, libpq's)."""
+    COMMAND_TIMEOUT: float | None = Field(default=None, gt=0, le=MAX_DATABASE_TIMEOUT)
+    """Seconds asyncpg waits for one statement; None: ``STATEMENT_TIMEOUT`` plus 5."""
+    PGBOUNCER: bool = False
+    """Connect through PgBouncer's transaction pooling (no session state kept)."""
 
     POOL_SIZE: int | None = Field(default=None, ge=1)
     MAX_OVERFLOW: int | None = Field(default=None, ge=0)
@@ -131,6 +168,32 @@ class DatabaseConfig(BaseModel):
         if scheme in LEDGER_SCHEMES:
             raise ValueError(f"{scheme}:// is a ledger; configure it in LEDGERS")
         return self
+
+    @model_validator(mode="after")
+    def check_pgbouncer(self) -> Self:
+        """PgBouncer pools PostgreSQL connections only."""
+        scheme = urlsplit(self.URL.get_secret_value()).scheme.split("+", 1)[0]
+        if self.PGBOUNCER and scheme != "postgresql":
+            raise ValueError("PGBOUNCER needs a postgresql:// URL")
+        return self
+
+    def looks_pooled(self) -> bool:
+        """Whether the entry seems to go through PgBouncer without ``PGBOUNCER``.
+
+        PgBouncer listens on 6432 by default, and a statement cache turned
+        off in ``CONNECT_ARGS`` is the usual way around it by hand.
+        """
+        if self.PGBOUNCER:
+            return False
+        try:
+            port = urlsplit(self.URL.get_secret_value()).port
+        except ValueError:
+            port = None
+        args = self.CONNECT_ARGS
+        uncached = any(
+            name in args and not args[name] for name in PGBOUNCER_CACHE_ARGUMENTS
+        )
+        return port == PGBOUNCER_PORT or uncached
 
 
 def _check_port(parts: SplitResult) -> None:
@@ -462,6 +525,40 @@ class DebugToolbarConfig(BaseModel):
     None turns profiling off."""
 
 
+class HttpClientConfig(BaseModel):
+    """``HTTP_CLIENT``: what ``domainkit.http.client`` clients do by default.
+
+    Each ``HttpClient`` may change the timeout and the retries for itself.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    TIMEOUT: float = Field(default=10.0, gt=0, le=MAX_REQUEST_SECONDS)
+    """Seconds one call may take, its retries included, and never past the deadline."""
+    CONNECT_TIMEOUT: float = Field(default=5.0, gt=0)
+    """Seconds to open a connection."""
+    RETRIES: int = Field(default=2, ge=0, le=10)
+    """Retries of a call that failed in a way worth trying again."""
+    BACKOFF: float = Field(default=0.1, ge=0)
+    """Seconds before the first retry, doubling for each next one, jittered."""
+    MAX_BACKOFF: float = Field(default=2.0, ge=0, le=MAX_BACKOFF_SECONDS)
+    """The longest wait before a retry, ``Retry-After`` included."""
+    BREAKER_FAILURES: int = Field(default=5, ge=1)
+    """Failures in a row that open a host's circuit: its calls then fail at once."""
+    BREAKER_COOLDOWN: float = Field(default=30.0, gt=0, le=MAX_REQUEST_SECONDS)
+    """Seconds a host's circuit stays open before one call may try it again."""
+    MAX_CONNECTIONS: int = Field(default=100, ge=1)
+    """Connections per client and event loop."""
+    MAX_KEEPALIVE_CONNECTIONS: int = Field(default=20, ge=0)
+    """Idle connections each client keeps open for the next calls."""
+    MAX_RESPONSE_BYTES: int = Field(default=10_485_760, ge=1, le=MAX_RESPONSE_SIZE)
+    """Largest response body read, decompressed; a larger one fails the call."""
+    USER_AGENT: str = Field(default="domainkit", pattern=r"^[\x20-\x7e]{1,256}$")
+    """The ``User-Agent`` of every call."""
+    CA_BUNDLE: Path | None = None
+    """CA certificates that sign the servers' certificates; default: the system's."""
+
+
 ABSOLUTE_URI: Final = r"^[A-Za-z][A-Za-z0-9+.-]*:[^\s]+$"
 """An absolute URI without whitespace (``https://...``, ``urn:...``)."""
 
@@ -477,6 +574,8 @@ class Settings(BaseModel):
     ENVIRONMENT: Environment = "local"
     """Staging and production get the deployment checks below."""
     DEBUG: bool = False
+    SLOW_CALLBACK_DURATION: float | None = Field(default=0.1, gt=0)
+    """With ``DEBUG``: log loop steps this slow (asyncio debug mode); None: off."""
     PROJECT_NAME: str = "API"
     VERSION: str = "0.1.0"
 
@@ -493,6 +592,8 @@ class Settings(BaseModel):
     """Dotted path to the ``APIRouter`` that mounts every route (``ROOT_URLCONF``)."""
     ASGI_APPLICATION: str | None = None
     """``module:attribute`` that ``runserver`` serves."""
+    EVENT_LOOP: Literal["auto", "asyncio", "uvloop"] = "auto"
+    """Commands' and ``runserver``'s loop: uvloop when installed (``auto``), or not."""
 
     DATABASES: dict[str, DatabaseConfig] = Field(default_factory=dict)
     """SQL databases by alias; if any are set, ``default`` is required."""
@@ -514,6 +615,15 @@ class Settings(BaseModel):
     """File storages by alias (``domainkit.storage``); none unless set."""
     LOGGING: dict[str, Any] = Field(default_factory=_minimal_logging)
     """``logging.config.dictConfig`` mapping applied by ``setup()``."""
+    EVENT_HANDLER_TIMEOUT: float = Field(default=10.0, gt=0, le=3600)
+    """Seconds an in-process event handler may run before it is cut off."""
+    SHUTDOWN_TIMEOUT: float = Field(default=15.0, gt=0, le=300)
+    """Seconds a shutdown may take in all, split across its phases.
+
+    Domain hooks, work in flight, background tasks, then connections (see
+    ``domainkit.lifecycle``). With the server's own graceful shutdown, keep
+    it under the orchestrator's grace period (30 s in Kubernetes).
+    """
 
     ALLOWED_HOSTS: tuple[str, ...] = ("localhost", "127.0.0.1", "[::1]")
     """Accepted ``Host`` header values; ``*.example.com`` matches subdomains."""
@@ -529,7 +639,23 @@ class Settings(BaseModel):
     """Options of ``DebugToolbarMiddleware`` (development only)."""
     MAX_REQUEST_BODY_SIZE: int = Field(default=1_048_576, ge=1)
     """Largest accepted request body in bytes; larger requests get 413."""
-    READINESS_TIMEOUT: float = Field(default=5.0, gt=0)
+    REQUEST_BODY_TIMEOUT: float = Field(default=10.0, gt=0, le=MAX_REQUEST_SECONDS)
+    """Seconds a request may spend waiting for its body; longer gets 408."""
+    REQUEST_TIMEOUT: float | None = Field(default=30.0, gt=0, le=MAX_REQUEST_SECONDS)
+    """Seconds an HTTP request may take until its response starts; None: no limit."""
+    MAX_CONCURRENT_REQUESTS: int | None = Field(
+        default=1000, ge=1, le=MAX_REQUESTS_AT_ONCE
+    )
+    """HTTP requests each event loop works on at once; None: no cap."""
+    MAX_QUEUED_REQUESTS: int = Field(default=100, ge=0, le=MAX_REQUESTS_AT_ONCE)
+    """Requests past the cap that may wait for a slot; more are refused at once."""
+    REQUEST_QUEUE_TIMEOUT: float = Field(default=1.0, ge=0, le=60)
+    """Seconds a request past the cap waits for a slot before it is refused."""
+    CONCURRENCY_EXEMPT_PATHS: tuple[str, ...] = ("/health", "/ready", "/metrics")
+    """Exact paths never counted against the cap, so probes are never refused."""
+    HTTP_CLIENT: HttpClientConfig = Field(default_factory=HttpClientConfig)
+    """Defaults of outgoing calls through ``domainkit.http.client``."""
+    READINESS_TIMEOUT: float = Field(default=5.0, gt=0, le=60)
     """Seconds each readiness check may take before it counts as failed."""
     READINESS_CACHE_SECONDS: float = Field(default=1.0, ge=0)
     """Reuse a readiness result this long, so probe floods cannot load the database."""
@@ -551,6 +677,29 @@ class Settings(BaseModel):
     """IPv6 clients are counted per network of this prefix length (one customer's)."""
     METRICS_TOKEN: SecretStr | None = None
     """Bearer token for ``/metrics``; without it staging and production refuse."""
+
+    LIVE_MAX_CONNECTIONS: int = Field(default=1000, ge=1, le=1_000_000)
+    """Open WebSockets and event streams per process; more are refused (503)."""
+    LIVE_MAX_CONNECTIONS_PER_CALLER: int = Field(default=10, ge=1, le=1_000_000)
+    """Open WebSockets and event streams per user, or per address if anonymous."""
+    LIVE_SEND_QUEUE: int = Field(default=64, ge=1, le=10_000)
+    """Messages or events a live connection may have waiting to be sent."""
+    LIVE_SEND_TIMEOUT: float = Field(default=10.0, gt=0)
+    """Seconds a message may take to reach the client before it counts as too slow."""
+    LIVE_REAUTH_INTERVAL: float | None = Field(
+        default=60.0, gt=0, le=MAX_REAUTH_INTERVAL
+    )
+    """Seconds between re-checks of an open connection's credentials and rules."""
+    WEBSOCKET_IDLE_TIMEOUT: float = Field(default=300.0, gt=0)
+    """Seconds without a message either way before a WebSocket is closed (1001)."""
+    WEBSOCKET_MAX_LIFETIME: float = Field(default=3600.0, gt=0)
+    """Seconds a WebSocket may stay open before it is closed (1001)."""
+    WEBSOCKET_MESSAGE_RATE: str | None = "20/second"
+    """Messages a WebSocket client may send, such as ``"20/second"``; None: any."""
+    SSE_KEEPALIVE: float = Field(default=15.0, gt=0)
+    """Seconds of silence before an event stream sends a keep-alive comment."""
+    SSE_MAX_LIFETIME: float = Field(default=3600.0, gt=0)
+    """Seconds an event stream may stay open; the client then reconnects."""
     ERROR_REPORTERS: tuple[str, ...] = ()
     """Callables ``(exc, context) -> None`` by dotted path, e.g. a Sentry adapter."""
 
@@ -608,6 +757,7 @@ class Settings(BaseModel):
             raise ValueError("CORS_ALLOW_CREDENTIALS cannot be used with origin '*'")
         if self.RATE_LIMIT is not None:
             parse_rate(self.RATE_LIMIT)
+        self._check_live_connections()
         self._check_i18n()
         if self.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
             self._check_deployment()
@@ -642,6 +792,15 @@ class Settings(BaseModel):
             raise ValueError(
                 f"DATABASE_ROUTING[{label!r}] = {target!r} must name a shard group "
                 "or a SQL alias outside the shard groups that is not a replica"
+            )
+
+    def _check_live_connections(self) -> None:
+        """The message rate reads, and a caller's cap fits in the process's."""
+        if self.WEBSOCKET_MESSAGE_RATE is not None:
+            parse_rate(self.WEBSOCKET_MESSAGE_RATE)
+        if self.LIVE_MAX_CONNECTIONS_PER_CALLER > self.LIVE_MAX_CONNECTIONS:
+            raise ValueError(
+                "LIVE_MAX_CONNECTIONS_PER_CALLER cannot exceed LIVE_MAX_CONNECTIONS"
             )
 
     def _check_i18n(self) -> None:
@@ -720,6 +879,40 @@ class Settings(BaseModel):
                 "TRUSTED_PROXIES is empty, so callers are rate limited by the "
                 "address they connect from: behind a load balancer or proxy, "
                 "they all share its count. List its networks in TRUSTED_PROXIES."
+            )
+        if self.LIVE_REAUTH_INTERVAL is None:
+            warnings.append(
+                "LIVE_REAUTH_INTERVAL is None, so an open WebSocket or event "
+                "stream keeps a revoked token or a removed permission until it "
+                "closes; set it (60 is a minute)."
+            )
+        warnings.extend(self._load_warnings())
+        return warnings
+
+    def _load_warnings(self) -> list[str]:
+        """Requests without a deadline or a cap, and PgBouncer left unsaid."""
+        warnings = []
+        if self.REQUEST_TIMEOUT is None or DEADLINE_MIDDLEWARE not in self.MIDDLEWARE:
+            warnings.append(
+                f"Requests have no deadline, so a slow one holds its resources "
+                f"for as long as it takes; set REQUEST_TIMEOUT and list "
+                f"{DEADLINE_MIDDLEWARE} in MIDDLEWARE."
+            )
+        if (
+            self.MAX_CONCURRENT_REQUESTS is None
+            or CONCURRENCY_MIDDLEWARE not in self.MIDDLEWARE
+        ):
+            warnings.append(
+                f"Requests are not shed under load, so they queue without end; "
+                f"set MAX_CONCURRENT_REQUESTS and list {CONCURRENCY_MIDDLEWARE} "
+                f"in MIDDLEWARE."
+            )
+        if pooled := sorted(a for a, db in self.DATABASES.items() if db.looks_pooled()):
+            warnings.append(
+                f"DATABASES {pooled} seem to go through PgBouncer (port "
+                f"{PGBOUNCER_PORT}, or a statement cache turned off in "
+                f"CONNECT_ARGS); set PGBOUNCER = True, so timeouts hold per "
+                f"transaction and prepared statements do not clash."
             )
         return warnings
 

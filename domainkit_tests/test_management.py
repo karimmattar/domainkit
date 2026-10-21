@@ -415,7 +415,12 @@ def test_startdomain_generates_a_working_domain(
             str(tests_dir / "shop" / "test_services.py"),
         ],
         cwd=tmp_path,
-        env={**os.environ, "PYTHONPATH": os.pathsep.join([str(tmp_path), *sys.path])},
+        # The child checks the generated code, not mutmut's mutants: under
+        # mutmut's stats run it would look for mutmut's settings in tmp_path.
+        env={
+            **{k: v for k, v in os.environ.items() if k != "MUTANT_UNDER_TEST"},
+            "PYTHONPATH": os.pathsep.join([str(tmp_path), *sys.path]),
+        },
         capture_output=True,
         text=True,
         check=False,

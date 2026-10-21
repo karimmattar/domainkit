@@ -3,11 +3,10 @@
 import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta, timezone
-from typing import cast
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import Insert, create_engine
+from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import create_async_engine
 from starlette.types import Message, Receive, Scope, Send
 
@@ -20,7 +19,7 @@ from domainkit.ddd import DomainEvent, EventBus, event_bus
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.http.middleware import ProxyHeadersMiddleware
-from domainkit.reporting import report_error, reporters
+from domainkit.reporting import flush_reports, report_error, reporters
 
 pytestmark = pytest.mark.anyio
 
@@ -254,6 +253,7 @@ def test_report_error_isolates_reporters(caplog: pytest.LogCaptureFixture) -> No
     with override_settings(ERROR_REPORTERS=paths):
         report_error(ValueError("boom"), request_id="r1")
 
+    flush_reports()  # Reporters run on their own thread.
     assert reported == [("boom", {"request_id": "r1"})]
     assert "Error reporter" in caplog.text
 
@@ -266,6 +266,7 @@ def test_unhandled_request_errors_are_reported() -> None:
         client = TestClient(get_asgi_application(), raise_server_exceptions=False)
         response = client.get("/boom")
 
+    flush_reports()  # Reporters run on their own thread.
     ((message, context),) = reported
     assert (message, context["path"], context["method"]) == ("boom", "/boom", "GET")
     assert context["request_id"] == response.headers["X-Request-ID"]
@@ -293,6 +294,7 @@ async def test_in_process_handler_failures_are_reported() -> None:
         finally:
             event_bus.unsubscribe(Pinged, failing)
 
+    flush_reports()  # Reporters run on their own thread.
     assert reported == [
         ("handler broke", {"event": "Pinged", "event_id": str(event.event_id)})
     ]
@@ -328,7 +330,7 @@ def test_postgres_deduplicated_inserts_compile() -> None:
     (statement,) = insert_statements("postgresql", [row])
 
     dialect = create_async_engine("postgresql+asyncpg://app@db/app").dialect
-    sql = str(cast(Insert, statement).compile(dialect=dialect))
+    sql = str(statement.compile(dialect=dialect))
     assert "ON CONFLICT (dedupe_key) DO NOTHING" in sql
 
 

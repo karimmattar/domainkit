@@ -5,7 +5,13 @@ This package depends only on the standard library, ``domainkit.utils``, and
 ``domainkit.ddd`` stays free of frameworks and I/O.
 """
 
-from domainkit.ddd.events import DomainEvent, EventBus, EventHandler, event_bus
+from domainkit.ddd.events import (
+    DomainEvent,
+    EventBus,
+    EventHandler,
+    HandlerTimedOut,
+    event_bus,
+)
 from domainkit.ddd.exceptions import (
     BusinessRuleViolation,
     ConcurrentUpdate,
@@ -54,6 +60,7 @@ __all__ = [
     "EventBus",
     "EventHandler",
     "F",
+    "HandlerTimedOut",
     "InMemoryRepository",
     "InvalidQuery",
     "LockNotAvailable",

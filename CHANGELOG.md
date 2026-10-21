@@ -6,6 +6,495 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `domainkit.tasks`: `spawn(coro, name=...)` starts a background task in a
+  clean context, keeps it, logs its failure once (`tasks_failed_total`),
+  and stops it at shutdown; `supervise(factory, name=...)` restarts work
+  that crashes, after a jittered backoff, until shutdown
+  (`tasks_restarted_total`). Each event loop owns its tasks, and a closed
+  loop is never kept alive by them (`docs/runtime.md`; ADR 0045).
+- `SHUTDOWN_TIMEOUT` (15 s): one budget for the whole shutdown, split into
+  phases (domain hooks, work in flight, background tasks, connections, and
+  a final flush), each with a share no other phase can take.
+  `lifecycle.register(name, close, phase=...)` adds closers, and
+  management commands run them too (R22, N13; ADR 0046).
+- `EVENT_HANDLER_TIMEOUT` (10 s), and `event_bus.subscribe(..., timeout=...)`
+  per handler: an in-process handler still running then is cancelled,
+  logged, and reported as `HandlerTimedOut`, and the request goes on
+  (ASYNC-26).
+- `AUDIT.SEAL_LATE_WINDOW`, `AUDIT.SEAL_BATCHES`, and
+  `AUDIT.SEAL_BACKLOG_WARNING`, and the `audit_unsealed_rows` gauge: a
+  sealing run is bounded, and a backlog is counted and logged (N6).
+- `AUTH.HASHING_RESERVED` (1): places of the hashing queue kept for
+  signed-in users changing their password and staff setting one, so a
+  flood of logins cannot lock them out; `acheck_password`, `amake_password`,
+  and `UserRepository.set_password` take `priority=True` (N7).
+- `docs/runtime.md`: how domainkit runs async work.
+- `WebSocketLimitsMiddleware` bounds every WebSocket (R08; `docs/live.md`;
+  ADR 0055): `LIVE_MAX_CONNECTIONS` open connections per process and
+  `LIVE_MAX_CONNECTIONS_PER_CALLER` per user or address (one more gets 503
+  with `Retry-After`, or a 1013 close where the server cannot answer a
+  handshake with a status); a send queue of `LIVE_SEND_QUEUE` messages, a
+  client slower than `LIVE_SEND_TIMEOUT` closed with 1013;
+  `WEBSOCKET_MESSAGE_RATE` messages per connection, closed with 1008 past
+  it; and `WEBSOCKET_IDLE_TIMEOUT` and `WEBSOCKET_MAX_LIFETIME`, closed with
+  1001. Each close says why, and cancels the handler, so none outlives its
+  connection. `LiveLimits` sets a route's own limits.
+- Open WebSockets and event streams are re-authorized every
+  `LIVE_REAUTH_INTERVAL` seconds (N9; ADR 0056): the handshake's
+  credentials are checked again and the route's `Require` rules re-run with
+  the user loaded afresh, so a revoked or expired token, a deactivated
+  user, or a removed permission closes the connection with 1008. A check
+  that fails or hangs closes it with 1013.
+- `domainkit.http.sse`: `EventSourceResponse` streams Server-Sent Events,
+  with `ServerSentEvent` (`id`, `event`, `retry`, data on several lines,
+  `ServerSentEvent.json`), `last_event_id(request)` for clients that
+  resume, keep-alive comments after `SSE_KEEPALIVE` seconds, an end as soon
+  as the client leaves, and the caps, queue, re-checks, and
+  `SSE_MAX_LIFETIME` above.
+- `domainkit.http.live_events`: domains stream their committed events to
+  the clients that may see them, over an event stream
+  (`live_events.stream`) or a WebSocket (`live_events.forward`). Each event
+  passes the subscription's access rule on its own, goes out without its
+  `Personal` fields unless `render` says otherwise, and a client that falls
+  more than `LIVE_SEND_QUEUE` events behind is closed as too slow. Events
+  reach the connections of the process that committed them (ADR 0057).
+- `check` warns, in staging and production, when the application serves
+  WebSockets without `WebSocketLimitsMiddleware`, and when
+  `LIVE_REAUTH_INTERVAL` is `None`.
+- `runserver` and management commands with an `async` handle, `runworker`
+  among them, run on uvloop when the new `uvloop` extra is installed.
+  `EVENT_LOOP` (`auto`, `asyncio`, `uvloop`) chooses, and
+  `domainkit.utils.loops.loop_factory` gives other entry points the same
+  loop (ASYNC-25).
+- `domainkit.log.BackgroundHandler` and `BackgroundListener`: log records
+  go on a bounded queue and a thread writes them, so a blocked stdout,
+  file, or socket never stops the event loop. A full queue drops records
+  and counts them, and says how many once there is room. `flush_logs()`
+  waits for what is queued (ASYNC-10; ADR 0051).
+- `domainkit.reporting.flush_reports()` waits for error reports still
+  waiting for the reporting thread, as tests do before checking what a
+  reporter received; the pytest plugin calls it, and `flush_logs()`,
+  after every test.
+- Blocking code is found before production (ASYNC-14, R07;
+  `docs/runtime.md`, "Finding blocking code"):
+  - with `DEBUG`, the application's loop runs in asyncio's debug mode and
+    logs every step that holds it for `SLOW_CALLBACK_DURATION` (0.1 s);
+  - `pytest --detect-blocking` fails a test that holds its loop that long
+    (`--blocking-seconds` to raise the bar);
+  - `check` warns about route handlers and dependencies of the installed
+    domains written as `def`, which FastAPI runs on its thread pool;
+    `domainkit.http.blocking.allow_sync` marks one that must stay sync;
+  - projects made by `init` turn on Ruff's `ASYNC` rules.
+- `Ledger.append(key, value, unchanged_since=...)` writes only if no
+  revision of the key came after the one read, in one step in the ledger
+  (immudb's `keyNotModifiedAfterTX` precondition), and raises the new
+  `LedgerChanged` otherwise.
+- Granian as a supported server: the new `granian` extra, `runserver
+  --server granian`, and production commands and limits for uvicorn and
+  Granian side by side in `docs/reference.md` ("Server limits"), with
+  `--timeout-graceful-shutdown` and keep-alive (ASYNC-27, R12).
+- In staging and production, `check` warns when an application that serves
+  WebSockets runs under a server that reads messages larger than
+  `MAX_REQUEST_BODY_SIZE` before the application can refuse them: uvicorn without a small enough `--ws-max-size`, or Granian
+  with WebSockets on. It reads the server's `UVICORN_*` and `GRANIAN_*`
+  variables, and a deployed application logs the same warning from the
+  server's command line when it starts.
+- CI runs the tests of state shared between threads, and of the
+  framework's own threads, on free-threaded Python 3.14 (3.14t), with the
+  GIL off throughout (R11). The whole suite crashes the 3.14.6t interpreter
+  now and then, already at 0.7.0, so it is not run there yet.
+- `domainkit.contrib.auth.acurrent_user`, the dependency behind
+  `CurrentUser`, which FastAPI awaits instead of calling on its thread
+  pool (ASYNC-09). `current_user` stays a plain function.
+- `MESSAGING.BREAKER_FAILURES` (5) and `MESSAGING.BREAKER_COOLDOWN` (30 s):
+  a broker that keeps failing trips the publisher's circuit breaker, and
+  commits leave their messages to the relays, touching neither the
+  database nor the broker, until a probe finds the broker answering again.
+  It is logged once when it opens and once when it closes;
+  `messaging_publisher_breaker_open` shows it, and
+  `messaging_left_to_relay_total` counts the messages commits left to the
+  relays, by reason (FX-12, N5; ADR 0042).
+- `MESSAGING.NOTIFY`: on PostgreSQL, a commit wakes idle workers through
+  `LISTEN`/`NOTIFY`, so a message starts right after its commit instead of
+  on the next poll, and `POLL_INTERVAL` can be longer. Polling stays as the
+  fallback (R20; ADR 0043).
+- `MESSAGING.CLEANUP_BATCH_SIZE` (1,000) and `MESSAGING.METRICS_TTL`
+  (15 s), below.
+- `domainkit.contrib.messaging.Budget`, the concurrency budget `Worker` and
+  `BrokerWorkers` share through `budget=`.
+- `docs/runtime.md`, "Workers and the outbox".
+- Request deadlines (ASYNC-11, R04; `docs/runtime.md`; ADR 0048): each
+  HTTP request gets `REQUEST_TIMEOUT` seconds (30) until its response
+  starts, through the new `DeadlineMiddleware`. Past them the work is
+  cancelled, its unit of work rolled back and its idempotency key
+  released, and the request is answered 503 `deadline_exceeded` with
+  `Retry-After`, logged once. A route sets its own with
+  `Depends(RequestTimeout(seconds))`, or none with `RequestTimeout(None)`;
+  streamed responses, background tasks, and WebSockets are not cut off.
+- `domainkit.deadlines`, to keep to the deadline anywhere: `remaining()`,
+  `within(awaitable, seconds)`, and `async with timeout(seconds)`, bounded
+  by the smaller of their seconds and the time left. PostgreSQL
+  transactions lower `statement_timeout` to the time left (`SET LOCAL`),
+  which `assert_num_queries` does not count.
+- Load shedding (`docs/runtime.md`; ADR 0049): `ConcurrencyLimitMiddleware`
+  lets each process work on `MAX_CONCURRENT_REQUESTS` requests at once
+  (1000); the next wait up to `REQUEST_QUEUE_TIMEOUT` (1 second) behind at
+  most `MAX_QUEUED_REQUESTS` (100), then get 503 `overloaded` with
+  `Retry-After`. Health and readiness probes and `/metrics` are never
+  refused (`CONCURRENCY_EXEMPT_PATHS`). New metrics:
+  `http_requests_admitted`, `http_requests_queued`,
+  `http_requests_shed_total`, and `http_request_deadlines_exceeded_total`.
+- Client-side database timeouts (ASYNC-12): `DATABASES` entries take
+  `CONNECT_TIMEOUT` (10 seconds, where asyncpg waited 60) and
+  `COMMAND_TIMEOUT` (`STATEMENT_TIMEOUT` plus 5 seconds).
+- `PGBOUNCER = True` for databases behind PgBouncer's transaction pooling:
+  no statement cache, a unique name for each prepared statement, and the
+  timeouts set in each transaction instead of the session. `check` warns
+  in staging and production about a database that seems to go through
+  PgBouncer without it.
+- `domainkit.http.client`, outgoing HTTP calls (R09; the new `httpclient`
+  extra; ADR 0050): pooled `HttpClient`s closed with the application,
+  each call bounded by a timeout and by the request's deadline, retried
+  with jittered backoff only when that is safe, a circuit breaker per
+  host, the request id and trace context sent along, answers read up to
+  `HTTP_CLIENT.MAX_RESPONSE_BYTES`, and logs without query strings or
+  headers. A client made with `guard=True` calls only public addresses,
+  checked as each connection opens; `stub(handler)` stubs every call in
+  tests.
+- `auditseal --late` (and `seal(..., late=True)` and `seal_all(late=True)`)
+  seals the audit rows that committed later than `AUDIT.SEAL_LATE_WINDOW`,
+  which no run could reach, into the chain, each seal flagged `late`;
+  `auditverify` counts them. It reads the whole trail, so the worker never
+  runs it on its own (ADR 0047).
+
+### Changed
+
+- Background work runs in a clean context: a `get_or_set` (or `@cached`)
+  computation, a readiness round, and settling an `Idempotency-Key` no
+  longer carry the first caller's request, actor, language, span, or key
+  (FX-03, N2). A cached factory that read `current_request()` or the active
+  language must now take them as arguments, in the key. `@cache_page` still
+  runs the endpoint as the caller, whose user and language its key holds.
+- Resource kinds, and the items of each kind, close at once at shutdown, so
+  one that hangs keeps no other open; domain shutdown hooks run within a
+  share of the budget, and one that overruns is cut off with a
+  `TimeoutError` naming it. `DomainRegistry.lifespan` takes `stop_within`.
+- `/ready` checks domains, databases, ledgers, and caches at once: a round
+  takes one `READINESS_TIMEOUT` at worst, not four (ASYNC-16).
+- Audit sealing looks for late rows `AUDIT.SEAL_LATE_WINDOW` (15 minutes)
+  before the newest sealed row instead of a day, so its cost follows what
+  is new, not how long the trail is: sealing 10 rows after 320k sealed over
+  a day went from 493 to 15 ms on SQLite (FX-04, N6; ADR 0047). A row that
+  commits later than the window stays unsealed, and `auditverify` reports
+  it; raise the window if your transactions run that long. The chain and
+  `auditverify` are unchanged.
+- A refused password check's `Retry-After` is the time the hashing queue
+  takes to drain, jittered, from 1 to 60 seconds, instead of always 1.
+- `DEFAULT_MIDDLEWARE` and the project template list
+  `WebSocketLimitsMiddleware`, so WebSockets of projects that set no
+  `MIDDLEWARE` get the limits above. List it in an older project's
+  `MIDDLEWARE`, after `RateLimitMiddleware`; with `domainkit.contrib.auth`
+  installed, listing it before `AuthenticationMiddleware` is refused at
+  startup, as it would count addresses rather than users.
+- `build_logging_config` writes through `BackgroundHandler`, with a queue
+  of 10,000 records (`queue_size`; `None` keeps writing on the caller's
+  thread), and the settings `init` writes now configure logging with it:
+  text lines, JSON lines in production, at `<PREFIX>LOG_LEVEL`. Lines are
+  written a moment after the call; shutdown waits up to 5 seconds for
+  them.
+- Error reporters run on a reporting thread, in a copy of the caller's
+  context, instead of inside the request: `report_error` returns at once,
+  and at most 100 reports wait (more are dropped and counted). Shutdown
+  waits up to 5 seconds for them. Tests that check a reporter call
+  `flush_reports()` first (ASYNC-10).
+- `CurrentUser`, a `ResourceRouter`'s unit of work and `FilterSet`, and the
+  auth admin's user and group listings no longer hop to FastAPI's thread
+  pool on every request: they are awaited, or built, on the loop.
+  Domains made by `startdomain` declare `get_unit_of_work` and `caller` as
+  `async def`; existing ones keep working, and `check` names them.
+- The in-memory rate limiter, `AuthenticationMiddleware`'s
+  refused-credential holds, and the password hashing pool's count take a
+  lock, so event loops on several threads, as free-threaded Python runs
+  them, share them safely (ASYNC-23).
+- immudb ledgers answer readiness probes on a thread and a client of their
+  own, so a probe no longer waits behind a slow write and reports the
+  ledger unready; `close()` waits at most `TIMEOUT` for a busy client,
+  which closes when its call returns, and no longer leaves a thread open
+  when shutdown cuts it short. Audit anchors are written with
+  `unchanged_since`, so a retried anchor, or one that landed after its
+  caller gave up, is written at most once (ASYNC-13; ADR 0052).
+- TLS contexts are built once per process for each set of TLS settings,
+  never on the event loop while it serves: databases' when the application
+  is built, RabbitMQ's and Redis's on a worker thread at the first
+  connection. Redis connections share one context instead of building
+  their own at each connect (ASYNC-21; `docs/runtime.md`, "TLS contexts").
+  A process uses renewed certificate files after a restart.
+- Relationships given to `map_imperatively` that leave `lazy` at
+  SQLAlchemy's default (`"select"`), and the backrefs they make, now raise
+  on an unloaded access (`lazy="raise"`) instead of trying a lazy load,
+  which async sessions cannot do and which failed later with
+  `MissingGreenlet` (ASYNC-22, R19; ADR 0054). `children`, `child`, and
+  every relationship that names its `lazy` are unchanged. To upgrade, load
+  such a relationship in the query (`selectinload`), pass
+  `lazy="selectin"`, or keep lazy loading on purpose with `lazy=True`
+  (for `AsyncAttrs.awaitable_attrs` or `run_sync`).
+- ADR 0053 records why domainkit stays on FastAPI and Starlette rather
+  than Litestar or plain Starlette, with what each costs a request, and
+  what would change the decision (R16).
+- **`MESSAGING.CONCURRENCY` is one budget for the whole worker process.**
+  Every outbox's worker, `runworker --once`, and the deliveries of every
+  queue a broker hands over draw from it, so a process runs at most
+  `CONCURRENCY` messages at once. A process serving several outboxes or
+  queues ran several times as many before; raise `CONCURRENCY` if it
+  needs them (R23, ASYNC-19, IND-A4, IND-A5; ADR 0044).
+- Relays and the publisher lock what they publish for a short lease, the
+  broker's `CONNECT_TIMEOUT` plus `PUBLISH_TIMEOUT` and five seconds, and
+  for `REPUBLISH_AFTER` only once the broker confirms. Whatever it did not
+  confirm is unlocked at once, also when the publication is cancelled
+  (FX-02; ADR 0042).
+- At shutdown the publisher gets the time the drain phase always has, a
+  fifth of `SHUTDOWN_TIMEOUT` (3 s by default), instead of a fixed five
+  seconds. Its flush ends early enough (`RELEASE_TIMEOUT`, or half that
+  time if less) for a publication it cuts short to be unlocked before the
+  phase ends (ADR 0042).
+- Committed messages are published `BATCH_SIZE` at a time, never a whole
+  backlog in one statement (N11), and a relay logs one line per round
+  instead of one per message.
+- The publisher's task is supervised (`domainkit.tasks.supervise`): it runs
+  in a clean context instead of the first committing request's, starts
+  again after a crash, and ends when idle. Shutdown's drain phase closes
+  the publishers, in management commands too; `MessagingConfig` no longer
+  closes them in its `shutdown` hook (N12, R22).
+- On PostgreSQL the outbox's clock decides what is due and when locks
+  expire (`statement_timestamp()`), so workers on hosts whose clocks
+  disagree neither run a message twice nor leave it waiting. Under
+  `freeze_time` the frozen clock still decides (ASYNC-18; ADR 0043).
+- Cleanup runs in a task of each polling or relaying worker, never in the
+  claim loop, and deletes `CLEANUP_BATCH_SIZE` rows per statement; a batch
+  that fails halves the next, so statement timeouts slow cleanup down but
+  never stop it (FX-15, ASYNC-07; ADR 0043).
+- Every RabbitMQ call has a deadline: `CONNECT_TIMEOUT` for opening
+  channels, declaring, binding, setting the prefetch, and starting or
+  stopping consumers, as for connecting (N4).
+- The outbox gauges count the table at most once per `METRICS_TTL` in each
+  process, and concurrent scrapes share one count (ASYNC-17).
+- Workers run their tasks in `asyncio.TaskGroup`s: a failure in a worker's
+  own task (a relay, cleanup) ends the worker with the error instead of
+  being lost (R15).
+- `DEFAULT_MIDDLEWARE`, and the settings `init` writes, list
+  `DeadlineMiddleware` and `ConcurrencyLimitMiddleware` right after
+  `RequestContextMiddleware`. Projects with a `MIDDLEWARE` of their own add
+  them there; until they do, `check` warns in staging and production.
+- The SSRF guard of `domainkit.contrib.webhooks` is now
+  `domainkit.http.guard`, shared with the HTTP client;
+  `domainkit.contrib.webhooks.guard` keeps its names, messages, and codes.
+- The uvicorn example in `docs/reference.md` sets `--limit-concurrency
+  1200`, above the default cap and queue, so the application refuses
+  first and never refuses its probes.
+- The idempotency keys table has a new `pinned` column: run
+  `makemigrations` and `migrate` in projects that install idempotency. A
+  commit on a database other than `IDEMPOTENCY.DATABASE` that raises now
+  keeps its key even if nothing was saved, and retries get 409
+  `idempotency_response_unavailable` instead of running again (ADR 0020).
+- The audit seals table has a new `late` column: run `makemigrations` and
+  `migrate` in projects that install audit. On PostgreSQL, seals are dated
+  by the database's clock rather than the sealer's.
+- Settings that had no upper bound have a generous one, and larger values
+  are refused at startup: in `MESSAGING`, `TASK_TIMEOUT` (a day),
+  `VISIBILITY_TIMEOUT` (two days), `POLL_INTERVAL` (an hour), `BATCH_SIZE`
+  (10,000), `CONCURRENCY` (65,535, the largest prefetch RabbitMQ takes),
+  `SHUTDOWN_TIMEOUT` (an hour), `REPUBLISH_AFTER` (a week),
+  `RETENTION_SECONDS` (a year), and `CLEANUP_INTERVAL` (a day); in
+  `IDEMPOTENCY`, `TTL_SECONDS` (30 days) and `LEASE_SECONDS` (a day); in
+  `AUTH`, `HASHING_THREADS` (1,024) and `HASHING_QUEUE` (10,000); and
+  `READINESS_TIMEOUT` (60 seconds). Defaults are unchanged.
+- `LIVE_REAUTH_INTERVAL` and `LiveLimits(reauth_interval=...)` are at most
+  3,600 seconds: a longer interval, which left a revoked token its
+  connection for hours, is refused when the settings load or the route is
+  defined. `None` still turns re-checks off. `docs/live.md` says what
+  re-checks cannot do: a route that opts out keeps revoked tokens,
+  single-use credentials fail the first re-check, and blocking work on a
+  thread is not cut off at the 10-second bound.
+- The logging queue keeps its last tenth for records at `WARNING` and
+  above: while a stalled stream drops access lines, security events and
+  errors still find room (`domainkit.log.WARNING_RESERVE`; ADR 0051). The
+  drop notice counts by level: `Dropped 52 log records (50 INFO, 2
+  WARNING): the logging queue was full`.
+- `HttpClient(breaker=False)` keeps no circuits. A client's circuits are
+  shared by all its callers, so one user's failing URLs on a host opened
+  the circuit for every user of a shared guarded client: make one client
+  per trust domain, and give one that calls URLs your users chose
+  `breaker=False`.
+- `HttpClient(guard=True, transport=...)` is refused with `ValueError`: the
+  transport would skip the address checks. Tests use `stub()`. A client's
+  or a call's `timeout` must be finite.
+- Limits have upper bounds, well above their defaults, and settings past
+  them fail at startup: `MAX_CONCURRENT_REQUESTS` and `MAX_QUEUED_REQUESTS`
+  100,000; `REQUEST_TIMEOUT`, `REQUEST_BODY_TIMEOUT`, and `HTTP_CLIENT`'s
+  `TIMEOUT` and `BREAKER_COOLDOWN` an hour; `MAX_BACKOFF` ten minutes;
+  `MAX_RESPONSE_BYTES` 1 GiB; and a database's `STATEMENT_TIMEOUT`,
+  `LOCK_TIMEOUT`, `IDLE_IN_TRANSACTION_TIMEOUT`, `CONNECT_TIMEOUT`, and
+  `COMMAND_TIMEOUT` 2147483.647 seconds, the longest PostgreSQL takes.
+- `deadlines.timeout`, `within`, and `Deadline` refuse seconds that are not
+  a finite number (NaN, infinity) with `ValueError`; `None` is how to ask
+  for no bound. Zero and less still raise `TimeoutError` on entry.
+- The SSRF guard always refuses AWS EKS Pod Identity (`169.254.170.23`,
+  `fd00:ec2::23`) and the AWS DNS resolver (`169.254.169.253`,
+  `fd00:ec2::253`) as cloud metadata addresses, whatever networks are
+  allowed.
+- `MAX_CONCURRENT_REQUESTS` is documented as what it always was, a cap per
+  event loop: a process serving on one loop admits the cap, one running a
+  loop per thread admits it on each (ADR 0049).
+
+### Deprecated
+
+- `timeout`, `command_timeout`, and `connect_timeout` in a database's
+  `CONNECT_ARGS`: set `CONNECT_TIMEOUT` and `COMMAND_TIMEOUT`. They still
+  apply, with a `DomainkitDeprecationWarning`, and are refused from 0.9.
+
+### Fixed
+
+- A keyed request cancelled by a cancel scope (anyio's level-triggered
+  cancellation) or a deadline kept its `Idempotency-Key` until the lease
+  ran out, since its release was cancelled too. The response is now stored,
+  or the key released, in a task of its own, within 5 seconds (R03).
+- Without messaging, concurrent claims of new idempotency keys queued on one
+  another's purge of the same expired keys; the purge now skips keys
+  another request is deleting (`SKIP LOCKED` on PostgreSQL) (N14).
+- At midnight UTC, every anonymous audited request waited for the first
+  one's insert of the new day's pseudonym key. Sealing now makes the keys
+  of today and tomorrow ahead of time, in a transaction of its own (N10).
+- A password check whose caller was cancelled freed its place in the
+  hashing pool while its thread still hashed, so the work in flight could
+  exceed `HASHING_THREADS + HASHING_QUEUE`; a call now keeps its place
+  until its hash is done (N7).
+- After a lull, the in-memory rate limiter forgot every idle caller in one
+  request: 100,000 of them cost that request 32 ms. It forgets at most 64
+  per request now (IND-RL).
+- The WebSocket message size check no longer copies a text message to
+  measure it: ASCII is counted by its length, other text a chunk at a
+  time (N9).
+- A publication cut short at shutdown no longer leaves its messages locked
+  for an hour (`REPUBLISH_AFTER`) while the log says the relay sends them
+  (N1).
+- A brokered worker whose broker was lost or stalls at shutdown no longer
+  skips its running messages' grace period or hangs: stopping the
+  consumers has five seconds, and the drain always runs (FX-05, N3,
+  ASYNC-06). A delivery that arrives while stopping is given back instead
+  of run.
+- The in-memory broker's empty queues no longer hold the slots of busy ones
+  (IND-A9).
+- Publishers and brokers of event loops closed without a shutdown no longer
+  keep those loops alive.
+- A timeout under half a millisecond (`STATEMENT_TIMEOUT = 0.0004`) no
+  longer reaches PostgreSQL as 0, which means no timeout at all.
+- A keyed request whose changes committed on a database other than
+  `IDEMPOTENCY.DATABASE`, but whose commit raised (its reply lost, or the
+  request cancelled while it waited for it), released its
+  `Idempotency-Key`, so a retry ran the changes again: a second payment,
+  since 0.7.0. A key pinned for such a commit is never released now.
+- A brokered worker whose acknowledgement of one message failed with
+  aio-pika's own error, as it does once the delivery's channel closed,
+  ended, cancelling its other running messages. RabbitMQ's answers that
+  fail now raise `BrokerUnavailable`, and the worker logs any answer that
+  fails and leaves the message for RabbitMQ to hand out again.
+- An audit sealer whose clock ran ahead moved the high-water mark past the
+  rows other hosts committed afterwards, which then stayed unsealed, open
+  to change unnoticed. On PostgreSQL the mark is now capped by the
+  database's clock (ADR 0047).
+- A domain shutdown hook that ignored cancellation (a flush behind
+  `asyncio.shield`, a retry loop that catches everything) held shutdown
+  for good, since it ran inline. Each hook now runs as a task, and one cut
+  off at its share is cancelled and left behind, so the hooks and phases
+  after it still run.
+- Event loops on several threads (free-threaded Python, a loop per thread)
+  raced as each new one dropped the closed loops from the registries of
+  background tasks, commit publishers, and brokers: a loop could fail with
+  a `KeyError`, and on 3.14t the interpreter could crash. Those registries
+  take a lock now.
+- On PostgreSQL, a periodic slot that every worker queues, and that all
+  but one insert skip for its dedupe key, sent a notification per worker,
+  each waking every idle worker. Only rows the inserts return notify now.
+- `brokers.close_all()`, which shutdown runs, closed no broker since 0.6:
+  it called the base class's `close`, which does nothing, rather than each
+  broker's own. RabbitMQ connections are closed at shutdown now.
+- `ledgers.close_all()` had the same fault: immudb clients and their
+  threads were left open at shutdown. Each ledger's own `close` runs now.
+- Live events a client may not see no longer fill its buffer: one user's
+  commit of more than `LIVE_SEND_QUEUE` events closed every other client
+  subscribed to that type with 1013, and told them a burst had happened.
+  Too slow now counts only the events the client's rule allows; the others
+  wait for the rule in a buffer of their own, 16 times as large. Publishing
+  lets the event loop run after each event, so a client that keeps up
+  takes a large commit one event at a time.
+- The caps on open WebSockets and event streams are counted under a lock.
+  With event loops on several threads (free-threaded Python, or a server
+  with a loop per thread), slots leaked until the process refused every
+  connection, and closing one could raise `KeyError`. Loops that open an
+  application's first connections at once now share one count.
+- `EventBus.subscribe` checks for a repeat and adds the handler under a
+  lock, as do `unsubscribe` and `clear`. Live events subscribed from loops
+  on several threads at once could hook themselves onto the bus twice, and
+  then sent every committed event to each client twice.
+- A `UVICORN_WS_MAX_SIZE` (or `--ws-max-size`) of superscript digits, or of
+  more than 4,300 digits, no longer stops a deployed application from
+  starting, or `check` from running, with a `ValueError`: a value that
+  cannot be read is unknown, and a failure to tell the server is logged.
+- `check`'s warning about WebSocket messages the server reads past
+  `MAX_REQUEST_BODY_SIZE` now covers uvicorn started by gunicorn
+  (`-k uvicorn.workers.UvicornWorker`, or `uvicorn_worker.UvicornWorker`,
+  read from the command line or `GUNICORN_CMD_ARGS`) and by `fastapi run`,
+  which both read up to 16 MiB whatever `UVICORN_WS_MAX_SIZE` says; it
+  says how to set the limit under each. Hypercorn is still not recognised
+  (`docs/reference.md`, "Server limits").
+- A process forked while another thread was adding a logging handler, or
+  flushing the logs, could hang in its child before running anything: the
+  child waited for a lock only the parent's thread could let go. The lock
+  is now held across the fork, and the child makes a new one (ADR 0051).
+- On a stuck log stream, exit took 15 seconds, not the 5 of
+  `FLUSH_TIMEOUT`: Python's logging shutdown calls the handler's `flush()`
+  and then `close()`, and every wait inside them had its own 5 seconds.
+  They now share one deadline, and `close()` does not wait at all once the
+  flush has given up.
+- A few connections that sent their headers, then their body slowly or
+  never, held every slot of `ConcurrencyLimitMiddleware` until
+  `REQUEST_TIMEOUT`, so every other request was answered 503, without any
+  credentials. A request now lends its slot to the next one while the
+  application waits for a chunk of its body, and takes one back through
+  the queue when the chunk arrives (503 `overloaded` if none frees in
+  time). `RequestBodyLimitMiddleware` answers 408 `request_timeout`, and
+  closes the connection, once the body has taken `REQUEST_BODY_TIMEOUT`
+  (10 seconds) in all (ADR 0049).
+- httpx2 and httpcore2 logged every outgoing call's full URL, query string
+  and the secrets in it included, at INFO, a guarded client's too.
+  `build_logging_config` sets their loggers to WARNING.
+- The guard looked host names up on the event loop's default executor,
+  and a lookup went on after the guard gave up on it: names whose DNS never
+  answers held up `asyncio.to_thread` and new database connections for as
+  long as the system's resolver tried. Lookups now run on 4 threads of the
+  guard's own, at most 2 of one host; one past those bounds, or of a host
+  whose lookup failed in the last 5 seconds, fails at once, as a
+  connection error (ADR 0050). The threads stop at shutdown.
+- With `STATEMENT_TIMEOUT = None`, a deadline over 24.8 days failed every
+  PostgreSQL transaction (`statement_timeout` out of range), and an
+  infinite one raised `OverflowError`: a transaction asks for at most
+  2147483647 milliseconds.
+- On Linux, guarded clients and webhooks trusted the CAs `SSL_CERT_FILE`
+  and `SSL_CERT_DIR` name, though they ignore proxies from the
+  environment. They trust `CA_BUNDLE`, or the system's CAs, only.
+- `base_url` kept calls on its origin but not under its path: a relative
+  URL such as `../admin` or `%2e%2e/admin` reached another path of the
+  host. A `.` or `..` segment, spelled out or percent-encoded, now raises
+  `UnsafeURL`.
+- On free-threaded Python, a client's circuit breaker could let two trial
+  calls through at once, or fail with `KeyError`, and the shedding warning
+  lost counts: both change only under a lock now.
+- Behind `--root-path`, the probes in `CONCURRENCY_EXEMPT_PATHS` were
+  counted against the cap and could be refused; paths are compared
+  without the root path.
+
 ## [0.7.0] - 2026-10-20
 
 ### Added

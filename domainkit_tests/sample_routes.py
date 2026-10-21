@@ -252,6 +252,8 @@ async def pay(outcome: str = "ok", database: str = "default") -> Response:
         raise RuntimeError("crashed before the commit")
     async with UNITS_OF_WORK.get(outcome, PaymentsUnitOfWork)(database=database) as uow:
         await uow.session.execute(insert(payments))
+        if outcome == "abandoned":
+            raise RuntimeError("crashed before the commit")
         await uow.commit()
     if outcome == "crash":
         raise RuntimeError("crashed after the commit")

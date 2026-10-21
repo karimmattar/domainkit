@@ -30,6 +30,7 @@ import ipaddress
 import logging
 import math
 import re
+import threading
 import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
@@ -87,14 +88,19 @@ class _Caller:
     """The emission interval (``period / limit``) they were counted in."""
 
 
+EVICTIONS_PER_HIT: Final = 64
+"""Idle callers ``MemoryBackend`` forgets at most per request."""
+
+
 class MemoryBackend:
     """GCRA state in this process, for at most ``max_keys`` callers.
 
     Callers are kept in the order they were last seen. Each request forgets
-    the longest-unseen callers whose quota is full again, which changes no
-    decision. Past ``max_keys``, the longest-unseen caller is forgotten
-    anyway and starts afresh. Memory and the cost of a request stay bounded
-    however many callers there are.
+    up to ``EVICTIONS_PER_HIT`` of the longest-unseen callers whose quota is
+    full again, which changes no decision; after a lull, the idle ones go a
+    few at a time, over the next requests. Past ``max_keys``, the
+    longest-unseen caller is forgotten anyway and starts afresh. Memory and
+    the cost of a request stay bounded however many callers there are.
     """
 
     def __init__(
@@ -104,9 +110,19 @@ class MemoryBackend:
         self.max_keys = max_keys
         self.clock = clock
         self._callers: OrderedDict[str, _Caller] = OrderedDict()
+        self._lock = threading.Lock()
 
     async def hit(self, key: str, limit: int, period: float) -> Decision:
-        """Apply GCRA: allow if the requests owed stay within the burst."""
+        """Apply GCRA: allow if the requests owed stay within the burst.
+
+        One lock guards the callers, so event loops on several threads (a
+        server's threads, or free-threaded Python) never interleave.
+        """
+        with self._lock:
+            return self._hit(key, limit, period)
+
+    def _hit(self, key: str, limit: int, period: float) -> Decision:
+        """``hit``, with the lock held."""
         now = self.clock()
         self._forget_idle(now)
         interval = period / limit
@@ -143,8 +159,13 @@ class MemoryBackend:
         )
 
     def _forget_idle(self, now: float) -> None:
-        """Forget the longest-unseen callers while their quota is full again."""
-        while self._callers:
+        """Forget the longest-unseen callers while their quota is full again.
+
+        At most ``EVICTIONS_PER_HIT``, so no one request pays for a crowd.
+        """
+        for _ in range(EVICTIONS_PER_HIT):
+            if not self._callers:
+                return
             key, caller = next(iter(self._callers.items()))
             if caller.seen + caller.owed * caller.interval > now:
                 return

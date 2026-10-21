@@ -1,11 +1,17 @@
 """Domain building blocks: model, events, errors, repositories, unit of work."""
 
+import asyncio
 import dataclasses
+import functools
+import logging
 from typing import NewType
 from uuid import UUID, uuid4
 
 import pytest
 
+from domainkit import setup
+from domainkit.apps import registry
+from domainkit.conf import override_settings
 from domainkit.ddd import (
     AggregateRoot,
     BusinessRuleViolation,
@@ -14,6 +20,7 @@ from domainkit.ddd import (
     DomainEvent,
     Entity,
     EventBus,
+    HandlerTimedOut,
     InMemoryRepository,
     NotFound,
     Page,
@@ -169,6 +176,173 @@ async def test_event_bus_delivers_by_class_hierarchy(
     assert bus.handlers_for(OrderPaid) == [specific, every]
     bus.clear()
     assert bus.handlers_for(OrderPaid) == []
+
+
+async def test_a_hung_handler_is_cut_off_logged_and_reported(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The handlers after it still run; the request is not held for ever."""
+    bus = EventBus(handler_timeout=0.01)
+    seen: list[str] = []
+    reported: list[tuple[BaseException, DomainEvent]] = []
+    bus.error_hook = lambda exc, event: reported.append((exc, event))
+
+    async def hung(event: OrderPaid) -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            seen.append("hung stopped")
+
+    async def after(event: OrderPaid) -> None:
+        seen.append("after")
+
+    bus.subscribe(OrderPaid, hung)
+    bus.subscribe(OrderPaid, after)
+    event = OrderPaid(order_id=uuid4())
+    with caplog.at_level(logging.ERROR, "domainkit.ddd.events"):
+        async with asyncio.timeout(5):
+            await bus.publish(event)
+
+    assert seen == ["hung stopped", "after"]
+    ((timed_out, about),) = reported
+    assert about is event
+    assert isinstance(timed_out, HandlerTimedOut)
+    assert isinstance(timed_out, TimeoutError)
+    message = (
+        f"Handler {hung.__qualname__} took more than 0.01s for OrderPaid "
+        f"{event.event_id}"
+    )
+    assert str(timed_out) == message
+    assert caplog.messages == [f"{message}; cut off"]
+
+
+async def test_a_handler_can_have_a_timeout_of_its_own() -> None:
+    """``subscribe(timeout=...)`` overrides the bus's limit, either way."""
+    bus = EventBus(handler_timeout=0.01)
+    seen: list[str] = []
+    reported: list[BaseException] = []
+    bus.error_hook = lambda exc, event: reported.append(exc)
+
+    async def slow(event: OrderPaid) -> None:
+        await asyncio.sleep(0.05)
+        seen.append("slow finished")
+
+    bus.subscribe(OrderPaid, slow, timeout=5)
+    await bus.publish(OrderPaid(order_id=uuid4()))
+    assert seen == ["slow finished"]
+    assert reported == []
+
+    strict = EventBus(handler_timeout=5)
+    strict.error_hook = lambda exc, event: reported.append(exc)
+    strict.subscribe(OrderPaid, slow, timeout=0.01)
+    await strict.publish(OrderPaid(order_id=uuid4()))
+    assert seen == ["slow finished"]
+    assert [type(exc) for exc in reported] == [HandlerTimedOut]
+
+
+async def test_a_handlers_own_timeout_error_is_a_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Only the bus's limit counts as cut off; the handler's own error is its own."""
+    bus = EventBus()
+    reported: list[BaseException] = []
+    bus.error_hook = lambda exc, event: reported.append(exc)
+
+    async def times_out(event: OrderPaid) -> None:
+        raise TimeoutError("the payment provider did not answer")
+
+    bus.subscribe(OrderPaid, times_out)
+    event = OrderPaid(order_id=uuid4())
+    await bus.publish(event)
+
+    (failure,) = reported
+    assert type(failure) is TimeoutError
+    assert caplog.messages == [
+        f"Handler {times_out.__qualname__} failed for OrderPaid {event.event_id}"
+    ]
+
+
+async def test_handlers_without_a_qualified_name_are_named_as_they_are(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A partial or a callable object is named by its repr in the log."""
+    bus = EventBus()
+
+    async def failing(event: OrderPaid, note: str) -> None:
+        raise RuntimeError(note)
+
+    handler = functools.partial(failing, note="broken")
+    bus.subscribe(OrderPaid, handler)
+    await bus.publish(OrderPaid(order_id=uuid4()))
+
+    assert caplog.messages[0].startswith("Handler functools.partial(")
+
+
+def test_unsubscribing_from_an_event_nothing_handles_does_nothing() -> None:
+    """No subscription, no error."""
+
+    async def handler(event: OrderPaid) -> None:
+        return None
+
+    bus = EventBus()
+    bus.unsubscribe(OrderPaid, handler)
+    assert bus.handlers_for(OrderPaid) == []
+
+
+async def test_cancelling_the_request_still_cancels_its_handlers() -> None:
+    """A handler's limit never swallows the request's own cancellation."""
+    bus = EventBus()
+    started = asyncio.Event()
+
+    async def waits(event: OrderPaid) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    bus.subscribe(OrderPaid, waits)
+    publishing = asyncio.create_task(bus.publish(OrderPaid(order_id=uuid4())))
+    async with asyncio.timeout(5):
+        await started.wait()
+    publishing.cancel()
+    await asyncio.wait([publishing], timeout=5)
+    assert publishing.cancelled()
+
+
+@pytest.mark.parametrize(
+    ("timeout", "durable"), [(0, False), (-1, False), (float("inf"), False), (5, True)]
+)
+def test_subscribe_refuses_a_timeout_it_cannot_apply(
+    timeout: float, durable: bool
+) -> None:
+    """Positive and finite, and only for in-process handlers."""
+
+    async def handler(event: OrderPaid) -> None:
+        return None
+
+    with pytest.raises(
+        ValueError,
+        match=r"^timeout is a positive number of seconds, for in-process handlers\.$",
+    ):
+        EventBus().subscribe(OrderPaid, handler, durable=durable, timeout=timeout)
+
+
+@pytest.mark.parametrize("seconds", [0, -1, float("inf")])
+def test_a_bus_refuses_a_handler_timeout_it_cannot_apply(seconds: float) -> None:
+    """Zero would cut off every handler; infinity none."""
+    with pytest.raises(
+        ValueError, match=r"^handler_timeout is a positive number of seconds\.$"
+    ):
+        EventBus(handler_timeout=seconds)
+
+
+def test_setup_gives_the_bus_the_handler_timeout_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``EVENT_HANDLER_TIMEOUT`` reaches the process's bus at ``setup()``."""
+    monkeypatch.setattr(event_bus, "handler_timeout", event_bus.handler_timeout)
+    registry.clear()
+    with override_settings(EVENT_HANDLER_TIMEOUT=2.5):
+        setup()
+    assert event_bus.handler_timeout == 2.5
 
 
 async def test_repository_tracks_what_it_hands_out() -> None:

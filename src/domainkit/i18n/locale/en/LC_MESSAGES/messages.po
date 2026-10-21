@@ -45,6 +45,9 @@ msgstr ""
 msgid "Too many requests; slow down."
 msgstr ""
 
+msgid "Too many open connections; try again later."
+msgstr ""
+
 msgid ""
 "The data changed while this request was running; reload it and try "
 "again."
@@ -617,4 +620,15 @@ msgid ""
 msgstr ""
 
 msgid "Usernames that start with erased- are kept for erased accounts."
+msgstr ""
+
+#. domainkit.http: deadlines and load shedding
+msgid "The request took too long; try again shortly."
+msgstr ""
+
+msgid "The server is busy; try again shortly."
+msgstr ""
+
+#. domainkit.http: request bodies
+msgid "The request body took too long to arrive."
 msgstr ""

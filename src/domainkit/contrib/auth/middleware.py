@@ -29,9 +29,14 @@ Only credentials that do not hold (401) count: a refusal of credentials
 that do, such as a cookie request that fails its CSRF checks (403), is a
 request another site can make a browser send, and counting it would let
 that site lock everyone behind the browser's address out.
+
+An open WebSocket or event stream has its credentials checked again while
+it lasts (``reauthenticate``, called by ``domainkit.http.live``), so a
+revoked or expired token, or a deactivated user, does not keep it open.
 """
 
 import logging
+import threading
 from collections import OrderedDict
 from dataclasses import replace
 from typing import Final
@@ -44,6 +49,7 @@ from domainkit.clock import monotonic
 from domainkit.conf import settings
 from domainkit.context import bind_request, current_request
 from domainkit.http.errors import error_response
+from domainkit.http.live import REAUTHENTICATE
 from domainkit.http.ratelimit import Backend, Decision, address_key, refuse
 from domainkit.log import SECURITY_LOGGER
 from domainkit.utils.module_loading import import_string
@@ -83,6 +89,8 @@ class AuthenticationMiddleware:
         )
         self.held: OrderedDict[str, float] = OrderedDict()
         """Addresses over the limit, and until when (``monotonic()``)."""
+        # Event loops on several threads (free-threaded Python) share it.
+        self._holding = threading.Lock()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Authenticate, then serve the request as its user."""
@@ -106,12 +114,44 @@ class AuthenticationMiddleware:
             return
         scope["user"] = AnonymousUser() if credentials is None else credentials.user
         scope["auth"] = credentials
+        scope[REAUTHENTICATE] = self.reauthenticate
         context = current_request()
         if credentials is None or context is None:
             await self.app(scope, receive, send)
             return
         with bind_request(replace(context, actor=str(credentials.user.id))):
             await self.app(scope, receive, send)
+
+    async def reauthenticate(self, scope: Scope) -> bool:
+        """Whether the credentials of ``scope`` still hold, for the same user.
+
+        On success the user, with its groups and permissions, is loaded
+        afresh into the scope, for the access rules checked next. Why
+        credentials failed is logged, never told to the client.
+        """
+        before: Credentials | None = scope.get("auth")
+        try:
+            credentials = await self._authenticate(HTTPConnection(scope))
+        except _Refused as refused:
+            security_logger.warning(
+                "Credentials of an open connection no longer hold: %s",
+                refused.error.detail,
+            )
+            return False
+        if before is None and credentials is None:
+            return True
+        if (
+            before is None
+            or credentials is None
+            or credentials.user.id != before.user.id
+        ):
+            security_logger.warning(
+                "An open connection's credentials no longer name its user"
+            )
+            return False
+        scope["user"] = credentials.user
+        scope["auth"] = credentials
+        return True
 
     async def _authenticate(self, connection: HTTPConnection) -> Credentials | None:
         """The first class's verdict on the request's credentials."""
@@ -158,20 +198,22 @@ class AuthenticationMiddleware:
 
     def _hold(self, address: str, seconds: float) -> None:
         """Refuse ``address``'s credentials unread for ``seconds``."""
-        self.held[address] = monotonic() + seconds
-        self.held.move_to_end(address)
-        if len(self.held) > MAX_HELD:
-            self.held.popitem(last=False)
+        with self._holding:
+            self.held[address] = monotonic() + seconds
+            self.held.move_to_end(address)
+            if len(self.held) > MAX_HELD:
+                self.held.popitem(last=False)
 
     def _held(self, address: str) -> tuple[int, Decision] | None:
         """The limit and the refusal ``address`` is still held to, if any."""
-        until = self.held.get(address)
-        if until is None or self.rate is None:
-            return None
-        left = until - monotonic()
-        if left <= 0:
-            del self.held[address]
-            return None
+        with self._holding:
+            until = self.held.get(address)
+            if until is None or self.rate is None:
+                return None
+            left = until - monotonic()
+            if left <= 0:
+                del self.held[address]
+                return None
         refusal = Decision(
             allowed=False, remaining=0, reset_after=left, retry_after=left
         )

@@ -10,7 +10,11 @@ Hashing is slow on purpose. The ``a``-prefixed functions run it on the
 process's hashing threads (``AUTH.HASHING_THREADS``), so a login never blocks
 the event loop. At most ``AUTH.HASHING_QUEUE`` calls wait for a thread; more
 are refused at once with ``PasswordChecksBusy`` (503), so a flood of logins
-cannot pile up work the process will never finish.
+cannot pile up work the process will never finish. Its ``Retry-After`` grows
+with the queue, jittered, so refused clients do not all come back at once.
+A call holds its place until its hash is done, even if its caller gave up,
+and ``AUTH.HASHING_RESERVED`` places are kept for ``priority`` calls, such as
+signed-in users changing their password during a flood of logins.
 """
 
 import asyncio
@@ -20,6 +24,7 @@ import hmac
 import math
 import secrets
 import string
+import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -29,6 +34,7 @@ from typing import ClassVar, Final
 
 from fastapi import status
 
+from domainkit import clock
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import APIError
 from domainkit.utils.module_loading import import_string
@@ -337,71 +343,136 @@ def check_password(password: str, encoded: str | None) -> bool:
 class PasswordChecksBusy(APIError):
     """Every hashing thread is busy and the queue is full."""
 
-    def __init__(self) -> None:
-        """A 503 that asks the client to try again shortly."""
+    def __init__(self, retry_after: int = 1) -> None:
+        """A 503 that asks the client to try again in ``retry_after`` seconds."""
         super().__init__(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "Too many password checks at once; try again in a moment.",
             code="password_checks_busy",
-            headers={"Retry-After": "1"},
+            headers={"Retry-After": str(retry_after)},
         )
 
 
-class HashingPool:
-    """``threads`` threads that hash, and room for ``queue`` calls to wait."""
+FIRST_ESTIMATE: Final = 0.25
+"""Seconds a hash is guessed to take until the pool has timed one."""
+MAX_RETRY_AFTER: Final = 60
+"""The longest ``Retry-After`` a refusal asks for, in seconds."""
+_random = secrets.SystemRandom()
 
-    def __init__(self, threads: int, queue: int) -> None:
-        """Start the threads lazily, on the first call."""
+
+class HashingPool:
+    """``threads`` threads that hash, and room for ``queue`` calls to wait.
+
+    A call holds its place from when it is accepted until its hash is done:
+    a caller cancelled meanwhile frees nothing while a thread still works
+    for it, so the work in flight never exceeds ``threads + queue``. The
+    last ``reserved`` places take ``priority`` calls only.
+    """
+
+    def __init__(self, threads: int, queue: int, reserved: int = 0) -> None:
+        """Start the threads lazily, on the first call.
+
+        Raises:
+            ValueError: ``reserved`` is negative or more than ``queue``.
+        """
+        if not 0 <= reserved <= queue:
+            raise ValueError(f"reserved must be from 0 to queue ({queue}).")
+        self.threads = threads
         self.capacity = threads + queue
+        self.reserved = reserved
         self.pending = 0
-        """Calls running or waiting, in this process."""
+        """Calls accepted whose hash is not done, in this process."""
+        self.seconds_per_hash = FIRST_ESTIMATE
+        """A moving average of how long one hash takes."""
+        # Every change of ``pending`` and the estimate holds it: event loops on
+        # several threads (free-threaded Python) count in the same pool.
+        self._lock = threading.Lock()
         self._executor = ThreadPoolExecutor(
             max_workers=threads, thread_name_prefix="domainkit-hashing"
         )
 
-    async def run[T](self, function: Callable[..., T], *args: object) -> T:
+    async def run[T](
+        self, function: Callable[..., T], *args: object, priority: bool = False
+    ) -> T:
         """Call ``function(*args)`` on a hashing thread.
 
         Raises:
-            PasswordChecksBusy: ``threads + queue`` calls are already pending.
+            PasswordChecksBusy: Every place it may take is pending already:
+                ``threads + queue``, less ``reserved`` unless ``priority``.
         """
-        if self.pending >= self.capacity:
-            raise PasswordChecksBusy
-        self.pending += 1
+        limit = self.capacity if priority else self.capacity - self.reserved
+        with self._lock:
+            if self.pending >= limit:
+                raise PasswordChecksBusy(self.retry_after(self.pending))
+            self.pending += 1
         try:
-            loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(self._executor, partial(function, *args))
+            future = self._executor.submit(self._timed, partial(function, *args))
+        except BaseException:
+            self._release()
+            raise
+        future.add_done_callback(self._release)
+        return await asyncio.wrap_future(future)
+
+    def retry_after(self, pending: int) -> int:
+        """Seconds to ask a refused caller to wait: until ``pending`` hashes drain.
+
+        Jittered up to half again, so refused callers spread out; at least
+        1 and at most ``MAX_RETRY_AFTER``.
+        """
+        drain = pending * self.seconds_per_hash / self.threads
+        return min(MAX_RETRY_AFTER, max(1, math.ceil(drain * _random.uniform(1, 1.5))))
+
+    def _timed[T](self, call: Callable[[], T]) -> T:
+        """Run ``call`` on this thread, and fold its time into the average."""
+        started = clock.monotonic()
+        try:
+            return call()
         finally:
+            took = clock.monotonic() - started
+            with self._lock:
+                self.seconds_per_hash = 0.8 * self.seconds_per_hash + 0.2 * took
+
+    def _release(self, future: object = None) -> None:
+        """Give back a call's place, once its hash is done (or never started)."""
+        with self._lock:
             self.pending -= 1
 
 
 @cache
-def hashing_pool(threads: int, queue: int) -> HashingPool:
+def hashing_pool(threads: int, queue: int, reserved: int = 0) -> HashingPool:
     """The process's pool for these settings."""
-    return HashingPool(threads, queue)
+    return HashingPool(threads, queue, reserved)
 
 
 def _pool() -> HashingPool:
-    """The pool ``AUTH.HASHING_THREADS`` and ``AUTH.HASHING_QUEUE`` describe."""
+    """The pool ``AUTH.HASHING_THREADS``, ``_QUEUE``, and ``_RESERVED`` describe."""
     from .settings import auth_settings
 
     config = auth_settings()
-    return hashing_pool(config.HASHING_THREADS, config.HASHING_QUEUE)
+    reserved = min(config.HASHING_RESERVED, config.HASHING_QUEUE)
+    return hashing_pool(config.HASHING_THREADS, config.HASHING_QUEUE, reserved)
 
 
-async def amake_password(password: str) -> str:
-    """``make_password`` on a hashing thread; raises ``PasswordChecksBusy``."""
-    return await _pool().run(make_password, password)
+async def amake_password(password: str, *, priority: bool = False) -> str:
+    """``make_password`` on a hashing thread; raises ``PasswordChecksBusy``.
+
+    ``priority`` may take the places ``AUTH.HASHING_RESERVED`` keeps.
+    """
+    return await _pool().run(make_password, password, priority=priority)
 
 
-async def averify_password(password: str, encoded: str | None) -> PasswordCheck:
+async def averify_password(
+    password: str, encoded: str | None, *, priority: bool = False
+) -> PasswordCheck:
     """``verify_password`` on a hashing thread; raises ``PasswordChecksBusy``."""
-    return await _pool().run(verify_password, password, encoded)
+    return await _pool().run(verify_password, password, encoded, priority=priority)
 
 
-async def acheck_password(password: str, encoded: str | None) -> bool:
+async def acheck_password(
+    password: str, encoded: str | None, *, priority: bool = False
+) -> bool:
     """``check_password`` on a hashing thread; raises ``PasswordChecksBusy``."""
-    return (await averify_password(password, encoded)).correct
+    return (await averify_password(password, encoded, priority=priority)).correct
 
 
 def insecure_hashers(paths: Sequence[str]) -> list[str]:

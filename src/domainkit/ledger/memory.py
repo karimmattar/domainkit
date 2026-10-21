@@ -6,6 +6,7 @@ nothing is proven: deployments refuse it.
 
 from domainkit.ledger.base import (
     Ledger,
+    LedgerChanged,
     LedgerEntry,
     LedgerKeyExists,
     LedgerKeyNotFound,
@@ -21,8 +22,18 @@ class MemoryLedger(Ledger):
         self._revisions: dict[bytes, list[tuple[bytes, int]]] = {}
         self._transactions = 0
 
-    async def append(self, key: bytes, value: bytes) -> LedgerWrite:
-        """Store a new revision in its own transaction."""
+    async def append(
+        self, key: bytes, value: bytes, *, unchanged_since: int | None = None
+    ) -> LedgerWrite:
+        """Store a new revision in its own transaction.
+
+        Raises:
+            LedgerChanged: A revision came after ``unchanged_since``.
+        """
+        revisions = self._revisions.get(key, [])
+        latest = revisions[-1][1] if revisions else 0
+        if unchanged_since is not None and latest > unchanged_since:
+            raise LedgerChanged(f"{key!r} changed after {unchanged_since}.")
         self._transactions += 1
         self._revisions.setdefault(key, []).append((value, self._transactions))
         return LedgerWrite(key, self._transactions)

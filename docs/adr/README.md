@@ -48,3 +48,19 @@ accepted record: supersede it with a new one and link both ways.
 | [0039](0039-translate-messages-at-the-boundary.md) | Translate messages at the HTTP boundary, from gettext catalogs compiled in Python | Accepted |
 | [0040](0040-store-files-under-random-names.md) | Store files under random names; trust only their content | Accepted |
 | [0041](0041-privacy-through-personal-markers.md) | Answer privacy requests from Personal markers, through units of work | Accepted |
+| [0042](0042-lease-publications-and-break-the-circuit.md) | Lease publications, and stop publishing on commit while the broker fails | Accepted |
+| [0043](0043-the-outbox-database-decides-when-work-is-due.md) | Let the outbox's database decide when work is due, and wake workers | Accepted |
+| [0044](0044-one-concurrency-budget-per-worker-process.md) | Run one concurrency budget per worker process | Accepted |
+| [0045](0045-own-background-tasks-per-loop.md) | Own background tasks per event loop, started in clean contexts | Accepted |
+| [0046](0046-one-shutdown-budget-in-phases.md) | Shut down in phases within one budget | Accepted |
+| [0047](0047-seal-from-a-high-water-mark.md) | Seal the audit trail from a high-water mark, with a short late window | Accepted |
+| [0055](0055-bound-live-connections.md) | Bound every live connection: caps, a send queue, a message rate, and clocks | Accepted |
+| [0056](0056-reauthorize-open-connections.md) | Re-authorize open connections on a timer, and close them when that fails | Accepted |
+| [0057](0057-live-committed-events-in-process.md) | Stream committed events to clients in process, filtered per event by an access rule | Accepted |
+| [0051](0051-logs-and-error-reports-leave-the-loop.md) | Write logs and error reports from threads, dropping what does not fit | Accepted |
+| [0052](0052-keep-the-immudb-sdk-on-threads.md) | Keep immudb's SDK, on threads, rather than an async-native client | Accepted |
+| [0053](0053-stay-on-fastapi.md) | Stay on FastAPI and Starlette | Accepted |
+| [0054](0054-relationships-raise-instead-of-loading-lazily.md) | Make relationships raise instead of loading lazily | Accepted |
+| [0048](0048-request-deadlines.md) | Give every request a deadline, answer 503 when it passes, and pass it on | Accepted |
+| [0049](0049-shed-load-past-a-concurrency-cap.md) | Shed load in the application: a cap per event loop, a short queue, and a fast 503 | Accepted |
+| [0050](0050-outgoing-http-client.md) | Call other services through pooled clients that keep to the deadline | Accepted |

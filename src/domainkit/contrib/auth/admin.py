@@ -242,7 +242,7 @@ ONE: Final = (*COMMON, status.HTTP_404_NOT_FOUND)
 CHANGE: Final = (*ONE, status.HTTP_409_CONFLICT, status.HTTP_422_UNPROCESSABLE_CONTENT)
 
 
-def user_listing(
+async def user_listing(
     search: Annotated[
         str | None,
         Query(max_length=150, description="Part of the username, in any case."),
@@ -253,7 +253,7 @@ def user_listing(
     return Listing(name.icontains(search) if search else None, ordering=[name])
 
 
-def group_listing() -> Listing:
+async def group_listing() -> Listing:
     """Groups by name (unique)."""
     return GroupRepository.LISTING
 
@@ -385,7 +385,7 @@ async def set_password(
         await _may_change(actor, user)
         if body.password is not None:
             validate_password(body.password, user)
-        await uow.users.set_password(user, body.password)
+        await uow.users.set_password(user, body.password, priority=True)
         await uow.tokens.revoke_user(user.id)
         await uow.commit()
 

@@ -37,6 +37,7 @@ URLs; an unreadable port is refused without quoting the URL.
 | `BASE_DIR` | the project root | The directory holding `pyproject.toml`. |
 | `ENVIRONMENT` | `"local"` | `local`, `test`, `staging`, or `production`. Staging and production get the [deployment checks](#deployment-checks). |
 | `DEBUG` | `False` | Development conveniences; refused in staging and production. |
+| `SLOW_CALLBACK_DURATION` | `0.1` | With `DEBUG`, the application's loop runs in asyncio's debug mode and logs each step that holds it this many seconds or more ([runtime.md](runtime.md#finding-blocking-code)); `None` turns it off. |
 | `PROJECT_NAME` | `"API"` | The OpenAPI title. |
 | `VERSION` | `"0.1.0"` | The OpenAPI version. |
 | `SECRET_KEY` | `None` | Signs what the service hands out: reset links, cookies, MFA challenges ([Signing](#signing)). Required in staging and production, with 50 random characters or more; shown as `**********`. |
@@ -45,8 +46,11 @@ URLs; an unreadable port is refused without quoting the URL.
 | `MIDDLEWARE` | see [Middleware](#middleware) | ASGI middleware by dotted path, outermost first. |
 | `ROOT_ROUTER` | `None` | Dotted path to the `APIRouter` that mounts every route (Django's `ROOT_URLCONF`). |
 | `ASGI_APPLICATION` | `None` | `module:attribute` that `runserver` serves. |
-| `LOGGING` | minimal | A `logging.config.dictConfig` mapping, applied by `setup()`. |
-| `ERROR_REPORTERS` | `()` | Callables `(exc, context) -> None` by dotted path, called for every unexpected error (500s, dead-lettered messages). A reporter that raises is logged and skipped. |
+| `EVENT_LOOP` | `"auto"` | The event loop of `runserver` and of commands with an `async` handle (`runworker` among them): uvloop when the `uvloop` extra is installed (`auto`), always asyncio's own (`asyncio`), or uvloop or a configuration error (`uvloop`). |
+| `LOGGING` | minimal | A `logging.config.dictConfig` mapping, applied by `setup()`. `domainkit.log.build_logging_config(log_format="json", level="INFO")` makes one that writes from a thread, through a bounded queue ([runtime.md](runtime.md#logging-and-error-reports)); the settings `init` writes use it. |
+| `ERROR_REPORTERS` | `()` | Callables `(exc, context) -> None` by dotted path, called for every unexpected error (500s, dead-lettered messages), on a reporting thread and in the caller's context; 100 reports may wait, and more are dropped and counted. A reporter that raises is logged and skipped. |
+| `EVENT_HANDLER_TIMEOUT` | `10.0` | Seconds an in-process event handler may run after a commit, up to 3600; one still running then is cancelled, logged, and reported (`HandlerTimedOut`), and the request goes on. `event_bus.subscribe(..., timeout=30)` sets one handler's limit; `durable=True` runs a handler from the outbox instead ([runtime.md](runtime.md#event-handlers)). |
+| `SHUTDOWN_TIMEOUT` | `15.0` | Seconds a shutdown may take in all, from 0 to 300: domain hooks, work in flight, background tasks, then connections, each phase within its share ([runtime.md](runtime.md#shutting-down-within-a-budget)). Add the server's graceful shutdown (`uvicorn --timeout-graceful-shutdown 10`) and keep the sum under the orchestrator's grace period: 30 s in Kubernetes. |
 
 ### Databases and migrations
 
@@ -70,14 +74,17 @@ Each `DATABASES` entry:
 | `LOG_PARAMETERS` | `False` | Show bound values in logs and errors; refused in staging and production. Without it, the `DETAIL` PostgreSQL adds to constraint errors (`Failing row contains (...)`, which repeats the row's values) is dropped too. |
 | `SSLMODE` | `None` | libpq names: `disable`, `require`, `verify-ca`, `verify-full`. Staging and production need `verify-full` for network databases. |
 | `SSLROOTCERT`, `SSLCERT`, `SSLKEY` | `None` | CA bundle, and client certificate and key for mutual TLS. |
-| `STATEMENT_TIMEOUT` | `30.0` | Seconds; PostgreSQL cancels longer statements. Migrations are exempt. |
+| `STATEMENT_TIMEOUT` | `30.0` | Seconds; PostgreSQL cancels longer statements. Migrations are exempt. This and the four timeouts below are at most 2147483.647 seconds (24.8 days), the longest PostgreSQL takes; a transaction's `statement_timeout` from a longer deadline asks for that much. |
 | `LOCK_TIMEOUT` | `10.0` | Seconds a statement waits for a lock. Migrations are exempt. |
 | `IDLE_IN_TRANSACTION_TIMEOUT` | `60.0` | Seconds before PostgreSQL ends a session idling inside a transaction. |
+| `CONNECT_TIMEOUT` | `10.0` | Seconds to open a connection (asyncpg's `timeout`; libpq's `connect_timeout`, in whole seconds), migrations included. A request that needs a new connection waits this long at most, after its `POOL_TIMEOUT`. |
+| `COMMAND_TIMEOUT` | `STATEMENT_TIMEOUT` plus 5 | Seconds asyncpg waits for one statement before giving up on it (a network or server that stopped answering). Longer than `STATEMENT_TIMEOUT`, so the server ends a slow statement first, with an error that keeps the connection. None without `STATEMENT_TIMEOUT`; migrations are exempt. |
+| `PGBOUNCER` | `False` | The database is reached through PgBouncer's transaction pooling: no statement cache, a unique name for every prepared statement, and the timeouts above set in each transaction (`SET LOCAL`) rather than for the session. PostgreSQL URLs only ([runtime.md](runtime.md#database-timeouts-and-pgbouncer)). |
 | `POOL_SIZE`, `MAX_OVERFLOW`, `POOL_RECYCLE` | SQLAlchemy's | Connection pool sizing. |
 | `POOL_TIMEOUT` | `10.0` for network databases, else SQLAlchemy's | Seconds a request waits for a connection; past it the request gets 503 `database_busy`. |
 | `POOL_PRE_PING` | `True` | Test connections before use, so database restarts are survived. |
 | `TEST_NAME` | `None` | The PostgreSQL database `domainkit.testing` creates for the tests, and drops after them; `test_<name>` when unset. It must start with `test_` ([docs/testing.md](testing.md)). |
-| `CONNECT_ARGS` | `{}` | Extra driver arguments, added to those derived from the options above. asyncpg's `server_settings` and libpq's `options` are merged with the timeouts. Setting what the options above already set (TLS, a timeout) is refused when the application is built, however the server setting is spelled (`STATEMENT_TIMEOUT`, `--statement-timeout=`); change that option instead. |
+| `CONNECT_ARGS` | `{}` | Extra driver arguments, added to those derived from the options above. asyncpg's `server_settings` and libpq's `options` are merged with the timeouts. Setting what the options above already set (TLS, a timeout, PgBouncer's statement cache) is refused when the application is built, however the server setting is spelled (`STATEMENT_TIMEOUT`, `--statement-timeout=`); change that option instead. `timeout`, `command_timeout`, and `connect_timeout` still replace `CONNECT_TIMEOUT` and `COMMAND_TIMEOUT`, with a `DomainkitDeprecationWarning`; they are refused from 0.9. |
 | `REPLICAS` | `()` | Aliases of read replicas of this database; read-only units of work take turns on them ([databases.md](databases.md#read-replicas)). Each is an alias of its own, other than `default`, of one primary, outside every shard group, with no replicas of its own, and never a routing target. |
 
 Each `LEDGERS` entry:
@@ -158,8 +165,8 @@ Each `BROKERS` entry:
 | `PREFIX` | required for RabbitMQ | Starts every exchange and queue name (`[A-Za-z0-9_.-]`, up to 64): `<PREFIX>.work`, `<PREFIX>.<queue>`. Unique among the services sharing a virtual host. |
 | `TLS_CA` | system CAs | CA bundle that signed the server's certificate (`amqps://` only). |
 | `TLS_CERT`, `TLS_KEY` | `None` | Client certificate and key for mutual TLS (`amqps://` only). |
-| `CONNECT_TIMEOUT` | `10.0` | Seconds to connect. |
-| `PUBLISH_TIMEOUT` | `10.0` | Seconds to wait for the broker to confirm a published message. |
+| `CONNECT_TIMEOUT` | `10.0` | Seconds to connect; also the deadline of opening channels, declaring, binding, setting the prefetch, and starting or stopping consumers. |
+| `PUBLISH_TIMEOUT` | `10.0` | Seconds to wait for the broker to confirm a published message. Relays lock a message for this, `CONNECT_TIMEOUT`, and five seconds while they publish it. |
 
 ### HTTP
 
@@ -171,7 +178,14 @@ Each `BROKERS` entry:
 | `ERROR_FORMAT` | `"domainkit"` | `"problem+json"`: errors are RFC 9457 problem details (see [Errors](#errors)). |
 | `ERROR_TYPE_BASE_URL` | `None` | With problem details, each code's `type` is this absolute URL plus the code (`https://errors.example.com/` gives `https://errors.example.com/not_found`); unset, it is `about:blank`. |
 | `MAX_REQUEST_BODY_SIZE` | `1048576` | Bytes; larger bodies get 413, whether declared or streamed. A larger WebSocket message, text counted in UTF-8 bytes, closes the connection with 1009. |
-| `READINESS_TIMEOUT` | `5.0` | Seconds each readiness check may take. |
+| `REQUEST_BODY_TIMEOUT` | `10.0` | Seconds (at most 3600) the application may wait for a request's body, all its chunks together (`RequestBodyLimitMiddleware`); past it the request is answered 408 `request_timeout` and the connection closed. Time spent working between chunks, or after the response starts, does not count. |
+| `REQUEST_TIMEOUT` | `30.0` | Seconds (at most 3600) an HTTP request may take until its response starts (`DeadlineMiddleware`); past it the work is cancelled and answered 503 `deadline_exceeded`. A route sets its own with `RequestTimeout`. `None`: no deadline ([runtime.md](runtime.md#request-deadlines)). |
+| `MAX_CONCURRENT_REQUESTS` | `1000` | HTTP requests each event loop works on at once (`ConcurrencyLimitMiddleware`), at most 100,000; a request waiting for its body is not counted meanwhile. `None`: no cap ([runtime.md](runtime.md#load-shedding)). |
+| `MAX_QUEUED_REQUESTS` | `100` | Requests past the cap that may wait for a slot (at most 100,000); the next are answered 503 `overloaded` at once. |
+| `REQUEST_QUEUE_TIMEOUT` | `1.0` | Seconds (at most 60) a request past the cap waits for a slot before it is answered 503 `overloaded`. |
+| `CONCURRENCY_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths never counted against the cap, so probes and scrapes are never refused; compared without the root path the application is mounted at (`--root-path`). |
+| `HTTP_CLIENT` | see [Outgoing HTTP calls](#outgoing-http-calls) | Defaults of outgoing calls through `domainkit.http.client`. |
+| `READINESS_TIMEOUT` | `5.0` | Seconds each readiness check may take (at most 60). |
 | `READINESS_CACHE_SECONDS` | `1.0` | How long a `/ready` result is reused, from when its checks ended; probes that come while checks run wait for them, so probe floods cannot load the database. |
 | `READINESS_DETAILS` | `False` | Name failing components in `/ready` responses (always logged). |
 | `ACCESS_LOG_QUIET_PATHS` | `/health`, `/ready` | Successful requests to these paths are logged at DEBUG. |
@@ -192,6 +206,27 @@ Each `BROKERS` entry:
 | `CORS_ALLOWED_HEADERS` | `Authorization Content-Type X-Request-ID` | |
 | `CORS_ALLOW_CREDENTIALS` | `False` | Cannot be combined with origin `*`. |
 
+### Outgoing HTTP calls
+
+`HTTP_CLIENT` keys: the defaults of every `domainkit.http.client.HttpClient`
+(the `httpclient` extra), which may change its own timeout and retries. See
+[runtime.md](runtime.md#outgoing-http-calls).
+
+| `HTTP_CLIENT` key | Default | Meaning |
+| --- | --- | --- |
+| `TIMEOUT` | `10.0` | Seconds (at most 3600) one call may take, its retries included, and never past the deadline of the work it serves. |
+| `CONNECT_TIMEOUT` | `5.0` | Seconds to open a connection. |
+| `RETRIES` | `2` | Retries (0 to 10) of a call that failed in a way worth trying again. |
+| `BACKOFF` | `0.1` | Seconds before the first retry; the bound doubles for each next one, and the wait is random below it. |
+| `MAX_BACKOFF` | `2.0` | The longest wait before a retry (at most 600 seconds); a longer `Retry-After` ends the retries. |
+| `BREAKER_FAILURES` | `5` | Failures in a row that open a host's circuit: its calls then fail at once with `CircuitOpen`. |
+| `BREAKER_COOLDOWN` | `30.0` | Seconds (at most 3600) a host's circuit stays open; then one call at a time tries it. A client made with `breaker=False` keeps no circuits. |
+| `MAX_CONNECTIONS` | `100` | Connections per client and event loop. |
+| `MAX_KEEPALIVE_CONNECTIONS` | `20` | Idle connections each client keeps for the next calls. |
+| `MAX_RESPONSE_BYTES` | `10485760` | The largest answer read (at most 1 GiB), counted after decompression; a longer one raises `ResponseTooLarge`. |
+| `USER_AGENT` | `"domainkit"` | The `User-Agent` of every call (printable ASCII). |
+| `CA_BUNDLE` | `None` | CA certificates of the servers called; the system's (or httpx2's) when unset. Guarded clients never trust the CAs `SSL_CERT_FILE` or `SSL_CERT_DIR` name, unless listed here. |
+
 ### Languages and time zones
 
 See [i18n.md](i18n.md).
@@ -205,25 +240,124 @@ See [i18n.md](i18n.md).
 
 ### Server limits
 
-The application limits bodies, WebSocket messages, and request rates. Slow
-and oversized requests are the server's to stop, before the application
-sees them. Run uvicorn behind a reverse proxy or load balancer that limits
-header size and the time to send headers and body (nginx:
+The application limits bodies, WebSocket messages, request rates, how long
+a request may take (`REQUEST_TIMEOUT`), and how many it works on at once
+(`MAX_CONCURRENT_REQUESTS`). Slow and oversized requests are the server's
+to stop, before the application sees them. Run the server behind a reverse
+proxy or load balancer that limits header size and the time to send
+headers and body (nginx:
 `large_client_header_buffers`, `client_header_timeout`,
-`client_body_timeout`), and set uvicorn's own limits:
+`client_body_timeout`), and set the server's own limits. domainkit runs on
+[uvicorn](https://www.uvicorn.org/) or [Granian](https://github.com/emmett-framework/granian)
+(`pip install 'domainkit[granian]'`); [runtime.md](runtime.md#servers)
+compares them.
+
+uvicorn, one process per core:
 
 ```bash
-uvicorn config.asgi:application --limit-concurrency 200 --timeout-keep-alive 5 \
+uvicorn config.asgi:application --workers 4 --loop uvloop \
+  --limit-concurrency 1200 --backlog 2048 --timeout-keep-alive 5 \
+  --timeout-graceful-shutdown 10 \
   --h11-max-incomplete-event-size 16384 --ws-max-size 1048576 \
   --no-proxy-headers --no-server-header
 ```
 
+Granian, the same:
+
+```bash
+granian --interface asgi config.asgi:application --host 0.0.0.0 --port 8000 \
+  --workers 4 --loop uvloop --backpressure 1200 --backlog 2048 \
+  --http1-header-read-timeout 5000 --workers-kill-timeout 10 \
+  --respawn-failed-workers --no-ws
+```
+
+| Concern | uvicorn | Granian |
+| --- | --- | --- |
+| Requests at once, per process | `--limit-concurrency` (more get 503) | `--backpressure` |
+| Idle keep-alive connections | `--timeout-keep-alive` seconds | `--http1-keep-alive` / `--no-http1-keep-alive` |
+| Slow headers | the proxy | `--http1-header-read-timeout` milliseconds |
+| Request line and headers | `--h11-max-incomplete-event-size` (16 KiB) | `--http1-buffer-size` |
+| WebSocket message | `--ws-max-size` bytes (16 MiB unless set) | no setting: `--no-ws` if unused, else the proxy |
+| Graceful shutdown | `--timeout-graceful-shutdown` seconds, then open connections are closed | `--workers-kill-timeout` seconds, then workers are killed |
+
+Keep the shutdown timeout below the orchestrator's grace period (30
+seconds on Kubernetes) less the time the application takes to close its
+resources, so a stop never ends in `SIGKILL`.
+
+Keep `--limit-concurrency` (Granian: `--backpressure`) above
+`MAX_CONCURRENT_REQUESTS` plus `MAX_QUEUED_REQUESTS`, and the WebSockets
+you expect: it is the backstop.
+
+A request whose body is slow to arrive holds no slot of
+`MAX_CONCURRENT_REQUESTS` while it waits, and is answered 408 after
+`REQUEST_BODY_TIMEOUT`; but it still holds a connection, the server's
+place in `--limit-concurrency`, and what it has sent so far. A buffering
+proxy in front is still recommended: nginx reads the whole body before it
+passes the request on (`proxy_request_buffering on`, its default), within
+`client_body_timeout` and `client_max_body_size`, so slow clients cost
+the proxy, not the application.
+The application refuses first, with a JSON 503 and `Retry-After`, and never
+refuses the probes in `CONCURRENCY_EXEMPT_PATHS`; uvicorn's 503 is plain, and
+refuses probes too. Keep `REQUEST_TIMEOUT` below the load balancer's idle
+timeout (60 seconds on most), so a slow request gets the application's 503,
+not a 504 from the balancer.
+
 `--ws-max-size` stops a WebSocket message before it is read whole;
 `MAX_REQUEST_BODY_SIZE` then closes the connection on one that got through.
+`check` warns, in staging and production, when an application that serves
+WebSockets runs under a server that reads messages larger than
+`MAX_REQUEST_BODY_SIZE`: uvicorn without
+`--ws-max-size` (or with a larger one), or Granian with WebSockets on. It
+reads the server's environment variables (`UVICORN_WS_MAX_SIZE`,
+`GRANIAN_WEBSOCKETS`, which both servers accept in place of options, and
+`GUNICORN_CMD_ARGS`); a deployed application logs the same warning when it
+starts, from the server's own command line. A value it cannot read is
+taken as unknown, and never stops the application or `check`.
+
+uvicorn started by gunicorn (`-k uvicorn.workers.UvicornWorker`, or
+`uvicorn_worker.UvicornWorker` from the `uvicorn-worker` package) or by
+`fastapi run` reads neither `--ws-max-size` nor `UVICORN_WS_MAX_SIZE`: it
+always reads messages of up to 16 MiB, and `check` warns about it. Under
+gunicorn, give a worker class of your own the limit, and start gunicorn
+with `-k config.workers.LimitedWorker`:
+
+```python
+from uvicorn_worker import UvicornWorker
+
+
+class LimitedWorker(UvicornWorker):
+    CONFIG_KWARGS = {**UvicornWorker.CONFIG_KWARGS, "ws_max_size": 1_048_576}
+```
+
+`check` does not look inside such a class, so it says nothing about it. For
+`fastapi run`, run uvicorn itself. Hypercorn, which reads up to 16 MiB as
+well (`websocket_max_message_size`, in its configuration file), and
+gunicorn with a worker class named only in its configuration file, are not
+recognised: `check` says nothing about them, so set their limits yourself.
+
 `--no-proxy-headers` leaves `X-Forwarded-*` to `TRUSTED_PROXIES`: uvicorn
 otherwise reads them itself, from `127.0.0.1` or from whatever
 `FORWARDED_ALLOW_IPS` allows (`*` lets any client choose its address, and
-so its rate limit and login throttle). `runserver` runs this way.
+so its rate limit and login throttle). Granian reads none. `runserver`
+runs this way, with either server.
+
+### Live connections
+
+WebSockets and Server-Sent Events streams are capped, queued, timed, and
+re-authorized while they stay open; see [live.md](live.md).
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `LIVE_MAX_CONNECTIONS` | `1000` | Open WebSockets and event streams per process; one more is refused with 503 and `Retry-After` (a WebSocket where the server cannot answer a handshake with a status: a 1013 close). |
+| `LIVE_MAX_CONNECTIONS_PER_CALLER` | `10` | The same per user, or per address for anonymous callers (IPv6 per `RATE_LIMIT_IPV6_PREFIX` network). At most `LIVE_MAX_CONNECTIONS`. |
+| `LIVE_SEND_QUEUE` | `64` | Messages or events that may wait for one client (1 to 10,000); a sender waits while they do. Live events count only those the client may see; 16 times as many may wait for its rule ([live.md](live.md#live-committed-events)). |
+| `LIVE_SEND_TIMEOUT` | `10.0` | Seconds one message may take to reach the client; a slower client is closed (1013). |
+| `LIVE_REAUTH_INTERVAL` | `60.0` | Seconds between re-checks of an open connection's credentials and its route's rules (each between three quarters of it and all of it; at most 3,600); closed with 1008 when they fail. `None` turns them off; `check` warns about that in staging and production. What re-checks cannot do: [live.md](live.md#what-re-checks-cannot-do). |
+| `WEBSOCKET_IDLE_TIMEOUT` | `300.0` | Seconds without a message either way before a WebSocket is closed (1001). |
+| `WEBSOCKET_MAX_LIFETIME` | `3600.0` | Seconds a WebSocket may stay open (1001). |
+| `WEBSOCKET_MESSAGE_RATE` | `"20/second"` | Messages a client may send per connection, counted in the process; one more closes it (1008). `None`: any. |
+| `SSE_KEEPALIVE` | `15.0` | Seconds without an event before an event stream sends a keep-alive comment. |
+| `SSE_MAX_LIFETIME` | `3600.0` | Seconds an event stream may stay open. |
 
 ### Debug toolbar
 
@@ -300,10 +434,22 @@ passes, so an API that is public on purpose can keep them:
 - no `RATE_LIMIT`, or `RateLimitMiddleware` missing from `MIDDLEWARE`
 - a rate limit with no `TRUSTED_PROXIES`: behind a load balancer, every
   caller would share its address and its count
+- no `REQUEST_TIMEOUT`, or `DeadlineMiddleware` missing from `MIDDLEWARE`;
+  no `MAX_CONCURRENT_REQUESTS`, or `ConcurrencyLimitMiddleware` missing
+- a database that seems to go through PgBouncer (port 6432, or a statement
+  cache turned off in `CONNECT_ARGS`) without `PGBOUNCER = True`
 - auth: `AUTH.LOGIN_RATE` or `AUTH.MFA.RATE` set to `None` (guesses
   without limit), and a session or CSRF cookie name without the `__Host-`
   prefix where the prefix could hold
   ([auth.md](auth.md#browser-sessions-in-cookies))
+- `LIVE_REAUTH_INTERVAL = None`: open WebSockets and event streams keep a
+  revoked token
+- an application that serves WebSockets under a server that reads larger
+  messages than `MAX_REQUEST_BODY_SIZE` (from `UVICORN_WS_MAX_SIZE` or
+  `GUNICORN_CMD_ARGS`; a deployed application also logs it at start), or
+  without
+  `WebSocketLimitsMiddleware`
+  ([live.md](live.md#message-size))
 
 The production settings that `init` create avoid the first three, and ask
 for `TRUSTED_PROXIES`: leave it empty only when callers connect directly.
@@ -321,10 +467,13 @@ first:
 | `domainkit.http.locale.LocaleMiddleware` | Picks the request's language from `Accept-Language`, before anything below answers, so their errors are translated; adds `Content-Language` and `Vary: Accept-Language` ([i18n.md](i18n.md)). |
 | `domainkit.http.middleware.CORSMiddleware` | Answers preflights before any work. |
 | `domainkit.http.middleware.RequestContextMiddleware` | Request id (`X-Request-ID`), access log, the context that logs and audit rows read. WebSocket connections get one too: method `WS`, the request id sent with the accept, one access log line when the connection ends (101 if accepted, 403 if closed first). |
+| `domainkit.http.deadlines.DeadlineMiddleware` | Starts the request's deadline (`REQUEST_TIMEOUT`) before any work, and answers 503 `deadline_exceeded` when it passes; lifted once the response starts ([runtime.md](runtime.md#request-deadlines)). |
+| `domainkit.http.shedding.ConcurrencyLimitMiddleware` | Sheds requests past `MAX_CONCURRENT_REQUESTS` with 503 `overloaded`, before authentication looks anything up; never the probes ([runtime.md](runtime.md#load-shedding)). |
 | `domainkit.http.middleware.AllowedHostsMiddleware` | Refuses unknown `Host` headers with 400. |
 | `domainkit.contrib.auth.middleware.AuthenticationMiddleware` | Finds the user from the request's token and makes it the actor, so what follows counts users (auth; see [auth.md](auth.md)). |
 | `domainkit.http.ratelimit.RateLimitMiddleware` | Counts per actor, or per client address (IPv6: per /64). A WebSocket handshake counts once; over the limit it gets the 429, or a 1013 close where the server cannot send one. |
-| `domainkit.http.middleware.RequestBodyLimitMiddleware` | Refuses bodies over `MAX_REQUEST_BODY_SIZE` with 413, and closes WebSockets with 1009 on a larger message. |
+| `domainkit.http.websockets.WebSocketLimitsMiddleware` | Caps open WebSockets per process and per caller, queues what they send, limits their messages, closes idle and old ones, and re-checks their credentials and rules ([live.md](live.md)). After the two above, so it counts users and only handshakes the rate limit let through. |
+| `domainkit.http.middleware.RequestBodyLimitMiddleware` | Refuses bodies over `MAX_REQUEST_BODY_SIZE` with 413, and bodies slower than `REQUEST_BODY_TIMEOUT` with 408; closes WebSockets with 1009 on a larger message. |
 | `domainkit.contrib.idempotency.middleware.IdempotencyMiddleware` | Last: reads whole bodies, which the limit above has already bounded. |
 | `domainkit.debug.DebugToolbarMiddleware` | Development only: times each request's SQL, from where it is listed inwards (see [Debug toolbar](#debug-toolbar)). |
 
@@ -333,8 +482,8 @@ innermost, that adds the headers of [deprecated
 routes](#versions-and-deprecations).
 
 `DEFAULT_MIDDLEWARE` (proxy headers, security headers, request context,
-allowed hosts, body limit) applies when a settings module sets no
-`MIDDLEWARE`.
+deadlines, the concurrency cap, allowed hosts, WebSocket limits, body
+limit) applies when a settings module sets no `MIDDLEWARE`.
 
 ## Signing
 
@@ -444,6 +593,10 @@ See ADR 0032.
 | a NOT NULL column (23502) | 422 | `missing_value`, with the field in `errors` |
 | a CHECK constraint (23514) | 422 | `check_violation`, with the fields of the columns it names |
 | a unique constraint outside a unit of work (23505) | 409 | as `DuplicateValue` |
+| a request past its deadline (`REQUEST_TIMEOUT`, or the route's `RequestTimeout`) | 503 | `deadline_exceeded`, with `Retry-After: 1`; logged once, as a warning |
+| no slot under `MAX_CONCURRENT_REQUESTS`: the queue was full, or the wait ran out, for a new request or for the next chunk of a body it waited for | 503 | `overloaded`, with `Retry-After: 1`; warned about at most every 10 seconds |
+| a request body that took longer than `REQUEST_BODY_TIMEOUT` to arrive | 408 | `request_timeout`, with `Connection: close`; logged as a security event |
+| a URL a guarded `HttpClient` may not call, or one that leaves a client's base URL | 422 | `unsafe_url` ([runtime.md](runtime.md#outgoing-http-calls)) |
 | unexpected exception | 500 | `internal_error`; logged and sent to `ERROR_REPORTERS` |
 
 WebSockets the database refuses are closed with 1013 (busy) or 1007 (a
@@ -524,6 +677,9 @@ Times need a time zone; a date means midnight UTC.
 
 **Logs** are JSON lines with `request_id`, and with `trace_id` and `span_id`
 when a span is active. Query strings and bound SQL values are never logged.
+They are written by a thread, never by the event loop; a burst past the
+queue's 10,000 records is dropped and counted, never waited for
+([runtime.md](runtime.md#logging-and-error-reports)).
 
 **Metrics** (`domainkit[metrics]`, mounted at `/metrics`):
 
@@ -533,6 +689,10 @@ when a span is active. Query strings and bound SQL values are never logged.
 | `http_request_duration_seconds` | `method`, `route` |
 | `http_requests_in_progress` | `method` |
 | `db_pool_connections` | `database`, `state` |
+| `http_requests_admitted` | (requests holding a slot under `MAX_CONCURRENT_REQUESTS`) |
+| `http_requests_queued` | (requests waiting for a slot) |
+| `http_requests_shed_total` | `reason` (`queue_full`, `queue_timeout`) |
+| `http_request_deadlines_exceeded_total` | |
 | `messaging_messages_total` | `kind`, `outcome` |
 | `messaging_message_duration_seconds` | `kind` |
 | `messaging_outbox_messages` | `status` |
@@ -568,8 +728,9 @@ It selects the test settings, never reads `.env`, and refuses settings whose
 application to sync and async tests (`client`, `client_for`, `admin_client`,
 `async_client`, `async_client_for`, `async_admin_client`). It also brings
 factories, a clock to freeze (`freeze_time`), and query-count assertions
-(`assert_num_queries`, `assert_max_queries`). [docs/testing.md](testing.md)
-covers them all.
+(`assert_num_queries`, `assert_max_queries`). `--detect-blocking` fails
+tests that hold their event loop. [docs/testing.md](testing.md) covers them
+all.
 
 Fixtures for published events and queued work (`captured_events`,
 `outbox`, `execute_deferred`) come with messaging's own plugin
@@ -584,7 +745,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | Command | Options | Purpose |
 | --- | --- | --- |
 | `init` | `name`, `[directory]` | Create a project: base, local, test, and production settings, routes, `manage.py`, `.env`, and a first test. The name sets the environment prefix; the directory (default `./<name>`) must be empty or missing. |
-| `check` | | Settings, domains, routes and their access rules, middleware, layer rules, and a single migration head. In staging and production it also lists [weak choices](#deployment-checks) as warnings. |
+| `check` | | Settings, domains, routes and their access rules, middleware, layer rules, and a single migration head. It warns about route handlers and dependencies of the installed domains written as `def`, which run on FastAPI's thread pool ([runtime.md](runtime.md#finding-blocking-code)); in staging and production it also lists [weak choices](#deployment-checks) as warnings. |
 | `broker` | `check\|declare`, `[ALIAS ...]` | Connect to brokers (all by default), or declare the exchange and every queue the worker's tasks use on `MESSAGING.BROKER`. |
 | `compilemessages` | `[DIRECTORY ...]`, `-l/--locale`, `--check` | Compile translation catalogs (`.po`) to `.mo` files: in the directories named, or in `LOCALE_PATHS` and each installed domain's `locale` directory. `--check` writes nothing and fails if one is missing or out of date ([i18n.md](i18n.md)). |
 | `cache` | `check\|clear`, `[ALIAS ...]`, `--all` | Ping caches (all by default), or delete every key of the named caches, all versions, in their namespace only. Clearing needs aliases or `--all`. |
@@ -598,7 +759,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `squashmigrations` | `[end]`, `--start`, `--database`, `-m/--message` | Replace a target's revisions, `--start` (default: the first) to `end` (default: the head), with one; see [Squashing migrations](#squashing-migrations). |
 | `showmigrations` | `--database` | Applied and pending revisions; a shard group lists each database. |
 | `partitions` | `--database`, `--prune`, `--dry-run` | Create the current and upcoming partitions of partitioned tables; `--prune` drops those past `retain`. |
-| `runserver` | `[addr:port]`, `--noreload` | Development server. Production runs uvicorn directly. |
+| `runserver` | `[addr:port]`, `--noreload`, `--server uvicorn\|granian` | Development server, on uvicorn or Granian (the `granian` extra). Production runs the server directly ([Server limits](#server-limits)). |
 | `shell` | `-c/--command`, `--no-imports` | An asyncio Python console, where `await` works at the top level, with settings, the registry, connections, `asyncio`, and every installed domain's models, repositories, and units of work by name (unless `--no-imports`). `-c` runs code and exits. |
 | `dbshell` | `--database`, `--owner`, `--allow-production`, `-- [ARG ...]` | Open `psql` or `sqlite3` on an alias, as its `URL`'s user (`--owner`: `MIGRATION_URL`'s). The connection and password reach `psql` in libpq's environment variables, never on its command line; TLS follows `SSLMODE` and its files. Production refuses without `--allow-production`. Arguments after `--` go to the client. |
 | `diffsettings` | `--all` | The settings that differ from the defaults; `--all` lists every one, defaults marked `###`. Secrets stay hidden as in `repr(settings)`, and so do entries of free-form settings named like secrets (`password`, `token`, `key`, ...) and passwords in URLs. |
@@ -607,11 +768,11 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `flush` | `--database`, `--dry-run`, `--force` | Delete every row but the audit trail's, saying first what goes, then rerun the `migrated` hooks (content types, permissions). Staging and production refuse without `--force`. |
 | `seed` | `[LABEL ...]` | Run installed domains' `DomainConfig.seed` hooks, in `INSTALLED_DOMAINS` order. |
 | `openapi` | `--output`, `--indent`, `--diff OLD` | Print or write the OpenAPI schema; `--diff` lists breaking changes since `OLD` and exits 1 if any (see [The API surface](#the-api-surface)). |
-| `runworker` | `--once`, `--metrics-port`, `--metrics-address`, `--database`, `--queue`, `--no-relay` | Run outbox messages (messaging): one worker per outbox, every hosting database by default; `--queue` (repeatable) limits them to some queues. With `MESSAGING.BROKER`, relay to the broker and run what it delivers; `--no-relay` only consumes. `--once` always works from the outbox. |
+| `runworker` | `--once`, `--metrics-port`, `--metrics-address`, `--database`, `--queue`, `--no-relay` | Run outbox messages (messaging): one worker per outbox, every hosting database by default; `--queue` (repeatable) limits them to some queues. With `MESSAGING.BROKER`, relay to the broker and run what it delivers; `--no-relay` only consumes. `--once` always works from the outbox. Whatever it serves, the process runs at most `MESSAGING.CONCURRENCY` messages at once. |
 | `messages` | `--pending\|--locked\|--dead`, `--queue`, `--limit`, `--retry ID\|all`, `--cancel ID`, `--database` | Count an outbox's messages and show each queue's lag, list them, requeue dead letters, or cancel a message no worker runs (messaging). |
 | `webhooks` | `subscriptions\|deliveries\|replay`, `[ID ...]`, `--failed`, `--status`, `--subscription`, `--limit` | List webhook subscriptions or deliveries, or send finished deliveries again (webhooks). |
 | `auditlog` | `--actor`, `--action`, `--limit`, `--database`, `--target`, `--aggregate FIELD=ID` | Read the audit trail, or one record's history with what each entry changed (audit; see [contrib.md](contrib.md#history)). |
-| `auditseal` | | Seal new audit rows into each database's hash chain and anchor its head on `AUDIT.LEDGER` (audit). |
+| `auditseal` | `--late` | Seal new audit rows into each database's hash chain and anchor its head on `AUDIT.LEDGER`; `--late` also seals rows that committed later than `AUDIT.SEAL_LATE_WINDOW`, flagged as sealed late (audit). |
 | `auditverify` | `--database` | Check the audit trail against its seals and anchors; fails if anything changed (audit). |
 | `auditforget` | `subject ...`, `--anonymous-days` | Make people's pseudonyms in the audit trail unlinkable, in every audited database (audit). |
 | `privacy` | `export --subject ID [--output FILE]`, `erase --subject ID [--reason] [--noinput]`, `purge [--dry-run]` | Export or erase what every installed domain holds about a person, from `Personal` markers on aggregates, or apply the domains' retention policies; each is audited (privacy; see [privacy.md](privacy.md)). |

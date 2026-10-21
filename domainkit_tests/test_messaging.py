@@ -66,6 +66,7 @@ from domainkit.db import connections
 from domainkit.ddd import DomainEvent, event_bus
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import CommandError, call_command
+from domainkit.reporting import flush_reports
 from domainkit_tests.sample_domains.alpha.events import GreetingSent
 from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork, NoteWritten, notes
 
@@ -256,6 +257,7 @@ async def test_failures_retry_then_dead_letter(
     assert [(r.getMessage(), bool(r.exc_info)) for r in dead] == [
         ("Dead-lettered task tests.always_fails after 3 attempts", True)
     ]
+    flush_reports()  # Reporters run on their own thread.
     assert reported == [
         ("still broken", {"message_id": str(row["id"]), "target": "tests.always_fails"})
     ]
@@ -278,6 +280,7 @@ async def test_invalid_arguments_are_reported_without_their_values(
     assert [type(r.exc_info[1]).__name__ for r in dead if r.exc_info] == ["InvalidData"]
     assert dead[0].exc_info is not None
     assert dead[0].exc_info[2] is not None  # Where it failed is kept.
+    flush_reports()  # Reporters run on their own thread.
     ((text, _),) = reported
     assert text.startswith("remember: value: Input should be a valid UUID")
     for kept in (str(row["last_error"]), caplog.text, text):
@@ -1007,9 +1010,12 @@ async def test_the_backlog_is_bounded(
 
     assert stalled.pending("default") == 2
     assert [row["lock_id"] is None for row in await outbox()].count(True) == 1
-    assert "Left 1 committed messages to the relay: 2 are already waiting" in (
-        caplog.messages
-    )
+    assert caplog.messages == [
+        (
+            "Left 1 committed messages to the relay: 2 are already waiting (logged "
+            "once until the backlog clears)"
+        )
+    ]
 
 
 async def test_shutdown_waits_for_the_publisher_then_stops_it(
@@ -1017,20 +1023,30 @@ async def test_shutdown_waits_for_the_publisher_then_stops_it(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Shutdown lets a stuck publish go after CLOSE_TIMEOUT; the relay sends it."""
+    """Closing lets a stuck publish go in its time; the relay sends the message."""
     stalled = Stalled()
     monkeypatch.setattr(BrokerHandler, "__getitem__", lambda self, alias: stalled)
-    monkeypatch.setattr(dispatch, "CLOSE_TIMEOUT", 0.05)
     config = registry.settings(MessagingSettings)
     await enqueue(remember, value=uuid.uuid4())
     publisher = commit_publisher(config)
+    task = publisher._task
+    assert task is not None
 
     async with asyncio.timeout(1):
-        await close_publishers()
+        await close_publishers(within=0.1)
+        await asyncio.wait({task})  # Its give-back may outlast close's time.
 
-    assert "Left 1 committed messages to the relay at shutdown" in caplog.messages
+    assert "Left 1 committed messages to the relay at shutdown" in (caplog.messages)
     assert commit_publisher(config) is not publisher
-    await published(commit_publisher(config))  # A fresh one has nothing to send.
+    await published(commit_publisher(config))  # A new one has nothing to send.
+    left = REGISTRY.get_sample_value(
+        "messaging_left_to_relay_total", {"reason": "shutdown"}
+    )
+    assert left is not None
+    assert left >= 1
+    (row,) = await outbox()
+    # The publication cut short gave its message back: the relay sends it now.
+    assert (row["lock_id"], row["locked_until"]) == (None, None)
 
 
 class RecordingWorker:
@@ -1066,13 +1082,13 @@ async def test_publishers_relay_each_outbox_through_its_own_worker(
     await published(publisher)
     publisher.submit("other", [second])
     await published(publisher)
-    await publisher.close()
+    await publisher.close(5)
 
     assert RecordingWorker.made == [(config, "other")]
-    assert RecordingWorker.relayed == [
-        ("other", broker_tables, [first]),
-        ("other", broker_tables, [second]),
-    ]
+    assert [
+        (database, broker.inner(), ids)  # type: ignore[attr-defined]
+        for database, broker, ids in RecordingWorker.relayed
+    ] == [("other", broker_tables, [first]), ("other", broker_tables, [second])]
     assert publisher.backlog == 0
 
 
@@ -1083,7 +1099,7 @@ async def test_closed_publishers_start_again_when_used(
     publisher = commit_publisher(registry.settings(MessagingSettings))
     await enqueue(remember, value=uuid.uuid4())
     await published(publisher)
-    await publisher.close()
+    await publisher.close(5)
 
     await enqueue(remember, value=uuid.uuid4())
     async with asyncio.timeout(1):
@@ -1121,23 +1137,32 @@ async def test_commits_hand_over_their_outbox_and_ids(
 
     [row] = await outbox()
     assert submitted == [("default", [row["id"]])]
+    flush_reports()  # Reporters run on their own thread.
     assert reported == []
 
 
 async def test_the_messaging_app_closes_the_publishers_at_shutdown(
     brokered: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """MessagingConfig.shutdown flushes and stops the background publishers."""
-    from domainkit.contrib.messaging import apps as messaging_apps
+    """Shutdown's drain phase flushes and stops the background publishers.
+
+    The application and management commands both shut down through
+    ``close_resources``, so commands close their publishers too.
+    """
+    from domainkit import lifecycle
 
     closed: list[bool] = []
 
     async def record() -> None:
         closed.append(True)
 
-    monkeypatch.setattr(messaging_apps, "close_publishers", record)
-    config = next(config for config in registry if config.label == "messaging")
-    await config.shutdown()
+    assert lifecycle._registered[lifecycle.Phase.DRAIN]["publishers"] is (
+        close_publishers
+    )
+    monkeypatch.setitem(
+        lifecycle._registered[lifecycle.Phase.DRAIN], "publishers", record
+    )
+    await lifecycle.close_resources()
 
     assert closed == [True]
 
@@ -1158,6 +1183,7 @@ async def test_after_commit_failures_are_reported(
         await uow.commit()
 
     assert len(await outbox()) == 1
+    flush_reports()  # Reporters run on their own thread.
     assert reported == [("hook broke", {"domain": "messaging"})]
 
 
@@ -1213,7 +1239,12 @@ async def test_unpublished_messages_are_unlocked(
     worker = Worker()
     with caplog.at_level(logging.WARNING, "domainkit.contrib.messaging.worker"):
         await worker.relay(Unreachable(declare=True), 10)
-    assert caplog.messages == ["Could not declare queues: down"]
+    assert caplog.messages == [
+        (
+            "Could not publish 1 of 1 message(s) to the broker (declaring 'default': "
+            "down); they go again on the next round"
+        )
+    ]
 
     for broken in (Unreachable(declare=True), Unreachable(declare=False)):
         assert await worker.relay(broken, 10) == 0
@@ -1290,7 +1321,7 @@ class Recording(MemoryBroker):
         """Take every waiting message of ``queue``."""
         waiting = []
         while self.pending(queue):
-            waiting.append(self._queues[queue].get_nowait())
+            waiting.append(self._queues[queue].popleft())
         return waiting
 
 
@@ -1324,7 +1355,10 @@ async def test_the_relay_works_in_batches_and_counts(
     }
     assert message_id == str(first["id"])
     assert caplog.messages == [
-        f"Could not publish {email['id']} to queue 'emails': no emails"
+        (
+            "Could not publish 1 of 2 message(s) to the broker (queue 'emails': no "
+            "emails); they go again on the next round"
+        )
     ]
     assert REGISTRY.get_sample_value("messaging_relayed_total", labels) == published + 1
     assert (
@@ -1412,7 +1446,7 @@ async def test_deliveries_that_cannot_run_are_settled(
         f"Could not run message {missing} from queue 'default'; requeued"
     ]
 
-    with pytest.raises(ValueError, match=r"needs MESSAGING\.BROKER"):
+    with pytest.raises(ValueError, match=r"^BrokerWorkers needs MESSAGING\.BROKER\.$"):
         BrokerWorkers([], [], MessagingSettings())
 
 
@@ -1976,6 +2010,31 @@ async def test_unsettled_answers_are_logged(
     assert caplog.messages[-1] == (
         "Could not answer message m1 from queue 'default': connection closed"
     )
+
+
+async def test_answers_that_fail_unexpectedly_are_logged_without_the_body(
+    broker_tables: MemoryBroker, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Any failure to answer is logged, never raised: the broker redelivers."""
+    runner = BrokerWorkers([], ["default"], registry.settings(MessagingSettings))
+
+    async def closed() -> None:
+        raise RuntimeError("The channel is closed.")
+
+    with caplog.at_level(logging.WARNING, "domainkit.contrib.messaging.dispatch"):
+        await runner.deliver(Delivery("default", b"secret", "m1", closed, closed))
+
+    record = caplog.records[-1]
+    assert (record.levelno, record.getMessage()) == (
+        logging.ERROR,
+        (
+            "Could not answer message m1 from queue 'default'; the broker will "
+            "hand it out again"
+        ),
+    )
+    assert record.exc_info
+    assert type(record.exc_info[1]) is RuntimeError
+    assert "secret" not in caplog.text
 
 
 async def test_workers_claim_only_what_they_can_run(

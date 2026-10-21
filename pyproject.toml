@@ -56,8 +56,15 @@ testing = ["pytest (>=9.1.1,<10.0.0)", "httpx2 (>=2.13.0,<3.0.0)"]
 # Outgoing webhooks (domainkit.contrib.webhooks) send with httpx2 and encrypt
 # subscription secrets with AES-GCM.
 webhooks = ["httpx2 (>=2.13.0,<3.0.0)", "cryptography (>=50.0.2,<51.0.0)"]
+# Outgoing HTTP calls (domainkit.http.client): pooled, bounded by the
+# request's deadline, retried, with a circuit breaker per host.
+httpclient = ["httpx2 (>=2.13.0,<3.0.0)"]
 # The IANA time zones for cron schedules where the system has none (Windows).
 tzdata = ["tzdata (>=2025.2)"]
+# uvloop's event loop for management commands and runserver (EVENT_LOOP).
+uvloop = ["uvloop (==0.23.0) ; sys_platform != 'win32'"]
+# Granian, an ASGI server in Rust: "runserver --server granian", or production.
+granian = ["granian (==2.8.4)"]
 
 # Runs commands before a project exists: "domainkit init billingAPI".
 [project.scripts]

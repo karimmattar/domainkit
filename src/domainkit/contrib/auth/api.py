@@ -256,7 +256,7 @@ async def change_password(
 ) -> None:
     """Change the password; every other session of the user ends."""
     await _throttle(request, f"password:user:{user.id}")
-    if not await acheck_password(body.old_password, user.password.value):
+    if not await acheck_password(body.old_password, user.password.value, priority=True):
         raise APIError(
             status.HTTP_400_BAD_REQUEST,
             "Your old password was entered incorrectly.",
@@ -266,7 +266,7 @@ async def change_password(
     credentials = _credentials(request)
     async with AuthUnitOfWork() as uow:
         stored = await uow.users.get(UserId(user.id))
-        await uow.users.set_password(stored, body.new_password)
+        await uow.users.set_password(stored, body.new_password, priority=True)
         await uow.tokens.revoke_user(
             user.id, keep=credentials.token_id, keep_family=credentials.session
         )

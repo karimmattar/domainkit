@@ -67,9 +67,13 @@ class LedgerHandler:
         await self[alias].check()
 
     async def close_all(self) -> None:
-        """Close every ledger opened so far, even if one fails (it is raised)."""
+        """Close every ledger opened so far, even if one fails (it is raised).
+
+        Each ledger's own ``close``: ``Ledger.close`` is the base class's,
+        which closes nothing.
+        """
         ledgers, self._ledgers = self._ledgers, {}
-        await close_each(ledgers.values(), Ledger.close)
+        await close_each(ledgers.values(), lambda ledger: ledger.close())
 
 
 ledgers: Final = LedgerHandler()

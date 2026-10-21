@@ -28,12 +28,12 @@ from {{ package }}.infrastructure.unit_of_work import SqlAlchemy{{ Domain }}Unit
 router = APIRouter(tags=["{{ domain }}"])
 
 
-def get_unit_of_work() -> {{ Domain }}UnitOfWork:
+async def get_unit_of_work() -> {{ Domain }}UnitOfWork:
     """A unit of work on the database; tests may override this dependency."""
     return SqlAlchemy{{ Domain }}UnitOfWork()
 
 
-def caller(user: AuthenticatedUser) -> UUID:
+async def caller(user: AuthenticatedUser) -> UUID:
     """The caller's id: who creates a {{ aggregate }} owns it."""
     return user.id
 

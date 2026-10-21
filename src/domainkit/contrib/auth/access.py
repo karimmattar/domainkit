@@ -43,6 +43,7 @@ from starlette.routing import BaseRoute, Host, Mount, Route, WebSocketRoute
 from domainkit.ddd import PermissionDenied
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import APIError
+from domainkit.http.live import record_check
 
 from .authentication import get_authenticators
 from .backends import has_perms
@@ -340,7 +341,9 @@ class ModelPermissions(BasePermission):
 class Require:
     """A FastAPI dependency: the rules must allow the request; returns the user.
 
-    Without rules, it requires a user who logged in.
+    Without rules, it requires a user who logged in. On a WebSocket or an
+    event stream, the rules are checked again while it stays open
+    (``LIVE_REAUTH_INTERVAL``), with the user loaded afresh.
     """
 
     def __init__(self, *rules: Rule) -> None:
@@ -362,7 +365,13 @@ class Require:
         refusal = await _first_refusal(self.rules, request, user)
         if refusal is not None:
             raise _denied(user, refusal)
+        record_check(request, self.allows)
         return user
+
+    async def allows(self, connection: HTTPConnection) -> bool:
+        """Whether every rule still allows ``connection``'s current user."""
+        user = current_user(connection)
+        return await _first_refusal(self.rules, connection, user) is None
 
 
 async def check_object_permissions(
@@ -383,7 +392,12 @@ async def check_object_permissions(
 
 
 def current_user(connection: HTTPConnection) -> AnyUser:
-    """The user ``AuthenticationMiddleware`` found (``AnonymousUser`` if none)."""
+    """The user ``AuthenticationMiddleware`` found (``AnonymousUser`` if none).
+
+    Call it from code that has the request. As a dependency, use
+    ``CurrentUser`` (``acurrent_user``): FastAPI awaits that on the event
+    loop, and would call this one on its thread pool.
+    """
     if "user" not in connection.scope:
         raise ImproperlyConfigured(
             "Add domainkit.contrib.auth.middleware.AuthenticationMiddleware to "
@@ -391,6 +405,11 @@ def current_user(connection: HTTPConnection) -> AnyUser:
         )
     user: AnyUser = connection.scope["user"]
     return user
+
+
+async def acurrent_user(connection: HTTPConnection) -> AnyUser:
+    """``current_user`` as a dependency FastAPI awaits, with no thread to hop to."""
+    return current_user(connection)
 
 
 async def authenticated_user(
@@ -408,7 +427,7 @@ async def authenticated_user(
     return user
 
 
-CurrentUser = Annotated[AnyUser, Depends(current_user)]
+CurrentUser = Annotated[AnyUser, Depends(acurrent_user)]
 """The request's user, or ``AnonymousUser``."""
 AuthenticatedUser = Annotated[AbstractBaseUser, Depends(authenticated_user)]
 """The request's user; anonymous callers get 401."""
@@ -420,7 +439,11 @@ async def public() -> None:
 
 Public = Depends(public)
 """``dependencies=[Public]``: the route needs no rule (``REQUIRE_ROUTE_RULES``)."""
-USER_GUARDS: Final[tuple[object, ...]] = (current_user, authenticated_user)
+USER_GUARDS: Final[tuple[object, ...]] = (
+    current_user,
+    acurrent_user,
+    authenticated_user,
+)
 """Dependencies that read the user, besides ``Require``."""
 
 

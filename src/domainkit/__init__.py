@@ -37,4 +37,5 @@ def setup() -> None:
     event_bus.error_hook = lambda exc, event: report_error(
         exc, event=type(event).__qualname__, event_id=str(event.event_id)
     )
+    event_bus.handler_timeout = settings.EVENT_HANDLER_TIMEOUT
     registry.populate(settings.INSTALLED_DOMAINS)

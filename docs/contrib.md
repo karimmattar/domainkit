@@ -103,23 +103,56 @@ inspects any outbox.
 | `MAX_ATTEMPTS` | `10` | Runs before dead-lettering, unless the task sets its own. |
 | `RETRY_BASE_SECONDS` | `2.0` | First retry delay; it doubles per attempt. |
 | `RETRY_MAX_SECONDS` | `3600.0` | Cap on the retry delay. |
-| `TASK_TIMEOUT` | `240.0` | Seconds a message may run; longer counts as a failure. |
-| `VISIBILITY_TIMEOUT` | `300.0` | Seconds a claim lasts; must exceed `TASK_TIMEOUT`. |
-| `POLL_INTERVAL` | `1.0` | Seconds an idle worker waits before looking again. |
-| `BATCH_SIZE` | `50` | Most messages claimed at once. |
-| `CONCURRENCY` | `10` | Messages one worker runs at the same time. |
-| `SHUTDOWN_TIMEOUT` | `20.0` | Seconds a stopping worker lets running messages finish; the rest are stopped and run again. |
-| `RETENTION_SECONDS` | `604800.0` | Finished messages are deleted after this (7 days). |
-| `CLEANUP_INTERVAL` | `3600.0` | Seconds between those deletions. |
+| `TASK_TIMEOUT` | `240.0` | Seconds a message may run; longer counts as a failure (at most a day). |
+| `VISIBILITY_TIMEOUT` | `300.0` | Seconds a claim lasts; must exceed `TASK_TIMEOUT` (at most two days). |
+| `POLL_INTERVAL` | `1.0` | Seconds an idle worker waits before looking again (at most an hour). |
+| `BATCH_SIZE` | `50` | Most messages claimed at once (1 to 10,000). |
+| `CONCURRENCY` | `10` | Messages one worker process runs at the same time, from all its outboxes and queues together (1 to 65,535, RabbitMQ's largest prefetch). |
+| `SHUTDOWN_TIMEOUT` | `20.0` | Seconds a stopping worker lets running messages finish; the rest are stopped and run again (at most an hour). |
+| `RETENTION_SECONDS` | `604800.0` | Finished messages are deleted after this (7 days; at most a year). |
+| `CLEANUP_INTERVAL` | `3600.0` | Seconds between those deletions (at most a day). |
+| `CLEANUP_BATCH_SIZE` | `1000` | Most finished messages one cleanup statement deletes (1 to 100,000). |
 | `BROKER` | `None` | An alias in `BROKERS`: workers take their work from that broker instead of polling the outbox (below). |
-| `REPUBLISH_AFTER` | `3600.0` | With a broker: seconds a published message may wait for a worker before the relay publishes it again, as lost. |
+| `REPUBLISH_AFTER` | `3600.0` | With a broker: seconds a published message may wait for a worker before the relay publishes it again, as lost (at most a week). |
 | `PUBLISH_ON_COMMIT` | `True` | With a broker: the committing process publishes the commit's due messages in the background right away, instead of leaving them to the relays' next poll. |
+| `BREAKER_FAILURES` | `5` | With a broker: failed broker calls in a row after which commits stop publishing and leave their messages to the relays. |
+| `BREAKER_COOLDOWN` | `30.0` | Seconds commits leave their messages to the relays before the publisher tries the broker again. |
+| `NOTIFY` | `True` | On PostgreSQL: commits wake idle workers at once (`LISTEN`/`NOTIFY`), unless a broker publishes each commit. |
+| `METRICS_TTL` | `15.0` | Seconds the outbox gauges are reused between scrapes; 0 counts every scrape. |
 
 Run `runworker --metrics-port 9100` to expose the worker's metrics. Scale by
-running more workers.
+running more workers. However many outboxes and queues a `runworker`
+process serves, it runs at most `CONCURRENCY` messages at once.
 
-**Stopping.** `SIGTERM` (or Ctrl+C) stops claiming and gives running
-messages `SHUTDOWN_TIMEOUT` seconds to finish. Messages still running then
+On PostgreSQL, the database's clock decides what is due and when a lock
+expires, so hosts whose clocks disagree neither run a message twice nor
+leave it waiting, and a commit wakes idle workers at once
+(`LISTEN`/`NOTIFY`, see `NOTIFY`), so `POLL_INTERVAL` can be longer. Old
+messages are deleted in small batches, by a task of each worker's own, so
+cleanup never holds up claiming. [runtime.md](runtime.md), "Workers and
+the outbox", has the details.
+
+**Watching PostgreSQL's notification queue.** PostgreSQL keeps sent
+notifications in one queue per server (8 GB by default) until every
+session that listens has read them. A listener that stops reading, such as
+a session that runs `LISTEN` and then sits in a long transaction, or a
+client whose process hangs, holds the queue's tail: the queue fills, and
+once it is full every transaction that sends `NOTIFY` fails at commit,
+domainkit's outbox writes included. Workers listen on a connection of
+their own and throw it away when they stop. Watch the queue:
+
+```sql
+SELECT pg_notification_queue_usage();  -- 0 (empty) to 1 (full)
+```
+
+Alert well before half full (0.5); from there on PostgreSQL also logs a
+warning naming the process that holds the queue back. Ending that process
+(`pg_terminate_backend(pid)`) lets the queue drain; `MESSAGING.NOTIFY =
+False` stops domainkit's notifications, and workers fall back on polling.
+
+**Stopping.** `SIGTERM` (or Ctrl+C) stops claiming (and, with a broker,
+consuming, within five seconds even if the broker does not answer) and
+gives running messages `SHUTDOWN_TIMEOUT` seconds to finish. Messages still running then
 are cancelled and go back to the outbox, due at once; the cut-short run
 does not count as an attempt. A second signal stops them at once. Keep
 `SHUTDOWN_TIMEOUT` a few seconds under the time your platform waits before
@@ -162,21 +195,31 @@ aio-pika). Then `runworker` works like this:
 - **Publish on commit.** Right after a unit of work commits (and after
   `enqueue()`), its process hands the messages it wrote to a background
   publisher and returns: a slow or stopped broker never delays the commit.
-  The publisher locks them for `REPUBLISH_AFTER` and publishes a small
-  pointer to each (its id, its database, and the lock), and RabbitMQ
-  confirms every publication. It declares each queue once per process. If
-  more than 10,000 committed messages are waiting to be published, newer
-  ones are left to the relays, and at shutdown the publisher gets five
-  seconds to finish; the outbox holds the rest. Set `PUBLISH_ON_COMMIT` to
-  `False` to leave all publishing to the relays. Delayed tasks wait for the
-  relay.
+  The publisher locks them for a short lease (the broker's `CONNECT_TIMEOUT`
+  plus `PUBLISH_TIMEOUT`, and five seconds) and publishes a small pointer to
+  each (its id, its database, and the lock), `BATCH_SIZE` at a time.
+  RabbitMQ confirms every publication, and a confirmed message stays
+  locked for `REPUBLISH_AFTER`; one the broker did not confirm, whatever
+  the reason, a stop included, is unlocked at once. It declares each queue
+  once per process. If more than 10,000 committed messages are waiting to
+  be published, newer ones are left to the relays. After `BREAKER_FAILURES`
+  broker failures in a row, commits leave their messages to the relays for
+  `BREAKER_COOLDOWN`, then the publisher checks the broker and tries again;
+  this is logged once when it starts and once when it ends. At shutdown
+  the publisher gets a fifth of `SHUTDOWN_TIMEOUT`, the time shutdown's
+  drain phase always has, and gives back what it cut short within it; the
+  outbox holds the rest.
+  Set `PUBLISH_ON_COMMIT` to `False` to leave all publishing to the relays.
+  Delayed tasks wait for the relay.
 - **Relay.** Workers also claim due messages of their outbox, as a polling
   worker would, and publish them the same way: delayed tasks when they fall
   due, retries, and anything a commit could not publish (the broker was
   down, the process died). A publication that fails is unlocked and tried
   again on the next round.
-- **Consume.** Workers consume their queues with a prefetch of
-  `CONCURRENCY`. For each delivery, a worker takes the message over by id,
+- **Consume.** Workers consume each queue with a prefetch of `CONCURRENCY`
+  (per queue: quorum queues take no prefetch shared by a channel), and run
+  at most `CONCURRENCY` deliveries at once in all; the others wait for a
+  slot. For each delivery, a worker takes the message over by id,
   which works only for the pointer of the current publication (or one whose
   lock has expired), runs it, records the outcome, and only then
   acknowledges the delivery. A duplicate, or a delivery of a message that
@@ -188,8 +231,11 @@ aio-pika). Then `runworker` works like this:
 - **Every delivery is answered**, so a failure never holds one of the
   consumer's `CONCURRENCY` slots. A delivery whose outbox cannot be reached
   is requeued after `POLL_INTERVAL`; any other is acknowledged once its
-  outcome is recorded, or once it is clear it cannot run here. The relay
-  waits out database outages as the polling worker does.
+  outcome is recorded, or once it is clear it cannot run here. An answer
+  that fails (the delivery's channel closed when RabbitMQ restarted or the
+  connection dropped) is logged, and RabbitMQ hands the message out again;
+  it never stops the worker or its other messages. The relay waits out
+  database outages as the polling worker does.
 - **Losses** cost time, never messages. A worker that dies mid-message
   leaves it to come back after `VISIBILITY_TIMEOUT`; a message RabbitMQ
   lost is published again after `REPUBLISH_AFTER`.
@@ -676,7 +722,26 @@ rewrite.
   digest). The worker seals every `AUDIT.SEAL_EVERY` when
   `domainkit.contrib.messaging` is installed; otherwise run
   `python manage.py auditseal` on a schedule. Each database's trail is its
-  own chain.
+  own chain. The newest sealed row is a high-water mark: a run looks for
+  rows from `AUDIT.SEAL_LATE_WINDOW` before it (rows that committed late),
+  so its cost follows what is new, not how long the trail is. The mark
+  counts as now at most, by the database's clock on PostgreSQL (the
+  host's on SQLite), which also dates the seals. A run seals
+  `AUDIT.SEAL_BATCHES` batches at most and leaves the rest for the next;
+  the `audit_unsealed_rows` gauge says how many it left, and a warning is
+  logged past `AUDIT.SEAL_BACKLOG_WARNING`. Sealing also makes the keys of
+  today's and tomorrow's anonymous callers ahead of time, so at midnight
+  (UTC) audited requests do not queue behind one insert of the new day's
+  key.
+- **Sealing late rows.** A row that commits later than the window after
+  the mark is out of a run's reach, and `auditverify` reports it as
+  unsealed once it is a day old. Look into why (a transaction that ran
+  that long, a host whose clock runs behind), then run
+  `python manage.py auditseal --late`: it seals such rows into the same
+  chain, each seal flagged `late`, and `auditverify` counts them
+  afterwards ("rows sealed late"). They were open to change unnoticed for
+  longer than the others. Finding them reads the whole trail, so the
+  worker never does it on its own.
 - **Anchoring.** With `AUDIT.LEDGER` naming a ledger in `LEDGERS` (immudb),
   sealing also writes each chain's head (its number and link) there, at
   most once per `AUDIT.ANCHOR_EVERY`, as a new revision of
@@ -692,11 +757,15 @@ rewrite.
 Every row can be sealed, whatever its strings hold (a lone surrogate, which
 JSON can escape, included). A host whose clock runs ahead cannot stop
 sealing or anchoring: a row or an anchor dated in the future counts as
-dated now.
+dated now, and on PostgreSQL "now" is the database's, so a sealer whose
+own clock runs ahead cannot leave other hosts' rows behind.
 
 A row can be changed unnoticed only until it is sealed and its head
 anchored, so anchor as often as you need: the default is hourly. Erasing a
 person (`auditforget`) deletes a key, not a row, so the chain stays intact.
+
+**Upgrading.** The seals table has a new `late` column: run
+`makemigrations` and `migrate` in each project that installs audit.
 
 Protect the seals like the trail, in the revision that creates them:
 
@@ -722,6 +791,9 @@ def downgrade() -> None:
 | `LEDGER` | `None` | `LEDGERS` alias to anchor each chain's head on; `None` seals without anchoring. |
 | `ANCHOR_EVERY` | 1 hour | Anchor a new head at most this often. |
 | `SEAL_EVERY` | 5 minutes | How often the worker seals new rows. |
+| `SEAL_LATE_WINDOW` | 15 minutes | How far before the newest sealed row a run looks for rows that committed late, up to a day. A row later than this stays unsealed until `auditseal --late`, and `auditverify` reports it once it is a day old: keep it above your longest transaction plus the clock skew between hosts. |
+| `SEAL_BATCHES` | `100` | Batches of 1,000 rows one run seals at most (1 to 10,000); the rest wait for the next run. |
+| `SEAL_BACKLOG_WARNING` | `100000` | Rows a run leaves unsealed past which it logs a warning. |
 
 ### History
 
@@ -801,6 +873,7 @@ the same request gets the stored response, with `Idempotent-Replayed: true`.
 | First response larger than `MAX_RESPONSE_BYTES`, nothing committed | Not stored: the retry runs again |
 | First request died before committing, and its lease has ended | The retry takes the key over and runs |
 | First request committed, then failed, died, or answered over `MAX_RESPONSE_BYTES` | 409 `idempotency_response_unavailable`: it never runs again |
+| First request's commit on another database raised (its reply lost, refused, or cancelled while it ran) | 409 `idempotency_response_unavailable`: it may have committed, so it never runs again |
 | First request ran past its lease and a retry took its key | The first gets 409 `idempotency_key_taken_over`; its changes are not saved |
 | Client disconnected before sending the whole body | Nothing runs and no key is claimed: retry with the same key |
 
@@ -820,12 +893,27 @@ it: a request that ran past its lease and lost its key to a retry cannot
 commit, so the changes are made once. Set `LEASE_SECONDS` above the
 longest a request may run, such as your server's or proxy's timeout.
 
+A request that raises, or is cancelled (its client gone, a deadline, an
+anyio cancel scope that cancels every wait inside it), still releases its
+key at once: the response is stored, or the key released, in a task of its
+own that the request's cancellation cannot stop, within 5 seconds. If that
+fails, the failure is logged and the lease applies.
+
 Keep `IDEMPOTENCY.DATABASE` on the database your writes use where you can.
 A unit of work on another database cannot carry the mark in its
-transaction: before it commits, the key is pinned until it expires, so no
-retry takes it over, and right after, it is marked committed. A crash
-after the pin leaves the key in progress until it expires. If the reply to
-that commit is lost, the key is released as though nothing was saved.
+transaction: before it commits, the key is pinned until it expires, and
+right after, it is marked committed. A pinned key is never taken over by a
+retry, nor released by its request, since its changes may have committed
+whatever the commit reported. So if that commit raises (its reply lost, the
+database refusing it, the request cancelled while it ran), retries get the
+409 `idempotency_response_unavailable`, as after a commit on the keys'
+database, even when nothing was in fact saved: look up the result. A
+request that fails before its unit of work commits pinned nothing, and its
+key is released as usual. A crash after the pin leaves the key in progress
+until it expires.
+
+**Upgrading.** The keys table has a new `pinned` column: run
+`makemigrations` and `migrate` in each project that installs idempotency.
 
 Keys are scoped to the actor, which `AuthenticationMiddleware` sets (list
 it first), so one user cannot replay another's response. Without an
@@ -835,13 +923,15 @@ actor, keys are scoped to the client address and a hash of the request's
 another. Add `IdempotencyMiddleware` last in `MIDDLEWARE`: it reads whole
 bodies, which `RequestBodyLimitMiddleware` has already bounded. With
 messaging installed, expired keys are purged hourly; without it, each new
-key deletes up to 100 expired ones.
+key deletes up to 100 expired ones, skipping those another request is
+deleting (`SKIP LOCKED` on PostgreSQL), so concurrent requests never queue
+behind one another's purge.
 
 | `IDEMPOTENCY` key | Default | Meaning |
 | --- | --- | --- |
 | `DATABASE` | `"default"` | Alias holding the keys. |
-| `TTL_SECONDS` | `86400.0` | How long a key is remembered (24 hours). |
-| `LEASE_SECONDS` | `60.0` | How long a request holds its key before a retry may take it over. |
+| `TTL_SECONDS` | `86400.0` | How long a key is remembered (24 hours; at most 30 days). |
+| `LEASE_SECONDS` | `60.0` | How long a request holds its key before a retry may take it over (at most a day). |
 | `METHODS` | `POST`, `PATCH` | Methods that honour the header; others ignore it. |
 | `MAX_RESPONSE_BYTES` | `1048576` | Larger responses are passed through but not stored. |
 | `CREDENTIAL_HEADERS` | `authorization`, `proxy-authorization`, `cookie`, `x-api-key` | Headers that tell callers without an actor apart. |

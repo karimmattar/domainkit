@@ -28,6 +28,7 @@ from pydantic_core import PydanticSerializationError, from_json, to_json
 
 from domainkit.cache.base import CacheError, CacheUnavailable, Store
 from domainkit.conf import CacheConfig
+from domainkit.tasks import spawn
 
 try:
     from domainkit.cache.metrics import observe, observe_error
@@ -44,6 +45,8 @@ logger = logging.getLogger(__name__)
 
 MAX_KEY_LENGTH: Final = 1024
 """Longest key accepted; hash long parts of keys (``@cached`` does)."""
+COMPUTE_TASK: Final = "domainkit.cache.compute"
+"""The name of ``get_or_set`` computations' tasks."""
 _EARLY: Final = b"~"
 """Starts the header of ``get_or_set`` entries; JSON never starts with it."""
 
@@ -381,20 +384,26 @@ class Cache:
         """Share one computation of ``full`` among concurrent callers; its JSON.
 
         The first caller decides whether the result is written to the store.
+        The computation is a background task of its own, in a clean context
+        (``domainkit.tasks.spawn``): it serves every caller, so it runs as
+        none of them, and shutdown stops it before what it uses closes.
         """
         task = self._computing.get(full)
         if task is None:
             computation = self._compute(full, factory, milliseconds, write=write)
-            task = asyncio.ensure_future(computation)
+            task = spawn(computation, name=COMPUTE_TASK, log_errors=False)
             self._computing[full] = task
             task.add_done_callback(lambda done: self._forget(full, done))
         try:
-            return await asyncio.shield(task)
+            # Waiting does not cancel the computation, which goes on for the
+            # other callers (asyncio.shield would, on 3.14, log its failure).
+            await asyncio.wait([task])
+            return task.result()
         except asyncio.CancelledError:
             caller = asyncio.current_task()
             if caller is None or caller.cancelling():
                 raise
-            # Not cancelled itself, so close() stopped the computation.
+            # Not cancelled itself, so shutdown or close() stopped the computation.
             return encode(await factory())
 
     def _forget(self, full: str, task: asyncio.Task[bytes]) -> None:

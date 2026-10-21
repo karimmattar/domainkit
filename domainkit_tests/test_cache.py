@@ -8,20 +8,24 @@ import asyncio
 import io
 import logging
 import math
+import ssl
+import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Final
+from typing import Final, cast
 
 import pytest
 from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
 from pydantic import BaseModel, ValidationError
 from redis.asyncio import Redis
+from redis.asyncio.connection import Connection, RedisSSLContext, SSLConnection
 
+from domainkit import clock
 from domainkit.broker import brokers
 from domainkit.cache import (
     Cache,
@@ -36,8 +40,19 @@ from domainkit.cache import (
     invalidate_on,
 )
 from domainkit.cache.core import split
-from domainkit.cache.redis import RedisStore, create_client
+from domainkit.cache.redis import (
+    RedisStore,
+    SharedTLSConnection,
+    _shared,
+    create_client,
+)
 from domainkit.conf import CacheConfig, Settings, override_settings
+from domainkit.context import RequestContext, bind_request, current_request
+from domainkit.contrib.idempotency.operations import (
+    Operation,
+    run_operation,
+    running_operation,
+)
 from domainkit.db.connections import connections
 from domainkit.ddd import DomainEvent, EventBus
 from domainkit.exceptions import ImproperlyConfigured
@@ -46,9 +61,14 @@ from domainkit.http.ratelimit import RedisBackend
 from domainkit.ledger import ledgers
 from domainkit.management import call_command
 from domainkit.management.base import CommandError, run_async
+from domainkit.tasks import owned
+from domainkit.tracing import current_ids, remote_parent
 from domainkit_tests.settings import SECRET_KEY
+from domainkit_tests.test_broker import certificate
 
 pytestmark = pytest.mark.anyio
+
+TRACEPARENT: Final = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
 
 CLOSED: Final = "redis://127.0.0.1:9/0"
 """A Redis URL nothing listens on (port 9, discard): a cache that is down."""
@@ -977,10 +997,37 @@ async def test_a_caller_cancelled_while_its_cache_closes_stays_cancelled() -> No
     assert factory.calls == 1
 
 
+async def test_a_failure_after_a_caller_gave_up_reaches_only_the_others(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The error goes to the callers still waiting; asyncio logs nothing."""
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def factory() -> int:
+        started.set()
+        await release.wait()
+        raise RuntimeError("factory broke")
+
+    cache = make_cache()
+    with caplog.at_level(logging.DEBUG):
+        gave_up = asyncio.create_task(cache.get_or_set("k", factory, int))
+        waiting = asyncio.create_task(cache.get_or_set("k", factory, int))
+        await started.wait()
+        gave_up.cancel()
+        await asyncio.wait([gave_up], timeout=5)
+        release.set()
+        with pytest.raises(RuntimeError, match="factory broke"):
+            await waiting
+        await asyncio.sleep(0)  # Done callbacks run on the next loop pass.
+
+    assert gave_up.cancelled()
+    assert [r.getMessage() for r in caplog.records if r.name == "asyncio"] == []
+
+
 def test_caches_close_before_what_their_computations_use(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """At shutdown, cache computations stop before databases and brokers close."""
+    """At shutdown, cache computations stop before caches and databases close."""
     closed: list[str] = []
     handlers = {
         "caches": caches,
@@ -999,9 +1046,45 @@ def test_caches_close_before_what_their_computations_use(
         pass
     assert closed == ["caches", "connections", "ledgers", "brokers"]
 
+    async def compute_then_stop() -> None:  # A management command.
+        factory = Stuck(on_cancel=lambda: closed.append("computation"))
+        asyncio.create_task(make_cache().get_or_set("k", factory, int))  # noqa: RUF006
+        await factory.started.wait()
+
     closed.clear()
-    run_async(asyncio.sleep(0))  # Management commands.
-    assert closed == ["caches", "connections", "ledgers", "brokers"]
+    run_async(compute_then_stop())
+    assert closed == ["computation", "caches", "connections", "ledgers", "brokers"]
+
+
+async def test_computations_run_in_a_clean_context_as_owned_tasks() -> None:
+    """The first caller's request, operation, and span stay with that caller."""
+    seen: list[object] = []
+    computing = asyncio.Event()
+    release = asyncio.Event()
+
+    async def factory() -> int:
+        seen.extend([current_request(), running_operation(), current_ids()])
+        seen.append(clock.now())
+        computing.set()
+        await release.wait()
+        return 7
+
+    cache = make_cache()
+    frozen_at = datetime(2026, 1, 1, tzinfo=UTC)
+    with (
+        bind_request(RequestContext("req-first", None, "GET", "/", actor="u1")),
+        run_operation(Operation("key-hash", "token")),
+        remote_parent({"traceparent": TRACEPARENT}),
+        clock.freeze_time(frozen_at),
+    ):
+        first = asyncio.create_task(cache.get_or_set("k", factory, int))
+        await computing.wait()
+        (task,) = owned()
+        assert task.get_name() == "domainkit.cache.compute"
+        release.set()
+        assert await first == 7
+
+    assert seen == [None, None, None, frozen_at]  # A test's frozen clock carries.
 
 
 def test_readiness_checks_only_caches_that_ask_for_it() -> None:
@@ -1133,9 +1216,80 @@ def test_redis_clients_use_short_timeouts_and_tls_options(tmp_path: Path) -> Non
         str(tmp_path / "client.key"),
     )
     assert options["retry"].get_retries() == 0
+    assert pool.connection_class is SharedTLSConnection
     client = RedisStore.from_config(config).client
     assert isinstance(client, Redis)
     assert isinstance(client.connection_pool, type(pool))
+    plain = create_client(CacheConfig(URL="redis://cache.internal", KEY_PREFIX="x"))
+    assert plain.connection_pool.connection_class is Connection
+
+
+async def test_redis_tls_contexts_are_shared_and_built_off_the_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One context per set of TLS settings, built once, on a worker thread."""
+    cert, key = certificate(tmp_path)
+    config = CacheConfig(URL="rediss://cache.internal/0", KEY_PREFIX="x", TLS_CA=cert)
+    mutual = CacheConfig(
+        URL="rediss://cache.internal/0",
+        KEY_PREFIX="x",
+        TLS_CA=cert,
+        TLS_CERT=cert,
+        TLS_KEY=key,
+    )
+    first, second, third = (
+        create_client(each).connection_pool.make_connection()  # type: ignore[no-untyped-call]
+        for each in (config, config, mutual)
+    )
+    built_on: list[str] = []
+    getting = RedisSSLContext.get
+
+    def watched(self: RedisSSLContext) -> ssl.SSLContext:
+        built_on.append(threading.current_thread().name)
+        return getting(self)
+
+    connected: list[object] = []
+
+    async def connect(self: SSLConnection) -> None:  # Where redis-py would connect.
+        connected.append(self)
+
+    monkeypatch.setattr(RedisSSLContext, "get", watched)
+    monkeypatch.setattr(SSLConnection, "connect", connect)
+
+    for connection in (first, second, third):
+        await connection.connect()
+
+    assert first.ssl_context is second.ssl_context
+    assert third.ssl_context is not first.ssl_context
+    assert connected == [first, second, third]
+    assert len(built_on) == 2  # Once per set of settings.
+    assert threading.current_thread().name not in built_on
+    context = first.ssl_context.context
+    assert context is not None
+    assert context.verify_mode == ssl.CERT_REQUIRED
+
+
+def test_tls_settings_redis_cannot_key_are_not_shared() -> None:
+    """A context whose settings cannot be compared keeps its own."""
+
+    class Slotted:
+        __slots__ = ("context", "flags")
+
+        def __init__(self) -> None:
+            self.context = None
+            self.flags = {"unhashable": True}
+
+    class Plain:
+        def __init__(self) -> None:
+            self.context = None
+            self.flags = [1, 2]
+
+    odd = cast(RedisSSLContext, Slotted())
+    plain, same = (cast(RedisSSLContext, Plain()) for _ in range(2))
+
+    assert _shared(odd) is odd
+    assert _shared(plain) is plain
+    assert _shared(same) is plain
 
 
 # Rate limits in Redis, the command, the testing plugin ------------------------------

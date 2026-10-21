@@ -9,13 +9,15 @@ default order:
 3. ``RequestContextMiddleware``: request id, access log, safe 500 responses,
    for HTTP requests and WebSocket connections.
 4. ``AllowedHostsMiddleware``: rejects untrusted ``Host`` headers (logged).
-5. ``RequestBodyLimitMiddleware``: rejects oversized bodies (logged).
+5. ``RequestBodyLimitMiddleware``: rejects oversized bodies, and bodies that
+   take too long to arrive (logged).
 
 Add ``CORSMiddleware`` right after ``SecurityHeadersMiddleware`` when browsers
 on other origins call the API. Pure ASGI (not ``BaseHTTPMiddleware``) keeps
 streaming responses intact and context variables visible to endpoints.
 """
 
+import asyncio
 import ipaddress
 import logging
 import re
@@ -29,6 +31,7 @@ from starlette.datastructures import Headers, MutableHeaders
 from starlette.middleware import cors
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from domainkit import clock
 from domainkit.conf import settings
 from domainkit.context import RequestContext, bind_request
 from domainkit.http.errors import (
@@ -448,17 +451,63 @@ class RequestBodyTooLarge(APIError):
         )
 
 
+class RequestBodyTimeout(APIError):
+    """The request body took longer than ``REQUEST_BODY_TIMEOUT`` to arrive.
+
+    The connection is closed after the answer: the rest of the body may
+    still come.
+    """
+
+    def __init__(self) -> None:
+        """Use status 408, and close the connection."""
+        super().__init__(
+            status.HTTP_408_REQUEST_TIMEOUT,
+            "The request body took too long to arrive.",
+            code="request_timeout",
+            headers={"Connection": "close"},
+        )
+
+
+UTF8_CHUNK: Final = 65_536
+"""Characters measured at a time by ``utf8_size``."""
+
+
+def utf8_size(text: str) -> int:
+    """The size of ``text`` in UTF-8, without encoding all of it at once.
+
+    ASCII text is one byte a character. Other text is encoded a chunk at a
+    time, so measuring a large message never holds a second copy of it.
+    """
+    if text.isascii():
+        return len(text)
+    return sum(
+        len(text[start : start + UTF8_CHUNK].encode())
+        for start in range(0, len(text), UTF8_CHUNK)
+    )
+
+
 class RequestBodyLimitMiddleware:
-    """Refuse bodies over the limit, by declared length and while streaming.
+    """Refuse bodies over the limit, or too slow to arrive.
+
+    A body over ``MAX_REQUEST_BODY_SIZE`` is refused with 413, by declared
+    length and while streaming. A body whose chunks the application waits
+    for longer than ``REQUEST_BODY_TIMEOUT`` seconds in all is refused with
+    408, and the connection closed: a client that sends its headers, then
+    its body slowly or never, holds the request no longer. The time counts
+    only while the application waits in ``receive()`` before the body is
+    in and the response starts, never while it works.
 
     A WebSocket message over the limit closes the connection with 1009
-    (message too big); the application sees the client disconnect.
+    (message too big); the application sees the client disconnect. The
+    server has read the whole message by then: run it with
+    ``--ws-max-size`` at the same limit, so it refuses larger ones first.
     """
 
     def __init__(self, app: ASGIApp) -> None:
-        """Wrap ``app`` with the ``MAX_REQUEST_BODY_SIZE`` byte limit."""
+        """Wrap ``app`` with the size and time limits of request bodies."""
         self.app = app
         self.max_body_size = settings.MAX_REQUEST_BODY_SIZE
+        self.body_timeout = settings.REQUEST_BODY_TIMEOUT
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Check ``Content-Length`` first, then count streamed bytes."""
@@ -483,16 +532,35 @@ class RequestBodyLimitMiddleware:
                 )(scope, receive, send)
                 return
         received = 0
+        waited = 0.0
+        body_read = False
         started = False
 
+        async def timed_receive() -> Message:
+            nonlocal waited
+            if body_read or started:
+                return await receive()
+            began = clock.monotonic()
+            try:
+                async with asyncio.timeout(self.body_timeout - waited):
+                    return await receive()
+            except TimeoutError:
+                self._too_slow()
+                raise RequestBodyTimeout from None
+            finally:
+                waited += clock.monotonic() - began
+
         async def limited_receive() -> Message:
-            nonlocal received
-            message = await receive()
-            if message["type"] == "http.request":
-                received += len(message.get("body", b""))
-                if received > self.max_body_size:
-                    self._reject(received)
-                    raise RequestBodyTooLarge
+            nonlocal received, body_read
+            message = await timed_receive()
+            if message["type"] != "http.request":
+                body_read = True
+                return message
+            body_read = not message.get("more_body", False)
+            received += len(message.get("body", b""))
+            if received > self.max_body_size:
+                self._reject(received)
+                raise RequestBodyTooLarge
             return message
 
         async def send_tracked(message: Message) -> None:
@@ -502,14 +570,16 @@ class RequestBodyLimitMiddleware:
 
         try:
             await self.app(scope, limited_receive, send_tracked)
-        except RequestBodyTooLarge:
+        except (RequestBodyTooLarge, RequestBodyTimeout) as refused:
             # Middleware that reads the body itself (IdempotencyMiddleware)
             # raises outside FastAPI's error handling: answer for it.
             if started:
                 raise
-            await error_response(
-                413, "Request body too large.", code="content_too_large"
-            )(scope, receive, send)
+            response = error_response(
+                refused.status_code, str(refused.detail), code=refused.code
+            )
+            response.headers.update(refused.headers or {})
+            await response(scope, receive, send)
 
     async def _websocket(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Close the connection on a message over the limit, text or bytes."""
@@ -519,8 +589,8 @@ class RequestBodyLimitMiddleware:
             nonlocal closed
             message = await receive()
             if message["type"] == "websocket.receive":
-                size = len(message.get("bytes") or b"") + len(
-                    (message.get("text") or "").encode()
+                size = len(message.get("bytes") or b"") + utf8_size(
+                    message.get("text") or ""
                 )
                 if size > self.max_body_size:
                     self._reject(size)
@@ -539,4 +609,10 @@ class RequestBodyLimitMiddleware:
         """Log an oversized request as a security event."""
         security_logger.warning(
             "Rejected request body of %d bytes (limit %d)", size, self.max_body_size
+        )
+
+    def _too_slow(self) -> None:
+        """Log a body that took too long as a security event."""
+        security_logger.warning(
+            "Rejected request body that took over %gs to arrive", self.body_timeout
         )

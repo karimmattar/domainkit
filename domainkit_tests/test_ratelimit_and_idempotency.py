@@ -1,11 +1,14 @@
 """Rate limiting and Idempotency-Key replay."""
 
 import asyncio
+import logging
+import os
 import secrets
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
+import anyio
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Table, false, insert, select
@@ -19,23 +22,29 @@ from domainkit.conf import Settings, override_settings
 from domainkit.context import RequestContext, bind_request
 from domainkit.contrib.idempotency import apps as idempotency_apps
 from domainkit.contrib.idempotency import middleware as idempotency
-from domainkit.contrib.idempotency.operations import Operation
+from domainkit.contrib.idempotency.operations import Operation, running_operation
 from domainkit.contrib.idempotency.settings import IdempotencySettings
 from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.http.ratelimit import (
+    EVICTIONS_PER_HIT,
     Decision,
     MemoryBackend,
     RateLimitMiddleware,
     _caller,
     client_group,
 )
+from domainkit.tasks import owned, shutdown
 from domainkit.utils.rates import parse_rate
 from domainkit_tests import sample_routes
+from domainkit_tests.conftest import POSTGRES_VARIABLE
 from domainkit_tests.test_http import headerless, started
 
+postgres_only = pytest.mark.skipif(
+    not os.environ.get(POSTGRES_VARIABLE), reason=f"set {POSTGRES_VARIABLE}"
+)
 BASE_MIDDLEWARE = [
     "domainkit.http.middleware.RequestContextMiddleware",
     "domainkit.http.middleware.RequestBodyLimitMiddleware",
@@ -126,6 +135,33 @@ def test_memory_backend_forgets_idle_callers() -> None:
     hit("f", 1, 1)
     # "e" refilled at this very moment: forgotten too.
     assert list(backend._callers) == ["f"]
+
+
+def test_memory_backend_forgets_a_crowd_of_idle_callers_a_few_at_a_time() -> None:
+    """After a lull, each request forgets at most ``EVICTIONS_PER_HIT`` (IND-RL)."""
+    clock = [0.0]
+    backend = MemoryBackend(clock=lambda: clock[0])
+    crowd = 3 * EVICTIONS_PER_HIT + 10
+
+    async def lull_then_hits() -> list[int]:
+        for caller in range(crowd):
+            await backend.hit(f"ip:{caller}", 300, 60)
+        clock[0] = 1000.0  # Every one of them is full again.
+        left = []
+        for _ in range(5):
+            await backend.hit("ip:new", 300, 60)
+            left.append(len(backend._callers))
+        return left
+
+    assert EVICTIONS_PER_HIT == 64
+    assert asyncio.run(lull_then_hits()) == [
+        crowd - 64 + 1,
+        crowd - 128 + 1,
+        crowd - 192 + 1,
+        1,
+        1,
+    ]
+    assert list(backend._callers) == ["ip:new"]
 
 
 def test_memory_backend_refills_callers_it_still_remembers() -> None:
@@ -711,6 +747,7 @@ def test_commits_elsewhere_are_marked_after_them(
         assert all(row["committed_at"] is not None for row in rows)
         # Pinned before the commit: no retry may take these keys over.
         assert all(row["locked_until"] == row["expires_at"] for row in rows)
+        assert all(row["pinned"] for row in rows)
 
 
 def test_a_failed_mark_still_keeps_the_key(
@@ -830,6 +867,7 @@ def test_taking_over_needs_the_row_as_it_was_read(idempotent: TestClient) -> Non
         ({"token": "other"}, False),
         ({"status_code": 201}, False),
         ({"committed_at": gone}, False),
+        ({"pinned": True}, False),
     ):
         asyncio.run(clear_keys())
         plant("race", locked_until=gone, **changed)
@@ -942,6 +980,166 @@ def test_a_lost_key_refuses_commits_elsewhere_too(
         assert payments_on("other") == 0
         [row] = stored_keys()
         assert (row["token"], row["status_code"]) == ("retry", None)
+
+
+UNAVAILABLE_AFTER_500 = (
+    "The request with this Idempotency-Key already ran (status 500), but its "
+    "response was not kept; look up the result instead of retrying."
+)
+
+
+def test_commits_elsewhere_that_raise_keep_their_key(
+    make_database: Callable[[str], str],
+) -> None:
+    """A key pinned for a commit elsewhere is never released: it may have landed.
+
+    A COMMIT whose reply is lost after it landed and one the database refused
+    raise alike, so neither runs again: retries learn the request ran.
+    """
+    databases = {"default": make_database("keys"), "other": make_database("other")}
+    with idempotent_app(databases) as client:
+        for outcome in ("unreported", "rejected"):
+            headers = {"Idempotency-Key": outcome}
+            path = f"/pay?outcome={outcome}&database=other"
+            first = client.post(path, headers=headers)
+            retry = client.post(path, headers=headers)
+
+            assert first.status_code == 500, outcome
+            assert (retry.status_code, retry.json()["code"]) == (
+                409,
+                "idempotency_response_unavailable",
+            ), outcome
+            assert retry.json()["detail"] == UNAVAILABLE_AFTER_500
+
+        assert payments_on("other") == 1  # The commit whose reply was lost, once.
+        assert [
+            (row["status_code"], row["body"], row["pinned"], row["committed_at"])
+            for row in stored_keys()
+        ] == [(500, None, True, None)] * 2
+
+
+def test_a_request_cancelled_while_committing_elsewhere_keeps_its_key(
+    make_database: Callable[[str], str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancelled while it waits for the COMMIT's reply, it still never runs twice."""
+    databases = {"default": make_database("keys"), "other": make_database("other")}
+    committed = asyncio.Event()
+    original = sample_routes.PaymentsUnitOfWork._commit
+
+    async def commit_then_wait(self: sample_routes.PaymentsUnitOfWork) -> None:
+        await original(self)  # The COMMIT lands...
+        if not committed.is_set():  # ...and the first one's reply never comes.
+            committed.set()
+            await asyncio.Event().wait()
+
+    async def pay(scope: Scope, receive: Receive, send: Send) -> None:
+        async with sample_routes.PaymentsUnitOfWork(database="other") as uow:
+            await uow.session.execute(insert(sample_routes.payments))
+            await uow.commit()
+        await send({"type": "http.response.start", "status": 201, "headers": []})
+        await send({"type": "http.response.body", "body": b"paid"})
+
+    async def scenario() -> list[Message]:
+        middleware = idempotency.IdempotencyMiddleware(pay)
+        request = asyncio.create_task(
+            middleware(KEYED_POST, receive_empty_body, discard)
+        )
+        async with asyncio.timeout(30):
+            await committed.wait()
+        request.cancel()  # The client left, or a deadline passed, mid-COMMIT.
+        with pytest.raises(asyncio.CancelledError):
+            await request  # Once the key is settled.
+        sent: list[Message] = []
+
+        async def send(message: Message) -> None:
+            sent.append(message)
+
+        await middleware(KEYED_POST, receive_empty_body, send)
+        await connections.close_all()
+        return sent
+
+    with idempotent_app(databases):
+        monkeypatch.setattr(
+            sample_routes.PaymentsUnitOfWork, "_commit", commit_then_wait
+        )
+        start, body = asyncio.run(scenario())
+
+        assert start["status"] == 409
+        assert b'"code":"idempotency_response_unavailable"' in body["body"]
+        assert payments_on("other") == 1
+        [row] = stored_keys()
+        assert (row["status_code"], row["body"], row["pinned"]) == (500, None, True)
+
+
+def test_requests_that_fail_before_committing_elsewhere_release_their_key(
+    make_database: Callable[[str], str],
+) -> None:
+    """Nothing was pinned, so nothing can have committed: the retry runs."""
+    databases = {"default": make_database("keys"), "other": make_database("other")}
+    with idempotent_app(databases) as client:
+        headers = {"Idempotency-Key": "abandoned"}
+        path = "/pay?outcome=abandoned&database=other"
+        first = client.post(path, headers=headers)
+        retry = client.post(path, headers=headers)
+
+        assert (first.status_code, retry.status_code) == (500, 500)
+        assert "Idempotent-Replayed" not in retry.headers
+        assert payments_on("other") == 0
+        assert stored_keys() == []
+
+
+def test_commits_elsewhere_note_the_pin_before_they_commit(
+    make_database: Callable[[str], str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The operation knows its key is pinned while the COMMIT runs; not on the keys'."""
+    databases = {"default": make_database("keys"), "other": make_database("other")}
+    seen: dict[str, bool] = {}
+    original = sample_routes.PaymentsUnitOfWork._commit
+
+    async def commit(self: sample_routes.PaymentsUnitOfWork) -> None:
+        operation = running_operation()
+        assert operation is not None
+        seen[self.alias] = operation.pinned
+        await original(self)
+
+    with idempotent_app(databases) as client:
+        monkeypatch.setattr(sample_routes.PaymentsUnitOfWork, "_commit", commit)
+        for database in ("other", "default"):
+            client.post(
+                f"/pay?database={database}", headers={"Idempotency-Key": database}
+            )
+
+    assert seen == {"other": True, "default": False}
+
+
+def test_a_pinned_key_is_kept_whatever_the_request_knows(
+    idempotent: TestClient,
+) -> None:
+    """The release refuses a key pinned in its row, or by its operation.
+
+    A pin whose own reply was lost is in the row only; either one keeps the
+    key, with the status and no body. A key neither pinned is released.
+    """
+    config = registry.settings(IdempotencySettings)
+    for key, row_pinned, operation_pinned in (
+        ("row", True, False),
+        ("operation", False, True),
+        ("neither", False, False),
+    ):
+        plant(key, pinned=row_pinned)
+        operation = Operation(keyed(key), "first", pinned=operation_pinned)
+
+        async def finish(operation: Operation = operation) -> None:
+            await idempotency._finish(config, operation, {"status": 503}, None)
+            await connections.close_all()
+
+        asyncio.run(finish())
+
+    rows = {row["key_hash"]: row for row in stored_keys()}
+    assert set(rows) == {keyed("row"), keyed("operation")}
+    assert all(
+        (row["status_code"], row["body"]) == (503, None) for row in rows.values()
+    )
 
 
 def test_storage_limits_are_inclusive(idempotent: TestClient) -> None:
@@ -1065,6 +1263,160 @@ def run_raw(app: ASGIApp, *incoming: Message) -> list[Message]:
         return sent
 
     return asyncio.run(scenario())
+
+
+KEYED_POST: Scope = {
+    "type": "http",
+    "method": "POST",
+    "path": "/raw",
+    "headers": [(b"idempotency-key", b"raw")],
+}
+
+
+async def receive_empty_body() -> Message:
+    """The body of a keyed POST: empty, in one message."""
+    return {"type": "http.request"}
+
+
+async def discard(message: Message) -> None:
+    """Send nowhere."""
+
+
+async def cancel_while_running(*, settle: bool = True) -> None:
+    """Send a keyed POST, then cancel it as anyio does, mid-request.
+
+    A cancelled cancel scope cancels every wait inside it until the scope
+    exits (level-triggered), the cleanup's too. With ``settle``, wait for
+    the key's own task to finish afterwards.
+    """
+    running = asyncio.Event()
+
+    async def handler(scope: Scope, receive: Receive, send: Send) -> None:
+        running.set()
+        await asyncio.Event().wait()
+
+    async with anyio.create_task_group() as group:
+        group.start_soon(
+            idempotency.IdempotencyMiddleware(handler),
+            KEYED_POST,
+            receive_empty_body,
+            discard,
+        )
+        await running.wait()
+        group.cancel_scope.cancel()
+    if settle and (settling := owned()):
+        await asyncio.wait(settling, timeout=5)
+
+
+@pytest.mark.usefixtures("idempotent")
+def test_a_request_cancelled_by_a_cancel_scope_releases_its_key() -> None:
+    """Its key is free for a retry at once, not after the lease (R03)."""
+
+    async def scenario() -> None:
+        await cancel_while_running()
+        await connections.close_all()
+
+    asyncio.run(scenario())
+    assert stored_keys() == []
+
+
+@pytest.mark.parametrize("failure", ["raises", "hangs"])
+@pytest.mark.usefixtures("idempotent")
+def test_a_key_a_cancelled_request_could_not_settle_is_logged(
+    failure: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """No one is left to raise to, so the failure is logged; the lease applies."""
+
+    async def finish(*args: object) -> None:
+        await asyncio.sleep(0)
+        if failure == "raises":
+            raise RuntimeError("database gone")
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(idempotency, "_finish", finish)
+    monkeypatch.setattr(idempotency, "SETTLE_TIMEOUT", 0.01)
+
+    async def scenario() -> None:
+        await cancel_while_running()
+        await asyncio.sleep(0)  # Done callbacks run on the next loop pass.
+        await connections.close_all()
+
+    with caplog.at_level(logging.ERROR, "domainkit.contrib.idempotency"):
+        asyncio.run(scenario())
+
+    (record,) = caplog.records
+    assert record.getMessage() == (
+        "Could not store the response of a cancelled request or release its "
+        "Idempotency-Key; the key is held until its lease runs out"
+    )
+    assert record.exc_info
+    expected = RuntimeError if failure == "raises" else TimeoutError
+    assert type(record.exc_info[1]) is expected
+    assert len(stored_keys()) == 1  # Held until its lease runs out.
+
+
+@pytest.mark.usefixtures("idempotent")
+def test_a_key_left_settling_at_shutdown_is_stopped_quietly(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Shutdown cancels the settling task like any other, within its budget."""
+
+    async def finish(*args: object) -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(idempotency, "_finish", finish)
+
+    async def scenario() -> list[str]:
+        await cancel_while_running(settle=False)
+        (settling,) = owned()
+        assert settling.get_name() == "domainkit.idempotency.settle"
+        stuck = await shutdown(asyncio.get_running_loop().time() + 5)
+        await asyncio.sleep(0)
+        await connections.close_all()
+        return stuck
+
+    with caplog.at_level(logging.ERROR, "domainkit.contrib.idempotency"):
+        assert asyncio.run(scenario()) == []
+    assert caplog.records == []
+
+
+@postgres_only
+def test_claims_skip_the_expired_keys_another_claim_is_purging(
+    idempotent: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without a worker, concurrent claims do not queue on one purge (N14)."""
+    gone = datetime.now(UTC) - timedelta(seconds=1)
+    for key in ("old-1", "old-2"):
+        plant(key, expires_at=gone)
+    monkeypatch.setattr(idempotency, "MESSAGING", "not.installed")
+
+    async def created(scope: Scope, receive: Receive, send: Send) -> None:
+        await send({"type": "http.response.start", "status": 201, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    async def scenario() -> list[Message]:
+        sent: list[Message] = []
+
+        async def send(message: Message) -> None:
+            sent.append(message)
+
+        async with connections.engine().connect() as purging:
+            await purging.begin()
+            await purging.execute(
+                select(idempotency_keys)
+                .where(idempotency_keys.c.expires_at < datetime.now(UTC))
+                .with_for_update()
+            )
+            async with asyncio.timeout(5):  # Without SKIP LOCKED: waits for ever.
+                await idempotency.IdempotencyMiddleware(created)(
+                    KEYED_POST, receive_empty_body, send
+                )
+            await purging.rollback()
+        await connections.close_all()
+        return sent
+
+    assert asyncio.run(scenario())[0]["status"] == 201
+    assert len(stored_keys()) == 3  # The two expired keys, locked, and "raw".
 
 
 async def clear_keys() -> None:

@@ -43,6 +43,31 @@ Memory caches are emptied before every test, so no test sees what another
 cached. Redis caches are left alone: give the test settings their own
 `KEY_PREFIX`.
 
+Error reporters (`ERROR_REPORTERS`) and the logging thread work in the
+background ([runtime.md](runtime.md#logging-and-error-reports)): what a test
+reported is sent, and what it logged is written, before the next test
+starts. To check what a reporter received inside the test, call
+`domainkit.reporting.flush_reports()` first:
+
+```python
+# tests/test_reports.py
+from domainkit.conf import override_settings
+from domainkit.reporting import flush_reports, report_error
+
+seen = []
+
+
+def remember(exc, context):
+    seen.append(str(exc))
+
+
+def test_reports_reach_the_reporter():
+    with override_settings(ERROR_REPORTERS=["tests.test_reports.remember"]):
+        report_error(ValueError("boom"))
+    flush_reports()
+    assert seen == ["boom"]
+```
+
 Fixtures for domain events and background work come with messaging's own
 plugin, `-p domainkit.contrib.messaging.testing`, which projects made by
 `domainkit init` enable too: `captured_events`, `outbox` (assert what was
@@ -275,11 +300,31 @@ AssertionError: Expected at most 6 queries, 7 ran:
 They count the statements of every engine of the process, in every thread
 and event loop, so a `TestClient`'s requests count; `using="reports"`
 counts one alias only. Each statement sent to the driver counts once, an
-`executemany` too; connecting and committing do not. An authenticated
+`executemany` too; connecting and committing do not, nor the timeouts a
+PostgreSQL transaction sets for itself under a deadline or PgBouncer
+([runtime.md](runtime.md#what-keeps-to-it)). An authenticated
 request costs a few statements of its own (the token, the user, its groups
 and permissions), so prefer `assert_max_queries` for whole requests and
 `assert_num_queries` for code you call directly. Without the fixtures,
 import them from `domainkit.testing`.
+
+## Blocking the event loop
+
+`pytest --detect-blocking` fails a test that holds its event loop for 0.1
+seconds or more in one step (`--blocking-seconds` raises the bar): a sync
+HTTP client, `time.sleep`, or a CPU-heavy loop inside `async def`. Every
+loop the tests start runs in asyncio's debug mode, the test's async loop
+and the clients' alike; fixtures are not timed. The failure quotes
+asyncio's report of the slow step. See
+[runtime.md](runtime.md#finding-blocking-code).
+## Outgoing calls
+
+Code that calls other services through `domainkit.http.client` is tested
+without them: `stub(handler)` sends every call made in its block to
+`handler`, a function of an `httpx2.Request` that returns an
+`httpx2.Response` ([runtime.md](runtime.md#outgoing-http-calls)). Both
+clients carry the block's context into the application, so calls made
+while serving a request are stubbed too.
 
 ## In generated projects
 

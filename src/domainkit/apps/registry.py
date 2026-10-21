@@ -2,7 +2,7 @@
 
 import difflib
 from collections.abc import AsyncIterator, Iterable, Iterator
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
 from typing import Final, cast
 
 from pydantic import BaseModel, ValidationError
@@ -10,6 +10,7 @@ from pydantic import BaseModel, ValidationError
 from domainkit.apps.config import DomainConfig
 from domainkit.conf import describe_errors, settings, unwrap_settings
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.utils.closing import close_in_turn
 from domainkit.utils.readiness import failing_checks
 
 
@@ -94,13 +95,26 @@ class DomainRegistry:
         return value
 
     @asynccontextmanager
-    async def lifespan(self) -> AsyncIterator[None]:
-        """Start domains in order and stop started ones in reverse, even on failure."""
-        async with AsyncExitStack() as stack:
+    async def lifespan(
+        self, *, stop_within: float | None = None
+    ) -> AsyncIterator[None]:
+        """Start domains in order and stop started ones in reverse, even on failure.
+
+        Stopping takes at most ``stop_within`` seconds (None: no limit). A
+        domain may use what is left of them, less a little kept for each
+        domain still to stop (``close_in_turn``): one whose ``shutdown``
+        hangs is cut off, and the domains started before it still stop.
+        Every domain is stopped; the first failure is raised, and later ones
+        are logged.
+        """
+        started: list[DomainConfig] = []
+        try:
             for config in self:
                 await config.startup()
-                stack.push_async_callback(config.shutdown)
+                started.append(config)
             yield
+        finally:
+            await close_in_turn(started[::-1], _stop, within=stop_within)
 
     async def check(self, seconds: float) -> list[str]:
         """Run every domain's readiness check; return the labels that failed."""
@@ -130,6 +144,11 @@ class DomainRegistry:
                 + ", ".join(_describe_unknown(label, labels) for label in unrouted)
                 + "."
             )
+
+
+async def _stop(config: DomainConfig) -> None:
+    """Run the domain's own ``shutdown``."""
+    await config.shutdown()
 
 
 def _describe_unknown(name: str, known: list[str]) -> str:

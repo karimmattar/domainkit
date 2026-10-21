@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import importlib
 import io
+import logging
 import os
 import time
 import uuid
@@ -13,13 +14,21 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from sqlalchemy import delete, event, insert, select, update
+from prometheus_client import REGISTRY
+from pydantic import ValidationError
+from sqlalchemy import delete, event, func, insert, select, update
 
-from domainkit import setup
+from domainkit import clock, setup
 from domainkit.apps import registry
+from domainkit.clock import freeze_time
 from domainkit.conf import override_settings, settings
+from domainkit.context import RequestContext, bind_request
 from domainkit.contrib.audit import apps as audit_apps
 from domainkit.contrib.audit import record
+from domainkit.contrib.audit import seals as seals_module
+from domainkit.contrib.audit.management.commands.auditseal import (
+    Command as SealCommand,
+)
 from domainkit.contrib.audit.management.commands.auditverify import (
     Command as VerifyCommand,
 )
@@ -37,16 +46,20 @@ from domainkit.contrib.audit.seals import (
     link,
     seal,
     seal_all,
+    unsealed_backlog,
     verify,
 )
+from domainkit.contrib.audit.settings import AuditSettings
 from domainkit.contrib.audit.tables import audit_keys, audit_log, audit_seals
 from domainkit.db import connections
-from domainkit.ledger import MemoryLedger, ledgers
+from domainkit.ledger import LedgerEntry, LedgerKeyNotFound, MemoryLedger, ledgers
 from domainkit.management import CommandError, call_command
 from domainkit_tests.conftest import POSTGRES_VARIABLE
 from domainkit_tests.test_postgres import Migration
 
 pytestmark = pytest.mark.anyio
+
+WINDOW = AuditSettings().SEAL_LATE_WINDOW
 
 AUDIT = "domainkit.contrib.audit"
 ALPHA = "domainkit_tests.sample_domains.alpha"
@@ -253,18 +266,18 @@ async def test_sealing_goes_in_batches(tables: None) -> None:
     assert (await verify("default")).intact
 
 
-async def test_late_rows_are_sealed_within_the_lookback_only(tables: None) -> None:
-    """A row that commits after newer ones is sealed after them, if not too old."""
+async def test_late_rows_are_sealed_within_the_late_window_only(tables: None) -> None:
+    """A row that commits after newer ones is sealed after them, if not too late."""
     now = datetime.now(UTC)
     await add(now)
     await seal("default")
-    late = await add(now - LOOKBACK + timedelta(minutes=1))
-    too_late = await add(now - LOOKBACK - timedelta(minutes=1))
+    late = await add(now - WINDOW + timedelta(seconds=1))
+    too_late = await add(now - WINDOW - timedelta(seconds=1))
 
     assert await seal("default") == 1
 
     assert [each["entry_id"] for each in await seals()][-1] == late
-    report = await verify("default")
+    report = await verify("default", now=now + LOOKBACK)  # Once it is a day old.
     assert (report.unsealed, report.intact) == (1, False)
     assert too_late not in [each["entry_id"] for each in await seals()]
 
@@ -293,12 +306,12 @@ async def test_rows_of_the_same_instant_are_sealed_in_id_order(
     assert [each["entry_id"] for each in await seals()] == [earlier, later]
 
 
-async def test_the_lookback_includes_its_first_instant(tables: None) -> None:
-    """A row exactly ``LOOKBACK`` before the newest sealed one is sealed."""
+async def test_the_late_window_includes_its_first_instant(tables: None) -> None:
+    """A row exactly ``SEAL_LATE_WINDOW`` before the newest sealed one is sealed."""
     now = datetime.now(UTC)
     await add(now)
     await seal("default")
-    edge = await add(now - LOOKBACK)
+    edge = await add(now - WINDOW)
 
     assert await seal("default") == 1
 
@@ -330,6 +343,148 @@ async def test_sealing_goes_on_when_the_newest_sealed_row_is_gone(
     await add(now - 3 * LOOKBACK)
 
     assert await seal("default") == 1
+
+
+async def test_a_sealer_whose_clock_runs_ahead_strands_no_rows(
+    tables: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PostgreSQL's clock caps the mark and dates the seals, not the sealer's host.
+
+    A host 40 minutes ahead seals a row it wrote on its own clock; then hosts
+    with right clocks write on. On SQLite, which lives in the sealer's
+    process, the host's clock is the database's: those rows are out of
+    reach, and only the late pass seals them.
+    """
+    real = clock.now
+    ahead = timedelta(minutes=40)
+    now = real()
+    await add(now - timedelta(minutes=1))
+    await add(now + ahead)  # Written, and then sealed, by the fast host.
+    monkeypatch.setattr(clock, "now", lambda: real() + ahead)
+    await seal("default")
+    monkeypatch.setattr(clock, "now", real)
+    others = [await add(now + timedelta(seconds=n)) for n in (5, 60, 300)]
+    monkeypatch.setattr(clock, "now", lambda: real() + ahead)
+    reachable = await unsealed_backlog("default", WINDOW)
+
+    sealed = await seal("default")
+
+    monkeypatch.setattr(clock, "now", real)
+    chain = await seals()
+    on_postgres = connections.engine().dialect.name == "postgresql"
+    assert (reachable, sealed) == ((3, 3) if on_postgres else (0, 0))
+    stamped = [each["sealed_at"] - real() for each in chain]
+    assert all(
+        stamp < timedelta(minutes=1) if on_postgres else stamp > timedelta(minutes=30)
+        for stamp in stamped
+    )
+    assert await seal("default", late=True) == (0 if on_postgres else 3)
+    assert [each["entry_id"] for each in await seals()][2:] == others
+
+
+async def test_rows_out_of_the_window_are_sealed_late_only_when_asked(
+    tables: None,
+) -> None:
+    """``late=True`` seals them into the chain, flagged; ``verify`` counts them.
+
+    Changing such a row afterwards is found like any other change.
+    """
+    now = datetime.now(UTC)
+    first = await add(now)
+    await seal("default")
+    late = [await add(now - WINDOW - timedelta(hours=n)) for n in (1, 3, 2)]
+    new = await add(now + timedelta(seconds=1))
+
+    assert await seal("default") == 1
+    assert await seal("default", late=True, batch=2) == 3
+
+    chain = await seals()
+    assert [(each["entry_id"], each["late"]) for each in chain] == [
+        (first, False),
+        (new, False),
+        (late[1], True),  # Oldest first.
+        (late[2], True),
+        (late[0], True),
+    ]
+    report = await verify("default", now=now + LOOKBACK + timedelta(hours=4))
+    assert (report.intact, report.unsealed, report.late) == (True, 0, 3)
+    await change(update(audit_log).where(audit_log.c.id == late[0]).values(actor="eve"))
+    report = await verify("default")
+    assert (report.intact, report.changed) == (False, [late[0]])
+
+
+async def test_late_seals_never_move_the_mark_back(tables: None) -> None:
+    """The mark is the newest row sealed in time, whatever was sealed late after it."""
+    now = datetime.now(UTC)
+    await add(now)
+    await seal("default")
+    await add(now - timedelta(days=3))
+    assert await seal("default", late=True) == 1
+    within_window = await add(now - WINDOW + timedelta(seconds=1))
+    await add(now - 2 * WINDOW)  # In reach only from the late row's time.
+
+    assert await seal("default") == 1
+
+    assert [each["entry_id"] for each in await seals()][-1] == within_window
+    assert await unsealed_backlog("default", WINDOW) == 0
+
+
+async def test_a_late_pass_leaves_the_windows_first_instant_alone(
+    tables: None,
+) -> None:
+    """A row exactly ``SEAL_LATE_WINDOW`` before the mark is in reach, not late."""
+    now = datetime.now(UTC)
+    await add(now)
+    await seal("default")
+    edge = await add(now - WINDOW)
+
+    assert await seals_module._seal_pass("default", 10, 1, WINDOW, late=True) == (
+        0,
+        True,
+    )
+    assert await seal("default") == 1
+    assert [(each["entry_id"], each["late"]) for each in await seals()][-1] == (
+        edge,
+        False,
+    )
+
+
+async def test_a_frozen_clock_dates_the_seals_on_every_database(
+    tables: None,
+) -> None:
+    """Under ``freeze_time`` the frozen clock decides, on PostgreSQL too."""
+    with freeze_time("2040-01-01T00:00:00Z"):
+        await add(datetime(2040, 1, 1, tzinfo=UTC))
+        await seal("default")
+
+    assert [each["sealed_at"] for each in await seals()] == [
+        datetime(2040, 1, 1, tzinfo=UTC)
+    ]
+
+
+async def test_a_late_pass_without_a_mark_seals_nothing_more(tables: None) -> None:
+    """With nothing sealed, or the mark's row gone, every row is in reach anyway.
+
+    So a late pass then seals nothing, even rows committed since the usual
+    pass: they are not late, and the next usual pass seals them.
+    """
+    assert await seal("default", late=True) == 0
+    fresh = await add(datetime.now(UTC))
+    assert await seals_module._seal_pass("default", 10, 1, WINDOW, late=True) == (
+        0,
+        True,
+    )
+    assert await seals() == []
+    await change(delete(audit_log).where(audit_log.c.id == fresh))
+
+    now = datetime.now(UTC)
+    newest = await add(now)
+    await seal("default")
+    await change(delete(audit_log).where(audit_log.c.id == newest))
+    await add(now - 3 * LOOKBACK)
+
+    assert await seal("default", late=True) == 1
+    assert [each["late"] for each in await seals()] == [False, False]
 
 
 async def test_only_rows_older_than_the_lookback_count_as_unsealed(
@@ -501,6 +656,60 @@ async def test_an_anchor_from_a_clock_ahead_holds_none_back(tables: None) -> Non
     assert same_instant is None
 
 
+async def test_an_anchor_written_meanwhile_is_not_written_again(
+    tables: None,
+) -> None:
+    """Another sealer, or a late write, anchors between the read and the write."""
+
+    class Raced(MemoryLedger):
+        """Another writer anchors right after each read."""
+
+        async def read(self, key: bytes, revision: int | None = None) -> LedgerEntry:
+            found = await super().read(key, revision)
+            await self.append(key, found.value)
+            return found
+
+    ledger = Raced()
+    now = datetime(2026, 10, 18, 9, 0, tzinfo=UTC)
+    every = timedelta(hours=1)
+    await add(now)
+    await seal("default")
+    old = Anchor(0, "0" * 64, now - 2 * every)  # Due for a new one.
+    await ledger.append(anchor_key("default"), old.encode())
+
+    raced = await anchor("default", ledger, every=every, now=now)
+
+    assert raced is None
+    # The old anchor, and the other writer's; this one did not land.
+    assert await ledger.revision_count(anchor_key("default"), limit=5) == 2
+
+
+async def test_a_first_anchor_written_meanwhile_is_not_written_again(
+    tables: None,
+) -> None:
+    """The same race, when the read found no anchor at all."""
+
+    class Raced(MemoryLedger):
+        """Another writer anchors first, right after a read that found none."""
+
+        async def read(self, key: bytes, revision: int | None = None) -> LedgerEntry:
+            try:
+                return await super().read(key, revision)
+            except LedgerKeyNotFound:
+                await self.append(key, b"another sealer's anchor")
+                raise
+
+    ledger = Raced()
+    now = datetime(2026, 10, 18, 9, 0, tzinfo=UTC)
+    await add(now)
+    await seal("default")
+
+    raced = await anchor("default", ledger, every=timedelta(hours=1), now=now)
+
+    assert raced is None
+    assert await ledger.revision_count(anchor_key("default"), limit=5) == 1
+
+
 async def test_seals_left_unanchored_are_reported(tables: None) -> None:
     """Seals the newest anchor misses for over ``every`` + ``LOOKBACK``."""
     every = timedelta(hours=2)
@@ -550,6 +759,207 @@ async def test_without_a_ledger_rows_are_only_sealed(tables: None) -> None:
     assert await ledgers["audit"].revision_count(anchor_key("default"), limit=5) == 0
 
 
+async def test_a_run_goes_on_from_the_last_row_it_sealed(tables: None) -> None:
+    """Late rows first, from the window; then the new ones, past each batch."""
+    now = datetime.now(UTC)
+    await add(now)
+    await seal("default")
+    late = await add(now - timedelta(minutes=1))
+    new = [await add(now + timedelta(seconds=n)) for n in range(1, 5)]
+
+    assert await seal("default", batch=2) == 5
+
+    assert [each["entry_id"] for each in await seals()][1:] == [late, *new]
+    assert (await verify("default")).intact
+
+
+async def test_rows_of_one_instant_split_across_batches_are_all_sealed(
+    tables: None,
+) -> None:
+    """A batch goes on past the last row's id too, not only its time."""
+    now = datetime.now(UTC)
+    async with connections.engine().begin() as connection:
+        for n in (1, 2, 3):
+            await connection.execute(
+                insert(audit_log).values(
+                    id=uuid.UUID(int=n),
+                    occurred_at=now,
+                    actor="system",
+                    action="test.added",
+                    outcome="success",
+                    details={},
+                )
+            )
+
+    assert await seal("default", batch=1) == 3
+    assert [each["entry_id"] for each in await seals()] == [
+        uuid.UUID(int=n) for n in (1, 2, 3)
+    ]
+
+
+def unsealed_gauge() -> float | None:
+    """The backlog gauge of ``default``."""
+    return REGISTRY.get_sample_value("audit_unsealed_rows", {"database": "default"})
+
+
+async def test_a_run_seals_its_batches_at_most_and_counts_what_is_left(
+    tables: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The rest waits for the next run; a backlog past the threshold is logged."""
+    start = datetime.now(UTC)
+    for n in range(6):
+        await add(start + timedelta(seconds=n))
+
+    with (
+        override_settings(AUDIT={"LEDGER": "audit", "SEAL_BACKLOG_WARNING": 1}),
+        caplog.at_level(logging.WARNING, "domainkit.contrib.audit.seals"),
+    ):
+        assert await seal("default", batch=2, batches=2) == 4
+        assert unsealed_gauge() == 2
+        assert caplog.messages == [
+            (
+                "Audit sealing of 'default' is behind: 2 rows wait to be sealed. "
+                "Raise AUDIT.SEAL_BATCHES or seal more often; until sealed, rows "
+                "can be changed unnoticed"
+            )
+        ]
+        caplog.clear()
+        assert await seal("default", batch=2, batches=1) == 2  # 1 left: quiet.
+        assert unsealed_gauge() == 0
+        assert caplog.messages == []
+
+    with override_settings(AUDIT={"LEDGER": "audit", "SEAL_BACKLOG_WARNING": 2}):
+        for n in range(10, 13):
+            await add(start + timedelta(seconds=n))
+        assert await seal("default", batch=1, batches=1) == 1
+        assert unsealed_gauge() == 2  # At the threshold: quiet.
+        assert await seal("default", batch=3, batches=1) == 2  # Caught up.
+        assert unsealed_gauge() == 0
+    assert caplog.messages == []
+    assert (await verify("default")).intact
+
+
+async def test_sealing_takes_its_window_and_bound_from_settings(
+    tables: None,
+) -> None:
+    """``SEAL_LATE_WINDOW`` and ``SEAL_BATCHES``, for ``seal`` and ``seal_all``."""
+    now = datetime.now(UTC)
+    await add(now)
+    await seal("default")
+    an_hour_late = await add(now - timedelta(hours=1))
+    await add(now - timedelta(hours=4))  # Past the window, even from the late row.
+
+    with override_settings(
+        AUDIT={"SEAL_LATE_WINDOW": timedelta(hours=2), "SEAL_BATCHES": 1}
+    ):
+        assert await seal_all() == {"default": (1, None)}
+        assert await seal("default", batch=1) == 0
+
+    assert [each["entry_id"] for each in await seals()][-1] == an_hour_late
+
+
+async def test_a_window_given_to_seal_wins_over_the_setting(tables: None) -> None:
+    """``seal(late_window=...)`` looks as far back as it is told."""
+    now = datetime.now(UTC)
+    await add(now)
+    await seal("default")
+    await add(now - timedelta(hours=1))
+
+    assert await seal("default") == 0
+    assert await seal("default", late_window=timedelta(hours=2)) == 1
+
+
+async def test_the_backlog_is_what_sealing_could_still_reach(tables: None) -> None:
+    """Unsealed rows from the window on; none sealed yet: every one."""
+    now = datetime.now(UTC)
+    for n in range(3):
+        await add(now + timedelta(seconds=n))
+    assert await unsealed_backlog("default", WINDOW) == 3
+
+    await seal("default")
+    await add(now - 2 * WINDOW)  # Too late: verify's to report.
+    await add(now + timedelta(seconds=9))
+    assert await unsealed_backlog("default", WINDOW) == 1
+
+
+async def test_the_backlog_counts_from_the_windows_first_instant(
+    tables: None,
+) -> None:
+    """A row exactly ``late_window`` before the head's is still within reach."""
+    head = datetime.now(UTC) - timedelta(minutes=1)  # In the past: the mark.
+    await add(head)
+    await seal("default")
+    await add(head - WINDOW)
+    await add(head - WINDOW - timedelta(microseconds=1))
+
+    assert await unsealed_backlog("default", WINDOW) == 1
+
+
+async def test_counting_a_backlog_stops_at_its_limit(
+    tables: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Past ``BACKLOG_COUNT_LIMIT`` rows the count reads the limit."""
+    monkeypatch.setattr(seals_module, "BACKLOG_COUNT_LIMIT", 2)
+    now = datetime.now(UTC)
+    for n in range(3):
+        await add(now + timedelta(seconds=n))
+    assert await unsealed_backlog("default", WINDOW) == 2
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"SEAL_LATE_WINDOW": timedelta(0)},
+        {"SEAL_LATE_WINDOW": timedelta(days=1, seconds=1)},
+        {"SEAL_BATCHES": 0},
+        {"SEAL_BATCHES": 10_001},
+        {"SEAL_BACKLOG_WARNING": 0},
+    ],
+)
+def test_sealing_limits_are_bounded(bad: dict[str, object]) -> None:
+    """A window of nothing or past a day, and runs of nothing, are refused."""
+    with pytest.raises(ValidationError):
+        AuditSettings.model_validate(bad)
+
+
+async def test_sealing_makes_the_anonymous_keys_of_today_and_tomorrow(
+    tables: None,
+) -> None:
+    """At midnight the day's key exists: no request inserts it (N10)."""
+    with freeze_time("2026-10-19T23:55:00Z") as frozen:
+        await seal_all()
+        async with connections.engine().connect() as connection:
+            subjects = await connection.scalars(
+                select(audit_keys.c.subject).order_by(audit_keys.c.subject)
+            )
+            assert list(subjects) == [
+                "anonymous:2026-10-19",
+                "anonymous:2026-10-20",
+            ]
+
+        frozen.move_to("2026-10-20T00:00:01Z")
+        inserts: list[str] = []
+
+        def count(conn: Any, cursor: Any, statement: str, *args: Any) -> None:  # noqa: ANN401
+            if statement.startswith("INSERT INTO domainkit_audit_keys"):
+                inserts.append(statement)
+
+        engine = connections.engine().sync_engine
+        event.listen(engine, "before_cursor_execute", count)
+        try:
+            with bind_request(RequestContext("r", "203.0.113.7", "POST", "/x")):
+                await record("shop.ordered")
+        finally:
+            event.remove(engine, "before_cursor_execute", count)
+
+        await seal_all()  # Keys there already are kept.
+
+    assert inserts == []
+    async with connections.engine().connect() as connection:
+        keys = await connection.scalar(select(func.count()).select_from(audit_keys))
+    assert keys == 3  # 19th, 20th, and now the 21st.
+
+
 def test_seal_and_verify_commands(
     audited: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -580,6 +990,7 @@ def test_seal_and_verify_commands(
 
         assert run("auditseal") == "default: sealed 4 rows, anchored #4.\n"
         assert run("auditseal") == "default: sealed 0 rows.\n"
+        assert run("auditseal", "--late") == "default: sealed 0 rows.\n"
         assert run("auditverify") == "default: 4 seals, 1 anchors: intact.\n"
         assert run("auditverify", "--database", "reports") == (
             "reports: 0 seals, 0 anchors: intact.\n"
@@ -622,6 +1033,50 @@ def test_auditverify_counts_seals_left_unanchored() -> None:
     """Anchoring that stopped is a problem of its own."""
     assert _summary(Report("default", sealed=5, anchors=1, unanchored=2)) == (
         "default: 5 seals, 1 anchors: NOT INTACT.\n  seals left unanchored: 2"
+    )
+
+
+def test_auditverify_counts_rows_sealed_late() -> None:
+    """Rows sealed late are no problem by themselves, but worth knowing."""
+    assert _summary(Report("default", sealed=5, anchors=1, late=2)) == (
+        "default: 5 seals, 1 anchors: intact.\n"
+        "  rows sealed late (open to change for longer): 2"
+    )
+
+
+def test_auditseal_explains_its_late_option() -> None:
+    """``--help`` says what ``--late`` seals, and what it costs."""
+    usage = SealCommand().create_parser("manage.py", "auditseal").format_help()
+
+    assert (
+        "--late also seal rows that committed later than "
+        "AUDIT.SEAL_LATE_WINDOW, flagged as sealed late (reads the whole trail)"
+    ) in " ".join(usage.split())
+
+
+@pytest.mark.parametrize("late", [False, True])
+def test_auditseal_seals_late_rows_only_with_its_option(
+    audited: str, late: bool
+) -> None:
+    """``auditseal --late`` reaches the rows a plain run leaves alone."""
+
+    async def prepare() -> None:
+        async with connections.engine().begin() as connection:
+            for table in (audit_log, audit_keys, audit_seals):
+                await connection.run_sync(table.create)
+        now = datetime.now(UTC)
+        await add(now)
+        await seal("default")
+        await add(now - 2 * WINDOW)
+        await connections.close_all()
+
+    asyncio.run(prepare())
+    output = io.StringIO()
+    with override_settings(AUDIT={}):  # Seal only: no anchors to count.
+        call_command("auditseal", *(["--late"] if late else []), stdout=output)
+
+    assert (
+        output.getvalue() == f"default: sealed {int(late)} row{'' if late else 's'}.\n"
     )
 
 

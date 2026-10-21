@@ -20,6 +20,7 @@ from ecdsa import NIST256p, SigningKey
 from domainkit.conf import LedgerConfig
 from domainkit.contrib.evidence import Evidence, EvidenceTampered, LedgerEvidenceStore
 from domainkit.ledger import (
+    LedgerChanged,
     LedgerKeyExists,
     LedgerKeyNotFound,
     LedgerTampered,
@@ -120,6 +121,39 @@ async def test_create_writes_only_new_keys(ledger: ImmudbLedger, prefix: bytes) 
     assert (await ledger.create(prefix + b"next", b"v")).transaction > (
         created.transaction
     )
+
+
+async def test_appends_after_a_revision_land_at_most_once(
+    ledger: ImmudbLedger, prefix: bytes
+) -> None:
+    """Immudb refuses a write once a revision came after the one read."""
+    key = prefix + b"k"
+
+    first = await ledger.append(key, b"one", unchanged_since=0)
+    read = await ledger.read(key)
+    second = await ledger.append(key, b"two", unchanged_since=read.transaction)
+    with pytest.raises(LedgerChanged):
+        await ledger.append(key, b"late", unchanged_since=read.transaction)
+    with pytest.raises(LedgerChanged):
+        await ledger.append(key, b"again", unchanged_since=0)
+
+    assert read.transaction == first.transaction
+    assert second.transaction > first.transaction
+    assert await ledger.revision_count(key, limit=5) == 2
+    # The refused writes leave the client's trusted state usable.
+    assert (await ledger.read(key)).value == b"two"
+    assert (await ledger.create(prefix + b"next", b"v")).transaction > (
+        second.transaction
+    )
+
+
+async def test_readiness_has_a_client_of_its_own(
+    ledger: ImmudbLedger, prefix: bytes
+) -> None:
+    """The probe logs in on its own and checks the server's signed state."""
+    await ledger.check()
+    await ledger.append(prefix + b"k", b"v")
+    await ledger.check()
 
 
 async def test_racing_evidence_writers_leave_one_revision(

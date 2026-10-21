@@ -49,6 +49,22 @@ IN_PROGRESS: Final = Gauge(
 DB_POOL: Final = Gauge(
     "db_pool_connections", "Database pool connections.", ["database", "state"]
 )
+ADMITTED: Final = Gauge(
+    "http_requests_admitted",
+    "HTTP requests holding one of the MAX_CONCURRENT_REQUESTS slots.",
+)
+QUEUED: Final = Gauge(
+    "http_requests_queued", "HTTP requests waiting for a slot under the cap."
+)
+SHED: Final = Counter(
+    "http_requests_shed_total",
+    "HTTP requests refused 503 overloaded: the queue was full, or the wait ran out.",
+    ["reason"],
+)
+DEADLINES: Final = Counter(
+    "http_request_deadlines_exceeded_total",
+    "HTTP requests answered 503 deadline_exceeded.",
+)
 
 _refreshers: list[Callable[[], Awaitable[None]]] = []
 logger = logging.getLogger(__name__)
@@ -58,6 +74,26 @@ def register_refresher(refresh: Callable[[], Awaitable[None]]) -> None:
     """Run ``refresh`` before each scrape (to update gauges from a database)."""
     if refresh not in _refreshers:
         _refreshers.append(refresh)
+
+
+def observe_admitted(change: int) -> None:
+    """Count requests taking (1) or giving back (-1) a slot under the cap."""
+    ADMITTED.inc(change)
+
+
+def observe_queued(change: int) -> None:
+    """Count requests starting (1) or ending (-1) a wait for a slot."""
+    QUEUED.inc(change)
+
+
+def observe_shed(reason: str) -> None:
+    """Count one request refused for want of a slot."""
+    SHED.labels(reason).inc()
+
+
+def observe_deadline_exceeded() -> None:
+    """Count one request answered 503 because its deadline passed."""
+    DEADLINES.inc()
 
 
 class MetricsMiddleware:

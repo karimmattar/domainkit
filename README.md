@@ -45,8 +45,14 @@ pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, m
   resource routes, commands and queries, derived schemas, partial changes,
   ETags and conditional writes, field policies, nesting, the generators,
   and the generic admin
+- [docs/runtime.md](https://github.com/karimmattar/domainkit/blob/main/docs/runtime.md): how async work runs:
+  background tasks, clean contexts, the shutdown budget, readiness,
+  event-handler timeouts, and workers and the outbox
 - [docs/cache.md](https://github.com/karimmattar/domainkit/blob/main/docs/cache.md): caches in memory, Redis, and Valkey,
   and shared rate limits
+- [docs/runtime.md](https://github.com/karimmattar/domainkit/blob/main/docs/runtime.md): running under load: request
+  deadlines, load shedding, database timeouts and PgBouncer, and outgoing
+  HTTP calls
 - [docs/contrib.md](https://github.com/karimmattar/domainkit/blob/main/docs/contrib.md): messaging (and workers on RabbitMQ),
   webhooks, audit and records' history, idempotency, evidence, and
   feature flags
@@ -58,10 +64,14 @@ pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, m
   time zones, and number and date formats
 - [docs/uploads.md](https://github.com/karimmattar/domainkit/blob/main/docs/uploads.md): file storages, receiving uploads,
   and serving files
+- [docs/live.md](https://github.com/karimmattar/domainkit/blob/main/docs/live.md): WebSockets and Server-Sent Events,
+  bounded and re-authorized while open, and committed events streamed live
 - [docs/privacy.md](https://github.com/karimmattar/domainkit/blob/main/docs/privacy.md): exporting and erasing a person's
   data, and retention
 - [docs/testing.md](https://github.com/karimmattar/domainkit/blob/main/docs/testing.md): the pytest plugin: test databases,
   sync and async clients, factories, a clock to freeze, and query counts
+- [docs/runtime.md](https://github.com/karimmattar/domainkit/blob/main/docs/runtime.md): how async work runs: event loops,
+  logging off the loop, finding blocking code, free-threaded Python, and servers
 - [docs/versioning.md](https://github.com/karimmattar/domainkit/blob/main/docs/versioning.md): compatibility, deprecations, and releases
 - [docs/adr/](https://github.com/karimmattar/domainkit/tree/main/docs/adr): the decisions behind the design
 - [CHANGELOG.md](https://github.com/karimmattar/domainkit/blob/main/CHANGELOG.md) and [SECURITY.md](https://github.com/karimmattar/domainkit/blob/main/SECURITY.md)

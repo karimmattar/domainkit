@@ -4,10 +4,12 @@ import asyncio
 import base64
 import hashlib
 import threading
+from collections.abc import Callable
 from typing import ClassVar
 
 import pytest
 
+from domainkit.clock import freeze_time
 from domainkit.contrib.auth import hashers
 from domainkit.contrib.auth.hashers import (
     SALT_CHARS,
@@ -349,6 +351,193 @@ def test_pending_calls_free_their_place_when_cancelled_or_failing() -> None:
     assert asyncio.run(scenario()) == 0
 
 
+def test_a_cancelled_call_keeps_its_place_until_its_hash_is_done() -> None:
+    """Giving up frees nothing while a thread still hashes for the caller (N7)."""
+    pool = HashingPool(threads=1, queue=0)
+    started, release = threading.Event(), threading.Event()
+    hashed: list[str] = []
+
+    def slow(value: str) -> str:
+        started.set()
+        release.wait(5)
+        hashed.append(value)
+        return value
+
+    async def scenario() -> int:
+        caller = asyncio.create_task(pool.run(slow, "abandoned"))
+        await asyncio.to_thread(started.wait, 5)
+        caller.cancel()
+        await asyncio.wait([caller], timeout=5)
+        assert caller.cancelled()
+        assert pool.pending == 1  # The thread still hashes for it.
+        with pytest.raises(PasswordChecksBusy):
+            await pool.run(slow, "refused")
+        release.set()
+        # The one thread takes this only after the first hash's place is given back.
+        await asyncio.wrap_future(pool._executor.submit(lambda: None))
+        return pool.pending
+
+    assert asyncio.run(scenario()) == 0
+    assert hashed == ["abandoned"]
+
+
+def test_a_call_cancelled_before_its_turn_frees_its_place_at_once() -> None:
+    """A queued call that never started gives its place back when cancelled."""
+    pool = HashingPool(threads=1, queue=1)
+    started, release = threading.Event(), threading.Event()
+
+    def slow() -> None:
+        started.set()
+        release.wait(5)
+
+    async def scenario() -> int:
+        running = asyncio.create_task(pool.run(slow))
+        await asyncio.to_thread(started.wait, 5)
+        queued = asyncio.create_task(pool.run(slow))
+        await asyncio.sleep(0)
+        assert pool.pending == 2
+        queued.cancel()
+        await asyncio.wait([queued], timeout=5)
+        pending = pool.pending
+        release.set()
+        await running
+        return pending
+
+    assert asyncio.run(scenario()) == 1
+
+
+def test_retry_after_grows_with_the_queue_and_is_jittered() -> None:
+    """Until the pending hashes drain, up to half again; from 1 to 60 seconds."""
+    pool = HashingPool(threads=2, queue=8)
+    pool.seconds_per_hash = 2.0
+
+    waits = {pool.retry_after(10) for _ in range(200)}
+    assert min(waits) >= 10  # 10 hashes of 2 s on 2 threads.
+    assert max(waits) <= 15
+    assert len(waits) > 1
+    assert pool.retry_after(0) == 1
+    assert pool.retry_after(1000) == hashers.MAX_RETRY_AFTER == 60
+
+
+def test_the_pool_learns_how_long_a_hash_takes() -> None:
+    """A moving average of the hashes timed, starting from a guess."""
+    pool = HashingPool(threads=1, queue=0)
+    assert pool.seconds_per_hash == hashers.FIRST_ESTIMATE == 0.25
+
+    async def quick() -> str:
+        return await pool.run(str, 1)
+
+    assert asyncio.run(quick()) == "1"
+    assert 0.2 <= pool.seconds_per_hash < 0.25  # Pulled toward a quick hash.
+
+
+def test_each_hash_moves_the_average_a_fifth_of_the_way() -> None:
+    """A moving average: 80% of what it was, 20% of the hash just timed."""
+    pool = HashingPool(threads=1, queue=0)
+
+    def one_second() -> str:
+        frozen.tick(1.0)
+        return "hashed"
+
+    with freeze_time() as frozen:
+        assert pool._timed(one_second) == "hashed"
+
+    assert pool.seconds_per_hash == pytest.approx(0.8 * 0.25 + 0.2 * 1.0)
+
+
+def test_a_refusal_says_retry_after_a_second_by_default() -> None:
+    """``PasswordChecksBusy()`` without a wait asks for one second."""
+    assert PasswordChecksBusy().headers == {"Retry-After": "1"}
+    assert PasswordChecksBusy(7).headers == {"Retry-After": "7"}
+
+
+def test_the_a_functions_hash_as_priority_only_when_asked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``priority`` reaches the pool; it is off unless given."""
+    asked: list[bool] = []
+
+    class Recording(HashingPool):
+        async def run[T](
+            self, function: Callable[..., T], *args: object, priority: bool = False
+        ) -> T:
+            asked.append(priority)
+            return function(*args)
+
+    monkeypatch.setattr(hashers, "_pool", lambda: Recording(threads=1, queue=0))
+    monkeypatch.setattr(hashers, "make_password", lambda password: "made")
+    monkeypatch.setattr(
+        hashers, "verify_password", lambda password, encoded: PasswordCheck(True)
+    )
+
+    async def scenario() -> None:
+        await amake_password(PASSWORD)
+        await amake_password(PASSWORD, priority=True)
+        await averify_password(PASSWORD, None)
+        await averify_password(PASSWORD, None, priority=True)
+        await acheck_password(PASSWORD, None)
+        await acheck_password(PASSWORD, None, priority=True)
+
+    asyncio.run(scenario())
+    assert asked == [False, True, False, True, False, True]
+
+
+def test_priority_calls_may_take_the_reserved_places() -> None:
+    """Logins fill the pool less the reserved places; password changes, all."""
+    pool = HashingPool(threads=1, queue=1, reserved=1)
+    started, release = threading.Event(), threading.Event()
+
+    def slow() -> None:
+        started.set()
+        release.wait(5)
+
+    async def scenario() -> None:
+        running = asyncio.create_task(pool.run(slow))
+        await asyncio.to_thread(started.wait, 5)
+        with pytest.raises(PasswordChecksBusy):
+            await pool.run(slow)  # One place left, and it is reserved.
+        change = asyncio.create_task(pool.run(slow, priority=True))
+        await asyncio.sleep(0)
+        assert pool.pending == 2
+        with pytest.raises(PasswordChecksBusy):
+            await pool.run(slow, priority=True)
+        release.set()
+        await asyncio.gather(running, change)
+
+    asyncio.run(scenario())
+    assert pool.pending == 0
+
+
+@pytest.mark.parametrize("reserved", [-1, 2])
+def test_the_reserved_places_are_part_of_the_queue(reserved: int) -> None:
+    """None, or up to the whole queue."""
+    with pytest.raises(ValueError, match="reserved must be from 0 to queue"):
+        HashingPool(threads=1, queue=1, reserved=reserved)
+
+
+def test_a_call_the_pool_cannot_take_gives_its_place_back() -> None:
+    """If the threads are gone, the call fails and frees its place."""
+    pool = HashingPool(threads=1, queue=0)
+    pool._executor.shutdown()
+
+    async def scenario() -> None:
+        await pool.run(str, 1)
+
+    with pytest.raises(RuntimeError, match="shutdown"):
+        asyncio.run(scenario())
+    assert pool.pending == 0
+
+
+def test_reserved_places_come_from_settings_within_the_queue(use_auth: UseAuth) -> None:
+    """``HASHING_RESERVED``, 1 by default, never more than ``HASHING_QUEUE``."""
+    use_auth(HASHING_THREADS=2, HASHING_QUEUE=4)
+    assert hashers._pool().reserved == 1
+    use_auth(HASHING_THREADS=2, HASHING_QUEUE=0, HASHING_RESERVED=3)
+    assert hashers._pool().reserved == 0
+    use_auth(HASHING_THREADS=2, HASHING_QUEUE=4, HASHING_RESERVED=3)
+    assert (hashers._pool().capacity, hashers._pool().reserved) == (6, 3)
+
+
 def test_passwords_hash_on_the_configured_pool(
     use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -372,7 +561,7 @@ def test_passwords_hash_on_the_configured_pool(
     assert asyncio.run(scenario()) == ["made", "made"]
     assert all(name.startswith("domainkit-hashing") for name in threads)
     pool = hashers._pool()
-    assert pool is hashers.hashing_pool(3, 5)
+    assert pool is hashers.hashing_pool(3, 5, 1)
     assert pool.capacity == 8
 
 
@@ -381,3 +570,4 @@ def test_hashing_defaults_to_one_thread_and_a_short_queue() -> None:
     defaults = AuthSettings()
 
     assert (defaults.HASHING_THREADS, defaults.HASHING_QUEUE) == (1, 8)
+    assert defaults.HASHING_RESERVED == 1

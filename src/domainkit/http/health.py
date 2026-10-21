@@ -5,10 +5,16 @@
 are always logged. Results are reused for ``READINESS_CACHE_SECONDS`` from
 when their round of checks ended, and probes that come during a round wait
 for it, so a flood of probes costs at most one round of checks per interval.
+
+A round checks domains, databases, ledgers, and caches at once, each check
+within ``READINESS_TIMEOUT``, so a round takes about that long at worst. It
+runs as a background task in a clean context (``domainkit.tasks.spawn``):
+it serves every waiting probe, so it carries none's request.
 """
 
 import asyncio
 import time
+from typing import Final
 
 from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
@@ -19,6 +25,10 @@ from domainkit.cache import caches
 from domainkit.conf import settings
 from domainkit.db.connections import connections
 from domainkit.ledger import ledgers
+from domainkit.tasks import spawn
+
+READINESS_TASK: Final = "domainkit.readiness"
+"""The name of a round of readiness checks' task."""
 
 router = APIRouter(tags=["health"])
 
@@ -56,7 +66,9 @@ async def _failing_checks(request: Request) -> list[str]:
         or running.done()
         or running.get_loop() is not asyncio.get_running_loop()
     ):
-        running = state.readiness_round = asyncio.ensure_future(_check(state))
+        running = state.readiness_round = spawn(
+            _check(state), name=READINESS_TASK, log_errors=False
+        )
     # A probe that gives up does not cancel the round the others wait for.
     return await asyncio.shield(running)
 
@@ -64,11 +76,17 @@ async def _failing_checks(request: Request) -> list[str]:
 async def _check(state: State) -> list[str]:
     """Run every check; keep the result, timed from when the round ended."""
     seconds = settings.READINESS_TIMEOUT
-    failing = [
-        *await registry.check(seconds),
-        *await connections.check_all(seconds),
-        *await ledgers.check_all(seconds),
-        *await caches.check_all(seconds),
-    ]
+    groups = await asyncio.gather(  # Each bounded: wait for all, leave none running.
+        registry.check(seconds),
+        connections.check_all(seconds),
+        ledgers.check_all(seconds),
+        caches.check_all(seconds),
+        return_exceptions=True,
+    )
+    failing: list[str] = []
+    for group in groups:
+        if isinstance(group, BaseException):
+            raise group
+        failing.extend(group)
     state.readiness = (time.monotonic(), failing)
     return failing

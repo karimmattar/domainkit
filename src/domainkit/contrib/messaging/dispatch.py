@@ -10,33 +10,54 @@ to the outbox with their delay, and the relay publishes them when due.
 
 Every delivery is answered, so a failure never holds a consumer's slot: it
 is requeued when its outbox cannot be reached, and acknowledged otherwise.
-A relay waits out database outages as the polling worker does.
+A relay waits out database outages as the polling worker does. Deliveries
+run within the process's ``Budget``, however many queues it consumes.
 
 With ``PUBLISH_ON_COMMIT``, a commit hands its message ids to the loop's
 ``CommitPublisher``, which publishes them in the background: the commit
-never waits on the broker.
+never waits on the broker, and a broker that keeps failing trips its
+breaker, so commits leave their messages to the relays until it recovers.
 """
 
 import asyncio
 import json
 import logging
+import threading
 import uuid
 from collections.abc import Iterable, Sequence
 from contextlib import suppress
+from itertools import batched
 from typing import Final
 from weakref import WeakKeyDictionary
 
-from domainkit.broker import Broker, BrokerError, Delivery, brokers
+from domainkit import lifecycle
+from domainkit.broker import Broker, BrokerError, Delivery, Subscription, brokers
 from domainkit.db.routing import router
+from domainkit.lifecycle import PHASE_ENDS, Phase
+from domainkit.tasks import supervise
 
+from .breaker import Breaker, Watched
+from .budget import Budget
 from .settings import MessagingSettings
-from .worker import Worker, finish
+from .worker import (
+    HELPER_GRACE,
+    OUTAGE_MAX_PAUSE,
+    RELEASE_TIMEOUT,
+    Worker,
+    finish,
+    pause,
+    set_when,
+    wind_down,
+)
 
 try:
-    from .metrics import observe_skipped
+    from .metrics import observe_left, observe_skipped
 except ImportError:  # pragma: no cover - only without the [metrics] extra.
 
     def observe_skipped() -> None:
+        """Record nothing: ``prometheus_client`` is not installed."""
+
+    def observe_left(reason: str, count: int) -> None:
         """Record nothing: ``prometheus_client`` is not installed."""
 
 
@@ -44,8 +65,12 @@ logger = logging.getLogger(__name__)
 
 MAX_UNPUBLISHED: Final = 10_000
 """Committed messages waiting to be published; past it, the relay sends them."""
-CLOSE_TIMEOUT: Final = 5.0
-"""Seconds shutdown waits for committed messages to reach the broker."""
+STOP_CONSUMING_TIMEOUT: Final = 5.0
+"""Seconds a stopping worker waits for the broker to stop its deliveries."""
+ANSWER_TIMEOUT: Final = 5.0
+"""Seconds a stopping worker waits to give back a delivery it will not run."""
+RESTART_BACKOFF: Final = 1.0
+"""Seconds before a crashed publisher starts again; doubling, up to a minute."""
 
 
 class BrokerWorkers:
@@ -58,11 +83,13 @@ class BrokerWorkers:
         config: MessagingSettings,
         *,
         relay: bool = True,
+        budget: Budget | None = None,
     ) -> None:
         """Relay each worker's outbox; run deliveries of ``queues`` from any outbox.
 
         Without ``relay``, only consume: other workers relay, schedule periodic
-        tasks, and clean up, so this one never polls the database.
+        tasks, and clean up, so this one never polls the database. Deliveries
+        run within ``budget`` (default: one of ``CONCURRENCY`` of their own).
         """
         if config.BROKER is None:
             raise ValueError("BrokerWorkers needs MESSAGING.BROKER.")
@@ -71,78 +98,128 @@ class BrokerWorkers:
         self.queues = sorted(set(queues))
         self.config = config
         self.alias = config.BROKER
+        self.budget = budget or Budget(config.CONCURRENCY)
         self._outboxes = {worker.database: worker for worker in workers}
 
     def outbox(self, database: str) -> Worker | None:
         """The worker of ``database``'s outbox, if it hosts domains."""
         if database not in self._outboxes and database in _hosting_aliases():
-            self._outboxes[database] = Worker(self.config, database=database)
+            self._outboxes[database] = Worker(
+                self.config, database=database, budget=self.budget
+            )
         return self._outboxes.get(database)
 
     async def run(self, stop: asyncio.Event) -> None:
         """Relay and consume until ``stop`` is set; then finish the running ones.
 
-        Running deliveries get ``SHUTDOWN_TIMEOUT`` seconds; then, or when
-        ``run`` itself is cancelled, the rest are cancelled, and their
-        messages go back to the outbox.
+        Running deliveries get ``SHUTDOWN_TIMEOUT`` seconds, counted from the
+        stop; then, or when ``run`` itself is cancelled, the rest are
+        cancelled, and their messages go back to the outbox. A broker that
+        is lost or stalled at shutdown cannot skip that drain, nor hold it
+        past ``STOP_CONSUMING_TIMEOUT``.
         """
         broker = brokers[self.alias]
         running: set[asyncio.Task[None]] = set()
+        consuming = _Consuming(stop)
+        async with asyncio.TaskGroup() as group:
 
-        async def handle(delivery: Delivery) -> None:
-            task = asyncio.create_task(self.deliver(delivery))
-            running.add(task)
-            task.add_done_callback(running.discard)
-            await task
+            async def handle(delivery: Delivery) -> None:
+                await self._handle(delivery, group, running, consuming)
 
-        subscription = await broker.consume(
-            self.queues, self.config.CONCURRENCY, handle
-        )
-        try:
+            subscription = await broker.consume(
+                self.queues, self.config.CONCURRENCY, handle
+            )
+            helpers: list[asyncio.Task[None]] = []
             try:
                 if self.relays:
-                    await asyncio.gather(
-                        *(
-                            self._relay_until(worker, broker, stop)
-                            for worker in self.workers
+                    for worker in self.workers:
+                        helpers.append(
+                            group.create_task(self._relay_until(worker, broker, stop))
                         )
-                    )
-                else:
-                    await stop.wait()
+                        helpers.append(group.create_task(worker.clean_until(stop)))
+                await stop.wait()
             finally:
+                # Cancelled itself, the group cancels the relays and cleanup.
+                grace = await self._stop_consuming(subscription)
+                consuming.ended.set()
+            await finish(running, grace)
+            await wind_down(helpers, HELPER_GRACE)
+
+    async def _handle(
+        self,
+        delivery: Delivery,
+        group: asyncio.TaskGroup,
+        running: set[asyncio.Task[None]],
+        consuming: "_Consuming",
+    ) -> None:
+        """Run ``delivery`` once the budget has room; give it back if stopping."""
+        if not await self.budget.acquire(stop=consuming.stop):
+            await consuming.give_back(delivery)
+            return
+        try:
+            task = group.create_task(self.deliver(delivery))
+        except RuntimeError:  # The run is over: nothing new starts.
+            self.budget.release()
+            await consuming.give_back(delivery)
+            return
+        running.add(task)
+        task.add_done_callback(running.discard)
+        task.add_done_callback(lambda _: self.budget.release())
+        await task
+
+    async def _stop_consuming(self, subscription: Subscription) -> float:
+        """Stop new deliveries; return what is left of ``SHUTDOWN_TIMEOUT``."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.config.SHUTDOWN_TIMEOUT
+        try:
+            async with asyncio.timeout(STOP_CONSUMING_TIMEOUT):
                 await subscription.cancel()
-            await finish(running, self.config.SHUTDOWN_TIMEOUT)
-        finally:
-            await finish(running, 0)  # Cancelled: stop the running ones now.
+        except (BrokerError, TimeoutError) as exc:
+            logger.warning(
+                "Could not stop consuming from broker %r (%s); running messages "
+                "still get their time",
+                self.alias,
+                str(exc) or "no answer in time",
+            )
+        return max(deadline - loop.time(), 0.0)
 
     async def _relay_until(
         self, worker: Worker, broker: Broker, stop: asyncio.Event
     ) -> None:
-        """Schedule, clean up, and relay until ``stop``; poll when nothing is due."""
+        """Schedule and relay until ``stop``; poll (or wait for a commit) when idle."""
         batch = self.config.BATCH_SIZE
         outage = worker.outage()
-        while not stop.is_set():
+        wake = asyncio.Event()
+        async with asyncio.TaskGroup() as group:
+            helpers = [
+                group.create_task(set_when(stop, wake)),
+                group.create_task(worker.listen(stop, wake)),
+            ]
             try:
-                await worker.schedule_periodic()
-                await worker.run_cleanup_when_due()
-                relayed = await worker.relay(broker, batch)
-            except Exception as exc:  # noqa: BLE001 - logged; the relay waits.
-                await outage.failed(exc, stop)
-                continue
-            outage.recovered()
-            if relayed < batch:
-                try:
-                    async with asyncio.timeout(self.config.POLL_INTERVAL):
-                        await stop.wait()
-                except TimeoutError:
-                    pass
+                while not stop.is_set():
+                    wake.clear()
+                    try:
+                        await worker.schedule_periodic()
+                        relayed = await worker.relay(broker, batch)
+                    except Exception as exc:  # noqa: BLE001 - logged; it waits.
+                        await outage.failed(exc, stop)
+                        continue
+                    outage.recovered()
+                    if relayed < batch:
+                        await pause(wake, self.config.POLL_INTERVAL)
+                await wind_down(helpers, HELPER_GRACE)
+            finally:
+                for helper in helpers:
+                    helper.cancel()  # Cancelled itself: they stop now.
 
     async def deliver(self, delivery: Delivery) -> None:
         """Run one delivered message, then answer it; every delivery is answered.
 
         It is acknowledged once its outcome is recorded, or when it cannot
         run here. It is requeued, after ``POLL_INTERVAL``, when its outbox
-        cannot be reached.
+        cannot be reached. An answer that fails, however, is logged and left
+        to the broker, which hands the message out again: it never ends the
+        worker, nor cancels the other deliveries.
         """
         try:
             await self._run(delivery)
@@ -164,6 +241,13 @@ class BrokerWorkers:
                 delivery.message_id,
                 delivery.queue,
                 exc,
+            )
+        except Exception:  # Unexpected, but the broker hands it out again too.
+            logger.exception(
+                "Could not answer message %s from queue %r; the broker will hand "
+                "it out again",
+                delivery.message_id,
+                delivery.queue,
             )
 
     async def _run(self, delivery: Delivery) -> None:
@@ -190,14 +274,44 @@ class BrokerWorkers:
             await worker.process(claimed)
 
 
+class _Consuming:
+    """A run's consumers: when they must stop, and when they did."""
+
+    def __init__(self, stop: asyncio.Event) -> None:
+        """Stop consuming once ``stop`` is set."""
+        self.stop = stop
+        self.ended = asyncio.Event()
+        """Set once the broker was asked to stop delivering (or gave up)."""
+
+    async def give_back(self, delivery: Delivery) -> None:
+        """Requeue a delivery that will not run here, once consuming stopped.
+
+        Requeued sooner, the same consumer could be handed it again at once,
+        over and over until it stops.
+        """
+        with suppress(BrokerError, TimeoutError):
+            async with asyncio.timeout(STOP_CONSUMING_TIMEOUT + ANSWER_TIMEOUT):
+                await self.ended.wait()
+                await delivery.requeue()
+
+
 class CommitPublisher:
     """Publishes committed messages in the background, so commits never wait.
 
     One task per event loop offers the submitted ids to the broker, a
-    database at a time, with one worker per database, so queues are declared
-    once. A slow or failing broker delays only this task, never a commit;
-    the backlog stops at ``MAX_UNPUBLISHED``, past which messages wait for
-    the relay, as after a crash. The outbox holds them either way.
+    database at a time, ``BATCH_SIZE`` ids per round, with one worker per
+    database, so queues are declared once. A slow or failing broker delays
+    only this task, never a commit; the backlog stops at
+    ``MAX_UNPUBLISHED``, past which messages wait for the relay, as after a
+    crash, and a broker that keeps failing opens the ``breaker``. The
+    outbox holds the messages either way.
+
+    The task runs while there is work and ends when there is none, so an
+    idle publisher holds nothing of its event loop. It is supervised
+    (``domainkit.tasks.supervise``): it runs in a clean context, never the
+    committing request's, a crash is logged and the task starts again
+    after a pause that doubles with each crash in a row, and shutdown
+    cancels it with the loop's other tasks.
     """
 
     def __init__(self, config: MessagingSettings) -> None:
@@ -209,63 +323,164 @@ class CommitPublisher:
         self.unpublished: dict[str, list[uuid.UUID]] = {}
         self.backlog = 0
         """Messages submitted and not yet offered to the broker."""
+        self.breaker = Breaker(
+            self.alias, config.BREAKER_FAILURES, config.BREAKER_COOLDOWN
+        )
         self._workers: dict[str, Worker] = {}
-        self._wake = asyncio.Event()
-        self._idle = asyncio.Event()
-        self._idle.set()
+        self._watched: Watched | None = None
         self._task: asyncio.Task[None] | None = None
+        self._flushes: list[asyncio.Future[None]] = []
+        self._full = False
 
     def submit(self, database: str, ids: Sequence[uuid.UUID]) -> None:
         """Queue ``ids``, committed to ``database``'s outbox, for publishing."""
+        if not self.breaker.allows():
+            observe_left("breaker", len(ids))
+            return
         if self.backlog + len(ids) > MAX_UNPUBLISHED:
-            logger.warning(
-                "Left %d committed messages to the relay: %d are already waiting",
-                len(ids),
-                self.backlog,
-            )
+            if not self._full:
+                self._full = True
+                logger.warning(
+                    "Left %d committed messages to the relay: %d are already "
+                    "waiting (logged once until the backlog clears)",
+                    len(ids),
+                    self.backlog,
+                )
+            observe_left("backlog", len(ids))
             return
         self.unpublished.setdefault(database, []).extend(ids)
         self.backlog += len(ids)
-        self._idle.clear()
-        self._wake.set()
-        if self._task is None:
-            self._task = asyncio.get_running_loop().create_task(self._run())
+        self._start()
 
     async def flush(self) -> None:
         """Wait until every message submitted so far was offered to the broker."""
-        await self._idle.wait()
-
-    async def close(self) -> None:
-        """Flush for up to ``CLOSE_TIMEOUT``, then stop; the relay sends the rest."""
+        if not self.backlog:
+            return
+        flushed = asyncio.get_running_loop().create_future()
+        self._flushes.append(flushed)
         try:
-            async with asyncio.timeout(CLOSE_TIMEOUT):
-                await self.flush()
-        except TimeoutError:
+            await flushed
+        finally:
+            if flushed in self._flushes:
+                self._flushes.remove(flushed)
+
+    async def close(self, within: float) -> None:
+        """Flush, then stop, within ``within`` seconds; the relay sends the rest.
+
+        The flush keeps back the time a publication it cuts short needs to
+        give its messages back to the outbox (``RELEASE_TIMEOUT``, or half
+        of ``within`` if that is less), so they are unlocked before
+        ``within`` is over, not left locked until their lease runs out.
+        A give-back that takes longer goes on in the task, which shutdown
+        awaits with the other background tasks; so does the give-back of a
+        ``close`` that is cancelled.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + within
+        try:
+            with suppress(TimeoutError):
+                flushed = deadline - min(RELEASE_TIMEOUT, within / 2)
+                async with asyncio.timeout_at(flushed):
+                    await self.flush()
+        finally:
+            task = self._stop()
+        if task is not None:
+            await asyncio.wait({task}, timeout=max(deadline - loop.time(), 0))
+
+    def _stop(self) -> asyncio.Task[None] | None:
+        """Cancel the task and wake every flush; the relay sends what is left.
+
+        A round in flight takes its messages off the backlog as it ends.
+        """
+        if self.backlog:
             logger.warning(
                 "Left %d committed messages to the relay at shutdown", self.backlog
             )
-        if self._task is not None:
-            self._task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._task
-            self._task = None
+            observe_left("shutdown", self.backlog)
+        self.backlog -= sum(map(len, self.unpublished.values()))
+        self.unpublished.clear()
+        task, self._task = self._task, None
+        if task is not None:
+            task.cancel()
+        self._idle()
+        return task
+
+    def _start(self) -> None:
+        """Start the supervised task, unless it runs (or waits to restart)."""
+        if self._task is None:
+            self._task = supervise(
+                self._run,
+                name=f"messaging.publisher.{self.alias}",
+                backoff=RESTART_BACKOFF,
+                max_backoff=OUTAGE_MAX_PAUSE,
+            )
+            self._task.add_done_callback(self._ended)
+
+    def _ended(self, task: asyncio.Task[None]) -> None:
+        """Start again for work submitted meanwhile; otherwise wake flushes.
+
+        Once the task is cancelled (shutdown), what is left goes to the relay.
+        """
+        if task is not self._task:
+            return  # ``close`` let it go.
+        self._task = None
+        if task.cancelled():
+            observe_left("shutdown", self.backlog)
+            self.unpublished.clear()
+            self.backlog = 0
+        if self.unpublished:
+            self._start()
+        else:
+            self._idle()
+
+    def _idle(self) -> None:
+        """Wake every ``flush``: nothing is left to offer."""
+        self._full = False
+        for flushed in self._flushes:
+            if not flushed.done():
+                flushed.set_result(None)
+        self._flushes.clear()
 
     async def _run(self) -> None:
-        """Publish what was submitted, round after round."""
-        while True:
-            await self._wake.wait()
-            self._wake.clear()
+        """Publish what was submitted, ``BATCH_SIZE`` at a time, until none is left.
+
+        Whatever a round does not publish (a failure, a crash, a stop) the
+        relay publishes later; the outbox holds it.
+        """
+        while self.unpublished:
             batch, self.unpublished = self.unpublished, {}
-            for database, ids in batch.items():
-                try:
-                    await self._worker(database).relay_ids(brokers[self.alias], ids)
-                except Exception:  # The relay publishes them on its next round.
-                    logger.exception(
-                        "Could not publish committed messages; the relay will"
-                    )
-                self.backlog -= len(ids)
-            if not self.unpublished:
-                self._idle.set()
+            try:
+                for database, ids in batch.items():
+                    for chunk in batched(ids, self.config.BATCH_SIZE, strict=False):
+                        try:
+                            await self._publish(database, chunk)
+                        except Exception:  # The relay publishes them later.
+                            logger.exception(
+                                "Could not publish committed messages; the relay will"
+                            )
+            finally:
+                self.backlog -= sum(map(len, batch.values()))
+
+    async def _publish(self, database: str, ids: Sequence[uuid.UUID]) -> None:
+        """Publish one round of ``ids``, unless the breaker says to leave them."""
+        if not self.breaker.allows():
+            observe_left("breaker", len(ids))
+            return
+        broker = self._broker()
+        if self.breaker.state == "probing":
+            try:
+                await broker.check()  # Before any row is locked.
+            except BrokerError:
+                observe_left("breaker", len(ids))
+                return
+        await self._worker(database).relay_ids(broker, ids)
+
+    def _broker(self) -> Watched:
+        """``BROKER``, watched by the breaker; replaced with the broker itself."""
+        broker = brokers[self.alias]
+        if self._watched is None or self._watched.inner() is not broker:
+            self._watched = Watched(broker, self.breaker)
+        return self._watched
 
     def _worker(self, database: str) -> Worker:
         """The worker of ``database``'s outbox, kept so it declares queues once."""
@@ -277,21 +492,49 @@ class CommitPublisher:
 _publishers: WeakKeyDictionary[
     asyncio.AbstractEventLoop, dict[MessagingSettings, CommitPublisher]
 ] = WeakKeyDictionary()
+_publishers_lock: Final = threading.Lock()
+"""Held to change or walk ``_publishers``: loops on other threads do too."""
 
 
 def commit_publisher(config: MessagingSettings) -> CommitPublisher:
-    """The running loop's publisher for ``config``."""
+    """The running loop's publisher for ``config``.
+
+    Publishers of loops closed without ``close_publishers`` are dropped
+    here; what they had not published is left to the relay.
+    """
     loop = asyncio.get_running_loop()
-    publishers = _publishers.setdefault(loop, {})
+    with _publishers_lock:
+        for closed in [other for other in _publishers if other.is_closed()]:
+            _publishers.pop(closed, None)
+        publishers = _publishers.setdefault(loop, {})
     if config not in publishers:
         publishers[config] = CommitPublisher(config)
     return publishers[config]
 
 
-async def close_publishers() -> None:
-    """Flush and stop the running loop's publishers (at shutdown)."""
-    for publisher in _publishers.pop(asyncio.get_running_loop(), {}).values():
-        await publisher.close()
+def drain_time() -> float:
+    """Seconds the shutdown's drain phase has, whatever ran before it.
+
+    The phase ends at its share of ``SHUTDOWN_TIMEOUT``, and begins by the
+    end of the domain hooks' share at the latest, so it always has the
+    difference: 20%, 3 seconds of the default 15.
+    """
+    share = PHASE_ENDS[Phase.DRAIN] - PHASE_ENDS[Phase.DOMAINS]
+    return lifecycle.shutdown_timeout() * share
+
+
+async def close_publishers(within: float | None = None) -> None:
+    """Flush and stop the running loop's publishers, at once, within ``within``.
+
+    ``within`` defaults to ``drain_time()``: shutdown runs this in its drain
+    phase, and a publication cut short is given back before the phase ends.
+    """
+    within = drain_time() if within is None else within
+    with _publishers_lock:
+        publishers = _publishers.pop(asyncio.get_running_loop(), {}).values()
+    async with asyncio.TaskGroup() as group:
+        for publisher in publishers:
+            group.create_task(publisher.close(within))
 
 
 def publish_committed(

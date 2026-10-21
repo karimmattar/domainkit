@@ -6,11 +6,13 @@ from importlib.util import find_spec
 from typing import Any, cast
 from weakref import WeakKeyDictionary
 
+from domainkit import lifecycle
 from domainkit.apps import DomainConfig, registry
 from domainkit.broker import brokers
 from domainkit.db import SqlAlchemyUnitOfWork
 from domainkit.db.routing import DatabaseRouter, router
 from domainkit.ddd import DeferredTask, DomainEvent, UnitOfWork
+from domainkit.lifecycle import Phase
 
 from .dispatch import close_publishers
 from .outbox import notify_committed, rows_for, write
@@ -28,11 +30,17 @@ class MessagingConfig(DomainConfig):
     settings_class = MessagingSettings
 
     def ready(self) -> None:
-        """Check the home outbox and broker; expose gauges with Prometheus."""
+        """Check the home outbox and broker; expose gauges with Prometheus.
+
+        Shutdown (``domainkit.lifecycle``) closes the background publishers
+        in its drain phase, in the application and in management commands
+        alike, within the time that phase always has (``drain_time``).
+        """
         config = self.get_settings()
         router.require_standalone(config.DATABASE, "MESSAGING.DATABASE")
         if config.BROKER is not None:
             brokers.config(config.BROKER)
+        lifecycle.register("publishers", close_publishers, phase=Phase.DRAIN)
         if find_spec("prometheus_client") is not None:
             import_module(f"{self.name}.metrics")
 
@@ -57,10 +65,6 @@ class MessagingConfig(DomainConfig):
         rows = _committing.pop(uow, [])
         sql_uow = cast(SqlAlchemyUnitOfWork, uow)
         await notify_committed(self.get_settings(), sql_uow.alias, rows)
-
-    async def shutdown(self) -> None:
-        """Let the background publisher finish, for a few seconds at most."""
-        await close_publishers()
 
     def databases(self, router: DatabaseRouter) -> frozenset[str]:
         """Every hosting target: the outbox commits with each domain's data."""
