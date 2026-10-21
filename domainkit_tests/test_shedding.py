@@ -600,7 +600,9 @@ def posting(app: ASGIApp, body: Body) -> asyncio.Task[list[Message]]:
     return asyncio.create_task(run())
 
 
-async def test_a_request_waiting_for_its_body_holds_no_slot() -> None:
+async def test_a_request_waiting_for_its_body_holds_no_slot(
+    admitted: Counter,
+) -> None:
     """Clients that send headers, then their body slowly or never, hold no slot.
 
     One slot, no queue: while a request waits for its body, another is
@@ -615,6 +617,7 @@ async def test_a_request_waiting_for_its_body_holds_no_slot() -> None:
         body = Body()
         slow = posting(middleware, body)
         await body.waits.reach(1)
+        assert (middleware.slots(1).held, admitted.value) == (0, 0)  # Lent.
         other = Call(middleware)
         await gated.admitted.reach(1)
         gated.gates[0].set()
@@ -623,7 +626,7 @@ async def test_a_request_waiting_for_its_body_holds_no_slot() -> None:
         answer = await slow
 
     assert answer[0]["status"] == 200
-    assert middleware.slots(1).held == 0
+    assert (middleware.slots(1).held, admitted.value) == (0, 0)
 
 
 async def test_a_chunk_takes_a_slot_back_in_turn(
@@ -949,7 +952,12 @@ async def test_exempt_paths_stay_exempt_behind_a_root_path() -> None:
             start=2,
         ):
             probe = Call(middleware, path, root_path=root)
-            await app.admitted.reach(admitted)
+            entered = asyncio.ensure_future(app.admitted.reach(admitted))
+            done, _ = await asyncio.wait(
+                {probe.task, entered}, return_when=asyncio.FIRST_COMPLETED
+            )
+            entered.cancel()
+            assert done == {entered}  # Let in, not refused.
             app.gates[-1].set()
             assert await probe.answered() == 200
         for path, root in (("/api/work", "/api"), ("/api/ready", "")):

@@ -941,7 +941,8 @@ async def test_a_body_that_does_not_arrive_in_time_gets_408(
 
     with override_settings(REQUEST_BODY_TIMEOUT=0.01):
         middleware = RequestBodyLimitMiddleware(read_body)
-    await middleware({"type": "http", "headers": []}, receive, send)
+    async with asyncio.timeout(30):  # Only if the body were not timed.
+        await middleware({"type": "http", "headers": []}, receive, send)
 
     assert sent[0]["status"] == 408
     assert (b"connection", b"close") in sent[0]["headers"]
@@ -1000,15 +1001,16 @@ async def test_the_body_time_counts_every_wait_and_nothing_else() -> None:
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("answering", [False, True])
+@pytest.mark.parametrize("ending", ["body", "answer", "disconnect"])
 async def test_the_body_time_ends_with_the_body_or_the_response(
-    answering: bool,
+    ending: str,
 ) -> None:
-    """Waiting for a disconnect, after the body or once answering, is not timed.
+    """Waiting after the body, once answering, or after a disconnect is not timed.
 
-    The first chunk took longer than the whole budget; the next wait is
+    The first message took longer than the whole budget; the next wait is
     still not cut off.
     """
+    answering = ending == "answer"
     waiting, left = asyncio.Event(), asyncio.Event()
     told: list[Message] = []
 
@@ -1018,7 +1020,9 @@ async def test_the_body_time_ends_with_the_body_or_the_response(
             if not told:
                 clock.tick(20)  # More than the whole budget went on the body.
                 told.append(
-                    {"type": "http.request", "body": b"x", "more_body": answering}
+                    {"type": "http.disconnect"}
+                    if ending == "disconnect"
+                    else {"type": "http.request", "body": b"x", "more_body": answering}
                 )
                 return told[-1]
             waiting.set()
@@ -1034,14 +1038,18 @@ async def test_the_body_time_ends_with_the_body_or_the_response(
             left.set()
             told.append(await listening)
 
+        sent: list[Message] = []
+
         async def send(message: Message) -> None:
-            pass
+            sent.append(message)
 
         with override_settings(REQUEST_BODY_TIMEOUT=10.0):
             middleware = RequestBodyLimitMiddleware(app)
         await middleware({"type": "http", "headers": []}, receive, send)
 
+    assert len(told) == 2  # The second wait ended with the client, not cut off.
     assert told[-1] == {"type": "http.disconnect"}
+    assert [message["status"] for message in sent] == ([200] if answering else [])
 
 
 @pytest.mark.anyio

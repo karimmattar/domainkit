@@ -100,11 +100,12 @@ async def drained(resolver: GuardResolver) -> None:
     await asyncio.wrap_future(resolver._executor.submit(lambda: None))
 
 
-def busy() -> Any:  # noqa: ANN401 - a context manager.
-    """The error of a lookup refused at once: too many are under way."""
-    return pytest.raises(
+def refused_at_once(resolver: GuardResolver, host: str) -> None:
+    """Check that a lookup of ``host`` is refused before any thread takes it."""
+    with pytest.raises(
         socket.gaierror, match=r"^\[Errno -3\] Too many host name lookups"
-    )
+    ):
+        resolver._start(host, 443)  # What lookup() hands a thread, or refuses.
 
 
 @pytest.mark.usefixtures("registered")
@@ -132,12 +133,10 @@ async def test_lookups_past_the_bounds_fail_at_once(lookups: Lookups) -> None:
     resolver = GuardResolver(threads=2, per_host=1)
     first = asyncio.create_task(resolver.lookup("a.test", 443))
     await lookups.started.reach(1)
-    with busy():
-        await resolver.lookup("a.test", 443)  # One of a host at once.
+    refused_at_once(resolver, "a.test")  # One of a host at once.
     second = asyncio.create_task(resolver.lookup("b.test", 443))
     await lookups.started.reach(2)
-    with busy():
-        await resolver.lookup("c.test", 443)  # Two in all.
+    refused_at_once(resolver, "c.test")  # Two in all.
     assert resolver.running == 2
     assert await asyncio.to_thread(lambda: "free") == "free"
 
@@ -160,8 +159,7 @@ async def test_a_lookup_counts_until_its_thread_ends(lookups: Lookups) -> None:
     with pytest.raises(asyncio.CancelledError):
         await gone
     assert resolver.running == 1
-    with busy():
-        await resolver.lookup("other.test", 443)
+    refused_at_once(resolver, "other.test")
 
     lookups.release.set()
     await drained(resolver)
@@ -179,6 +177,7 @@ async def test_a_failed_lookup_is_remembered_for_a_while(lookups: Lookups) -> No
     )
     resolver = GuardResolver()
     with freeze_time("2026-01-01") as clock:
+        clock.tick(3600)  # Far from the real clock: the failure is timed on this one.
         for _ in range(2):
             with pytest.raises(socket.gaierror) as failed:
                 await resolver.lookup("gone.test", 443)
