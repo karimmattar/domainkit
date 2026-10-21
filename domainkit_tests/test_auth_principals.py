@@ -608,6 +608,35 @@ def test_a_last_use_written_elsewhere_is_left(api: Api, statements: list[str]) -
     assert stored_last_used(raw).isoformat().startswith("2026-05-01T10:00:00")
 
 
+def test_touching_a_loaded_token_writes_once_per_period(
+    api: Api, statements: list[str]
+) -> None:
+    """``TokenStore.touch`` trusts the time it loaded, and writes at its end."""
+    create_user("alice")
+    api()
+
+    async def touch(raw: str) -> tuple[bool, Any]:
+        async with AuthUnitOfWork() as uow:
+            token = await uow.tokens.find(raw)
+            assert token is not None
+            written = await uow.tokens.touch(token)
+            await uow.commit()
+        return written, token.last_used_at
+
+    with freeze_time("2026-05-01T10:00:00Z") as clock:
+        raw = run_async(issue("alice"))
+        start = clock.now()
+        assert run_async(touch(raw)) == (True, start)
+        clock.tick(LAST_USED_EVERY - timedelta(seconds=1))
+        statements.clear()
+        assert run_async(touch(raw)) == (False, start)
+        assert "UPDATE" not in statements  # Not due: no statement at all.
+        clock.tick(1)
+        assert run_async(touch(raw)) == (True, start + LAST_USED_EVERY)
+
+    assert stored_last_used(raw) == start + LAST_USED_EVERY
+
+
 def stored_last_used(raw: str) -> Any:  # noqa: ANN401 - a datetime.
     """The ``last_used_at`` stored for token ``raw``."""
 
