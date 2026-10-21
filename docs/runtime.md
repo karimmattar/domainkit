@@ -511,9 +511,12 @@ connection of their pool. An idle worker then starts a committed message
 right away instead of on its next poll, so `POLL_INTERVAL` can be longer.
 Polling stays: a notification is only a hint, sent when the transaction
 commits and lost harmlessly when nobody listens, and a worker whose
-listening connection drops polls until it listens again. With a broker that
-publishes on commit, the broker wakes the workers and nothing is sent. Set
-`MESSAGING.NOTIFY` to `False` to turn it off.
+listening connection drops polls until it listens again. Only rows the
+transaction wrote count (the inserts return them): a row skipped for its
+dedupe key, such as a periodic slot that every worker queues and one
+insert wins, wakes no one. With a broker that publishes on commit, the
+broker wakes the workers and nothing is sent. Set `MESSAGING.NOTIFY` to
+`False` to turn it off.
 
 **Gauges.** `messaging_outbox_messages` and `messaging_outbox_lag_seconds`
 count the outbox at most once per `METRICS_TTL` seconds (15) in each

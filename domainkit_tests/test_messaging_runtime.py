@@ -1661,6 +1661,31 @@ async def test_domain_commits_notify_and_clamp_as_enqueue_does() -> None:
         assert (notified, clamped) == ([], [])
 
 
+@pytest.mark.usefixtures("tables")
+async def test_rows_skipped_for_their_dedupe_key_wake_no_worker() -> None:
+    """Only rows written notify: a periodic slot every worker queues, once.
+
+    Every worker queues each periodic slot under one dedupe key, and all
+    but one insert is skipped; each used to notify every worker anyway.
+    """
+    from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork
+    from domainkit_tests.test_messaging import send_email
+
+    await enqueue(send_email, to="ada@example.com", dedupe_key="slot")
+    seen = statements(connections.engine())
+    for _ in range(3):  # Three workers queue the same slot.
+        await enqueue(send_email, to="ada@example.com", dedupe_key="slot")
+    async with NotesUnitOfWork() as uow:  # A new row beside a skipped one.
+        await uow.notes.add(Note(id=NoteId(uuid.uuid4()), text="t"))
+        uow.defer(send_email, to="ada@example.com", dedupe_key="slot")
+        uow.defer(remember, value=uuid.uuid4(), dedupe_key="other")
+        await uow.commit()
+
+    notified = [tuple(parameters) for text, parameters in seen if "pg_notify" in text]
+    assert notified == ([("domainkit_messages", "default")] if postgres() else [])
+    assert len(await rows()) == 2
+
+
 def test_workers_wake_only_for_their_queues() -> None:
     """A worker of some queues ignores commits to the others."""
     config = MessagingSettings()

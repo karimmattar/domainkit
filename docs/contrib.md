@@ -132,6 +132,24 @@ messages are deleted in small batches, by a task of each worker's own, so
 cleanup never holds up claiming. [runtime.md](runtime.md), "Workers and
 the outbox", has the details.
 
+**Watching PostgreSQL's notification queue.** PostgreSQL keeps sent
+notifications in one queue per server (8 GB by default) until every
+session that listens has read them. A listener that stops reading, such as
+a session that runs `LISTEN` and then sits in a long transaction, or a
+client whose process hangs, holds the queue's tail: the queue fills, and
+once it is full every transaction that sends `NOTIFY` fails at commit,
+domainkit's outbox writes included. Workers listen on a connection of
+their own and throw it away when they stop. Watch the queue:
+
+```sql
+SELECT pg_notification_queue_usage();  -- 0 (empty) to 1 (full)
+```
+
+Alert well before half full (0.5); from there on PostgreSQL also logs a
+warning naming the process that holds the queue back. Ending that process
+(`pg_terminate_backend(pid)`) lets the queue drain; `MESSAGING.NOTIFY =
+False` stops domainkit's notifications, and workers fall back on polling.
+
 **Stopping.** `SIGTERM` (or Ctrl+C) stops claiming (and, with a broker,
 consuming, within five seconds even if the broker does not answer) and
 gives running messages `SHUTDOWN_TIMEOUT` seconds to finish. Messages still running then

@@ -312,6 +312,9 @@ All notable changes to domainkit. The format follows
   background tasks, commit publishers, and brokers: a loop could fail with
   a `KeyError`, and on 3.14t the interpreter could crash. Those registries
   take a lock now.
+- On PostgreSQL, a periodic slot that every worker queues, and that all
+  but one insert skip for its dedupe key, sent a notification per worker,
+  each waking every idle worker. Only rows the inserts return notify now.
 
 ## [0.7.0] - 2026-10-20
 
