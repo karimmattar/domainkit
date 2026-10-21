@@ -3,11 +3,10 @@
 import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta, timezone
-from typing import cast
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import Insert, create_engine
+from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import create_async_engine
 from starlette.types import Message, Receive, Scope, Send
 
@@ -331,7 +330,7 @@ def test_postgres_deduplicated_inserts_compile() -> None:
     (statement,) = insert_statements("postgresql", [row])
 
     dialect = create_async_engine("postgresql+asyncpg://app@db/app").dialect
-    sql = str(cast(Insert, statement).compile(dialect=dialect))
+    sql = str(statement.compile(dialect=dialect))
     assert "ON CONFLICT (dedupe_key) DO NOTHING" in sql
 
 
