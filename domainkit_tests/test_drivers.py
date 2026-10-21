@@ -10,9 +10,12 @@ import pytest
 from pydantic import ValidationError
 
 from domainkit.conf import DatabaseConfig, override_settings
+from domainkit.conf.global_settings import MAX_DATABASE_TIMEOUT
 from domainkit.db import drivers
 from domainkit.db.drivers import (
     DEADLINE_SLACK,
+    MAX_MILLISECONDS,
+    _server_settings,
     client_ssl_context,
     command_timeout,
     connect_args,
@@ -330,6 +333,31 @@ def test_timeouts_are_finite(value: object) -> None:
     """An endless timeout is no timeout: it is refused, not overflowed later."""
     with pytest.raises(ValidationError, match="finite number"):
         config(STATEMENT_TIMEOUT=value)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "STATEMENT_TIMEOUT",
+        "LOCK_TIMEOUT",
+        "IDLE_IN_TRANSACTION_TIMEOUT",
+        "CONNECT_TIMEOUT",
+        "COMMAND_TIMEOUT",
+    ],
+)
+def test_timeouts_are_at_most_what_postgresql_takes(name: str) -> None:
+    """2147483647 milliseconds (24.8 days); a longer one fails every connection."""
+    longest = config(POSTGRES, **{name: MAX_DATABASE_TIMEOUT})
+    assert getattr(longest, name) == MAX_DATABASE_TIMEOUT
+    with pytest.raises(ValidationError, match=r"less than or equal to 2147483\.647"):
+        config(POSTGRES, **{name: MAX_DATABASE_TIMEOUT + 0.001})
+    settings_ms = _server_settings(
+        config(STATEMENT_TIMEOUT=MAX_DATABASE_TIMEOUT, LOCK_TIMEOUT=None)
+    )
+    assert settings_ms == {
+        "statement_timeout": str(MAX_MILLISECONDS),
+        "idle_in_transaction_session_timeout": "60000",
+    }
 
 
 def test_tls_files_cannot_be_replaced(client_certificate: tuple[Path, Path]) -> None:
