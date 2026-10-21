@@ -412,11 +412,12 @@ class ReportsUnitOfWork(SqlAlchemyUnitOfWork):
   work may see different data: a write that commits between them shows in
   the second. When reads must agree with each other, such as an order and
   its lines, use `SNAPSHOT`.
-- **Writes are refused** however they are sent. A flush, or an `INSERT`,
-  `UPDATE`, `DELETE` or DDL statement, raises `ReadOnlyError` before
-  anything is sent. On PostgreSQL the server refuses writes in SQL text
-  too (SQLSTATE 25006), and `commit()` raises `ReadOnlyError` as for any
-  read-only unit of work. Changes left unflushed at the end are dropped.
+- **Writes are refused.** With `STATEMENTS` or `SNAPSHOT`, a flush, or an
+  `INSERT`, `UPDATE`, `DELETE` or DDL statement, raises `ReadOnlyError`
+  before anything is sent. On PostgreSQL the server refuses writes in SQL
+  text too (SQLSTATE 25006), whichever way the unit of work reads, and
+  `commit()` always raises `ReadOnlyError`. Changes left unflushed at the
+  end are dropped.
 - **Deadlines.** A `STATEMENTS` read is cut off at the request's deadline,
   like everything the request awaits, and the driver cancels it on the
   server. Work that shares a deadline without enforcing it, such as a task
