@@ -610,6 +610,36 @@ name. Constraint errors are logged with their SQLSTATE and the
 constraint's name, never with the row's values. SQLite checks foreign keys
 only on connections that turn `PRAGMA foreign_keys` on.
 
+## JSON responses
+
+`domainkit.http.JSONResponse` is Starlette's `JSONResponse` with pydantic's
+encoder (`pydantic_core.to_json`): the same bytes, two to three times
+sooner on a page of resources. Resources, error bodies, and readiness
+answers use it. Where pydantic writes a value otherwise than `json.dumps`
+(a float from 1e-9 up to 1e-4, NaN or Infinity, a `None` key), the content
+goes through `json.dumps` as before, so JSON content gets the same bytes
+and the same errors. Values JSON has no type for, which Starlette refuses,
+pydantic encodes (a `Decimal` as a string); see ADR 0063.
+
+Routes with a response model (a return annotation, or `response_model=`)
+are encoded by pydantic in FastAPI already: leave them FastAPI's default,
+as any response class set turns that off and changes how their floats are
+written. Give it to routes without one, or build it from JSON content:
+
+```python
+from domainkit.http import JSONResponse
+
+
+@router.get("/totals", response_model=None, response_class=JSONResponse)
+async def totals() -> dict[str, object]:
+    return {"count": 3, "amount": "12.50"}
+```
+
+FastAPI passes such a route's value through `jsonable_encoder` first,
+which costs more than encoding it (about 1 ms for 50 resources); a response
+model skips both, but writes a `Decimal` as a string, where
+`jsonable_encoder` makes a float of one returned outside a model.
+
 ## The API surface
 
 ### Operation ids

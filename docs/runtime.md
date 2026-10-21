@@ -290,6 +290,41 @@ for waiting reports, within 5 seconds, before the logs. In tests, call
 `domainkit.reporting.flush_reports()` before checking what was reported
 ([testing.md](testing.md#fixtures)).
 
+`JsonFormatter` writes the same line, byte for byte, that it wrote before
+0.9, in 40% less time (4.5 µs instead of 7.4): text goes through the
+escaping `json.dumps` uses, and the date and time of the timestamp are
+worked out once a second.
+A line the level drops (`domainkit.access` below `INFO`, say) costs the
+request nothing: the access log checks the level before building it.
+
+### Sampling the access log
+
+Every request writes an access line, which costs the event loop and the
+logging thread about 154,000 instructions between them: it adds a third to
+a light request ([performance.md](performance.md)). A busy service can
+write a share of them instead:
+
+```python
+ACCESS_LOG_SAMPLE_RATE = 0.1  # About one request in ten.
+ACCESS_LOG_SLOW_DURATION = 1.0  # Seconds.
+```
+
+- These are always written, whatever the rate: errors (status 500 and up,
+  or no response at all), refusals (401, 403, 429), and requests that took
+  `ACCESS_LOG_SLOW_DURATION` seconds or more.
+- Each other request is written with probability `ACCESS_LOG_SAMPLE_RATE`,
+  drawn on its own: a fair sample whatever the traffic's pattern, which a
+  caller cannot steer. A line left out costs nothing more than the draw.
+- To count requests from a sample, count each sampled line as
+  `1 / ACCESS_LOG_SAMPLE_RATE` requests, and every always-written one as
+  one; the status and `duration_ms` of the line say which it is.
+- Only `domainkit.access` is sampled. Security events (`domainkit.security`:
+  rejected hosts, bodies, and credentials), warnings, and errors of every
+  other logger are written as before, and the audit trail
+  (`domainkit.contrib.audit`) is a table, not a log: sampling never touches
+  either.
+- `1.0`, the default, writes every line, as before.
+
 ## Finding blocking code
 
 A call that blocks inside an `async def` (a sync HTTP client, `time.sleep`,
