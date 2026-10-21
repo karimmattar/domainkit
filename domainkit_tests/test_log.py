@@ -1182,6 +1182,8 @@ def test_any_record_formats_as_json_dumps_wrote_it(
 @example(1792575015.99949999)
 @example(1792575015.9999995)
 @example(1792575015.0000005)
+@example(1792575015.9999993)  # A microsecond short of the next second.
+@example(0.9999994)
 @example(-0.0000004)
 @example(0.0)
 def test_timestamps_are_what_datetime_writes(created: float) -> None:
@@ -1473,3 +1475,104 @@ def test_lines_the_level_drops_are_not_built(monkeypatch: pytest.MonkeyPatch) ->
         access.setLevel(level)
 
     assert built == []
+
+
+def test_the_slow_duration_is_a_second_unless_set() -> None:
+    """``AccessSampler(rate)`` writes every request of a second or more."""
+    sampler = AccessSampler(0.0, draw=Draws(0.99))
+
+    assert sampler.keep(200, 1.0)
+    assert not sampler.keep(200, 0.999)
+
+
+def test_json_formatter_takes_logging_formatters_arguments() -> None:
+    """Positional and keyword arguments reach ``logging.Formatter``, as before."""
+    positional = JsonFormatter(None, "%H:%M")
+    keyword = JsonFormatter(datefmt="%M")
+    line = access_record()
+
+    assert (positional.datefmt, keyword.datefmt) == ("%H:%M", "%M")
+    assert positional.format(line) == reference_line(positional, line)
+
+
+def test_dates_are_utc_whatever_the_local_zone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The cached date and time are UTC's, not the machine's."""
+    monkeypatch.setenv("TZ", "Asia/Tokyo")
+    time.tzset()
+    try:
+        stamp = JsonFormatter().timestamp(0.5)
+        local = datetime.fromtimestamp(0).isoformat()  # noqa: DTZ006 - the zone's.
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+    assert local == "1970-01-01T09:00:00"  # The zone took effect.
+    assert stamp == "1970-01-01T00:00:00.500+00:00"
+
+
+def test_access_lines_carry_the_request_and_its_rounded_duration(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Method, path, status, and milliseconds to one place; 400 and up warn."""
+    caplog.set_level(logging.DEBUG, logger="domainkit.access")
+    middleware = RequestContextMiddleware(answered)
+    context = RequestContext("req-1", None, "POST", "/orders")
+    monkeypatch.setattr(time, "perf_counter", lambda: 100.0)
+
+    middleware._log_access(context, 400, 98.76544)  # 1,234.56 ms ago.
+    middleware._log_access(context, 399, 99.5)
+    monkeypatch.undo()
+
+    lines = [r for r in caplog.records if r.name == "domainkit.access"]
+    assert [(r.getMessage(), r.levelno) for r in lines] == [
+        ("POST /orders 400 1234.6ms", logging.WARNING),
+        ("POST /orders 399 500.0ms", logging.INFO),
+    ]
+    assert lines[0].__dict__["access"] == {
+        "method": "POST",
+        "path": "/orders",
+        "status": 400,
+        "duration_ms": 1234.6,
+    }
+
+
+def test_flush_waits_and_a_close_after_giving_up_waits_no_more(
+    collect: Collect, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``flush()`` waits ``FLUSH_TIMEOUT``; when it gave up, ``close()`` waits 0."""
+    handler = BackgroundHandler.writing_to(collect)
+    waits: list[float] = []
+
+    def stuck(timeout: float) -> bool:
+        waits.append(timeout)
+        return False
+
+    monkeypatch.setattr(handler, "wait_written", stuck)
+
+    handler.flush()
+    handler.close()
+
+    assert waits == [log.FLUSH_TIMEOUT, 0.0]
+
+
+def test_stopping_waits_for_room_no_longer_than_it_may(
+    collect: Collect, seconds: Seconds
+) -> None:
+    """On a full queue, ``stop`` waits its timeout for room, never without a bound.
+
+    Room is what it needs to ask the thread to end.
+    """
+    records = FullQueue(seconds, maxsize=5)
+    listener = BackgroundListener(records, collect)
+    listener.start()
+    worker = listener._worker
+    assert worker is not None
+
+    stopped = listener.stop(5.0)
+
+    records.refusing = False
+    records.put(log._STOP)  # End the thread, which was never asked.
+    worker.join(10)
+    assert not stopped
+    assert records.waits == [5.0]
+    assert not worker.is_alive()

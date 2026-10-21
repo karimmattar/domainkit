@@ -215,6 +215,9 @@ def test_lookalikes_inside_strings_and_other_numbers_pass(encoded: bytes) -> Non
         b"NaN",
         b"[-Infinity]",
         b'{"None":1}',
+        b'[0.00001,"0.00005"]',
+        b'["0.00005",0.00001]',
+        b'["0.00005",0.00001,"0.00005"]',
     ],
 )
 def test_forms_json_dumps_writes_otherwise_are_caught(encoded: bytes) -> None:
