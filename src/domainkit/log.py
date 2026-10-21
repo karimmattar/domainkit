@@ -7,7 +7,9 @@ Query strings and request bodies are never logged.
 ``build_logging_config`` writes through a ``BackgroundHandler``: the caller,
 the event loop included, only puts the record on a bounded queue, and one
 thread writes it out. A full queue drops records and counts them instead of
-waiting, and the count is logged once there is room again. Shutdown waits
+waiting, and the count is logged once there is room again. The last tenth
+of the queue is kept for warnings and errors (``WARNING_RESERVE``), so a
+flood of lower records cannot crowd out a security event. Shutdown waits
 for the queue to drain, within ``FLUSH_TIMEOUT``.
 """
 
@@ -21,6 +23,7 @@ import os
 import queue
 import threading
 import weakref
+from collections import Counter
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, Final
@@ -44,6 +47,11 @@ DEFAULT_QUEUE_SIZE: Final = 10_000
 """Records that may wait for the logging thread; more are dropped and counted."""
 FLUSH_TIMEOUT: Final = 5.0
 """Seconds shutdown waits for queued records to be written."""
+WARNING_RESERVE: Final = 0.1
+"""Part of a logging queue only records at ``WARNING`` and above may fill.
+
+Records below it may fill the rest: 9,000 of the default 10,000 places.
+A queue of fewer than 10 places keeps none."""
 
 
 class ContextFilter(logging.Filter):
@@ -224,10 +232,13 @@ class BackgroundHandler(logging.handlers.QueueHandler):
             "filters": ["context"],
         }
 
-    A full queue drops the record and counts it (``dropped``); the next
-    record that fits is preceded by a warning with the count. Once closed
-    (at exit, or when another ``dictConfig`` replaces it), records are
-    written on the caller's thread, as a plain handler would.
+    A full queue drops the record and counts it (``dropped``), by level;
+    the next record that fits with it is preceded by a warning with the
+    counts. Records below ``WARNING`` may only fill the queue up to
+    ``WARNING_RESERVE`` from the top, so warnings and errors find room
+    when lower records are being dropped. Once closed (at exit, or when
+    another ``dictConfig`` replaces it), records are written on the
+    caller's thread, as a plain handler would.
     """
 
     def __init__(self, records: queue.Queue[Any]) -> None:
@@ -246,7 +257,10 @@ class BackgroundHandler(logging.handlers.QueueHandler):
         self.queue: queue.Queue[Any] = records
         self.dropped = 0
         """Records dropped on a full queue since the handler was made."""
-        self._unreported = 0
+        self._below_warning = records.maxsize - int(records.maxsize * WARNING_RESERVE)
+        """Places records below ``WARNING`` may fill."""
+        self._unreported: Counter[int] = Counter()
+        """Records dropped and not yet reported, by level."""
         self._counting = threading.Lock()
         # Not ``_closed``: ``logging.Handler`` has its own, which it sets.
         self._stopped = False
@@ -286,19 +300,25 @@ class BackgroundHandler(logging.handlers.QueueHandler):
         return prepared
 
     def enqueue(self, record: logging.LogRecord) -> None:
-        """Queue ``record`` without waiting; on a full queue, drop and count it."""
+        """Queue ``record`` without waiting; on a full queue, drop and count it.
+
+        Drops not yet reported go ahead of it in a notice, if both fit;
+        otherwise a later record says them.
+        """
         listener = self._listener
         if listener is None or self._stopped:
             self._write_here(record)
             return
         if not listener.running:
             listener.start()
+        level = record.levelno
         unreported = self._take_unreported()
-        if unreported and not self._offer(self._drop_notice(unreported)):
-            self._count_dropped(1, unreported=unreported)
-            return
+        if unreported is not None and not (
+            self._room(level, 2) and self._offer(self._drop_notice(unreported))
+        ):
+            self._count_dropped(unreported=unreported)
         if not self._offer(record):
-            self._count_dropped(1)
+            self._count_dropped(level)
 
     def flush(self) -> None:
         """Wait, at most ``FLUSH_TIMEOUT``, for queued records to be written."""
@@ -313,11 +333,11 @@ class BackgroundHandler(logging.handlers.QueueHandler):
         if listener is None:
             return True
         unreported = self._take_unreported()
-        if unreported:
+        if unreported is not None:
             try:
                 self.queue.put(self._drop_notice(unreported), timeout=timeout)
             except queue.Full:
-                self._count_dropped(0, unreported=unreported)
+                self._count_dropped(unreported=unreported)
         return listener.flush(timeout)
 
     def close(self) -> None:
@@ -332,37 +352,53 @@ class BackgroundHandler(logging.handlers.QueueHandler):
                 self._listener.stop(FLUSH_TIMEOUT)
         super().close()
 
+    def _room(self, level: int, places: int = 1) -> bool:
+        """Whether ``places`` records of ``level`` fit on the queue now."""
+        top = self.queue.maxsize if level >= logging.WARNING else self._below_warning
+        return self.queue.qsize() + places <= top
+
     def _offer(self, item: logging.LogRecord) -> bool:
-        """Put ``item`` on the queue if there is room."""
+        """Put ``item`` on the queue if there is room for its level."""
+        if not self._room(item.levelno):
+            return False
         try:
             self.queue.put_nowait(item)
         except queue.Full:
             return False
         return True
 
-    def _count_dropped(self, records: int, *, unreported: int = 0) -> None:
-        """Count ``records`` dropped now, plus a count not reported yet."""
+    def _count_dropped(
+        self, level: int | None = None, *, unreported: Counter[int] | None = None
+    ) -> None:
+        """Count a record of ``level`` dropped now, and put back drops not reported."""
         with self._counting:
-            self.dropped += records
-            self._unreported += records + unreported
+            if level is not None:
+                self.dropped += 1
+                self._unreported[level] += 1
+            if unreported is not None:
+                self._unreported.update(unreported)
 
-    def _take_unreported(self) -> int:
+    def _take_unreported(self) -> Counter[int] | None:
         """The drops not reported yet, which are now this caller's to report."""
         if not self._unreported:
-            return 0
+            return None
         with self._counting:
-            unreported, self._unreported = self._unreported, 0
-        return unreported
+            unreported, self._unreported = self._unreported, Counter()
+        return unreported or None
 
-    def _drop_notice(self, count: int) -> logging.LogRecord:
-        """The warning that says ``count`` records were dropped."""
+    def _drop_notice(self, counts: Counter[int]) -> logging.LogRecord:
+        """The warning that says how many records of each level were dropped."""
+        levels = ", ".join(
+            f"{count} {logging.getLevelName(level)}"
+            for level, count in sorted(counts.items())
+        )
         record = logging.LogRecord(
             LOG_LOGGER,
             logging.WARNING,
             __file__,
             0,
-            "Dropped %d log records: the logging queue was full",
-            (count,),
+            "Dropped %d log records (%s): the logging queue was full",
+            (counts.total(), levels),
             None,
         )
         record.__dict__.update(dict.fromkeys(_CONTEXT_FIELDS, "-"))
@@ -381,7 +417,7 @@ class BackgroundHandler(logging.handlers.QueueHandler):
         """
         self.queue = queue.Queue(self.queue.maxsize)
         self._counting = threading.Lock()
-        self._unreported = 0
+        self._unreported = Counter()
         if self._listener is not None:
             self._listener.restart_on(self.queue)
 

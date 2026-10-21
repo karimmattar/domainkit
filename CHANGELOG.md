@@ -240,6 +240,11 @@ All notable changes to domainkit. The format follows
 - Workers run their tasks in `asyncio.TaskGroup`s: a failure in a worker's
   own task (a relay, cleanup) ends the worker with the error instead of
   being lost (R15).
+- The logging queue keeps its last tenth for records at `WARNING` and
+  above: while a stalled stream drops access lines, security events and
+  errors still find room (`domainkit.log.WARNING_RESERVE`; ADR 0051). The
+  drop notice counts by level: `Dropped 52 log records (50 INFO, 2
+  WARNING): the logging queue was full`.
 
 ### Fixed
 

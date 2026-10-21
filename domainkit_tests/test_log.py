@@ -200,9 +200,9 @@ def held() -> Iterator[Collect]:
     handler.resume.set()
 
 
-def record(message: str, *args: object) -> logging.LogRecord:
-    """A record for the ``app`` logger."""
-    return logging.LogRecord("app", logging.INFO, __file__, 1, message, args, None)
+def record(message: str, *args: object, level: int = logging.INFO) -> logging.LogRecord:
+    """A record for the ``app`` logger, at ``level``."""
+    return logging.LogRecord("app", level, __file__, 1, message, args, None)
 
 
 def emit_from_another_thread(handler: logging.Handler, *messages: str) -> None:
@@ -251,7 +251,7 @@ def test_a_full_queue_drops_and_counts_without_waiting(held: Collect) -> None:
         "first",
         "queued 1",
         "queued 2",
-        "Dropped 2 log records: the logging queue was full",
+        "Dropped 2 log records (2 INFO): the logging queue was full",
         "after",
     ]
     notice = held.records[3]
@@ -282,9 +282,103 @@ def test_drops_are_reported_by_the_next_record_that_fits(held: Collect) -> None:
     assert held.lines == [
         "first",
         "queued",
-        "Dropped 2 log records: the logging queue was full",
+        "Dropped 2 log records (2 INFO): the logging queue was full",
         "after",
     ]
+
+
+def test_warnings_have_room_that_records_below_them_cannot_fill(
+    held: Collect,
+) -> None:
+    """A security event during a flood of access lines is kept, not dropped.
+
+    Lines below WARNING fill 9 of 10 places; the tenth takes the warning.
+    The drops are then reported by level, once there is room.
+    """
+    handler = BackgroundHandler.writing_to(held, maxsize=10)
+    handler.handle(record("first"))
+    assert held.entered.wait(10)  # The thread holds "first"; the queue is empty.
+    lines = [f"GET /items {number}" for number in range(12)]
+
+    emit_from_another_thread(handler, *lines)
+    handler.handle(record("Refused credentials", level=logging.WARNING))
+    handler.handle(record("No room left", level=logging.WARNING))
+    handler.handle(record("Nor here", level=logging.ERROR))
+    assert handler.dropped == 5
+    held.resume.set()
+    assert handler.wait_written(10)
+    handler.close()
+
+    assert held.lines == [
+        "first",
+        *lines[:9],
+        "Refused credentials",
+        (
+            "Dropped 5 log records (3 INFO, 1 WARNING, 1 ERROR): the logging queue "
+            "was full"
+        ),
+    ]
+
+
+def test_a_drop_notice_goes_ahead_of_a_record_only_if_both_fit(held: Collect) -> None:
+    """With room for one, the record goes; with room for two, the notice first."""
+    handler = BackgroundHandler.writing_to(held, maxsize=20)  # 18 below WARNING.
+    handler.handle(record("first"))
+    assert held.entered.wait(10)
+    lines = [f"line {number}" for number in range(19)]
+
+    emit_from_another_thread(handler, *lines)  # 18 fit: "line 18" is dropped.
+    handler.handle(record("Refused credentials", level=logging.WARNING))
+    held.resume.set()
+    assert handler.wait_written(10)
+    handler.close()
+
+    assert held.lines == [
+        "first",
+        *lines[:18],
+        "Dropped 1 log records (1 INFO): the logging queue was full",
+        "Refused credentials",
+    ]
+    assert len(held.lines) == 21
+
+
+class LaggingQueue(queue.Queue[Any]):
+    """A queue whose size is read before another thread takes the last place."""
+
+    def qsize(self) -> int:
+        """Empty, as it was just before."""
+        return 0
+
+
+def test_a_record_that_loses_the_last_place_to_another_thread_is_dropped(
+    held: Collect,
+) -> None:
+    """There was room when it looked; there is none when it puts: dropped, counted."""
+    records = LaggingQueue(1)
+    handler = BackgroundHandler(records)
+    handler.listener = BackgroundListener(records, held)
+    handler.handle(record("first"))
+    assert held.entered.wait(10)
+    handler.handle(record("queued"))  # Takes the one place.
+
+    handler.handle(record("lost"))
+
+    assert handler.dropped == 1
+    held.resume.set()
+    handler.close()
+    assert held.lines == [
+        "first",
+        "queued",
+        "Dropped 1 log records (1 INFO): the logging queue was full",
+    ]
+
+
+def test_small_queues_keep_no_room_for_warnings(collect: Collect) -> None:
+    """Below ten places, records of any level may fill the whole queue."""
+    for size, below in [(1, 1), (9, 9), (10, 9), (10_000, 9_000)]:
+        handler = BackgroundHandler(queue.Queue(size))
+        assert handler._below_warning == below
+        handler.close()
 
 
 def test_a_dropped_count_rides_ahead_of_the_next_record(held: Collect) -> None:
@@ -301,7 +395,7 @@ def test_a_dropped_count_rides_ahead_of_the_next_record(held: Collect) -> None:
     handler.close()
 
     assert held.lines[-2:] == [
-        "Dropped 1 log records: the logging queue was full",
+        "Dropped 1 log records (1 INFO): the logging queue was full",
         "after",
     ]
 
@@ -489,13 +583,14 @@ def test_forked_children_start_over(
     assert handler.listener is not None
     assert handler.listener.queue is handler.queue
     assert not handler.listener.running
-    handler._count_dropped(2)  # As if the child's own queue had been full.
+    handler._count_dropped(logging.INFO)  # As if the child's own queue was full.
+    handler._count_dropped(logging.INFO)
     handler.handle(record("child"))
     handler.close()
     parents.put(log._STOP)  # End the parent's thread, which this test left.
     assert collect.lines == [
         "parent",
-        "Dropped 2 log records: the logging queue was full",
+        "Dropped 2 log records (2 INFO): the logging queue was full",
         "child",
     ]
     assert unwired.queue.maxsize == 3

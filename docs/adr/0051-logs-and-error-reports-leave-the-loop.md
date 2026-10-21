@@ -73,3 +73,13 @@ Options considered:
   the list. The lock is reentrant, as `logging`'s is, so a fork from a
   signal handler that interrupted the thread holding it does not wait for
   itself.
+- **Room for warnings.** A stalled stream let access lines fill the queue,
+  and a `domainkit.security` warning was then dropped like any line, with
+  only a count to say so. Records below `WARNING` now fill at most 90% of
+  the queue (`WARNING_RESERVE`); warnings and errors may use the rest. A
+  tenth keeps 1,000 places of the default queue for them, more than a
+  burst of refusals needs, while lines below lose only a tenth of their
+  room; a queue of fewer than 10 places keeps none, so a tiny queue still
+  takes every level. The drop notice counts by level (`Dropped 52 log
+  records (50 INFO, 2 WARNING)`), and goes ahead of a record only when
+  both fit, so it never takes the place of the warning it would precede.
