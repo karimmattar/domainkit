@@ -243,13 +243,21 @@ LOGGING = build_logging_config(log_format="json", level="INFO")
   on a queue of 10,000 (`queue_size`). One thread, `domainkit-logging`,
   formats and writes it; exceptions are formatted there too.
 - A full queue never makes the caller wait. The record is dropped and
-  counted (`handler.dropped`), and the next record that fits is preceded by
-  a warning from `domainkit.log`: `Dropped 120 log records: the logging
-  queue was full`.
+  counted (`handler.dropped`), and the next record that fits with it is
+  preceded by a warning from `domainkit.log` that counts them by level:
+  `Dropped 120 log records (118 INFO, 2 WARNING): the logging queue was
+  full`.
+- Records below `WARNING` fill at most nine tenths of the queue (9,000 of
+  10,000); the last tenth is kept for warnings and errors
+  (`WARNING_RESERVE`), so a flood of access lines while the stream is
+  stalled cannot crowd out a security event or an error. A queue of fewer
+  than 10 places keeps none.
 - At shutdown the lifespan and management commands wait for the queue to
   drain in the `flush` phase, last of all, after error reports; Python's own
   logging shutdown does the same at exit. A stream that stays blocked is
-  given up on, so it cannot hold the process.
+  given up on, so it cannot hold the process: at exit, the handler's
+  `flush()` and `close()` share one `FLUSH_TIMEOUT` (5 seconds), and once
+  the flush gives up the close does not wait again.
 - `queue_size=None` writes on the caller's thread, as plain handlers do:
   for scripts that must see each line before going on.
 
@@ -372,7 +380,11 @@ never across an `await`:
 - the logging and reporting queues, and memory caches (`cache/memory.py`);
 - the registries that keep each loop's background tasks
   (`domainkit.tasks`), commit publishers, and brokers, which a new loop
-  walks to let go of the closed ones.
+  walks to let go of the closed ones;
+- the open live connections counted against `LIVE_MAX_CONNECTIONS` and
+  `LIVE_MAX_CONNECTIONS_PER_CALLER`, and the making of them on first use;
+- the event bus's subscriptions, so a handler subscribed from several
+  threads at once (live events, as clients connect) is subscribed once.
 
 A project's own module-level state needs the same care: a dict two threads
 change at once needs a `threading.Lock` on free-threaded Python, as it would

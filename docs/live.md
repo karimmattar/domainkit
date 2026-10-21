@@ -103,8 +103,32 @@ async def cursor(websocket: WebSocket) -> None: ...
 
 Its keys are `max_lifetime`, `idle_timeout` (None: never idle),
 `message_rate` (None: any), `send_queue`, `send_timeout`, `reauth_interval`
-(None: never), and, for event streams, `keepalive`. They are checked when
-the route is defined.
+(at most 3,600 seconds, as `LIVE_REAUTH_INTERVAL`; None: never), and, for
+event streams, `keepalive`. They are checked when the route is defined.
+
+### What re-checks cannot do
+
+- **A route that opts out keeps what was revoked.** With
+  `LiveLimits(reauth_interval=None)`, a connection keeps a revoked or
+  expired token, a deactivated user, or a removed permission until it
+  closes, at `max_lifetime` at the latest. `check` warns about
+  `LIVE_REAUTH_INTERVAL = None`, not about a route that opts out, so keep
+  such routes few, and their lifetime short.
+- **Credentials that work once fail their first re-check.** A re-check
+  presents the handshake's credentials again. An authenticator built on
+  single-use credentials (a one-time ticket in the URL, a nonce it
+  consumes) refuses them the second time, so the connection closes with
+  1008 after its first interval. Use credentials that can be checked
+  again, such as a token or a session, or opt the route out and accept
+  the point above.
+- **Blocking work on a thread is not cut off at 10 seconds.** The bound
+  cancels what the check awaits. Work an authenticator runs on a thread
+  with `anyio.to_thread.run_sync` or Starlette's `run_in_threadpool` (as
+  FastAPI runs a sync dependency) does not heed it: the check waits until
+  the thread is done, and its answer then counts. Meanwhile the connection
+  stays open, and one that closes waits for the check. Work run with
+  `loop.run_in_executor`, as the password hashing pool does, is left to
+  finish on its own at the bound, and the check fails (1013).
 
 ### Message size
 
@@ -122,6 +146,9 @@ WebSockets and the server's limit is above `MAX_REQUEST_BODY_SIZE`, read
 from its environment variables (`UVICORN_WS_MAX_SIZE`; 16 MiB when unset),
 and a deployed application logs the same warning when it starts, from the
 server's own command line ([reference.md](reference.md#server-limits)).
+uvicorn under gunicorn's uvicorn worker, or under `fastapi run`, always
+reads up to 16 MiB: neither passes it a limit, and reference.md shows how
+to set one. Hypercorn is not recognised, and its limit is yours to set.
 `check` also warns when `WebSocketLimitsMiddleware` is not in `MIDDLEWARE`.
 
 ## Server-Sent Events
@@ -219,9 +246,14 @@ async def order_socket(websocket: WebSocket) -> None:
   client sends is read and dropped.
 - The fields marked `Personal` are left out. `render=` chooses what is sent
   instead: `render=lambda event: {"order": str(event.order_id)}`.
-- Each connection buffers up to `LIVE_SEND_QUEUE` events. One that falls
-  further behind is closed as too slow (1013), and reconnects. Publishing
-  never waits for a client, and never fails the commit.
+- Each connection buffers up to `LIVE_SEND_QUEUE` events its rule allows.
+  One that falls further behind is closed as too slow (1013), and
+  reconnects. Events a client may not see never count against it, however
+  many one commit has: they wait for the rule in a buffer of their own, 16
+  times as large, and only a client that falls that far behind on them is
+  closed too. Publishing never waits for a client, and never fails the
+  commit; it lets the event loop run after each event, so a client that
+  keeps up takes the events of a large commit one by one.
 - `live_events.subscribe(connection, *types, rule=...)` gives the events to
   a route that sends them its own way.
 

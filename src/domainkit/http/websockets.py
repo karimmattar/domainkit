@@ -273,11 +273,17 @@ def server_warnings(app: FastAPI) -> list[str]:
 
     The server is found from this process's command line and environment
     (``domainkit.http.servers``). An application without WebSocket routes
-    never reads a message, so it is not warned.
+    never reads a message, so it is not warned. A failure to tell is
+    logged, never raised: a warning must not stop the application starting.
     """
     if not serves_websockets(app.routes):
         return []
-    return limit_warnings(settings.MAX_REQUEST_BODY_SIZE, server_limits())
+    try:
+        limits = server_limits()
+    except Exception:
+        logger.exception("Could not tell which server runs the application")
+        return []
+    return limit_warnings(settings.MAX_REQUEST_BODY_SIZE, limits)
 
 
 def serves_websockets(routes: Sequence[BaseRoute]) -> bool:

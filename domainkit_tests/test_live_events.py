@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 
 import anyio
 import pytest
+from anyio.abc import TaskStatus
 from starlette.datastructures import State
 from starlette.requests import HTTPConnection
 from starlette.testclient import WebSocketDenialResponse
@@ -36,6 +37,7 @@ from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application, live
 from domainkit.http.live import TOO_SLOW, Closed
 from domainkit.http.live_events import (
+    INTAKE_FACTOR,
     EventRule,
     LiveEvents,
     _send_all,
@@ -193,6 +195,166 @@ async def test_a_subscriber_that_falls_behind_is_closed_as_too_slow() -> None:
     assert str(closed.value) == "Client too slow."
 
 
+@pytest.mark.anyio
+async def test_events_a_subscriber_may_not_see_never_make_it_too_slow() -> None:
+    """One commit of someone else's events: the bystander gets its own next.
+
+    Too slow is judged on the events the rule allows: Alice's own subscriber
+    falls behind on the same commit and is closed.
+    """
+    bus = EventBus()
+    hub = LiveEvents(bus)
+    alice, bob = Someone(), Someone()
+    burst = [granted(alice.id) for _ in range(20)]
+    mine = granted(bob.id)
+
+    with override_settings(LIVE_SEND_QUEUE=2):
+        async with (
+            hub.subscribe(connection(bob), DomainEvent, rule=OwnEvents()) as bobs,
+            hub.subscribe(connection(alice), DomainEvent, rule=OwnEvents()) as alices,
+        ):
+            await bus.publish_all([*burst, mine])
+            assert await anext(bobs) is mine
+            with pytest.raises(Closed) as closed:
+                await anext(alices)
+
+    assert closed.value.closure is TOO_SLOW
+
+
+@pytest.mark.anyio
+async def test_events_waiting_for_the_rule_are_bounded_too() -> None:
+    """Past INTAKE_FACTOR times the send queue unchecked, the subscriber is too slow.
+
+    Events past that bound are not kept: they would be lost unchecked, so
+    the connection is closed instead, to reconnect.
+    """
+    bus = EventBus()
+    hub = LiveEvents(bus)
+    alice, bob = Someone(), Someone()
+
+    with override_settings(LIVE_SEND_QUEUE=2):
+        async with hub.subscribe(
+            connection(bob), DomainEvent, rule=OwnEvents()
+        ) as events:
+            (subscriber,) = hub._subscribers
+            assert subscriber.intake_size == 2 * INTAKE_FACTOR == 32
+            await bus.publish_all([granted(alice.id) for _ in range(32)])
+            assert not subscriber.overflowed
+            await bus.publish_all([granted(alice.id), granted(bob.id)])
+            assert len(subscriber.intake) == 32
+            with pytest.raises(Closed) as closed, anyio.fail_after(10):
+                await anext(events)
+
+    assert closed.value.closure is TOO_SLOW
+
+
+@pytest.mark.anyio
+async def test_a_subscriber_that_keeps_up_takes_each_event_as_it_commits() -> None:
+    """Publishing yields after each event, so a reader never meets a whole commit."""
+    bus = EventBus()
+    hub = LiveEvents(bus)
+    me = Someone()
+    commit = [granted(me.id) for _ in range(3)]
+    taken: list[DomainEvent] = []
+
+    async def read(
+        events: AsyncIterator[DomainEvent],
+        *,
+        task_status: TaskStatus[None] = anyio.TASK_STATUS_IGNORED,
+    ) -> None:
+        task_status.started()
+        async for event in events:
+            taken.append(event)  # noqa: PERF401 - each as it comes; it is cancelled.
+
+    with override_settings(LIVE_SEND_QUEUE=1):
+        async with (
+            hub.subscribe(connection(me), DomainEvent, rule=AllowAny()) as events,
+            anyio.create_task_group() as tasks,
+        ):
+            await tasks.start(read, events)  # Waiting for its first event now.
+            await bus.publish_all(commit)
+            tasks.cancel_scope.cancel()
+
+    assert taken == commit
+
+
+class Gate(BasePermission):
+    """Allows events about its user, after holding the first check at a gate."""
+
+    def __init__(self, user: Someone) -> None:
+        """Hold the first check until ``opened`` is set; ``held`` says it waits."""
+        self.user = user
+        self.held = anyio.Event()
+        self.opened = anyio.Event()
+        self.checked: list[object] = []
+
+    async def has_object_permission(
+        self,
+        request: HTTPConnection,
+        user: Any,  # noqa: ANN401
+        obj: object,
+    ) -> bool:
+        """Wait at the gate the first time; then whether ``obj`` is the user's."""
+        self.checked.append(obj)
+        if not self.held.is_set():
+            self.held.set()
+            await self.opened.wait()
+        return getattr(obj, "user_id", None) == self.user.id
+
+
+@pytest.mark.anyio
+async def test_events_that_come_during_a_check_are_not_forgotten() -> None:
+    """An event taken in while the rule checks another is checked next, not later."""
+    bus = EventBus()
+    hub = LiveEvents(bus)
+    me = Someone()
+    rule = Gate(me)
+    mine = granted(me.id)
+    taken: list[DomainEvent] = []
+
+    async with hub.subscribe(connection(me), DomainEvent, rule=rule) as events:
+
+        async def read() -> None:
+            taken.append(await anext(events))
+
+        with anyio.fail_after(10):  # A bound for a broken test, not a timing.
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(read)
+                await bus.publish(granted(uuid4()))
+                await rule.held.wait()  # The reader is checking someone else's.
+                await bus.publish(mine)
+                rule.opened.set()
+
+    assert taken == [mine]
+
+
+@pytest.mark.anyio
+async def test_an_allowed_event_goes_out_before_later_ones_are_checked() -> None:
+    """The reader checks what had come when it asked, so a stream never holds it."""
+    bus = EventBus()
+    hub = LiveEvents(bus)
+    me = Someone()
+    rule = Gate(me)
+    mine, later = granted(me.id), granted(uuid4())
+    taken: list[DomainEvent] = []
+
+    async with hub.subscribe(connection(me), DomainEvent, rule=rule) as events:
+
+        async def read() -> None:
+            taken.append(await anext(events))
+
+        with anyio.fail_after(10):  # A bound for a broken test, not a timing.
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(read)
+                await bus.publish(mine)
+                await rule.held.wait()  # The reader is checking it.
+                await bus.publish(later)
+                rule.opened.set()
+
+    assert taken == [mine]
+    assert rule.checked == [mine]  # The later one waits for the next read.
+
+
 def test_a_subscription_names_types_and_needs_users() -> None:
     """Nothing to hear, or nobody to check, is a configuration error."""
     hub = LiveEvents()
@@ -231,6 +393,22 @@ async def test_subscribing_hooks_the_bus_once() -> None:
 
     assert bus.handlers_for(DomainEvent) == [hub.publish]
     assert LiveEvents().bus is event_bus
+    await bus.publish(granted(uuid4()))  # Nobody listens: nothing to wait for.
+
+
+@pytest.mark.anyio
+async def test_a_hub_hears_its_bus_again_after_it_was_cleared() -> None:
+    """A cleared bus is hooked again by the next subscription."""
+    bus = EventBus()
+    hub = LiveEvents(bus)
+    me = Someone()
+    event = granted(me.id)
+
+    async with hub.subscribe(connection(me), DomainEvent, rule=AllowAny()):
+        bus.clear()
+    async with hub.subscribe(connection(me), DomainEvent, rule=AllowAny()) as events:
+        await bus.publish(event)
+        assert await anext(events) is event
 
 
 @pytest.mark.anyio
@@ -259,7 +437,7 @@ def test_subscribers_of_a_closed_loop_are_skipped() -> None:
     hub._subscribers.add(stale)
     asyncio.run(hub.publish(granted(uuid4())))
 
-    assert list(stale.buffer) == []
+    assert list(stale.intake) == []
 
 
 class Hub(LiveEvents):
@@ -344,6 +522,10 @@ class Socket:
         self.sent: list[Message] = []
         self.arrived = anyio.Event()
         self.gone = False
+        self.release: anyio.Event | None = None
+        """When set, messages wait for it: the client stopped reading."""
+        self.holding = anyio.Event()
+        """Set once a message waits for ``release``."""
         scope = {"type": "websocket", "path": "/raw", "headers": [], "user": user}
         self.websocket = WebSocket(scope, self.receive, self.send)
 
@@ -360,9 +542,12 @@ class Socket:
         self.more.set()
 
     async def send(self, message: Message) -> None:
-        """Take what the route sends; fail once the client is gone."""
+        """Take what the route sends; wait while held; fail once the client is gone."""
         if self.gone and message["type"] == "websocket.send":
             raise OSError("client gone")
+        if self.release is not None and message["type"] == "websocket.send":
+            self.holding.set()
+            await self.release.wait()
         self.sent.append(message)
         self.arrived.set()
 
@@ -431,6 +616,7 @@ async def test_a_forwarded_socket_that_falls_behind_is_closed() -> None:
     hub = LiveEvents(bus)
     me = Someone()
     socket = Socket(me)
+    first = granted(me.id)
 
     with override_settings(LIVE_SEND_QUEUE=1):
         async with anyio.create_task_group() as tasks:
@@ -438,8 +624,18 @@ async def test_a_forwarded_socket_that_falls_behind_is_closed() -> None:
                 partial(hub.forward, socket.websocket, DomainEvent, rule=AllowAny())
             )
             await socket.wait_sent(1)
+            socket.release = anyio.Event()
+            await bus.publish(first)
+            await socket.holding.wait()  # The client does not take it.
             await bus.publish_all([granted(me.id), granted(me.id)])
+            socket.release.set()
 
+    assert [message["type"] for message in socket.sent] == [
+        "websocket.accept",
+        "websocket.send",
+        "websocket.close",
+    ]
+    assert str(first.event_id) in socket.sent[1]["text"]
     assert socket.sent[-1] == {
         "type": "websocket.close",
         "code": 1013,
@@ -564,15 +760,6 @@ def grant_to(username: str, *keys: str) -> Callable[[], Any]:
     return work
 
 
-def until_closed(socket: Any) -> tuple[int, str]:  # noqa: ANN401 - a test session.
-    """Read ``socket`` until it is closed; the code and reason."""
-    try:
-        while True:
-            socket.receive_json()
-    except WebSocketDisconnect as closed:
-        return closed.code, closed.reason
-
-
 def test_users_see_their_own_committed_events_live(live_client: MakeClient) -> None:
     """A WebSocket hears the events about its user, as they commit; not others'."""
     client = live_client()
@@ -608,8 +795,13 @@ def test_everyone_may_hear_what_a_public_route_sends(live_client: MakeClient) ->
     assert "username" not in created["data"]
 
 
-def test_a_flood_of_events_closes_a_slow_socket(live_client: MakeClient) -> None:
-    """More events at once than LIVE_SEND_QUEUE: closed with 1013, to reconnect."""
+ACTIONS: Final = ("shop.add_product", "shop.change_product", "shop.delete_product")
+
+
+def test_a_commit_larger_than_the_queue_reaches_a_client_that_keeps_up(
+    live_client: MakeClient,
+) -> None:
+    """More events in one commit than LIVE_SEND_QUEUE: each still goes out."""
     client = live_client()
     alice = client.authenticated(username="alice")
 
@@ -617,11 +809,30 @@ def test_a_flood_of_events_closes_a_slow_socket(live_client: MakeClient) -> None
         override_settings(LIVE_SEND_QUEUE=2),
         alice.websocket_connect("/live/users") as socket,
     ):
-        actions = ("add", "change", "delete")
-        run(client, grant_to("alice", *(f"shop.{a}_product" for a in actions)))
-        closed = until_closed(socket)
+        run(client, grant_to("alice", *ACTIONS))
+        received = [socket.receive_json()["data"]["permission"] for _ in ACTIONS]
 
-    assert closed == (1013, "Client too slow.")
+    assert received == list(ACTIONS)
+
+
+def test_another_users_commit_never_closes_a_socket(live_client: MakeClient) -> None:
+    """Grants to Alice, more than Bob's queue: Bob sees none, and stays open."""
+    client = live_client()
+    client.authenticated(username="alice")
+    bob = client.authenticated(username="bob")
+
+    with (
+        override_settings(LIVE_SEND_QUEUE=2),
+        bob.websocket_connect("/live/users") as socket,
+    ):
+        run(client, grant_to("alice", *ACTIONS))
+        run(client, grant_to("bob", VIEW_PRODUCT))
+        event = socket.receive_json()
+
+    assert (event["event"], event["data"]["permission"]) == (
+        "UserPermissionGranted",
+        VIEW_PRODUCT,
+    )
 
 
 @pytest.mark.parametrize(

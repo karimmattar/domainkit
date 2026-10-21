@@ -26,8 +26,11 @@ send every event of those types to whoever may connect.
 
 Each event goes out as its type's name, its ``event_id``, and its fields
 as JSON, but those marked ``Personal``; ``render`` chooses other fields.
-Each connection buffers at most ``LIVE_SEND_QUEUE`` events: one that falls
-further behind is closed as too slow (1013), and reconnects.
+Each connection buffers at most ``LIVE_SEND_QUEUE`` events its rule allows:
+one that falls further behind is closed as too slow (1013), and
+reconnects. Events it may not see never count against it, however many
+one commit publishes; they wait for the rule in a buffer of their own,
+``INTAKE_FACTOR`` times as large, so memory stays bounded.
 
 Events reach the connections of this process only. Behind several
 replicas, a client sees the events committed by the replica it is
@@ -52,6 +55,11 @@ from domainkit.ddd.personal import personal_fields
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.live import TOO_SLOW, Closed, Closure, send_queue
 from domainkit.http.sse import EventSourceResponse, ServerSentEvent
+
+INTAKE_FACTOR: Final = 16
+"""Events of its types, allowed or not, that a connection may hold before
+its rule has seen them: this many times its send queue. One more is too
+slow too, as events would be lost unchecked."""
 
 
 class EventRule(Protocol):
@@ -101,7 +109,14 @@ def payload(event: DomainEvent) -> dict[str, Any]:
 
 
 class _Subscriber:
-    """One connection's subscription: a bounded buffer, read in its own task."""
+    """One connection's subscription: bounded buffers, read in its own task.
+
+    Events of the subscribed types wait in ``intake`` until the reader asks
+    for the next one; it then checks all that came against the rule, and
+    keeps those allowed in ``allowed``. Too slow is judged on what the
+    connection may see: more than ``size`` allowed events waiting. The
+    intake has a bound of its own, ``INTAKE_FACTOR`` times larger.
+    """
 
     def __init__(
         self,
@@ -114,13 +129,20 @@ class _Subscriber:
         self.types = types
         self.rule = rule
         self.size = send_queue(connection.scope)
+        """Allowed events that may wait for the reader; one more is too slow."""
+        self.intake_size = self.size * INTAKE_FACTOR
+        """Events that may wait for the rule; one more is too slow."""
         self.loop = asyncio.get_running_loop()
-        self.buffer: deque[DomainEvent] = deque()
+        self.intake: deque[DomainEvent] = deque()
+        """Events of the subscribed types the rule has not seen yet."""
+        self.allowed: deque[DomainEvent] = deque()
+        """Events the rule allowed, not yet taken by the reader."""
         self.overflowed = False
+        """Whether the intake was full, so events were lost unchecked."""
         self.ready = asyncio.Event()
 
     def offer(self, event: DomainEvent) -> None:
-        """Buffer ``event`` if it is of a subscribed type, in the subscriber's loop."""
+        """Take ``event`` in if it is of a subscribed type, in the subscriber's loop."""
         if not isinstance(event, self.types):
             return
         if asyncio.get_running_loop() is self.loop:
@@ -130,29 +152,43 @@ class _Subscriber:
             self.loop.call_soon_threadsafe(self._put, event)
 
     def _put(self, event: DomainEvent) -> None:
-        """Buffer ``event``; a full buffer marks the subscriber too slow."""
-        if len(self.buffer) < self.size:
-            self.buffer.append(event)
+        """Take ``event`` in; a full intake marks the subscriber too slow."""
+        if len(self.intake) < self.intake_size:
+            self.intake.append(event)
         else:
             self.overflowed = True
         self.ready.set()
 
     async def events(self) -> AsyncIterator[DomainEvent]:
-        """The buffered events the rule allows, as they come.
+        """The events the rule allows, in order, as they come.
 
         Raises:
             Closed: The subscriber fell too far behind (``TOO_SLOW``).
         """
         while True:
-            if self.overflowed:
-                raise Closed(TOO_SLOW)
-            if not self.buffer:
+            await self._check_intake()
+            if self.allowed:
+                yield self.allowed.popleft()
+            elif not self.intake:  # Events that came during the checks go next.
                 self.ready.clear()
                 await self.ready.wait()
-                continue
-            event = self.buffer.popleft()
+
+    async def _check_intake(self) -> None:
+        """Check the events taken in so far, and keep those the rule allows.
+
+        Raises:
+            Closed: ``TOO_SLOW``: the intake overflowed, or more than ``size``
+                allowed events wait.
+        """
+        if self.overflowed:
+            raise Closed(TOO_SLOW)
+        # Only those here now, so a steady stream cannot hold the next one back.
+        for _ in range(len(self.intake)):
+            event = self.intake.popleft()
             if await self._allowed(event):
-                yield event
+                self.allowed.append(event)
+                if len(self.allowed) > self.size:
+                    raise Closed(TOO_SLOW)
 
     async def _allowed(self, event: DomainEvent) -> bool:
         """Whether the rule lets the connection's user see ``event``."""
@@ -174,11 +210,17 @@ class LiveEvents:
         """Guards the subscribers: commits in other threads publish too."""
 
     async def publish(self, event: DomainEvent) -> None:
-        """Offer a committed event to every subscriber; never waits, never fails."""
+        """Offer a committed event to every subscriber; never waits, never fails.
+
+        It then yields to the event loop once, so subscribers in this loop
+        take each event of a commit as it comes, not all of them at once.
+        """
         with self._lock:
             subscribers = tuple(self._subscribers)
         for subscriber in subscribers:
             subscriber.offer(event)
+        if subscribers:
+            await asyncio.sleep(0)
 
     @asynccontextmanager
     async def subscribe(
@@ -197,9 +239,11 @@ class LiveEvents:
             ImproperlyConfigured: No types, or no ``AuthenticationMiddleware``.
         """
         _check(connection, types)
-        self.bus.subscribe(DomainEvent, self.publish)
         subscriber = _Subscriber(connection, types, rule)
         with self._lock:
+            # Hear the bus, once: it ignores repeats. Not just at the first
+            # subscription, as a bus may be cleared (tests restore theirs).
+            self.bus.subscribe(DomainEvent, self.publish)
             self._subscribers.add(subscriber)
         try:
             yield subscriber.events()

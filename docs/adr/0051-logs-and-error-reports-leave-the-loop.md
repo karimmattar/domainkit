@@ -60,3 +60,34 @@ Options considered:
 - A crash that kills the process outright (`SIGKILL`, `os._exit`) loses
   what was queued; `queue_size=None` trades that back for blocking.
 - Reports for 500s are sent after the response, not before it.
+
+## Addendum (2026-10-21): after the security review
+
+- **Forks.** The after-fork hook took the lock that guards the list of
+  handlers. A thread of the parent that held it at the fork never lets go
+  in the child, so the child hung before running anything. The lock is now
+  held across every fork (`os.register_at_fork(before=...,
+  after_in_parent=...)`), so no thread is changing the list then, and the
+  child makes a new lock before reading it, as `logging` does with its own.
+  A fork waits, at most, for a thread to finish adding a handler or copying
+  the list. The lock is reentrant, as `logging`'s is, so a fork from a
+  signal handler that interrupted the thread holding it does not wait for
+  itself.
+- **Room for warnings.** A stalled stream let access lines fill the queue,
+  and a `domainkit.security` warning was then dropped like any line, with
+  only a count to say so. Records below `WARNING` now fill at most 90% of
+  the queue (`WARNING_RESERVE`); warnings and errors may use the rest. A
+  tenth keeps 1,000 places of the default queue for them, more than a
+  burst of refusals needs, while lines below lose only a tenth of their
+  room; a queue of fewer than 10 places keeps none, so a tiny queue still
+  takes every level. The drop notice counts by level (`Dropped 52 log
+  records (50 INFO, 2 WARNING)`), and goes ahead of a record only when
+  both fit, so it never takes the place of the warning it would precede.
+- **One wait at exit.** `logging.shutdown` calls the handler's `flush()`
+  and then its `close()`, and each step inside them (room for the drop
+  notice, room for the marker, the thread reaching it, ending the thread)
+  waited its own 5 seconds: on a stuck stream, exit took 15 seconds. The
+  steps of each call now share one deadline, `close()` right after a
+  `flush()` gets only what is left of the flush's, and none at all once the
+  flush gave up: exit waits `FLUSH_TIMEOUT` at most, as this record says.
+  The thread, a daemon, still writes what it can while the process lives.

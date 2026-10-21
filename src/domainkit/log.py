@@ -7,7 +7,9 @@ Query strings and request bodies are never logged.
 ``build_logging_config`` writes through a ``BackgroundHandler``: the caller,
 the event loop included, only puts the record on a bounded queue, and one
 thread writes it out. A full queue drops records and counts them instead of
-waiting, and the count is logged once there is room again. Shutdown waits
+waiting, and the count is logged once there is room again. The last tenth
+of the queue is kept for warnings and errors (``WARNING_RESERVE``), so a
+flood of lower records cannot crowd out a security event. Shutdown waits
 for the queue to drain, within ``FLUSH_TIMEOUT``.
 """
 
@@ -20,7 +22,9 @@ import logging.handlers
 import os
 import queue
 import threading
+import time
 import weakref
+from collections import Counter
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, Final
@@ -44,6 +48,11 @@ DEFAULT_QUEUE_SIZE: Final = 10_000
 """Records that may wait for the logging thread; more are dropped and counted."""
 FLUSH_TIMEOUT: Final = 5.0
 """Seconds shutdown waits for queued records to be written."""
+WARNING_RESERVE: Final = 0.1
+"""Part of a logging queue only records at ``WARNING`` and above may fill.
+
+Records below it may fill the rest: 9,000 of the default 10,000 places.
+A queue of fewer than 10 places keeps none."""
 
 
 class ContextFilter(logging.Filter):
@@ -97,6 +106,20 @@ class TextFormatter(logging.Formatter):
         """Escape line breaks that untrusted input (such as paths) may contain."""
         line = super().formatMessage(record)
         return line.replace("\r", "\\r").replace("\n", "\\n")
+
+
+def _seconds() -> float:
+    """Real seconds, for the deadlines of waits on the logging thread.
+
+    Not ``domainkit.clock``: these bound real waits on another thread, which
+    a frozen clock would not move.
+    """
+    return time.monotonic()
+
+
+def _left(deadline: float) -> float:
+    """Seconds until ``deadline`` (a ``_seconds`` reading); none once past."""
+    return max(0.0, deadline - _seconds())
 
 
 class _Flush:
@@ -163,16 +186,17 @@ class BackgroundListener(logging.handlers.QueueListener):
         """Wait until what was queued before now is written; False after ``timeout``.
 
         The wait for room on a full queue and the wait for the thread to
-        reach the marker each take at most ``timeout``.
+        reach the marker share the ``timeout``.
         """
         if not self.running:
             return self.queue.empty()
+        deadline = _seconds() + timeout
         marker = _Flush()
         try:
             self.queue.put(marker, timeout=timeout)
         except queue.Full:
             return False
-        return marker.done.wait(timeout)
+        return marker.done.wait(_left(deadline))
 
     def stop(self, timeout: float = FLUSH_TIMEOUT) -> bool:  # type: ignore[override]
         """Write what is queued, then end the thread; False if it is still busy.
@@ -184,11 +208,12 @@ class BackgroundListener(logging.handlers.QueueListener):
             worker, self._worker = self._worker, None
         if worker is None:
             return True
+        deadline = _seconds() + timeout
         try:
             self.queue.put(_STOP, timeout=timeout)
         except queue.Full:
             return False
-        worker.join(timeout)
+        worker.join(_left(deadline))
         return not worker.is_alive()
 
     def restart_on(self, records: queue.Queue[Any]) -> None:
@@ -224,10 +249,13 @@ class BackgroundHandler(logging.handlers.QueueHandler):
             "filters": ["context"],
         }
 
-    A full queue drops the record and counts it (``dropped``); the next
-    record that fits is preceded by a warning with the count. Once closed
-    (at exit, or when another ``dictConfig`` replaces it), records are
-    written on the caller's thread, as a plain handler would.
+    A full queue drops the record and counts it (``dropped``), by level;
+    the next record that fits with it is preceded by a warning with the
+    counts. Records below ``WARNING`` may only fill the queue up to
+    ``WARNING_RESERVE`` from the top, so warnings and errors find room
+    when lower records are being dropped. Once closed (at exit, or when
+    another ``dictConfig`` replaces it), records are written on the
+    caller's thread, as a plain handler would.
     """
 
     def __init__(self, records: queue.Queue[Any]) -> None:
@@ -246,10 +274,17 @@ class BackgroundHandler(logging.handlers.QueueHandler):
         self.queue: queue.Queue[Any] = records
         self.dropped = 0
         """Records dropped on a full queue since the handler was made."""
-        self._unreported = 0
+        self._below_warning = records.maxsize - int(records.maxsize * WARNING_RESERVE)
+        """Places records below ``WARNING`` may fill."""
+        self._unreported: Counter[int] = Counter()
+        """Records dropped and not yet reported, by level."""
         self._counting = threading.Lock()
         # Not ``_closed``: ``logging.Handler`` has its own, which it sets.
         self._stopped = False
+        self._flushed_by: float | None = None
+        """The last ``flush()``'s deadline, which a ``close()`` before it shares."""
+        self._gave_up = False
+        """Whether the last ``flush()`` gave up on a stuck stream."""
         _remember(self)
 
     @property
@@ -286,83 +321,124 @@ class BackgroundHandler(logging.handlers.QueueHandler):
         return prepared
 
     def enqueue(self, record: logging.LogRecord) -> None:
-        """Queue ``record`` without waiting; on a full queue, drop and count it."""
+        """Queue ``record`` without waiting; on a full queue, drop and count it.
+
+        Drops not yet reported go ahead of it in a notice, if both fit;
+        otherwise a later record says them.
+        """
         listener = self._listener
         if listener is None or self._stopped:
             self._write_here(record)
             return
         if not listener.running:
             listener.start()
+        level = record.levelno
         unreported = self._take_unreported()
-        if unreported and not self._offer(self._drop_notice(unreported)):
-            self._count_dropped(1, unreported=unreported)
-            return
+        if unreported is not None and not (
+            self._room(level, 2) and self._offer(self._drop_notice(unreported))
+        ):
+            self._count_dropped(unreported=unreported)
         if not self._offer(record):
-            self._count_dropped(1)
+            self._count_dropped(level)
 
     def flush(self) -> None:
-        """Wait, at most ``FLUSH_TIMEOUT``, for queued records to be written."""
-        self.wait_written(FLUSH_TIMEOUT)
+        """Wait, at most ``FLUSH_TIMEOUT``, for queued records to be written.
+
+        At exit, ``logging.shutdown`` calls it and then ``close()``: they
+        share the one ``FLUSH_TIMEOUT``, and ``close()`` waits no more once
+        this gave up on a stuck stream.
+        """
+        self._flushed_by = _seconds() + FLUSH_TIMEOUT
+        self._gave_up = not self.wait_written(FLUSH_TIMEOUT)
 
     def wait_written(self, timeout: float) -> bool:
         """Report drops, then wait until queued records are written.
 
-        Returns False when they were not written within ``timeout``.
+        Returns False when they were not written within ``timeout``, which
+        the waits for room and for the thread share.
         """
         listener = self._listener
         if listener is None:
             return True
+        deadline = _seconds() + timeout
         unreported = self._take_unreported()
-        if unreported:
+        if unreported is not None:
             try:
                 self.queue.put(self._drop_notice(unreported), timeout=timeout)
             except queue.Full:
-                self._count_dropped(0, unreported=unreported)
-        return listener.flush(timeout)
+                self._count_dropped(unreported=unreported)
+        return listener.flush(_left(deadline))
 
     def close(self) -> None:
         """Write what is queued (within ``FLUSH_TIMEOUT``) and end the thread.
 
-        Later records are written on the caller's thread.
+        Right after ``flush()``, only within what is left of its time, and
+        without waiting if it gave up: the thread then writes on, if it
+        can, while nothing waits for it. Later records are written on the
+        caller's thread.
         """
         if not self._stopped:
-            self.wait_written(FLUSH_TIMEOUT)
+            deadline = _seconds() + (0.0 if self._gave_up else self._time_left())
+            self.wait_written(_left(deadline))
             self._stopped = True
             if self._listener is not None:
-                self._listener.stop(FLUSH_TIMEOUT)
+                self._listener.stop(_left(deadline))
         super().close()
 
+    def _time_left(self) -> float:
+        """Seconds ``close()`` may wait: what ``flush()`` left, or ``FLUSH_TIMEOUT``."""
+        flushed_by, now = self._flushed_by, _seconds()
+        if flushed_by is not None and now < flushed_by:
+            return flushed_by - now
+        return FLUSH_TIMEOUT
+
+    def _room(self, level: int, places: int = 1) -> bool:
+        """Whether ``places`` records of ``level`` fit on the queue now."""
+        top = self.queue.maxsize if level >= logging.WARNING else self._below_warning
+        return self.queue.qsize() + places <= top
+
     def _offer(self, item: logging.LogRecord) -> bool:
-        """Put ``item`` on the queue if there is room."""
+        """Put ``item`` on the queue if there is room for its level."""
+        if not self._room(item.levelno):
+            return False
         try:
             self.queue.put_nowait(item)
         except queue.Full:
             return False
         return True
 
-    def _count_dropped(self, records: int, *, unreported: int = 0) -> None:
-        """Count ``records`` dropped now, plus a count not reported yet."""
+    def _count_dropped(
+        self, level: int | None = None, *, unreported: Counter[int] | None = None
+    ) -> None:
+        """Count a record of ``level`` dropped now, and put back drops not reported."""
         with self._counting:
-            self.dropped += records
-            self._unreported += records + unreported
+            if level is not None:
+                self.dropped += 1
+                self._unreported[level] += 1
+            if unreported is not None:
+                self._unreported.update(unreported)
 
-    def _take_unreported(self) -> int:
+    def _take_unreported(self) -> Counter[int] | None:
         """The drops not reported yet, which are now this caller's to report."""
         if not self._unreported:
-            return 0
+            return None
         with self._counting:
-            unreported, self._unreported = self._unreported, 0
-        return unreported
+            unreported, self._unreported = self._unreported, Counter()
+        return unreported or None
 
-    def _drop_notice(self, count: int) -> logging.LogRecord:
-        """The warning that says ``count`` records were dropped."""
+    def _drop_notice(self, counts: Counter[int]) -> logging.LogRecord:
+        """The warning that says how many records of each level were dropped."""
+        levels = ", ".join(
+            f"{count} {logging.getLevelName(level)}"
+            for level, count in sorted(counts.items())
+        )
         record = logging.LogRecord(
             LOG_LOGGER,
             logging.WARNING,
             __file__,
             0,
-            "Dropped %d log records: the logging queue was full",
-            (count,),
+            "Dropped %d log records (%s): the logging queue was full",
+            (counts.total(), levels),
             None,
         )
         record.__dict__.update(dict.fromkeys(_CONTEXT_FIELDS, "-"))
@@ -381,13 +457,15 @@ class BackgroundHandler(logging.handlers.QueueHandler):
         """
         self.queue = queue.Queue(self.queue.maxsize)
         self._counting = threading.Lock()
-        self._unreported = 0
+        self._unreported = Counter()
         if self._listener is not None:
             self._listener.restart_on(self.queue)
 
 
 _handlers: "weakref.WeakSet[BackgroundHandler]" = weakref.WeakSet()
-_handlers_lock = threading.Lock()
+_handlers_lock = threading.RLock()
+"""Guards ``_handlers``. Reentrant, as ``logging``'s own lock: a fork from a
+signal handler that interrupted the thread holding it takes it again."""
 
 
 def _remember(handler: BackgroundHandler) -> None:
@@ -402,14 +480,35 @@ def _live_handlers() -> list[BackgroundHandler]:
         return list(_handlers)
 
 
+def _before_fork() -> None:
+    """Hold the handlers' lock across a fork, so no thread is changing them then."""
+    _handlers_lock.acquire()
+
+
+def _after_fork_in_parent() -> None:
+    """Let the parent's threads at the handlers again."""
+    _handlers_lock.release()
+
+
 def _after_fork_in_child() -> None:
-    """Give every background handler a fresh queue in a forked child."""
+    """Give every background handler a fresh queue in a forked child.
+
+    The child's copy of the handlers' lock is held (``_before_fork`` took
+    it, and no thread of the child will let it go), so the child makes a
+    new lock before it reads them, as ``logging`` does with its own.
+    """
+    global _handlers_lock
+    _handlers_lock = threading.RLock()
     for handler in _live_handlers():
         handler._after_fork()
 
 
 if hasattr(os, "register_at_fork"):  # pragma: no branch - POSIX has it.
-    os.register_at_fork(after_in_child=_after_fork_in_child)
+    os.register_at_fork(
+        before=_before_fork,
+        after_in_parent=_after_fork_in_parent,
+        after_in_child=_after_fork_in_child,
+    )
 
 
 def flush_logs(timeout: float = FLUSH_TIMEOUT) -> bool:

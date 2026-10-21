@@ -27,6 +27,7 @@ A route may set its own limits with ``LiveLimits``::
 import logging
 import math
 import random
+import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Final, TypedDict, Unpack
@@ -39,6 +40,7 @@ from starlette.types import Message, Receive, Scope, Send
 
 from domainkit.clock import frozen, monotonic
 from domainkit.conf import settings
+from domainkit.conf.global_settings import MAX_REAUTH_INTERVAL
 from domainkit.context import current_request
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import error_response
@@ -147,7 +149,7 @@ class _Overrides(BaseModel):
     max_lifetime: float = Field(default=1.0, gt=0)
     send_queue: int = Field(default=1, ge=1, le=10_000)
     send_timeout: float = Field(default=1.0, gt=0)
-    reauth_interval: float | None = Field(default=None, gt=0)
+    reauth_interval: float | None = Field(default=None, gt=0, le=MAX_REAUTH_INTERVAL)
     idle_timeout: float | None = Field(default=None, gt=0)
     message_rate: str | None = None
     keepalive: float = Field(default=1.0, gt=0)
@@ -225,7 +227,12 @@ def _shared(given: dict[str, Any]) -> dict[str, Any]:
 
 
 class Slots:
-    """Open connections of the process, and of each caller, under their caps."""
+    """Open connections of the process, and of each caller, under their caps.
+
+    Event loops on several threads (free-threaded Python, or a server with
+    a loop per thread) share one application's slots, so they are counted
+    under a lock.
+    """
 
     def __init__(self, total: int, per_caller: int) -> None:
         """Allow ``total`` open connections, ``per_caller`` of them per caller."""
@@ -234,34 +241,48 @@ class Slots:
         self.open = 0
         self.callers: dict[str, int] = {}
         """Open connections per caller; callers with none are forgotten."""
+        self._lock = threading.Lock()
 
     def acquire(self, caller: str) -> str | None:
         """Take a slot for ``caller``; if none is free, say which cap is full."""
-        if self.open >= self.total:
-            return "LIVE_MAX_CONNECTIONS"
-        held = self.callers.get(caller, 0)
-        if held >= self.per_caller:
-            return "LIVE_MAX_CONNECTIONS_PER_CALLER"
-        self.open += 1
-        self.callers[caller] = held + 1
-        return None
+        with self._lock:
+            if self.open >= self.total:
+                return "LIVE_MAX_CONNECTIONS"
+            held = self.callers.get(caller, 0)
+            if held >= self.per_caller:
+                return "LIVE_MAX_CONNECTIONS_PER_CALLER"
+            self.open += 1
+            self.callers[caller] = held + 1
+            return None
 
     def release(self, caller: str) -> None:
-        """Give back a slot ``caller`` took."""
-        self.open -= 1
-        held = self.callers.pop(caller) - 1
-        if held:
-            self.callers[caller] = held
+        """Give back a slot ``caller`` took; a caller holding none changes nothing."""
+        with self._lock:
+            held = self.callers.pop(caller, 0)
+            if not held:
+                return
+            self.open -= 1
+            if held > 1:
+                self.callers[caller] = held - 1
+
+
+_making_slots: Final = threading.Lock()
+"""Held while an application's slots are looked up, and made on first use."""
 
 
 def slots_for(scope: Scope) -> Slots:
-    """The application's slots, made from the settings on first use."""
+    """The application's slots, made from the settings on first use.
+
+    Loops on several threads may open the first connections at once; they
+    all get the one ``Slots``.
+    """
     state = scope["app"].state
-    slots: Slots | None = getattr(state, "live_slots", None)
-    if slots is None:
-        slots = state.live_slots = Slots(
-            settings.LIVE_MAX_CONNECTIONS, settings.LIVE_MAX_CONNECTIONS_PER_CALLER
-        )
+    with _making_slots:
+        slots: Slots | None = getattr(state, "live_slots", None)
+        if slots is None:
+            slots = state.live_slots = Slots(
+                settings.LIVE_MAX_CONNECTIONS, settings.LIVE_MAX_CONNECTIONS_PER_CALLER
+            )
     return slots
 
 

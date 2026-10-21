@@ -4,8 +4,10 @@ import json
 import logging
 import logging.handlers
 import queue
+import subprocess
 import sys
 import threading
+import weakref
 from collections.abc import Iterator
 from typing import Any
 
@@ -198,9 +200,9 @@ def held() -> Iterator[Collect]:
     handler.resume.set()
 
 
-def record(message: str, *args: object) -> logging.LogRecord:
-    """A record for the ``app`` logger."""
-    return logging.LogRecord("app", logging.INFO, __file__, 1, message, args, None)
+def record(message: str, *args: object, level: int = logging.INFO) -> logging.LogRecord:
+    """A record for the ``app`` logger, at ``level``."""
+    return logging.LogRecord("app", level, __file__, 1, message, args, None)
 
 
 def emit_from_another_thread(handler: logging.Handler, *messages: str) -> None:
@@ -249,7 +251,7 @@ def test_a_full_queue_drops_and_counts_without_waiting(held: Collect) -> None:
         "first",
         "queued 1",
         "queued 2",
-        "Dropped 2 log records: the logging queue was full",
+        "Dropped 2 log records (2 INFO): the logging queue was full",
         "after",
     ]
     notice = held.records[3]
@@ -280,9 +282,103 @@ def test_drops_are_reported_by_the_next_record_that_fits(held: Collect) -> None:
     assert held.lines == [
         "first",
         "queued",
-        "Dropped 2 log records: the logging queue was full",
+        "Dropped 2 log records (2 INFO): the logging queue was full",
         "after",
     ]
+
+
+def test_warnings_have_room_that_records_below_them_cannot_fill(
+    held: Collect,
+) -> None:
+    """A security event during a flood of access lines is kept, not dropped.
+
+    Lines below WARNING fill 9 of 10 places; the tenth takes the warning.
+    The drops are then reported by level, once there is room.
+    """
+    handler = BackgroundHandler.writing_to(held, maxsize=10)
+    handler.handle(record("first"))
+    assert held.entered.wait(10)  # The thread holds "first"; the queue is empty.
+    lines = [f"GET /items {number}" for number in range(12)]
+
+    emit_from_another_thread(handler, *lines)
+    handler.handle(record("Refused credentials", level=logging.WARNING))
+    handler.handle(record("No room left", level=logging.WARNING))
+    handler.handle(record("Nor here", level=logging.ERROR))
+    assert handler.dropped == 5
+    held.resume.set()
+    assert handler.wait_written(10)
+    handler.close()
+
+    assert held.lines == [
+        "first",
+        *lines[:9],
+        "Refused credentials",
+        (
+            "Dropped 5 log records (3 INFO, 1 WARNING, 1 ERROR): the logging queue "
+            "was full"
+        ),
+    ]
+
+
+def test_a_drop_notice_goes_ahead_of_a_record_only_if_both_fit(held: Collect) -> None:
+    """With room for one, the record goes; with room for two, the notice first."""
+    handler = BackgroundHandler.writing_to(held, maxsize=20)  # 18 below WARNING.
+    handler.handle(record("first"))
+    assert held.entered.wait(10)
+    lines = [f"line {number}" for number in range(19)]
+
+    emit_from_another_thread(handler, *lines)  # 18 fit: "line 18" is dropped.
+    handler.handle(record("Refused credentials", level=logging.WARNING))
+    held.resume.set()
+    assert handler.wait_written(10)
+    handler.close()
+
+    assert held.lines == [
+        "first",
+        *lines[:18],
+        "Dropped 1 log records (1 INFO): the logging queue was full",
+        "Refused credentials",
+    ]
+    assert len(held.lines) == 21
+
+
+class LaggingQueue(queue.Queue[Any]):
+    """A queue whose size is read before another thread takes the last place."""
+
+    def qsize(self) -> int:
+        """Empty, as it was just before."""
+        return 0
+
+
+def test_a_record_that_loses_the_last_place_to_another_thread_is_dropped(
+    held: Collect,
+) -> None:
+    """There was room when it looked; there is none when it puts: dropped, counted."""
+    records = LaggingQueue(1)
+    handler = BackgroundHandler(records)
+    handler.listener = BackgroundListener(records, held)
+    handler.handle(record("first"))
+    assert held.entered.wait(10)
+    handler.handle(record("queued"))  # Takes the one place.
+
+    handler.handle(record("lost"))
+
+    assert handler.dropped == 1
+    held.resume.set()
+    handler.close()
+    assert held.lines == [
+        "first",
+        "queued",
+        "Dropped 1 log records (1 INFO): the logging queue was full",
+    ]
+
+
+def test_small_queues_keep_no_room_for_warnings(collect: Collect) -> None:
+    """Below ten places, records of any level may fill the whole queue."""
+    for size, below in [(1, 1), (9, 9), (10, 9), (10_000, 9_000)]:
+        handler = BackgroundHandler(queue.Queue(size))
+        assert handler._below_warning == below
+        handler.close()
 
 
 def test_a_dropped_count_rides_ahead_of_the_next_record(held: Collect) -> None:
@@ -299,7 +395,7 @@ def test_a_dropped_count_rides_ahead_of_the_next_record(held: Collect) -> None:
     handler.close()
 
     assert held.lines[-2:] == [
-        "Dropped 1 log records: the logging queue was full",
+        "Dropped 1 log records (1 INFO): the logging queue was full",
         "after",
     ]
 
@@ -368,6 +464,201 @@ def test_flushing_and_closing_give_up_on_a_stuck_handler(
 
     assert held.lines == []  # Both returned while the stream was still stuck.
     held.resume.set()
+
+
+class Seconds:
+    """The seconds the logging waits read, moved by the test."""
+
+    def __init__(self) -> None:
+        """Start at 0."""
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        """The time now."""
+        return self.now
+
+
+@pytest.fixture
+def seconds(monkeypatch: pytest.MonkeyPatch) -> Seconds:
+    """The clock of the logging waits' deadlines, under the test's hand."""
+    clock = Seconds()
+    monkeypatch.setattr(log, "_seconds", clock)
+    return clock
+
+
+class FullQueue(queue.Queue[Any]):
+    """A queue whose waits for room use up their timeout on ``clock``, in vain."""
+
+    def __init__(self, clock: Seconds, maxsize: int) -> None:
+        """Bounded at ``maxsize``; full to every wait while ``refusing``."""
+        super().__init__(maxsize)
+        self.clock = clock
+        self.refusing = True
+        self.waits: list[float | None] = []
+
+    def put(self, item: Any, block: bool = True, timeout: float | None = None) -> None:  # noqa: ANN401
+        """Wait out ``timeout`` and find no room; ``put_nowait`` works as ever."""
+        if self.refusing and block:
+            self.waits.append(timeout)
+            self.clock.now += timeout or 0.0
+            raise queue.Full
+        super().put(item, block, timeout)
+
+
+def test_the_waits_of_one_flush_share_its_time(held: Collect, seconds: Seconds) -> None:
+    """Waiting for room for the drop notice leaves only the rest for the marker."""
+    records = FullQueue(seconds, maxsize=5)
+    handler = BackgroundHandler(records)
+    handler.listener = BackgroundListener(records, held)
+    handler.handle(record("held"))
+    assert held.entered.wait(10)
+    handler._count_dropped(logging.INFO)
+
+    assert not handler.wait_written(5.0)
+
+    assert records.waits == [5.0, 0.0]
+    records.refusing = False
+    held.resume.set()
+    handler.close()
+
+
+def test_stopping_shares_its_time_between_room_and_the_thread(
+    held: Collect, seconds: Seconds, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Room for the stop marker after 2 of 5 seconds: the thread gets 3."""
+    records: queue.Queue[Any] = queue.Queue(5)
+    listener = BackgroundListener(records, held)
+    listener.start()
+    worker = listener._worker
+    assert worker is not None
+    joins: list[float | None] = []
+    put = records.put
+
+    def put_later(item: Any, block: bool = True, timeout: float | None = None) -> None:  # noqa: ANN401
+        seconds.now += 2.0
+        put(item, block, timeout)
+
+    monkeypatch.setattr(records, "put", put_later)
+    monkeypatch.setattr(worker, "join", joins.append)
+
+    listener.stop(5.0)
+
+    assert joins == [3.0]
+    threading.Thread.join(worker, 10)
+    assert not worker.is_alive()
+
+
+class TimedFlush(log._Flush):
+    """A flush marker that records how long it is waited for, and is never reached."""
+
+    waits: list[float | None]
+
+    def __init__(self) -> None:
+        """Unreached, its waits recorded on the class."""
+        super().__init__()
+        self.done = self  # type: ignore[assignment]
+
+    def wait(self, timeout: float | None = None) -> bool:
+        """Record ``timeout``; the thread never gets here."""
+        self.waits.append(timeout)
+        return False
+
+    def set(self) -> None:
+        """Ignore the thread reaching it, as if it never did."""
+
+
+def test_a_listener_flush_shares_its_time_between_room_and_the_thread(
+    collect: Collect, seconds: Seconds, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Room for the marker after 2 of 5 seconds: the thread has 3 to reach it."""
+    records: queue.Queue[Any] = queue.Queue(5)
+    listener = BackgroundListener(records, collect)
+    listener.start()
+    put = records.put
+
+    def put_later(item: Any, block: bool = True, timeout: float | None = None) -> None:  # noqa: ANN401
+        seconds.now += 2.0
+        put(item, block, timeout)
+
+    TimedFlush.waits = []
+    monkeypatch.setattr(log, "_Flush", TimedFlush)
+    monkeypatch.setattr(records, "put", put_later)
+
+    assert not listener.flush(5.0)
+
+    assert TimedFlush.waits == [3.0]
+    monkeypatch.undo()
+    assert listener.stop(10)
+
+
+def test_closing_after_a_flush_gave_up_does_not_wait(
+    held: Collect, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """At exit, a stream stuck through ``flush()`` costs ``close()`` no wait.
+
+    The thread writes on once the stream is free, though nothing waits.
+    """
+    handler = BackgroundHandler.writing_to(held, maxsize=5)
+    handler.handle(record("held"))
+    assert held.entered.wait(10)
+    handler.handle(record("queued"))
+    assert handler.listener is not None
+    worker = handler.listener._worker
+    assert worker is not None
+    monkeypatch.setattr(log, "FLUSH_TIMEOUT", 0.01)
+    handler.flush()  # Gives up: the stream is stuck.
+    monkeypatch.setattr(log, "FLUSH_TIMEOUT", 3600.0)
+
+    closing = threading.Thread(target=handler.close)
+    closing.start()
+    closing.join(10)  # A bound for a broken test, not a timing.
+    waited = closing.is_alive()
+    held.resume.set()
+    closing.join()
+    worker.join(10)
+
+    assert not waited
+    assert held.lines == ["held", "queued"]
+    assert not worker.is_alive()
+
+
+def test_closing_right_after_a_flush_waits_only_for_what_it_left(
+    held: Collect, seconds: Seconds, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``flush()`` then ``close()``, as at exit, share one ``FLUSH_TIMEOUT``."""
+    monkeypatch.setattr(log, "FLUSH_TIMEOUT", 3600.0)
+    handler = BackgroundHandler.writing_to(held, maxsize=5)
+    handler.flush()  # Nothing queued: done at 0, of its 3600 seconds.
+    handler.handle(record("held"))
+    assert held.entered.wait(10)  # The stream is stuck now.
+    seconds.now = 3600.0 - 0.01
+
+    closing = threading.Thread(target=handler.close)
+    closing.start()
+    closing.join(10)  # A bound for a broken test, not a timing.
+    waited = closing.is_alive()
+    held.resume.set()
+    closing.join()
+
+    assert not waited
+
+
+def test_a_close_long_after_a_flush_has_all_its_time(
+    collect: Collect, seconds: Seconds
+) -> None:
+    """What a flush leaves is shared until its deadline; then it is FLUSH_TIMEOUT."""
+    handler = BackgroundHandler.writing_to(collect)
+    assert handler._time_left() == log.FLUSH_TIMEOUT  # No flush yet.
+
+    handler.flush()  # At 0: until FLUSH_TIMEOUT.
+    seconds.now = 2.0
+    shared = handler._time_left()
+    seconds.now = log.FLUSH_TIMEOUT
+    later = handler._time_left()
+    handler.close()
+
+    assert shared == log.FLUSH_TIMEOUT - 2.0
+    assert later == log.FLUSH_TIMEOUT
 
 
 def test_a_failing_handler_does_not_stop_the_thread(collect: Collect) -> None:
@@ -478,6 +769,7 @@ def test_forked_children_start_over(
     parents = handler.queue
     unwired = BackgroundHandler(queue.Queue(3))
     monkeypatch.setattr(log, "_live_handlers", lambda: [handler, unwired])
+    monkeypatch.setattr(log, "_handlers_lock", log._handlers_lock)  # Put back after.
 
     log._after_fork_in_child()
 
@@ -486,17 +778,177 @@ def test_forked_children_start_over(
     assert handler.listener is not None
     assert handler.listener.queue is handler.queue
     assert not handler.listener.running
-    handler._count_dropped(2)  # As if the child's own queue had been full.
+    handler._count_dropped(logging.INFO)  # As if the child's own queue was full.
+    handler._count_dropped(logging.INFO)
     handler.handle(record("child"))
     handler.close()
     parents.put(log._STOP)  # End the parent's thread, which this test left.
     assert collect.lines == [
         "parent",
-        "Dropped 2 log records: the logging queue was full",
+        "Dropped 2 log records (2 INFO): the logging queue was full",
         "child",
     ]
     assert unwired.queue.maxsize == 3
     assert unwired.listener is None
+
+
+def test_a_forked_child_never_waits_for_the_parents_lock(
+    collect: Collect, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The child's copy of the lock stays held: it makes a new one first.
+
+    The lock is held at every fork (``_before_fork``), and may be held by
+    any thread of the parent; that thread does not exist in the child.
+    """
+    handler = BackgroundHandler.writing_to(collect, maxsize=3)
+    parents = handler.queue
+    held = threading.RLock()
+    monkeypatch.setattr(log, "_handlers_lock", held)
+    monkeypatch.setattr(log, "_handlers", weakref.WeakSet([handler]))
+    held.acquire()  # As at the fork.
+
+    child = threading.Thread(target=log._after_fork_in_child)
+    child.start()
+    child.join(10)  # A bound for a broken test, not a timing.
+    stuck = child.is_alive()
+    held.release()  # Lets a stuck child go, so the test ends.
+    child.join()
+
+    assert not stuck
+    assert log._handlers_lock is not held
+    assert free_to_others(log._handlers_lock)
+    assert reentrant(log._handlers_lock)
+    assert handler.queue is not parents
+    assert handler.queue.maxsize == 3
+    handler.close()
+
+
+def free_to_others(lock: Any) -> bool:  # noqa: ANN401 - a Lock or an RLock.
+    """Whether another thread could take ``lock`` now."""
+    taken: list[bool] = []
+
+    def take() -> None:
+        if lock.acquire(blocking=False):
+            taken.append(True)
+            lock.release()
+
+    other = threading.Thread(target=take)
+    other.start()
+    other.join()
+    return bool(taken)
+
+
+def reentrant(lock: Any) -> bool:  # noqa: ANN401 - a Lock or an RLock.
+    """Whether the thread that holds ``lock`` may take it again."""
+    with lock:
+        again = lock.acquire(blocking=False)
+        if again:
+            lock.release()
+    return bool(again)
+
+
+def test_the_handlers_lock_is_reentrant() -> None:
+    """A fork from a signal handler, on the thread that holds it, takes it again.
+
+    As ``logging``'s own lock: the hook before a fork must not wait for the
+    thread it runs on.
+    """
+    assert reentrant(log._handlers_lock)
+    assert free_to_others(log._handlers_lock)
+
+
+def test_the_lock_is_held_across_a_fork(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Taken before a fork, so no thread changes the handlers then; given back after."""
+    lock = threading.Lock()
+    monkeypatch.setattr(log, "_handlers_lock", lock)
+
+    log._before_fork()
+    taken = lock.locked()
+    log._after_fork_in_parent()
+
+    assert taken
+    assert not lock.locked()
+
+
+FORK_WHILE_HELD = """
+import os, threading, warnings
+from domainkit import log
+
+held, release = threading.Event(), threading.Event()
+
+def free():
+    taken = []
+    def take():
+        if log._handlers_lock.acquire(blocking=False):
+            taken.append(True)
+            log._handlers_lock.release()
+    other = threading.Thread(target=take)
+    other.start()
+    other.join()
+    return bool(taken)
+
+def hold():
+    with log._handlers_lock:
+        held.set()
+        release.wait()
+
+holder = threading.Thread(target=hold)
+holder.start()
+held.wait()
+# Hooks run newest first: the holder lets go as the fork starts, before
+# domainkit's own hook takes the lock.
+os.register_at_fork(before=release.set)
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", DeprecationWarning)
+    pid = os.fork()
+if pid == 0:
+    os._exit(7)
+statuses = []
+waiter = threading.Thread(target=lambda: statuses.append(os.waitpid(pid, 0)[1]))
+waiter.start()
+waiter.join(60)
+if waiter.is_alive():
+    os.kill(pid, 9)
+    waiter.join()
+    print("child=stuck")
+else:
+    print(f"child={os.waitstatus_to_exitcode(statuses[0])}")
+holder.join()
+print(f"parent-lock-free={free()}")
+with log._handlers_lock:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        pid = os.fork()
+    if pid == 0:
+        os._exit(8)
+print(f"own-child={os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1])}")
+print(f"lock-free-after={free()}")
+"""
+
+
+def test_a_fork_while_a_thread_holds_the_lock_leaves_a_working_child() -> None:
+    """A real fork, in a process of its own: the child runs, the parent goes on.
+
+    Then the thread that holds the lock forks, as a signal handler that
+    interrupted it would: the lock is reentrant, so it does not wait for
+    itself.
+    """
+    child = subprocess.run(  # noqa: S603 - this interpreter, fixed code.
+        [sys.executable, "-c", FORK_WHILE_HELD],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+    assert child.returncode == 0, child.stderr
+    assert child.stdout.split() == [
+        "child=7",
+        "parent-lock-free=True",
+        "own-child=8",
+        "lock-free-after=True",
+    ]
+    assert child.stderr == ""  # No at-fork hook failed (they are only printed).
 
 
 def test_flush_logs_waits_for_every_handler(

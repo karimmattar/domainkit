@@ -15,6 +15,7 @@ it survives crashes and is retried.
 
 import asyncio
 import logging
+import threading
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -84,6 +85,8 @@ class EventBus:
         if not 0 < handler_timeout < float("inf"):
             raise ValueError("handler_timeout is a positive number of seconds.")
         self._handlers: dict[type[DomainEvent], list[_Subscription]] = {}
+        self._lock = threading.Lock()
+        """Guards changes to the subscriptions: loops on several threads subscribe."""
         self.error_hook: Callable[[BaseException, DomainEvent], None] | None = None
         """Called with each in-process handler failure (``setup()`` wires it)."""
         self.handler_timeout = handler_timeout
@@ -102,7 +105,8 @@ class EventBus:
 
         ``timeout`` gives an in-process handler its own limit in seconds
         (default: the bus's ``handler_timeout``). Durable handlers follow the
-        worker's task policies instead.
+        worker's task policies instead. Threads that subscribe the same
+        handler at once subscribe it once.
 
         Raises:
             ValueError: ``timeout`` is not positive, or the handler is durable.
@@ -111,25 +115,28 @@ class EventBus:
             raise ValueError(
                 "timeout is a positive number of seconds, for in-process handlers."
             )
-        subscriptions = self._handlers.setdefault(event_type, [])
-        if not any(
-            entry.handler == handler and entry.durable is durable
-            for entry in subscriptions
-        ):
-            subscriptions.append(_Subscription(handler, durable, timeout))
+        with self._lock:
+            subscriptions = self._handlers.setdefault(event_type, [])
+            if not any(
+                entry.handler == handler and entry.durable is durable
+                for entry in subscriptions
+            ):
+                subscriptions.append(_Subscription(handler, durable, timeout))
 
     def unsubscribe[E: DomainEvent](
         self, event_type: type[E], handler: EventHandler[E]
     ) -> None:
         """Stop calling ``handler``, durable or not; unknown handlers are ignored."""
-        subscriptions = self._handlers.get(event_type, [])
-        subscriptions[:] = [
-            entry for entry in subscriptions if entry.handler != handler
-        ]
+        with self._lock:
+            subscriptions = self._handlers.get(event_type, [])
+            subscriptions[:] = [
+                entry for entry in subscriptions if entry.handler != handler
+            ]
 
     def clear(self) -> None:
         """Remove every subscription."""
-        self._handlers.clear()
+        with self._lock:
+            self._handlers.clear()
 
     def handlers_for(
         self, event_type: type[DomainEvent], *, durable: bool = False
@@ -141,12 +148,13 @@ class EventBus:
         self,
     ) -> list[tuple[type[DomainEvent], EventHandler[Any]]]:
         """Return every durable ``(event type, handler)`` pair."""
-        return [
-            (event_type, entry.handler)
-            for event_type, subscriptions in self._handlers.items()
-            for entry in subscriptions
-            if entry.durable
-        ]
+        with self._lock:  # A type subscribed meanwhile would change the dict.
+            return [
+                (event_type, entry.handler)
+                for event_type, subscriptions in self._handlers.items()
+                for entry in subscriptions
+                if entry.durable
+            ]
 
     async def publish(self, event: DomainEvent) -> None:
         """Run the in-process handlers for ``event`` in order, isolating failures.

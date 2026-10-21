@@ -310,6 +310,18 @@ All notable changes to domainkit. The format follows
   `IDEMPOTENCY`, `TTL_SECONDS` (30 days) and `LEASE_SECONDS` (a day); in
   `AUTH`, `HASHING_THREADS` (1,024) and `HASHING_QUEUE` (10,000); and
   `READINESS_TIMEOUT` (60 seconds). Defaults are unchanged.
+- `LIVE_REAUTH_INTERVAL` and `LiveLimits(reauth_interval=...)` are at most
+  3,600 seconds: a longer interval, which left a revoked token its
+  connection for hours, is refused when the settings load or the route is
+  defined. `None` still turns re-checks off. `docs/live.md` says what
+  re-checks cannot do: a route that opts out keeps revoked tokens,
+  single-use credentials fail the first re-check, and blocking work on a
+  thread is not cut off at the 10-second bound.
+- The logging queue keeps its last tenth for records at `WARNING` and
+  above: while a stalled stream drops access lines, security events and
+  errors still find room (`domainkit.log.WARNING_RESERVE`; ADR 0051). The
+  drop notice counts by level: `Dropped 52 log records (50 INFO, 2
+  WARNING): the logging queue was full`.
 
 ### Deprecated
 
@@ -385,6 +397,42 @@ All notable changes to domainkit. The format follows
   broker's own. RabbitMQ connections are closed at shutdown now.
 - `ledgers.close_all()` had the same fault: immudb clients and their
   threads were left open at shutdown. Each ledger's own `close` runs now.
+- Live events a client may not see no longer fill its buffer: one user's
+  commit of more than `LIVE_SEND_QUEUE` events closed every other client
+  subscribed to that type with 1013, and told them a burst had happened.
+  Too slow now counts only the events the client's rule allows; the others
+  wait for the rule in a buffer of their own, 16 times as large. Publishing
+  lets the event loop run after each event, so a client that keeps up
+  takes a large commit one event at a time.
+- The caps on open WebSockets and event streams are counted under a lock.
+  With event loops on several threads (free-threaded Python, or a server
+  with a loop per thread), slots leaked until the process refused every
+  connection, and closing one could raise `KeyError`. Loops that open an
+  application's first connections at once now share one count.
+- `EventBus.subscribe` checks for a repeat and adds the handler under a
+  lock, as do `unsubscribe` and `clear`. Live events subscribed from loops
+  on several threads at once could hook themselves onto the bus twice, and
+  then sent every committed event to each client twice.
+- A `UVICORN_WS_MAX_SIZE` (or `--ws-max-size`) of superscript digits, or of
+  more than 4,300 digits, no longer stops a deployed application from
+  starting, or `check` from running, with a `ValueError`: a value that
+  cannot be read is unknown, and a failure to tell the server is logged.
+- `check`'s warning about WebSocket messages the server reads past
+  `MAX_REQUEST_BODY_SIZE` now covers uvicorn started by gunicorn
+  (`-k uvicorn.workers.UvicornWorker`, or `uvicorn_worker.UvicornWorker`,
+  read from the command line or `GUNICORN_CMD_ARGS`) and by `fastapi run`,
+  which both read up to 16 MiB whatever `UVICORN_WS_MAX_SIZE` says; it
+  says how to set the limit under each. Hypercorn is still not recognised
+  (`docs/reference.md`, "Server limits").
+- A process forked while another thread was adding a logging handler, or
+  flushing the logs, could hang in its child before running anything: the
+  child waited for a lock only the parent's thread could let go. The lock
+  is now held across the fork, and the child makes a new one (ADR 0051).
+- On a stuck log stream, exit took 15 seconds, not the 5 of
+  `FLUSH_TIMEOUT`: Python's logging shutdown calls the handler's `flush()`
+  and then `close()`, and every wait inside them had its own 5 seconds.
+  They now share one deadline, and `close()` does not wait at all once the
+  flush has given up.
 
 ## [0.7.0] - 2026-10-20
 
