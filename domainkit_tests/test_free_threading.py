@@ -20,7 +20,7 @@ from weakref import WeakKeyDictionary
 import pytest
 
 from domainkit import tasks
-from domainkit.broker import BrokerHandler
+from domainkit.broker import Broker, BrokerHandler, MemoryBroker
 from domainkit.conf import override_settings
 from domainkit.contrib.auth import middleware as middleware_module
 from domainkit.contrib.auth.hashers import HashingPool
@@ -235,6 +235,38 @@ def test_loops_on_threads_keep_their_own_brokers() -> None:
 
     with handler._lock:
         assert list(handler._brokers) == []
+
+
+def test_brokers_replaced_by_new_settings_are_kept_under_the_lock() -> None:
+    """They close with their loop, or are dropped once it closed without that."""
+    closed: list[Broker] = []
+
+    class Recorded(MemoryBroker):
+        async def close(self) -> None:
+            closed.append(self)
+
+    handler = BrokerHandler(connect=lambda config: Recorded())
+    handler._brokers = CheckedRegistry(handler._lock)
+    handler._replaced = CheckedRegistry(handler._lock)
+    rabbit = {"URL": "amqp://app:pw@localhost:5672/app", "PREFIX": "app"}
+
+    async def replace(close: bool) -> list[Broker]:
+        first = handler["rabbit"]
+        with override_settings(BROKERS={"rabbit": {**rabbit, "PREFIX": "new"}}):
+            second = handler["rabbit"]  # The first waits, under the lock, to close.
+        if close:
+            await handler.close_all()
+        return [second, first]
+
+    with override_settings(BROKERS={"rabbit": rabbit}):
+        left = asyncio.new_event_loop()
+        left.run_until_complete(replace(close=False))
+        left.close()
+        assert left in handler._replaced  # Still referenced here.
+        replaced = asyncio.run(replace(close=True))
+
+    assert closed == replaced  # Not the brokers of the loop closed before.
+    assert left not in handler._replaced
 
 
 IMPORT_EVERYTHING = """

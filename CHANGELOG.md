@@ -324,6 +324,9 @@ All notable changes to domainkit. The format follows
 - On PostgreSQL, a periodic slot that every worker queues, and that all
   but one insert skip for its dedupe key, sent a notification per worker,
   each waking every idle worker. Only rows the inserts return notify now.
+- `brokers.close_all()`, which shutdown runs, closed no broker since 0.6:
+  it called the base class's `close`, which does nothing, rather than each
+  broker's own. RabbitMQ connections are closed at shutdown now.
 
 ## [0.7.0] - 2026-10-20
 

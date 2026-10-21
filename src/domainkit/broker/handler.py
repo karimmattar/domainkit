@@ -89,12 +89,16 @@ class BrokerHandler:
             self._replaced.pop(loop, None)
 
     async def close_all(self) -> None:
-        """Close the running loop's brokers; the next use opens new ones."""
+        """Close the running loop's brokers; the next use opens new ones.
+
+        Each broker's own ``close``: ``Broker.close`` is the base class's,
+        which closes nothing.
+        """
         loop = asyncio.get_running_loop()
         with self._lock:
             current = [broker for _, broker in self._brokers.pop(loop, {}).values()]
             replaced = self._replaced.pop(loop, [])
-        await close_each([*current, *replaced], Broker.close)
+        await close_each([*current, *replaced], lambda broker: broker.close())
 
 
 brokers: Final = BrokerHandler()
