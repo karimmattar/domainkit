@@ -282,6 +282,11 @@ All notable changes to domainkit. The format follows
   wait for the rule in a buffer of their own, 16 times as large. Publishing
   lets the event loop run after each event, so a client that keeps up
   takes a large commit one event at a time.
+- The caps on open WebSockets and event streams are counted under a lock.
+  With event loops on several threads (free-threaded Python, or a server
+  with a loop per thread), slots leaked until the process refused every
+  connection, and closing one could raise `KeyError`. Loops that open an
+  application's first connections at once now share one count.
 
 ## [0.7.0] - 2026-10-20
 

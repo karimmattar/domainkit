@@ -854,6 +854,11 @@ def test_slots_count_per_process_and_per_caller() -> None:
     slots.release("a")
     slots.release("b")
     assert (slots.open, slots.callers) == (0, {})
+    slots.release("a")  # A caller holding none: nothing changes, nothing fails.
+    assert (slots.open, slots.callers) == (0, {})
+    assert slots.acquire("c") is None
+    slots.release("d")
+    assert (slots.open, slots.callers) == (1, {"c": 1})
 
 
 def test_connections_are_held_by_their_actor_or_address() -> None:

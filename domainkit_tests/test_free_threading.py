@@ -1,7 +1,8 @@
 """State shared by event loops on several threads stays consistent.
 
 Free-threaded Python (3.14t), and servers that run a loop per thread, share
-one rate limiter, one middleware, and one hashing pool between threads.
+one rate limiter, one middleware, one hashing pool, and one application's
+live connection slots between threads.
 Each test drives them from several threads at once and checks what must
 always hold, and that the state is only touched with the lock held.
 """
@@ -13,13 +14,20 @@ import sys
 import sysconfig
 import threading
 from collections.abc import Callable
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
+from starlette.datastructures import State
+from starlette.types import Message, Receive, Scope, Send
 
 from domainkit.contrib.auth import middleware as middleware_module
 from domainkit.contrib.auth.hashers import HashingPool
 from domainkit.contrib.auth.middleware import AuthenticationMiddleware
+from domainkit.http import live
+from domainkit.http.live import Slots
 from domainkit.http.ratelimit import MemoryBackend
+from domainkit.http.websockets import WebSocketLimitsMiddleware
 from domainkit_tests.conftest import UseAuth
 
 THREADS = 8
@@ -119,6 +127,90 @@ def test_the_hashing_pool_counts_calls_from_every_thread() -> None:
 
     assert results == [[index * 2] * 20 for index in range(THREADS)]
     assert pool.pending == 0
+
+
+class CheckedSlots(Slots):
+    """Live connection slots counted only with their lock held, within the cap."""
+
+    checking = False
+    """Whether the slots are made, so a change needs the lock."""
+
+    def __init__(self, total: int, per_caller: int) -> None:
+        """Slots under ``total`` and ``per_caller``, checked from now on."""
+        super().__init__(total, per_caller)
+        self.checking = True
+
+    @property
+    def open(self) -> int:
+        """Connections open now."""
+        return self._open
+
+    @open.setter
+    def open(self, value: int) -> None:
+        """Change the count, which needs the lock once the slots exist."""
+        if self.checking:
+            assert self._lock.locked()
+        assert 0 <= value <= self.total
+        self._open = value
+
+
+def test_live_connection_slots_are_counted_from_every_thread() -> None:
+    """Loops on several threads open and close connections; none leaks or fails.
+
+    Each thread opens and closes WebSockets through the middleware, as one
+    of two callers, under caps that more threads than they allow can meet.
+    """
+    application = SimpleNamespace(state=State())
+    application.state.live_slots = slots = CheckedSlots(total=6, per_caller=3)
+    middleware = WebSocketLimitsMiddleware(refuse_at_once)
+
+    async def connections(index: int) -> None:
+        for number in range(200):
+            scope: Scope = {
+                "type": "websocket",
+                "app": application,
+                "client": (f"203.0.113.{(index + number) % 2}", 4000),
+                "headers": [],
+                "path": "/live",
+            }
+            await middleware(scope, connect, close)
+
+    on_threads(lambda index: asyncio.run(connections(index)))
+
+    assert (slots.open, slots.callers) == (0, {})
+
+
+async def refuse_at_once(scope: Scope, receive: Receive, send: Send) -> None:
+    """A WebSocket route that ends without accepting."""
+
+
+async def connect() -> Message:
+    """A client's handshake."""
+    return {"type": "websocket.connect"}
+
+
+async def close(message: Message) -> None:
+    """Take what the middleware sends a refused client."""
+
+
+class CheckedState(State):
+    """An application's state, whose slots are only looked up under the lock."""
+
+    def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - any state.
+        """Read ``name``; the slots only while they cannot be made elsewhere."""
+        if name == "live_slots":
+            assert live._making_slots.locked()
+        return super().__getattr__(name)
+
+
+def test_an_application_gets_one_set_of_slots_from_every_thread() -> None:
+    """The first connections, on several loops at once, share the slots made."""
+    scope = {"app": SimpleNamespace(state=CheckedState())}
+
+    found = on_threads(lambda _: live.slots_for(scope))
+
+    assert all(slots is found[0] for slots in found)
+    assert scope["app"].state._state == {"live_slots": found[0]}
 
 
 IMPORT_EVERYTHING = """

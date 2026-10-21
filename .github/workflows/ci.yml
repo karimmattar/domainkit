@@ -84,7 +84,8 @@ jobs:
 
   # Free-threaded Python (3.14t, no GIL): the locks around state that event
   # loops on several threads share (rate limits, refused-credential holds,
-  # the hashing pool, caches, the logging and reporting queues) meet threads
+  # the hashing pool, caches, the logging and reporting queues, live
+  # connection slots) meet threads
   # that really run at once, and test_free_threading checks that importing
   # domainkit keeps the GIL off. With every warning an error, a module that
   # turned the GIL back on would fail the job. Only those tests run: the
