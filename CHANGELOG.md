@@ -288,6 +288,31 @@ All notable changes to domainkit. The format follows
 - The uvicorn example in `docs/reference.md` sets `--limit-concurrency
   1200`, above the default cap and queue, so the application refuses
   first and never refuses its probes.
+- `HttpClient(breaker=False)` keeps no circuits. A client's circuits are
+  shared by all its callers, so one user's failing URLs on a host opened
+  the circuit for every user of a shared guarded client: make one client
+  per trust domain, and give one that calls URLs your users chose
+  `breaker=False`.
+- `HttpClient(guard=True, transport=...)` is refused with `ValueError`: the
+  transport would skip the address checks. Tests use `stub()`. A client's
+  or a call's `timeout` must be finite.
+- Limits have upper bounds, well above their defaults, and settings past
+  them fail at startup: `MAX_CONCURRENT_REQUESTS` and `MAX_QUEUED_REQUESTS`
+  100,000; `REQUEST_TIMEOUT`, `REQUEST_BODY_TIMEOUT`, and `HTTP_CLIENT`'s
+  `TIMEOUT` and `BREAKER_COOLDOWN` an hour; `MAX_BACKOFF` ten minutes;
+  `MAX_RESPONSE_BYTES` 1 GiB; and a database's `STATEMENT_TIMEOUT`,
+  `LOCK_TIMEOUT`, `IDLE_IN_TRANSACTION_TIMEOUT`, `CONNECT_TIMEOUT`, and
+  `COMMAND_TIMEOUT` 2147483.647 seconds, the longest PostgreSQL takes.
+- `deadlines.timeout`, `within`, and `Deadline` refuse seconds that are not
+  a finite number (NaN, infinity) with `ValueError`; `None` is how to ask
+  for no bound. Zero and less still raise `TimeoutError` on entry.
+- The SSRF guard always refuses AWS EKS Pod Identity (`169.254.170.23`,
+  `fd00:ec2::23`) and the AWS DNS resolver (`169.254.169.253`,
+  `fd00:ec2::253`) as cloud metadata addresses, whatever networks are
+  allowed.
+- `MAX_CONCURRENT_REQUESTS` is documented as what it always was, a cap per
+  event loop: a process serving on one loop admits the cap, one running a
+  loop per thread admits it on each (ADR 0049).
 
 ### Deprecated
 
@@ -331,6 +356,42 @@ All notable changes to domainkit. The format follows
   keep those loops alive.
 - A timeout under half a millisecond (`STATEMENT_TIMEOUT = 0.0004`) no
   longer reaches PostgreSQL as 0, which means no timeout at all.
+- A few connections that sent their headers, then their body slowly or
+  never, held every slot of `ConcurrencyLimitMiddleware` until
+  `REQUEST_TIMEOUT`, so every other request was answered 503, without any
+  credentials. A request now lends its slot to the next one while the
+  application waits for a chunk of its body, and takes one back through
+  the queue when the chunk arrives (503 `overloaded` if none frees in
+  time). `RequestBodyLimitMiddleware` answers 408 `request_timeout`, and
+  closes the connection, once the body has taken `REQUEST_BODY_TIMEOUT`
+  (10 seconds) in all (ADR 0049).
+- httpx2 and httpcore2 logged every outgoing call's full URL, query string
+  and the secrets in it included, at INFO, a guarded client's too.
+  `build_logging_config` sets their loggers to WARNING.
+- The guard looked host names up on the event loop's default executor,
+  and a lookup went on after the guard gave up on it: names whose DNS never
+  answers held up `asyncio.to_thread` and new database connections for as
+  long as the system's resolver tried. Lookups now run on 4 threads of the
+  guard's own, at most 2 of one host; one past those bounds, or of a host
+  whose lookup failed in the last 5 seconds, fails at once, as a
+  connection error (ADR 0050). The threads stop at shutdown.
+- With `STATEMENT_TIMEOUT = None`, a deadline over 24.8 days failed every
+  PostgreSQL transaction (`statement_timeout` out of range), and an
+  infinite one raised `OverflowError`: a transaction asks for at most
+  2147483647 milliseconds.
+- On Linux, guarded clients and webhooks trusted the CAs `SSL_CERT_FILE`
+  and `SSL_CERT_DIR` name, though they ignore proxies from the
+  environment. They trust `CA_BUNDLE`, or the system's CAs, only.
+- `base_url` kept calls on its origin but not under its path: a relative
+  URL such as `../admin` or `%2e%2e/admin` reached another path of the
+  host. A `.` or `..` segment, spelled out or percent-encoded, now raises
+  `UnsafeURL`.
+- On free-threaded Python, a client's circuit breaker could let two trial
+  calls through at once, or fail with `KeyError`, and the shedding warning
+  lost counts: both change only under a lock now.
+- Behind `--root-path`, the probes in `CONCURRENCY_EXEMPT_PATHS` were
+  counted against the cap and could be refused; paths are compared
+  without the root path.
 
 ## [0.7.0] - 2026-10-20
 
