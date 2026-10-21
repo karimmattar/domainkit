@@ -556,6 +556,9 @@ def test_fixture_helpers() -> None:
     )
     unknown = Column("unknown", NullType())
     assert fixtures_module._decoded(unknown, {"kept": True}) == {"kept": True}
+    # A decorator that cannot tell its type is read as the type it wraps.
+    with pytest.raises(FixtureError, match=r"opaque holds a value that is not str"):
+        fixtures_module._decoded(kinds.c.opaque, 5)
     assert fixtures_module._encoded(kinds.c.label, 3) == 3
 
 
