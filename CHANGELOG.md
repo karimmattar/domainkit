@@ -6,6 +6,8 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-21
+
 ### Added
 
 - `domainkit.tasks`: `spawn(coro, name=...)` starts a background task in a
@@ -1703,7 +1705,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/karimmattar/domainkit/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/karimmattar/domainkit/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/karimmattar/domainkit/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/karimmattar/domainkit/compare/v0.6.0...v0.6.1
