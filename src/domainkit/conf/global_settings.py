@@ -663,6 +663,10 @@ class Settings(BaseModel):
     """Name failing components in ``/ready`` responses; they are always logged."""
     ACCESS_LOG_QUIET_PATHS: tuple[str, ...] = ("/health", "/ready")
     """Successful requests to these paths are logged at DEBUG, not INFO."""
+    ACCESS_LOG_SAMPLE_RATE: float = Field(default=1.0, ge=0.0, le=1.0)
+    """Share of access lines written; errors, refusals, slow requests: all of them."""
+    ACCESS_LOG_SLOW_DURATION: float = Field(default=1.0, gt=0, le=MAX_REQUEST_SECONDS)
+    """Seconds after which a request's access line is written whatever the rate."""
     TRUSTED_PROXIES: tuple[IPvAnyNetwork, ...] = ()
     """Load balancers whose ``X-Forwarded-For``/``-Proto`` headers are believed."""
     RATE_LIMIT: str | None = None
