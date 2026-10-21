@@ -16,6 +16,7 @@ from immudb.exceptions import ErrCorruptedData, ErrKeyNotFound
 from domainkit.conf import LedgerConfig, override_settings
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.ledger import (
+    LedgerChanged,
     LedgerEntry,
     LedgerHandler,
     LedgerKeyExists,
@@ -33,6 +34,7 @@ from domainkit.ledger.immudb import (
     address_of,
     connect,
     translate,
+    verified_append_after,
     verified_create,
 )
 
@@ -80,6 +82,7 @@ class FakeClient:
         self.shutdown_threads: list[str] = []
         self._active = 0
         self.peak = 0
+        self.shut = threading.Event()
 
     def _call(self, name: str) -> None:
         self.calls.append(name)
@@ -112,6 +115,15 @@ class FakeClient:
         return SimpleNamespace(
             id=sum(len(v) for v in self.values.values()), verified=True
         )
+
+    def verifiedAppendAfter(self, key: bytes, value: bytes, transaction: int) -> Any:  # noqa: ANN401 - SDK API.
+        """Append unless a revision came after ``transaction``, as immudb refuses."""
+        self._call("append-after")
+        revisions = self.values.setdefault(key, [])
+        if revisions and 10 + len(revisions) > transaction:  # verifiedGet's ids.
+            raise RpcError("precondition failed: key modified after given tx")
+        revisions.append(value)
+        return SimpleNamespace(id=10 + len(revisions), verified=True)
 
     def verifiedGet(self, key: bytes, atRevision: int | None = None) -> Any:  # noqa: ANN401 - SDK API.
         """Return a revision, or fail like immudb does."""
@@ -154,6 +166,7 @@ class FakeClient:
         """Close the channel."""
         self.shutdown_threads.append(threading.current_thread().name)
         self.closed = True
+        self.shut.set()
 
 
 def ledger_on(
@@ -199,6 +212,21 @@ async def test_memory_ledgers_keep_every_revision() -> None:
         assert str(missing.value) == f"No revision {number} of {key!r}."
 
 
+async def test_memory_ledgers_append_only_after_what_was_read() -> None:
+    """``unchanged_since`` refuses a write once a later revision exists."""
+    ledger = MemoryLedger()
+
+    first = await ledger.append(b"k", b"one", unchanged_since=0)
+    second = await ledger.append(b"k", b"two", unchanged_since=first.transaction)
+    with pytest.raises(LedgerChanged, match="changed after 1"):
+        await ledger.append(b"k", b"late", unchanged_since=first.transaction)
+    with pytest.raises(LedgerChanged, match="changed after 0"):
+        await ledger.append(b"k", b"late", unchanged_since=0)
+
+    assert second.transaction == 2
+    assert await ledger.revision_count(b"k", limit=5) == 2
+
+
 async def test_memory_ledgers_create_only_new_keys() -> None:
     """A create writes revision 1 of a new key and refuses a written one."""
     ledger = MemoryLedger()
@@ -242,11 +270,10 @@ async def test_immudb_ledgers_call_the_sdk_on_their_own_thread() -> None:
         "state",
     ]
     assert client.scans == [(b"", b"k/", False, SCAN_LIMIT)]
-    assert [thread.startswith("domainkit-ledger") for thread in client.threads] == [
-        True
-    ]
-    assert client.shutdown_threads[0].startswith("domainkit-ledger")
-    assert connects == [ledger.config]
+    # The work on its thread; the readiness probe on one of its own.
+    assert client.threads == {"domainkit-ledger_0", "domainkit-ledger-check_0"}
+    assert sorted(client.shutdown_threads) == sorted(client.threads)
+    assert connects == [ledger.config, ledger.config]
     assert client.closed
 
 
@@ -263,6 +290,98 @@ async def test_immudb_creates_are_conditional_sets() -> None:
     assert created == LedgerWrite(b"k", 1)
     assert client.calls == ["create", "create"]
     assert client.values == {b"k": [b"one"]}
+
+
+async def test_immudb_appends_after_a_revision_are_conditional() -> None:
+    """``unchanged_since`` is immudb's precondition; its refusal is LedgerChanged."""
+    client = FakeClient()
+    ledger, _ = ledger_on(client)
+
+    await ledger.append(b"k", b"one")
+    read = await ledger.read(b"k")
+    after = await ledger.append(b"k", b"two", unchanged_since=read.transaction)
+    with pytest.raises(LedgerChanged) as late:
+        await ledger.append(b"k", b"late", unchanged_since=read.transaction)
+    fresh = await ledger.append(b"new", b"one", unchanged_since=0)
+    with pytest.raises(LedgerChanged):
+        await ledger.append(b"new", b"again", unchanged_since=0)
+    await ledger.close()
+
+    assert (after, fresh) == (LedgerWrite(b"k", 12), LedgerWrite(b"new", 11))
+    assert str(late.value) == "The ledger has a later revision of this key."
+    assert isinstance(late.value.__cause__, LedgerKeyExists)
+    assert client.values == {b"k": [b"one", b"two"], b"new": [b"one"]}
+
+
+class HeldClient(FakeClient):
+    """A client whose writes wait until ``resume`` is set."""
+
+    def __init__(self) -> None:
+        """Start empty, with writes held."""
+        super().__init__()
+        self.entered = threading.Event()
+        self.resume = threading.Event()
+
+    def verifiedSet(self, key: bytes, value: bytes) -> Any:  # noqa: ANN401 - SDK API.
+        """Hold the write, as a slow ledger does."""
+        self.entered.set()
+        self.resume.wait(30)
+        return super().verifiedSet(key, value)
+
+
+async def test_readiness_never_waits_behind_the_ledgers_work() -> None:
+    """A probe answers while a write still holds the work thread."""
+    client = HeldClient()
+    ledger, _ = ledger_on(client)
+    writing = asyncio.create_task(ledger.append(b"k", b"v"))
+    try:
+        assert await asyncio.to_thread(client.entered.wait, 10)
+
+        await ledger.check()
+
+        assert not writing.done()
+    finally:
+        client.resume.set()
+    assert (await writing).transaction == 1
+    await ledger.close()
+
+
+async def test_closing_a_busy_ledger_waits_at_most_its_timeout(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A call that outlived its caller holds the client: close returns anyway."""
+    client = HeldClient()
+    ledger, _ = ledger_on(client, TIMEOUT=0.05)
+    with pytest.raises(LedgerUnavailable):
+        await ledger.append(b"k", b"v")  # Given up on; the write still runs.
+    assert client.entered.is_set()
+
+    await ledger.close()
+
+    assert not client.closed
+    assert (
+        "The ledger's domainkit-ledger thread is busy; its client closes when "
+        "the call returns."
+    ) in caplog.messages
+    client.resume.set()
+    assert await asyncio.to_thread(client.shut.wait, 10)
+    assert client.values == {b"k": [b"v"]}  # The late write landed, then it closed.
+
+
+async def test_a_close_cut_short_still_closes_the_client() -> None:
+    """When the caller's budget ends first, the client closes once it is free."""
+    client = HeldClient()
+    ledger, _ = ledger_on(client)
+    writing = asyncio.create_task(ledger.append(b"k", b"v"))
+    assert await asyncio.to_thread(client.entered.wait, 10)
+
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.01):
+            await ledger.close()
+
+    client.resume.set()
+    assert (await writing).transaction == 1
+    assert await asyncio.to_thread(client.shut.wait, 10)
 
 
 def test_connect_hands_the_sdk_its_settings(
@@ -293,6 +412,52 @@ def test_connect_hands_the_sdk_its_settings(
     assert plain.logins == [("writer", "p@ss", b"evidence")]  # type: ignore[attr-defined]
     create = plain.verifiedCreate
     assert (create.func, create.args) == (verified_create, (plain,))  # type: ignore[attr-defined]
+    after = plain.verifiedAppendAfter
+    assert (after.func, after.args) == (verified_append_after, (plain,))  # type: ignore[attr-defined]
+
+
+def test_conditional_sets_carry_their_precondition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each conditional write reaches immudb with its precondition, then verifies."""
+    from immudb.grpc import schema_pb2
+    from immudb.handler import verifiedSet
+
+    sent: list[Any] = []
+
+    class Stub:
+        def VerifiableSet(self, request: Any) -> str:  # noqa: ANN401 - gRPC API.
+            sent.append(request)
+            return "verified"
+
+    def call(service: Any, state: str, key: bytes, value: bytes, signing: str) -> Any:  # noqa: ANN401 - SDK API.
+        assert (state, signing) == ("trusted state", "signing key")
+        kv = schema_pb2.KeyValue(key=key, value=value)
+        request = schema_pb2.VerifiableSetRequest(
+            setRequest=schema_pb2.SetRequest(KVs=[kv])
+        )
+        return service.VerifiableSet(request)
+
+    monkeypatch.setattr(verifiedSet, "call", call)
+    client = SimpleNamespace(_stub=Stub(), _rs="trusted state", _vk="signing key")
+
+    results = [
+        verified_create(client, b"k", b"first"),
+        verified_append_after(client, b"k", b"second", 0),
+        verified_append_after(client, b"k", b"third", 42),
+    ]
+
+    assert results == ["verified"] * 3
+    assert [
+        [(kv.key, kv.value) for kv in request.setRequest.KVs] for request in sent
+    ] == [[(b"k", b"first")], [(b"k", b"second")], [(b"k", b"third")]]
+    (new,), (still_new,), (unchanged,) = (
+        list(request.setRequest.preconditions) for request in sent
+    )
+    assert new.keyMustNotExist.key == still_new.keyMustNotExist.key == b"k"
+    assert unchanged.WhichOneof("precondition") == "keyNotModifiedAfterTX"
+    after = unchanged.keyNotModifiedAfterTX
+    assert (after.key, after.txID) == (b"k", 42)
 
 
 def test_connect_names_the_missing_extra(monkeypatch: pytest.MonkeyPatch) -> None:

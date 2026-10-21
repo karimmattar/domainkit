@@ -140,7 +140,7 @@ EXPORT_CHUNK: Final = 500
 PROVIDED: Final = "provided__"
 """Starts the parameters of a command's ``provide`` dependencies."""
 
-type UnitOfWorkFactory = Callable[[], UnitOfWork]
+type UnitOfWorkFactory = Callable[[], UnitOfWork | Awaitable[UnitOfWork]]
 type RepositoryOf = Callable[[Any], Repository[Any, Any]]
 type Scope = Callable[[HTTPConnection], Awaitable[CriteriaLike | None]]
 type Service = Callable[[Any, Any], Awaitable[Any]]
@@ -275,6 +275,7 @@ class ResourceRouter(APIRouter):
         self.links = links
         self.pagination = pagination or Pagination()
         self.filters = filters
+        self._filters_dependency = _awaited(filters)
         given = schema or schema_for(model)  # type: ignore[arg-type]
         if policy is not None:
             policy.check(given.model_fields, given.__name__)
@@ -1015,7 +1016,9 @@ class ResourceRouter(APIRouter):
             )
             if self.filters is not None:
                 parameters.append(
-                    _parameter("filters", Annotated[Any, Depends(self.filters)])
+                    _parameter(
+                        "filters", Annotated[Any, Depends(self._filters_dependency)]
+                    )
                 )
         if reads:
             parameters.append(
@@ -1588,16 +1591,33 @@ def _dependency(factory: UnitOfWorkFactory | type[UnitOfWork]) -> UnitOfWorkFact
     """A unit of work dependency; a class is called without arguments.
 
     FastAPI would read a class's ``__init__`` parameters from the query
-    string, so it is wrapped.
+    string, and call it on its thread pool, so it is wrapped in a coroutine.
     """
     if not isinstance(factory, type):
         return factory
 
-    def unit_of_work() -> UnitOfWork:
+    async def unit_of_work() -> UnitOfWork:
         made: UnitOfWork = factory()
         return made
 
     return unit_of_work
+
+
+def _awaited[T](dependency: T) -> T:
+    """A class dependency (a ``FilterSet``) FastAPI awaits, built on the loop.
+
+    FastAPI calls a class on its thread pool; this coroutine takes the
+    class's parameters and builds it where the request runs.
+    """
+    if not isinstance(dependency, type):
+        return dependency
+    cls: type = dependency
+
+    async def build(**values: Any) -> object:  # noqa: ANN401 - the class's own parameters.
+        return cls(**values)
+
+    build.__signature__ = inspect.signature(cls)  # type: ignore[attr-defined]
+    return cast("T", build)
 
 
 def _id_type(model: type | Callable[[], type]) -> type:

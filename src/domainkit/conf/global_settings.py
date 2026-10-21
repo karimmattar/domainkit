@@ -478,6 +478,8 @@ class Settings(BaseModel):
     ENVIRONMENT: Environment = "local"
     """Staging and production get the deployment checks below."""
     DEBUG: bool = False
+    SLOW_CALLBACK_DURATION: float | None = Field(default=0.1, gt=0)
+    """With ``DEBUG``: log loop steps this slow (asyncio debug mode); None: off."""
     PROJECT_NAME: str = "API"
     VERSION: str = "0.1.0"
 
@@ -494,6 +496,8 @@ class Settings(BaseModel):
     """Dotted path to the ``APIRouter`` that mounts every route (``ROOT_URLCONF``)."""
     ASGI_APPLICATION: str | None = None
     """``module:attribute`` that ``runserver`` serves."""
+    EVENT_LOOP: Literal["auto", "asyncio", "uvloop"] = "auto"
+    """Commands' and ``runserver``'s loop: uvloop when installed (``auto``), or not."""
 
     DATABASES: dict[str, DatabaseConfig] = Field(default_factory=dict)
     """SQL databases by alias; if any are set, ``default`` is required."""
@@ -578,8 +582,6 @@ class Settings(BaseModel):
     """Seconds a WebSocket may stay open before it is closed (1001)."""
     WEBSOCKET_MESSAGE_RATE: str | None = "20/second"
     """Messages a WebSocket client may send, such as ``"20/second"``; None: any."""
-    WEBSOCKET_SERVER_MAX_SIZE: int | None = Field(default=None, ge=1)
-    """The server's ``--ws-max-size`` in bytes; None: its default (16 MiB)."""
     SSE_KEEPALIVE: float = Field(default=15.0, gt=0)
     """Seconds of silence before an event stream sends a keep-alive comment."""
     SSE_MAX_LIFETIME: float = Field(default=3600.0, gt=0)

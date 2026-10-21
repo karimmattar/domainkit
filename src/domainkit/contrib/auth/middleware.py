@@ -36,6 +36,7 @@ revoked or expired token, or a deactivated user, does not keep it open.
 """
 
 import logging
+import threading
 from collections import OrderedDict
 from dataclasses import replace
 from typing import Final
@@ -88,6 +89,8 @@ class AuthenticationMiddleware:
         )
         self.held: OrderedDict[str, float] = OrderedDict()
         """Addresses over the limit, and until when (``monotonic()``)."""
+        # Event loops on several threads (free-threaded Python) share it.
+        self._holding = threading.Lock()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Authenticate, then serve the request as its user."""
@@ -195,20 +198,22 @@ class AuthenticationMiddleware:
 
     def _hold(self, address: str, seconds: float) -> None:
         """Refuse ``address``'s credentials unread for ``seconds``."""
-        self.held[address] = monotonic() + seconds
-        self.held.move_to_end(address)
-        if len(self.held) > MAX_HELD:
-            self.held.popitem(last=False)
+        with self._holding:
+            self.held[address] = monotonic() + seconds
+            self.held.move_to_end(address)
+            if len(self.held) > MAX_HELD:
+                self.held.popitem(last=False)
 
     def _held(self, address: str) -> tuple[int, Decision] | None:
         """The limit and the refusal ``address`` is still held to, if any."""
-        until = self.held.get(address)
-        if until is None or self.rate is None:
-            return None
-        left = until - monotonic()
-        if left <= 0:
-            del self.held[address]
-            return None
+        with self._holding:
+            until = self.held.get(address)
+            if until is None or self.rate is None:
+                return None
+            left = until - monotonic()
+            if left <= 0:
+                del self.held[address]
+                return None
         refusal = Decision(
             allowed=False, remaining=0, reset_after=left, retry_after=left
         )

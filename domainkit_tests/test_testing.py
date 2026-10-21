@@ -159,6 +159,33 @@ def test_memory_caches_start_empty_in_every_test(
     result.assert_outcomes(passed=2)
 
 
+def test_reports_and_logs_are_written_after_every_test(
+    pytester: pytest.Pytester, prefix: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each test's error reports and logs are written before the next one runs."""
+    flushed: list[str] = []
+    monkeypatch.setattr(
+        "domainkit.testing.flush_reports", lambda: flushed.append("reports")
+    )
+    monkeypatch.setattr("domainkit.testing.flush_logs", lambda: flushed.append("logs"))
+    pytester.makepyfile(
+        test_two="""
+        def test_one():
+            pass
+
+        def test_two():
+            pass
+        """
+    )
+
+    result = pytester.runpytest_inprocess(
+        "-p", "domainkit.testing", "-p", "no:randomly", "-p", "no:cov"
+    )
+
+    result.assert_outcomes(passed=2)
+    assert flushed == ["reports", "logs", "reports", "logs"]
+
+
 def test_clients_for_users_and_superusers(
     auth_project: str, prefix: str, pytester: pytest.Pytester
 ) -> None:

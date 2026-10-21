@@ -66,6 +66,7 @@ from domainkit.db import connections
 from domainkit.ddd import DomainEvent, event_bus
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import CommandError, call_command
+from domainkit.reporting import flush_reports
 from domainkit_tests.sample_domains.alpha.events import GreetingSent
 from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork, NoteWritten, notes
 
@@ -256,6 +257,7 @@ async def test_failures_retry_then_dead_letter(
     assert [(r.getMessage(), bool(r.exc_info)) for r in dead] == [
         ("Dead-lettered task tests.always_fails after 3 attempts", True)
     ]
+    flush_reports()  # Reporters run on their own thread.
     assert reported == [
         ("still broken", {"message_id": str(row["id"]), "target": "tests.always_fails"})
     ]
@@ -278,6 +280,7 @@ async def test_invalid_arguments_are_reported_without_their_values(
     assert [type(r.exc_info[1]).__name__ for r in dead if r.exc_info] == ["InvalidData"]
     assert dead[0].exc_info is not None
     assert dead[0].exc_info[2] is not None  # Where it failed is kept.
+    flush_reports()  # Reporters run on their own thread.
     ((text, _),) = reported
     assert text.startswith("remember: value: Input should be a valid UUID")
     for kept in (str(row["last_error"]), caplog.text, text):
@@ -1121,6 +1124,7 @@ async def test_commits_hand_over_their_outbox_and_ids(
 
     [row] = await outbox()
     assert submitted == [("default", [row["id"]])]
+    flush_reports()  # Reporters run on their own thread.
     assert reported == []
 
 
@@ -1158,6 +1162,7 @@ async def test_after_commit_failures_are_reported(
         await uow.commit()
 
     assert len(await outbox()) == 1
+    flush_reports()  # Reporters run on their own thread.
     assert reported == [("hook broke", {"domain": "messaging"})]
 
 

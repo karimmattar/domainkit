@@ -243,10 +243,16 @@ openssl ec -in signing.key -pubout -out immudb-signing.pub
   `SERVER_SIGNING_KEY`, and `memory://` is refused. Evidence also needs
   `EVIDENCE.SUBJECT_KEY`
   ([contrib.md](contrib.md#evidence-records-that-provably-never-change)).
-- `/ready` checks every ledger (`ledger:<alias>`).
+- `/ready` checks every ledger (`ledger:<alias>`), on a thread and a
+  client of its own, so a probe never waits behind a slow write.
 - Each process trusts the server's state when it first connects, then
   verifies every later step against it. The signing key is what protects
   across restarts.
+- A call that takes longer than `TIMEOUT` is given up on with
+  `LedgerUnavailable`, but the SDK cannot interrupt it: a write may still
+  land afterwards. `create`, and `append(..., unchanged_since=...)`, make a
+  retried or late write land at most once. Shutdown waits up to `TIMEOUT`
+  for a busy client, which then closes when its call returns.
 - Calls run on one thread per ledger, in order. On a laptop (immudb in
   Docker, synced, TLS and signed states) that was about 70 verified writes
   and 900 verified reads per second per process; immudb's synced commits set
@@ -263,10 +269,17 @@ from domainkit.ledger import ledgers
 written = await ledgers["evidence"].append(b"key", b"value")
 entry = await ledgers["evidence"].read(b"key", revision=1)
 first = await ledgers["evidence"].create(b"new", b"value")  # LedgerKeyExists if written
+latest = await ledgers["evidence"].read(b"key")
+await ledgers["evidence"].append(
+    b"key", b"next", unchanged_since=latest.transaction
+)  # LedgerChanged if another revision came first
 ```
 
 `append` adds a revision; `create` writes only a new key, in one step in
 the ledger, so of several writers racing for a key exactly one succeeds.
+`append` with `unchanged_since`, the transaction of the revision read (0 for
+a key found unwritten), writes only if no revision came after it, also in
+one step: audit anchors are written this way.
 
 Tests use `LEDGERS = {"evidence": {"URL": "memory://"}}`: the same port, in
 memory, without proofs.
@@ -381,9 +394,15 @@ def start_mappers() -> None:
   one entity. Pass `order_by` for a stable order, `collection_class=set`
   for a `set[...]` field, or any other `relationship()` option.
 - Another aggregate is referenced by its id, not by a relationship, so
-  each loads and locks on its own. If you map a read-only reference anyway,
-  give it `lazy="raise"`, so an unloaded access fails loudly instead of
-  needing I/O.
+  each loads and locks on its own.
+- Any other relationship given to `map_imperatively` that leaves `lazy` at
+  SQLAlchemy's default, and the reverse side its `backref` makes, raises on
+  an unloaded access (`lazy="raise"`): `'Order.customer' is not available
+  due to lazy='raise'`. A lazy load needs I/O, which an attribute access in
+  async code cannot do, so it would otherwise fail later with
+  `MissingGreenlet`. Load it in the query (`selectinload(Order.customer)`),
+  or pass `lazy="selectin"`. `lazy=True` asks for lazy loading on purpose,
+  for `AsyncAttrs.awaitable_attrs` or code run with `session.run_sync`.
 - `ON DELETE CASCADE` matters to bulk deletes (`delete_rows`) on
   PostgreSQL; SQLite enforces foreign keys only with `PRAGMA foreign_keys`.
 - Queries reach into children with dotted names: `F("lines.sku") == "A-1"`.

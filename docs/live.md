@@ -117,11 +117,12 @@ limit, so it refuses larger messages before reading them:
 uvicorn config.asgi:application --ws-max-size 1048576 ...
 ```
 
-and tell `check` that it does, with `WEBSOCKET_SERVER_MAX_SIZE = 1048576`.
 In staging and production, `check` warns when the application serves
-WebSockets and the server's limit (16 MiB unless that setting says
-otherwise) is above `MAX_REQUEST_BODY_SIZE`, or when
-`WebSocketLimitsMiddleware` is not in `MIDDLEWARE`.
+WebSockets and the server's limit is above `MAX_REQUEST_BODY_SIZE`, read
+from its environment variables (`UVICORN_WS_MAX_SIZE`; 16 MiB when unset),
+and a deployed application logs the same warning when it starts, from the
+server's own command line ([reference.md](reference.md#server-limits)).
+`check` also warns when `WebSocketLimitsMiddleware` is not in `MIDDLEWARE`.
 
 ## Server-Sent Events
 

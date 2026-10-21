@@ -384,6 +384,8 @@ class HashingPool:
         """Calls accepted whose hash is not done, in this process."""
         self.seconds_per_hash = FIRST_ESTIMATE
         """A moving average of how long one hash takes."""
+        # Every change of ``pending`` and the estimate holds it: event loops on
+        # several threads (free-threaded Python) count in the same pool.
         self._lock = threading.Lock()
         self._executor = ThreadPoolExecutor(
             max_workers=threads, thread_name_prefix="domainkit-hashing"

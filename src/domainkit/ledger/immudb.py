@@ -2,13 +2,20 @@
 
 immudb-py is synchronous and keeps the trusted state inside the client, so
 each ledger runs its client on one dedicated thread: calls never block the
-event loop and never race on that state. The SDK only opens plain-text
-channels; with ``TLS_CA`` this module hands it a TLS channel that verifies
-the server certificate. With ``SERVER_SIGNING_KEY`` every state the server
-returns must carry its signature. See ADR 0011.
+event loop and never race on that state. Readiness checks have a thread and
+a client of their own, so a probe never waits behind a slow write. The SDK
+only opens plain-text channels; with ``TLS_CA`` this module hands it a TLS
+channel that verifies the server certificate. With ``SERVER_SIGNING_KEY``
+every state the server returns must carry its signature. See ADR 0011.
+
+A call that outlives ``TIMEOUT`` is given up on, but the SDK cannot be
+interrupted, so a write may still land after its caller had an error:
+``create``, and ``append`` with ``unchanged_since``, make such a write land
+at most once. ADR 0052 says why the client stays the SDK's, on threads.
 """
 
 import asyncio
+import logging
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -21,6 +28,7 @@ from domainkit.conf.global_settings import IMMUDB_PORT
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.ledger.base import (
     Ledger,
+    LedgerChanged,
     LedgerEntry,
     LedgerError,
     LedgerKeyExists,
@@ -29,6 +37,8 @@ from domainkit.ledger.base import (
     LedgerUnavailable,
     LedgerWrite,
 )
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_DATABASE: Final = "defaultdb"
 SCAN_LIMIT: Final = 1000
@@ -52,6 +62,10 @@ class Client(Protocol):
 
     def verifiedCreate(self, key: bytes, value: bytes) -> Any:  # noqa: ANN401 - SDK API.
         """Write ``key`` only if it is new, and verify the write (``connect``)."""
+        ...
+
+    def verifiedAppendAfter(self, key: bytes, value: bytes, transaction: int) -> Any:  # noqa: ANN401 - SDK API.
+        """Write ``key`` only if unwritten since ``transaction`` (``connect``)."""
         ...
 
     def verifiedGet(self, key: bytes, atRevision: int | None = None) -> Any:  # noqa: ANN401 - SDK API.
@@ -129,98 +143,79 @@ def connect(config: LedgerConfig) -> Client:
         sdk._resetStub()
     sdk.login(address.user, address.password, database=address.database.encode())
     sdk.verifiedCreate = partial(verified_create, sdk)
+    sdk.verifiedAppendAfter = partial(verified_append_after, sdk)
     client: Client = sdk
     return client
 
 
 def verified_create(client: Any, key: bytes, value: bytes) -> Any:  # noqa: ANN401 - SDK types.
-    """The SDK's ``verifiedSet``, refused by immudb if ``key`` is already written.
+    """The SDK's ``verifiedSet``, refused by immudb if ``key`` is already written."""
+    from immudb.grpc import schema_pb2
+
+    must = schema_pb2.Precondition.KeyMustNotExistPrecondition(key=key)
+    return _verified_set_if(client, key, value, keyMustNotExist=must)
+
+
+def verified_append_after(
+    client: Any,  # noqa: ANN401 - SDK types.
+    key: bytes,
+    value: bytes,
+    transaction: int,
+) -> Any:  # noqa: ANN401 - SDK types.
+    """The SDK's ``verifiedSet``, refused if ``key`` changed after ``transaction``.
+
+    Transaction 0 means the caller found the key unwritten: it must still be.
+    """
+    if transaction == 0:
+        return verified_create(client, key, value)
+    from immudb.grpc import schema_pb2
+
+    unchanged = schema_pb2.Precondition.KeyNotModifiedAfterTXPrecondition(
+        key=key, txID=transaction
+    )
+    return _verified_set_if(client, key, value, keyNotModifiedAfterTX=unchanged)
+
+
+def _verified_set_if(
+    client: Any,  # noqa: ANN401 - SDK types.
+    key: bytes,
+    value: bytes,
+    **precondition: Any,  # noqa: ANN401 - one immudb precondition.
+) -> Any:  # noqa: ANN401 - SDK types.
+    """The SDK's verified set, with ``precondition`` added to the request.
 
     immudb-py 1.5 cannot send preconditions, so this runs its verified set
-    through a stub that adds ``keyMustNotExist`` to the request.
+    through a stub that adds one; the server checks it and writes in one
+    step, and the SDK verifies the write as any other.
     """
-    from immudb.grpc import schema_pb2
     from immudb.handler import verifiedSet
 
-    class MustNotExist:
+    class Conditional:
         """The client's stub, making each verified set conditional."""
 
         def VerifiableSet(self, request: Any) -> Any:  # noqa: ANN401 - gRPC API.
-            request.setRequest.preconditions.add(
-                keyMustNotExist=schema_pb2.Precondition.KeyMustNotExistPrecondition(
-                    key=key
-                )
-            )
+            request.setRequest.preconditions.add(**precondition)
             return client._stub.VerifiableSet(request)
 
-    return verifiedSet.call(MustNotExist(), client._rs, key, value, client._vk)
+    return verifiedSet.call(Conditional(), client._rs, key, value, client._vk)
 
 
-class ImmudbLedger(Ledger):
-    """A verified immudb key-value ledger, one client per instance."""
+class _Lane:
+    """One thread, and the SDK client that lives on it."""
 
-    def __init__(
-        self, config: LedgerConfig, *, factory: ClientFactory = connect
-    ) -> None:
-        """Connect lazily with ``factory`` (the real SDK by default)."""
+    def __init__(self, config: LedgerConfig, factory: ClientFactory, name: str) -> None:
+        """Connect with ``factory`` on first use, on a thread called ``name``."""
         self.config = config
+        self.name = name
         self._factory = factory
         self._client: Client | None = None
         self._executor: ThreadPoolExecutor | None = None
 
-    async def append(self, key: bytes, value: bytes) -> LedgerWrite:
-        """Write a new revision and verify it against the trusted state."""
-        response = await self._call(lambda client: client.verifiedSet(key, value))
-        return LedgerWrite(key, int(response.id))
-
-    async def create(self, key: bytes, value: bytes) -> LedgerWrite:
-        """Write the first revision, refused by immudb if the key exists."""
-        response = await self._call(lambda client: client.verifiedCreate(key, value))
-        return LedgerWrite(key, int(response.id))
-
-    async def read(self, key: bytes, revision: int | None = None) -> LedgerEntry:
-        """Read and verify the latest, or the given, revision."""
-        response = await self._call(
-            lambda client: client.verifiedGet(key, atRevision=revision)
-        )
-        return LedgerEntry(
-            key, bytes(response.value), int(response.id), int(response.revision)
-        )
-
-    async def revision_count(self, key: bytes, *, limit: int) -> int:
-        """Count revisions from the key's history, up to ``limit``."""
-        try:
-            history = await self._call(
-                lambda client: client.history(key, 0, limit, False)
-            )
-        except LedgerKeyNotFound:
-            return 0
-        return len(history)
-
-    async def keys(self, prefix: bytes, *, limit: int) -> list[bytes]:
-        """Scan keys with ``prefix`` (immudb returns at most 1000)."""
-        found = await self._call(
-            lambda client: client.scan(b"", prefix, False, min(limit, SCAN_LIMIT))
-        )
-        return list(found)
-
-    async def check(self) -> None:
-        """Fetch the current state, which verifies the server's signature."""
-        await self._call(lambda client: client.currentState())
-
-    async def close(self) -> None:
-        """Close the client on its thread, then stop the thread."""
-        executor, self._executor = self._executor, None
-        if executor is None:
-            return
-        await asyncio.get_running_loop().run_in_executor(executor, self._disconnect)
-        executor.shutdown(wait=False)
-
-    async def _call[T](self, operation: Callable[[Client], T]) -> T:
-        """Run ``operation`` on the ledger thread, within ``TIMEOUT``."""
+    async def call[T](self, operation: Callable[[Client], T]) -> T:
+        """Run ``operation`` on the thread, within ``TIMEOUT``."""
         if self._executor is None:
             self._executor = ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="domainkit-ledger"
+                max_workers=1, thread_name_prefix=self.name
             )
         future = asyncio.get_running_loop().run_in_executor(
             self._executor, self._run, operation
@@ -232,8 +227,30 @@ class ImmudbLedger(Ledger):
                 f"The ledger did not answer within {self.config.TIMEOUT}s."
             ) from exc
 
+    async def close(self) -> None:
+        """Close the client on its thread, waiting at most ``TIMEOUT``; let it go.
+
+        A client busy with a call (one that outlived its caller) is closed
+        when the call returns, and its thread then ends; the wait stops at
+        ``TIMEOUT``, or sooner if the caller's own budget ends first.
+        """
+        executor, self._executor = self._executor, None
+        if executor is None:
+            return
+        closed = asyncio.wrap_future(executor.submit(self._disconnect))
+        executor.shutdown(wait=False)
+        try:
+            async with asyncio.timeout(self.config.TIMEOUT):
+                await asyncio.shield(closed)
+        except TimeoutError:
+            logger.warning(
+                "The ledger's %s thread is busy; its client closes when the "
+                "call returns.",
+                self.name,
+            )
+
     def _run[T](self, operation: Callable[[Client], T]) -> T:
-        """Call the SDK (ledger thread only), translating its errors."""
+        """Call the SDK (this lane's thread only), translating its errors."""
         try:
             if self._client is None:
                 self._client = self._factory(self.config)
@@ -247,10 +264,92 @@ class ImmudbLedger(Ledger):
             raise error from exc
 
     def _disconnect(self) -> None:
-        """Drop the client (ledger thread only); the next call reconnects."""
+        """Drop the client (this lane's thread only); the next call reconnects."""
         client, self._client = self._client, None
         if client is not None:
             client.shutdown()
+
+
+class ImmudbLedger(Ledger):
+    """A verified immudb key-value ledger: a client for work, one for probes."""
+
+    def __init__(
+        self, config: LedgerConfig, *, factory: ClientFactory = connect
+    ) -> None:
+        """Connect lazily with ``factory`` (the real SDK by default)."""
+        self.config = config
+        self._work = _Lane(config, factory, "domainkit-ledger")
+        self._probe = _Lane(config, factory, "domainkit-ledger-check")
+
+    async def append(
+        self, key: bytes, value: bytes, *, unchanged_since: int | None = None
+    ) -> LedgerWrite:
+        """Write a new revision and verify it against the trusted state.
+
+        Raises:
+            LedgerChanged: A revision came after ``unchanged_since``.
+        """
+        if unchanged_since is None:
+            response = await self._work.call(
+                lambda client: client.verifiedSet(key, value)
+            )
+        else:
+            try:
+                response = await self._work.call(
+                    lambda client: client.verifiedAppendAfter(
+                        key, value, unchanged_since
+                    )
+                )
+            except LedgerKeyExists as exc:
+                raise LedgerChanged(
+                    "The ledger has a later revision of this key."
+                ) from exc
+        return LedgerWrite(key, int(response.id))
+
+    async def create(self, key: bytes, value: bytes) -> LedgerWrite:
+        """Write the first revision, refused by immudb if the key exists."""
+        response = await self._work.call(
+            lambda client: client.verifiedCreate(key, value)
+        )
+        return LedgerWrite(key, int(response.id))
+
+    async def read(self, key: bytes, revision: int | None = None) -> LedgerEntry:
+        """Read and verify the latest, or the given, revision."""
+        response = await self._work.call(
+            lambda client: client.verifiedGet(key, atRevision=revision)
+        )
+        return LedgerEntry(
+            key, bytes(response.value), int(response.id), int(response.revision)
+        )
+
+    async def revision_count(self, key: bytes, *, limit: int) -> int:
+        """Count revisions from the key's history, up to ``limit``."""
+        try:
+            history = await self._work.call(
+                lambda client: client.history(key, 0, limit, False)
+            )
+        except LedgerKeyNotFound:
+            return 0
+        return len(history)
+
+    async def keys(self, prefix: bytes, *, limit: int) -> list[bytes]:
+        """Scan keys with ``prefix`` (immudb returns at most 1000)."""
+        found = await self._work.call(
+            lambda client: client.scan(b"", prefix, False, min(limit, SCAN_LIMIT))
+        )
+        return list(found)
+
+    async def check(self) -> None:
+        """Fetch the current state, which verifies the server's signature.
+
+        The probe has its own client and thread, so it never waits behind
+        the ledger's work.
+        """
+        await self._probe.call(lambda client: client.currentState())
+
+    async def close(self) -> None:
+        """Close both clients on their threads, together, within ``TIMEOUT``."""
+        await asyncio.gather(self._work.close(), self._probe.close())
 
 
 def translate(exc: Exception) -> LedgerError:

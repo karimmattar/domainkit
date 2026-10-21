@@ -91,6 +91,35 @@ def test_tls_files(client_certificate: tuple[Path, Path], tmp_path: Path) -> Non
         config(SSLCERT=cert)
 
 
+def test_tls_contexts_are_built_once_per_process(
+    client_certificate: tuple[Path, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Entries with the same mode and files share one context, built once."""
+    cert, _ = client_certificate
+    root = tmp_path / "root.crt"
+    shutil.copy(cert, root)  # A path no other test built a context for.
+    built: list[object] = []
+    making = ssl.create_default_context
+
+    def counted(**options: Any) -> ssl.SSLContext:  # noqa: ANN401 - ssl's options.
+        built.append(options)
+        return making(**options)
+
+    monkeypatch.setattr(ssl, "create_default_context", counted)
+
+    first = client_ssl_context(config(SSLMODE="verify-full", SSLROOTCERT=root))
+    second = client_ssl_context(config(SSLMODE="verify-full", SSLROOTCERT=root))
+    other = client_ssl_context(config(SSLMODE="verify-ca", SSLROOTCERT=root))
+    driver = connect_args(config(SSLMODE="verify-full", SSLROOTCERT=root))
+
+    assert first is second
+    assert driver["ssl"] is first
+    assert other is not first
+    assert built == [{"cafile": root}, {"cafile": root}]
+
+
 def test_asyncpg_arguments() -> None:
     """The asyncpg driver gets an SSL context and timeouts in milliseconds."""
     args = connect_args(config(SSLMODE="verify-full", LOCK_TIMEOUT=None))

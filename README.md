@@ -67,6 +67,8 @@ pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, m
   data, and retention
 - [docs/testing.md](https://github.com/karimmattar/domainkit/blob/main/docs/testing.md): the pytest plugin: test databases,
   sync and async clients, factories, a clock to freeze, and query counts
+- [docs/runtime.md](https://github.com/karimmattar/domainkit/blob/main/docs/runtime.md): how async work runs: event loops,
+  logging off the loop, finding blocking code, free-threaded Python, and servers
 - [docs/versioning.md](https://github.com/karimmattar/domainkit/blob/main/docs/versioning.md): compatibility, deprecations, and releases
 - [docs/adr/](https://github.com/karimmattar/domainkit/tree/main/docs/adr): the decisions behind the design
 - [CHANGELOG.md](https://github.com/karimmattar/domainkit/blob/main/CHANGELOG.md) and [SECURITY.md](https://github.com/karimmattar/domainkit/blob/main/SECURITY.md)

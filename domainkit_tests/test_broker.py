@@ -8,6 +8,7 @@ import asyncio
 import datetime as dt
 import io
 import ssl
+import threading
 from pathlib import Path
 from typing import Any, Final, cast
 
@@ -29,6 +30,7 @@ from domainkit.broker import (
     Delivery,
     MemoryBroker,
     brokers,
+    rabbitmq,
 )
 from domainkit.broker.rabbitmq import QUEUE_ARGUMENTS, RabbitMQBroker, ssl_context
 from domainkit.conf import UNSET, BrokerConfig, Settings, override_settings
@@ -94,6 +96,33 @@ async def test_amqps_connections_trust_the_configured_ca(tmp_path: Path) -> None
     [(_, options)] = server.connections
     assert isinstance(options["ssl_context"], ssl.SSLContext)
     assert options["ssl_context"].verify_mode == ssl.CERT_REQUIRED
+
+
+async def test_tls_contexts_are_built_off_the_loop_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each broker gets the process's one context, built on a worker thread."""
+    built_on: list[str] = []
+    building = rabbitmq.ssl_context
+
+    def watched(config: BrokerConfig) -> ssl.SSLContext | None:
+        built_on.append(threading.current_thread().name)
+        return building(config)
+
+    monkeypatch.setattr(rabbitmq, "ssl_context", watched)
+    server = FakeAMQP()
+    cert, _ = certificate(tmp_path)
+    url = "amqps://billing:pw@mq.internal/billing"
+    brokers = [rabbit(server, URL=url, TLS_CA=str(cert)) for _ in range(2)]
+
+    for broker in brokers:
+        await broker.check()
+        await broker.close()
+
+    first, second = (options["ssl_context"] for _, options in server.connections)
+    assert first is second
+    assert threading.current_thread().name not in built_on
+    assert len(built_on) == 2
 
 
 class Inbox:

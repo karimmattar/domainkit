@@ -61,10 +61,53 @@ All notable changes to domainkit. The format follows
   more than `LIVE_SEND_QUEUE` events behind is closed as too slow. Events
   reach the connections of the process that committed them (ADR 0057).
 - `check` warns, in staging and production, when the application serves
-  WebSockets under a server that reads larger messages than
-  `MAX_REQUEST_BODY_SIZE` (`WEBSOCKET_SERVER_MAX_SIZE`; uvicorn reads 16 MiB
-  unless run with `--ws-max-size`), or without `WebSocketLimitsMiddleware`,
-  and when `LIVE_REAUTH_INTERVAL` is `None`.
+  WebSockets without `WebSocketLimitsMiddleware`, and when
+  `LIVE_REAUTH_INTERVAL` is `None`.
+- `runserver` and management commands with an `async` handle, `runworker`
+  among them, run on uvloop when the new `uvloop` extra is installed.
+  `EVENT_LOOP` (`auto`, `asyncio`, `uvloop`) chooses, and
+  `domainkit.utils.loops.loop_factory` gives other entry points the same
+  loop (ASYNC-25).
+- `domainkit.log.BackgroundHandler` and `BackgroundListener`: log records
+  go on a bounded queue and a thread writes them, so a blocked stdout,
+  file, or socket never stops the event loop. A full queue drops records
+  and counts them, and says how many once there is room. `flush_logs()`
+  waits for what is queued (ASYNC-10; ADR 0051).
+- `domainkit.reporting.flush_reports()` waits for error reports still
+  waiting for the reporting thread, as tests do before checking what a
+  reporter received; the pytest plugin calls it, and `flush_logs()`,
+  after every test.
+- Blocking code is found before production (ASYNC-14, R07;
+  `docs/runtime.md`, "Finding blocking code"):
+  - with `DEBUG`, the application's loop runs in asyncio's debug mode and
+    logs every step that holds it for `SLOW_CALLBACK_DURATION` (0.1 s);
+  - `pytest --detect-blocking` fails a test that holds its loop that long
+    (`--blocking-seconds` to raise the bar);
+  - `check` warns about route handlers and dependencies of the installed
+    domains written as `def`, which FastAPI runs on its thread pool;
+    `domainkit.http.blocking.allow_sync` marks one that must stay sync;
+  - projects made by `init` turn on Ruff's `ASYNC` rules.
+- `Ledger.append(key, value, unchanged_since=...)` writes only if no
+  revision of the key came after the one read, in one step in the ledger
+  (immudb's `keyNotModifiedAfterTX` precondition), and raises the new
+  `LedgerChanged` otherwise.
+- Granian as a supported server: the new `granian` extra, `runserver
+  --server granian`, and production commands and limits for uvicorn and
+  Granian side by side in `docs/reference.md` ("Server limits"), with
+  `--timeout-graceful-shutdown` and keep-alive (ASYNC-27, R12).
+- In staging and production, `check` warns when an application that serves
+  WebSockets runs under a server that reads messages larger than
+  `MAX_REQUEST_BODY_SIZE` before the application can refuse them: uvicorn without a small enough `--ws-max-size`, or Granian
+  with WebSockets on. It reads the server's `UVICORN_*` and `GRANIAN_*`
+  variables, and a deployed application logs the same warning from the
+  server's command line when it starts.
+- CI runs the tests of state shared between threads, and of the
+  framework's own threads, on free-threaded Python 3.14 (3.14t), with the
+  GIL off throughout (R11). The whole suite crashes the 3.14.6t interpreter
+  now and then, already at 0.7.0, so it is not run there yet.
+- `domainkit.contrib.auth.acurrent_user`, the dependency behind
+  `CurrentUser`, which FastAPI awaits instead of calling on its thread
+  pool (ASYNC-09). `current_user` stays a plain function.
 
 ### Changed
 
@@ -95,6 +138,51 @@ All notable changes to domainkit. The format follows
   `MIDDLEWARE`, after `RateLimitMiddleware`; with `domainkit.contrib.auth`
   installed, listing it before `AuthenticationMiddleware` is refused at
   startup, as it would count addresses rather than users.
+- `build_logging_config` writes through `BackgroundHandler`, with a queue
+  of 10,000 records (`queue_size`; `None` keeps writing on the caller's
+  thread), and the settings `init` writes now configure logging with it:
+  text lines, JSON lines in production, at `<PREFIX>LOG_LEVEL`. Lines are
+  written a moment after the call; shutdown waits up to 5 seconds for
+  them.
+- Error reporters run on a reporting thread, in a copy of the caller's
+  context, instead of inside the request: `report_error` returns at once,
+  and at most 100 reports wait (more are dropped and counted). Shutdown
+  waits up to 5 seconds for them. Tests that check a reporter call
+  `flush_reports()` first (ASYNC-10).
+- `CurrentUser`, a `ResourceRouter`'s unit of work and `FilterSet`, and the
+  auth admin's user and group listings no longer hop to FastAPI's thread
+  pool on every request: they are awaited, or built, on the loop.
+  Domains made by `startdomain` declare `get_unit_of_work` and `caller` as
+  `async def`; existing ones keep working, and `check` names them.
+- The in-memory rate limiter, `AuthenticationMiddleware`'s
+  refused-credential holds, and the password hashing pool's count take a
+  lock, so event loops on several threads, as free-threaded Python runs
+  them, share them safely (ASYNC-23).
+- immudb ledgers answer readiness probes on a thread and a client of their
+  own, so a probe no longer waits behind a slow write and reports the
+  ledger unready; `close()` waits at most `TIMEOUT` for a busy client,
+  which closes when its call returns, and no longer leaves a thread open
+  when shutdown cuts it short. Audit anchors are written with
+  `unchanged_since`, so a retried anchor, or one that landed after its
+  caller gave up, is written at most once (ASYNC-13; ADR 0052).
+- TLS contexts are built once per process for each set of TLS settings,
+  never on the event loop while it serves: databases' when the application
+  is built, RabbitMQ's and Redis's on a worker thread at the first
+  connection. Redis connections share one context instead of building
+  their own at each connect (ASYNC-21; `docs/runtime.md`, "TLS contexts").
+  A process uses renewed certificate files after a restart.
+- Relationships given to `map_imperatively` that leave `lazy` at
+  SQLAlchemy's default (`"select"`), and the backrefs they make, now raise
+  on an unloaded access (`lazy="raise"`) instead of trying a lazy load,
+  which async sessions cannot do and which failed later with
+  `MissingGreenlet` (ASYNC-22, R19; ADR 0054). `children`, `child`, and
+  every relationship that names its `lazy` are unchanged. To upgrade, load
+  such a relationship in the query (`selectinload`), pass
+  `lazy="selectin"`, or keep lazy loading on purpose with `lazy=True`
+  (for `AsyncAttrs.awaitable_attrs` or `run_sync`).
+- ADR 0053 records why domainkit stays on FastAPI and Starlette rather
+  than Litestar or plain Starlette, with what each costs a request, and
+  what would change the decision (R16).
 
 ### Fixed
 

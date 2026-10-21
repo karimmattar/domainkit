@@ -84,9 +84,10 @@ Options for each:
 - **Message size.** The 1009 check counts text in UTF-8 a chunk at a time,
   never copying a whole message. It runs once the server has read the
   message, so `check` warns, in staging and production, when the
-  application serves WebSockets and the server's limit
-  (`WEBSOCKET_SERVER_MAX_SIZE`, uvicorn's 16 MiB unless set) is above
-  `MAX_REQUEST_BODY_SIZE`, and when the middleware is missing.
+  application serves WebSockets and the server's limit (read from the
+  server's environment, and its command line at start; uvicorn's 16 MiB
+  unless set) is above `MAX_REQUEST_BODY_SIZE`, and when the middleware is
+  missing.
 
 ## Consequences
 

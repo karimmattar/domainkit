@@ -1,12 +1,13 @@
 """Base class for management commands (``django.core.management.base``)."""
 
-import asyncio
 import inspect
 import sys
 from argparse import ArgumentParser
 from collections.abc import Awaitable, Sequence
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, TextIO, cast
+
+from domainkit.utils import loops
 
 
 class CommandError(Exception):
@@ -81,9 +82,15 @@ def run_async[T](awaitable: Awaitable[T]) -> T:
     """Run ``awaitable`` in a new event loop, then close what it connected.
 
     ``execute`` runs an async ``handle`` this way; a sync ``handle`` that
-    asks questions can reach the database between them with it.
+    asks questions can reach the database between them with it. The loop
+    is uvloop's when it is installed, unless ``EVENT_LOOP`` says otherwise.
     """
-    return asyncio.run(_run_async(awaitable))
+    from domainkit.conf import settings
+    from domainkit.conf.lazy import LazySettings
+
+    loaded = cast(LazySettings, settings).configured
+    kind = settings.EVENT_LOOP if loaded else "auto"
+    return loops.run(_run_async(awaitable), kind=kind)
 
 
 async def _run_async[T](awaitable: Awaitable[T]) -> T:

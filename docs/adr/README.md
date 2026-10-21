@@ -54,3 +54,7 @@ accepted record: supersede it with a new one and link both ways.
 | [0055](0055-bound-live-connections.md) | Bound every live connection: caps, a send queue, a message rate, and clocks | Accepted |
 | [0056](0056-reauthorize-open-connections.md) | Re-authorize open connections on a timer, and close them when that fails | Accepted |
 | [0057](0057-live-committed-events-in-process.md) | Stream committed events to clients in process, filtered per event by an access rule | Accepted |
+| [0051](0051-logs-and-error-reports-leave-the-loop.md) | Write logs and error reports from threads, dropping what does not fit | Accepted |
+| [0052](0052-keep-the-immudb-sdk-on-threads.md) | Keep immudb's SDK, on threads, rather than an async-native client | Accepted |
+| [0053](0053-stay-on-fastapi.md) | Stay on FastAPI and Starlette | Accepted |
+| [0054](0054-relationships-raise-instead-of-loading-lazily.md) | Make relationships raise instead of loading lazily | Accepted |

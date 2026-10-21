@@ -11,7 +11,8 @@ The application's lifespan (``serving``) and management commands
    ``supervise``) are cancelled and awaited.
 4. ``resources``: caches, databases, ledgers, brokers, and the kinds others
    register (an HTTP client) close, all at once.
-5. ``flush``: closers registered to run last, such as logs.
+5. ``flush``: closers registered to run last; then error reports, and
+   last of all the logs, so what closing the others logged is written too.
 
 Each phase may run until its share of the budget has passed, counted from
 the start of the shutdown (``PHASE_ENDS``: 30%, 50%, 60%, 90%, then 100%),
@@ -45,6 +46,8 @@ from domainkit.conf.global_settings import Settings
 from domainkit.db.connections import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.ledger import ledgers
+from domainkit.log import aflush_logs
+from domainkit.reporting import aflush_reports
 from domainkit.utils.closing import forget_outcome
 
 logger = logging.getLogger(__name__)
@@ -93,6 +96,11 @@ def _builtin() -> dict[str, Closer]:
     }
 
 
+def _flushes() -> dict[str, Closer]:
+    """The framework's own last steps: error reports, then logs, each in turn."""
+    return {"error reports": aflush_reports, "logs": aflush_logs}
+
+
 def register(name: str, close: Closer, *, phase: Phase = Phase.RESOURCES) -> None:
     """Call ``close`` for the running loop when it shuts down, in ``phase``.
 
@@ -106,7 +114,7 @@ def register(name: str, close: Closer, *, phase: Phase = Phase.RESOURCES) -> Non
         raise ValueError(
             f"Closers go in the drain, resources, or flush phase, not {phase}."
         )
-    if name in _builtin():
+    if name in _builtin() or name in _flushes():
         raise ValueError(f"{name!r} is closed by the framework already.")
     unregister(name)
     _registered[phase][name] = close
@@ -181,6 +189,8 @@ async def close_resources(budget: Budget | None = None) -> None:
     resources = _builtin() | _registered[Phase.RESOURCES]
     await _close_all(resources, budget.end(Phase.RESOURCES))
     await _close_all(_registered[Phase.FLUSH], budget.end(Phase.FLUSH))
+    for name, flush in _flushes().items():
+        await _close_all({name: flush}, budget.end(Phase.FLUSH))
 
 
 async def _close_all(closers: Mapping[str, Closer], deadline: float) -> None:

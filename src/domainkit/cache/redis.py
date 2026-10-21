@@ -5,6 +5,10 @@ bounded pool, short timeouts, and one retry: a slow cache is worse than no
 cache, and ``Cache`` falls back to computing values when this one fails.
 Valkey speaks the same protocol, so the same URLs and client work for it.
 
+A ``rediss`` URL connects over TLS; connections share one TLS context per
+process for each set of TLS settings, built on a worker thread at the first
+connect, never per connection on the event loop.
+
 A Sentinel group (``redis+sentinel://``) gives the address of the current
 primary, and the client follows failovers. A Cluster (``redis+cluster://``)
 spreads keys over its nodes by hash slot; every operation here touches one
@@ -13,14 +17,21 @@ slots. The rate limiter's script reads and writes one key, so it runs on
 the node that holds it.
 """
 
+import asyncio
 import re
+import threading
 from collections.abc import Awaitable, Mapping, Sequence
-from typing import Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from redis.asyncio import BlockingConnectionPool, Redis
 from redis.asyncio.cluster import ClusterNode, RedisCluster
+from redis.asyncio.connection import RedisSSLContext, SSLConnection
 from redis.asyncio.retry import Retry
-from redis.asyncio.sentinel import Sentinel, SentinelConnectionPool
+from redis.asyncio.sentinel import (
+    Sentinel,
+    SentinelConnectionPool,
+    SentinelManagedSSLConnection,
+)
 from redis.backoff import ExponentialWithJitterBackoff
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import RedisClusterException, RedisError
@@ -66,6 +77,64 @@ large clock readings, and keeps each caller only until its quota is full.
 """
 
 
+if TYPE_CHECKING:
+    _TLSConnection = SSLConnection
+else:
+    _TLSConnection = object
+
+
+class _SharedTLS(_TLSConnection):
+    """A connection that shares its TLS context and builds it off the loop.
+
+    redis-py makes a context for each connection at its first connect, on
+    the event loop, reading the system's CA store and the certificate files
+    every time. These connections share one per process for each set of
+    TLS settings, and the first connect builds it on a worker thread.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401 - redis-py's.
+        """Make the connection, then swap in the shared context."""
+        super().__init__(*args, **kwargs)
+        self.ssl_context = _shared(self.ssl_context)
+
+    async def connect(self) -> None:
+        """Build the shared context on a thread the first time, then connect."""
+        if self.ssl_context.context is None:
+            await asyncio.to_thread(self.ssl_context.get)
+        await super().connect()  # type: ignore[no-untyped-call]  # redis-py leaves it untyped.
+
+
+class SharedTLSConnection(_SharedTLS, SSLConnection):
+    """A TLS connection to a server or a Cluster node, with the shared context."""
+
+
+class SharedTLSSentinelConnection(_SharedTLS, SentinelManagedSSLConnection):
+    """A TLS connection to the primary a Sentinel names, with the shared context."""
+
+
+_contexts: dict[tuple[tuple[str, object], ...], RedisSSLContext] = {}
+_contexts_lock: Final = threading.Lock()
+
+
+def _shared(context: RedisSSLContext) -> RedisSSLContext:
+    """The process's context with ``context``'s settings; ``context`` if new."""
+    names = getattr(type(context), "__slots__", None) or vars(context)
+    settings = tuple(
+        (name, _frozen(getattr(context, name))) for name in names if name != "context"
+    )
+    try:
+        hash(settings)
+    except TypeError:  # A setting redis-py adds one day, of a type we cannot key.
+        return context
+    with _contexts_lock:
+        return _contexts.setdefault(settings, context)
+
+
+def _frozen(value: object) -> object:
+    """``value``, with lists (redis-py's verify flags) as tuples."""
+    return tuple(value) if isinstance(value, list) else value
+
+
 class BlockingSentinelPool(SentinelConnectionPool, BlockingConnectionPool):
     """Sentinel's pool that waits for a free connection, as the server's pool does.
 
@@ -94,19 +163,27 @@ def create_client(config: CacheConfig) -> Redis:
     pool = BlockingConnectionPool.from_url(
         config.URL.get_secret_value(), **options, **tls
     )
+    if pool.connection_class is SSLConnection:
+        pool.connection_class = SharedTLSConnection
     return Redis.from_pool(pool)
 
 
 def create_cluster_client(config: CacheConfig) -> RedisCluster:
     """Build a Cluster client from its seed nodes; it finds the others itself."""
     target = parse_redis_url(config.URL.get_secret_value())
-    return RedisCluster(
+    client = RedisCluster(
         startup_nodes=[ClusterNode(host, port) for host, port in target.hosts],
         username=target.username,
         password=target.password,
         **_options(config),
         **_tls_options(config),
     )
+    if config.uses_tls():
+        # The nodes it starts from, and those it finds, share one context.
+        client.nodes_manager.connection_kwargs["connection_class"] = SharedTLSConnection
+        for node in client.nodes_manager.startup_nodes.values():
+            node.connection_class = SharedTLSConnection
+    return client
 
 
 def _options(config: CacheConfig) -> dict[str, Any]:
@@ -158,6 +235,8 @@ def _primary(
     sentinel = Sentinel(  # type: ignore[no-untyped-call]  # redis-py leaves it untyped.
         list(target.hosts), sentinel_kwargs=sentinel_options
     )
+    if tls:
+        options = {**options, "connection_class": SharedTLSSentinelConnection}
     client: Redis = sentinel.master_for(
         target.service or "",
         connection_pool_class=BlockingSentinelPool,

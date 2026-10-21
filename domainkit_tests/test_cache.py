@@ -8,19 +8,22 @@ import asyncio
 import io
 import logging
 import math
+import ssl
+import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Final
+from typing import Final, cast
 
 import pytest
 from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
 from pydantic import BaseModel, ValidationError
 from redis.asyncio import Redis
+from redis.asyncio.connection import Connection, RedisSSLContext, SSLConnection
 
 from domainkit import clock
 from domainkit.broker import brokers
@@ -37,7 +40,12 @@ from domainkit.cache import (
     invalidate_on,
 )
 from domainkit.cache.core import split
-from domainkit.cache.redis import RedisStore, create_client
+from domainkit.cache.redis import (
+    RedisStore,
+    SharedTLSConnection,
+    _shared,
+    create_client,
+)
 from domainkit.conf import CacheConfig, Settings, override_settings
 from domainkit.context import RequestContext, bind_request, current_request
 from domainkit.contrib.idempotency.operations import (
@@ -56,6 +64,7 @@ from domainkit.management.base import CommandError, run_async
 from domainkit.tasks import owned
 from domainkit.tracing import current_ids, remote_parent
 from domainkit_tests.settings import SECRET_KEY
+from domainkit_tests.test_broker import certificate
 
 pytestmark = pytest.mark.anyio
 
@@ -1207,9 +1216,80 @@ def test_redis_clients_use_short_timeouts_and_tls_options(tmp_path: Path) -> Non
         str(tmp_path / "client.key"),
     )
     assert options["retry"].get_retries() == 0
+    assert pool.connection_class is SharedTLSConnection
     client = RedisStore.from_config(config).client
     assert isinstance(client, Redis)
     assert isinstance(client.connection_pool, type(pool))
+    plain = create_client(CacheConfig(URL="redis://cache.internal", KEY_PREFIX="x"))
+    assert plain.connection_pool.connection_class is Connection
+
+
+async def test_redis_tls_contexts_are_shared_and_built_off_the_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One context per set of TLS settings, built once, on a worker thread."""
+    cert, key = certificate(tmp_path)
+    config = CacheConfig(URL="rediss://cache.internal/0", KEY_PREFIX="x", TLS_CA=cert)
+    mutual = CacheConfig(
+        URL="rediss://cache.internal/0",
+        KEY_PREFIX="x",
+        TLS_CA=cert,
+        TLS_CERT=cert,
+        TLS_KEY=key,
+    )
+    first, second, third = (
+        create_client(each).connection_pool.make_connection()  # type: ignore[no-untyped-call]
+        for each in (config, config, mutual)
+    )
+    built_on: list[str] = []
+    getting = RedisSSLContext.get
+
+    def watched(self: RedisSSLContext) -> ssl.SSLContext:
+        built_on.append(threading.current_thread().name)
+        return getting(self)
+
+    connected: list[object] = []
+
+    async def connect(self: SSLConnection) -> None:  # Where redis-py would connect.
+        connected.append(self)
+
+    monkeypatch.setattr(RedisSSLContext, "get", watched)
+    monkeypatch.setattr(SSLConnection, "connect", connect)
+
+    for connection in (first, second, third):
+        await connection.connect()
+
+    assert first.ssl_context is second.ssl_context
+    assert third.ssl_context is not first.ssl_context
+    assert connected == [first, second, third]
+    assert len(built_on) == 2  # Once per set of settings.
+    assert threading.current_thread().name not in built_on
+    context = first.ssl_context.context
+    assert context is not None
+    assert context.verify_mode == ssl.CERT_REQUIRED
+
+
+def test_tls_settings_redis_cannot_key_are_not_shared() -> None:
+    """A context whose settings cannot be compared keeps its own."""
+
+    class Slotted:
+        __slots__ = ("context", "flags")
+
+        def __init__(self) -> None:
+            self.context = None
+            self.flags = {"unhashable": True}
+
+    class Plain:
+        def __init__(self) -> None:
+            self.context = None
+            self.flags = [1, 2]
+
+    odd = cast(RedisSSLContext, Slotted())
+    plain, same = (cast(RedisSSLContext, Plain()) for _ in range(2))
+
+    assert _shared(odd) is odd
+    assert _shared(plain) is plain
+    assert _shared(same) is plain
 
 
 # Rate limits in Redis, the command, the testing plugin ------------------------------

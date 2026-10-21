@@ -13,6 +13,7 @@ Most projects use ``domainkit.contrib.evidence`` on top of it. See ADR 0011.
 
 from domainkit.ledger.base import (
     Ledger,
+    LedgerChanged,
     LedgerEntry,
     LedgerError,
     LedgerKeyExists,
@@ -26,6 +27,7 @@ from domainkit.ledger.memory import MemoryLedger
 
 __all__ = [
     "Ledger",
+    "LedgerChanged",
     "LedgerEntry",
     "LedgerError",
     "LedgerHandler",

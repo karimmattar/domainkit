@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from domainkit.conf.env import Env
+from domainkit.log import build_logging_config
 
 env = Env()
 BASE_DIR = Path(__file__).resolve().parents[3]
@@ -36,3 +37,6 @@ TIME_ZONE = "UTC"
 # Operation ids are route names, so generated clients keep their method
 # names when routers move (docs/reference.md, "The API surface").
 OPENAPI_OPERATION_IDS = "route_name"
+# Lines leave through a bounded queue and a thread, so writing them never
+# holds the event loop (docs/runtime.md, "Logging").
+LOGGING = build_logging_config(log_format="text", level=env.str("LOG_LEVEL", "INFO"))

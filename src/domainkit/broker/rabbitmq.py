@@ -11,7 +11,8 @@ import asyncio
 import ssl
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from contextlib import asynccontextmanager
-from functools import partial
+from functools import cache, partial
+from pathlib import Path
 from typing import Any, Final
 
 import aio_pika
@@ -48,14 +49,24 @@ QUEUE_ARGUMENTS: Final = {"x-queue-type": "quorum"}
 
 
 def ssl_context(config: BrokerConfig) -> ssl.SSLContext | None:
-    """A verifying TLS context with the configured CA and client certificate."""
+    """A verifying TLS context with the configured CA and client certificate.
+
+    Built once per process for each set of files; the broker builds it on a
+    worker thread, since reading the CA store and the files blocks.
+    """
     if config.TLS_CA is None and config.TLS_CERT is None:
         return None  # aiormq's default context verifies against the system CAs.
-    context = ssl.create_default_context(
-        cafile=None if config.TLS_CA is None else str(config.TLS_CA)
-    )
-    if config.TLS_CERT is not None and config.TLS_KEY is not None:
-        context.load_cert_chain(str(config.TLS_CERT), str(config.TLS_KEY))
+    return _ssl_context(config.TLS_CA, config.TLS_CERT, config.TLS_KEY)
+
+
+@cache
+def _ssl_context(
+    ca: Path | None, cert: Path | None, key: Path | None
+) -> ssl.SSLContext:
+    """Build the context ``ssl_context`` describes (once, then cached)."""
+    context = ssl.create_default_context(cafile=None if ca is None else str(ca))
+    if cert is not None and key is not None:
+        context.load_cert_chain(str(cert), str(key))
     return context
 
 
@@ -120,9 +131,10 @@ class RabbitMQBroker(Broker):
         async with self._opening:
             if self._connection is None:
                 async with _translated():
+                    context = await asyncio.to_thread(ssl_context, self.config)
                     self._connection = await self._connect(
                         self.config.URL.get_secret_value(),
-                        ssl_context=ssl_context(self.config),
+                        ssl_context=context,
                         timeout=self.config.CONNECT_TIMEOUT,
                         client_properties={
                             "connection_name": f"domainkit {self.prefix}"

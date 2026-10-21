@@ -53,6 +53,7 @@ from domainkit.http.live import (
     websocket_limits,
 )
 from domainkit.http.ratelimit import MemoryBackend
+from domainkit.http.servers import limit_warnings, server_limits
 from domainkit.log import SECURITY_LOGGER
 
 logger = logging.getLogger(__name__)
@@ -61,8 +62,6 @@ security_logger = logging.getLogger(SECURITY_LOGGER)
 MIDDLEWARE: Final = "domainkit.http.websockets.WebSocketLimitsMiddleware"
 CLOSE_TIMEOUT: Final = 5.0
 """Seconds the close of a WebSocket the framework ends may take to send."""
-SERVER_MAX_SIZE: Final = 16 * 1024 * 1024
-"""uvicorn's ``--ws-max-size`` unless it is given: 16 MiB."""
 
 
 class ConnectionClosed(OSError):
@@ -260,14 +259,6 @@ def deployment_warnings(app: FastAPI) -> list[str]:
     ):
         return []
     warnings = []
-    limit = settings.MAX_REQUEST_BODY_SIZE
-    server = settings.WEBSOCKET_SERVER_MAX_SIZE or SERVER_MAX_SIZE
-    if server > limit:
-        warnings.append(
-            f"The server reads WebSocket messages of up to {server} bytes whole "
-            f"before MAX_REQUEST_BODY_SIZE ({limit}) is checked; run uvicorn with "
-            f"--ws-max-size {limit}, and set WEBSOCKET_SERVER_MAX_SIZE to match."
-        )
     if MIDDLEWARE not in settings.MIDDLEWARE:
         warnings.append(
             f"WebSockets are served without {MIDDLEWARE}: no caps, send queue, "
@@ -275,6 +266,18 @@ def deployment_warnings(app: FastAPI) -> list[str]:
             "in MIDDLEWARE."
         )
     return warnings
+
+
+def server_warnings(app: FastAPI) -> list[str]:
+    """What the server reads past ``MAX_REQUEST_BODY_SIZE``, for WebSocket apps.
+
+    The server is found from this process's command line and environment
+    (``domainkit.http.servers``). An application without WebSocket routes
+    never reads a message, so it is not warned.
+    """
+    if not serves_websockets(app.routes):
+        return []
+    return limit_warnings(settings.MAX_REQUEST_BODY_SIZE, server_limits())
 
 
 def serves_websockets(routes: Sequence[BaseRoute]) -> bool:

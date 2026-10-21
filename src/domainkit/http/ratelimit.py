@@ -30,6 +30,7 @@ import ipaddress
 import logging
 import math
 import re
+import threading
 import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
@@ -109,9 +110,19 @@ class MemoryBackend:
         self.max_keys = max_keys
         self.clock = clock
         self._callers: OrderedDict[str, _Caller] = OrderedDict()
+        self._lock = threading.Lock()
 
     async def hit(self, key: str, limit: int, period: float) -> Decision:
-        """Apply GCRA: allow if the requests owed stay within the burst."""
+        """Apply GCRA: allow if the requests owed stay within the burst.
+
+        One lock guards the callers, so event loops on several threads (a
+        server's threads, or free-threaded Python) never interleave.
+        """
+        with self._lock:
+            return self._hit(key, limit, period)
+
+    def _hit(self, key: str, limit: int, period: float) -> Decision:
+        """``hit``, with the lock held."""
         now = self.clock()
         self._forget_idle(now)
         interval = period / limit

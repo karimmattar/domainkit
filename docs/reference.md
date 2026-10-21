@@ -37,6 +37,7 @@ URLs; an unreadable port is refused without quoting the URL.
 | `BASE_DIR` | the project root | The directory holding `pyproject.toml`. |
 | `ENVIRONMENT` | `"local"` | `local`, `test`, `staging`, or `production`. Staging and production get the [deployment checks](#deployment-checks). |
 | `DEBUG` | `False` | Development conveniences; refused in staging and production. |
+| `SLOW_CALLBACK_DURATION` | `0.1` | With `DEBUG`, the application's loop runs in asyncio's debug mode and logs each step that holds it this many seconds or more ([runtime.md](runtime.md#finding-blocking-code)); `None` turns it off. |
 | `PROJECT_NAME` | `"API"` | The OpenAPI title. |
 | `VERSION` | `"0.1.0"` | The OpenAPI version. |
 | `SECRET_KEY` | `None` | Signs what the service hands out: reset links, cookies, MFA challenges ([Signing](#signing)). Required in staging and production, with 50 random characters or more; shown as `**********`. |
@@ -45,8 +46,9 @@ URLs; an unreadable port is refused without quoting the URL.
 | `MIDDLEWARE` | see [Middleware](#middleware) | ASGI middleware by dotted path, outermost first. |
 | `ROOT_ROUTER` | `None` | Dotted path to the `APIRouter` that mounts every route (Django's `ROOT_URLCONF`). |
 | `ASGI_APPLICATION` | `None` | `module:attribute` that `runserver` serves. |
-| `LOGGING` | minimal | A `logging.config.dictConfig` mapping, applied by `setup()`. |
-| `ERROR_REPORTERS` | `()` | Callables `(exc, context) -> None` by dotted path, called for every unexpected error (500s, dead-lettered messages). A reporter that raises is logged and skipped. |
+| `EVENT_LOOP` | `"auto"` | The event loop of `runserver` and of commands with an `async` handle (`runworker` among them): uvloop when the `uvloop` extra is installed (`auto`), always asyncio's own (`asyncio`), or uvloop or a configuration error (`uvloop`). |
+| `LOGGING` | minimal | A `logging.config.dictConfig` mapping, applied by `setup()`. `domainkit.log.build_logging_config(log_format="json", level="INFO")` makes one that writes from a thread, through a bounded queue ([runtime.md](runtime.md#logging-and-error-reports)); the settings `init` writes use it. |
+| `ERROR_REPORTERS` | `()` | Callables `(exc, context) -> None` by dotted path, called for every unexpected error (500s, dead-lettered messages), on a reporting thread and in the caller's context; 100 reports may wait, and more are dropped and counted. A reporter that raises is logged and skipped. |
 | `EVENT_HANDLER_TIMEOUT` | `10.0` | Seconds an in-process event handler may run after a commit, up to 3600; one still running then is cancelled, logged, and reported (`HandlerTimedOut`), and the request goes on. `event_bus.subscribe(..., timeout=30)` sets one handler's limit; `durable=True` runs a handler from the outbox instead ([runtime.md](runtime.md#event-handlers)). |
 | `SHUTDOWN_TIMEOUT` | `15.0` | Seconds a shutdown may take in all, from 0 to 300: domain hooks, work in flight, background tasks, then connections, each phase within its share ([runtime.md](runtime.md#shutting-down-within-a-budget)). Add the server's graceful shutdown (`uvicorn --timeout-graceful-shutdown 10`) and keep the sum under the orchestrator's grace period: 30 s in Kubernetes. |
 
@@ -209,26 +211,62 @@ See [i18n.md](i18n.md).
 
 The application limits bodies, WebSocket messages, and request rates. Slow
 and oversized requests are the server's to stop, before the application
-sees them. Run uvicorn behind a reverse proxy or load balancer that limits
-header size and the time to send headers and body (nginx:
+sees them. Run the server behind a reverse proxy or load balancer that
+limits header size and the time to send headers and body (nginx:
 `large_client_header_buffers`, `client_header_timeout`,
-`client_body_timeout`), and set uvicorn's own limits:
+`client_body_timeout`), and set the server's own limits. domainkit runs on
+[uvicorn](https://www.uvicorn.org/) or [Granian](https://github.com/emmett-framework/granian)
+(`pip install 'domainkit[granian]'`); [runtime.md](runtime.md#servers)
+compares them.
+
+uvicorn, one process per core:
 
 ```bash
-uvicorn config.asgi:application --limit-concurrency 200 --timeout-keep-alive 5 \
+uvicorn config.asgi:application --workers 4 --loop uvloop \
+  --limit-concurrency 200 --backlog 2048 --timeout-keep-alive 5 \
+  --timeout-graceful-shutdown 20 \
   --h11-max-incomplete-event-size 16384 --ws-max-size 1048576 \
   --no-proxy-headers --no-server-header
 ```
 
+Granian, the same:
+
+```bash
+granian --interface asgi config.asgi:application --host 0.0.0.0 --port 8000 \
+  --workers 4 --loop uvloop --backpressure 200 --backlog 2048 \
+  --http1-header-read-timeout 5000 --workers-kill-timeout 20 \
+  --respawn-failed-workers --no-ws
+```
+
+| Concern | uvicorn | Granian |
+| --- | --- | --- |
+| Requests at once, per process | `--limit-concurrency` (more get 503) | `--backpressure` |
+| Idle keep-alive connections | `--timeout-keep-alive` seconds | `--http1-keep-alive` / `--no-http1-keep-alive` |
+| Slow headers | the proxy | `--http1-header-read-timeout` milliseconds |
+| Request line and headers | `--h11-max-incomplete-event-size` (16 KiB) | `--http1-buffer-size` |
+| WebSocket message | `--ws-max-size` bytes (16 MiB unless set) | no setting: `--no-ws` if unused, else the proxy |
+| Graceful shutdown | `--timeout-graceful-shutdown` seconds, then open connections are closed | `--workers-kill-timeout` seconds, then workers are killed |
+
+Keep the shutdown timeout below the orchestrator's grace period (30
+seconds on Kubernetes) less the time the application takes to close its
+resources, so a stop never ends in `SIGKILL`.
+
 `--ws-max-size` stops a WebSocket message before it is read whole;
 `MAX_REQUEST_BODY_SIZE` then closes the connection on one that got through.
-Set `WEBSOCKET_SERVER_MAX_SIZE` to the same number: in staging and
-production, `check` warns when an application that serves WebSockets runs
-under a server that reads larger messages (uvicorn's default is 16 MiB).
+`check` warns, in staging and production, when an application that serves
+WebSockets runs under a server that reads messages larger than
+`MAX_REQUEST_BODY_SIZE`: uvicorn without
+`--ws-max-size` (or with a larger one), or Granian with WebSockets on. It
+reads the server's environment variables (`UVICORN_WS_MAX_SIZE`,
+`GRANIAN_WEBSOCKETS`, which both servers accept in place of options); a
+deployed application logs the same warning when it starts, from the
+server's own command line.
+
 `--no-proxy-headers` leaves `X-Forwarded-*` to `TRUSTED_PROXIES`: uvicorn
 otherwise reads them itself, from `127.0.0.1` or from whatever
 `FORWARDED_ALLOW_IPS` allows (`*` lets any client choose its address, and
-so its rate limit and login throttle). `runserver` runs this way.
+so its rate limit and login throttle). Granian reads none. `runserver`
+runs this way, with either server.
 
 ### Live connections
 
@@ -245,7 +283,6 @@ re-authorized while they stay open; see [live.md](live.md).
 | `WEBSOCKET_IDLE_TIMEOUT` | `300.0` | Seconds without a message either way before a WebSocket is closed (1001). |
 | `WEBSOCKET_MAX_LIFETIME` | `3600.0` | Seconds a WebSocket may stay open (1001). |
 | `WEBSOCKET_MESSAGE_RATE` | `"20/second"` | Messages a client may send per connection, counted in the process; one more closes it (1008). `None`: any. |
-| `WEBSOCKET_SERVER_MAX_SIZE` | `None` | The server's `--ws-max-size` in bytes, for `check`; `None` means uvicorn's 16 MiB. |
 | `SSE_KEEPALIVE` | `15.0` | Seconds without an event before an event stream sends a keep-alive comment. |
 | `SSE_MAX_LIFETIME` | `3600.0` | Seconds an event stream may stay open. |
 
@@ -331,8 +368,9 @@ passes, so an API that is public on purpose can keep them:
 - `LIVE_REAUTH_INTERVAL = None`: open WebSockets and event streams keep a
   revoked token
 - an application that serves WebSockets under a server that reads larger
-  messages than `MAX_REQUEST_BODY_SIZE` (`WEBSOCKET_SERVER_MAX_SIZE`, 16 MiB
-  unless set), or without `WebSocketLimitsMiddleware`
+  messages than `MAX_REQUEST_BODY_SIZE` (from `UVICORN_WS_MAX_SIZE`; a
+  deployed application also logs it at start), or without
+  `WebSocketLimitsMiddleware`
   ([live.md](live.md#message-size))
 
 The production settings that `init` create avoid the first three, and ask
@@ -555,6 +593,9 @@ Times need a time zone; a date means midnight UTC.
 
 **Logs** are JSON lines with `request_id`, and with `trace_id` and `span_id`
 when a span is active. Query strings and bound SQL values are never logged.
+They are written by a thread, never by the event loop; a burst past the
+queue's 10,000 records is dropped and counted, never waited for
+([runtime.md](runtime.md#logging-and-error-reports)).
 
 **Metrics** (`domainkit[metrics]`, mounted at `/metrics`):
 
@@ -599,8 +640,9 @@ It selects the test settings, never reads `.env`, and refuses settings whose
 application to sync and async tests (`client`, `client_for`, `admin_client`,
 `async_client`, `async_client_for`, `async_admin_client`). It also brings
 factories, a clock to freeze (`freeze_time`), and query-count assertions
-(`assert_num_queries`, `assert_max_queries`). [docs/testing.md](testing.md)
-covers them all.
+(`assert_num_queries`, `assert_max_queries`). `--detect-blocking` fails
+tests that hold their event loop. [docs/testing.md](testing.md) covers them
+all.
 
 Fixtures for published events and queued work (`captured_events`,
 `outbox`, `execute_deferred`) come with messaging's own plugin
@@ -615,7 +657,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | Command | Options | Purpose |
 | --- | --- | --- |
 | `init` | `name`, `[directory]` | Create a project: base, local, test, and production settings, routes, `manage.py`, `.env`, and a first test. The name sets the environment prefix; the directory (default `./<name>`) must be empty or missing. |
-| `check` | | Settings, domains, routes and their access rules, middleware, layer rules, and a single migration head. In staging and production it also lists [weak choices](#deployment-checks) as warnings. |
+| `check` | | Settings, domains, routes and their access rules, middleware, layer rules, and a single migration head. It warns about route handlers and dependencies of the installed domains written as `def`, which run on FastAPI's thread pool ([runtime.md](runtime.md#finding-blocking-code)); in staging and production it also lists [weak choices](#deployment-checks) as warnings. |
 | `broker` | `check\|declare`, `[ALIAS ...]` | Connect to brokers (all by default), or declare the exchange and every queue the worker's tasks use on `MESSAGING.BROKER`. |
 | `compilemessages` | `[DIRECTORY ...]`, `-l/--locale`, `--check` | Compile translation catalogs (`.po`) to `.mo` files: in the directories named, or in `LOCALE_PATHS` and each installed domain's `locale` directory. `--check` writes nothing and fails if one is missing or out of date ([i18n.md](i18n.md)). |
 | `cache` | `check\|clear`, `[ALIAS ...]`, `--all` | Ping caches (all by default), or delete every key of the named caches, all versions, in their namespace only. Clearing needs aliases or `--all`. |
@@ -629,7 +671,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `squashmigrations` | `[end]`, `--start`, `--database`, `-m/--message` | Replace a target's revisions, `--start` (default: the first) to `end` (default: the head), with one; see [Squashing migrations](#squashing-migrations). |
 | `showmigrations` | `--database` | Applied and pending revisions; a shard group lists each database. |
 | `partitions` | `--database`, `--prune`, `--dry-run` | Create the current and upcoming partitions of partitioned tables; `--prune` drops those past `retain`. |
-| `runserver` | `[addr:port]`, `--noreload` | Development server. Production runs uvicorn directly. |
+| `runserver` | `[addr:port]`, `--noreload`, `--server uvicorn\|granian` | Development server, on uvicorn or Granian (the `granian` extra). Production runs the server directly ([Server limits](#server-limits)). |
 | `shell` | `-c/--command`, `--no-imports` | An asyncio Python console, where `await` works at the top level, with settings, the registry, connections, `asyncio`, and every installed domain's models, repositories, and units of work by name (unless `--no-imports`). `-c` runs code and exits. |
 | `dbshell` | `--database`, `--owner`, `--allow-production`, `-- [ARG ...]` | Open `psql` or `sqlite3` on an alias, as its `URL`'s user (`--owner`: `MIGRATION_URL`'s). The connection and password reach `psql` in libpq's environment variables, never on its command line; TLS follows `SSLMODE` and its files. Production refuses without `--allow-production`. Arguments after `--` go to the client. |
 | `diffsettings` | `--all` | The settings that differ from the defaults; `--all` lists every one, defaults marked `###`. Secrets stay hidden as in `repr(settings)`, and so do entries of free-form settings named like secrets (`password`, `token`, `key`, ...) and passwords in URLs. |

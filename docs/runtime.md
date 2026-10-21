@@ -4,8 +4,10 @@ domainkit serves requests on one event loop per process. Work that is not a
 request (computing a cached value, checking readiness, settling an
 `Idempotency-Key`) runs as background tasks of that loop. This page covers
 how those tasks start, who owns them, how the process stops them, and how
-long anything may wait while it does. Settings are in
-[reference.md](reference.md#core).
+long anything may wait while it does. Then it covers what keeps the loop
+free: which loop runs, how logs and error reports leave it, how blocking
+code is found before production, and which servers and Python builds
+domainkit runs on. Settings are in [reference.md](reference.md#core).
 
 ## Background tasks: spawn and supervise
 
@@ -91,7 +93,7 @@ command ends, the process shuts down in phases, all within
 | `drain` | Closers registered to finish work in flight, such as a publisher sending the messages it holds | 50% |
 | `tasks` | The loop's background tasks: cancelled, and waited for | 60% |
 | `resources` | Caches, databases, ledgers, brokers, and kinds others register (an HTTP client), all at once | 90% |
-| `flush` | Closers registered to run last, such as logs | 100% |
+| `flush` | Closers registered to run last, then error reports, then logs | 100% |
 
 Each phase may run until its share of the budget has passed, counted from
 the start of the shutdown. Time one phase does not use goes to the next,
@@ -184,3 +186,207 @@ Background work in the stores is bounded too:
   ([auth.md](auth.md#passwords)).
 - **The in-memory rate limiter** forgets idle callers at most 64 per
   request, so no one request pays for a crowd that left.
+
+## Event loops: uvloop
+
+`runserver` and every management command with an `async` handle
+(`runworker`, `migrate`, `seed`, ...) run on [uvloop](https://github.com/MagicStack/uvloop)
+when it is installed: `pip install 'domainkit[uvloop]'` (uvicorn's
+`standard` extra brings it too, on Linux and macOS). `EVENT_LOOP` chooses:
+
+| `EVENT_LOOP` | Loop |
+| --- | --- |
+| `"auto"` (default) | uvloop when it can be imported, asyncio's own otherwise |
+| `"asyncio"` | always asyncio's own: rule uvloop out when chasing a bug |
+| `"uvloop"` | uvloop, or a configuration error when it is missing |
+
+`runserver` follows it on uvicorn and on Granian. Production servers pick
+their own loop: uvicorn and Granian take `--loop uvloop` (both default to
+`auto`, and Granian's `auto` takes rloop first when it is installed). Code
+that starts a loop of its own can follow the setting:
+
+```python
+import asyncio
+
+from domainkit.conf import settings
+from domainkit.utils.loops import loop_factory
+
+asyncio.run(main(), loop_factory=loop_factory(settings.EVENT_LOOP))
+```
+
+uvloop does not run on Windows; `auto` falls back to asyncio's loop there,
+and the extra installs nothing.
+
+## Logging and error reports
+
+Writing a log line can block: stdout is a pipe a log collector may stop
+reading, and a file or socket can stall. A handler called on the event loop
+would then stop every request. `build_logging_config` writes through a
+`domainkit.log.BackgroundHandler` instead, and the project settings `init`
+writes use it:
+
+```python
+from domainkit.log import build_logging_config
+
+LOGGING = build_logging_config(log_format="json", level="INFO")
+```
+
+- The caller, the event loop included, merges the message, adds the
+  request id and trace ids (they live in its context), and puts the record
+  on a queue of 10,000 (`queue_size`). One thread, `domainkit-logging`,
+  formats and writes it; exceptions are formatted there too.
+- A full queue never makes the caller wait. The record is dropped and
+  counted (`handler.dropped`), and the next record that fits is preceded by
+  a warning from `domainkit.log`: `Dropped 120 log records: the logging
+  queue was full`.
+- At shutdown the lifespan and management commands wait for the queue to
+  drain in the `flush` phase, last of all, after error reports; Python's own
+  logging shutdown does the same at exit. A stream that stays blocked is
+  given up on, so it cannot hold the process.
+- `queue_size=None` writes on the caller's thread, as plain handlers do:
+  for scripts that must see each line before going on.
+
+Another `LOGGING` can use the handler around any handlers:
+
+```python
+LOGGING = {
+    "version": 1,
+    "handlers": {
+        "file": {"class": "logging.FileHandler", "filename": "app.log"},
+        "background": {
+            "class": "domainkit.log.BackgroundHandler",
+            "handlers": ["file"],
+            "queue": {"()": "queue.Queue", "maxsize": 10000},
+            "listener": "domainkit.log.BackgroundListener",
+            "filters": ["context"],
+        },
+    },
+    "filters": {"context": {"()": "domainkit.log.ContextFilter"}},
+    "root": {"handlers": ["background"], "level": "INFO"},
+}
+```
+
+Error reporters (`ERROR_REPORTERS`) run off the loop too, on one
+`domainkit-reporting` thread: `report_error` queues the report and returns.
+Each reporter runs in a copy of the caller's context, so Sentry still sees
+the request's scope and log lines keep its request id. At most 100 reports
+wait; more are dropped and counted, and the count is logged. Shutdown waits
+for waiting reports, within 5 seconds, before the logs. In tests, call
+`domainkit.reporting.flush_reports()` before checking what was reported
+([testing.md](testing.md#fixtures)).
+
+## Finding blocking code
+
+A call that blocks inside an `async def` (a sync HTTP client, `time.sleep`,
+`open()` on a slow disk, a CPU-heavy loop) stops every request on the
+event loop while it runs. domainkit looks for it in four places, so it is
+found before production:
+
+- **While developing.** With `DEBUG` on, the application runs its loop in
+  asyncio's debug mode, and every callback or task step that holds it for
+  `SLOW_CALLBACK_DURATION` seconds (0.1) or more is logged by the `asyncio`
+  logger: `Executing <Task ... coro=<list_orders() running at
+  shop/api/routes.py:42>> took 0.250 seconds`. Debug mode also reports
+  resources left open, and work handed to the loop from another thread
+  without `call_soon_threadsafe`. `SLOW_CALLBACK_DURATION = None` turns it
+  off; staging and production refuse `DEBUG`.
+- **In tests.** `pytest --detect-blocking` runs every loop the tests start
+  in debug mode, and fails a test whose loop was held that long in one
+  step; `--blocking-seconds 0.5` raises the bar (0.1 is the least asyncio
+  reports). Fixtures are not timed. Turn it on for a run, or always:
+
+  ```toml
+  [tool.pytest.ini_options]
+  addopts = "-p domainkit.testing --detect-blocking"
+  ```
+
+  Debug mode reports resources left open as `ResourceWarning`, so with
+  `filterwarnings = error` it can find unclosed connections too.
+- **In `check`.** It warns about the route handlers and dependencies of the
+  installed domains written as `def`: FastAPI calls each on its thread pool
+  (40 threads by default), a hop per call, and a busy service queues on it.
+  Make them `async def`. One that must stay sync (it calls a library with
+  no async API) can say so, and `check` stops warning about it:
+
+  ```python
+  from domainkit.http.blocking import allow_sync
+
+
+  @allow_sync
+  def render_invoice(invoice_id: UUID) -> bytes: ...
+  ```
+
+  Classes used as dependencies are left alone: FastAPI builds every class
+  on its thread pool, whatever it does. The dependencies domainkit itself
+  provides are `async`: `CurrentUser` (`acurrent_user`; `current_user` stays
+  a plain function to call with a request), and a `ResourceRouter`'s unit of
+  work and `FilterSet`, which it builds on the loop.
+- **While writing.** Projects made by `init` turn on Ruff's `ASYNC` rules,
+  which catch `time.sleep`, `open()`, `subprocess`, and sync HTTP clients
+  inside `async def`.
+
+## TLS contexts
+
+Building a TLS context reads the system's CA store and the certificate and
+key files: milliseconds of blocking work. domainkit builds each one once
+per process, for each set of TLS settings, and never on the event loop
+while it serves:
+
+| Connection | When the context is built |
+| --- | --- |
+| Databases (`SSLMODE`, `SSLROOTCERT`, `SSLCERT`, `SSLKEY`) | by `get_asgi_application`, before the server's loop serves; by a command, at its first connection |
+| RabbitMQ (`TLS_CA`, `TLS_CERT`, `TLS_KEY`) | at the first connection, on a worker thread |
+| Redis and Valkey (`rediss://`, `TLS_CA`, `TLS_CERT`, `TLS_KEY`) | at the first connection, on a worker thread, then shared by every connection of every pool with those settings (servers, Sentinel primaries, and Cluster nodes) |
+| immudb (`TLS_CA`) | on the ledger's own thread |
+
+A process keeps its contexts until it ends: restart it to use renewed
+certificate files.
+
+## Free-threaded Python
+
+domainkit runs on free-threaded CPython 3.14 (`python3.14t`, without the
+GIL). Importing domainkit and its runtime dependencies keeps the GIL off;
+the `immudb` extra is the exception, since grpcio publishes no
+free-threaded build yet. CI runs the tests of the state below, and of the
+framework's own threads, on 3.14t with the GIL off throughout. The whole
+suite does not run there yet: on 3.14.6t it crashes the interpreter now
+and then (a segmentation fault inside the allocator, at a different test
+each time), as it did before any of this was added, so that waits for a
+fix in the interpreter or an extension.
+
+Most state lives in one event loop and needs no lock. What event loops on
+several threads can share (a server with a loop per thread, or threads that
+start their own) is guarded by a lock, held only for plain Python work,
+never across an `await`:
+
+- the in-memory rate limiter (`MemoryBackend`) and its callers;
+- `AuthenticationMiddleware`'s refused-credential holds;
+- the password hashing pool's count of pending calls;
+- the logging and reporting queues, and memory caches (`cache/memory.py`).
+
+A project's own module-level state needs the same care: a dict two threads
+change at once needs a `threading.Lock` on free-threaded Python, as it would
+with threads anywhere.
+
+## Servers
+
+domainkit is an ASGI application, served by
+[uvicorn](https://www.uvicorn.org/) (a dependency) or
+[Granian](https://github.com/emmett-framework/granian) (the `granian`
+extra). `manage.py runserver --server granian` develops on Granian;
+[reference.md](reference.md#server-limits) gives a production command and
+the limits for each.
+
+- **uvicorn** is Python on uvloop and httptools. It answers 503 past
+  `--limit-concurrency`, limits WebSocket messages (`--ws-max-size`), and
+  closes connections left open past `--timeout-graceful-shutdown`.
+- **Granian** is an HTTP server in Rust that runs the same ASGI
+  application, lifespan included (`--interface asgi`). It parses HTTP/1
+  and HTTP/2 outside Python, bounds requests in flight per worker
+  (`--backpressure`), times out slow headers, and restarts workers that
+  die (`--respawn-failed-workers`). It has no WebSocket message limit: turn
+  WebSockets off (`--no-ws`) when the API has none.
+
+Both run one event loop per worker process; run one worker per core. The
+test suite serves the application with Granian in a subprocess, so a
+change that breaks it fails CI.

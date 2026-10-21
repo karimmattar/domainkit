@@ -43,6 +43,7 @@ from domainkit.http.websockets import (
     ConnectionClosed,
     WebSocketLimitsMiddleware,
     deployment_warnings,
+    server_warnings,
     serves_websockets,
 )
 from domainkit.log import SECURITY_LOGGER
@@ -1073,26 +1074,12 @@ def deployed(**overrides: Any) -> list[str]:  # noqa: ANN401
         return deployment_warnings(websocket_app())
 
 
-def test_check_warns_about_websocket_server_limits() -> None:
-    """A server that reads larger messages than the limit, or a missing middleware."""
+def test_check_warns_about_a_missing_limits_middleware() -> None:
+    """WebSockets served without ``WebSocketLimitsMiddleware`` are a warning."""
     middleware = [*settings.MIDDLEWARE]
-    limited = {"MIDDLEWARE": middleware, "WEBSOCKET_SERVER_MAX_SIZE": 1_048_576}
 
-    assert deployed(**limited) == []
-    assert deployed(**{**limited, "MAX_REQUEST_BODY_SIZE": 2_000_000}) == []
-    assert deployed(MIDDLEWARE=middleware) == [
-        (
-            "The server reads WebSocket messages of up to 16777216 bytes whole "
-            "before MAX_REQUEST_BODY_SIZE (1048576) is checked; run uvicorn with "
-            "--ws-max-size 1048576, and set WEBSOCKET_SERVER_MAX_SIZE to match."
-        )
-    ]
-    assert deployed(MIDDLEWARE=middleware[:1], WEBSOCKET_SERVER_MAX_SIZE=1_048_577) == [
-        (
-            "The server reads WebSocket messages of up to 1048577 bytes whole "
-            "before MAX_REQUEST_BODY_SIZE (1048576) is checked; run uvicorn with "
-            "--ws-max-size 1048576, and set WEBSOCKET_SERVER_MAX_SIZE to match."
-        ),
+    assert deployed(MIDDLEWARE=middleware) == []
+    assert deployed(MIDDLEWARE=middleware[:1]) == [
         (
             "WebSockets are served without "
             "domainkit.http.websockets.WebSocketLimitsMiddleware: no caps, send "
@@ -1100,6 +1087,24 @@ def test_check_warns_about_websocket_server_limits() -> None:
             "List it in MIDDLEWARE."
         ),
     ]
+
+
+def test_the_servers_limit_is_checked_only_where_websockets_are_served(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A server reading past the body limit matters to WebSocket routes alone."""
+    monkeypatch.setenv("UVICORN_WS_MAX_SIZE", str(4 * 1_048_576))
+
+    assert server_warnings(websocket_app()) == [
+        (
+            "uvicorn reads WebSocket messages of up to 4194304 bytes before "
+            "MAX_REQUEST_BODY_SIZE (1048576) refuses them; start it with "
+            "--ws-max-size 1048576 (UVICORN_WS_MAX_SIZE)."
+        )
+    ]
+    assert server_warnings(FastAPI()) == []
+    monkeypatch.setenv("UVICORN_WS_MAX_SIZE", "1048576")
+    assert server_warnings(websocket_app()) == []
 
 
 def test_check_is_quiet_without_websockets_or_outside_deployments() -> None:
