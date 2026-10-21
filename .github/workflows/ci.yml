@@ -261,6 +261,54 @@ jobs:
           include-hidden-files: true
           retention-days: 1
 
+  # The benchmark ladder (docs/performance.md, ADR 0064): Python calls and
+  # database round trips per request on each rung, against
+  # benchmarks/budgets.toml; over budget fails. CPU time goes to the job
+  # summary, beside the base branch's on pull requests, and is never gated:
+  # a shared runner's timings are too noisy for that.
+  bench:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      DOMAINKIT_BENCH_POSTGRES_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The base branch's code, measured by this harness for comparison.
+      - if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.base_ref }}
+          path: base
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: pipx install "poetry==${POETRY_VERSION}"
+      - run: poetry sync --extras "postgres sqlite uvloop"
+      - run: >-
+          poetry run python -m benchmarks --strict --json ladder.json
+          ${{ github.event_name == 'pull_request' && '--baseline base/src' || '' }}
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: benchmark-ladder
+          path: ladder.json
+          retention-days: 30
+
   # Every line must run in some job: a few only run on SQLite, others only
   # against the servers. The combined report is the coverage gate.
   coverage:

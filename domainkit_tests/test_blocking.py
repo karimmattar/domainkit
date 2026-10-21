@@ -13,6 +13,8 @@ from typing import Annotated, Any
 import pytest
 from fastapi import APIRouter, Depends, FastAPI, WebSocket
 from fastapi.dependencies.models import Dependant
+from starlette.applications import Starlette
+from starlette.routing import Host
 
 from domainkit.conf import UNSET, override_settings
 from domainkit.http.application import get_asgi_application
@@ -277,6 +279,26 @@ def test_mounted_and_hosted_routes_are_named_by_their_whole_path() -> None:
             "pool for GET POST /mounted/inner, GET /mounted/deeper/deep, GET "
             "/hosted; make it async def, or mark it with "
             "domainkit.http.blocking.allow_sync."
+        )
+    ]
+
+
+def test_hosts_and_mounts_of_included_routers_keep_their_prefix() -> None:
+    """Inside an included router or a mount, routes are named with the prefix."""
+    hosted = FastAPI()
+    hosted.add_api_route("/hosted", sync_dependency)
+    inner = APIRouter()
+    inner.host("api.example.com", hosted)
+    inner.mount("/mounted", hosted)
+    app = FastAPI()
+    app.include_router(inner, prefix="/v2")
+    app.mount("/m", Starlette(routes=[Host("api.example.com", hosted)]))
+
+    assert sync_calls(app, [HERE]) == [
+        (
+            f"{HERE}.sync_dependency is a def, so FastAPI calls it on its thread "
+            "pool for GET /v2/hosted, GET /v2/mounted/hosted, GET /m/hosted; make "
+            "it async def, or mark it with domainkit.http.blocking.allow_sync."
         )
     ]
 

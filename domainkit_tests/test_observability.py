@@ -9,7 +9,14 @@ from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
-from opentelemetry import trace
+from opentelemetry import _logs, metrics, trace
+from opentelemetry.sdk._logs import LoggerProvider
+from opentelemetry.sdk._logs.export import (
+    InMemoryLogRecordExporter,
+    SimpleLogRecordProcessor,
+)
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import HistogramDataPoint, InMemoryMetricReader
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -29,6 +36,8 @@ from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork, notes
 from domainkit_tests.test_messaging import remember
 
 EXPORTER = InMemorySpanExporter()
+METRICS = InMemoryMetricReader()
+LOGS = InMemoryLogRecordExporter()  # type: ignore[no-untyped-call]
 METRICS_MIDDLEWARE = [
     "domainkit.http.metrics.MetricsMiddleware",
     "domainkit.http.middleware.RequestContextMiddleware",
@@ -37,17 +46,42 @@ METRICS_MIDDLEWARE = [
 
 @pytest.fixture(scope="module", autouse=True)
 def tracer_provider() -> None:
-    """Install an SDK provider that keeps spans in memory (once per process)."""
+    """Install SDK providers that keep spans, metrics, and logs in memory.
+
+    Once per process: OpenTelemetry's global providers are set only once.
+    """
     if not isinstance(trace.get_tracer_provider(), TracerProvider):
         provider = TracerProvider()
         provider.add_span_processor(SimpleSpanProcessor(EXPORTER))
         trace.set_tracer_provider(provider)
+    if not isinstance(metrics.get_meter_provider(), MeterProvider):
+        metrics.set_meter_provider(MeterProvider(metric_readers=[METRICS]))
+    if not isinstance(_logs.get_logger_provider(), LoggerProvider):
+        loggers = LoggerProvider()
+        loggers.add_log_record_processor(SimpleLogRecordProcessor(LOGS))
+        _logs.set_logger_provider(loggers)
 
 
 @pytest.fixture(autouse=True)
 def fresh_spans() -> None:
-    """Forget spans of earlier tests."""
+    """Forget spans and log records of earlier tests."""
     EXPORTER.clear()
+    LOGS.clear()
+
+
+def fastapi_requests_measured() -> int:
+    """Requests FastAPI's own metrics have counted in this process."""
+    data = METRICS.get_metrics_data()
+    return sum(
+        point.count
+        for resource in (data.resource_metrics if data else ())
+        for scope in resource.scope_metrics
+        if scope.scope.name == "fastapi"
+        for metric in scope.metrics
+        if metric.name == "http.server.request.duration"
+        for point in metric.data.data_points
+        if isinstance(point, HistogramDataPoint)
+    )
 
 
 def sample(name: str, **labels: str) -> float:
@@ -127,6 +161,26 @@ def test_commits_and_messages_are_traced(database: None) -> None:
         "target": qualified_name(remember),
     }
     assert sample("messaging_messages_total", kind="task", outcome="done") == before + 1
+
+
+def test_fastapi_records_nothing_of_its_own(database: None) -> None:
+    """FastAPI's own telemetry stays off, even with every SDK provider set.
+
+    Its spans would carry query strings, and its logs exception messages,
+    which domainkit keeps out of what it records. domainkit traces its own
+    work; requests are traced by ``opentelemetry-instrument`` when a
+    deployment asks for it.
+    """
+    measured = fastapi_requests_measured()
+    client = TestClient(get_asgi_application(), raise_server_exceptions=False)
+
+    assert client.get("/ok?token=s3cret").status_code == 200
+    assert client.post("/typed", json={"count": "s3cret"}).status_code == 422
+    assert client.get("/boom").status_code == 500
+    assert client.get("/no/such").status_code == 404
+    assert EXPORTER.get_finished_spans() == ()
+    assert LOGS.get_finished_logs() == ()
+    assert fastapi_requests_measured() == measured
 
 
 def test_request_metrics_use_route_templates(database: None) -> None:

@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 from fastapi import APIRouter, Depends, FastAPI, WebSocket
+from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 from starlette.routing import Host, Mount, Route, WebSocketRoute
@@ -133,6 +134,42 @@ def test_what_takes_no_rule_is_listed_unless_marked(tmp_path: Path) -> None:
     assert not routes_need_users(app)
     app.mount("/guarded", app_of(alone(sample_open_routes.authenticated)))
     assert routes_need_users(app)
+
+
+def test_hosts_and_mounts_keep_the_prefix_they_are_served_under(
+    tmp_path: Path,
+) -> None:
+    """Inside an included router or a mount, the prefix counts.
+
+    FastAPI serves a host of an included router through a mount of the
+    prefix, so one whose application has no routes is listed as that mount.
+    """
+    sub = app_of(alone(sample_open_routes.open_route))
+    inner = APIRouter()
+    inner.host("hosted.example.org", sub)
+    inner.mount("/sub", sub)
+    inner.host("files.example.org", StaticFiles(directory=tmp_path))
+    app = FastAPI()
+    app.include_router(inner, prefix="/nested")
+    app.mount("/hosting", Starlette(routes=[Host("api.example.org", sub)]))
+
+    assert open_routes(app) == [
+        "GET /nested/alone",
+        "GET /nested/sub/alone",
+        "MOUNT /nested",
+        "GET /hosting/alone",
+    ]
+
+
+def test_the_rules_of_an_include_cover_its_websockets() -> None:
+    """Dependencies given to ``include_router`` guard its WebSockets too."""
+    sockets = APIRouter()
+    sockets.add_api_websocket_route("/socket", sample_open_routes.socket)
+    app = FastAPI()
+    app.include_router(sockets, prefix="/open")
+    app.include_router(sockets, prefix="/public", dependencies=[Public])
+
+    assert open_routes(app) == ["WEBSOCKET /open/socket"]
 
 
 def test_the_check_says_how_to_mark_what_takes_no_rule(use_auth: UseAuth) -> None:

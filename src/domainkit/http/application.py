@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Final
 
 from fastapi import APIRouter, FastAPI
+from fastapi.telemetry import TelemetryConfig
 
 from domainkit import setup
 from domainkit.apps import registry
@@ -35,6 +36,12 @@ FRAMEWORK_ERRORS: Final = {
     429: "Too many requests",
     500: "Internal server error",
 }
+FASTAPI_TELEMETRY: Final[TelemetryConfig] = {
+    "tracing": False,
+    "metrics": False,
+    "logs": False,
+}
+"""FastAPI's native telemetry, off: domainkit traces its own work."""
 
 
 @asynccontextmanager
@@ -79,6 +86,10 @@ def get_asgi_application() -> FastAPI:
             for code, description in FRAMEWORK_ERRORS.items()
         },
         generate_unique_id_function=operation_id,
+        # FastAPI's own OpenTelemetry (0.142+) stays off, as before: its spans
+        # record query strings and its logs raw exception messages, which
+        # domainkit keeps out of logs and error reports.
+        telemetry=FASTAPI_TELEMETRY,
     )
     install_exception_handlers(app)
     install_openapi(app)

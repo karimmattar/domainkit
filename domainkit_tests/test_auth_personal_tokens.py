@@ -8,6 +8,7 @@ from uuid import UUID
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
+from sqlalchemy.orm.attributes import set_committed_value
 
 from domainkit.clock import freeze_time
 from domainkit.contrib.auth import AuthUnitOfWork, Credentials, User
@@ -382,7 +383,9 @@ def test_touching_twice_at_once_writes_once(identity: Api) -> None:
             page = await uow.tokens.of_user(alice, limit=10)
             (token,) = page.items
             first = await uow.tokens.touch(token)
-            token.last_used_at = None  # As another request, read earlier, sees it.
+            # As another request, read earlier, sees it: its own copy, not a
+            # change of this session's (which would be flushed first).
+            set_committed_value(token, "last_used_at", None)
             second = await uow.tokens.touch(token)
             third = await uow.tokens.touch(token)
             await uow.commit()

@@ -504,25 +504,22 @@ def _routes(
     """
     for context in iter_route_contexts(routes):
         route = context.original_route
-        # Routes of included routers keep their full path (and a WebSocket
-        # its dependencies) here; FastAPI's own context has them for others.
-        effective = getattr(context, "starlette_route", None)
-        if isinstance(effective, type(route)):
-            route = effective
+        # The context answers for the route as served: an included router's
+        # carries its full path, dependencies, and (a Host's) prefixed routes.
         found: tuple[str, Dependant | None]
         if isinstance(route, APIWebSocketRoute):
-            found = (f"WEBSOCKET {prefix}{route.path}", route.dependant)
+            found = (f"WEBSOCKET {prefix}{context.path}", context.dependant)
         elif isinstance(route, APIRoute):
             methods = " ".join(sorted(route.methods or ()))
             found = (f"{methods} {prefix}{context.path}", context.dependant)
         elif _marked_public(route):
             continue
-        elif isinstance(route, Mount | Host) and route.routes:
-            inner = prefix + route.path if isinstance(route, Mount) else prefix
-            yield from _routes(route.routes, inner)
+        elif isinstance(route, Mount | Host) and context.routes:
+            inner = prefix + str(context.path) if isinstance(route, Mount) else prefix
+            yield from _routes(context.routes, inner)
             continue
         else:
-            path = getattr(route, "path", "")
+            path = context.path or ""
             found = (f"{_kind(route)} {prefix}{path}".rstrip(), None)
         endpoint = getattr(route, "endpoint", None)
         if not getattr(endpoint, "__module__", "").startswith(FRAMEWORK_ROUTES):
