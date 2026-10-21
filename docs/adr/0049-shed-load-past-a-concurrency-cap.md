@@ -1,4 +1,4 @@
-# 0049. Shed load in the application: a cap per process, a short queue, and a fast 503
+# 0049. Shed load in the application: a cap per event loop, a short queue, and a fast 503
 
 - Status: Accepted
 - Date: 2026-10-20
@@ -60,8 +60,12 @@ the cap to measured delay.
 
 - Under overload a process answers quickly: either it works on a request,
   or it says within a second that it cannot, and its probes keep passing.
-- The cap is per process: a host running eight workers admits eight
-  times the cap. Spreading load across processes stays the balancer's job.
+- The cap is per event loop, since a slot's waiters belong to one loop. A
+  process serves on one loop (uvicorn, Granian's asyncio workers), so a
+  host running eight workers admits eight times the cap; a server that
+  runs several loops in one process (free-threaded Python, a loop per
+  thread) admits the cap on each. Spreading load across processes stays
+  the balancer's job.
 - Streams and requests whose response has started are not counted, so the
   cap bounds the work before answering, not open connections; uvicorn's
   `--limit-concurrency` stays the backstop for those, set above the cap
@@ -72,3 +76,47 @@ the cap to measured delay.
 - The default only protects against pile-ups; a project whose database
   pool holds 15 connections is better served by a cap near a few times
   that.
+
+## Addendum (2026-10-21): time spent waiting on the client is not counted
+
+A security review found that a request held its slot while the
+application waited in `receive()` for the body. A few connections that
+send their headers and never their body held every slot until
+`REQUEST_TIMEOUT`, and every other request was answered 503, without any
+credentials.
+
+Two ways out were weighed:
+
+- **Take the slot only once the body has arrived**, read whole by the
+  middleware first, up to `MAX_REQUEST_BODY_SIZE`. Simple, and no slot
+  changes hands mid-request; but the body is held in memory before the
+  request is counted, so a project that raises the limit for uploads
+  would buffer each upload whole, where Starlette spools forms to disk,
+  and the server's own flow control would be bypassed.
+- **Lend the slot while the application waits for a body chunk.** A
+  receive that has to wait (it does not return at once) gives the slot to
+  the next request; when the chunk arrives, the request takes a slot back
+  through the queue, as a new request would, and is refused 503
+  `overloaded` (`Overloaded`) when none frees in time. Streaming uploads
+  are unchanged, and a request works only while it holds a slot.
+
+The second was chosen. Details:
+
+- Lending stops once the body is in or the response has started, so a
+  task waiting for a disconnect never lends the slot of a request at
+  work. A `receive()` that is being cancelled (a deadline, or Starlette's
+  `is_disconnected()`, which cancels a receive that would wait) lends
+  nothing. A wait that ends in an error takes nothing back: the request
+  is ending.
+- `REQUEST_BODY_TIMEOUT` (10 seconds, at most an hour) bounds the time the
+  application waits for the body, all chunks together:
+  `RequestBodyLimitMiddleware`, which already bounded its size, answers
+  408 `request_timeout` and closes the connection. So a slow body costs a
+  connection and some memory for at most that long, never a slot.
+- A buffering proxy (nginx's `proxy_request_buffering on`, the default)
+  stays the first line: it reads slow bodies before the application sees
+  them.
+
+Paths in `CONCURRENCY_EXEMPT_PATHS` are compared without the root path
+the application is mounted at (`--root-path`), so the probes stay exempt
+behind one.

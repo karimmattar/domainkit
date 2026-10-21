@@ -69,6 +69,12 @@ async def hang() -> None:
     await forever()
 
 
+@router.post("/echo")
+async def echo(body: dict[str, Any]) -> dict[str, Any]:
+    """The JSON body it was sent, once all of it arrived."""
+    return body
+
+
 @router.get("/remaining")
 async def remaining() -> dict[str, float | None]:
     """The seconds left before the request's deadline."""

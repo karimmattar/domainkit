@@ -628,3 +628,7 @@ msgstr ""
 
 msgid "The server is busy; try again shortly."
 msgstr ""
+
+#. domainkit.http: request bodies
+msgid "The request body took too long to arrive."
+msgstr ""

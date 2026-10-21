@@ -634,3 +634,7 @@ msgstr "استغرق الطلب وقتًا أطول من اللازم؛ أعد �
 
 msgid "The server is busy; try again shortly."
 msgstr "الخادم مشغول؛ أعد المحاولة بعد قليل."
+
+#. domainkit.http: request bodies
+msgid "The request body took too long to arrive."
+msgstr "استغرق وصول جسم الطلب وقتًا أطول من اللازم."

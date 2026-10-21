@@ -7,13 +7,15 @@ from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from typing import Any
 
+import anyio
 import pytest
 from prometheus_client import REGISTRY
+from pydantic import ValidationError
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from domainkit import deadlines
 from domainkit.clock import freeze_time
-from domainkit.conf import override_settings
+from domainkit.conf import Settings, override_settings
 from domainkit.conf.global_settings import (
     CONCURRENCY_MIDDLEWARE,
     DEADLINE_MIDDLEWARE,
@@ -36,6 +38,7 @@ from domainkit_tests.deadline_routes import Counter
 pytestmark = pytest.mark.anyio
 
 LOGGER = "domainkit.http.shedding"
+JSON = {"Content-Type": "application/json"}
 
 
 @pytest.fixture
@@ -43,6 +46,14 @@ def queued(monkeypatch: pytest.MonkeyPatch) -> Counter:
     """Requests waiting for a slot, counted as the queue metric sees them."""
     count = Counter()
     monkeypatch.setattr(shedding, "observe_queued", count.add)
+    return count
+
+
+@pytest.fixture
+def admitted(monkeypatch: pytest.MonkeyPatch) -> Counter:
+    """Slots held, counted as the admission metric sees them."""
+    count = Counter()
+    monkeypatch.setattr(shedding, "observe_admitted", count.add)
     return count
 
 
@@ -173,11 +184,17 @@ class Gated:
 class Call:
     """One request to an ASGI app, run as a task, with what it answered."""
 
-    def __init__(self, app: ASGIApp, path: str = "/work") -> None:
+    def __init__(self, app: ASGIApp, path: str = "/work", root_path: str = "") -> None:
         """Start the request."""
         self.sent: list[Message] = []
         self.started = asyncio.Event()
-        scope = {"type": "http", "method": "GET", "path": path, "headers": []}
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": path,
+            "root_path": root_path,
+            "headers": [],
+        }
 
         async def run() -> None:
             await app(scope, self.receive, self.send)
@@ -521,6 +538,440 @@ def test_deadlines_and_shedding_come_first_by_default() -> None:
         DEADLINE_MIDDLEWARE,
         CONCURRENCY_MIDDLEWARE,
     )
+
+
+# Requests waiting for their body --------------------------------------------------
+
+
+class Body:
+    """A client that sends its body chunk by chunk, when the test says."""
+
+    def __init__(self) -> None:
+        """Nothing sent yet."""
+        self.chunks: asyncio.Queue[Message] = asyncio.Queue()
+        self.waits = Counter()
+
+    async def receive(self) -> Message:
+        """The next chunk, once sent."""
+        self.waits.add()
+        return await self.chunks.get()
+
+    def send(self, body: bytes, *, more: bool = False) -> None:
+        """Send a chunk; the last unless ``more``."""
+        self.chunks.put_nowait(
+            {"type": "http.request", "body": body, "more_body": more}
+        )
+
+
+class Reader:
+    """An app that reads the whole body, then answers 200 with what it read."""
+
+    def __init__(self) -> None:
+        """Nothing read yet."""
+        self.admitted = Counter()
+        self.read = Counter()
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Read every chunk, then answer."""
+        self.admitted.add()
+        body = b""
+        while True:
+            message = await receive()
+            body += message["body"]
+            self.read.add()
+            if not message.get("more_body"):
+                break
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": body})
+
+
+def posting(app: ASGIApp, body: Body) -> asyncio.Task[list[Message]]:
+    """Send a POST whose body comes from ``body``; the task returns the answer."""
+    sent: list[Message] = []
+
+    async def keep(message: Message) -> None:
+        sent.append(message)
+
+    async def run() -> list[Message]:
+        scope = {"type": "http", "method": "POST", "path": "/items", "headers": []}
+        await app(scope, body.receive, keep)
+        return sent
+
+    return asyncio.create_task(run())
+
+
+async def test_a_request_waiting_for_its_body_holds_no_slot() -> None:
+    """Clients that send headers, then their body slowly or never, hold no slot.
+
+    One slot, no queue: while a request waits for its body, another is
+    served, where it was refused 503 before.
+    """
+    reader, gated = Reader(), Gated()
+
+    async def route(scope: Scope, receive: Receive, send: Send) -> None:
+        await (reader if scope["method"] == "POST" else gated)(scope, receive, send)
+
+    async with capped(route) as middleware:
+        body = Body()
+        slow = posting(middleware, body)
+        await body.waits.reach(1)
+        other = Call(middleware)
+        await gated.admitted.reach(1)
+        gated.gates[0].set()
+        assert await other.answered() == 200
+        body.send(b"all")
+        answer = await slow
+
+    assert answer[0]["status"] == 200
+    assert middleware.slots(1).held == 0
+
+
+async def test_a_chunk_takes_a_slot_back_in_turn(
+    admitted: Counter, queued: Counter
+) -> None:
+    """The slot is lent while the request waits, and taken back through the queue."""
+    reader, gated = Reader(), Gated()
+
+    async def route(scope: Scope, receive: Receive, send: Send) -> None:
+        await (reader if scope["method"] == "POST" else gated)(scope, receive, send)
+
+    async with capped(
+        route, MAX_QUEUED_REQUESTS=1, REQUEST_QUEUE_TIMEOUT=60.0
+    ) as middleware:
+        body = Body()
+        slow = posting(middleware, body)
+        await reader.admitted.reach(1)
+        await admitted.reach(0)  # Lent while it waits for its first chunk.
+        other = Call(middleware)
+        await gated.admitted.reach(1)
+        body.send(b"one;", more=True)  # Its chunk waits for the slot, in turn.
+        waits = asyncio.ensure_future(queued.reach(1))
+        reads = asyncio.ensure_future(reader.read.reach(1))
+        done, _ = await asyncio.wait(
+            {waits, reads}, return_when=asyncio.FIRST_COMPLETED
+        )
+        reads.cancel()
+        assert done == {waits}  # Queued: not read while another holds the slot.
+        gated.gates[0].set()
+        assert await other.answered() == 200
+        await reader.read.reach(1)
+        await admitted.reach(0)  # Lent again for the second chunk.
+        body.send(b"two")
+        answer = await slow
+
+    assert answer[0]["status"] == 200
+    assert answer[1]["body"] == b"one;two"
+    assert (middleware.slots(1).held, admitted.value, queued.value) == (0, 0, 0)
+
+
+async def test_a_chunk_that_finds_no_slot_is_refused_as_overloaded(
+    admitted: Counter, caplog: pytest.LogCaptureFixture
+) -> None:
+    """As a new request would be: 503 overloaded, counted, at most one warning."""
+    caplog.set_level(logging.WARNING, LOGGER)
+    reader, gated = Reader(), Gated()
+
+    async def route(scope: Scope, receive: Receive, send: Send) -> None:
+        await (reader if scope["method"] == "POST" else gated)(scope, receive, send)
+
+    async with capped(route) as middleware:
+        body = Body()
+        slow = posting(middleware, body)
+        await reader.admitted.reach(1)
+        await admitted.reach(0)
+        holder = Call(middleware)
+        await gated.admitted.reach(1)
+        body.send(b"late")
+        answer = await slow
+        gated.gates[0].set()
+        assert await holder.answered() == 200
+
+    assert answer[0]["status"] == 503
+    assert dict(answer[0]["headers"])[b"retry-after"] == b"1"
+    assert b'"code":"overloaded"' in answer[1]["body"]
+    assert reader.read.value == 0
+    assert messages(caplog) == [
+        "Shed 1 request(s) past MAX_CONCURRENT_REQUESTS (1); the last: queue_full"
+    ]
+    assert (middleware.slots(1).held, admitted.value) == (0, 0)
+
+
+async def test_a_body_already_in_lends_nothing(admitted: Counter) -> None:
+    """A chunk at hand is no wait; nor is waiting after the body, for a disconnect."""
+    answer = asyncio.Event()
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        assert (await receive())["body"] == b"all"
+        listening = asyncio.ensure_future(receive())  # Waits for the disconnect.
+        await answer.wait()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+        assert (await listening)["type"] == "http.disconnect"
+
+    async with capped(app) as middleware:
+        body = Body()
+        body.send(b"all")
+        task = posting(middleware, body)
+        await body.waits.reach(2)  # The second receive() waits.
+        assert (middleware.slots(1).held, admitted.value) == (1, 1)
+        answer.set()
+        body.chunks.put_nowait({"type": "http.disconnect"})
+        assert (await task)[0]["status"] == 200
+
+    assert (middleware.slots(1).held, admitted.value) == (0, 0)
+
+
+async def test_a_check_for_a_disconnect_lends_nothing(admitted: Counter) -> None:
+    """A receive() cancelled at once (Starlette's is_disconnected) is no wait."""
+    checked = asyncio.Event()
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        with anyio.CancelScope() as scope_:
+            scope_.cancel()
+            await receive()
+        assert scope_.cancelled_caught
+        checked.set()
+        message = await receive()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": message["body"]})
+
+    async with capped(app) as middleware:
+        body = Body()
+        task = posting(middleware, body)
+        await checked.wait()
+        assert (middleware.slots(1).held, admitted.value) == (1, 1)
+        await admitted.reach(0)  # Waiting for the body for real: lent.
+        body.send(b"in")
+        answer = await task
+
+    assert answer[1]["body"] == b"in"
+    assert (middleware.slots(1).held, admitted.value) == (0, 0)
+
+
+async def test_a_response_started_while_a_chunk_waits_needs_no_slot(
+    admitted: Counter, queued: Counter
+) -> None:
+    """Given one, or refused one, after the response started: nothing is held."""
+
+    class Refusing(Slots):
+        """Refuses a waiter when the test says, as if its wait ran out."""
+
+        def __init__(self) -> None:
+            super().__init__(limit=1, queue=1)
+            self.refuse = asyncio.Event()
+
+        async def acquire(self, wait: float) -> str | None:
+            if self.held < self.limit:
+                return await super().acquire(wait)
+            queued.add(1)
+            await self.refuse.wait()
+            queued.add(-1)
+            return QUEUE_TIMEOUT
+
+    started, entered = asyncio.Event(), asyncio.Event()
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        entered.set()
+        reading = asyncio.ensure_future(receive())  # Waits for the body.
+        await queued.reach(1)  # Its chunk came, and waits for a slot.
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        started.set()
+        assert (await reading)["body"] == b"late"
+        await send({"type": "http.response.body", "body": b"done"})
+
+    for refuse in (False, True):
+        started.clear()
+        entered.clear()
+        slots = Refusing() if refuse else Slots(limit=1, queue=1)
+        async with capped(app, MAX_QUEUED_REQUESTS=1) as middleware:
+            middleware._slots[asyncio.get_running_loop()] = slots
+            body = Body()
+            task = posting(middleware, body)
+            await entered.wait()
+            await admitted.reach(0)
+            assert await slots.acquire(0) is None  # Another request takes it.
+            body.send(b"late")
+            await started.wait()
+            if isinstance(slots, Refusing):
+                slots.refuse.set()
+            else:
+                slots.release()  # Handed to the chunk, after the response began.
+            answer = await task
+        slots.release() if refuse else None
+        assert [message.get("status") for message in answer] == [200, None]
+        assert answer[1]["body"] == b"done"
+        assert (slots.held, admitted.value) == (0, 0)
+
+
+async def test_a_chunk_after_the_response_started_takes_no_slot_back(
+    admitted: Counter, queued: Counter
+) -> None:
+    """The response started while the body waited: the chunk waits for no slot."""
+    started = asyncio.Event()
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        reading = asyncio.ensure_future(receive())  # Waits for the body.
+        await admitted.reach(0)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        started.set()
+        assert (await reading)["body"] == b"late"
+        await send({"type": "http.response.body", "body": b"done"})
+
+    async with capped(
+        app, MAX_QUEUED_REQUESTS=1, REQUEST_QUEUE_TIMEOUT=60.0
+    ) as middleware:
+        slots = middleware.slots(1)
+        body = Body()
+        task = posting(middleware, body)
+        await started.wait()
+        assert await slots.acquire(0) is None  # Another request takes the slot.
+        body.send(b"late")
+        waiting = asyncio.ensure_future(queued.reach(1))
+        done, _ = await asyncio.wait(
+            {task, waiting}, return_when=asyncio.FIRST_COMPLETED
+        )
+        waiting.cancel()
+        assert done == {task}  # Answered, never queued behind the other request.
+        answer = await task
+        slots.release()
+
+    assert answer[1]["body"] == b"done"
+    assert (slots.held, admitted.value, queued.value) == (0, 0, 0)
+
+
+async def test_an_overload_raised_after_the_response_started_goes_on() -> None:
+    """It cannot become a 503 any more."""
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        raise shedding.Overloaded
+
+    async with capped(app) as middleware:
+        call = Call(middleware)
+        with pytest.raises(shedding.Overloaded):
+            await call.task
+        assert [m["type"] for m in call.sent] == ["http.response.start"]
+        assert middleware.slots(1).held == 0
+
+
+async def test_a_deadline_passing_while_the_body_waits_frees_everything(
+    admitted: Counter,
+) -> None:
+    """Cut off while its slot is lent: 503, and nothing is held or owed."""
+    given: list[deadlines.Deadline | None] = []
+    reader = Reader()
+    with override_settings(
+        REQUEST_TIMEOUT=60.0, MAX_CONCURRENT_REQUESTS=1, MAX_QUEUED_REQUESTS=0
+    ):
+        middleware = ConcurrencyLimitMiddleware(reader)
+
+        async def keeping(scope: Scope, receive: Receive, send: Send) -> None:
+            given.append(deadlines.current_deadline())
+            await middleware(scope, receive, send)
+
+        bounded = DeadlineMiddleware(keeping)
+    body = Body()
+    task = posting(bounded, body)
+    await reader.admitted.reach(1)
+    await admitted.reach(0)
+    [deadline] = given
+    assert deadline is not None
+    deadline.reset(0.0)
+    answer = await task
+
+    assert answer[0]["status"] == 503
+    assert b'"code":"deadline_exceeded"' in answer[1]["body"]
+    assert (middleware.slots(1).held, admitted.value) == (0, 0)
+    assert await middleware.slots(1).acquire(0) is None
+
+
+@pytest.mark.usefixtures("busy_routes")
+async def test_the_application_serves_others_while_a_body_is_slow(
+    admitted: Counter,
+) -> None:
+    """Through the default middleware, a body that waits holds no slot.
+
+    Its chunk then finds the slot taken and no room in the queue: FastAPI
+    answers the Overloaded raised while it read the body.
+    """
+    sent = asyncio.Event()
+
+    async def slowly() -> AsyncIterator[bytes]:
+        yield b'{"name":'
+        await sent.wait()
+        yield b'"widget"}'
+
+    with override_settings(
+        ROOT_ROUTER="domainkit_tests.deadline_routes.router",
+        MAX_CONCURRENT_REQUESTS=1,
+        MAX_QUEUED_REQUESTS=0,
+    ):
+        async with AsyncTestClient(get_asgi_application(), lifespan=False) as client:
+            slow = asyncio.create_task(
+                client.post("/echo", content=slowly(), headers=JSON)
+            )
+            await admitted.reach(1)
+            await admitted.reach(0)
+            assert (await client.get("/remaining")).status_code == 200
+            holder = asyncio.create_task(client.get("/busy", params={"gate": "a"}))
+            await deadline_routes.arrivals.reach(1)
+            sent.set()
+            refused = await slow
+            deadline_routes.gates["a"].set()
+            assert (await holder).status_code == 200
+
+            sent.clear()
+            fine = asyncio.create_task(
+                client.post("/echo", content=slowly(), headers=JSON)
+            )
+            await admitted.reach(1)
+            await admitted.reach(0)
+            sent.set()
+            assert (await fine).json() == {"name": "widget"}
+
+    assert refused.status_code == 503
+    assert refused.headers["Retry-After"] == "1"
+    assert refused.json() == {
+        "detail": "The server is busy; try again shortly.",
+        "code": "overloaded",
+        "request_id": refused.headers["X-Request-ID"],
+    }
+
+
+async def test_exempt_paths_stay_exempt_behind_a_root_path() -> None:
+    """Behind --root-path, a path starts with it: it is compared without it."""
+    app = Gated()
+    async with capped(app) as middleware:
+        holder = Call(middleware)
+        await app.admitted.reach(1)
+        for admitted, (path, root) in enumerate(
+            (("/api/ready", "/api"), ("/api/ready", "/api/"), ("/ready", "/api")),
+            start=2,
+        ):
+            probe = Call(middleware, path, root_path=root)
+            await app.admitted.reach(admitted)
+            app.gates[-1].set()
+            assert await probe.answered() == 200
+        for path, root in (("/api/work", "/api"), ("/api/ready", "")):
+            assert await Call(middleware, path, root_path=root).answered() == 503
+        app.gates[0].set()
+        assert await holder.answered() == 200
+
+
+@pytest.mark.parametrize(
+    ("name", "highest"),
+    [
+        ("MAX_CONCURRENT_REQUESTS", 100_000),
+        ("MAX_QUEUED_REQUESTS", 100_000),
+        ("REQUEST_TIMEOUT", 3600.0),
+        ("REQUEST_BODY_TIMEOUT", 3600.0),
+    ],
+)
+def test_request_limits_have_upper_bounds(name: str, highest: float) -> None:
+    """Generous, but bounded; the defaults stay well inside."""
+    assert getattr(Settings.model_validate({name: highest}), name) == highest
+    with pytest.raises(ValidationError, match=name):
+        Settings.model_validate({name: highest + 1})
 
 
 @pytest.fixture
