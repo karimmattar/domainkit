@@ -107,19 +107,34 @@ inspects any outbox.
 | `VISIBILITY_TIMEOUT` | `300.0` | Seconds a claim lasts; must exceed `TASK_TIMEOUT`. |
 | `POLL_INTERVAL` | `1.0` | Seconds an idle worker waits before looking again. |
 | `BATCH_SIZE` | `50` | Most messages claimed at once. |
-| `CONCURRENCY` | `10` | Messages one worker runs at the same time. |
+| `CONCURRENCY` | `10` | Messages one worker process runs at the same time, from all its outboxes and queues together. |
 | `SHUTDOWN_TIMEOUT` | `20.0` | Seconds a stopping worker lets running messages finish; the rest are stopped and run again. |
 | `RETENTION_SECONDS` | `604800.0` | Finished messages are deleted after this (7 days). |
 | `CLEANUP_INTERVAL` | `3600.0` | Seconds between those deletions. |
+| `CLEANUP_BATCH_SIZE` | `1000` | Most finished messages one cleanup statement deletes (1 to 100,000). |
 | `BROKER` | `None` | An alias in `BROKERS`: workers take their work from that broker instead of polling the outbox (below). |
 | `REPUBLISH_AFTER` | `3600.0` | With a broker: seconds a published message may wait for a worker before the relay publishes it again, as lost. |
 | `PUBLISH_ON_COMMIT` | `True` | With a broker: the committing process publishes the commit's due messages in the background right away, instead of leaving them to the relays' next poll. |
+| `BREAKER_FAILURES` | `5` | With a broker: failed broker calls in a row after which commits stop publishing and leave their messages to the relays. |
+| `BREAKER_COOLDOWN` | `30.0` | Seconds commits leave their messages to the relays before the publisher tries the broker again. |
+| `NOTIFY` | `True` | On PostgreSQL: commits wake idle workers at once (`LISTEN`/`NOTIFY`), unless a broker publishes each commit. |
+| `METRICS_TTL` | `15.0` | Seconds the outbox gauges are reused between scrapes; 0 counts every scrape. |
 
 Run `runworker --metrics-port 9100` to expose the worker's metrics. Scale by
-running more workers.
+running more workers. However many outboxes and queues a `runworker`
+process serves, it runs at most `CONCURRENCY` messages at once.
 
-**Stopping.** `SIGTERM` (or Ctrl+C) stops claiming and gives running
-messages `SHUTDOWN_TIMEOUT` seconds to finish. Messages still running then
+On PostgreSQL, the database's clock decides what is due and when a lock
+expires, so hosts whose clocks disagree neither run a message twice nor
+leave it waiting, and a commit wakes idle workers at once
+(`LISTEN`/`NOTIFY`, see `NOTIFY`), so `POLL_INTERVAL` can be longer. Old
+messages are deleted in small batches, by a task of each worker's own, so
+cleanup never holds up claiming. [runtime.md](runtime.md), "Workers and
+the outbox", has the details.
+
+**Stopping.** `SIGTERM` (or Ctrl+C) stops claiming (and, with a broker,
+consuming, within five seconds even if the broker does not answer) and
+gives running messages `SHUTDOWN_TIMEOUT` seconds to finish. Messages still running then
 are cancelled and go back to the outbox, due at once; the cut-short run
 does not count as an attempt. A second signal stops them at once. Keep
 `SHUTDOWN_TIMEOUT` a few seconds under the time your platform waits before
@@ -162,21 +177,31 @@ aio-pika). Then `runworker` works like this:
 - **Publish on commit.** Right after a unit of work commits (and after
   `enqueue()`), its process hands the messages it wrote to a background
   publisher and returns: a slow or stopped broker never delays the commit.
-  The publisher locks them for `REPUBLISH_AFTER` and publishes a small
-  pointer to each (its id, its database, and the lock), and RabbitMQ
-  confirms every publication. It declares each queue once per process. If
-  more than 10,000 committed messages are waiting to be published, newer
-  ones are left to the relays, and at shutdown the publisher gets five
-  seconds to finish; the outbox holds the rest. Set `PUBLISH_ON_COMMIT` to
-  `False` to leave all publishing to the relays. Delayed tasks wait for the
-  relay.
+  The publisher locks them for a short lease (the broker's `CONNECT_TIMEOUT`
+  plus `PUBLISH_TIMEOUT`, and five seconds) and publishes a small pointer to
+  each (its id, its database, and the lock), `BATCH_SIZE` at a time.
+  RabbitMQ confirms every publication, and a confirmed message stays
+  locked for `REPUBLISH_AFTER`; one the broker did not confirm, whatever
+  the reason, a stop included, is unlocked at once. It declares each queue
+  once per process. If more than 10,000 committed messages are waiting to
+  be published, newer ones are left to the relays. After `BREAKER_FAILURES`
+  broker failures in a row, commits leave their messages to the relays for
+  `BREAKER_COOLDOWN`, then the publisher checks the broker and tries again;
+  this is logged once when it starts and once when it ends. At shutdown
+  the publisher gets a fifth of `SHUTDOWN_TIMEOUT`, the time shutdown's
+  drain phase always has, and gives back what it cut short within it; the
+  outbox holds the rest.
+  Set `PUBLISH_ON_COMMIT` to `False` to leave all publishing to the relays.
+  Delayed tasks wait for the relay.
 - **Relay.** Workers also claim due messages of their outbox, as a polling
   worker would, and publish them the same way: delayed tasks when they fall
   due, retries, and anything a commit could not publish (the broker was
   down, the process died). A publication that fails is unlocked and tried
   again on the next round.
-- **Consume.** Workers consume their queues with a prefetch of
-  `CONCURRENCY`. For each delivery, a worker takes the message over by id,
+- **Consume.** Workers consume each queue with a prefetch of `CONCURRENCY`
+  (per queue: quorum queues take no prefetch shared by a channel), and run
+  at most `CONCURRENCY` deliveries at once in all; the others wait for a
+  slot. For each delivery, a worker takes the message over by id,
   which works only for the pointer of the current publication (or one whose
   lock has expired), runs it, records the outcome, and only then
   acknowledges the delivery. A duplicate, or a delivery of a message that

@@ -3,14 +3,18 @@
 It covers what ``RabbitMQBroker`` uses: robust connections, channels with
 publisher confirms, durable direct exchanges, queues bound by routing key,
 mandatory publishing (unroutable messages raise ``PublishError`` once
-``on_return_raises`` is on), prefetch, consumers, acknowledgements, and
-requeues. Tests break it on purpose with ``down``, ``refuse``, and
-``timeout``. ``test_rabbitmq.py`` runs the same tests on real servers.
+``on_return_raises`` is on), prefetch per consumer, consumers,
+acknowledgements, and requeues. Tests break it on purpose with ``down``, ``refuse``, and
+``timeout``, and stall the calls named in ``stalled`` (a server that
+accepts connections but stops answering): a stalled call with aio-pika's
+``timeout=`` raises ``TimeoutError`` once it passes, as aio-pika does, and
+one without waits until ``release()``. ``test_rabbitmq.py`` runs the same
+tests on real servers.
 """
 
 import asyncio
 import itertools
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -29,6 +33,26 @@ type Callback = Callable[[Any], Awaitable[Any]]
 
 
 @dataclass
+class FakeConsumer:
+    """A consumer of one queue, with its own prefetch (RabbitMQ's for quorum queues).
+
+    ``set_qos`` before ``consume`` sets it, whether or not ``global_`` is
+    asked for: quorum queues refuse a prefetch shared by a channel, and
+    RabbitMQ 4.3 quietly makes it per consumer.
+    """
+
+    tag: str
+    channel: "FakeChannel"
+    callback: Callback
+    prefetch: int
+    unacked: int = 0
+
+    def has_room(self) -> bool:
+        """Report whether the prefetch allows another delivery."""
+        return self.prefetch == 0 or self.unacked < self.prefetch
+
+
+@dataclass
 class FakeIncomingMessage:
     """A delivered message; acknowledging or rejecting settles it."""
 
@@ -36,7 +60,7 @@ class FakeIncomingMessage:
     message_id: str | None
     delivery_mode: DeliveryMode
     _queue: "FakeQueue"
-    _channel: "FakeChannel"
+    _consumer: FakeConsumer | None = None
     settled: bool = False
 
     async def ack(self) -> None:
@@ -54,10 +78,10 @@ class FakeIncomingMessage:
         if self.settled:
             raise RuntimeError("A message is settled once.")
         self.settled = True
-        self._channel.unacked -= 1
-        # The prefetch is the channel's: any of its consumers may have room now.
-        for queue in self._queue.server.queues.values():
-            queue.wake()
+        if self._consumer is not None:
+            self._consumer.unacked -= 1
+            self._consumer.channel.unacked -= 1
+        self._queue.wake()
 
 
 @dataclass
@@ -68,26 +92,46 @@ class FakeQueue:
     arguments: dict[str, Any]
     server: "FakeAMQP"
     messages: deque[FakeIncomingMessage] = field(default_factory=deque)
-    consumers: dict[str, tuple["FakeChannel", Callback]] = field(default_factory=dict)
+    consumers: dict[str, FakeConsumer] = field(default_factory=dict)
     _ready: asyncio.Event = field(default_factory=asyncio.Event)
     _pumps: dict[str, asyncio.Task[None]] = field(default_factory=dict)
 
-    async def bind(self, exchange: "FakeExchange", routing_key: str) -> None:
+    async def bind(
+        self,
+        exchange: "FakeExchange",
+        routing_key: str,
+        timeout: float | None = None,  # noqa: ASYNC109 - aio-pika's signature.
+    ) -> None:
         """Route the exchange's messages with ``routing_key`` here."""
+        await self.server.answer("bind", timeout)
         self.server.bindings.setdefault((exchange.name, routing_key), set()).add(
             self.name
         )
 
-    async def consume(self, callback: Callback, no_ack: bool = False) -> str:
-        """Hand messages to ``callback`` within the channel's prefetch."""
+    async def consume(
+        self,
+        callback: Callback,
+        no_ack: bool = False,
+        timeout: float | None = None,  # noqa: ASYNC109 - aio-pika's signature.
+    ) -> str:
+        """Hand messages to ``callback`` within the prefetch."""
+        await self.server.answer("consume", timeout)
         channel = self.server.current_channel(self)
         tag = f"ctag-{next(self.server.tags)}"
-        self.consumers[tag] = (channel, callback)
-        self._pumps[tag] = asyncio.create_task(self._pump(tag, channel, callback))
+        consumer = FakeConsumer(tag, channel, callback, channel.prefetch)
+        self.consumers[tag] = consumer
+        self._pumps[tag] = asyncio.create_task(self._pump(consumer))
         return tag
 
-    async def cancel(self, tag: str) -> None:
+    async def cancel(
+        self,
+        tag: str,
+        timeout: float | None = None,  # noqa: ASYNC109 - aio-pika's signature.
+    ) -> None:
         """Stop handing messages to the consumer ``tag``."""
+        if self.server.down:
+            raise ChannelClosed(None, None)
+        await self.server.answer("cancel", timeout)
         self.consumers.pop(tag)
         pump = self._pumps.pop(tag)
         pump.cancel()
@@ -97,16 +141,17 @@ class FakeQueue:
         """Let consumers look again."""
         self._ready.set()
 
-    async def _pump(self, tag: str, channel: "FakeChannel", callback: Callback) -> None:
+    async def _pump(self, consumer: FakeConsumer) -> None:
         while True:
-            while not self.messages or not channel.has_room():
+            while not self.messages or not consumer.has_room():
                 self._ready.clear()
                 await self._ready.wait()
             message = self.messages.popleft()
             message.settled = False
-            message._channel = channel
-            channel.unacked += 1
-            self.server.spawn(callback(message))
+            message._consumer = consumer
+            consumer.unacked += 1
+            consumer.channel.unacked += 1
+            self.server.spawn(consumer.callback(message))
 
 
 @dataclass
@@ -141,11 +186,7 @@ class FakeExchange:
             queue = server.queues[name]
             queue.messages.append(
                 FakeIncomingMessage(
-                    message.body,
-                    message.message_id,
-                    message.delivery_mode,
-                    queue,
-                    self.channel,
+                    message.body, message.message_id, message.delivery_mode, queue
                 )
             )
             queue.wake()
@@ -154,40 +195,61 @@ class FakeExchange:
 
 @dataclass
 class FakeChannel:
-    """A channel: confirms, returns, prefetch, and unacknowledged messages."""
+    """A channel: confirms, returns, the next consumers' prefetch, and unacked."""
 
     server: "FakeAMQP"
     publisher_confirms: bool
     on_return_raises: bool
     prefetch: int = 0
     unacked: int = 0
+    closed: bool = False
 
-    async def set_qos(self, prefetch_count: int) -> None:
+    async def set_qos(
+        self,
+        prefetch_count: int,
+        global_: bool = False,
+        timeout: float | None = None,  # noqa: ASYNC109 - aio-pika's signature.
+    ) -> None:
         """Limit unacknowledged messages on this channel."""
+        await self.server.answer("set_qos", timeout)
+        self.server.qos.append((prefetch_count, global_))
         self.prefetch = prefetch_count
 
-    def has_room(self) -> bool:
-        """Report whether the prefetch allows another delivery."""
-        return self.prefetch == 0 or self.unacked < self.prefetch
-
     async def declare_exchange(
-        self, name: str, type: object, durable: bool
+        self,
+        name: str,
+        type: object,
+        durable: bool,
+        timeout: float | None = None,  # noqa: ASYNC109 - aio-pika's signature.
     ) -> FakeExchange:
         """Return the exchange, declaring it once."""
+        await self.server.answer("declare_exchange", timeout)
         self.server.exchanges[name] = durable
+        self.server.exchange_types[name] = type
         return FakeExchange(name, self)
 
     async def declare_queue(
-        self, name: str, durable: bool, arguments: dict[str, Any]
+        self,
+        name: str,
+        durable: bool,
+        arguments: dict[str, Any],
+        timeout: float | None = None,  # noqa: ASYNC109 - aio-pika's signature.
     ) -> FakeQueue:
         """Return the queue; changing an existing one's arguments fails."""
+        await self.server.answer("declare_queue", timeout)
         queue = self.server.queues.get(name)
         if queue is None:
             queue = self.server.queues[name] = FakeQueue(name, arguments, self.server)
+            self.server.durable_queues[name] = durable
         elif queue.arguments != arguments:
             raise ChannelPreconditionFailed(406, "PRECONDITION_FAILED")
         self.server.last_channel = self
         return queue
+
+    async def close(self) -> None:
+        """Close the channel."""
+        await self.server.answer("close_channel", None)
+        self.closed = True
 
 
 class FakeConnection:
@@ -202,12 +264,14 @@ class FakeConnection:
         self, publisher_confirms: bool = True, on_return_raises: bool = False
     ) -> FakeChannel:
         """Open a channel."""
+        await self.server.answer("channel", None)
         channel = FakeChannel(self.server, publisher_confirms, on_return_raises)
         self.server.last_channel = channel
         return channel
 
     async def close(self) -> None:
         """Close the connection."""
+        await self.server.answer("close", None)
         self.is_closed = True
 
 
@@ -217,6 +281,9 @@ class FakeAMQP:
     def __init__(self) -> None:
         """Start empty and up."""
         self.exchanges: dict[str, bool] = {}
+        """Each declared exchange, and whether it is durable."""
+        self.exchange_types: dict[str, object] = {}
+        self.durable_queues: dict[str, bool] = {}
         self.queues: dict[str, FakeQueue] = {}
         self.bindings: dict[tuple[str, str], set[str]] = {}
         self.published: list[tuple[str, Message, bool, float]] = []
@@ -226,7 +293,26 @@ class FakeAMQP:
         self.down = False
         self.refuse = False
         self.timeout = False
+        self.stalled: set[str] = set()
+        self.timeouts: dict[str, float | None] = {}
+        """The ``timeout=`` each kind of call was last made with."""
+        self.calls: Counter[str] = Counter()
+        """How often each kind of call was made."""
+        self.qos: list[tuple[int, bool]] = []
         self._tasks: set[asyncio.Task[Any]] = set()
+        self._released = asyncio.Event()
+
+    async def answer(self, call: str, timeout: float | None) -> None:  # noqa: ASYNC109
+        """Answer ``call`` at once, or stall it if it is in ``stalled``."""
+        self.timeouts[call] = timeout
+        self.calls[call] += 1
+        if call in self.stalled:
+            async with asyncio.timeout(timeout):
+                await self._released.wait()
+
+    def release(self) -> None:
+        """Let stalled calls answer."""
+        self._released.set()
 
     async def connect(self, url: str, **options: Any) -> FakeConnection:  # noqa: ANN401
         """Open a connection, or fail as an unreachable server does."""

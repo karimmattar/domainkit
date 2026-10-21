@@ -1,22 +1,30 @@
-"""Writing messages: inside a unit of work, or on their own (``enqueue``)."""
+"""Writing messages: inside a unit of work, or on their own (``enqueue``).
+
+On PostgreSQL, the transaction that writes messages due at once also
+notifies the workers (``NOTIFY domainkit_messages``), so an idle worker
+starts them right after the commit instead of on its next poll. The row
+stays the record: a notification is only a hint, sent when the transaction
+commits and lost harmlessly when no worker listens.
+"""
 
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Final
 
-from sqlalchemy import Executable, insert
+from sqlalchemy import BindParameter, Executable, func, insert, literal, select
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from domainkit import clock
 from domainkit.apps import registry
 from domainkit.context import current_request
-from domainkit.db import connections
+from domainkit.db import UTCDateTime, connections
 from domainkit.ddd import DeferredTask, DomainEvent, EventBus
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.tracing import trace_headers
 
+from . import dbclock
 from .registry import (
     CHAIN,
     Chain,
@@ -29,10 +37,29 @@ from .registry import (
 from .settings import MessagingSettings
 from .tables import DEFAULT_QUEUE, PENDING, messages
 
+CHANNEL: Final = "domainkit_messages"
+"""The PostgreSQL notification channel; each payload is a queue's name."""
+
 
 def _now() -> datetime:
     """Return the current time in UTC."""
     return clock.now()
+
+
+def _utc(moment: datetime) -> BindParameter[datetime]:
+    """``moment`` as a bound value of the outbox's time columns."""
+    return literal(moment, UTCDateTime())
+
+
+def notifies(config: MessagingSettings) -> bool:
+    """Report whether commits notify workers (on PostgreSQL) under ``config``.
+
+    ``NOTIFY`` turns it on. With a broker that publishes on commit, the
+    broker wakes the workers instead, so nothing is sent.
+    """
+    return config.NOTIFY and not (
+        config.BROKER is not None and config.PUBLISH_ON_COMMIT
+    )
 
 
 type Watcher = Callable[[str, Sequence[Mapping[str, Any]]], Awaitable[None]]
@@ -132,7 +159,20 @@ def rows_for(
 
 
 def insert_statements(dialect: str, rows: Sequence[dict[str, Any]]) -> list[Executable]:
-    """Build inserts; rows with a ``dedupe_key`` skip keys that already exist."""
+    """Build inserts; rows with a ``dedupe_key`` skip keys that already exist.
+
+    Where the database's clock decides (``dbclock``), a message due at once
+    is due by that clock too: a writer whose clock runs ahead does not make
+    it wait out the difference.
+    """
+    if dbclock.uses_database(dialect):
+        now = dbclock.now(dialect)
+        rows = [
+            {**row, "available_at": func.least(_utc(row["available_at"]), now)}
+            if row["available_at"] <= row["created_at"]
+            else row
+            for row in rows
+        ]
     plain = [row for row in rows if row["dedupe_key"] is None]
     keyed = [row for row in rows if row["dedupe_key"] is not None]
     statements: list[Executable] = [insert(messages).values(plain)] if plain else []
@@ -158,9 +198,21 @@ async def write(
     dialect: str,
     rows: Sequence[dict[str, Any]],
 ) -> None:
-    """Insert ``rows`` through an async session or connection."""
+    """Insert ``rows`` through an async session or connection.
+
+    On PostgreSQL, also notify the queues of the rows due at once, when
+    ``notifies`` says so; the notification goes out with the commit.
+    """
     for statement in insert_statements(dialect, rows):
         await executor.execute(statement)
+    if dialect != "postgresql":
+        return
+    if not notifies(registry.settings(MessagingSettings)):
+        return
+    due = {row["queue"] for row in rows if row["available_at"] <= row["created_at"]}
+    if due:
+        notify = (func.pg_notify(CHANNEL, queue) for queue in sorted(due))
+        await executor.execute(select(*notify))
 
 
 async def enqueue(

@@ -390,3 +390,127 @@ the limits for each.
 Both run one event loop per worker process; run one worker per core. The
 test suite serves the application with Granian in a subprocess, so a
 change that breaks it fails CI.
+
+## Workers and the outbox
+
+`runworker` and the publisher that sends committed messages to a broker
+(`domainkit.contrib.messaging`, see [contrib.md](contrib.md)) stay
+correct under outages, overload, and shutdown: committed messages are
+never stranded, the process runs a bounded number of messages, every broker
+call has a deadline, and cleanup never holds up claiming.
+
+**One concurrency budget.** A worker process runs at most
+`MESSAGING.CONCURRENCY` messages at once, whatever it serves. The polling
+worker of each outbox, `runworker --once`, and the deliveries of every
+queue a broker hands over draw from one budget. A message holds its slot
+from its claim (or delivery) until its outcome is recorded. On RabbitMQ the
+prefetch is each consumer's: quorum queues refuse a prefetch shared by a
+channel, and RabbitMQ 4.3 quietly turns one into a prefetch per consumer.
+So a worker of three queues may hold up to `3 × CONCURRENCY` deliveries;
+at most `CONCURRENCY` of them run, and the others wait for a slot,
+unacknowledged. Keep `TASK_TIMEOUT` times the number of queues well under
+RabbitMQ's `consumer_timeout` (30 minutes by default), or give busy queues
+workers of their own (`runworker --queue`).
+
+```python
+MESSAGING = {"BROKER": "default", "CONCURRENCY": 20}  # 20 at once, in all
+```
+
+**Deadlines on the broker.** Every RabbitMQ call has one:
+`BROKERS[...].CONNECT_TIMEOUT` for connecting, opening channels,
+declaring, binding, setting the prefetch, and starting or stopping
+consumers, and `PUBLISH_TIMEOUT` for each confirmation. A broker that
+accepts connections but stops answering fails the call instead of holding
+the publisher, and everything queued behind it, until its heartbeat ends.
+
+**Publishing on commit.** The background publisher sends committed
+messages to the broker without ever holding up a commit:
+
+- *Leases.* A message is locked for a short lease while it is published:
+  the broker's `publish_timeout` (`CONNECT_TIMEOUT` plus
+  `PUBLISH_TIMEOUT` on RabbitMQ) and five seconds. Once the broker
+  confirms it, the lock lasts `REPUBLISH_AFTER`. Whatever the broker did
+  not confirm, for any reason (a refusal, the deadline, a stop), is
+  unlocked at once, in a clean-up that a cancellation cannot interrupt and
+  that has five seconds of its own. If even that fails, the lease expires
+  within seconds, and the relay sends the message.
+- *A circuit breaker.* After `BREAKER_FAILURES` failed broker calls in a
+  row (5), commits leave their messages to the relays for
+  `BREAKER_COOLDOWN` seconds (30), touching neither the database nor the
+  broker. Then one round probes, checking that the broker answers before
+  it locks any row; a confirmed message closes the breaker. It logs once
+  when it opens and once when it closes, and
+  `messaging_publisher_breaker_open` shows it.
+- *Bounded rounds.* A round locks at most `BATCH_SIZE` messages and has at
+  most that many publications in flight; a backlog of thousands goes a
+  batch at a time. Past 10,000 waiting messages, commits leave theirs to
+  the relays (logged once until the backlog clears).
+  `messaging_left_to_relay_total` counts the messages left to the relays,
+  by reason.
+- *An owned task.* The publisher's task is
+  [supervised](#background-tasks-spawn-and-supervise): it runs in a clean
+  context, never the
+  committing request's, starts again after a crash, after a pause that
+  doubles up to a minute, and ends when it has nothing to do, so an idle
+  publisher holds nothing of its event loop.
+- *Shutdown.* The shutdown's [drain phase](#shutting-down-within-a-budget)
+  closes the publishers, in the application and in management commands
+  alike, within the time that phase always has: a fifth of
+  `SHUTDOWN_TIMEOUT` (3 seconds of the default 15), since it ends at half
+  and begins by 30% at the latest. The flush ends `RELEASE_TIMEOUT` (five
+  seconds), or half that time if less, before then, so a publication it
+  cuts short is unlocked within the phase; the relays send the rest. Cut
+  short, it costs a few seconds' delay, never a message.
+
+**Brokered shutdown.** A stopping worker stops consuming within five
+seconds, even from a broker that is lost or stalled, and logs it if it
+could not. Running deliveries still get `MESSAGING.SHUTDOWN_TIMEOUT` (20
+seconds), counted from the stop; a delivery that arrives meanwhile is given
+back to the broker, not run. Relays, cleanup, and the listener of a
+stopping worker finish the step they are on, for up to five seconds, so a
+round under way is published rather than given back. A second signal stops
+everything at once, as before.
+
+A worker's shutdown is longer than a web process's, on purpose: its
+messages get their time first, then the process shuts down within
+`SHUTDOWN_TIMEOUT` like any other. With the defaults that is up to
+20 + 5 + 15 = 40 seconds, so give worker pods a longer grace period than
+Kubernetes' 30-second default (`terminationGracePeriodSeconds: 45`), or
+lower `MESSAGING.SHUTDOWN_TIMEOUT`.
+
+**Cleanup.** Each polling and relaying worker deletes finished messages
+older than `RETENTION_SECONDS` in a task of its own, every
+`CLEANUP_INTERVAL`, starting a random 30 to 60 seconds after it starts.
+It deletes `CLEANUP_BATCH_SIZE` rows per statement (1,000), each batch in
+its own short transaction, skipping rows other workers lock on PostgreSQL.
+A batch that fails, for example past `STATEMENT_TIMEOUT`, halves the next
+one, down to a single row, and full batches double back: a slow table
+slows cleanup down but never stops it, and claiming never waits for it.
+
+**The database's clock.** On PostgreSQL, the outbox's server decides what
+is due and when locks expire (`statement_timestamp()`), so a worker on a
+host whose clock runs ahead never takes over another's message early, one
+whose clock runs behind never leaves due work waiting, and a message due
+at once is due at once whatever the clock of the host that wrote it.
+SQLite lives in the worker's process, so its clock is the host's. Under
+`domainkit.clock.freeze_time` the frozen clock decides on every database,
+so tests can move time. Delays (`delay=`, schedules) still count from the
+clock of the host that writes them.
+
+**Waking on commit.** On PostgreSQL (with asyncpg), a transaction that
+writes messages due at once also sends `NOTIFY domainkit_messages` with
+each queue's name, and polling and relaying workers `LISTEN` on one
+connection of their pool. An idle worker then starts a committed message
+right away instead of on its next poll, so `POLL_INTERVAL` can be longer.
+Polling stays: a notification is only a hint, sent when the transaction
+commits and lost harmlessly when nobody listens, and a worker whose
+listening connection drops polls until it listens again. With a broker that
+publishes on commit, the broker wakes the workers and nothing is sent. Set
+`MESSAGING.NOTIFY` to `False` to turn it off.
+
+**Gauges.** `messaging_outbox_messages` and `messaging_outbox_lag_seconds`
+count the outbox at most once per `METRICS_TTL` seconds (15) in each
+process, and scrapes that arrive during a count share it.
+
+The outbox is not partitioned: see
+[ADR 0043](adr/0043-the-outbox-database-decides-when-work-is-due.md).

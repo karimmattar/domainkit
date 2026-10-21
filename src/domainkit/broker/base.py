@@ -51,6 +51,13 @@ class Subscription(ABC):
 class Broker(ABC):
     """Durable work queues. Queue names are the application's; adapters prefix them."""
 
+    publish_timeout: float = 10.0
+    """Most seconds ``publish`` may take, connecting first included.
+
+    Relays lock the messages they publish for a little longer than this, so
+    a publication cut short (a crash, a stop) is retried soon after.
+    """
+
     @abstractmethod
     async def declare(self, queues: Iterable[str]) -> None:
         """Create the queues if they do not exist yet."""

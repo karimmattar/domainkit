@@ -250,10 +250,10 @@ async def queue_deliveries(
 
 
 async def _committed(alias: str, messages: Sequence[dict[str, Any]]) -> None:
-    """Hand committed messages on; the relay publishes them.
+    """Hand committed messages on; the relay publishes them, not this caller.
 
-    Publishing here would leave them locked for ``REPUBLISH_AFTER`` if a
-    stopping process cut the publication short.
+    A publication cut short by a stopping process is given back once its
+    short lease ends (ADR 0042), and the relay picks the messages up then.
     """
     await notify_committed(
         registry.settings(MessagingSettings), alias, messages, publish=False

@@ -108,6 +108,23 @@ All notable changes to domainkit. The format follows
 - `domainkit.contrib.auth.acurrent_user`, the dependency behind
   `CurrentUser`, which FastAPI awaits instead of calling on its thread
   pool (ASYNC-09). `current_user` stays a plain function.
+- `MESSAGING.BREAKER_FAILURES` (5) and `MESSAGING.BREAKER_COOLDOWN` (30 s):
+  a broker that keeps failing trips the publisher's circuit breaker, and
+  commits leave their messages to the relays, touching neither the
+  database nor the broker, until a probe finds the broker answering again.
+  It is logged once when it opens and once when it closes;
+  `messaging_publisher_breaker_open` shows it, and
+  `messaging_left_to_relay_total` counts the messages commits left to the
+  relays, by reason (FX-12, N5; ADR 0042).
+- `MESSAGING.NOTIFY`: on PostgreSQL, a commit wakes idle workers through
+  `LISTEN`/`NOTIFY`, so a message starts right after its commit instead of
+  on the next poll, and `POLL_INTERVAL` can be longer. Polling stays as the
+  fallback (R20; ADR 0043).
+- `MESSAGING.CLEANUP_BATCH_SIZE` (1,000) and `MESSAGING.METRICS_TTL`
+  (15 s), below.
+- `domainkit.contrib.messaging.Budget`, the concurrency budget `Worker` and
+  `BrokerWorkers` share through `budget=`.
+- `docs/runtime.md`, "Workers and the outbox".
 
 ### Changed
 
@@ -183,6 +200,46 @@ All notable changes to domainkit. The format follows
 - ADR 0053 records why domainkit stays on FastAPI and Starlette rather
   than Litestar or plain Starlette, with what each costs a request, and
   what would change the decision (R16).
+- **`MESSAGING.CONCURRENCY` is one budget for the whole worker process.**
+  Every outbox's worker, `runworker --once`, and the deliveries of every
+  queue a broker hands over draw from it, so a process runs at most
+  `CONCURRENCY` messages at once. A process serving several outboxes or
+  queues ran several times as many before; raise `CONCURRENCY` if it
+  needs them (R23, ASYNC-19, IND-A4, IND-A5; ADR 0044).
+- Relays and the publisher lock what they publish for a short lease, the
+  broker's `CONNECT_TIMEOUT` plus `PUBLISH_TIMEOUT` and five seconds, and
+  for `REPUBLISH_AFTER` only once the broker confirms. Whatever it did not
+  confirm is unlocked at once, also when the publication is cancelled
+  (FX-02; ADR 0042).
+- At shutdown the publisher gets the time the drain phase always has, a
+  fifth of `SHUTDOWN_TIMEOUT` (3 s by default), instead of a fixed five
+  seconds. Its flush ends early enough (`RELEASE_TIMEOUT`, or half that
+  time if less) for a publication it cuts short to be unlocked before the
+  phase ends (ADR 0042).
+- Committed messages are published `BATCH_SIZE` at a time, never a whole
+  backlog in one statement (N11), and a relay logs one line per round
+  instead of one per message.
+- The publisher's task is supervised (`domainkit.tasks.supervise`): it runs
+  in a clean context instead of the first committing request's, starts
+  again after a crash, and ends when idle. Shutdown's drain phase closes
+  the publishers, in management commands too; `MessagingConfig` no longer
+  closes them in its `shutdown` hook (N12, R22).
+- On PostgreSQL the outbox's clock decides what is due and when locks
+  expire (`statement_timestamp()`), so workers on hosts whose clocks
+  disagree neither run a message twice nor leave it waiting. Under
+  `freeze_time` the frozen clock still decides (ASYNC-18; ADR 0043).
+- Cleanup runs in a task of each polling or relaying worker, never in the
+  claim loop, and deletes `CLEANUP_BATCH_SIZE` rows per statement; a batch
+  that fails halves the next, so statement timeouts slow cleanup down but
+  never stop it (FX-15, ASYNC-07; ADR 0043).
+- Every RabbitMQ call has a deadline: `CONNECT_TIMEOUT` for opening
+  channels, declaring, binding, setting the prefetch, and starting or
+  stopping consumers, as for connecting (N4).
+- The outbox gauges count the table at most once per `METRICS_TTL` in each
+  process, and concurrent scrapes share one count (ASYNC-17).
+- Workers run their tasks in `asyncio.TaskGroup`s: a failure in a worker's
+  own task (a relay, cleanup) ends the worker with the error instead of
+  being lost (R15).
 
 ### Fixed
 
@@ -206,6 +263,18 @@ All notable changes to domainkit. The format follows
 - The WebSocket message size check no longer copies a text message to
   measure it: ASCII is counted by its length, other text a chunk at a
   time (N9).
+- A publication cut short at shutdown no longer leaves its messages locked
+  for an hour (`REPUBLISH_AFTER`) while the log says the relay sends them
+  (N1).
+- A brokered worker whose broker was lost or stalls at shutdown no longer
+  skips its running messages' grace period or hangs: stopping the
+  consumers has five seconds, and the drain always runs (FX-05, N3,
+  ASYNC-06). A delivery that arrives while stopping is given back instead
+  of run.
+- The in-memory broker's empty queues no longer hold the slots of busy ones
+  (IND-A9).
+- Publishers and brokers of event loops closed without a shutdown no longer
+  keep those loops alive.
 
 ## [0.7.0] - 2026-10-20
 

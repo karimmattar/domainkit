@@ -33,11 +33,13 @@ from domainkit.contrib.messaging import MessagingSettings, Worker, enqueue
 from domainkit.contrib.messaging.dispatch import BrokerWorkers
 from domainkit.contrib.messaging.tables import DONE, messages
 from domainkit.db import connections
+from domainkit_tests import test_messaging_runtime as runtime
 from domainkit_tests.fake_amqp import FakeAMQP
 from domainkit_tests.test_messaging import (
     ALPHA,
     FAST,
     MESSAGING,
+    SLOW,
     outbox,
     ran,
     remember,
@@ -340,3 +342,47 @@ async def test_brokered_messaging_end_to_end(brokered: Server) -> None:
         )
         == 1
     )
+
+
+async def test_work_in_flight_never_exceeds_the_budget(brokered: Server) -> None:
+    """Each queue's consumer has its own prefetch; the process still runs one at once.
+
+    RabbitMQ applies the prefetch per consumer on quorum queues, so two
+    queues with a prefetch of one hand out two messages; the worker's
+    budget of one runs them one after the other.
+    """
+    gate = runtime.gate = runtime.Gate()
+    async with connections.engine().begin() as connection:
+        await connection.run_sync(messages.create)
+    with override_settings(
+        MESSAGING={**FAST, **SLOW, "BROKER": "work", "CONCURRENCY": 1}
+    ):
+        for name in ("d1", "d2"):
+            await enqueue(runtime.at_gate, name=name)
+        for name in ("e1", "e2"):
+            await enqueue(runtime.at_gate_emails, name=name)
+        config = registry.settings(MessagingSettings)
+        budget = runtime.WatchedBudget(1)
+        stop = asyncio.Event()
+        workers = BrokerWorkers(
+            [Worker(config)], ["default", "emails"], config, budget=budget
+        )
+        running = asyncio.create_task(workers.run(stop))
+        try:
+            await gate.until(lambda: len(gate.started) == 1)
+            await budget.until_waiting(1)  # The other queue's delivery waits.
+            assert gate.running == 1
+            gate.open()
+            await gate.until(lambda: len(gate.finished) == 4)
+        finally:
+            gate.open()
+            stop.set()
+            async with asyncio.timeout(runtime.WAIT):
+                await running
+            await brokers.close_all()
+
+    rows = await outbox()
+    await connections.close_all()
+    assert gate.peak == 1
+    assert sorted(gate.finished) == ["d1", "d2", "e1", "e2"]
+    assert [row["status"] for row in rows] == [DONE] * 4

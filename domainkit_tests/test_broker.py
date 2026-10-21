@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Final, cast
 
 import pytest
-from aio_pika import DeliveryMode
+from aio_pika import DeliveryMode, ExchangeType
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -350,6 +350,8 @@ async def test_rabbitmq_topology_and_publishing() -> None:
     assert options["ssl_context"] is None
     assert options["client_properties"] == {"connection_name": "domainkit billing"}
     assert server.exchanges == {"billing.work": True}
+    assert server.exchange_types == {"billing.work": ExchangeType.DIRECT}
+    assert server.durable_queues == {"billing.default": True, "billing.emails": True}
     assert set(server.queues) == {"billing.default", "billing.emails"}
     assert server.queues["billing.emails"].arguments == QUEUE_ARGUMENTS
     routing_key, message, mandatory, timeout = server.published[0]
@@ -500,3 +502,193 @@ def test_broker_command_checks_and_declares(monkeypatch: pytest.MonkeyPatch) -> 
             with pytest.raises(CommandError, match="rabbit: RabbitMQ is unavailable"):
                 run("broker", "declare")
     registry.clear()
+
+
+# Deadlines and prefetch --------------------------------------------------------------
+
+QUICK: Final = {"CONNECT_TIMEOUT": 0.05, "PUBLISH_TIMEOUT": 0.05}
+"""Deadlines short enough that a stalled call fails the test fast, not slowly."""
+
+
+@pytest.mark.parametrize("call", ["channel", "declare_exchange"])
+async def test_a_stalled_broker_fails_publishers_in_time(call: str) -> None:
+    """Opening the publishing channel has a deadline; the lock is let go after it."""
+    server = FakeAMQP()
+    server.stalled.add(call)
+    broker = rabbit(server, **QUICK)
+
+    async with asyncio.timeout(5):  # A hang fails here, not in CI's timeout.
+        results = await asyncio.gather(
+            broker.check(), broker.check(), return_exceptions=True
+        )
+    server.stalled.clear()
+    await broker.check()  # Nothing was left holding the lock or a channel.
+    await broker.close()
+
+    assert [type(result) for result in results] == [BrokerUnavailable] * 2
+    assert "TimeoutError" in str(results[0])
+    assert server.timeouts["declare_exchange"] == 0.05
+    if call == "declare_exchange":  # A channel that failed is closed, not kept.
+        assert server.calls["close_channel"] == 2
+
+
+@pytest.mark.parametrize("call", ["set_qos", "declare_queue", "bind", "consume"])
+async def test_a_stalled_broker_fails_consumers_in_time(call: str) -> None:
+    """Starting consumers has deadlines; a channel that failed is closed, not reused."""
+    server = FakeAMQP()
+    broker = rabbit(server, **QUICK)
+    server.stalled.add(call)
+
+    async with asyncio.timeout(5):
+        with pytest.raises(BrokerUnavailable, match="TimeoutError"):
+            await broker.consume(["default"], 3, Inbox())
+    assert server.last_channel is not None
+    assert server.last_channel.closed
+    assert server.timeouts[call] == 0.05
+    server.stalled.clear()
+    subscription = await broker.consume(["default"], 3, Inbox())
+    await subscription.cancel()
+    await broker.close()
+
+
+@pytest.mark.parametrize("stage", ["publisher", "consumer"])
+async def test_a_channel_that_cannot_close_is_left_behind(stage: str) -> None:
+    """Closing a broken channel has a deadline too, and never raises."""
+    server = FakeAMQP()
+    broker = rabbit(server, **QUICK)
+    failing = "declare_exchange" if stage == "publisher" else "set_qos"
+    server.stalled.update({failing, "close_channel"})
+
+    failure = broker.check() if stage == "publisher" else broker.consume([], 1, Inbox())
+    async with asyncio.timeout(5):
+        with pytest.raises(BrokerUnavailable):
+            await failure
+
+    assert server.calls["close_channel"] == 1
+    assert server.last_channel is not None
+    assert not server.last_channel.closed
+
+
+async def test_stopping_consumers_has_a_deadline_and_tries_each() -> None:
+    """Every consumer is cancelled even after one fails; the first failure is raised."""
+    server = FakeAMQP()
+    broker = rabbit(server, **QUICK)
+    subscription = await broker.consume(["default", "emails"], 1, Inbox())
+    server.stalled.add("cancel")
+
+    async with asyncio.timeout(5):
+        with pytest.raises(BrokerUnavailable, match="TimeoutError"):
+            await subscription.cancel()
+
+    assert server.calls["cancel"] == 2
+    assert server.timeouts["cancel"] == 0.05
+    server.stalled.clear()
+    server.down = True
+    with pytest.raises(BrokerUnavailable, match="ChannelClosed"):
+        await subscription.cancel()
+    server.down = False
+    await subscription.cancel()
+    assert all(not queue.consumers for queue in server.queues.values())
+
+
+async def test_closing_a_stalled_connection_has_a_deadline() -> None:
+    """A connection that will not close fails within CONNECT_TIMEOUT."""
+    server = FakeAMQP()
+    broker = rabbit(server, **QUICK)
+    await broker.check()
+    server.stalled.add("close")
+
+    async with asyncio.timeout(5):
+        with pytest.raises(BrokerUnavailable, match="TimeoutError"):
+            await broker.close()
+    await broker.close()  # Forgotten already: nothing left to close.
+
+
+def test_publishing_may_take_a_connect_and_a_confirmation() -> None:
+    """The broker's publish_timeout is what relays lease their messages for."""
+    broker = rabbit(FakeAMQP(), CONNECT_TIMEOUT=3, PUBLISH_TIMEOUT=7)
+
+    assert broker.publish_timeout == 10
+    assert MemoryBroker().publish_timeout == 10.0
+
+
+async def test_the_prefetch_is_each_consumers() -> None:
+    """Quorum queues take no channel-wide prefetch: each consumer gets its own."""
+    server = FakeAMQP()
+    broker = rabbit(server)
+    held = Inbox(ack=False)
+    subscription = await broker.consume(["default", "emails"], 1, held)
+    for queue in ("default", "emails", "default", "emails"):
+        await broker.publish(queue, b"{}", message_id=queue)
+
+    # Two in flight with a prefetch of one: one per consumer.
+    first, second = await held.wait(2)
+    await first.ack()
+    await second.ack()
+    await held.wait(4)
+    await subscription.cancel()
+    await broker.close()
+
+    assert server.qos == [(1, False)]
+    assert {first.queue, second.queue} == {"default", "emails"}
+
+
+async def test_an_empty_queue_never_holds_a_slot() -> None:
+    """One pump serves every queue, so idle queues cannot starve a busy one."""
+    broker = MemoryBroker()
+    await broker.declare(["idle", "quiet", "busy"])
+    for number in range(3):
+        await broker.publish("busy", b"%d" % number, message_id=f"b{number}")
+    inbox = Inbox()
+
+    subscription = await broker.consume(["idle", "quiet", "busy"], 1, inbox)
+    delivered = await inbox.wait(3)
+    await subscription.cancel()
+
+    assert [d.message_id for d in delivered] == ["b0", "b1", "b2"]
+
+
+@pytest.mark.parametrize(
+    ("waiting", "order"),
+    [
+        (["a1", "a2", "b1", "b2"], ["a1", "b1", "a2", "b2"]),
+        (["a1", "a2", "b1", "c1"], ["a1", "b1", "c1", "a2"]),
+        (["a1", "a2", "c1"], ["a1", "c1", "a2"]),  # b is empty: c comes next.
+    ],
+)
+async def test_queues_take_turns(waiting: list[str], order: list[str]) -> None:
+    """With work in several queues, each is served in turn, the next after the last."""
+    broker = MemoryBroker()
+    await broker.declare(["a", "b", "c"])
+    for name in waiting:
+        await broker.publish(name[0], b"{}", message_id=name)
+    inbox = Inbox()
+
+    subscription = await broker.consume(["a", "b", "c"], 1, inbox)
+    delivered = await inbox.wait(len(order))
+    await subscription.cancel()
+    assert subscription._pump.done()  # type: ignore[attr-defined]
+    await subscription.cancel()  # Stopping twice is harmless.
+
+    assert [d.message_id for d in delivered] == order
+    assert broker.pending("a") == broker.pending("nowhere") == 0
+
+
+def test_closed_loops_let_go_of_their_brokers() -> None:
+    """A loop closed without close_all is not kept alive by its brokers."""
+    handler = BrokerHandler()
+
+    async def use() -> Broker:
+        broker = handler["memory"]
+        await broker.declare(["default"])
+        return broker
+
+    with override_settings(BROKERS={"memory": {"URL": "memory://"}}):
+        loop = asyncio.new_event_loop()
+        broker = loop.run_until_complete(use())
+        loop.close()
+        assert list(handler._brokers) == [loop]  # Still referenced here.
+        asyncio.run(use())
+
+    assert loop not in handler._brokers
+    assert isinstance(broker, MemoryBroker)

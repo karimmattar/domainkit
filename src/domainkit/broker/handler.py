@@ -60,6 +60,8 @@ class BrokerHandler:
                 f"brokers[{alias!r}] needs a running event loop: connections "
                 "belong to one, so look brokers up inside async code."
             ) from None
+        if loop not in self._brokers:
+            self._forget_closed_loops()
         brokers = self._brokers.setdefault(loop, {})
         current = brokers.get(alias)
         if current is not None and current[0] == config:
@@ -69,6 +71,16 @@ class BrokerHandler:
         broker = MemoryBroker() if config.scheme == "memory" else self._connect(config)
         brokers[alias] = (config, broker)
         return broker
+
+    def _forget_closed_loops(self) -> None:
+        """Drop the brokers of loops closed without ``close_all``.
+
+        Their connections died with the loop, and a broker that references
+        its loop would keep it alive for good.
+        """
+        for loop in [loop for loop in self._brokers if loop.is_closed()]:
+            del self._brokers[loop]
+            self._replaced.pop(loop, None)
 
     async def close_all(self) -> None:
         """Close the running loop's brokers; the next use opens new ones."""

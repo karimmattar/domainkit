@@ -776,7 +776,7 @@ async def test_waiting_messages_can_be_cancelled_running_ones_not() -> None:
     assert not await outbox_admin.cancel(config, claimed.id)  # Done.
     await set_rows(available_at=datetime.now(UTC) - timedelta(seconds=1))
     assert await Worker().run_once() == 0  # Nothing cancelled runs.
-    body, _ = broker._queues["default"].get_nowait()
+    body, _ = broker._queues["default"].popleft()
     answers: list[str] = []
     consumer = BrokerWorkers(
         [Worker()], ["default"], MessagingSettings(**{**FAST, "BROKER": "x"})
