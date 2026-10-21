@@ -64,3 +64,4 @@ accepted record: supersede it with a new one and link both ways.
 | [0048](0048-request-deadlines.md) | Give every request a deadline, answer 503 when it passes, and pass it on | Accepted |
 | [0049](0049-shed-load-past-a-concurrency-cap.md) | Shed load in the application: a cap per event loop, a short queue, and a fast 503 | Accepted |
 | [0050](0050-outgoing-http-client.md) | Call other services through pooled clients that keep to the deadline | Accepted |
+| [0060](0060-flatten-included-routers.md) | Flatten included routers when the application is built | Accepted |

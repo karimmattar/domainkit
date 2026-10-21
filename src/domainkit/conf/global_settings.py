@@ -590,6 +590,8 @@ class Settings(BaseModel):
     """ASGI middleware classes by dotted path; the first one is outermost."""
     ROOT_ROUTER: str | None = None
     """Dotted path to the ``APIRouter`` that mounts every route (``ROOT_URLCONF``)."""
+    FLATTEN_ROUTERS: bool = True
+    """Serve the routes of included routers from the top (ADR 0060); False nests."""
     ASGI_APPLICATION: str | None = None
     """``module:attribute`` that ``runserver`` serves."""
     EVENT_LOOP: Literal["auto", "asyncio", "uvloop"] = "auto"

@@ -45,6 +45,7 @@ URLs; an unreadable port is refused without quoting the URL.
 | `INSTALLED_DOMAINS` | `()` | Domain packages (Django's `INSTALLED_APPS`), started in order and stopped in reverse. |
 | `MIDDLEWARE` | see [Middleware](#middleware) | ASGI middleware by dotted path, outermost first. |
 | `ROOT_ROUTER` | `None` | Dotted path to the `APIRouter` that mounts every route (Django's `ROOT_URLCONF`). |
+| `FLATTEN_ROUTERS` | `True` | Serve the routes of the routers `ROOT_ROUTER` includes from the top of the application, each matched once ([Included routers](#included-routers)); `False` keeps FastAPI's nesting, which matches a request again at each level. |
 | `ASGI_APPLICATION` | `None` | `module:attribute` that `runserver` serves. |
 | `EVENT_LOOP` | `"auto"` | The event loop of `runserver` and of commands with an `async` handle (`runworker` among them): uvloop when the `uvloop` extra is installed (`auto`), always asyncio's own (`asyncio`), or uvloop or a configuration error (`uvloop`). |
 | `LOGGING` | minimal | A `logging.config.dictConfig` mapping, applied by `setup()`. `domainkit.log.build_logging_config(log_format="json", level="INFO")` makes one that writes from a thread, through a bounded queue ([runtime.md](runtime.md#logging-and-error-reports)); the settings `init` writes use it. |
@@ -672,6 +673,37 @@ carry `Deprecation: @<seconds>` (RFC 9745), `Sunset: <HTTP date>`
 wins. OpenAPI marks the operations `deprecated`, with the headers on each
 response, `x-deprecated-since`, `x-sunset`, and the link as `externalDocs`.
 Times need a time zone; a date means midnight UTC.
+
+### Included routers
+
+`get_asgi_application` serves the routes of the routers that `ROOT_ROUTER`
+includes from the top of the application: FastAPI keeps each
+`include_router` call nested, and matched each request again at each level
+(ADR 0060). Every route keeps what its routers gave it: the full path, the
+dependencies and access rules, tags, responses, response class, route
+class, callbacks, and OpenAPI settings. Mounts stay mounts, the routers'
+lifespans and startup hooks run, and the OpenAPI document is the same,
+byte for byte. What a project can see:
+
+- `app.routes` lists the routes themselves, with their full paths, in the
+  order they are matched;
+- `request.scope["route"].path` is the route's full path template;
+- a router with frontend routes (`APIRouter.frontend`) stays included;
+- a route added to an included router after the application is built is
+  not served: finish routers before `get_asgi_application` runs.
+
+`FLATTEN_ROUTERS = False` keeps FastAPI's nesting. `flatten_routes(app.router)`
+(`domainkit.http.routing`) flattens an application built by hand:
+
+```python
+from fastapi import FastAPI
+
+from domainkit.http.routing import flatten_routes
+
+app = FastAPI()
+app.include_router(router)
+flatten_routes(app.router)  # How many included routers it replaced.
+```
 
 ## Observability
 
