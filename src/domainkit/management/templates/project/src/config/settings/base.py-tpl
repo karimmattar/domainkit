@@ -21,6 +21,8 @@ MIDDLEWARE = [
     "domainkit.http.locale.LocaleMiddleware",  # Answers in LANGUAGES (docs/i18n.md).
     "domainkit.http.middleware.SecurityHeadersMiddleware",
     "domainkit.http.middleware.RequestContextMiddleware",
+    "domainkit.http.deadlines.DeadlineMiddleware",  # REQUEST_TIMEOUT (docs/runtime.md).
+    "domainkit.http.shedding.ConcurrencyLimitMiddleware",  # MAX_CONCURRENT_REQUESTS.
     "domainkit.http.middleware.AllowedHostsMiddleware",
     "domainkit.contrib.auth.middleware.AuthenticationMiddleware",
     "domainkit.http.ratelimit.RateLimitMiddleware",  # Off until RATE_LIMIT is set.

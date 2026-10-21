@@ -9,8 +9,8 @@ The application's lifespan (``serving``) and management commands
    publisher sending the messages it holds.
 3. ``tasks``: the loop's background tasks (``domainkit.tasks.spawn`` and
    ``supervise``) are cancelled and awaited.
-4. ``resources``: caches, databases, ledgers, brokers, and the kinds others
-   register (an HTTP client) close, all at once.
+4. ``resources``: caches, HTTP clients, databases, ledgers, brokers, and the
+   kinds others register close, all at once.
 5. ``flush``: closers registered to run last; then error reports, and
    last of all the logs, so what closing the others logged is written too.
 
@@ -25,12 +25,13 @@ still to run.
 
 Other parts of the framework add their closers with ``register``::
 
-    lifecycle.register("http clients", clients.close_all)
+    lifecycle.register("search index", index.close)
     lifecycle.register("publishers", close_publishers, phase=Phase.DRAIN)
 """
 
 import asyncio
 import logging
+import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -90,6 +91,7 @@ def _builtin() -> dict[str, Closer]:
     """The framework's own kinds of resources, looked up when shutting down."""
     return {
         "caches": caches.close_all,
+        "HTTP clients": close_http_clients,
         "databases": connections.close_all,
         "ledgers": ledgers.close_all,
         "brokers": brokers.close_all,
@@ -220,3 +222,13 @@ async def _close_all(closers: Mapping[str, Closer], deadline: float) -> None:
             )
         elif not task.cancelled() and (exc := task.exception()) is not None:
             logger.error("Could not close the %s; closing the rest", name, exc_info=exc)
+
+
+async def close_http_clients() -> None:
+    """Close ``domainkit.http.client``'s pools, if anything imported it.
+
+    Looked up, not imported, so the lifespan needs no ``httpclient`` extra.
+    """
+    client = sys.modules.get("domainkit.http.client")
+    if client is not None:
+        await client.close_all()

@@ -4,16 +4,22 @@ Engines are created on first use and disposed by the application lifespan, so
 importing a module never opens a connection. Async drivers bind connections
 to the event loop that opened them, so each running loop gets its own engines:
 a management command and a test client in one process never share a pool.
+
+On PostgreSQL each transaction starts by setting what
+``drivers.transaction_settings`` asks for: a ``statement_timeout`` no longer
+than the time left before the deadline (``domainkit.deadlines``), and under
+PgBouncer every timeout. It runs with the ``INTERNAL`` execution option,
+which ``assert_num_queries`` leaves out, as it does ``BEGIN``.
 """
 
 import asyncio
 import re
-from functools import partial
+from functools import cache, partial
 from typing import Any, Final
 from weakref import WeakKeyDictionary
 
-from sqlalchemy import event, text
-from sqlalchemy.engine import ExceptionContext
+from sqlalchemy import TextClause, event, make_url, text
+from sqlalchemy.engine import Connection, ExceptionContext
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -24,7 +30,8 @@ from sqlalchemy.pool import NullPool
 
 from domainkit.conf import DEFAULT_DB_ALIAS, DatabaseConfig, settings
 from domainkit.conf.global_settings import is_network_database
-from domainkit.db.drivers import connect_args
+from domainkit.db.drivers import connect_args, transaction_settings
+from domainkit.deadlines import remaining
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.utils.closing import close_each
 from domainkit.utils.readiness import failing_checks
@@ -33,6 +40,9 @@ type _Pool = tuple[AsyncEngine, async_sessionmaker[AsyncSession]]
 
 DEFAULT_POOL_TIMEOUT: Final = 10.0
 """Seconds a request waits for a connection to a network database."""
+INTERNAL: Final = "domainkit_internal"
+"""Execution option of the framework's own statements, such as the timeouts
+a transaction sets; ``assert_num_queries`` does not count them."""
 _DETAIL: Final = re.compile(r"\nDETAIL:  [^\n]*")
 
 
@@ -54,17 +64,41 @@ def create_engine(config: DatabaseConfig) -> AsyncEngine:
         "pool_recycle": config.POOL_RECYCLE,
     }
     options: dict[str, Any] = {k: v for k, v in pool.items() if v is not None}
-    return _hiding_details(
-        create_async_engine(
-            url,
-            echo=config.ECHO,
-            hide_parameters=not config.LOG_PARAMETERS,
-            pool_pre_ping=config.POOL_PRE_PING,
-            connect_args=connect_args(config),
-            **options,
-        ),
-        config,
+    engine = create_async_engine(
+        url,
+        echo=config.ECHO,
+        hide_parameters=not config.LOG_PARAMETERS,
+        pool_pre_ping=config.POOL_PRE_PING,
+        connect_args=connect_args(config),
+        **options,
     )
+    if make_url(url).get_backend_name() == "postgresql":
+        event.listen(engine.sync_engine, "begin", partial(_set_local, config))
+    return _hiding_details(engine, config)
+
+
+def _set_local(config: DatabaseConfig, connection: Connection) -> None:
+    """Start a transaction with its own timeouts (``SET LOCAL``), if it needs any.
+
+    The deadline's time is read in the caller's context, which SQLAlchemy
+    carries into the event.
+    """
+    values = transaction_settings(config, remaining())
+    if values:
+        connection.execute(
+            _set_config(tuple(values)), values, execution_options={INTERNAL: True}
+        )
+
+
+@cache
+def _set_config(names: tuple[str, ...]) -> TextClause:
+    """``SELECT set_config(name, :name, true), ...``: ``SET LOCAL`` with values bound.
+
+    The text depends only on which settings are set, so each connection
+    prepares it once.
+    """
+    calls = ", ".join(f"set_config('{name}', :{name}, true)" for name in names)
+    return text(f"SELECT {calls}")
 
 
 def create_owner_engine(config: DatabaseConfig) -> AsyncEngine:

@@ -50,6 +50,9 @@ pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, m
   event-handler timeouts, and workers and the outbox
 - [docs/cache.md](https://github.com/karimmattar/domainkit/blob/main/docs/cache.md): caches in memory, Redis, and Valkey,
   and shared rate limits
+- [docs/runtime.md](https://github.com/karimmattar/domainkit/blob/main/docs/runtime.md): running under load: request
+  deadlines, load shedding, database timeouts and PgBouncer, and outgoing
+  HTTP calls
 - [docs/contrib.md](https://github.com/karimmattar/domainkit/blob/main/docs/contrib.md): messaging (and workers on RabbitMQ),
   webhooks, audit and records' history, idempotency, evidence, and
   feature flags

@@ -48,10 +48,16 @@ LANGUAGE_PATTERN: Final = r"^[a-z]{2,3}(-[a-z0-9]{2,8})*$"
 RATE_LIMIT_MIDDLEWARE: Final = "domainkit.http.ratelimit.RateLimitMiddleware"
 DEBUG_TOOLBAR_MIDDLEWARE: Final = "domainkit.debug.DebugToolbarMiddleware"
 """Development middleware: SQL per request, N+1 warnings, profiles."""
+DEADLINE_MIDDLEWARE: Final = "domainkit.http.deadlines.DeadlineMiddleware"
+"""Gives each request its ``REQUEST_TIMEOUT`` deadline."""
+CONCURRENCY_MIDDLEWARE: Final = "domainkit.http.shedding.ConcurrencyLimitMiddleware"
+"""Sheds requests past ``MAX_CONCURRENT_REQUESTS``."""
 DEFAULT_MIDDLEWARE: Final = (
     "domainkit.http.middleware.ProxyHeadersMiddleware",
     "domainkit.http.middleware.SecurityHeadersMiddleware",
     "domainkit.http.middleware.RequestContextMiddleware",
+    DEADLINE_MIDDLEWARE,
+    CONCURRENCY_MIDDLEWARE,
     "domainkit.http.middleware.AllowedHostsMiddleware",
     "domainkit.http.websockets.WebSocketLimitsMiddleware",
     "domainkit.http.middleware.RequestBodyLimitMiddleware",
@@ -75,6 +81,14 @@ def is_network_database(url: str) -> bool:
 LEDGER_SCHEMES: Final = frozenset({"immudb", "memory"})
 """URL schemes of ledgers (``LEDGERS``); ``DATABASES`` refuses them."""
 IMMUDB_PORT: Final = 3322
+PGBOUNCER_PORT: Final = 6432
+"""The port PgBouncer listens on unless told otherwise."""
+PGBOUNCER_CACHE_ARGUMENTS: Final = (
+    "statement_cache_size",
+    "prepared_statement_cache_size",
+    "prepare_threshold",
+)
+"""Driver arguments that turn prepared statements off, as PgBouncer needed."""
 
 
 class DatabaseConfig(BaseModel):
@@ -105,6 +119,12 @@ class DatabaseConfig(BaseModel):
     """Seconds a statement may wait for a lock."""
     IDLE_IN_TRANSACTION_TIMEOUT: float | None = Field(default=60.0, gt=0)
     """Seconds an open transaction may sit idle before the server ends it."""
+    CONNECT_TIMEOUT: float = Field(default=10.0, gt=0)
+    """Seconds to open a connection (asyncpg's ``timeout``, libpq's)."""
+    COMMAND_TIMEOUT: float | None = Field(default=None, gt=0)
+    """Seconds asyncpg waits for one statement; None: ``STATEMENT_TIMEOUT`` plus 5."""
+    PGBOUNCER: bool = False
+    """Connect through PgBouncer's transaction pooling (no session state kept)."""
 
     POOL_SIZE: int | None = Field(default=None, ge=1)
     MAX_OVERFLOW: int | None = Field(default=None, ge=0)
@@ -132,6 +152,32 @@ class DatabaseConfig(BaseModel):
         if scheme in LEDGER_SCHEMES:
             raise ValueError(f"{scheme}:// is a ledger; configure it in LEDGERS")
         return self
+
+    @model_validator(mode="after")
+    def check_pgbouncer(self) -> Self:
+        """PgBouncer pools PostgreSQL connections only."""
+        scheme = urlsplit(self.URL.get_secret_value()).scheme.split("+", 1)[0]
+        if self.PGBOUNCER and scheme != "postgresql":
+            raise ValueError("PGBOUNCER needs a postgresql:// URL")
+        return self
+
+    def looks_pooled(self) -> bool:
+        """Whether the entry seems to go through PgBouncer without ``PGBOUNCER``.
+
+        PgBouncer listens on 6432 by default, and a statement cache turned
+        off in ``CONNECT_ARGS`` is the usual way around it by hand.
+        """
+        if self.PGBOUNCER:
+            return False
+        try:
+            port = urlsplit(self.URL.get_secret_value()).port
+        except ValueError:
+            port = None
+        args = self.CONNECT_ARGS
+        uncached = any(
+            name in args and not args[name] for name in PGBOUNCER_CACHE_ARGUMENTS
+        )
+        return port == PGBOUNCER_PORT or uncached
 
 
 def _check_port(parts: SplitResult) -> None:
@@ -463,6 +509,40 @@ class DebugToolbarConfig(BaseModel):
     None turns profiling off."""
 
 
+class HttpClientConfig(BaseModel):
+    """``HTTP_CLIENT``: what ``domainkit.http.client`` clients do by default.
+
+    Each ``HttpClient`` may change the timeout and the retries for itself.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    TIMEOUT: float = Field(default=10.0, gt=0)
+    """Seconds one call may take, its retries included, and never past the deadline."""
+    CONNECT_TIMEOUT: float = Field(default=5.0, gt=0)
+    """Seconds to open a connection."""
+    RETRIES: int = Field(default=2, ge=0, le=10)
+    """Retries of a call that failed in a way worth trying again."""
+    BACKOFF: float = Field(default=0.1, ge=0)
+    """Seconds before the first retry, doubling for each next one, jittered."""
+    MAX_BACKOFF: float = Field(default=2.0, ge=0)
+    """The longest wait before a retry, ``Retry-After`` included."""
+    BREAKER_FAILURES: int = Field(default=5, ge=1)
+    """Failures in a row that open a host's circuit: its calls then fail at once."""
+    BREAKER_COOLDOWN: float = Field(default=30.0, gt=0)
+    """Seconds a host's circuit stays open before one call may try it again."""
+    MAX_CONNECTIONS: int = Field(default=100, ge=1)
+    """Connections per client and event loop."""
+    MAX_KEEPALIVE_CONNECTIONS: int = Field(default=20, ge=0)
+    """Idle connections each client keeps open for the next calls."""
+    MAX_RESPONSE_BYTES: int = Field(default=10_485_760, ge=1)
+    """Largest response body read, decompressed; a larger one fails the call."""
+    USER_AGENT: str = Field(default="domainkit", pattern=r"^[\x20-\x7e]{1,256}$")
+    """The ``User-Agent`` of every call."""
+    CA_BUNDLE: Path | None = None
+    """CA certificates that sign the servers' certificates; default: the system's."""
+
+
 ABSOLUTE_URI: Final = r"^[A-Za-z][A-Za-z0-9+.-]*:[^\s]+$"
 """An absolute URI without whitespace (``https://...``, ``urn:...``)."""
 
@@ -543,6 +623,18 @@ class Settings(BaseModel):
     """Options of ``DebugToolbarMiddleware`` (development only)."""
     MAX_REQUEST_BODY_SIZE: int = Field(default=1_048_576, ge=1)
     """Largest accepted request body in bytes; larger requests get 413."""
+    REQUEST_TIMEOUT: float | None = Field(default=30.0, gt=0)
+    """Seconds an HTTP request may take until its response starts; None: no limit."""
+    MAX_CONCURRENT_REQUESTS: int | None = Field(default=1000, ge=1)
+    """HTTP requests each process works on at once; None: no cap."""
+    MAX_QUEUED_REQUESTS: int = Field(default=100, ge=0)
+    """Requests past the cap that may wait for a slot; more are refused at once."""
+    REQUEST_QUEUE_TIMEOUT: float = Field(default=1.0, ge=0, le=60)
+    """Seconds a request past the cap waits for a slot before it is refused."""
+    CONCURRENCY_EXEMPT_PATHS: tuple[str, ...] = ("/health", "/ready", "/metrics")
+    """Exact paths never counted against the cap, so probes are never refused."""
+    HTTP_CLIENT: HttpClientConfig = Field(default_factory=HttpClientConfig)
+    """Defaults of outgoing calls through ``domainkit.http.client``."""
     READINESS_TIMEOUT: float = Field(default=5.0, gt=0)
     """Seconds each readiness check may take before it counts as failed."""
     READINESS_CACHE_SECONDS: float = Field(default=1.0, ge=0)
@@ -771,6 +863,34 @@ class Settings(BaseModel):
                 "LIVE_REAUTH_INTERVAL is None, so an open WebSocket or event "
                 "stream keeps a revoked token or a removed permission until it "
                 "closes; set it (60 is a minute)."
+            )
+        warnings.extend(self._load_warnings())
+        return warnings
+
+    def _load_warnings(self) -> list[str]:
+        """Requests without a deadline or a cap, and PgBouncer left unsaid."""
+        warnings = []
+        if self.REQUEST_TIMEOUT is None or DEADLINE_MIDDLEWARE not in self.MIDDLEWARE:
+            warnings.append(
+                f"Requests have no deadline, so a slow one holds its resources "
+                f"for as long as it takes; set REQUEST_TIMEOUT and list "
+                f"{DEADLINE_MIDDLEWARE} in MIDDLEWARE."
+            )
+        if (
+            self.MAX_CONCURRENT_REQUESTS is None
+            or CONCURRENCY_MIDDLEWARE not in self.MIDDLEWARE
+        ):
+            warnings.append(
+                f"Requests are not shed under load, so they queue without end; "
+                f"set MAX_CONCURRENT_REQUESTS and list {CONCURRENCY_MIDDLEWARE} "
+                f"in MIDDLEWARE."
+            )
+        if pooled := sorted(a for a, db in self.DATABASES.items() if db.looks_pooled()):
+            warnings.append(
+                f"DATABASES {pooled} seem to go through PgBouncer (port "
+                f"{PGBOUNCER_PORT}, or a statement cache turned off in "
+                f"CONNECT_ARGS); set PGBOUNCER = True, so timeouts hold per "
+                f"transaction and prepared statements do not clash."
             )
         return warnings
 

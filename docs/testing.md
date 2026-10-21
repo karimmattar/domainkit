@@ -300,7 +300,9 @@ AssertionError: Expected at most 6 queries, 7 ran:
 They count the statements of every engine of the process, in every thread
 and event loop, so a `TestClient`'s requests count; `using="reports"`
 counts one alias only. Each statement sent to the driver counts once, an
-`executemany` too; connecting and committing do not. An authenticated
+`executemany` too; connecting and committing do not, nor the timeouts a
+PostgreSQL transaction sets for itself under a deadline or PgBouncer
+([runtime.md](runtime.md#what-keeps-to-it)). An authenticated
 request costs a few statements of its own (the token, the user, its groups
 and permissions), so prefer `assert_max_queries` for whole requests and
 `assert_num_queries` for code you call directly. Without the fixtures,
@@ -315,6 +317,14 @@ loop the tests start runs in asyncio's debug mode, the test's async loop
 and the clients' alike; fixtures are not timed. The failure quotes
 asyncio's report of the slow step. See
 [runtime.md](runtime.md#finding-blocking-code).
+## Outgoing calls
+
+Code that calls other services through `domainkit.http.client` is tested
+without them: `stub(handler)` sends every call made in its block to
+`handler`, a function of an `httpx2.Request` that returns an
+`httpx2.Response` ([runtime.md](runtime.md#outgoing-http-calls)). Both
+clients carry the block's context into the application, so calls made
+while serving a request are stubbed too.
 
 ## In generated projects
 

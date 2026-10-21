@@ -1633,6 +1633,20 @@ async def test_commits_wake_idle_workers() -> None:
 
 
 @pytest.mark.usefixtures("tables")
+async def test_workers_poll_through_pgbouncer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``LISTEN`` needs a session of its own; PgBouncer's pooling keeps none."""
+    worker = Worker(MessagingSettings(**{**FAST, "POLL_INTERVAL": 30}))
+    assert worker.engine is not None  # Built before the patch, as configured.
+    pooled = connections.config(worker.database).model_copy(update={"PGBOUNCER": True})
+    monkeypatch.setattr(connections, "config", lambda alias: pooled)
+    stop, wake = asyncio.Event(), asyncio.Event()
+
+    await within(worker.listen(stop, wake))  # Returns at once: polling only.
+
+    assert not wake.is_set()
+
+
+@pytest.mark.usefixtures("tables")
 async def test_a_lost_listener_listens_again(caplog: pytest.LogCaptureFixture) -> None:
     """A listening connection that drops is opened again; polling covers the gap."""
     if not postgres():

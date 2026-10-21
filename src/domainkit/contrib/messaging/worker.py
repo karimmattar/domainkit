@@ -1094,7 +1094,9 @@ class Worker:
 
         On PostgreSQL with asyncpg, while ``MESSAGING.NOTIFY`` applies (see
         ``outbox.notifies``); elsewhere it returns at once and polling is
-        all there is. It holds one connection of the pool. A lost connection
+        all there is. So it does through PgBouncer (``PGBOUNCER``): ``LISTEN``
+        needs a session of its own, which transaction pooling does not keep.
+        It holds one connection of the pool. A lost connection
         is opened again after a pause that grows with each failure in a row;
         meanwhile the worker polls.
         """
@@ -1103,6 +1105,7 @@ class Worker:
             notifies(self.config)
             and engine.dialect.name == "postgresql"
             and engine.dialect.driver == "asyncpg"
+            and not connections.config(self.database).PGBOUNCER
         ):
             return
         failures = Outage(

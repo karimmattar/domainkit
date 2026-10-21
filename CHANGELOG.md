@@ -125,6 +125,44 @@ All notable changes to domainkit. The format follows
 - `domainkit.contrib.messaging.Budget`, the concurrency budget `Worker` and
   `BrokerWorkers` share through `budget=`.
 - `docs/runtime.md`, "Workers and the outbox".
+- Request deadlines (ASYNC-11, R04; `docs/runtime.md`; ADR 0048): each
+  HTTP request gets `REQUEST_TIMEOUT` seconds (30) until its response
+  starts, through the new `DeadlineMiddleware`. Past them the work is
+  cancelled, its unit of work rolled back and its idempotency key
+  released, and the request is answered 503 `deadline_exceeded` with
+  `Retry-After`, logged once. A route sets its own with
+  `Depends(RequestTimeout(seconds))`, or none with `RequestTimeout(None)`;
+  streamed responses, background tasks, and WebSockets are not cut off.
+- `domainkit.deadlines`, to keep to the deadline anywhere: `remaining()`,
+  `within(awaitable, seconds)`, and `async with timeout(seconds)`, bounded
+  by the smaller of their seconds and the time left. PostgreSQL
+  transactions lower `statement_timeout` to the time left (`SET LOCAL`),
+  which `assert_num_queries` does not count.
+- Load shedding (`docs/runtime.md`; ADR 0049): `ConcurrencyLimitMiddleware`
+  lets each process work on `MAX_CONCURRENT_REQUESTS` requests at once
+  (1000); the next wait up to `REQUEST_QUEUE_TIMEOUT` (1 second) behind at
+  most `MAX_QUEUED_REQUESTS` (100), then get 503 `overloaded` with
+  `Retry-After`. Health and readiness probes and `/metrics` are never
+  refused (`CONCURRENCY_EXEMPT_PATHS`). New metrics:
+  `http_requests_admitted`, `http_requests_queued`,
+  `http_requests_shed_total`, and `http_request_deadlines_exceeded_total`.
+- Client-side database timeouts (ASYNC-12): `DATABASES` entries take
+  `CONNECT_TIMEOUT` (10 seconds, where asyncpg waited 60) and
+  `COMMAND_TIMEOUT` (`STATEMENT_TIMEOUT` plus 5 seconds).
+- `PGBOUNCER = True` for databases behind PgBouncer's transaction pooling:
+  no statement cache, a unique name for each prepared statement, and the
+  timeouts set in each transaction instead of the session. `check` warns
+  in staging and production about a database that seems to go through
+  PgBouncer without it.
+- `domainkit.http.client`, outgoing HTTP calls (R09; the new `httpclient`
+  extra; ADR 0050): pooled `HttpClient`s closed with the application,
+  each call bounded by a timeout and by the request's deadline, retried
+  with jittered backoff only when that is safe, a circuit breaker per
+  host, the request id and trace context sent along, answers read up to
+  `HTTP_CLIENT.MAX_RESPONSE_BYTES`, and logs without query strings or
+  headers. A client made with `guard=True` calls only public addresses,
+  checked as each connection opens; `stub(handler)` stubs every call in
+  tests.
 
 ### Changed
 
@@ -240,6 +278,22 @@ All notable changes to domainkit. The format follows
 - Workers run their tasks in `asyncio.TaskGroup`s: a failure in a worker's
   own task (a relay, cleanup) ends the worker with the error instead of
   being lost (R15).
+- `DEFAULT_MIDDLEWARE`, and the settings `init` writes, list
+  `DeadlineMiddleware` and `ConcurrencyLimitMiddleware` right after
+  `RequestContextMiddleware`. Projects with a `MIDDLEWARE` of their own add
+  them there; until they do, `check` warns in staging and production.
+- The SSRF guard of `domainkit.contrib.webhooks` is now
+  `domainkit.http.guard`, shared with the HTTP client;
+  `domainkit.contrib.webhooks.guard` keeps its names, messages, and codes.
+- The uvicorn example in `docs/reference.md` sets `--limit-concurrency
+  1200`, above the default cap and queue, so the application refuses
+  first and never refuses its probes.
+
+### Deprecated
+
+- `timeout`, `command_timeout`, and `connect_timeout` in a database's
+  `CONNECT_ARGS`: set `CONNECT_TIMEOUT` and `COMMAND_TIMEOUT`. They still
+  apply, with a `DomainkitDeprecationWarning`, and are refused from 0.9.
 
 ### Fixed
 
@@ -275,6 +329,8 @@ All notable changes to domainkit. The format follows
   (IND-A9).
 - Publishers and brokers of event loops closed without a shutdown no longer
   keep those loops alive.
+- A timeout under half a millisecond (`STATEMENT_TIMEOUT = 0.0004`) no
+  longer reaches PostgreSQL as 0, which means no timeout at all.
 
 ## [0.7.0] - 2026-10-20
 

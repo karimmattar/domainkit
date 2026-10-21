@@ -627,3 +627,10 @@ msgstr "يستخدم حسابٌ هذا الاسم أو هذا العنوان ب�
 
 msgid "Usernames that start with erased- are kept for erased accounts."
 msgstr "أسماء المستخدمين التي تبدأ بـ erased- محجوزة للحسابات الممحوّة."
+
+#. domainkit.http: deadlines and load shedding
+msgid "The request took too long; try again shortly."
+msgstr "استغرق الطلب وقتًا أطول من اللازم؛ أعد المحاولة بعد قليل."
+
+msgid "The server is busy; try again shortly."
+msgstr "الخادم مشغول؛ أعد المحاولة بعد قليل."

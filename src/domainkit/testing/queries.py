@@ -13,17 +13,20 @@ Statements are counted on every engine of the process, in every thread and
 event loop (a ``TestClient`` serves requests in a thread of its own), or
 only on one alias's ``URL`` with ``using``. Each statement sent to the
 driver counts once, an ``executemany`` included; the driver's own work
-(connecting, beginning and ending transactions) does not. A failure lists
-the statements, as SQL with placeholders: bound values are never kept.
+(connecting, beginning and ending transactions) does not, nor the timeouts
+a PostgreSQL transaction sets for itself (``connections.INTERNAL``). A
+failure lists the statements, as SQL with placeholders: bound values are
+never kept.
 """
 
 from types import TracebackType
 from typing import Any, Final, Self
 
 from sqlalchemy import event, make_url
-from sqlalchemy.engine import URL, Connection, Engine
+from sqlalchemy.engine import URL, Connection, Engine, ExecutionContext
 
 from domainkit.db import connections
+from domainkit.db.connections import INTERNAL
 
 EVENT: Final = "before_cursor_execute"
 
@@ -99,9 +102,13 @@ class CapturedQueries:
         connection: Connection,
         cursor: object,
         statement: str,
-        *args: Any,  # noqa: ANN401 - parameters, context, executemany.
+        parameters: Any,  # noqa: ANN401 - never read.
+        context: ExecutionContext | None,
+        executemany: bool,
     ) -> None:
-        """Keep ``statement`` if it ran on the database counted."""
+        """Keep ``statement`` if it ran on the database counted, and is the work's."""
+        if context is not None and context.execution_options.get(INTERNAL):
+            return
         if self._url is None or connection.engine.url == self._url:
             self.statements.append(statement)
 
