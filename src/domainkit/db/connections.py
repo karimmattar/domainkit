@@ -12,8 +12,9 @@ PgBouncer every timeout. It runs with the ``INTERNAL`` execution option,
 which ``assert_num_queries`` leaves out, as it does ``BEGIN``.
 
 With asyncpg, ``POOL_PRE_PING`` tests a connection with one round trip, a
-``SELECT 1`` outside any transaction, where SQLAlchemy's own test takes three
-(``BEGIN``, a prepared ``;``, ``ROLLBACK``).
+prepared ``;`` outside any transaction, where SQLAlchemy's own test takes
+three (``BEGIN``, the ``;``, ``ROLLBACK``); through PgBouncer, which needs
+the transaction, it keeps SQLAlchemy's.
 
 Read-only sessions read in one of three ways (``Reads``). ``STATEMENTS``
 runs each statement on its own, without ``BEGIN`` or ``ROLLBACK``, on an
@@ -69,7 +70,6 @@ SNAPSHOT_BEGIN: Final = "domainkit_snapshot"
 """Execution option asking SQLite to begin a transaction before reading."""
 READS_SUFFIX: Final = ":reads"
 """Added to an alias to name its ``STATEMENTS`` engine in ``pool_stats``."""
-PING: Final = "SELECT 1"
 _DETAIL: Final = re.compile(r"\nDETAIL:  [^\n]*")
 _ALONE_DRIVERS: Final = frozenset({"asyncpg", "psycopg"})
 """PostgreSQL drivers whose connections can be held read-only at connect time."""
@@ -147,7 +147,7 @@ def create_engine(config: DatabaseConfig) -> AsyncEngine:
         event.listen(engine.sync_engine, "begin", partial(_set_local, config))
     else:
         event.listen(engine.sync_engine, "begin", _begin_snapshot)
-    if backend.get_driver_name() == "asyncpg":
+    if backend.get_driver_name() == "asyncpg" and not config.PGBOUNCER:
         engine.sync_engine.dialect.do_ping = _ping  # type: ignore[method-assign]
     return _hiding_details(engine, config)
 
@@ -194,22 +194,20 @@ def reads_alone(config: DatabaseConfig) -> bool:
 
 
 def _ping(dbapi_connection: Any) -> bool:  # noqa: ANN401 - SQLAlchemy's adapter.
-    """Test an asyncpg connection with one ``SELECT 1``; False if it is unusable.
+    """SQLAlchemy's test of an asyncpg connection, outside a transaction.
 
-    The simple query protocol prepares nothing, so it needs no transaction,
-    also behind PgBouncer. False makes the pool replace the connection and
-    every older idle one, as for a disconnect.
+    SQLAlchemy sends a prepared ``;`` between ``BEGIN`` and ``ROLLBACK``,
+    which only PgBouncer's transaction pooling needs; outside it, the
+    connection is put in ``AUTOCOMMIT`` for the test, and back. Its errors,
+    and whether they mean the connection is gone, are judged as before.
     """
+    was = dbapi_connection.autocommit
+    dbapi_connection.autocommit = True
     try:
-        dbapi_connection.run_async(_select_one)
-    except Exception:  # noqa: BLE001 - any failure of SELECT 1 is the connection's.
-        return False
+        dbapi_connection.ping()
+    finally:
+        dbapi_connection.autocommit = was
     return True
-
-
-async def _select_one(connection: Any) -> object:  # noqa: ANN401 - asyncpg's.
-    """Run ``PING`` with the simple query protocol."""
-    return await connection.execute(PING)
 
 
 def _read_alone(

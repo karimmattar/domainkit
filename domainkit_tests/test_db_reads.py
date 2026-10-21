@@ -3,7 +3,7 @@
 ``Reads.STATEMENTS`` runs each statement on its own on PostgreSQL, without
 ``BEGIN`` and ``ROLLBACK``; ``Reads.SNAPSHOT`` reads one snapshot. Both
 refuse writes, and the first is cut off at the deadline and survives the
-server closing its connections. Pre-ping costs one ``SELECT 1``.
+server closing its connections. Pre-ping costs one round trip.
 """
 
 import asyncio
@@ -469,7 +469,7 @@ async def test_reads_survive_the_server_closing_connections_between_requests(
     """Each way of reading gets its answer, on a fresh connection.
 
     Reads on their own run once more; the others' connections are tested
-    with one ``SELECT 1`` when taken from the pool.
+    with one round trip when taken from the pool.
     """
     async with reading_app(database_url) as client:
         for reads in ("statements", "snapshot", "transaction", None):
@@ -485,20 +485,22 @@ async def test_reads_survive_the_server_closing_connections_between_requests(
         assert connects.count == 2  # One per pool, each replaced once.
 
 
-def test_asyncpg_engines_ping_with_select_one(tmp_path: Path) -> None:
-    """Engines on asyncpg test connections their own way; others, SQLAlchemy's.
+def test_asyncpg_engines_ping_outside_a_transaction(tmp_path: Path) -> None:
+    """Outside PgBouncer, which needs SQLAlchemy's transaction around the ping.
 
-    The engine of reads on their own does not test them: it runs a read
-    once more instead.
+    The engine of reads on their own does not ping: it runs a read once
+    more instead.
     """
     postgres = DatabaseConfig.model_validate({"URL": "postgresql+asyncpg://a@b/c"})
     local = DatabaseConfig.model_validate(
         {"URL": f"sqlite+aiosqlite:///{tmp_path / 'ping.sqlite3'}"}
     )
+    bounced = postgres.model_copy(update={"PGBOUNCER": True})
     unpinged = postgres.model_copy(update={"POOL_PRE_PING": False})
 
     assert create_engine(postgres).sync_engine.dialect.do_ping == ping
-    assert create_engine(local).sync_engine.dialect.do_ping != ping
+    for other in (local, bounced):
+        assert create_engine(other).sync_engine.dialect.do_ping != ping
     assert pre_pings(create_engine(postgres))
     assert not pre_pings(create_engine(unpinged))
     assert not pre_pings(create_read_engine(postgres))
@@ -509,17 +511,58 @@ def pre_pings(engine: AsyncEngine) -> bool:
     return bool(engine.sync_engine.pool._pre_ping)
 
 
+class Sent:
+    """The statements a connection sends, from asyncpg's query loggers.
+
+    asyncpg calls them soon after each statement: ``reach`` waits for them.
+    """
+
+    def __init__(self) -> None:
+        """Start with none."""
+        self.queries: list[str] = []
+        self.changed = asyncio.Event()
+
+    def __call__(self, record: Any) -> None:  # noqa: ANN401 - asyncpg's LoggedQuery.
+        """Keep the statement's text."""
+        self.queries.append(record.query)
+        self.changed.set()
+
+    async def reach(self, count: int) -> None:
+        """Wait until ``count`` statements were logged."""
+        while len(self.queries) < count:
+            self.changed.clear()
+            await self.changed.wait()
+
+
 @postgres_only
-async def test_a_ping_is_one_select_outside_a_transaction(tables: None) -> None:
-    """It begins nothing; a connection that cannot answer fails it."""
+async def test_a_ping_is_one_statement_outside_a_transaction(tables: None) -> None:
+    """SQLAlchemy's own ping wraps it in BEGIN and ROLLBACK: three round trips."""
+    sent = Sent()
     async with connections.engine().connect() as connection:
         raw = await connection.get_raw_connection()
         dbapi: Any = raw.dbapi_connection
+        dbapi.driver_connection.add_query_logger(sent)
+
         assert await connection.run_sync(lambda _: ping(dbapi)) is True
-        assert not dbapi.driver_connection.is_in_transaction()
-        await dbapi.driver_connection.close()
-        assert await connection.run_sync(lambda _: ping(dbapi)) is False
-        await connection.invalidate()
+        await sent.reach(1)
+        assert dbapi.autocommit is False  # As it was.
+        await connection.run_sync(lambda _: dbapi.ping())
+        await sent.reach(4)
+
+    assert sent.queries == [";", "BEGIN;", ";", "ROLLBACK;"]
+
+
+@postgres_only
+async def test_a_connection_that_failed_its_ping_is_replaced(tables: None) -> None:
+    """Closed under the pool, it is replaced as it is taken; the work runs."""
+    async with connections.engine().connect() as connection:
+        raw = await connection.get_raw_connection()
+        await raw.dbapi_connection.driver_connection.close()  # type: ignore[union-attr]
+
+    with Connects() as connects:
+        async with GadgetsUnitOfWork() as uow:
+            assert len(await uow.gadgets.filter()) == 1
+    assert connects.count == 1
 
 
 # The pool --------------------------------------------------------------------------
