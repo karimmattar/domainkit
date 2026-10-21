@@ -387,7 +387,9 @@ class BackgroundHandler(logging.handlers.QueueHandler):
 
 
 _handlers: "weakref.WeakSet[BackgroundHandler]" = weakref.WeakSet()
-_handlers_lock = threading.Lock()
+_handlers_lock = threading.RLock()
+"""Guards ``_handlers``. Reentrant, as ``logging``'s own lock: a fork from a
+signal handler that interrupted the thread holding it takes it again."""
 
 
 def _remember(handler: BackgroundHandler) -> None:
@@ -402,14 +404,35 @@ def _live_handlers() -> list[BackgroundHandler]:
         return list(_handlers)
 
 
+def _before_fork() -> None:
+    """Hold the handlers' lock across a fork, so no thread is changing them then."""
+    _handlers_lock.acquire()
+
+
+def _after_fork_in_parent() -> None:
+    """Let the parent's threads at the handlers again."""
+    _handlers_lock.release()
+
+
 def _after_fork_in_child() -> None:
-    """Give every background handler a fresh queue in a forked child."""
+    """Give every background handler a fresh queue in a forked child.
+
+    The child's copy of the handlers' lock is held (``_before_fork`` took
+    it, and no thread of the child will let it go), so the child makes a
+    new lock before it reads them, as ``logging`` does with its own.
+    """
+    global _handlers_lock
+    _handlers_lock = threading.RLock()
     for handler in _live_handlers():
         handler._after_fork()
 
 
 if hasattr(os, "register_at_fork"):  # pragma: no branch - POSIX has it.
-    os.register_at_fork(after_in_child=_after_fork_in_child)
+    os.register_at_fork(
+        before=_before_fork,
+        after_in_parent=_after_fork_in_parent,
+        after_in_child=_after_fork_in_child,
+    )
 
 
 def flush_logs(timeout: float = FLUSH_TIMEOUT) -> bool:

@@ -302,6 +302,10 @@ All notable changes to domainkit. The format follows
   which both read up to 16 MiB whatever `UVICORN_WS_MAX_SIZE` says; it
   says how to set the limit under each. Hypercorn is still not recognised
   (`docs/reference.md`, "Server limits").
+- A process forked while another thread was adding a logging handler, or
+  flushing the logs, could hang in its child before running anything: the
+  child waited for a lock only the parent's thread could let go. The lock
+  is now held across the fork, and the child makes a new one (ADR 0051).
 
 ## [0.7.0] - 2026-10-20
 

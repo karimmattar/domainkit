@@ -60,3 +60,16 @@ Options considered:
 - A crash that kills the process outright (`SIGKILL`, `os._exit`) loses
   what was queued; `queue_size=None` trades that back for blocking.
 - Reports for 500s are sent after the response, not before it.
+
+## Addendum (2026-10-21): after the security review
+
+- **Forks.** The after-fork hook took the lock that guards the list of
+  handlers. A thread of the parent that held it at the fork never lets go
+  in the child, so the child hung before running anything. The lock is now
+  held across every fork (`os.register_at_fork(before=...,
+  after_in_parent=...)`), so no thread is changing the list then, and the
+  child makes a new lock before reading it, as `logging` does with its own.
+  A fork waits, at most, for a thread to finish adding a handler or copying
+  the list. The lock is reentrant, as `logging`'s is, so a fork from a
+  signal handler that interrupted the thread holding it does not wait for
+  itself.

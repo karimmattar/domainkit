@@ -4,8 +4,10 @@ import json
 import logging
 import logging.handlers
 import queue
+import subprocess
 import sys
 import threading
+import weakref
 from collections.abc import Iterator
 from typing import Any
 
@@ -478,6 +480,7 @@ def test_forked_children_start_over(
     parents = handler.queue
     unwired = BackgroundHandler(queue.Queue(3))
     monkeypatch.setattr(log, "_live_handlers", lambda: [handler, unwired])
+    monkeypatch.setattr(log, "_handlers_lock", log._handlers_lock)  # Put back after.
 
     log._after_fork_in_child()
 
@@ -497,6 +500,165 @@ def test_forked_children_start_over(
     ]
     assert unwired.queue.maxsize == 3
     assert unwired.listener is None
+
+
+def test_a_forked_child_never_waits_for_the_parents_lock(
+    collect: Collect, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The child's copy of the lock stays held: it makes a new one first.
+
+    The lock is held at every fork (``_before_fork``), and may be held by
+    any thread of the parent; that thread does not exist in the child.
+    """
+    handler = BackgroundHandler.writing_to(collect, maxsize=3)
+    parents = handler.queue
+    held = threading.RLock()
+    monkeypatch.setattr(log, "_handlers_lock", held)
+    monkeypatch.setattr(log, "_handlers", weakref.WeakSet([handler]))
+    held.acquire()  # As at the fork.
+
+    child = threading.Thread(target=log._after_fork_in_child)
+    child.start()
+    child.join(10)  # A bound for a broken test, not a timing.
+    stuck = child.is_alive()
+    held.release()  # Lets a stuck child go, so the test ends.
+    child.join()
+
+    assert not stuck
+    assert log._handlers_lock is not held
+    assert free_to_others(log._handlers_lock)
+    assert reentrant(log._handlers_lock)
+    assert handler.queue is not parents
+    assert handler.queue.maxsize == 3
+    handler.close()
+
+
+def free_to_others(lock: Any) -> bool:  # noqa: ANN401 - a Lock or an RLock.
+    """Whether another thread could take ``lock`` now."""
+    taken: list[bool] = []
+
+    def take() -> None:
+        if lock.acquire(blocking=False):
+            taken.append(True)
+            lock.release()
+
+    other = threading.Thread(target=take)
+    other.start()
+    other.join()
+    return bool(taken)
+
+
+def reentrant(lock: Any) -> bool:  # noqa: ANN401 - a Lock or an RLock.
+    """Whether the thread that holds ``lock`` may take it again."""
+    with lock:
+        again = lock.acquire(blocking=False)
+        if again:
+            lock.release()
+    return bool(again)
+
+
+def test_the_handlers_lock_is_reentrant() -> None:
+    """A fork from a signal handler, on the thread that holds it, takes it again.
+
+    As ``logging``'s own lock: the hook before a fork must not wait for the
+    thread it runs on.
+    """
+    assert reentrant(log._handlers_lock)
+    assert free_to_others(log._handlers_lock)
+
+
+def test_the_lock_is_held_across_a_fork(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Taken before a fork, so no thread changes the handlers then; given back after."""
+    lock = threading.Lock()
+    monkeypatch.setattr(log, "_handlers_lock", lock)
+
+    log._before_fork()
+    taken = lock.locked()
+    log._after_fork_in_parent()
+
+    assert taken
+    assert not lock.locked()
+
+
+FORK_WHILE_HELD = """
+import os, threading, warnings
+from domainkit import log
+
+held, release = threading.Event(), threading.Event()
+
+def free():
+    taken = []
+    def take():
+        if log._handlers_lock.acquire(blocking=False):
+            taken.append(True)
+            log._handlers_lock.release()
+    other = threading.Thread(target=take)
+    other.start()
+    other.join()
+    return bool(taken)
+
+def hold():
+    with log._handlers_lock:
+        held.set()
+        release.wait()
+
+holder = threading.Thread(target=hold)
+holder.start()
+held.wait()
+# Hooks run newest first: the holder lets go as the fork starts, before
+# domainkit's own hook takes the lock.
+os.register_at_fork(before=release.set)
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", DeprecationWarning)
+    pid = os.fork()
+if pid == 0:
+    os._exit(7)
+statuses = []
+waiter = threading.Thread(target=lambda: statuses.append(os.waitpid(pid, 0)[1]))
+waiter.start()
+waiter.join(60)
+if waiter.is_alive():
+    os.kill(pid, 9)
+    waiter.join()
+    print("child=stuck")
+else:
+    print(f"child={os.waitstatus_to_exitcode(statuses[0])}")
+holder.join()
+print(f"parent-lock-free={free()}")
+with log._handlers_lock:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        pid = os.fork()
+    if pid == 0:
+        os._exit(8)
+print(f"own-child={os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1])}")
+print(f"lock-free-after={free()}")
+"""
+
+
+def test_a_fork_while_a_thread_holds_the_lock_leaves_a_working_child() -> None:
+    """A real fork, in a process of its own: the child runs, the parent goes on.
+
+    Then the thread that holds the lock forks, as a signal handler that
+    interrupted it would: the lock is reentrant, so it does not wait for
+    itself.
+    """
+    child = subprocess.run(  # noqa: S603 - this interpreter, fixed code.
+        [sys.executable, "-c", FORK_WHILE_HELD],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+    assert child.returncode == 0, child.stderr
+    assert child.stdout.split() == [
+        "child=7",
+        "parent-lock-free=True",
+        "own-child=8",
+        "lock-free-after=True",
+    ]
+    assert child.stderr == ""  # No at-fork hook failed (they are only printed).
 
 
 def test_flush_logs_waits_for_every_handler(
