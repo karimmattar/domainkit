@@ -226,7 +226,11 @@ async def flush_plan(database: str) -> tuple[dict[str, int], list[str]]:
             emptied, kept = await _flush_tables(connection, database)
             counts = {
                 table.name: int(
-                    await connection.scalar(select(func.count()).select_from(table))
+                    (
+                        await connection.execute(
+                            select(func.count()).select_from(table)
+                        )
+                    ).scalar_one()
                 )
                 for table in emptied
             }
@@ -383,10 +387,16 @@ def _decoded(column: Column[Any], value: object) -> object:
 
 
 def _python_type(type_: TypeEngine[Any]) -> type | None:
-    """The Python type a column type holds; a decorator's from what it wraps."""
+    """The Python type a column type holds; a decorator's from what it wraps.
+
+    A type that cannot tell answers ``object`` (SQLAlchemy 2.1) or raises
+    ``NotImplementedError`` (types written for 2.0): both mean unknown.
+    """
     for candidate in (type_, getattr(type_, "impl_instance", None)):
         try:
-            return candidate.python_type  # type: ignore[union-attr]
+            python_type: type = candidate.python_type  # type: ignore[union-attr]
         except (NotImplementedError, AttributeError):
             continue
+        if python_type is not object:
+            return python_type
     return None

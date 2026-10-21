@@ -6,6 +6,28 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- domainkit requires FastAPI 0.143.1 (`<0.144`), SQLAlchemy 2.1.4
+  (`<2.2`), and asyncpg 0.32.0 (`<0.33`, the `postgres` extra), and lists
+  Starlette 1.8.0 (`<2`) itself, which FastAPI allows down to 0.46
+  (ASYNC-R18, FX-18; ADR 0065). Requests run the same statements as
+  before; each makes 15 more Python calls (FastAPI's telemetry hooks), and
+  those that reach the database 5–14% fewer (SQLAlchemy's compiled paths).
+  What projects meet:
+  - FastAPI now depends on `opentelemetry-api` and traces requests itself
+    when an OpenTelemetry SDK is configured. `get_asgi_application` turns
+    that off, as it was: its spans record query strings and its logs
+    exception messages. Trace requests with `opentelemetry-instrument`.
+  - SQLAlchemy 2.1, in a project's own code: `Result.tuples()` is
+    deprecated (rows unpack as they are); statements are typed by column
+    (`Select[int, str]`); a session flushes before Core statements such as
+    `text()` too; `Computed()` without `persisted=True` makes a VIRTUAL
+    column on PostgreSQL 18 and warns on older servers; and a
+    `postgresql://` URL without a driver now means psycopg 3, so keep
+    writing `postgresql+asyncpg://`. SQLAlchemy's "What's New in 2.1" has
+    the rest.
+
 ## [0.8.0] - 2026-10-21
 
 ### Added

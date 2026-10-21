@@ -158,7 +158,7 @@ async def _read_keys(executor: Executor, subjects: Collection[str]) -> dict[str,
             audit_keys.c.subject.in_(sorted(subjects))
         )
     )
-    return dict(found.tuples().all())
+    return dict(found.all())
 
 
 async def _delete(condition: ColumnElement[bool]) -> int:

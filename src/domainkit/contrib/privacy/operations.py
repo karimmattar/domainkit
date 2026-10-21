@@ -385,7 +385,7 @@ async def _count(policy: Policy, alias: str, cutoff: datetime | date) -> int:
     """How many rows a purge would delete or erase."""
     query = select(func.count()).select_from(policy.table).where(_old(policy, cutoff))
     async with connections.engine(alias).connect() as connection:
-        return int(await connection.scalar(query))
+        return int((await connection.execute(query)).scalar_one())
 
 
 async def _delete_old(

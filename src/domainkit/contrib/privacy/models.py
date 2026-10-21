@@ -320,11 +320,16 @@ def _resolve(
 
 
 def _python_type(column: Column[Any]) -> object:
-    """The column's Python type, if SQLAlchemy knows it."""
+    """The column's Python type, if SQLAlchemy knows it.
+
+    A type that cannot tell answers ``object`` (SQLAlchemy 2.1) or raises
+    ``NotImplementedError`` (types written for 2.0).
+    """
     try:
-        return column.type.python_type
+        python_type = column.type.python_type
     except NotImplementedError:
         return None
+    return None if python_type is object else python_type
 
 
 def _erased_to_none(model: PersonalModel) -> bool:

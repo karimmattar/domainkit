@@ -15,6 +15,7 @@ import pytest
 from sqlalchemy import Column, Date, PickleType, String, insert, select, text, update
 from sqlalchemy import delete as sa_delete
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.types import TypeDecorator
 
 from domainkit import setup
 from domainkit.apps import registry
@@ -971,11 +972,24 @@ def test_erasing_retention_needs_fields_that_become_none(
     ]
 
 
+class _Unknown(TypeDecorator[str]):
+    """A type written for SQLAlchemy 2.0, which raised for unknown types."""
+
+    impl = String(20)
+    cache_ok = True
+
+    @property
+    def python_type(self) -> type:
+        """Not known."""
+        raise NotImplementedError
+
+
 def test_columns_without_a_python_type_are_no_dates() -> None:
     """SQLAlchemy cannot tell some columns' types: they cannot date rows."""
     from domainkit.contrib.privacy import models
 
     assert models._python_type(Column("blob", PickleType)) is None
+    assert models._python_type(Column("opaque", _Unknown)) is None
     assert models._python_type(Column("day", Date)) is date
 
 

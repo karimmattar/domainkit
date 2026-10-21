@@ -310,7 +310,12 @@ async def test_row_values_stay_out_of_postgres_errors(engine: AsyncEngine) -> No
         assert "null value in column" in text_of
         assert secret not in text_of
         assert "DETAIL" not in text_of
-    assert f"Failing row contains (1, {secret}" in str(shown_error)
+    # SQLAlchemy 2.1 keeps the driver's DETAIL on its own error too.
+    assert getattr(hidden_error.orig, "detail", None) is None
+    assert getattr(cause, "detail", None) is None
+    shown_cause = shown_error.orig.__cause__ if shown_error.orig else None
+    assert f"Failing row contains (1, {secret}" in str(shown_cause)
+    assert secret in str(getattr(shown_error.orig, "detail", None))
 
 
 def test_errors_without_a_detail_are_left_as_they_are() -> None:

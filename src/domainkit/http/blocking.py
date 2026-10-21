@@ -80,19 +80,16 @@ def _dependants(
     """``METHOD /path`` and the dependencies of every route, mounts included."""
     for context in iter_route_contexts(routes):
         route = context.original_route
-        # Routes of included routers keep their full path (and a WebSocket
-        # its dependencies) here; FastAPI's own context has them for others.
-        effective = getattr(context, "starlette_route", None)
-        if isinstance(effective, type(route)):
-            route = effective
+        # The context answers for the route as served: an included router's
+        # carries its full path, dependencies, and (a Host's) prefixed routes.
         if isinstance(route, APIWebSocketRoute):
-            yield f"WEBSOCKET {prefix}{route.path}", route.dependant
+            yield f"WEBSOCKET {prefix}{context.path}", context.dependant
         elif isinstance(route, APIRoute):
             methods = " ".join(sorted(route.methods or ()))
             yield f"{methods} {prefix}{context.path}", context.dependant
-        elif isinstance(route, Mount | Host) and route.routes:
-            inner = prefix + route.path if isinstance(route, Mount) else prefix
-            yield from _dependants(route.routes, inner)
+        elif isinstance(route, Mount | Host) and context.routes:
+            inner = prefix + str(context.path) if isinstance(route, Mount) else prefix
+            yield from _dependants(context.routes, inner)
 
 
 def _calls(dependant: Dependant) -> Iterator[Callable[..., Any]]:

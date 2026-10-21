@@ -707,7 +707,11 @@ get spans. domainkit only uses the OpenTelemetry API; configure the SDK and
 exporter in the deployment, or run under `opentelemetry-instrument`. Outbox
 messages carry the W3C trace context of their commit, so a worker's span
 continues the trace of the request that queued its work
-([contrib.md](contrib.md#traces)).
+([contrib.md](contrib.md#traces)). FastAPI (0.142 and later) has telemetry
+of its own, which `get_asgi_application` turns off: its spans record query
+strings, and its log records exception messages, which domainkit keeps out
+of logs and error reports. To trace requests, run under
+`opentelemetry-instrument`, as before.
 
 ## Testing
 
