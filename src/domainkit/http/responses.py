@@ -46,6 +46,12 @@ TINY: Final = b".0000"
 """What ``to_json`` writes for a float from 1e-5 up to 1e-4: ``0.00005``."""
 NUMBER_STARTS: Final = frozenset(b":,[")
 """What may come right before a number in compact JSON (or nothing)."""
+TINY_LOOKS: Final = 16
+"""``0.0000`` found inside strings that are looked at before giving up.
+
+Past them the content is encoded by ``json.dumps``: that costs less than
+looking on, so text full of them cannot make the check the dear part.
+"""
 _ZERO: Final = ord("0")
 _MINUS: Final = ord("-")
 
@@ -101,9 +107,14 @@ def _has_tiny_decimal(encoded: bytes) -> bool:
     """Whether a number in ``encoded`` starts with ``0.0000`` (or ``-0.0000``).
 
     Python writes those floats with an exponent; ``to_json`` without one.
+    After ``TINY_LOOKS`` lookalikes it answers True without looking on.
     """
     found = encoded.find(TINY)
+    looked = 0
     while found != -1:
+        if looked == TINY_LOOKS:
+            return True
+        looked += 1
         start = found - 1  # The digit before the point.
         if found and encoded[start] == _ZERO:
             if start and encoded[start - 1] == _MINUS:

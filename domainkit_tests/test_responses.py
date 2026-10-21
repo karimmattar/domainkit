@@ -394,3 +394,36 @@ def test_readiness_answers_render_through_the_fast_encoder(
 
     assert rendered == [{"status": "ready"}]
     assert response.content == bytes(starlette.JSONResponse(response.json()).body)
+
+
+def test_a_few_lookalikes_are_looked_at_and_pass() -> None:
+    """Up to ``TINY_LOOKS`` decimal strings like ``"0.00005"``: still the fast path."""
+    content = {"rates": ["0.00005"] * fast.TINY_LOOKS}
+
+    assert not may_differ(to_json(content))
+    assert encode_json(content) == reference_json(content)
+
+
+def test_text_full_of_lookalikes_goes_to_json_dumps_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Past ``TINY_LOOKS`` of them the check stops, and json.dumps encodes it.
+
+    So content made of them costs one more encoding, never a search in
+    Python through each of them.
+    """
+    referenced: list[object] = []
+    reference = fast.reference_json
+
+    def counted(content: object) -> bytes:
+        referenced.append(content)
+        return reference(content)
+
+    many = {"rates": ["0.00005"] * (fast.TINY_LOOKS + 1)}
+    flood = [".0000" * 200_000]
+    monkeypatch.setattr(fast, "reference_json", counted)
+
+    assert may_differ(to_json(many))
+    assert encode_json(many) == reference(many)
+    assert encode_json(flood) == reference(flood)
+    assert referenced == [many, flood]

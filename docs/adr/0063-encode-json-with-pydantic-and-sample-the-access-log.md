@@ -69,7 +69,11 @@ for `1e+16`.
   `jsonable_encoder` and `model_dump(mode="json")` give) gets Starlette's
   bytes or Starlette's error. A string that only looks like one of those
   forms costs a second encoding, never a wrong one. Single-byte searches
-  go first, as they cost almost nothing.
+  go first, as they cost almost nothing, and after 16 strings that look
+  like a tiny number the check stops and `json.dumps` encodes: text
+  crafted to be all lookalikes costs at most about twice what `json.dumps`
+  alone costs (a megabyte of `e-1x`: 8.4 ms instead of 3.6), never a
+  search through each of them in Python.
 - **`domainkit.http.JSONResponse`** renders with it, and domainkit's own JSON
   responses use it: resource pages, items, and batches (their ETags, taken
   over the bytes, stay the same), error bodies, readiness answers.

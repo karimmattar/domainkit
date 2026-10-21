@@ -13,7 +13,7 @@ flood of lower records cannot crowd out a security event. Shutdown waits
 for the queue to drain, within ``FLUSH_TIMEOUT``.
 
 ``JsonFormatter`` writes the line ``json.dumps`` wrote, byte for byte, in
-half the time. ``AccessSampler`` decides which access lines to write when
+40% less time. ``AccessSampler`` decides which access lines to write when
 ``ACCESS_LOG_SAMPLE_RATE`` is below 1: every error, refusal, and slow
 request, and a fair share of the rest.
 """
