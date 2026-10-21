@@ -53,8 +53,14 @@ Options considered:
   client tries again later. Authorization fails closed.
 - A check is not cut off when its connection ends meanwhile: it is shielded
   and bounded by the same ten seconds, so no query is cancelled halfway.
+  The bound cancels what the check awaits; blocking work an authenticator
+  runs on a thread with `anyio.to_thread.run_sync` does not heed it, and
+  its answer counts when it ends (`docs/live.md`). (Amended 2026-10-21.)
 - `None` turns the checks off; `check` warns about that in staging and
   production.
+- The interval, the setting's or a route's own (`LiveLimits`), is at most
+  an hour, so no setting leaves a revoked token its connection for longer.
+  (Amended 2026-10-21.)
 - Live events (ADR 0057) are filtered with the user of the last check.
 
 ## Consequences

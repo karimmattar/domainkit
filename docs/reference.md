@@ -301,7 +301,7 @@ re-authorized while they stay open; see [live.md](live.md).
 | `LIVE_MAX_CONNECTIONS_PER_CALLER` | `10` | The same per user, or per address for anonymous callers (IPv6 per `RATE_LIMIT_IPV6_PREFIX` network). At most `LIVE_MAX_CONNECTIONS`. |
 | `LIVE_SEND_QUEUE` | `64` | Messages or events that may wait for one client (1 to 10,000); a sender waits while they do. Live events count only those the client may see; 16 times as many may wait for its rule ([live.md](live.md#live-committed-events)). |
 | `LIVE_SEND_TIMEOUT` | `10.0` | Seconds one message may take to reach the client; a slower client is closed (1013). |
-| `LIVE_REAUTH_INTERVAL` | `60.0` | Seconds between re-checks of an open connection's credentials and its route's rules (each between three quarters of it and all of it); closed with 1008 when they fail. `None` turns them off; `check` warns about that in staging and production. |
+| `LIVE_REAUTH_INTERVAL` | `60.0` | Seconds between re-checks of an open connection's credentials and its route's rules (each between three quarters of it and all of it; at most 3,600); closed with 1008 when they fail. `None` turns them off; `check` warns about that in staging and production. What re-checks cannot do: [live.md](live.md#what-re-checks-cannot-do). |
 | `WEBSOCKET_IDLE_TIMEOUT` | `300.0` | Seconds without a message either way before a WebSocket is closed (1001). |
 | `WEBSOCKET_MAX_LIFETIME` | `3600.0` | Seconds a WebSocket may stay open (1001). |
 | `WEBSOCKET_MESSAGE_RATE` | `"20/second"` | Messages a client may send per connection, counted in the process; one more closes it (1008). `None`: any. |

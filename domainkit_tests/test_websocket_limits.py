@@ -12,6 +12,7 @@ import anyio
 import anyio.lowlevel
 import pytest
 from fastapi import APIRouter, FastAPI, WebSocket
+from pydantic import ValidationError
 from starlette.datastructures import State
 from starlette.requests import HTTPConnection
 from starlette.routing import Mount, Route
@@ -925,6 +926,7 @@ def test_route_limits_keep_what_they_were_given() -> None:
     """Only the keys passed override; they are checked as the settings are."""
     assert LiveLimits(idle_timeout=5).overrides == {"idle_timeout": 5.0}
     assert LiveLimits(message_rate=None).overrides == {"message_rate": None}
+    assert LiveLimits(reauth_interval=3600).overrides == {"reauth_interval": 3600.0}
     bad: list[dict[str, Any]] = [
         {"idle_timeout": 0},
         {"max_lifetime": -1},
@@ -932,6 +934,8 @@ def test_route_limits_keep_what_they_were_given() -> None:
         {"send_queue": 10_001},
         {"send_timeout": math.inf},
         {"reauth_interval": 0},
+        {"reauth_interval": 3600.5},
+        {"reauth_interval": math.inf},
         {"keepalive": 0},
         {"message_rate": "often"},
         {"lifetime": 5},
@@ -939,6 +943,15 @@ def test_route_limits_keep_what_they_were_given() -> None:
     for overrides in bad:
         with pytest.raises(ImproperlyConfigured, match=r"^LiveLimits: "):
             LiveLimits(**overrides)
+
+
+@pytest.mark.parametrize("interval", [0, -1, 3600.5, math.inf])
+def test_rechecks_come_at_least_hourly(interval: float) -> None:
+    """LIVE_REAUTH_INTERVAL is at most an hour; None still turns re-checks off."""
+    assert Settings(LIVE_REAUTH_INTERVAL=3600).LIVE_REAUTH_INTERVAL == 3600
+    assert Settings(LIVE_REAUTH_INTERVAL=None).LIVE_REAUTH_INTERVAL is None
+    with pytest.raises(ValidationError, match="LIVE_REAUTH_INTERVAL"):
+        Settings(LIVE_REAUTH_INTERVAL=interval)
 
 
 @pytest.mark.anyio

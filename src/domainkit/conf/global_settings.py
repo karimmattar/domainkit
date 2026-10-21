@@ -45,6 +45,9 @@ DEVELOPMENT_KEY_PREFIXES: Final = ("domainkit-insecure-", "django-insecure-")
 LANGUAGE_PATTERN: Final = r"^[a-z]{2,3}(-[a-z0-9]{2,8})*$"
 """A language code in settings: lower case, as ``ar`` or ``pt-br``."""
 
+MAX_REAUTH_INTERVAL: Final = 3600.0
+"""The longest an open live connection may go between re-checks, in seconds."""
+
 RATE_LIMIT_MIDDLEWARE: Final = "domainkit.http.ratelimit.RateLimitMiddleware"
 DEBUG_TOOLBAR_MIDDLEWARE: Final = "domainkit.debug.DebugToolbarMiddleware"
 """Development middleware: SQL per request, N+1 warnings, profiles."""
@@ -574,7 +577,9 @@ class Settings(BaseModel):
     """Messages or events a live connection may have waiting to be sent."""
     LIVE_SEND_TIMEOUT: float = Field(default=10.0, gt=0)
     """Seconds a message may take to reach the client before it counts as too slow."""
-    LIVE_REAUTH_INTERVAL: float | None = Field(default=60.0, gt=0)
+    LIVE_REAUTH_INTERVAL: float | None = Field(
+        default=60.0, gt=0, le=MAX_REAUTH_INTERVAL
+    )
     """Seconds between re-checks of an open connection's credentials and rules."""
     WEBSOCKET_IDLE_TIMEOUT: float = Field(default=300.0, gt=0)
     """Seconds without a message either way before a WebSocket is closed (1001)."""

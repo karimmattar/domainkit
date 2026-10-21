@@ -40,6 +40,7 @@ from starlette.types import Message, Receive, Scope, Send
 
 from domainkit.clock import frozen, monotonic
 from domainkit.conf import settings
+from domainkit.conf.global_settings import MAX_REAUTH_INTERVAL
 from domainkit.context import current_request
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import error_response
@@ -148,7 +149,7 @@ class _Overrides(BaseModel):
     max_lifetime: float = Field(default=1.0, gt=0)
     send_queue: int = Field(default=1, ge=1, le=10_000)
     send_timeout: float = Field(default=1.0, gt=0)
-    reauth_interval: float | None = Field(default=None, gt=0)
+    reauth_interval: float | None = Field(default=None, gt=0, le=MAX_REAUTH_INTERVAL)
     idle_timeout: float | None = Field(default=None, gt=0)
     message_rate: str | None = None
     keepalive: float = Field(default=1.0, gt=0)

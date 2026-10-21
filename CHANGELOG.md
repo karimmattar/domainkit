@@ -240,6 +240,13 @@ All notable changes to domainkit. The format follows
 - Workers run their tasks in `asyncio.TaskGroup`s: a failure in a worker's
   own task (a relay, cleanup) ends the worker with the error instead of
   being lost (R15).
+- `LIVE_REAUTH_INTERVAL` and `LiveLimits(reauth_interval=...)` are at most
+  3,600 seconds: a longer interval, which left a revoked token its
+  connection for hours, is refused when the settings load or the route is
+  defined. `None` still turns re-checks off. `docs/live.md` says what
+  re-checks cannot do: a route that opts out keeps revoked tokens,
+  single-use credentials fail the first re-check, and blocking work on a
+  thread is not cut off at the 10-second bound.
 - The logging queue keeps its last tenth for records at `WARNING` and
   above: while a stalled stream drops access lines, security events and
   errors still find room (`domainkit.log.WARNING_RESERVE`; ADR 0051). The

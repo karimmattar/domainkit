@@ -103,8 +103,32 @@ async def cursor(websocket: WebSocket) -> None: ...
 
 Its keys are `max_lifetime`, `idle_timeout` (None: never idle),
 `message_rate` (None: any), `send_queue`, `send_timeout`, `reauth_interval`
-(None: never), and, for event streams, `keepalive`. They are checked when
-the route is defined.
+(at most 3,600 seconds, as `LIVE_REAUTH_INTERVAL`; None: never), and, for
+event streams, `keepalive`. They are checked when the route is defined.
+
+### What re-checks cannot do
+
+- **A route that opts out keeps what was revoked.** With
+  `LiveLimits(reauth_interval=None)`, a connection keeps a revoked or
+  expired token, a deactivated user, or a removed permission until it
+  closes, at `max_lifetime` at the latest. `check` warns about
+  `LIVE_REAUTH_INTERVAL = None`, not about a route that opts out, so keep
+  such routes few, and their lifetime short.
+- **Credentials that work once fail their first re-check.** A re-check
+  presents the handshake's credentials again. An authenticator built on
+  single-use credentials (a one-time ticket in the URL, a nonce it
+  consumes) refuses them the second time, so the connection closes with
+  1008 after its first interval. Use credentials that can be checked
+  again, such as a token or a session, or opt the route out and accept
+  the point above.
+- **Blocking work on a thread is not cut off at 10 seconds.** The bound
+  cancels what the check awaits. Work an authenticator runs on a thread
+  with `anyio.to_thread.run_sync` or Starlette's `run_in_threadpool` (as
+  FastAPI runs a sync dependency) does not heed it: the check waits until
+  the thread is done, and its answer then counts. Meanwhile the connection
+  stays open, and one that closes waits for the check. Work run with
+  `loop.run_in_executor`, as the password hashing pool does, is left to
+  finish on its own at the bound, and the check fails (1013).
 
 ### Message size
 
