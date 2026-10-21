@@ -19,7 +19,7 @@ import pytest
 
 from domainkit.conf import override_settings
 from domainkit.conf.env import project_prefix
-from domainkit.http import get_asgi_application
+from domainkit.http import get_asgi_application, websockets
 from domainkit.http.servers import (
     UVICORN_WS_MAX_SIZE,
     ServerLimits,
@@ -78,6 +78,37 @@ def test_the_server_is_read_from_its_command_line_or_environment(
     assert server_limits(argv, environ) == found
 
 
+@pytest.mark.parametrize(
+    ("argv", "environ"),
+    [
+        (["manage.py", "check"], {"UVICORN_WS_MAX_SIZE": "\u00b2"}),
+        (["manage.py", "check"], {"UVICORN_WS_MAX_SIZE": "9" * 5000}),
+        ([UVICORN, "--ws-max-size", "\u00b9\u2070\u00b2\u2074"], {}),
+        ([UVICORN, f"--ws-max-size={'1' * 4301}"], {}),
+        ([UVICORN, "--ws-max-size", "-1"], {}),
+        ([UVICORN, "--ws-max-size", " 1024"], {}),
+    ],
+)
+def test_values_that_cannot_be_read_are_unknown(
+    argv: list[str], environ: dict[str, str]
+) -> None:
+    """Superscripts, too many digits, unbalanced quotes: unknown, never an error.
+
+    ``str.isdigit`` takes superscript digits, which ``int`` refuses, as it
+    refuses a number of more than 4,300 digits.
+    """
+    assert server_limits(argv, environ) is None
+
+
+def test_other_decimal_digits_are_read_as_uvicorn_reads_them() -> None:
+    """Digits of other scripts are numbers to ``int``, as to uvicorn's own parser."""
+    arabic_indic = "\u0661\u0660\u0662\u0664"
+
+    assert server_limits([UVICORN, "--ws-max-size", arabic_indic], {}) == ServerLimits(
+        "uvicorn", True, 1024
+    )
+
+
 def test_this_process_is_read_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """Without arguments, this process's command line and environment count."""
     monkeypatch.setattr(sys, "argv", ["/venv/bin/granian"])
@@ -128,6 +159,46 @@ def test_check_warns_about_server_limits_where_deployed(
         "before MAX_REQUEST_BODY_SIZE (1048576) refuses them"
     ) in output.getvalue()
     assert "Warning" not in local.getvalue()
+
+
+@pytest.mark.parametrize("value", ["\u00b2", "9" * 5000], ids=["²", "5000 digits"])
+def test_a_stray_variable_never_stops_an_application(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """A deployed application builds, and ``check`` runs, whatever the value."""
+    monkeypatch.setattr(sys, "argv", [UVICORN, "config.asgi:application"])
+    monkeypatch.setenv("UVICORN_WS_MAX_SIZE", value)
+
+    with override_settings(**PRODUCTION):
+        get_asgi_application()
+        call_command("check", stdout=(output := io.StringIO()))
+
+    assert "System check identified no issues" in output.getvalue()
+
+
+def test_failing_to_tell_the_server_never_stops_an_application(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Whatever goes wrong finding the server is logged, and the start goes on."""
+
+    def broken() -> ServerLimits:
+        raise RuntimeError("unreadable")
+
+    def failures() -> list[logging.LogRecord]:
+        message = "Could not tell which server runs the application"
+        return [r for r in caplog.records if r.getMessage() == message]
+
+    monkeypatch.setattr(websockets, "server_limits", broken)
+
+    with override_settings(**PRODUCTION):
+        get_asgi_application()
+        (failure,) = failures()
+        caplog.clear()
+        call_command("check", stdout=(output := io.StringIO()))
+
+    assert failure.exc_info is not None
+    assert failures()
+    assert "System check identified no issues" in output.getvalue()
 
 
 def test_deployed_applications_log_server_limits_when_built(

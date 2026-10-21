@@ -7,7 +7,9 @@ finds which server runs, and its WebSocket limit, from its command line
 (the server's own process) or its environment variables (``UVICORN_*``,
 ``GRANIAN_*``, which both read); ``limit_warnings`` says what to change.
 ``check`` lists them in staging and production, from the environment, and
-a deployed application logs them when it starts.
+a deployed application logs them when it starts. A value that cannot be
+read is treated as unknown, never as an error: warning code must not stop
+an application starting.
 
 The request line and headers have the server's own default limits (h11's
 16 KiB under uvicorn), already below any body limit, so they are not
@@ -53,13 +55,10 @@ def server_limits(
     if program == "uvicorn" or _configures(environ, "UVICORN_"):
         size = _option(argv, "--ws-max-size") or environ.get("UVICORN_WS_MAX_SIZE")
         ws = _option(argv, "--ws") or environ.get("UVICORN_WS", "auto")
-        if size is not None and not size.isdigit():
+        max_size = _bytes(size) if size else UVICORN_WS_MAX_SIZE
+        if max_size is None:
             return None
-        return ServerLimits(
-            "uvicorn",
-            websockets=ws != "none",
-            ws_max_size=int(size) if size else UVICORN_WS_MAX_SIZE,
-        )
+        return ServerLimits("uvicorn", websockets=ws != "none", ws_max_size=max_size)
     if program == "granian" or _configures(environ, "GRANIAN_"):
         off = "--no-ws" in argv or (
             environ.get("GRANIAN_WEBSOCKETS", "").lower() in _OFF
@@ -99,6 +98,20 @@ def _program(argv: Sequence[str]) -> str:
         return ""
     path = Path(argv[0])
     return path.parent.name if path.name == "__main__.py" else path.name
+
+
+def _bytes(text: str) -> int | None:
+    """``text`` as a whole number of bytes, or None if it is not one.
+
+    ``isdigit`` takes superscripts, which ``int`` refuses, so ``isdecimal``
+    decides; ``int`` also refuses more digits than Python's limit (4,300).
+    """
+    if not text.isdecimal():
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
 
 
 def _configures(environ: Mapping[str, str], prefix: str) -> bool:

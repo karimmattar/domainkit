@@ -291,6 +291,10 @@ All notable changes to domainkit. The format follows
   lock, as do `unsubscribe` and `clear`. Live events subscribed from loops
   on several threads at once could hook themselves onto the bus twice, and
   then sent every committed event to each client twice.
+- A `UVICORN_WS_MAX_SIZE` (or `--ws-max-size`) of superscript digits, or of
+  more than 4,300 digits, no longer stops a deployed application from
+  starting, or `check` from running, with a `ValueError`: a value that
+  cannot be read is unknown, and a failure to tell the server is logged.
 
 ## [0.7.0] - 2026-10-20
 

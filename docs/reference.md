@@ -260,7 +260,8 @@ WebSockets runs under a server that reads messages larger than
 reads the server's environment variables (`UVICORN_WS_MAX_SIZE`,
 `GRANIAN_WEBSOCKETS`, which both servers accept in place of options); a
 deployed application logs the same warning when it starts, from the
-server's own command line.
+server's own command line. A value it cannot read is taken as unknown,
+and never stops the application or `check`.
 
 `--no-proxy-headers` leaves `X-Forwarded-*` to `TRUSTED_PROXIES`: uvicorn
 otherwise reads them itself, from `127.0.0.1` or from whatever
