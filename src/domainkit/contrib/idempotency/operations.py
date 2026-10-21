@@ -11,8 +11,10 @@ take over a key whose lease ran out before anything committed; the key then
 carries the retry's token. Marks and results are written only under the
 holder's token, so a request that lost its key cannot commit: its unit of
 work fails with ``KeyTakenOver``. Before a unit of work on another database
-commits, the key is pinned (held until it expires), since no retry may take
-over a key whose changes might have committed.
+commits, the key is pinned (held until it expires, and marked ``pinned``),
+and the operation notes it: from then on the key is never taken over or
+released, since those changes may have committed even if their commit
+raised (a lost reply, a cancellation while it ran).
 """
 
 from collections.abc import Iterator
@@ -44,6 +46,11 @@ class Operation:
     """Proves this request still holds the key."""
     committed: bool = False
     """Whether a SQL unit of work committed during the request."""
+    pinned: bool = False
+    """Whether the key was pinned for a commit on another database.
+
+    Set before that commit, so it holds whatever the commit reports.
+    """
 
     def holds_key(self) -> ColumnElement[bool]:
         """Match the key's row while this request holds it."""
@@ -74,11 +81,11 @@ def running_operation() -> Operation | None:
 
 
 def pin_lease(operation: Operation) -> Update:
-    """Hold the key until it expires, if the operation still holds it."""
+    """Hold the key until it expires, never released, if the operation holds it."""
     return (
         update(idempotency_keys)
         .where(operation.holds_key())
-        .values(locked_until=idempotency_keys.c.expires_at)
+        .values(locked_until=idempotency_keys.c.expires_at, pinned=True)
     )
 
 

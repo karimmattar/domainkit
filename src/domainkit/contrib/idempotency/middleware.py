@@ -19,7 +19,8 @@ released (see ``operations``): if the response cannot be kept (a server
 error after the commit, an exception, a body over ``MAX_RESPONSE_BYTES``,
 or one marked ``Cache-Control: no-store``, such as new tokens), a retry
 gets a 409 ``idempotency_response_unavailable`` instead of running the
-changes again.
+changes again. The same holds once the key is pinned for a commit on
+another database, even if that commit raised: it may have landed.
 Only commits through a unit of work are seen: call payment providers and
 other services from deferred tasks, not from the handler.
 
@@ -181,9 +182,10 @@ class IdempotencyMiddleware:
     ) -> bool:
         """Take the key from the request holding it as ``held_by``.
 
-        Only while that request still holds it, unfinished and uncommitted:
-        it may have finished or committed since its row was read, or another
-        retry may have taken the key first.
+        Only while that request still holds it, unfinished, uncommitted,
+        and not pinned: it may have finished, committed, or pinned the key
+        since its row was read, or another retry may have taken the key
+        first.
         """
         async with connections.engine(config.DATABASE).begin() as connection:
             taken = await connection.execute(
@@ -193,6 +195,7 @@ class IdempotencyMiddleware:
                     idempotency_keys.c.token == held_by,
                     idempotency_keys.c.status_code.is_(None),
                     idempotency_keys.c.committed_at.is_(None),
+                    idempotency_keys.c.pinned.is_(False),
                 )
                 .values(
                     token=operation.token,
@@ -342,18 +345,22 @@ async def _finish(
     started: dict[str, Any],
     body: bytes | None,
 ) -> None:
-    """Store the response; without one, release the key unless changes committed.
+    """Store the response; without one, release the key unless it may have committed.
 
     ``body`` is None when the response is not kept. The release skips a key
-    marked committed, which a commit that failed to report back still sets.
-    Nothing is written once a retry has taken the key over.
+    marked committed, which a commit that failed to report back still sets,
+    and a key pinned for a commit on another database, which may have
+    landed whatever it reported: that key keeps the status, without a body,
+    so retries learn the request ran. Nothing is written once a retry has
+    taken the key over.
     """
     async with connections.engine(config.DATABASE).begin() as connection:
-        if body is None and not operation.committed:
+        if body is None and not (operation.committed or operation.pinned):
             released = await connection.execute(
                 delete(idempotency_keys).where(
                     operation.holds_key(),
                     idempotency_keys.c.committed_at.is_(None),
+                    idempotency_keys.c.pinned.is_(False),
                 )
             )
             if released.rowcount:

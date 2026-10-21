@@ -240,6 +240,11 @@ All notable changes to domainkit. The format follows
 - Workers run their tasks in `asyncio.TaskGroup`s: a failure in a worker's
   own task (a relay, cleanup) ends the worker with the error instead of
   being lost (R15).
+- The idempotency keys table has a new `pinned` column: run
+  `makemigrations` and `migrate` in projects that install idempotency. A
+  commit on a database other than `IDEMPOTENCY.DATABASE` that raises now
+  keeps its key even if nothing was saved, and retries get 409
+  `idempotency_response_unavailable` instead of running again (ADR 0020).
 
 ### Fixed
 
@@ -275,6 +280,11 @@ All notable changes to domainkit. The format follows
   (IND-A9).
 - Publishers and brokers of event loops closed without a shutdown no longer
   keep those loops alive.
+- A keyed request whose changes committed on a database other than
+  `IDEMPOTENCY.DATABASE`, but whose commit raised (its reply lost, or the
+  request cancelled while it waited for it), released its
+  `Idempotency-Key`, so a retry ran the changes again: a second payment,
+  since 0.7.0. A key pinned for such a commit is never released now.
 
 ## [0.7.0] - 2026-10-20
 

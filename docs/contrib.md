@@ -837,6 +837,7 @@ the same request gets the stored response, with `Idempotent-Replayed: true`.
 | First response larger than `MAX_RESPONSE_BYTES`, nothing committed | Not stored: the retry runs again |
 | First request died before committing, and its lease has ended | The retry takes the key over and runs |
 | First request committed, then failed, died, or answered over `MAX_RESPONSE_BYTES` | 409 `idempotency_response_unavailable`: it never runs again |
+| First request's commit on another database raised (its reply lost, refused, or cancelled while it ran) | 409 `idempotency_response_unavailable`: it may have committed, so it never runs again |
 | First request ran past its lease and a retry took its key | The first gets 409 `idempotency_key_taken_over`; its changes are not saved |
 | Client disconnected before sending the whole body | Nothing runs and no key is claimed: retry with the same key |
 
@@ -864,10 +865,19 @@ fails, the failure is logged and the lease applies.
 
 Keep `IDEMPOTENCY.DATABASE` on the database your writes use where you can.
 A unit of work on another database cannot carry the mark in its
-transaction: before it commits, the key is pinned until it expires, so no
-retry takes it over, and right after, it is marked committed. A crash
-after the pin leaves the key in progress until it expires. If the reply to
-that commit is lost, the key is released as though nothing was saved.
+transaction: before it commits, the key is pinned until it expires, and
+right after, it is marked committed. A pinned key is never taken over by a
+retry, nor released by its request, since its changes may have committed
+whatever the commit reported. So if that commit raises (its reply lost, the
+database refusing it, the request cancelled while it ran), retries get the
+409 `idempotency_response_unavailable`, as after a commit on the keys'
+database, even when nothing was in fact saved: look up the result. A
+request that fails before its unit of work commits pinned nothing, and its
+key is released as usual. A crash after the pin leaves the key in progress
+until it expires.
+
+**Upgrading.** The keys table has a new `pinned` column: run
+`makemigrations` and `migrate` in each project that installs idempotency.
 
 Keys are scoped to the actor, which `AuthenticationMiddleware` sets (list
 it first), so one user cannot replay another's response. Without an
