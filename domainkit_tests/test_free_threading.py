@@ -2,14 +2,16 @@
 
 Free-threaded Python (3.14t), and servers that run a loop per thread, share
 one rate limiter, one middleware, one hashing pool, one application's live
-connection slots, the event bus, an HTTP client's circuit breaker, and the
-guard's lookup threads between threads, and the registries that keep each
+connection slots, the event bus, an HTTP client's circuit breaker, the
+guard's lookup threads, the remembered client addresses, and the handles
+of the request metrics between threads, and the registries that keep each
 loop's tasks, publishers, and brokers. Each test drives them from several
 threads at once and checks what must always hold, and that the state is
 only touched with the lock held.
 """
 
 import asyncio
+import ipaddress
 import os
 import random
 import socket
@@ -37,12 +39,14 @@ from domainkit.contrib.auth.hashers import HashingPool
 from domainkit.contrib.auth.middleware import AuthenticationMiddleware
 from domainkit.contrib.messaging import MessagingSettings, dispatch
 from domainkit.ddd import DomainEvent, EventBus
-from domainkit.http import live
+from domainkit.http import live, metrics, ratelimit
 from domainkit.http.client import BREAKER_HOSTS, CircuitBreaker
 from domainkit.http.guard import GuardResolver
 from domainkit.http.live import Slots
 from domainkit.http.live_events import LiveEvents
-from domainkit.http.ratelimit import MemoryBackend
+from domainkit.http.metrics import REQUESTS, MetricsMiddleware
+from domainkit.http.middleware import ProxyHeadersMiddleware, _address
+from domainkit.http.ratelimit import MemoryBackend, client_group
 from domainkit.http.shedding import QUEUE_FULL, ShedReport
 from domainkit.http.websockets import WebSocketLimitsMiddleware
 from domainkit_tests.conftest import UseAuth
@@ -601,3 +605,72 @@ def test_importing_domainkit_keeps_the_gil_off_where_it_is_off() -> None:
     assert child.returncode == 0, child.stderr
     free_threaded = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
     assert child.stdout.strip() == str(not free_threaded)
+
+
+def test_client_groups_are_remembered_alike_from_every_thread() -> None:
+    """Threads filling one memory of groups at once each get the parsed group."""
+    ratelimit._cached_address_group.cache_clear()
+    ratelimit._cached_network.cache_clear()
+    networks = {
+        f"2001:db8:{n:x}::1": str(ipaddress.IPv6Network(f"2001:db8:{n:x}::/64"))
+        for n in range(100)
+    }
+    addresses = {f"203.0.113.{n}": f"203.0.113.{n}" for n in range(100)}
+    groups = networks | addresses
+
+    def group_all(seed: int) -> bool:
+        order = random.Random(seed).sample(list(groups), len(groups))  # noqa: S311 - order only.
+        return all(client_group(host) == groups[host] for host in order)
+
+    assert all(on_threads(group_all))
+    assert ratelimit._cached_address_group.cache_info().currsize == len(groups)
+    assert ratelimit._cached_network.cache_info().currsize == len(networks)
+
+
+def test_a_proxys_remembered_addresses_hold_from_every_thread() -> None:
+    """One middleware, many threads parsing hops: the parsed answer each time."""
+    with override_settings(TRUSTED_PROXIES=["10.0.0.0/8"]):
+        proxy = ProxyHeadersMiddleware(app=lambda *args: None)  # type: ignore[arg-type]
+    hops = [f"10.0.{n}.1" for n in range(50)] + [
+        f"[2001:db8::{n:x}]:443" for n in range(50)
+    ]
+
+    def parse_all(seed: int) -> bool:
+        order = random.Random(seed).sample(hops, len(hops))  # noqa: S311 - order only.
+        return all(proxy.address(hop) == _address(proxy.networks, hop) for hop in order)
+
+    assert all(on_threads(parse_all))
+
+
+class LockedSeries(dict[tuple[str, str, int], Any]):
+    """The kept metric handles, which may only grow with their lock held."""
+
+    def __init__(self, lock: Any) -> None:  # noqa: ANN401 - a lock.
+        """Check ``lock`` on every write."""
+        super().__init__()
+        self.lock = lock
+
+    def __setitem__(self, key: tuple[str, str, int], value: Any) -> None:  # noqa: ANN401 - a handle.
+        """Keep a handle, under the lock."""
+        assert self.lock.locked()
+        super().__setitem__(key, value)
+
+
+def test_metric_handles_are_kept_once_from_every_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every thread counts in the one series; the kept handles stay bounded."""
+    monkeypatch.setattr(metrics, "MAX_SERIES", 10)
+    counter = MetricsMiddleware(app=lambda *args: None)  # type: ignore[arg-type]
+    counter._series = LockedSeries(counter._lock)
+    keys = [("GET", f"/threads/{n}", 200) for n in range(30)]
+
+    def count_all(seed: int) -> bool:
+        order = random.Random(seed).sample(keys, len(keys))  # noqa: S311 - order only.
+        return all(
+            counter.series(*key)[0] is REQUESTS.labels(key[0], key[1], str(key[2]))
+            for key in order
+        )
+
+    assert all(on_threads(count_all))
+    assert len(counter._series) == 10
