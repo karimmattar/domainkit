@@ -62,27 +62,44 @@ async def close_in_turn[T](
     is left, less a reserve kept for every item after it (a quarter of
     ``within``, split among the items), so one slow close may use most of
     the time while one that hangs is cut off (``TimeoutError``) before the
-    others' reserves. Every item is tried; later failures are logged.
+    others' reserves. Each close runs as a task: one cut off is cancelled
+    and left behind, so a close that ignores cancellation holds up neither
+    the items after it nor the caller. Every item is tried; later failures
+    are logged. If the wait is cancelled, the close running is cancelled
+    and left behind too, and the cancellation goes on.
     """
     loop = asyncio.get_running_loop()
     end = None if within is None else loop.time() + within
     reserve = 0.0 if within is None else within * RESERVED_SHARE / max(len(items), 1)
     failures: list[BaseException | None] = []
+
+    async def run(item: T) -> None:
+        await close(item)
+
     for done, item in enumerate(items):
         after = len(items) - done - 1
         share = None if end is None else end - loop.time() - reserve * after
+        closing = asyncio.ensure_future(run(item))
         try:
-            async with asyncio.timeout(share) as limit:
-                await close(item)
-        except Exception as exc:  # noqa: BLE001 - raised or logged below.
-            failures.append(
-                TimeoutError(f"{item!r} did not close within {share:.2f}s")
-                if limit.expired()
-                else exc
-            )
+            await asyncio.wait([closing], timeout=share)
+        except asyncio.CancelledError:
+            _leave_behind(closing)
+            logger.error("Gave up closing %r", item)
+            raise
+        if not closing.done():
+            _leave_behind(closing)
+            failures.append(TimeoutError(f"{item!r} did not close within {share:.2f}s"))
+        elif closing.cancelled():
+            failures.append(asyncio.CancelledError())
         else:
-            failures.append(None)
+            failures.append(closing.exception())
     _raise_first(items, failures)
+
+
+def _leave_behind(task: "asyncio.Future[Any]") -> None:
+    """Cancel ``task`` and stop waiting for it; how it ends is not logged."""
+    task.cancel()
+    task.add_done_callback(forget_outcome)
 
 
 def forget_outcome(task: "asyncio.Future[Any]") -> None:

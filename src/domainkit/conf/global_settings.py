@@ -635,7 +635,7 @@ class Settings(BaseModel):
     """Exact paths never counted against the cap, so probes are never refused."""
     HTTP_CLIENT: HttpClientConfig = Field(default_factory=HttpClientConfig)
     """Defaults of outgoing calls through ``domainkit.http.client``."""
-    READINESS_TIMEOUT: float = Field(default=5.0, gt=0)
+    READINESS_TIMEOUT: float = Field(default=5.0, gt=0, le=60)
     """Seconds each readiness check may take before it counts as failed."""
     READINESS_CACHE_SECONDS: float = Field(default=1.0, ge=0)
     """Reuse a readiness result this long, so probe floods cannot load the database."""

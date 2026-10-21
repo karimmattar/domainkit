@@ -636,6 +636,26 @@ async def test_ledgers_come_from_databases_by_alias() -> None:
     assert built == ["memory://", "memory://"]
 
 
+async def test_closing_the_ledgers_closes_each_ones_clients() -> None:
+    """``close_all`` runs each ledger's own ``close``, not the base class's."""
+    closed: list[str] = []
+
+    class Closing(MemoryLedger):
+        async def close(self) -> None:
+            closed.append("closed")
+
+    handler = LedgerHandler({"memory": lambda config: Closing()})
+    with override_settings(
+        DATABASES={"default": SQLITE},
+        LEDGERS={"evidence": {"URL": "memory://"}, "audit": {"URL": "memory://"}},
+    ):
+        opened = [handler["evidence"], handler["audit"]]
+    await handler.close_all()
+
+    assert len(opened) == 2
+    assert closed == ["closed", "closed"]
+
+
 async def test_failing_ledgers_fail_readiness() -> None:
     """Each failing ledger is reported as ledger:<alias>."""
 

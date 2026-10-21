@@ -2012,6 +2012,31 @@ async def test_unsettled_answers_are_logged(
     )
 
 
+async def test_answers_that_fail_unexpectedly_are_logged_without_the_body(
+    broker_tables: MemoryBroker, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Any failure to answer is logged, never raised: the broker redelivers."""
+    runner = BrokerWorkers([], ["default"], registry.settings(MessagingSettings))
+
+    async def closed() -> None:
+        raise RuntimeError("The channel is closed.")
+
+    with caplog.at_level(logging.WARNING, "domainkit.contrib.messaging.dispatch"):
+        await runner.deliver(Delivery("default", b"secret", "m1", closed, closed))
+
+    record = caplog.records[-1]
+    assert (record.levelno, record.getMessage()) == (
+        logging.ERROR,
+        (
+            "Could not answer message m1 from queue 'default'; the broker will "
+            "hand it out again"
+        ),
+    )
+    assert record.exc_info
+    assert type(record.exc_info[1]) is RuntimeError
+    assert "secret" not in caplog.text
+
+
 async def test_workers_claim_only_what_they_can_run(
     tables: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:

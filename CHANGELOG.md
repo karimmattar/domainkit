@@ -163,6 +163,11 @@ All notable changes to domainkit. The format follows
   headers. A client made with `guard=True` calls only public addresses,
   checked as each connection opens; `stub(handler)` stubs every call in
   tests.
+- `auditseal --late` (and `seal(..., late=True)` and `seal_all(late=True)`)
+  seals the audit rows that committed later than `AUDIT.SEAL_LATE_WINDOW`,
+  which no run could reach, into the chain, each seal flagged `late`;
+  `auditverify` counts them. It reads the whole trail, so the worker never
+  runs it on its own (ADR 0047).
 
 ### Changed
 
@@ -288,6 +293,23 @@ All notable changes to domainkit. The format follows
 - The uvicorn example in `docs/reference.md` sets `--limit-concurrency
   1200`, above the default cap and queue, so the application refuses
   first and never refuses its probes.
+- The idempotency keys table has a new `pinned` column: run
+  `makemigrations` and `migrate` in projects that install idempotency. A
+  commit on a database other than `IDEMPOTENCY.DATABASE` that raises now
+  keeps its key even if nothing was saved, and retries get 409
+  `idempotency_response_unavailable` instead of running again (ADR 0020).
+- The audit seals table has a new `late` column: run `makemigrations` and
+  `migrate` in projects that install audit. On PostgreSQL, seals are dated
+  by the database's clock rather than the sealer's.
+- Settings that had no upper bound have a generous one, and larger values
+  are refused at startup: in `MESSAGING`, `TASK_TIMEOUT` (a day),
+  `VISIBILITY_TIMEOUT` (two days), `POLL_INTERVAL` (an hour), `BATCH_SIZE`
+  (10,000), `CONCURRENCY` (65,535, the largest prefetch RabbitMQ takes),
+  `SHUTDOWN_TIMEOUT` (an hour), `REPUBLISH_AFTER` (a week),
+  `RETENTION_SECONDS` (a year), and `CLEANUP_INTERVAL` (a day); in
+  `IDEMPOTENCY`, `TTL_SECONDS` (30 days) and `LEASE_SECONDS` (a day); in
+  `AUTH`, `HASHING_THREADS` (1,024) and `HASHING_QUEUE` (10,000); and
+  `READINESS_TIMEOUT` (60 seconds). Defaults are unchanged.
 
 ### Deprecated
 
@@ -331,6 +353,38 @@ All notable changes to domainkit. The format follows
   keep those loops alive.
 - A timeout under half a millisecond (`STATEMENT_TIMEOUT = 0.0004`) no
   longer reaches PostgreSQL as 0, which means no timeout at all.
+- A keyed request whose changes committed on a database other than
+  `IDEMPOTENCY.DATABASE`, but whose commit raised (its reply lost, or the
+  request cancelled while it waited for it), released its
+  `Idempotency-Key`, so a retry ran the changes again: a second payment,
+  since 0.7.0. A key pinned for such a commit is never released now.
+- A brokered worker whose acknowledgement of one message failed with
+  aio-pika's own error, as it does once the delivery's channel closed,
+  ended, cancelling its other running messages. RabbitMQ's answers that
+  fail now raise `BrokerUnavailable`, and the worker logs any answer that
+  fails and leaves the message for RabbitMQ to hand out again.
+- An audit sealer whose clock ran ahead moved the high-water mark past the
+  rows other hosts committed afterwards, which then stayed unsealed, open
+  to change unnoticed. On PostgreSQL the mark is now capped by the
+  database's clock (ADR 0047).
+- A domain shutdown hook that ignored cancellation (a flush behind
+  `asyncio.shield`, a retry loop that catches everything) held shutdown
+  for good, since it ran inline. Each hook now runs as a task, and one cut
+  off at its share is cancelled and left behind, so the hooks and phases
+  after it still run.
+- Event loops on several threads (free-threaded Python, a loop per thread)
+  raced as each new one dropped the closed loops from the registries of
+  background tasks, commit publishers, and brokers: a loop could fail with
+  a `KeyError`, and on 3.14t the interpreter could crash. Those registries
+  take a lock now.
+- On PostgreSQL, a periodic slot that every worker queues, and that all
+  but one insert skip for its dedupe key, sent a notification per worker,
+  each waking every idle worker. Only rows the inserts return notify now.
+- `brokers.close_all()`, which shutdown runs, closed no broker since 0.6:
+  it called the base class's `close`, which does nothing, rather than each
+  broker's own. RabbitMQ connections are closed at shutdown now.
+- `ledgers.close_all()` had the same fault: immudb clients and their
+  threads were left open at shutdown. Each ledger's own `close` runs now.
 
 ## [0.7.0] - 2026-10-20
 

@@ -264,15 +264,22 @@ class RabbitMQBroker(Broker):
     async def _deliver(
         queue: str, handler: Handler, message: AbstractIncomingMessage
     ) -> Any:  # noqa: ANN401 - aio-pika's callback type.
-        """Hand one message to ``handler``."""
+        """Hand one message to ``handler``; answers it cannot give are broker errors.
+
+        aio-pika raises its own errors from ``ack`` and ``reject`` once the
+        delivery's channel closed, or for a message already answered.
+        """
+
+        async def ack() -> None:
+            async with _translated():
+                await message.ack()
+
+        async def requeue() -> None:
+            async with _translated():
+                await message.reject(requeue=True)
+
         await handler(
-            Delivery(
-                queue,
-                message.body,
-                message.message_id or "",
-                message.ack,
-                partial(message.reject, requeue=True),
-            )
+            Delivery(queue, message.body, message.message_id or "", ack, requeue)
         )
 
     async def check(self) -> None:

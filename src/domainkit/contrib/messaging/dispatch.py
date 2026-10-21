@@ -22,6 +22,7 @@ breaker, so commits leave their messages to the relays until it recovers.
 import asyncio
 import json
 import logging
+import threading
 import uuid
 from collections.abc import Iterable, Sequence
 from contextlib import suppress
@@ -216,7 +217,9 @@ class BrokerWorkers:
 
         It is acknowledged once its outcome is recorded, or when it cannot
         run here. It is requeued, after ``POLL_INTERVAL``, when its outbox
-        cannot be reached.
+        cannot be reached. An answer that fails, however, is logged and left
+        to the broker, which hands the message out again: it never ends the
+        worker, nor cancels the other deliveries.
         """
         try:
             await self._run(delivery)
@@ -238,6 +241,13 @@ class BrokerWorkers:
                 delivery.message_id,
                 delivery.queue,
                 exc,
+            )
+        except Exception:  # Unexpected, but the broker hands it out again too.
+            logger.exception(
+                "Could not answer message %s from queue %r; the broker will hand "
+                "it out again",
+                delivery.message_id,
+                delivery.queue,
             )
 
     async def _run(self, delivery: Delivery) -> None:
@@ -482,6 +492,8 @@ class CommitPublisher:
 _publishers: WeakKeyDictionary[
     asyncio.AbstractEventLoop, dict[MessagingSettings, CommitPublisher]
 ] = WeakKeyDictionary()
+_publishers_lock: Final = threading.Lock()
+"""Held to change or walk ``_publishers``: loops on other threads do too."""
 
 
 def commit_publisher(config: MessagingSettings) -> CommitPublisher:
@@ -491,9 +503,10 @@ def commit_publisher(config: MessagingSettings) -> CommitPublisher:
     here; what they had not published is left to the relay.
     """
     loop = asyncio.get_running_loop()
-    for closed in [other for other in _publishers if other.is_closed()]:
-        del _publishers[closed]
-    publishers = _publishers.setdefault(loop, {})
+    with _publishers_lock:
+        for closed in [other for other in _publishers if other.is_closed()]:
+            _publishers.pop(closed, None)
+        publishers = _publishers.setdefault(loop, {})
     if config not in publishers:
         publishers[config] = CommitPublisher(config)
     return publishers[config]
@@ -517,7 +530,8 @@ async def close_publishers(within: float | None = None) -> None:
     phase, and a publication cut short is given back before the phase ends.
     """
     within = drain_time() if within is None else within
-    publishers = _publishers.pop(asyncio.get_running_loop(), {}).values()
+    with _publishers_lock:
+        publishers = _publishers.pop(asyncio.get_running_loop(), {}).values()
     async with asyncio.TaskGroup() as group:
         for publisher in publishers:
             group.create_task(publisher.close(within))

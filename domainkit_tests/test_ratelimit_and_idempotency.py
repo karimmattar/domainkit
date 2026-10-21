@@ -22,7 +22,7 @@ from domainkit.conf import Settings, override_settings
 from domainkit.context import RequestContext, bind_request
 from domainkit.contrib.idempotency import apps as idempotency_apps
 from domainkit.contrib.idempotency import middleware as idempotency
-from domainkit.contrib.idempotency.operations import Operation
+from domainkit.contrib.idempotency.operations import Operation, running_operation
 from domainkit.contrib.idempotency.settings import IdempotencySettings
 from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.db import connections
@@ -747,6 +747,7 @@ def test_commits_elsewhere_are_marked_after_them(
         assert all(row["committed_at"] is not None for row in rows)
         # Pinned before the commit: no retry may take these keys over.
         assert all(row["locked_until"] == row["expires_at"] for row in rows)
+        assert all(row["pinned"] for row in rows)
 
 
 def test_a_failed_mark_still_keeps_the_key(
@@ -866,6 +867,7 @@ def test_taking_over_needs_the_row_as_it_was_read(idempotent: TestClient) -> Non
         ({"token": "other"}, False),
         ({"status_code": 201}, False),
         ({"committed_at": gone}, False),
+        ({"pinned": True}, False),
     ):
         asyncio.run(clear_keys())
         plant("race", locked_until=gone, **changed)
@@ -978,6 +980,166 @@ def test_a_lost_key_refuses_commits_elsewhere_too(
         assert payments_on("other") == 0
         [row] = stored_keys()
         assert (row["token"], row["status_code"]) == ("retry", None)
+
+
+UNAVAILABLE_AFTER_500 = (
+    "The request with this Idempotency-Key already ran (status 500), but its "
+    "response was not kept; look up the result instead of retrying."
+)
+
+
+def test_commits_elsewhere_that_raise_keep_their_key(
+    make_database: Callable[[str], str],
+) -> None:
+    """A key pinned for a commit elsewhere is never released: it may have landed.
+
+    A COMMIT whose reply is lost after it landed and one the database refused
+    raise alike, so neither runs again: retries learn the request ran.
+    """
+    databases = {"default": make_database("keys"), "other": make_database("other")}
+    with idempotent_app(databases) as client:
+        for outcome in ("unreported", "rejected"):
+            headers = {"Idempotency-Key": outcome}
+            path = f"/pay?outcome={outcome}&database=other"
+            first = client.post(path, headers=headers)
+            retry = client.post(path, headers=headers)
+
+            assert first.status_code == 500, outcome
+            assert (retry.status_code, retry.json()["code"]) == (
+                409,
+                "idempotency_response_unavailable",
+            ), outcome
+            assert retry.json()["detail"] == UNAVAILABLE_AFTER_500
+
+        assert payments_on("other") == 1  # The commit whose reply was lost, once.
+        assert [
+            (row["status_code"], row["body"], row["pinned"], row["committed_at"])
+            for row in stored_keys()
+        ] == [(500, None, True, None)] * 2
+
+
+def test_a_request_cancelled_while_committing_elsewhere_keeps_its_key(
+    make_database: Callable[[str], str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancelled while it waits for the COMMIT's reply, it still never runs twice."""
+    databases = {"default": make_database("keys"), "other": make_database("other")}
+    committed = asyncio.Event()
+    original = sample_routes.PaymentsUnitOfWork._commit
+
+    async def commit_then_wait(self: sample_routes.PaymentsUnitOfWork) -> None:
+        await original(self)  # The COMMIT lands...
+        if not committed.is_set():  # ...and the first one's reply never comes.
+            committed.set()
+            await asyncio.Event().wait()
+
+    async def pay(scope: Scope, receive: Receive, send: Send) -> None:
+        async with sample_routes.PaymentsUnitOfWork(database="other") as uow:
+            await uow.session.execute(insert(sample_routes.payments))
+            await uow.commit()
+        await send({"type": "http.response.start", "status": 201, "headers": []})
+        await send({"type": "http.response.body", "body": b"paid"})
+
+    async def scenario() -> list[Message]:
+        middleware = idempotency.IdempotencyMiddleware(pay)
+        request = asyncio.create_task(
+            middleware(KEYED_POST, receive_empty_body, discard)
+        )
+        async with asyncio.timeout(30):
+            await committed.wait()
+        request.cancel()  # The client left, or a deadline passed, mid-COMMIT.
+        with pytest.raises(asyncio.CancelledError):
+            await request  # Once the key is settled.
+        sent: list[Message] = []
+
+        async def send(message: Message) -> None:
+            sent.append(message)
+
+        await middleware(KEYED_POST, receive_empty_body, send)
+        await connections.close_all()
+        return sent
+
+    with idempotent_app(databases):
+        monkeypatch.setattr(
+            sample_routes.PaymentsUnitOfWork, "_commit", commit_then_wait
+        )
+        start, body = asyncio.run(scenario())
+
+        assert start["status"] == 409
+        assert b'"code":"idempotency_response_unavailable"' in body["body"]
+        assert payments_on("other") == 1
+        [row] = stored_keys()
+        assert (row["status_code"], row["body"], row["pinned"]) == (500, None, True)
+
+
+def test_requests_that_fail_before_committing_elsewhere_release_their_key(
+    make_database: Callable[[str], str],
+) -> None:
+    """Nothing was pinned, so nothing can have committed: the retry runs."""
+    databases = {"default": make_database("keys"), "other": make_database("other")}
+    with idempotent_app(databases) as client:
+        headers = {"Idempotency-Key": "abandoned"}
+        path = "/pay?outcome=abandoned&database=other"
+        first = client.post(path, headers=headers)
+        retry = client.post(path, headers=headers)
+
+        assert (first.status_code, retry.status_code) == (500, 500)
+        assert "Idempotent-Replayed" not in retry.headers
+        assert payments_on("other") == 0
+        assert stored_keys() == []
+
+
+def test_commits_elsewhere_note_the_pin_before_they_commit(
+    make_database: Callable[[str], str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The operation knows its key is pinned while the COMMIT runs; not on the keys'."""
+    databases = {"default": make_database("keys"), "other": make_database("other")}
+    seen: dict[str, bool] = {}
+    original = sample_routes.PaymentsUnitOfWork._commit
+
+    async def commit(self: sample_routes.PaymentsUnitOfWork) -> None:
+        operation = running_operation()
+        assert operation is not None
+        seen[self.alias] = operation.pinned
+        await original(self)
+
+    with idempotent_app(databases) as client:
+        monkeypatch.setattr(sample_routes.PaymentsUnitOfWork, "_commit", commit)
+        for database in ("other", "default"):
+            client.post(
+                f"/pay?database={database}", headers={"Idempotency-Key": database}
+            )
+
+    assert seen == {"other": True, "default": False}
+
+
+def test_a_pinned_key_is_kept_whatever_the_request_knows(
+    idempotent: TestClient,
+) -> None:
+    """The release refuses a key pinned in its row, or by its operation.
+
+    A pin whose own reply was lost is in the row only; either one keeps the
+    key, with the status and no body. A key neither pinned is released.
+    """
+    config = registry.settings(IdempotencySettings)
+    for key, row_pinned, operation_pinned in (
+        ("row", True, False),
+        ("operation", False, True),
+        ("neither", False, False),
+    ):
+        plant(key, pinned=row_pinned)
+        operation = Operation(keyed(key), "first", pinned=operation_pinned)
+
+        async def finish(operation: Operation = operation) -> None:
+            await idempotency._finish(config, operation, {"status": 503}, None)
+            await connections.close_all()
+
+        asyncio.run(finish())
+
+    rows = {row["key_hash"]: row for row in stored_keys()}
+    assert set(rows) == {keyed("row"), keyed("operation")}
+    assert all(
+        (row["status_code"], row["body"]) == (503, None) for row in rows.values()
+    )
 
 
 def test_storage_limits_are_inclusive(idempotent: TestClient) -> None:

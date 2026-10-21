@@ -5,6 +5,7 @@ loop that opened them, so each running loop gets its own brokers.
 """
 
 import asyncio
+import threading
 from collections.abc import Callable
 from typing import Final
 from weakref import WeakKeyDictionary
@@ -42,6 +43,8 @@ class BrokerHandler:
         self._replaced: WeakKeyDictionary[asyncio.AbstractEventLoop, list[Broker]] = (
             WeakKeyDictionary()
         )
+        self._lock = threading.Lock()
+        """Held to change or walk the registries: loops on other threads do too."""
 
     def config(self, alias: str) -> BrokerConfig:
         """Return the ``BROKERS`` entry of ``alias``."""
@@ -60,14 +63,17 @@ class BrokerHandler:
                 f"brokers[{alias!r}] needs a running event loop: connections "
                 "belong to one, so look brokers up inside async code."
             ) from None
-        if loop not in self._brokers:
-            self._forget_closed_loops()
-        brokers = self._brokers.setdefault(loop, {})
+        with self._lock:
+            if loop not in self._brokers:
+                self._forget_closed_loops()
+            brokers = self._brokers.setdefault(loop, {})
         current = brokers.get(alias)
         if current is not None and current[0] == config:
             return current[1]
         if current is not None:  # override_settings changed it; close it later.
-            self._replaced.setdefault(loop, []).append(current[1])
+            with self._lock:
+                replaced = self._replaced.setdefault(loop, [])
+            replaced.append(current[1])
         broker = MemoryBroker() if config.scheme == "memory" else self._connect(config)
         brokers[alias] = (config, broker)
         return broker
@@ -76,17 +82,23 @@ class BrokerHandler:
         """Drop the brokers of loops closed without ``close_all``.
 
         Their connections died with the loop, and a broker that references
-        its loop would keep it alive for good.
+        its loop would keep it alive for good. Called with ``_lock`` held.
         """
         for loop in [loop for loop in self._brokers if loop.is_closed()]:
-            del self._brokers[loop]
+            self._brokers.pop(loop, None)
             self._replaced.pop(loop, None)
 
     async def close_all(self) -> None:
-        """Close the running loop's brokers; the next use opens new ones."""
+        """Close the running loop's brokers; the next use opens new ones.
+
+        Each broker's own ``close``: ``Broker.close`` is the base class's,
+        which closes nothing.
+        """
         loop = asyncio.get_running_loop()
-        current = [broker for _, broker in self._brokers.pop(loop, {}).values()]
-        await close_each([*current, *self._replaced.pop(loop, [])], Broker.close)
+        with self._lock:
+            current = [broker for _, broker in self._brokers.pop(loop, {}).values()]
+            replaced = self._replaced.pop(loop, [])
+        await close_each([*current, *replaced], lambda broker: broker.close())
 
 
 brokers: Final = BrokerHandler()

@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Any, Final
 
-from sqlalchemy import BindParameter, Executable, func, insert, literal, select
+from sqlalchemy import BindParameter, Insert, func, insert, literal, select
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
@@ -158,7 +158,7 @@ def rows_for(
     return rows
 
 
-def insert_statements(dialect: str, rows: Sequence[dict[str, Any]]) -> list[Executable]:
+def insert_statements(dialect: str, rows: Sequence[dict[str, Any]]) -> list[Insert]:
     """Build inserts; rows with a ``dedupe_key`` skip keys that already exist.
 
     Where the database's clock decides (``dbclock``), a message due at once
@@ -175,7 +175,7 @@ def insert_statements(dialect: str, rows: Sequence[dict[str, Any]]) -> list[Exec
         ]
     plain = [row for row in rows if row["dedupe_key"] is None]
     keyed = [row for row in rows if row["dedupe_key"] is not None]
-    statements: list[Executable] = [insert(messages).values(plain)] if plain else []
+    statements: list[Insert] = [insert(messages).values(plain)] if plain else []
     if keyed:
         if dialect == "postgresql":
             statement: Any = postgresql.insert(messages)
@@ -201,15 +201,24 @@ async def write(
     """Insert ``rows`` through an async session or connection.
 
     On PostgreSQL, also notify the queues of the rows due at once, when
-    ``notifies`` says so; the notification goes out with the commit.
+    ``notifies`` says so; the notification goes out with the commit. Only
+    rows the inserts return count: one skipped for its ``dedupe_key``
+    (a periodic slot every worker queues, say) wakes no worker.
     """
-    for statement in insert_statements(dialect, rows):
-        await executor.execute(statement)
-    if dialect != "postgresql":
+    statements = insert_statements(dialect, rows)
+    if dialect != "postgresql" or not notifies(registry.settings(MessagingSettings)):
+        for statement in statements:
+            await executor.execute(statement)
         return
-    if not notifies(registry.settings(MessagingSettings)):
-        return
-    due = {row["queue"] for row in rows if row["available_at"] <= row["created_at"]}
+    inserted: set[uuid.UUID] = set()
+    for statement in statements:
+        result = await executor.execute(statement.returning(messages.c.id))
+        inserted.update(result.scalars())
+    due = {
+        row["queue"]
+        for row in rows
+        if row["id"] in inserted and row["available_at"] <= row["created_at"]
+    }
     if due:
         notify = (func.pg_notify(CHANNEL, queue) for queue in sorted(due))
         await executor.execute(select(*notify))

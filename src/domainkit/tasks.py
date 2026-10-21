@@ -31,6 +31,7 @@ Names label log lines and the ``tasks_failed_total`` and
 import asyncio
 import logging
 import secrets
+import threading
 from collections.abc import Callable, Coroutine
 from contextvars import Context
 from typing import Any, Final, cast
@@ -83,6 +84,8 @@ _owned: WeakKeyDictionary[asyncio.AbstractEventLoop, set[asyncio.Task[Any]]] = (
     WeakKeyDictionary()
 )
 """Each loop's tasks still running; a set holds no reference to its loop."""
+_owned_lock: Final = threading.Lock()
+"""Held to add a loop to ``_owned`` or drop closed ones: loops run on threads."""
 
 
 def clean_context() -> Context:
@@ -194,14 +197,21 @@ async def shutdown(deadline: float) -> list[str]:
 
 
 def _own(loop: asyncio.AbstractEventLoop, task: asyncio.Task[Any]) -> None:
-    """Keep ``task`` until it finishes; let go of the tasks of closed loops."""
+    """Keep ``task`` until it finishes; let go of the tasks of closed loops.
+
+    Loops on other threads (free-threaded Python, a loop per thread) add
+    and drop their own entries meanwhile, so the registry is changed, and
+    walked, only under ``_owned_lock``. A loop's own set is only touched
+    from that loop's thread.
+    """
     tasks = _owned.get(loop)
     if tasks is None:
-        # A new loop: those that closed with tasks pending will never run
-        # them, and the tasks would keep those loops alive.
-        for closed in [other for other in _owned if other.is_closed()]:
-            del _owned[closed]
-        tasks = _owned[loop] = set()
+        with _owned_lock:
+            # A new loop: those that closed with tasks pending will never
+            # run them, and the tasks would keep those loops alive.
+            for closed in [other for other in _owned if other.is_closed()]:
+                _owned.pop(closed, None)
+            tasks = _owned.setdefault(loop, set())
     tasks.add(task)
     task.add_done_callback(tasks.discard)
 

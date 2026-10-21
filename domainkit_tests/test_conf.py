@@ -26,6 +26,7 @@ from domainkit.conf.env import (
 )
 from domainkit.conf.global_settings import DEFAULT_MIDDLEWARE, RATE_LIMIT_MIDDLEWARE
 from domainkit.conf.lazy import LazySettings
+from domainkit.contrib.auth.settings import AuthSettings
 from domainkit.contrib.idempotency.settings import IdempotencySettings
 from domainkit.contrib.messaging.settings import MessagingSettings
 from domainkit.exceptions import ImproperlyConfigured
@@ -666,3 +667,56 @@ def test_domain_settings_numbers_are_finite(
     """Domain settings refuse infinity too: an endless shutdown never ends."""
     with pytest.raises(ValidationError, match="finite number"):
         schema.model_validate({field: float("inf")})
+
+
+def refused_above(
+    schema: type[BaseModel], field: str, highest: float, **others: object
+) -> None:
+    """``schema`` takes ``highest`` for ``field``, and refuses anything above it."""
+    taken = schema.model_validate({**others, field: highest})
+    assert getattr(taken, field) == highest
+    with pytest.raises(
+        ValidationError, match=f"{field}\n  Input should be less than or equal to"
+    ):
+        schema.model_validate({**others, field: highest + 1})
+
+
+@pytest.mark.parametrize(
+    ("field", "highest"),
+    [
+        ("TASK_TIMEOUT", 24 * 3600),
+        ("VISIBILITY_TIMEOUT", 2 * 24 * 3600),
+        ("POLL_INTERVAL", 3600),
+        ("BATCH_SIZE", 10_000),
+        ("CONCURRENCY", 65_535),  # RabbitMQ's prefetch is a 16-bit count.
+        ("SHUTDOWN_TIMEOUT", 3600),
+        ("REPUBLISH_AFTER", 7 * 24 * 3600),
+        ("RETENTION_SECONDS", 365 * 24 * 3600),
+        ("CLEANUP_INTERVAL", 24 * 3600),
+    ],
+)
+def test_messaging_settings_have_upper_bounds(field: str, highest: int) -> None:
+    """Generous, but bounded: a typo cannot make a wait or a batch endless."""
+    refused_above(MessagingSettings, field, highest, VISIBILITY_TIMEOUT=2 * 24 * 3600)
+
+
+@pytest.mark.parametrize(
+    ("field", "highest"),
+    [("TTL_SECONDS", 30 * 24 * 3600), ("LEASE_SECONDS", 24 * 3600)],
+)
+def test_idempotency_settings_have_upper_bounds(field: str, highest: int) -> None:
+    """Keys live at most 30 days, and a lease lasts at most a day."""
+    refused_above(IdempotencySettings, field, highest)
+
+
+@pytest.mark.parametrize(
+    ("field", "highest"), [("HASHING_THREADS", 1024), ("HASHING_QUEUE", 10_000)]
+)
+def test_auth_hashing_settings_have_upper_bounds(field: str, highest: int) -> None:
+    """The hashing pool's threads and queue are bounded."""
+    refused_above(AuthSettings, field, highest)
+
+
+def test_readiness_timeout_has_an_upper_bound() -> None:
+    """A readiness check waits a minute at most."""
+    refused_above(Settings, "READINESS_TIMEOUT", 60)

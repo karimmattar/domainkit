@@ -38,8 +38,9 @@ class IdempotencyConfig(DomainConfig):
         """Mark the keyed request committed here, or pin its key; refuse a lost key.
 
         On ``IDEMPOTENCY.DATABASE`` the mark joins this transaction. Elsewhere
-        the key is pinned first, in its own transaction, so no retry can take
-        it over whether or not the commit lands.
+        the key is pinned first, in its own transaction, and the operation
+        notes it: whether or not the commit lands, or reports back, no retry
+        can take the key over and the request never releases it.
         """
         operation = running_operation()
         if operation is None:
@@ -52,6 +53,8 @@ class IdempotencyConfig(DomainConfig):
         else:
             async with connections.engine(database).begin() as connection:
                 held = await connection.execute(pin_lease(operation))
+            if held.rowcount:
+                operation.pinned = True  # Before the commit, whatever it reports.
         if not held.rowcount:
             raise KeyTakenOver(
                 "This request ran past its Idempotency-Key lease, and a retry "

@@ -113,7 +113,11 @@ phase:
   is left of their phase, less a reserve kept for every hook still to run
   (a quarter of the phase, split among the hooks), so one slow hook may
   use most of the phase, while one that hangs is cut off with a
-  `TimeoutError` naming the domain, and the others still stop.
+  `TimeoutError` naming the domain, and the others still stop. Each hook
+  runs as a task: one cut off is cancelled and left behind, like a closer,
+  so a hook that ignores cancellation (a flush behind `asyncio.shield`, a
+  retry loop that catches everything) holds up neither the hooks after it
+  nor the later phases.
 
 Other parts of the framework, and projects, add closers to the `drain`,
 `resources`, or `flush` phase:
@@ -365,7 +369,10 @@ never across an `await`:
 - the in-memory rate limiter (`MemoryBackend`) and its callers;
 - `AuthenticationMiddleware`'s refused-credential holds;
 - the password hashing pool's count of pending calls;
-- the logging and reporting queues, and memory caches (`cache/memory.py`).
+- the logging and reporting queues, and memory caches (`cache/memory.py`);
+- the registries that keep each loop's background tasks
+  (`domainkit.tasks`), commit publishers, and brokers, which a new loop
+  walks to let go of the closed ones.
 
 A project's own module-level state needs the same care: a dict two threads
 change at once needs a `threading.Lock` on free-threaded Python, as it would
@@ -507,9 +514,12 @@ connection of their pool. An idle worker then starts a committed message
 right away instead of on its next poll, so `POLL_INTERVAL` can be longer.
 Polling stays: a notification is only a hint, sent when the transaction
 commits and lost harmlessly when nobody listens, and a worker whose
-listening connection drops polls until it listens again. With a broker that
-publishes on commit, the broker wakes the workers and nothing is sent. Set
-`MESSAGING.NOTIFY` to `False` to turn it off.
+listening connection drops polls until it listens again. Only rows the
+transaction wrote count (the inserts return them): a row skipped for its
+dedupe key, such as a periodic slot that every worker queues and one
+insert wins, wakes no one. With a broker that publishes on commit, the
+broker wakes the workers and nothing is sent. Set `MESSAGING.NOTIFY` to
+`False` to turn it off.
 
 **Gauges.** `messaging_outbox_messages` and `messaging_outbox_lag_seconds`
 count the outbox at most once per `METRICS_TTL` seconds (15) in each
