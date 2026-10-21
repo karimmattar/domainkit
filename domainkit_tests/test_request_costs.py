@@ -198,6 +198,7 @@ def test_the_address_is_worked_out_once_per_request(parses: list[Work]) -> None:
     keys = [address_key(scope) for _ in range(3)]
 
     assert keys == ["ip:2001:db8::/64"] * 3
+    assert ADDRESS == "domainkit.address"  # Namespaced, as docs/performance.md says.
     assert scope[ADDRESS] == ("2001:db8::7", "ip:2001:db8::/64")
     assert parses == [("host", "2001:db8::7"), ("network", "2001:db8::7", 64)]
     assert address_key({}) == "ip:unknown"
@@ -466,6 +467,11 @@ def test_request_headers_become_a_list_once() -> None:
     assert middleware._header({"headers": ((b"host", b"t"),)}, b"host") == "t"
     assert middleware._header(scope, b"x-request-id") == "abc"
     assert middleware._header(scope, b"missing") is None
+    # Read straight from a one-shot iterable, a header after another is found.
+    once: Scope = {"headers": iter([(b"host", b"h"), (b"x-request-id", b"abc")])}
+    assert middleware._header(once, b"x-request-id") == "abc"
+    assert middleware._header(once, b"host") == "h"
+    assert once["headers"] == [(b"host", b"h"), (b"x-request-id", b"abc")]
 
 
 def test_request_ids_are_32_hex_digits_and_new_each_time() -> None:
@@ -564,6 +570,7 @@ def test_metric_handles_kept_are_bounded(
     labelled: list[tuple[str, ...]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Past ``MAX_SERIES``, a series is looked up for each request, and counted."""
+    assert metrics.MAX_SERIES == 4096  # As docs/reference.md says.
     monkeypatch.setattr(metrics, "MAX_SERIES", 1)
     counter = MetricsMiddleware(_nothing_app)
 

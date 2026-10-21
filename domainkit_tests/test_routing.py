@@ -36,9 +36,11 @@ from domainkit.http.metrics import route_template
 from domainkit.http.routing import flatten_routes, nests_routers
 from domainkit.management import call_command
 from domainkit_tests import nested_routes
-from domainkit_tests.conftest import UseAuth
+from domainkit_tests.conftest import ALPHA, AUTH, CONTENTTYPES, UseAuth
 
 ROUTES = "domainkit_tests.nested_routes.router"
+AUDIT = "domainkit.contrib.audit"
+FLAGS = "domainkit.contrib.flags"
 GATEWAY = "domainkit_tests.test_routing.GatewayAuthentication"
 STACK = [
     "domainkit.http.middleware.SecurityHeadersMiddleware",
@@ -394,15 +396,28 @@ def test_route_labels_of_path_operations_stay(nested: Build) -> None:
 def test_openapi_documents_are_byte_identical(
     use_auth: UseAuth, nested: Build, root: str
 ) -> None:
-    """The auth, admin, and staff routers, and the tests' own, documented alike."""
+    """The auth, admin, and staff routers, and the tests' own, documented alike.
+
+    Audit and flags are installed, as for the tests these routers serve:
+    the admin site builds its router once, with ``/history`` only if audit
+    is installed then, so another test's site must not be built without.
+    """
     use_auth(
         AUTHENTICATION_CLASSES=[GATEWAY],
-        settings={"ROOT_ROUTER": root, "MIDDLEWARE": STACK, "API_DOCS": True},
+        settings={
+            "INSTALLED_DOMAINS": [CONTENTTYPES, AUTH, AUDIT, FLAGS, ALPHA],
+            "ROOT_ROUTER": root,
+            "MIDDLEWARE": STACK,
+            "API_DOCS": True,
+        },
     )
     before, after = nested(), get_asgi_application()
 
     assert json.dumps(after.openapi()) == json.dumps(before.openapi())
     assert len(after.routes) > len(before.routes)
+    if root == "domainkit_tests.admin_routes.router":
+        histories = [path for path in kinds(after) if path[1].endswith("/history")]
+        assert histories == [("APIRoute", "/admin/alpha/notes/{note_id}/history")]
 
 
 def test_the_template_projects_document_and_rules_stay(
@@ -503,7 +518,9 @@ def test_routes_added_to_a_router_after_the_build_are_not_served() -> None:
     router = APIRouter()
     app = FastAPI()
     app.include_router(router, prefix="/late")
-    flatten_routes(app.router)
+    app.include_router(router, prefix="/later")
+
+    assert flatten_routes(app.router) == 2  # Both inclusions, without a route.
     router.add_api_route("/hello", nested_routes.open_route)
 
     assert TestClient(app).get("/late/hello").status_code == 404
