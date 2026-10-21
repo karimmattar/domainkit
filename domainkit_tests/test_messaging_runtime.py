@@ -1262,7 +1262,7 @@ async def test_a_stop_that_outlasts_shutdown_timeout_leaves_no_grace(
     monkeypatch.setattr(BrokerHandler, "__getitem__", lambda self, alias: broker)
     monkeypatch.setattr(dispatch, "STOP_CONSUMING_TIMEOUT", 0.2)
     graces: list[float] = []
-    finish = dispatch.finish
+    finish = worker_module.finish  # What dispatch calls.
 
     async def spy(running: set[asyncio.Task[None]], grace: float) -> None:
         graces.append(grace)
