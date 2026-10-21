@@ -337,6 +337,18 @@ def test_reasons_are_checked() -> None:
         run_async(erase_subject(str(ANN), reason=""))
 
 
+class _Unknown(TypeDecorator[str]):
+    """A type written for SQLAlchemy 2.0, which raised for unknown types."""
+
+    impl = String(20)
+    cache_ok = True
+
+    @property
+    def python_type(self) -> type:
+        """Not known."""
+        raise NotImplementedError
+
+
 def test_subject_values_follow_their_column() -> None:
     """UUIDs and integers are parsed; other types are compared as text."""
     model = PersonalModel(
@@ -348,6 +360,7 @@ def test_subject_values_follow_their_column() -> None:
             "number": Column("number", String(10)),
             "id": tables.cards.c.id,
             "blob": Column("blob", PickleType),
+            "opaque": Column("opaque", _Unknown),
             "patient_id": tables.visits.c.patient_id,
         },
     )
@@ -356,6 +369,7 @@ def test_subject_values_follow_their_column() -> None:
     assert operations._subject_value(model, "id", "x") is operations._NO_MATCH
     assert operations._subject_value(model, "number", "12") == "12"
     assert operations._subject_value(model, "blob", "12") == "12"
+    assert operations._subject_value(model, "opaque", "12") == "12"
     assert operations._subject_value(model, "patient_id", str(ANN)) == ANN
     assert operations._subject_value(model, "patient_id", "x") is operations._NO_MATCH
 
@@ -970,18 +984,6 @@ def test_erasing_retention_needs_fields_that_become_none(
             "without erase_personal_data()."
         )
     ]
-
-
-class _Unknown(TypeDecorator[str]):
-    """A type written for SQLAlchemy 2.0, which raised for unknown types."""
-
-    impl = String(20)
-    cache_ok = True
-
-    @property
-    def python_type(self) -> type:
-        """Not known."""
-        raise NotImplementedError
 
 
 def test_columns_without_a_python_type_are_no_dates() -> None:
