@@ -178,6 +178,43 @@ async def test_requeued_messages_come_back(server: Server) -> None:
     assert received == [("default", b"once", "m")]
 
 
+async def test_answers_the_broker_cannot_take_are_broker_errors(
+    server: Server,
+) -> None:
+    """A delivery answered twice, or once its channel closed, is a broker error.
+
+    aio-pika raises errors of its own for both, a ``RuntimeError`` once the
+    channel closed (a restart, a dropped connection); a worker must only
+    ever see ``BrokerError``s.
+    """
+    broker = server.broker()
+    held: list[Delivery] = []
+    arrived = asyncio.Event()
+
+    async def hold(delivery: Delivery) -> None:
+        held.append(delivery)
+        if len(held) == 2:
+            arrived.set()
+
+    try:
+        await broker.declare(["default"])
+        subscription = await broker.consume(["default"], 2, hold)
+        await broker.publish("default", b"1", message_id="m1")
+        await broker.publish("default", b"2", message_id="m2")
+        async with asyncio.timeout(10):
+            await arrived.wait()
+        first, second = held
+        await first.ack()
+        with pytest.raises(BrokerUnavailable, match=r"processed|settled once"):
+            await first.requeue()
+        await subscription.cancel()
+    finally:
+        await broker.close()
+    for answer in (second.ack, second.requeue):
+        with pytest.raises(BrokerUnavailable, match="ChannelInvalidStateError"):
+            await answer()
+
+
 async def test_unroutable_messages_and_changed_queues_are_refused(
     server: Server,
 ) -> None:

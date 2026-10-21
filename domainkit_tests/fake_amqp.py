@@ -4,7 +4,8 @@ It covers what ``RabbitMQBroker`` uses: robust connections, channels with
 publisher confirms, durable direct exchanges, queues bound by routing key,
 mandatory publishing (unroutable messages raise ``PublishError`` once
 ``on_return_raises`` is on), prefetch per consumer, consumers,
-acknowledgements, and requeues. Tests break it on purpose with ``down``, ``refuse``, and
+acknowledgements, and requeues (which fail once their channel closed, with the
+connection). Tests break it on purpose with ``down``, ``refuse``, and
 ``timeout``, and stall the calls named in ``stalled`` (a server that
 accepts connections but stops answering): a stalled call with aio-pika's
 ``timeout=`` raises ``TimeoutError`` once it passes, as aio-pika does, and
@@ -27,6 +28,7 @@ from aio_pika.exceptions import (
     DeliveryError,
     PublishError,
 )
+from aiormq.exceptions import ChannelInvalidStateError
 from pamqp.commands import Basic
 
 type Callback = Callable[[Any], Awaitable[Any]]
@@ -75,6 +77,8 @@ class FakeIncomingMessage:
             self._queue.wake()
 
     def _settle(self) -> None:
+        if self._consumer is not None and self._consumer.channel.closed:
+            raise ChannelInvalidStateError  # As aio-pika's messages do.
         if self.settled:
             raise RuntimeError("A message is settled once.")
         self.settled = True
@@ -259,6 +263,7 @@ class FakeConnection:
         """Open on ``server``."""
         self.server = server
         self.is_closed = False
+        self.channels: list[FakeChannel] = []
 
     async def channel(
         self, publisher_confirms: bool = True, on_return_raises: bool = False
@@ -267,12 +272,15 @@ class FakeConnection:
         await self.server.answer("channel", None)
         channel = FakeChannel(self.server, publisher_confirms, on_return_raises)
         self.server.last_channel = channel
+        self.channels.append(channel)
         return channel
 
     async def close(self) -> None:
-        """Close the connection."""
+        """Close the connection, and its channels with it."""
         await self.server.answer("close", None)
         self.is_closed = True
+        for channel in self.channels:
+            channel.closed = True
 
 
 class FakeAMQP:

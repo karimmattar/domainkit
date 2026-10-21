@@ -285,6 +285,11 @@ All notable changes to domainkit. The format follows
   request cancelled while it waited for it), released its
   `Idempotency-Key`, so a retry ran the changes again: a second payment,
   since 0.7.0. A key pinned for such a commit is never released now.
+- A brokered worker whose acknowledgement of one message failed with
+  aio-pika's own error, as it does once the delivery's channel closed,
+  ended, cancelling its other running messages. RabbitMQ's answers that
+  fail now raise `BrokerUnavailable`, and the worker logs any answer that
+  fails and leaves the message for RabbitMQ to hand out again.
 
 ## [0.7.0] - 2026-10-20
 

@@ -213,8 +213,11 @@ aio-pika). Then `runworker` works like this:
 - **Every delivery is answered**, so a failure never holds one of the
   consumer's `CONCURRENCY` slots. A delivery whose outbox cannot be reached
   is requeued after `POLL_INTERVAL`; any other is acknowledged once its
-  outcome is recorded, or once it is clear it cannot run here. The relay
-  waits out database outages as the polling worker does.
+  outcome is recorded, or once it is clear it cannot run here. An answer
+  that fails (the delivery's channel closed when RabbitMQ restarted or the
+  connection dropped) is logged, and RabbitMQ hands the message out again;
+  it never stops the worker or its other messages. The relay waits out
+  database outages as the polling worker does.
 - **Losses** cost time, never messages. A worker that dies mid-message
   leaves it to come back after `VISIBILITY_TIMEOUT`; a message RabbitMQ
   lost is published again after `REPUBLISH_AFTER`.

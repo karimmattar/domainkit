@@ -216,7 +216,9 @@ class BrokerWorkers:
 
         It is acknowledged once its outcome is recorded, or when it cannot
         run here. It is requeued, after ``POLL_INTERVAL``, when its outbox
-        cannot be reached.
+        cannot be reached. An answer that fails, however, is logged and left
+        to the broker, which hands the message out again: it never ends the
+        worker, nor cancels the other deliveries.
         """
         try:
             await self._run(delivery)
@@ -238,6 +240,13 @@ class BrokerWorkers:
                 delivery.message_id,
                 delivery.queue,
                 exc,
+            )
+        except Exception:  # Unexpected, but the broker hands it out again too.
+            logger.exception(
+                "Could not answer message %s from queue %r; the broker will hand "
+                "it out again",
+                delivery.message_id,
+                delivery.queue,
             )
 
     async def _run(self, delivery: Delivery) -> None:

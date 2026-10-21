@@ -8,6 +8,7 @@ regression fails instead of hanging.
 """
 
 import asyncio
+import dataclasses
 import gc
 import io
 import json
@@ -1249,6 +1250,72 @@ async def test_a_lost_or_stalled_broker_neither_skips_nor_holds_the_drain(
         (
             f"Could not stop consuming from broker 'work' ({reason}); running "
             "messages still get their time"
+        )
+    ]
+
+
+class AcksFail(MemoryBroker):
+    """Acknowledging the messages in ``failing`` fails, as aio-pika's ack does.
+
+    Once a delivery's channel closed (RabbitMQ restarted, a connection blip,
+    a consumer timeout), aio-pika raises ``ChannelInvalidStateError``, a
+    ``RuntimeError`` rather than a ``BrokerError``.
+    """
+
+    def __init__(self) -> None:
+        """Fail no acknowledgement until told which."""
+        super().__init__()
+        self.failing: set[str] = set()
+        self.failed = asyncio.Event()
+
+    async def consume(
+        self, queues: Iterable[str], prefetch: int, handler: Handler
+    ) -> Subscription:
+        """Consume, failing the acknowledgements of ``failing``."""
+
+        async def answered_badly(delivery: Delivery) -> None:
+            async def ack() -> None:
+                if delivery.message_id in self.failing:
+                    self.failed.set()
+                    raise RuntimeError("The channel is closed.")
+                await delivery.ack()
+
+            await handler(dataclasses.replace(delivery, ack=ack))
+
+        return await super().consume(queues, prefetch, answered_badly)
+
+
+@pytest.mark.usefixtures("broker_tables")
+async def test_a_failed_answer_ends_neither_the_worker_nor_other_deliveries(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """It is logged and left to the broker; the running delivery finishes."""
+    broker = AcksFail()
+    monkeypatch.setattr(BrokerHandler, "__getitem__", lambda self, alias: broker)
+    config = MessagingSettings(**{**BROKERED, **SLOW})
+    stop = asyncio.Event()
+    running = asyncio.create_task(
+        BrokerWorkers([Worker(config)], ["default"], config).run(stop)
+    )
+    await enqueue(at_gate, name="running")
+    await enqueue(at_gate, name="acked")
+    await gate.until(lambda: sorted(gate.started) == ["acked", "running"])
+    (acked,) = [row["id"] for row in await rows() if row["payload"]["name"] == "acked"]
+    broker.failing.add(str(acked))
+
+    with caplog.at_level(logging.WARNING, "domainkit.contrib.messaging.dispatch"):
+        gate.open("acked")
+        await within(broker.failed.wait())
+        gate.open("running")
+        await gate.until(lambda: gate.finished == ["acked", "running"])
+        stop.set()
+        await within(running)
+
+    assert [row["status"] for row in await rows()] == [DONE, DONE]
+    assert logged(caplog, "domainkit.contrib.messaging.dispatch") == [
+        (
+            f"Could not answer message {acked} from queue 'default'; the broker "
+            "will hand it out again"
         )
     ]
 
