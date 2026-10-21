@@ -164,6 +164,31 @@ class ReportsUnitOfWork(SqlAlchemyUnitOfWork):
 - **Tests.** Point the replica at the primary's URL, or leave `REPLICAS`
   out of the test settings: two SQLite files do not replicate.
 
+## Connection pools
+
+Each alias has a pool of connections per event loop (`POOL_SIZE`,
+`MAX_OVERFLOW`, `POOL_TIMEOUT`, `POOL_RECYCLE`), made on first use.
+
+- **Testing connections.** With `POOL_PRE_PING`, on by default, a connection
+  is tested as it leaves the pool, so one the server closed (a restart, a
+  failover) is replaced before a request uses it. On asyncpg the test is
+  one round trip, a prepared `;` outside any transaction; SQLAlchemy wraps
+  it in `BEGIN` and `ROLLBACK`, three round trips, which only PgBouncer
+  needs, and keeps. Keep it on: without it, the first request on each
+  stale connection fails.
+- **Reads on their own.** The first `Reads.STATEMENTS` unit of work on an
+  alias opens a second pool for that alias, sized like the first, whose
+  connections PostgreSQL holds read-only from the start
+  ([queries.md](queries.md#how-read-only-work-reads)). That pool does not
+  test connections: a read whose connection the server had closed runs
+  once more on a fresh one. A process may then hold up to twice the
+  alias's connections, so count them when you size the server's
+  `max_connections`. `pool_stats()` and the `db_pool_connections` metric
+  name it `<alias>:reads`. A replica read that way gets one too.
+
+ADR [0061](adr/0061-read-without-a-transaction-and-ping-once.md) explains
+the choices.
+
 ## Partitioning
 
 Tables that only grow (events, readings, logs) can be split by time on

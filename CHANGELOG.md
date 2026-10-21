@@ -6,6 +6,54 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Read-only units of work choose how they read with `reads=`, which also
+  makes them read-only (`docs/queries.md`; ADR 0061).
+  - `Reads.STATEMENTS` runs each statement on its own, without `BEGIN` and
+    `ROLLBACK`: a read by id on PostgreSQL takes 1 round trip instead of 6.
+    It reads on a pool of its own per alias, `<alias>:reads`, sized like
+    the alias's, whose connections PostgreSQL holds read-only, so a write
+    is refused however it is sent.
+  - `Reads.SNAPSHOT` reads one snapshot, in a `REPEATABLE READ`, `READ
+    ONLY` transaction.
+  - Both sessions refuse to flush, and refuse write and DDL statements,
+    with `ReadOnlyError`.
+  - `STATEMENTS` bounds each statement by the deadline, and runs it once
+    more on a fresh connection if the server had closed the one it used.
+    Through PgBouncer and on SQLite it reads in the `READ ONLY`
+    transaction.
+  - `readonly=True` alone keeps its `READ ONLY` transaction, as before
+    (PERF-03).
+- `connections.autocommit()`: a connection whose statements commit as they
+  run, for short writes that stand alone; through PgBouncer, a transaction.
+- `deadlines.enforced()`: whether a timer of the running task already cuts
+  it off at its deadline.
+
+### Changed
+
+- Testing a pooled asyncpg connection (`POOL_PRE_PING`, still on by
+  default) is SQLAlchemy's prepared `;` outside any transaction, where it
+  was wrapped in `BEGIN` and `ROLLBACK`. Every checkout saves two round
+  trips, and a read through a unit of work takes 4 instead of 6. Through
+  PgBouncer, whose transaction pooling needs the transaction, the test is
+  as before (PERF-03; ADR 0061).
+- A request with an `Idempotency-Key` claims its key with one upsert that
+  also replaces an expired key. It stores its response with one more
+  statement, and both commit as they run (N3, FX-17; ADR 0062).
+  - A first keyed request makes 2 transactions and 4 pool checkouts
+    instead of 5 and 5: 16 round trips instead of 34 on PostgreSQL, with
+    the cheaper ping.
+  - A replay makes 2 checkouts instead of 4: 10 round trips instead of
+    27.
+  - Every guarantee holds as before. A committed operation never runs
+    twice, a pinned key is never released, a cancelled request settles
+    its key, and of requests racing with one key one runs.
+- The audit trail makes a new subject's key with an insert that returns
+  it: an audited commit about a new person costs 2 statements for the keys
+  instead of 3. A transaction reads each subject's key once, and `forget`
+  drops the keys that open transactions of the process hold (N4).
+
 ## [0.8.0] - 2026-10-21
 
 ### Added

@@ -1,0 +1,96 @@
+# 0062. Claim idempotency keys in one statement, and commit the framework's short writes as they run
+
+- Status: Accepted
+- Date: 2026-10-21
+
+## Context
+
+A first request with an `Idempotency-Key` made five transactions, each on a
+checkout of its own:
+
+1. a sweep that deleted the key's expired row (and, without messaging, up to
+   100 other expired keys);
+2. the claim, an `INSERT` of the in-progress row;
+3. authentication;
+4. the unit of work, which also marks the key committed (ADR 0019);
+5. the store of the response.
+
+On a conflict, the claim's failed insert was followed by a third
+connection that read the row. A retry therefore took four checkouts. At
+0.8.0 on PostgreSQL, a keyed `POST` made 34 round trips and a replay 27.
+The commit mark added an `UPDATE`, and with it 11% of CPU, over 0.6.1
+(N3).
+
+The guarantees to keep:
+
+- A committed operation never runs twice, and the mark is part of the
+  business transaction (ADR 0019).
+- A key pinned for a commit on another database is never released or
+  taken over: its retries get 409 (0.8.0).
+- A cancelled request settles its key in a shielded task within
+  `SETTLE_TIMEOUT` (R03).
+- Of requests racing with one key, exactly one runs.
+- Fingerprint mismatches, expiry, take-over of abandoned keys, and a
+  request that died after committing behave as before.
+
+Options considered:
+
+- **Fold the sweep into the claim.** `INSERT … ON CONFLICT (key_hash) DO
+  UPDATE … WHERE expires_at < now RETURNING token` either inserts the row,
+  replaces an expired one, or leaves a live one alone. PostgreSQL and
+  SQLite both take it. Under `READ COMMITTED`, PostgreSQL checks the
+  `WHERE` again on the newest version of a row it waited for, so of two
+  claims of one expired key only one replaces it.
+- **Run the framework's single-statement writes without `BEGIN` and
+  `COMMIT`.** The claim, take-over, store or release, pin, and late mark
+  each stand on their own. The release-or-store pair depends only on the
+  order of its two statements, which `READ COMMITTED` did not make atomic
+  either. Through PgBouncer, the timeouts are set with `SET LOCAL`, which
+  needs a transaction.
+- **Fold the store into the unit of work.** Impossible: the response does
+  not exist yet when the unit of work commits.
+- **Fold the mark into the outbox insert, with a CTE.** It saves one round
+  trip, only when messaging writes in the same commit, at the cost of
+  coupling two apps' SQL.
+- **Skip pre-ping on these checkouts.** Their writes cannot be safely run
+  again after a lost connection: a claim whose reply was lost has
+  committed.
+
+## Decision
+
+- The claim is one upsert on a connection whose statements commit as they
+  run (`connections.autocommit()`). On a conflict it reads the live row on
+  the same connection.
+- The take-over, the store or release, and the pin and late mark of a
+  commit on another database also run on `connections.autocommit()`.
+  Through PgBouncer, that is one transaction, which sets the timeouts.
+- Without messaging, the sweep of expired keys is one more statement on
+  the claim's connection. It still skips rows another claim is deleting.
+- The mark stays in the business transaction. Pre-ping stays on these
+  checkouts, with ADR 0061's ping of one round trip.
+
+## Consequences
+
+Measured on PostgreSQL, on the wire:
+
+- A first keyed request takes 16 round trips instead of 34, of which the
+  cheaper ping saves 10 and this change 8.
+- It makes 2 transactions instead of 5, and 4 checkouts instead of 5.
+- A replay takes 10 round trips instead of 27, and 2 checkouts instead of
+  4.
+
+The framework's own claim and store do not lower `statement_timeout` to
+the request's deadline any more: `SET LOCAL` needs a transaction. They are
+still bounded:
+
+- by `STATEMENT_TIMEOUT`, `LOCK_TIMEOUT` and `COMMAND_TIMEOUT`, which the
+  session keeps outside PgBouncer;
+- the claim by the request deadline's timer;
+- the store or release by `SETTLE_TIMEOUT`.
+
+`connections.autocommit()` is for statements that each make sense alone:
+code that needs several to commit together must use a transaction.
+
+The guarantees above are tested unchanged. New tests count the
+statements, transactions and checkouts of a keyed write, race five claims
+of one key, and run the claim through PgBouncer's mode.

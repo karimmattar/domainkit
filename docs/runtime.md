@@ -630,7 +630,13 @@ timers that cancel work run on the event loop's own clock.
   server stops the work too. SQLite has no such setting; the cancellation
   stops the wait. A transaction begun after the deadline passed (cleanup)
   keeps `STATEMENT_TIMEOUT`. The statement is not counted by
-  `assert_num_queries`.
+  `assert_num_queries`. A read that runs without a transaction
+  (`Reads.STATEMENTS`, [queries.md](queries.md#how-read-only-work-reads))
+  has no `SET LOCAL`: each of its statements is cut off at the deadline by
+  the request's timer, or by a timer of its own in work that shares a
+  deadline without enforcing it, and the driver then cancels it on the
+  server. The framework's own short writes, such as an idempotency key's
+  claim, run that way too, within `STATEMENT_TIMEOUT`.
 - **Outgoing HTTP calls** through `domainkit.http.client` are bounded by it
   (below).
 - **Ledgers and caches** keep their own `TIMEOUT`: a request's call to
@@ -745,6 +751,13 @@ new messages through it (`LISTEN` needs a session of its own): its
 workers poll every `POLL_INTERVAL`, and `NOTIFY` from commits is simply
 not heard. Point `MIGRATION_URL` at PostgreSQL directly: migrations may
 take longer, and need the schema owner.
+
+For the same reason, reads that would run without a transaction
+(`Reads.STATEMENTS`) and the framework's own short writes run in a
+transaction through PgBouncer, which sets the timeouts. A pool tests a
+connection (`POOL_PRE_PING`) with SQLAlchemy's own ping there, in the
+transaction its prepared statement needs; elsewhere, domainkit sends it
+without one.
 
 `check` warns in staging and production about a database that seems to
 go through PgBouncer without the mode: one on port 6432, or one whose
