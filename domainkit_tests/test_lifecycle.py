@@ -133,7 +133,7 @@ async def test_phases_run_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
 
     register("http clients", partial(note, "http clients"))
     register("publishers", partial(note, "publishers"), phase=Phase.DRAIN)
-    register("logs", partial(note, "logs"), phase=Phase.FLUSH)
+    register("exports", partial(note, "exports"), phase=Phase.FLUSH)
     spawn(background(), name="test.background")
     await asyncio.sleep(0)
 
@@ -147,14 +147,39 @@ async def test_phases_run_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
         "ledgers",
         "brokers",
         "http clients",
-        "logs",
+        "exports",
     ]
+
+
+async def test_error_reports_then_logs_are_flushed_last(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The framework flushes reports, then logs, after the flush phase's closers.
+
+    What closing everything else reported or logged is then written too.
+    """
+    closed: list[str] = []
+    record_closes(monkeypatch, closed)
+
+    async def note(name: str) -> None:
+        closed.append(name)
+
+    monkeypatch.setattr(lifecycle, "aflush_reports", partial(note, "error reports"))
+    monkeypatch.setattr(lifecycle, "aflush_logs", partial(note, "logs"))
+    register("exports", partial(note, "exports"), phase=Phase.FLUSH)
+
+    await close_resources()
+
+    assert closed[-3:] == ["exports", "error reports", "logs"]
+    for name in ("error reports", "logs"):
+        with pytest.raises(ValueError, match="closed by the framework already"):
+            register(name, partial(note, name), phase=Phase.FLUSH)
 
 
 async def test_a_hung_phase_leaves_the_later_phases_their_share(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A drain that hangs is cut off at its share; resources and logs still close."""
+    """A drain that hangs is cut off at its share; later phases still close."""
     closed: list[str] = []
     record_closes(monkeypatch, closed)
     release = asyncio.Event()
@@ -171,7 +196,7 @@ async def test_a_hung_phase_leaves_the_later_phases_their_share(
         closed.append(name)
 
     register("stubborn", ignores_cancellation, phase=Phase.DRAIN)
-    register("logs", partial(note, "logs"), phase=Phase.FLUSH)
+    register("exports", partial(note, "exports"), phase=Phase.FLUSH)
 
     try:
         with caplog.at_level(logging.ERROR, "domainkit.lifecycle"):
@@ -180,7 +205,14 @@ async def test_a_hung_phase_leaves_the_later_phases_their_share(
     finally:
         release.set()  # Fail fast, not hang, if anything above goes wrong.
 
-    assert closed == ["stubborn", "caches", "databases", "ledgers", "brokers", "logs"]
+    assert closed == [
+        "stubborn",
+        "caches",
+        "databases",
+        "ledgers",
+        "brokers",
+        "exports",
+    ]
     assert caplog.messages == [
         "Could not close the stubborn within the shutdown budget; closing the rest"
     ]
