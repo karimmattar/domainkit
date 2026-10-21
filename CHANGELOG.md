@@ -295,6 +295,13 @@ All notable changes to domainkit. The format follows
   more than 4,300 digits, no longer stops a deployed application from
   starting, or `check` from running, with a `ValueError`: a value that
   cannot be read is unknown, and a failure to tell the server is logged.
+- `check`'s warning about WebSocket messages the server reads past
+  `MAX_REQUEST_BODY_SIZE` now covers uvicorn started by gunicorn
+  (`-k uvicorn.workers.UvicornWorker`, or `uvicorn_worker.UvicornWorker`,
+  read from the command line or `GUNICORN_CMD_ARGS`) and by `fastapi run`,
+  which both read up to 16 MiB whatever `UVICORN_WS_MAX_SIZE` says; it
+  says how to set the limit under each. Hypercorn is still not recognised
+  (`docs/reference.md`, "Server limits").
 
 ## [0.7.0] - 2026-10-20
 

@@ -258,10 +258,31 @@ WebSockets runs under a server that reads messages larger than
 `MAX_REQUEST_BODY_SIZE`: uvicorn without
 `--ws-max-size` (or with a larger one), or Granian with WebSockets on. It
 reads the server's environment variables (`UVICORN_WS_MAX_SIZE`,
-`GRANIAN_WEBSOCKETS`, which both servers accept in place of options); a
-deployed application logs the same warning when it starts, from the
-server's own command line. A value it cannot read is taken as unknown,
-and never stops the application or `check`.
+`GRANIAN_WEBSOCKETS`, which both servers accept in place of options, and
+`GUNICORN_CMD_ARGS`); a deployed application logs the same warning when it
+starts, from the server's own command line. A value it cannot read is
+taken as unknown, and never stops the application or `check`.
+
+uvicorn started by gunicorn (`-k uvicorn.workers.UvicornWorker`, or
+`uvicorn_worker.UvicornWorker` from the `uvicorn-worker` package) or by
+`fastapi run` reads neither `--ws-max-size` nor `UVICORN_WS_MAX_SIZE`: it
+always reads messages of up to 16 MiB, and `check` warns about it. Under
+gunicorn, give a worker class of your own the limit, and start gunicorn
+with `-k config.workers.LimitedWorker`:
+
+```python
+from uvicorn_worker import UvicornWorker
+
+
+class LimitedWorker(UvicornWorker):
+    CONFIG_KWARGS = {**UvicornWorker.CONFIG_KWARGS, "ws_max_size": 1_048_576}
+```
+
+`check` does not look inside such a class, so it says nothing about it. For
+`fastapi run`, run uvicorn itself. Hypercorn, which reads up to 16 MiB as
+well (`websocket_max_message_size`, in its configuration file), and
+gunicorn with a worker class named only in its configuration file, are not
+recognised: `check` says nothing about them, so set their limits yourself.
 
 `--no-proxy-headers` leaves `X-Forwarded-*` to `TRUSTED_PROXIES`: uvicorn
 otherwise reads them itself, from `127.0.0.1` or from whatever
@@ -369,8 +390,9 @@ passes, so an API that is public on purpose can keep them:
 - `LIVE_REAUTH_INTERVAL = None`: open WebSockets and event streams keep a
   revoked token
 - an application that serves WebSockets under a server that reads larger
-  messages than `MAX_REQUEST_BODY_SIZE` (from `UVICORN_WS_MAX_SIZE`; a
-  deployed application also logs it at start), or without
+  messages than `MAX_REQUEST_BODY_SIZE` (from `UVICORN_WS_MAX_SIZE` or
+  `GUNICORN_CMD_ARGS`; a deployed application also logs it at start), or
+  without
   `WebSocketLimitsMiddleware`
   ([live.md](live.md#message-size))
 
