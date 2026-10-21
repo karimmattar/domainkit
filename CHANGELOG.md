@@ -311,6 +311,11 @@ All notable changes to domainkit. The format follows
   flushing the logs, could hang in its child before running anything: the
   child waited for a lock only the parent's thread could let go. The lock
   is now held across the fork, and the child makes a new one (ADR 0051).
+- On a stuck log stream, exit took 15 seconds, not the 5 of
+  `FLUSH_TIMEOUT`: Python's logging shutdown calls the handler's `flush()`
+  and then `close()`, and every wait inside them had its own 5 seconds.
+  They now share one deadline, and `close()` does not wait at all once the
+  flush has given up.
 
 ## [0.7.0] - 2026-10-20
 

@@ -466,6 +466,201 @@ def test_flushing_and_closing_give_up_on_a_stuck_handler(
     held.resume.set()
 
 
+class Seconds:
+    """The seconds the logging waits read, moved by the test."""
+
+    def __init__(self) -> None:
+        """Start at 0."""
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        """The time now."""
+        return self.now
+
+
+@pytest.fixture
+def seconds(monkeypatch: pytest.MonkeyPatch) -> Seconds:
+    """The clock of the logging waits' deadlines, under the test's hand."""
+    clock = Seconds()
+    monkeypatch.setattr(log, "_seconds", clock)
+    return clock
+
+
+class FullQueue(queue.Queue[Any]):
+    """A queue whose waits for room use up their timeout on ``clock``, in vain."""
+
+    def __init__(self, clock: Seconds, maxsize: int) -> None:
+        """Bounded at ``maxsize``; full to every wait while ``refusing``."""
+        super().__init__(maxsize)
+        self.clock = clock
+        self.refusing = True
+        self.waits: list[float | None] = []
+
+    def put(self, item: Any, block: bool = True, timeout: float | None = None) -> None:  # noqa: ANN401
+        """Wait out ``timeout`` and find no room; ``put_nowait`` works as ever."""
+        if self.refusing and block:
+            self.waits.append(timeout)
+            self.clock.now += timeout or 0.0
+            raise queue.Full
+        super().put(item, block, timeout)
+
+
+def test_the_waits_of_one_flush_share_its_time(held: Collect, seconds: Seconds) -> None:
+    """Waiting for room for the drop notice leaves only the rest for the marker."""
+    records = FullQueue(seconds, maxsize=5)
+    handler = BackgroundHandler(records)
+    handler.listener = BackgroundListener(records, held)
+    handler.handle(record("held"))
+    assert held.entered.wait(10)
+    handler._count_dropped(logging.INFO)
+
+    assert not handler.wait_written(5.0)
+
+    assert records.waits == [5.0, 0.0]
+    records.refusing = False
+    held.resume.set()
+    handler.close()
+
+
+def test_stopping_shares_its_time_between_room_and_the_thread(
+    held: Collect, seconds: Seconds, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Room for the stop marker after 2 of 5 seconds: the thread gets 3."""
+    records: queue.Queue[Any] = queue.Queue(5)
+    listener = BackgroundListener(records, held)
+    listener.start()
+    worker = listener._worker
+    assert worker is not None
+    joins: list[float | None] = []
+    put = records.put
+
+    def put_later(item: Any, block: bool = True, timeout: float | None = None) -> None:  # noqa: ANN401
+        seconds.now += 2.0
+        put(item, block, timeout)
+
+    monkeypatch.setattr(records, "put", put_later)
+    monkeypatch.setattr(worker, "join", joins.append)
+
+    listener.stop(5.0)
+
+    assert joins == [3.0]
+    threading.Thread.join(worker, 10)
+    assert not worker.is_alive()
+
+
+class TimedFlush(log._Flush):
+    """A flush marker that records how long it is waited for, and is never reached."""
+
+    waits: list[float | None]
+
+    def __init__(self) -> None:
+        """Unreached, its waits recorded on the class."""
+        super().__init__()
+        self.done = self  # type: ignore[assignment]
+
+    def wait(self, timeout: float | None = None) -> bool:
+        """Record ``timeout``; the thread never gets here."""
+        self.waits.append(timeout)
+        return False
+
+    def set(self) -> None:
+        """Ignore the thread reaching it, as if it never did."""
+
+
+def test_a_listener_flush_shares_its_time_between_room_and_the_thread(
+    collect: Collect, seconds: Seconds, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Room for the marker after 2 of 5 seconds: the thread has 3 to reach it."""
+    records: queue.Queue[Any] = queue.Queue(5)
+    listener = BackgroundListener(records, collect)
+    listener.start()
+    put = records.put
+
+    def put_later(item: Any, block: bool = True, timeout: float | None = None) -> None:  # noqa: ANN401
+        seconds.now += 2.0
+        put(item, block, timeout)
+
+    TimedFlush.waits = []
+    monkeypatch.setattr(log, "_Flush", TimedFlush)
+    monkeypatch.setattr(records, "put", put_later)
+
+    assert not listener.flush(5.0)
+
+    assert TimedFlush.waits == [3.0]
+    monkeypatch.undo()
+    assert listener.stop(10)
+
+
+def test_closing_after_a_flush_gave_up_does_not_wait(
+    held: Collect, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """At exit, a stream stuck through ``flush()`` costs ``close()`` no wait.
+
+    The thread writes on once the stream is free, though nothing waits.
+    """
+    handler = BackgroundHandler.writing_to(held, maxsize=5)
+    handler.handle(record("held"))
+    assert held.entered.wait(10)
+    handler.handle(record("queued"))
+    assert handler.listener is not None
+    worker = handler.listener._worker
+    assert worker is not None
+    monkeypatch.setattr(log, "FLUSH_TIMEOUT", 0.01)
+    handler.flush()  # Gives up: the stream is stuck.
+    monkeypatch.setattr(log, "FLUSH_TIMEOUT", 3600.0)
+
+    closing = threading.Thread(target=handler.close)
+    closing.start()
+    closing.join(10)  # A bound for a broken test, not a timing.
+    waited = closing.is_alive()
+    held.resume.set()
+    closing.join()
+    worker.join(10)
+
+    assert not waited
+    assert held.lines == ["held", "queued"]
+    assert not worker.is_alive()
+
+
+def test_closing_right_after_a_flush_waits_only_for_what_it_left(
+    held: Collect, seconds: Seconds, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``flush()`` then ``close()``, as at exit, share one ``FLUSH_TIMEOUT``."""
+    monkeypatch.setattr(log, "FLUSH_TIMEOUT", 3600.0)
+    handler = BackgroundHandler.writing_to(held, maxsize=5)
+    handler.flush()  # Nothing queued: done at 0, of its 3600 seconds.
+    handler.handle(record("held"))
+    assert held.entered.wait(10)  # The stream is stuck now.
+    seconds.now = 3600.0 - 0.01
+
+    closing = threading.Thread(target=handler.close)
+    closing.start()
+    closing.join(10)  # A bound for a broken test, not a timing.
+    waited = closing.is_alive()
+    held.resume.set()
+    closing.join()
+
+    assert not waited
+
+
+def test_a_close_long_after_a_flush_has_all_its_time(
+    collect: Collect, seconds: Seconds
+) -> None:
+    """What a flush leaves is shared until its deadline; then it is FLUSH_TIMEOUT."""
+    handler = BackgroundHandler.writing_to(collect)
+    assert handler._time_left() == log.FLUSH_TIMEOUT  # No flush yet.
+
+    handler.flush()  # At 0: until FLUSH_TIMEOUT.
+    seconds.now = 2.0
+    shared = handler._time_left()
+    seconds.now = log.FLUSH_TIMEOUT
+    later = handler._time_left()
+    handler.close()
+
+    assert shared == log.FLUSH_TIMEOUT - 2.0
+    assert later == log.FLUSH_TIMEOUT
+
+
 def test_a_failing_handler_does_not_stop_the_thread(collect: Collect) -> None:
     """A handler that raises is reported by its handleError; the rest still write."""
     failures: list[str] = []

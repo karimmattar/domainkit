@@ -83,3 +83,11 @@ Options considered:
   takes every level. The drop notice counts by level (`Dropped 52 log
   records (50 INFO, 2 WARNING)`), and goes ahead of a record only when
   both fit, so it never takes the place of the warning it would precede.
+- **One wait at exit.** `logging.shutdown` calls the handler's `flush()`
+  and then its `close()`, and each step inside them (room for the drop
+  notice, room for the marker, the thread reaching it, ending the thread)
+  waited its own 5 seconds: on a stuck stream, exit took 15 seconds. The
+  steps of each call now share one deadline, `close()` right after a
+  `flush()` gets only what is left of the flush's, and none at all once the
+  flush gave up: exit waits `FLUSH_TIMEOUT` at most, as this record says.
+  The thread, a daemon, still writes what it can while the process lives.

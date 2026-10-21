@@ -22,6 +22,7 @@ import logging.handlers
 import os
 import queue
 import threading
+import time
 import weakref
 from collections import Counter
 from collections.abc import Mapping
@@ -107,6 +108,20 @@ class TextFormatter(logging.Formatter):
         return line.replace("\r", "\\r").replace("\n", "\\n")
 
 
+def _seconds() -> float:
+    """Real seconds, for the deadlines of waits on the logging thread.
+
+    Not ``domainkit.clock``: these bound real waits on another thread, which
+    a frozen clock would not move.
+    """
+    return time.monotonic()
+
+
+def _left(deadline: float) -> float:
+    """Seconds until ``deadline`` (a ``_seconds`` reading); none once past."""
+    return max(0.0, deadline - _seconds())
+
+
 class _Flush:
     """A marker on the queue: the thread sets ``done`` when it reaches it."""
 
@@ -171,16 +186,17 @@ class BackgroundListener(logging.handlers.QueueListener):
         """Wait until what was queued before now is written; False after ``timeout``.
 
         The wait for room on a full queue and the wait for the thread to
-        reach the marker each take at most ``timeout``.
+        reach the marker share the ``timeout``.
         """
         if not self.running:
             return self.queue.empty()
+        deadline = _seconds() + timeout
         marker = _Flush()
         try:
             self.queue.put(marker, timeout=timeout)
         except queue.Full:
             return False
-        return marker.done.wait(timeout)
+        return marker.done.wait(_left(deadline))
 
     def stop(self, timeout: float = FLUSH_TIMEOUT) -> bool:  # type: ignore[override]
         """Write what is queued, then end the thread; False if it is still busy.
@@ -192,11 +208,12 @@ class BackgroundListener(logging.handlers.QueueListener):
             worker, self._worker = self._worker, None
         if worker is None:
             return True
+        deadline = _seconds() + timeout
         try:
             self.queue.put(_STOP, timeout=timeout)
         except queue.Full:
             return False
-        worker.join(timeout)
+        worker.join(_left(deadline))
         return not worker.is_alive()
 
     def restart_on(self, records: queue.Queue[Any]) -> None:
@@ -264,6 +281,10 @@ class BackgroundHandler(logging.handlers.QueueHandler):
         self._counting = threading.Lock()
         # Not ``_closed``: ``logging.Handler`` has its own, which it sets.
         self._stopped = False
+        self._flushed_by: float | None = None
+        """The last ``flush()``'s deadline, which a ``close()`` before it shares."""
+        self._gave_up = False
+        """Whether the last ``flush()`` gave up on a stuck stream."""
         _remember(self)
 
     @property
@@ -321,36 +342,55 @@ class BackgroundHandler(logging.handlers.QueueHandler):
             self._count_dropped(level)
 
     def flush(self) -> None:
-        """Wait, at most ``FLUSH_TIMEOUT``, for queued records to be written."""
-        self.wait_written(FLUSH_TIMEOUT)
+        """Wait, at most ``FLUSH_TIMEOUT``, for queued records to be written.
+
+        At exit, ``logging.shutdown`` calls it and then ``close()``: they
+        share the one ``FLUSH_TIMEOUT``, and ``close()`` waits no more once
+        this gave up on a stuck stream.
+        """
+        self._flushed_by = _seconds() + FLUSH_TIMEOUT
+        self._gave_up = not self.wait_written(FLUSH_TIMEOUT)
 
     def wait_written(self, timeout: float) -> bool:
         """Report drops, then wait until queued records are written.
 
-        Returns False when they were not written within ``timeout``.
+        Returns False when they were not written within ``timeout``, which
+        the waits for room and for the thread share.
         """
         listener = self._listener
         if listener is None:
             return True
+        deadline = _seconds() + timeout
         unreported = self._take_unreported()
         if unreported is not None:
             try:
                 self.queue.put(self._drop_notice(unreported), timeout=timeout)
             except queue.Full:
                 self._count_dropped(unreported=unreported)
-        return listener.flush(timeout)
+        return listener.flush(_left(deadline))
 
     def close(self) -> None:
         """Write what is queued (within ``FLUSH_TIMEOUT``) and end the thread.
 
-        Later records are written on the caller's thread.
+        Right after ``flush()``, only within what is left of its time, and
+        without waiting if it gave up: the thread then writes on, if it
+        can, while nothing waits for it. Later records are written on the
+        caller's thread.
         """
         if not self._stopped:
-            self.wait_written(FLUSH_TIMEOUT)
+            deadline = _seconds() + (0.0 if self._gave_up else self._time_left())
+            self.wait_written(_left(deadline))
             self._stopped = True
             if self._listener is not None:
-                self._listener.stop(FLUSH_TIMEOUT)
+                self._listener.stop(_left(deadline))
         super().close()
+
+    def _time_left(self) -> float:
+        """Seconds ``close()`` may wait: what ``flush()`` left, or ``FLUSH_TIMEOUT``."""
+        flushed_by, now = self._flushed_by, _seconds()
+        if flushed_by is not None and now < flushed_by:
+            return flushed_by - now
+        return FLUSH_TIMEOUT
 
     def _room(self, level: int, places: int = 1) -> bool:
         """Whether ``places`` records of ``level`` fit on the queue now."""

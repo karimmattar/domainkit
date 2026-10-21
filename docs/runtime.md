@@ -248,7 +248,9 @@ LOGGING = build_logging_config(log_format="json", level="INFO")
 - At shutdown the lifespan and management commands wait for the queue to
   drain in the `flush` phase, last of all, after error reports; Python's own
   logging shutdown does the same at exit. A stream that stays blocked is
-  given up on, so it cannot hold the process.
+  given up on, so it cannot hold the process: at exit, the handler's
+  `flush()` and `close()` share one `FLUSH_TIMEOUT` (5 seconds), and once
+  the flush gives up the close does not wait again.
 - `queue_size=None` writes on the caller's thread, as plain handlers do:
   for scripts that must see each line before going on.
 
