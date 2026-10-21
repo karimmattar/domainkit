@@ -189,7 +189,7 @@ async def _read_keys(executor: Executor, subjects: Collection[str]) -> dict[str,
             audit_keys.c.subject.in_(sorted(subjects))
         )
     )
-    return dict(found.tuples().all())
+    return {row.subject: row.key for row in found}
 
 
 async def _make_keys(executor: Executor, subjects: list[str]) -> dict[str, bytes]:
@@ -209,7 +209,7 @@ async def _make_keys(executor: Executor, subjects: list[str]) -> dict[str, bytes
         .returning(audit_keys.c.subject, audit_keys.c.key),
         rows,
     )
-    return dict(made.tuples().all())
+    return {row.subject: row.key for row in made}
 
 
 def _transaction(executor: Executor) -> SessionTransaction | None:
