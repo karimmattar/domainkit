@@ -13,11 +13,12 @@ import ssl
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from functools import cache
 from pathlib import Path
 from typing import Final
 
 import httpx2
+
+from domainkit.http.guard import tls_context
 
 from .guard import UnsafeTarget, checked_address, checked_url
 from .settings import WebhookSettings
@@ -43,15 +44,13 @@ class Outcome:
         return self.status is not None and 200 <= self.status < 300
 
 
-@cache
 def _tls(ca_bundle: Path | None) -> ssl.SSLContext:
-    """A client TLS context, built once per CA bundle."""
-    if ca_bundle is None:
-        context = httpx2.create_ssl_context(trust_env=False)
-    else:
-        context = ssl.create_default_context(cafile=ca_bundle)
-    context.minimum_version = ssl.TLSVersion.TLSv1_2
-    return context
+    """A client TLS context, built once per CA bundle (the guard's).
+
+    It trusts the bundle, or the system's CAs, never ``SSL_CERT_FILE`` or
+    ``SSL_CERT_DIR``: receivers are someone else's choice.
+    """
+    return tls_context(ca_bundle)
 
 
 async def post(

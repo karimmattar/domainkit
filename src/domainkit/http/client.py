@@ -77,6 +77,7 @@ from domainkit import clock, deadlines
 from domainkit.conf import settings
 from domainkit.conf.global_settings import HttpClientConfig
 from domainkit.context import current_request
+from domainkit.http import guard as guards
 from domainkit.http.guard import Network, UnsafeURL, checked_host, checked_url
 from domainkit.tracing import trace_headers
 from domainkit.utils.closing import close_each
@@ -505,8 +506,11 @@ class HttpClient:
         return pool
 
     def _open(self, config: HttpClientConfig) -> httpx2.AsyncClient:
-        """A pool of connections, with the guard's transport if guarded."""
-        verify = tls_context(config.CA_BUNDLE)
+        """A pool of connections, with the guard's transport and TLS if guarded."""
+        if self.guard:
+            verify = guards.tls_context(config.CA_BUNDLE)
+        else:
+            verify = tls_context(config.CA_BUNDLE)
         limits = httpx2.Limits(
             max_connections=config.MAX_CONNECTIONS,
             max_keepalive_connections=config.MAX_KEEPALIVE_CONNECTIONS,

@@ -403,7 +403,11 @@ def test_good_event_types_pass() -> None:
         ("2001:0:4136:e378:8000:63bf:3fff:fdd2", "private"),  # Teredo.
         ("169.254.169.254", "metadata"),
         ("169.254.170.2", "metadata"),
+        ("169.254.170.23", "metadata"),  # EKS Pod Identity.
+        ("169.254.169.253", "metadata"),  # The VPC's DNS resolver.
         ("fd00:ec2::254", "metadata"),
+        ("fd00:ec2::23", "metadata"),
+        ("fd00:ec2::253", "metadata"),
         ("100.100.100.200", "metadata"),
         ("168.63.129.16", "metadata"),
         ("192.0.0.192", "metadata"),
@@ -439,8 +443,18 @@ def test_allowed_private_networks_let_only_themselves_through() -> None:
     assert refusal(ipaddress.ip_address("10.21.3.4"), allowed[:1]) is not None
     assert refusal(ipaddress.ip_address("::ffff:10.20.3.4"), allowed[:1]) is None
     assert refusal(ipaddress.ip_address("fd12::1"), allowed) is None
-    for never in ("169.254.169.254", "0.0.0.0", "224.0.0.1", "fd00:ec2::254"):  # noqa: S104
-        assert refusal(ipaddress.ip_address(never), allowed) is not None
+    never = (
+        "169.254.169.254",
+        "169.254.170.23",
+        "169.254.169.253",
+        "0.0.0.0",  # noqa: S104 - an address, not a binding.
+        "224.0.0.1",
+        "fd00:ec2::254",
+        "fd00:ec2::23",
+        "fd00:ec2::253",
+    )
+    for address in never:
+        assert refusal(ipaddress.ip_address(address), allowed) is not None
 
 
 @pytest.mark.parametrize(
@@ -967,6 +981,30 @@ async def test_tls_checks_the_name_while_connecting_to_the_address(
             "CERTIFICATE_VERIFY_FAILED" in failed.error or "certificate" in failed.error
         )
     assert wrong.requests == []
+
+
+async def test_tls_trusts_no_ca_the_environment_names(
+    certificates: dict[str, Path],
+    resolver: FakeResolver,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SSL_CERT_FILE and SSL_CERT_DIR add no CA: receivers are someone else's."""
+    resolver.answers["hooks.example.test"] = ["127.0.0.1"]
+    monkeypatch.setenv("SSL_CERT_FILE", str(certificates["ca"]))
+    monkeypatch.setenv("SSL_CERT_DIR", str(certificates["ca"].parent))
+    async with Receiver(tls=server_tls(certificates["hooks.example.test"])) as server:
+        outcome = await client.post(
+            server.url(host="hooks.example.test"),
+            b"{}",
+            HEADERS,
+            settings_for(),
+            allow_http=False,
+        )
+
+    assert outcome.status is None
+    assert outcome.error is not None
+    assert "CERTIFICATE_VERIFY_FAILED" in outcome.error
+    assert server.requests == []
 
 
 def test_tls_contexts_are_built_once_and_strict(certificates: dict[str, Path]) -> None:

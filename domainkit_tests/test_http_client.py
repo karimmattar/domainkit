@@ -905,9 +905,11 @@ def test_pools_are_built_from_http_client(
         config = settings.HTTP_CLIENT
         plain = HttpClient()._open(config)
         guarded = HttpClient(guard=True)._open(config)
-    context = tls_context(client_certificate[0])
 
-    for pool in (plain, guarded):
+    for pool, context in (
+        (plain, tls_context(client_certificate[0])),
+        (guarded, guard.tls_context(client_certificate[0])),
+    ):
         assert pool.follow_redirects is False
         transport = pool._transport
         assert isinstance(transport, httpx2.AsyncHTTPTransport)
