@@ -6,6 +6,18 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The benchmark ladder: `python -m benchmarks` measures what a request
+  costs on thirteen rungs, from a bare ASGI application through the
+  `init` template's stack to an authenticated read, a keyed write, and a
+  429, in Python calls and database round trips (statements,
+  transactions, checkouts, pings) and CPU time. CI's new `bench` job fails
+  a change that makes a rung's requests cost more calls (by over 2%) or any
+  more round trips than `benchmarks/budgets.toml` allows, and shows CPU
+  time beside the base branch's; time is never gated (PERF-09, ASYNC-R17;
+  ADR 0064). `--baseline` measures any other commit with the same harness.
+
 ### Changed
 
 - domainkit requires FastAPI 0.143.1 (`<0.144`), SQLAlchemy 2.1.4
