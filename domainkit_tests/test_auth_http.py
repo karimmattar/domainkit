@@ -34,7 +34,7 @@ from domainkit.contrib.auth import (
 )
 from domainkit.contrib.auth.hashers import HashingPool
 from domainkit.contrib.auth.middleware import AuthenticationMiddleware
-from domainkit.contrib.auth.repositories import TokenStore
+from domainkit.contrib.auth.repositories import PrincipalStore
 from domainkit.contrib.auth.tables import tokens
 from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.db import connections
@@ -439,13 +439,13 @@ def test_refused_credentials_count_against_the_rate_limit(
     """Past ``RATE_LIMIT``, an address's credentials are refused unread."""
     create_user("alice")
     lookups: list[str] = []
-    find = TokenStore.find
+    find = PrincipalStore.credential
 
-    async def counted(self: TokenStore, raw: str) -> Any:  # noqa: ANN401
-        lookups.append(raw)
-        return await find(self, raw)
+    async def counted(self: PrincipalStore, digest: str) -> Any:  # noqa: ANN401
+        lookups.append(digest)
+        return await find(self, digest)
 
-    monkeypatch.setattr(TokenStore, "find", counted)
+    monkeypatch.setattr(PrincipalStore, "credential", counted)
     guess = bearer("dkt_" + "A" * 43)  # Well formed, so it is looked up.
     with override_settings(RATE_LIMIT="3/minute"):
         client = api()
@@ -520,13 +520,13 @@ def test_malformed_tokens_are_refused_without_a_lookup(
 ) -> None:
     """Only a token of the issued form is looked up."""
     lookups: list[str] = []
-    find = TokenStore.find
+    find = PrincipalStore.credential
 
-    async def counted(self: TokenStore, raw: str) -> Any:  # noqa: ANN401
-        lookups.append(raw)
-        return await find(self, raw)
+    async def counted(self: PrincipalStore, digest: str) -> Any:  # noqa: ANN401
+        lookups.append(digest)
+        return await find(self, digest)
 
-    monkeypatch.setattr(TokenStore, "find", counted)
+    monkeypatch.setattr(PrincipalStore, "credential", counted)
     client = api()
     for raw in ("dkt_unknown", "dkt_" + "A" * 42, "dkt_" + "A" * 44, "dkt_" + "+" * 43):
         response = client.get("/whoami", headers=bearer(raw))

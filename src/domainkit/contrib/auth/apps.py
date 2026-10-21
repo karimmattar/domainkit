@@ -5,15 +5,15 @@ from importlib import import_module
 
 from fastapi import FastAPI
 from sqlalchemy import Table
-from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from domainkit.apps import DomainConfig, registry
 from domainkit.conf import settings
-from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
+from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS, REDIS_SCHEMES
 from domainkit.contrib.contenttypes.sync import has_tables
 from domainkit.db import metadata
 from domainkit.db.routing import router
-from domainkit.ddd import event_bus
+from domainkit.ddd import UnitOfWork, event_bus
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.utils.module_loading import import_string
 
@@ -23,7 +23,8 @@ from .backends import get_backends
 from .hashers import insecure_hashers
 from .models import AbstractBaseUser, AbstractUser, User
 from .permissions import declared_permissions, sync_permissions
-from .settings import AuthSettings, auth_settings
+from .principals import invalidate_all, stamp_committed, watch
+from .settings import PRINCIPAL_TTL, AuthSettings, auth_settings
 from .tables import DEFAULT_USER_TABLES, permissions, start_mappers, users
 from .validators import get_password_validators
 
@@ -87,6 +88,8 @@ class AuthConfig(DomainConfig):
         get_authenticators()
         get_password_validators()
         start_mappers(self.user_model, self.user_table)
+        watch(self.user_model)
+        invalidate_all()  # Settings, models, or databases may have changed.
         declared_permissions()
         if registry.is_installed(MESSAGING):
             import_module(f"{self.name}.tasks")
@@ -98,6 +101,12 @@ class AuthConfig(DomainConfig):
             from .erasure import forget_credentials
 
             event_bus.subscribe(PersonalDataErased, forget_credentials)
+
+    async def committed(self, uow: UnitOfWork) -> None:
+        """Stamp what the commit changed in principals, for other processes."""
+        session = getattr(uow, "session", None)
+        if isinstance(session, AsyncSession):
+            await stamp_committed(session, auth_settings().PRINCIPAL_CACHE)
 
     def check_application(self, app: FastAPI) -> list[str]:
         """Routes that declare no rule, and rules no middleware can answer."""
@@ -160,14 +169,29 @@ class AuthConfig(DomainConfig):
     def deployment_warnings(self) -> list[str]:
         """Weak choices in staging and production.
 
-        Login and code checks without a rate, and cookies without
-        ``__Host-`` where it could hold.
+        Login and code checks without a rate, cookies without ``__Host-``
+        where it could hold, and principals kept longer than
+        ``PRINCIPAL_TTL`` where nothing tells other processes of changes.
         """
         if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
             return []
         config = auth_settings()
         cookie = config.COOKIE
         warnings: list[str] = []
+        principals = config.PRINCIPAL_CACHE
+        if (
+            principals.ENABLED
+            and principals.STAMPS is None
+            and principals.TTL > PRINCIPAL_TTL
+        ):
+            seconds = principals.TTL.total_seconds()
+            warnings.append(
+                f"AUTH.PRINCIPAL_CACHE.TTL is {seconds:g} seconds without STAMPS: "
+                "with several processes, a revoked token, a deactivated user, or "
+                f"a removed permission keeps working in the others for up to "
+                f"{seconds:g} seconds. Set STAMPS to a Redis cache, or the TTL to "
+                f"{PRINCIPAL_TTL.total_seconds():g} seconds or less."
+            )
         if config.LOGIN_RATE is None:
             warnings.append(
                 "AUTH.LOGIN_RATE is None, so passwords can be guessed without "
@@ -245,6 +269,15 @@ class AuthConfig(DomainConfig):
             raise ImproperlyConfigured(
                 'AUTH.CLIENT_CERT: MATCH = "subject" through HEADER needs '
                 "VERIFY_HEADER, or anyone could sign a certificate naming any user."
+            )
+        stamps = config.PRINCIPAL_CACHE.STAMPS
+        if stamps is not None and (
+            stamps not in settings.CACHES
+            or settings.CACHES[stamps].scheme not in REDIS_SCHEMES
+        ):
+            raise ImproperlyConfigured(
+                f"AUTH.PRINCIPAL_CACHE.STAMPS must name a Redis cache of CACHES "
+                f"that every process shares, not {stamps!r}."
             )
         insecure = insecure_hashers(config.PASSWORD_HASHERS)
         if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:

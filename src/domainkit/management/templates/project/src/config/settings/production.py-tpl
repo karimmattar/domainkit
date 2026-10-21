@@ -36,4 +36,8 @@ SECURE_HSTS_SECONDS = env.int("SECURE_HSTS_SECONDS", 31_536_000)  # A year.
 # Counted per process; behind several replicas, count in Redis:
 # RATE_LIMIT_BACKEND = "domainkit.http.ratelimit.RedisBackend"
 RATE_LIMIT = env.str("RATE_LIMIT", "300/minute")
+# Who a token names is kept for 5 seconds per process, so a revoked token
+# works up to 5 seconds longer in the other replicas; with a Redis cache in
+# CACHES, every replica sees a revocation at once:
+# AUTH = {"PRINCIPAL_CACHE": {"STAMPS": "shared"}}
 LOGGING = build_logging_config(log_format="json", level=env.str("LOG_LEVEL", "INFO"))

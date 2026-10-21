@@ -291,7 +291,9 @@ one with a source that ends.
 
 The settings are listed in [reference.md](reference.md#live-connections).
 
-A re-check costs what authenticating a request costs (with tokens, a
-token lookup and the user with its groups and permissions), once per
-connection per interval, never per message: 1,000 open connections at the
-default interval make about 17 checks a second.
+A re-check costs what authenticating a request costs, once per connection
+per interval, never per message: 1,000 open connections at the default
+interval make about 17 checks a second. It reads through the
+[principal cache](auth.md#the-principal-cache), as requests do: a kept
+principal costs no query, and a change that drops it is seen at the next
+re-check.

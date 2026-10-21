@@ -65,10 +65,17 @@ from .api import (
     _no_store,
     check_password,
 )
-from .authentication import AuthenticationFailed, BaseAuthentication, Credentials
+from .authentication import (
+    AuthenticationFailed,
+    BaseAuthentication,
+    Credentials,
+    accept,
+    stored_credential,
+)
 from .events import UserLoggedOut
 from .mfa import MfaLoginIn, challenge, verify_challenge
 from .models import AbstractBaseUser, UserId
+from .principals import forget
 from .settings import auth_settings
 from .tokens import TokenKind, token_digest, well_formed
 from .uow import AuthUnitOfWork
@@ -110,19 +117,24 @@ class CookieAuthentication(BaseAuthentication):
         headers = connection.headers
         if "authorization" in headers or "cookie" not in headers:
             return None
+        config = auth_settings()
         raw = connection.cookies.get(cookie_names()[0])
-        if raw is None or not well_formed(raw, auth_settings().TOKEN_PREFIX):
+        if raw is None or not well_formed(raw, config.TOKEN_PREFIX):
             return None
-        async with AuthUnitOfWork() as uow:
-            token = await uow.tokens.find(raw)
-            if token is None or token.kind != TokenKind.SESSION or token.expired():
-                return None
-            user = await uow.users.find(UserId(token.user_id))
-            if user is None or not user.is_active:
-                return None
-            check_request(connection, token.id)
-            if await uow.tokens.touch(token):
-                await uow.commit()
+        entry = await stored_credential(
+            SCHEME, token_digest(raw), config.PRINCIPAL_CACHE
+        )
+        token = None if entry is None else entry.credential
+        if entry is None or token is None or token.kind != TokenKind.SESSION:
+            return None
+        if token.expired():
+            forget(entry)
+            return None
+        user = entry.user()
+        if user is None:
+            return None
+        check_request(connection, token.id)
+        await accept(entry, config.PRINCIPAL_CACHE)
         return Credentials(user, scheme=SCHEME, token_id=token.id)
 
 

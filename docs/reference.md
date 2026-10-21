@@ -442,6 +442,9 @@ passes, so an API that is public on purpose can keep them:
   without limit), and a session or CSRF cookie name without the `__Host-`
   prefix where the prefix could hold
   ([auth.md](auth.md#browser-sessions-in-cookies))
+- auth: `AUTH.PRINCIPAL_CACHE.TTL` above 5 seconds without `STAMPS`: a
+  revoked token works that long in the other processes
+  ([auth.md](auth.md#the-principal-cache))
 - `LIVE_REAUTH_INTERVAL = None`: open WebSockets and event streams keep a
   revoked token
 - an application that serves WebSockets under a server that reads larger
@@ -701,6 +704,7 @@ queue's 10,000 records is dropped and counted, never waited for
 | `messaging_deliveries_skipped_total` | |
 | `cache_lookups_total` | `cache`, `result` (`hit`, `miss`, `invalid`, `early`) |
 | `cache_errors_total` | `cache` |
+| `auth_principal_cache_total` | `authentication` (`token`, `cookie`, `jwt`, `certificate`), `event` (`hit`, `miss`, `invalidation`, `eviction`) |
 
 **Traces** (`domainkit[tracing]`): unit-of-work commits and worker messages
 get spans. domainkit only uses the OpenTelemetry API; configure the SDK and

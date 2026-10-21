@@ -22,7 +22,7 @@ import logging
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import cache
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Final
 from uuid import UUID, uuid4
 
 from fastapi import status
@@ -35,8 +35,25 @@ from domainkit.utils.module_loading import import_string
 
 from .events import RefreshTokenReused
 from .models import AbstractBaseUser, UserId
-from .settings import HMAC_ALGORITHMS, AuthSettings, JWTSettings, auth_settings
-from .tokens import TokenKind, utc_now, well_formed
+from .principals import (
+    Entry,
+    family_target,
+    forget,
+    principal_cache,
+    recall,
+    remember,
+    stamps_before_reading,
+    token_target,
+    user_target,
+)
+from .settings import (
+    HMAC_ALGORITHMS,
+    AuthSettings,
+    JWTSettings,
+    PrincipalCacheSettings,
+    auth_settings,
+)
+from .tokens import TokenKind, token_digest, utc_now, well_formed
 from .uow import AuthUnitOfWork
 
 security_logger = logging.getLogger(SECURITY_LOGGER)
@@ -69,6 +86,12 @@ class IssuedTokens:
     expires_in: int | None
     """Seconds the access token works; None: until revoked."""
     refresh_token: str | None = None
+
+
+TOKEN_SCHEME: Final = "token"  # noqa: S105 - a scheme, not a secret.
+"""``request.auth.scheme`` of requests an opaque token authenticates."""
+JWT_SCHEME: Final = "jwt"
+"""``request.auth.scheme`` of requests a JSON Web Token authenticates."""
 
 
 class AuthenticationFailed(APIError):
@@ -137,8 +160,11 @@ class TokenAuthentication(BaseAuthentication):
     """Opaque tokens: ``Authorization: Bearer <AUTH.TOKEN_PREFIX>...``.
 
     Logging in issues one that works for ``AUTH.TOKEN_TTL``; ``createtoken``
-    makes long-lived ones for scripts. Each request looks the token up, so
-    logging out, or a password change, ends it at once.
+    makes long-lived ones for scripts. A token is looked up by its digest,
+    with its user, and kept for ``AUTH.PRINCIPAL_CACHE.TTL``: logging out,
+    or a password change, ends it at once in this process, and in the
+    others within the TTL (at once with ``STAMPS``). Its expiry is checked
+    on every request.
     """
 
     async def authenticate(self, connection: HTTPConnection) -> Credentials | None:
@@ -146,21 +172,28 @@ class TokenAuthentication(BaseAuthentication):
         raw = bearer_token(connection)
         if raw is None:
             return None
-        prefix = auth_settings().TOKEN_PREFIX
+        config = auth_settings()
+        prefix = config.TOKEN_PREFIX
         if not raw.startswith(prefix):
             return None
         if not well_formed(raw, prefix):  # No database work for a guess.
             raise AuthenticationFailed("Invalid token.")
-        async with AuthUnitOfWork() as uow:
-            token = await uow.tokens.find(raw)
-            if token is None or token.kind != TokenKind.ACCESS:
-                raise AuthenticationFailed("Invalid token.")
-            if token.expired():
-                raise AuthenticationFailed("Token expired.")
-            user = await active_user(uow, token.user_id)
-            if await uow.tokens.touch(token):
-                await uow.commit()
-        return Credentials(user, scheme="token", token_id=token.id, scopes=token.scopes)
+        entry = await stored_credential(
+            TOKEN_SCHEME, token_digest(raw), config.PRINCIPAL_CACHE
+        )
+        token = None if entry is None else entry.credential
+        if entry is None or token is None or token.kind != TokenKind.ACCESS:
+            raise AuthenticationFailed("Invalid token.")
+        if token.expired():
+            forget(entry)
+            raise AuthenticationFailed("Token expired.")
+        user = entry.user()
+        if user is None:
+            raise AuthenticationFailed("User inactive or deleted.")
+        await accept(entry, config.PRINCIPAL_CACHE)
+        return Credentials(
+            user, scheme=TOKEN_SCHEME, token_id=token.id, scopes=token.scopes
+        )
 
     async def issue(self, uow: AuthUnitOfWork, user: AbstractBaseUser) -> IssuedTokens:
         """One access token for ``AUTH.TOKEN_TTL``."""
@@ -193,17 +226,25 @@ class JWTAuthentication(BaseAuthentication):
         self._check_keys()
 
     async def authenticate(self, connection: HTTPConnection) -> Credentials | None:
-        """The user of a valid access token whose login has not ended."""
+        """The user of a valid access token whose login has not ended.
+
+        The login and the user are kept as opaque tokens' are, by login
+        and user; the signature and the times are checked every time.
+        """
         raw = bearer_token(connection)
         if raw is None or raw.count(".") != 2:  # Not a JWT: header.payload.signature.
             return None
         claims = self.decode(raw)
         session = _uuid(claims["sid"])
-        async with AuthUnitOfWork() as uow:
-            if not await uow.tokens.family_active(session):
-                raise AuthenticationFailed("Session ended; log in again.")
-            user = await active_user(uow, _uuid(claims["sub"]))
-        return Credentials(user, scheme="jwt", session=session)
+        config = auth_settings().PRINCIPAL_CACHE
+        entry = await login_principal(session, _uuid(claims["sub"]), config)
+        if entry.login is None or not entry.login.active_at(utc_now()):
+            raise AuthenticationFailed("Session ended; log in again.")
+        user = entry.user()
+        if user is None:
+            raise AuthenticationFailed("User inactive or deleted.")
+        remember(entry, config)
+        return Credentials(user, scheme=JWT_SCHEME, session=session)
 
     async def issue(self, uow: AuthUnitOfWork, user: AbstractBaseUser) -> IssuedTokens:
         """An access token and a refresh token that starts a new family."""
@@ -363,6 +404,88 @@ def bearer_token(connection: HTTPConnection) -> str | None:
     if scheme.lower() != "bearer":
         return None
     return token.strip() or None
+
+
+async def stored_credential(
+    scheme: str, digest: str, config: PrincipalCacheSettings
+) -> Entry | None:
+    """Token ``digest`` and the user it names: kept, or read in two queries.
+
+    None: no token has the digest. The entry of a token just read is not
+    kept yet: ``accept`` keeps it once the class accepts the credential.
+    The stamps (``STAMPS``) are read after the token, which names the user,
+    and before the user, whose read checks that the token is still stored.
+    """
+    key = (scheme, digest)
+    entry = await recall(key, config)
+    if entry is not None:
+        return entry
+    started = principal_cache.begin()
+    async with AuthUnitOfWork() as uow:
+        credential = await uow.principals.credential(digest)
+        if credential is None:
+            return None
+        targets = [user_target(credential.user_id), token_target(digest)]
+        if credential.family is not None:
+            targets.append(family_target(credential.family))
+        entry = Entry(
+            key,
+            None,
+            credential=credential,
+            targets=tuple(targets),
+            started=started,
+            last_used=credential.last_used_at,
+        )
+        await stamps_before_reading(entry, config)
+        snapshot = await uow.principals.principal(credential.user_id, token=digest)
+    return entry.holding(snapshot)
+
+
+async def accept(
+    entry: Entry, config: PrincipalCacheSettings, *, touch: bool = True
+) -> None:
+    """Keep ``entry``, which its class accepted; record that its token was used.
+
+    ``last_used_at`` is written when due (``LAST_USED_EVERY``), by one of
+    the requests that find it due, in a transaction of its own; kept or
+    not, no other request opens one.
+    """
+    if touch and entry.credential is not None:
+        now = utc_now()
+        if principal_cache.claim_touch(entry, now):
+            async with AuthUnitOfWork() as uow:
+                if await uow.tokens.touch_digest(entry.credential.id, now):
+                    await uow.commit()
+    remember(entry, config)
+
+
+async def login_principal(
+    session: UUID, user_id: UUID, config: PrincipalCacheSettings
+) -> Entry:
+    """A JSON Web Token's login and user: kept, or read in two queries.
+
+    A kept login past its last token's expiry is read again: a refresh may
+    have given it a newer one.
+    """
+    key = (JWT_SCHEME, f"{session}:{user_id}")
+    entry = await recall(key, config)
+    if entry is not None:
+        if entry.login is not None and entry.login.active_at(utc_now()):
+            return entry
+        forget(entry)
+    entry = Entry(
+        key,
+        None,
+        targets=(user_target(user_id), family_target(session)),
+        started=principal_cache.begin(),
+    )
+    await stamps_before_reading(entry, config)
+    async with AuthUnitOfWork() as uow:
+        entry.login = await uow.principals.login(session)
+        if not entry.login.active_at(utc_now()):
+            return entry
+        snapshot = await uow.principals.principal(user_id)
+    return entry.holding(snapshot)
 
 
 async def active_user(uow: AuthUnitOfWork, user_id: UUID) -> AbstractBaseUser:

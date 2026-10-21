@@ -12,7 +12,7 @@ configured by one setting, a dictionary whose keys are all optional.
 | `domainkit.contrib.idempotency` | `IDEMPOTENCY` | `domainkit_idempotency_keys` |
 | `domainkit.contrib.evidence` | `EVIDENCE` | none: records live on a ledger |
 | `domainkit.contrib.contenttypes` | none | `domainkit_content_types` |
-| `domainkit.contrib.auth` | `AUTH` | users, groups, permissions; see [auth.md](auth.md) |
+| `domainkit.contrib.auth` | `AUTH` | users, groups, permissions, and the principal cache; see [auth.md](auth.md) |
 | `domainkit.contrib.privacy` | none | none: exports, erases, and purges domains' rows; see [privacy.md](privacy.md) |
 | `domainkit.contrib.flags` | `FLAGS` | `domainkit_flags`, `domainkit_dynamic_settings` |
 | `domainkit.contrib.objectpermissions` | none | `domainkit_object_permissions`, in every database that hosts a domain; see [auth.md](auth.md#grants-on-single-objects) |

@@ -33,6 +33,8 @@ that site lock everyone behind the browser's address out.
 An open WebSocket or event stream has its credentials checked again while
 it lasts (``reauthenticate``, called by ``domainkit.http.live``), so a
 revoked or expired token, or a deactivated user, does not keep it open.
+The check reads through the principal cache, as requests do: it sees a
+change as soon as requests of this process do (``principals``).
 """
 
 import logging
@@ -129,9 +131,11 @@ class AuthenticationMiddleware:
     async def reauthenticate(self, scope: Scope) -> bool:
         """Whether the credentials of ``scope`` still hold, for the same user.
 
-        On success the user, with its groups and permissions, is loaded
-        afresh into the scope, for the access rules checked next. Why
-        credentials failed is logged, never told to the client.
+        On success the user, with its groups and permissions, is built
+        afresh into the scope, for the access rules checked next, from the
+        principal cache as for a request: a change that dropped the
+        principal is seen at once. Why credentials failed is logged, never
+        told to the client.
         """
         before: Credentials | None = scope.get("auth")
         try:
