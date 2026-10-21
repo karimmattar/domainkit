@@ -36,25 +36,26 @@ characters (an IPv6 zone can be any length) are never kept.
 ### What it saves
 
 Python calls per request, counted with cProfile (exact), `GET /hello`
-answering `{"status": "ok"}` in process, against 0.8.0 (`a686177`). "T7"
+answering `{"status": "ok"}` in process, against 0.8.0 (`a686177`), on
+FastAPI 0.141.1 and on 0.143.1, the release this branch ships with. "T7"
 is the re-audit's `init` stack of 0.6 (seven middleware); "init" is the
 eleven `domainkit init` writes now, with the template's routes in front
 of `/hello` (health, auth, and the auth admin).
 
-| Stack and request | 0.8.0 | routers flattened | all changes |
-| --- | ---: | ---: | ---: |
-| No middleware, template routes, `/hello` (1 level) | 1,638 | 434 | 434 |
-| No middleware, template routes, `/v1/hello` (2 levels) | 1,760 | 442 | 442 |
-| 5 middleware (the re-audit's default) | 388 | 274 | 226 |
-| `DEFAULT_MIDDLEWARE` (8) | 476 | 362 | 314 |
-| T7 | 749 | 509 | 405 |
-| T7, behind a trusted proxy | 844 | 604 | 427 |
-| T7, an IPv6 client | 923 | – | 409 |
-| init (11) | 2,019 | 815 | 711 |
-| init, behind a trusted proxy | 2,114 | 910 | 733 |
-| init, an IPv6 client | 2,193 | – | 715 |
-| init, `/v1/hello` (2 levels) | 2,141 | 823 | 719 |
-| init, `/auth/me` without a token (401, 2 levels) | 1,729 | 1,161 | 1,059 |
+| Stack and request | 0.141.1: 0.8.0 | routers flattened | all changes | 0.143.1: 0.8.0 | all changes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| No middleware, template routes, `/hello` (1 level) | 1,638 | 434 | 434 | 1,674 | 500 |
+| No middleware, template routes, `/v1/hello` (2 levels) | 1,760 | 442 | 442 | 1,796 | 508 |
+| 5 middleware (the re-audit's default) | 388 | 274 | 226 | 424 | 292 |
+| `DEFAULT_MIDDLEWARE` (8) | 476 | 362 | 314 | 512 | 380 |
+| T7 | 749 | 509 | 405 | 785 | 471 |
+| T7, behind a trusted proxy | 844 | 604 | 427 | 880 | 493 |
+| T7, an IPv6 client | 923 | – | 409 | 959 | 475 |
+| init (11) | 2,019 | 815 | 711 | 2,055 | 777 |
+| init, behind a trusted proxy | 2,114 | 910 | 733 | 2,150 | 799 |
+| init, an IPv6 client | 2,193 | – | 715 | 2,229 | 781 |
+| init, `/v1/hello` (2 levels) | 2,141 | 823 | 719 | 2,177 | 785 |
+| init, `/auth/me` without a token (401, 2 levels) | 1,729 | 1,161 | 1,059 | 1,745 | 1,105 |
 
 Time per request, the same requests: CPU time of the process, best of
 fifteen runs of 10,000 in three rounds of fresh processes, 0.8.0 and this
@@ -77,13 +78,19 @@ re-audit measured T7 at 166 µs on a quiet one) and wall time spread more.
 One route nested in FastAPI alone (the re-audit's `nest_bench.py`, adapted
 to compare each depth nested and flattened in one process):
 
-| Depth | FastAPI 0.141.1, nested | flattened | FastAPI 0.158.2, nested | flattened |
+| Depth | FastAPI 0.141.1, nested | flattened | 0.143.1 and 0.158.2, nested | flattened |
 | --- | ---: | ---: | ---: | ---: |
 | 0 | 168 calls | 168 | 234 | 234 |
 | 1 | 280 | 168 | 316 | 234 |
 | 2 | 370 | 168 | 406 | 234 |
 | 3 | 492 | 168 | 528 | 234 |
+| 1, behind 20 sibling routes | 1,078 | 320 | 1,114 | 386 |
 | 2, behind 20 sibling routes | 1,605 | 320 | 1,641 | 386 |
+
+On 0.141.1, the best of seven alternating rounds of 20,000 requests took
+72.7 µs nested and 39.8 µs flattened at depth 2, and 176.0 and 67.9 µs
+behind 20 sibling routes (wall time; medians 85.9 and 48.3, 204.4 and
+80.1 µs).
 
 What the pieces cost alone (`timeit`, best of 5, at 0.8.0):
 `MutableHeaders` security headers 4.3 µs, raw 0.45 µs; `uuid4().hex`

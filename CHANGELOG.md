@@ -21,9 +21,9 @@ All notable changes to domainkit. The format follows
   and built the route's handler again for each request. Every route keeps
   its full path, access rules and other dependencies, tags, responses,
   response and route classes, and callbacks, and the OpenAPI document is
-  the same byte for byte, on FastAPI 0.141 and 0.158. In the project
-  template's routes, a request makes 434 Python calls instead of 1,638
-  before any middleware. `app.routes` now lists the routes, with their
+  the same byte for byte, on FastAPI 0.141, 0.143, and 0.158. In the
+  project template's routes, a request makes 434 Python calls instead of
+  1,638 before any middleware (500 instead of 1,674 on 0.143). `app.routes` now lists the routes, with their
   full paths, and `request.scope["route"].path` is the full template. A
   route added to an included router after the application is built is not
   served, and a router with frontend routes stays included.

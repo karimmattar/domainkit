@@ -9,7 +9,8 @@ FastAPI 0.141.1, the release domainkit pins, keeps each `include_router`
 call as one entry of the including router's routes (`_IncludedRouter`),
 and works out what the router gives its routes (the full path,
 dependencies, tags, responses, response class) when a request arrives.
-FastAPI 0.158.2, the newest today, still does. For each level of
+FastAPI 0.143.1, which the performance branch upgrades to, and 0.158.2,
+the newest today, still do. For each level of
 nesting, a request is matched twice, once to choose the router and once
 to serve it; FastAPI sets and restores keys in `scope["fastapi"]` for each
 route it tries; and on 0.141.1 the served route's handler is built again
@@ -57,7 +58,7 @@ The options:
 - `FLATTEN_ROUTERS = False` keeps FastAPI's nesting, for a FastAPI release
   or a project's route class that needs it, without a code change.
 - The tests build every application twice, nested and flattened, on
-  FastAPI 0.141.1 and 0.158.2, and require the same OpenAPI document byte
+  FastAPI 0.141.1, 0.143.1, and 0.158.2, and require the same OpenAPI document byte
   for byte (the `init` project, the auth, admin, staff, and identity
   routers, and a router tree with every option), the same responses byte
   for byte (statuses, headers in order, bodies; 404, 405, 422, redirects,
@@ -70,7 +71,8 @@ The options:
   built once. In the template's routes, a request with no middleware makes
   434 Python calls instead of 1,638; with the template's eleven
   middleware, 711 instead of 2,019 (with the other changes of the
-  performance branch to the HTTP stack).
+  performance branch to the HTTP stack). On FastAPI 0.143.1: 500 instead
+  of 1,674, and 777 instead of 2,055.
 - What a project can see:
   - `app.routes` lists the routes themselves, with their full paths,
     where it listed the included routers;
@@ -94,7 +96,7 @@ The options:
   their shape fails the tests that compare nested and flattened
   applications. The benchmarks in CI would show the cost of nesting
   coming back.
-- On FastAPI 0.158, `iter_route_contexts` readers that ask a nested
+- On FastAPI 0.143 and 0.158, `iter_route_contexts` readers that ask a nested
   WebSocket's context for its `starlette_route` get nothing, so domainkit's
   checks see the router's own route: its path without prefixes, and
   without the rules of the `include_router` calls. Flattened routes do not
