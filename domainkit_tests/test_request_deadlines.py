@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
-from sqlalchemy import select, text, update
+from sqlalchemy import insert, select, text, update
 from sqlalchemy.ext.asyncio import create_async_engine
 from starlette.types import Message, Receive, Scope, Send
 
@@ -138,13 +138,14 @@ async def test_requests_get_request_timeout_unless_it_is_none() -> None:
 
 async def test_only_http_requests_get_a_deadline() -> None:
     """WebSockets and the lifespan pass through without one."""
-    seen: list[tuple[str, float | None]] = []
+    seen: list[tuple[str, float | None, str]] = []
 
     async def app(scope: Scope, receive: Receive, send: Send) -> None:
-        seen.append((scope["type"], deadlines.remaining()))
+        received = await receive()  # What the server passed.
+        seen.append((scope["type"], deadlines.remaining(), received["type"]))
 
     async def receive() -> Message:
-        return {"type": "lifespan.startup"}  # pragma: no cover - never read.
+        return {"type": "lifespan.startup"}
 
     async def send(message: Message) -> None:
         """Nothing is sent."""  # pragma: no cover - nothing sends.
@@ -154,7 +155,10 @@ async def test_only_http_requests_get_a_deadline() -> None:
     for kind in ("websocket", "lifespan"):
         await middleware({"type": kind}, receive, send)
 
-    assert seen == [("websocket", None), ("lifespan", None)]
+    assert seen == [
+        ("websocket", None, "lifespan.startup"),
+        ("lifespan", None, "lifespan.startup"),
+    ]
 
 
 async def test_a_request_arriving_with_no_time_left_is_answered_503(
@@ -229,8 +233,15 @@ async def test_a_response_that_started_cannot_become_a_503(
 
 async def test_a_route_that_catches_the_cancellation_answers_itself() -> None:
     """Swallowing the cancellation is the route's choice; its answer stands."""
-    async with serving(REQUEST_TIMEOUT=0.05) as client:
-        response = await client.get("/swallow")
+    deadline_routes.swallowing.clear()
+    deadline_routes.arrivals.value = 0
+    async with serving(REQUEST_TIMEOUT=30.0) as client:
+        pending = asyncio.create_task(client.get("/swallow"))
+        await deadline_routes.arrivals.reach(1)  # Inside its try.
+        [deadline] = deadline_routes.swallowing
+        assert deadline is not None
+        deadline.reset(0.0)  # The deadline passes now.
+        response = await pending
 
     assert response.json() == {"swallowed": True}
 
@@ -376,8 +387,8 @@ def _milliseconds(value: str) -> int:
 async def test_a_lock_wait_cut_off_leaves_no_lock(database_url: str) -> None:
     """A request waiting on a row lock is answered 503 and waits no more."""
     async with paying(database_url, REQUEST_TIMEOUT=0.3) as client:
-        deadline_routes.hang_payments[:] = [False]
-        assert (await client.post("/slow-pay", json={})).status_code == 201
+        async with connections.engine().begin() as connection:
+            await connection.execute(insert(payments))  # Outside any deadline.
         holder = create_async_engine(database_url)
         try:
             async with holder.connect() as connection:

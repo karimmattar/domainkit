@@ -53,6 +53,8 @@ hang_payments: list[bool] = [True]
 """Whether ``/slow-pay`` hangs after writing (else it commits)."""
 paying: list[deadlines.Deadline | None] = []
 """The deadline of each ``/slow-pay`` that wrote and hangs, for the test to end."""
+swallowing: list[deadlines.Deadline | None] = []
+"""The deadline of each ``/swallow`` waiting, for the test to end."""
 
 
 async def forever() -> None:
@@ -135,6 +137,8 @@ async def own_timeout() -> None:
 async def swallow() -> dict[str, bool]:
     """Catch the deadline's cancellation and answer anyway."""
     try:
+        swallowing.append(deadlines.current_deadline())
+        arrivals.add()
         await forever()
     except asyncio.CancelledError:
         return {"swallowed": True}

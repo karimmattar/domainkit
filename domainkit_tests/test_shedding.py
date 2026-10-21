@@ -157,10 +157,11 @@ class Gated:
         self.gates: list[asyncio.Event] = []
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Count the admission, wait for the gate, answer."""
+        """Count the admission, read the request, wait for the gate, answer."""
         gate = asyncio.Event()
         self.gates.append(gate)
         self.admitted.add()
+        assert (await receive())["type"] == "http.request"
         if self.stream:
             await send({"type": "http.response.start", "status": 200, "headers": []})
         await gate.wait()
@@ -183,9 +184,10 @@ class Call:
 
         self.task = asyncio.create_task(run())
 
-    async def receive(self) -> Message:
+    @staticmethod
+    async def receive() -> Message:
         """No body."""
-        return {"type": "http.request", "body": b""}  # pragma: no cover
+        return {"type": "http.request", "body": b""}
 
     async def send(self, message: Message) -> None:
         """Keep what the app sent."""
@@ -309,20 +311,30 @@ async def test_the_deadline_frees_the_slot_of_a_request_it_cuts_off(
 ) -> None:
     """Running or waiting, a request past its deadline gives everything back."""
     app = Gated()
+    given: list[deadlines.Deadline | None] = []
     with override_settings(
-        REQUEST_TIMEOUT=0.05,
+        REQUEST_TIMEOUT=60.0,
         MAX_CONCURRENT_REQUESTS=1,
         MAX_QUEUED_REQUESTS=1,
         REQUEST_QUEUE_TIMEOUT=60.0,
     ):
         middleware = ConcurrencyLimitMiddleware(app)
-        bounded = DeadlineMiddleware(middleware)
+
+        async def keeping(scope: Scope, receive: Receive, send: Send) -> None:
+            given.append(deadlines.current_deadline())
+            await middleware(scope, receive, send)
+
+        bounded = DeadlineMiddleware(keeping)
     holder = Call(bounded)
     await app.admitted.reach(1)
     waiter = Call(bounded)
     await queued.reach(1)
-    assert await holder.answered() == 503
-    assert await waiter.answered() == 503
+    for deadline in given:
+        assert deadline is not None
+        deadline.reset(0.0)  # Both pass now: one request runs, one waits.
+    for call in (holder, waiter):
+        assert await call.answered() == 503
+        assert b'"code":"deadline_exceeded"' in call.sent[1]["body"]
     assert (middleware.slots(1).held, middleware.slots(1).waiting) == (0, 0)
 
 
@@ -419,6 +431,7 @@ async def test_probes_websockets_and_no_cap_pass_through() -> None:
     seen: list[str] = []
 
     async def record(scope: Scope, receive: Receive, send: Send) -> None:
+        await receive()  # What the server passed.
         seen.append(scope["type"])
 
     async with capped(record) as middleware:
