@@ -219,9 +219,14 @@ async def order_socket(websocket: WebSocket) -> None:
   client sends is read and dropped.
 - The fields marked `Personal` are left out. `render=` chooses what is sent
   instead: `render=lambda event: {"order": str(event.order_id)}`.
-- Each connection buffers up to `LIVE_SEND_QUEUE` events. One that falls
-  further behind is closed as too slow (1013), and reconnects. Publishing
-  never waits for a client, and never fails the commit.
+- Each connection buffers up to `LIVE_SEND_QUEUE` events its rule allows.
+  One that falls further behind is closed as too slow (1013), and
+  reconnects. Events a client may not see never count against it, however
+  many one commit has: they wait for the rule in a buffer of their own, 16
+  times as large, and only a client that falls that far behind on them is
+  closed too. Publishing never waits for a client, and never fails the
+  commit; it lets the event loop run after each event, so a client that
+  keeps up takes the events of a large commit one by one.
 - `live_events.subscribe(connection, *types, rule=...)` gives the events to
   a route that sends them its own way.
 

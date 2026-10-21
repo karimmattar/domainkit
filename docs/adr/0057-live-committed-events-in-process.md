@@ -37,10 +37,15 @@ Questions to settle:
   event of the global bus, once a connection subscribes. Publishing offers
   each event to the subscribers of its type, in their own event loop, and
   never waits or fails: a commit is not slowed by its watchers.
-- Each subscriber buffers at most `LIVE_SEND_QUEUE` events. One more ends
-  the subscription as too slow (`Closed(TOO_SLOW)`: a 1013 close, or the
-  end of an event stream), and the client reconnects. Nothing is dropped
-  silently.
+- Each subscriber buffers at most `LIVE_SEND_QUEUE` events its rule
+  allows. One more ends the subscription as too slow (`Closed(TOO_SLOW)`:
+  a 1013 close, or the end of an event stream), and the client reconnects.
+  Nothing is dropped silently. Events wait for the rule in an intake of
+  their own, 16 times as large, which ends the subscription the same way
+  when full: counting every event of the type against the send queue let
+  one user's large commit close everyone else's subscriptions. Publishing
+  yields to the loop after each event, so a subscriber that keeps up takes
+  a large commit one event at a time. (Amended 2026-10-21.)
 - Each subscription names its event types and an access rule, which is
   required (`AllowAny()` says "everyone may see these" on purpose). In the
   subscriber's task, each event passes only if the rule's

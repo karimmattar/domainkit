@@ -275,6 +275,13 @@ All notable changes to domainkit. The format follows
   (IND-A9).
 - Publishers and brokers of event loops closed without a shutdown no longer
   keep those loops alive.
+- Live events a client may not see no longer fill its buffer: one user's
+  commit of more than `LIVE_SEND_QUEUE` events closed every other client
+  subscribed to that type with 1013, and told them a burst had happened.
+  Too slow now counts only the events the client's rule allows; the others
+  wait for the rule in a buffer of their own, 16 times as large. Publishing
+  lets the event loop run after each event, so a client that keeps up
+  takes a large commit one event at a time.
 
 ## [0.7.0] - 2026-10-20
 
