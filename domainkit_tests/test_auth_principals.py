@@ -506,10 +506,12 @@ def test_an_expired_token_is_refused_from_memory(api: Api) -> None:
         raw = run_async(issue("alice", ttl=timedelta(seconds=3)))
         assert run_async(credentials_of(headers=bearer(raw))) is not None
         clock.tick(3)
+        before = sample("invalidation")
         with pytest.raises(AuthenticationFailed) as expired:
             run_async(credentials_of(headers=bearer(raw)))
     assert expired.value.detail == "Token expired."
     assert len(principal_cache) == 0
+    assert sample("invalidation") == before + 1
 
 
 def test_principals_are_read_again_after_the_ttl(
