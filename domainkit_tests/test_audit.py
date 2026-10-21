@@ -8,7 +8,7 @@ import os
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Collection, Iterator
 from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,17 +26,20 @@ from domainkit.contrib.audit import (
     action_for,
     forget,
     forget_anonymous,
+    personal,
     pseudonym_of,
     record,
 )
 from domainkit.contrib.audit.management.commands.auditforget import Command
-from domainkit.contrib.audit.personal import audited_databases, pseudonym
+from domainkit.contrib.audit.personal import audited_databases, pseudonym, subject_keys
 from domainkit.contrib.audit.protection import PROTECT, UNPROTECT, protect, unprotect
 from domainkit.contrib.audit.tables import audit_keys, audit_log
 from domainkit.db import connections
 from domainkit.ddd import DomainEvent, Personal, ValueObject
 from domainkit.ddd.personal import personal_fields
 from domainkit.management import CommandError, call_command
+from domainkit.testing import assert_num_queries
+from domainkit.testing.queries import CapturedQueries
 from domainkit_tests.sample_domains.alpha.events import GreetingSent
 from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork, NoteWritten, notes
 
@@ -720,3 +723,141 @@ def test_auditforget_explains_its_arguments() -> None:
         "keep anonymous callers' addresses for DAYS days (UTC) and forget older ones"
         in " ".join(usage.split())
     )
+
+
+# What subject keys cost, and how long they are kept --------------------------------
+
+
+def on_keys(queries: CapturedQueries) -> list[str]:
+    """The first word of each statement ``queries`` saw on the keys table."""
+    return [
+        statement.split(None, 1)[0]
+        for statement in queries.statements
+        if audit_keys.name in statement
+    ]
+
+
+async def test_known_subjects_cost_one_query_and_new_ones_two(tables: None) -> None:
+    """A commit reads every subject's key at once; it inserts the missing ones.
+
+    The insert returns the keys it made: they are not read again.
+    """
+    member = uuid.uuid4()
+    joined = MemberJoined(member_id=member, email="ann@example.com")
+
+    with CapturedQueries() as first:
+        await commit_events(joined, actor="alice")
+    with CapturedQueries() as known:
+        await commit_events(joined, actor="alice")
+
+    assert on_keys(first) == ["SELECT", "INSERT"]  # Alice and the member, new.
+    assert on_keys(known) == ["SELECT"]
+    entry = (await entries())[-1]
+    assert entry["details"]["email"] == await pseudonym_of(
+        str(member), "email", "ann@example.com"
+    )
+
+
+async def test_a_transaction_reads_each_subjects_key_once(tables: None) -> None:
+    """Keys are kept for the rest of the transaction, and not past it."""
+    async with NotesUnitOfWork() as uow:
+        with CapturedQueries() as first:
+            made = await subject_keys(uow.session, ["ann", "bob"])
+        with assert_num_queries(0):
+            again = await subject_keys(uow.session, ["bob", "ann"])
+        with CapturedQueries() as more:
+            more_keys = await subject_keys(uow.session, ["ann", "cid"])
+        await uow.commit()
+        with CapturedQueries() as next_transaction:
+            after = await subject_keys(uow.session, ["ann"])
+
+    assert on_keys(first) == ["SELECT", "INSERT"]
+    assert again == made
+    assert on_keys(more) == ["SELECT", "INSERT"]  # Only cid, which is new.
+    assert more_keys["ann"] == made["ann"]
+    assert on_keys(next_transaction) == ["SELECT"]
+    assert after == {"ann": made["ann"]}
+
+
+async def test_forgetting_drops_the_keys_open_transactions_keep(tables: None) -> None:
+    """A transaction of this process never uses a key forgotten meanwhile."""
+    async with NotesUnitOfWork() as uow:  # Made and committed beforehand.
+        await subject_keys(uow.session, ["ann", "bob", "anonymous:2026-01-01"])
+        await uow.commit()
+    async with NotesUnitOfWork() as uow:
+        kept = await subject_keys(uow.session, ["ann", "bob", "anonymous:2026-01-01"])
+        assert await forget("ann") == 1
+        assert await forget_anonymous(date(2026, 1, 2)) == 1
+        with CapturedQueries() as later:
+            renewed = await subject_keys(
+                uow.session, ["ann", "bob", "anonymous:2026-01-01"]
+            )
+        await uow.commit()
+
+    assert on_keys(later) == ["SELECT", "INSERT"]  # Ann and the day, made anew.
+    assert renewed["bob"] == kept["bob"]
+    for subject in ("ann", "anonymous:2026-01-01"):
+        assert renewed[subject] != kept[subject]
+    assert await pseudonym_of("ann", "email", "a") == pseudonym(
+        renewed["ann"], "email", "a"
+    )
+
+
+async def test_a_key_made_in_a_savepoint_goes_with_it(tables: None) -> None:
+    """Rolled back, the key is gone, and made again; the stored one is used."""
+    lost: dict[str, bytes] = {}
+
+    async def undone(uow: NotesUnitOfWork) -> None:
+        async with uow.savepoint():
+            lost.update(await subject_keys(uow.session, ["zed"]))
+            raise LookupError("undo")
+
+    async with NotesUnitOfWork() as uow:
+        await subject_keys(uow.session, ["ann"])
+        with pytest.raises(LookupError, match="undo"):
+            await undone(uow)
+        with CapturedQueries() as after:
+            kept = await subject_keys(uow.session, ["zed"])
+        await uow.commit()
+
+    assert on_keys(after) == ["SELECT", "INSERT"]
+    assert kept["zed"] != lost["zed"]
+    stored = await pseudonym_of("zed", "email", "z")
+    assert stored == pseudonym(kept["zed"], "email", "z")
+
+
+async def test_a_key_another_writer_made_first_is_read(
+    tables: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Missed by the read, then refused by the insert: the stored key wins."""
+    async with NotesUnitOfWork() as uow:
+        stored = await subject_keys(uow.session, ["ann"])
+        await uow.commit()
+    reads = [personal._read_keys]
+
+    async def missed_once(
+        executor: personal.Executor, subjects: Collection[str]
+    ) -> dict[str, bytes]:
+        if len(reads) == 1:
+            reads.append(personal._read_keys)
+            return {}  # As if another writer had not committed it yet.
+        return await reads[0](executor, subjects)
+
+    monkeypatch.setattr(personal, "_read_keys", missed_once)
+    async with NotesUnitOfWork() as uow:
+        with CapturedQueries() as raced:
+            keys = await subject_keys(uow.session, ["ann"])
+
+    assert on_keys(raced) == ["INSERT", "SELECT"]  # Refused, then read.
+    assert keys == stored
+
+
+async def test_connections_keep_no_keys(tables: None) -> None:
+    """Explicit records read their keys in their own short transaction."""
+    async with connections.engine().begin() as connection:
+        first = await subject_keys(connection, ["ann"])
+        with CapturedQueries() as again:
+            await subject_keys(connection, ["ann"])
+
+    assert on_keys(again) == ["SELECT"]
+    assert first["ann"]
