@@ -11,7 +11,10 @@ raises ``DuplicateValue`` (a 409), or the subclass the constraint names.
 A read-only unit of work opens its session on a replica of its database
 when ``DATABASES`` names one (``REPLICAS``), and on the database itself
 otherwise; on PostgreSQL its transaction is ``READ ONLY`` either way.
-``savepoint()`` is a ``SAVEPOINT`` in the session's transaction.
+``reads`` says how it reads (``Reads``): ``STATEMENTS`` runs each statement
+on its own, without ``BEGIN`` and ``ROLLBACK``, and ``SNAPSHOT`` reads one
+snapshot (``REPEATABLE READ``). ``savepoint()`` is a ``SAVEPOINT`` in the
+session's transaction.
 """
 
 import logging
@@ -25,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, AsyncSessionTransaction
 from sqlalchemy.orm.exc import StaleDataError
 
 from domainkit.apps import registry
-from domainkit.db.connections import connections
+from domainkit.db.connections import Reads, connections
 from domainkit.db.errors import duplicate_value
 from domainkit.db.orm import metadata
 from domainkit.db.repository import reload_expired
@@ -58,10 +61,18 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
 
     ``readonly=True`` (or ``readonly = True`` on the subclass) reads from a
     replica of that database, if it has one, and refuses to commit.
+    ``reads`` picks how such a unit of work reads (``Reads``), and makes it
+    read-only::
+
+        async with AccountsUnitOfWork(reads=Reads.STATEMENTS) as uow: ...
     """
 
     database: str | None = None
     """Target (a SQL alias or a shard group); None follows ``DATABASE_ROUTING``."""
+    reads: Reads = Reads.TRANSACTION
+    """How a read-only unit of work reads. A subclass that sets another
+    value is read-only; with ``STATEMENTS`` or ``SNAPSHOT`` its session also
+    refuses to flush or to run a statement that writes."""
     alias: str
     """The one SQL alias this unit of work uses, resolved from the target.
 
@@ -76,9 +87,30 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         database: str | None = None,
         events: EventBus | None = None,
         readonly: bool | None = None,
+        reads: Reads | str | None = None,
     ) -> None:
-        """Resolve the database now, so a missing shard key fails before any work."""
+        """Resolve the database now, so a missing shard key fails before any work.
+
+        ``reads`` makes the unit of work read-only, unless ``readonly=False``
+        says otherwise, which only ``Reads.TRANSACTION`` allows.
+
+        Raises:
+            ValueError: ``reads`` is not a ``Reads`` value, or asks a unit of
+                work that writes (``readonly=False``) to read without its
+                transaction: one that writes always has one.
+        """
         super().__init__(events=events, readonly=readonly)
+        if reads is not None:
+            self.reads = Reads(reads)
+        if (reads is not None or self.reads is not Reads.TRANSACTION) and (
+            readonly is not False
+        ):
+            self.readonly = True
+        elif self.reads is not Reads.TRANSACTION and not self.readonly:
+            raise ValueError(
+                f"reads={self.reads.value!r} is for read-only units of work; "
+                "one that writes always runs in a transaction."
+            )
         self.database = (
             database or self.database or router.target_for_module(type(self).__module__)
         )
@@ -89,7 +121,9 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
 
     async def __aenter__(self) -> Self:
         """Open a session and the repositories that share it."""
-        self.session = connections.session(self.alias, readonly=self.readonly)
+        self.session = connections.session(
+            self.alias, readonly=self.readonly, reads=self.reads
+        )
         self.create_repositories(self.session)
         return await super().__aenter__()
 

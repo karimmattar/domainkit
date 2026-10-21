@@ -163,6 +163,18 @@ def remaining(at_most: float | None = None) -> float | None:
     return min(at_most, left)
 
 
+def enforced() -> bool:
+    """Whether a timer cuts the running task off when its deadline passes.
+
+    True in the task that entered a ``timeout`` block (an HTTP request's
+    included), and in the blocks it nests; False without a deadline, and in
+    a task that only shares one. Code that bounds a wait by the deadline
+    itself can skip that when it is: the timer already does.
+    """
+    deadline = _current.get()
+    return deadline is not None and deadline._enforced()
+
+
 class Timeout:
     """A block bounded by its seconds and the deadline (see ``timeout``)."""
 
