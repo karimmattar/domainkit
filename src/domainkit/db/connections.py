@@ -77,7 +77,31 @@ SNAPSHOT_BEGIN: Final = "domainkit_snapshot"
 """Execution option asking SQLite to begin a transaction before reading."""
 READS_SUFFIX: Final = ":reads"
 """Added to an alias to name its ``STATEMENTS`` engine in ``pool_stats``."""
-_DETAIL: Final = re.compile(r"\nDETAIL:  [^\n]*")
+_DETAIL: Final = re.compile(
+    r"\n(?:DETAIL:  .*?(?=\n(?:HINT|QUERY|CONTEXT):  |\n\[SQL: |\Z)"
+    r"|CONTEXT:  .*?(?=\n\[SQL: |\Z))",
+    re.DOTALL,
+)
+"""The fields of a libpq message (psycopg's) that repeat values: a ``DETAIL``
+(``Failing row contains (...)``) up to the next field, and the ``CONTEXT``
+(``JSON data, line 1: ...``), which comes last."""
+HIDDEN: Final = "<hidden>"
+"""What a value is replaced with in an error's text."""
+_REFUSED_ARGUMENT: Final = re.compile(
+    r"(?P<encoding>invalid input for )?query argument \$[0-9]+"
+    r"(?: in element #[0-9]+ of executemany\(\) sequence)?: "
+)
+"""How asyncpg starts its refusal of a value it cannot send. The value's
+``repr`` follows, then the reason in parentheses; or, without ``invalid
+input for``, a type's own message."""
+_QUOTED: Final = re.compile(
+    r"""'(?:[^'\\]|\\.)*'(?! object)|"(?:[^"\\]|\\.)*"(?! object)"""
+)
+"""A quoted value in Python's messages; not a type's name (``'str' object``)."""
+_DATA_EXCEPTION: Final = "22"
+"""SQLSTATE class of PostgreSQL's refusals of a value: its input functions
+quote the value (``invalid input syntax for type integer: "x"``)."""
+_FIELD: Final = re.compile(r"\n(?:DETAIL|HINT|QUERY|CONTEXT|LINE [0-9]+):? ")
 _ALONE_DRIVERS: Final = frozenset({"asyncpg", "psycopg"})
 """PostgreSQL drivers whose connections can be held read-only at connect time."""
 _SEES_CLOSING: Final = frozenset({"asyncpg"})
@@ -594,11 +618,14 @@ def create_owner_engine(config: DatabaseConfig) -> AsyncEngine:
 
 
 def _hiding_details(engine: AsyncEngine, config: DatabaseConfig) -> AsyncEngine:
-    """Keep the values PostgreSQL repeats in errors out, unless they may show.
+    """Keep values out of errors, from PostgreSQL or the driver, unless they may show.
 
     A constraint's error carries a ``DETAIL`` with the values of the row or
     key (``Failing row contains (1, alice@example.com, ...)``), which would
-    reach logs and error reporters although bound values are hidden.
+    reach logs and error reporters although bound values are hidden. So do
+    a value the driver cannot send (``invalid input for query argument $1:
+    '4111...'``) and one PostgreSQL cannot read (``invalid input syntax for
+    type integer: "4111..."``).
     """
     if not config.LOG_PARAMETERS:
         event.listen(engine.sync_engine, "handle_error", _drop_detail)
@@ -606,14 +633,67 @@ def _hiding_details(engine: AsyncEngine, config: DatabaseConfig) -> AsyncEngine:
 
 
 def _drop_detail(context: ExceptionContext) -> None:
-    """Remove the ``DETAIL`` from the error, the driver's, and what that wraps."""
+    """Remove values from the error, the driver's, and what that wraps.
+
+    The ``DETAIL`` and ``CONTEXT`` go, and a refused value becomes
+    ``HIDDEN``; the argument's number, the reason, and the SQLSTATE stay.
+    """
     driver = context.original_exception
-    for error in (context.sqlalchemy_exception, driver):
+    hidden = _hidden_values(driver)
+    for error in (context.sqlalchemy_exception, driver, driver.__cause__):
         if error is not None and error.args and isinstance(error.args[0], str):
-            error.args = (_DETAIL.sub("", error.args[0]), *error.args[1:])
+            message = _DETAIL.sub("", error.args[0])
+            for shown, kept in hidden:
+                message = message.replace(shown, kept)
+            error.args = (message, *error.args[1:])
     for error in (driver, driver.__cause__):
-        if getattr(error, "detail", None) is not None:  # asyncpg keeps it apart.
-            error.detail = None  # type: ignore[union-attr]
+        for name in ("detail", "context"):  # asyncpg keeps them apart.
+            if getattr(error, name, None) is not None:
+                setattr(error, name, None)
+
+
+def _hidden_values(driver: BaseException) -> list[tuple[str, str]]:
+    """Each text of ``driver``'s error that shows a value, and what replaces it.
+
+    asyncpg's refusal of a value it cannot encode names the argument, the
+    value, and the reason, raised from the type's own error, whose quoted
+    values are masked too. PostgreSQL's refusal of a value (SQLSTATE class
+    22, how psycopg's untyped values are refused) quotes it once in the
+    message; everything between the first and the last double quote goes.
+    """
+    refusal = driver.__cause__ or driver
+    message = refusal.args[0] if refusal.args else None
+    if not isinstance(message, str):
+        return []
+    if argument := _REFUSED_ARGUMENT.match(message):
+        rest = message[argument.end() :]
+        if not argument["encoding"]:
+            return [(message, argument.group() + _masked(rest))]
+        reason = str(refusal.__cause__) if refusal.__cause__ else None
+        _mask_causes(refusal)
+        if reason and rest.endswith(f" ({reason})"):
+            return [(message, f"{argument.group()}{HIDDEN} ({_masked(reason)})")]
+        return [(message, argument.group() + HIDDEN)]
+    if str(getattr(driver, "sqlstate", "")).startswith(_DATA_EXCEPTION):
+        primary = _FIELD.split(message, maxsplit=1)[0]
+        first, last = primary.find('"'), primary.rfind('"')
+        if first < last:
+            return [(primary, f"{primary[: first + 1]}{HIDDEN}{primary[last:]}")]
+    return []
+
+
+def _masked(text: str) -> str:
+    """``text`` with each quoted value ``HIDDEN``, but not a type's name."""
+    return _QUOTED.sub(lambda quoted: f"{quoted[0][0]}{HIDDEN}{quoted[0][0]}", text)
+
+
+def _mask_causes(error: BaseException) -> None:
+    """Mask the quoted values in the errors ``error`` was raised from."""
+    cause = error.__cause__
+    while cause is not None:
+        if cause.args and isinstance(cause.args[0], str):
+            cause.args = (_masked(cause.args[0]), *cause.args[1:])
+        cause = cause.__cause__
 
 
 class _Engines:

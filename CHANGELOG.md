@@ -151,6 +151,17 @@ All notable changes to domainkit. The format follows
   instead of 3. A transaction reads each subject's key once, and `forget`
   drops the keys that open transactions of the process hold (N4).
 
+### Fixed
+
+- With `LOG_PARAMETERS` off, a value the driver cannot send no longer shows
+  in the error: asyncpg's `invalid input for query argument $1: '4111...'`
+  reads `$1: <hidden>`, with the reason kept, in the message, its `repr`,
+  and logged tracebacks. A value PostgreSQL cannot read, which it quotes
+  (`invalid input syntax for type integer: "<hidden>"`, how psycopg's
+  untyped values are refused), is hidden too, and so is the `CONTEXT` it
+  adds (`JSON data, line 1: ...`). A `DETAIL` that spans lines is dropped
+  whole.
+
 ## [0.8.0] - 2026-10-21
 
 ### Added
