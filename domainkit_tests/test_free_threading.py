@@ -3,10 +3,11 @@
 Free-threaded Python (3.14t), and servers that run a loop per thread, share
 one rate limiter, one middleware, one hashing pool, one application's live
 connection slots, the event bus, an HTTP client's circuit breaker, the
-guard's lookup threads, and the principal cache between threads, and the
-registries that keep each loop's tasks, publishers, and brokers. Each test
-drives them from several threads at once and checks what must always hold,
-and that the state is only touched with the lock held.
+guard's lookup threads, the principal cache, and the grants principals
+share between threads, and the registries that keep each loop's tasks,
+publishers, and brokers. Each test drives them from several threads at
+once and checks what must always hold, and that the state is only touched
+with the lock held (where there is one).
 """
 
 import asyncio
@@ -32,7 +33,7 @@ from domainkit import clock as clock_module
 from domainkit import tasks
 from domainkit.broker import Broker, BrokerHandler, MemoryBroker
 from domainkit.conf import override_settings
-from domainkit.contrib.auth import AllowAny
+from domainkit.contrib.auth import AllowAny, principals
 from domainkit.contrib.auth import middleware as middleware_module
 from domainkit.contrib.auth.hashers import HashingPool
 from domainkit.contrib.auth.middleware import AuthenticationMiddleware
@@ -246,6 +247,30 @@ def test_the_principal_cache_stays_whole_on_every_thread() -> None:
             for target in (ALL, *entry.targets):
                 assert cache._invalidated.get(target, -1) <= entry.started
                 assert target == ALL or key in cache._by_target[target]
+
+
+def test_shared_grants_stay_equal_and_bounded_on_every_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``shared`` takes no lock: each value comes back equal, the table bounded.
+
+    Threads that intern one value at once may each keep their copy, and may
+    restart interning together: a copy more, never another value.
+    """
+    monkeypatch.setattr(principals, "INTERNED_MAX", 64)
+    monkeypatch.setattr(principals, "_INTERNED", {})
+
+    def intern(index: int) -> int:
+        chosen = random.Random(index)  # noqa: S311 - the values only.
+        wrong = 0
+        for _ in range(5_000):
+            number = chosen.randrange(200)
+            value = (number, f"grant {number}")  # A new object each time.
+            wrong += principals.shared(value) != value
+        return wrong
+
+    assert on_threads(intern) == [0] * THREADS
+    assert len(principals._INTERNED) < 64 + THREADS
 
 
 def test_the_hashing_pool_counts_calls_from_every_thread() -> None:
