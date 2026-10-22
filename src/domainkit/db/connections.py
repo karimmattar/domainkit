@@ -231,7 +231,7 @@ def create_engine(config: DatabaseConfig) -> AsyncEngine:
     if backend.get_backend_name() == "postgresql":
         event.listen(engine.sync_engine, "begin", partial(_set_local, config))
     else:
-        event.listen(engine.sync_engine, "begin", _begin_snapshot)
+        _listen(engine.sync_engine, "begin", _begin_snapshot)
     if backend.get_driver_name() == "asyncpg" and not config.PGBOUNCER:
         engine.sync_engine.dialect.do_ping = _ping  # type: ignore[method-assign]
     return _hiding_details(engine, config)
@@ -264,12 +264,26 @@ def create_read_engine(config: DatabaseConfig) -> AsyncEngine:
         **_pool_options(config, url),
     )
     sync = engine.sync_engine
-    event.listen(sync, "do_execute", _read_alone)
-    event.listen(sync, "do_execute_no_params", _read_alone_no_params)
-    event.listen(sync.pool, "connect", _require_read_only)
-    event.listen(sync.pool, "checkout", _take_open)
-    event.listen(sync.pool, "reset", _reset_session)
+    _listen(sync, "do_execute", _read_alone)
+    _listen(sync, "do_execute_no_params", _read_alone_no_params)
+    _listen(sync.pool, "connect", _require_read_only)
+    _listen(sync.pool, "checkout", _take_open)
+    _listen(sync.pool, "reset", _reset_session)
     return _hiding_details(engine, config)
+
+
+def _listen(target: Any, name: str, listener: Callable[..., Any]) -> None:  # noqa: ANN401 - an engine or a pool.
+    """Add ``listener`` to one engine's or pool's ``name``, as a callable of its own.
+
+    SQLAlchemy keys its listener registry by the ids of the target and the
+    function, and a disposed engine's new pool keeps its listeners under the
+    old pool's id. With one function for every engine, a key repeats once a
+    freed pool's id is reused, and the registry, which is not thread-safe,
+    then races between threads making and dropping engines (a ``KeyError`` in
+    its weakref callback). A callable for each engine keeps the keys apart
+    while its listeners live.
+    """
+    event.listen(target, name, partial(listener))
 
 
 def reads_alone(config: DatabaseConfig) -> bool:
@@ -620,7 +634,7 @@ def _hiding_details(engine: AsyncEngine, config: DatabaseConfig) -> AsyncEngine:
     type integer: "4111..."``).
     """
     if not config.LOG_PARAMETERS:
-        event.listen(engine.sync_engine, "handle_error", _drop_detail)
+        _listen(engine.sync_engine, "handle_error", _drop_detail)
     return engine
 
 
