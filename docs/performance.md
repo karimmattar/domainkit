@@ -352,6 +352,12 @@ On 0.141.1, the best of seven alternating rounds of 20,000 requests took
 behind 20 sibling routes (wall time; medians 85.9 and 48.3, 204.4 and
 80.1 µs).
 
+A router whose class has its own `matches`, `handle`, or other method
+that serves requests (an IP gate, a host rule) stays included, so its own
+routes cost what nesting costs; the routers around it are still
+flattened ([reference.md](reference.md#included-routers)). Give such a
+router only the routes it guards.
+
 What the pieces cost alone (`timeit`, best of 5, at 0.8.0):
 `MutableHeaders` security headers 4.3 µs, raw 0.45 µs; `uuid4().hex`
 1.96 µs, `os.urandom(16).hex()` 0.45 µs; `labels()` 0.86 µs, a kept
