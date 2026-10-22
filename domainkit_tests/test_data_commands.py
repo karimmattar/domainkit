@@ -583,11 +583,12 @@ def test_fixtures_load_money_with_every_digit(tmp_path: Path) -> None:
         Column("count", Integer),
         Column("flag", Boolean),
         Column("extra", JSON),
+        Column("ratios", postgresql.ARRAY(Float)),
         Column("unknown", NullType()),
     )
     text = (
         '{"amount": 1234567890123456.78, "rate": 0.1, "ratio": 0.1, "count": 5.0, '
-        '"flag": 1.0, "extra": {"n": [0.1, 2]}, "unknown": 1e400}'
+        '"flag": 1.0, "extra": {"n": [0.1, 2]}, "ratios": [0.1], "unknown": 1e400}'
     )
     path = tmp_path / "money.json"
     path.write_text(text, encoding="utf-8")
@@ -598,12 +599,13 @@ def test_fixtures_load_money_with_every_digit(tmp_path: Path) -> None:
     assert loaded["amount"] == Decimal("1234567890123456.78")
     assert as_floats["amount"] == Decimal("1234567890123456.8")  # What it was.
     assert loaded["rate"] == Decimal("0.1")
-    others = ("ratio", "count", "flag", "extra", "unknown")
+    others = ("ratio", "count", "flag", "extra", "ratios", "unknown")
     assert {name: loaded[name] for name in others} == {
         name: as_floats[name] for name in others
     }
     assert type(loaded["ratio"]) is float
     assert loaded["extra"] == {"n": [0.1, 2]}
+    assert [type(ratio) for ratio in loaded["ratios"]] == [float]
     money = ExactDecimal(18, 2)
     bound = money.process_bind_param(loaded["amount"], postgresql.dialect())  # type: ignore[no-untyped-call]
     assert bound == Decimal("1234567890123456.78")

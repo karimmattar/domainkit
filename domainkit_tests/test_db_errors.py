@@ -495,6 +495,49 @@ def test_psycopg_messages_lose_their_values(
     assert CARD not in every_text(wrapped)
 
 
+def test_values_are_masked_in_the_errors_a_refusal_was_raised_from() -> None:
+    """Asyncpg raises its refusal from the type's own error, which may quote it.
+
+    Each error down the chain has its quoted values masked; other arguments,
+    and errors without a message, stay. A reason that is not the cause's
+    goes with the value.
+    """
+    from domainkit.db.connections import _drop_detail
+
+    def refused(message: str, cause: BaseException) -> Exception:
+        refusal = Exception(message)
+        refusal.__cause__ = cause
+        driver = Exception(message)
+        driver.__cause__ = refusal
+        context = SimpleNamespace(sqlalchemy_exception=None, original_exception=driver)
+        _drop_detail(context)  # type: ignore[arg-type]
+        return driver
+
+    empty = ValueError()
+    inner = ValueError(f"could not convert string to float: '{CARD}'", "kept")
+    inner.__cause__ = empty
+    element = TypeError(f"invalid array element at index 0: '{CARD}'")
+    element.__cause__ = inner
+    array = refused(
+        f"invalid input for query argument $1: ['{CARD}'] ({element})", element
+    )
+    other = refused(
+        f"invalid input for query argument $2: '{CARD}' (a reason of its own)",
+        ValueError("another reason"),
+    )
+
+    assert array.args == (
+        (
+            "invalid input for query argument $1: <hidden> "
+            "(invalid array element at index 0: '<hidden>')"
+        ),
+    )
+    assert element.args == ("invalid array element at index 0: '<hidden>'",)
+    assert inner.args == ("could not convert string to float: '<hidden>'", "kept")
+    assert empty.args == ()
+    assert other.args == ("invalid input for query argument $2: <hidden>",)
+
+
 def test_network_databases_wait_briefly_for_a_connection(tmp_path: Path) -> None:
     """``POOL_TIMEOUT`` defaults to 10 s for network databases; set, it wins."""
     from domainkit.conf import DatabaseConfig

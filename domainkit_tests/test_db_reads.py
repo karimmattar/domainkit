@@ -830,7 +830,8 @@ async def test_plain_selects_need_no_reset_and_anything_else_one_round_trip() ->
             await uow.gadgets.filter()
             if statement is not None:
                 await uow.session.execute(statement, [{}, {}] if many else None)
-        await sent.reach(logged + (statement is not None) + many)
+        async with asyncio.timeout(30):  # Fails, rather than hangs, without a reset.
+            await sent.reach(logged + (statement is not None) + many)
         return (_sent(driver) or 0) - ran, sent.queries[logged:]
 
     assert await read() == (3, [])
@@ -917,7 +918,7 @@ async def test_drivers_that_cannot_count_queries_are_always_reset() -> None:
         await greenlet_spawn(_reset_session, dbapi, record, state)
 
     assert driver.sent == [(RESET_SESSION, False)]
-    assert record.info == {"domainkit_reads_dirty": False, "domainkit_reads_sent": None}
+    assert record.info == {"domainkit_reads_dirty": False}
     assert (_sent(driver), _closed(driver)) == (None, False)
     driver.closed = True
     assert _closed(driver)
@@ -932,6 +933,8 @@ async def test_drivers_that_cannot_count_queries_are_always_reset() -> None:
         ("SELECT t.a FROM t WHERE t.b > $1::TIMESTAMP(6) WITH TIME ZONE", True),
         ("SELECT t.a FROM t WHERE t.b = ANY ($1::VARCHAR[]) AND NOT (t.c = $2)", True),
         ("SELECT t.a FROM t WHERE EXISTS (SELECT u.a FROM u WHERE u.a = t.a)", True),
+        ("SELECT t.a FROM t WHERE t.a = (SELECT u.a FROM u)", True),
+        ("SELECT t.a FROM t WHERE (t.a, t.b) IN (($1, $2))", True),
         ("SELECT $1::pg_catalog.int4", True),
         ("SELECT $1::pg_catalog.numeric(18, 2)", True),
         ("SELECT $1::CHARACTER VARYING(255)", True),
@@ -953,6 +956,7 @@ async def test_drivers_that_cannot_count_queries_are_always_reset() -> None:
         ("SELECT t.a FROM t WHERE t.a ~ $1", False),
         ("SELECT (SELECT 1)(2)", False),
         ("SELECT t.a[1](2) FROM t", False),
+        ("SELECT t.(a) FROM t", False),
         ("SELECT 1 INTO TEMP copied", False),
         ("WITH x AS (SELECT 1) SELECT 1", False),
         ("SET search_path TO a", False),

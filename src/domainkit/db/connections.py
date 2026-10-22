@@ -266,7 +266,6 @@ def create_read_engine(config: DatabaseConfig) -> AsyncEngine:
     sync = engine.sync_engine
     event.listen(sync, "do_execute", _read_alone)
     event.listen(sync, "do_execute_no_params", _read_alone_no_params)
-    event.listen(sync, "do_executemany", _read_many)
     event.listen(sync.pool, "connect", _require_read_only)
     event.listen(sync.pool, "checkout", _take_open)
     event.listen(sync.pool, "reset", _reset_session)
@@ -333,17 +332,6 @@ def _read_alone_no_params(
     return True
 
 
-def _read_many(
-    cursor: Any,  # noqa: ANN401 - the driver's.
-    statement: str,
-    parameters: Any,  # noqa: ANN401 - the driver's.
-    context: ExecutionContext,
-) -> bool:
-    """Note that the connection may have changed (``do_executemany``); False: run it."""
-    context.root_connection.info[_DIRTY] = True
-    return False
-
-
 def _run_alone(context: ExecutionContext, execute: _Execute) -> None:
     """Run one statement on its own, bounded by the deadline.
 
@@ -357,7 +345,9 @@ def _run_alone(context: ExecutionContext, execute: _Execute) -> None:
 
     The connection is marked for a reset (``_reset_session``) unless the
     statement is a plain ``SELECT`` (``_plain_select``) and nothing else
-    reached the server through it since the last statement seen here.
+    reached the server through it since the last statement seen here:
+    statements sent many at a time (``executemany``), which do not come
+    here, or on the driver's own connection.
     """
     connection = context.root_connection
     proxied = connection.connection
@@ -537,7 +527,6 @@ def _reset_session(
         else:
             await_only(driver.execute(RESET_SESSION))
         record.info[_DIRTY] = False
-        record.info[_SENT] = _sent(driver)
 
 
 def _within_deadline(execute: _Execute, cursor: Any) -> None:  # noqa: ANN401

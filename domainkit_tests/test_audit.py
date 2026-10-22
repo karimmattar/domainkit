@@ -932,6 +932,45 @@ async def test_forget_never_misses_a_first_key_being_made(
         await connections.close_all()
 
 
+async def test_forget_anonymous_never_misses_a_first_day_key_being_made(
+    tables: None, audited: str
+) -> None:
+    """Every anonymous day shares one lock, which ``forget_anonymous`` takes.
+
+    It cannot know which days a writer is making keys for, so it waits for
+    any writer making one, then deletes what is old enough.
+    """
+    await connections.close_all()
+    impatient = {"URL": audited, "CONNECT_ARGS": {} if ON_POSTGRES else {"timeout": 0}}
+    with override_settings(DATABASES={"default": impatient}):
+        async with NotesUnitOfWork() as uow:
+            await subject_keys(uow.session, ["anonymous:2026-01-01"])
+            forgetting = None
+            if ON_POSTGRES:
+                forgetting = asyncio.create_task(forget_anonymous(date(2026, 1, 2)))
+                await lock_waiter_or(forgetting, audited)
+            else:
+                with pytest.raises(OperationalError, match="database is locked"):
+                    await forget_anonymous(date(2026, 1, 2))
+            await uow.commit()
+
+        assert await (forgetting or forget_anonymous(date(2026, 1, 2))) == 1
+        assert await pseudonym_of("anonymous:2026-01-01", "client_ip", IP) is None
+        await connections.close_all()
+
+
+def test_subject_locks_are_stable_64_bit_hashes() -> None:
+    """The same everywhere, for every subject, lone surrogates included.
+
+    Anonymous days share one lock; other subjects have their own.
+    """
+    assert personal._lock_key("ann") == 7366055514945368831
+    assert personal._lock_key("\udc80") == -2477758832629098479
+    anonymous = {personal._lock_key(f"anonymous:2026-01-0{day}") for day in (1, 2)}
+    assert anonymous == {personal._lock_key("anonymous:")}
+    assert personal._lock_key("bob") not in {*anonymous, personal._lock_key("ann")}
+
+
 async def test_only_a_new_subject_takes_its_lock(tables: None) -> None:
     """A known subject costs what it did: one query, and no lock.
 
