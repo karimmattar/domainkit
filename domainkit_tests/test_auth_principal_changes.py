@@ -773,6 +773,34 @@ def test_a_cache_that_keeps_no_stamp_keeps_no_principal(
     assert len(principal_cache) == 0
 
 
+def test_a_cache_turned_off_reads_and_gives_no_stamps(
+    api: Api, shared: FakeServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``ENABLED = False`` with ``STAMPS`` (for the processes that keep principals)."""
+    create_user("alice")
+    api(PRINCIPAL_CACHE={**STAMPED, "ENABLED": False})
+    raw = run_async(issue("alice"))
+    reads: list[str] = []
+    get_many = Cache.get_many
+
+    async def counted(self: Cache, keys: Any, *args: Any) -> Any:  # noqa: ANN401
+        keys = list(keys)
+        reads.extend(keys)
+        return await get_many(self, keys, *args)
+
+    monkeypatch.setattr(Cache, "get_many", counted)
+
+    async def scenario() -> tuple[set[str], str, set[str]]:
+        before = await stamped_targets()
+        return before, await outcome(raw), await stamped_targets()
+
+    before, seen, after = run_async(scenario())
+    assert seen == "served"
+    assert after == before
+    assert reads == []
+    assert len(principal_cache) == 0
+
+
 def test_stamps_all_known_are_not_read_again(
     api: Api, shared: FakeServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
