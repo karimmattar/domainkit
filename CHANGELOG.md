@@ -19,12 +19,18 @@ All notable changes to domainkit. The format follows
   every request. A change committed in the process (logging out, a
   revoked token, a password change, a deactivated or deleted user, a
   group joined or left, a permission given or taken, a group changed)
-  drops what it affects at once; other processes see it within `TTL`, or
-  at once with `STAMPS`, a Redis cache every process shares. A cache that
-  fails is never trusted: the database answers. `check` warns about a
-  `TTL` above 5 seconds without `STAMPS` in staging and production;
-  `auth_principal_cache_total` counts hits, misses, invalidations, and
-  evictions by authentication class (`docs/auth.md`).
+  drops what it affects at once, as does a bulk statement a session runs
+  on the tables principals are read from (`update_rows`, `delete_rows`,
+  Core `UPDATE` and `DELETE`); other processes see it within `TTL`, or at
+  once with `STAMPS`, a Redis cache every process shares, stamped before
+  and after each commit. A cache that fails, or loses its stamps, is
+  never trusted: the database answers. Principals share their grants: an
+  entry costs a few kilobytes whatever the user's role holds. `check`
+  warns about a `TTL` above 5 seconds without `STAMPS` in staging and
+  production; `auth_principal_cache_total` counts hits, misses,
+  invalidations, and evictions by authentication class (`docs/auth.md`).
+- `AUTH.MAX_LIVE_TOKENS` (100): a user holding that many live access
+  tokens cannot make another personal token (`409 too_many_tokens`).
 - `domainkit.contrib.auth.principals.invalidate(...)`, `invalidate_all()`,
   and `invalidate_everywhere(...)` (with the stamps) drop principals that SQL
   outside the ORM changed;

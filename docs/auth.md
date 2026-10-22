@@ -766,8 +766,13 @@ how principals are read.
   taken back (directly or through a group), renaming or deleting a group,
   a new login (it changes `last_login`), and erasure. Repositories and the
   ORM mark what each commit changes, so the API, the admin API, the
-  management commands, and your own units of work all count. A principal
-  read while such a change commits is not kept.
+  management commands, and your own units of work all count. So do bulk
+  statements a session executes on the tables principals are read from
+  (users, their groups and permissions, groups, permissions, content
+  types, tokens): `update_rows`, `delete_rows`, `update(User)`, or a Core
+  `UPDATE`, `DELETE`, or link `INSERT`. They drop every principal at the
+  commit. It is the transaction's commit that counts, not a savepoint's
+  release, and a principal read while such a change commits is not kept.
 - **In other processes**: within `TTL`. To make it at once, name a Redis
   cache that every process shares in `STAMPS`: a commit stamps what it
   changed there, and each request compares its principal's stamps, one
@@ -781,14 +786,27 @@ how principals are read.
   AUTH = {"PRINCIPAL_CACHE": {"STAMPS": "shared", "TTL": 60}}
   ```
 
+  Every service that reads the same auth tables must name the same Redis
+  and the same `KEY_PREFIX`, or it never sees the others' stamps. Give
+  that Redis `maxmemory-policy noeviction` (or enough memory): an evicted
+  or lost stamp is safe, as it reads as a change, but every principal
+  resting on it is then read again. Each commit stamps twice: before the
+  commit, then after it, in a task a cancelled request does not stop
+  (bounded by 5 seconds). A commit outside a unit of work
+  (`connections.session()`) stamps too. A principal is kept with the
+  stamps it was read with, and a stamp that is absent when it is read is
+  given one first: a stamp the cache later loses (a restart without
+  persistence, an eviction, `FLUSHDB`) never matches it again.
+
 - **When the cache fails**: a request whose stamps cannot be read uses
   nothing kept, and reads its principal from the database, which it does
   not keep; nothing stale is ever served past the TTL. A stamp that
   cannot be written is logged (security logger): the change then reaches
   other processes within the TTL.
-- **Changes outside domainkit**: SQL that bypasses the auth repositories
-  and the ORM, or another service writing the tables, is seen within the
-  TTL. Drop what it changed yourself to see it at once, with
+- **Changes outside domainkit**: SQL run on a connection outside any
+  session (`connections.engine().begin()`, `loaddata`, a snapshot
+  restore), or another service writing the tables without these stamps,
+  is seen within the TTL. Drop what it changed yourself to see it at once, with
   `from domainkit.contrib.auth import principals`:
   `principals.invalidate([principals.user_target(user_id)])`, or
   `principals.invalidate_all()`, in this process; with `STAMPS`,

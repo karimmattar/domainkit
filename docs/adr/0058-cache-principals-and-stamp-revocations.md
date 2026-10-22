@@ -59,7 +59,7 @@ Options considered:
   CSRF checks, a JSON Web Token's signature and times. A kept login past
   its last token's expiry is read again (a refresh may have renewed it).
 - **Bounds**: `MAX_ENTRIES` (10,000; least recently used first, at most
-  a million) and `TTL`, 5 seconds by default and 5 minutes at most. Five
+  100,000) and `TTL`, 5 seconds by default and 5 minutes at most. Five
   seconds is shorter than an operator takes to revoke anything after
   noticing it, and still removes most lookups: a client sending one
   request a second is read once in five, a busy one once in fifty or more.
@@ -73,18 +73,33 @@ Options considered:
   changes `last_login`); the ORM marks users, groups, permissions, and
   tokens it updates or deletes (mapper events), which covers the API, the
   admin API, the management commands, erasure, and projects' own units of
-  work. A group or permission changed drops every principal. A read that
-  overlaps an invalidation of what it rests on is served but not kept
+  work. A group, permission, or content type changed drops every
+  principal. Bulk statements fire no mapper event: a session's
+  `do_orm_execute` sees each `UPDATE` or `DELETE` (and link `INSERT`) it
+  executes on the tables principals are read from (`update_rows`,
+  `delete_rows`, `update(User)`, Core statements) and drops every
+  principal at the commit; the auth repositories' own writes, which mark
+  what they change or change nothing principals hold, say so with an
+  execution option. SQLAlchemy reports a savepoint's release as a commit
+  too: it is ignored, so marks wait for the transaction's commit. A read
+  that overlaps an invalidation of what it rests on is served but not kept
   (each read takes a mark before its queries; an invalidation after the
   mark refuses the entry).
 - **In other processes**: within `TTL`, or at once with `STAMPS`, the
-  alias of a Redis cache every process shares. A commit writes a new
-  random stamp for each user, credential, and login it changed (and one
-  for everything, for groups and permissions), for 10 minutes. An entry
-  records its stamps, read before its rows (after the token, which names
-  the user; the user's read then checks the token is still stored), and
-  each request compares them in one `MGET`. Random rather than counted,
-  so a stamp that expired and came back never matches an old one.
+  alias of a Redis cache every process shares (with one `KEY_PREFIX`). A
+  commit writes a new random stamp for each user, credential, and login
+  it changed (and one for everything, for groups and permissions), for 10
+  minutes, twice: before the commit, and after it in an owned task that a
+  cancelled request does not stop, bounded by 5 seconds. Any session's
+  commit stamps, a unit of work's or a bare one's. An entry records its
+  stamps, read before its rows (`ALL`'s and the token's before the unit
+  of work opens, the user's after the token, which names the user; the
+  user's read then checks the token is still stored), and each request
+  compares them in one `MGET`. A stamp absent when an entry is read is
+  given one first (`SET NX`, once the credential proved real), so an entry
+  never records an absent stamp: a stamp the cache later loses reads as a
+  change. Random rather than counted, so a stamp that expired and came
+  back never matches an old one.
 - **Failures fail closed to the database.** Stamps that cannot be read
   confirm nothing: the principal is read from the database and not kept.
   A stamp that cannot be written is logged, and that change reaches other
@@ -109,21 +124,35 @@ Options considered:
 - Without `STAMPS`, a change reaches the other processes within the `TTL`,
   5 seconds by default; `check` warns when it is longer. With `STAMPS`,
   each request makes one cache round trip.
-- SQL that bypasses the repositories and the ORM, or another service
-  writing the tables, is seen within the `TTL`, unless the code calls
-  `principals.invalidate(...)`.
+- SQL run on a connection outside any session (`connections.engine()`,
+  fixtures, snapshot restores), or another service writing the tables
+  without these stamps, is seen within the `TTL`, unless the code calls
+  `principals.invalidate(...)`. Bulk statements through a session drop
+  every principal: a burst of misses.
 - A database outage no longer refuses requests whose principal is kept,
   for up to `TTL`; open connections then close at their first re-check
   past it (ADR 0056 said at once).
 - Changing a group drops every principal at once: a burst of misses after
   an admin action.
-- Memory is bounded by `MAX_ENTRIES` times a principal's size, a few
-  kilobytes for a user with dozens of permissions.
+- Memory is bounded by `MAX_ENTRIES` times a principal's size. Grants are
+  shared between principals (a user's credentials, a group's users), so
+  a principal costs a few kilobytes whatever its role holds (5.6 kB per
+  entry for a user with 1,000 permissions, measured; it was 368 kB before
+  grants were shared). `AUTH.MAX_LIVE_TOKENS` bounds the personal tokens
+  one user can make.
 - Whoever can write the shared cache can put an old stamp back and delay a
-  revocation in other processes, never past the `TTL`; deleting stamps
-  only causes misses. Its server deserves the protection the deployment
-  checks already ask of caches (TLS, a password).
-- On a miss with `STAMPS`, the stamps are read between the two queries,
-  while the read holds its connection: a slow cache lengthens that by its
-  `SOCKET_TIMEOUT` at most, and a failing one not at all once its
-  `FAILURE_COOLDOWN` starts.
+  revocation in other processes, never past the `TTL`. Deleting stamps
+  (or Redis losing them: a restart without persistence, an eviction,
+  `FLUSHDB`) causes misses, never matches, since no entry records an
+  absent stamp; `maxmemory-policy noeviction` avoids the misses. Its
+  server deserves the protection the deployment checks already ask of
+  caches (TLS, a password).
+- A commit's stamps are written before it and after it. If the process
+  ends between the commit and the second write, principals read before
+  the transaction still differ from the first stamp; one read during the
+  commit itself may stay for the `TTL`.
+- On a miss with `STAMPS`, `ALL`'s and the token's stamps are read before
+  the connection is taken; the user's (and any absent one, given a stamp)
+  between the two queries, while the read holds its connection: a slow
+  cache lengthens that by its `SOCKET_TIMEOUT` at most, and a failing one
+  not at all once its `FAILURE_COOLDOWN` starts.
