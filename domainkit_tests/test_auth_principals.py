@@ -1566,6 +1566,24 @@ def test_users_with_relationships_of_their_own_are_read_as_before(
     assert gone.user() is None
 
 
+def test_tokens_of_deleted_users_the_orm_reads_name_no_one(profiles: None) -> None:
+    """Read by the ORM too, a token whose user is gone is refused."""
+    from domainkit_tests.sample_domains.profiles.models import Profile
+
+    alice = create_user("alice")
+    raw = run_async(issue("alice"))
+
+    async def delete() -> None:
+        table = Profile.__table__  # type: ignore[attr-defined]
+        async with connections.engine().begin() as connection:
+            await connection.execute(table.delete().where(table.c.id == alice))
+
+    run_async(delete())
+    with pytest.raises(AuthenticationFailed) as refused:
+        run_async(credentials_of(headers=bearer(raw)))
+    assert refused.value.detail == "User inactive or deleted."
+
+
 # The counters.
 
 
