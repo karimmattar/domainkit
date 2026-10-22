@@ -72,7 +72,6 @@ asyncpg_only = pytest.mark.skipif(
     "+asyncpg" not in os.environ.get(POSTGRES_VARIABLE, ""),
     reason="reads asyncpg's own ping",
 )
-sqlite_only = pytest.mark.skipif(ON_POSTGRES, reason="reads SQLite's own behaviour")
 ROUTES = "domainkit_tests.reading_routes.router"
 MIDDLEWARE = [
     "domainkit.http.middleware.RequestContextMiddleware",
@@ -106,6 +105,22 @@ async def tables(database: str) -> AsyncIterator[None]:
     await store("first")
     yield
     await connections.close_all()
+
+
+@pytest.fixture
+async def sqlite_tables(tmp_path: Path) -> AsyncIterator[None]:
+    """The gadget tables on SQLite, whichever database the suite runs on.
+
+    For what only SQLite does: these tests run in the PostgreSQL job too,
+    which allows no skips.
+    """
+    url = f"sqlite+aiosqlite:///{tmp_path / 'reads.sqlite3'}"
+    with override_settings(DATABASES={"default": {"URL": url}}):
+        async with connections.engine().begin() as connection:
+            await connection.run_sync(metadata.create_all)
+        await store("first")
+        yield
+        await connections.close_all()
 
 
 async def store(*names: str) -> None:
@@ -292,8 +307,7 @@ async def test_statements_read_in_a_transaction_through_pgbouncer(
     assert getattr(refused.value.orig, "sqlstate", None) == WRITE_REFUSED
 
 
-@sqlite_only
-async def test_sqlite_reads_on_the_alias_itself(tables: None) -> None:
+async def test_sqlite_reads_on_the_alias_itself(sqlite_tables: None) -> None:
     """SQLite begins no transaction to read: there is no other pool to use."""
     with assert_num_queries(3):
         async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
@@ -323,8 +337,9 @@ async def test_a_snapshot_reads_the_data_as_it_was(tables: None) -> None:
         assert await names() == ["first", "second"]
 
 
-@sqlite_only
-async def test_read_only_work_on_sqlite_begins_before_it_reads(tables: None) -> None:
+async def test_read_only_work_on_sqlite_begins_before_it_reads(
+    sqlite_tables: None,
+) -> None:
     """SQLite's driver begins only before writes; read-only sessions begin themselves.
 
     Every way of reading, so a snapshot's reads agree and the rollback
