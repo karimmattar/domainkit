@@ -18,6 +18,7 @@ import sys
 import sysconfig
 import threading
 from collections.abc import Awaitable, Callable, Iterator
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from weakref import WeakKeyDictionary
@@ -45,6 +46,7 @@ from domainkit.http.live_events import LiveEvents
 from domainkit.http.ratelimit import MemoryBackend
 from domainkit.http.shedding import QUEUE_FULL, ShedReport
 from domainkit.http.websockets import WebSocketLimitsMiddleware
+from domainkit.log import JsonFormatter
 from domainkit_tests.conftest import UseAuth
 
 THREADS = 8
@@ -577,6 +579,28 @@ for module in pkgutil.walk_packages(domainkit.__path__, "domainkit."):
         importlib.import_module(module.name)
 print(sys._is_gil_enabled())
 """
+
+
+def test_one_json_formatter_dates_lines_from_every_thread() -> None:
+    """Its cached second is one tuple: no line gets another second's date.
+
+    Each thread formats seconds of its own day, so the cache changes hands
+    all the time.
+    """
+    formatter = JsonFormatter()
+
+    def stamps(index: int) -> list[tuple[str, str]]:
+        times = [index * 86_400.0 + second + 0.25 for second in range(300)]
+        return [
+            (
+                formatter.timestamp(created),
+                datetime.fromtimestamp(created, UTC).isoformat(timespec="milliseconds"),
+            )
+            for created in times
+        ]
+
+    for written in on_threads(stamps):
+        assert all(stamp == expected for stamp, expected in written)
 
 
 def test_importing_domainkit_keeps_the_gil_off_where_it_is_off() -> None:

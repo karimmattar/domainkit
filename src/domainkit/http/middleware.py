@@ -40,7 +40,7 @@ from domainkit.http.errors import (
     error_response,
     refusal_reason,
 )
-from domainkit.log import ACCESS_LOGGER, SECURITY_LOGGER
+from domainkit.log import ACCESS_LOGGER, SECURITY_LOGGER, AccessSampler
 from domainkit.reporting import report_error
 
 REQUEST_ID_HEADER: Final = "X-Request-ID"
@@ -262,6 +262,9 @@ class RequestContextMiddleware:
         self.app = app
         self.debug = settings.DEBUG
         self.quiet_paths = frozenset(settings.ACCESS_LOG_QUIET_PATHS)
+        self.sampler = AccessSampler(
+            settings.ACCESS_LOG_SAMPLE_RATE, settings.ACCESS_LOG_SLOW_DURATION
+        )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Serve one request, or one WebSocket connection, inside its context."""
@@ -355,8 +358,11 @@ class RequestContextMiddleware:
     def _log_access(
         self, context: RequestContext, response_status: int | None, started: float
     ) -> None:
-        """Log method, path (never the query string), status, and duration."""
-        duration_ms = round((time.perf_counter() - started) * 1000, 1)
+        """Log method, path (never the query string), status, and duration.
+
+        Nothing is built for a line the logger's level would drop, or that
+        ``ACCESS_LOG_SAMPLE_RATE`` leaves out of the sample.
+        """
         if context.path in self.quiet_paths and response_status == status.HTTP_200_OK:
             level = logging.DEBUG
         elif response_status is None or response_status >= 500:
@@ -365,6 +371,12 @@ class RequestContextMiddleware:
             level = logging.WARNING
         else:
             level = logging.INFO
+        if not access_logger.isEnabledFor(level):
+            return
+        seconds = time.perf_counter() - started
+        if not self.sampler.keep(response_status, seconds):
+            return
+        duration_ms = round(seconds * 1000, 1)
         access_logger.log(
             level,
             "%s %s %s %.1fms",

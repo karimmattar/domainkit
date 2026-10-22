@@ -17,13 +17,13 @@ import time
 from typing import Final
 
 from fastapi import APIRouter, Request, status
-from fastapi.responses import JSONResponse
 from starlette.datastructures import State
 
 from domainkit.apps import registry
 from domainkit.cache import caches
 from domainkit.conf import settings
 from domainkit.db.connections import connections
+from domainkit.http.responses import JSONResponse
 from domainkit.ledger import ledgers
 from domainkit.tasks import spawn
 

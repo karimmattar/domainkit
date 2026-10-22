@@ -20,6 +20,24 @@ All notable changes to domainkit. The format follows
 - `docs/performance.md`: what each rung costs, how to run the ladder and
   update its budgets, the cores 500 million requests a day need, and what
   makes requests cheaper. The README says to serve one worker per core.
+- `domainkit.http.JSONResponse`: Starlette's `JSONResponse` encoded by
+  pydantic's Rust encoder, with the same bytes. Where pydantic writes a
+  value otherwise (a float from 1e-9 up to 1e-4, NaN or Infinity, a `None`
+  key), the content goes through `json.dumps` as before, so JSON content
+  gets the same bytes and the same errors. Resource pages, items, and
+  batches (and their ETags), error bodies, and readiness answers use it: a
+  page of 50 resources encodes in half the instructions (69 µs instead of
+  179). Give it to routes without a response model
+  (`response_class=JSONResponse`); routes with one keep FastAPI's default,
+  which encodes them with pydantic already (PERF-08; ADR 0063).
+- `ACCESS_LOG_SAMPLE_RATE` (1.0) and `ACCESS_LOG_SLOW_DURATION` (1 second):
+  write a share of the access lines, each request drawn on its own. Errors
+  (500 and up, or no response), refusals (401, 403, 429), and requests that
+  take the slow duration or longer are always written, and
+  `domainkit.security` and the audit trail are never sampled. At 0.1 the
+  JSON access line costs about 18,000 instructions a request instead of
+  154,000 (PERF-02; ADR 0063). The production settings `init` writes read
+  the rate from the environment.
 
 ### Changed
 
@@ -42,6 +60,11 @@ All notable changes to domainkit. The format follows
     `postgresql://` URL without a driver now means psycopg 3, so keep
     writing `postgresql+asyncpg://`. SQLAlchemy's "What's New in 2.1" has
     the rest.
+- `JsonFormatter` writes the same lines, byte for byte, with 35% fewer
+  instructions, and `BackgroundHandler` copies a record for its queue with
+  39% fewer: the JSON access line costs about 154,000 instructions a
+  request instead of 181,000. An access line the logger's level drops is no
+  longer built at all (PERF-02).
 
 ## [0.8.0] - 2026-10-21
 

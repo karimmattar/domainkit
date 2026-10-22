@@ -189,6 +189,8 @@ Each `BROKERS` entry:
 | `READINESS_CACHE_SECONDS` | `1.0` | How long a `/ready` result is reused, from when its checks ended; probes that come while checks run wait for them, so probe floods cannot load the database. |
 | `READINESS_DETAILS` | `False` | Name failing components in `/ready` responses (always logged). |
 | `ACCESS_LOG_QUIET_PATHS` | `/health`, `/ready` | Successful requests to these paths are logged at DEBUG. |
+| `ACCESS_LOG_SAMPLE_RATE` | `1.0` | Share of access lines written, from 0 to 1: `0.1` writes about one request in ten, each drawn on its own. Errors (500 and up, or no response), refusals (401, 403, 429), and requests that take `ACCESS_LOG_SLOW_DURATION` or longer are always written; `domainkit.security` and the audit trail are never sampled ([runtime.md](runtime.md#sampling-the-access-log)). |
+| `ACCESS_LOG_SLOW_DURATION` | `1.0` | Seconds (at most 3600): a request this slow or slower has its access line written whatever `ACCESS_LOG_SAMPLE_RATE` says. |
 | `TRUSTED_PROXIES` | `()` | Networks (`10.0.0.0/8`) whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed. The client is the right-most address that is not a trusted proxy, across every line of the header; hops may carry a port. The scheme is the `X-Forwarded-Proto` value at the client's place from the right, or the last one. Empty: the socket peer is the client. |
 | `RATE_LIMIT` | `None` | Requests per caller, such as `"300/minute"` (`second`, `minute`, `hour`, `day`). `None` disables it. |
 | `RATE_LIMIT_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths never counted. |
@@ -607,6 +609,36 @@ else the attribute of the class mapped onto its table, else the column's
 name. Constraint errors are logged with their SQLSTATE and the
 constraint's name, never with the row's values. SQLite checks foreign keys
 only on connections that turn `PRAGMA foreign_keys` on.
+
+## JSON responses
+
+`domainkit.http.JSONResponse` is Starlette's `JSONResponse` with pydantic's
+encoder (`pydantic_core.to_json`): the same bytes, two to three times
+sooner on a page of resources. Resources, error bodies, and readiness
+answers use it. Where pydantic writes a value otherwise than `json.dumps`
+(a float from 1e-9 up to 1e-4, NaN or Infinity, a `None` key), the content
+goes through `json.dumps` as before, so JSON content gets the same bytes
+and the same errors. Values JSON has no type for, which Starlette refuses,
+pydantic encodes (a `Decimal` as a string); see ADR 0063.
+
+Routes with a response model (a return annotation, or `response_model=`)
+are encoded by pydantic in FastAPI already: leave them FastAPI's default,
+as any response class set turns that off and changes how their floats are
+written. Give it to routes without one, or build it from JSON content:
+
+```python
+from domainkit.http import JSONResponse
+
+
+@router.get("/totals", response_model=None, response_class=JSONResponse)
+async def totals() -> dict[str, object]:
+    return {"count": 3, "amount": "12.50"}
+```
+
+FastAPI passes such a route's value through `jsonable_encoder` first,
+which costs more than encoding it (about 1 ms for 50 resources); a response
+model skips both, but writes a `Decimal` as a string, where
+`jsonable_encoder` makes a float of one returned outside a model.
 
 ## The API surface
 
