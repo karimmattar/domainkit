@@ -221,13 +221,19 @@ async def orm_user(user_id: UUID) -> AbstractBaseUser:
 
 
 async def editors_with(username: str, *keys: str) -> None:
-    """Put ``username`` in a new group ``editors`` that gives ``keys``."""
+    """Put ``username`` in a new group ``editors`` that gives ``keys``.
+
+    And in a group that gives nothing; not in ``owners``, which gives
+    ``shop.delete_product``.
+    """
     async with AuthUnitOfWork() as uow:
         user = await uow.users.get_by_natural_key(username)
         assert user is not None
         editors = await uow.groups.create("editors")
         editors.grant(*await uow.permissions.get_many(keys))
         empty = await uow.groups.create("empty")
+        owners = await uow.groups.create("owners")
+        owners.grant(await uow.permissions.get("shop.delete_product"))
         user.join(editors)
         user.join(empty)
         await uow.commit()
