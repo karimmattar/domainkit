@@ -44,14 +44,22 @@ idempotency) for the writes.
   unit of work is then `;`, `BEGIN`, the `SELECT`, `ROLLBACK`.
 - A `STATEMENTS` read is the `SELECT` alone.
 - Of the keyed write's 18 saved round trips, the ping saves 10 and the
-  claim and store 8. Of its 9 statements, the sweep's `DELETE` is gone,
-  and the claim and the store each run alone.
+  claim and store 8. Of its 9 statements, the `DELETE` of the key's
+  expired row is gone, since the upsert replaces that row, and the claim
+  and the store each run alone.
 - A new audit subject costs 2 statements for its keys instead of 3, the
   key coming back from the insert. A known subject still costs 1 `SELECT`
   for the keys of every subject the commit writes about.
 
 The counts are the same with SQLAlchemy 2.0.54 and with 2.1.4 and asyncpg
 0.32.0.
+
+The benchmark ladder counts on SQLAlchemy's side, with a project of its
+own. Its `keyed-write` rung went from 10 statements, 5 transactions, 5
+checkouts and 5 pings to 9, 4, 4 and 4, with either SQLAlchemy. It counts
+a transaction for each connection SQLAlchemy begins, the claim's and the
+store's included, which send no `BEGIN`; the table above counts the
+transactions the server runs.
 
 CPU of the Python process per request, the best of three runs, each in a
 fresh process, old and new interleaved (16 in flight, 5 × 1,600 requests
