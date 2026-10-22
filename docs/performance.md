@@ -56,7 +56,13 @@ pool's wait ran out), and the new code none.
   16 µs for a user, and 16 µs more for each permission with its content
   type, measured with `timeit`; estimated in proportion for users with
   hundreds of permissions) and the rest of the stack.
-- With `STAMPS`, a hit adds one `MGET` to the shared cache.
+- With `STAMPS`, a hit adds one `MGET` to the shared cache. A miss reads
+  the stamps that exist before taking a connection, and gives any absent
+  one a stamp (`SET NX`) once the credential proved real. A commit that
+  changes principals writes their stamps twice, before and after it.
+- Memory: principals share their grants. Measured with `tracemalloc` over
+  200 tokens of one user holding 1,000 permissions through a group: 368 kB
+  per entry before (3.7 GB at the default `MAX_ENTRIES`), 5.6 kB after.
 - Lending the password hash to `request.user` while `.password` is
   deprecated (until 0.10) adds no statement. It adds 6 Python calls to a
   hit and 13 to 18 to a miss, and one hash of about 100 characters to each kept
