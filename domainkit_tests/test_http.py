@@ -809,6 +809,126 @@ def test_application_without_root_router() -> None:
     assert "/ok" not in paths
 
 
+@pytest.mark.parametrize(
+    ("environment", "logged"), [("staging", True), ("test", False)]
+)
+def test_server_warnings_are_logged_where_the_service_is_deployed(
+    environment: str,
+    logged: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Staging and production log what the server reads past the limits."""
+    monkeypatch.setattr(
+        "domainkit.http.application.server_warnings",
+        lambda app: ["The server reads 16 MiB WebSocket messages."],
+    )
+    with (
+        override_settings(ENVIRONMENT=environment, ROOT_ROUTER=None),
+        caplog.at_level(logging.WARNING, logger="domainkit.http.application"),
+    ):
+        get_asgi_application()
+
+    expected = ["The server reads 16 MiB WebSocket messages."] if logged else []
+    assert caplog.messages == expected
+
+
+@pytest.mark.parametrize(
+    ("status_code", "level"),
+    [
+        (399, logging.INFO),
+        (400, logging.WARNING),
+        (499, logging.WARNING),
+        (500, logging.ERROR),
+        (501, logging.ERROR),
+    ],
+)
+def test_access_log_lines_carry_their_level_fields_and_time(
+    status_code: int,
+    level: int,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Warnings from 400, errors from 500; fields for JSON logs; milliseconds."""
+    readings = iter([10.0, 10.01234])
+    monkeypatch.setattr(
+        middleware_module, "time", SimpleNamespace(perf_counter=lambda: next(readings))
+    )
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        await send({"type": "http.response.start", "status": status_code})
+        await send({"type": "http.response.body", "body": b""})
+
+    scope = {"type": "http", "method": "GET", "path": "/logged", "headers": []}
+    with caplog.at_level(logging.DEBUG, logger="domainkit.access"):
+        asyncio.run(RequestContextMiddleware(app)(scope, receive_nothing, send_nowhere))
+
+    [record] = caplog.records
+    assert (record.levelno, record.getMessage()) == (
+        level,
+        f"GET /logged {status_code} 12.3ms",
+    )
+    assert record.access == {  # type: ignore[attr-defined]
+        "method": "GET",
+        "path": "/logged",
+        "status": status_code,
+        "duration_ms": 12.3,
+    }
+
+
+def test_only_waits_for_the_body_have_a_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole ``REQUEST_BODY_TIMEOUT`` for the body; none once it is in.
+
+    A message without ``more_body`` is the whole body: waiting for the
+    client to leave afterwards is not timed. The deadlines are recorded,
+    not waited for.
+    """
+    deadlines: list[float] = []
+
+    def timeout(delay: float) -> asyncio.Timeout:
+        deadlines.append(delay)
+        return asyncio.timeout(delay)
+
+    monkeypatch.setattr(middleware_module, "asyncio", SimpleNamespace(timeout=timeout))
+    received: list[Message] = []
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        received.extend([await receive(), await receive()])
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    sent: list[Message] = [
+        {"type": "http.request", "body": b"whole"},
+        {"type": "http.disconnect"},
+    ]
+    messages = iter(sent)
+
+    async def receive() -> Message:
+        return next(messages)
+
+    with override_settings(REQUEST_BODY_TIMEOUT=7.0):
+        limited = RequestBodyLimitMiddleware(app)
+    scope = {"type": "http", "method": "POST", "path": "/", "headers": []}
+    asyncio.run(limited(scope, receive, send_nowhere))
+
+    assert [message["type"] for message in received] == [
+        "http.request",
+        "http.disconnect",
+    ]
+    assert deadlines == [7.0]
+
+
+async def receive_nothing() -> Message:
+    """A client that says nothing more."""
+    return {"type": "http.disconnect"}
+
+
+async def send_nowhere(message: Message) -> None:
+    """A server that takes any message."""
+
+
 def test_websocket_messages_have_the_body_limit(
     make_client: MakeClient, caplog: pytest.LogCaptureFixture
 ) -> None:

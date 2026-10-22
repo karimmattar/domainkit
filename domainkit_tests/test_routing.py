@@ -497,7 +497,8 @@ def test_routers_kept_otherwise_are_left_as_they_are(
         assert not nests_routers()
     unknown = SimpleNamespace(original_route=BaseRoute(), starlette_route=None)
     not_a_dataclass = SimpleNamespace(original_route=router.routes[0])
-    for context in (unknown, not_a_dataclass):
+    not_a_route = SimpleNamespace(original_route=BaseRoute(), starlette_route="/x")
+    for context in (unknown, not_a_dataclass, not_a_route):
         with monkeypatch.context() as patch:
             patch.setattr(
                 fastapi_routing._IncludedRouter,
