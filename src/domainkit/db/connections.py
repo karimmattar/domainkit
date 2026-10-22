@@ -424,16 +424,14 @@ def _plain_select(statement: str) -> bool:
             return False
         if cast == "modifier":
             if lexeme == ")":
-                cast = "suffix"
+                cast = ""
             elif kind != "number" and lexeme != ",":
                 return False
-        elif cast == "type" and (kind in {"word", "quoted"} or lexeme == "."):
-            cast = "name" if lexeme != "." else "type"
+        elif cast == "type" and kind in {"word", "quoted"}:
+            cast = "name"
         elif cast == "name" and lexeme == ".":
             cast = "type"
-        elif cast in {"name", "suffix"} and (
-            lexeme in _TYPE_WORDS or lexeme in {"[", "]"}
-        ):
+        elif cast == "name" and lexeme in _TYPE_WORDS:
             pass
         elif cast == "name" and lexeme == "(":
             cast = "modifier"

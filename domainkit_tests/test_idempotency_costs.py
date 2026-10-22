@@ -26,6 +26,7 @@ from starlette.types import Message, Receive, Scope, Send
 
 from domainkit import deadlines, setup
 from domainkit.apps import registry
+from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.idempotency import middleware as idempotency
 from domainkit.contrib.idempotency.operations import Operation
@@ -425,3 +426,41 @@ def test_pins_and_late_marks_keep_to_a_deadline_no_timer_enforces(
         assert payments_on("other") == 1
 
     assert seen == [("pin", True), ("mark", True)]
+
+
+def test_a_deadline_that_passed_changes_nothing_for_the_pin_and_mark(
+    make_database: Callable[[str], str],
+) -> None:
+    """As for a transaction's timeouts: the commit and its mark still happen.
+
+    The clock moves past the deadline, which no timer has cut off yet.
+    """
+    databases = {"default": make_database("keys"), "other": make_database("other")}
+
+    async def pay(scope: Scope, receive: Receive, send: Send) -> None:
+        async def work() -> None:
+            async with sample_routes.PaymentsUnitOfWork(database="other") as uow:
+                await uow.session.execute(insert(sample_routes.payments))
+                await uow.commit()
+
+        with freeze_time() as clock:
+            async with deadlines.timeout(60.0):
+                clock.tick(61)
+                assert deadlines.remaining() == 0
+                await asyncio.create_task(work())  # Shares the deadline only.
+        await send({"type": "http.response.start", "status": 201, "headers": []})
+        await send({"type": "http.response.body", "body": b"paid"})
+
+    async def scenario() -> None:
+        await idempotency.IdempotencyMiddleware(pay)(
+            KEYED_POST, receive_empty_body, discard
+        )
+        await connections.close_all()
+
+    with idempotent_app(databases):
+        asyncio.run(scenario())
+        assert payments_on("other") == 1
+        [row] = stored_keys()
+
+    assert (row["status_code"], row["pinned"]) == (201, True)
+    assert row["committed_at"] is not None
