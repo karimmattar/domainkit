@@ -48,10 +48,11 @@ Options considered:
   Entries are keyed by the authentication class's scheme and the
   credential's digest: the token's SHA-256, a certificate's, a JSON Web
   Token's login and user. Never by a raw value.
-- **What an entry holds**: a snapshot of the user without the password hash,
-  their groups and permissions (ADR 0059), and what the token table says
-  of the credential: kind, expiry, scopes, login. Never a second factor's
-  secret, recovery codes, or the token. Only credentials their class
+- **What an entry holds**: a snapshot of the user, their groups and
+  permissions (ADR 0059), and what the token table says of the credential:
+  kind, expiry, scopes, login. Never a second factor's secret, recovery
+  codes, or the token. The password hash only until 0.10, for the
+  deprecated `request.user.password` (ADR 0059). Only credentials their class
   accepted are kept; refusals never are, so guesses cannot fill the cache.
 - **Checked on every request, kept or not**: a token's expiry against
   `domainkit.clock` (refused from memory as from the table), a cookie's

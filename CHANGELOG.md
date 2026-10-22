@@ -37,15 +37,22 @@ All notable changes to domainkit. The format follows
 - A principal that is not kept is read in two queries: the token, then the
   user with every group and permission in one statement (was 4 or 5; N6,
   ADR 0059).
-- `request.user` no longer carries the password hash: reading
-  `request.user.password` raises `DetachedInstanceError`. Read the hash in
-  a unit of work (`await uow.users.password_hash(user.id)`), or check a
-  password with `password_holds`. Each request gets a user of its own, built
-  as a query builds it.
+- Each request gets a user of its own, built as a query builds it. A
+  user's `repr` leaves out its password.
 - `AuthenticationMiddleware` looks at the client address only while an
   address is held for refused credentials, and `TokenAuthentication` and
   `CookieAuthentication` read no settings for a request without their
   credentials (FX-16).
+
+### Deprecated
+
+- `request.user.password` (and the password of any user authentication
+  builds): check a password with `password_holds(user, password)`
+  (`domainkit.contrib.auth.api`), or read the hash in a unit of work with
+  `await uow.users.password_hash(user.id)`. It still returns the stored
+  hash, warns with `DomainkitDeprecationWarning` the first time each
+  request reads it, and is removed in 0.10. `has_usable_password()` keeps
+  working, without the hash and without a warning.
 
 ## [0.8.0] - 2026-10-21
 

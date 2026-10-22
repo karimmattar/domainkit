@@ -742,12 +742,13 @@ refused without a query too. ADR
 design, and [0059](adr/0059-read-principals-in-two-queries-without-the-hash.md)
 how principals are read.
 
-- **What is kept**: the user's columns but the password hash, their
-  groups and permissions, and the credential's kind, expiry, scopes, and
-  login. Never the password hash, a second factor's secret, recovery
-  codes, or the token itself: entries are keyed by the token's digest.
-  Each request gets its own user, built from what is kept, the same as a
-  query builds.
+- **What is kept**: the user's columns, their groups and permissions,
+  and the credential's kind, expiry, scopes, and login. Never a second
+  factor's secret, recovery codes, or the token itself: entries are keyed
+  by the token's digest. The password hash is kept, in process memory, only
+  while `request.user.password` is deprecated (below), and never shows in a
+  `repr`, a log, a key, or a stamp. Each request gets its own user, built
+  from what is kept, the same as a query builds.
 - **What every request checks**: a token's expiry, on `domainkit.clock`
   (an expired token is refused from memory as from the table); a cookie's
   CSRF checks; a JSON Web Token's signature and times. `last_used_at` is
@@ -790,10 +791,13 @@ how principals are read.
   reaches the others too.
 - **Open connections** are re-checked through the cache too, so they see a
   change as soon as requests do.
-- **`request.user` carries no password hash**: reading
-  `request.user.password` raises `DetachedInstanceError`. To check a
-  password, read the hash afresh: `await password_holds(user, raw)`
-  (`domainkit.contrib.auth.api`), or `await uow.users.password_hash(user.id)`.
+- **`request.user.password` is deprecated**, and removed in 0.10. It still
+  returns the stored hash, and warns with `DomainkitDeprecationWarning` the
+  first time a request's user reads it. To check a password, read the hash
+  afresh: `await password_holds(user, raw)` (`domainkit.contrib.auth.api`),
+  or `await uow.users.password_hash(user.id)`. `has_usable_password()` keeps
+  working, without the hash and without a warning. A user's `repr` leaves
+  the password out.
 - A user model that loads relationships of its own with the user (other
   than `groups` and `user_permissions`) is read by the ORM every time, and
   never kept.
