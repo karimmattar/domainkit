@@ -1598,10 +1598,14 @@ def test_stamps_that_cannot_be_written_are_logged(
     run_async(revoke())
 
     assert len(principal_cache) == 0
-    (warning,) = [m for m in caplog.messages if m.startswith("Could not stamp")]
-    assert warning == (
-        "Could not stamp 1 changed principals in cache 'shared' (CacheUnavailable); "
-        "other processes keep theirs for up to 0:05:00"
+    before, after = [m for m in caplog.messages if m.startswith("Could not stamp")]
+    assert (
+        before
+        == after
+        == (
+            "Could not stamp 1 changed principals in cache 'shared' (CacheUnavailable); "
+            "other processes keep theirs for up to 0:05:00"
+        )
     )
 
 

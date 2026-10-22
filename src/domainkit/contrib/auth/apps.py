@@ -1,7 +1,9 @@
 """Install ``domainkit.contrib.auth`` (after ``domainkit.contrib.contenttypes``)."""
 
 import dataclasses
+from collections.abc import Sequence
 from importlib import import_module
+from typing import Any
 
 from fastapi import FastAPI
 from sqlalchemy import Table
@@ -13,7 +15,7 @@ from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS, REDIS_SCHEMES
 from domainkit.contrib.contenttypes.sync import has_tables
 from domainkit.db import metadata
 from domainkit.db.routing import router
-from domainkit.ddd import UnitOfWork, event_bus
+from domainkit.ddd import DomainEvent, UnitOfWork, event_bus
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.utils.module_loading import import_string
 
@@ -23,7 +25,7 @@ from .backends import get_backends
 from .hashers import insecure_hashers
 from .models import AbstractBaseUser, AbstractUser, User
 from .permissions import declared_permissions, sync_permissions
-from .principals import invalidate_all, stamp_committed, watch
+from .principals import invalidate_all, stamp_committed, stamp_pending, watch
 from .settings import PRINCIPAL_TTL, AuthSettings, auth_settings
 from .tables import DEFAULT_USER_TABLES, permissions, start_mappers, users
 from .validators import get_password_validators
@@ -102,11 +104,19 @@ class AuthConfig(DomainConfig):
 
             event_bus.subscribe(PersonalDataErased, forget_credentials)
 
-    async def committed(self, uow: UnitOfWork) -> None:
-        """Stamp what the commit changed in principals, for other processes."""
+    async def stage(
+        self, uow: UnitOfWork, events: Sequence[DomainEvent], tasks: Sequence[Any]
+    ) -> None:
+        """Stamp what the commit will change in principals, before it too."""
         session = getattr(uow, "session", None)
         if isinstance(session, AsyncSession):
-            await stamp_committed(session, auth_settings().PRINCIPAL_CACHE)
+            await stamp_pending(session, auth_settings().PRINCIPAL_CACHE)
+
+    async def committed(self, uow: UnitOfWork) -> None:
+        """Wait for the stamps of what the commit changed, for other processes."""
+        session = getattr(uow, "session", None)
+        if isinstance(session, AsyncSession):
+            await stamp_committed(session)
 
     def check_application(self, app: FastAPI) -> list[str]:
         """Routes that declare no rule, and rules no middleware can answer."""

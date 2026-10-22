@@ -32,6 +32,7 @@ them here, in memory, without a query (``AUTH.PRINCIPAL_CACHE``):
   that fails is never trusted: the principal is read from the database.
 """
 
+import asyncio
 import copy
 import logging
 import secrets
@@ -67,11 +68,13 @@ from domainkit.cache import CacheError, caches
 from domainkit.contrib.contenttypes.models import ContentType
 from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.deprecation import DomainkitDeprecationWarning
+from domainkit.exceptions import ImproperlyConfigured
 from domainkit.log import SECURITY_LOGGER
+from domainkit.tasks import spawn
 
 from . import tokens
 from .models import USABLE_PASSWORD, AbstractBaseUser, Group, PasswordHash, Permission
-from .settings import MAX_PRINCIPAL_TTL, PrincipalCacheSettings
+from .settings import MAX_PRINCIPAL_TTL, PrincipalCacheSettings, auth_settings
 from .tables import (
     group_permissions,
     groups,
@@ -134,8 +137,10 @@ IMMUTABLE: Final = (
 Subclasses count (asyncpg's ``UUID``, ``datetime``, ``bool``)."""
 PENDING: Final = "domainkit.auth.principals.pending"
 """``Session.info`` key: what to drop when the session commits."""
-COMMITTED: Final = "domainkit.auth.principals.committed"
-"""``Session.info`` key: what the last commit dropped, still to stamp."""
+STAMPING: Final = "domainkit.auth.principals.stamping"
+"""``Session.info`` key: the tasks stamping what its commits changed."""
+STAMP_WRITE_TIMEOUT: Final = 5.0
+"""Seconds a commit's stamps may take to write before they are given up."""
 HANDLED: Final = {"domainkit_principals_handled": True}
 """Execution options of a statement whose effect on principals is handled.
 
@@ -642,42 +647,95 @@ def invalidate_after_commit(
 
 
 def _committed(session: Session) -> None:
-    """Drop what the commit changed (``Session`` ``after_commit``).
+    """Drop what the commit changed (``Session`` ``after_commit``), and stamp it.
 
     SQLAlchemy reports a savepoint's release as a commit too. Nothing is
     committed then: the targets wait for the transaction's own commit, or a
-    principal read before it would be kept.
+    principal read before it would be kept. Any session's commit stamps,
+    a unit of work's or a bare one's (``stamp_soon``).
     """
     if session.in_nested_transaction():
         return
     targets = session.info.pop(PENDING, None)
     if targets:
         invalidate(targets)
-        session.info.setdefault(COMMITTED, set()).update(targets)
+        stamp_soon(session, frozenset(targets))
 
 
-async def stamp_committed(
-    session: AsyncSession, config: PrincipalCacheSettings
-) -> None:
-    """Stamp, in the shared cache, what ``session``'s commits changed.
+def stamp_soon(session: Session, targets: frozenset[str]) -> None:
+    """Stamp ``targets`` in a task of their own, once ``session`` committed.
 
-    Without ``STAMPS`` there is nothing to stamp. A cache that fails is
-    logged: other processes then see the change within ``TTL``.
+    The task is owned (``domainkit.tasks.spawn``): a request cancelled after
+    its commit (a deadline, a client gone) does not cancel it, and it is
+    bounded by ``STAMP_WRITE_TIMEOUT``. A unit of work waits for it
+    (``stamp_committed``); a bare session's commit leaves it running.
     """
-    targets = session.info.pop(COMMITTED, None)
-    if not targets or config.STAMPS is None:
+    try:
+        config = auth_settings().PRINCIPAL_CACHE
+    except ImproperlyConfigured:
+        return
+    if config.STAMPS is None:
         return
     try:
-        await write_stamps(config.STAMPS, targets)
-    except CacheError as exc:
-        security_logger.warning(
-            "Could not stamp %d changed principals in cache %r (%s); other "
-            "processes keep theirs for up to %s",
-            len(targets),
-            config.STAMPS,
-            type(exc).__name__,
-            config.TTL,
-        )
+        task = spawn(stamped(config.STAMPS, targets, config), name="principals.stamps")
+    except RuntimeError:  # A synchronous session: no event loop to stamp from.
+        stamp_failed(targets, config, "no event loop")
+        return
+    session.info.setdefault(STAMPING, []).append(task)
+
+
+async def stamped(
+    alias: str, targets: Collection[str], config: PrincipalCacheSettings
+) -> None:
+    """Give ``targets`` new stamps in cache ``alias``, within ``STAMP_WRITE_TIMEOUT``.
+
+    A failure is logged (``stamp_failed``), never raised.
+    """
+    try:
+        async with asyncio.timeout(STAMP_WRITE_TIMEOUT):
+            await write_stamps(alias, targets)
+    except (CacheError, TimeoutError) as exc:
+        stamp_failed(targets, config, type(exc).__name__)
+
+
+def stamp_failed(
+    targets: Collection[str], config: PrincipalCacheSettings, reason: str
+) -> None:
+    """Log stamps not written: other processes keep principals for ``TTL``."""
+    security_logger.warning(
+        "Could not stamp %d changed principals in cache %r (%s); other "
+        "processes keep theirs for up to %s",
+        len(targets),
+        config.STAMPS,
+        reason,
+        config.TTL,
+    )
+
+
+async def stamp_pending(session: AsyncSession, config: PrincipalCacheSettings) -> None:
+    """Stamp what ``session`` is about to commit, before the commit (``stage``).
+
+    Stamped again once committed (``stamp_soon``): a principal read in
+    between differs from the second stamp. If that one is lost (the process
+    ends between the commit and the write), those read before the
+    transaction differ from the first already.
+    """
+    if config.STAMPS is None:
+        return
+    await session.flush()
+    targets = session.info.get(PENDING)
+    if targets:
+        await stamped(config.STAMPS, frozenset(targets), config)
+
+
+async def stamp_committed(session: AsyncSession) -> None:
+    """Wait for the stamps of ``session``'s commits (``stamp_soon``).
+
+    Cancelling the wait leaves the writes running.
+    """
+    tasks = session.info.pop(STAMPING, None)
+    if tasks:
+        await asyncio.shield(asyncio.gather(*tasks))
 
 
 def stamp_key(target: str) -> str:

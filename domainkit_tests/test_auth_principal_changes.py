@@ -6,16 +6,17 @@ bulk statement, after the shared cache lost its stamps, after a cancelled
 commit. Interleavings are forced with events, never with sleeps.
 """
 
-from collections.abc import Awaitable, Callable
+import asyncio
+from collections.abc import Awaitable, Callable, Collection
 from datetime import timedelta
 from typing import Final
 from uuid import UUID, uuid4
 
 import pytest
 from fakeredis import FakeServer
-from sqlalchemy import delete, insert, update
+from sqlalchemy import delete, insert, select, update
 
-from domainkit.cache import caches
+from domainkit.cache import CacheUnavailable, caches
 from domainkit.cache import redis as redis_cache
 from domainkit.clock import freeze_time
 from domainkit.contrib.auth import (
@@ -25,7 +26,7 @@ from domainkit.contrib.auth import (
     UserId,
     principals,
 )
-from domainkit.contrib.auth.principals import principal_cache, user_target
+from domainkit.contrib.auth.principals import principal_cache, token_target, user_target
 from domainkit.contrib.auth.tables import group_permissions, tokens, user_link_tables
 from domainkit.contrib.auth.tokens import token_digest, utc_now
 from domainkit.contrib.auth.users import get_user_table
@@ -33,6 +34,7 @@ from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.db import connections
 from domainkit.ddd import F
 from domainkit.management.base import run_async
+from domainkit.tasks import owned
 from domainkit_tests.conftest import Api
 from domainkit_tests.test_auth_http import bearer, create_user
 from domainkit_tests.test_auth_principals import (
@@ -339,3 +341,122 @@ def test_guessed_tokens_write_no_stamps(api: Api, shared: FakeServer) -> None:
     digests = {token_digest(guess) for guess in guesses}
     assert keys  # alice's stamps, and the one of every principal.
     assert not [key for key in keys if any(digest in key for digest in digests)]
+
+
+# Stamps written whatever happens after the commit.
+
+
+async def stamps_written() -> None:
+    """Wait for the stamp writes commits left running."""
+    await asyncio.gather(
+        *(task for task in owned() if task.get_name() == "principals.stamps")
+    )
+
+
+async def token_gone(digest: str) -> bool:
+    """Whether the deletion of token ``digest`` is committed, as others see."""
+    async with connections.engine().connect() as connection:
+        found = await connection.scalar(
+            select(tokens.c.id).where(tokens.c.id == digest)
+        )
+    return found is None
+
+
+def test_a_request_cancelled_after_its_commit_still_stamps(
+    api: Api, shared: FakeServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deadline or a client gone between the commit and the stamp loses nothing."""
+    create_user("alice")
+    api(PRINCIPAL_CACHE=STAMPED)
+    raw = run_async(issue("alice"))
+    digest = token_digest(raw)
+    key = principals.stamp_key(token_target(digest))
+    write = principals.write_stamps
+
+    async def scenario() -> tuple[object, object]:
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def gated(alias: str, targets: Collection[str]) -> None:
+            if await token_gone(digest):  # The write after the commit.
+                entered.set()
+                await release.wait()
+            await write(alias, targets)
+
+        monkeypatch.setattr(principals, "write_stamps", gated)
+
+        async def revoke() -> None:
+            async with AuthUnitOfWork() as uow:
+                await uow.tokens.revoke(digest)
+                await uow.commit()
+
+        request = asyncio.create_task(revoke())
+        async with asyncio.timeout(30):  # A guard: the interleaving is the events'.
+            await entered.wait()
+        before = await caches["shared"].get(key)
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        release.set()
+        await stamps_written()
+        return before, await caches["shared"].get(key)
+
+    before, after = run_async(scenario())
+    assert isinstance(before, str)  # Stamped before the commit too.
+    assert isinstance(after, str)
+    assert after != before
+
+
+def test_a_stamp_lost_after_the_commit_was_given_before_it(
+    api: Api, shared: FakeServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The process ends between the commit and its stamp: the first one holds."""
+    create_user("alice")
+    api(PRINCIPAL_CACHE=STAMPED)
+    raw = run_async(issue("alice"))
+    digest = token_digest(raw)
+    key = principals.stamp_key(token_target(digest))
+    write = principals.write_stamps
+
+    async def lost_after_the_commit(alias: str, targets: Collection[str]) -> None:
+        if await token_gone(digest):
+            raise CacheUnavailable("The process ended.")
+        await write(alias, targets)
+
+    async def scenario() -> tuple[object, object]:
+        assert await outcome(raw) == "served"  # Kept, with the token's stamp.
+        kept_with = await caches["shared"].get(key)
+        monkeypatch.setattr(principals, "write_stamps", lost_after_the_commit)
+        async with AuthUnitOfWork() as uow:
+            await uow.tokens.revoke(digest)
+            await uow.commit()
+        await stamps_written()
+        return kept_with, await caches["shared"].get(key)
+
+    kept_with, now = run_async(scenario())
+    assert isinstance(kept_with, str)
+    assert isinstance(now, str)
+    assert now != kept_with  # Another process's principal no longer matches.
+
+
+def test_bare_session_commits_stamp(api: Api, shared: FakeServer) -> None:
+    """A commit outside a unit of work stamps what it changed too."""
+    alice = create_user("alice")
+    api(PRINCIPAL_CACHE=STAMPED)
+    raw = run_async(issue("alice"))
+    key = principals.stamp_key(user_target(alice))
+
+    async def scenario() -> tuple[object, object]:
+        assert await outcome(raw) == "served"
+        kept_with = await caches["shared"].get(key)
+        async with connections.session() as session:
+            user = await session.get(User, alice)
+            assert user is not None
+            user.set_active(False)
+            await session.commit()
+        await stamps_written()
+        return kept_with, await caches["shared"].get(key)
+
+    kept_with, now = run_async(scenario())
+    assert isinstance(kept_with, str)
+    assert isinstance(now, str)
+    assert now != kept_with
