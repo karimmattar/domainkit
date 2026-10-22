@@ -868,6 +868,19 @@ async def test_a_read_connection_that_is_not_read_only_is_refused(
         await connections.close_all()
 
 
+async def test_a_database_check_that_hangs_fails_readiness(
+    database: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each check has the readiness seconds; one that never answers fails."""
+
+    async def never(alias: str = "default") -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(connections, "check", never)
+    async with asyncio.timeout(30):  # Fails, rather than hangs, without a bound.
+        assert await connections.check_all(0.01) == ["database:default"]
+
+
 @postgres_only
 @pytest.mark.usefixtures("one_connection")
 async def test_a_connection_whose_reset_fails_is_closed(
