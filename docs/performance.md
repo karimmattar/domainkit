@@ -57,6 +57,13 @@ pool's wait ran out), and the new code none.
   type, measured with `timeit`; estimated in proportion for users with
   hundreds of permissions) and the rest of the stack.
 - With `STAMPS`, a hit adds one `MGET` to the shared cache.
+- Lending the password hash to `request.user` while `.password` is
+  deprecated (until 0.10) adds no statement. It adds 6 Python calls to a
+  hit and 13 to 18 to a miss, and one hash of about 100 characters to each kept
+  principal. The CPU per request did not change measurably: best of three
+  rounds, `/me` hit 293 µs before and 283 µs after, miss 1,852 µs and
+  1,776 µs; `/guarded` hit 378 µs and 374 µs, miss 1,910 µs and 1,921 µs.
+  Those were measured on 22 October 2026, at load average 6 to 9.
 - Measure it yourself: `auth_principal_cache_total{event="hit"}` against
   `{event="miss"}` gives the hit rate. A low one means short-lived tokens,
   many processes per client, or a `TTL` shorter than the gap between a
