@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from sqlalchemy import delete, event, insert, text, update
+from sqlalchemy import delete, event, insert, make_url, text, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import (
@@ -55,6 +55,10 @@ from domainkit_tests.gadgets import (
 pytestmark = pytest.mark.anyio
 ON_POSTGRES = bool(os.environ.get(POSTGRES_VARIABLE))
 postgres_only = pytest.mark.skipif(not ON_POSTGRES, reason=f"set {POSTGRES_VARIABLE}")
+asyncpg_only = pytest.mark.skipif(
+    "+asyncpg" not in os.environ.get(POSTGRES_VARIABLE, ""),
+    reason="reads asyncpg's own ping",
+)
 sqlite_only = pytest.mark.skipif(ON_POSTGRES, reason="reads SQLite's own behaviour")
 ROUTES = "domainkit_tests.reading_routes.router"
 MIDDLEWARE = [
@@ -356,7 +360,10 @@ async def test_postgresql_refuses_writes_however_sent(
     database: str, reads: Reads
 ) -> None:
     """SQL text is refused by the server; CONNECT_ARGS cannot turn that off."""
-    reads_on = {"server_settings": {"default_transaction_read_only": "off"}}
+    reads_on = {
+        "asyncpg": {"server_settings": {"default_transaction_read_only": "off"}},
+        "psycopg": {"options": "-c default_transaction_read_only=off"},
+    }[make_url(database).get_driver_name()]
     with override_settings(
         DATABASES={"default": {"URL": database, "CONNECT_ARGS": reads_on}}
     ):
@@ -550,7 +557,7 @@ class Sent:
             await self.changed.wait()
 
 
-@postgres_only
+@asyncpg_only
 async def test_a_ping_is_one_statement_outside_a_transaction(tables: None) -> None:
     """SQLAlchemy's own ping wraps it in BEGIN and ROLLBACK: three round trips."""
     sent = Sent()
