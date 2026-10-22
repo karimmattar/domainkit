@@ -146,6 +146,11 @@ All notable changes to domainkit. The format follows
   - Every guarantee holds as before. A committed operation never runs
     twice, a pinned key is never released, a cancelled request settles
     its key, and of requests racing with one key one runs.
+  - Without messaging, a claim deletes expired keys after its upsert, so
+    two claims through PgBouncer, whose statements share a transaction,
+    never deadlock on each other's sweep. The pin before a commit on
+    another database and the mark after it keep to the deadline in a task
+    that only shares it.
 - The audit trail makes a new subject's key with an insert that returns
   it: an audited commit about a new person costs 2 statements for the keys
   instead of 3. A transaction reads each subject's key once, and `forget`
