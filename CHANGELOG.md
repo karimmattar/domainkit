@@ -53,9 +53,23 @@ All notable changes to domainkit. The format follows
     ONLY` transaction.
   - Both sessions refuse to flush, and refuse write and DDL statements,
     with `ReadOnlyError`.
-  - `STATEMENTS` bounds each statement by the deadline, and runs it once
-    more on a fresh connection if the server had closed the one it used.
-    Through PgBouncer and on SQLite it reads in the `READ ONLY`
+  - `STATEMENTS` bounds each statement by the deadline. A connection the
+    driver knows the server closed is replaced before a statement is sent
+    on it; a statement whose connection closes while it runs fails, and is
+    never run again, since it may have had effects outside its
+    transaction. Through psycopg, which notices only when it next sends,
+    the pool pings.
+  - A `STATEMENTS` connection is reset (`RESET ALL`, `RESET ROLE`,
+    `UNLISTEN *`, advisory locks, cursors, temporary tables) before the
+    next caller gets it, so nothing one unit of work sets in the session,
+    `default_transaction_read_only` included, reaches another. A unit of
+    work that ran only plain `SELECT` statements needs no reset; one that
+    ran SQL text or called a function takes one more round trip. A new
+    connection that is not read-only, because a pooler dropped the
+    startup setting, is refused, and readiness checks the pool as
+    `database:<alias>:reads`. `SET LOCAL` and transaction-scoped advisory
+    locks end with each statement.
+  - Through PgBouncer and on SQLite it reads in the `READ ONLY`
     transaction.
   - `readonly=True` alone keeps its `READ ONLY` transaction, as before
     (PERF-03).

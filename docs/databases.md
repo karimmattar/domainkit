@@ -179,12 +179,20 @@ Each alias has a pool of connections per event loop (`POOL_SIZE`,
 - **Reads on their own.** The first `Reads.STATEMENTS` unit of work on an
   alias opens a second pool for that alias, sized like the first, whose
   connections PostgreSQL holds read-only from the start
-  ([queries.md](queries.md#how-read-only-work-reads)). That pool does not
-  test connections: a read whose connection the server had closed runs
-  once more on a fresh one. A process may then hold up to twice the
-  alias's connections, so count them when you size the server's
+  ([queries.md](queries.md#how-read-only-work-reads)). Each new connection
+  is checked once: if its transactions are not read-only, because a
+  pooler between you and PostgreSQL dropped the startup settings, it is
+  refused with `ImproperlyConfigured`. Through asyncpg the pool does not
+  test connections: asyncpg notices when the server closes one, and it is
+  replaced before a statement is sent on it. psycopg notices only when it
+  next sends one, so through psycopg the pool pings. A connection is
+  reset before it goes to the next caller, unless it ran only plain
+  `SELECT` statements. A process may then hold up to twice the alias's
+  connections, so count them when you size the server's
   `max_connections`. `pool_stats()` and the `db_pool_connections` metric
-  name it `<alias>:reads`. A replica read that way gets one too.
+  name it `<alias>:reads`, and readiness checks it as
+  `database:<alias>:reads` once it is open. A replica read that way gets
+  one too.
 
 ADR [0061](adr/0061-read-without-a-transaction-and-ping-once.md) explains
 the choices.

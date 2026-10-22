@@ -417,7 +417,24 @@ class ReportsUnitOfWork(SqlAlchemyUnitOfWork):
   before anything is sent. On PostgreSQL the server refuses writes in SQL
   text too (SQLSTATE 25006), whichever way the unit of work reads, and
   `commit()` always raises `ReadOnlyError`. Changes left unflushed at the
-  end are dropped.
+  end are dropped. With `STATEMENTS`, the server's refusal rests on the
+  session's `default_transaction_read_only`: SQL text in the unit of work
+  that turns it off could write until the unit of work ends.
+- **One statement, one transaction.** In `STATEMENTS`, `SET LOCAL` and
+  transaction-scoped advisory locks (`pg_advisory_xact_lock`) end with the
+  statement that takes them: they do nothing for the next one. What you
+  set for the session (`SET`, `set_config(..., false)`, `SET ROLE`,
+  `LISTEN`, session advisory locks) lasts until the unit of work ends;
+  then the connection is reset before anyone else gets it. The reset
+  costs one round trip, unless all the unit of work ran was plain
+  `SELECT` statements of columns, which change nothing: SQL text, a
+  function call or a statement run many times always count as changes.
+  Use `TRANSACTION` or `SNAPSHOT` when statements must share a setting
+  scoped to a transaction.
+- **Connections the server closed.** After a restart or failover, a
+  `STATEMENTS` read gets a fresh connection. A statement whose connection
+  closes while it runs fails, and is never run again: it may have had
+  effects outside its transaction, through `dblink` or a foreign table.
 - **Deadlines.** A `STATEMENTS` read is cut off at the request's deadline,
   like everything the request awaits, and the driver cancels it on the
   server. Work that shares a deadline without enforcing it, such as a task
