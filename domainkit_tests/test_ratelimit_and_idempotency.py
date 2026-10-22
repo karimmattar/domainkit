@@ -1205,13 +1205,19 @@ def test_expired_keys_run_again_and_are_purged(idempotent: TestClient) -> None:
     assert asyncio.run(purge()) == 0
 
 
+@pytest.mark.parametrize("sweeping", [False, True], ids=["purged", "swept"])
 def test_keys_live_until_the_instant_they_expire(
-    idempotent: TestClient, monkeypatch: pytest.MonkeyPatch
+    idempotent: TestClient, monkeypatch: pytest.MonkeyPatch, sweeping: bool
 ) -> None:
-    """At ``expires_at`` a key still replays; it is expired only afterwards."""
+    """At ``expires_at`` a key still replays; it is expired only afterwards.
+
+    Without a worker, the claim's sweep of expired keys leaves it too.
+    """
     idempotent.post("/counter", json={}, headers={"Idempotency-Key": "edge"})
     [row] = stored_keys()
     monkeypatch.setattr(idempotency, "_now", lambda: row["expires_at"])
+    if sweeping:
+        monkeypatch.setattr(idempotency, "MESSAGING", "not.installed")
 
     at_expiry = idempotent.post(
         "/counter", json={}, headers={"Idempotency-Key": "edge"}
