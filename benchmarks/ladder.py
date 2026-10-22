@@ -4,16 +4,45 @@ The first rungs need no database. The rest are the paths a real API serves
 most, behind the stack ``domainkit init`` writes, against PostgreSQL.
 """
 
+import re
 from dataclasses import dataclass
 from typing import Final, Literal
+from urllib.parse import unquote, urlsplit
 
 POSTGRES_VARIABLE: Final = "DOMAINKIT_BENCH_POSTGRES_URL"
 """The database the database rungs make their schemas in; never on a command line."""
+CREDENTIALS: Final = re.compile(
+    r"(?P<before>[A-Za-z][A-Za-z0-9+.-]*://[^:/?#@\s]*:)(?P<password>[^@/\s]*)(?=@)"
+)
+"""The password of a URL written out, as ``scheme://user:password@``."""
+MASK: Final = "***"
 UNLIMITED: Final = "1000000000/minute"
 """A rate limit that counts every request and refuses none."""
 IDEMPOTENCY_MIDDLEWARE: Final = (
     "domainkit.contrib.idempotency.middleware.IdempotencyMiddleware"
 )
+
+
+def masked(text: str, url: str = "") -> str:
+    """``text`` with ``url``, and the password of any URL, written as ``***``.
+
+    What the harness prints from its children (a failure's last lines) goes
+    through here: a URL that does not parse is echoed whole by some errors,
+    and a password may appear on its own, percent-encoded or not, so
+    every occurrence of it goes too (a short one takes some text with it).
+    """
+    if url:
+        text = text.replace(url, MASK)
+    text = CREDENTIALS.sub(rf"\g<before>{MASK}", text)
+    try:
+        password = urlsplit(url).password
+    except ValueError:  # Not a URL urllib splits: as written out.
+        found = CREDENTIALS.search(url)
+        password = found["password"] if found else None
+    for secret in sorted({password or "", unquote(password or "")} - {""}):
+        text = text.replace(secret, MASK)
+    return text
+
 
 type App = Literal["asgi", "fastapi", "domainkit"]
 type Stack = Literal["none", "default", "template", "template+idempotency"]

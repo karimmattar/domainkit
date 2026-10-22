@@ -88,11 +88,14 @@ python -m benchmarks me read throttled  # some
 `DOMAINKIT_BENCH_POSTGRES_URL` (or `--postgres`, which other users of the
 machine can read in its process list) names a database the ladder may make
 schemas in. The ladder passes it on to the processes it starts in their
-environment, never on their command line. Each run creates
-`domainkit_bench_<tree>_<pid>`, migrates it with the code measured, adds a
-user in a group that may view and add items, a token and an item, and drops
-the schema at the end. It touches nothing else, and only ever creates or
-drops schemas named `domainkit_bench_...`.
+environment, never on their command line, and masks its password in
+what it prints of them. Each run creates `domainkit_bench_<tree>_<random>`,
+a schema no other run has (it refuses one that exists rather than replace
+it), migrates it with the code measured, adds a user without a usable
+password in a group that may view and add items, a token that expires
+within the hour, and an item, and drops that schema, and only that one, at
+the end. It touches nothing else, and only ever creates or drops schemas
+named `domainkit_bench_...`.
 
 It prints a table, checks the counts against the budgets (below), and
 exits 1 when a rung fails or goes over budget. `--json PATH` keeps every
