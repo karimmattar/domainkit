@@ -17,6 +17,10 @@ All notable changes to domainkit. The format follows
   more round trips than `benchmarks/budgets.toml` allows, and shows CPU
   time beside the base branch's; time is never gated (PERF-09, ASYNC-R17;
   ADR 0064). `--baseline` measures any other commit with the same harness.
+  Each run makes a PostgreSQL schema of its own (a random suffix), drops
+  only that one, masks the database's password in what it prints, and
+  gives its bench user a token that expires within the hour and no
+  password.
 - `docs/performance.md`: what each rung costs, how to run the ladder and
   update its budgets, the cores 500 million requests a day need, and what
   makes requests cheaper. The README says to serve one worker per core.
