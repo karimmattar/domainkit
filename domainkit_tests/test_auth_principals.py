@@ -1406,6 +1406,31 @@ def test_commits_stamp_what_they_change(api: Api, shared: FakeServer) -> None:
     assert len(after) == 16
 
 
+def test_commits_stamp_nothing_without_stamps_or_changes(
+    api: Api, shared: FakeServer, caplog: pytest.LogCaptureFixture
+) -> None:
+    """No ``STAMPS``, or a commit that changed no principal: no stamp, no error."""
+    create_user("alice")
+    api()
+    raw = run_async(issue("alice"))
+
+    async def revoke() -> None:
+        async with AuthUnitOfWork() as uow:
+            await uow.tokens.revoke(token_digest(raw))
+            await uow.commit()
+
+    async def change_nothing() -> None:
+        async with AuthUnitOfWork() as uow:
+            await uow.commit()
+
+    run_async(revoke())
+    api(PRINCIPAL_CACHE=STAMPED)
+    run_async(change_nothing())
+
+    failed = ("After-commit work", "Could not stamp")
+    assert not [each for each in caplog.messages if each.startswith(failed)]
+
+
 def test_a_failing_shared_cache_is_never_trusted(
     api: Api, shared: FakeServer, statements: list[str]
 ) -> None:
