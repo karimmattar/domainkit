@@ -753,8 +753,13 @@ how principals are read.
   (an expired token is refused from memory as from the table); a cookie's
   CSRF checks; a JSON Web Token's signature and times. `last_used_at` is
   still written once every five minutes, by one request.
-- **Bounds**: `MAX_ENTRIES` principals per process (10,000; the least
-  recently used go first), each for `TTL` at most (5 minutes at most).
+- **Bounds**: `MAX_ENTRIES` principals per process (10,000 by default,
+  100,000 at most; the least recently used go first), each for `TTL` at
+  most (5 minutes at most). Principals share their grants: a user's
+  credentials, and the users of a group, hold one copy of its
+  permissions, so an entry costs a few kilobytes whatever the role holds
+  (5.6 kB each for 200 tokens of a user with 1,000 permissions, was
+  368 kB). `AUTH.MAX_LIVE_TOKENS` bounds the tokens one user can make.
 - **In the process that makes a change, at once**: logging out, revoking
   a token (or all of a user's), a password change or reset, deactivating
   or deleting a user, joining or leaving a group, a permission given or
@@ -1259,6 +1264,7 @@ changed what.
 | `AUTHENTICATION_EXEMPT_PATHS` | `["/health", "/ready", "/metrics"]` | Paths served without looking at credentials. |
 | `TOKEN_TTL` | 14 days | How long a login's opaque token works; `None` until revoked. |
 | `TOKEN_PREFIX` | `"dkt_"` | Starts every opaque token; changing it invalidates existing tokens. |
+| `MAX_LIVE_TOKENS` | `100` | Live access tokens (logins and personal tokens) a user may hold and still make a personal token; past it, `409 too_many_tokens` (1 to 10,000). |
 | `LOGIN_RATE` | `"10/minute"` | Login and password-change attempts per client address and per username, and checks of link tokens per client address; `None` for no limit. |
 | `EMAIL_RATE` | `"5/hour"` | Requests that send mail (resets, verifications, signups) per client address and per email address or user. |
 | `PASSWORD_RESET_TIMEOUT` | 1 hour | How long a reset link works. |
@@ -1305,7 +1311,7 @@ changed what.
 | --- | --- | --- |
 | `ENABLED` | `True` | Keep principals between requests; `False` reads them on every request. |
 | `TTL` | 5 seconds | How long a principal is used before it is read again, at most 5 minutes: the longest a change made in another process takes to be seen without `STAMPS`. |
-| `MAX_ENTRIES` | `10000` | Principals kept per process (1 to 1,000,000); the least recently used go first. |
+| `MAX_ENTRIES` | `10000` | Principals kept per process (1 to 100,000); the least recently used go first. |
 | `STAMPS` | `None` | A `CACHES` alias of a Redis or Valkey cache every process shares; changes then reach every process at once. |
 
 | `AUTH["JWT"]` key | Default | Meaning |

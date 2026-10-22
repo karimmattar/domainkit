@@ -68,6 +68,7 @@ from .principals import (
     family_target,
     invalidate_after_commit,
     lend_password,
+    shared,
     token_target,
     user_shape,
     user_target,
@@ -527,6 +528,21 @@ class TokenStore:
         )
         return _count(result) == 1
 
+    async def live_count(
+        self,
+        user_id: UUID,
+        kind: TokenKind = TokenKind.ACCESS,
+        now: datetime | None = None,
+    ) -> int:
+        """How many of ``user_id``'s tokens of ``kind`` have not expired."""
+        moment = now or utc_now()
+        statement = select(func.count()).where(
+            tokens.c.user_id == user_id,
+            tokens.c.kind == kind,
+            tokens.c.expires_at.is_(None) | (tokens.c.expires_at > moment),
+        )
+        return int(await self.session.scalar(statement) or 0)
+
     async def of_user(
         self, user_id: UUID, *, limit: int, before: tuple[datetime, str] | None = None
     ) -> Page[AuthToken]:
@@ -715,7 +731,7 @@ class PrincipalStore:
         direct: dict[int, GrantedPermission] = {}
         for row in rows:
             group, name, version, *grant = row[width + 1 : width + 1 + GRANT_COLUMNS]
-            permission = None if grant[0] is None else GrantedPermission(*grant)
+            permission = None if grant[0] is None else shared(GrantedPermission(*grant))
             if group is not None:
                 held = found.setdefault(group, (name, version, {}))[2]
                 if permission is not None:
@@ -727,14 +743,19 @@ class PrincipalStore:
             is_active=dict(columns)["is_active"] is True,
             columns=columns,
             groups=tuple(
-                Membership(group, name, version, tuple(held.values()))
+                shared(Membership(group, name, version, _sorted(held)))
                 for group, (name, version, held) in found.items()
             ),
-            permissions=tuple(direct.values()),
+            permissions=_sorted(direct),
             usable_password=hashed.usable,
             password=hashed,
         )
         return Snapshot(principal=principal, current=bool(rows[0][-1]))
+
+
+def _sorted(granted: dict[int, GrantedPermission]) -> tuple[GrantedPermission, ...]:
+    """``granted`` by id, as one shared tuple: equal grants are one object."""
+    return shared(tuple(granted[key] for key in sorted(granted)))
 
 
 @cache

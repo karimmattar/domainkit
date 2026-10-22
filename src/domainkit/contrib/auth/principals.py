@@ -39,7 +39,14 @@ import secrets
 import threading
 import warnings
 from collections import OrderedDict
-from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from collections.abc import (
+    Callable,
+    Collection,
+    Hashable,
+    Iterable,
+    Mapping,
+    Sequence,
+)
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -188,6 +195,28 @@ class Membership:
     name: str
     version: int
     permissions: tuple[GrantedPermission, ...]
+
+
+INTERNED_MAX: Final = 65_536
+"""Grants interned per process (``shared``) at most; past it, interning restarts."""
+_INTERNED: Final[dict[Hashable, Hashable]] = {}
+
+
+def shared[T: Hashable](value: T) -> T:
+    """The one copy of ``value`` this process's principals hold.
+
+    The users of a group, and each user's credentials, share its grants: a
+    principal costs about the same whatever its role holds. Bounded by
+    ``INTERNED_MAX``: past it, interning starts afresh (kept principals keep
+    what they hold).
+    """
+    found = _INTERNED.get(value)
+    if found is not None:
+        return cast(T, found)
+    if len(_INTERNED) >= INTERNED_MAX:
+        _INTERNED.clear()
+    _INTERNED[value] = value
+    return value
 
 
 @dataclass(frozen=True, slots=True, repr=False)

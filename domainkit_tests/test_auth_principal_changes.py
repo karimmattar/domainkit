@@ -9,7 +9,7 @@ commit. Interleavings are forced with events, never with sleeps.
 import asyncio
 from collections.abc import Awaitable, Callable, Collection
 from datetime import timedelta
-from typing import Final
+from typing import Any, Final
 from uuid import UUID, uuid4
 
 import pytest
@@ -36,7 +36,8 @@ from domainkit.ddd import F
 from domainkit.management.base import run_async
 from domainkit.tasks import owned
 from domainkit_tests.conftest import Api
-from domainkit_tests.test_auth_http import bearer, create_user
+from domainkit_tests.conftest import identity as identity
+from domainkit_tests.test_auth_http import bearer, create_user, grant, login
 from domainkit_tests.test_auth_principals import (
     STAMPED,
     credentials_of,
@@ -460,3 +461,86 @@ def test_bare_session_commits_stamp(api: Api, shared: FakeServer) -> None:
     assert isinstance(kept_with, str)
     assert isinstance(now, str)
     assert now != kept_with
+
+
+# What kept principals cost.
+
+
+def test_principals_share_their_grants(api: Api) -> None:
+    """A user's credentials, and the users of a group, hold one copy of its grants."""
+    alice, bob = create_user("alice"), create_user("bob")
+    api(PRINCIPAL_CACHE=LONG)
+    run_async(editors_with("alice", "shop.view_product", "shop.change_product"))
+    grant("bob", "shop.view_product")
+
+    async def join_bob() -> None:
+        async with AuthUnitOfWork() as uow:
+            user = await uow.users.get(UserId(bob))
+            editors = await uow.groups.get_by_name("editors")
+            assert editors is not None
+            user.join(editors)
+            await uow.commit()
+
+    run_async(join_bob())
+    raws = [run_async(issue(name)) for name in ("alice", "alice", "bob")]
+
+    async def kept() -> list[Any]:
+        for raw in raws:
+            assert await outcome(raw) == "served"
+        found = [principal_cache.get(("token", token_digest(raw)), 0) for raw in raws]
+        return [entry.principal for entry in found if entry is not None]
+
+    first, second, third = run_async(kept())
+    editors = {each.name: each for each in first.groups}["editors"]
+    assert {each.name: each for each in second.groups}["editors"] is editors
+    assert {each.name: each for each in third.groups}["editors"] is editors
+    (view,) = third.permissions  # Given directly, and through the group.
+    assert view in editors.permissions
+    assert view is next(each for each in editors.permissions if each == view)
+    assert alice != bob
+
+
+def test_sharing_grants_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Past ``INTERNED_MAX`` values, interning starts afresh, and still shares."""
+    monkeypatch.setattr(principals, "INTERNED_MAX", 2)
+    monkeypatch.setattr(principals, "_INTERNED", {})
+
+    def value(n: int) -> tuple[int, str]:
+        return (n, f"grant {n}")  # A new object each time.
+
+    first = principals.shared(value(1))
+    assert principals.shared(value(1)) is first
+    principals.shared(value(2))
+    principals.shared(value(3))  # A third value: interning restarts.
+    again = principals.shared(value(1))
+    assert again is not first
+    assert principals.shared(value(1)) is again
+    assert len(principals._INTERNED) == 2
+
+
+def test_the_cache_keeps_at_most_100000_principals() -> None:
+    """``MAX_ENTRIES``' ceiling: a hundred thousand, not a million."""
+    from pydantic import ValidationError
+
+    from domainkit.contrib.auth.settings import PrincipalCacheSettings
+
+    assert PrincipalCacheSettings(MAX_ENTRIES=100_000).MAX_ENTRIES == 100_000
+    with pytest.raises(ValidationError):
+        PrincipalCacheSettings(MAX_ENTRIES=100_001)
+
+
+def test_users_hold_a_bounded_number_of_live_tokens(identity: Api) -> None:
+    """Past ``MAX_LIVE_TOKENS``, no more personal tokens: 409 ``too_many_tokens``."""
+    create_user("alice")
+    client = identity(MAX_LIVE_TOKENS=3)
+    headers = bearer(login(client, "alice")["access_token"])  # One live token.
+
+    def make() -> Any:  # noqa: ANN401 - a response.
+        return client.post("/auth/tokens", json={"name": "ci"}, headers=headers)
+
+    made = [make() for _ in range(3)]
+    assert [each.status_code for each in made] == [201, 201, 409]
+    assert made[2].json()["code"] == "too_many_tokens"
+    revoked = client.delete(f"/auth/tokens/{made[0].json()['id']}", headers=headers)
+    assert revoked.status_code == 204
+    assert make().status_code == 201
