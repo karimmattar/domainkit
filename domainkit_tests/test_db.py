@@ -186,7 +186,9 @@ async def test_a_handler_of_its_own_shares_no_engines(database: str) -> None:
 
 async def test_unknown_alias(database: str) -> None:
     """Asking for an alias that is not configured names it."""
-    with pytest.raises(ImproperlyConfigured, match="'reports'"):
+    with pytest.raises(
+        ImproperlyConfigured, match=r"^DATABASES has no 'reports' alias\.$"
+    ):
         connections.engine("reports")
 
 
