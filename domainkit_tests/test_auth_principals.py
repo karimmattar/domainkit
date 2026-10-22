@@ -1599,14 +1599,11 @@ def test_stamps_that_cannot_be_written_are_logged(
 
     assert len(principal_cache) == 0
     before, after = [m for m in caplog.messages if m.startswith("Could not stamp")]
-    assert (
-        before
-        == after
-        == (
-            "Could not stamp 1 changed principals in cache 'shared' (CacheUnavailable); "
-            "other processes keep theirs for up to 0:05:00"
-        )
+    expected = (
+        "Could not stamp 1 changed principals in cache 'shared' (CacheUnavailable); "
+        "other processes keep theirs for up to 0:05:00"
     )
+    assert before == after == expected
 
 
 def test_stamps_need_a_shared_redis_cache(use_auth: UseAuth) -> None:
