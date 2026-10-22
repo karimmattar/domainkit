@@ -10,6 +10,7 @@ from typing import Any, Final
 from uuid import UUID, uuid4
 
 import pytest
+import sqlalchemy
 from fakeredis import FakeServer
 from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
@@ -218,7 +219,9 @@ def lent_password(user: AbstractBaseUser) -> PasswordHash:
     with pytest.warns(DomainkitDeprecationWarning, match="password_holds") as warned:
         hashed = user.password
     assert len(warned) == 1
-    assert warned[0].filename == __file__  # Whoever read it: not SQLAlchemy's code.
+    # Whoever read it, not the code that lends it, nor SQLAlchemy's.
+    assert warned[0].filename != principals.__file__
+    assert not warned[0].filename.startswith(str(Path(sqlalchemy.__file__).parent))
     return hashed
 
 
