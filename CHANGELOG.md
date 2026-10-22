@@ -21,15 +21,21 @@ All notable changes to domainkit. The format follows
   update its budgets, the cores 500 million requests a day need, and what
   makes requests cheaper. The README says to serve one worker per core.
 - `domainkit.http.JSONResponse`: Starlette's `JSONResponse` encoded by
-  pydantic's Rust encoder, with the same bytes. Where pydantic writes a
-  value otherwise (a float from 1e-9 up to 1e-4, NaN or Infinity, a `None`
-  key), the content goes through `json.dumps` as before, so JSON content
-  gets the same bytes and the same errors. Resource pages, items, and
-  batches (and their ETags), error bodies, and readiness answers use it: a
-  page of 50 resources encodes in half the instructions (69 µs instead of
-  179). Give it to routes without a response model
+  pydantic's Rust encoder where the content is JSON's own values, with the
+  same bytes and the same errors. It checks the content first; anything
+  else goes to `json.dumps` and fails as in Starlette: a pydantic model
+  passed by mistake, a dataclass, a `Decimal`, a `datetime`, bytes, or a
+  set is a 500 that writes none of their fields, and an integer past
+  Python's digit limit is refused before it is written. A body of
+  `{"status": "ok"}` takes 9,489 instructions instead of 21,723, a page of
+  50 resources 8% fewer, and 200 orders of eight lines a quarter more: the
+  check costs about what the encoding saves. Give it to routes without a response model
   (`response_class=JSONResponse`); routes with one keep FastAPI's default,
-  which encodes them with pydantic already (PERF-08; ADR 0063).
+  which encodes them with pydantic already. domainkit's own bodies,
+  built JSON-native (resource pages, items, and batches, and their ETags,
+  error bodies, readiness answers), skip the check: a page of 50 resources
+  encodes in half the instructions (69 µs instead of 179) (PERF-08; ADR
+  0063).
 - `ACCESS_LOG_SAMPLE_RATE` (1.0) and `ACCESS_LOG_SLOW_DURATION` (1 second):
   write a share of the access lines of successful and redirected requests,
   each drawn on its own. Every response from 400 up (the 404 of what is out

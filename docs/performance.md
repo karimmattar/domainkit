@@ -483,9 +483,9 @@ sample its access log (ADR 0063). Measured on domainkit 0.8.0 and this
 release side by side, with the re-audit's harness (`GET /hello` fed straight
 into the application, 4 shared vCPUs).
 
-**Responses.** `domainkit.http.JSONResponse` gives the bytes Starlette's
-gave, for 41% to 52% fewer instructions. Resource pages, items, and
-batches, error bodies, and readiness answers use it.
+**Responses.** domainkit's own JSON bodies (resource pages, items, and
+batches, error bodies, and readiness answers) give the bytes Starlette's
+gave, for 41% to 52% fewer instructions.
 
 | Payload | Instructions, 0.8.0 | Instructions, 0.9 | Time, 0.8.0 | Time, 0.9 |
 | --- | ---: | ---: | ---: | ---: |
@@ -498,6 +498,31 @@ batches, error bodies, and readiness answers use it.
 A request that answers the page of 50, with no middleware, costs 1,302,835
 instructions instead of 2,155,451: 40% fewer. One that answers an error body
 costs 382,839 instead of 400,160.
+
+`domainkit.http.JSONResponse`, for a project's own bodies, first checks
+that its content is JSON's own values, so that what Starlette refused (a
+model passed by mistake, a `Decimal`, a `datetime`, an integer past
+Python's digit limit) it refuses too ([reference.md](reference.md#json-responses)).
+The check is Python and costs about what pydantic's encoder saves:
+instructions per encode on FastAPI 0.143.1, with the payloads above and
+those of the security review:
+
+| Payload | `json.dumps` (Starlette) | `JSONResponse` | domainkit's own bodies |
+| --- | ---: | ---: | ---: |
+| `{"status": "ok"}` | 21,723 | 9,489 | 11,411 |
+| an error body | 38,722 | 26,479 | 22,803 |
+| one resource | 60,752 | 38,201 | 28,830 |
+| a page of 50 resources | 1,885,266 | 1,732,036 | 977,754 |
+| 200 orders with lines | 16,194,560 | 20,374,652 | 9,528,040 |
+| one string of 1 MB | 35,022,878 | 11,010,388 | 18,548,736 |
+| 100,000 strings like `",0.0000x"` | 81,674,934 | 69,262,245 | 126,938,647 |
+| 100,000 floats of 0.5 | 210,950,885 | 162,327,471 | 55,165,425 |
+| 200,000 keys, integer values | 336,499,646 | 411,797,353 | 207,510,234 |
+
+On content of many small dicts or many numbers the check costs more than
+`json.dumps`; text costs it nothing, as it reads no string. Routes that
+answer large bodies are cheapest with a response model, which FastAPI
+writes with pydantic directly.
 
 **Access log.** The JSON access line costs about 154,000 instructions instead
 of 181,000, on the default middleware and on the re-audit's seven-middleware

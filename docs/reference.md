@@ -614,13 +614,32 @@ only on connections that turn `PRAGMA foreign_keys` on.
 ## JSON responses
 
 `domainkit.http.JSONResponse` is Starlette's `JSONResponse` with pydantic's
-encoder (`pydantic_core.to_json`): the same bytes, two to three times
-sooner on a page of resources. Resources, error bodies, and readiness
-answers use it. Where pydantic writes a value otherwise than `json.dumps`
-(a float from 1e-9 up to 1e-4, NaN or Infinity, a `None` key), the content
-goes through `json.dumps` as before, so JSON content gets the same bytes
-and the same errors. Values JSON has no type for, which Starlette refuses,
-pydantic encodes (a `Decimal` as a string); see ADR 0063.
+encoder (`pydantic_core.to_json`) for content that is JSON's own values:
+the same bytes, and the same errors. It checks the content first
+(`domainkit.http.responses.json_native`): dicts, lists, and tuples;
+strings, integers, floats, booleans, and None; instances of str, int, and
+float subclasses and enum members, written as `json.dumps` writes them;
+keys that are strings, integers, finite floats, or booleans. Anything else
+goes to `json.dumps`, as in Starlette, and fails as it failed there:
+
+- a pydantic model passed where its `model_dump(mode="json")` belongs, a
+  dataclass, a `Decimal`, a `datetime`, a `UUID`, bytes, or a set raise
+  `TypeError`, a 500, and none of their fields is written;
+- NaN, Infinity, and an integer longer than Python writes
+  (`sys.get_int_max_str_digits()`) raise `ValueError`, before a digit is
+  written;
+- JSON content pydantic would write otherwise (a float under 1e-4, a
+  `None` key, an enum whose value is not its data, a dict subclass's own
+  order) is written by `json.dumps` too.
+
+The check is Python and costs about what the encoding saves: a small body
+encodes in under half the instructions `json.dumps` takes, a page of 50
+resources in 8% fewer, and content of many small dicts (200 orders of eight
+lines) in a quarter more ([performance.md](performance.md#json-responses-and-logs)).
+domainkit's own bodies (resource items, pages, and batches, error bodies,
+readiness answers), which it builds JSON-native, skip it and encode in
+half (ADR 0063). Routes that answer large bodies are cheapest with a
+response model, which FastAPI writes with pydantic directly.
 
 Routes with a response model (a return annotation, or `response_model=`)
 are encoded by pydantic in FastAPI already: leave them FastAPI's default,

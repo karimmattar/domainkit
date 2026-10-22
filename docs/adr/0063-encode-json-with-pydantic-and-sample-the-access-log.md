@@ -60,23 +60,39 @@ for `1e+16`.
 
 ## Decision
 
-- **`encode_json`** (`domainkit.http.responses`) writes with
-  `pydantic_core.to_json`, then searches the bytes for the forms
-  `json.dumps` writes otherwise or refuses: a one-digit negative exponent
-  at the end of a number, a number that starts `0.0000`, `NaN`, `Infinity`,
-  and a `"None"` key. When one is there, or when `to_json` refuses the
-  content, it encodes with `json.dumps` itself. JSON content (what
-  `jsonable_encoder` and `model_dump(mode="json")` give) gets Starlette's
-  bytes or Starlette's error. A string that only looks like one of those
-  forms costs a second encoding, never a wrong one. Single-byte searches
-  go first, as they cost almost nothing, and after 16 strings that look
-  like a tiny number the check stops and `json.dumps` encodes: text
-  crafted to be all lookalikes costs at most about twice what `json.dumps`
-  alone costs (a megabyte of `e-1x`: 8.4 ms instead of 3.6), never a
-  search through each of them in Python.
-- **`domainkit.http.JSONResponse`** renders with it, and domainkit's own JSON
-  responses use it: resource pages, items, and batches (their ETags, taken
-  over the bytes, stay the same), error bodies, readiness answers.
+- **`encode_json`** (`domainkit.http.responses`) fails exactly as Starlette
+  fails, and writes Starlette's bytes. It first checks, in Python, that the
+  content is JSON's own values as `json.dumps` takes them (`json_native`):
+  dicts, lists, and tuples of exactly those classes; strings, integers
+  under `2 ** (3 * sys.get_int_max_str_digits())`, floats from 1e-4 up (or
+  zero), booleans, and None; str, int, and float subclasses, read through
+  the base class's own methods, and enum members whose `value` (which
+  `to_json` writes) is their data (which `json.dumps` writes); keys that
+  are strings, such integers, finite floats, or booleans; at most
+  `MAX_DEPTH` (64) containers deep, so a cycle stops the check. Such
+  content is written by `pydantic_core.to_json`. Anything else goes to
+  `json.dumps`, which writes it as Starlette did or raises Starlette's
+  error: a pydantic model, a dataclass, a `Decimal`, a `datetime`, bytes,
+  or a set is a `TypeError`, an integer past the digit limit a
+  `ValueError` raised before any digit is written.
+- **`domainkit.http.JSONResponse`** renders with it.
+- **domainkit's own bodies take a private path** (`_BuiltJSONResponse`,
+  `_encode_built`): resource pages, items, and batches (their ETags, taken
+  over the bytes, stay the same), error bodies, readiness answers. domainkit
+  builds them JSON-native (`model_dump(mode="json")`, models of strings
+  and integers), so they skip the check: `_encode_built` writes with
+  `to_json`, then searches the bytes for the forms `json.dumps` writes
+  otherwise or refuses: a one-digit negative exponent at the end of a
+  number, a number that starts `0.0000`, `NaN`, `Infinity`, and a `"None"`
+  key. When one is there, or when `to_json` refuses the content, it
+  encodes with `json.dumps` itself. A string that only looks like one of
+  those forms costs a second encoding, never a wrong one. Single-byte
+  searches go first, as they cost almost nothing, and after 16 strings
+  that look like a tiny number the search stops and `json.dumps` encodes:
+  text crafted to be all lookalikes costs at most about twice what
+  `json.dumps` alone costs, never a search through each of them in Python.
+  The path is not exported; content from elsewhere goes through
+  `JSONResponse`.
 - **No default response class, and no setting for one.** In FastAPI 0.141.1
   it would take pydantic's path from every route with a response model and
   change its bytes. Projects give `response_class=JSONResponse` to routes
@@ -109,7 +125,17 @@ Rejected:
   where `jsonable_encoder` makes it a float, which clients see.
 - Checking the content's types with a strict JSON schema in pydantic, to
   make `encode_json` refuse what `json.dumps` refuses: it takes 300 µs on
-  the page, more than `json.dumps`.
+  the page, more than `json.dumps`. The check in Python takes less.
+- Letting `encode_json` write what `json.dumps` refuses, as the first
+  version did. A mistake that used to fail closed with a 500 then wrote
+  every field of a model passed in place of its JSON dump (a password
+  hash among them), or a dataclass, a `Decimal`, or a `datetime`; and an
+  integer past Python's digit limit (CVE-2020-10735) was written, in
+  quadratic time: 481,648 digits took 527 ms instead of a `ValueError`.
+- One lenient path for everyone, the check left to callers: projects build
+  their bodies by hand, and the mistake it guards against is theirs.
+- The check for domainkit's own bodies too: it costs as much as the
+  encoding, and they are JSON by construction.
 - One line in N instead of a draw: periodic traffic biases it, and a
   caller who knows N can keep their requests out of it.
 - Sampling refusals, or `domainkit.security`: those are the lines an
@@ -128,17 +154,29 @@ Rejected:
 - Responses keep their bytes, and get cheaper: a page of 50 resources
   encodes in 991,051 instructions instead of 1,939,596 (69 µs instead of
   179), and a request that answers it costs 1,302,835 instead of
-  2,155,451; an error body encodes in 22,438 instead of 38,678.
+  2,155,451; an error body encodes in 22,438 instead of 38,678. These are
+  domainkit's own bodies, on the private path; measured again on FastAPI
+  0.143.1, 977,754 instead of 1,885,266 for the page, and 22,803 instead
+  of 38,722 for the error body.
+- `JSONResponse` pays for its check: in instructions per encode, against
+  `json.dumps`'s, `{"status": "ok"}` takes 9,489 instead of 21,723 (it
+  skips the search through the bytes), an error body 26,479 instead of
+  38,722, one resource 38,201 instead of 60,752, a page of 50 resources
+  1,732,036 instead of 1,885,266, and 200 orders with eight lines each
+  20,374,652 instead of 16,194,560: on content of many small dicts the
+  check costs more than `to_json` saves. Routes that answer large
+  bodies are best given a response model, which FastAPI writes with
+  pydantic directly.
 - The JSON access line costs about 154,000 instructions a request instead
   of 181,000 (15% fewer), on the default middleware and on the re-audit's
   `init` template stack alike; the formatter is 35% of a line cheaper, the copy 39%.
   With `ACCESS_LOG_SAMPLE_RATE = 0.1` it costs about 18,000.
-- `encode_json` differs from Starlette for content outside JSON's values,
-  which neither domainkit nor `jsonable_encoder` nor `model_dump(mode="json")`
-  gives it: values JSON has no type for are encoded (a `Decimal` as a
-  string, never a float; a `datetime` in pydantic's ISO 8601), so are keys
-  of other types, NaN or infinite keys, and integers over 4,300 digits, and
-  a dict subclass that overrides `items()` is written in its stored order.
+- `encode_json` gives Starlette's bytes or Starlette's error for any
+  content; the corpus, a hypothesis test over JSON values mixed with
+  models, dataclasses, `Decimal`s, dates, bytes, sets, enums, subclasses,
+  long integers, and odd keys, and a test per refused type check it.
+  `_encode_built` differs for content outside JSON's values, which
+  domainkit never gives it: it would encode values JSON has no type for.
 - It depends on FastAPI 0.141.1's choice between `dump_json` and
   `jsonable_encoder`; `test_routes_with_a_response_model_are_left_to_fastapi`
   pins it, so a FastAPI upgrade that changes it fails there. It depends on
