@@ -181,6 +181,26 @@ def view(user: AbstractBaseUser) -> dict[str, Any]:
     }
 
 
+def one_object_each(user: AbstractBaseUser) -> bool:
+    """Whether each permission, and content type, is one object however reached.
+
+    As the ORM loads them: a permission given directly and by a group is
+    the same object.
+    """
+    permissions: dict[int, Any] = {}
+    content_types: dict[int, Any] = {}
+    reached = [
+        *user.user_permissions,
+        *(each for group in user.groups for each in group.permissions),
+    ]
+    return all(
+        permissions.setdefault(each.id, each) is each
+        and content_types.setdefault(each.content_type.id, each.content_type)
+        is each.content_type
+        for each in reached
+    )
+
+
 def unloaded_password(user: AbstractBaseUser) -> bool:
     """Whether reading the user's password raises: it was never loaded."""
     try:
@@ -363,6 +383,9 @@ def test_tokens_kept_and_read_build_the_same_user(
     assert reads.count("SELECT") == 2  # The token, then the user with grants.
     assert hits == []  # Hits ask the database nothing.
     assert view(missed.user) == view(hit.user) == view(stored)
+    assert one_object_each(stored)
+    assert one_object_each(missed.user)
+    assert one_object_each(hit.user)
     assert len(hit.user.groups) == 2
     assert hit.user is not again.user  # Each request gets a user of its own.
     assert all(
@@ -1015,6 +1038,35 @@ def test_a_principal_read_while_its_token_is_revoked_is_not_kept(
     assert len(principal_cache) == 0
     with pytest.raises(AuthenticationFailed) as refused:
         run_async(credentials_of(headers=bearer(raw)))
+    assert refused.value.detail == "Invalid token."
+
+
+def test_a_principal_whose_token_another_process_deletes_is_not_kept(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No invalidation reaches this process: the read itself checks the token."""
+    create_user("alice")
+    api(PRINCIPAL_CACHE={"TTL": timedelta(minutes=5)})
+    raw = run_async(issue("alice"))
+    read = principals_store_principal()
+
+    async def deleted_meanwhile(self: Any, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        async with connections.engine().begin() as connection:  # Another process.
+            await connection.execute(
+                delete(tokens).where(tokens.c.id == token_digest(raw))
+            )
+        return await read(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        "domainkit.contrib.auth.repositories.PrincipalStore.principal",
+        deleted_meanwhile,
+    )
+    with freeze_time("2026-05-01T10:00:00Z"):
+        assert run_async(credentials_of(headers=bearer(raw))) is not None
+        monkeypatch.undo()
+        assert len(principal_cache) == 0
+        with pytest.raises(AuthenticationFailed) as refused:
+            run_async(credentials_of(headers=bearer(raw)))
     assert refused.value.detail == "Invalid token."
 
 
