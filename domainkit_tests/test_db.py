@@ -33,6 +33,7 @@ from domainkit.db import (
     map_imperatively,
 )
 from domainkit.db import migrations as migrations_module
+from domainkit.db.connections import ConnectionHandler
 from domainkit.db.migrations import (
     downgrade,
     make_migration,
@@ -163,6 +164,20 @@ async def test_each_database_is_checked_on_its_own(tmp_path: Path) -> None:
             assert await connections.check_all(1.0) == ["database:other"]
         finally:
             await connections.close_all()
+
+
+async def test_a_handler_of_its_own_shares_no_engines(database: str) -> None:
+    """Each ``ConnectionHandler`` keeps its own engines, and closes only those."""
+    handler = ConnectionHandler()
+    engine = handler.engine()
+    assert handler.engine() is engine
+    assert connections.engine() is not engine
+
+    await handler.close_all()
+
+    assert handler.engine() is not engine
+    await handler.close_all()
+    await connections.close_all()
 
 
 async def test_unknown_alias(database: str) -> None:
