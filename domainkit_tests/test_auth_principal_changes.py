@@ -595,6 +595,11 @@ def test_the_first_stamps_are_read_before_a_connection_is_taken(
     def checked_in(*_: object) -> None:
         taken[0] -= 1
 
+    async def first() -> None:  # Its stamps given, then dropped here only.
+        assert await credentials_of(**options) is not None
+        principals.invalidate_all()
+
+    run_async(first())
     monkeypatch.setattr(Cache, "get_many", counted)
 
     async def scenario() -> bool:
@@ -611,6 +616,9 @@ def test_the_first_stamps_are_read_before_a_connection_is_taken(
     assert while_reading[0] == 0  # Read ahead, no connection held.
     assert max(while_reading) == 1  # The user's, between the two queries.
     assert principals.stamp_key(principals.ALL) not in read_holding  # Not again.
+    if credential == "token":
+        token = principals.stamp_key(token_target(token_digest(raw)))
+        assert token not in read_holding
     assert len(principal_cache) == 1
 
 
