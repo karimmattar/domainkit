@@ -38,12 +38,13 @@ import secrets
 import threading
 import warnings
 from collections import OrderedDict
-from collections.abc import Callable, Collection, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from functools import cache
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Final, Self, cast
 from uuid import UUID
 
@@ -424,8 +425,9 @@ class Entry:
     login: Login | None = None
     targets: tuple[str, ...] = ()
     """What it rests on: invalidating one of them drops it."""
-    stamps: tuple[str | None, ...] | None = None
-    """The shared stamps of ``ALL`` and ``targets`` when it was read."""
+    stamps: tuple[str, ...] | None = None
+    """The shared stamps of ``ALL`` and ``targets`` when it was read: never
+    an absent one, which a lost stamp would match again (``settle_stamps``)."""
     started: int = 0
     """``PrincipalCache.begin()`` before it was read."""
     keep: bool = False
@@ -732,18 +734,77 @@ async def recall(key: Key, config: PrincipalCacheSettings) -> Entry | None:
     return entry
 
 
-async def stamps_before_reading(entry: Entry, config: PrincipalCacheSettings) -> None:
-    """Read ``entry``'s stamps now, before its rows; mark whether it may be kept.
+async def settle_stamps(
+    alias: str, targets: Sequence[str], known: Mapping[str, str] | None = None
+) -> tuple[str, ...]:
+    """The stamps of ``ALL`` and ``targets``, giving any that is absent one.
+
+    An absent stamp must never confirm an entry: a stamp the shared cache
+    lost (a restart, an eviction, a flush) would be absent again after the
+    change it stood for. So a missing one is set now, only if still missing
+    (``add``, as ``SET NX``), and the value the cache holds is the one kept.
+    ``known`` are stamps read earlier, by key.
+
+    Raises:
+        CacheError: The cache failed, or kept no stamp.
+    """
+    cache = caches[alias]
+    keys = [stamp_key(ALL), *map(stamp_key, targets)]
+    values = dict(known or {})
+    wanted = [key for key in keys if key not in values]
+    if wanted:
+        values.update(await cache.get_many(wanted, str))
+        missing = [key for key in wanted if key not in values]
+        for key in missing:
+            await cache.add(key, secrets.token_hex(8), ttl=STAMP_TTL)
+        if missing:
+            values.update(await cache.get_many(missing, str))
+    if any(key not in values for key in keys):
+        raise CacheError(f"Cache {alias!r} kept no stamp.")
+    return tuple(values[key] for key in keys)
+
+
+NONE_AHEAD: Final[Mapping[str, str]] = MappingProxyType({})
+"""No stamp read ahead (``stamps_before_reading``)."""
+
+
+async def stamps_ahead(
+    config: PrincipalCacheSettings, targets: Sequence[str]
+) -> dict[str, str] | None:
+    """The stamps of ``ALL`` and ``targets`` that exist, read before a unit of work.
+
+    A slow cache then holds no database connection for them. Only read:
+    a stamp is given (``settle_stamps``) once the credential proved real,
+    so guesses write nothing. Empty without ``STAMPS``; None when the cache
+    failed (the principal is not kept).
+    """
+    if not config.ENABLED or config.STAMPS is None:
+        return {}
+    keys = [stamp_key(ALL), *map(stamp_key, targets)]
+    try:
+        found: dict[str, str] = await caches[config.STAMPS].get_many(keys, str)
+    except CacheError:
+        return None
+    return found
+
+
+async def stamps_before_reading(
+    entry: Entry,
+    config: PrincipalCacheSettings,
+    known: Mapping[str, str] | None = NONE_AHEAD,
+) -> None:
+    """Settle ``entry``'s stamps now, before its rows; mark whether it may be kept.
 
     A principal is kept only with the stamps read before it, so a change
-    stamped after that tells it apart. Disabled, or with a cache that
-    fails, it is not kept.
+    stamped after that tells it apart. ``known`` are stamps read earlier
+    (``stamps_ahead``); None when that read failed. Disabled, or with a
+    cache that fails, it is not kept.
     """
-    if not config.ENABLED:
+    if not config.ENABLED or known is None:
         return
     if config.STAMPS is not None:
         try:
-            entry.stamps = await read_stamps(config.STAMPS, entry.targets)
+            entry.stamps = await settle_stamps(config.STAMPS, entry.targets, known)
         except CacheError:
             return
     entry.keep = True

@@ -1996,11 +1996,17 @@ def test_changes_made_in_sql_can_be_dropped_everywhere(
         )
         return dropped, await caches["shared"].get(principals.stamp_key(target))
 
-    assert run_async(drop({"TTL": timedelta(minutes=5)})) == (1, None)
+    async def given() -> object:  # The stamp the token's principal was kept with.
+        return await caches["shared"].get(principals.stamp_key(target))
+
+    kept_with = run_async(given())
+    assert isinstance(kept_with, str)
+    assert run_async(drop({"TTL": timedelta(minutes=5)})) == (1, kept_with)
     run_async(credentials_of(headers=bearer(raw)))
     dropped, stamp = run_async(drop(STAMPED))
     assert dropped == 1
     assert isinstance(stamp, str)
+    assert stamp != kept_with
 
 
 def test_refused_credentials_are_never_kept(api: Api) -> None:

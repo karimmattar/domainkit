@@ -9,32 +9,39 @@ commit. Interleavings are forced with events, never with sleeps.
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import Final
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
+from fakeredis import FakeServer
 from sqlalchemy import delete, insert, update
 
+from domainkit.cache import caches
+from domainkit.cache import redis as redis_cache
 from domainkit.clock import freeze_time
 from domainkit.contrib.auth import (
     AuthenticationFailed,
     AuthUnitOfWork,
     User,
     UserId,
+    principals,
 )
-from domainkit.contrib.auth.principals import principal_cache
+from domainkit.contrib.auth.principals import principal_cache, user_target
 from domainkit.contrib.auth.tables import group_permissions, tokens, user_link_tables
 from domainkit.contrib.auth.tokens import token_digest, utc_now
 from domainkit.contrib.auth.users import get_user_table
 from domainkit.contrib.contenttypes.tables import content_types
+from domainkit.db import connections
 from domainkit.ddd import F
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import Api
 from domainkit_tests.test_auth_http import bearer, create_user
 from domainkit_tests.test_auth_principals import (
+    STAMPED,
     credentials_of,
     editors_with,
     issue,
 )
+from domainkit_tests.test_auth_principals import shared as shared
 from domainkit_tests.test_auth_principals import statements as statements
 
 LONG: Final = {"TTL": timedelta(minutes=5)}
@@ -277,3 +284,58 @@ def test_the_repositories_own_writes_keep_principals(
         assert run_async(outcome(raw)) == "served"
     assert "SELECT" not in statements
     assert len(principal_cache) == 1
+
+
+# Stamps the shared cache lost.
+
+
+@pytest.mark.parametrize("lost", ["everything", "the user's stamp"])
+def test_lost_stamps_never_confirm_a_principal(
+    api: Api, shared: FakeServer, lost: str
+) -> None:
+    """A stamp lost (a restart without persistence, an eviction, a flush) is a change.
+
+    An entry kept while its user had no stamp recorded none; once the stamp
+    a change wrote was lost, none matched again.
+    """
+    alice = create_user("alice")
+    api(PRINCIPAL_CACHE=STAMPED)
+    raw = run_async(issue("alice"))
+    stamp = principals.stamp_key(user_target(alice))
+
+    async def scenario() -> list[str]:
+        seen = [await outcome(raw)]
+        async with connections.engine().begin() as connection:  # Another process.
+            table = get_user_table()
+            await connection.execute(
+                update(table).where(table.c.id == alice).values(is_active=False)
+            )
+        await principals.write_stamps("shared", [user_target(alice)])
+        if lost == "everything":
+            await caches["shared"].clear()
+        else:
+            await caches["shared"].delete(stamp)
+        seen.append(await outcome(raw))
+        return seen
+
+    assert run_async(scenario()) == ["served", "User inactive or deleted."]
+
+
+def test_guessed_tokens_write_no_stamps(api: Api, shared: FakeServer) -> None:
+    """Stamps are given to credentials that exist: guesses only read."""
+    create_user("alice")
+    api(PRINCIPAL_CACHE=STAMPED)
+    raw = run_async(issue("alice"))
+    guesses = [f"dkt_{uuid4().hex}{uuid4().hex[:11]}" for _ in range(5)]
+
+    async def scenario() -> list[str]:
+        for guess in guesses:
+            assert await outcome(guess) == "Invalid token."
+        assert await outcome(raw) == "served"
+        client = redis_cache.create_client(None)  # type: ignore[arg-type]
+        return sorted(str(key) for key in await client.keys("*"))
+
+    keys = run_async(scenario())
+    digests = {token_digest(guess) for guess in guesses}
+    assert keys  # alice's stamps, and the one of every principal.
+    assert not [key for key in keys if any(digest in key for digest in digests)]
