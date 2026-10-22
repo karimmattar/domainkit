@@ -621,7 +621,14 @@ def invalidate_after_commit(
 
 
 def _committed(session: Session) -> None:
-    """Drop what the commit changed (``Session`` ``after_commit``)."""
+    """Drop what the commit changed (``Session`` ``after_commit``).
+
+    SQLAlchemy reports a savepoint's release as a commit too. Nothing is
+    committed then: the targets wait for the transaction's own commit, or a
+    principal read before it would be kept.
+    """
+    if session.in_nested_transaction():
+        return
     targets = session.info.pop(PENDING, None)
     if targets:
         invalidate(targets)
