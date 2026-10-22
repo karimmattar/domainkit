@@ -523,6 +523,37 @@ def test_cors_preflight(make_client: MakeClient) -> None:
     assert response.headers["Access-Control-Allow-Origin"] == "https://app.example"
 
 
+def test_cors_answers_with_every_setting(make_client: MakeClient) -> None:
+    """Methods, headers, and credentials come from ``CORS_*``; the request id shows."""
+    client = make_client(
+        MIDDLEWARE=[
+            "domainkit.http.middleware.CORSMiddleware",
+            "domainkit.http.middleware.RequestContextMiddleware",
+        ],
+        CORS_ALLOWED_ORIGINS=["https://app.example"],
+        CORS_ALLOWED_METHODS=["GET", "PATCH"],
+        CORS_ALLOWED_HEADERS=["Authorization", "X-Trace"],
+        CORS_ALLOW_CREDENTIALS=True,
+    )
+    origin = {"Origin": "https://app.example"}
+
+    preflight = client.options(
+        "/ok",
+        headers={
+            **origin,
+            "Access-Control-Request-Method": "PATCH",
+            "Access-Control-Request-Headers": "X-Trace",
+        },
+    )
+    simple = client.get("/ok", headers=origin)
+
+    assert preflight.headers["Access-Control-Allow-Methods"] == "GET, PATCH"
+    assert preflight.headers["Access-Control-Allow-Credentials"] == "true"
+    assert "x-trace" in preflight.headers["Access-Control-Allow-Headers"].lower()
+    assert simple.headers["Access-Control-Allow-Credentials"] == "true"
+    assert simple.headers["Access-Control-Expose-Headers"] == "X-Request-ID"
+
+
 def test_health_and_readiness(client: TestClient) -> None:
     """Liveness always answers; readiness hides failing names by default."""
     assert client.get("/health").json() == {"status": "ok"}

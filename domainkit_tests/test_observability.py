@@ -6,6 +6,7 @@ import json
 import logging
 import uuid
 from collections.abc import Iterator
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,6 +15,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from prometheus_client import REGISTRY
+from starlette.types import Receive, Scope, Send
 
 from domainkit import setup, tracing
 from domainkit.apps import registry
@@ -180,10 +182,46 @@ def test_metrics_endpoint_protection() -> None:
         refused = TestClient(get_asgi_application()).get("/metrics")
 
     assert (missing.status_code, missing.json()["code"]) == (401, "unauthorized")
+    assert missing.json()["detail"] == "A valid metrics token is required."
     assert missing.headers["WWW-Authenticate"] == "Bearer"
     assert wrong.status_code == 401
     assert right.status_code == 200
     assert (refused.status_code, refused.json()["code"]) == (403, "metrics_disabled")
+    assert refused.json()["detail"] == (
+        "Set METRICS_TOKEN to expose metrics in staging and production."
+    )
+
+
+def test_requests_are_timed_and_failures_count_as_500(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The time from call to answer, by its clock; no answer at all is a 500."""
+    from domainkit.http import metrics
+
+    readings = iter([100.0, 100.25, 200.0, 200.5])
+    monkeypatch.setattr(
+        metrics, "time", SimpleNamespace(perf_counter=lambda: next(readings))
+    )
+    route = SimpleNamespace(path=f"/timed/{uuid.uuid4().hex}")
+    bodies: list[bytes] = []
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        scope["route"] = route
+        bodies.append((await receive())["body"])
+        if scope["path"] == "/fail":
+            raise RuntimeError("no answer")
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    client = TestClient(metrics.MetricsMiddleware(app), raise_server_exceptions=False)
+    client.post("/ok", content=b"body")
+    client.post("/fail", content=b"more")
+
+    labels = {"method": "POST", "route": route.path}
+    assert bodies == [b"body", b"more"]
+    assert sample("http_requests_total", status="204", **labels) == 1
+    assert sample("http_requests_total", status="500", **labels) == 1
+    assert sample("http_request_duration_seconds_sum", **labels) == 0.75
 
 
 def test_worker_metrics_server(database: None, monkeypatch: pytest.MonkeyPatch) -> None:

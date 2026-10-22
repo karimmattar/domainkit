@@ -138,6 +138,11 @@ async def test_forwarded_headers_only_from_trusted_proxies(
             {"x-forwarded-for": "[2001:db8::1]:443, [2001:db8::2]:8"},
             (("2001:db8::2", 0), "http"),
         ),
+        (  # Brackets without a port.
+            "10.0.0.5",
+            {"x-forwarded-for": "[2001:db8::3]"},
+            (("2001:db8::3", 0), "http"),
+        ),
         *(
             ("10.0.0.5", {"x-forwarded-for": malformed}, (("10.0.0.5", 1234), "http"))
             for malformed in (
@@ -145,6 +150,7 @@ async def test_forwarded_headers_only_from_trusted_proxies(
                 "[2001:db8::1]443",
                 "[2001:db8::1]:",
                 "[2001:db8::1]:https",
+                "[fe80::1%a]b]",  # The host ends at the first bracket.
                 "203.0.113.9:",
                 "203.0.113.9:-1",
             )
