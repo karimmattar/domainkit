@@ -212,6 +212,27 @@ def test_host_matching(host: str, allowed: list[str], expected: bool) -> None:
     assert host_allowed(host, allowed) is expected
 
 
+@pytest.mark.parametrize(
+    ("seconds", "subdomains", "expected"),
+    [
+        (1, False, "max-age=1"),
+        (1, True, "max-age=1; includeSubDomains"),
+        (0, True, None),
+    ],
+)
+def test_hsts_follows_its_settings(
+    make_client: MakeClient, seconds: int, subdomains: bool, expected: str | None
+) -> None:
+    """One second is enough to send it; subdomains are included when asked."""
+    client = make_client(
+        MIDDLEWARE=["domainkit.http.middleware.SecurityHeadersMiddleware"],
+        SECURE_HSTS_SECONDS=seconds,
+        SECURE_HSTS_INCLUDE_SUBDOMAINS=subdomains,
+    )
+
+    assert client.get("/ok").headers.get("Strict-Transport-Security") == expected
+
+
 def test_responses_carry_security_headers_and_request_ids(client: TestClient) -> None:
     """Headers are added unless set; valid caller request ids are echoed."""
     response = client.get("/ok")

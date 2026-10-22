@@ -338,6 +338,8 @@ def test_rate_limits_count_http_requests_per_caller() -> None:
     assert (echoed.status_code, echoed.json()) == (200, {"size": 4})
     assert echoed.headers["RateLimit-Remaining"] == "0"
     assert (refused.status_code, other.status_code) == (429, 200)
+    assert refused.headers["RateLimit-Limit"] == "1"
+    assert int(refused.headers["Retry-After"]) > 0
 
 
 def test_rate_limits_count_ipv6_clients_per_network() -> None:
