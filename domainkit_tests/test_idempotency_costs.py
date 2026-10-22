@@ -8,7 +8,7 @@ the stored response with two. Claims race safely without a transaction.
 import asyncio
 import os
 import secrets
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
@@ -24,7 +24,7 @@ from sqlalchemy.pool import Pool
 from sqlalchemy.sql import Executable
 from starlette.types import Message, Receive, Scope, Send
 
-from domainkit import setup
+from domainkit import deadlines, setup
 from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.contrib.idempotency import middleware as idempotency
@@ -33,10 +33,13 @@ from domainkit.contrib.idempotency.settings import IdempotencySettings
 from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.db import connections
 from domainkit.db.connections import INTERNAL
+from domainkit_tests import sample_routes
 from domainkit_tests.conftest import POSTGRES_VARIABLE
 from domainkit_tests.test_ratelimit_and_idempotency import (
     KEYED_POST,
+    discard,
     idempotent_app,
+    payments_on,
     receive_empty_body,
     stored_keys,
 )
@@ -375,3 +378,50 @@ def test_an_expired_key_is_claimed_with_nothing_of_its_old_row() -> None:
     assert claimed["expires_at"] > now
     assert claimed["locked_until"] > now
     assert stored_keys() == []  # Released: the failure committed nothing.
+
+
+def test_pins_and_late_marks_keep_to_a_deadline_no_timer_enforces(
+    make_database: Callable[[str], str],
+) -> None:
+    """A task that shares the request's deadline, but not its timer, commits elsewhere.
+
+    The pin before that commit and the mark after it commit as they run,
+    with no transaction to lower ``statement_timeout`` in: each runs under
+    a timer of its own, cut off at the deadline.
+    """
+    databases = {"default": make_database("keys"), "other": make_database("other")}
+    seen: list[tuple[str, bool]] = []
+
+    def record(*args: Any) -> None:  # noqa: ANN401 - before_cursor_execute's.
+        statement: str = args[2]
+        if statement.startswith("UPDATE domainkit_idempotency_keys"):
+            which = "pin" if "pinned=" in statement else "mark"
+            if "committed_at=" in statement or which == "pin":
+                seen.append((which, deadlines.enforced()))
+
+    async def pay(scope: Scope, receive: Receive, send: Send) -> None:
+        async def work() -> None:
+            async with sample_routes.PaymentsUnitOfWork(database="other") as uow:
+                await uow.session.execute(insert(sample_routes.payments))
+                await uow.commit()
+
+        async with deadlines.timeout(60.0):
+            await asyncio.create_task(work())  # Shares the deadline only.
+        await send({"type": "http.response.start", "status": 201, "headers": []})
+        await send({"type": "http.response.body", "body": b"paid"})
+
+    async def scenario() -> None:
+        await idempotency.IdempotencyMiddleware(pay)(
+            KEYED_POST, receive_empty_body, discard
+        )
+        await connections.close_all()
+
+    with idempotent_app(databases):
+        event.listen(Engine, "before_cursor_execute", record)
+        try:
+            asyncio.run(scenario())
+        finally:
+            event.remove(Engine, "before_cursor_execute", record)
+        assert payments_on("other") == 1
+
+    assert seen == [("pin", True), ("mark", True)]

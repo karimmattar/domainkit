@@ -85,14 +85,22 @@ Measured on PostgreSQL, on the wire:
 - A replay takes 10 round trips instead of 27, and 2 checkouts instead of
   4.
 
-The framework's own claim and store do not lower `statement_timeout` to
-the request's deadline any more: `SET LOCAL` needs a transaction. They are
-still bounded:
+The framework's own claim, store, pin and late mark do not lower
+`statement_timeout` to the request's deadline any more: `SET LOCAL` needs
+a transaction. They are still bounded:
 
 - by `STATEMENT_TIMEOUT`, `LOCK_TIMEOUT` and `COMMAND_TIMEOUT`, which the
   session keeps outside PgBouncer;
 - the claim by the request deadline's timer;
-- the store or release by `SETTLE_TIMEOUT`.
+- the store or release by `SETTLE_TIMEOUT`;
+- the pin before a commit on another database, and the mark after it, by
+  the deadline: the request's timer cuts them off, and in a task that only
+  shares the deadline (`deadlines.enforced()` is false), a
+  `deadlines.timeout` block of their own does, which costs no round trip.
+  A deadline that has passed changes nothing, as for a transaction's
+  timeouts. A pin cut off may still have landed on the server; the key is
+  then pinned, and its retries get 409, as when the commit after a pin
+  fails. (Amended 2026-10-22.)
 
 `connections.autocommit()` is for statements that each make sense alone:
 code that needs several to commit together must use a transaction.
