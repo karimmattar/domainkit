@@ -404,6 +404,7 @@ def test_browser_sessions_kept_and_read_build_the_same_user(
     create_user("alice", is_superuser=True)
     identity()
     raw = run_async(issue("alice", kind=TokenKind.SESSION, ttl=timedelta(hours=1)))
+    access = run_async(issue("alice"))
     session, csrf = cookie_names()
     digest = token_digest(raw)
     token = csrf_token(digest)
@@ -427,9 +428,11 @@ def test_browser_sessions_kept_and_read_build_the_same_user(
         without_cookie = await credentials_of(headers=site)
         return missed, hit, reads, refused.value, posted, with_header, without_cookie
 
+    before = {name: sample(name, "cookie") for name in ("hit", "miss")}
     missed, hit, reads, refused, posted, with_header, without_cookie = run_async(
         scenario()
     )
+    not_a_session = {**site, "Cookie": f"{session}={access}"}
     assert reads == []
     assert view(missed.user) == view(hit.user)
     assert (hit.scheme, hit.token_id) == ("cookie", digest)
@@ -438,6 +441,12 @@ def test_browser_sessions_kept_and_read_build_the_same_user(
     assert posted.user.is_superuser
     assert with_header is None
     assert without_cookie is None
+    assert sample("miss", "cookie") == before["miss"] + 1
+    assert sample("hit", "cookie") == before["hit"] + 3
+    for _ in range(2):  # Read, then as the token it is: never a session.
+        assert run_async(credentials_of(headers=not_a_session)) is None
+    run_async(credentials_of(headers=bearer(access)))
+    assert run_async(credentials_of(headers=not_a_session)) is None
 
 
 def test_json_web_tokens_kept_and_read_build_the_same_user(
@@ -868,13 +877,23 @@ def test_a_password_change_keeps_this_session_and_ends_the_others(
     assert wrong.json()["code"] == "wrong_password"
 
 
-def test_a_password_holds_only_for_a_stored_user(api: Api) -> None:
+def test_a_password_holds_only_for_a_stored_user(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A user deleted meanwhile has no password to check."""
     from domainkit.contrib.auth.api import password_holds
+    from domainkit.contrib.auth.hashers import acheck_password
 
     alice = create_user("alice")
     api()
     user = run_async(orm_user(alice))
+    priorities: list[bool] = []
+
+    async def check(password: str, encoded: str | None, *, priority: bool) -> bool:
+        priorities.append(priority)
+        return await acheck_password(password, encoded, priority=priority)
+
+    monkeypatch.setattr("domainkit.contrib.auth.api.acheck_password", check)
 
     async def delete() -> None:
         async with AuthUnitOfWork() as uow:
@@ -883,6 +902,8 @@ def test_a_password_holds_only_for_a_stored_user(api: Api) -> None:
             await uow.commit()
 
     assert run_async(password_holds(user, PASSWORD))
+    assert run_async(password_holds(user, PASSWORD, priority=True))
+    assert priorities == [False, True]  # Reserved places only when asked.
     run_async(delete())
     assert not run_async(password_holds(user, PASSWORD))
 
@@ -1100,6 +1121,101 @@ def test_a_login_with_a_token_that_never_expires_lasts() -> None:
     with freeze_time("2099-01-01T00:00:00Z") as clock:
         assert login_state.active_at(clock.now())
         assert not gone.active_at(clock.now())
+
+
+async def jwt_login(
+    ttl: timedelta | None, family: UUID | None = None
+) -> tuple[str, UUID, str]:
+    """Alice's access token, login ``family``, and refresh token for ``ttl``.
+
+    A new login when ``family`` is None; another token of it otherwise.
+    """
+    authenticator = next(
+        each for each in get_authenticators() if isinstance(each, JWTAuthentication)
+    )
+    async with AuthUnitOfWork() as uow:
+        user = await uow.users.get_by_natural_key("alice")
+        assert user is not None
+        family = family or uuid4()
+        refresh = await uow.tokens.issue(
+            user.id, kind=TokenKind.REFRESH, ttl=ttl, family=family
+        )
+        await uow.commit()
+    return authenticator.encode(user, family), family, refresh
+
+
+def test_logins_read_whether_any_token_never_expires(api: Api) -> None:
+    """A login ends with its last expiring token, unless one never expires."""
+    create_user("alice")
+    api(**JWT)
+
+    async def login_of(family: UUID) -> principals.Login:
+        async with AuthUnitOfWork() as uow:
+            return await uow.principals.login(family)
+
+    with freeze_time("2026-05-01T10:00:00Z") as clock:
+        _, family, _ = run_async(jwt_login(timedelta(minutes=2)))
+        ends = clock.now() + timedelta(minutes=2)
+        assert run_async(login_of(family)) == principals.Login(active=True, until=ends)
+        run_async(jwt_login(None, family))
+        assert run_async(login_of(family)) == principals.Login(active=True, until=None)
+        gone = principals.Login(active=False, until=None)
+        assert run_async(login_of(uuid4())) == gone
+
+
+def test_a_kept_login_renewed_meanwhile_is_read_again(api: Api) -> None:
+    """Past the end it was kept with, a login is read again, and lasts if renewed."""
+    create_user("alice")
+    api(**JWT, PRINCIPAL_CACHE={"TTL": timedelta(minutes=5)})
+
+    with freeze_time("2026-05-01T10:00:00Z") as clock:
+        access, family, _ = run_async(jwt_login(timedelta(minutes=2)))
+        assert run_async(credentials_of(headers=bearer(access))) is not None
+        run_async(jwt_login(timedelta(minutes=10), family))  # A refresh elsewhere.
+        clock.tick(120)  # Past the end kept, inside the cache's TTL.
+        assert run_async(credentials_of(headers=bearer(access))) is not None
+
+
+def test_ending_a_logins_only_token_drops_the_kept_login(api: Api) -> None:
+    """``revoke`` of a login's token drops the login, which rests on its family."""
+    create_user("alice")
+    api(**JWT, PRINCIPAL_CACHE={"TTL": timedelta(minutes=5)})
+
+    async def end(refresh: str) -> int:
+        async with AuthUnitOfWork() as uow:
+            ended = await uow.tokens.revoke(token_digest(refresh))
+            await uow.commit()
+        return ended
+
+    with freeze_time("2026-05-01T10:00:00Z"):
+        access, _, refresh = run_async(jwt_login(timedelta(hours=1)))
+        assert run_async(credentials_of(headers=bearer(access))) is not None
+        assert run_async(end(refresh)) == 1
+        with pytest.raises(AuthenticationFailed) as ended:
+            run_async(credentials_of(headers=bearer(access)))
+    assert ended.value.detail == "Session ended; log in again."
+
+
+def test_revoking_a_users_tokens_reads_each_of_their_principals_again(
+    api: Api,
+) -> None:
+    """The token kept too: ``revoke_user`` drops every principal of the user."""
+    alice = create_user("alice")
+    api(PRINCIPAL_CACHE={"TTL": timedelta(minutes=5)})
+
+    async def revoke_others(kept: str) -> int:
+        async with AuthUnitOfWork() as uow:
+            ended = await uow.tokens.revoke_user(alice, keep=kept)
+            await uow.commit()
+        return ended
+
+    with freeze_time("2026-05-01T10:00:00Z"):
+        raw = run_async(issue("alice"))
+        assert run_async(credentials_of(headers=bearer(raw))) is not None
+        assert len(principal_cache) == 1
+        assert run_async(revoke_others(token_digest(raw))) == 0
+        assert len(principal_cache) == 0
+        assert run_async(credentials_of(headers=bearer(raw))) is not None
 
 
 def test_live_connections_see_changes_as_requests_do(
@@ -1496,10 +1612,11 @@ def test_refresh_tokens_are_not_access_tokens(api: Api) -> None:
 
 
 def test_inactive_users_are_refused_with_json_web_tokens(api: Api) -> None:
-    """At the request, and at the refresh."""
+    """At the request, kept or not, and at the refresh."""
     create_user("alice")
-    client = api(**JWT)
+    client = api(**JWT, PRINCIPAL_CACHE={"TTL": timedelta(minutes=5)})
     issued = login(client, "alice")
+    assert client.get("/private", headers=bearer(issued["access_token"])).is_success
 
     async def deactivate() -> None:
         async with AuthUnitOfWork() as uow:
