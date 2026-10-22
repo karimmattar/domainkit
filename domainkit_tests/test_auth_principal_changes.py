@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 import pytest
 from fakeredis import FakeServer
 from sqlalchemy import delete, event, insert, select, update
+from sqlalchemy.orm import Session
 
 from domainkit.cache import Cache, CacheUnavailable, caches
 from domainkit.cache import redis as redis_cache
@@ -27,7 +28,12 @@ from domainkit.contrib.auth import (
     UserId,
     principals,
 )
-from domainkit.contrib.auth.principals import principal_cache, token_target, user_target
+from domainkit.contrib.auth.principals import (
+    invalidate_after_commit,
+    principal_cache,
+    token_target,
+    user_target,
+)
 from domainkit.contrib.auth.tables import group_permissions, tokens, user_link_tables
 from domainkit.contrib.auth.tokens import TokenKind, token_digest, utc_now
 from domainkit.contrib.auth.users import get_user_table
@@ -703,3 +709,20 @@ def test_a_cache_that_keeps_no_stamp_keeps_no_principal(
     monkeypatch.setattr(Cache, "add", keeps_nothing)
     assert run_async(outcome(raw)) == "served"
     assert len(principal_cache) == 0
+
+
+def test_synchronous_sessions_say_they_cannot_stamp(
+    api: Api, shared: FakeServer, caplog: pytest.LogCaptureFixture
+) -> None:
+    """With no event loop to write from, the commit drops here and logs."""
+    api(PRINCIPAL_CACHE=STAMPED)
+    session = Session()
+    invalidate_after_commit(session, [user_target(uuid4())])
+
+    principals._committed(session)
+
+    (warning,) = [m for m in caplog.messages if m.startswith("Could not stamp")]
+    assert warning == (
+        "Could not stamp 1 changed principals in cache 'shared' (no event loop); "
+        "other processes keep theirs for up to 0:05:00"
+    )
