@@ -14,8 +14,8 @@ for the queue to drain, within ``FLUSH_TIMEOUT``.
 
 ``JsonFormatter`` writes the line ``json.dumps`` wrote, byte for byte, in
 40% less time. ``AccessSampler`` decides which access lines to write when
-``ACCESS_LOG_SAMPLE_RATE`` is below 1: every error, refusal, and slow
-request, and a fair share of the rest.
+``ACCESS_LOG_SAMPLE_RATE`` is below 1: every response from 400 up, every
+request without one, every slow request, and a fair share of the rest.
 """
 
 import asyncio
@@ -84,17 +84,25 @@ class ContextFilter(logging.Filter):
         return True
 
 
-ALWAYS_LOGGED_STATUSES: Final = frozenset({401, 403, 429})
-"""Refusals that sampling never leaves out of the access log, with errors."""
+ALWAYS_LOGGED_FROM: Final = 400
+"""The first status whose access line sampling never leaves out.
+
+Client errors are refusals as much as 401, 403, and 429 are: a scoped
+resource answers 404 for what the caller may not reach, so probing other
+tenants' ids is a run of 404s. They are few in a healthy service, and
+they are what an investigation reads.
+"""
 
 
 class AccessSampler:
     """Which access lines to write: all that matter, and a fair share of the rest.
 
-    With a ``rate`` under 1, a line is still written for every error (status
-    500 and up, or no response at all), every refusal of credentials,
-    access, or rate (401, 403, 429), and every request that took ``slow``
-    seconds or more. Each other request is written with probability
+    With a ``rate`` under 1, a line is still written for every response
+    with a status of 400 or more (client and server errors, refusals of
+    credentials, access, or rate, and the 404 of what is out of the
+    caller's reach), for every request that got no response at all, and
+    for every request that took ``slow`` seconds or more. Each other
+    request, a success or a redirect, is written with probability
     ``rate``, drawn on its own: a fair sample whatever the traffic's
     pattern, which callers cannot steer. Security events have a logger of
     their own (``domainkit.security``) that sampling never touches, and the
@@ -130,18 +138,9 @@ class AccessSampler:
         """
         if self.rate >= 1.0:
             return True
-        if (
-            status is None
-            or status >= ERRORS_FROM
-            or status in ALWAYS_LOGGED_STATUSES
-            or seconds >= self.slow
-        ):
+        if status is None or status >= ALWAYS_LOGGED_FROM or seconds >= self.slow:
             return True
         return self._draw() < self.rate
-
-
-ERRORS_FROM: Final = 500
-"""The first status of a server error, whose access line is always written."""
 
 
 class JsonFormatter(logging.Formatter):

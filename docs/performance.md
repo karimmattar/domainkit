@@ -500,8 +500,8 @@ logging queue 16,302 instead of 26,844; the rest is the standard library's
 logger's level drops is no longer built: with the access log off, a
 request costs 468,844 instructions instead of 477,115.
 
-**Sampling.** `ACCESS_LOG_SAMPLE_RATE = 0.1` writes about one ordinary
-request in ten, and every error, refusal, and slow request
+**Sampling.** `ACCESS_LOG_SAMPLE_RATE = 0.1` writes about one successful
+request in ten, and every response from 400 up and every slow request
 ([runtime.md](runtime.md#sampling-the-access-log)):
 
 | Default middleware | Instructions a request |

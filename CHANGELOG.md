@@ -31,10 +31,12 @@ All notable changes to domainkit. The format follows
   (`response_class=JSONResponse`); routes with one keep FastAPI's default,
   which encodes them with pydantic already (PERF-08; ADR 0063).
 - `ACCESS_LOG_SAMPLE_RATE` (1.0) and `ACCESS_LOG_SLOW_DURATION` (1 second):
-  write a share of the access lines, each request drawn on its own. Errors
-  (500 and up, or no response), refusals (401, 403, 429), and requests that
-  take the slow duration or longer are always written, and
-  `domainkit.security` and the audit trail are never sampled. At 0.1 the
+  write a share of the access lines of successful and redirected requests,
+  each drawn on its own. Every response from 400 up (the 404 of what is out
+  of the caller's reach and the 401, 403, and 429 of refusals among them),
+  every request without a response, and requests that take the slow
+  duration or longer are always written, and `domainkit.security` and the
+  audit trail are never sampled. At 0.1 the
   JSON access line costs about 18,000 instructions a request instead of
   154,000 (PERF-02; ADR 0063). The production settings `init` writes read
   the rate from the environment.

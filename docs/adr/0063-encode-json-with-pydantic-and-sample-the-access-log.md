@@ -93,9 +93,10 @@ for `1e+16`.
   by field, without `copy.copy`'s generic machinery.
 - **Access-log sampling**, off by default: `ACCESS_LOG_SAMPLE_RATE` (1.0,
   every line) and `ACCESS_LOG_SLOW_DURATION` (1 second). Below 1.0, the
-  lines of errors (status 500 and up, or no response), refusals (401, 403,
-  429), and requests that took the slow duration or longer are always
-  written; each other line is written with probability rate, drawn per
+  lines of every response from status 400 up (client errors, refusals, and
+  server errors), of requests that got no response, and of requests that
+  took the slow duration or longer are always written; each other line (a
+  success or a redirect) is written with probability rate, drawn per
   request with `random.random`. The middleware checks the logger's level,
   then the sample, before it builds anything. Only `domainkit.access` is
   sampled: `domainkit.security`, the other loggers, and the audit trail
@@ -113,6 +114,12 @@ Rejected:
   caller who knows N can keep their requests out of it.
 - Sampling refusals, or `domainkit.security`: those are the lines an
   operator reads during an attack.
+- Sampling client errors other than 401, 403, and 429, as the first
+  version did. A scoped resource answers 404 for what is out of the
+  caller's reach, so at a low rate a caller trying other tenants' ids, one
+  after another, left almost no trace; 400, 405, 409, and 422 are probes'
+  answers too. They are few in a healthy service, so keeping them all
+  costs little, and they are what an investigation needs.
 - Refusing a low sample rate in staging and production: it never drops
   errors, refusals, or security events, so it stays the operator's choice.
 
