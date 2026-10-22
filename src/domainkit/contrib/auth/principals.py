@@ -858,21 +858,25 @@ NONE_AHEAD: Final[Mapping[str, str]] = MappingProxyType({})
 async def stamps_ahead(
     config: PrincipalCacheSettings, targets: Sequence[str]
 ) -> dict[str, str] | None:
-    """The stamps of ``ALL`` and ``targets`` that exist, read before a unit of work.
+    """``ALL``'s stamp, and those of ``targets`` that exist, before a unit of work.
 
-    A slow cache then holds no database connection for them. Only read:
-    a stamp is given (``settle_stamps``) once the credential proved real,
-    so guesses write nothing. Empty without ``STAMPS``; None when the cache
-    failed (the principal is not kept).
+    A slow cache then holds no database connection for them. ``ALL`` is
+    given a stamp if absent (``settle_stamps``); ``targets`` are only read:
+    their stamps are given once the credential proved real, so guesses
+    write nothing. Empty without ``STAMPS``; None when the cache failed
+    (the principal is not kept).
     """
     if not config.ENABLED or config.STAMPS is None:
         return {}
-    keys = [stamp_key(ALL), *map(stamp_key, targets)]
+    keys = list(map(stamp_key, targets))
     try:
-        found: dict[str, str] = await caches[config.STAMPS].get_many(keys, str)
+        (everyone,) = await settle_stamps(config.STAMPS, ())
+        found: dict[str, str] = (
+            await caches[config.STAMPS].get_many(keys, str) if keys else {}
+        )
     except CacheError:
         return None
-    return found
+    return {stamp_key(ALL): everyone, **found}
 
 
 async def stamps_before_reading(

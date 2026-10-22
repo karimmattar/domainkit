@@ -9,6 +9,7 @@ commit. Interleavings are forced with events, never with sleeps.
 import asyncio
 from collections.abc import Awaitable, Callable, Collection
 from datetime import timedelta
+from pathlib import Path
 from typing import Any, Final
 from uuid import UUID, uuid4
 
@@ -28,7 +29,7 @@ from domainkit.contrib.auth import (
 )
 from domainkit.contrib.auth.principals import principal_cache, token_target, user_target
 from domainkit.contrib.auth.tables import group_permissions, tokens, user_link_tables
-from domainkit.contrib.auth.tokens import token_digest, utc_now
+from domainkit.contrib.auth.tokens import TokenKind, token_digest, utc_now
 from domainkit.contrib.auth.users import get_user_table
 from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.db import connections
@@ -37,8 +38,10 @@ from domainkit.management.base import run_async
 from domainkit.tasks import owned
 from domainkit_tests.conftest import Api
 from domainkit_tests.conftest import identity as identity
+from domainkit_tests.fake_smtp import certificate
 from domainkit_tests.test_auth_http import bearer, create_user, grant, login
 from domainkit_tests.test_auth_principals import (
+    CERTIFICATES,
     STAMPED,
     credentials_of,
     editors_with,
@@ -546,19 +549,38 @@ def test_users_hold_a_bounded_number_of_live_tokens(identity: Api) -> None:
     assert make().status_code == 201
 
 
+@pytest.mark.parametrize("credential", ["token", "certificate subject"])
 def test_the_first_stamps_are_read_before_a_connection_is_taken(
-    api: Api, shared: FakeServer, monkeypatch: pytest.MonkeyPatch
+    api: Api,
+    shared: FakeServer,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    credential: str,
 ) -> None:
-    """``ALL``'s and the token's: a slow shared cache holds no connection for them."""
+    """``ALL``'s (and a token's): a slow shared cache holds no connection for them."""
     create_user("alice")
-    api(PRINCIPAL_CACHE=STAMPED)
-    raw = run_async(issue("alice"))
+    if credential == "token":
+        api(PRINCIPAL_CACHE=STAMPED)
+        raw = run_async(issue("alice"))
+        options: dict[str, Any] = {"headers": bearer(raw)}
+    else:
+        api(
+            PRINCIPAL_CACHE=STAMPED,
+            AUTHENTICATION_CLASSES=CERTIFICATES,
+            CLIENT_CERT={"MATCH": "subject"},
+        )
+        path, _ = certificate(tmp_path, "alice")
+        options = {"certificate_pem": path.read_text(encoding="ascii")}
     taken = [0]
     while_reading: list[int] = []
+    read_holding: list[str] = []
     get_many = Cache.get_many
 
     async def counted(self: Cache, keys: Any, *args: Any) -> Any:  # noqa: ANN401
+        keys = list(keys)
         while_reading.append(taken[0])
+        if taken[0]:
+            read_holding.extend(keys)
         return await get_many(self, keys, *args)
 
     def checked_out(*_: object) -> None:
@@ -569,16 +591,115 @@ def test_the_first_stamps_are_read_before_a_connection_is_taken(
 
     monkeypatch.setattr(Cache, "get_many", counted)
 
-    async def scenario() -> str:
+    async def scenario() -> bool:
         engine = connections.engine().sync_engine
         event.listen(engine, "checkout", checked_out)
         event.listen(engine, "checkin", checked_in)
         try:
-            return await outcome(raw)
+            return await credentials_of(**options) is not None
         finally:
             event.remove(engine, "checkout", checked_out)
             event.remove(engine, "checkin", checked_in)
 
-    assert run_async(scenario()) == "served"
+    assert run_async(scenario())
     assert while_reading[0] == 0  # Read ahead, no connection held.
     assert max(while_reading) == 1  # The user's, between the two queries.
+    assert principals.stamp_key(principals.ALL) not in read_holding  # Not again.
+    assert len(principal_cache) == 1
+
+
+def test_stamps_given_at_a_read_expire_as_the_others(
+    api: Api, shared: FakeServer
+) -> None:
+    """A stamp given to an absent one lives ``STAMP_TTL``, and is as short."""
+    alice = create_user("alice")
+    api(PRINCIPAL_CACHE=STAMPED)
+    raw = run_async(issue("alice"))
+
+    async def scenario() -> tuple[object, int]:
+        assert await outcome(raw) == "served"
+        key = principals.stamp_key(user_target(alice))
+        client = redis_cache.create_client(None)  # type: ignore[arg-type]
+        (stored,) = [each for each in await client.keys("*") if key in str(each)]
+        return await caches["shared"].get(key), await client.pttl(stored)
+
+    stamp, lives = run_async(scenario())
+    assert isinstance(stamp, str)
+    assert len(stamp) == 16
+    ttl = int(principals.STAMP_TTL.total_seconds() * 1000)
+    assert ttl - 60_000 < lives <= ttl
+
+
+def test_stamp_writes_are_bounded(
+    api: Api,
+    shared: FakeServer,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A write that hangs is given up after ``STAMP_WRITE_TIMEOUT``, and logged."""
+    create_user("alice")
+    api(PRINCIPAL_CACHE=STAMPED)
+    raw = run_async(issue("alice"))
+    monkeypatch.setattr(principals, "STAMP_WRITE_TIMEOUT", 0)
+
+    async def scenario() -> None:
+        never = asyncio.Event()
+
+        async def hangs(alias: str, targets: Collection[str]) -> None:
+            await never.wait()
+
+        monkeypatch.setattr(principals, "write_stamps", hangs)
+        async with AuthUnitOfWork() as uow:
+            await uow.tokens.revoke(token_digest(raw))
+            await uow.commit()
+        await stamps_written()
+
+    run_async(scenario())
+    reasons = [m for m in caplog.messages if m.startswith("Could not stamp")]
+    assert len(reasons) == 2  # Before the commit, and after it.
+    assert all("(TimeoutError)" in each for each in reasons)
+
+
+def test_live_tokens_are_counted_by_user_kind_and_expiry(api: Api) -> None:
+    """``TokenStore.live_count``: a user's access tokens that still work."""
+    alice, bob = create_user("alice"), create_user("bob")
+    api()
+
+    async def count() -> int:
+        async with AuthUnitOfWork() as uow:
+            return await uow.tokens.live_count(alice)
+
+    async def give(user: UUID, kind: TokenKind, ttl: timedelta | None) -> None:
+        async with AuthUnitOfWork() as uow:
+            await uow.tokens.issue(user, kind=kind, ttl=ttl)
+            await uow.commit()
+
+    with freeze_time("2026-05-01T10:00:00Z") as clock:
+        seen = [run_async(count())]
+        run_async(give(alice, TokenKind.ACCESS, timedelta(hours=1)))
+        run_async(give(alice, TokenKind.ACCESS, None))
+        run_async(give(alice, TokenKind.SESSION, timedelta(hours=1)))
+        run_async(give(alice, TokenKind.REFRESH, timedelta(hours=1)))
+        run_async(give(bob, TokenKind.ACCESS, None))
+        run_async(give(alice, TokenKind.ACCESS, timedelta(minutes=1)))
+        seen.append(run_async(count()))
+        clock.tick(60)  # The last one ends now.
+        seen.append(run_async(count()))
+
+    assert seen == [0, 3, 2]
+
+
+def test_a_cache_that_keeps_no_stamp_keeps_no_principal(
+    api: Api, shared: FakeServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stamp given and gone at once (an eviction) confirms nothing: read, not kept."""
+    create_user("alice")
+    api(PRINCIPAL_CACHE=STAMPED)
+    raw = run_async(issue("alice"))
+
+    async def keeps_nothing(*_: object, **__: object) -> bool:
+        return False
+
+    monkeypatch.setattr(Cache, "add", keeps_nothing)
+    assert run_async(outcome(raw)) == "served"
+    assert len(principal_cache) == 0
