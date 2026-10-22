@@ -20,7 +20,7 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from starlette.datastructures import Headers
 from starlette.requests import HTTPConnection
-from starlette.routing import BaseRoute, Match
+from starlette.routing import BaseRoute, Match, Router
 from starlette.testclient import WebSocketDenialResponse
 from starlette.types import Receive, Scope, Send
 from starlette.websockets import WebSocketClose, WebSocketDisconnect
@@ -917,6 +917,11 @@ def test_routers_that_only_declare_otherwise_are_flattened() -> None:
     assert flatten_routes(app.router) == 1
     assert isinstance(app.routes[-1], APIRoute)
     assert app.url_path_for("hello") == "/declared/hello"
+
+
+def test_a_router_that_is_not_fastapis_serves_itself() -> None:
+    """Starlette's ``Router`` is all its own methods: never flattened."""
+    assert serves_itself(Router())  # type: ignore[arg-type]
 
 
 def test_a_router_given_its_own_method_serves_itself() -> None:
