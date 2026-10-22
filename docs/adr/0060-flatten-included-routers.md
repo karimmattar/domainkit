@@ -50,20 +50,40 @@ The options:
   - any other route (a WebSocket, a Starlette route, a mount, a host) is
     the route FastAPI already builds, and serves, for it.
 - Left included as FastAPI built them:
+  - a router that serves requests in its own way
+    (`domainkit.http.routing.serves_itself`): its class, a class between
+    it and `APIRouter`, or the router itself has its own version of any
+    method of `APIRouter` or Starlette's `Router` but those that only
+    declare routes (`__init__`, `add_api_route`, `get`, `include_router`,
+    `mount`, and the like: `DECLARING`). FastAPI asks a nested router's
+    `matches` and `handle` for each request, and a project may keep an IP
+    gate, a host rule, or a tenant's context there; flattened, it would
+    never be asked. The methods are read from FastAPI's and Starlette's
+    classes, not listed by hand, so one a later release adds counts too.
+    Such a router stays one entry, in its place: FastAPI's own branch for
+    it, with the prefixes, rules, and other options of every router above
+    it. The routers above and beside it are flattened around it;
   - a router with frontend routes (`APIRouter.frontend`), which FastAPI
     matches after every other route;
   - a router with a route whose served form FastAPI does not give;
   - every router, on a FastAPI without `_IncludedRouter` and its
-    `effective_route_contexts`: there, flattening does nothing.
+    `effective_candidates`: there, flattening does nothing.
 - `FLATTEN_ROUTERS = False` keeps FastAPI's nesting, for a FastAPI release
   or a project's route class that needs it, without a code change.
+- Rejected, for routers that serve themselves: leaving included the whole
+  top-level router a project's router sits in. Exact too, but one gated
+  router in `config/urls.py` would put every route of the application
+  back to matching at each level.
 - The tests build every application twice, nested and flattened, on
   FastAPI 0.141.1, 0.143.1, and 0.158.2, and require the same OpenAPI document byte
   for byte (the `init` project, the auth, admin, staff, and identity
   routers, and a router tree with every option), the same responses byte
   for byte (statuses, headers in order, bodies; 404, 405, 422, redirects,
   WebSockets), the same access rules, the same `url_path_for`, and the
-  routers' lifespans and startup hooks still run.
+  routers' lifespans and startup hooks still run. Routers that have their
+  own `handle`, `matches`, `not_found`, `__call__`, or `app`, at the top
+  or below an ordinary router, answer and refuse alike over HTTP and
+  WebSocket.
 
 ## Consequences
 
@@ -96,12 +116,10 @@ The options:
   their shape fails the tests that compare nested and flattened
   applications. The benchmarks in CI would show the cost of nesting
   coming back.
-- On FastAPI 0.143 and 0.158, `iter_route_contexts` readers that ask a nested
-  WebSocket's context for its `starlette_route` get nothing, so domainkit's
-  checks see the router's own route: its path without prefixes, and
-  without the rules of the `include_router` calls. Flattened routes do not
-  have that problem; routers left nested still do, until those checks read
-  the context itself.
+- A router that serves itself costs what nesting costs, for its own
+  routes only, and its routes added after the build are still served.
+  Below another router, its `matches` is asked once per request, as at
+  the top, where nesting asked it once more for each router above it.
 - What would change this: FastAPI serving included routes flat itself, or
   giving a public way to read what it works out for them. Then
   `flatten_routes` does nothing, or reads that instead.

@@ -309,9 +309,13 @@ ACCESS_LOG_SAMPLE_RATE = 0.1  # About one request in ten.
 ACCESS_LOG_SLOW_DURATION = 1.0  # Seconds.
 ```
 
-- These are always written, whatever the rate: errors (status 500 and up,
-  or no response at all), refusals (401, 403, 429), and requests that took
-  `ACCESS_LOG_SLOW_DURATION` seconds or more.
+- These are always written, whatever the rate: every response with a
+  status of 400 or more, every request that got no response at all, and
+  requests that took `ACCESS_LOG_SLOW_DURATION` seconds or more. Only
+  successes and redirects are sampled. Client errors are kept because they
+  are what an investigation reads: a scoped resource answers 404 for what
+  the caller may not reach, so a caller trying other tenants' ids leaves a
+  404 line for every id tried, and a healthy service answers few of them.
 - Each other request is written with probability `ACCESS_LOG_SAMPLE_RATE`,
   drawn on its own: a fair sample whatever the traffic's pattern, which a
   caller cannot steer. A line left out costs nothing more than the draw.

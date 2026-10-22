@@ -88,11 +88,14 @@ python -m benchmarks me read throttled  # some
 `DOMAINKIT_BENCH_POSTGRES_URL` (or `--postgres`, which other users of the
 machine can read in its process list) names a database the ladder may make
 schemas in. The ladder passes it on to the processes it starts in their
-environment, never on their command line. Each run creates
-`domainkit_bench_<tree>_<pid>`, migrates it with the code measured, adds a
-user in a group that may view and add items, a token and an item, and drops
-the schema at the end. It touches nothing else, and only ever creates or
-drops schemas named `domainkit_bench_...`.
+environment, never on their command line, and masks its password in
+what it prints of them. Each run creates `domainkit_bench_<tree>_<random>`,
+a schema no other run has (it refuses one that exists rather than replace
+it), migrates it with the code measured, adds a user without a usable
+password in a group that may view and add items, a token that expires
+within the hour, and an item, and drops that schema, and only that one, at
+the end. It touches nothing else, and only ever creates or drops schemas
+named `domainkit_bench_...`.
 
 It prints a table, checks the counts against the budgets (below), and
 exits 1 when a rung fails or goes over budget. `--json PATH` keeps every
@@ -421,6 +424,12 @@ On 0.141.1, the best of seven alternating rounds of 20,000 requests took
 behind 20 sibling routes (wall time; medians 85.9 and 48.3, 204.4 and
 80.1 µs).
 
+A router whose class has its own `matches`, `handle`, or other method
+that serves requests (an IP gate, a host rule) stays included, so its own
+routes cost what nesting costs; the routers around it are still
+flattened ([reference.md](reference.md#included-routers)). Give such a
+router only the routes it guards.
+
 What the pieces cost alone (`timeit`, best of 5, at 0.8.0):
 `MutableHeaders` security headers 4.3 µs, raw 0.45 µs; `uuid4().hex`
 1.96 µs, `os.urandom(16).hex()` 0.45 µs; `labels()` 0.86 µs, a kept
@@ -546,9 +555,9 @@ sample its access log (ADR 0063). Measured on domainkit 0.8.0 and this
 release side by side, with the re-audit's harness (`GET /hello` fed straight
 into the application, 4 shared vCPUs).
 
-**Responses.** `domainkit.http.JSONResponse` gives the bytes Starlette's
-gave, for 41% to 52% fewer instructions. Resource pages, items, and
-batches, error bodies, and readiness answers use it.
+**Responses.** domainkit's own JSON bodies (resource pages, items, and
+batches, error bodies, and readiness answers) give the bytes Starlette's
+gave, for 41% to 52% fewer instructions.
 
 | Payload | Instructions, 0.8.0 | Instructions, 0.9 | Time, 0.8.0 | Time, 0.9 |
 | --- | ---: | ---: | ---: | ---: |
@@ -562,6 +571,31 @@ A request that answers the page of 50, with no middleware, costs 1,302,835
 instructions instead of 2,155,451: 40% fewer. One that answers an error body
 costs 382,839 instead of 400,160.
 
+`domainkit.http.JSONResponse`, for a project's own bodies, first checks
+that its content is JSON's own values, so that what Starlette refused (a
+model passed by mistake, a `Decimal`, a `datetime`, an integer past
+Python's digit limit) it refuses too ([reference.md](reference.md#json-responses)).
+The check is Python and costs about what pydantic's encoder saves:
+instructions per encode on FastAPI 0.143.1, with the payloads above and
+those of the security review:
+
+| Payload | `json.dumps` (Starlette) | `JSONResponse` | domainkit's own bodies |
+| --- | ---: | ---: | ---: |
+| `{"status": "ok"}` | 21,723 | 9,489 | 11,411 |
+| an error body | 38,722 | 26,479 | 22,803 |
+| one resource | 60,752 | 38,201 | 28,830 |
+| a page of 50 resources | 1,885,266 | 1,732,036 | 977,754 |
+| 200 orders with lines | 16,194,560 | 20,374,652 | 9,528,040 |
+| one string of 1 MB | 35,022,878 | 11,010,388 | 18,548,736 |
+| 100,000 strings like `",0.0000x"` | 81,674,934 | 69,262,245 | 126,938,647 |
+| 100,000 floats of 0.5 | 210,950,885 | 162,327,471 | 55,165,425 |
+| 200,000 keys, integer values | 336,499,646 | 411,797,353 | 207,510,234 |
+
+On content of many small dicts or many numbers the check costs more than
+`json.dumps`; text costs it nothing, as it reads no string. Routes that
+answer large bodies are cheapest with a response model, which FastAPI
+writes with pydantic directly.
+
 **Access log.** The JSON access line costs about 154,000 instructions instead
 of 181,000, on the default middleware and on the re-audit's seven-middleware
 `init` template stack alike (15% fewer; a light request is about
@@ -572,8 +606,8 @@ logging queue 16,302 instead of 26,844; the rest is the standard library's
 logger's level drops is no longer built: with the access log off, a
 request costs 468,844 instructions instead of 477,115.
 
-**Sampling.** `ACCESS_LOG_SAMPLE_RATE = 0.1` writes about one ordinary
-request in ten, and every error, refusal, and slow request
+**Sampling.** `ACCESS_LOG_SAMPLE_RATE = 0.1` writes about one successful
+request in ten, and every response from 400 up and every slow request
 ([runtime.md](runtime.md#sampling-the-access-log)):
 
 | Default middleware | Instructions a request |

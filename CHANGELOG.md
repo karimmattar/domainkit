@@ -17,24 +17,36 @@ All notable changes to domainkit. The format follows
   more round trips than `benchmarks/budgets.toml` allows, and shows CPU
   time beside the base branch's; time is never gated (PERF-09, ASYNC-R17;
   ADR 0064). `--baseline` measures any other commit with the same harness.
+  Each run makes a PostgreSQL schema of its own (a random suffix), drops
+  only that one, masks the database's password in what it prints, and
+  gives its bench user a token that expires within the hour and no
+  password.
 - `docs/performance.md`: what each rung costs, how to run the ladder and
   update its budgets, the cores 500 million requests a day need, and what
   makes requests cheaper. The README says to serve one worker per core.
 - `domainkit.http.JSONResponse`: Starlette's `JSONResponse` encoded by
-  pydantic's Rust encoder, with the same bytes. Where pydantic writes a
-  value otherwise (a float from 1e-9 up to 1e-4, NaN or Infinity, a `None`
-  key), the content goes through `json.dumps` as before, so JSON content
-  gets the same bytes and the same errors. Resource pages, items, and
-  batches (and their ETags), error bodies, and readiness answers use it: a
-  page of 50 resources encodes in half the instructions (69 µs instead of
-  179). Give it to routes without a response model
+  pydantic's Rust encoder where the content is JSON's own values, with the
+  same bytes and the same errors. It checks the content first; anything
+  else goes to `json.dumps` and fails as in Starlette: a pydantic model
+  passed by mistake, a dataclass, a `Decimal`, a `datetime`, bytes, or a
+  set is a 500 that writes none of their fields, and an integer past
+  Python's digit limit is refused before it is written. A body of
+  `{"status": "ok"}` takes 9,489 instructions instead of 21,723, a page of
+  50 resources 8% fewer, and 200 orders of eight lines a quarter more: the
+  check costs about what the encoding saves. Give it to routes without a response model
   (`response_class=JSONResponse`); routes with one keep FastAPI's default,
-  which encodes them with pydantic already (PERF-08; ADR 0063).
+  which encodes them with pydantic already. domainkit's own bodies,
+  built JSON-native (resource pages, items, and batches, and their ETags,
+  error bodies, readiness answers), skip the check: a page of 50 resources
+  encodes in half the instructions (69 µs instead of 179) (PERF-08; ADR
+  0063).
 - `ACCESS_LOG_SAMPLE_RATE` (1.0) and `ACCESS_LOG_SLOW_DURATION` (1 second):
-  write a share of the access lines, each request drawn on its own. Errors
-  (500 and up, or no response), refusals (401, 403, 429), and requests that
-  take the slow duration or longer are always written, and
-  `domainkit.security` and the audit trail are never sampled. At 0.1 the
+  write a share of the access lines of successful and redirected requests,
+  each drawn on its own. Every response from 400 up (the 404 of what is out
+  of the caller's reach and the 401, 403, and 429 of refusals among them),
+  every request without a response, and requests that take the slow
+  duration or longer are always written, and `domainkit.security` and the
+  audit trail are never sampled. At 0.1 the
   JSON access line costs about 18,000 instructions a request instead of
   154,000 (PERF-02; ADR 0063). The production settings `init` writes read
   the rate from the environment.
@@ -98,7 +110,8 @@ All notable changes to domainkit. The format follows
   What projects meet:
   - FastAPI now depends on `opentelemetry-api` and traces requests itself
     when an OpenTelemetry SDK is configured. `get_asgi_application` turns
-    that off, as it was: its spans record query strings and its logs
+    that off, as it was, in its application and in every FastAPI
+    application mounted in it: its spans record query strings and its logs
     exception messages. Trace requests with `opentelemetry-instrument`.
   - SQLAlchemy 2.1, in a project's own code: `Result.tuples()` is
     deprecated (rows unpack as they are); statements are typed by column
@@ -124,7 +137,11 @@ All notable changes to domainkit. The format follows
   1,638 before any middleware (500 instead of 1,674 on 0.143). `app.routes` now lists the routes, with their
   full paths, and `request.scope["route"].path` is the full template. A
   route added to an included router after the application is built is not
-  served, and a router with frontend routes stays included.
+  served, and a router with frontend routes stays included. So does a
+  router whose class has its own `matches`, `handle`, or other method that
+  serves requests (an IP gate, a host rule, a tenant's context), at any
+  depth, with the prefixes and rules of the routers above it; the routers
+  around it are flattened.
 - Each request does its work once (PERF-05, PERF-06, N1, FX-16). The client
   address is parsed once per request, for the refused-credential hold and
   the rate limit together, and the rate-limit groups and the proxy's trust

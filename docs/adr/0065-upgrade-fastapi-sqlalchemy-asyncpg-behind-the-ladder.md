@@ -80,6 +80,14 @@ statement cache keys, and its results are compiled code).
   metrics and logs), as it was before 0.142. Deployments that want
   request spans run under `opentelemetry-instrument`, as reference.md said
   already.
+- It is off in the FastAPI applications mounted in domainkit's too, which
+  keep FastAPI's defaults otherwise. The application it returns (a
+  `FastAPI` subclass) sets `scope["fastapi.telemetry"]` to None on each
+  HTTP and WebSocket request before any middleware sees it, the mark
+  FastAPI sets itself for a request an enclosing application measures or
+  excludes, and FastAPI skips its telemetry for a request with that key
+  (0.143.1 and 0.158.2 read it so). A middleware would do the same, but a
+  project's `MIDDLEWARE` could leave it out.
 - Fix what the upgrade breaks, where it breaks, and nothing else: the
   route walkers read the route as served from FastAPI's context; the
   `python_type` readers take `object` as unknown; counts use

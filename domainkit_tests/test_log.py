@@ -16,6 +16,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from fastapi import APIRouter
+from fastapi.testclient import TestClient
 from hypothesis import example, given
 from hypothesis import strategies as st
 from starlette.types import Message, Receive, Scope, Send
@@ -23,7 +25,9 @@ from starlette.types import Message, Receive, Scope, Send
 from domainkit import log
 from domainkit.conf import override_settings
 from domainkit.context import RequestContext, bind_request, current_request
+from domainkit.ddd.exceptions import NotFound
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.http import get_asgi_application
 from domainkit.http.middleware import RequestContextMiddleware
 from domainkit.lifecycle import close_resources
 from domainkit.log import (
@@ -1293,13 +1297,29 @@ def test_everything_is_logged_at_the_default_rate() -> None:
     assert draws.drawn == 0
 
 
-@pytest.mark.parametrize("status", [None, 500, 502, 503, 599, 401, 403, 429])
+@pytest.mark.parametrize(
+    "status",
+    [None, 500, 502, 503, 599, 400, 401, 403, 404, 405, 409, 413, 422, 429, 451, 499],
+)
 def test_errors_and_refusals_are_always_logged(status: int | None) -> None:
-    """Whatever the rate, without a draw."""
+    """Whatever the rate, without a draw: every status from 400 up, or none.
+
+    A scoped resource answers 404 for what the caller may not reach, so
+    probing another tenant's ids leaves a line for every probe.
+    """
     draws = Draws()
 
     assert AccessSampler(0.0, 1.0, draw=draws).keep(status, 0.0)
     assert draws.drawn == 0
+
+
+@pytest.mark.parametrize("status", [100, 101, 200, 201, 204, 206, 301, 302, 304, 399])
+def test_successes_and_redirects_are_sampled(status: int) -> None:
+    """Below 400 the draw decides: at rate 0, no line."""
+    draws = Draws(0.0)
+
+    assert not AccessSampler(0.0, 1.0, draw=draws).keep(status, 0.0)
+    assert draws.drawn == 1
 
 
 def test_slow_requests_are_always_logged() -> None:
@@ -1308,7 +1328,7 @@ def test_slow_requests_are_always_logged() -> None:
     sampler = AccessSampler(0.0, 2.5, draw=draws)
 
     assert sampler.keep(200, 2.5)
-    assert sampler.keep(404, 60.0)
+    assert sampler.keep(302, 60.0)
     assert not sampler.keep(200, 2.4999)
     assert draws.drawn == 1
 
@@ -1330,7 +1350,7 @@ def test_the_sample_is_fair() -> None:
     sampler = AccessSampler(0.25, 1.0, draw=numbers.random)
     kept = {
         status: sum(sampler.keep(status, 0.0) for _ in range(10_000))
-        for status in (200, 201, 302, 404)
+        for status in (200, 201, 204, 302)
     }
 
     assert all(2_400 <= count <= 2_600 for count in kept.values()), kept
@@ -1407,18 +1427,67 @@ def statuses_logged(
 def test_a_sampled_access_log_keeps_errors_and_refusals(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """At rate 0, successful requests and other client errors leave no line."""
+    """At rate 0, successful and redirected requests alone leave no line."""
     with override_settings(ACCESS_LOG_SAMPLE_RATE=0.0):
         middleware = RequestContextMiddleware(answered)
-    codes = [200, 204, 302, 400, 404, 401, 403, 429, 500]
+    codes = [200, 204, 302, 400, 404, 401, 403, 409, 422, 429, 500]
 
     logged = statuses_logged(middleware, codes, caplog)
 
     assert logged == [
+        ("/status/400", logging.WARNING),
+        ("/status/404", logging.WARNING),
         ("/status/401", logging.WARNING),
         ("/status/403", logging.WARNING),
+        ("/status/409", logging.WARNING),
+        ("/status/422", logging.WARNING),
         ("/status/429", logging.WARNING),
         ("/status/500", logging.ERROR),
+    ]
+
+
+scoped = APIRouter()
+"""Accounts as a scoped resource answers them: 404 for those of other tenants."""
+
+
+@scoped.get("/accounts/{number}")
+async def account(number: int) -> dict[str, int]:
+    """Account 1 is the caller's; any other is out of their reach."""
+    if number != 1:
+        raise NotFound(f"Account {number} not found.")
+    return {"account": number}
+
+
+def test_probing_a_sampled_application_leaves_a_line_per_probe(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """At rate 0, every id tried that is not the caller's is in the access log.
+
+    So are the requests the application refuses before a route runs (405,
+    422); the caller's own reads are left out.
+    """
+    caplog.set_level(logging.INFO, logger="domainkit.access")
+    with (
+        override_settings(
+            ROOT_ROUTER=f"{__name__}.scoped",
+            MIDDLEWARE=["domainkit.http.middleware.RequestContextMiddleware"],
+            ACCESS_LOG_SAMPLE_RATE=0.0,
+            ACCESS_LOG_SLOW_DURATION=3600.0,  # No request is slow enough to count.
+        ),
+        TestClient(get_asgi_application()) as client,
+    ):
+        answers = [client.get(f"/accounts/{n}").status_code for n in range(1, 41)]
+        answers += [
+            client.delete("/accounts/2").status_code,
+            client.get("/accounts/two").status_code,
+        ]
+
+    lines = [r.getMessage() for r in caplog.records if r.name == "domainkit.access"]
+    assert answers == [200] + [404] * 39 + [405, 422]
+    assert [line.rsplit(" ", 1)[0] for line in lines] == [
+        *(f"GET /accounts/{n} 404" for n in range(2, 41)),
+        "DELETE /accounts/2 405",
+        "GET /accounts/two 422",
     ]
 
 

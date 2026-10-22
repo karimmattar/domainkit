@@ -19,6 +19,7 @@ gated. ``GITHUB_STEP_SUMMARY`` (or ``--summary``) gets a Markdown table.
 import argparse
 import json
 import os
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -28,7 +29,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from benchmarks import budgets as budgeting
-from benchmarks.ladder import LADDER, POSTGRES_VARIABLE, RUNGS, Rung
+from benchmarks.ladder import LADDER, POSTGRES_VARIABLE, RUNGS, Rung, masked
 
 ROOT: Final = Path(__file__).resolve().parent.parent
 """The repository holding this harness."""
@@ -118,8 +119,8 @@ def chosen(options: argparse.Namespace) -> list[Rung]:
 def child(
     tree: Tree, arguments: list[str], migrations: Path, postgres: str
 ) -> subprocess.CompletedProcess[str]:
-    """Run ``python -m <arguments>`` for ``tree``."""
-    return subprocess.run(  # noqa: S603 - our own interpreter and modules.
+    """Run ``python -m <arguments>`` for ``tree``; its output, ``postgres`` masked."""
+    done = subprocess.run(  # noqa: S603 - our own interpreter and modules.
         [tree.python, "-m", *arguments],
         env=tree.environment(migrations, postgres),
         cwd=ROOT,
@@ -127,23 +128,31 @@ def child(
         text=True,
         check=False,
     )
+    done.stdout = masked(done.stdout, postgres)
+    done.stderr = masked(done.stderr, postgres)
+    return done
 
 
 def prepare(tree: Tree, postgres: str, scratch: Path) -> None:
     """Make ``tree``'s schema and fixture, migrated by its own code.
 
+    The schema's name ends in a random suffix, so no other run (another
+    job on the same server, a run killed before it dropped its own) has
+    it; it is ``tree``'s to drop once the child says it made it.
+
     Raises:
         RuntimeError: The schema could not be made.
     """
-    schema = f"domainkit_bench_{tree.label}_{os.getpid()}"
+    schema = f"domainkit_bench_{tree.label}_{secrets.token_hex(8)}"
     tree.fixture = scratch / f"{tree.label}.json"
-    tree.schema = schema  # Dropped at the end, even half made.
     done = child(
         tree,
         ["benchmarks.database", "create", schema, str(tree.fixture)],
         scratch / f"migrations-{tree.label}",
         postgres,
     )
+    if tree.fixture.exists():
+        tree.schema = schema  # Made by this run: dropped at the end, even half made.
     if done.returncode:
         raise RuntimeError(f"{tree.label}: no database:\n{done.stderr[-3000:]}")
 

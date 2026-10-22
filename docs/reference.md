@@ -190,7 +190,7 @@ Each `BROKERS` entry:
 | `READINESS_CACHE_SECONDS` | `1.0` | How long a `/ready` result is reused, from when its checks ended; probes that come while checks run wait for them, so probe floods cannot load the database. |
 | `READINESS_DETAILS` | `False` | Name failing components in `/ready` responses (always logged). |
 | `ACCESS_LOG_QUIET_PATHS` | `/health`, `/ready` | Successful requests to these paths are logged at DEBUG. |
-| `ACCESS_LOG_SAMPLE_RATE` | `1.0` | Share of access lines written, from 0 to 1: `0.1` writes about one request in ten, each drawn on its own. Errors (500 and up, or no response), refusals (401, 403, 429), and requests that take `ACCESS_LOG_SLOW_DURATION` or longer are always written; `domainkit.security` and the audit trail are never sampled ([runtime.md](runtime.md#sampling-the-access-log)). |
+| `ACCESS_LOG_SAMPLE_RATE` | `1.0` | Share of access lines written, from 0 to 1: `0.1` writes about one request in ten, each drawn on its own. Responses from 400 up (client errors, refusals, and server errors), requests without a response, and requests that take `ACCESS_LOG_SLOW_DURATION` or longer are always written, so only successes and redirects are sampled; `domainkit.security` and the audit trail are never sampled ([runtime.md](runtime.md#sampling-the-access-log)). |
 | `ACCESS_LOG_SLOW_DURATION` | `1.0` | Seconds (at most 3600): a request this slow or slower has its access line written whatever `ACCESS_LOG_SAMPLE_RATE` says. |
 | `TRUSTED_PROXIES` | `()` | Networks (`10.0.0.0/8`) whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed. The client is the right-most address that is not a trusted proxy, across every line of the header; hops may carry a port. The scheme is the `X-Forwarded-Proto` value at the client's place from the right, or the last one. Empty: the socket peer is the client. |
 | `RATE_LIMIT` | `None` | Requests per caller, such as `"300/minute"` (`second`, `minute`, `hour`, `day`). `None` disables it. |
@@ -617,13 +617,32 @@ only on connections that turn `PRAGMA foreign_keys` on.
 ## JSON responses
 
 `domainkit.http.JSONResponse` is Starlette's `JSONResponse` with pydantic's
-encoder (`pydantic_core.to_json`): the same bytes, two to three times
-sooner on a page of resources. Resources, error bodies, and readiness
-answers use it. Where pydantic writes a value otherwise than `json.dumps`
-(a float from 1e-9 up to 1e-4, NaN or Infinity, a `None` key), the content
-goes through `json.dumps` as before, so JSON content gets the same bytes
-and the same errors. Values JSON has no type for, which Starlette refuses,
-pydantic encodes (a `Decimal` as a string); see ADR 0063.
+encoder (`pydantic_core.to_json`) for content that is JSON's own values:
+the same bytes, and the same errors. It checks the content first
+(`domainkit.http.responses.json_native`): dicts, lists, and tuples;
+strings, integers, floats, booleans, and None; instances of str, int, and
+float subclasses and enum members, written as `json.dumps` writes them;
+keys that are strings, integers, finite floats, or booleans. Anything else
+goes to `json.dumps`, as in Starlette, and fails as it failed there:
+
+- a pydantic model passed where its `model_dump(mode="json")` belongs, a
+  dataclass, a `Decimal`, a `datetime`, a `UUID`, bytes, or a set raise
+  `TypeError`, a 500, and none of their fields is written;
+- NaN, Infinity, and an integer longer than Python writes
+  (`sys.get_int_max_str_digits()`) raise `ValueError`, before a digit is
+  written;
+- JSON content pydantic would write otherwise (a float under 1e-4, a
+  `None` key, an enum whose value is not its data, a dict subclass's own
+  order) is written by `json.dumps` too.
+
+The check is Python and costs about what the encoding saves: a small body
+encodes in under half the instructions `json.dumps` takes, a page of 50
+resources in 8% fewer, and content of many small dicts (200 orders of eight
+lines) in a quarter more ([performance.md](performance.md#json-responses-and-logs)).
+domainkit's own bodies (resource items, pages, and batches, error bodies,
+readiness answers), which it builds JSON-native, skip it and encode in
+half (ADR 0063). Routes that answer large bodies are cheapest with a
+response model, which FastAPI writes with pydantic directly.
 
 Routes with a response model (a return annotation, or `response_model=`)
 are encoded by pydantic in FastAPI already: leave them FastAPI's default,
@@ -724,6 +743,13 @@ byte for byte. What a project can see:
   order they are matched;
 - `request.scope["route"].path` is the route's full path template;
 - a router with frontend routes (`APIRouter.frontend`) stays included;
+- a router that serves requests in its own way stays included, with the
+  prefixes and rules of the routers above it, in its place: one whose
+  class (or the router itself) has its own `matches`, `handle`, or any
+  other method of `APIRouter` or Starlette's `Router` but `__init__` and
+  those that declare routes (`domainkit.http.routing.serves_itself`). An
+  IP gate in `handle` or a host rule in `matches` holds as under FastAPI's
+  nesting; the routers around it are still flattened;
 - a route added to an included router after the application is built is
   not served: finish routers before `get_asgi_application` runs.
 
@@ -786,6 +812,16 @@ of its own, which `get_asgi_application` turns off: its spans record query
 strings, and its log records exception messages, which domainkit keeps out
 of logs and error reports. To trace requests, run under
 `opentelemetry-instrument`, as before.
+
+It is off in the FastAPI applications mounted in domainkit's too, which
+keep FastAPI's defaults otherwise: the application `get_asgi_application`
+returns (`domainkit.http.application.Application`, a `FastAPI`) sets
+`scope["fastapi.telemetry"]` to None on each HTTP and WebSocket request
+before any middleware or application sees it, whatever `MIDDLEWARE` lists,
+and FastAPI skips its telemetry for a request so marked, as it does for
+one an enclosing application measures. A mark an enclosing application
+set is kept. An application served on its own, outside domainkit's, is
+the project's to configure (`FastAPI(telemetry=...)`).
 
 ## Testing
 
