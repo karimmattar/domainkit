@@ -148,33 +148,35 @@ async def credentials_of(**options: Any) -> Credentials | None:  # noqa: ANN401
     return None
 
 
+def columns(instance: Any, *leave: str) -> tuple[tuple[str, Any], ...]:  # noqa: ANN401 - any mapped instance.
+    """Every column value of ``instance`` but ``leave``; unloaded ones raise."""
+    return tuple(
+        (prop.key, str(value) if isinstance(value, UUID) else value)
+        for prop in class_mapper(type(instance)).column_attrs
+        if prop.key not in leave
+        for value in [getattr(instance, prop.key)]
+    )
+
+
+def granted(permission: Any) -> tuple[Any, ...]:  # noqa: ANN401 - a Permission.
+    """A permission's columns, with its content type's."""
+    return (*columns(permission), columns(permission.content_type))
+
+
 def view(user: AbstractBaseUser) -> dict[str, Any]:
     """Everything a user built for a request holds but the password, comparable."""
-    mapper = class_mapper(type(user))
     state = instance_state(user)
     return {
         "type": type(user),
-        "columns": {
-            prop.key: getattr(user, prop.key)
-            for prop in mapper.column_attrs
-            if prop.key != "password"
-        },
+        "columns": dict(columns(user, "password")),
         "groups": sorted(
             (
-                str(group.id),
-                group.name,
-                group.version,
-                sorted(
-                    (each.id, each.key, each.name, each.content_type.id)
-                    for each in group.permissions
-                ),
+                columns(group),
+                sorted(granted(each) for each in group.permissions),
             )
             for group in user.groups
         ),
-        "permissions": sorted(
-            (each.id, each.key, each.name, str(each.content_type))
-            for each in user.user_permissions
-        ),
+        "permissions": sorted(granted(each) for each in user.user_permissions),
         "every": user.get_all_permissions(),
         "detached": state.detached,
         "identity": state.identity_key,
