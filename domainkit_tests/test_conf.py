@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel, ValidationError
 
+from domainkit import setup
 from domainkit.conf import (
     UNSET,
     Settings,
@@ -707,6 +708,26 @@ def test_messaging_settings_have_upper_bounds(field: str, highest: int) -> None:
 def test_idempotency_settings_have_upper_bounds(field: str, highest: int) -> None:
     """Keys live at most 30 days, and a lease lasts at most a day."""
     refused_above(IdempotencySettings, field, highest)
+
+
+def test_idempotency_keys_live_at_least_as_long_as_their_lease() -> None:
+    """A key expired while its request held it could be claimed by a retry.
+
+    Refused at startup, in the domain's settings; equal is fine.
+    """
+    lease = IdempotencySettings.model_validate({"TTL_SECONDS": 60})
+    assert lease.TTL_SECONDS == lease.LEASE_SECONDS
+    refused = "TTL_SECONDS must be at least LEASE_SECONDS"
+    with pytest.raises(ValidationError, match=refused):
+        IdempotencySettings.model_validate({"TTL_SECONDS": 600, "LEASE_SECONDS": 601})
+    with (
+        override_settings(
+            INSTALLED_DOMAINS=["domainkit.contrib.idempotency"],
+            IDEMPOTENCY={"TTL_SECONDS": 30},
+        ),
+        pytest.raises(ImproperlyConfigured, match=f"(?s)IDEMPOTENCY.*{refused}"),
+    ):
+        setup()
 
 
 @pytest.mark.parametrize(

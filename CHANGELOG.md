@@ -166,6 +166,9 @@ All notable changes to domainkit. The format follows
   it. They committed at once, since SQLite's driver begins a transaction
   only before `INSERT`, `UPDATE`, `DELETE` or `REPLACE`. The reader now
   holds SQLite's read lock until it ends.
+- `IDEMPOTENCY` with `TTL_SECONDS` below `LEASE_SECONDS` is refused at
+  startup. A key that expired while its request still held it could be
+  claimed by a retry, which ran the request a second time.
 
 ## [0.8.0] - 2026-10-21
 

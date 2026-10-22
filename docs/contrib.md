@@ -949,7 +949,7 @@ choices.
 | `IDEMPOTENCY` key | Default | Meaning |
 | --- | --- | --- |
 | `DATABASE` | `"default"` | Alias holding the keys. |
-| `TTL_SECONDS` | `86400.0` | How long a key is remembered (24 hours; at most 30 days). |
+| `TTL_SECONDS` | `86400.0` | How long a key is remembered (24 hours; at most 30 days, and at least `LEASE_SECONDS`, or startup fails). |
 | `LEASE_SECONDS` | `60.0` | How long a request holds its key before a retry may take it over (at most a day). |
 | `METHODS` | `POST`, `PATCH` | Methods that honour the header; others ignore it. |
 | `MAX_RESPONSE_BYTES` | `1048576` | Larger responses are passed through but not stored. |
