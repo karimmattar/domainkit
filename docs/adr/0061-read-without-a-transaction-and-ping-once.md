@@ -127,7 +127,13 @@ in the identity map, and tracking its version, which is the work those
     query the driver ran that domainkit did not see (on the driver's own
     connection) counts too; psycopg cannot count them, so its
     connections are always reset. If the reset fails, the pool closes
-    the connection. (Amended 2026-10-22.)
+    the connection. What the proof cannot see is the schema's: views,
+    row security policies, the functions of types and operators, and
+    computed fields. Neither can it see a `COPY` sent on asyncpg's own
+    connection, which asyncpg does not count, nor reset the driver's own
+    state there (type codecs, listeners): code that uses the driver's
+    connection directly should read with `TRANSACTION`.
+    (Amended 2026-10-22.)
   - On asyncpg it does not pre-ping: asyncpg notices the server closing
     an idle connection, and such a connection is replaced as it leaves
     the pool, or before a statement is sent on it. psycopg reads the

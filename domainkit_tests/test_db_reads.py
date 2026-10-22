@@ -942,6 +942,7 @@ async def test_drivers_that_cannot_count_queries_are_always_reset() -> None:
         ("SELECT f/**/(1)", False),
         ("SELECT t.a -- AND\n(1) FROM t", False),
         ("SELECT t.a FROM t; SET search_path TO a", False),
+        ("SELECT t.a FROM t WHERE t.a IN\u00a0($1)", False),  # A name to PostgreSQL.
         ("SELECT 'a'", False),
         ("SELECT t.a FROM t WHERE t.a ~ $1", False),
         ("SELECT (SELECT 1)(2)", False),

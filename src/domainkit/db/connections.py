@@ -130,7 +130,7 @@ _SENT: Final = "domainkit_reads_sent"
 statement domainkit saw: a higher count means something else ran."""
 _SQL_TOKEN: Final = re.compile(
     r"""
-    (?P<space>\s+)
+    (?P<space>[ \t\n\r\f\v]+)
     | (?P<comment>--|/\*)
     | (?P<word>[A-Za-z_][A-Za-z0-9_]*)
     | (?P<quoted>"[^"]*")
@@ -404,9 +404,11 @@ def _plain_select(statement: str) -> bool:
     a keyword such as ``IN`` or ``EXISTS``, or a cast's type. A name before
     ``(`` is a function call, which may change the session
     (``set_config``, ``pg_advisory_lock``). Quotes, comments, ``;`` and
-    any other character make it something else. Views, row security
-    policies and the functions of types and operators it uses are not
-    seen: they are the schema's.
+    any other character, a space outside ASCII among them (PostgreSQL reads
+    those as part of a name), make it something else. Views, row security
+    policies, the functions of types and operators it uses, and computed
+    fields (``t.f`` for a function ``f(t)``) are not seen: they are the
+    schema's.
     """
     previous: tuple[str, str] = ("", "")
     cast = ""  # "type" after ::, "name" after its name, "modifier" in its (n, m).
