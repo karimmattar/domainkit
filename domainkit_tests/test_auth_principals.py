@@ -11,7 +11,7 @@ import pytest
 from fakeredis import FakeServer
 from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
-from sqlalchemy import event, update
+from sqlalchemy import delete, event, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import class_mapper
 from sqlalchemy.orm.attributes import instance_state
@@ -61,6 +61,7 @@ from domainkit.contrib.auth.tokens import (
     TokenKind,
     token_digest,
 )
+from domainkit.contrib.auth.users import get_user_table
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import call_command
@@ -493,6 +494,91 @@ def test_certificates_kept_and_read_build_the_same_user(
         assert hit.scheme == "certificate"
     assert by_fingerprint[1].token_id is not None
     assert by_subject[1].token_id is None
+
+
+def test_certificates_record_no_use_and_are_counted_as_theirs(
+    api: Api, tmp_path: Path, statements: list[str]
+) -> None:
+    """As before, a certificate's token stores no last use; counters name its class."""
+    create_user("alice")
+    path, _ = certificate(tmp_path, "alice")
+    pem = path.read_text(encoding="ascii")
+    call_command("addcertificate", "alice", str(path), stdout=io.StringIO())
+    api(AUTHENTICATION_CLASSES=CERTIFICATES)
+    before = {name: sample(name, "certificate") for name in ("hit", "miss")}
+
+    with freeze_time("2026-05-01T10:00:00Z"):
+        statements.clear()
+        read = run_async(credentials_of(certificate_pem=pem))
+        kept = run_async(credentials_of(certificate_pem=pem))
+
+    assert read is not None
+    assert kept is not None
+    assert "UPDATE" not in statements
+    assert sample("miss", "certificate") == before["miss"] + 1
+    assert sample("hit", "certificate") == before["hit"] + 1
+
+    async def last_used() -> Any:  # noqa: ANN401 - a datetime, or None.
+        async with connections.engine().connect() as connection:
+            return await connection.scalar(
+                select(tokens.c.last_used_at).where(tokens.c.id == read.token_id)
+            )
+
+    assert run_async(last_used()) is None
+
+
+def test_a_user_change_drops_the_principal_of_a_subject(
+    api: Api, tmp_path: Path
+) -> None:
+    """Matched by subject, a principal rests on its user, as tokens' do."""
+    create_user("alice")
+    path, _ = certificate(tmp_path, "alice")
+    pem = path.read_text(encoding="ascii")
+    api(AUTHENTICATION_CLASSES=CERTIFICATES, CLIENT_CERT={"MATCH": "subject"})
+
+    async def deactivate() -> None:
+        async with AuthUnitOfWork() as uow:
+            user = await uow.users.get_by_natural_key("alice")
+            assert user is not None
+            user.is_active = False
+            await uow.commit()
+
+    with freeze_time("2026-05-01T10:00:00Z"):
+        assert run_async(credentials_of(certificate_pem=pem)) is not None
+        assert len(principal_cache) == 1
+        run_async(deactivate())
+        assert len(principal_cache) == 0
+        with pytest.raises(AuthenticationFailed) as refused:
+            run_async(credentials_of(certificate_pem=pem))
+    assert refused.value.detail == "Unknown client certificate."
+
+
+def test_a_subject_renamed_while_it_is_read_names_no_one(
+    api: Api, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The read checks the name is still the user's, whoever renamed them."""
+    create_user("alice")
+    path, _ = certificate(tmp_path, "alice")
+    pem = path.read_text(encoding="ascii")
+    api(AUTHENTICATION_CLASSES=CERTIFICATES, CLIENT_CERT={"MATCH": "subject"})
+    read = principals_store_principal()
+
+    async def renamed_meanwhile(self: Any, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        table = get_user_table()
+        async with connections.engine().begin() as connection:  # Another process.
+            await connection.execute(
+                update(table).where(table.c.username == "alice").values(username="bob")
+            )
+        return await read(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        "domainkit.contrib.auth.repositories.PrincipalStore.principal",
+        renamed_meanwhile,
+    )
+    with pytest.raises(AuthenticationFailed) as refused:
+        run_async(credentials_of(certificate_pem=pem))
+    assert refused.value.detail == "Unknown client certificate."
+    assert len(principal_cache) == 0
 
 
 # What every request checks, and what bounds the cache.
@@ -935,6 +1021,42 @@ def test_json_web_token_logins_end_and_renew(api: Api) -> None:
         assert client.post("/auth/logout", headers=fresh).status_code == 204
         assert client.get("/private", headers=fresh).status_code == 401
         assert client.get("/private", headers=access).status_code == 401
+
+
+def test_ending_a_login_drops_it_here_though_its_tokens_are_gone(api: Api) -> None:
+    """``revoke_family`` drops the kept login even when another process deleted it."""
+    create_user("alice")
+    api(**JWT)
+    authenticator = next(
+        each for each in get_authenticators() if isinstance(each, JWTAuthentication)
+    )
+
+    async def log_in() -> tuple[str, UUID]:
+        async with AuthUnitOfWork() as uow:
+            user = await uow.users.get_by_natural_key("alice")
+            assert user is not None
+            family = uuid4()
+            await uow.tokens.issue(
+                user.id, kind=TokenKind.REFRESH, ttl=timedelta(hours=1), family=family
+            )
+            await uow.commit()
+        return authenticator.encode(user, family), family
+
+    async def deleted_elsewhere_then_ended(family: UUID) -> int:
+        async with connections.engine().begin() as connection:  # Another process.
+            await connection.execute(delete(tokens).where(tokens.c.family == family))
+        async with AuthUnitOfWork() as uow:
+            ended = await uow.tokens.revoke_family(family)
+            await uow.commit()
+        return ended
+
+    with freeze_time("2026-05-01T10:00:00Z"):
+        access, family = run_async(log_in())
+        assert run_async(credentials_of(headers=bearer(access))) is not None
+        assert run_async(deleted_elsewhere_then_ended(family)) == 0
+        with pytest.raises(AuthenticationFailed) as ended:
+            run_async(credentials_of(headers=bearer(access)))
+    assert ended.value.detail == "Session ended; log in again."
 
 
 def test_a_kept_login_past_its_tokens_is_read_again(api: Api) -> None:
