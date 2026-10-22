@@ -162,7 +162,6 @@ class Principal:
     """
 
     model: type[AbstractBaseUser]
-    user_id: UUID
     is_active: bool
     columns: tuple[tuple[str, object], ...]
     groups: tuple[Membership, ...]

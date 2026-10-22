@@ -705,7 +705,6 @@ class PrincipalStore:
                 direct[permission.id] = permission
         principal = Principal(
             model=model,
-            user_id=user_id,
             is_active=dict(columns)["is_active"] is True,
             columns=columns,
             groups=tuple(

@@ -345,7 +345,6 @@ def test_principals_hide_their_fields() -> None:
     """A principal's ``repr`` names its model only: the rest is personal data."""
     principal = principals.Principal(
         model=User,
-        user_id=uuid4(),
         is_active=True,
         columns=(("username", "alice"),),
         groups=(),
@@ -1784,7 +1783,6 @@ def test_mutable_column_values_are_each_requests_own(use_auth: UseAuth) -> None:
     use_auth()
     principal = principals.Principal(
         model=User,
-        user_id=uuid4(),
         is_active=True,
         columns=(("username", "alice"), ("email", ["mutable", {"deep": []}])),
         groups=(),
