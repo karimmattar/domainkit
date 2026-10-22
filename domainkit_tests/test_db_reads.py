@@ -8,6 +8,7 @@ server closing its connections. Pre-ping costs one round trip.
 
 import asyncio
 import os
+import re
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -211,8 +212,12 @@ def test_work_that_writes_always_has_a_transaction() -> None:
     class Reports(GadgetsUnitOfWork):
         reads = Reads.SNAPSHOT
 
-    for reads in (Reads.STATEMENTS, "snapshot"):
-        with pytest.raises(ValueError, match="for read-only units of work"):
+    for reads, name in ((Reads.STATEMENTS, "statements"), ("snapshot", "snapshot")):
+        refused = (
+            f"reads='{name}' is for read-only units of work; "
+            "one that writes always runs in a transaction."
+        )
+        with pytest.raises(ValueError, match=f"^{re.escape(refused)}$"):
             GadgetsUnitOfWork(readonly=False, reads=reads)
     with pytest.raises(ValueError, match="for read-only units of work"):
         Reports(readonly=False)
@@ -508,6 +513,30 @@ async def test_reads_survive_the_server_closing_connections_between_requests(
         assert connects.count == 2  # One per pool, each replaced once.
 
 
+def test_a_ping_leaves_the_connection_as_it_found_it() -> None:
+    """It pings outside a transaction, then puts autocommit back, even on failure."""
+
+    class Driver:
+        def __init__(self, autocommit: bool, *, fails: bool = False) -> None:
+            self.autocommit = autocommit
+            self.fails = fails
+            self.pinged_with: bool | None = None
+
+        def ping(self) -> None:
+            self.pinged_with = self.autocommit
+            if self.fails:
+                raise ConnectionResetError
+
+    for autocommit in (False, True):
+        driver = Driver(autocommit)
+        assert ping(driver) is True
+        assert (driver.pinged_with, driver.autocommit) == (True, autocommit)
+        failing = Driver(autocommit, fails=True)
+        with pytest.raises(ConnectionResetError):
+            ping(failing)
+        assert (failing.pinged_with, failing.autocommit) == (True, autocommit)
+
+
 def test_asyncpg_engines_ping_outside_a_transaction(tmp_path: Path) -> None:
     """Outside PgBouncer, which needs SQLAlchemy's transaction around the ping.
 
@@ -592,21 +621,61 @@ async def test_a_connection_that_failed_its_ping_is_replaced(tables: None) -> No
 
 
 @postgres_only
-async def test_the_read_pool_is_reported_and_closed(tables: None) -> None:
-    """``pool_stats`` names it ``<alias>:reads``; ``close_all`` disposes it."""
-    async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
-        await uow.gadgets.filter()
-        assert connections.pool_stats()[f"default{READS_SUFFIX}"] == {
-            "size": connections.engine().pool.size(),  # type: ignore[attr-defined]
-            "checked_out": 1,
-            "overflow": 0,
-        }
+async def test_the_read_engine_takes_its_alias_settings(database: str) -> None:
+    """Its pool's size, statement logging and hidden parameters, as configured."""
+    messages = {}
+    for logged in (False, True):
+        config = DatabaseConfig.model_validate(
+            {"URL": database, "POOL_SIZE": 2, "ECHO": logged, "LOG_PARAMETERS": logged}
+        )
+        engine = create_read_engine(config)
+        assert (engine.pool.size(), engine.echo) == (2, logged)  # type: ignore[attr-defined]
+        async with engine.connect() as connection:
+            with pytest.raises(DBAPIError) as failed:
+                await connection.execute(
+                    text("SELECT * FROM missing WHERE name = :name"),
+                    {"name": "s3cret-token"},
+                )
+        messages[logged] = str(failed.value)
+        await engine.dispose()
 
+    assert "s3cret-token" not in messages[False]
+    assert "s3cret-token" in messages[True]
+
+
+@postgres_only
+async def test_the_read_pool_is_reported_and_closed(
+    tables: None, database: str
+) -> None:
+    """``pool_stats`` names it ``<alias>:reads``; ``close_all`` disposes it.
+
+    It is sized like the alias's own pool, and reports its overflow.
+    """
     await connections.close_all()
+    pool = {"URL": database, "POOL_SIZE": 1, "MAX_OVERFLOW": 1}
+    with override_settings(DATABASES={"default": pool}):
+        async with (
+            GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow,
+            GadgetsUnitOfWork(reads=Reads.STATEMENTS) as other,
+        ):
+            await uow.gadgets.filter()
+            assert connections.pool_stats()[f"default{READS_SUFFIX}"] == {
+                "size": 1,
+                "checked_out": 1,
+                "overflow": 0,
+            }
+            await other.gadgets.filter()
+            assert connections.pool_stats()[f"default{READS_SUFFIX}"] == {
+                "size": 1,
+                "checked_out": 2,
+                "overflow": 1,
+            }
 
-    assert connections.pool_stats() == {}
-    async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:  # A new one.
-        assert len(await uow.gadgets.filter()) == 1
+        await connections.close_all()
+
+        assert connections.pool_stats() == {}
+        async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:  # A new one.
+            assert len(await uow.gadgets.filter()) == 1
 
 
 # Statements that commit as they run ------------------------------------------------
