@@ -894,12 +894,13 @@ def _snapshot_options(engine: AsyncEngine) -> dict[str, Any]:
 def _read_only_options(engine: AsyncEngine) -> dict[str, Any]:
     """Execution options for a read-only transaction on ``engine``'s database.
 
-    ``READ ONLY`` on PostgreSQL; elsewhere, a transaction begun before the
-    first read, which the session's end rolls back.
+    ``READ ONLY`` on PostgreSQL, which other databases ignore; elsewhere,
+    also a transaction begun before the first read, which the session's
+    end rolls back.
     """
     if engine.dialect.name == "postgresql":
         return {"postgresql_readonly": True}
-    return {SNAPSHOT_BEGIN: True}
+    return {"postgresql_readonly": True, SNAPSHOT_BEGIN: True}
 
 
 connections: Final = ConnectionHandler()
