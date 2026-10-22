@@ -1376,13 +1376,14 @@ def test_stamps_carry_changes_made_in_other_processes(
             await credentials_of(headers=bearer(other))
         return hit, reads, revoked.value, kept, deactivated.value
 
+    before = sample("invalidation")
     hit, reads, revoked, kept, deactivated = run_async(scenario())
     assert hit is not None
     assert reads == []
     assert revoked.detail == "Invalid token."
     assert kept is not None
     assert deactivated.detail == "User inactive or deleted."
-    assert sample("invalidation") >= 2
+    assert sample("invalidation") == before + 2  # One for each stamp seen changed.
 
 
 def test_commits_stamp_what_they_change(api: Api, shared: FakeServer) -> None:
