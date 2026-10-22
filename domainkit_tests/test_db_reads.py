@@ -589,7 +589,11 @@ async def test_the_read_pool_is_reported_and_closed(tables: None) -> None:
     """``pool_stats`` names it ``<alias>:reads``; ``close_all`` disposes it."""
     async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
         await uow.gadgets.filter()
-        assert connections.pool_stats()[f"default{READS_SUFFIX}"]["checked_out"] == 1
+        assert connections.pool_stats()[f"default{READS_SUFFIX}"] == {
+            "size": connections.engine().pool.size(),  # type: ignore[attr-defined]
+            "checked_out": 1,
+            "overflow": 0,
+        }
 
     await connections.close_all()
 

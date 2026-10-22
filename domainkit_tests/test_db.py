@@ -150,6 +150,21 @@ async def test_connections_are_per_event_loop(database: str) -> None:
     await connections.close_all()
 
 
+async def test_each_database_is_checked_on_its_own(tmp_path: Path) -> None:
+    """A database that cannot be reached fails its own check, not the others'."""
+    missing = tmp_path / "missing" / "other.sqlite3"
+    with override_settings(
+        DATABASES={
+            "default": {"URL": f"sqlite+aiosqlite:///{tmp_path / 'ok.sqlite3'}"},
+            "other": {"URL": f"sqlite+aiosqlite:///{missing}"},
+        }
+    ):
+        try:
+            assert await connections.check_all(1.0) == ["database:other"]
+        finally:
+            await connections.close_all()
+
+
 async def test_unknown_alias(database: str) -> None:
     """Asking for an alias that is not configured names it."""
     with pytest.raises(ImproperlyConfigured, match="'reports'"):
