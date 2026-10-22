@@ -169,6 +169,10 @@ All notable changes to domainkit. The format follows
 - `IDEMPOTENCY` with `TTL_SECONDS` below `LEASE_SECONDS` is refused at
   startup. A key that expired while its request still held it could be
   claimed by a retry, which ran the request a second time.
+- `loaddata` reads a fixture's numbers with a fraction as decimals, so a
+  money column gets every digit: `1234567890123456.78` was loaded as
+  `1234567890123456.80`, through a float that `ExactDecimal` would have
+  refused. Other columns get the same floats as before.
 
 ## [0.8.0] - 2026-10-21
 

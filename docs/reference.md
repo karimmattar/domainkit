@@ -872,9 +872,11 @@ A fixture is one JSON document, its tables parents first:
 Numbers and text are written as they are; decimals, times, durations, ids,
 and enums as text; bytes as base64; JSON columns as JSON. `loaddata`
 converts each value back by its column's type, and refuses one that does
-not fit without quoting it. A row whose primary key is stored replaces the
-stored row. Rows load in one transaction, and on PostgreSQL serial ids then
-continue after the highest one loaded.
+not fit without quoting it. A number with a fraction reaches a decimal
+column with every digit, as written (`1234567890123456.78`), never through
+a float; other columns get it as a float. A row whose primary key is stored
+replaces the stored row. Rows load in one transaction, and on PostgreSQL
+serial ids then continue after the highest one loaded.
 
 State is never dumped or loaded: the audit trail (a copy of its keys would
 outlive `auditforget`), tokens, the outbox, idempotency keys, webhook
