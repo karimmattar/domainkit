@@ -487,7 +487,8 @@ idempotency) for the writes.
 
 - Every checkout's ping went from 3 round trips to 1. A read through a
   unit of work is then `;`, `BEGIN`, the `SELECT`, `ROLLBACK`.
-- A `STATEMENTS` read is the `SELECT` alone.
+- A `STATEMENTS` read of columns is the `SELECT` alone; one that runs
+  SQL text or calls a function adds a reset (below).
 - Of the keyed write's 18 saved round trips, the ping saves 10 and the
   claim and store 8. Of its 9 statements, the `DELETE` of the key's
   expired row is gone, since the upsert replaces that row, and the claim
@@ -546,6 +547,36 @@ What the CPU table shows:
   [0061](adr/0061-read-without-a-transaction-and-ping-once.md)).
 - **A second pool.** `STATEMENTS` reads open a pool of their own per
   alias, `<alias>:reads`. Count it when sizing `max_connections`.
+
+#### What the security review added
+
+A review of these paths found that `STATEMENTS` connections carried one
+caller's session to the next, that a read could run twice or fail after
+a restart, that two claims could deadlock through PgBouncer, and that
+`forget` could miss a key being made. The fixes cost round trips only
+where the work may have changed something. Measured alone, on the wire,
+by the same kind of proxy (pool of one connection, prepared statements
+warm, mean of 10):
+
+| Work | Before | Now |
+| --- | ---: | ---: |
+| `STATEMENTS` `SELECT` by id (asyncpg) | 1 | 1 |
+| `STATEMENTS` repository `get` (gadget, parts, makers) | 3 | 3 |
+| `STATEMENTS` `SELECT` by id, then SQL text | 2 | 3 |
+| `STATEMENTS` `count(*)` (a function) | 1 | 2 |
+| `STATEMENTS` `SELECT` by id through psycopg | 1 | 3 |
+| Audited commit, known subject | 6 | 6 |
+| Audited commit, new subject (PostgreSQL) | 7 | 8 |
+
+- **The reset.** A `STATEMENTS` connection that ran anything but plain
+  `SELECT`s is reset before the next caller gets it: one simple query.
+- **psycopg** cannot tell a closed idle connection, or count what ran on
+  one, without asking: its `STATEMENTS` pool pings and always resets.
+- **A new audit subject** takes its lock first: one statement more, 3 for
+  its keys. A known subject still costs 1 `SELECT`, and no lock.
+- **Keyed writes** cost what they did: the claim sweeps expired keys after
+  its upsert instead of before, and the pin and late mark keep to the
+  deadline with a timer, not a round trip.
 
 ### JSON responses and logs
 

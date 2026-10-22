@@ -718,26 +718,38 @@ def test_loops_on_threads_get_their_own_engines(
 def test_subject_keys_kept_by_transactions_on_every_thread(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Transactions on many threads keep their own keys; forgetting reaches all."""
+    """Transactions on many threads keep their own keys; forgetting reaches all.
+
+    Every forget is counted once, and a key read before any forget began
+    is never kept, whichever thread forgot what.
+    """
     held = CheckedRegistry[Any, dict[str, bytes]](personal._held_lock)
     monkeypatch.setattr(personal, "_held", held)
+    sessions = []
+    for index in range(THREADS):
+        session = AsyncSession()
+        session.sync_session.begin()
+        mine = {"shared": b"shared", f"s{index}": bytes([index])}
+        personal._keep(session, mine, personal._forgotten())
+        sessions.append(session)
+    began = personal._forgotten()
 
     def work(index: int) -> list[bool]:
-        results = []
-        for attempt in range(LOOPS):
-            session = AsyncSession()
-            session.sync_session.begin()
-            mine = {f"s{index}": bytes([index]), "shared": bytes([attempt])}
-            personal._keep(session, mine)
-            personal._drop({f"s{(index + 1) % THREADS}"}.__contains__)
-            kept = personal._kept(session, ["shared", f"s{index}"])
-            results.append(kept.get("shared") == bytes([attempt]))
-            personal._drop({"shared"}.__contains__)
-            results.append("shared" not in personal._kept(session, ["shared"]))
-            session.sync_session.close()
+        session, results = sessions[index], []
+        for _ in range(LOOPS):
+            read = personal._forgotten()
+            personal._drop({f"gone{index}"}.__contains__)
+            personal._keep(session, {f"late{index}": b"late"}, read)
+            kept = personal._kept(session, [f"late{index}", f"s{index}"])
+            results.append(kept == {f"s{index}": bytes([index])})
+        personal._drop({"shared"}.__contains__)
+        results.append(personal._kept(session, ["shared"]) == {})
         return results
 
-    assert on_threads(work) == [[True] * 2 * LOOPS] * THREADS
+    assert on_threads(work) == [[True] * (LOOPS + 1)] * THREADS
+    assert personal._forgotten() == began + THREADS * (LOOPS + 1)
+    for session in sessions:
+        session.sync_session.close()
 
 
 IMPORT_EVERYTHING = """

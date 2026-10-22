@@ -65,9 +65,23 @@ All notable changes to domainkit. The format follows
     ONLY` transaction.
   - Both sessions refuse to flush, and refuse write and DDL statements,
     with `ReadOnlyError`.
-  - `STATEMENTS` bounds each statement by the deadline, and runs it once
-    more on a fresh connection if the server had closed the one it used.
-    Through PgBouncer and on SQLite it reads in the `READ ONLY`
+  - `STATEMENTS` bounds each statement by the deadline. A connection the
+    driver knows the server closed is replaced before a statement is sent
+    on it; a statement whose connection closes while it runs fails, and is
+    never run again, since it may have had effects outside its
+    transaction. Through psycopg, which notices only when it next sends,
+    the pool pings.
+  - A `STATEMENTS` connection is reset (`RESET ALL`, `RESET ROLE`,
+    `UNLISTEN *`, advisory locks, cursors, temporary tables) before the
+    next caller gets it, so nothing one unit of work sets in the session,
+    `default_transaction_read_only` included, reaches another. A unit of
+    work that ran only plain `SELECT` statements needs no reset; one that
+    ran SQL text or called a function takes one more round trip. A new
+    connection that is not read-only, because a pooler dropped the
+    startup setting, is refused, and readiness checks the pool as
+    `database:<alias>:reads`. `SET LOCAL` and transaction-scoped advisory
+    locks end with each statement.
+  - Through PgBouncer and on SQLite it reads in the `READ ONLY`
     transaction.
   - `readonly=True` alone keeps its `READ ONLY` transaction, as before
     (PERF-03).
@@ -175,6 +189,11 @@ All notable changes to domainkit. The format follows
   - Every guarantee holds as before. A committed operation never runs
     twice, a pinned key is never released, a cancelled request settles
     its key, and of requests racing with one key one runs.
+  - Without messaging, a claim deletes expired keys after its upsert, so
+    two claims through PgBouncer, whose statements share a transaction,
+    never deadlock on each other's sweep. The pin before a commit on
+    another database and the mark after it keep to the deadline in a task
+    that only shares it.
 - The audit trail makes a new subject's key with an insert that returns
   it: an audited commit about a new person costs 2 statements for the keys
   instead of 3. A transaction reads each subject's key once, and `forget`
@@ -191,6 +210,36 @@ All notable changes to domainkit. The format follows
   address is held for refused credentials, and `TokenAuthentication` and
   `CookieAuthentication` read no settings for a request without their
   credentials (FX-16).
+
+### Fixed
+
+- With `LOG_PARAMETERS` off, a value the driver cannot send no longer shows
+  in the error: asyncpg's `invalid input for query argument $1: '4111...'`
+  reads `$1: <hidden>`, with the reason kept, in the message, its `repr`,
+  and logged tracebacks. A value PostgreSQL cannot read, which it quotes
+  (`invalid input syntax for type integer: "<hidden>"`, how psycopg's
+  untyped values are refused), is hidden too, and so is the `CONTEXT` it
+  adds (`JSON data, line 1: ...`). A `DETAIL` that spans lines is dropped
+  whole.
+- On SQLite, a read-only unit of work begins its transaction before it
+  reads, so DDL or a `WITH ... INSERT` sent as SQL text is rolled back with
+  it. They committed at once, since SQLite's driver begins a transaction
+  only before `INSERT`, `UPDATE`, `DELETE` or `REPLACE`. The reader now
+  holds SQLite's read lock until it ends.
+- `IDEMPOTENCY` with `TTL_SECONDS` below `LEASE_SECONDS` is refused at
+  startup. A key that expired while its request still held it could be
+  claimed by a retry, which ran the request a second time.
+- `forget` no longer misses a subject's first key while a writer is making
+  it: on PostgreSQL the key is made under a transaction advisory lock of
+  the subject, which `forget` takes too, so it waits for the writer and
+  deletes the key. It returned 0, and the key was committed after it.
+  Known subjects take no lock; a new one costs one more statement. A key
+  a lookup read before `forget` began is no longer kept for the rest of
+  its transaction.
+- `loaddata` reads a fixture's numbers with a fraction as decimals, so a
+  money column gets every digit: `1234567890123456.78` was loaded as
+  `1234567890123456.80`, through a float that `ExactDecimal` would have
+  refused. Other columns get the same floats as before.
 
 ## [0.8.0] - 2026-10-21
 

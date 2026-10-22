@@ -72,7 +72,7 @@ Each `DATABASES` entry:
 | `URL` | required | SQLAlchemy async URL (`postgresql+asyncpg://…`, `sqlite+aiosqlite:///…`). Kept secret in logs and reprs. |
 | `MIGRATION_URL` | `None` | A schema-owner URL used only by `migrate` and `makemigrations`; the app keeps a row-level role. |
 | `ECHO` | `False` | Log every statement; refused in staging and production. |
-| `LOG_PARAMETERS` | `False` | Show bound values in logs and errors; refused in staging and production. Without it, the `DETAIL` PostgreSQL adds to constraint errors (`Failing row contains (...)`, which repeats the row's values) is dropped too. |
+| `LOG_PARAMETERS` | `False` | Show bound values in logs and errors; refused in staging and production. Without it, the `DETAIL` PostgreSQL adds to constraint errors (`Failing row contains (...)`, which repeats the row's values) is dropped too, as are its `CONTEXT`, and a value the driver or PostgreSQL refuses (`invalid input for query argument $1: <hidden>`). |
 | `SSLMODE` | `None` | libpq names: `disable`, `require`, `verify-ca`, `verify-full`. Staging and production need `verify-full` for network databases. |
 | `SSLROOTCERT`, `SSLCERT`, `SSLKEY` | `None` | CA bundle, and client certificate and key for mutual TLS. |
 | `STATEMENT_TIMEOUT` | `30.0` | Seconds; PostgreSQL cancels longer statements. Migrations are exempt. This and the four timeouts below are at most 2147483.647 seconds (24.8 days), the longest PostgreSQL takes; a transaction's `statement_timeout` from a longer deadline asks for that much. |
@@ -912,9 +912,11 @@ A fixture is one JSON document, its tables parents first:
 Numbers and text are written as they are; decimals, times, durations, ids,
 and enums as text; bytes as base64; JSON columns as JSON. `loaddata`
 converts each value back by its column's type, and refuses one that does
-not fit without quoting it. A row whose primary key is stored replaces the
-stored row. Rows load in one transaction, and on PostgreSQL serial ids then
-continue after the highest one loaded.
+not fit without quoting it. A number with a fraction reaches a decimal
+column with every digit, as written (`1234567890123456.78`), never through
+a float; other columns get it as a float. A row whose primary key is stored
+replaces the stored row. Rows load in one transaction, and on PostgreSQL
+serial ids then continue after the highest one loaded.
 
 State is never dumped or loaded: the audit trail (a copy of its keys would
 outlive `auditforget`), tokens, the outbox, idempotency keys, webhook

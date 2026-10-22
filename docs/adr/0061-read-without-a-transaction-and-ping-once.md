@@ -1,7 +1,8 @@
 # 0061. Read without a transaction where it is safe, and ping a connection once
 
 - Status: Accepted
-- Date: 2026-10-21
+- Date: 2026-10-21; amended 2026-10-22 (sessions reset, no statement run
+  twice)
 
 ## Context
 
@@ -98,12 +99,50 @@ in the identity map, and tracking its version, which is the work those
   - `STATEMENTS` runs each statement on its own.
   - `SNAPSHOT` reads one snapshot: `REPEATABLE READ`, `READ ONLY` on
     PostgreSQL, and an explicit `BEGIN` on SQLite.
+  - On SQLite every read-only session begins explicitly, whichever way it
+    reads: its driver begins only before `INSERT`, `UPDATE`, `DELETE` or
+    `REPLACE`, so DDL or a `WITH … INSERT` sent as SQL text committed at
+    once, past the rollback that ends the session. (Amended 2026-10-22.)
 - **`STATEMENTS`** reads on an engine of its own per alias (the
   `<alias>:reads` pool), on PostgreSQL through asyncpg or psycopg:
   - The engine runs in `AUTOCOMMIT`, and its connections start with
-    `default_transaction_read_only=on`, added after `CONNECT_ARGS`.
-  - It does not pre-ping. A statement whose connection the server had
-    closed runs once more on a fresh one.
+    `default_transaction_read_only=on`, added after `CONNECT_ARGS`. Each
+    new connection is asked for `transaction_read_only` once, and refused
+    if it is not `on`: a pooler that drops startup parameters would
+    otherwise let reads write. Readiness checks the pool as
+    `database:<alias>:reads` once it is open. (Amended 2026-10-22.)
+  - Nothing ends with a statement but the statement's own transaction:
+    `SET`, `set_config(…, false)`, `SET ROLE`, `LISTEN` and session
+    advisory locks stay with the connection. Before another caller gets
+    it, the connection is reset with one simple query (`SET SESSION
+    AUTHORIZATION DEFAULT; RESET ROLE; RESET ALL; CLOSE ALL; SELECT
+    pg_advisory_unlock_all(); DISCARD TEMP; DISCARD SEQUENCES;` and
+    `UNLISTEN *` when something listens). `RESET ALL` also puts
+    `default_transaction_read_only` back to `on`. The reset is skipped
+    only when everything the checkout ran is provably a plain `SELECT`:
+    a compiled `Select` whose SQL, read token by token, calls no
+    function and holds nothing but names, parameters, casts and
+    operators. SQL text, `exec_driver_sql`, function calls and
+    statements sent many at a time count as changes. On asyncpg, a
+    query the driver ran that domainkit did not see (on the driver's own
+    connection) counts too; psycopg cannot count them, so its
+    connections are always reset. If the reset fails, the pool closes
+    the connection. What the proof cannot see is the schema's: views,
+    row security policies, the functions of types and operators, and
+    computed fields. Neither can it see a `COPY` sent on asyncpg's own
+    connection, which asyncpg does not count, nor reset the driver's own
+    state there (type codecs, listeners): code that uses the driver's
+    connection directly should read with `TRANSACTION`.
+    (Amended 2026-10-22.)
+  - On asyncpg it does not pre-ping: asyncpg notices the server closing
+    an idle connection, and such a connection is replaced as it leaves
+    the pool, or before a statement is sent on it. psycopg reads the
+    server's goodbye only with the next query, so its connections are
+    pinged. A statement whose connection closes while it runs is never
+    run again: it may have had effects outside its read-only transaction
+    (`dblink`, foreign tables, untrusted procedural languages).
+    SQLAlchemy then replaces every connection of the pool. Earlier, any
+    disconnect retried the statement once. (Amended 2026-10-22.)
   - Each statement is bounded by the deadline, unless a timer of its own
     task already enforces it (`deadlines.enforced()`).
   - Through PgBouncer, which keeps no timeouts in the session, and on
@@ -119,7 +158,9 @@ in the identity map, and tracking its version, which is the work those
 Round trips:
 
 - A read through a unit of work takes 4 round trips (was 6).
-- A `STATEMENTS` read by id takes 1.
+- A `STATEMENTS` read by id takes 1. One that runs SQL text or calls a
+  function takes 2: the statement and the reset. Through psycopg, a
+  `STATEMENTS` read also pings, and always resets. (Amended 2026-10-22.)
 - Every checkout of an asyncpg pool outside PgBouncer saves two.
 
 What `STATEMENTS` costs and how it behaves:
@@ -134,14 +175,26 @@ What `STATEMENTS` costs and how it behaves:
   fail at once. Use `TRANSACTION` or `SNAPSHOT` for them.
 - A write in SQL text is refused by the server (SQLSTATE 25006), as in a
   `READ ONLY` transaction. Flushes and write statements are refused by the
-  session before anything is sent.
+  session before anything is sent. The server's refusal rests on the
+  session's `default_transaction_read_only`: SQL text in the unit of work
+  that turns it off can write, until the unit of work ends.
+- `SET LOCAL` and transaction-scoped advisory locks
+  (`pg_advisory_xact_lock`) end with the statement that takes them: in
+  `STATEMENTS` they do nothing for the statements after it. Session-wide
+  settings last until the unit of work ends. (Amended 2026-10-22.)
 - The server stops a statement cut off at the deadline when asyncpg's
   cancel request reaches it, not by `statement_timeout`.
   `STATEMENT_TIMEOUT` and `COMMAND_TIMEOUT` still bound every statement.
 - A statement started after the deadline has passed is refused at once.
 - After a restart or failover, a `STATEMENTS` read gets its answer from a
-  fresh connection, with no error. Other pools rely on pre-ping, which
-  cannot catch a connection that dies between the ping and the statement.
+  fresh connection, with no error, once the driver has seen the old one
+  close; asyncpg sees it as the server's goodbye arrives. A connection
+  that dies while a statement runs fails that read, as in every other
+  pool; pre-ping cannot catch a connection that dies between the ping and
+  the statement either. (Amended 2026-10-22.)
+- After SQL text, a connection closed between two statements of one unit
+  of work is not replaced: whatever the text set in the session would be
+  missing from a fresh one. The unit of work fails instead.
 
 Reversal is cheap: `STATEMENTS` and `SNAPSHOT` are opt-in per unit of work,
 and the ping is internal.

@@ -1,7 +1,7 @@
 # 0062. Claim idempotency keys in one statement, and commit the framework's short writes as they run
 
 - Status: Accepted
-- Date: 2026-10-21
+- Date: 2026-10-21; amended 2026-10-22 (the sweep comes last)
 
 ## Context
 
@@ -65,7 +65,13 @@ Options considered:
   commit on another database also run on `connections.autocommit()`.
   Through PgBouncer, that is one transaction, which sets the timeouts.
 - Without messaging, the sweep of expired keys is one more statement on
-  the claim's connection. It still skips rows another claim is deleting.
+  the claim's connection, the last one. It still skips rows another claim
+  is deleting. Through PgBouncer the claim's statements share one
+  transaction: a sweep run first held the locks of the keys it deleted
+  while the upsert waited for another claim's row, and two claims whose
+  keys lay in each other's sweep deadlocked (SQLSTATE 40P01, a 503).
+  Run last, the sweep never waits, and nothing waits while it holds its
+  locks. (Amended 2026-10-22.)
 - The mark stays in the business transaction. Pre-ping stays on these
   checkouts, with ADR 0061's ping of one round trip.
 
@@ -79,14 +85,22 @@ Measured on PostgreSQL, on the wire:
 - A replay takes 10 round trips instead of 27, and 2 checkouts instead of
   4.
 
-The framework's own claim and store do not lower `statement_timeout` to
-the request's deadline any more: `SET LOCAL` needs a transaction. They are
-still bounded:
+The framework's own claim, store, pin and late mark do not lower
+`statement_timeout` to the request's deadline any more: `SET LOCAL` needs
+a transaction. They are still bounded:
 
 - by `STATEMENT_TIMEOUT`, `LOCK_TIMEOUT` and `COMMAND_TIMEOUT`, which the
   session keeps outside PgBouncer;
 - the claim by the request deadline's timer;
-- the store or release by `SETTLE_TIMEOUT`.
+- the store or release by `SETTLE_TIMEOUT`;
+- the pin before a commit on another database, and the mark after it, by
+  the deadline: the request's timer cuts them off, and in a task that only
+  shares the deadline (`deadlines.enforced()` is false), a
+  `deadlines.timeout` block of their own does, which costs no round trip.
+  A deadline that has passed changes nothing, as for a transaction's
+  timeouts. A pin cut off may still have landed on the server; the key is
+  then pinned, and its retries get 409, as when the commit after a pin
+  fails. (Amended 2026-10-22.)
 
 `connections.autocommit()` is for statements that each make sense alone:
 code that needs several to commit together must use a transaction.

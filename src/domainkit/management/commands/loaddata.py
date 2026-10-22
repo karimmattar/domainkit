@@ -2,6 +2,7 @@
 
 import json
 from argparse import ArgumentParser
+from decimal import Decimal
 from pathlib import Path
 
 from sqlalchemy.exc import IntegrityError
@@ -81,9 +82,14 @@ def _rows(count: int) -> str:
 
 
 def _read(path: Path) -> object:
-    """The JSON document in ``path``."""
+    """The JSON document in ``path``; its numbers with a fraction as ``Decimal``.
+
+    Read as floats, money would lose digits before its column, which
+    refuses floats, ever saw it (``fixtures.read_fixture`` turns them back
+    into floats for columns that hold floats).
+    """
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"), parse_float=Decimal)
     except OSError as exc:
         raise CommandError(f"Cannot read {path}: {exc.strerror or exc}.") from None
     except (ValueError, RecursionError):

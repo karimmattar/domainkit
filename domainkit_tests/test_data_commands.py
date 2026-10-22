@@ -17,12 +17,15 @@ from typing import Any
 import pytest
 from sqlalchemy import (
     JSON,
+    Boolean,
     Column,
     Date,
     Enum,
+    Float,
     Integer,
     Interval,
     LargeBinary,
+    MetaData,
     Numeric,
     String,
     Table,
@@ -35,6 +38,7 @@ from sqlalchemy import (
     text,
     update,
 )
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.types import NullType, TypeDecorator
 
 from domainkit import setup
@@ -43,10 +47,11 @@ from domainkit.conf import override_settings
 from domainkit.contrib.audit import record
 from domainkit.contrib.audit.tables import audit_log
 from domainkit.contrib.contenttypes.tables import content_types
-from domainkit.db import UTCDateTime, connections, metadata
+from domainkit.db import ExactDecimal, UTCDateTime, connections, metadata
 from domainkit.db import fixtures as fixtures_module
 from domainkit.db.fixtures import FixtureError, read_fixture, select_tables, to_json
 from domainkit.management import CommandError, call_command
+from domainkit.management.commands import loaddata
 from domainkit.testing import CapturedQueries
 from domainkit_tests.conftest import (
     ALPHA,
@@ -560,6 +565,50 @@ def test_fixture_helpers() -> None:
     with pytest.raises(FixtureError, match=r"opaque holds a value that is not str"):
         fixtures_module._decoded(kinds.c.opaque, 5)
     assert fixtures_module._encoded(kinds.c.label, 3) == 3
+
+
+def test_fixtures_load_money_with_every_digit(tmp_path: Path) -> None:
+    """A JSON number with a fraction reaches a decimal column exactly.
+
+    Read as a float, 1234567890123456.78 became 1234567890123456.8, past
+    the column's refusal of floats. Every other column gets the float it
+    always did, JSON columns and types that cannot tell theirs included.
+    """
+    table = Table(
+        "framework_test_money",
+        MetaData(),
+        Column("amount", ExactDecimal(18, 2)),
+        Column("rate", Numeric(10, 4, asdecimal=True)),
+        Column("ratio", Float),
+        Column("count", Integer),
+        Column("flag", Boolean),
+        Column("extra", JSON),
+        Column("ratios", postgresql.ARRAY(Float)),
+        Column("unknown", NullType()),
+    )
+    text = (
+        '{"amount": 1234567890123456.78, "rate": 0.1, "ratio": 0.1, "count": 5.0, '
+        '"flag": 1.0, "extra": {"n": [0.1, 2]}, "ratios": [0.1], "unknown": 1e400}'
+    )
+    path = tmp_path / "money.json"
+    path.write_text(text, encoding="utf-8")
+
+    loaded = fixtures_module._decoded_row(table, loaddata._read(path))
+    as_floats = fixtures_module._decoded_row(table, json.loads(text))
+
+    assert loaded["amount"] == Decimal("1234567890123456.78")
+    assert as_floats["amount"] == Decimal("1234567890123456.8")  # What it was.
+    assert loaded["rate"] == Decimal("0.1")
+    others = ("ratio", "count", "flag", "extra", "ratios", "unknown")
+    assert {name: loaded[name] for name in others} == {
+        name: as_floats[name] for name in others
+    }
+    assert type(loaded["ratio"]) is float
+    assert loaded["extra"] == {"n": [0.1, 2]}
+    assert [type(ratio) for ratio in loaded["ratios"]] == [float]
+    money = ExactDecimal(18, 2)
+    bound = money.process_bind_param(loaded["amount"], postgresql.dialect())  # type: ignore[no-untyped-call]
+    assert bound == Decimal("1234567890123456.78")
 
 
 def test_dump_options_on_the_command_line(project: str, tmp_path: Path) -> None:

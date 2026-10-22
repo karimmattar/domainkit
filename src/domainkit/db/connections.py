@@ -19,9 +19,9 @@ the transaction, it keeps SQLAlchemy's.
 Read-only sessions read in one of three ways (``Reads``). ``STATEMENTS``
 runs each statement on its own, without ``BEGIN`` or ``ROLLBACK``, on an
 engine of its own whose connections PostgreSQL holds read-only; each
-statement is bounded by the deadline, and run once more on a fresh
-connection if the server had closed the one it was sent on. ``SNAPSHOT``
-reads in one ``REPEATABLE READ`` transaction.
+statement is bounded by the deadline. Its connections are checked when
+made, and reset before another caller gets them (``_reset_session``).
+``SNAPSHOT`` reads in one ``REPEATABLE READ`` transaction.
 """
 
 import asyncio
@@ -30,12 +30,13 @@ import threading
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from enum import StrEnum
-from functools import cache, partial
+from functools import cache, lru_cache, partial
 from typing import Any, Final
 from weakref import WeakKeyDictionary
 
-from sqlalchemy import TextClause, event, make_url, text
+from sqlalchemy import Select, TextClause, event, literal_column, make_url, select, text
 from sqlalchemy.engine import Connection, ExceptionContext, ExecutionContext
+from sqlalchemy.exc import DisconnectionError
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
     AsyncEngine,
@@ -44,7 +45,13 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import ORMExecuteState, Session, UOWTransaction
-from sqlalchemy.pool import NullPool
+from sqlalchemy.pool import (
+    ConnectionPoolEntry,
+    NullPool,
+    PoolProxiedConnection,
+    PoolResetState,
+)
+from sqlalchemy.sql import Executable
 from sqlalchemy.sql.ddl import ExecutableDDLElement
 from sqlalchemy.sql.dml import UpdateBase
 from sqlalchemy.util import await_only
@@ -67,12 +74,90 @@ INTERNAL: Final = "domainkit_internal"
 """Execution option of the framework's own statements, such as the timeouts
 a transaction sets; ``assert_num_queries`` does not count them."""
 SNAPSHOT_BEGIN: Final = "domainkit_snapshot"
-"""Execution option asking SQLite to begin a transaction before reading."""
+"""Execution option asking SQLite to begin a transaction before reading, for
+every read-only session."""
 READS_SUFFIX: Final = ":reads"
 """Added to an alias to name its ``STATEMENTS`` engine in ``pool_stats``."""
-_DETAIL: Final = re.compile(r"\nDETAIL:  [^\n]*")
+_DETAIL: Final = re.compile(
+    r"\n(?:DETAIL:  .*?(?=\n(?:HINT|QUERY|CONTEXT):  |\n\[SQL: |\Z)"
+    r"|CONTEXT:  .*?(?=\n\[SQL: |\Z))",
+    re.DOTALL,
+)
+"""The fields of a libpq message (psycopg's) that repeat values: a ``DETAIL``
+(``Failing row contains (...)``) up to the next field, and the ``CONTEXT``
+(``JSON data, line 1: ...``), which comes last."""
+HIDDEN: Final = "<hidden>"
+"""What a value is replaced with in an error's text."""
+_REFUSED_ARGUMENT: Final = re.compile(
+    r"(?P<encoding>invalid input for )?query argument \$[0-9]+"
+    r"(?: in element #[0-9]+ of executemany\(\) sequence)?: "
+)
+"""How asyncpg starts its refusal of a value it cannot send. The value's
+``repr`` follows, then the reason in parentheses; or, without ``invalid
+input for``, a type's own message."""
+_QUOTED: Final = re.compile(
+    r"""'(?:[^'\\]|\\.)*'(?! object)|"(?:[^"\\]|\\.)*"(?! object)"""
+)
+"""A quoted value in Python's messages; not a type's name (``'str' object``)."""
+_DATA_EXCEPTION: Final = "22"
+"""SQLSTATE class of PostgreSQL's refusals of a value: its input functions
+quote the value (``invalid input syntax for type integer: "x"``)."""
+_FIELD: Final = re.compile(r"\n(?:DETAIL|HINT|QUERY|CONTEXT|LINE [0-9]+):? ")
 _ALONE_DRIVERS: Final = frozenset({"asyncpg", "psycopg"})
 """PostgreSQL drivers whose connections can be held read-only at connect time."""
+_SEES_CLOSING: Final = frozenset({"asyncpg"})
+"""Drivers that notice the server closing an idle connection, without a round
+trip; the ``STATEMENTS`` pool pings the others' connections as it hands them
+out (psycopg reads the server's goodbye only with the next query, whose
+failure looks like a statement cut off as it ran)."""
+RESET_SESSION: Final = (
+    "SET SESSION AUTHORIZATION DEFAULT; RESET ROLE; RESET ALL; CLOSE ALL; "
+    "SELECT pg_advisory_unlock_all(); DISCARD TEMP; DISCARD SEQUENCES; "
+    "DO $$BEGIN PERFORM * FROM pg_listening_channels() LIMIT 1; "
+    "IF FOUND THEN UNLISTEN *; END IF; END$$"
+)
+"""What a ``STATEMENTS`` connection is reset with before another caller gets
+it, in one round trip (the simple query protocol): the session user and
+role, every setting (``default_transaction_read_only`` back to ``on``
+among them), cursors, session advisory locks, temporary tables, sequence
+values, and ``LISTEN``. ``UNLISTEN`` runs only if something listens, as a
+standby refuses it."""
+_DIRTY: Final = "domainkit_reads_dirty"
+"""A ``STATEMENTS`` connection's ``info`` key: it ran something that may
+have changed its session since it was last reset."""
+_SENT: Final = "domainkit_reads_sent"
+"""Its ``info`` key for the driver's count of queries after the last
+statement domainkit saw: a higher count means something else ran."""
+_SQL_TOKEN: Final = re.compile(
+    r"""
+    (?P<space>[ \t\n\r\f\v]+)
+    | (?P<comment>--|/\*)
+    | (?P<word>[A-Za-z_][A-Za-z0-9_]*)
+    | (?P<quoted>"[^"]*")
+    | (?P<parameter>\$[0-9]+|%\([A-Za-z0-9_]+\)s)
+    | (?P<number>[0-9]+)
+    | (?P<symbol>::|<>|<=|>=|!=|[(),.*=<>+\-/\[\]])
+    """,
+    re.VERBOSE,
+)
+"""The tokens of SQL a plain ``SELECT`` is made of; anything else is not one."""
+_BEFORE_PARENTHESIS: Final = frozenset(
+    {
+        "SELECT", "FROM", "JOIN", "ON", "WHERE", "AND", "OR", "NOT", "IN",
+        "EXISTS", "ANY", "ALL", "SOME", "AS", "BY", "HAVING", "WHEN", "THEN",
+        "ELSE", "DISTINCT", "LATERAL", "UNION", "INTERSECT", "EXCEPT", "LIKE",
+        "ILIKE", "BETWEEN", "IS",
+    }
+)  # fmt: skip
+"""Keywords a ``(`` may follow without a function being called."""
+_NOT_A_READ: Final = frozenset({"INTO", "TEMP", "TEMPORARY"})
+"""Words of a ``SELECT`` that makes a table."""
+_TYPE_WORDS: Final = frozenset(
+    {"PRECISION", "VARYING", "WITH", "WITHOUT", "TIME", "ZONE"}
+)
+"""Words that continue a type's name: ``DOUBLE PRECISION``, ``TIME ZONE``."""
+_SELECT_ONE: Final[Executable] = select(literal_column("1"))
+"""A readiness probe a ``STATEMENTS`` connection needs no reset after."""
 
 
 class Reads(StrEnum):
@@ -157,12 +242,16 @@ def create_read_engine(config: DatabaseConfig) -> AsyncEngine:
 
     Its connections run each statement on its own (``AUTOCOMMIT``), and
     PostgreSQL holds them read-only from the start, so a write is refused
-    however it is sent. Its pool is sized as ``config`` says, like the
-    alias's own. It does not test connections before use: a statement whose
-    connection the server had closed (a restart, a failover) runs once more
-    on a fresh one, which is safe for statements that cannot write. Each
-    statement is bounded by the deadline (``domainkit.deadlines``), since
-    ``SET LOCAL`` needs a transaction.
+    however it is sent; a connection a pooler made without that is refused
+    (``_require_read_only``). Its pool is sized as ``config`` says, like the
+    alias's own. On asyncpg it does not ping connections before use: one
+    the driver knows is closed (a restart, a failover) is replaced as it is
+    taken from the pool, or before a statement is sent on it. psycopg
+    cannot tell without a round trip, so its connections are pinged. A
+    connection is reset before another caller gets it, unless all it ran
+    was plain ``SELECT`` statements (``_reset_session``). Each statement is
+    bounded by the deadline (``domainkit.deadlines``), since ``SET LOCAL``
+    needs a transaction.
     """
     url = config.URL.get_secret_value()
     engine = create_async_engine(
@@ -170,12 +259,16 @@ def create_read_engine(config: DatabaseConfig) -> AsyncEngine:
         echo=config.ECHO,
         hide_parameters=not config.LOG_PARAMETERS,
         isolation_level="AUTOCOMMIT",
-        pool_pre_ping=False,
+        pool_pre_ping=make_url(url).get_driver_name() not in _SEES_CLOSING,
         connect_args=read_only_args(config),
         **_pool_options(config, url),
     )
-    event.listen(engine.sync_engine, "do_execute", _read_alone)
-    event.listen(engine.sync_engine, "do_execute_no_params", _read_alone_no_params)
+    sync = engine.sync_engine
+    event.listen(sync, "do_execute", _read_alone)
+    event.listen(sync, "do_execute_no_params", _read_alone_no_params)
+    event.listen(sync.pool, "connect", _require_read_only)
+    event.listen(sync.pool, "checkout", _take_open)
+    event.listen(sync.pool, "reset", _reset_session)
     return _hiding_details(engine, config)
 
 
@@ -242,20 +335,198 @@ def _read_alone_no_params(
 def _run_alone(context: ExecutionContext, execute: _Execute) -> None:
     """Run one statement on its own, bounded by the deadline.
 
-    If the server had closed its connection, it runs once more on a fresh
-    one; the connection is replaced, as the pool would on checkout.
+    A connection the driver knows is closed is replaced first, as the pool
+    would on checkout: the statement was never sent, so it runs once. Not
+    if an earlier statement of this checkout may have set something in the
+    session, which a fresh connection would not have: then it fails. A
+    connection closed while the statement runs is never retried, since
+    the statement may have done something outside its transaction (through
+    ``dblink``, say); SQLAlchemy then replaces every connection of the pool.
+
+    The connection is marked for a reset (``_reset_session``) unless the
+    statement is a plain ``SELECT`` (``_plain_select``) and nothing else
+    reached the server through it since the last statement seen here:
+    statements sent many at a time (``executemany``), which do not come
+    here, or on the driver's own connection.
     """
-    try:
-        _within_deadline(execute, context.cursor)
-    except context.dialect.loaded_dbapi.Error as error:
-        connection = context.root_connection
-        dbapi = connection.connection.dbapi_connection
-        if not context.dialect.is_disconnect(error, dbapi, context.cursor):
-            raise
+    connection = context.root_connection
+    proxied = connection.connection
+    info = _info(proxied)
+    sent = _sent(proxied.driver_connection)
+    if sent is None or info.get(_SENT) != sent:
+        info[_DIRTY] = True  # Something reached the server unseen.
+    if _closed(proxied.driver_connection) and not info.get(_DIRTY):
         connection.invalidate()
         connection.rollback()
-        context.cursor = connection.connection.cursor()
+        proxied = connection.connection
+        info = _info(proxied)
+        context.cursor = proxied.cursor()
+    if not (
+        isinstance(getattr(context.compiled, "statement", None), Select)
+        and _plain_select(context.statement)
+    ):
+        info[_DIRTY] = True
+    try:
         _within_deadline(execute, context.cursor)
+    finally:
+        info[_SENT] = _sent(proxied.driver_connection)
+
+
+def _info(proxied: PoolProxiedConnection) -> dict[Any, Any]:
+    """The pooled connection's ``info``; a throwaway one for SQLAlchemy's first look.
+
+    The dialect reads the server's version and settings on a connection
+    that is not checked out yet, whose ``info`` cannot be read; those
+    statements change nothing.
+    """
+    try:
+        return proxied.info
+    except NotImplementedError:
+        return {}
+
+
+@lru_cache(maxsize=512)
+def _plain_select(statement: str) -> bool:
+    """Whether ``statement`` is a ``SELECT`` that calls no function, provably.
+
+    It is read lexeme by lexeme: only names, bound parameters, numbers, casts
+    and the usual operators may appear, and a ``(`` only after an operator,
+    a keyword such as ``IN`` or ``EXISTS``, or a cast's type. A name before
+    ``(`` is a function call, which may change the session
+    (``set_config``, ``pg_advisory_lock``). Quotes, comments, ``;`` and
+    any other character, a space outside ASCII among them (PostgreSQL reads
+    those as part of a name), make it something else. Views, row security
+    policies, the functions of types and operators it uses, and computed
+    fields (``t.f`` for a function ``f(t)``) are not seen: they are the
+    schema's.
+    """
+    previous: tuple[str, str] = ("", "")
+    cast = ""  # "type" after ::, "name" after its name, "modifier" in its (n, m).
+    position = 0
+    for match in _SQL_TOKEN.finditer(statement):
+        kind, lexeme = match.lastgroup or "", match.group().upper()
+        if match.start() != position or kind == "comment" or lexeme in _NOT_A_READ:
+            return False
+        position = match.end()
+        if kind == "space":
+            continue
+        if not previous[0] and lexeme != "SELECT":
+            return False
+        if cast == "modifier":
+            if lexeme == ")":
+                cast = ""
+            elif kind != "number" and lexeme != ",":
+                return False
+        elif cast == "type" and kind in {"word", "quoted"}:
+            cast = "name"
+        elif cast == "name" and lexeme == ".":
+            cast = "type"
+        elif cast == "name" and lexeme in _TYPE_WORDS:
+            pass
+        elif cast == "name" and lexeme == "(":
+            cast = "modifier"
+        else:
+            cast = ""
+            if lexeme == "::":
+                cast = "type"
+            elif lexeme == "(" and not _may_open(*previous):
+                return False
+        previous = (kind, lexeme)
+    return position == len(statement) and bool(previous[0])
+
+
+def _may_open(kind: str, lexeme: str) -> bool:
+    """Whether ``(`` may follow this lexeme without calling a function."""
+    if kind == "word":
+        return lexeme in _BEFORE_PARENTHESIS
+    return kind == "symbol" and lexeme not in {")", "]", "."}
+
+
+def _sent(driver: Any) -> int | None:  # noqa: ANN401 - asyncpg's or psycopg's.
+    """How many queries the driver has run on this connection; None if unknown.
+
+    asyncpg counts them (the count its own pool uses); psycopg does not.
+    """
+    count = getattr(getattr(driver, "_protocol", None), "queries_count", None)
+    return count if isinstance(count, int) else None
+
+
+def _closed(driver: Any) -> bool:  # noqa: ANN401 - asyncpg's or psycopg's.
+    """Whether the driver knows the connection is closed, without a round trip.
+
+    asyncpg notices as soon as the server closes it; psycopg when an
+    operation fails.
+    """
+    is_closed = getattr(driver, "is_closed", None)
+    return bool(is_closed()) if callable(is_closed) else bool(driver.closed)
+
+
+def _require_read_only(
+    dbapi_connection: Any,  # noqa: ANN401 - SQLAlchemy's adapter.
+    record: ConnectionPoolEntry,
+) -> None:
+    """Refuse a new ``STATEMENTS`` connection that PostgreSQL does not hold read-only.
+
+    A pooler that drops the startup parameters would let a read write.
+
+    Raises:
+        ImproperlyConfigured: Its transactions are not read-only.
+    """
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("SHOW transaction_read_only")
+        (read_only,) = cursor.fetchone()
+    finally:
+        cursor.close()
+    if read_only != "on":
+        raise ImproperlyConfigured(
+            "A connection for reads on their own (Reads.STATEMENTS) is not "
+            f"read-only (transaction_read_only is {read_only!r}): something "
+            "between the application and PostgreSQL dropped "
+            "default_transaction_read_only. Set PGBOUNCER if it is PgBouncer, "
+            "or read in a transaction."
+        )
+
+
+def _take_open(
+    dbapi_connection: Any,  # noqa: ANN401 - SQLAlchemy's adapter.
+    record: ConnectionPoolEntry,
+    proxied: PoolProxiedConnection,
+) -> None:
+    """Replace a connection the driver knows is closed, as it leaves the pool.
+
+    Raises:
+        DisconnectionError: It is closed; the pool connects afresh.
+    """
+    driver = dbapi_connection.driver_connection
+    if _closed(driver):
+        raise DisconnectionError("The server closed this connection.")
+    record.info[_SENT] = _sent(driver)
+
+
+def _reset_session(
+    dbapi_connection: Any,  # noqa: ANN401 - SQLAlchemy's adapter.
+    record: ConnectionPoolEntry,
+    state: PoolResetState,
+) -> None:
+    """Reset a ``STATEMENTS`` connection's session as it goes back to the pool.
+
+    Unless all it ran was plain ``SELECT`` statements, seen here: anything
+    else may have changed the session (``SET``, ``set_config``,
+    ``SET ROLE``, ``LISTEN``, advisory locks), which the next caller would
+    inherit. ``RESET_SESSION`` takes one round trip; if it fails, the pool
+    closes the connection. A connection being closed anyway is left alone.
+    """
+    if state.terminate_only or not state.asyncio_safe:
+        return
+    driver = dbapi_connection.driver_connection
+    sent = _sent(driver)
+    if record.info.get(_DIRTY) or sent is None or record.info.get(_SENT) != sent:
+        if sent is None:  # psycopg: never prepared, so sent as a simple query.
+            await_only(driver.execute(RESET_SESSION, prepare=False))
+        else:
+            await_only(driver.execute(RESET_SESSION))
+        record.info[_DIRTY] = False
 
 
 def _within_deadline(execute: _Execute, cursor: Any) -> None:  # noqa: ANN401
@@ -298,10 +569,12 @@ def _set_local(config: DatabaseConfig, connection: Connection) -> None:
 
 
 def _begin_snapshot(connection: Connection) -> None:
-    """Begin the transaction now for a ``SNAPSHOT`` read, outside PostgreSQL.
+    """Begin the transaction now for a read-only session, outside PostgreSQL.
 
-    SQLite's driver begins one only before a write, so reads would not
-    share a snapshot without it.
+    SQLite's driver begins one only before ``INSERT``, ``UPDATE``,
+    ``DELETE`` or ``REPLACE``: reads would not share a snapshot without it,
+    and DDL or a ``WITH ... INSERT`` sent as SQL text would commit at once,
+    beyond the rollback that ends a read-only session.
     """
     if connection.get_execution_options().get(SNAPSHOT_BEGIN):
         connection.exec_driver_sql("BEGIN", execution_options={INTERNAL: True})
@@ -337,11 +610,14 @@ def create_owner_engine(config: DatabaseConfig) -> AsyncEngine:
 
 
 def _hiding_details(engine: AsyncEngine, config: DatabaseConfig) -> AsyncEngine:
-    """Keep the values PostgreSQL repeats in errors out, unless they may show.
+    """Keep values out of errors, from PostgreSQL or the driver, unless they may show.
 
     A constraint's error carries a ``DETAIL`` with the values of the row or
     key (``Failing row contains (1, alice@example.com, ...)``), which would
-    reach logs and error reporters although bound values are hidden.
+    reach logs and error reporters although bound values are hidden. So do
+    a value the driver cannot send (``invalid input for query argument $1:
+    '4111...'``) and one PostgreSQL cannot read (``invalid input syntax for
+    type integer: "4111..."``).
     """
     if not config.LOG_PARAMETERS:
         event.listen(engine.sync_engine, "handle_error", _drop_detail)
@@ -349,14 +625,67 @@ def _hiding_details(engine: AsyncEngine, config: DatabaseConfig) -> AsyncEngine:
 
 
 def _drop_detail(context: ExceptionContext) -> None:
-    """Remove the ``DETAIL`` from the error, the driver's, and what that wraps."""
+    """Remove values from the error, the driver's, and what that wraps.
+
+    The ``DETAIL`` and ``CONTEXT`` go, and a refused value becomes
+    ``HIDDEN``; the argument's number, the reason, and the SQLSTATE stay.
+    """
     driver = context.original_exception
-    for error in (context.sqlalchemy_exception, driver):
+    hidden = _hidden_values(driver)
+    for error in (context.sqlalchemy_exception, driver, driver.__cause__):
         if error is not None and error.args and isinstance(error.args[0], str):
-            error.args = (_DETAIL.sub("", error.args[0]), *error.args[1:])
+            message = _DETAIL.sub("", error.args[0])
+            for shown, kept in hidden:
+                message = message.replace(shown, kept)
+            error.args = (message, *error.args[1:])
     for error in (driver, driver.__cause__):
-        if getattr(error, "detail", None) is not None:  # asyncpg keeps it apart.
-            error.detail = None  # type: ignore[union-attr]
+        for name in ("detail", "context"):  # asyncpg keeps them apart.
+            if getattr(error, name, None) is not None:
+                setattr(error, name, None)
+
+
+def _hidden_values(driver: BaseException) -> list[tuple[str, str]]:
+    """Each text of ``driver``'s error that shows a value, and what replaces it.
+
+    asyncpg's refusal of a value it cannot encode names the argument, the
+    value, and the reason, raised from the type's own error, whose quoted
+    values are masked too. PostgreSQL's refusal of a value (SQLSTATE class
+    22, how psycopg's untyped values are refused) quotes it once in the
+    message; everything between the first and the last double quote goes.
+    """
+    refusal = driver.__cause__ or driver
+    message = refusal.args[0] if refusal.args else None
+    if not isinstance(message, str):
+        return []
+    if argument := _REFUSED_ARGUMENT.match(message):
+        rest = message[argument.end() :]
+        if not argument["encoding"]:
+            return [(message, argument.group() + _masked(rest))]
+        reason = str(refusal.__cause__) if refusal.__cause__ else None
+        _mask_causes(refusal)
+        if reason and rest.endswith(f" ({reason})"):
+            return [(message, f"{argument.group()}{HIDDEN} ({_masked(reason)})")]
+        return [(message, argument.group() + HIDDEN)]
+    if str(getattr(driver, "sqlstate", "")).startswith(_DATA_EXCEPTION):
+        primary = _FIELD.split(message, maxsplit=1)[0]
+        first, last = primary.find('"'), primary.rfind('"')
+        if first < last:
+            return [(primary, f"{primary[: first + 1]}{HIDDEN}{primary[last:]}")]
+    return []
+
+
+def _masked(text: str) -> str:
+    """``text`` with each quoted value ``HIDDEN``, but not a type's name."""
+    return _QUOTED.sub(lambda quoted: f"{quoted[0][0]}{HIDDEN}{quoted[0][0]}", text)
+
+
+def _mask_causes(error: BaseException) -> None:
+    """Mask the quoted values in the errors ``error`` was raised from."""
+    cause = error.__cause__
+    while cause is not None:
+        if cause.args and isinstance(cause.args[0], str):
+            cause.args = (_masked(cause.args[0]), *cause.args[1:])
+        cause = cause.__cause__
 
 
 class _Engines:
@@ -413,17 +742,19 @@ class ConnectionHandler:
         """Open a session; objects stay readable after commit.
 
         A ``readonly`` session's transactions are ``READ ONLY`` on
-        PostgreSQL, so even a replica's primary refuses its writes. ``reads``
-        says how it reads (see ``Reads``); with ``STATEMENTS`` or
-        ``SNAPSHOT`` the session itself also refuses to flush or to run a
-        statement that writes (``ReadOnlyError``).
+        PostgreSQL, so even a replica's primary refuses its writes. On
+        SQLite they begin before the first read, so that SQL text that
+        writes is rolled back with them. ``reads`` says how it reads (see
+        ``Reads``); with ``STATEMENTS`` or ``SNAPSHOT`` the session itself
+        also refuses to flush or to run a statement that writes
+        (``ReadOnlyError``).
         """
         engine, sessions = self._pool(alias)
         if not readonly:
             return sessions()
         if reads is Reads.TRANSACTION:
             return AsyncSession(
-                engine.execution_options(postgresql_readonly=True),
+                engine.execution_options(**_read_only_options(engine)),
                 expire_on_commit=False,
             )
         if reads is Reads.STATEMENTS and reads_alone(self.config(alias)):
@@ -431,7 +762,7 @@ class ConnectionHandler:
         elif reads is Reads.SNAPSHOT:
             bind = engine.execution_options(**_snapshot_options(engine))
         else:
-            bind = engine.execution_options(postgresql_readonly=True)
+            bind = engine.execution_options(**_read_only_options(engine))
         return AsyncSession(
             bind, expire_on_commit=False, sync_session_class=ReadOnlySession
         )
@@ -462,14 +793,20 @@ class ConnectionHandler:
             await connection.execute(text("SELECT 1"))
 
     async def check_all(self, seconds: float) -> list[str]:
-        """Check every configured alias; return ``database:<alias>`` for failures."""
-        return await failing_checks(
-            {
-                f"database:{alias}": partial(self.check, alias)
-                for alias in settings.DATABASES
-            },
-            seconds,
-        )
+        """Check every configured alias; return ``database:<alias>`` for failures.
+
+        An alias whose ``STATEMENTS`` pool this loop opened is checked
+        through it too, as ``database:<alias>:reads``: its connections are
+        made apart, and refused if they are not read-only.
+        """
+        checks = {
+            f"database:{alias}": partial(self.check, alias)
+            for alias in settings.DATABASES
+        }
+        engines = self._engines.get(asyncio.get_running_loop())
+        for alias, engine in (engines.reads if engines else {}).items():
+            checks[f"database:{alias}{READS_SUFFIX}"] = partial(_select_one, engine)
+        return await failing_checks(checks, seconds)
 
     def pool_stats(self) -> dict[str, dict[str, int]]:
         """Return pool usage per alias for the running loop (for metrics).
@@ -530,11 +867,29 @@ class ConnectionHandler:
         return reads[alias]
 
 
+async def _select_one(engine: AsyncEngine) -> None:
+    """Run ``SELECT 1`` on ``engine``: a plain ``SELECT``, which needs no reset."""
+    async with engine.connect() as connection:
+        await connection.execute(_SELECT_ONE)
+
+
 def _snapshot_options(engine: AsyncEngine) -> dict[str, Any]:
     """Execution options for one read snapshot on ``engine``'s database."""
     if engine.dialect.name == "postgresql":
         return {"postgresql_readonly": True, "isolation_level": "REPEATABLE READ"}
     return {SNAPSHOT_BEGIN: True}
+
+
+def _read_only_options(engine: AsyncEngine) -> dict[str, Any]:
+    """Execution options for a read-only transaction on ``engine``'s database.
+
+    ``READ ONLY`` on PostgreSQL, which other databases ignore; elsewhere,
+    also a transaction begun before the first read, which the session's
+    end rolls back.
+    """
+    if engine.dialect.name == "postgresql":
+        return {"postgresql_readonly": True}
+    return {"postgresql_readonly": True, SNAPSHOT_BEGIN: True}
 
 
 connections: Final = ConnectionHandler()

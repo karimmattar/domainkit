@@ -1,5 +1,7 @@
 """Unique violations become ``DuplicateValue`` (a 409), named by their constraint."""
 
+import io
+import logging
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,12 +18,13 @@ from sqlalchemy import (
     Table,
     func,
     insert,
+    text,
 )
 from sqlalchemy import UniqueConstraint as Unique
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from domainkit.conf import override_settings
+from domainkit.conf import DatabaseConfig, override_settings
 from domainkit.db import connections, create_engine
 from domainkit.db.errors import duplicate_value
 from domainkit.db.orm import NAMING_CONVENTION
@@ -325,13 +328,214 @@ def test_errors_without_a_detail_are_left_as_they_are() -> None:
     plain = ValueError("a message\nDETAIL:  kept, not a database's")
     numbered = OSError(5, "I/O error")
     several = ValueError("first\nDETAIL:  dropped", "second", "third")
-    for error in (plain, numbered, several):
+    empty = ValueError()
+    for error in (plain, numbered, several, empty):
         context = SimpleNamespace(sqlalchemy_exception=None, original_exception=error)
         _drop_detail(context)  # type: ignore[arg-type]
 
     assert plain.args == ("a message",)  # Read as a driver's, it loses its DETAIL.
     assert numbered.args == (5, "I/O error")
     assert several.args == ("first", "second", "third")
+    assert empty.args == ()
+
+
+CARD = "4111111111111111"
+"""A value no error text may show unless ``LOG_PARAMETERS``."""
+
+
+def every_text(error: BaseException) -> str:
+    """All an error and its causes show: messages, reprs, a logged traceback."""
+    shown = []
+    seen: BaseException | None = error
+    while seen is not None:
+        shown += [str(seen), repr(seen), repr(seen.args)]
+        shown += [str(getattr(seen, name, "")) for name in ("detail", "context")]
+        seen = seen.__cause__ or seen.__context__
+    buffer = io.StringIO()
+    log = logging.getLogger("framework_test_db_errors")
+    handler = logging.StreamHandler(buffer)
+    log.addHandler(handler)
+    try:
+        log.error("failed", exc_info=error)
+    finally:
+        log.removeHandler(handler)
+    return "\n".join([*shown, buffer.getvalue()])
+
+
+async def refused_value(
+    engine: AsyncEngine, statement: str, value: object
+) -> DBAPIError:
+    """Run ``statement`` with ``value`` as ``:v``; return the error it raises."""
+    with pytest.raises(DBAPIError) as caught:
+        async with engine.connect() as connection:
+            await connection.execute(text(statement), {"v": value})
+    return caught.value
+
+
+async def test_values_the_driver_or_server_refuses_stay_out_of_errors(
+    engine: AsyncEngine,
+) -> None:
+    """The argument's number and the reason stay; the value does not.
+
+    asyncpg refuses a value it cannot encode, naming it; PostgreSQL quotes
+    one it cannot read (an enum's, sent as text), and repeats JSON it
+    cannot parse in its context.
+    """
+    if engine.dialect.driver != "asyncpg":
+        pytest.skip("asyncpg's own refusals, and the server's for its types")
+    async with engine.begin() as connection:
+        await connection.execute(text("DROP TYPE IF EXISTS framework_test_mood"))
+        await connection.execute(text("CREATE TYPE framework_test_mood AS ENUM ('ok')"))
+    shown = create_engine(
+        DatabaseConfig(URL=connections.config("default").URL, LOG_PARAMETERS=True)
+    )
+    cases = [
+        ("SELECT CAST(:v AS integer)", f"{CARD}x"),
+        ("SELECT CAST(:v AS float8[])", [f"{CARD}x"]),
+        ("SELECT CAST(:v AS framework_test_mood)", f"{CARD}x"),
+        ("SELECT CAST(CAST(:v AS text) AS json)", f'{{"card": {CARD}x}}'),
+    ]
+    try:
+        hidden = [await refused_value(engine, *case) for case in cases]
+        visible = [await refused_value(shown, *case) for case in cases]
+    finally:
+        await shown.dispose()
+
+    integer, array, mood, json = hidden
+    for error in hidden:
+        assert CARD not in every_text(error), error
+    for error in visible[:3]:
+        assert CARD in str(error)
+    assert (
+        "invalid input for query argument $1: <hidden> "
+        "('str' object cannot be interpreted as an integer)"
+    ) in str(integer)
+    assert (
+        "invalid input for query argument $1: <hidden> "
+        "(invalid array element at index 0: must be real number, not str)"
+    ) in str(array)
+    assert 'invalid input value for enum framework_test_mood: "<hidden>"' in str(mood)
+    assert "invalid input syntax for type json" in str(json)
+    assert getattr(json.orig, "sqlstate", None) == "22P02"  # Still known.
+
+
+@pytest.mark.parametrize(
+    ("message", "sqlstate", "kept"),
+    [
+        (
+            (
+                f"query argument $2 in element #1 of executemany() sequence: "
+                f"bad value '{CARD}'"
+            ),
+            None,
+            (
+                "query argument $2 in element #1 of executemany() sequence: "
+                "bad value '<hidden>'"
+            ),
+        ),
+        (
+            (
+                f'invalid input syntax for type integer: "{CARD}"\n'
+                f"CONTEXT:  unnamed portal parameter $1 = '{CARD}'"
+            ),
+            "22P02",
+            'invalid input syntax for type integer: "<hidden>"',
+        ),
+        (
+            f'value "{CARD}" is out of range for type integer\nHINT:  smaller',
+            "22003",
+            'value "<hidden>" is out of range for type integer\nHINT:  smaller',
+        ),
+        (
+            (
+                f'invalid input syntax for type json\nDETAIL:  Token "{CARD}" is '
+                f'invalid.\nCONTEXT:  JSON data, line 1: {{"card": {CARD}...'
+            ),
+            "22P02",
+            "invalid input syntax for type json",
+        ),
+        (
+            (
+                f'null value in column "card"\nDETAIL:  Failing row contains '
+                f"(1, line\n{CARD}).\nHINT:  fill it"
+            ),
+            "23502",
+            'null value in column "card"\nHINT:  fill it',
+        ),
+        ('relation "framework_test_cards" does not exist', "42P01", None),
+        (
+            f"invalid input for query argument $1: '{CARD}' (no reason given)",
+            None,
+            "invalid input for query argument $1: <hidden>",
+        ),
+    ],
+)
+def test_psycopg_messages_lose_their_values(
+    message: str, sqlstate: str | None, kept: str | None
+) -> None:
+    """Messages in psycopg's form keep PostgreSQL's names, never the values.
+
+    psycopg sends values untyped: PostgreSQL refuses them, quoted, and
+    repeats them in the DETAIL and CONTEXT of its message.
+    """
+    from domainkit.db.connections import _drop_detail
+
+    class PsycopgError(Exception):
+        """What psycopg raises: the whole message, and the SQLSTATE."""
+
+    driver = PsycopgError(message)
+    driver.sqlstate = sqlstate  # type: ignore[attr-defined]
+    wrapped = DBAPIError("SELECT :v\n[SQL: SELECT %(v)s]", None, driver)
+    context = SimpleNamespace(sqlalchemy_exception=wrapped, original_exception=driver)
+    _drop_detail(context)  # type: ignore[arg-type]
+
+    assert driver.args == (kept or message,)
+    assert (kept or message) in str(wrapped)
+    assert "[SQL: " in str(wrapped)
+    assert CARD not in every_text(wrapped)
+
+
+def test_values_are_masked_in_the_errors_a_refusal_was_raised_from() -> None:
+    """Asyncpg raises its refusal from the type's own error, which may quote it.
+
+    Each error down the chain has its quoted values masked; other arguments,
+    and errors without a message, stay. A reason that is not the cause's
+    goes with the value.
+    """
+    from domainkit.db.connections import _drop_detail
+
+    def refused(message: str, cause: BaseException) -> Exception:
+        refusal = Exception(message)
+        refusal.__cause__ = cause
+        driver = Exception(message)
+        driver.__cause__ = refusal
+        context = SimpleNamespace(sqlalchemy_exception=None, original_exception=driver)
+        _drop_detail(context)  # type: ignore[arg-type]
+        return driver
+
+    empty = ValueError()
+    inner = ValueError(f"could not convert string to float: '{CARD}'", "kept")
+    inner.__cause__ = empty
+    element = TypeError(f"invalid array element at index 0: '{CARD}'")
+    element.__cause__ = inner
+    array = refused(
+        f"invalid input for query argument $1: ['{CARD}'] ({element})", element
+    )
+    other = refused(
+        f"invalid input for query argument $2: '{CARD}' (a reason of its own)",
+        ValueError("another reason"),
+    )
+
+    assert array.args == (
+        (
+            "invalid input for query argument $1: <hidden> "
+            "(invalid array element at index 0: '<hidden>')"
+        ),
+    )
+    assert element.args == ("invalid array element at index 0: '<hidden>'",)
+    assert inner.args == ("could not convert string to float: '<hidden>'", "kept")
+    assert empty.args == ()
+    assert other.args == ("invalid input for query argument $2: <hidden>",)
 
 
 def test_network_databases_wait_briefly_for_a_connection(tmp_path: Path) -> None:

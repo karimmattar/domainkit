@@ -2,20 +2,23 @@
 
 ``Reads.STATEMENTS`` runs each statement on its own on PostgreSQL, without
 ``BEGIN`` and ``ROLLBACK``; ``Reads.SNAPSHOT`` reads one snapshot. Both
-refuse writes, and the first is cut off at the deadline and survives the
-server closing its connections. Pre-ping costs one round trip.
+refuse writes, and the first is cut off at the deadline, survives the
+server closing its connections, never runs a statement twice, and hands
+the next caller a session as it was made. Pre-ping costs one round trip.
 """
 
 import asyncio
 import os
 import re
+import sys
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from sqlalchemy import delete, event, insert, make_url, text, update
+from sqlalchemy import delete, event, func, insert, make_url, select, text, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import (
@@ -24,8 +27,10 @@ from sqlalchemy.ext.asyncio import (
     AsyncSession,
     create_async_engine,
 )
+from sqlalchemy.pool import PoolResetState
 from sqlalchemy.schema import CreateTable
 from sqlalchemy.sql import Executable
+from sqlalchemy.util import greenlet_spawn
 
 from domainkit import deadlines, setup
 from domainkit.apps import registry
@@ -34,7 +39,12 @@ from domainkit.conf import DatabaseConfig, override_settings
 from domainkit.db import Reads, connections
 from domainkit.db.connections import (
     READS_SUFFIX,
+    RESET_SESSION,
     ReadOnlySession,
+    _closed,
+    _plain_select,
+    _reset_session,
+    _sent,
     create_engine,
     create_read_engine,
     reads_alone,
@@ -42,7 +52,9 @@ from domainkit.db.connections import (
 from domainkit.db.connections import (
     _ping as ping,
 )
+from domainkit.db.drivers import connect_args
 from domainkit.ddd import ReadOnlyError
+from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.testing import AsyncTestClient, assert_num_queries
 from domainkit_tests.conftest import POSTGRES_VARIABLE
@@ -312,10 +324,12 @@ async def test_a_snapshot_reads_the_data_as_it_was(tables: None) -> None:
 
 
 @sqlite_only
-async def test_a_snapshot_on_sqlite_begins_before_it_reads(tables: None) -> None:
-    """SQLite's driver begins only before writes; a snapshot begins itself.
+async def test_read_only_work_on_sqlite_begins_before_it_reads(tables: None) -> None:
+    """SQLite's driver begins only before writes; read-only sessions begin themselves.
 
-    The ``BEGIN`` is the framework's: it is not counted.
+    Every way of reading, so a snapshot's reads agree and the rollback
+    that ends the unit of work undoes what SQL text wrote. The ``BEGIN``
+    is the framework's: it is not counted.
     """
 
     async def driver_in_transaction(uow: GadgetsUnitOfWork) -> bool:
@@ -323,13 +337,54 @@ async def test_a_snapshot_on_sqlite_begins_before_it_reads(tables: None) -> None
         driver: Any = connection.sync_connection.connection.driver_connection  # type: ignore[union-attr]
         return bool(driver.in_transaction)
 
-    with assert_num_queries(3):
-        async with GadgetsUnitOfWork(reads=Reads.SNAPSHOT) as uow:
-            await uow.gadgets.filter()
-            assert await driver_in_transaction(uow)
-    async with GadgetsUnitOfWork(reads=Reads.TRANSACTION) as uow:
+    for reads in Reads:
+        with assert_num_queries(3):
+            async with GadgetsUnitOfWork(reads=reads) as uow:
+                await uow.gadgets.filter()
+                assert await driver_in_transaction(uow), reads
+    async with GadgetsUnitOfWork() as uow:
         await uow.gadgets.filter()
-        assert not await driver_in_transaction(uow)
+        assert not await driver_in_transaction(uow)  # A writer begins to write.
+
+
+@pytest.mark.parametrize("reads", list(Reads))
+async def test_sql_text_that_writes_in_read_only_work_never_lasts(
+    tables: None, reads: Reads
+) -> None:
+    """DDL and ``WITH ... INSERT`` sent as SQL text: refused, or rolled back.
+
+    PostgreSQL refuses them in a read-only transaction or session. SQLite's
+    driver would commit them at once, outside a transaction; read-only work
+    begins one there, which its end rolls back.
+    """
+    async with connections.engine().begin() as connection:
+        await connection.execute(text("CREATE TABLE framework_test_kept (a int)"))
+    statements = [
+        (
+            "WITH added AS (SELECT 1 AS a) "
+            "INSERT INTO framework_test_kept SELECT a FROM added"
+        ),
+        "CREATE TABLE framework_test_made (a int)",
+    ]
+    for statement in statements:
+        async with GadgetsUnitOfWork(reads=reads) as uow:
+            if ON_POSTGRES:
+                with pytest.raises(DBAPIError) as refused:
+                    await uow.session.execute(text(statement))
+                assert getattr(refused.value.orig, "sqlstate", None) == WRITE_REFUSED
+            else:
+                await uow.session.execute(text(statement))
+    async with connections.engine().connect() as connection:
+        kept = await connection.scalar(text("SELECT count(*) FROM framework_test_kept"))
+        made = await connection.scalar(
+            text(
+                "SELECT count(*) FROM information_schema.tables "
+                "WHERE table_name = 'framework_test_made'"
+            )
+            if ON_POSTGRES
+            else text("SELECT count(*) FROM sqlite_master WHERE name LIKE '%test_made'")
+        )
+    assert (kept, made) == (0, 0)
 
 
 # Refusing writes ------------------------------------------------------------------
@@ -496,8 +551,9 @@ async def test_reads_survive_the_server_closing_connections_between_requests(
 ) -> None:
     """Each way of reading gets its answer, on a fresh connection.
 
-    Reads on their own run once more; the others' connections are tested
-    with one round trip when taken from the pool.
+    Reads on their own replace a connection the driver knows is closed as
+    they take it from the pool; the others' connections are tested with
+    one round trip.
     """
     async with reading_app(database_url) as client:
         for reads in ("statements", "snapshot", "transaction", None):
@@ -511,6 +567,418 @@ async def test_reads_survive_the_server_closing_connections_between_requests(
                 response = await client.get("/gadgets", params=params)
                 assert response.json() == ["first"], reads
         assert connects.count == 2  # One per pool, each replaced once.
+
+
+async def hold_connections(count: int) -> list[asyncio.Event]:
+    """Leave ``count`` idle connections in the read pool; an event each when closed.
+
+    The units of work hold their connections until all have one, so the
+    pool makes ``count`` of them.
+    """
+    closed: list[asyncio.Event] = []
+    all_in = asyncio.Event()
+
+    async def hold() -> None:
+        async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
+            await uow.gadgets.filter()
+            raw = await (await uow.session.connection()).get_raw_connection()
+            event = asyncio.Event()
+            raw.driver_connection.add_termination_listener(lambda _: event.set())  # type: ignore[union-attr]
+            closed.append(event)
+            if len(closed) == count:
+                all_in.set()
+            await all_in.wait()
+
+    await asyncio.gather(*(hold() for _ in range(count)))
+    return closed
+
+
+@asyncpg_only
+async def test_reads_survive_every_idle_connection_being_closed(
+    database: str,
+) -> None:
+    """A restart closes all of them: each is replaced as it is taken, none fails.
+
+    The driver has seen every connection close before the reads start, as
+    it does once the server's goodbye arrives. The reads come one at a
+    time first: a read that replaced only its own connection would retry
+    on the next idle one, closed too.
+    """
+    with override_settings(DATABASES={"default": {"URL": database, "POOL_SIZE": 4}}):
+        async with connections.engine().begin() as connection:
+            await connection.run_sync(metadata.create_all)
+        await store("first")
+        closed = await hold_connections(4)
+        assert await terminate_other_backends(database) >= 4
+        await asyncio.gather(*(event.wait() for event in closed))
+
+        async def read() -> list[str]:
+            async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
+                return [gadget.name for gadget in await uow.gadgets.filter()]
+
+        with Connects() as connects:
+            one_by_one = [await read() for _ in range(4)]
+            together = await asyncio.gather(*(read() for _ in range(4)))
+        await connections.close_all()
+
+    assert one_by_one == list(together) == [["first"]] * 4
+    assert connects.count == 4  # Each closed connection replaced once.
+
+
+async def wait_for_lock_waiter(
+    admin: AsyncConnection, key: int, *seen: int, until: asyncio.Event | None = None
+) -> int | None:
+    """The backend waiting for advisory lock ``key``, other than ``seen``.
+
+    It asks the server until one is waiting, or ``until`` is set (None).
+    """
+    query = text(
+        "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND NOT granted "
+        "AND objid = :key AND NOT pid = ANY(:seen)"
+    )
+    while until is None or not until.is_set():
+        pid = await admin.scalar(query, {"key": key, "seen": list(seen)})
+        if pid is not None:
+            return int(pid)
+    return None
+
+
+@postgres_only
+async def test_a_read_closed_while_it_runs_is_not_run_again(
+    tables: None, database: str
+) -> None:
+    """It may have done something outside its transaction (``dblink``): it fails.
+
+    The read waits for a lock another session holds, and its connection is
+    closed meanwhile. Run again, a second backend would wait for the lock.
+    """
+    key = 4242
+    admin = create_async_engine(database, isolation_level="AUTOCOMMIT")
+    try:
+        async with admin.connect() as holder, admin.connect() as watcher:
+            await holder.execute(text("SELECT pg_advisory_lock(:key)"), {"key": key})
+
+            async def read() -> None:
+                async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
+                    await uow.session.execute(
+                        text("SELECT pg_advisory_xact_lock_shared(:key)"),
+                        {"key": key},
+                    )
+
+            reading = asyncio.create_task(read())
+            first = await wait_for_lock_waiter(watcher, key)
+            await watcher.execute(
+                text("SELECT pg_terminate_backend(:pid, 5000)"), {"pid": first}
+            )
+            stop = asyncio.Event()
+            again = asyncio.create_task(
+                wait_for_lock_waiter(watcher, key, first or 0, until=stop)
+            )
+            await asyncio.wait({reading, again}, return_when=asyncio.FIRST_COMPLETED)
+            stop.set()
+            second = await again
+            await holder.execute(text("SELECT pg_advisory_unlock_all()"))
+            outcome = await asyncio.gather(reading, return_exceptions=True)
+    finally:
+        await admin.dispose()
+
+    assert second is None, "the read ran a second time"
+    assert isinstance(outcome[0], DBAPIError)
+
+
+@asyncpg_only
+async def test_a_connection_closed_between_reads_is_replaced_unless_it_set_something(
+    tables: None,
+) -> None:
+    """Closed before a statement is sent, it is replaced: the statement runs once.
+
+    Not after SQL text, which may have set something in the session that a
+    fresh connection would not have.
+    """
+
+    async def close_it(uow: GadgetsUnitOfWork) -> None:
+        """Close the unit of work's connection from the server, and wait till seen."""
+        raw = await (await uow.session.connection()).get_raw_connection()
+        driver: Any = raw.driver_connection
+        closed = asyncio.Event()
+        driver.add_termination_listener(lambda _: closed.set())
+        async with connections.engine().connect() as admin:
+            await admin.execute(
+                text("SELECT pg_terminate_backend(:pid, 5000)"),
+                {"pid": driver.get_server_pid()},
+            )
+        await closed.wait()
+
+    async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
+        await uow.gadgets.filter()  # The read pool's connection, made beforehand.
+    with Connects() as connects:
+        async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
+            await uow.gadgets.filter()
+            await close_it(uow)
+            assert [gadget.name for gadget in await uow.gadgets.filter()] == ["first"]
+    assert connects.count == 1
+
+    async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
+        await uow.session.execute(text("SET search_path TO pg_catalog"))
+        await close_it(uow)
+        with pytest.raises(DBAPIError, match="connection is closed"):
+            await uow.gadgets.filter()
+
+
+# What one read leaves for the next --------------------------------------------------
+
+SESSION_STATE = text(
+    "SELECT current_setting('search_path'), "
+    "nullif(current_setting('domainkit.tenant', true), ''), "
+    "current_setting('statement_timeout'), current_user = session_user, "
+    "current_setting('default_transaction_read_only'), "
+    "(SELECT count(*) FROM pg_listening_channels()), "
+    "(SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' "
+    "AND pid = pg_backend_pid())"
+)
+"""What a session may carry from one caller to the next."""
+
+
+@pytest.fixture
+async def one_connection(database: str) -> AsyncIterator[None]:
+    """The gadget tables, read through a pool of one connection."""
+    one = {"URL": database, "POOL_SIZE": 1, "MAX_OVERFLOW": 0}
+    with override_settings(DATABASES={"default": one}):
+        async with connections.engine().begin() as connection:
+            await connection.run_sync(metadata.create_all)
+        await store("first")
+        yield
+        await connections.close_all()
+
+
+@postgres_only
+@pytest.mark.usefixtures("one_connection")
+async def test_what_a_read_sets_in_its_session_never_reaches_the_next() -> None:
+    """Settings, role, LISTEN, advisory locks, temporary tables: all reset.
+
+    The pool has one connection, so the second unit of work gets the
+    first's. The first even turns read-only off; the second still cannot
+    write, and reads the table, not a temporary one named like it.
+    """
+    async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
+        backend = await uow.session.scalar(text("SELECT pg_backend_pid()"))
+        before = (await uow.session.execute(SESSION_STATE)).one()
+        for statement in (
+            "SET search_path TO pg_catalog",
+            "SELECT set_config('domainkit.tenant', 'tenant-a', false)",
+            "SET statement_timeout = 0",
+            "LISTEN tenant_a",
+            "SELECT pg_advisory_lock(42)",
+            "SET default_transaction_read_only = off",
+            "CREATE TEMP TABLE framework_test_gadgets (name text)",
+            "SET ROLE pg_read_all_data",
+        ):
+            await uow.session.execute(text(statement))
+        assert (await uow.session.execute(SESSION_STATE)).one() != before
+
+    async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
+        assert await uow.session.scalar(text("SELECT pg_backend_pid()")) == backend
+        assert (await uow.session.execute(SESSION_STATE)).one() == before
+        assert [gadget.name for gadget in await uow.gadgets.filter()] == ["first"]
+        with pytest.raises(DBAPIError) as refused:
+            await uow.session.execute(
+                text("UPDATE framework_test_gadgets SET name = 'x'")
+            )
+    assert getattr(refused.value.orig, "sqlstate", None) == WRITE_REFUSED
+
+
+@asyncpg_only
+@pytest.mark.usefixtures("one_connection")
+async def test_what_the_driver_sends_unseen_is_reset_too() -> None:
+    """Statements sent on the driver's own connection count: the session is reset.
+
+    Between two plain reads, or after the last one.
+    """
+    tenant = "SELECT set_config('domainkit.tenant', 'tenant-a', false)"
+    for between in (True, False):
+        async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
+            await uow.gadgets.filter()
+            raw = await (await uow.session.connection()).get_raw_connection()
+            await raw.driver_connection.execute(tenant)  # type: ignore[union-attr]
+            if between:
+                await uow.gadgets.filter()
+        async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
+            assert (await uow.session.execute(SESSION_STATE)).one()[1] is None
+
+
+@asyncpg_only
+@pytest.mark.usefixtures("one_connection")
+async def test_plain_selects_need_no_reset_and_anything_else_one_round_trip() -> None:
+    """A read of columns runs its own statements only.
+
+    SQL text, a function call, or statements sent many at a time add the
+    reset: one more query, by the simple query protocol. asyncpg counts
+    the queries it runs; its loggers see those not prepared.
+    """
+    sent = Sent()
+    async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
+        raw = await (await uow.session.connection()).get_raw_connection()
+        driver: Any = raw.driver_connection
+        driver.add_query_logger(sent)
+
+    async def read(
+        statement: Executable | None = None, *, many: bool = False
+    ) -> tuple[int, list[str]]:
+        """Queries one read runs, and those logged: a gadget, its parts and makers."""
+        ran, logged = _sent(driver) or 0, len(sent.queries)
+        async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
+            await uow.gadgets.filter()
+            if statement is not None:
+                await uow.session.execute(statement, [{}, {}] if many else None)
+        async with asyncio.timeout(30):  # Fails, rather than hangs, without a reset.
+            await sent.reach(logged + (statement is not None) + many)
+        return (_sent(driver) or 0) - ran, sent.queries[logged:]
+
+    assert await read() == (3, [])
+    assert await read(select(func.count()).select_from(gadgets)) == (
+        5,
+        [RESET_SESSION],
+    )
+    assert await read(text("SELECT 1")) == (5, [RESET_SESSION])
+    assert await read(text("SELECT 1"), many=True) == (5, ["SELECT 1", RESET_SESSION])
+    assert await read() == (3, [])  # Nothing more arrived meanwhile.
+
+
+@postgres_only
+async def test_a_read_connection_that_is_not_read_only_is_refused(
+    database: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pooler that drops the startup settings would let reads write: no read runs.
+
+    Readiness then reports the alias's read pool.
+    """
+    module = sys.modules[create_read_engine.__module__]
+    monkeypatch.setattr(module, "read_only_args", connect_args)  # As a pooler would.
+    with override_settings(DATABASES={"default": {"URL": database}}):
+        assert await connections.check_all(10.0) == []
+        with pytest.raises(ImproperlyConfigured, match="is not read-only"):
+            async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
+                await uow.session.execute(text("SELECT 1"))
+        assert await connections.check_all(10.0) == [f"database:default{READS_SUFFIX}"]
+        monkeypatch.undo()
+        await connections.close_all()
+        async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
+            await uow.session.execute(text("SELECT 1"))
+        assert await connections.check_all(10.0) == []
+        await connections.close_all()
+
+
+async def test_a_database_check_that_hangs_fails_readiness(
+    database: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each check has the readiness seconds; one that never answers fails."""
+
+    async def never(alias: str = "default") -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(connections, "check", never)
+    async with asyncio.timeout(30):  # Fails, rather than hangs, without a bound.
+        assert await connections.check_all(0.01) == ["database:default"]
+
+
+@postgres_only
+@pytest.mark.usefixtures("one_connection")
+async def test_a_connection_whose_reset_fails_is_closed(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The pool replaces it: the next caller gets a fresh session."""
+    async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
+        first = await uow.session.scalar(text("SELECT pg_backend_pid()"))
+        await uow.session.execute(text("SET search_path TO pg_catalog"))
+        monkeypatch.setattr(
+            sys.modules[create_read_engine.__module__], "RESET_SESSION", "RESET nothing"
+        )
+    monkeypatch.undo()
+    async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
+        assert await uow.session.scalar(text("SELECT pg_backend_pid()")) != first
+        assert await uow.session.scalar(text("SHOW search_path")) == '"$user", public'
+    assert "Exception during reset" in caplog.text
+
+
+async def test_drivers_that_cannot_count_queries_are_always_reset() -> None:
+    """psycopg: the reset is never prepared, so it is one simple query.
+
+    A connection on its way out is left alone.
+    """
+
+    class Psycopg:
+        closed = False
+
+        def __init__(self) -> None:
+            self.sent: list[tuple[str, object]] = []
+
+        async def execute(self, query: str, *, prepare: bool | None = None) -> None:
+            self.sent.append((query, prepare))
+
+    driver = Psycopg()
+    dbapi = SimpleNamespace(driver_connection=driver)
+    record = SimpleNamespace(info={})
+    leaving = PoolResetState(
+        transaction_was_reset=False, terminate_only=True, asyncio_safe=True
+    )
+    unsafe = PoolResetState(
+        transaction_was_reset=False, terminate_only=False, asyncio_safe=False
+    )
+    staying = PoolResetState(
+        transaction_was_reset=False, terminate_only=False, asyncio_safe=True
+    )
+    for state in (leaving, unsafe, staying):
+        await greenlet_spawn(_reset_session, dbapi, record, state)
+
+    assert driver.sent == [(RESET_SESSION, False)]
+    assert record.info == {"domainkit_reads_dirty": False}
+    assert (_sent(driver), _closed(driver)) == (None, False)
+    driver.closed = True
+    assert _closed(driver)
+
+
+@pytest.mark.parametrize(
+    ("statement", "plain"),
+    [
+        ("SELECT t.a, t.b FROM t AS t WHERE t.id IN ($1::UUID, $2::UUID)", True),
+        ("SELECT $1::INTEGER AS anon_1", True),
+        ("select t.a from t where t.b = %(b_1)s::NUMERIC(18, 2)", True),
+        ("SELECT t.a FROM t WHERE t.b > $1::TIMESTAMP(6) WITH TIME ZONE", True),
+        ("SELECT t.a FROM t WHERE t.b = ANY ($1::VARCHAR[]) AND NOT (t.c = $2)", True),
+        ("SELECT t.a FROM t WHERE EXISTS (SELECT u.a FROM u WHERE u.a = t.a)", True),
+        ("SELECT t.a FROM t WHERE t.a = (SELECT u.a FROM u)", True),
+        ("SELECT t.a FROM t WHERE (t.a, t.b) IN (($1, $2))", True),
+        ("SELECT $1::pg_catalog.int4", True),
+        ("SELECT $1::pg_catalog.numeric(18, 2)", True),
+        ("SELECT $1::CHARACTER VARYING(255)", True),
+        ('SELECT $1::"varchar"(10)', True),
+        ('SELECT "user".id FROM "user"', True),
+        ("SELECT 1;", False),
+        ("SELECT 1 INTO copied", False),
+        ("SELECT count(*) AS count_1 FROM t", False),
+        ("SELECT $1::INTEGER OR pg_advisory_lock (1)", False),
+        ("SELECT $1::INTEGER AS a, set_config($2, $3, false)", False),
+        ("SELECT $1::NUMERIC(f(1))", False),
+        ("SELECT $1::int4(1)(2)", False),
+        ('SELECT "f"(1)', False),
+        ("SELECT f/**/(1)", False),
+        ("SELECT t.a -- AND\n(1) FROM t", False),
+        ("SELECT t.a FROM t; SET search_path TO a", False),
+        ("SELECT t.a FROM t WHERE t.a IN\u00a0($1)", False),  # A name to PostgreSQL.
+        ("SELECT 'a'", False),
+        ("SELECT t.a FROM t WHERE t.a ~ $1", False),
+        ("SELECT (SELECT 1)(2)", False),
+        ("SELECT t.a[1](2) FROM t", False),
+        ("SELECT t.(a) FROM t", False),
+        ("SELECT 1 INTO TEMP copied", False),
+        ("WITH x AS (SELECT 1) SELECT 1", False),
+        ("SET search_path TO a", False),
+        ("", False),
+    ],
+)  # fmt: skip
+def test_what_counts_as_a_plain_select(statement: str, plain: bool) -> None:
+    """Names, parameters, casts and operators; a ``(`` never after a name."""
+    assert _plain_select(statement) is plain
 
 
 def test_a_ping_leaves_the_connection_as_it_found_it() -> None:

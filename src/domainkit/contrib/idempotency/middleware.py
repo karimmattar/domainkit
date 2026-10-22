@@ -139,13 +139,13 @@ class IdempotencyMiddleware:
         statement commits as it runs (``connections.autocommit``), so a
         claim is visible at once to every retry, and only one of them
         claims the key. Without the hourly purge, a few expired keys are
-        deleted first.
+        deleted last: through PgBouncer the statements share a transaction,
+        and a sweep run first would hold its locks while the upsert waited
+        for another claim's, which may wait for this one's.
         """
         now = _now()
         lease = now + timedelta(seconds=config.LEASE_SECONDS)
         async with connections.autocommit(config.DATABASE) as connection:
-            if not registry.is_installed(MESSAGING):  # No hourly purge: sweep a few.
-                await connection.execute(_sweep(now))
             claim = _upsert(connection.dialect.name)(idempotency_keys).values(
                 key_hash=operation.key_hash,
                 fingerprint=fingerprint,
@@ -174,15 +174,19 @@ class IdempotencyMiddleware:
                     where=idempotency_keys.c.expires_at < now,
                 ).returning(idempotency_keys.c.token)
             )
-            if claimed is not None:
-                return None
-            row = (
-                await connection.execute(
-                    select(idempotency_keys).where(
-                        idempotency_keys.c.key_hash == operation.key_hash
+            row = None
+            if claimed is None:
+                row = (
+                    await connection.execute(
+                        select(idempotency_keys).where(
+                            idempotency_keys.c.key_hash == operation.key_hash
+                        )
                     )
-                )
-            ).first()
+                ).first()
+            if not registry.is_installed(MESSAGING):  # No hourly purge: sweep a few.
+                await connection.execute(_sweep(now))
+        if claimed is not None:
+            return None
         return dict(row._mapping) if row is not None else {}
 
     async def _take_over(
