@@ -14,9 +14,9 @@ from uuid import UUID, uuid4
 
 import pytest
 from fakeredis import FakeServer
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, event, insert, select, update
 
-from domainkit.cache import CacheUnavailable, caches
+from domainkit.cache import Cache, CacheUnavailable, caches
 from domainkit.cache import redis as redis_cache
 from domainkit.clock import freeze_time
 from domainkit.contrib.auth import (
@@ -544,3 +544,41 @@ def test_users_hold_a_bounded_number_of_live_tokens(identity: Api) -> None:
     revoked = client.delete(f"/auth/tokens/{made[0].json()['id']}", headers=headers)
     assert revoked.status_code == 204
     assert make().status_code == 201
+
+
+def test_the_first_stamps_are_read_before_a_connection_is_taken(
+    api: Api, shared: FakeServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``ALL``'s and the token's: a slow shared cache holds no connection for them."""
+    create_user("alice")
+    api(PRINCIPAL_CACHE=STAMPED)
+    raw = run_async(issue("alice"))
+    taken = [0]
+    while_reading: list[int] = []
+    get_many = Cache.get_many
+
+    async def counted(self: Cache, keys: Any, *args: Any) -> Any:  # noqa: ANN401
+        while_reading.append(taken[0])
+        return await get_many(self, keys, *args)
+
+    def checked_out(*_: object) -> None:
+        taken[0] += 1
+
+    def checked_in(*_: object) -> None:
+        taken[0] -= 1
+
+    monkeypatch.setattr(Cache, "get_many", counted)
+
+    async def scenario() -> str:
+        engine = connections.engine().sync_engine
+        event.listen(engine, "checkout", checked_out)
+        event.listen(engine, "checkin", checked_in)
+        try:
+            return await outcome(raw)
+        finally:
+            event.remove(engine, "checkout", checked_out)
+            event.remove(engine, "checkin", checked_in)
+
+    assert run_async(scenario()) == "served"
+    assert while_reading[0] == 0  # Read ahead, no connection held.
+    assert max(while_reading) == 1  # The user's, between the two queries.

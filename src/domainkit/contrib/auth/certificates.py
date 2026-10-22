@@ -54,6 +54,7 @@ from .principals import (
     principal_cache,
     recall,
     remember,
+    stamps_ahead,
     stamps_before_reading,
     user_target,
 )
@@ -207,11 +208,12 @@ async def subject_principal(
     if name is None:
         return None
     started = principal_cache.begin()
+    ahead = await stamps_ahead(config, [])
     async with AuthUnitOfWork() as uow:
         user_id = await uow.principals.user_id(name)
         if user_id is None:
             return None
         entry = Entry(key, None, targets=(user_target(user_id),), started=started)
-        await stamps_before_reading(entry, config)
+        await stamps_before_reading(entry, config, ahead)
         snapshot = await uow.principals.principal(user_id, username=name)
     return entry.holding(snapshot)
