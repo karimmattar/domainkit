@@ -20,6 +20,15 @@ were already merged into the including router by ``include_router``.
 
 What is left included, as FastAPI built it:
 
+- a router that serves requests in its own way (``serves_itself``): its
+  class, or the router itself, has its own ``matches``, ``handle``, or any
+  other method of ``APIRouter`` or Starlette's ``Router`` but those that
+  declare routes. FastAPI asks a nested router to match and handle each
+  request, so a router that gates by IP address or host, or sets a
+  tenant's context, there does it; once flattened, it would never be
+  asked. It stays one entry, with the prefixes and options of the routers
+  above it, where its routes were; the routers around it, above it or
+  beside it, are still flattened;
 - a router with frontend routes (``APIRouter.frontend``), which FastAPI
   matches after every other route;
 - every router, on a FastAPI that no longer includes routers this way.
@@ -38,10 +47,45 @@ from typing import Any, Final
 from fastapi import APIRouter
 from fastapi import routing as fastapi_routing
 from fastapi.routing import APIRoute
-from starlette.routing import BaseRoute
+from starlette.routing import BaseRoute, Router
 
-_INCLUDED: Final[type | None] = getattr(fastapi_routing, "_IncludedRouter", None)
+_INCLUDED: Final[type[BaseRoute] | None] = getattr(
+    fastapi_routing, "_IncludedRouter", None
+)
 """What ``include_router`` adds to a router's routes, on a FastAPI that nests."""
+DECLARING: Final = frozenset(
+    {
+        "__init__",
+        "add_api_route",
+        "add_api_websocket_route",
+        "add_event_handler",
+        "add_route",
+        "add_websocket_route",
+        "api_route",
+        "delete",
+        "frontend",
+        "get",
+        "head",
+        "host",
+        "include_router",
+        "mount",
+        "on_event",
+        "options",
+        "patch",
+        "post",
+        "put",
+        "route",
+        "trace",
+        "websocket",
+        "websocket_route",
+    }
+)
+"""Methods of ``APIRouter`` and ``Router`` that only declare routes and hooks.
+
+They run before the application is built, and what they declare is what
+flattening reads: a router may have its own. Any other method may run
+while a request is served.
+"""
 
 
 def nests_routers() -> bool:
@@ -53,15 +97,52 @@ def nests_routers() -> bool:
     """
     return _INCLUDED is not None and all(
         callable(getattr(_INCLUDED, name, None))
-        for name in ("effective_route_contexts", "effective_low_priority_routes")
+        for name in ("effective_candidates", "effective_low_priority_routes")
     )
+
+
+def serving_methods() -> frozenset[str]:
+    """The methods of ``APIRouter`` and ``Router`` that may run for a request.
+
+    Every method (and property) the two classes have, but ``DECLARING``: read
+    from the FastAPI and Starlette installed, so a method a later release
+    adds is one of them without a change here.
+    """
+    names = {
+        name
+        for base in (APIRouter, Router)
+        for name, value in vars(base).items()
+        if callable(value) or isinstance(value, property | classmethod)
+    }
+    return frozenset(names - DECLARING)
+
+
+def serves_itself(router: APIRouter) -> bool:
+    """Whether ``router`` has its own version of a method that serves requests.
+
+    True when its class, a class between it and ``APIRouter``, or the
+    router itself defines one of ``serving_methods()``. FastAPI calls a
+    nested router's ``matches`` and ``handle`` for each request (an IP
+    gate, a host rule, or a tenant's context may live there), and could
+    call the others; a flattened router is never asked. A router that only
+    has its own ``__init__`` or ways of declaring routes does not count.
+    """
+    serving = serving_methods()
+    own = set(vars(router))
+    for base in type(router).__mro__:
+        if base is APIRouter:
+            break
+        own.update(vars(base))
+    return not own.isdisjoint(serving)
 
 
 def flatten_routes(router: APIRouter) -> int:
     """Put the routes of each router included in ``router`` in its place.
 
     Routes keep their order, so a request matches the route it matched
-    before. Returns how many included routers were replaced.
+    before. A router that serves itself (``serves_itself``) stays
+    included, where its routes were. Returns how many of the routers
+    ``router`` includes were replaced.
     """
     if not nests_routers():
         return 0
@@ -79,12 +160,24 @@ def flatten_routes(router: APIRouter) -> int:
 
 
 def _served(included: Any) -> list[BaseRoute] | None:  # noqa: ANN401 - FastAPI's private type.
-    """The routes ``included`` serves, in order; None to leave it included."""
-    if included.effective_low_priority_routes():
+    """The routes ``included`` serves, in order; None to leave it included.
+
+    A router included below it that is left included too stays one entry,
+    in its place, with the prefixes and options of every router above it
+    (FastAPI's own branch for it, as nesting serves it).
+    """
+    if (
+        serves_itself(included.original_router)
+        or included.effective_low_priority_routes()
+    ):
         return None
-    routes = []
-    for context in included.effective_route_contexts():
-        route = _route(context)
+    routes: list[BaseRoute] = []
+    for candidate in included.effective_candidates():
+        if isinstance(candidate, _INCLUDED):  # type: ignore[arg-type]
+            served = _served(candidate)
+            routes.extend([candidate] if served is None else served)
+            continue
+        route = _route(candidate)
         if route is None:
             return None
         routes.append(route)

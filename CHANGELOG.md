@@ -104,7 +104,11 @@ All notable changes to domainkit. The format follows
   1,638 before any middleware (500 instead of 1,674 on 0.143). `app.routes` now lists the routes, with their
   full paths, and `request.scope["route"].path` is the full template. A
   route added to an included router after the application is built is not
-  served, and a router with frontend routes stays included.
+  served, and a router with frontend routes stays included. So does a
+  router whose class has its own `matches`, `handle`, or other method that
+  serves requests (an IP gate, a host rule, a tenant's context), at any
+  depth, with the prefixes and rules of the routers above it; the routers
+  around it are flattened.
 - Each request does its work once (PERF-05, PERF-06, N1, FX-16). The client
   address is parsed once per request, for the refused-credential hold and
   the rate limit together, and the rate-limit groups and the proxy's trust

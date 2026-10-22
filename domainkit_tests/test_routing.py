@@ -13,30 +13,40 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, Depends, FastAPI, Request, WebSocket, status
 from fastapi import routing as fastapi_routing
+from fastapi.responses import PlainTextResponse
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from starlette.datastructures import Headers
 from starlette.requests import HTTPConnection
-from starlette.routing import BaseRoute
+from starlette.routing import BaseRoute, Match
 from starlette.testclient import WebSocketDenialResponse
 from starlette.types import Receive, Scope, Send
+from starlette.websockets import WebSocketClose, WebSocketDisconnect
 
 from domainkit import setup
 from domainkit.apps import registry
 from domainkit.conf import override_settings, use_settings
 from domainkit.conf.env import PROJECT_ROOT_VARIABLE, project_prefix, project_root
-from domainkit.contrib.auth import Public
+from domainkit.contrib.auth import IsAuthenticated, Public, Require
 from domainkit.contrib.auth.access import _routes, open_routes
 from domainkit.contrib.auth.authentication import BaseAuthentication, Credentials
 from domainkit.contrib.auth.models import PasswordHash, User
 from domainkit.http import get_asgi_application, routing
 from domainkit.http.application import application_problems
 from domainkit.http.metrics import route_template
-from domainkit.http.routing import flatten_routes, nests_routers
+from domainkit.http.routing import (
+    flatten_routes,
+    nests_routers,
+    serves_itself,
+    serving_methods,
+)
 from domainkit.management import call_command
+from domainkit.resources import ResourceRouter
 from domainkit_tests import nested_routes
 from domainkit_tests.conftest import ALPHA, AUTH, CONTENTTYPES, UseAuth
+from domainkit_tests.gadgets import FakeGadgetsUnitOfWork, Gadget
 
 ROUTES = "domainkit_tests.nested_routes.router"
 AUDIT = "domainkit.contrib.audit"
@@ -182,10 +192,8 @@ def test_each_route_is_matched_once_and_built_once(
 def test_rules_and_dependencies_are_the_ones_nesting_gave(nested: Build) -> None:
     """Deny by default sees the same rules, router-level ones included.
 
-    Path operations are compared with nesting as it is read. WebSockets
-    are checked by name: nested, FastAPI 0.158 hides their full path and
-    the rules of the ``include_router`` calls from ``iter_route_contexts``
-    readers, so ``/v1/plain/feed`` would be listed as ``/feed``, open.
+    WebSockets too: nested, FastAPI's context answers for one with its full
+    path and the rules of every ``include_router`` call above it.
     """
     before, after = nested(), get_asgi_application()
 
@@ -196,10 +204,7 @@ def test_rules_and_dependencies_are_the_ones_nesting_gave(nested: Build) -> None
             if dependant is not None
         ]
 
-    def operations(app: FastAPI) -> list[tuple[str, list[object]]]:
-        return [rule for rule in rules(app) if not rule[0].startswith("WEBSOCKET")]
-
-    assert operations(after) == operations(before)
+    assert rules(after) == rules(before)
     assert open_routes(after) == ["GET /open"]
     assert application_problems(after) == [OPEN]
     found = dict(rules(after))
@@ -502,8 +507,8 @@ def test_routers_kept_otherwise_are_left_as_they_are(
         with monkeypatch.context() as patch:
             patch.setattr(
                 fastapi_routing._IncludedRouter,
-                "effective_route_contexts",
-                lambda self, context=context: iter([context]),
+                "effective_candidates",
+                lambda self, context=context: [context],
             )
             assert flatten_routes(app.router) == 0
     assert app.router.routes == included
@@ -528,3 +533,413 @@ def test_routes_added_to_a_router_after_the_build_are_not_served() -> None:
     assert [getattr(route, "path", "") for route in app.routes if route] == sorted(
         OWN, key=["/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"].index
     )
+
+
+# Routers that serve requests their own way stay included.
+
+
+class GatedRouter(APIRouter):
+    """Guards its routes itself: only callers sending ``X-Gate: open`` get in."""
+
+    async def handle(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Refuse a closed gate: 403, or a WebSocket closed before it opens."""
+        if Headers(scope=scope).get("x-gate") != "open":
+            refusal: Any = (
+                WebSocketClose(status.WS_1008_POLICY_VIOLATION)
+                if scope["type"] == "websocket"
+                else PlainTextResponse("gate closed", status.HTTP_403_FORBIDDEN)
+            )
+            await refusal(scope, receive, send)
+            return
+        await super().handle(scope, receive, send)
+
+
+class InternalRouter(APIRouter):
+    """Matches requests for the internal host only."""
+
+    def matches(self, scope: Scope) -> tuple[Match, Scope]:
+        """No match for any other host."""
+        if Headers(scope=scope).get("host") != "internal":
+            return Match.NONE, {}
+        return super().matches(scope)
+
+
+async def whoami(request: Request) -> dict[str, str]:
+    """The caller's name, or ``anonymous``."""
+    user = request.user
+    return {"user": user.get_username() if user.is_authenticated else "anonymous"}
+
+
+async def greet(websocket: WebSocket) -> None:
+    """Send the caller's name, then close."""
+    await websocket.accept()
+    user = websocket.user
+    await websocket.send_text(user.get_username() if user.is_authenticated else "-")
+    await websocket.close()
+
+
+async def hello(websocket: WebSocket) -> None:
+    """Send ``hello``, then close."""
+    await websocket.accept()
+    await websocket.send_text("hello")
+    await websocket.close()
+
+
+gated = GatedRouter(dependencies=[Public])
+gated.add_api_route("/secret", whoami, name="secret")
+gated.add_api_websocket_route("/socket", greet, name="gated_socket")
+internal = InternalRouter(dependencies=[Public])
+internal.add_api_route("/ops", whoami, name="ops")
+internal.add_api_websocket_route("/feed", greet, name="feed")
+before_gate = APIRouter(dependencies=[Public])
+before_gate.add_api_route("/first", whoami, name="first")
+after_gate = APIRouter()
+after_gate.add_api_route("/last", whoami, name="last")
+inner = APIRouter()
+"""An ordinary router with the gated one included between two others."""
+inner.include_router(before_gate, prefix="/before")
+inner.include_router(gated, prefix="/gated", tags=["gated"])
+inner.include_router(after_gate, prefix="/after", dependencies=[Public])
+outer = APIRouter(
+    prefix="/outer",
+    tags=["outer"],
+    dependencies=[Depends(Require(IsAuthenticated))],
+    responses={418: {"description": "A teapot"}},
+)
+"""Users only: the rule reaches the gated router's routes deep below."""
+outer.include_router(inner, prefix="/inner")
+serving = APIRouter()
+serving.include_router(gated, prefix="/gated")
+serving.include_router(internal, prefix="/internal")
+serving.include_router(outer)
+SERVING = f"{__name__}.serving"
+GATE = {"X-Gate": "open", **FIXED_ID}
+
+
+@pytest.fixture
+def served(use_auth: UseAuth) -> None:
+    """Auth installed, users named by ``X-User``, the routers above mounted."""
+    use_auth(
+        AUTHENTICATION_CLASSES=[GATEWAY],
+        settings={"ROOT_ROUTER": SERVING, "MIDDLEWARE": STACK, "API_DOCS": True},
+    )
+
+
+@pytest.mark.usefixtures("served")
+@pytest.mark.parametrize(
+    ("method", "path", "headers", "status_code"),
+    [
+        ("GET", "/gated/secret", {}, 403),  # The gate, closed.
+        ("GET", "/gated/secret", GATE, 200),
+        ("GET", "/internal/ops", {}, 404),  # Another host: no match.
+        ("GET", "/internal/ops", {"Host": "internal"}, 200),
+        ("POST", "/internal/ops", {"Host": "internal"}, 405),
+        ("GET", "/outer/inner/gated/secret", GATE, 401),  # The outer rule.
+        ("GET", "/outer/inner/gated/secret", ALICE, 403),  # The gate, deep below.
+        ("GET", "/outer/inner/gated/secret", {**ALICE, **GATE}, 200),
+        ("GET", "/outer/inner/before/first", {}, 401),
+        ("GET", "/outer/inner/before/first", ALICE, 200),
+        ("GET", "/outer/inner/after/last", ALICE, 200),
+        ("GET", "/outer/inner/gated/missing", {**ALICE, **GATE}, 404),
+    ],
+)
+def test_routers_that_serve_themselves_answer_as_nested(
+    nested: Build, method: str, path: str, headers: dict[str, str], status_code: int
+) -> None:
+    """A router's own ``handle`` and ``matches`` still run once flattened.
+
+    Byte for byte as nesting answers: a gate the router keeps in ``handle``
+    refuses, a host rule in ``matches`` matches nothing, at the top or
+    deep below an ordinary router, whose rules still apply.
+    """
+    headers = {**FIXED_ID, **headers}
+    with TestClient(nested()) as before, TestClient(get_asgi_application()) as after:
+        answered = answer(after, method, path, headers=headers)
+        assert answered == answer(before, method, path, headers=headers)
+    assert answered[0] == status_code  # type: ignore[index]
+
+
+@pytest.mark.usefixtures("served")
+def test_websockets_of_routers_that_serve_themselves_are_refused_alike(
+    nested: Build,
+) -> None:
+    """The gate and the host rule hold for WebSockets too, flattened or not."""
+
+    def outcomes(app: FastAPI) -> list[object]:
+        client = TestClient(app)
+        seen: list[object] = []
+        for path, headers in [
+            ("/gated/socket", {}),
+            ("/gated/socket", GATE),
+            ("/internal/feed", {}),
+            ("/internal/feed", {"Host": "internal"}),
+            ("/outer/inner/gated/socket", ALICE),
+            ("/outer/inner/gated/socket", {**ALICE, **GATE}),
+            ("/outer/inner/gated/socket", GATE),
+        ]:
+            try:
+                with client.websocket_connect(path, headers=headers) as socket:
+                    seen.append(socket.receive_text())
+            except WebSocketDenialResponse as denied:
+                seen.append(denied.status_code)
+            except WebSocketDisconnect as closed:
+                seen.append(closed.code)
+        return seen
+
+    assert outcomes(get_asgi_application()) == outcomes(nested())
+    assert outcomes(nested()) == [1008, "-", 1000, "-", 1008, "alice", 401]
+
+
+@pytest.mark.usefixtures("served")
+def test_only_routers_that_serve_themselves_stay_included(nested: Build) -> None:
+    """They stay one entry each, in place; the routers around them are flattened.
+
+    The gated router deep below keeps the prefixes, tags, responses, and
+    rules of every router above it.
+    """
+    app = get_asgi_application()
+    included = fastapi_routing._IncludedRouter
+
+    assert kinds(app) == [
+        ("_IncludedRouter", ""),
+        ("_IncludedRouter", ""),
+        ("APIRoute", "/outer/inner/before/first"),
+        ("_IncludedRouter", ""),
+        ("APIRoute", "/outer/inner/after/last"),
+    ]
+    top, host, deep = [r for r in app.routes if isinstance(r, included)]
+    assert (top.original_router, host.original_router) == (gated, internal)
+    assert deep.original_router is gated
+    context = deep.include_context
+    assert context.prefix == "/outer/inner/gated"
+    assert context.tags == ["outer", "gated"]
+    assert 418 in context.responses
+    assert outer.dependencies[0] in context.dependencies
+    assert [type(route) for route in nested().routes][-1] is included
+
+
+@pytest.mark.usefixtures("served")
+def test_routers_that_serve_themselves_are_documented_and_guarded_alike(
+    nested: Build,
+) -> None:
+    """The same OpenAPI document, rules, and URLs; WebSockets in full.
+
+    Deny by default reads a WebSocket of a router left included with its
+    full path and the rules of every router above it.
+    """
+    before, after = nested(), get_asgi_application()
+
+    def rules(app: FastAPI) -> list[tuple[str, list[object]]]:
+        return [
+            (name, [dependency.call for dependency in dependant.dependencies])
+            for name, dependant in _routes(app.routes)
+            if dependant is not None
+        ]
+
+    assert json.dumps(after.openapi()) == json.dumps(before.openapi())
+    assert rules(after) == rules(before)
+    found = dict(rules(after))
+    assert found["WEBSOCKET /outer/inner/gated/socket"] == [
+        outer.dependencies[0].dependency,
+        Public.dependency,
+    ]
+    assert found["WEBSOCKET /internal/feed"] == [Public.dependency]
+    assert open_routes(after) == []
+    for name in ("secret", "gated_socket", "ops", "feed", "first", "last"):
+        assert after.url_path_for(name) == before.url_path_for(name), name
+
+
+class Recording(APIRouter):
+    """A router that writes down each of its methods FastAPI calls."""
+
+    def __init__(self) -> None:
+        """An empty router, with nothing called yet."""
+        super().__init__()
+        self.calls: list[str] = []
+
+
+class OwnHandle(Recording):
+    """Its own ``handle``."""
+
+    async def handle(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Write it down, then handle."""
+        self.calls.append("handle")
+        await super().handle(scope, receive, send)
+
+
+class OwnMatches(Recording):
+    """Its own ``matches``."""
+
+    def matches(self, scope: Scope) -> tuple[Match, Scope]:
+        """Write it down, then match."""
+        self.calls.append("matches")
+        return super().matches(scope)
+
+
+class OwnNotFound(Recording):
+    """Its own ``not_found``."""
+
+    async def not_found(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Write it down, then answer it."""
+        self.calls.append("not_found")
+        await super().not_found(scope, receive, send)
+
+
+class OwnCall(Recording):
+    """Its own ``__call__``."""
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Write it down, then serve."""
+        self.calls.append("__call__")
+        await super().__call__(scope, receive, send)
+
+
+class OwnApp(Recording):
+    """Its own ``app``."""
+
+    async def app(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Write it down, then serve."""
+        self.calls.append("app")
+        await super().app(scope, receive, send)
+
+
+@pytest.mark.parametrize(
+    "kind", [OwnHandle, OwnMatches, OwnNotFound, OwnCall, OwnApp], ids=repr
+)
+@pytest.mark.parametrize("deep", [False, True], ids=["top", "deep"])
+def test_each_overridden_method_keeps_its_router_included(
+    kind: type[Recording], deep: bool
+) -> None:
+    """Over HTTP and WebSocket, the router is answered and asked as nested.
+
+    At the top, or below an ordinary router, which is flattened around it.
+    FastAPI 0.143 calls a nested router's ``handle`` and ``matches`` for
+    each request; the router stays included whichever of its methods it
+    has its own of. Below another router, nesting asked ``matches`` once
+    more per request, as each level matches again; flattened, the router is
+    asked as one included at the top is.
+    """
+
+    def build(flatten: bool, *, deep: bool) -> tuple[list[object], Recording, FastAPI]:
+        own = kind()
+        own.add_api_route("/x", nested_routes.open_route)
+        own.add_api_websocket_route("/ws", hello)
+        app = FastAPI()
+        if deep:
+            above = APIRouter()
+            above.include_router(own, prefix="/p")
+            app.include_router(above, prefix="/o")
+        else:
+            app.include_router(own, prefix="/o/p")
+        if flatten:
+            assert flatten_routes(app.router) == int(deep)
+        client = TestClient(app)
+        seen: list[object] = [
+            client.get("/o/p/x").status_code,
+            client.get("/o/p/missing").status_code,
+            client.post("/o/p/x").status_code,
+        ]
+        with client.websocket_connect("/o/p/ws") as socket:
+            seen.append(socket.receive_text())
+        return seen, own, app
+
+    nested_answers, _, _ = build(False, deep=deep)
+    answers, own, app = build(True, deep=deep)
+    _, at_top, _ = build(False, deep=False)
+
+    assert answers == nested_answers == [200, 404, 405, "hello"]
+    assert own.calls == at_top.calls
+    if kind in (OwnHandle, OwnMatches):
+        assert own.calls  # Asked for each request.
+    (kept,) = [r for r in app.routes if isinstance(r, fastapi_routing._IncludedRouter)]
+    assert kept.original_router is own
+    assert kept.include_context.prefix == "/o/p"
+
+
+def test_methods_that_serve_requests_are_every_one_but_declaring() -> None:
+    """Read from FastAPI's and Starlette's classes, not listed by hand."""
+    methods = serving_methods()
+
+    assert {"handle", "matches", "not_found", "__call__", "app"} <= methods
+    assert {"url_path_for", "lifespan", "_match_low_priority"} <= methods
+    assert methods.isdisjoint({"__init__", "get", "add_api_route", "include_router"})
+    assert methods.isdisjoint({"__doc__", "__module__", "__dict__", "__weakref__"})
+
+
+@pytest.mark.parametrize("name", sorted(serving_methods()))
+def test_a_router_with_its_own_serving_method_serves_itself(name: str) -> None:
+    """Whichever method it overrides, in its class or a class it mixes in."""
+
+    def own(self: object, *args: object, **kwargs: object) -> None:
+        """Another version of the method."""
+
+    subclass = type("Own", (APIRouter,), {name: own})
+    mixin = type("Mixin", (), {name: own})
+    mixed = type("Mixed", (mixin, APIRouter), {})
+    below = type("Below", (subclass,), {})
+
+    assert serves_itself(subclass())
+    assert serves_itself(mixed())
+    assert serves_itself(below())
+
+
+def test_routers_that_only_declare_otherwise_are_flattened() -> None:
+    """Their own ``__init__``, or ways of declaring routes, change nothing served."""
+
+    class Declaring(APIRouter):
+        """Declares routes its own way."""
+
+        def __init__(self) -> None:
+            """Public routes, under ``/declared``."""
+            super().__init__(prefix="/declared", dependencies=[Public])
+
+        def add_api_route(self, path: str, endpoint: Any, **options: Any) -> None:  # noqa: ANN401 - FastAPI's.
+            """Name each route after its path."""
+            options.setdefault("name", path.strip("/"))
+            super().add_api_route(path, endpoint, **options)
+
+    declaring = Declaring()
+    declaring.add_api_route("/hello", nested_routes.open_route)
+    app = FastAPI()
+    app.include_router(declaring)
+
+    resource = ResourceRouter(
+        "/gadgets",
+        model=Gadget,
+        unit_of_work=FakeGadgetsUnitOfWork,
+        repository=lambda uow: uow.gadgets,
+        dependencies=[Public],
+    )
+
+    assert not serves_itself(declaring)
+    assert not serves_itself(APIRouter())
+    assert not serves_itself(resource)  # domainkit's own: its __init__ only.
+    assert flatten_routes(app.router) == 1
+    assert isinstance(app.routes[-1], APIRoute)
+    assert app.url_path_for("hello") == "/declared/hello"
+
+
+def test_a_router_given_its_own_method_serves_itself() -> None:
+    """A method set on the router itself counts as one of its class's."""
+    router = APIRouter()
+    plain = APIRouter()
+    router.handle = plain.handle  # type: ignore[method-assign]
+
+    assert serves_itself(router)
+    assert not serves_itself(plain)
+
+
+def test_a_method_a_later_fastapi_adds_counts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A method ``APIRouter`` gains is a serving one, with no change in domainkit."""
+
+    class Ahead(APIRouter):
+        """Has a method FastAPI does not have yet."""
+
+        def serve_later(self) -> None:
+            """Not called by this FastAPI."""
+
+    assert not serves_itself(Ahead())
+    monkeypatch.setattr(APIRouter, "serve_later", lambda self: None, raising=False)
+
+    assert "serve_later" in serving_methods()
+    assert serves_itself(Ahead())

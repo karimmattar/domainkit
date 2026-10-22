@@ -721,6 +721,13 @@ byte for byte. What a project can see:
   order they are matched;
 - `request.scope["route"].path` is the route's full path template;
 - a router with frontend routes (`APIRouter.frontend`) stays included;
+- a router that serves requests in its own way stays included, with the
+  prefixes and rules of the routers above it, in its place: one whose
+  class (or the router itself) has its own `matches`, `handle`, or any
+  other method of `APIRouter` or Starlette's `Router` but `__init__` and
+  those that declare routes (`domainkit.http.routing.serves_itself`). An
+  IP gate in `handle` or a host rule in `matches` holds as under FastAPI's
+  nesting; the routers around it are still flattened;
 - a route added to an included router after the application is built is
   not served: finish routers before `get_asgi_application` runs.
 
