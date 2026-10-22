@@ -2,8 +2,9 @@
 
 import asyncio
 import io
+import os
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import NewType
 from uuid import UUID, uuid4
@@ -19,12 +20,14 @@ from sqlalchemy import (
     Table,
     Uuid,
     inspect,
+    text,
 )
 from sqlalchemy.dialects.postgresql import INET
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+from sqlalchemy.pool import NullPool
 from sqlalchemy.types import TypeDecorator
 
-from domainkit.conf import override_settings
+from domainkit.conf import DatabaseConfig, override_settings
 from domainkit.db import (
     SqlAlchemyRepository,
     SqlAlchemyUnitOfWork,
@@ -33,7 +36,7 @@ from domainkit.db import (
     map_imperatively,
 )
 from domainkit.db import migrations as migrations_module
-from domainkit.db.connections import ConnectionHandler
+from domainkit.db.connections import ConnectionHandler, create_owner_engine
 from domainkit.db.migrations import (
     downgrade,
     make_migration,
@@ -45,6 +48,7 @@ from domainkit.db.migrations import (
 from domainkit.ddd import AggregateRoot, ConcurrentUpdate, DomainEvent, EventBus
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import CommandError, call_command
+from domainkit_tests.conftest import POSTGRES_VARIABLE
 
 pytestmark = pytest.mark.anyio
 
@@ -378,16 +382,20 @@ async def test_concurrent_changes_raise_instead_of_overwriting(
     await connections.close_all()
 
 
-async def test_sql_parameters_stay_out_of_errors(tmp_path: Path) -> None:
-    """Bound values are hidden from error text unless ``LOG_PARAMETERS``."""
-    from sqlalchemy.exc import IntegrityError
+@pytest.mark.parametrize("build", [create_engine, create_owner_engine])
+async def test_sql_parameters_stay_out_of_errors(
+    tmp_path: Path, build: Callable[[DatabaseConfig], AsyncEngine]
+) -> None:
+    """Bound values are hidden from error text unless ``LOG_PARAMETERS``.
 
-    from domainkit.conf import DatabaseConfig
+    The schema owner's engine too, which migrations use.
+    """
+    from sqlalchemy.exc import IntegrityError
 
     url = f"sqlite+aiosqlite:///{tmp_path / 'params.sqlite3'}"
     messages = {}
     for log_parameters in (False, True):
-        engine = create_engine(DatabaseConfig(URL=url, LOG_PARAMETERS=log_parameters))
+        engine = build(DatabaseConfig(URL=url, LOG_PARAMETERS=log_parameters))
         async with engine.begin() as connection:
             await connection.run_sync(test_metadata.create_all)
             row = {"id": uuid4(), "text": "s3cret-token", "version": 1}
@@ -400,6 +408,35 @@ async def test_sql_parameters_stay_out_of_errors(tmp_path: Path) -> None:
 
     assert "s3cret-token" not in messages[False]
     assert "s3cret-token" in messages[True]
+
+
+def test_the_schema_owner_keeps_no_pool() -> None:
+    """Migrations connect when they run, and close when they are done."""
+    engine = create_owner_engine(DatabaseConfig(URL="sqlite+aiosqlite://"))
+    assert isinstance(engine.pool, NullPool)
+
+
+@pytest.mark.skipif(
+    not os.environ.get(POSTGRES_VARIABLE), reason=f"set {POSTGRES_VARIABLE}"
+)
+async def test_the_schema_owner_keeps_the_servers_timeouts(database: str) -> None:
+    """A migration may run longer than a request: the alias's timeouts are not set.
+
+    Its ``CONNECT_ARGS`` are.
+    """
+    named = {"server_settings": {"application_name": "owner-test"}}
+    config = DatabaseConfig(URL=database, CONNECT_ARGS=named)
+    shown = []
+    for build in (create_engine, create_owner_engine):
+        engine = build(config)
+        async with engine.connect() as connection:
+            idle = await connection.scalar(
+                text("SHOW idle_in_transaction_session_timeout")
+            )
+            name = await connection.scalar(text("SHOW application_name"))
+        shown += [idle, name]
+        await engine.dispose()
+    assert shown == ["1min", "owner-test", "0", "owner-test"]
 
 
 def test_tables_of_uninstalled_domains_are_ignored(migration_project: Path) -> None:
