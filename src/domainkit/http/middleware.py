@@ -18,16 +18,16 @@ streaming responses intact and context variables visible to endpoints.
 """
 
 import asyncio
+import functools
 import ipaddress
 import logging
+import os
 import re
 import time
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Final
-from uuid import uuid4
 
 from fastapi import status
-from starlette.datastructures import Headers, MutableHeaders
 from starlette.middleware import cors
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -40,10 +40,11 @@ from domainkit.http.errors import (
     error_response,
     refusal_reason,
 )
-from domainkit.log import ACCESS_LOGGER, SECURITY_LOGGER
+from domainkit.log import ACCESS_LOGGER, SECURITY_LOGGER, AccessSampler
 from domainkit.reporting import report_error
 
 REQUEST_ID_HEADER: Final = "X-Request-ID"
+_REQUEST_ID_NAME: Final = REQUEST_ID_HEADER.lower().encode("latin-1")
 # Accept caller-supplied ids only in a safe, bounded format; otherwise mint one.
 _REQUEST_ID: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _HOST: Final = re.compile(r"([a-z0-9.-]+|\[[a-f0-9]*:[a-f0-9.:]+\])(?::[0-9]+)?")
@@ -71,6 +72,13 @@ INVALID_DATA: Final = 1007
 
 
 type _Network = ipaddress.IPv4Network | ipaddress.IPv6Network
+type RawHeaders = list[tuple[bytes, bytes]]
+"""Headers as ASGI messages carry them: lowercase names, latin-1 values."""
+
+ADDRESS_CACHE: Final = 4096
+"""Addresses each cache of parsed client addresses keeps, the latest used."""
+MAX_CACHED_ADDRESS: Final = 64
+"""Longer texts are parsed every time, never kept: an IPv6 zone can be any length."""
 
 
 class ProxyHeadersMiddleware:
@@ -92,6 +100,12 @@ class ProxyHeadersMiddleware:
         """Wrap ``app`` with the configured proxy networks."""
         self.app = app
         self.networks: tuple[_Network, ...] = tuple(settings.TRUSTED_PROXIES)
+        self._addresses: functools._lru_cache_wrapper[tuple[str, bool] | None] = (
+            functools.lru_cache(maxsize=ADDRESS_CACHE)(
+                functools.partial(_address, self.networks)
+            )
+        )
+        """``address``, remembered: parsing an address costs about 2.5 µs."""
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Rewrite ``client`` and ``scheme`` for requests from a trusted proxy."""
@@ -104,12 +118,11 @@ class ProxyHeadersMiddleware:
         ):
             scope = dict(scope)
             scope[PEER] = client
-            headers = Headers(scope=scope)
             place = 1  # From the right: the hop the scheme describes.
-            if found := self.client_hop(_values(headers, "x-forwarded-for")):
+            if found := self.client_hop(_values(scope, b"x-forwarded-for")):
                 address, place = found
                 scope["client"] = (address, 0)
-            protos = _values(headers, "x-forwarded-proto")
+            protos = _values(scope, b"x-forwarded-proto")
             proto = protos[-min(place, len(protos))].lower() if protos else ""
             if proto in {"http", "https"}:
                 secure = proto == "https"
@@ -121,12 +134,8 @@ class ProxyHeadersMiddleware:
 
     def trusted(self, address: str) -> bool:
         """Report whether ``address`` belongs to a trusted proxy."""
-        ip = _ip(address)
-        return ip is not None and self._covers(ip)
-
-    def _covers(self, ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-        """Whether a trusted network holds ``ip``."""
-        return any(ip in network for network in self.networks)
+        found = self.address(address)
+        return found is not None and found[1]
 
     def client_hop(self, hops: list[str]) -> tuple[str, int] | None:
         """The first untrusted hop from the right, and its place; None if malformed.
@@ -136,21 +145,42 @@ class ProxyHeadersMiddleware:
         """
         addresses = []
         for hop in hops:
-            if (ip := _ip(hop)) is None:
+            if (found := self.address(hop)) is None:
                 return None
-            addresses.append(ip)
-        for place, ip in enumerate(reversed(addresses), start=1):
-            if not self._covers(ip):
-                return str(ip), place
-        return (str(addresses[0]), len(addresses)) if addresses else None
+            addresses.append(found)
+        for place, (address, trusted) in enumerate(reversed(addresses), start=1):
+            if not trusted:
+                return address, place
+        return (addresses[0][0], len(addresses)) if addresses else None
+
+    def address(self, text: str) -> tuple[str, bool] | None:
+        """``text`` as an address, and whether a trusted proxy has it; None if not one.
+
+        The address is in its usual form (``_ip``, then ``str``). The last
+        ``ADDRESS_CACHE`` texts of up to ``MAX_CACHED_ADDRESS`` characters
+        are remembered, so the proxy's own address, and a client seen
+        again, are not parsed again.
+        """
+        if len(text) > MAX_CACHED_ADDRESS:
+            return _address(self.networks, text)
+        return self._addresses(text)
 
 
-def _values(headers: Headers, name: str) -> list[str]:
-    """Every comma-separated value of every ``name`` line, in order."""
+def _address(networks: tuple[_Network, ...], text: str) -> tuple[str, bool] | None:
+    """``text`` as an address in its usual form, and whether ``networks`` hold it."""
+    ip = _ip(text)
+    if ip is None:
+        return None
+    return str(ip), any(ip in network for network in networks)
+
+
+def _values(scope: Scope, name: bytes) -> list[str]:
+    """Every comma-separated value of every ``name`` line (lowercase), in order."""
     return [
         value.strip()
-        for line in headers.getlist(name)
-        for value in line.split(",")
+        for key, line in request_headers(scope)
+        if key == name
+        for value in line.decode("latin-1").split(",")
         if value.strip()
     ]
 
@@ -174,6 +204,68 @@ def _ip(text: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         return ip.ipv4_mapped
     return ip
+
+
+def request_headers(scope: Scope) -> RawHeaders:
+    """``scope["headers"]`` as a list, as ``Headers(scope=scope)`` leaves it.
+
+    ASGI allows any iterable; a list can be read again and again.
+    """
+    headers = scope["headers"]
+    if type(headers) is not list:
+        headers = scope["headers"] = list(headers)
+    return headers
+
+
+def _header(scope: Scope, name: bytes) -> str | None:
+    """The first ``name`` header of ``scope`` (lowercase), as ``Headers`` reads it."""
+    headers = scope["headers"]
+    if type(headers) is not list:  # request_headers(), inline: once per header read.
+        headers = scope["headers"] = list(headers)
+    for key, value in headers:
+        if key == name:
+            found: str = value.decode("latin-1")
+            return found
+    return None
+
+
+def set_headers(
+    headers: Iterable[tuple[bytes, bytes]], items: Iterable[tuple[bytes, bytes]]
+) -> RawHeaders:
+    """``headers`` with ``items`` set, as ``MutableHeaders`` sets them one by one.
+
+    A name already there keeps its place, with the new value, and loses
+    its repeats; the others come last, in order. Names are compared as
+    they are, so the names of ``items`` must be lowercase. The result is a
+    new list: the application's own is never changed.
+    """
+    pending = dict(items)
+    result: RawHeaders = []
+    seen: set[bytes] = set()
+    for header in headers:
+        name = header[0]
+        if name in pending:
+            result.append((name, pending.pop(name)))
+            seen.add(name)
+        elif name not in seen:
+            result.append(header)
+    result.extend(pending.items())
+    return result
+
+
+def add_missing_headers(
+    headers: Iterable[tuple[bytes, bytes]], defaults: Iterable[tuple[bytes, bytes]]
+) -> RawHeaders:
+    """``headers``, then each of ``defaults`` whose name they lack, as a new list.
+
+    It is what checking a ``MutableHeaders`` for each default, and setting
+    the missing ones, gives: names are compared as they are, so the names
+    of ``defaults`` must be lowercase.
+    """
+    result = list(headers)
+    present = {name for name, _ in result}
+    result.extend([header for header in defaults if header[0] not in present])
+    return result
 
 
 def security_headers(
@@ -211,19 +303,22 @@ class SecurityHeadersMiddleware:
             referrer_policy=settings.SECURE_REFERRER_POLICY,
             frame_options=settings.X_FRAME_OPTIONS,
         )
+        self.raw_headers: RawHeaders = [
+            (name.lower().encode("latin-1"), value.encode("latin-1"))
+            for name, value in self.headers
+        ]
+        """``headers`` encoded once, as the response start carries them."""
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Add headers to the response start message."""
+        """Add headers to the response start message, in one append."""
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+        defaults = self.raw_headers
 
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
-                response_headers = MutableHeaders(scope=message)
-                for name, value in self.headers:
-                    if name not in response_headers:
-                        response_headers[name] = value
+                message["headers"] = add_missing_headers(message["headers"], defaults)
             await send(message)
 
         await self.app(scope, receive, send_with_headers)
@@ -262,6 +357,9 @@ class RequestContextMiddleware:
         self.app = app
         self.debug = settings.DEBUG
         self.quiet_paths = frozenset(settings.ACCESS_LOG_QUIET_PATHS)
+        self.sampler = AccessSampler(
+            settings.ACCESS_LOG_SAMPLE_RATE, settings.ACCESS_LOG_SLOW_DURATION
+        )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Serve one request, or one WebSocket connection, inside its context."""
@@ -269,10 +367,13 @@ class RequestContextMiddleware:
             await self.app(scope, receive, send)
             return
         websocket = scope["type"] == "websocket"
-        supplied = Headers(scope=scope).get(REQUEST_ID_HEADER)
+        supplied = _header(scope, _REQUEST_ID_NAME)
         request_id = (
-            supplied if supplied and _REQUEST_ID.fullmatch(supplied) else uuid4().hex
+            supplied
+            if supplied and _REQUEST_ID.fullmatch(supplied)
+            else new_request_id()
         )
+        echoed = ((_REQUEST_ID_NAME, request_id.encode("latin-1")),)
         client = scope.get("client")
         context = RequestContext(
             request_id=request_id,
@@ -292,8 +393,7 @@ class RequestContextMiddleware:
                     if accepted
                     else message["status"]
                 )
-                message.setdefault("headers", [])
-                MutableHeaders(scope=message)[REQUEST_ID_HEADER] = request_id
+                message["headers"] = set_headers(message.get("headers", ()), echoed)
             elif message["type"] == "websocket.close" and response_status is None:
                 response_status = status.HTTP_403_FORBIDDEN  # Closed before accept.
             await send(message)
@@ -355,8 +455,11 @@ class RequestContextMiddleware:
     def _log_access(
         self, context: RequestContext, response_status: int | None, started: float
     ) -> None:
-        """Log method, path (never the query string), status, and duration."""
-        duration_ms = round((time.perf_counter() - started) * 1000, 1)
+        """Log method, path (never the query string), status, and duration.
+
+        Nothing is built for a line the logger's level would drop, or that
+        ``ACCESS_LOG_SAMPLE_RATE`` leaves out of the sample.
+        """
         if context.path in self.quiet_paths and response_status == status.HTTP_200_OK:
             level = logging.DEBUG
         elif response_status is None or response_status >= 500:
@@ -365,6 +468,12 @@ class RequestContextMiddleware:
             level = logging.WARNING
         else:
             level = logging.INFO
+        if not access_logger.isEnabledFor(level):
+            return
+        seconds = time.perf_counter() - started
+        if not self.sampler.keep(response_status, seconds):
+            return
+        duration_ms = round(seconds * 1000, 1)
         access_logger.log(
             level,
             "%s %s %s %.1fms",
@@ -381,6 +490,15 @@ class RequestContextMiddleware:
                 }
             },
         )
+
+
+def new_request_id() -> str:
+    """A new request id: 32 lowercase hexadecimal digits, 128 random bits.
+
+    The format of ``uuid4().hex``, at a quarter of the cost: no UUID is
+    built, and no bits are spent on a version.
+    """
+    return os.urandom(16).hex()
 
 
 def _hostname(host_header: str) -> str:
@@ -422,7 +540,7 @@ class AllowedHostsMiddleware:
         if scope["type"] not in {"http", "websocket"}:
             await self.app(scope, receive, send)
             return
-        host = Headers(scope=scope).get("host", "")
+        host = _header(scope, b"host") or ""
         if host_allowed(host, self.allowed_hosts):
             await self.app(scope, receive, send)
             return
@@ -517,7 +635,7 @@ class RequestBodyLimitMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        declared = Headers(scope=scope).get("content-length")
+        declared = _header(scope, b"content-length")
         if declared is not None:
             # isdigit() alone accepts "²", which int() then rejects.
             if not (declared.isascii() and declared.isdigit()):

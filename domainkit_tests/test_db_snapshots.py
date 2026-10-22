@@ -60,7 +60,7 @@ items = Table(
     Column("shop_id", ForeignKey(shops.c.id), nullable=False),
     Column("price", Numeric(12, 2), nullable=False),
     Column("added", UTCDateTime, nullable=False),
-    Column("doubled", Numeric(12, 2), Computed("price * 2")),
+    Column("doubled", Numeric(12, 2), Computed("price * 2", persisted=True)),
 )
 ADDED = datetime(2026, 10, 18, 9, 30, 15, 123456, tzinfo=UTC)
 

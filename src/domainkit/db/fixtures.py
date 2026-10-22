@@ -10,7 +10,9 @@ empties tables. A fixture is one JSON document::
 Values are JSON: numbers and text as they are, decimals, times, durations,
 ids, and enums as text, bytes as base64, JSON columns as JSON. Loading
 converts them back from each column's type, and puts a row whose primary
-key exists in place of the stored one.
+key exists in place of the stored one. ``loaddata`` reads numbers with a
+fraction as ``Decimal``, so a decimal column gets every digit; any other
+column gets the float JSON's number always gave it.
 
 Some tables hold state, not data, and are never dumped or loaded: the audit
 trail (its pseudonyms' keys would outlive ``forget`` in a copy), tokens,
@@ -28,6 +30,7 @@ import binascii
 import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any, Final
 
 from pydantic import TypeAdapter, ValidationError
@@ -226,7 +229,11 @@ async def flush_plan(database: str) -> tuple[dict[str, int], list[str]]:
             emptied, kept = await _flush_tables(connection, database)
             counts = {
                 table.name: int(
-                    await connection.scalar(select(func.count()).select_from(table))
+                    (
+                        await connection.execute(
+                            select(func.count()).select_from(table)
+                        )
+                    ).scalar_one()
                 )
                 for table in emptied
             }
@@ -363,12 +370,19 @@ def _decoded_row(table: Table, row: object) -> dict[str, Any]:
 
 
 def _decoded(column: Column[Any], value: object) -> object:
-    """One JSON value as the column's Python type; never quoted in errors."""
-    if value is None or isinstance(column.type, JSON):
+    """One JSON value as the column's Python type; never quoted in errors.
+
+    A ``Decimal`` number (as ``loaddata`` reads one with a fraction) stays
+    one for a decimal column, and is the float it always was for any
+    other, JSON columns included.
+    """
+    if value is None:
         return value
     python_type = _python_type(column.type)
-    if python_type is None:
-        return value
+    if isinstance(column.type, JSON) or python_type is None:
+        return _floats(value)
+    if not (isinstance(python_type, type) and issubclass(python_type, Decimal)):
+        value = _floats(value)
     where = f"{column.table.name}.{column.name}"
     try:
         if python_type is bytes:
@@ -382,11 +396,28 @@ def _decoded(column: Column[Any], value: object) -> object:
         ) from None
 
 
+def _floats(value: object) -> object:
+    """``value`` with every ``Decimal`` in it a float, as JSON would read it."""
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, list):
+        return [_floats(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _floats(item) for key, item in value.items()}
+    return value
+
+
 def _python_type(type_: TypeEngine[Any]) -> type | None:
-    """The Python type a column type holds; a decorator's from what it wraps."""
+    """The Python type a column type holds; a decorator's from what it wraps.
+
+    A type that cannot tell answers ``object`` (SQLAlchemy 2.1) or raises
+    ``NotImplementedError`` (types written for 2.0): both mean unknown.
+    """
     for candidate in (type_, getattr(type_, "impl_instance", None)):
         try:
-            return candidate.python_type  # type: ignore[union-attr]
+            python_type: type = candidate.python_type  # type: ignore[union-attr]
         except (NotImplementedError, AttributeError):
             continue
+        if python_type is not object:
+            return python_type
     return None

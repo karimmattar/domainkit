@@ -213,7 +213,7 @@ def test_migrate_creates_content_types_and_permissions(auth_project: str) -> Non
             rows = await connection.execute(
                 select(permissions.c.codename, permissions.c.name)
             )
-            return dict(rows.tuples().all())
+            return dict(rows.all())
 
     stored = run(names())
     assert stored["add_product"] == "Can add product"

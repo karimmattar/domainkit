@@ -63,7 +63,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Body, Depends, Header, Path, Request, Response, status
 from fastapi import Query as QueryParameters
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field, create_model
 from starlette.requests import HTTPConnection
@@ -91,6 +91,7 @@ from domainkit.ddd.uow import UnitOfWork
 from domainkit.http.errors import error_responses
 from domainkit.http.filters import FilterSet
 from domainkit.http.pagination import PageRequest, Pagination
+from domainkit.http.responses import _BuiltJSONResponse
 from domainkit.utils.headers import none_match
 from domainkit.utils.text import pluralize, snake_case
 
@@ -554,7 +555,7 @@ class ResourceRouter(APIRouter):
                     if each.error is not None and each.error.code != NOT_APPLIED
                 ),
             )
-            return JSONResponse(
+            return _BuiltJSONResponse(
                 answer.model_dump(exclude_none=True),
                 status_code=status.HTTP_207_MULTI_STATUS,
             )
@@ -706,7 +707,7 @@ class ResourceRouter(APIRouter):
                     if all(each.matches(item) for each in criteria)
                     and await self._allows(request, item, rules)
                 ]
-                return JSONResponse({"items": items})
+                return _BuiltJSONResponse({"items": items})
             if not isinstance(result, AggregateRoot):
                 raise RuntimeError(
                     f"{_label_of(handler)} answered {type(result).__name__}, not "
@@ -781,7 +782,9 @@ class ResourceRouter(APIRouter):
             for name in self.page_schema.model_fields:
                 if name != "items":
                     body[name] = getattr(out, name)
-            return JSONResponse(body, headers={"Vary": "Accept"} if exporting else None)
+            return _BuiltJSONResponse(
+                body, headers={"Vary": "Accept"} if exporting else None
+            )
 
         self._route(
             "",
@@ -1329,7 +1332,9 @@ class ResourceRouter(APIRouter):
             )
         schema = self.source_schema if returns is DEFAULT else returns
         shown = _presenter(schema)(result)  # type: ignore[arg-type]
-        return JSONResponse(shown.model_dump(mode="json"), status_code=status_code)
+        return _BuiltJSONResponse(
+            shown.model_dump(mode="json"), status_code=status_code
+        )
 
     async def _export(
         self, request: Request, values: Values, query: Query, media: str
@@ -1393,7 +1398,7 @@ class ResourceRouter(APIRouter):
         """An aggregate's JSON for this caller, its bytes, and its ``ETag``."""
         hidden = await self._hidden(request)
         document = self._dump(request, values, aggregate, hidden)
-        body = bytes(JSONResponse(document).body)
+        body = bytes(_BuiltJSONResponse(document).body)
         return document, body, entity_tag(aggregate.version, body)
 
     async def _respond(

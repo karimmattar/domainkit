@@ -12,7 +12,7 @@ configured by one setting, a dictionary whose keys are all optional.
 | `domainkit.contrib.idempotency` | `IDEMPOTENCY` | `domainkit_idempotency_keys` |
 | `domainkit.contrib.evidence` | `EVIDENCE` | none: records live on a ledger |
 | `domainkit.contrib.contenttypes` | none | `domainkit_content_types` |
-| `domainkit.contrib.auth` | `AUTH` | users, groups, permissions; see [auth.md](auth.md) |
+| `domainkit.contrib.auth` | `AUTH` | users, groups, permissions, and the principal cache; see [auth.md](auth.md) |
 | `domainkit.contrib.privacy` | none | none: exports, erases, and purges domains' rows; see [privacy.md](privacy.md) |
 | `domainkit.contrib.flags` | `FLAGS` | `domainkit_flags`, `domainkit_dynamic_settings` |
 | `domainkit.contrib.objectpermissions` | none | `domainkit_object_permissions`, in every database that hosts a domain; see [auth.md](auth.md#grants-on-single-objects) |
@@ -687,6 +687,19 @@ a schedule to keep anonymous callers' addresses only as long as you need
 them. Rows written before this release keep their values in clear; the
 append-only protection keeps them as they are.
 
+A transaction reads the keys of all the subjects it writes about with one
+query, and makes a new subject's key with an insert that returns it, so
+each key is read once per transaction. No key is kept past its
+transaction: `forget` reaches every process through the database, for
+every transaction that starts after it, and drops at once the keys that
+open transactions of its own process hold. A lookup that read a key
+before `forget` began may still use it for the rows it is writing, as it
+would had it run a moment earlier, but keeps nothing it read. A subject's
+first key is made under a lock of that subject, which `forget` takes too
+(a transaction advisory lock on PostgreSQL, one more statement for a new
+subject only; SQLite runs one writer at a time): `forget` waits for a
+writer making a key, then deletes that key as well.
+
 The application only inserts. To make sure a compromised API cannot rewrite
 history, make the table append-only in the database itself. Add a revision
 that calls `domainkit.contrib.audit.protection.protect(op)` in `upgrade()`
@@ -923,14 +936,26 @@ actor, keys are scoped to the client address and a hash of the request's
 another. Add `IdempotencyMiddleware` last in `MIDDLEWARE`: it reads whole
 bodies, which `RequestBodyLimitMiddleware` has already bounded. With
 messaging installed, expired keys are purged hourly; without it, each new
-key deletes up to 100 expired ones, skipping those another request is
-deleting (`SKIP LOCKED` on PostgreSQL), so concurrent requests never queue
-behind one another's purge.
+key deletes up to 100 expired ones once it has claimed its own, skipping
+those another request is deleting (`SKIP LOCKED` on PostgreSQL), so
+concurrent requests never queue behind one another's purge, nor deadlock
+through PgBouncer.
+
+**What a key costs.** A request claims its key with one statement, an
+upsert that inserts the in-progress row or replaces an expired one, and
+stores its response with one more. Each commits as it runs, without
+`BEGIN` and `COMMIT`; through PgBouncer each is a transaction of its own,
+which sets the timeouts. The commit mark is one `UPDATE` in the request's
+own transaction. With authentication and one unit of work on PostgreSQL,
+a first request makes 2 transactions and 4 pool checkouts (16 round
+trips), and a replay 1 transaction and 2 checkouts (10 round trips). ADR
+[0062](adr/0062-claim-idempotency-keys-in-one-statement.md) explains the
+choices.
 
 | `IDEMPOTENCY` key | Default | Meaning |
 | --- | --- | --- |
 | `DATABASE` | `"default"` | Alias holding the keys. |
-| `TTL_SECONDS` | `86400.0` | How long a key is remembered (24 hours; at most 30 days). |
+| `TTL_SECONDS` | `86400.0` | How long a key is remembered (24 hours; at most 30 days, and at least `LEASE_SECONDS`, or startup fails). |
 | `LEASE_SECONDS` | `60.0` | How long a request holds its key before a retry may take it over (at most a day). |
 | `METHODS` | `POST`, `PATCH` | Methods that honour the header; others ignore it. |
 | `MAX_RESPONSE_BYTES` | `1048576` | Larger responses are passed through but not stored. |

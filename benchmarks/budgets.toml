@@ -1,0 +1,101 @@
+# What a request may cost on each rung of the ladder (docs/performance.md).
+# Over budget fails CI; well under prints a hint to lower the budget.
+# Rewrite it from a run with: python -m benchmarks --write-budgets
+
+[tolerance]
+calls = 0.02
+statements = 0
+transactions = 0
+checkouts = 0
+pings = 0
+
+[rungs.asgi]
+calls = 5
+statements = 0
+transactions = 0
+checkouts = 0
+pings = 0
+
+[rungs.fastapi]
+calls = 234
+statements = 0
+transactions = 0
+checkouts = 0
+pings = 0
+
+[rungs.bare]
+calls = 481
+statements = 0
+transactions = 0
+checkouts = 0
+pings = 0
+
+[rungs.nested]
+calls = 489
+statements = 0
+transactions = 0
+checkouts = 0
+pings = 0
+
+[rungs.default]
+calls = 601
+statements = 0
+transactions = 0
+checkouts = 0
+pings = 0
+
+[rungs.default-json]
+calls = 746
+statements = 0
+transactions = 0
+checkouts = 0
+pings = 0
+
+[rungs.template]
+calls = 714
+statements = 0
+transactions = 0
+checkouts = 0
+pings = 0
+
+[rungs.template-json]
+calls = 859
+statements = 0
+transactions = 0
+checkouts = 0
+pings = 0
+
+[rungs.me]
+calls = 1194
+statements = 0
+transactions = 0
+checkouts = 0
+pings = 0
+
+[rungs.read]
+calls = 2440
+statements = 1
+transactions = 1
+checkouts = 1
+pings = 1
+
+[rungs.write]
+calls = 2813
+statements = 1
+transactions = 1
+checkouts = 1
+pings = 1
+
+[rungs.keyed-write]
+calls = 5810
+statements = 4
+transactions = 3
+checkouts = 3
+pings = 3
+
+[rungs.throttled]
+calls = 1036
+statements = 0
+transactions = 0
+checkouts = 0
+pings = 0

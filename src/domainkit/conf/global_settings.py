@@ -590,6 +590,8 @@ class Settings(BaseModel):
     """ASGI middleware classes by dotted path; the first one is outermost."""
     ROOT_ROUTER: str | None = None
     """Dotted path to the ``APIRouter`` that mounts every route (``ROOT_URLCONF``)."""
+    FLATTEN_ROUTERS: bool = True
+    """Serve the routes of included routers from the top (ADR 0060); False nests."""
     ASGI_APPLICATION: str | None = None
     """``module:attribute`` that ``runserver`` serves."""
     EVENT_LOOP: Literal["auto", "asyncio", "uvloop"] = "auto"
@@ -663,6 +665,10 @@ class Settings(BaseModel):
     """Name failing components in ``/ready`` responses; they are always logged."""
     ACCESS_LOG_QUIET_PATHS: tuple[str, ...] = ("/health", "/ready")
     """Successful requests to these paths are logged at DEBUG, not INFO."""
+    ACCESS_LOG_SAMPLE_RATE: float = Field(default=1.0, ge=0.0, le=1.0)
+    """Share of access lines written; from status 400 up, and slow ones: all of them."""
+    ACCESS_LOG_SLOW_DURATION: float = Field(default=1.0, gt=0, le=MAX_REQUEST_SECONDS)
+    """Seconds after which a request's access line is written whatever the rate."""
     TRUSTED_PROXIES: tuple[IPvAnyNetwork, ...] = ()
     """Load balancers whose ``X-Forwarded-For``/``-Proto`` headers are believed."""
     RATE_LIMIT: str | None = None

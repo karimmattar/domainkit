@@ -37,12 +37,13 @@ import asyncio
 import hashlib
 import logging
 import secrets
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any, Final
 
 from fastapi import status
-from sqlalchemy import delete, insert, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import Delete, Table, delete, null, select, update
+from sqlalchemy.dialects import postgresql, sqlite
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -131,42 +132,50 @@ class IdempotencyMiddleware:
     async def _claim(
         self, config: IdempotencySettings, operation: Operation, fingerprint: str
     ) -> dict[str, Any] | None:
-        """Insert an in-progress row; return the existing one if the key is taken."""
+        """Claim the key; return its row instead if another request holds it.
+
+        One statement inserts the in-progress row, or replaces the key's row
+        if that expired: an upsert that only updates an expired row. Each
+        statement commits as it runs (``connections.autocommit``), so a
+        claim is visible at once to every retry, and only one of them
+        claims the key. Without the hourly purge, a few expired keys are
+        deleted last: through PgBouncer the statements share a transaction,
+        and a sweep run first would hold its locks while the upsert waited
+        for another claim's, which may wait for this one's.
+        """
         now = _now()
-        engine = connections.engine(config.DATABASE)
-        expired = idempotency_keys.c.expires_at < now
-        async with engine.begin() as connection:
-            await connection.execute(
-                delete(idempotency_keys).where(
-                    idempotency_keys.c.key_hash == operation.key_hash, expired
-                )
+        lease = now + timedelta(seconds=config.LEASE_SECONDS)
+        async with connections.autocommit(config.DATABASE) as connection:
+            claim = _upsert(connection.dialect.name)(idempotency_keys).values(
+                key_hash=operation.key_hash,
+                fingerprint=fingerprint,
+                created_at=now,
+                expires_at=now + timedelta(seconds=config.TTL_SECONDS),
+                token=operation.token,
+                locked_until=lease,
+                pinned=False,
             )
-            if not registry.is_installed(MESSAGING):  # No hourly purge: sweep a few.
-                oldest = (
-                    select(idempotency_keys.c.key_hash)
-                    .where(expired)
-                    .limit(PURGE_BATCH)
-                    .with_for_update(skip_locked=True)
-                )
-                await connection.execute(
-                    delete(idempotency_keys).where(
-                        idempotency_keys.c.key_hash.in_(oldest.scalar_subquery())
-                    )
-                )
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(
-                    insert(idempotency_keys).values(
-                        key_hash=operation.key_hash,
-                        fingerprint=fingerprint,
-                        created_at=now,
-                        expires_at=now + timedelta(seconds=config.TTL_SECONDS),
-                        token=operation.token,
-                        locked_until=now + timedelta(seconds=config.LEASE_SECONDS),
-                    )
-                )
-        except IntegrityError:
-            async with engine.connect() as connection:
+            fresh = claim.excluded
+            claimed = await connection.scalar(
+                claim.on_conflict_do_update(
+                    index_elements=[idempotency_keys.c.key_hash],
+                    set_={
+                        "fingerprint": fresh.fingerprint,
+                        "status_code": null(),
+                        "headers": null(),  # SQL NULL, not JSON's null.
+                        "body": null(),
+                        "created_at": fresh.created_at,
+                        "expires_at": fresh.expires_at,
+                        "committed_at": null(),
+                        "token": fresh.token,
+                        "locked_until": fresh.locked_until,
+                        "pinned": False,
+                    },
+                    where=idempotency_keys.c.expires_at < now,
+                ).returning(idempotency_keys.c.token)
+            )
+            row = None
+            if claimed is None:
                 row = (
                     await connection.execute(
                         select(idempotency_keys).where(
@@ -174,8 +183,11 @@ class IdempotencyMiddleware:
                         )
                     )
                 ).first()
-            return dict(row._mapping) if row is not None else {}
-        return None
+            if not registry.is_installed(MESSAGING):  # No hourly purge: sweep a few.
+                await connection.execute(_sweep(now))
+        if claimed is not None:
+            return None
+        return dict(row._mapping) if row is not None else {}
 
     async def _take_over(
         self, config: IdempotencySettings, operation: Operation, held_by: str
@@ -187,7 +199,7 @@ class IdempotencyMiddleware:
         since its row was read, or another retry may have taken the key
         first.
         """
-        async with connections.engine(config.DATABASE).begin() as connection:
+        async with connections.autocommit(config.DATABASE) as connection:
             taken = await connection.execute(
                 update(idempotency_keys)
                 .where(
@@ -354,7 +366,7 @@ async def _finish(
     so retries learn the request ran. Nothing is written once a retry has
     taken the key over.
     """
-    async with connections.engine(config.DATABASE).begin() as connection:
+    async with connections.autocommit(config.DATABASE) as connection:
         if body is None and not (operation.committed or operation.pinned):
             released = await connection.execute(
                 delete(idempotency_keys).where(
@@ -381,6 +393,24 @@ async def _finish(
                 body=body,
             )
         )
+
+
+def _sweep(now: datetime) -> Delete:
+    """Delete up to ``PURGE_BATCH`` expired keys, skipping those being claimed."""
+    oldest = (
+        select(idempotency_keys.c.key_hash)
+        .where(idempotency_keys.c.expires_at < now)
+        .limit(PURGE_BATCH)
+        .with_for_update(skip_locked=True)
+    )
+    return delete(idempotency_keys).where(
+        idempotency_keys.c.key_hash.in_(oldest.scalar_subquery())
+    )
+
+
+def _upsert(dialect: str) -> Callable[[Table], postgresql.Insert | sqlite.Insert]:
+    """The dialect's ``INSERT`` with ``ON CONFLICT`` (PostgreSQL's or SQLite's)."""
+    return postgresql.insert if dialect == "postgresql" else sqlite.insert
 
 
 def _abandoned(existing: dict[str, Any], fingerprint: str) -> bool:

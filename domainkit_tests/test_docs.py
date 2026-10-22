@@ -25,6 +25,7 @@ from domainkit.contrib.auth.settings import (
     CookieSettings,
     JWTSettings,
     MfaSettings,
+    PrincipalCacheSettings,
 )
 from domainkit.contrib.evidence.settings import EvidenceSettings
 from domainkit.contrib.flags.settings import FlagsSettings
@@ -76,6 +77,7 @@ def documented(page: str) -> set[str]:
         (CookieSettings, "auth.md"),
         (MfaSettings, "auth.md"),
         (ClientCertSettings, "auth.md"),
+        (PrincipalCacheSettings, "auth.md"),
         (MailSettings, "mail.md"),
         (SmtpSettings, "mail.md"),
         (NotificationsSettings, "mail.md"),

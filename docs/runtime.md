@@ -290,6 +290,45 @@ for waiting reports, within 5 seconds, before the logs. In tests, call
 `domainkit.reporting.flush_reports()` before checking what was reported
 ([testing.md](testing.md#fixtures)).
 
+`JsonFormatter` writes the same line, byte for byte, that it wrote before
+0.9, in 40% less time (4.5 µs instead of 7.4): text goes through the
+escaping `json.dumps` uses, and the date and time of the timestamp are
+worked out once a second.
+A line the level drops (`domainkit.access` below `INFO`, say) costs the
+request nothing: the access log checks the level before building it.
+
+### Sampling the access log
+
+Every request writes an access line, which costs the event loop and the
+logging thread about 154,000 instructions between them: it adds a third to
+a light request ([performance.md](performance.md)). A busy service can
+write a share of them instead:
+
+```python
+ACCESS_LOG_SAMPLE_RATE = 0.1  # About one request in ten.
+ACCESS_LOG_SLOW_DURATION = 1.0  # Seconds.
+```
+
+- These are always written, whatever the rate: every response with a
+  status of 400 or more, every request that got no response at all, and
+  requests that took `ACCESS_LOG_SLOW_DURATION` seconds or more. Only
+  successes and redirects are sampled. Client errors are kept because they
+  are what an investigation reads: a scoped resource answers 404 for what
+  the caller may not reach, so a caller trying other tenants' ids leaves a
+  404 line for every id tried, and a healthy service answers few of them.
+- Each other request is written with probability `ACCESS_LOG_SAMPLE_RATE`,
+  drawn on its own: a fair sample whatever the traffic's pattern, which a
+  caller cannot steer. A line left out costs nothing more than the draw.
+- To count requests from a sample, count each sampled line as
+  `1 / ACCESS_LOG_SAMPLE_RATE` requests, and every always-written one as
+  one; the status and `duration_ms` of the line say which it is.
+- Only `domainkit.access` is sampled. Security events (`domainkit.security`:
+  rejected hosts, bodies, and credentials), warnings, and errors of every
+  other logger are written as before, and the audit trail
+  (`domainkit.contrib.audit`) is a table, not a log: sampling never touches
+  either.
+- `1.0`, the default, writes every line, as before.
+
 ## Finding blocking code
 
 A call that blocks inside an `async def` (a sync HTTP client, `time.sleep`,
@@ -630,7 +669,13 @@ timers that cancel work run on the event loop's own clock.
   server stops the work too. SQLite has no such setting; the cancellation
   stops the wait. A transaction begun after the deadline passed (cleanup)
   keeps `STATEMENT_TIMEOUT`. The statement is not counted by
-  `assert_num_queries`.
+  `assert_num_queries`. A read that runs without a transaction
+  (`Reads.STATEMENTS`, [queries.md](queries.md#how-read-only-work-reads))
+  has no `SET LOCAL`: each of its statements is cut off at the deadline by
+  the request's timer, or by a timer of its own in work that shares a
+  deadline without enforcing it, and the driver then cancels it on the
+  server. The framework's own short writes, such as an idempotency key's
+  claim, run that way too, within `STATEMENT_TIMEOUT`.
 - **Outgoing HTTP calls** through `domainkit.http.client` are bounded by it
   (below).
 - **Ledgers and caches** keep their own `TIMEOUT`: a request's call to
@@ -745,6 +790,13 @@ new messages through it (`LISTEN` needs a session of its own): its
 workers poll every `POLL_INTERVAL`, and `NOTIFY` from commits is simply
 not heard. Point `MIGRATION_URL` at PostgreSQL directly: migrations may
 take longer, and need the schema owner.
+
+For the same reason, reads that would run without a transaction
+(`Reads.STATEMENTS`) and the framework's own short writes run in a
+transaction through PgBouncer, which sets the timeouts. A pool tests a
+connection (`POOL_PRE_PING`) with SQLAlchemy's own ping there, in the
+transaction its prepared statement needs; elsewhere, domainkit sends it
+without one.
 
 `check` warns in staging and production about a database that seems to
 go through PgBouncer without the mode: one on port 6432, or one whose

@@ -28,7 +28,7 @@ from urllib.parse import quote
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.exc import TimeoutError as PoolTimeout
@@ -52,6 +52,7 @@ from domainkit.ddd.exceptions import (
     PermissionDenied,
     PreconditionFailed,
 )
+from domainkit.http.responses import JSONResponse, _BuiltJSONResponse
 from domainkit.i18n import gettext, validation_message
 
 STATUS_CODES: Final[tuple[tuple[type[DomainError], int], ...]] = (
@@ -164,7 +165,7 @@ def error_response(
         problem = problem_details(
             status_code, detail, code=code, errors=errors, request=request
         )
-        return JSONResponse(
+        return _BuiltJSONResponse(
             problem.model_dump(exclude_none=True),
             status_code=status_code,
             media_type=PROBLEM_MEDIA_TYPE,
@@ -175,7 +176,9 @@ def error_response(
         request_id=request.request_id if request else None,
         errors=errors,
     )
-    return JSONResponse(body.model_dump(exclude_none=True), status_code=status_code)
+    return _BuiltJSONResponse(
+        body.model_dump(exclude_none=True), status_code=status_code
+    )
 
 
 def problem_details(

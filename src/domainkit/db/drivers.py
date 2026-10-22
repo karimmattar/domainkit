@@ -66,6 +66,9 @@ MAX_MILLISECONDS: Final = 2_147_483_647
 longer one is refused, and the transaction that sets it fails."""
 _OPTION: Final = re.compile(r"(?:-c\s*|--)([\w.-]+)=")
 """A server setting in libpq ``options``, as PostgreSQL's command line takes it."""
+READ_ONLY: Final = {"default_transaction_read_only": "on"}
+"""What a connection that may only read starts with: PostgreSQL refuses every
+write it is sent, in a transaction or on its own."""
 
 
 def client_ssl_context(config: DatabaseConfig) -> ssl.SSLContext | None:
@@ -128,6 +131,22 @@ def connect_args(
     else:
         derived = {}
     return _add(derived, config.CONNECT_ARGS)
+
+
+def read_only_args(config: DatabaseConfig) -> dict[str, Any]:
+    """``connect_args`` for PostgreSQL connections that may only read.
+
+    The server makes every statement they run read-only, so a write is
+    refused however it is sent. It is added last: ``CONNECT_ARGS`` cannot
+    turn it off.
+    """
+    args = connect_args(config)
+    if make_url(config.URL.get_secret_value()).get_driver_name() == "asyncpg":
+        args["server_settings"] = {**args.get("server_settings", {}), **READ_ONLY}
+    else:  # psycopg: libpq options, where the last setting of a name wins.
+        added = " ".join(f"-c {name}={value}" for name, value in READ_ONLY.items())
+        args["options"] = f"{args['options']} {added}" if "options" in args else added
+    return args
 
 
 def _add(derived: dict[str, Any], extra: Mapping[str, Any]) -> dict[str, Any]:

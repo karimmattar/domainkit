@@ -44,6 +44,7 @@ from .api import _credentials, _errors, _no_store
 from .backends import get_all_permissions
 from .events import TokenCreated, TokenRevoked
 from .models import UserId
+from .settings import auth_settings
 from .tokens import AuthToken, TokenKind
 from .uow import AuthUnitOfWork
 
@@ -133,7 +134,11 @@ async def list_tokens(
 @router.post(
     "/tokens",
     status_code=status.HTTP_201_CREATED,
-    responses=_errors(status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN),
+    responses=_errors(
+        status.HTTP_401_UNAUTHORIZED,
+        status.HTTP_403_FORBIDDEN,
+        status.HTTP_409_CONFLICT,
+    ),
 )
 async def create_token(body: TokenIn, request: Request, response: Response) -> NewToken:
     """Make a personal token, limited to ``scopes`` if given; it is shown once."""
@@ -149,8 +154,15 @@ async def create_token(body: TokenIn, request: Request, response: Response) -> N
             code="scope_not_held",
         )
     ttl = None if body.expires_in_days is None else timedelta(days=body.expires_in_days)
+    limit = auth_settings().MAX_LIVE_TOKENS
     async with AuthUnitOfWork() as uow:
         stored = await uow.users.get(UserId(user.id))
+        if await uow.tokens.live_count(user.id) >= limit:
+            raise APIError(
+                status.HTTP_409_CONFLICT,
+                f"You hold {limit} live tokens, the most allowed; revoke one first.",
+                code="too_many_tokens",
+            )
         raw, token = await uow.tokens.create(
             user.id, ttl=ttl, name=body.name, scopes=scopes
         )

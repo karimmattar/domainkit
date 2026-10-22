@@ -55,6 +55,9 @@ GroupId = NewType("GroupId", UUID)
 
 UNUSABLE_PASSWORD_PREFIX: Final = "!"  # noqa: S105 - a marker, not a password.
 """Starts every unusable password; no hasher's output starts with it."""
+USABLE_PASSWORD: Final = "_usable_password"  # noqa: S105 - a key, not a secret.
+"""Where a user built for a request (``request.user``) keeps whether its
+password is usable, so ``has_usable_password`` needs no hash."""
 USERNAME_MAX_LENGTH: Final = 150
 GROUP_NAME_MAX_LENGTH: Final = 150
 EMAIL_MAX_LENGTH: Final = 254
@@ -220,7 +223,8 @@ class AbstractBaseUser(AggregateRoot[UserId]):
     is_authenticated: ClassVar[bool] = True
     is_anonymous: ClassVar[bool] = False
 
-    password: PasswordHash
+    password: PasswordHash = field(repr=False)
+    """Left out of ``repr``: a request's user reads it with a warning."""
     last_login: datetime | None = None
     is_active: bool = True
     is_superuser: bool = False
@@ -253,7 +257,12 @@ class AbstractBaseUser(AggregateRoot[UserId]):
         self.set_password(PasswordHash.unusable())
 
     def has_usable_password(self) -> bool:
-        """Whether some password can log this user in."""
+        """Whether some password can log this user in.
+
+        A user built for a request answers without reading its hash.
+        """
+        if "password" not in self.__dict__ and USABLE_PASSWORD in self.__dict__:
+            return bool(self.__dict__[USABLE_PASSWORD])
         return self.password.usable
 
     def rehash_password(self, password: PasswordHash) -> None:

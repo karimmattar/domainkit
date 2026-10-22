@@ -25,6 +25,13 @@ from domainkit.cache import redis as redis_cache
 from domainkit.cache.core import split
 from domainkit.cache.redis import RedisStore
 from domainkit.conf import CacheConfig, override_settings
+from domainkit.contrib.auth.principals import (
+    ALL,
+    STAMP_TTL,
+    read_stamps,
+    stamp_key,
+    write_stamps,
+)
 from domainkit.http import get_asgi_application
 from domainkit.http.ratelimit import RedisBackend
 
@@ -329,6 +336,37 @@ async def test_rate_limits_are_shared_between_replicas(
     assert 0.5 < refused.reset_after <= 1.0
     assert (other.allowed, other.remaining) == (True, 1)
     assert 0 < ttl <= 1000  # Kept only until the quota is full again.
+
+
+async def test_principal_stamps_are_shared_between_replicas(
+    shared: dict[str, object],
+) -> None:
+    """A stamp one replica writes, another reads; each is new, and expires."""
+    targets = ["user:3f2b", "token:9c1d"]
+    other_config = CacheConfig.model_validate(shared)
+    other = Cache("shared", other_config, RedisStore.from_config(other_config))
+    keys = [stamp_key(ALL), *map(stamp_key, targets)]
+    try:
+        before = await read_stamps("shared", targets)
+        await write_stamps("shared", targets)
+        first = await other.get_many(keys, str)  # Another replica's client.
+        await write_stamps("shared", targets[:1])
+        second = await read_stamps("shared", targets)
+        key = caches["shared"].make_key(stamp_key(targets[0]))
+        ttl = await caches["shared"].store.client.pttl(key)  # type: ignore[attr-defined]
+    finally:
+        await caches["shared"].clear()
+        await caches.close_all()
+        await other.close()
+
+    assert before == (None, None, None)
+    assert set(first) == set(keys[1:])
+    assert second[0] is None
+    assert second[1] != first[keys[1]]
+    assert second[2] == first[keys[2]]
+    assert all(len(stamp or "") == 16 for stamp in second[1:])
+    stamp_ms = STAMP_TTL.total_seconds() * 1000
+    assert stamp_ms - 60_000 < ttl <= stamp_ms
 
 
 async def test_refused_rate_limits_let_requests_through(

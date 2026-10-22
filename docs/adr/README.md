@@ -64,3 +64,11 @@ accepted record: supersede it with a new one and link both ways.
 | [0048](0048-request-deadlines.md) | Give every request a deadline, answer 503 when it passes, and pass it on | Accepted |
 | [0049](0049-shed-load-past-a-concurrency-cap.md) | Shed load in the application: a cap per event loop, a short queue, and a fast 503 | Accepted |
 | [0050](0050-outgoing-http-client.md) | Call other services through pooled clients that keep to the deadline | Accepted |
+| [0058](0058-cache-principals-and-stamp-revocations.md) | Keep principals in each process, and stamp revocations in a shared cache | Accepted |
+| [0059](0059-read-principals-in-two-queries-without-the-hash.md) | Read a principal in two queries, build each request's user, and deprecate its password hash | Accepted |
+| [0060](0060-flatten-included-routers.md) | Flatten included routers when the application is built | Accepted |
+| [0061](0061-read-without-a-transaction-and-ping-once.md) | Read without a transaction where it is safe, and ping a connection once | Accepted |
+| [0062](0062-claim-idempotency-keys-in-one-statement.md) | Claim idempotency keys in one statement, and commit the framework's short writes as they run | Accepted |
+| [0063](0063-encode-json-with-pydantic-and-sample-the-access-log.md) | Encode JSON with pydantic where the bytes stay the same, and let projects sample the access log | Accepted |
+| [0064](0064-gate-performance-on-counts-not-time.md) | Gate performance in CI on counts, and report time | Accepted |
+| [0065](0065-upgrade-fastapi-sqlalchemy-asyncpg-behind-the-ladder.md) | Upgrade FastAPI, SQLAlchemy, and asyncpg behind the ladder, with FastAPI's telemetry off | Accepted |

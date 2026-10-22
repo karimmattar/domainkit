@@ -45,6 +45,7 @@ URLs; an unreadable port is refused without quoting the URL.
 | `INSTALLED_DOMAINS` | `()` | Domain packages (Django's `INSTALLED_APPS`), started in order and stopped in reverse. |
 | `MIDDLEWARE` | see [Middleware](#middleware) | ASGI middleware by dotted path, outermost first. |
 | `ROOT_ROUTER` | `None` | Dotted path to the `APIRouter` that mounts every route (Django's `ROOT_URLCONF`). |
+| `FLATTEN_ROUTERS` | `True` | Serve the routes of the routers `ROOT_ROUTER` includes from the top of the application, each matched once ([Included routers](#included-routers)); `False` keeps FastAPI's nesting, which matches a request again at each level. |
 | `ASGI_APPLICATION` | `None` | `module:attribute` that `runserver` serves. |
 | `EVENT_LOOP` | `"auto"` | The event loop of `runserver` and of commands with an `async` handle (`runworker` among them): uvloop when the `uvloop` extra is installed (`auto`), always asyncio's own (`asyncio`), or uvloop or a configuration error (`uvloop`). |
 | `LOGGING` | minimal | A `logging.config.dictConfig` mapping, applied by `setup()`. `domainkit.log.build_logging_config(log_format="json", level="INFO")` makes one that writes from a thread, through a bounded queue ([runtime.md](runtime.md#logging-and-error-reports)); the settings `init` writes use it. |
@@ -71,7 +72,7 @@ Each `DATABASES` entry:
 | `URL` | required | SQLAlchemy async URL (`postgresql+asyncpg://…`, `sqlite+aiosqlite:///…`). Kept secret in logs and reprs. |
 | `MIGRATION_URL` | `None` | A schema-owner URL used only by `migrate` and `makemigrations`; the app keeps a row-level role. |
 | `ECHO` | `False` | Log every statement; refused in staging and production. |
-| `LOG_PARAMETERS` | `False` | Show bound values in logs and errors; refused in staging and production. Without it, the `DETAIL` PostgreSQL adds to constraint errors (`Failing row contains (...)`, which repeats the row's values) is dropped too. |
+| `LOG_PARAMETERS` | `False` | Show bound values in logs and errors; refused in staging and production. Without it, the `DETAIL` PostgreSQL adds to constraint errors (`Failing row contains (...)`, which repeats the row's values) is dropped too, as are its `CONTEXT`, and a value the driver or PostgreSQL refuses (`invalid input for query argument $1: <hidden>`). |
 | `SSLMODE` | `None` | libpq names: `disable`, `require`, `verify-ca`, `verify-full`. Staging and production need `verify-full` for network databases. |
 | `SSLROOTCERT`, `SSLCERT`, `SSLKEY` | `None` | CA bundle, and client certificate and key for mutual TLS. |
 | `STATEMENT_TIMEOUT` | `30.0` | Seconds; PostgreSQL cancels longer statements. Migrations are exempt. This and the four timeouts below are at most 2147483.647 seconds (24.8 days), the longest PostgreSQL takes; a transaction's `statement_timeout` from a longer deadline asks for that much. |
@@ -82,7 +83,7 @@ Each `DATABASES` entry:
 | `PGBOUNCER` | `False` | The database is reached through PgBouncer's transaction pooling: no statement cache, a unique name for every prepared statement, and the timeouts above set in each transaction (`SET LOCAL`) rather than for the session. PostgreSQL URLs only ([runtime.md](runtime.md#database-timeouts-and-pgbouncer)). |
 | `POOL_SIZE`, `MAX_OVERFLOW`, `POOL_RECYCLE` | SQLAlchemy's | Connection pool sizing. |
 | `POOL_TIMEOUT` | `10.0` for network databases, else SQLAlchemy's | Seconds a request waits for a connection; past it the request gets 503 `database_busy`. |
-| `POOL_PRE_PING` | `True` | Test connections before use, so database restarts are survived. |
+| `POOL_PRE_PING` | `True` | Test connections before use, so database restarts are survived. On asyncpg outside PgBouncer the test is one round trip, outside a transaction ([databases.md](databases.md#connection-pools)). |
 | `TEST_NAME` | `None` | The PostgreSQL database `domainkit.testing` creates for the tests, and drops after them; `test_<name>` when unset. It must start with `test_` ([docs/testing.md](testing.md)). |
 | `CONNECT_ARGS` | `{}` | Extra driver arguments, added to those derived from the options above. asyncpg's `server_settings` and libpq's `options` are merged with the timeouts. Setting what the options above already set (TLS, a timeout, PgBouncer's statement cache) is refused when the application is built, however the server setting is spelled (`STATEMENT_TIMEOUT`, `--statement-timeout=`); change that option instead. `timeout`, `command_timeout`, and `connect_timeout` still replace `CONNECT_TIMEOUT` and `COMMAND_TIMEOUT`, with a `DomainkitDeprecationWarning`; they are refused from 0.9. |
 | `REPLICAS` | `()` | Aliases of read replicas of this database; read-only units of work take turns on them ([databases.md](databases.md#read-replicas)). Each is an alias of its own, other than `default`, of one primary, outside every shard group, with no replicas of its own, and never a routing target. |
@@ -189,6 +190,8 @@ Each `BROKERS` entry:
 | `READINESS_CACHE_SECONDS` | `1.0` | How long a `/ready` result is reused, from when its checks ended; probes that come while checks run wait for them, so probe floods cannot load the database. |
 | `READINESS_DETAILS` | `False` | Name failing components in `/ready` responses (always logged). |
 | `ACCESS_LOG_QUIET_PATHS` | `/health`, `/ready` | Successful requests to these paths are logged at DEBUG. |
+| `ACCESS_LOG_SAMPLE_RATE` | `1.0` | Share of access lines written, from 0 to 1: `0.1` writes about one request in ten, each drawn on its own. Responses from 400 up (client errors, refusals, and server errors), requests without a response, and requests that take `ACCESS_LOG_SLOW_DURATION` or longer are always written, so only successes and redirects are sampled; `domainkit.security` and the audit trail are never sampled ([runtime.md](runtime.md#sampling-the-access-log)). |
+| `ACCESS_LOG_SLOW_DURATION` | `1.0` | Seconds (at most 3600): a request this slow or slower has its access line written whatever `ACCESS_LOG_SAMPLE_RATE` says. |
 | `TRUSTED_PROXIES` | `()` | Networks (`10.0.0.0/8`) whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed. The client is the right-most address that is not a trusted proxy, across every line of the header; hops may carry a port. The scheme is the `X-Forwarded-Proto` value at the client's place from the right, or the last one. Empty: the socket peer is the client. |
 | `RATE_LIMIT` | `None` | Requests per caller, such as `"300/minute"` (`second`, `minute`, `hour`, `day`). `None` disables it. |
 | `RATE_LIMIT_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths never counted. |
@@ -442,6 +445,9 @@ passes, so an API that is public on purpose can keep them:
   without limit), and a session or CSRF cookie name without the `__Host-`
   prefix where the prefix could hold
   ([auth.md](auth.md#browser-sessions-in-cookies))
+- auth: `AUTH.PRINCIPAL_CACHE.TTL` above 5 seconds without `STAMPS`: a
+  revoked token works that long in the other processes
+  ([auth.md](auth.md#the-principal-cache))
 - `LIVE_REAUTH_INTERVAL = None`: open WebSockets and event streams keep a
   revoked token
 - an application that serves WebSockets under a server that reads larger
@@ -461,17 +467,17 @@ first:
 
 | Middleware | Why here |
 | --- | --- |
-| `domainkit.http.middleware.ProxyHeadersMiddleware` | First, so everything after it sees the real client address and scheme. |
+| `domainkit.http.middleware.ProxyHeadersMiddleware` | First, so everything after it sees the real client address and scheme. Remembers the latest 4,096 addresses it parsed, and whether each is a trusted proxy's. |
 | `domainkit.http.metrics.MetricsMiddleware` | Counts every response, including ones refused below. |
 | `domainkit.http.middleware.SecurityHeadersMiddleware` | Adds the `SECURE_*` headers to every response. |
 | `domainkit.http.locale.LocaleMiddleware` | Picks the request's language from `Accept-Language`, before anything below answers, so their errors are translated; adds `Content-Language` and `Vary: Accept-Language` ([i18n.md](i18n.md)). |
 | `domainkit.http.middleware.CORSMiddleware` | Answers preflights before any work. |
-| `domainkit.http.middleware.RequestContextMiddleware` | Request id (`X-Request-ID`), access log, the context that logs and audit rows read. WebSocket connections get one too: method `WS`, the request id sent with the accept, one access log line when the connection ends (101 if accepted, 403 if closed first). |
+| `domainkit.http.middleware.RequestContextMiddleware` | Request id (`X-Request-ID`: a caller's valid one, else 32 lowercase hex digits), access log, the context that logs and audit rows read. WebSocket connections get one too: method `WS`, the request id sent with the accept, one access log line when the connection ends (101 if accepted, 403 if closed first). |
 | `domainkit.http.deadlines.DeadlineMiddleware` | Starts the request's deadline (`REQUEST_TIMEOUT`) before any work, and answers 503 `deadline_exceeded` when it passes; lifted once the response starts ([runtime.md](runtime.md#request-deadlines)). |
 | `domainkit.http.shedding.ConcurrencyLimitMiddleware` | Sheds requests past `MAX_CONCURRENT_REQUESTS` with 503 `overloaded`, before authentication looks anything up; never the probes ([runtime.md](runtime.md#load-shedding)). |
 | `domainkit.http.middleware.AllowedHostsMiddleware` | Refuses unknown `Host` headers with 400. |
 | `domainkit.contrib.auth.middleware.AuthenticationMiddleware` | Finds the user from the request's token and makes it the actor, so what follows counts users (auth; see [auth.md](auth.md)). |
-| `domainkit.http.ratelimit.RateLimitMiddleware` | Counts per actor, or per client address (IPv6: per /64). A WebSocket handshake counts once; over the limit it gets the 429, or a 1013 close where the server cannot send one. |
+| `domainkit.http.ratelimit.RateLimitMiddleware` | Counts per actor, or per client address (IPv6: per /64), worked out once per request and remembered for the latest 4,096 addresses. A WebSocket handshake counts once; over the limit it gets the 429, or a 1013 close where the server cannot send one. |
 | `domainkit.http.websockets.WebSocketLimitsMiddleware` | Caps open WebSockets per process and per caller, queues what they send, limits their messages, closes idle and old ones, and re-checks their credentials and rules ([live.md](live.md)). After the two above, so it counts users and only handshakes the rate limit let through. |
 | `domainkit.http.middleware.RequestBodyLimitMiddleware` | Refuses bodies over `MAX_REQUEST_BODY_SIZE` with 413, and bodies slower than `REQUEST_BODY_TIMEOUT` with 408; closes WebSockets with 1009 on a larger message. |
 | `domainkit.contrib.idempotency.middleware.IdempotencyMiddleware` | Last: reads whole bodies, which the limit above has already bounded. |
@@ -608,6 +614,55 @@ name. Constraint errors are logged with their SQLSTATE and the
 constraint's name, never with the row's values. SQLite checks foreign keys
 only on connections that turn `PRAGMA foreign_keys` on.
 
+## JSON responses
+
+`domainkit.http.JSONResponse` is Starlette's `JSONResponse` with pydantic's
+encoder (`pydantic_core.to_json`) for content that is JSON's own values:
+the same bytes, and the same errors. It checks the content first
+(`domainkit.http.responses.json_native`): dicts, lists, and tuples;
+strings, integers, floats, booleans, and None; instances of str, int, and
+float subclasses and enum members, written as `json.dumps` writes them;
+keys that are strings, integers, finite floats, or booleans. Anything else
+goes to `json.dumps`, as in Starlette, and fails as it failed there:
+
+- a pydantic model passed where its `model_dump(mode="json")` belongs, a
+  dataclass, a `Decimal`, a `datetime`, a `UUID`, bytes, or a set raise
+  `TypeError`, a 500, and none of their fields is written;
+- NaN, Infinity, and an integer longer than Python writes
+  (`sys.get_int_max_str_digits()`) raise `ValueError`, before a digit is
+  written;
+- JSON content pydantic would write otherwise (a float under 1e-4, a
+  `None` key, an enum whose value is not its data, a dict subclass's own
+  order) is written by `json.dumps` too.
+
+The check is Python and costs about what the encoding saves: a small body
+encodes in under half the instructions `json.dumps` takes, a page of 50
+resources in 8% fewer, and content of many small dicts (200 orders of eight
+lines) in a quarter more ([performance.md](performance.md#json-responses-and-logs)).
+domainkit's own bodies (resource items, pages, and batches, error bodies,
+readiness answers), which it builds JSON-native, skip it and encode in
+half (ADR 0063). Routes that answer large bodies are cheapest with a
+response model, which FastAPI writes with pydantic directly.
+
+Routes with a response model (a return annotation, or `response_model=`)
+are encoded by pydantic in FastAPI already: leave them FastAPI's default,
+as any response class set turns that off and changes how their floats are
+written. Give it to routes without one, or build it from JSON content:
+
+```python
+from domainkit.http import JSONResponse
+
+
+@router.get("/totals", response_model=None, response_class=JSONResponse)
+async def totals() -> dict[str, object]:
+    return {"count": 3, "amount": "12.50"}
+```
+
+FastAPI passes such a route's value through `jsonable_encoder` first,
+which costs more than encoding it (about 1 ms for 50 resources); a response
+model skips both, but writes a `Decimal` as a string, where
+`jsonable_encoder` makes a float of one returned outside a model.
+
 ## The API surface
 
 ### Operation ids
@@ -673,6 +728,44 @@ wins. OpenAPI marks the operations `deprecated`, with the headers on each
 response, `x-deprecated-since`, `x-sunset`, and the link as `externalDocs`.
 Times need a time zone; a date means midnight UTC.
 
+### Included routers
+
+`get_asgi_application` serves the routes of the routers that `ROOT_ROUTER`
+includes from the top of the application: FastAPI keeps each
+`include_router` call nested, and matched each request again at each level
+(ADR 0060). Every route keeps what its routers gave it: the full path, the
+dependencies and access rules, tags, responses, response class, route
+class, callbacks, and OpenAPI settings. Mounts stay mounts, the routers'
+lifespans and startup hooks run, and the OpenAPI document is the same,
+byte for byte. What a project can see:
+
+- `app.routes` lists the routes themselves, with their full paths, in the
+  order they are matched;
+- `request.scope["route"].path` is the route's full path template;
+- a router with frontend routes (`APIRouter.frontend`) stays included;
+- a router that serves requests in its own way stays included, with the
+  prefixes and rules of the routers above it, in its place: one whose
+  class (or the router itself) has its own `matches`, `handle`, or any
+  other method of `APIRouter` or Starlette's `Router` but `__init__` and
+  those that declare routes (`domainkit.http.routing.serves_itself`). An
+  IP gate in `handle` or a host rule in `matches` holds as under FastAPI's
+  nesting; the routers around it are still flattened;
+- a route added to an included router after the application is built is
+  not served: finish routers before `get_asgi_application` runs.
+
+`FLATTEN_ROUTERS = False` keeps FastAPI's nesting. `flatten_routes(app.router)`
+(`domainkit.http.routing`) flattens an application built by hand:
+
+```python
+from fastapi import FastAPI
+
+from domainkit.http.routing import flatten_routes
+
+app = FastAPI()
+app.include_router(router)
+flatten_routes(app.router)  # How many included routers it replaced.
+```
+
 ## Observability
 
 **Logs** are JSON lines with `request_id`, and with `trace_id` and `span_id`
@@ -701,13 +794,34 @@ queue's 10,000 records is dropped and counted, never waited for
 | `messaging_deliveries_skipped_total` | |
 | `cache_lookups_total` | `cache`, `result` (`hit`, `miss`, `invalid`, `early`) |
 | `cache_errors_total` | `cache` |
+| `auth_principal_cache_total` | `authentication` (`token`, `cookie`, `jwt`, `certificate`), `event` (`hit`, `miss`, `invalidation`, `eviction`) |
+
+`MetricsMiddleware` keeps the handle of each series it counts in, for at
+most 4,096 series per application, so a request looks no labels up; clear
+these metrics (`REQUESTS.clear()`) only when no application is serving. A
+Starlette route or a mount inside an included router is labelled as it
+would be at the top: `unmatched`, or the mounted application's route.
 
 **Traces** (`domainkit[tracing]`): unit-of-work commits and worker messages
 get spans. domainkit only uses the OpenTelemetry API; configure the SDK and
 exporter in the deployment, or run under `opentelemetry-instrument`. Outbox
 messages carry the W3C trace context of their commit, so a worker's span
 continues the trace of the request that queued its work
-([contrib.md](contrib.md#traces)).
+([contrib.md](contrib.md#traces)). FastAPI (0.142 and later) has telemetry
+of its own, which `get_asgi_application` turns off: its spans record query
+strings, and its log records exception messages, which domainkit keeps out
+of logs and error reports. To trace requests, run under
+`opentelemetry-instrument`, as before.
+
+It is off in the FastAPI applications mounted in domainkit's too, which
+keep FastAPI's defaults otherwise: the application `get_asgi_application`
+returns (`domainkit.http.application.Application`, a `FastAPI`) sets
+`scope["fastapi.telemetry"]` to None on each HTTP and WebSocket request
+before any middleware or application sees it, whatever `MIDDLEWARE` lists,
+and FastAPI skips its telemetry for a request so marked, as it does for
+one an enclosing application measures. A mark an enclosing application
+set is kept. An application served on its own, outside domainkit's, is
+the project's to configure (`FastAPI(telemetry=...)`).
 
 ## Testing
 
@@ -798,9 +912,11 @@ A fixture is one JSON document, its tables parents first:
 Numbers and text are written as they are; decimals, times, durations, ids,
 and enums as text; bytes as base64; JSON columns as JSON. `loaddata`
 converts each value back by its column's type, and refuses one that does
-not fit without quoting it. A row whose primary key is stored replaces the
-stored row. Rows load in one transaction, and on PostgreSQL serial ids then
-continue after the highest one loaded.
+not fit without quoting it. A number with a fraction reaches a decimal
+column with every digit, as written (`1234567890123456.78`), never through
+a float; other columns get it as a float. A row whose primary key is stored
+replaces the stored row. Rows load in one transaction, and on PostgreSQL
+serial ids then continue after the highest one loaded.
 
 State is never dumped or loaded: the audit trail (a copy of its keys would
 outlive `auditforget`), tokens, the outbox, idempotency keys, webhook

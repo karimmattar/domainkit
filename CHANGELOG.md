@@ -6,6 +6,254 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The benchmark ladder: `python -m benchmarks` measures what a request
+  costs on thirteen rungs, from a bare ASGI application through the
+  `init` template's stack to an authenticated read, a keyed write, and a
+  429, in Python calls and database round trips (statements,
+  transactions, checkouts, pings) and CPU time. CI's new `bench` job fails
+  a change that makes a rung's requests cost more calls (by over 2%) or any
+  more round trips than `benchmarks/budgets.toml` allows, and shows CPU
+  time beside the base branch's; time is never gated (PERF-09, ASYNC-R17;
+  ADR 0064). `--baseline` measures any other commit with the same harness.
+  Each run makes a PostgreSQL schema of its own (a random suffix), drops
+  only that one, masks the database's password in what it prints, and
+  gives its bench user a token that expires within the hour and no
+  password.
+- `docs/performance.md`: what each rung costs, how to run the ladder and
+  update its budgets, the cores 500 million requests a day need, and what
+  makes requests cheaper. The README says to serve one worker per core.
+- `domainkit.http.JSONResponse`: Starlette's `JSONResponse` encoded by
+  pydantic's Rust encoder where the content is JSON's own values, with the
+  same bytes and the same errors. It checks the content first; anything
+  else goes to `json.dumps` and fails as in Starlette: a pydantic model
+  passed by mistake, a dataclass, a `Decimal`, a `datetime`, bytes, or a
+  set is a 500 that writes none of their fields, and an integer past
+  Python's digit limit is refused before it is written. A body of
+  `{"status": "ok"}` takes 9,489 instructions instead of 21,723, a page of
+  50 resources 8% fewer, and 200 orders of eight lines a quarter more: the
+  check costs about what the encoding saves. Give it to routes without a response model
+  (`response_class=JSONResponse`); routes with one keep FastAPI's default,
+  which encodes them with pydantic already. domainkit's own bodies,
+  built JSON-native (resource pages, items, and batches, and their ETags,
+  error bodies, readiness answers), skip the check: a page of 50 resources
+  encodes in half the instructions (69 µs instead of 179) (PERF-08; ADR
+  0063).
+- `ACCESS_LOG_SAMPLE_RATE` (1.0) and `ACCESS_LOG_SLOW_DURATION` (1 second):
+  write a share of the access lines of successful and redirected requests,
+  each drawn on its own. Every response from 400 up (the 404 of what is out
+  of the caller's reach and the 401, 403, and 429 of refusals among them),
+  every request without a response, and requests that take the slow
+  duration or longer are always written, and `domainkit.security` and the
+  audit trail are never sampled. At 0.1 the
+  JSON access line costs about 18,000 instructions a request instead of
+  154,000 (PERF-02; ADR 0063). The production settings `init` writes read
+  the rate from the environment.
+- `domainkit.http.routing.flatten_routes(router)` puts the routes of each
+  router included in `router` in its place, as `get_asgi_application` now
+  does for `ROOT_ROUTER` (ADR 0060). `FLATTEN_ROUTERS = False` keeps
+  FastAPI's nesting.
+- Read-only units of work choose how they read with `reads=`, which also
+  makes them read-only (`docs/queries.md`; ADR 0061).
+  - `Reads.STATEMENTS` runs each statement on its own, without `BEGIN` and
+    `ROLLBACK`: a read by id on PostgreSQL takes 1 round trip instead of 6.
+    It reads on a pool of its own per alias, `<alias>:reads`, sized like
+    the alias's, whose connections PostgreSQL holds read-only, so a write
+    is refused however it is sent.
+  - `Reads.SNAPSHOT` reads one snapshot, in a `REPEATABLE READ`, `READ
+    ONLY` transaction.
+  - Both sessions refuse to flush, and refuse write and DDL statements,
+    with `ReadOnlyError`.
+  - `STATEMENTS` bounds each statement by the deadline. A connection the
+    driver knows the server closed is replaced before a statement is sent
+    on it; a statement whose connection closes while it runs fails, and is
+    never run again, since it may have had effects outside its
+    transaction. Through psycopg, which notices only when it next sends,
+    the pool pings.
+  - A `STATEMENTS` connection is reset (`RESET ALL`, `RESET ROLE`,
+    `UNLISTEN *`, advisory locks, cursors, temporary tables) before the
+    next caller gets it, so nothing one unit of work sets in the session,
+    `default_transaction_read_only` included, reaches another. A unit of
+    work that ran only plain `SELECT` statements needs no reset; one that
+    ran SQL text or called a function takes one more round trip. A new
+    connection that is not read-only, because a pooler dropped the
+    startup setting, is refused, and readiness checks the pool as
+    `database:<alias>:reads`. `SET LOCAL` and transaction-scoped advisory
+    locks end with each statement.
+  - Through PgBouncer and on SQLite it reads in the `READ ONLY`
+    transaction.
+  - `readonly=True` alone keeps its `READ ONLY` transaction, as before
+    (PERF-03).
+- `connections.autocommit()`: a connection whose statements commit as they
+  run, for short writes that stand alone; through PgBouncer, a transaction.
+- `deadlines.enforced()`: whether a timer of the running task already cuts
+  it off at its deadline.
+- `domainkit.contrib.auth.principals.invalidate(...)`, `invalidate_all()`,
+  and `invalidate_everywhere(...)` (with the stamps) drop principals that SQL
+  outside the ORM changed;
+  `UserRepository.password_hash(user_id)` and
+  `domainkit.contrib.auth.api.password_holds(user, password)` read and
+  check a password hash afresh.
+- The principal cache (`AUTH.PRINCIPAL_CACHE`; ADR 0058): who a credential
+  names, with their groups and permissions, is kept per process for `TTL`
+  (5 seconds; 5 minutes at most), at most `MAX_ENTRIES` (10,000) of them.
+  A request whose principal is kept makes no query to authenticate (was
+  4 or 5 `SELECT`s, a `BEGIN`, a `ROLLBACK`, and a pre-ping), and a 429
+  for a valid token none either (PERF-01, ASYNC-R13, N8). Opaque tokens,
+  personal tokens, browser sessions, JSON Web Tokens, and client
+  certificates are all kept; expiry, CSRF, and signatures are checked on
+  every request. A change committed in the process (logging out, a
+  revoked token, a password change, a deactivated or deleted user, a
+  group joined or left, a permission given or taken, a group changed)
+  drops what it affects at once, as does a bulk statement a session runs
+  on the tables principals are read from (`update_rows`, `delete_rows`,
+  Core `UPDATE` and `DELETE`); other processes see it within `TTL`, or at
+  once with `STAMPS`, a Redis cache every process shares, stamped before
+  and after each commit. A cache that fails, or loses its stamps, is
+  never trusted: the database answers. Principals share their grants: an
+  entry costs a few kilobytes whatever the user's role holds. `check`
+  warns about a `TTL` above 5 seconds without `STAMPS` in staging and
+  production; `auth_principal_cache_total` counts hits, misses,
+  invalidations, and evictions by authentication class (`docs/auth.md`).
+- `AUTH.MAX_LIVE_TOKENS` (100): a user holding that many live access
+  tokens cannot make another personal token (`409 too_many_tokens`).
+
+### Changed
+
+- The weekly mutation run is split into eight shards that run side by side,
+  each within its own time limit: the whole package no longer fits in one
+  job. A test checks that every module falls in exactly one shard.
+- domainkit requires FastAPI 0.143.1 (`<0.144`), SQLAlchemy 2.1.4
+  (`<2.2`), and asyncpg 0.32.0 (`<0.33`, the `postgres` extra), and lists
+  Starlette 1.8.0 (`<2`) itself, which FastAPI allows down to 0.46
+  (ASYNC-R18, FX-18; ADR 0065). Requests run the same statements as
+  before; each makes 15 more Python calls (FastAPI's telemetry hooks), and
+  those that reach the database 5–14% fewer (SQLAlchemy's compiled paths).
+  What projects meet:
+  - FastAPI now depends on `opentelemetry-api` and traces requests itself
+    when an OpenTelemetry SDK is configured. `get_asgi_application` turns
+    that off, as it was, in its application and in every FastAPI
+    application mounted in it: its spans record query strings and its logs
+    exception messages. Trace requests with `opentelemetry-instrument`.
+  - SQLAlchemy 2.1, in a project's own code: `Result.tuples()` is
+    deprecated (rows unpack as they are); statements are typed by column
+    (`Select[int, str]`); a session flushes before Core statements such as
+    `text()` too; `Computed()` without `persisted=True` makes a VIRTUAL
+    column on PostgreSQL 18 and warns on older servers; and a
+    `postgresql://` URL without a driver now means psycopg 3, so keep
+    writing `postgresql+asyncpg://`. SQLAlchemy's "What's New in 2.1" has
+    the rest.
+- `JsonFormatter` writes the same lines, byte for byte, with 35% fewer
+  instructions, and `BackgroundHandler` copies a record for its queue with
+  39% fewer: the JSON access line costs about 154,000 instructions a
+  request instead of 181,000. An access line the logger's level drops is no
+  longer built at all (PERF-02).
+- The routes of the routers that `ROOT_ROUTER` includes are served from the
+  top of the application (PERF-04, N5, FX-18; ADR 0060). FastAPI keeps each
+  `include_router` call nested: it matched a request again at each level,
+  and built the route's handler again for each request. Every route keeps
+  its full path, access rules and other dependencies, tags, responses,
+  response and route classes, and callbacks, and the OpenAPI document is
+  the same byte for byte, on FastAPI 0.141, 0.143, and 0.158. In the
+  project template's routes, a request makes 434 Python calls instead of
+  1,638 before any middleware (500 instead of 1,674 on 0.143). `app.routes` now lists the routes, with their
+  full paths, and `request.scope["route"].path` is the full template. A
+  route added to an included router after the application is built is not
+  served, and a router with frontend routes stays included. So does a
+  router whose class has its own `matches`, `handle`, or other method that
+  serves requests (an IP gate, a host rule, a tenant's context), at any
+  depth, with the prefixes and rules of the routers above it; the routers
+  around it are flattened.
+- Each request does its work once (PERF-05, PERF-06, N1, FX-16). The client
+  address is parsed once per request, for the refused-credential hold and
+  the rate limit together, and the rate-limit groups and the proxy's trust
+  of the latest 4,096 addresses are remembered (an IPv6 group took about
+  25 µs to work out). Security headers are added in one append, request
+  ids come from `os.urandom` (still 32 lowercase hex digits, at a quarter
+  of the cost of `uuid4()`), and `MetricsMiddleware` keeps the handle of
+  each series, for at most 4,096. With the template's eleven middleware a
+  request makes 711 Python calls instead of 2,019, and with
+  `DEFAULT_MIDDLEWARE` 314 instead of 476 (`docs/performance.md`).
+- `MetricsMiddleware` labels a Starlette route or a mount inside an
+  included router as it would one at the top: `unmatched`, or the mounted
+  application's route. Nesting gave them an empty `route` label.
+- Testing a pooled asyncpg connection (`POOL_PRE_PING`, still on by
+  default) is SQLAlchemy's prepared `;` outside any transaction, where it
+  was wrapped in `BEGIN` and `ROLLBACK`. Every checkout saves two round
+  trips, and a read through a unit of work takes 4 instead of 6. Through
+  PgBouncer, whose transaction pooling needs the transaction, the test is
+  as before (PERF-03; ADR 0061).
+- A request with an `Idempotency-Key` claims its key with one upsert that
+  also replaces an expired key. It stores its response with one more
+  statement, and both commit as they run (N3, FX-17; ADR 0062).
+  - A first keyed request makes 2 transactions and 4 pool checkouts
+    instead of 5 and 5: 16 round trips instead of 34 on PostgreSQL, with
+    the cheaper ping.
+  - A replay makes 2 checkouts instead of 4: 10 round trips instead of
+    27.
+  - Every guarantee holds as before. A committed operation never runs
+    twice, a pinned key is never released, a cancelled request settles
+    its key, and of requests racing with one key one runs.
+  - Without messaging, a claim deletes expired keys after its upsert, so
+    two claims through PgBouncer, whose statements share a transaction,
+    never deadlock on each other's sweep. The pin before a commit on
+    another database and the mark after it keep to the deadline in a task
+    that only shares it.
+- The audit trail makes a new subject's key with an insert that returns
+  it: an audited commit about a new person costs 2 statements for the keys
+  instead of 3. A transaction reads each subject's key once, and `forget`
+  drops the keys that open transactions of the process hold (N4).
+- A principal that is not kept is read in two queries: the token, then the
+  user with every group and permission in one statement (was 4 or 5; N6,
+  ADR 0059).
+- `AuthenticationMiddleware` looks at the client address only while an
+  address is held for refused credentials, and `TokenAuthentication` and
+  `CookieAuthentication` read no settings for a request without their
+  credentials (FX-16).
+- Each request gets a user of its own, built as a query builds it. A
+  user's `repr` leaves out its password.
+
+### Deprecated
+
+- `request.user.password` (and the password of any user authentication
+  builds): check a password with `password_holds(user, password)`
+  (`domainkit.contrib.auth.api`), or read the hash in a unit of work with
+  `await uow.users.password_hash(user.id)`. It still returns the stored
+  hash, warns with `DomainkitDeprecationWarning` the first time each
+  request reads it, and is removed in 0.10. `has_usable_password()` keeps
+  working, without the hash and without a warning.
+
+### Fixed
+
+- With `LOG_PARAMETERS` off, a value the driver cannot send no longer shows
+  in the error: asyncpg's `invalid input for query argument $1: '4111...'`
+  reads `$1: <hidden>`, with the reason kept, in the message, its `repr`,
+  and logged tracebacks. A value PostgreSQL cannot read, which it quotes
+  (`invalid input syntax for type integer: "<hidden>"`, how psycopg's
+  untyped values are refused), is hidden too, and so is the `CONTEXT` it
+  adds (`JSON data, line 1: ...`). A `DETAIL` that spans lines is dropped
+  whole.
+- On SQLite, a read-only unit of work begins its transaction before it
+  reads, so DDL or a `WITH ... INSERT` sent as SQL text is rolled back with
+  it. They committed at once, since SQLite's driver begins a transaction
+  only before `INSERT`, `UPDATE`, `DELETE` or `REPLACE`. The reader now
+  holds SQLite's read lock until it ends.
+- `IDEMPOTENCY` with `TTL_SECONDS` below `LEASE_SECONDS` is refused at
+  startup. A key that expired while its request still held it could be
+  claimed by a retry, which ran the request a second time.
+- `forget` no longer misses a subject's first key while a writer is making
+  it: on PostgreSQL the key is made under a transaction advisory lock of
+  the subject, which `forget` takes too, so it waits for the writer and
+  deletes the key. It returned 0, and the key was committed after it.
+  Known subjects take no lock; a new one costs one more statement. A key
+  a lookup read before `forget` began is no longer kept for the rest of
+  its transaction.
+- `loaddata` reads a fixture's numbers with a fraction as decimals, so a
+  money column gets every digit: `1234567890123456.78` was loaded as
+  `1234567890123456.80`, through a float that `ExactDecimal` would have
+  refused. Other columns get the same floats as before.
+
 ## [0.8.0] - 2026-10-21
 
 ### Added

@@ -210,6 +210,41 @@ def test_production_hardening_can_be_relaxed_from_the_environment(
     ]
 
 
+def test_production_samples_access_lines_from_the_environment(
+    tmp_path: Path,
+) -> None:
+    """Every access line unless the rate is set; then that share, checked."""
+    project = tmp_path / "billing"
+    init("billingAPI", str(project))
+    production = {
+        "BILLING_API_SETTINGS_MODULE": "config.settings.production",
+        "BILLING_API_ALLOWED_HOSTS": "api.example.com",
+        "BILLING_API_DATABASE_URL": "postgresql+asyncpg://app@db/billing",
+        "BILLING_API_TRUSTED_PROXIES": "10.0.0.0/8",
+        "BILLING_API_SECRET_KEY": "s3cret-" * 8,
+    }
+    show = "from domainkit.conf import settings; print(settings.ACCESS_LOG_SAMPLE_RATE)"
+
+    unset = run(project / "src", "-c", show, env=production)
+    sampled = run(
+        project / "src",
+        "-c",
+        show,
+        env={**production, "BILLING_API_ACCESS_LOG_SAMPLE_RATE": "0.25"},
+    )
+    wrong = run(
+        project,
+        "manage.py",
+        "check",
+        env={**production, "BILLING_API_ACCESS_LOG_SAMPLE_RATE": "2"},
+    )
+
+    assert unset.stdout.strip() == "1.0", unset.stderr
+    assert sampled.stdout.strip() == "0.25", sampled.stderr
+    assert wrong.returncode == 1
+    assert "ACCESS_LOG_SAMPLE_RATE" in wrong.stderr
+
+
 @pytest.mark.parametrize(
     ("name", "message"),
     [

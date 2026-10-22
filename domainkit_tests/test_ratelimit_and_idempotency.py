@@ -338,6 +338,8 @@ def test_rate_limits_count_http_requests_per_caller() -> None:
     assert (echoed.status_code, echoed.json()) == (200, {"size": 4})
     assert echoed.headers["RateLimit-Remaining"] == "0"
     assert (refused.status_code, other.status_code) == (429, 200)
+    assert refused.headers["RateLimit-Limit"] == "1"
+    assert int(refused.headers["Retry-After"]) > 0
 
 
 def test_rate_limits_count_ipv6_clients_per_network() -> None:
@@ -1205,13 +1207,19 @@ def test_expired_keys_run_again_and_are_purged(idempotent: TestClient) -> None:
     assert asyncio.run(purge()) == 0
 
 
+@pytest.mark.parametrize("sweeping", [False, True], ids=["purged", "swept"])
 def test_keys_live_until_the_instant_they_expire(
-    idempotent: TestClient, monkeypatch: pytest.MonkeyPatch
+    idempotent: TestClient, monkeypatch: pytest.MonkeyPatch, sweeping: bool
 ) -> None:
-    """At ``expires_at`` a key still replays; it is expired only afterwards."""
+    """At ``expires_at`` a key still replays; it is expired only afterwards.
+
+    Without a worker, the claim's sweep of expired keys leaves it too.
+    """
     idempotent.post("/counter", json={}, headers={"Idempotency-Key": "edge"})
     [row] = stored_keys()
     monkeypatch.setattr(idempotency, "_now", lambda: row["expires_at"])
+    if sweeping:
+        monkeypatch.setattr(idempotency, "MESSAGING", "not.installed")
 
     at_expiry = idempotent.post(
         "/counter", json={}, headers={"Idempotency-Key": "edge"}

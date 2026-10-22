@@ -1,9 +1,11 @@
 """Install ``domainkit.contrib.idempotency`` and add its middleware."""
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from importlib import import_module
 from typing import cast
 
+from domainkit import deadlines
 from domainkit.apps import DomainConfig, registry
 from domainkit.db import SqlAlchemyUnitOfWork, connections
 from domainkit.db.routing import DatabaseRouter, router
@@ -38,9 +40,10 @@ class IdempotencyConfig(DomainConfig):
         """Mark the keyed request committed here, or pin its key; refuse a lost key.
 
         On ``IDEMPOTENCY.DATABASE`` the mark joins this transaction. Elsewhere
-        the key is pinned first, in its own transaction, and the operation
-        notes it: whether or not the commit lands, or reports back, no retry
-        can take the key over and the request never releases it.
+        the key is pinned first, by a statement that commits on its own, and
+        the operation notes it: whether or not the commit lands, or reports
+        back, no retry can take the key over and the request never releases
+        it. The pin keeps to the deadline (``_within_deadline``).
         """
         operation = running_operation()
         if operation is None:
@@ -51,7 +54,10 @@ class IdempotencyConfig(DomainConfig):
             connection = await sql_uow.session.connection()
             held = await connection.execute(mark_committed(operation))
         else:
-            async with connections.engine(database).begin() as connection:
+            async with (
+                _within_deadline(),
+                connections.autocommit(database) as connection,
+            ):
                 held = await connection.execute(pin_lease(operation))
             if held.rowcount:
                 operation.pinned = True  # Before the commit, whatever it reports.
@@ -62,14 +68,21 @@ class IdempotencyConfig(DomainConfig):
             )
 
     async def committed(self, uow: UnitOfWork) -> None:
-        """Note the commit; mark the key now if it went to another database."""
+        """Note the commit; mark the key now if it went to another database.
+
+        The mark keeps to the deadline (``_within_deadline``); cut off, the
+        key stays pinned, so the changes still never run twice.
+        """
         operation = running_operation()
         if operation is None:
             return
         operation.committed = True
         database = self.get_settings().DATABASE
         if cast(SqlAlchemyUnitOfWork, uow).alias != database:
-            async with connections.engine(database).begin() as connection:
+            async with (
+                _within_deadline(),
+                connections.autocommit(database) as connection,
+            ):
                 await connection.execute(mark_committed(operation))
 
     def databases(self, router: DatabaseRouter) -> frozenset[str]:
@@ -79,3 +92,21 @@ class IdempotencyConfig(DomainConfig):
     def get_settings(self) -> IdempotencySettings:
         """Return the validated ``IDEMPOTENCY`` settings."""
         return registry.settings(IdempotencySettings)
+
+
+@asynccontextmanager
+async def _within_deadline() -> AsyncIterator[None]:
+    """Cut the block off at the deadline, unless a timer already does.
+
+    The pin and the late mark commit as they run, without the transaction
+    whose ``SET LOCAL`` lowered ``statement_timeout`` to the time left. A
+    request's own timer cuts them off already; a task that only shares
+    the deadline gets a timer of its own here, at no round trip. A
+    deadline that has passed changes nothing, as for a transaction's
+    timeouts: the work after it must still finish.
+    """
+    if deadlines.enforced() or not deadlines.remaining():
+        yield
+        return
+    async with deadlines.timeout(None):
+        yield

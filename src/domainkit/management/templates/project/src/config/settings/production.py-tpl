@@ -13,7 +13,9 @@ the key, move the old one to {{ prefix }}SECRET_KEY_FALLBACKS until what it
 signed has expired. The API docs
 are off, browsers are told to use HTTPS only, and callers are rate limited;
 {{ prefix }}API_DOCS, {{ prefix }}SECURE_HSTS_SECONDS, and {{ prefix }}RATE_LIMIT change that.
-Logs are JSON lines on stdout, at {{ prefix }}LOG_LEVEL (INFO unless set).
+Logs are JSON lines on stdout, at {{ prefix }}LOG_LEVEL (INFO unless set);
+{{ prefix }}ACCESS_LOG_SAMPLE_RATE writes a share of the access lines (all
+unless set), always those answered 400 and up, and slow ones.
 """
 
 from domainkit.log import build_logging_config
@@ -36,4 +38,11 @@ SECURE_HSTS_SECONDS = env.int("SECURE_HSTS_SECONDS", 31_536_000)  # A year.
 # Counted per process; behind several replicas, count in Redis:
 # RATE_LIMIT_BACKEND = "domainkit.http.ratelimit.RedisBackend"
 RATE_LIMIT = env.str("RATE_LIMIT", "300/minute")
+# Who a token names is kept for 5 seconds per process, so a revoked token
+# works up to 5 seconds longer in the other replicas; with a Redis cache in
+# CACHES, every replica sees a revocation at once:
+# AUTH = {"PRINCIPAL_CACHE": {"STAMPS": "shared"}}
 LOGGING = build_logging_config(log_format="json", level=env.str("LOG_LEVEL", "INFO"))
+# 0.1 writes about one successful request in ten (docs/runtime.md, "Sampling
+# the access log"); every answer from 400 up, and slow ones, are always written.
+ACCESS_LOG_SAMPLE_RATE = env.float("ACCESS_LOG_SAMPLE_RATE", 1.0)

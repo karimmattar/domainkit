@@ -34,12 +34,13 @@ from domainkit.contrib.auth import (
 )
 from domainkit.contrib.auth.hashers import HashingPool
 from domainkit.contrib.auth.middleware import AuthenticationMiddleware
-from domainkit.contrib.auth.repositories import TokenStore
+from domainkit.contrib.auth.repositories import PrincipalStore
 from domainkit.contrib.auth.tables import tokens
 from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
+from domainkit.http.ratelimit import address_key
 from domainkit.http.websockets import MIDDLEWARE as WEBSOCKET_LIMITS
 from domainkit.log import SECURITY_LOGGER
 from domainkit.management import call_command
@@ -438,13 +439,13 @@ def test_refused_credentials_count_against_the_rate_limit(
     """Past ``RATE_LIMIT``, an address's credentials are refused unread."""
     create_user("alice")
     lookups: list[str] = []
-    find = TokenStore.find
+    find = PrincipalStore.credential
 
-    async def counted(self: TokenStore, raw: str) -> Any:  # noqa: ANN401
-        lookups.append(raw)
-        return await find(self, raw)
+    async def counted(self: PrincipalStore, digest: str) -> Any:  # noqa: ANN401
+        lookups.append(digest)
+        return await find(self, digest)
 
-    monkeypatch.setattr(TokenStore, "find", counted)
+    monkeypatch.setattr(PrincipalStore, "credential", counted)
     guess = bearer("dkt_" + "A" * 43)  # Well formed, so it is looked up.
     with override_settings(RATE_LIMIT="3/minute"):
         client = api()
@@ -519,13 +520,13 @@ def test_malformed_tokens_are_refused_without_a_lookup(
 ) -> None:
     """Only a token of the issued form is looked up."""
     lookups: list[str] = []
-    find = TokenStore.find
+    find = PrincipalStore.credential
 
-    async def counted(self: TokenStore, raw: str) -> Any:  # noqa: ANN401
-        lookups.append(raw)
-        return await find(self, raw)
+    async def counted(self: PrincipalStore, digest: str) -> Any:  # noqa: ANN401
+        lookups.append(digest)
+        return await find(self, digest)
 
-    monkeypatch.setattr(TokenStore, "find", counted)
+    monkeypatch.setattr(PrincipalStore, "credential", counted)
     client = api()
     for raw in ("dkt_unknown", "dkt_" + "A" * 42, "dkt_" + "A" * 44, "dkt_" + "+" * 43):
         response = client.get("/whoami", headers=bearer(raw))
@@ -1262,3 +1263,48 @@ def test_token_commands_are_audited(api: Api) -> None:
     )
     (logged_out,) = audited("auth.user_logged_out")
     assert logged_out["details"] == {"user_id": str(alice), "everywhere": True}
+
+
+def test_nothing_held_means_no_address_is_looked_at(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refused-credential hold reads the address only while one is held."""
+    create_user("alice")
+    client = api()
+    token = bearer(login(client, "alice")["access_token"])
+    looked: list[object] = []
+    real = address_key
+
+    def counted(scope: Any) -> str:  # noqa: ANN401 - an ASGI scope.
+        looked.append(scope)
+        return real(scope)
+
+    monkeypatch.setattr(auth_middleware, "address_key", counted)
+    assert client.get("/whoami", headers=token).json()["user"] == "alice"
+    assert looked == []
+    _find(client.app, AuthenticationMiddleware)._hold("ip:203.0.113.250", 60)
+    assert client.get("/whoami", headers=token).json()["user"] == "alice"
+    assert len(looked) == 1
+
+
+def test_requests_without_a_token_read_no_settings(
+    use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``TokenAuthentication`` and ``CookieAuthentication`` look at headers first."""
+    from domainkit.contrib.auth import cookies
+
+    use_auth()
+    read: list[str] = []
+    monkeypatch.setattr(authentication, "auth_settings", lambda: read.append("t"))
+    monkeypatch.setattr(cookies, "auth_settings", lambda: read.append("c"))
+    scope = {"type": "http", "headers": [(b"accept", b"application/json")]}
+
+    async def anonymous() -> tuple[object, object]:
+        connection = HTTPConnection(scope)
+        return (
+            await authentication.TokenAuthentication().authenticate(connection),
+            await cookies.CookieAuthentication().authenticate(connection),
+        )
+
+    assert run_async(anonymous()) == (None, None)
+    assert read == []

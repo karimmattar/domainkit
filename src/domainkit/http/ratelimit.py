@@ -24,6 +24,7 @@ the global limit, with the same backends::
     async def export(...): ...
 """
 
+import functools
 import hashlib
 import inspect
 import ipaddress
@@ -38,7 +39,6 @@ from dataclasses import dataclass
 from typing import Final, Literal, Protocol
 
 from fastapi import status
-from starlette.datastructures import MutableHeaders
 from starlette.exceptions import WebSocketException
 from starlette.requests import HTTPConnection
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -50,6 +50,7 @@ from domainkit.conf.global_settings import REDIS_SCHEMES
 from domainkit.context import current_request
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import APIError, error_response
+from domainkit.http.middleware import ADDRESS_CACHE, MAX_CACHED_ADDRESS, set_headers
 from domainkit.utils.module_loading import import_string
 from domainkit.utils.rates import parse_rate
 
@@ -255,6 +256,8 @@ TOO_MANY_REQUESTS: Final = "Too many requests; slow down."
 """The detail of every 429 a limit answers with."""
 _DENIAL: Final = "websocket.http.response"
 """The ASGI extension that lets a WebSocket handshake be refused with a 429."""
+ADDRESS: Final = "domainkit.address"
+"""Scope key: the request's client host and ``address_key`` for it, once worked out."""
 
 
 class RateLimitMiddleware:
@@ -283,15 +286,17 @@ class RateLimitMiddleware:
             return
         limit, period = self.rate
         decision = await self.backend.hit(_caller(scope), limit, period)
-        headers = _quota(limit, decision)
         if not decision.allowed:
             await refuse(scope, receive, send, limit, decision)
             return
+        headers = [
+            (name.lower().encode("latin-1"), value.encode("latin-1"))
+            for name, value in _quota(limit, decision).items()
+        ]
 
         async def send_with_headers(message: Message) -> None:
             if message["type"] in {"http.response.start", "websocket.accept"}:
-                message.setdefault("headers", [])
-                MutableHeaders(scope=message).update(headers)
+                message["headers"] = set_headers(message.get("headers", ()), headers)
             await send(message)
 
         await self.app(scope, receive, send_with_headers)
@@ -314,9 +319,22 @@ async def refuse(
 
 
 def address_key(scope: Scope) -> str:
-    """The key a caller without an actor is counted by: its address."""
+    """The key a caller without an actor is counted by: its address.
+
+    It is worked out once per request: the scope keeps it (``ADDRESS``)
+    with the client host it is for, and it is used again only for that
+    host. A key worked out before ``ProxyHeadersMiddleware`` put the real
+    client in is not used for the real client.
+    """
     client = scope.get("client")
-    return f"ip:{client_group(client[0]) if client else 'unknown'}"
+    host = client[0] if client else None
+    kept = scope.get(ADDRESS)
+    if kept is not None and kept[0] == host:
+        known: str = kept[1]
+        return known
+    key = f"ip:{'unknown' if host is None else client_group(host)}"
+    scope[ADDRESS] = (host, key)
+    return key
 
 
 def _caller(scope: Scope) -> str:
@@ -341,17 +359,47 @@ def client_group(host: str) -> str:
 
     IPv4-mapped IPv6 addresses count as their IPv4 address. Hosts that are
     not addresses (a test client's name) are returned unchanged.
+
+    Groups are remembered for the latest ``ADDRESS_CACHE`` hosts, so a
+    client seen again is not parsed again (an IPv6 network takes about
+    25 µs to work out): by host, and for IPv6 by host and
+    ``RATE_LIMIT_IPV6_PREFIX``, which only IPv6 hosts read.
     """
+    remembered = len(host) <= MAX_CACHED_ADDRESS
+    group = _cached_address_group(host) if remembered else _address_group(host)
+    if group is not None:
+        return group
+    prefix = settings.RATE_LIMIT_IPV6_PREFIX
+    return _cached_network(host, prefix) if remembered else _network(host, prefix)
+
+
+@functools.lru_cache(maxsize=ADDRESS_CACHE)
+def _cached_address_group(host: str) -> str | None:
+    """``_address_group``, remembered for the latest hosts."""
+    return _address_group(host)
+
+
+@functools.lru_cache(maxsize=ADDRESS_CACHE)
+def _cached_network(host: str, prefix: int) -> str:
+    """``_network``, remembered for the latest IPv6 hosts and prefixes."""
+    return _network(host, prefix)
+
+
+def _address_group(host: str) -> str | None:
+    """``host``'s group if no prefix is needed; None for an IPv6 address."""
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
         return host
     if isinstance(address, ipaddress.IPv6Address):
-        if address.ipv4_mapped is not None:
-            return str(address.ipv4_mapped)
-        prefix = settings.RATE_LIMIT_IPV6_PREFIX
-        return str(ipaddress.IPv6Interface((address, prefix)).network)
+        return None if address.ipv4_mapped is None else str(address.ipv4_mapped)
     return str(address)
+
+
+def _network(host: str, prefix: int) -> str:
+    """The network of ``prefix`` bits that IPv6 ``host`` is in."""
+    address = ipaddress.IPv6Address(host)
+    return str(ipaddress.IPv6Interface((address, prefix)).network)
 
 
 _SCOPE: Final = re.compile(r"[A-Za-z0-9_.-]{1,128}")

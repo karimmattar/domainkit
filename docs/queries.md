@@ -382,3 +382,77 @@ refuses to commit (`ReadOnlyError`). The SQL one reads from a replica when
 the database names one ([databases.md](databases.md#read-replicas)), and
 its PostgreSQL transaction is `READ ONLY`, so the server refuses writes
 too. Row locks need a writable unit of work.
+
+### How read-only work reads
+
+`reads=` picks how a SQL unit of work reads, and makes it read-only:
+
+```python
+from domainkit.db import Reads
+
+async with OrdersUnitOfWork(reads=Reads.STATEMENTS) as uow:  # one round trip
+    order = await uow.orders.get(order_id)
+
+async with OrdersUnitOfWork(reads=Reads.SNAPSHOT) as uow:  # one snapshot
+    order = await uow.orders.get(order_id)
+    lines = await uow.lines.filter(F("order_id") == order_id)
+
+
+class ReportsUnitOfWork(SqlAlchemyUnitOfWork):
+    reads = Reads.SNAPSHOT  # always
+```
+
+| `reads` | On PostgreSQL | Statements see |
+| --- | --- | --- |
+| `TRANSACTION` (`readonly=True` alone) | A `READ ONLY` transaction: `BEGIN`, the statements, `ROLLBACK` | What was committed when each started |
+| `STATEMENTS` | Each statement on its own: no `BEGIN`, no `ROLLBACK` | What was committed when each started |
+| `SNAPSHOT` | A `REPEATABLE READ`, `READ ONLY` transaction | What was committed when the first started |
+
+- **Snapshots.** Two statements of a `STATEMENTS` or `TRANSACTION` unit of
+  work may see different data: a write that commits between them shows in
+  the second. When reads must agree with each other, such as an order and
+  its lines, use `SNAPSHOT`.
+- **Writes are refused.** With `STATEMENTS` or `SNAPSHOT`, a flush, or an
+  `INSERT`, `UPDATE`, `DELETE` or DDL statement, raises `ReadOnlyError`
+  before anything is sent. On PostgreSQL the server refuses writes in SQL
+  text too (SQLSTATE 25006), whichever way the unit of work reads, and
+  `commit()` always raises `ReadOnlyError`. Changes left unflushed at the
+  end are dropped. With `STATEMENTS`, the server's refusal rests on the
+  session's `default_transaction_read_only`: SQL text in the unit of work
+  that turns it off could write until the unit of work ends. On SQLite,
+  every read-only unit of work runs in a transaction that is rolled back,
+  so whatever SQL text writes there is undone.
+- **One statement, one transaction.** In `STATEMENTS`, `SET LOCAL` and
+  transaction-scoped advisory locks (`pg_advisory_xact_lock`) end with the
+  statement that takes them: they do nothing for the next one. What you
+  set for the session (`SET`, `set_config(..., false)`, `SET ROLE`,
+  `LISTEN`, session advisory locks) lasts until the unit of work ends;
+  then the connection is reset before anyone else gets it. The reset
+  costs one round trip, unless all the unit of work ran was plain
+  `SELECT` statements of columns, which change nothing: SQL text, a
+  function call or a statement run many times always count as changes.
+  Use `TRANSACTION` or `SNAPSHOT` when statements must share a setting
+  scoped to a transaction.
+- **Connections the server closed.** After a restart or failover, a
+  `STATEMENTS` read gets a fresh connection. A statement whose connection
+  closes while it runs fails, and is never run again: it may have had
+  effects outside its transaction, through `dblink` or a foreign table.
+- **Deadlines.** A `STATEMENTS` read is cut off at the request's deadline,
+  like everything the request awaits, and the driver cancels it on the
+  server. Work that shares a deadline without enforcing it, such as a task
+  the request starts, bounds each statement by the time left.
+  `STATEMENT_TIMEOUT` still applies to every statement
+  ([runtime.md](runtime.md#what-keeps-to-it)).
+- **Where it applies.** `STATEMENTS` runs without a transaction on
+  PostgreSQL through asyncpg or psycopg, on a pool of its own (see
+  [databases.md](databases.md#connection-pools)). Through PgBouncer
+  (`PGBOUNCER`), which keeps no timeouts in the session, and on SQLite, it
+  reads in the `READ ONLY` transaction. SQLite's driver begins a
+  transaction only to write; there every read-only unit of work begins its
+  own before it reads, so its reads agree, and holds SQLite's read lock
+  until it ends.
+- **Streaming** (`session.stream()`) needs a transaction: use
+  `TRANSACTION` or `SNAPSHOT` for it.
+
+ADR [0061](adr/0061-read-without-a-transaction-and-ping-once.md) explains
+the choices.

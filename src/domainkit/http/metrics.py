@@ -9,6 +9,7 @@ per container (or set up prometheus_client's multiprocess mode).
 
 import hmac
 import logging
+import threading
 import time
 from collections.abc import Awaitable, Callable
 from typing import Final
@@ -66,6 +67,9 @@ DEADLINES: Final = Counter(
     "HTTP requests answered 503 deadline_exceeded.",
 )
 
+MAX_SERIES: Final = 4096
+"""Series of the request metrics whose handles ``MetricsMiddleware`` keeps."""
+
 _refreshers: list[Callable[[], Awaitable[None]]] = []
 logger = logging.getLogger(__name__)
 
@@ -96,12 +100,27 @@ def observe_deadline_exceeded() -> None:
     DEADLINES.inc()
 
 
+type _Series = tuple[Counter, Histogram]
+
+
 class MetricsMiddleware:
-    """Count requests and time them, by method, route template, and status."""
+    """Count requests and time them, by method, route template, and status.
+
+    Each series' handle (``labels()``) is looked up once and kept, for at
+    most ``MAX_SERIES`` series; past that, handles are looked up for each
+    request. Labels come from methods, route templates, and statuses, never
+    from raw paths, so a service has few series. Kept handles keep counting
+    in their series: clear the metrics (``REQUESTS.clear()``) only with no
+    application serving.
+    """
 
     def __init__(self, app: ASGIApp) -> None:
         """Wrap ``app``."""
         self.app = app
+        self._in_progress: dict[str, Gauge] = {}
+        """One gauge per method seen: ``METHODS`` and ``OTHER``, so few."""
+        self._series: dict[tuple[str, str, int], _Series] = {}
+        self._lock = threading.Lock()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Record one request."""
@@ -118,21 +137,43 @@ class MetricsMiddleware:
                 status_code = message["status"]
             await send(message)
 
-        IN_PROGRESS.labels(method).inc()
+        in_progress = self._in_progress.get(method)
+        if in_progress is None:
+            # labels() returns the same gauge to a thread that races here.
+            in_progress = self._in_progress[method] = IN_PROGRESS.labels(method)
+        in_progress.inc()
         try:
             await self.app(scope, receive, send_with_status)
         finally:
-            IN_PROGRESS.labels(method).dec()
-            route = route_template(scope)
-            REQUESTS.labels(method, route, str(status_code)).inc()
-            DURATION.labels(method, route).observe(time.perf_counter() - started)
+            in_progress.dec()
+            requests, duration = self.series(method, route_template(scope), status_code)
+            requests.inc()
+            duration.observe(time.perf_counter() - started)
+
+    def series(self, method: str, route: str, status_code: int) -> _Series:
+        """The request counter and duration of one series, kept once looked up."""
+        key = (method, route, status_code)
+        found = self._series.get(key)
+        if found is not None:
+            return found
+        found = (
+            REQUESTS.labels(method, route, str(status_code)),
+            DURATION.labels(method, route),
+        )
+        # Event loops on several threads (free-threaded Python) share it.
+        with self._lock:
+            if len(self._series) < MAX_SERIES:
+                self._series[key] = found
+        return found
 
 
 def route_template(scope: Scope) -> str:
     """Return the matched route's full path template, or ``unmatched``.
 
-    FastAPI keeps nested routers and records the effective, prefixed route in
-    ``scope["fastapi"]``; ``scope["route"]`` alone would drop the prefixes.
+    A flattened route (``domainkit.http.routing``) is ``scope["route"]``,
+    with its full path. For a route of a router FastAPI keeps nested, the
+    effective, prefixed route is in ``scope["fastapi"]``: ``scope["route"]``
+    alone would drop the prefixes.
     """
     fastapi_scope = scope.get("fastapi")
     effective = (

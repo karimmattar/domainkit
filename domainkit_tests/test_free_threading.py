@@ -2,14 +2,17 @@
 
 Free-threaded Python (3.14t), and servers that run a loop per thread, share
 one rate limiter, one middleware, one hashing pool, one application's live
-connection slots, the event bus, an HTTP client's circuit breaker, and the
-guard's lookup threads between threads, and the registries that keep each
-loop's tasks, publishers, and brokers. Each test drives them from several
-threads at once and checks what must always hold, and that the state is
-only touched with the lock held.
+connection slots, the event bus, an HTTP client's circuit breaker, the
+guard's lookup threads, the remembered client addresses, the handles of
+the request metrics, the principal cache, and the grants principals share
+between threads, and the registries that keep each loop's tasks,
+publishers, and brokers. Each test drives them from several threads at
+once and checks what must always hold, and that the state is only touched
+with the lock held (where there is one).
 """
 
 import asyncio
+import ipaddress
 import os
 import random
 import socket
@@ -17,12 +20,15 @@ import subprocess
 import sys
 import sysconfig
 import threading
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterator
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from weakref import WeakKeyDictionary
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import State
 from starlette.requests import HTTPConnection
 from starlette.types import Message, Receive, Scope, Send
@@ -31,20 +37,26 @@ from domainkit import clock as clock_module
 from domainkit import tasks
 from domainkit.broker import Broker, BrokerHandler, MemoryBroker
 from domainkit.conf import override_settings
-from domainkit.contrib.auth import AllowAny
+from domainkit.contrib.audit import personal
+from domainkit.contrib.auth import AllowAny, principals
 from domainkit.contrib.auth import middleware as middleware_module
 from domainkit.contrib.auth.hashers import HashingPool
 from domainkit.contrib.auth.middleware import AuthenticationMiddleware
+from domainkit.contrib.auth.principals import ALL, Entry, PrincipalCache
 from domainkit.contrib.messaging import MessagingSettings, dispatch
+from domainkit.db import Reads, connections
 from domainkit.ddd import DomainEvent, EventBus
-from domainkit.http import live
+from domainkit.http import live, metrics, ratelimit
 from domainkit.http.client import BREAKER_HOSTS, CircuitBreaker
 from domainkit.http.guard import GuardResolver
 from domainkit.http.live import Slots
 from domainkit.http.live_events import LiveEvents
-from domainkit.http.ratelimit import MemoryBackend
+from domainkit.http.metrics import REQUESTS, MetricsMiddleware
+from domainkit.http.middleware import ProxyHeadersMiddleware, _address
+from domainkit.http.ratelimit import MemoryBackend, client_group
 from domainkit.http.shedding import QUEUE_FULL, ShedReport
 from domainkit.http.websockets import WebSocketLimitsMiddleware
+from domainkit.log import JsonFormatter
 from domainkit_tests.conftest import UseAuth
 
 THREADS = 8
@@ -133,6 +145,141 @@ class CheckedPool(HashingPool):
         if hasattr(self, "_lock"):
             assert self._lock.locked()
         self._pending = value
+
+
+def test_holds_are_skipped_only_while_none_is_held(use_auth: UseAuth) -> None:
+    """Requests read whether anything is held without the lock, never wrongly.
+
+    Threads hold and let go of addresses while others ask, as each request
+    does, whether to look its address up: an address held for good is
+    found by every thread once it is held.
+    """
+    use_auth(settings={"RATE_LIMIT": "10/minute"})
+    middleware = AuthenticationMiddleware(app=lambda *args: None)  # type: ignore[arg-type]
+    middleware._hold("ip:192.0.2.1", 3600)
+
+    def ask(index: int) -> int:
+        found = 0
+        for round_ in range(500):
+            middleware._hold(f"ip:203.0.113.{index}", -1 if round_ % 2 else 30)
+            held = middleware._held("ip:192.0.2.1") if middleware.held else None
+            found += held is not None
+        return found
+
+    assert on_threads(ask) == [500] * THREADS
+
+
+class _Guarded(OrderedDict[Any, Any]):
+    """An ``OrderedDict`` that is only touched under ``lock``."""
+
+    def __init__(self, lock: Any) -> None:  # noqa: ANN401 - a lock.
+        """Watch ``lock``."""
+        super().__init__()
+        self.lock = lock
+
+    def _check(self) -> None:
+        assert self.lock.locked()
+
+    def __getitem__(self, key: Any) -> Any:  # noqa: ANN401
+        self._check()
+        return super().__getitem__(key)
+
+    def __setitem__(self, key: Any, value: Any) -> None:  # noqa: ANN401
+        self._check()
+        super().__setitem__(key, value)
+
+    def get(self, key: Any, default: Any = None) -> Any:  # noqa: ANN401
+        self._check()
+        return super().get(key, default)
+
+    def pop(self, key: Any, *default: Any) -> Any:  # noqa: ANN401
+        self._check()
+        return super().pop(key, *default)
+
+    def move_to_end(self, key: Any, last: bool = True) -> None:  # noqa: ANN401
+        self._check()
+        super().move_to_end(key, last)
+
+    def popitem(self, last: bool = True) -> tuple[Any, Any]:
+        self._check()
+        return super().popitem(last)
+
+
+def test_the_principal_cache_stays_whole_on_every_thread() -> None:
+    """Keeps, hits, invalidations, and evictions at once: bounded and consistent.
+
+    Above all, nothing read before an invalidation of what it rests on is
+    kept after it, whatever the interleaving.
+    """
+    cache = PrincipalCache(recent=32)
+    cache._entries = _Guarded(cache._lock)
+    cache._invalidated = _Guarded(cache._lock)
+
+    def hammer(index: int) -> int:
+        chosen = random.Random(index)  # noqa: S311 - the order of the calls only.
+        kept = 0
+        for round_ in range(1_500):
+            user = f"user:{chosen.randrange(12)}"
+            started = cache.begin()
+            entry = Entry(
+                ("token", f"{index}-{round_ % 40}"),
+                None,
+                targets=(user, f"token:{index}-{round_ % 40}"),
+                started=started,
+                keep=True,
+                deadline=10.0,
+            )
+            step = chosen.random()
+            if step < 0.5:
+                kept += cache.put(entry, limit=64) is not None
+            elif step < 0.8:
+                found = cache.get(entry.key, now=chosen.choice((1.0, 20.0)))
+                if found is not None:
+                    cache.claim_touch(found, clock_module.now())
+            elif step < 0.97:
+                cache.invalidate([user])
+            elif step < 0.99:
+                cache.discard(entry)
+            else:
+                cache.invalidate([ALL])
+        return kept
+
+    assert sum(on_threads(hammer)) > 0
+
+    assert len(cache) <= 64
+    with cache._lock:
+        indexed = {key for keys in cache._by_target.values() for key in keys}
+        assert indexed == set(cache._entries)
+        for key, entry in cache._entries.items():
+            assert entry.key == key
+            assert entry.started >= cache._floor
+            for target in (ALL, *entry.targets):
+                assert cache._invalidated.get(target, -1) <= entry.started
+                assert target == ALL or key in cache._by_target[target]
+
+
+def test_shared_grants_stay_equal_and_bounded_on_every_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``shared`` takes no lock: each value comes back equal, the table bounded.
+
+    Threads that intern one value at once may each keep their copy, and may
+    restart interning together: a copy more, never another value.
+    """
+    monkeypatch.setattr(principals, "INTERNED_MAX", 64)
+    monkeypatch.setattr(principals, "_INTERNED", {})
+
+    def intern(index: int) -> int:
+        chosen = random.Random(index)  # noqa: S311 - the values only.
+        wrong = 0
+        for _ in range(5_000):
+            number = chosen.randrange(200)
+            value = (number, f"grant {number}")  # A new object each time.
+            wrong += principals.shared(value) != value
+        return wrong
+
+    assert on_threads(intern) == [0] * THREADS
+    assert len(principals._INTERNED) < 64 + THREADS
 
 
 def test_the_hashing_pool_counts_calls_from_every_thread() -> None:
@@ -566,6 +713,70 @@ def test_the_guards_lookups_are_counted_from_every_thread(
     assert (resolver.running, resolver._running) == (0, {})
 
 
+def test_loops_on_threads_get_their_own_engines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each loop makes its own engines, reads alone too; closing drops them."""
+    engines = CheckedRegistry[asyncio.AbstractEventLoop, Any](connections._lock)
+    monkeypatch.setattr(connections, "_engines", engines)
+    network = "postgresql+asyncpg://app@db.invalid/app"  # Never connected to.
+
+    async def use(close: bool) -> bool:
+        engine = connections.engine()
+        reads = connections.session(readonly=True, reads=Reads.STATEMENTS).bind
+        same = connections.engine() is engine
+        again = connections.session(readonly=True, reads=Reads.STATEMENTS).bind
+        if close:
+            await connections.close_all()
+        return same and again is reads and reads is not engine
+
+    def loops(index: int) -> list[bool]:
+        return [asyncio.run(use(n % 2 == 0)) for n in range(LOOPS)]
+
+    with override_settings(DATABASES={"default": {"URL": network}}):
+        assert on_threads(loops) == [[True] * LOOPS] * THREADS
+        asyncio.run(use(close=True))
+    with connections._lock:
+        assert len(list(engines)) <= THREADS * LOOPS // 2 + 1  # Unclosed loops'.
+
+
+def test_subject_keys_kept_by_transactions_on_every_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Transactions on many threads keep their own keys; forgetting reaches all.
+
+    Every forget is counted once, and a key read before any forget began
+    is never kept, whichever thread forgot what.
+    """
+    held = CheckedRegistry[Any, dict[str, bytes]](personal._held_lock)
+    monkeypatch.setattr(personal, "_held", held)
+    sessions = []
+    for index in range(THREADS):
+        session = AsyncSession()
+        session.sync_session.begin()
+        mine = {"shared": b"shared", f"s{index}": bytes([index])}
+        personal._keep(session, mine, personal._forgotten())
+        sessions.append(session)
+    began = personal._forgotten()
+
+    def work(index: int) -> list[bool]:
+        session, results = sessions[index], []
+        for _ in range(LOOPS):
+            read = personal._forgotten()
+            personal._drop({f"gone{index}"}.__contains__)
+            personal._keep(session, {f"late{index}": b"late"}, read)
+            kept = personal._kept(session, [f"late{index}", f"s{index}"])
+            results.append(kept == {f"s{index}": bytes([index])})
+        personal._drop({"shared"}.__contains__)
+        results.append(personal._kept(session, ["shared"]) == {})
+        return results
+
+    assert on_threads(work) == [[True] * (LOOPS + 1)] * THREADS
+    assert personal._forgotten() == began + THREADS * (LOOPS + 1)
+    for session in sessions:
+        session.sync_session.close()
+
+
 IMPORT_EVERYTHING = """
 import importlib, pkgutil, sys
 import domainkit
@@ -577,6 +788,28 @@ for module in pkgutil.walk_packages(domainkit.__path__, "domainkit."):
         importlib.import_module(module.name)
 print(sys._is_gil_enabled())
 """
+
+
+def test_one_json_formatter_dates_lines_from_every_thread() -> None:
+    """Its cached second is one tuple: no line gets another second's date.
+
+    Each thread formats seconds of its own day, so the cache changes hands
+    all the time.
+    """
+    formatter = JsonFormatter()
+
+    def stamps(index: int) -> list[tuple[str, str]]:
+        times = [index * 86_400.0 + second + 0.25 for second in range(300)]
+        return [
+            (
+                formatter.timestamp(created),
+                datetime.fromtimestamp(created, UTC).isoformat(timespec="milliseconds"),
+            )
+            for created in times
+        ]
+
+    for written in on_threads(stamps):
+        assert all(stamp == expected for stamp, expected in written)
 
 
 def test_importing_domainkit_keeps_the_gil_off_where_it_is_off() -> None:
@@ -601,3 +834,72 @@ def test_importing_domainkit_keeps_the_gil_off_where_it_is_off() -> None:
     assert child.returncode == 0, child.stderr
     free_threaded = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
     assert child.stdout.strip() == str(not free_threaded)
+
+
+def test_client_groups_are_remembered_alike_from_every_thread() -> None:
+    """Threads filling one memory of groups at once each get the parsed group."""
+    ratelimit._cached_address_group.cache_clear()
+    ratelimit._cached_network.cache_clear()
+    networks = {
+        f"2001:db8:{n:x}::1": str(ipaddress.IPv6Network(f"2001:db8:{n:x}::/64"))
+        for n in range(100)
+    }
+    addresses = {f"203.0.113.{n}": f"203.0.113.{n}" for n in range(100)}
+    groups = networks | addresses
+
+    def group_all(seed: int) -> bool:
+        order = random.Random(seed).sample(list(groups), len(groups))  # noqa: S311 - order only.
+        return all(client_group(host) == groups[host] for host in order)
+
+    assert all(on_threads(group_all))
+    assert ratelimit._cached_address_group.cache_info().currsize == len(groups)
+    assert ratelimit._cached_network.cache_info().currsize == len(networks)
+
+
+def test_a_proxys_remembered_addresses_hold_from_every_thread() -> None:
+    """One middleware, many threads parsing hops: the parsed answer each time."""
+    with override_settings(TRUSTED_PROXIES=["10.0.0.0/8"]):
+        proxy = ProxyHeadersMiddleware(app=lambda *args: None)  # type: ignore[arg-type]
+    hops = [f"10.0.{n}.1" for n in range(50)] + [
+        f"[2001:db8::{n:x}]:443" for n in range(50)
+    ]
+
+    def parse_all(seed: int) -> bool:
+        order = random.Random(seed).sample(hops, len(hops))  # noqa: S311 - order only.
+        return all(proxy.address(hop) == _address(proxy.networks, hop) for hop in order)
+
+    assert all(on_threads(parse_all))
+
+
+class LockedSeries(dict[tuple[str, str, int], Any]):
+    """The kept metric handles, which may only grow with their lock held."""
+
+    def __init__(self, lock: Any) -> None:  # noqa: ANN401 - a lock.
+        """Check ``lock`` on every write."""
+        super().__init__()
+        self.lock = lock
+
+    def __setitem__(self, key: tuple[str, str, int], value: Any) -> None:  # noqa: ANN401 - a handle.
+        """Keep a handle, under the lock."""
+        assert self.lock.locked()
+        super().__setitem__(key, value)
+
+
+def test_metric_handles_are_kept_once_from_every_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every thread counts in the one series; the kept handles stay bounded."""
+    monkeypatch.setattr(metrics, "MAX_SERIES", 10)
+    counter = MetricsMiddleware(app=lambda *args: None)  # type: ignore[arg-type]
+    counter._series = LockedSeries(counter._lock)
+    keys = [("GET", f"/threads/{n}", 200) for n in range(30)]
+
+    def count_all(seed: int) -> bool:
+        order = random.Random(seed).sample(keys, len(keys))  # noqa: S311 - order only.
+        return all(
+            counter.series(*key)[0] is REQUESTS.labels(key[0], key[1], str(key[2]))
+            for key in order
+        )
+
+    assert all(on_threads(count_all))
+    assert len(counter._series) == 10

@@ -388,3 +388,19 @@ async def test_the_deadline_is_seen_by_tasks_started_inside() -> None:
             assert bound.deadline is not None
             bound.deadline.clear()  # The task's context holds the same deadline.
             assert await asyncio.create_task(left()) is None
+
+
+async def test_enforced_says_whether_a_timer_cuts_this_task_off() -> None:
+    """The task that entered a block, and its inner blocks; not a task sharing it."""
+
+    async def in_a_task() -> bool:
+        return deadlines.enforced()
+
+    assert deadlines.enforced() is False
+    async with deadlines.timeout():  # Neither seconds nor a deadline.
+        assert deadlines.enforced() is False
+    async with deadlines.timeout(30.0):
+        assert deadlines.enforced() is True
+        async with deadlines.timeout():  # Bounded by the outer deadline.
+            assert deadlines.enforced() is True
+        assert await asyncio.create_task(in_a_task()) is False

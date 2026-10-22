@@ -8,6 +8,7 @@ from .repositories import (
     GroupRepository,
     MfaStore,
     PermissionStore,
+    PrincipalStore,
     SignupStore,
     TokenStore,
     UserRepository,
@@ -28,6 +29,7 @@ class AuthUnitOfWork(SqlAlchemyUnitOfWork):
     users: UserRepository
     groups: GroupRepository
     permissions: PermissionStore
+    principals: PrincipalStore
     tokens: TokenStore
     mfa: MfaStore
     signups: SignupStore
@@ -37,6 +39,7 @@ class AuthUnitOfWork(SqlAlchemyUnitOfWork):
         self.users = UserRepository(session)
         self.groups = GroupRepository(session)
         self.permissions = PermissionStore(session)
+        self.principals = PrincipalStore(session)
         self.tokens = TokenStore(session)
         self.mfa = MfaStore(session)
         self.signups = SignupStore(session)

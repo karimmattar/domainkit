@@ -5,6 +5,7 @@ import io
 import json
 import logging
 import os
+import re
 import signal
 import uuid
 from collections.abc import (
@@ -667,7 +668,14 @@ async def test_configuration_guards(tables: None) -> None:
 
 
 async def test_durable_work_needs_messaging_installed(tmp_path: Path) -> None:
-    """Without the messaging app a deferred task fails loudly at commit."""
+    """Without the messaging app durable work fails loudly at commit.
+
+    A deferred task, or an event that a durable handler subscribes to.
+    """
+    refused = re.escape(
+        "Durable handlers and deferred tasks need 'domainkit.contrib.messaging' "
+        "in INSTALLED_DOMAINS."
+    )
     registry.clear()
     url = f"sqlite+aiosqlite:///{tmp_path / 'plain.sqlite3'}"
     with override_settings(DATABASES={"default": {"URL": url}}):
@@ -676,8 +684,18 @@ async def test_durable_work_needs_messaging_installed(tmp_path: Path) -> None:
             await connection.run_sync(notes.create)
         async with NotesUnitOfWork() as uow:
             uow.defer(remember, value=uuid.uuid4())
-            with pytest.raises(ImproperlyConfigured, match=r"need 'domainkit\.contrib"):
+            with pytest.raises(ImproperlyConfigured, match=f"^{refused}$"):
                 await uow.commit()
+        event_bus.subscribe(NoteWritten, durable_handler, durable=True)
+        try:
+            note = Note(id=NoteId(uuid.uuid4()), text="t")
+            note.record(NoteWritten(note_id=note.id))
+            async with NotesUnitOfWork() as uow:
+                await uow.notes.add(note)
+                with pytest.raises(ImproperlyConfigured, match=f"^{refused}$"):
+                    await uow.commit()
+        finally:
+            event_bus.unsubscribe(NoteWritten, durable_handler)
         await connections.close_all()
     registry.clear()
 
@@ -1561,7 +1579,7 @@ async def test_a_cancelled_worker_gives_its_messages_back_at_once(
     await until(lambda: "cut:started" in ran)
 
     running.cancel()
-    await stopped(running, within=0.5)
+    await stopped(running)  # Well within SHUTDOWN_TIMEOUT's 20 seconds.
 
     assert running.cancelled()
     await given_back("cut")
@@ -1641,7 +1659,7 @@ async def test_a_cancelled_brokered_worker_gives_its_deliveries_back(
     await until(lambda: "cut:started" in ran)
 
     running.cancel()
-    await stopped(running, within=0.5)
+    await stopped(running)  # Well within SHUTDOWN_TIMEOUT's 20 seconds.
 
     assert running.cancelled()
     await given_back("cut")

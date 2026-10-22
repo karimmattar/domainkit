@@ -1,6 +1,8 @@
 """Settings of ``domainkit.contrib.idempotency``: ``IDEMPOTENCY = {...}``."""
 
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Self
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from domainkit.conf import DEFAULT_DB_ALIAS
 
@@ -12,7 +14,8 @@ class IdempotencySettings(BaseModel):
 
     DATABASE: str = DEFAULT_DB_ALIAS
     TTL_SECONDS: float = Field(default=24 * 3600.0, gt=0, le=30 * 24 * 3600)
-    """How long a stored response is replayed for the same key."""
+    """How long a stored response is replayed for the same key; at least
+    ``LEASE_SECONDS``."""
     LEASE_SECONDS: float = Field(default=60.0, gt=0, le=24 * 3600)
     """How long a request holds its key before a retry may take it over.
 
@@ -28,3 +31,18 @@ class IdempotencySettings(BaseModel):
         "x-api-key",
     )
     """Headers that name a caller without an actor: their keys are apart."""
+
+    @model_validator(mode="after")
+    def check_lease(self) -> Self:
+        """Keep a key until its lease runs out.
+
+        A key that expired while its request still held it could be claimed
+        again: a retry would run the request a second time.
+        """
+        if self.TTL_SECONDS < self.LEASE_SECONDS:
+            raise ValueError(
+                "TTL_SECONDS must be at least LEASE_SECONDS: a key that expired "
+                "while its request still held it could be claimed again, and "
+                "the request run twice"
+            )
+        return self

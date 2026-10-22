@@ -261,6 +261,54 @@ jobs:
           include-hidden-files: true
           retention-days: 1
 
+  # The benchmark ladder (docs/performance.md, ADR 0064): Python calls and
+  # database round trips per request on each rung, against
+  # benchmarks/budgets.toml; over budget fails. CPU time goes to the job
+  # summary, beside the base branch's on pull requests, and is never gated:
+  # a shared runner's timings are too noisy for that.
+  bench:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      DOMAINKIT_BENCH_POSTGRES_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The base branch's code, measured by this harness for comparison.
+      - if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.base_ref }}
+          path: base
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: pipx install "poetry==${POETRY_VERSION}"
+      - run: poetry sync --extras "postgres sqlite uvloop"
+      - run: >-
+          poetry run python -m benchmarks --strict --json ladder.json
+          ${{ github.event_name == 'pull_request' && '--baseline base/src' || '' }}
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: benchmark-ladder
+          path: ladder.json
+          retention-days: 30
+
   # Every line must run in some job: a few only run on SQLite, others only
   # against the servers. The combined report is the coverage gate.
   coverage:
@@ -337,10 +385,48 @@ jobs:
           zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
           git /repo --redact --no-banner --verbose
 
+  # The whole package's mutants take longer than one job may run, so they run
+  # in shards of about 7,000 lines each. Every module must fall in exactly one
+  # shard; domainkit_tests/test_ci.py checks that.
   mutation:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: mutation (${{ matrix.shard.name }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - name: auth
+            mutants: "domainkit.contrib.auth.*"
+          - name: http
+            mutants: "domainkit.http.*"
+          - name: data
+            mutants: "domainkit.db.* domainkit.ledger.* domainkit.storage.* domainkit.cache.*"
+          - name: messaging
+            mutants: >-
+              domainkit.contrib.messaging.* domainkit.broker.*
+              domainkit.contrib.webhooks.* domainkit.contrib.notifications.*
+              domainkit.contrib.mail.*
+          - name: management
+            mutants: >-
+              domainkit.management.* domainkit.conf.* domainkit.apps.*
+              domainkit.utils.* domainkit.debug.*
+          - name: domain
+            mutants: "domainkit.resources.* domainkit.ddd.* domainkit.testing.* domainkit.i18n.*"
+          - name: contrib
+            mutants: >-
+              domainkit.contrib.audit.* domainkit.contrib.privacy.*
+              domainkit.contrib.flags.* domainkit.contrib.objectpermissions.*
+              domainkit.contrib.idempotency.* domainkit.contrib.admin.*
+              domainkit.contrib.evidence.* domainkit.contrib.contenttypes.*
+          - name: core
+            mutants: >-
+              domainkit.x* domainkit.architecture.* domainkit.clock.*
+              domainkit.context.* domainkit.deadlines.* domainkit.deprecation.*
+              domainkit.encryption.* domainkit.exceptions.* domainkit.lifecycle.*
+              domainkit.log.* domainkit.reporting.* domainkit.signing.*
+              domainkit.tasks.* domainkit.tracing.*
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -350,10 +436,13 @@ jobs:
           python-version: "3.13"
       - run: pipx install "poetry==${POETRY_VERSION}"
       - run: poetry sync --all-extras --with dev
-      - run: poetry run mutmut run
+      # The patterns are mutant names, not files: no globbing by the shell.
+      - run: set -f; poetry run mutmut run $MUTANTS
+        env:
+          MUTANTS: ${{ matrix.shard.mutants }}
       - run: poetry run mutmut results | tee mutmut-results.txt
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: mutmut-results
+          name: mutmut-results-${{ matrix.shard.name }}
           path: mutmut-results.txt
           retention-days: 90

@@ -72,6 +72,8 @@ pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, m
   sync and async clients, factories, a clock to freeze, and query counts
 - [docs/runtime.md](https://github.com/karimmattar/domainkit/blob/main/docs/runtime.md): how async work runs: event loops,
   logging off the loop, finding blocking code, free-threaded Python, and servers
+- [docs/performance.md](https://github.com/karimmattar/domainkit/blob/main/docs/performance.md): what a request costs, the
+  benchmark ladder CI gates on, and how to make requests cheaper
 - [docs/versioning.md](https://github.com/karimmattar/domainkit/blob/main/docs/versioning.md): compatibility, deprecations, and releases
 - [docs/adr/](https://github.com/karimmattar/domainkit/tree/main/docs/adr): the decisions behind the design
 - [CHANGELOG.md](https://github.com/karimmattar/domainkit/blob/main/CHANGELOG.md) and [SECURITY.md](https://github.com/karimmattar/domainkit/blob/main/SECURITY.md)
@@ -119,6 +121,12 @@ also turn the API docs off, send HSTS for a year, and limit each caller to
 300 requests a minute; `BILLING_API_API_DOCS`,
 `BILLING_API_SECURE_HSTS_SECONDS`, and `BILLING_API_RATE_LIMIT` change that.
 
+Serve it with one worker process per core, each on its own event loop:
+`uvicorn config.asgi:application --workers 4 --loop uvloop`, or Granian
+(`pip install 'domainkit[granian]'`). [docs/reference.md](https://github.com/karimmattar/domainkit/blob/main/docs/reference.md#server-limits)
+gives the whole command with its limits, and [docs/performance.md](https://github.com/karimmattar/domainkit/blob/main/docs/performance.md)
+how many cores a load needs.
+
 ## Developing domainkit
 
 ```bash
@@ -160,10 +168,13 @@ CI (`.github/workflows/ci.yml`) runs on every push and pull request:
   Redis 8 (plain and TLS), Valkey 9, and RabbitMQ 4 (plain and TLS); no test
   may be skipped there
 - coverage of both runs combined, which must be 100%
+- the benchmark ladder: Python calls and database round trips per request,
+  against budgets (`python -m benchmarks`; docs/performance.md)
 - a wheel build, installed and imported in a clean environment
 - pip-audit, and a gitleaks scan of the whole history
 
-A full mutation testing run happens weekly. Releases are published to PyPI
+A full mutation testing run happens weekly, in eight shards that run side by
+side. Releases are published to PyPI
 from a version tag; see [docs/versioning.md](https://github.com/karimmattar/domainkit/blob/main/docs/versioning.md).
 
 ## License

@@ -1,24 +1,38 @@
 """Structured logging and the request context."""
 
+import asyncio
 import json
 import logging
 import logging.handlers
 import queue
+import random
 import subprocess
 import sys
 import threading
+import time
 import weakref
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from fastapi import APIRouter
+from fastapi.testclient import TestClient
+from hypothesis import example, given
+from hypothesis import strategies as st
+from starlette.types import Message, Receive, Scope, Send
 
 from domainkit import log
+from domainkit.conf import override_settings
 from domainkit.context import RequestContext, bind_request, current_request
+from domainkit.ddd.exceptions import NotFound
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.http import get_asgi_application
+from domainkit.http.middleware import RequestContextMiddleware
 from domainkit.lifecycle import close_resources
 from domainkit.log import (
     DEFAULT_QUEUE_SIZE,
+    AccessSampler,
     BackgroundHandler,
     BackgroundListener,
     ContextFilter,
@@ -1012,3 +1026,622 @@ async def test_shutdown_waits_for_logs_as_long_as_asked(
 
     assert waited == [1.5, log.FLUSH_TIMEOUT]
     handler.close()
+
+
+def reference_line(formatter: logging.Formatter, record: logging.LogRecord) -> str:
+    """The line domainkit 0.8.0's ``JsonFormatter`` wrote: ``json.dumps`` of a dict."""
+    entry: dict[str, Any] = {
+        "timestamp": datetime.fromtimestamp(record.created, UTC).isoformat(
+            timespec="milliseconds"
+        ),
+        "level": record.levelname,
+        "logger": record.name,
+        "message": record.getMessage(),
+    }
+    for field in ("request_id", "client_ip", "trace_id", "span_id"):
+        value = record.__dict__.get(field)
+        if value and value != "-":
+            entry[field] = value
+    if "access" in record.__dict__:
+        entry["access"] = record.__dict__["access"]
+    if record.exc_info and not record.exc_text:
+        record.exc_text = formatter.formatException(record.exc_info)
+    if record.exc_text:
+        entry["exception"] = record.exc_text
+    if record.stack_info:
+        entry["stack"] = formatter.formatStack(record.stack_info)
+    return json.dumps(entry, default=str, ensure_ascii=False)
+
+
+class Named:
+    """A value JSON has no type for: the line shows its ``str``."""
+
+    def __str__(self) -> str:
+        """Its name."""
+        return "named é"
+
+
+class Text(str):
+    """A string subclass."""
+
+
+ODD_VALUES: list[object] = [
+    "",
+    "-",
+    'é\n\r\t"\\\x00\x1f\u2028😀',
+    Text("subclassed"),
+    0,
+    7,
+    -1.5,
+    float("nan"),
+    float("inf"),
+    None,
+    True,
+    ["a", 1, None],
+    {"k": [1, {"x": None}], "n": 2.5},
+    Named(),
+]
+
+
+def access_record(**fields: object) -> logging.LogRecord:
+    """An access line, merged as the background handler merges it, with ``fields``."""
+    line = logging.LogRecord(
+        "domainkit.access",
+        logging.INFO,
+        __file__,
+        1,
+        "%s %s %s %.1fms",
+        ("GET", "/hello", 200, 0.4),
+        None,
+    )
+    line.__dict__.update(
+        request_id="9f2c1d7e8a6b4c3d9e0f1a2b3c4d5e6f",
+        client_ip="203.0.113.7",
+        trace_id="-",
+        span_id="-",
+        access={"method": "GET", "path": "/hello", "status": 200, "duration_ms": 0.4},
+    )
+    line.__dict__.update(fields)
+    return line
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {},
+        {"request_id": "-", "client_ip": "-"},
+        {"trace_id": "4bf92f3577b34da6a3ce929d0e0e4736", "span_id": "00f067aa0ba902b7"},
+        {
+            "access": {
+                "method": "WS",
+                "path": "/ws",
+                "status": None,
+                "duration_ms": 1e-7,
+            }
+        },
+        {"name": "é.\n", "levelname": "LOUD\x00"},
+        {"msg": "line\r\nforged", "args": None},
+        {"stack_info": "Stack (most recent call last):\n  é"},
+        {"created": 1792575015.9999996},
+        {"created": 0.0},
+        {"created": -1.5},
+        *({field: value} for field in ("request_id", "access") for value in ODD_VALUES),
+        {"levelname": 20, "name": Named()},
+    ],
+)
+def test_json_lines_are_byte_for_byte_what_json_dumps_wrote(
+    fields: dict[str, object],
+) -> None:
+    """Log pipelines parse these lines: every byte stays as it was."""
+    formatter = JsonFormatter()
+    line = access_record(**fields)
+    twin = access_record(**{"created": line.created, **fields})
+    expected = reference_line(formatter, twin)
+
+    assert formatter.format(line) == expected
+
+
+def test_json_lines_with_exceptions_are_what_json_dumps_wrote() -> None:
+    """The traceback, formatted once, is the ``exception`` field."""
+    formatter = JsonFormatter()
+    try:
+        raise ValueError("bad é")
+    except ValueError:
+        failed = access_record()
+        again = access_record(created=failed.created)
+        failed.exc_info = again.exc_info = sys.exc_info()
+
+    assert formatter.format(failed) == reference_line(formatter, again)
+    assert failed.exc_text is not None
+    assert formatter.format(failed) == reference_line(formatter, again)  # Cached.
+
+
+@given(
+    st.dictionaries(
+        st.sampled_from(["request_id", "client_ip", "trace_id", "span_id", "access"]),
+        st.recursive(
+            st.none() | st.booleans() | st.integers() | st.floats() | st.text(),
+            lambda children: (
+                st.lists(children, max_size=4)
+                | st.dictionaries(st.text(max_size=5), children, max_size=4)
+            ),
+            max_leaves=12,
+        ),
+    ),
+    st.text(),
+    st.floats(min_value=-2e9, max_value=2.5e11),
+)
+def test_any_record_formats_as_json_dumps_wrote_it(
+    fields: dict[str, object], message: str, created: float
+) -> None:
+    """Whatever the extras, message, and time: the same line."""
+    formatter = JsonFormatter()
+    line = access_record(msg=message, args=None, created=created, **fields)
+
+    assert formatter.format(line) == reference_line(formatter, line)
+
+
+@given(st.floats(min_value=-2e9, max_value=253402300799.0))
+@example(1792575015.9995)
+@example(1792575015.99949999)
+@example(1792575015.9999995)
+@example(1792575015.0000005)
+@example(1792575015.9999993)  # A microsecond short of the next second.
+@example(0.9999994)
+@example(-0.0000004)
+@example(0.0)
+def test_timestamps_are_what_datetime_writes(created: float) -> None:
+    """Rounded and cut as ``datetime.fromtimestamp(...).isoformat`` does."""
+    expected = datetime.fromtimestamp(created, UTC).isoformat(timespec="milliseconds")
+
+    assert JsonFormatter().timestamp(created) == expected
+
+
+def test_the_date_and_time_are_worked_out_once_a_second(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lines within one second reuse its date and time; the next works out its own."""
+    worked_out: list[int] = []
+    utc_second = log.utc_second
+
+    def counted(second: int) -> str:
+        worked_out.append(second)
+        return utc_second(second)
+
+    formatter = JsonFormatter()
+    monkeypatch.setattr(log, "utc_second", counted)
+
+    stamps = [formatter.timestamp(t) for t in (100.1, 100.5, 100.9999999, 101.2)]
+
+    assert stamps == [
+        "1970-01-01T00:01:40.100+00:00",
+        "1970-01-01T00:01:40.500+00:00",
+        "1970-01-01T00:01:41.000+00:00",  # Rounds up into the next second.
+        "1970-01-01T00:01:41.200+00:00",
+    ]
+    assert worked_out == [100, 101]
+
+
+class CopiedOwnWay(logging.LogRecord):
+    """A record kind with its own way of being copied."""
+
+    copies = 0
+
+    def __copy__(self) -> "CopiedOwnWay":
+        """Count the copy, then copy the fields."""
+        CopiedOwnWay.copies += 1
+        twin = CopiedOwnWay.__new__(CopiedOwnWay)
+        twin.__dict__.update(self.__dict__)
+        return twin
+
+
+def test_prepare_copies_plain_records_field_by_field() -> None:
+    """The copy holds the caller's fields and the merged message; the original stays."""
+    handler = BackgroundHandler(queue.Queue(5))
+    original = access_record()
+    fields = dict(original.__dict__)
+
+    prepared = handler.prepare(original)
+    handler.close()
+
+    assert type(prepared) is logging.LogRecord
+    assert prepared is not original
+    assert original.__dict__ == fields  # Untouched.
+    assert prepared.__dict__ == {
+        **fields,
+        "message": "GET /hello 200 0.4ms",
+        "msg": "GET /hello 200 0.4ms",
+        "args": None,
+    }
+    assert prepared.__dict__["access"] is fields["access"]  # Shallow, as copy.copy.
+
+
+def test_prepare_copies_other_record_kinds_their_own_way() -> None:
+    """A record class of its own is copied by ``copy.copy``, so by its ``__copy__``."""
+    handler = BackgroundHandler(queue.Queue(5))
+    original = CopiedOwnWay("app", logging.INFO, __file__, 1, "hi %s", ("you",), None)
+    CopiedOwnWay.copies = 0
+
+    prepared = handler.prepare(original)
+    handler.close()
+
+    assert type(prepared) is CopiedOwnWay
+    assert CopiedOwnWay.copies == 1
+    assert (prepared.msg, prepared.args, original.args) == ("hi you", None, ("you",))
+
+
+class Draws:
+    """Numbers ``AccessSampler`` draws, in order, and how many it drew."""
+
+    def __init__(self, *numbers: float) -> None:
+        """Return ``numbers``, one per draw."""
+        self.numbers = list(numbers)
+        self.drawn = 0
+
+    def __call__(self) -> float:
+        """The next number."""
+        self.drawn += 1
+        return self.numbers.pop(0)
+
+
+def test_everything_is_logged_at_the_default_rate() -> None:
+    """At 1.0 nothing is drawn, and every line is written."""
+    draws = Draws()
+    sampler = AccessSampler(draw=draws)
+
+    assert all(
+        sampler.keep(status, seconds)
+        for status in (200, 201, 204, 302, 404, 422, None)
+        for seconds in (0.0, 0.5, 30.0)
+    )
+    assert draws.drawn == 0
+
+
+@pytest.mark.parametrize(
+    "status",
+    [None, 500, 502, 503, 599, 400, 401, 403, 404, 405, 409, 413, 422, 429, 451, 499],
+)
+def test_errors_and_refusals_are_always_logged(status: int | None) -> None:
+    """Whatever the rate, without a draw: every status from 400 up, or none.
+
+    A scoped resource answers 404 for what the caller may not reach, so
+    probing another tenant's ids leaves a line for every probe.
+    """
+    draws = Draws()
+
+    assert AccessSampler(0.0, 1.0, draw=draws).keep(status, 0.0)
+    assert draws.drawn == 0
+
+
+@pytest.mark.parametrize("status", [100, 101, 200, 201, 204, 206, 301, 302, 304, 399])
+def test_successes_and_redirects_are_sampled(status: int) -> None:
+    """Below 400 the draw decides: at rate 0, no line."""
+    draws = Draws(0.0)
+
+    assert not AccessSampler(0.0, 1.0, draw=draws).keep(status, 0.0)
+    assert draws.drawn == 1
+
+
+def test_slow_requests_are_always_logged() -> None:
+    """From ``slow`` seconds on, a line is written without a draw."""
+    draws = Draws(0.99)
+    sampler = AccessSampler(0.0, 2.5, draw=draws)
+
+    assert sampler.keep(200, 2.5)
+    assert sampler.keep(302, 60.0)
+    assert not sampler.keep(200, 2.4999)
+    assert draws.drawn == 1
+
+
+@pytest.mark.parametrize(
+    ("rate", "draw", "kept"),
+    [(0.25, 0.0, True), (0.25, 0.2499, True), (0.25, 0.25, False), (0.0, 0.0, False)],
+)
+def test_other_lines_are_kept_below_the_rate(
+    rate: float, draw: float, kept: bool
+) -> None:
+    """A line is written when its draw falls under the rate: never at 0."""
+    assert AccessSampler(rate, 1.0, draw=Draws(draw)).keep(200, 0.0) is kept
+
+
+def test_the_sample_is_fair() -> None:
+    """A rate of a quarter keeps a quarter of 40,000 lines, of each status."""
+    numbers = random.Random(20261021)  # noqa: S311 - a fixed seed, a repeatable sample.
+    sampler = AccessSampler(0.25, 1.0, draw=numbers.random)
+    kept = {
+        status: sum(sampler.keep(status, 0.0) for _ in range(10_000))
+        for status in (200, 201, 204, 302)
+    }
+
+    assert all(2_400 <= count <= 2_600 for count in kept.values()), kept
+
+
+@pytest.mark.parametrize(
+    ("rate", "slow", "refused"),
+    [
+        (-0.1, 1.0, "sample rate must be from 0 to 1, not -0.1"),
+        (1.5, 1.0, "sample rate must be from 0 to 1, not 1.5"),
+        (float("nan"), 1.0, "sample rate must be from 0 to 1, not nan"),
+        (0.5, 0.0, "slow duration must be positive, not 0.0"),
+        (0.5, float("nan"), "slow duration must be positive, not nan"),
+    ],
+)
+def test_sampler_arguments_are_checked(rate: float, slow: float, refused: str) -> None:
+    """A rate outside 0 to 1, or a duration that is not positive, is refused."""
+    with pytest.raises(ValueError, match=refused):
+        AccessSampler(rate, slow)
+
+
+@pytest.mark.parametrize(
+    ("setting", "value", "message"),
+    [
+        ("ACCESS_LOG_SAMPLE_RATE", 1.01, "less than or equal to 1"),
+        ("ACCESS_LOG_SAMPLE_RATE", -0.01, "greater than or equal to 0"),
+        ("ACCESS_LOG_SLOW_DURATION", 0.0, "greater than 0"),
+        ("ACCESS_LOG_SLOW_DURATION", 3600.5, "less than or equal to 3600"),
+        ("ACCESS_LOG_SLOW_DURATION", float("inf"), "finite number"),
+    ],
+)
+def test_access_log_settings_are_bounded(
+    setting: str, value: float, message: str
+) -> None:
+    """A sample rate from 0 to 1; a slow duration up to an hour."""
+    with pytest.raises(ImproperlyConfigured, match=message):
+        override_settings(**{setting: value}).__enter__()
+
+
+async def answered(scope: Scope, receive: Receive, send: Send) -> None:
+    """Answer the status the path names: ``/status/404`` answers 404."""
+    code = int(scope["path"].rsplit("/", 1)[1])
+    await send({"type": "http.response.start", "status": code, "headers": []})
+    await send({"type": "http.response.body", "body": b""})
+
+
+def statuses_logged(
+    middleware: RequestContextMiddleware,
+    codes: list[int],
+    caplog: pytest.LogCaptureFixture,
+) -> list[tuple[str, int]]:
+    """The access lines ``middleware`` writes for requests answered ``codes``."""
+    caplog.set_level(logging.DEBUG, logger="domainkit.access")
+
+    async def requests() -> None:
+        async def receive() -> Message:
+            return {"type": "http.request", "body": b""}
+
+        async def send(message: Message) -> None:
+            pass
+
+        for code in codes:
+            scope = {"type": "http", "method": "GET", "path": f"/status/{code}"}
+            await middleware({**scope, "headers": []}, receive, send)
+
+    asyncio.run(requests())
+    return [
+        (line.getMessage().split()[1], line.levelno)
+        for line in caplog.records
+        if line.name == "domainkit.access"
+    ]
+
+
+def test_a_sampled_access_log_keeps_errors_and_refusals(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """At rate 0, successful and redirected requests alone leave no line."""
+    with override_settings(ACCESS_LOG_SAMPLE_RATE=0.0):
+        middleware = RequestContextMiddleware(answered)
+    codes = [200, 204, 302, 400, 404, 401, 403, 409, 422, 429, 500]
+
+    logged = statuses_logged(middleware, codes, caplog)
+
+    assert logged == [
+        ("/status/400", logging.WARNING),
+        ("/status/404", logging.WARNING),
+        ("/status/401", logging.WARNING),
+        ("/status/403", logging.WARNING),
+        ("/status/409", logging.WARNING),
+        ("/status/422", logging.WARNING),
+        ("/status/429", logging.WARNING),
+        ("/status/500", logging.ERROR),
+    ]
+
+
+scoped = APIRouter()
+"""Accounts as a scoped resource answers them: 404 for those of other tenants."""
+
+
+@scoped.get("/accounts/{number}")
+async def account(number: int) -> dict[str, int]:
+    """Account 1 is the caller's; any other is out of their reach."""
+    if number != 1:
+        raise NotFound(f"Account {number} not found.")
+    return {"account": number}
+
+
+def test_probing_a_sampled_application_leaves_a_line_per_probe(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """At rate 0, every id tried that is not the caller's is in the access log.
+
+    So are the requests the application refuses before a route runs (405,
+    422); the caller's own reads are left out.
+    """
+    caplog.set_level(logging.INFO, logger="domainkit.access")
+    with (
+        override_settings(
+            ROOT_ROUTER=f"{__name__}.scoped",
+            MIDDLEWARE=["domainkit.http.middleware.RequestContextMiddleware"],
+            ACCESS_LOG_SAMPLE_RATE=0.0,
+            ACCESS_LOG_SLOW_DURATION=3600.0,  # No request is slow enough to count.
+        ),
+        TestClient(get_asgi_application()) as client,
+    ):
+        answers = [client.get(f"/accounts/{n}").status_code for n in range(1, 41)]
+        answers += [
+            client.delete("/accounts/2").status_code,
+            client.get("/accounts/two").status_code,
+        ]
+
+    lines = [r.getMessage() for r in caplog.records if r.name == "domainkit.access"]
+    assert answers == [200] + [404] * 39 + [405, 422]
+    assert [line.rsplit(" ", 1)[0] for line in lines] == [
+        *(f"GET /accounts/{n} 404" for n in range(2, 41)),
+        "DELETE /accounts/2 405",
+        "GET /accounts/two 422",
+    ]
+
+
+def test_the_full_access_log_is_the_default(caplog: pytest.LogCaptureFixture) -> None:
+    """At the default rate every request has its line, as before."""
+    middleware = RequestContextMiddleware(answered)
+
+    logged = statuses_logged(middleware, [200, 404, 500], caplog)
+
+    assert [path for path, _ in logged] == ["/status/200", "/status/404", "/status/500"]
+    assert middleware.sampler.rate == 1.0
+
+
+def test_a_slow_request_is_logged_whatever_the_rate(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Past ``ACCESS_LOG_SLOW_DURATION`` the line is written, with its duration."""
+    caplog.set_level(logging.INFO, logger="domainkit.access")
+    with override_settings(ACCESS_LOG_SAMPLE_RATE=0.0, ACCESS_LOG_SLOW_DURATION=2.0):
+        middleware = RequestContextMiddleware(answered)
+    context = RequestContext("req-1", None, "GET", "/slow")
+    now = time.perf_counter()
+
+    middleware._log_access(context, 200, now - 1.0)  # Fast enough: sampled out.
+    middleware._log_access(context, 200, now - 5.0)  # Started 5 seconds ago.
+
+    (line,) = [r for r in caplog.records if r.name == "domainkit.access"]
+    assert line.getMessage().startswith("GET /slow 200 5")
+    assert line.__dict__["access"]["duration_ms"] >= 5000
+
+
+class Untouchable(AccessSampler):
+    """A sampler that fails the test if it is asked."""
+
+    def keep(self, status: int | None, seconds: float) -> bool:
+        """Never to be called."""
+        raise AssertionError("asked about a line the level drops")
+
+
+def test_lines_the_level_drops_are_not_built(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No sampling, no record: the level is checked first."""
+    access = logging.getLogger("domainkit.access")
+    built: list[object] = []
+    monkeypatch.setattr(access, "_log", lambda *args, **kwargs: built.append(args))
+    middleware = RequestContextMiddleware(answered)
+    middleware.sampler = Untouchable()
+    context = RequestContext("req-1", None, "GET", "/")
+    level = access.level
+    access.setLevel(logging.ERROR)
+    try:
+        middleware._log_access(context, 200, time.perf_counter())
+        middleware._log_access(context, 404, time.perf_counter())
+    finally:
+        access.setLevel(level)
+
+    assert built == []
+
+
+def test_the_slow_duration_is_a_second_unless_set() -> None:
+    """``AccessSampler(rate)`` writes every request of a second or more."""
+    sampler = AccessSampler(0.0, draw=Draws(0.99))
+
+    assert sampler.keep(200, 1.0)
+    assert not sampler.keep(200, 0.999)
+
+
+def test_json_formatter_takes_logging_formatters_arguments() -> None:
+    """Positional and keyword arguments reach ``logging.Formatter``, as before."""
+    positional = JsonFormatter(None, "%H:%M")
+    keyword = JsonFormatter(datefmt="%M")
+    line = access_record()
+
+    assert (positional.datefmt, keyword.datefmt) == ("%H:%M", "%M")
+    assert positional.format(line) == reference_line(positional, line)
+
+
+def test_dates_are_utc_whatever_the_local_zone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The cached date and time are UTC's, not the machine's."""
+    monkeypatch.setenv("TZ", "Asia/Tokyo")
+    time.tzset()
+    try:
+        stamp = JsonFormatter().timestamp(0.5)
+        local = datetime.fromtimestamp(0).isoformat()  # noqa: DTZ006 - the zone's.
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+    assert local == "1970-01-01T09:00:00"  # The zone took effect.
+    assert stamp == "1970-01-01T00:00:00.500+00:00"
+
+
+def test_access_lines_carry_the_request_and_its_rounded_duration(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Method, path, status, and milliseconds to one place; 400 and up warn."""
+    caplog.set_level(logging.DEBUG, logger="domainkit.access")
+    middleware = RequestContextMiddleware(answered)
+    context = RequestContext("req-1", None, "POST", "/orders")
+    monkeypatch.setattr(time, "perf_counter", lambda: 100.0)
+
+    middleware._log_access(context, 400, 98.76544)  # 1,234.56 ms ago.
+    middleware._log_access(context, 399, 99.5)
+    monkeypatch.undo()
+
+    lines = [r for r in caplog.records if r.name == "domainkit.access"]
+    assert [(r.getMessage(), r.levelno) for r in lines] == [
+        ("POST /orders 400 1234.6ms", logging.WARNING),
+        ("POST /orders 399 500.0ms", logging.INFO),
+    ]
+    assert lines[0].__dict__["access"] == {
+        "method": "POST",
+        "path": "/orders",
+        "status": 400,
+        "duration_ms": 1234.6,
+    }
+
+
+def test_flush_waits_and_a_close_after_giving_up_waits_no_more(
+    collect: Collect, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``flush()`` waits ``FLUSH_TIMEOUT``; when it gave up, ``close()`` waits 0."""
+    handler = BackgroundHandler.writing_to(collect)
+    waits: list[float] = []
+
+    def stuck(timeout: float) -> bool:
+        waits.append(timeout)
+        return False
+
+    monkeypatch.setattr(handler, "wait_written", stuck)
+
+    handler.flush()
+    handler.close()
+
+    assert waits == [log.FLUSH_TIMEOUT, 0.0]
+
+
+def test_stopping_waits_for_room_no_longer_than_it_may(
+    collect: Collect, seconds: Seconds
+) -> None:
+    """On a full queue, ``stop`` waits its timeout for room, never without a bound.
+
+    Room is what it needs to ask the thread to end.
+    """
+    records = FullQueue(seconds, maxsize=5)
+    listener = BackgroundListener(records, collect)
+    listener.start()
+    worker = listener._worker
+    assert worker is not None
+
+    stopped = listener.stop(5.0)
+
+    records.refusing = False
+    records.put(log._STOP)  # End the thread, which was never asked.
+    worker.join(10)
+    assert not stopped
+    assert records.waits == [5.0]
+    assert not worker.is_alive()
