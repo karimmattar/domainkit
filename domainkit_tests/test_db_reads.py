@@ -600,7 +600,9 @@ async def test_reads_survive_every_idle_connection_being_closed(
     """A restart closes all of them: each is replaced as it is taken, none fails.
 
     The driver has seen every connection close before the reads start, as
-    it does once the server's goodbye arrives.
+    it does once the server's goodbye arrives. The reads come one at a
+    time first: a read that replaced only its own connection would retry
+    on the next idle one, closed too.
     """
     with override_settings(DATABASES={"default": {"URL": database, "POOL_SIZE": 4}}):
         async with connections.engine().begin() as connection:
@@ -615,11 +617,11 @@ async def test_reads_survive_every_idle_connection_being_closed(
                 return [gadget.name for gadget in await uow.gadgets.filter()]
 
         with Connects() as connects:
-            together = await asyncio.gather(*(read() for _ in range(4)))
             one_by_one = [await read() for _ in range(4)]
+            together = await asyncio.gather(*(read() for _ in range(4)))
         await connections.close_all()
 
-    assert together == one_by_one == [["first"]] * 4
+    assert one_by_one == list(together) == [["first"]] * 4
     assert connects.count == 4  # Each closed connection replaced once.
 
 
