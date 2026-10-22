@@ -53,9 +53,9 @@ from .api import (
     _throttle,
     _token_out,
     issue_login,
+    password_holds,
 )
 from .events import MfaDisabled, MfaEnabled, RecoveryCodesRegenerated, RecoveryCodeUsed
-from .hashers import acheck_password
 from .models import AbstractBaseUser, UserId
 from .onetime import TOKEN_MAX_LENGTH, UserTokenGenerator
 from .repositories import TotpDevice
@@ -424,7 +424,7 @@ async def _reauthenticate(
         InvalidCode: The code is wrong, or was used.
     """
     await _throttle(request, f"password:user:{user.id}")
-    if not await acheck_password(password, user.password.value):
+    if not await password_holds(user, password):
         raise APIError(
             status.HTTP_400_BAD_REQUEST,
             "Your password was entered incorrectly.",

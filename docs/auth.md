@@ -477,9 +477,12 @@ before the socket opens.
 
 `TokenAuthentication`, the default, accepts tokens such as
 `dkt_6R2v...`: `AUTH.TOKEN_PREFIX` and 256 random bits. Only a token's
-SHA-256 is stored, so the table never holds a working token, and every
-request looks its token up: logging out, a password change, or
-`cleartokens --user` ends it at once. A login's token works for
+SHA-256 is stored, so the table never holds a working token. A request
+looks its token up, or finds it in the
+[principal cache](#the-principal-cache): logging out, a password change,
+or `cleartokens --user` ends it at once in the process that made the
+change, and in the others within `AUTH.PRINCIPAL_CACHE.TTL` (5 seconds),
+or at once with `STAMPS`. A login's token works for
 `AUTH.TOKEN_TTL` (14 days); `createtoken` makes longer-lived ones for
 scripts and other services. The prefix lets secret scanners and people
 recognize a leaked token.
@@ -723,6 +726,86 @@ class GatewayAuthentication(BaseAuthentication):
 `active_user` raises `AuthenticationFailed` for unknown and inactive
 users. The first class in the list also issues the tokens logins return
 (`issue`) and refreshes them (`refresh`).
+
+### The principal cache
+
+Each request's credential names a user, with groups and permissions: its
+principal. Reading it took four or five queries in a transaction of its
+own, about 70% of an authenticated read. Now the first request of a
+credential reads it in two (the token, then the user with every group and
+permission), and the next ones find it in memory, with no query at all,
+for `AUTH.PRINCIPAL_CACHE.TTL` (5 seconds). Opaque tokens, personal
+tokens, browser sessions, JSON Web Tokens' logins, and client
+certificates are all kept this way; a request over its rate limit is
+refused without a query too. ADR
+[0058](adr/0058-cache-principals-and-stamp-revocations.md) explains the
+design, and [0059](adr/0059-read-principals-in-two-queries-without-the-hash.md)
+how principals are read.
+
+- **What is kept**: the user's columns but the password hash, their
+  groups and permissions, and the credential's kind, expiry, scopes, and
+  login. Never the password hash, a second factor's secret, recovery
+  codes, or the token itself: entries are keyed by the token's digest.
+  Each request gets its own user, built from what is kept, the same as a
+  query builds.
+- **What every request checks**: a token's expiry, on `domainkit.clock`
+  (an expired token is refused from memory as from the table); a cookie's
+  CSRF checks; a JSON Web Token's signature and times. `last_used_at` is
+  still written once every five minutes, by one request.
+- **Bounds**: `MAX_ENTRIES` principals per process (10,000; the least
+  recently used go first), each for `TTL` at most (5 minutes at most).
+- **In the process that makes a change, at once**: logging out, revoking
+  a token (or all of a user's), a password change or reset, deactivating
+  or deleting a user, joining or leaving a group, a permission given or
+  taken back (directly or through a group), renaming or deleting a group,
+  a new login (it changes `last_login`), and erasure. Repositories and the
+  ORM mark what each commit changes, so the API, the admin API, the
+  management commands, and your own units of work all count. A principal
+  read while such a change commits is not kept.
+- **In other processes**: within `TTL`. To make it at once, name a Redis
+  cache that every process shares in `STAMPS`: a commit stamps what it
+  changed there, and each request compares its principal's stamps, one
+  round trip instead of two queries:
+
+  ```python
+  CACHES = {
+      "default": {"URL": "memory://"},
+      "shared": {"URL": env.str("CACHE_URL"), "KEY_PREFIX": "billing"},
+  }
+  AUTH = {"PRINCIPAL_CACHE": {"STAMPS": "shared", "TTL": 60}}
+  ```
+
+- **When the cache fails**: a request whose stamps cannot be read uses
+  nothing kept, and reads its principal from the database, which it does
+  not keep; nothing stale is ever served past the TTL. A stamp that
+  cannot be written is logged (security logger): the change then reaches
+  other processes within the TTL.
+- **Changes outside domainkit**: SQL that bypasses the auth repositories
+  and the ORM, or another service writing the tables, is seen within the
+  TTL. Drop what it changed yourself to see it at once, with
+  `from domainkit.contrib.auth import principals`:
+  `principals.invalidate([principals.user_target(user_id)])`, or
+  `principals.invalidate_all()`, in this process; with `STAMPS`,
+  `await principals.invalidate_everywhere(targets, auth_settings().PRINCIPAL_CACHE)`
+  reaches the others too.
+- **Open connections** are re-checked through the cache too, so they see a
+  change as soon as requests do.
+- **`request.user` carries no password hash**: reading
+  `request.user.password` raises `DetachedInstanceError`. To check a
+  password, read the hash afresh: `await password_holds(user, raw)`
+  (`domainkit.contrib.auth.api`), or `await uow.users.password_hash(user.id)`.
+- A user model that loads relationships of its own with the user (other
+  than `groups` and `user_permissions`) is read by the ORM every time, and
+  never kept.
+
+`check` warns, in staging and production, about a `TTL` above 5 seconds
+without `STAMPS`: a revocation would keep working that long in the other
+processes. `STAMPS` naming anything but a Redis cache of `CACHES` stops
+startup. With `domainkit[metrics]`, `auth_principal_cache_total` counts
+hits, misses, invalidations, and evictions, by authentication class
+(`token`, `cookie`, `jwt`, `certificate`), never by user.
+`ENABLED = False` reads the principal on every request, in the same two
+queries.
 
 ## Logging in and out
 
@@ -1183,6 +1266,7 @@ changed what.
 | `COOKIE` | see below | Browser sessions, for `CookieAuthentication`. |
 | `MFA` | see below | Second factors (`auth.mfa`). |
 | `CLIENT_CERT` | see below | Client certificates, for `ClientCertificateAuthentication`. |
+| `PRINCIPAL_CACHE` | see below | Principals kept between requests ([the principal cache](#the-principal-cache)). |
 | `CSRF_TRUSTED_ORIGINS` | `()` | Origins (`https://app.example.com`, `https://*.example.com`) whose pages may send cookie requests, besides the request's own and `ALLOWED_HOSTS`. |
 | `REQUIRE_ROUTE_RULES` | `True` | Every route must say who may call it (`Require`, a user parameter, or `Public`); see "Deny by default". |
 | `JWT` | see below | JSON Web Tokens, for `JWTAuthentication`. |
@@ -1212,6 +1296,13 @@ changed what.
 | `HEADER` | `None` | The header a proxy of `PROXIES` sets to the URL-encoded PEM; `None` takes certificates from the ASGI TLS extension only. Needs `PROXIES`. |
 | `VERIFY_HEADER` | `None` | The header in which the proxy says `SUCCESS` (nginx's `$ssl_client_verify`). Required with `HEADER` and `MATCH = "subject"`. |
 | `PROXIES` | `()` | The addresses of the proxies that check certificates and set `HEADER`; requests from anywhere else that send it get 401. Single addresses in staging and production. |
+
+| `AUTH["PRINCIPAL_CACHE"]` key | Default | Meaning |
+| --- | --- | --- |
+| `ENABLED` | `True` | Keep principals between requests; `False` reads them on every request. |
+| `TTL` | 5 seconds | How long a principal is used before it is read again, at most 5 minutes: the longest a change made in another process takes to be seen without `STAMPS`. |
+| `MAX_ENTRIES` | `10000` | Principals kept per process (1 to 1,000,000); the least recently used go first. |
+| `STAMPS` | `None` | A `CACHES` alias of a Redis or Valkey cache every process shares; changes then reach every process at once. |
 
 | `AUTH["JWT"]` key | Default | Meaning |
 | --- | --- | --- |

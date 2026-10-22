@@ -30,6 +30,12 @@ ORIGIN: Final = re.compile(r"https?://(\*\.)?[a-z0-9.-]+(:[0-9]{1,5})?")
 """An origin: a scheme and a host, and a port; ``*.`` matches subdomains."""
 HMAC_ALGORITHMS: Final = frozenset({"HS256", "HS384", "HS512"})
 """JWT algorithms that sign and verify with one shared secret."""
+PRINCIPAL_TTL: Final = timedelta(seconds=5)
+"""How long a cached principal is used by default (``PRINCIPAL_CACHE.TTL``).
+
+Also the longest ``check`` accepts without ``STAMPS`` where deployed."""
+MAX_PRINCIPAL_TTL: Final = timedelta(minutes=5)
+"""The longest ``PRINCIPAL_CACHE.TTL`` may be: a JWT's default lifetime."""
 
 
 class PasswordValidatorConfig(BaseModel):
@@ -170,6 +176,33 @@ class ClientCertSettings(BaseModel):
     production take single addresses here (``/32``, ``/128``)."""
 
 
+class PrincipalCacheSettings(BaseModel):
+    """``AUTH["PRINCIPAL_CACHE"]``: who credentials name, kept between requests.
+
+    See ``domainkit.contrib.auth.principals`` and ADR 0058.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    ENABLED: bool = True
+    """Keep principals between requests; False reads them every time."""
+    TTL: timedelta = Field(default=PRINCIPAL_TTL, gt=timedelta(0), le=MAX_PRINCIPAL_TTL)
+    """How long a principal is used before it is read again, at most 5 minutes.
+
+    The longest a change made by another process takes to reach this one,
+    unless ``STAMPS`` names a shared cache.
+    """
+    MAX_ENTRIES: int = Field(default=10_000, ge=1, le=1_000_000)
+    """Principals kept per process; the least recently used go first."""
+    STAMPS: str | None = Field(default=None, min_length=1, max_length=100)
+    """A ``CACHES`` alias of a Redis or Valkey cache every process shares.
+
+    Changes stamp what they affect there, and each request checks the
+    stamps of its principal in one round trip: a change made anywhere then
+    reaches every process at once. None: the ``TTL`` is the bound.
+    """
+
+
 class AuthSettings(BaseModel):
     """Users, hashing, validation, and backends; every key is optional."""
 
@@ -260,6 +293,8 @@ class AuthSettings(BaseModel):
     """Second factors: authenticator apps and recovery codes."""
     CLIENT_CERT: ClientCertSettings = ClientCertSettings()
     """Client certificates (mutual TLS)."""
+    PRINCIPAL_CACHE: PrincipalCacheSettings = PrincipalCacheSettings()
+    """Principals kept between requests, so most cost no query."""
     CSRF_TRUSTED_ORIGINS: tuple[str, ...] = ()
     """Origins of pages that may send cookie requests besides ``ALLOWED_HOSTS``'."""
 

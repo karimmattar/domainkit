@@ -3,11 +3,11 @@
 Free-threaded Python (3.14t), and servers that run a loop per thread, share
 one rate limiter, one middleware, one hashing pool, one application's live
 connection slots, the event bus, an HTTP client's circuit breaker, the
-guard's lookup threads, the remembered client addresses, and the handles
-of the request metrics between threads, and the registries that keep each
-loop's tasks, publishers, and brokers. Each test drives them from several
-threads at once and checks what must always hold, and that the state is
-only touched with the lock held.
+guard's lookup threads, the remembered client addresses, the handles of
+the request metrics, and the principal cache between threads, and the
+registries that keep each loop's tasks, publishers, and brokers. Each test
+drives them from several threads at once and checks what must always hold,
+and that the state is only touched with the lock held.
 """
 
 import asyncio
@@ -19,6 +19,7 @@ import subprocess
 import sys
 import sysconfig
 import threading
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterator
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -40,6 +41,7 @@ from domainkit.contrib.auth import AllowAny
 from domainkit.contrib.auth import middleware as middleware_module
 from domainkit.contrib.auth.hashers import HashingPool
 from domainkit.contrib.auth.middleware import AuthenticationMiddleware
+from domainkit.contrib.auth.principals import ALL, Entry, PrincipalCache
 from domainkit.contrib.messaging import MessagingSettings, dispatch
 from domainkit.db import Reads, connections
 from domainkit.ddd import DomainEvent, EventBus
@@ -142,6 +144,117 @@ class CheckedPool(HashingPool):
         if hasattr(self, "_lock"):
             assert self._lock.locked()
         self._pending = value
+
+
+def test_holds_are_skipped_only_while_none_is_held(use_auth: UseAuth) -> None:
+    """Requests read whether anything is held without the lock, never wrongly.
+
+    Threads hold and let go of addresses while others ask, as each request
+    does, whether to look its address up: an address held for good is
+    found by every thread once it is held.
+    """
+    use_auth(settings={"RATE_LIMIT": "10/minute"})
+    middleware = AuthenticationMiddleware(app=lambda *args: None)  # type: ignore[arg-type]
+    middleware._hold("ip:192.0.2.1", 3600)
+
+    def ask(index: int) -> int:
+        found = 0
+        for round_ in range(500):
+            middleware._hold(f"ip:203.0.113.{index}", -1 if round_ % 2 else 30)
+            held = middleware._held("ip:192.0.2.1") if middleware.held else None
+            found += held is not None
+        return found
+
+    assert on_threads(ask) == [500] * THREADS
+
+
+class _Guarded(OrderedDict[Any, Any]):
+    """An ``OrderedDict`` that is only touched under ``lock``."""
+
+    def __init__(self, lock: Any) -> None:  # noqa: ANN401 - a lock.
+        """Watch ``lock``."""
+        super().__init__()
+        self.lock = lock
+
+    def _check(self) -> None:
+        assert self.lock.locked()
+
+    def __getitem__(self, key: Any) -> Any:  # noqa: ANN401
+        self._check()
+        return super().__getitem__(key)
+
+    def __setitem__(self, key: Any, value: Any) -> None:  # noqa: ANN401
+        self._check()
+        super().__setitem__(key, value)
+
+    def get(self, key: Any, default: Any = None) -> Any:  # noqa: ANN401
+        self._check()
+        return super().get(key, default)
+
+    def pop(self, key: Any, *default: Any) -> Any:  # noqa: ANN401
+        self._check()
+        return super().pop(key, *default)
+
+    def move_to_end(self, key: Any, last: bool = True) -> None:  # noqa: ANN401
+        self._check()
+        super().move_to_end(key, last)
+
+    def popitem(self, last: bool = True) -> tuple[Any, Any]:
+        self._check()
+        return super().popitem(last)
+
+
+def test_the_principal_cache_stays_whole_on_every_thread() -> None:
+    """Keeps, hits, invalidations, and evictions at once: bounded and consistent.
+
+    Above all, nothing read before an invalidation of what it rests on is
+    kept after it, whatever the interleaving.
+    """
+    cache = PrincipalCache(recent=32)
+    cache._entries = _Guarded(cache._lock)
+    cache._invalidated = _Guarded(cache._lock)
+
+    def hammer(index: int) -> int:
+        chosen = random.Random(index)  # noqa: S311 - the order of the calls only.
+        kept = 0
+        for round_ in range(1_500):
+            user = f"user:{chosen.randrange(12)}"
+            started = cache.begin()
+            entry = Entry(
+                ("token", f"{index}-{round_ % 40}"),
+                None,
+                targets=(user, f"token:{index}-{round_ % 40}"),
+                started=started,
+                keep=True,
+                deadline=10.0,
+            )
+            step = chosen.random()
+            if step < 0.5:
+                kept += cache.put(entry, limit=64) is not None
+            elif step < 0.8:
+                found = cache.get(entry.key, now=chosen.choice((1.0, 20.0)))
+                if found is not None:
+                    cache.claim_touch(found, clock_module.now())
+            elif step < 0.97:
+                cache.invalidate([user])
+            elif step < 0.99:
+                cache.discard(entry)
+            else:
+                cache.invalidate([ALL])
+        return kept
+
+    assert sum(on_threads(hammer)) > 0
+
+    assert len(cache) <= 64
+    with cache._lock:
+        indexed = {key for keys in cache._by_target.values() for key in keys}
+        assert indexed == set(cache._entries)
+        for key, entry in cache._entries.items():
+            assert entry.key == key
+            assert entry.started >= cache._floor
+            for target in (ALL, *entry.targets):
+                assert cache._invalidated.get(target, -1) <= entry.started
+                assert target == ALL or key in cache._by_target[target]
 
 
 def test_the_hashing_pool_counts_calls_from_every_thread() -> None:

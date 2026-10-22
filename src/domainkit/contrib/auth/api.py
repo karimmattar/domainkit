@@ -256,7 +256,7 @@ async def change_password(
 ) -> None:
     """Change the password; every other session of the user ends."""
     await _throttle(request, f"password:user:{user.id}")
-    if not await acheck_password(body.old_password, user.password.value, priority=True):
+    if not await password_holds(user, body.old_password, priority=True):
         raise APIError(
             status.HTTP_400_BAD_REQUEST,
             "Your old password was entered incorrectly.",
@@ -271,6 +271,21 @@ async def change_password(
             user.id, keep=credentials.token_id, keep_family=credentials.session
         )
         await uow.commit()
+
+
+async def password_holds(
+    user: AbstractBaseUser, password: str, *, priority: bool = False
+) -> bool:
+    """Whether ``password`` is the stored password of ``user``.
+
+    The hash is read afresh: users that authenticated requests carry none.
+    ``priority`` hashes in the places ``AUTH.HASHING_RESERVED`` keeps.
+    """
+    async with AuthUnitOfWork() as uow:
+        hashed = await uow.users.password_hash(user.id)
+    return hashed is not None and await acheck_password(
+        password, hashed.value, priority=priority
+    )
 
 
 async def _throttle(request: Request, *keys: str) -> None:

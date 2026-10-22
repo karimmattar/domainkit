@@ -29,6 +29,7 @@ from domainkit.conf.env import (
     project_prefix,
     project_root,
 )
+from domainkit.contrib.auth.principals import invalidate_all
 from domainkit.contrib.messaging import registry as task_registry
 from domainkit.ddd import event_bus
 from domainkit.http import get_asgi_application, metrics
@@ -58,10 +59,11 @@ def isolated_registries() -> Iterator[None]:
     """Restore process-wide registries (tasks, subscriptions, metrics) per test.
 
     Apps register tasks and handlers when they are installed; a test that
-    installs one must not leak them into the next test. Memory caches start
-    empty, too.
+    installs one must not leak them into the next test. Memory caches and
+    the principal cache start empty, too.
     """
     caches.reset()
+    invalidate_all()
     tasks = dict(task_registry._tasks)
     subscriptions = {key: list(value) for key, value in event_bus._handlers.items()}
     refreshers = list(metrics._refreshers)

@@ -63,6 +63,29 @@ All notable changes to domainkit. The format follows
   run, for short writes that stand alone; through PgBouncer, a transaction.
 - `deadlines.enforced()`: whether a timer of the running task already cuts
   it off at its deadline.
+- The principal cache (`AUTH.PRINCIPAL_CACHE`; ADR 0058): who a credential
+  names, with their groups and permissions, is kept per process for `TTL`
+  (5 seconds; 5 minutes at most), at most `MAX_ENTRIES` (10,000) of them.
+  A request whose principal is kept makes no query to authenticate (was
+  4 or 5 `SELECT`s, a `BEGIN`, a `ROLLBACK`, and a pre-ping), and a 429
+  for a valid token none either (PERF-01, ASYNC-R13, N8). Opaque tokens,
+  personal tokens, browser sessions, JSON Web Tokens, and client
+  certificates are all kept; expiry, CSRF, and signatures are checked on
+  every request. A change committed in the process (logging out, a
+  revoked token, a password change, a deactivated or deleted user, a
+  group joined or left, a permission given or taken, a group changed)
+  drops what it affects at once; other processes see it within `TTL`, or
+  at once with `STAMPS`, a Redis cache every process shares. A cache that
+  fails is never trusted: the database answers. `check` warns about a
+  `TTL` above 5 seconds without `STAMPS` in staging and production;
+  `auth_principal_cache_total` counts hits, misses, invalidations, and
+  evictions by authentication class (`docs/auth.md`).
+- `domainkit.contrib.auth.principals.invalidate(...)`, `invalidate_all()`,
+  and `invalidate_everywhere(...)` (with the stamps) drop principals that SQL
+  outside the ORM changed;
+  `UserRepository.password_hash(user_id)` and
+  `domainkit.contrib.auth.api.password_holds(user, password)` read and
+  check a password hash afresh.
 
 ### Changed
 
@@ -136,6 +159,18 @@ All notable changes to domainkit. The format follows
   it: an audited commit about a new person costs 2 statements for the keys
   instead of 3. A transaction reads each subject's key once, and `forget`
   drops the keys that open transactions of the process hold (N4).
+- A principal that is not kept is read in two queries: the token, then the
+  user with every group and permission in one statement (was 4 or 5; N6,
+  ADR 0059).
+- `request.user` no longer carries the password hash: reading
+  `request.user.password` raises `DetachedInstanceError`. Read the hash in
+  a unit of work (`await uow.users.password_hash(user.id)`), or check a
+  password with `password_holds`. Each request gets a user of its own, built
+  as a query builds it.
+- `AuthenticationMiddleware` looks at the client address only while an
+  address is held for refused credentials, and `TokenAuthentication` and
+  `CookieAuthentication` read no settings for a request without their
+  credentials (FX-16).
 
 ## [0.8.0] - 2026-10-21
 

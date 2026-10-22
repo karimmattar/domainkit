@@ -46,10 +46,18 @@ from .authentication import (
     AuthenticationFailed,
     BaseAuthentication,
     Credentials,
-    active_user,
+    accept,
+    stored_credential,
 )
-from .models import AbstractBaseUser
-from .settings import auth_settings
+from .principals import (
+    Entry,
+    principal_cache,
+    recall,
+    remember,
+    stamps_before_reading,
+    user_target,
+)
+from .settings import PrincipalCacheSettings, auth_settings
 from .tokens import TokenKind
 from .uow import AuthUnitOfWork
 
@@ -75,15 +83,23 @@ class ClientCertificateAuthentication(BaseAuthentication):
         if pem is None:
             return None
         der = certificate_der(pem)
-        async with AuthUnitOfWork() as uow:
-            if auth_settings().CLIENT_CERT.MATCH == "fingerprint":
-                fingerprint = hashlib.sha256(der).hexdigest()
-                token = await uow.tokens.find_digest(fingerprint)
-                if token is None or token.kind != TokenKind.CERTIFICATE:
-                    raise AuthenticationFailed("Unknown client certificate.")
-                user = await active_user(uow, token.user_id)
-                return Credentials(user, scheme=SCHEME, token_id=token.id)
-            user = await _subject_user(uow, der)
+        fingerprint = hashlib.sha256(der).hexdigest()
+        config = auth_settings()
+        if config.CLIENT_CERT.MATCH == "fingerprint":
+            entry = await stored_credential(SCHEME, fingerprint, config.PRINCIPAL_CACHE)
+            token = None if entry is None else entry.credential
+            if entry is None or token is None or token.kind != TokenKind.CERTIFICATE:
+                raise AuthenticationFailed("Unknown client certificate.")
+            user = entry.user()
+            if user is None:
+                raise AuthenticationFailed("User inactive or deleted.")
+            await accept(entry, config.PRINCIPAL_CACHE, touch=False)
+            return Credentials(user, scheme=SCHEME, token_id=token.id)
+        found = await subject_principal(der, fingerprint, config.PRINCIPAL_CACHE)
+        user = None if found is None else found.user()
+        if found is None or user is None:
+            raise AuthenticationFailed("Unknown client certificate.")
+        remember(found, config.PRINCIPAL_CACHE)
         return Credentials(user, scheme=SCHEME)
 
 
@@ -175,14 +191,27 @@ def common_name(der: bytes) -> str | None:
     return str(names[0].value) if names else None
 
 
-async def _subject_user(uow: AuthUnitOfWork, der: bytes) -> AbstractBaseUser:
-    """The active user whose username is the certificate's common name.
+async def subject_principal(
+    der: bytes, fingerprint: str, config: PrincipalCacheSettings
+) -> Entry | None:
+    """The user whose username is the certificate's common name, kept by its hash.
 
-    Raises:
-        AuthenticationFailed: There is none.
+    None: the certificate names no user. The user's read checks the name is
+    still theirs, so a rename meanwhile is never kept.
     """
+    key = (SCHEME, f"subject:{fingerprint}")
+    entry = await recall(key, config)
+    if entry is not None:
+        return entry
     name = common_name(der)
-    user = None if name is None else await uow.users.get_by_natural_key(name)
-    if user is None or not user.is_active:
-        raise AuthenticationFailed("Unknown client certificate.")
-    return user
+    if name is None:
+        return None
+    started = principal_cache.begin()
+    async with AuthUnitOfWork() as uow:
+        user_id = await uow.principals.user_id(name)
+        if user_id is None:
+            return None
+        entry = Entry(key, None, targets=(user_target(user_id),), started=started)
+        await stamps_before_reading(entry, config)
+        snapshot = await uow.principals.principal(user_id, username=name)
+    return entry.holding(snapshot)
