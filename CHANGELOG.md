@@ -6,6 +6,8 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-22
+
 ### Added
 
 - The benchmark ladder: `python -m benchmarks` measures what a request
@@ -223,6 +225,15 @@ All notable changes to domainkit. The format follows
   hash, warns with `DomainkitDeprecationWarning` the first time each
   request reads it, and is removed in 0.10. `has_usable_password()` keeps
   working, without the hash and without a warning.
+
+### Removed
+
+- `timeout`, `command_timeout`, and `connect_timeout` in a database's
+  `CONNECT_ARGS`, deprecated in 0.8.0: they are refused when the
+  application is built, as every argument the settings derive is. Set
+  `CONNECT_TIMEOUT` and `COMMAND_TIMEOUT` instead. A `command_timeout`
+  still applies when neither `COMMAND_TIMEOUT` nor `STATEMENT_TIMEOUT` is
+  set, since nothing derives one then.
 
 ### Fixed
 
@@ -1953,7 +1964,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/karimmattar/domainkit/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/karimmattar/domainkit/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/karimmattar/domainkit/compare/v0.6.2...v0.7.0
 [0.6.2]: https://github.com/karimmattar/domainkit/compare/v0.6.1...v0.6.2
