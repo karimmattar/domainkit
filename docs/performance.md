@@ -174,18 +174,17 @@ above. These are lower bounds: the HTTP server's own work comes on top
 (about 34 µs a request for uvicorn on uvloop with httptools, as the
 re-audit measured it on this machine class), and so does the database's.
 
-| 500 million requests per… | Requests/s | Light: `default-json`, 207 µs | Authenticated read: `read`, 2,087 µs | 0.8.0 (304 µs / 6,481 µs, this release's dependencies: 283 / 5,325): light / read |
+| 500 million requests per… | Requests/s | Light: `default-json`, 207 µs | Authenticated read: `read`, 2,087 µs | 0.8.0, 304 µs / 6,481 µs: light / read |
 | --- | ---: | ---: | ---: | ---: |
-| Day (average) | 5,787 | 2 | 13 | 2 / 31 |
-| Day (3× peak) | 17,361 | 4 | 37 | 5 / 93 |
-| Hour | 138,889 | 29 | 290 | 40 / 740 |
-| Minute | 8,333,333 | 1,724 | 17,389 | 2,356 / 44,376 |
+| Day (average) | 5,787 | 2 | 13 | 2 / 38 |
+| Day (3× peak) | 17,361 | 4 | 37 | 6 / 113 |
+| Hour | 138,889 | 29 | 290 | 43 / 901 |
+| Minute | 8,333,333 | 1,724 | 17,389 | 2,534 / 54,009 |
 | Second | 500,000,000 | not a framework's question (2 ns a request): edge caches and CDNs | | |
 
 A core now serves about 4,800 light requests a second, or 480 authenticated
-reads whose principal is kept: about 2.5 times the reads of 0.8.0 on the
-same dependencies. The 0.8.0 column is the one this page gave before this
-release's changes landed.
+reads whose principal is kept: about three times the reads of 0.8.0
+(2.5 times on the same dependencies, where 0.8.0 read in 5,325 µs).
 
 ## Making requests cheaper
 
