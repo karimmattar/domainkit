@@ -467,6 +467,26 @@ def test_request_users_lend_their_password_hash_deprecated(api: Api) -> None:
     assert lent_password(hit) == stored
 
 
+def test_a_user_lent_a_hash_again_reads_the_last_and_keeps_its_loaders(
+    use_auth: UseAuth,
+) -> None:
+    """``lend_password`` on a user lent one already (an ORM-read user read twice)."""
+    use_auth()
+    first, last = PasswordHash.unusable(), PasswordHash.unusable()
+    user = User.create(password=first, username="alice")
+    state = instance_state(user)
+    principals.lend_password(user, first, usable=False)
+
+    def own_loader(state: object, passive: object) -> str:
+        return "its own"
+
+    state.callables["nickname"] = own_loader
+    principals.lend_password(user, last, usable=False)
+
+    assert state.callables["nickname"] is own_loader
+    assert lent_password(user) == last
+
+
 @pytest.mark.parametrize("password", [PASSWORD, None])
 def test_request_users_know_whether_their_password_is_usable(
     api: Api, password: str | None
@@ -1889,14 +1909,17 @@ def test_only_instances_in_a_session_wait_for_its_commit(use_auth: UseAuth) -> N
     principals._after_commit_of(user, [user_target(user.id)])  # Nothing happens.
 
 
-def test_units_of_work_without_a_session_stamp_nothing(use_auth: UseAuth) -> None:
+def test_units_of_work_without_a_session_stamp_nothing(
+    use_auth: UseAuth, shared: FakeServer
+) -> None:
     """Only SQL units of work commit what principals rest on."""
-    use_auth()
+    use_auth(PRINCIPAL_CACHE=STAMPED)
     config = registry.get_domain_config("auth")
 
     class Memory:
         """A unit of work kept in memory."""
 
+    run_async(config.stage(Memory(), [], []))  # type: ignore[arg-type]
     run_async(config.committed(Memory()))  # type: ignore[arg-type]
 
 

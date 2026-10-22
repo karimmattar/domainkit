@@ -29,8 +29,11 @@ from domainkit.contrib.auth import (
     principals,
 )
 from domainkit.contrib.auth.principals import (
+    ALL,
+    family_target,
     invalidate_after_commit,
     principal_cache,
+    stamp_key,
     token_target,
     user_target,
 )
@@ -58,6 +61,17 @@ from domainkit_tests.test_auth_principals import statements as statements
 
 LONG: Final = {"TTL": timedelta(minutes=5)}
 """Principals kept long enough that only an invalidation drops them."""
+
+
+async def stamped_targets() -> set[str]:
+    """The targets the shared cache holds a stamp of."""
+    client = redis_cache.create_client(None)  # type: ignore[arg-type]
+    full = caches["shared"].make_key(stamp_key(""))
+    names = [
+        key.decode() if isinstance(key, bytes) else key
+        for key in await client.keys("*")
+    ]
+    return {name.removeprefix(full) for name in names if name.startswith(full)}
 
 
 async def outcome(raw: str) -> str:
@@ -335,43 +349,50 @@ def test_lost_stamps_never_confirm_a_principal(
 
 def test_guessed_tokens_write_no_stamps(api: Api, shared: FakeServer) -> None:
     """Stamps are given to credentials that exist: guesses only read."""
-    create_user("alice")
+    alice = create_user("alice")
     api(PRINCIPAL_CACHE=STAMPED)
     raw = run_async(issue("alice"))
     guesses = [f"dkt_{uuid4().hex}{uuid4().hex[:11]}" for _ in range(5)]
 
-    async def scenario() -> list[str]:
+    async def scenario() -> set[str]:
         for guess in guesses:
             assert await outcome(guess) == "Invalid token."
         assert await outcome(raw) == "served"
-        client = redis_cache.create_client(None)  # type: ignore[arg-type]
-        return sorted(str(key) for key in await client.keys("*"))
+        return await stamped_targets()
 
-    keys = run_async(scenario())
-    digests = {token_digest(guess) for guess in guesses}
-    assert keys  # alice's stamps, and the one of every principal.
-    assert not [key for key in keys if any(digest in key for digest in digests)]
+    # Every principal's, and those alice's token rests on: nothing else.
+    assert run_async(scenario()) == {
+        ALL,
+        user_target(alice),
+        token_target(token_digest(raw)),
+    }
 
 
 def test_refresh_tokens_are_refused_as_bearer_tokens_with_stamps(
     api: Api, shared: FakeServer
 ) -> None:
     """A login's refresh token has a family, stamped too: still invalid, not kept."""
-    create_user("alice")
+    alice = create_user("alice")
     api(PRINCIPAL_CACHE=STAMPED)
+    family = uuid4()
 
-    async def scenario() -> str:
+    async def scenario() -> tuple[str, str, set[str]]:
         async with AuthUnitOfWork() as uow:
-            user = await uow.users.get_by_natural_key("alice")
-            assert user is not None
             raw = await uow.tokens.issue(
-                user.id, kind=TokenKind.REFRESH, ttl=None, family=uuid4()
+                alice, kind=TokenKind.REFRESH, ttl=None, family=family
             )
             await uow.commit()
-        return await outcome(raw)
+        return raw, await outcome(raw), await stamped_targets()
 
-    assert run_async(scenario()) == "Invalid token."
+    raw, seen, stamped = run_async(scenario())
+    assert seen == "Invalid token."
     assert len(principal_cache) == 0
+    assert stamped == {
+        ALL,
+        user_target(alice),
+        token_target(token_digest(raw)),
+        family_target(family),
+    }
 
 
 # Stamps written whatever happens after the commit.
@@ -605,6 +626,7 @@ def test_the_first_stamps_are_read_before_a_connection_is_taken(
 
     async def counted(self: Cache, keys: Any, *args: Any) -> Any:  # noqa: ANN401
         keys = list(keys)
+        assert keys  # An MGET of no key would be a round trip for nothing.
         while_reading.append(taken[0])
         if taken[0]:
             read_holding.extend(keys)
@@ -724,13 +746,24 @@ def test_live_tokens_are_counted_by_user_kind_and_expiry(api: Api) -> None:
     assert seen == [0, 3, 2]
 
 
+@pytest.mark.parametrize("held", ["nothing", "every principal's stamp"])
 def test_a_cache_that_keeps_no_stamp_keeps_no_principal(
-    api: Api, shared: FakeServer, monkeypatch: pytest.MonkeyPatch
+    api: Api, shared: FakeServer, monkeypatch: pytest.MonkeyPatch, held: str
 ) -> None:
-    """A stamp given and gone at once (an eviction) confirms nothing: read, not kept."""
+    """A stamp given and gone at once (an eviction) confirms nothing: read, not kept.
+
+    Whether the stamp lost is ``ALL``'s, read before the unit of work, or the
+    user's, read during it.
+    """
     create_user("alice")
     api(PRINCIPAL_CACHE=STAMPED)
     raw = run_async(issue("alice"))
+
+    async def stamp_everyone() -> None:
+        await caches["shared"].set(stamp_key(ALL), "everyone")
+
+    if held != "nothing":
+        run_async(stamp_everyone())
 
     async def keeps_nothing(*_: object, **__: object) -> bool:
         return False
@@ -738,6 +771,23 @@ def test_a_cache_that_keeps_no_stamp_keeps_no_principal(
     monkeypatch.setattr(Cache, "add", keeps_nothing)
     assert run_async(outcome(raw)) == "served"
     assert len(principal_cache) == 0
+
+
+def test_stamps_all_known_are_not_read_again(
+    api: Api, shared: FakeServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``settle_stamps`` with every stamp read earlier asks the cache nothing."""
+    api(PRINCIPAL_CACHE=STAMPED)
+    target = user_target(uuid4())
+    known = {stamp_key(ALL): "everyone", stamp_key(target): "theirs"}
+
+    async def fails(*_: object, **__: object) -> None:
+        raise AssertionError("read again")
+
+    monkeypatch.setattr(Cache, "get_many", fails)
+    monkeypatch.setattr(Cache, "add", fails)
+    settled = run_async(principals.settle_stamps("shared", [target], known))
+    assert settled == ("everyone", "theirs")
 
 
 def test_synchronous_sessions_say_they_cannot_stamp(
@@ -755,3 +805,23 @@ def test_synchronous_sessions_say_they_cannot_stamp(
         "Could not stamp 1 changed principals in cache 'shared' (no event loop); "
         "other processes keep theirs for up to 0:05:00"
     )
+
+
+def test_commits_without_the_auth_domain_drop_here_only(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No ``AUTH`` settings to read (the domain is not installed): no stamp, no log."""
+    alice = user_target(uuid4())
+    started = principal_cache.begin()
+    entry = principals.Entry(
+        ("token", "kept"), None, targets=(alice,), started=started, keep=True
+    )
+    assert principal_cache.put(entry, limit=10) is not None
+    session = Session()
+    invalidate_after_commit(session, [alice])
+
+    principals._committed(session)
+
+    assert len(principal_cache) == 0
+    assert principals.STAMPING not in session.info
+    assert not [m for m in caplog.messages if m.startswith("Could not stamp")]
