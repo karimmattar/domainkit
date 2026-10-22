@@ -514,6 +514,7 @@ REFUSED: dict[str, object] = {
     "huge integer subclass": [Lying(HUGE)],
     "NaN key": {float("nan"): 1},
     "infinite key": {float("-inf"): 1},
+    "positive infinite key": {float("inf"): 1},
     "NaN subclass": [LyingFloat("nan")],
     "tuple key": {(1, 2): "a"},
     "bytes key": {b"k": 1},
