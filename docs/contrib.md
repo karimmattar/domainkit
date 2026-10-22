@@ -692,7 +692,13 @@ query, and makes a new subject's key with an insert that returns it, so
 each key is read once per transaction. No key is kept past its
 transaction: `forget` reaches every process through the database, for
 every transaction that starts after it, and drops at once the keys that
-open transactions of its own process hold.
+open transactions of its own process hold. A lookup that read a key
+before `forget` began may still use it for the rows it is writing, as it
+would had it run a moment earlier, but keeps nothing it read. A subject's
+first key is made under a lock of that subject, which `forget` takes too
+(a transaction advisory lock on PostgreSQL, one more statement for a new
+subject only; SQLite runs one writer at a time): `forget` waits for a
+writer making a key, then deletes that key as well.
 
 The application only inserts. To make sure a compromised API cannot rewrite
 history, make the table append-only in the database itself. Add a revision

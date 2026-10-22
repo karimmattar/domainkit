@@ -169,6 +169,13 @@ All notable changes to domainkit. The format follows
 - `IDEMPOTENCY` with `TTL_SECONDS` below `LEASE_SECONDS` is refused at
   startup. A key that expired while its request still held it could be
   claimed by a retry, which ran the request a second time.
+- `forget` no longer misses a subject's first key while a writer is making
+  it: on PostgreSQL the key is made under a transaction advisory lock of
+  the subject, which `forget` takes too, so it waits for the writer and
+  deletes the key. It returned 0, and the key was committed after it.
+  Known subjects take no lock; a new one costs one more statement. A key
+  a lookup read before `forget` began is no longer kept for the rest of
+  its transaction.
 - `loaddata` reads a fixture's numbers with a fraction as decimals, so a
   money column gets every digit: `1234567890123456.78` was loaded as
   `1234567890123456.80`, through a float that `ExactDecimal` would have

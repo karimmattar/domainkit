@@ -347,26 +347,42 @@ async def test_read_only_work_on_sqlite_begins_before_it_reads(tables: None) -> 
         assert not await driver_in_transaction(uow)  # A writer begins to write.
 
 
-@sqlite_only
 @pytest.mark.parametrize("reads", list(Reads))
-async def test_sql_text_that_writes_on_sqlite_is_rolled_back(
+async def test_sql_text_that_writes_in_read_only_work_never_lasts(
     tables: None, reads: Reads
 ) -> None:
-    """DDL and ``WITH ... INSERT`` would commit at once without the ``BEGIN``."""
+    """DDL and ``WITH ... INSERT`` sent as SQL text: refused, or rolled back.
+
+    PostgreSQL refuses them in a read-only transaction or session. SQLite's
+    driver would commit them at once, outside a transaction; read-only work
+    begins one there, which its end rolls back.
+    """
     async with connections.engine().begin() as connection:
         await connection.execute(text("CREATE TABLE framework_test_kept (a int)"))
-    async with GadgetsUnitOfWork(reads=reads) as uow:
-        await uow.session.execute(
-            text(
-                "WITH added AS (SELECT 1 AS a) "
-                "INSERT INTO framework_test_kept SELECT a FROM added"
-            )
-        )
-        await uow.session.execute(text("CREATE TABLE framework_test_made (a int)"))
+    statements = [
+        (
+            "WITH added AS (SELECT 1 AS a) "
+            "INSERT INTO framework_test_kept SELECT a FROM added"
+        ),
+        "CREATE TABLE framework_test_made (a int)",
+    ]
+    for statement in statements:
+        async with GadgetsUnitOfWork(reads=reads) as uow:
+            if ON_POSTGRES:
+                with pytest.raises(DBAPIError) as refused:
+                    await uow.session.execute(text(statement))
+                assert getattr(refused.value.orig, "sqlstate", None) == WRITE_REFUSED
+            else:
+                await uow.session.execute(text(statement))
     async with connections.engine().connect() as connection:
         kept = await connection.scalar(text("SELECT count(*) FROM framework_test_kept"))
         made = await connection.scalar(
-            text("SELECT count(*) FROM sqlite_master WHERE name LIKE '%test_made'")
+            text(
+                "SELECT count(*) FROM information_schema.tables "
+                "WHERE table_name = 'framework_test_made'"
+            )
+            if ON_POSTGRES
+            else text("SELECT count(*) FROM sqlite_master WHERE name LIKE '%test_made'")
         )
     assert (kept, made) == (0, 0)
 
