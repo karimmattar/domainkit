@@ -17,7 +17,6 @@ time left before the request's deadline.
 import math
 import re
 import ssl
-import warnings
 from collections.abc import Mapping, Set
 from functools import cache
 from pathlib import Path
@@ -27,7 +26,6 @@ from uuid import uuid4
 from sqlalchemy.engine import make_url
 
 from domainkit.conf import DatabaseConfig
-from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 
 TIMEOUTS: Final = "STATEMENT_TIMEOUT, LOCK_TIMEOUT, IDLE_IN_TRANSACTION_TIMEOUT"
@@ -46,14 +44,11 @@ SOURCES: Final = {
     "prepared_statement_cache_size": "PGBOUNCER",
     "prepared_statement_name_func": "PGBOUNCER",
     "prepare_threshold": "PGBOUNCER",
-}
-"""The settings behind each driver argument and server setting derived here."""
-REPLACED: Final = {
     "timeout": "CONNECT_TIMEOUT",
     "connect_timeout": "CONNECT_TIMEOUT",
     "command_timeout": "COMMAND_TIMEOUT",
 }
-"""Arguments ``CONNECT_ARGS`` may still set, deprecated, and their settings."""
+"""The settings behind each driver argument and server setting derived here."""
 COMMAND_TIMEOUT_MARGIN: Final = 5.0
 """Seconds asyncpg waits beyond ``STATEMENT_TIMEOUT``, so the server ends a
 slow statement first, with an error that keeps the connection usable."""
@@ -153,10 +148,9 @@ def _add(derived: dict[str, Any], extra: Mapping[str, Any]) -> dict[str, Any]:
     """Add ``extra`` (``CONNECT_ARGS``) to ``derived``, replacing nothing.
 
     asyncpg's ``server_settings`` and libpq's ``options`` are combined with
-    the derived timeouts. The connect and command timeouts, which
-    ``CONNECT_ARGS`` set before they were settings, still replace theirs,
-    with a deprecation warning. Any other derived argument may not be set
-    again.
+    the derived timeouts. Any other derived argument may not be set again,
+    the connect and command timeouts among them (``CONNECT_TIMEOUT`` and
+    ``COMMAND_TIMEOUT`` set those).
     """
     combined = {**extra, **derived}
     for name in derived.keys() & extra.keys():
@@ -167,14 +161,6 @@ def _add(derived: dict[str, Any], extra: Mapping[str, Any]) -> dict[str, Any]:
         elif name == "options" and isinstance(added, str):
             _refuse(_option_settings(derived[name]) & _option_settings(added))
             combined[name] = f"{derived[name]} {added}"
-        elif name in REPLACED:
-            warnings.warn(
-                f"CONNECT_ARGS[{name!r}] is deprecated; set {REPLACED[name]} "
-                f"instead. It is refused from domainkit 0.9.",
-                DomainkitDeprecationWarning,
-                stacklevel=3,
-            )
-            combined[name] = added
         else:
             _refuse({name})
     return combined

@@ -11,7 +11,6 @@ from pydantic import ValidationError
 
 from domainkit.conf import DatabaseConfig, override_settings
 from domainkit.conf.global_settings import MAX_DATABASE_TIMEOUT
-from domainkit.db import drivers
 from domainkit.db.drivers import (
     DEADLINE_SLACK,
     MAX_MILLISECONDS,
@@ -24,7 +23,6 @@ from domainkit.db.drivers import (
     statement_name,
     transaction_settings,
 )
-from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 
@@ -441,20 +439,27 @@ def test_timeouts_of_a_millisecond_or_less_never_become_zero() -> None:
     assert args["server_settings"]["lock_timeout"] == "1"
 
 
-@pytest.mark.parametrize("name", ["timeout", "command_timeout"])
-def test_connect_args_still_set_the_client_timeouts_deprecated(name: str) -> None:
-    """They were driver arguments before they were settings; they warn now."""
-    with pytest.warns(
-        DomainkitDeprecationWarning, match=f"CONNECT_ARGS\\['{name}'\\]"
-    ) as warned:
-        args = connect_args(config(CONNECT_ARGS={name: 99}))
+@pytest.mark.parametrize(
+    ("url", "name", "setting"),
+    [
+        (POSTGRES, "timeout", "CONNECT_TIMEOUT"),
+        (POSTGRES, "command_timeout", "COMMAND_TIMEOUT"),
+        (PSYCOPG, "connect_timeout", "CONNECT_TIMEOUT"),
+    ],
+)
+def test_connect_args_no_longer_set_the_client_timeouts(
+    url: str, name: str, setting: str
+) -> None:
+    """Deprecated in 0.8, refused from 0.9: they are settings now."""
+    with pytest.raises(ImproperlyConfigured, match=rf"{name} \(from {setting}\)"):
+        connect_args(config(url, CONNECT_ARGS={name: 99}))
 
-    assert args[name] == 99
-    # Whoever asked for the arguments, not the module that makes them.
-    assert warned[0].filename != drivers.__file__
-    with pytest.warns(DomainkitDeprecationWarning, match="CONNECT_TIMEOUT instead"):
-        libpq = connect_args(config(PSYCOPG, CONNECT_ARGS={"connect_timeout": 9}))
-    assert libpq["connect_timeout"] == 9
+
+def test_connect_args_set_a_command_timeout_no_setting_sets() -> None:
+    """Without STATEMENT_TIMEOUT or COMMAND_TIMEOUT, nothing is replaced."""
+    unbounded = config(STATEMENT_TIMEOUT=None, CONNECT_ARGS={"command_timeout": 99})
+
+    assert connect_args(unbounded)["command_timeout"] == 99
 
 
 def test_pgbouncer_mode_keeps_nothing_in_the_session() -> None:
