@@ -930,9 +930,10 @@ actor, keys are scoped to the client address and a hash of the request's
 another. Add `IdempotencyMiddleware` last in `MIDDLEWARE`: it reads whole
 bodies, which `RequestBodyLimitMiddleware` has already bounded. With
 messaging installed, expired keys are purged hourly; without it, each new
-key deletes up to 100 expired ones, skipping those another request is
-deleting (`SKIP LOCKED` on PostgreSQL), so concurrent requests never queue
-behind one another's purge.
+key deletes up to 100 expired ones once it has claimed its own, skipping
+those another request is deleting (`SKIP LOCKED` on PostgreSQL), so
+concurrent requests never queue behind one another's purge, nor deadlock
+through PgBouncer.
 
 **What a key costs.** A request claims its key with one statement, an
 upsert that inserts the in-progress row or replaces an expired one, and

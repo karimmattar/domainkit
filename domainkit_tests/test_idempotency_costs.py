@@ -7,7 +7,9 @@ the stored response with two. Claims race safely without a transaction.
 
 import asyncio
 import os
-from collections.abc import Iterator
+import secrets
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
 from typing import Any, Self
@@ -16,11 +18,17 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import event, insert, select
 from sqlalchemy.engine import Connection, Engine, ExecutionContext
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.pool import Pool
+from sqlalchemy.sql import Executable
 from starlette.types import Message, Receive, Scope, Send
 
+from domainkit import setup
+from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.contrib.idempotency import middleware as idempotency
+from domainkit.contrib.idempotency.operations import Operation
 from domainkit.contrib.idempotency.settings import IdempotencySettings
 from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.db import connections
@@ -119,13 +127,17 @@ def test_a_keyed_write_claims_and_stores_with_one_statement_each(
 def test_a_claim_without_a_worker_sweeps_on_the_same_connection(
     idempotent: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The sweep of expired keys adds a statement, not a transaction."""
+    """The sweep of expired keys adds a statement, not a transaction.
+
+    It comes after the claim: through PgBouncer they share a transaction,
+    whose sweep must hold no locks while its upsert waits.
+    """
     monkeypatch.setattr(idempotency, "MESSAGING", "not.installed")
 
     with Costs() as costs:
         idempotent.post("/counter", json={}, headers={"Idempotency-Key": "swept"})
 
-    assert costs.statements == ["DELETE", "INSERT", "UPDATE"]
+    assert costs.statements == ["INSERT", "DELETE", "UPDATE"]
     assert (costs.transactions, costs.checkouts) == (0, 2)
 
 
@@ -144,6 +156,109 @@ def test_through_pgbouncer_claims_and_stores_are_transactions(
     assert (paid.status_code, again.headers["Idempotent-Replayed"]) == (201, "true")
     assert costs.transactions == 4  # Claim, payment, store; the retry's claim.
     assert [row["status_code"] for row in stored] == [201]
+
+
+class Pausing:
+    """A claim's connection that waits after its first statement until let go."""
+
+    def __init__(
+        self, connection: AsyncConnection, ran: asyncio.Event, go: asyncio.Event
+    ) -> None:
+        """Wrap ``connection``: set ``ran`` after its first statement, then wait."""
+        self.connection, self.ran, self.go = connection, ran, go
+        self.dialect = connection.dialect
+
+    async def _after(self, result: Any) -> Any:  # noqa: ANN401 - SQLAlchemy's.
+        if not self.ran.is_set():
+            self.ran.set()
+            await self.go.wait()
+        return result
+
+    async def execute(self, statement: Executable) -> Any:  # noqa: ANN401
+        """Run ``statement``; the first one waits afterwards."""
+        return await self._after(await self.connection.execute(statement))
+
+    async def scalar(self, statement: Executable) -> Any:  # noqa: ANN401
+        """Run ``statement`` for one value; the first one waits afterwards."""
+        return await self._after(await self.connection.scalar(statement))
+
+
+@postgres_only
+def test_claims_through_pgbouncer_never_wait_holding_their_sweep(
+    database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two claims whose keys each sweep would delete both get their keys.
+
+    Through PgBouncer a claim and its sweep share a transaction. Each
+    claim here pauses after its first statement until both have run one.
+    Had each swept first, holding the other's expired key, both upserts
+    would wait for each other: a deadlock (SQLSTATE 40P01), refused as 503.
+    """
+    monkeypatch.setattr(idempotency, "MESSAGING", "not.installed")
+    expired = datetime.now(UTC) - timedelta(days=3)
+    real = connections.autocommit
+    pauses = {name: (asyncio.Event(), asyncio.Event()) for name in ("A", "B")}
+
+    @asynccontextmanager
+    async def pausing(alias: str = "default") -> AsyncIterator[Any]:
+        task = asyncio.current_task()
+        async with real(alias) as connection:
+            yield Pausing(connection, *pauses[task.get_name() if task else ""])
+
+    async def scenario() -> list[object]:
+        async with connections.engine().begin() as connection:
+            await connection.run_sync(idempotency_keys.create)
+            await connection.execute(
+                insert(idempotency_keys),
+                [
+                    {
+                        "key_hash": f"{n:064d}",
+                        "fingerprint": "f" * 64,
+                        "created_at": expired,
+                        "expires_at": expired + timedelta(seconds=n),  # 0 oldest.
+                        "token": "old",
+                        "locked_until": expired,
+                    }
+                    for n in range(2 * idempotency.PURGE_BATCH)
+                ],
+            )
+        middleware = idempotency.IdempotencyMiddleware(app=None)  # type: ignore[arg-type]
+        config = IdempotencySettings()
+        monkeypatch.setattr(connections, "autocommit", pausing)
+
+        async def claim(key: int) -> object:
+            operation = Operation(f"{key:064d}", secrets.token_hex(16))
+            try:
+                return await middleware._claim(config, operation, "g" * 64)
+            except DBAPIError as exc:
+                return exc
+
+        # A's key is in the second sweep's batch, B's in the first's.
+        a = asyncio.create_task(claim(150), name="A")
+        await pauses["A"][0].wait()
+        b = asyncio.create_task(claim(50), name="B")
+        await pauses["B"][0].wait()
+        for _, go in pauses.values():
+            go.set()
+        claimed = list(await asyncio.gather(a, b))
+        monkeypatch.setattr(connections, "autocommit", real)
+        await connections.close_all()
+        return claimed
+
+    bounced = {"default": {"URL": database_url, "PGBOUNCER": True}}
+    with override_settings(
+        INSTALLED_DOMAINS=[
+            "domainkit.contrib.idempotency",
+            "domainkit_tests.sample_domains.alpha",
+        ],
+        DATABASES=bounced,
+    ):
+        registry.clear()
+        setup()
+        claimed = asyncio.run(scenario())
+        registry.clear()
+
+    assert claimed == [None, None]  # Both claimed their keys.
 
 
 @pytest.mark.usefixtures("idempotent")
