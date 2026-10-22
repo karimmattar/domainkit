@@ -231,6 +231,12 @@ async def test_tasks_that_will_not_stop_are_named(
 ) -> None:
     """The tasks phase ends at its share even if a task ignores cancellation."""
     record_closes(monkeypatch, [])
+
+    async def flushed() -> None:
+        """The flush phase is not under test: it may need a thread on a busy host."""
+
+    monkeypatch.setattr(lifecycle, "aflush_reports", flushed)
+    monkeypatch.setattr(lifecycle, "aflush_logs", flushed)
     release = asyncio.Event()
 
     async def stubborn() -> None:

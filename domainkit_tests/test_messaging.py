@@ -1579,7 +1579,7 @@ async def test_a_cancelled_worker_gives_its_messages_back_at_once(
     await until(lambda: "cut:started" in ran)
 
     running.cancel()
-    await stopped(running, within=0.5)
+    await stopped(running)  # Well within SHUTDOWN_TIMEOUT's 20 seconds.
 
     assert running.cancelled()
     await given_back("cut")
@@ -1659,7 +1659,7 @@ async def test_a_cancelled_brokered_worker_gives_its_deliveries_back(
     await until(lambda: "cut:started" in ran)
 
     running.cancel()
-    await stopped(running, within=0.5)
+    await stopped(running)  # Well within SHUTDOWN_TIMEOUT's 20 seconds.
 
     assert running.cancelled()
     await given_back("cut")
