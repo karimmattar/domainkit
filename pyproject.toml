@@ -168,7 +168,7 @@ exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError"]
 # full run takes a while), then "mutmut results".
 [tool.mutmut]
 source_paths = ["src"]
-also_copy = ["domainkit_tests/", "docs/", "benchmarks/"]
+also_copy = ["domainkit_tests/", "docs/", "benchmarks/", ".github/"]
 pytest_add_cli_args_test_selection = ["domainkit_tests/", "-p", "no:randomly"]
 # Fork from a clean server: children forked after the suite ran hang on
 # database tests, which mutmut would count as killed by timeout.

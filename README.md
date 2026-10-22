@@ -173,7 +173,8 @@ CI (`.github/workflows/ci.yml`) runs on every push and pull request:
 - a wheel build, installed and imported in a clean environment
 - pip-audit, and a gitleaks scan of the whole history
 
-A full mutation testing run happens weekly. Releases are published to PyPI
+A full mutation testing run happens weekly, in eight shards that run side by
+side. Releases are published to PyPI
 from a version tag; see [docs/versioning.md](https://github.com/karimmattar/domainkit/blob/main/docs/versioning.md).
 
 ## License

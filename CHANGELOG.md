@@ -101,6 +101,9 @@ All notable changes to domainkit. The format follows
 
 ### Changed
 
+- The weekly mutation run is split into eight shards that run side by side,
+  each within its own time limit: the whole package no longer fits in one
+  job. A test checks that every module falls in exactly one shard.
 - domainkit requires FastAPI 0.143.1 (`<0.144`), SQLAlchemy 2.1.4
   (`<2.2`), and asyncpg 0.32.0 (`<0.33`, the `postgres` extra), and lists
   Starlette 1.8.0 (`<2`) itself, which FastAPI allows down to 0.46
