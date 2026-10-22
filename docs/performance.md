@@ -57,9 +57,10 @@ pool's wait ran out), and the new code none.
   type, measured with `timeit`; estimated in proportion for users with
   hundreds of permissions) and the rest of the stack.
 - With `STAMPS`, a hit adds one `MGET` to the shared cache. A miss reads
-  the stamps that exist before taking a connection, and gives any absent
-  one a stamp (`SET NX`) once the credential proved real. A commit that
-  changes principals writes their stamps twice, before and after it.
+  `ALL`'s stamp and the token's before taking a connection, giving `ALL`
+  one if absent (`SET NX`), and gives any other absent one a stamp once
+  the credential proved real. A commit that changes principals writes
+  their stamps twice, before and after it.
 - Memory: principals share their grants. Measured with `tracemalloc` over
   200 tokens of one user holding 1,000 permissions through a group: 368 kB
   per entry before (3.7 GB at the default `MAX_ENTRIES`), 5.6 kB after.

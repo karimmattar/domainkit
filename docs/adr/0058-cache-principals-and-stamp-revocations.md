@@ -151,8 +151,9 @@ Options considered:
   ends between the commit and the second write, principals read before
   the transaction still differ from the first stamp; one read during the
   commit itself may stay for the `TTL`.
-- On a miss with `STAMPS`, `ALL`'s and the token's stamps are read before
-  the connection is taken; the user's (and any absent one, given a stamp)
+- On a miss with `STAMPS`, `ALL`'s stamp (given one if absent) and the
+  token's (if it exists) are read before the connection is taken; the
+  user's, and an absent token's (given one once the token proved real),
   between the two queries, while the read holds its connection: a slow
   cache lengthens that by its `SOCKET_TIMEOUT` at most, and a failing one
   not at all once its `FAILURE_COOLDOWN` starts.
