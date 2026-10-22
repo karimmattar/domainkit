@@ -15,64 +15,61 @@ write. Requests go straight into the application, one at a time, with no
 server or socket; the database rungs run against PostgreSQL. Each rung runs
 in a process of its own.
 
-Measured on domainkit 0.8.0 with this release's dependencies (FastAPI
-0.143.1, Starlette 1.8.0, SQLAlchemy 2.1.4, asyncpg 0.32.0, Pydantic
-2.14.1), Python 3.13.16 on uvloop, and PostgreSQL 16 on the same 4-vCPU
-Linux machine, which other work shared (load average about 3.5). Per
-request; CPU is the best of three ladder runs.
+Measured on this release (FastAPI 0.143.1, Starlette 1.8.0, SQLAlchemy
+2.1.4, asyncpg 0.32.0, Pydantic 2.14.1) and on 0.8.0 with its own pins
+(FastAPI 0.141.1, SQLAlchemy 2.0.54, asyncpg 0.31.0), side by side in one
+ladder run (`--baseline`): Python 3.13.16 on uvloop, and PostgreSQL 16 on
+the same 4-vCPU Linux machine, which other work shared. Per request; the
+round trips are statements, transactions, checkouts and pings.
 
-| Rung | Stack and request | Calls | Statements | Transactions | Checkouts | Pings | CPU µs |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `asgi` | A bare ASGI application: `GET /hello` | 5 | 0 | 0 | 0 | 0 | 1.2 |
-| `fastapi` | Plain FastAPI: `GET /hello` | 234 | 0 | 0 | 0 | 0 | 51.0 |
-| `bare` | domainkit, no middleware: `GET /hello` | 1,668 | 0 | 0 | 0 | 0 | 154 |
-| `nested` | domainkit, no middleware, two routers deep: `GET /a/b/hello` | 1,904 | 0 | 0 | 0 | 0 | 170 |
-| `default` | `DEFAULT_MIDDLEWARE`: `GET /hello` | 1,840 | 0 | 0 | 0 | 0 | 206 |
-| `default-json` | `DEFAULT_MIDDLEWARE`, JSON access log: `GET /hello` | 1,981 | 0 | 0 | 0 | 0 | 283 |
-| `template` | The `init` template's stack: `GET /hello` | 2,033 | 0 | 0 | 0 | 0 | 281 |
-| `template-json` | The template's stack, JSON access log: `GET /hello` | 2,173 | 0 | 0 | 0 | 0 | 370 |
-| `me` | Template stack, opaque token: `GET /me` | 5,296 | 5 | 1 | 1 | 1 | 3,995 |
-| `read` | Template stack, token, `ModelPermissions`, read through a unit of work: `GET /items/{id}` | 6,662 | 6 | 2 | 2 | 2 | 5,325 |
-| `write` | Template stack, token, `ModelPermissions`, write through a unit of work: `POST /items` | 7,055 | 6 | 2 | 2 | 2 | 5,953 |
-| `keyed-write` | The write with an `Idempotency-Key` (`IdempotencyMiddleware` last): `POST /items` | 10,428 | 10 | 5 | 5 | 5 | 10,056 |
-| `throttled` | Template stack, token, refused by `RATE_LIMIT` (429): `GET /me` | 3,788 | 5 | 1 | 1 | 1 | 3,695 |
+| Rung | Stack and request | Calls, 0.8.0 → now | Round trips, 0.8.0 → now | CPU µs, 0.8.0 → now |
+| --- | --- | ---: | ---: | ---: |
+| `asgi` | A bare ASGI application: `GET /hello` | 5 → 5 | 0/0/0/0 → 0/0/0/0 | 1.1 → 1.1 |
+| `fastapi` | Plain FastAPI: `GET /hello` | 168 → 234 | 0/0/0/0 → 0/0/0/0 | 58 → 64 |
+| `bare` | domainkit, no middleware: `GET /hello` | 1,653 → 481 | 0/0/0/0 → 0/0/0/0 | 169 → 84 |
+| `nested` | domainkit, no middleware, two routers deep: `GET /a/b/hello` | 1,889 → 489 | 0/0/0/0 → 0/0/0/0 | 198 → 82 |
+| `default` | `DEFAULT_MIDDLEWARE`: `GET /hello` | 1,825 → 601 | 0/0/0/0 → 0/0/0/0 | 237 → 132 |
+| `default-json` | `DEFAULT_MIDDLEWARE`, JSON access log: `GET /hello` | 1,965 → 746 | 0/0/0/0 → 0/0/0/0 | 304 → 207 |
+| `template` | The `init` template's stack: `GET /hello` | 2,018 → 714 | 0/0/0/0 → 0/0/0/0 | 422 → 179 |
+| `template-json` | The template's stack, JSON access log: `GET /hello` | 2,158 → 859 | 0/0/0/0 → 0/0/0/0 | 389 → 224 |
+| `me` | Template stack, opaque token: `GET /me` | 5,892 → 1,194 | 5/1/1/1 → 0/0/0/0 | 5,007 → 341 |
+| `read` | Template stack, token, `ModelPermissions`, read through a unit of work: `GET /items/{id}` | 7,359 → 2,439 | 6/2/2/2 → 1/1/1/1 | 6,481 → 2,087 |
+| `write` | Template stack, token, `ModelPermissions`, write through a unit of work: `POST /items` | 7,648 → 2,812 | 6/2/2/2 → 1/1/1/1 | 7,567 → 2,167 |
+| `keyed-write` | The write with an `Idempotency-Key` (`IdempotencyMiddleware` last): `POST /items` | 10,977 → 5,810 | 10/5/5/5 → 4/3/3/3 | 11,839 → 5,829 |
+| `throttled` | Template stack, token, refused by `RATE_LIMIT` (429): `GET /me` | 4,401 → 1,036 | 5/1/1/1 → 0/0/0/0 | 4,842 → 391 |
 
 - **Calls** are the Python function calls cProfile counts per request,
   built-in ones included, in every thread: the JSON access log is
   formatted on the logging thread, and counts. A coroutine resumed after a
   wait counts again, so each layer of `await` adds a call per wait for the
   database. Every rung counts the same calls in every run, but for the two
-  with a JSON access log, which vary by under 1% (the logging thread waits
-  on its queue more or less often).
-- **Statements, transactions, checkouts, pings** are what reaches the
-  database, per request: statements sent to the driver, transactions begun,
-  connections taken from the pool, and the `SELECT 1` that tests a pooled
-  connection first (`POOL_PRE_PING`).
+  with a JSON access log, which can vary by under 1% (the logging thread
+  waits on its queue more or less often).
+- **Round trips** are what reaches the database, per request: statements
+  sent to the driver, transactions begun, connections taken from the pool,
+  and the check that a pooled connection still answers (`POOL_PRE_PING`).
 - **CPU** is the process's CPU time per request (all threads), the best of
   the timed runs. It moves by 15% or more from run to run on a shared
-  machine; never read a smaller difference into it.
+  machine; never read a smaller difference into it. The calls and round
+  trips are exact.
 
 What the rungs show:
 
-- **Routing is most of a light request.** `domainkit init` mounts `/health`,
-  `/auth` and `/admin/auth` (23 routes) before the project's own, and
-  FastAPI walks the routes of each included router a request passes:
-  `/hello` behind them takes 12 router matches and 48 route matches, and
-  1,180 of the `bare` rung's 1,668 calls (488 when mounted first). A route
-  two routers deeper costs 236 calls more.
-- **Authentication is most of an authenticated request.** `GET /me` with an
-  opaque token runs five SELECTs in their own transaction: the token, the
-  user (password hash included), their groups, their own permissions, and
-  their groups' permissions. A permission-guarded read through a unit of
-  work adds one more transaction for the row.
-- **A 429 costs nearly what the request it refuses would have**:
-  authentication runs before the rate limit, so the same five SELECTs run
-  for a caller who is then turned away (3,788 calls and 3,695 µs, against
-  `me`'s 5,296 and 3,995).
-- **A keyed write costs five transactions** where a plain write costs two:
-  after authentication, one deletes an expired claim of the same key,
-  one inserts the claim, the write commits with the key's commit mark, and
-  one stores the response; each takes its own connection and ping.
+- **Authentication costs nothing once its principal is kept.** `GET /me`
+  with an opaque token made five SELECTs in their own transaction; a kept
+  principal makes none, and a 429 for a valid token none either (the
+  [principal cache](#authentication-the-principal-cache)). A principal not
+  kept is read in two queries.
+- **Routing no longer walks nested routers.** Behind the template's 23
+  routes, `/hello` took 1,180 of the `bare` rung's 1,653 calls; flattened,
+  a route two routers deep costs what one at the top does
+  ([the HTTP stack](#the-http-stack-does-each-piece-of-work-once)).
+- **A keyed write takes three transactions instead of five**: the claim is
+  one statement outside a transaction, and so is storing the response
+  ([database round trips](#database-round-trips-reads-keyed-writes-and-audit-keys)).
+- **Plain FastAPI is slower on 0.143** than on 0.141: its own telemetry
+  hooks run on every request (ADR 0065). domainkit turns its telemetry off,
+  and its own rungs gained far more than that.
 
 ## Running the ladder
 
@@ -177,31 +174,27 @@ above. These are lower bounds: the HTTP server's own work comes on top
 (about 34 µs a request for uvicorn on uvloop with httptools, as the
 re-audit measured it on this machine class), and so does the database's.
 
-| 500 million requests per… | Requests/s | Light: `default-json`, 283 µs | Authenticated read: `read`, 5,325 µs | Re-audit, 0.6.1: light / read |
+| 500 million requests per… | Requests/s | Light: `default-json`, 207 µs | Authenticated read: `read`, 2,087 µs | 0.8.0 (304 µs / 6,481 µs, this release's dependencies: 283 / 5,325): light / read |
 | --- | ---: | ---: | ---: | ---: |
-| Day (average) | 5,787 | 2 | 31 | 2 / 27 |
-| Day (3× peak) | 17,361 | 5 | 93 | 4 / 79 |
-| Hour | 138,889 | 40 | 740 | 32 / 625 |
-| Minute | 8,333,333 | 2,356 | 44,376 | 1,887 / 37,487 |
+| Day (average) | 5,787 | 2 | 13 | 2 / 31 |
+| Day (3× peak) | 17,361 | 4 | 37 | 5 / 93 |
+| Hour | 138,889 | 29 | 290 | 40 / 740 |
+| Minute | 8,333,333 | 1,724 | 17,389 | 2,356 / 44,376 |
 | Second | 500,000,000 | not a framework's question (2 ns a request): edge caches and CDNs | | |
 
-A core serves about 3,500 light requests a second, or 190 authenticated
-reads. The re-audit's figures (4,418 and 222 a second, at 0.6.1, the light
-one over real HTTP) came from a lighter setup: its application had two
-routes where the ladder's light request is routed past the template's 23
-(1,180 calls a request, above), `DEFAULT_MIDDLEWARE` had five entries where
-it now has eight, its user was in no group (here the group's permissions
-take a fifth SELECT), and its machine was quieter. The sections below lower
-these numbers as the performance branch's changes land.
+A core now serves about 4,800 light requests a second, or 480 authenticated
+reads whose principal is kept: about 2.5 times the reads of 0.8.0 on the
+same dependencies. The 0.8.0 column is the one this page gave before this
+release's changes landed.
 
 ## Making requests cheaper
 
 - **Serve one worker per core**, on uvloop: `uvicorn config.asgi:application
   --workers N --loop uvloop`, or Granian (reference.md has the whole
   command and its limits).
-- **Mount busy routers first.** FastAPI tries routes in order; a domain's
-  routes mounted after the template's (`/health`, `/auth`, `/admin/auth`)
-  pay for those 23 routes on every request.
+- **Mount busy routers first.** Routes are still tried in order: with
+  routers flattened, each route ahead of a match costs about 4 or 5 calls,
+  so a domain's routes mounted after the template's 23 pay about 100.
 - **Keep handlers and dependencies `async def`.** A plain `def` goes to the
   thread pool; `manage.py check` lists them (runtime.md).
 - **Count round trips in tests**: `assert_num_queries` and
@@ -257,8 +250,9 @@ interleaved (`--baseline ../base/src --baseline-python ...`):
   That is the largest single cost of a light request, and what flattening
   routers (PERF-04) saves.
 
-The ladder's budgets were set from these figures: 0.8.0 on this release's
-dependencies. Each change below lowers the ones it beats.
+The ladder's budgets were first set from these figures, 0.8.0 on this
+release's dependencies; they now hold this release's own counts, the
+highest of three ladder runs (the table at the top of the page).
 
 ### Authentication: the principal cache
 

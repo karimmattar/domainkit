@@ -24,78 +24,78 @@ checkouts = 0
 pings = 0
 
 [rungs.bare]
-calls = 1668
+calls = 481
 statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
 
 [rungs.nested]
-calls = 1904
+calls = 489
 statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
 
 [rungs.default]
-calls = 1840
+calls = 601
 statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
 
 [rungs.default-json]
-calls = 1981
+calls = 746
 statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
 
 [rungs.template]
-calls = 2033
+calls = 714
 statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
 
 [rungs.template-json]
-calls = 2174
+calls = 859
 statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
 
 [rungs.me]
-calls = 5296
-statements = 5
-transactions = 1
-checkouts = 1
-pings = 1
+calls = 1194
+statements = 0
+transactions = 0
+checkouts = 0
+pings = 0
 
 [rungs.read]
-calls = 6662
-statements = 6
-transactions = 2
-checkouts = 2
-pings = 2
-
-[rungs.write]
-calls = 7055
-statements = 6
-transactions = 2
-checkouts = 2
-pings = 2
-
-[rungs.keyed-write]
-calls = 10429
-statements = 10
-transactions = 5
-checkouts = 5
-pings = 5
-
-[rungs.throttled]
-calls = 3788
-statements = 5
+calls = 2440
+statements = 1
 transactions = 1
 checkouts = 1
 pings = 1
+
+[rungs.write]
+calls = 2813
+statements = 1
+transactions = 1
+checkouts = 1
+pings = 1
+
+[rungs.keyed-write]
+calls = 5810
+statements = 4
+transactions = 3
+checkouts = 3
+pings = 3
+
+[rungs.throttled]
+calls = 1036
+statements = 0
+transactions = 0
+checkouts = 0
+pings = 0
