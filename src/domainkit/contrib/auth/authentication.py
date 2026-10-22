@@ -42,6 +42,7 @@ from .principals import (
     principal_cache,
     recall,
     remember,
+    stamps_ahead,
     stamps_before_reading,
     token_target,
     user_target,
@@ -413,14 +414,17 @@ async def stored_credential(
 
     None: no token has the digest. The entry of a token just read is not
     kept yet: ``accept`` keeps it once the class accepts the credential.
-    The stamps (``STAMPS``) are read after the token, which names the user,
-    and before the user, whose read checks that the token is still stored.
+    The stamps (``STAMPS``) of ``ALL`` and the token are read before the
+    unit of work opens; the others (and any absent one) after the token,
+    which names the user, and before the user, whose read checks that the
+    token is still stored.
     """
     key = (scheme, digest)
     entry = await recall(key, config)
     if entry is not None:
         return entry
     started = principal_cache.begin()
+    ahead = await stamps_ahead(config, [token_target(digest)])
     async with AuthUnitOfWork() as uow:
         credential = await uow.principals.credential(digest)
         if credential is None:
@@ -436,7 +440,7 @@ async def stored_credential(
             started=started,
             last_used=credential.last_used_at,
         )
-        await stamps_before_reading(entry, config)
+        await stamps_before_reading(entry, config, ahead)
         snapshot = await uow.principals.principal(credential.user_id, token=digest)
     return entry.holding(snapshot)
 

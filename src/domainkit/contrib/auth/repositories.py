@@ -32,7 +32,6 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import defer
 from sqlalchemy.orm.attributes import set_committed_value
 
 from domainkit.conf import settings
@@ -58,6 +57,7 @@ from .models import (
     same_email,
 )
 from .principals import (
+    HANDLED,
     PASSWORD,
     Credential,
     GrantedPermission,
@@ -67,6 +67,8 @@ from .principals import (
     Snapshot,
     family_target,
     invalidate_after_commit,
+    lend_password,
+    shared,
     token_target,
     user_shape,
     user_target,
@@ -263,6 +265,7 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
             update(table)
             .where(table.c.id == user_id, table.c.password == verified)
             .values(password=rehashed)
+            .execution_options(**HANDLED)  # The same password: principals hold.
         )
 
     async def active_superusers(self) -> int:
@@ -284,7 +287,10 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         when = utc_now()
         table = get_user_table()
         await self.session.execute(
-            update(table).where(table.c.id == user.id).values(last_login=when)
+            update(table)
+            .where(table.c.id == user.id)
+            .values(last_login=when)
+            .execution_options(**HANDLED)  # Marked below.
         )
         set_committed_value(user, "last_login", when)
         invalidate_after_commit(self.session, [user_target(user.id)])
@@ -518,8 +524,24 @@ class TokenStore:
                 | (tokens.c.last_used_at <= now - LAST_USED_EVERY),
             )
             .values(last_used_at=now)
+            .execution_options(**HANDLED)  # A last use changes no principal.
         )
         return _count(result) == 1
+
+    async def live_count(
+        self,
+        user_id: UUID,
+        kind: TokenKind = TokenKind.ACCESS,
+        now: datetime | None = None,
+    ) -> int:
+        """How many of ``user_id``'s tokens of ``kind`` have not expired."""
+        moment = now or utc_now()
+        statement = select(func.count()).where(
+            tokens.c.user_id == user_id,
+            tokens.c.kind == kind,
+            tokens.c.expires_at.is_(None) | (tokens.c.expires_at > moment),
+        )
+        return int(await self.session.scalar(statement) or 0)
 
     async def of_user(
         self, user_id: UUID, *, limit: int, before: tuple[datetime, str] | None = None
@@ -557,6 +579,7 @@ class TokenStore:
             update(tokens)
             .where(tokens.c.id == token.id, tokens.c.used_at.is_(None))
             .values(used_at=when)
+            .execution_options(**HANDLED)  # Logins rest on tokens, not their use.
         )
         set_committed_value(token, "used_at", when)
         return _count(result) == 1
@@ -589,14 +612,21 @@ class TokenStore:
 
         No principal rests on them: every request checks expiry.
         """
-        statement = delete(tokens).where(tokens.c.expires_at <= (now or utc_now()))
+        statement = (
+            delete(tokens)
+            .where(tokens.c.expires_at <= (now or utc_now()))
+            .execution_options(**HANDLED)
+        )
         return _count(await self.session.execute(statement))
 
     async def _revoke(self, condition: Any, *targets: str) -> int:  # noqa: ANN401 - a SQL clause.
         """Delete matching tokens, and their principals once committed; how many."""
         deleted = (
             await self.session.execute(
-                delete(tokens).where(condition).returning(tokens.c.id, tokens.c.family)
+                delete(tokens)
+                .where(condition)
+                .returning(tokens.c.id, tokens.c.family)
+                .execution_options(**HANDLED)  # Marked below, by what it deleted.
             )
         ).all()
         dropped = set(targets)
@@ -667,8 +697,9 @@ class PrincipalStore:
 
         The same statement checks that ``token`` is still stored and that
         ``username`` (normalized) is still the user's: ``current`` says.
-        Never the password hash. A model a snapshot cannot hold
-        (``user_shape``) is loaded by the ORM, without the hash too.
+        The password hash is read for ``request.user.password`` only,
+        deprecated (``lend_password``). A model a snapshot cannot hold
+        (``user_shape``) is loaded by the ORM.
         """
         model = get_user_model()
         shape = user_shape(model)
@@ -682,9 +713,12 @@ class PrincipalStore:
             values["username"] = model.normalize_username(username)
         if shape is None:
             row = (await self.session.execute(statement, values)).first()
-            return (
-                Snapshot() if row is None else Snapshot(loaded=row[0], current=row[1])
-            )
+            if row is None:
+                return Snapshot()
+            loaded: AbstractBaseUser = row[0]
+            hashed = loaded.password
+            lend_password(loaded, hashed, usable=hashed.usable)
+            return Snapshot(loaded=loaded, current=row[1])
         rows = (await self.session.execute(statement, values)).all()
         if not rows:
             return Snapshot()
@@ -692,11 +726,12 @@ class PrincipalStore:
         columns = tuple(
             (key, rows[0][index]) for index, (key, _) in enumerate(shape.columns)
         )
+        hashed = rows[0][width]
         found: dict[UUID, tuple[str, int, dict[int, GrantedPermission]]] = {}
         direct: dict[int, GrantedPermission] = {}
         for row in rows:
-            group, name, version, *grant = row[width : width + GRANT_COLUMNS]
-            permission = None if grant[0] is None else GrantedPermission(*grant)
+            group, name, version, *grant = row[width + 1 : width + 1 + GRANT_COLUMNS]
+            permission = None if grant[0] is None else shared(GrantedPermission(*grant))
             if group is not None:
                 held = found.setdefault(group, (name, version, {}))[2]
                 if permission is not None:
@@ -708,12 +743,19 @@ class PrincipalStore:
             is_active=dict(columns)["is_active"] is True,
             columns=columns,
             groups=tuple(
-                Membership(group, name, version, tuple(held.values()))
+                shared(Membership(group, name, version, _sorted(held)))
                 for group, (name, version, held) in found.items()
             ),
-            permissions=tuple(direct.values()),
+            permissions=_sorted(direct),
+            usable_password=hashed.usable,
+            password=hashed,
         )
         return Snapshot(principal=principal, current=bool(rows[0][-1]))
+
+
+def _sorted(granted: dict[int, GrantedPermission]) -> tuple[GrantedPermission, ...]:
+    """``granted`` by id, as one shared tuple: equal grants are one object."""
+    return shared(tuple(granted[key] for key in sorted(granted)))
 
 
 @cache
@@ -739,15 +781,12 @@ def _principal_statement(
     ).label("current")
     shape = user_shape(model)
     if shape is None:
-        return (
-            select(model, live)
-            .options(defer(getattr(model, PASSWORD)))
-            .where(*conditions)
-        )
+        return select(model, live).where(*conditions)
     granted = _grants(user_table)
     return (
         select(
             *(column.label(f"u{i}") for i, (_, column) in enumerate(shape.columns)),
+            shape.password.label("password"),
             *granted.c,
             live,
         )

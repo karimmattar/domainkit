@@ -192,7 +192,7 @@ class PrincipalCacheSettings(BaseModel):
     The longest a change made by another process takes to reach this one,
     unless ``STAMPS`` names a shared cache.
     """
-    MAX_ENTRIES: int = Field(default=10_000, ge=1, le=1_000_000)
+    MAX_ENTRIES: int = Field(default=10_000, ge=1, le=100_000)
     """Principals kept per process; the least recently used go first."""
     STAMPS: str | None = Field(default=None, min_length=1, max_length=100)
     """A ``CACHES`` alias of a Redis or Valkey cache every process shares.
@@ -259,6 +259,10 @@ class AuthSettings(BaseModel):
     """How long a token from logging in works (``TokenAuthentication``)."""
     TOKEN_PREFIX: str = Field(default="dkt_", pattern=r"^[A-Za-z][A-Za-z0-9]{1,15}_$")
     """Starts every opaque token, so secret scanners and people can spot one."""
+    MAX_LIVE_TOKENS: int = Field(default=100, ge=1, le=10_000)
+    """Live access tokens (logins and personal tokens) a user may hold and
+    still make a personal token (``POST /auth/tokens``): past it, ``409
+    too_many_tokens``. It bounds what one user can make the server keep."""
     LOGIN_RATE: str | None = "10/minute"
     """Login attempts allowed per client address and per username.
 

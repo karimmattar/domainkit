@@ -742,26 +742,37 @@ refused without a query too. ADR
 design, and [0059](adr/0059-read-principals-in-two-queries-without-the-hash.md)
 how principals are read.
 
-- **What is kept**: the user's columns but the password hash, their
-  groups and permissions, and the credential's kind, expiry, scopes, and
-  login. Never the password hash, a second factor's secret, recovery
-  codes, or the token itself: entries are keyed by the token's digest.
-  Each request gets its own user, built from what is kept, the same as a
-  query builds.
+- **What is kept**: the user's columns, their groups and permissions,
+  and the credential's kind, expiry, scopes, and login. Never a second
+  factor's secret, recovery codes, or the token itself: entries are keyed
+  by the token's digest. The password hash is kept, in process memory, only
+  while `request.user.password` is deprecated (below), and never shows in a
+  `repr`, a log, a key, or a stamp. Each request gets its own user, built
+  from what is kept, the same as a query builds.
 - **What every request checks**: a token's expiry, on `domainkit.clock`
   (an expired token is refused from memory as from the table); a cookie's
   CSRF checks; a JSON Web Token's signature and times. `last_used_at` is
   still written once every five minutes, by one request.
-- **Bounds**: `MAX_ENTRIES` principals per process (10,000; the least
-  recently used go first), each for `TTL` at most (5 minutes at most).
+- **Bounds**: `MAX_ENTRIES` principals per process (10,000 by default,
+  100,000 at most; the least recently used go first), each for `TTL` at
+  most (5 minutes at most). Principals share their grants: a user's
+  credentials, and the users of a group, hold one copy of its
+  permissions, so an entry costs a few kilobytes whatever the role holds
+  (5.6 kB each for 200 tokens of a user with 1,000 permissions, was
+  368 kB). `AUTH.MAX_LIVE_TOKENS` bounds the tokens one user can make.
 - **In the process that makes a change, at once**: logging out, revoking
   a token (or all of a user's), a password change or reset, deactivating
   or deleting a user, joining or leaving a group, a permission given or
   taken back (directly or through a group), renaming or deleting a group,
   a new login (it changes `last_login`), and erasure. Repositories and the
   ORM mark what each commit changes, so the API, the admin API, the
-  management commands, and your own units of work all count. A principal
-  read while such a change commits is not kept.
+  management commands, and your own units of work all count. So do bulk
+  statements a session executes on the tables principals are read from
+  (users, their groups and permissions, groups, permissions, content
+  types, tokens): `update_rows`, `delete_rows`, `update(User)`, or a Core
+  `UPDATE`, `DELETE`, or link `INSERT`. They drop every principal at the
+  commit. It is the transaction's commit that counts, not a savepoint's
+  release, and a principal read while such a change commits is not kept.
 - **In other processes**: within `TTL`. To make it at once, name a Redis
   cache that every process shares in `STAMPS`: a commit stamps what it
   changed there, and each request compares its principal's stamps, one
@@ -775,14 +786,27 @@ how principals are read.
   AUTH = {"PRINCIPAL_CACHE": {"STAMPS": "shared", "TTL": 60}}
   ```
 
+  Every service that reads the same auth tables must name the same Redis
+  and the same `KEY_PREFIX`, or it never sees the others' stamps. Give
+  that Redis `maxmemory-policy noeviction` (or enough memory): an evicted
+  or lost stamp is safe, as it reads as a change, but every principal
+  resting on it is then read again. Each commit stamps twice: before the
+  commit, then after it, in a task a cancelled request does not stop
+  (bounded by 5 seconds). A commit outside a unit of work
+  (`connections.session()`) stamps too. A principal is kept with the
+  stamps it was read with, and a stamp that is absent when it is read is
+  given one first: a stamp the cache later loses (a restart without
+  persistence, an eviction, `FLUSHDB`) never matches it again.
+
 - **When the cache fails**: a request whose stamps cannot be read uses
   nothing kept, and reads its principal from the database, which it does
   not keep; nothing stale is ever served past the TTL. A stamp that
   cannot be written is logged (security logger): the change then reaches
   other processes within the TTL.
-- **Changes outside domainkit**: SQL that bypasses the auth repositories
-  and the ORM, or another service writing the tables, is seen within the
-  TTL. Drop what it changed yourself to see it at once, with
+- **Changes outside domainkit**: SQL run on a connection outside any
+  session (`connections.engine().begin()`, `loaddata`, a snapshot
+  restore), or another service writing the tables without these stamps,
+  is seen within the TTL. Drop what it changed yourself to see it at once, with
   `from domainkit.contrib.auth import principals`:
   `principals.invalidate([principals.user_target(user_id)])`, or
   `principals.invalidate_all()`, in this process; with `STAMPS`,
@@ -790,10 +814,13 @@ how principals are read.
   reaches the others too.
 - **Open connections** are re-checked through the cache too, so they see a
   change as soon as requests do.
-- **`request.user` carries no password hash**: reading
-  `request.user.password` raises `DetachedInstanceError`. To check a
-  password, read the hash afresh: `await password_holds(user, raw)`
-  (`domainkit.contrib.auth.api`), or `await uow.users.password_hash(user.id)`.
+- **`request.user.password` is deprecated**, and removed in 0.10. It still
+  returns the stored hash, and warns with `DomainkitDeprecationWarning` the
+  first time a request's user reads it. To check a password, read the hash
+  afresh: `await password_holds(user, raw)` (`domainkit.contrib.auth.api`),
+  or `await uow.users.password_hash(user.id)`. `has_usable_password()` keeps
+  working, without the hash and without a warning. A user's `repr` leaves
+  the password out.
 - A user model that loads relationships of its own with the user (other
   than `groups` and `user_permissions`) is read by the ORM every time, and
   never kept.
@@ -1255,6 +1282,7 @@ changed what.
 | `AUTHENTICATION_EXEMPT_PATHS` | `["/health", "/ready", "/metrics"]` | Paths served without looking at credentials. |
 | `TOKEN_TTL` | 14 days | How long a login's opaque token works; `None` until revoked. |
 | `TOKEN_PREFIX` | `"dkt_"` | Starts every opaque token; changing it invalidates existing tokens. |
+| `MAX_LIVE_TOKENS` | `100` | Live access tokens (logins and personal tokens) a user may hold and still make a personal token; past it, `409 too_many_tokens` (1 to 10,000). |
 | `LOGIN_RATE` | `"10/minute"` | Login and password-change attempts per client address and per username, and checks of link tokens per client address; `None` for no limit. |
 | `EMAIL_RATE` | `"5/hour"` | Requests that send mail (resets, verifications, signups) per client address and per email address or user. |
 | `PASSWORD_RESET_TIMEOUT` | 1 hour | How long a reset link works. |
@@ -1301,7 +1329,7 @@ changed what.
 | --- | --- | --- |
 | `ENABLED` | `True` | Keep principals between requests; `False` reads them on every request. |
 | `TTL` | 5 seconds | How long a principal is used before it is read again, at most 5 minutes: the longest a change made in another process takes to be seen without `STAMPS`. |
-| `MAX_ENTRIES` | `10000` | Principals kept per process (1 to 1,000,000); the least recently used go first. |
+| `MAX_ENTRIES` | `10000` | Principals kept per process (1 to 100,000); the least recently used go first. |
 | `STAMPS` | `None` | A `CACHES` alias of a Redis or Valkey cache every process shares; changes then reach every process at once. |
 
 | `AUTH["JWT"]` key | Default | Meaning |

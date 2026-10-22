@@ -65,7 +65,7 @@ accepted record: supersede it with a new one and link both ways.
 | [0049](0049-shed-load-past-a-concurrency-cap.md) | Shed load in the application: a cap per event loop, a short queue, and a fast 503 | Accepted |
 | [0050](0050-outgoing-http-client.md) | Call other services through pooled clients that keep to the deadline | Accepted |
 | [0058](0058-cache-principals-and-stamp-revocations.md) | Keep principals in each process, and stamp revocations in a shared cache | Accepted |
-| [0059](0059-read-principals-in-two-queries-without-the-hash.md) | Read a principal in two queries, without the password hash, and build each request's user | Accepted |
+| [0059](0059-read-principals-in-two-queries-without-the-hash.md) | Read a principal in two queries, build each request's user, and deprecate its password hash | Accepted |
 | [0060](0060-flatten-included-routers.md) | Flatten included routers when the application is built | Accepted |
 | [0061](0061-read-without-a-transaction-and-ping-once.md) | Read without a transaction where it is safe, and ping a connection once | Accepted |
 | [0062](0062-claim-idempotency-keys-in-one-statement.md) | Claim idempotency keys in one statement, and commit the framework's short writes as they run | Accepted |

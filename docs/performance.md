@@ -316,7 +316,21 @@ pool's wait ran out), and the new code none.
   16 µs for a user, and 16 µs more for each permission with its content
   type, measured with `timeit`; estimated in proportion for users with
   hundreds of permissions) and the rest of the stack.
-- With `STAMPS`, a hit adds one `MGET` to the shared cache.
+- With `STAMPS`, a hit adds one `MGET` to the shared cache. A miss reads
+  `ALL`'s stamp and the token's before taking a connection, giving `ALL`
+  one if absent (`SET NX`), and gives any other absent one a stamp once
+  the credential proved real. A commit that changes principals writes
+  their stamps twice, before and after it.
+- Memory: principals share their grants. Measured with `tracemalloc` over
+  200 tokens of one user holding 1,000 permissions through a group: 368 kB
+  per entry before (3.7 GB at the default `MAX_ENTRIES`), 5.6 kB after.
+- Lending the password hash to `request.user` while `.password` is
+  deprecated (until 0.10) adds no statement. It adds 6 Python calls to a
+  hit and 13 to 18 to a miss, and one hash of about 100 characters to each kept
+  principal. The CPU per request did not change measurably: best of three
+  rounds, `/me` hit 293 µs before and 283 µs after, miss 1,852 µs and
+  1,776 µs; `/guarded` hit 378 µs and 374 µs, miss 1,910 µs and 1,921 µs.
+  Those were measured on 22 October 2026, at load average 6 to 9.
 - Measure it yourself: `auth_principal_cache_total{event="hit"}` against
   `{event="miss"}` gives the hit rate. A low one means short-lived tokens,
   many processes per client, or a `TTL` shorter than the gap between a
