@@ -6,12 +6,14 @@ names, with the user's groups and permissions. The first request of a
 credential reads them in two queries (``PrincipalStore``); later ones find
 them here, in memory, without a query (``AUTH.PRINCIPAL_CACHE``):
 
-- **What is kept.** A snapshot of the user: every column but the password
-  hash, its groups, and its permissions (``Principal``); and what the token
-  table says of the credential: its kind, expiry, scopes, and login
-  (``Credential``). Never the password hash, a second factor's secret,
-  recovery codes, or the raw token: entries are keyed by the class's
-  scheme and the credential's digest. Each request gets a user built afresh
+- **What is kept.** A snapshot of the user: its columns, its groups, and
+  its permissions (``Principal``); and what the token table says of the
+  credential: its kind, expiry, scopes, and login (``Credential``). Never a
+  second factor's secret, recovery codes, or the raw token: entries are
+  keyed by the class's scheme and the credential's digest. The password
+  hash is kept only for ``request.user.password``, deprecated and removed
+  in 0.10, which warns (``DomainkitDeprecationWarning``); it is never in a
+  ``repr``, a log, a key, or a stamp. Each request gets a user built afresh
   from the snapshot, the same as a query builds.
 - **What is checked on every request.** A token's expiry, on
   ``domainkit.clock``; a cookie's CSRF checks; a JSON Web Token's signature
@@ -34,15 +36,18 @@ import copy
 import logging
 import secrets
 import threading
+import warnings
 from collections import OrderedDict
 from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from functools import cache
+from pathlib import Path
 from typing import Any, Final, Self, cast
 from uuid import UUID
 
+import sqlalchemy
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import (
@@ -52,16 +57,17 @@ from sqlalchemy.orm import (
     make_transient_to_detached,
     object_session,
 )
-from sqlalchemy.orm.attributes import set_committed_value
+from sqlalchemy.orm.attributes import instance_state, set_committed_value
 from sqlalchemy.sql.elements import ColumnElement
 
 from domainkit import clock
 from domainkit.cache import CacheError, caches
 from domainkit.contrib.contenttypes.models import ContentType
+from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.log import SECURITY_LOGGER
 
 from . import tokens
-from .models import AbstractBaseUser, Group, Permission
+from .models import USABLE_PASSWORD, AbstractBaseUser, Group, PasswordHash, Permission
 from .settings import MAX_PRINCIPAL_TTL, PrincipalCacheSettings
 from .tokens import LAST_USED_EVERY, AuthToken
 
@@ -88,7 +94,15 @@ RECENT_INVALIDATIONS: Final = 4096
 """Targets whose last invalidation is remembered, to refuse principals read
 during it; an older one refuses every principal read before it."""
 PASSWORD: Final = "password"  # noqa: S105 - a field name, not a secret.
-"""The user field no snapshot holds."""
+"""The user field a request's user reads with a warning (``lend_password``)."""
+PASSWORD_DEPRECATED: Final = (
+    "request.user.password is deprecated and removed in domainkit 0.10: check "  # noqa: S105 - a message, not a password.
+    "a password with domainkit.contrib.auth.api.password_holds(user, password), "
+    "or read the hash with await uow.users.password_hash(user.id)."
+)
+"""What reading ``password`` of a request's user warns."""
+_INTERNAL: Final = (str(Path(sqlalchemy.__file__).parent), __file__)
+"""Where the warning is not pinned: it names the code that read the password."""
 SNAPSHOT_RELATIONSHIPS: Final = frozenset({"groups", "user_permissions"})
 """The user's relationships a snapshot holds."""
 UNLOADED: Final = frozenset({"raise", "raise_on_sql", "noload"})
@@ -153,12 +167,12 @@ class Membership:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class Principal:
-    """A user as authorization needs them: never the password hash.
+    """A user as authorization needs them.
 
     ``user()`` builds a user from it, detached from any session, as a query
-    that left the password unloaded would: every other column, the groups
-    with their permissions, and the permissions given directly. The
-    ``repr`` names no field: some are personal data.
+    would: every column, the groups with their permissions, and the
+    permissions given directly. The ``repr`` names no field: some are
+    personal data, and one is the password hash.
     """
 
     model: type[AbstractBaseUser]
@@ -166,16 +180,20 @@ class Principal:
     columns: tuple[tuple[str, object], ...]
     groups: tuple[Membership, ...]
     permissions: tuple[GrantedPermission, ...]
+    usable_password: bool
+    """Whether some password can log the user in (``has_usable_password``)."""
+    password: PasswordHash
+    """Only for ``request.user.password``, deprecated: removed in 0.10."""
 
     def __repr__(self) -> str:
         """Name the user model only."""
         return f"<Principal of a {self.model.__name__}>"
 
     def user(self) -> AbstractBaseUser:
-        """A new user of ``model``: detached, its password not loaded.
+        """A new user of ``model``, detached from any session.
 
-        Reading ``password`` raises ``DetachedInstanceError``: load the
-        user in a unit of work to check a password.
+        Reading its ``password`` warns (``lend_password``): check a password
+        with ``password_holds``, or read the hash in a unit of work.
         """
         content_types: dict[int, ContentType] = {}
         permissions: dict[int, Permission] = {}
@@ -222,6 +240,7 @@ class Principal:
             groups=groups,
             user_permissions={permission(each) for each in self.permissions},
         )
+        lend_password(user, self.password, usable=self.usable_password)
         return user
 
 
@@ -251,12 +270,55 @@ def _detached[T](cls: type[T], columns: dict[str, object], **relations: object) 
     return instance
 
 
+class _LentPassword:
+    """Loads ``password`` of a request's user: the hash read with it, and a warning."""
+
+    __slots__ = ("_hashed",)
+
+    def __init__(self, hashed: PasswordHash) -> None:
+        """Lend ``hashed``."""
+        self._hashed = hashed
+
+    def __repr__(self) -> str:
+        """Hide the hash."""
+        return "<password lent to a request's user>"
+
+    def __call__(self, state: object, passive: object) -> PasswordHash:
+        """Warn (``PASSWORD_DEPRECATED``); SQLAlchemy keeps what this returns."""
+        warnings.warn(
+            PASSWORD_DEPRECATED,
+            DomainkitDeprecationWarning,
+            skip_file_prefixes=_INTERNAL,
+        )
+        return self._hashed
+
+
+def lend_password(
+    user: AbstractBaseUser, hashed: PasswordHash, *, usable: bool
+) -> None:
+    """Let ``user`` read ``hashed`` as its ``password``, warning the first time.
+
+    ``request.user.password`` is deprecated (removed in 0.10). Until then it
+    reads the hash the user was built with, as SQLAlchemy loads a deferred
+    column; ``has_usable_password`` answers ``usable`` without it.
+    """
+    state = instance_state(user)
+    state.dict.pop(PASSWORD, None)
+    state.dict[USABLE_PASSWORD] = usable
+    state.expired_attributes.discard(PASSWORD)
+    if "callables" not in state.__dict__:
+        state.callables = {}
+    state.callables[PASSWORD] = _LentPassword(hashed)
+
+
 @dataclass(frozen=True, slots=True)
 class UserShape:
     """How a user model is read into a ``Principal``: its loaded columns."""
 
     columns: tuple[tuple[str, ColumnElement[Any]], ...]
     """``(attribute, column)`` of each column a query loads, but the password."""
+    password: ColumnElement[Any]
+    """The password's column, read apart (``lend_password``)."""
 
 
 @cache
@@ -277,7 +339,8 @@ def user_shape(model: type[AbstractBaseUser]) -> UserShape | None:
             (prop.key, prop.columns[0])
             for prop in mapper.column_attrs
             if prop.key != PASSWORD and not prop.deferred
-        )
+        ),
+        mapper.column_attrs[PASSWORD].columns[0],
     )
 
 

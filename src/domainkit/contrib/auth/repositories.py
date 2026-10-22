@@ -32,7 +32,6 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import defer
 from sqlalchemy.orm.attributes import set_committed_value
 
 from domainkit.conf import settings
@@ -67,6 +66,7 @@ from .principals import (
     Snapshot,
     family_target,
     invalidate_after_commit,
+    lend_password,
     token_target,
     user_shape,
     user_target,
@@ -667,8 +667,9 @@ class PrincipalStore:
 
         The same statement checks that ``token`` is still stored and that
         ``username`` (normalized) is still the user's: ``current`` says.
-        Never the password hash. A model a snapshot cannot hold
-        (``user_shape``) is loaded by the ORM, without the hash too.
+        The password hash is read for ``request.user.password`` only,
+        deprecated (``lend_password``). A model a snapshot cannot hold
+        (``user_shape``) is loaded by the ORM.
         """
         model = get_user_model()
         shape = user_shape(model)
@@ -682,9 +683,12 @@ class PrincipalStore:
             values["username"] = model.normalize_username(username)
         if shape is None:
             row = (await self.session.execute(statement, values)).first()
-            return (
-                Snapshot() if row is None else Snapshot(loaded=row[0], current=row[1])
-            )
+            if row is None:
+                return Snapshot()
+            loaded: AbstractBaseUser = row[0]
+            hashed = loaded.password
+            lend_password(loaded, hashed, usable=hashed.usable)
+            return Snapshot(loaded=loaded, current=row[1])
         rows = (await self.session.execute(statement, values)).all()
         if not rows:
             return Snapshot()
@@ -692,10 +696,11 @@ class PrincipalStore:
         columns = tuple(
             (key, rows[0][index]) for index, (key, _) in enumerate(shape.columns)
         )
+        hashed = rows[0][width]
         found: dict[UUID, tuple[str, int, dict[int, GrantedPermission]]] = {}
         direct: dict[int, GrantedPermission] = {}
         for row in rows:
-            group, name, version, *grant = row[width : width + GRANT_COLUMNS]
+            group, name, version, *grant = row[width + 1 : width + 1 + GRANT_COLUMNS]
             permission = None if grant[0] is None else GrantedPermission(*grant)
             if group is not None:
                 held = found.setdefault(group, (name, version, {}))[2]
@@ -712,6 +717,8 @@ class PrincipalStore:
                 for group, (name, version, held) in found.items()
             ),
             permissions=tuple(direct.values()),
+            usable_password=hashed.usable,
+            password=hashed,
         )
         return Snapshot(principal=principal, current=bool(rows[0][-1]))
 
@@ -739,15 +746,12 @@ def _principal_statement(
     ).label("current")
     shape = user_shape(model)
     if shape is None:
-        return (
-            select(model, live)
-            .options(defer(getattr(model, PASSWORD)))
-            .where(*conditions)
-        )
+        return select(model, live).where(*conditions)
     granted = _grants(user_table)
     return (
         select(
             *(column.label(f"u{i}") for i, (_, column) in enumerate(shape.columns)),
+            shape.password.label("password"),
             *granted.c,
             live,
         )

@@ -1,6 +1,8 @@
 """The principal cache: what it keeps, what it checks, and what drops it."""
 
 import io
+import logging
+import warnings
 from collections.abc import Callable, Iterator
 from datetime import timedelta
 from pathlib import Path
@@ -15,7 +17,6 @@ from sqlalchemy import delete, event, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import class_mapper
 from sqlalchemy.orm.attributes import instance_state
-from sqlalchemy.orm.exc import DetachedInstanceError
 from starlette.requests import HTTPConnection
 
 from domainkit import setup
@@ -63,6 +64,7 @@ from domainkit.contrib.auth.tokens import (
 )
 from domainkit.contrib.auth.users import get_user_table
 from domainkit.db import connections
+from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import call_command
 from domainkit.management.base import run_async
@@ -95,6 +97,7 @@ CERTIFICATES = [
     f"{AUTHENTICATION}.certificates.ClientCertificateAuthentication",
 ]
 SITE = "https://testserver"
+HIDDEN: Final = PasswordHash("pbkdf2_sha256$1$salt$a-hash-no-repr-shows")
 NEW_PASSWORD = "Fresh-pa55-word"
 
 
@@ -146,6 +149,13 @@ async def credentials_of(**options: Any) -> Credentials | None:  # noqa: ANN401
         if found is not None:
             return found
     return None
+
+
+async def user_of(**options: Any) -> AbstractBaseUser:  # noqa: ANN401
+    """The user the configured classes accept for a request (``scope``'s options)."""
+    found = await credentials_of(**options)
+    assert found is not None
+    return found.user
 
 
 def columns(instance: Any, *leave: str) -> tuple[tuple[str, Any], ...]:  # noqa: ANN401 - any mapped instance.
@@ -203,13 +213,19 @@ def one_object_each(user: AbstractBaseUser) -> bool:
     )
 
 
-def unloaded_password(user: AbstractBaseUser) -> bool:
-    """Whether reading the user's password raises: it was never loaded."""
-    try:
-        _ = user.password
-    except DetachedInstanceError:
-        return True
-    return False
+def lent_password(user: AbstractBaseUser) -> PasswordHash:
+    """The password hash of a request's ``user``, read with the warning it gives."""
+    with pytest.warns(DomainkitDeprecationWarning, match="password_holds") as warned:
+        hashed = user.password
+    assert len(warned) == 1
+    assert warned[0].filename == __file__  # Whoever read it: not SQLAlchemy's code.
+    return hashed
+
+
+async def stored_hash(user_id: UUID) -> PasswordHash | None:
+    """The password hash stored for ``user_id``."""
+    async with AuthUnitOfWork() as uow:
+        return await uow.users.password_hash(user_id)
 
 
 async def orm_user(user_id: UUID) -> AbstractBaseUser:
@@ -347,18 +363,30 @@ def test_last_use_is_claimed_once_per_period() -> None:
         assert kept.last_used == now + LAST_USED_EVERY
 
 
-def test_principals_hide_their_fields() -> None:
-    """A principal's ``repr`` names its model only: the rest is personal data."""
-    principal = principals.Principal(
-        model=User,
-        is_active=True,
-        columns=(("username", "alice"),),
-        groups=(),
-        permissions=(),
-    )
+def test_principals_hide_their_fields(api: Api) -> None:
+    """A principal's ``repr`` names its model only: the rest is personal data.
 
-    assert repr(principal) == "<Principal of a User>"
-    assert "alice" not in repr(entry("a"))
+    Nor does a user built from it show the password hash it lends.
+    """
+    alice = create_user("alice")
+    api()
+    raw = run_async(issue("alice"))
+    credentials = run_async(credentials_of(headers=bearer(raw)))
+    kept = principal_cache.get(("token", token_digest(raw)), 0)
+    hashed = run_async(stored_hash(alice))
+    assert credentials is not None
+    assert kept is not None
+    assert hashed is not None
+
+    assert repr(kept.principal) == "<Principal of a User>"
+    assert "alice" not in repr(kept)
+    shown = [
+        repr(kept),
+        repr(credentials),
+        repr(credentials.user),
+        repr(instance_state(credentials.user).callables),
+    ]
+    assert not [each for each in shown if hashed.value in each]
 
 
 # A kept principal is what a query builds.
@@ -401,10 +429,96 @@ def test_tokens_kept_and_read_build_the_same_user(
     assert (missed.scheme, missed.token_id) == (hit.scheme, hit.token_id)
     assert missed.token_id == token_digest(token)
     assert missed.scopes is hit.scopes is None
-    assert unloaded_password(missed.user)
-    assert unloaded_password(hit.user)
+    assert lent_password(missed.user) == lent_password(hit.user) == stored.password
+    assert missed.user.password is missed.user.password  # Warned once, then kept.
     assert hit.user.has_perm("shop.change_product")
     assert not hit.user.has_perm("shop.delete_product")
+
+
+def test_request_users_lend_their_password_hash_deprecated(api: Api) -> None:
+    """``request.user.password`` works for one more release, and warns.
+
+    Kept or read, it is the stored hash; projects that make the warning an
+    error (``filterwarnings``) find each use.
+    """
+    alice = create_user("alice")
+    api(PRINCIPAL_CACHE={"TTL": timedelta(minutes=5)})
+    raw = run_async(issue("alice"))
+    stored = run_async(stored_hash(alice))
+
+    with freeze_time("2026-05-01T10:00:00Z"):
+        missed = run_async(user_of(headers=bearer(raw)))
+        hit = run_async(user_of(headers=bearer(raw)))
+        strict = run_async(user_of(headers=bearer(raw)))
+    with pytest.warns(DomainkitDeprecationWarning) as warned:
+        assert missed.password == stored
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DomainkitDeprecationWarning)
+        with pytest.raises(DomainkitDeprecationWarning):
+            _ = strict.password
+
+    (message,) = [str(each.message) for each in warned]
+    assert "password_holds(user, password)" in message
+    assert "uow.users.password_hash(user.id)" in message
+    assert "removed in domainkit 0.10" in message
+    assert lent_password(hit) == stored
+
+
+@pytest.mark.parametrize("password", [PASSWORD, None])
+def test_request_users_know_whether_their_password_is_usable(
+    api: Api, password: str | None
+) -> None:
+    """Kept or read, with no warning and no hash: Django's ``has_usable_password``."""
+    create_user("alice", password)
+    api(PRINCIPAL_CACHE={"TTL": timedelta(minutes=5)})
+    raw = run_async(issue("alice"))
+
+    with freeze_time("2026-05-01T10:00:00Z"):
+        missed = run_async(user_of(headers=bearer(raw)))
+        hit = run_async(user_of(headers=bearer(raw)))
+
+    usable = password is not None
+    assert missed.has_usable_password() is usable  # Warnings are errors here.
+    assert hit.has_usable_password() is usable
+    assert lent_password(hit).usable is usable
+    assert hit.has_usable_password() is usable  # The hash read, now.
+    hit.set_unusable_password()
+    assert not hit.has_usable_password()
+
+
+def test_password_hashes_stay_out_of_logs_metrics_and_stamps(
+    api: Api, shared: FakeServer, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Kept, read, refused, dropped, and stamped: the hash shows nowhere."""
+    alice = create_user("alice")
+    api(PRINCIPAL_CACHE=STAMPED)
+    raw = run_async(issue("alice"))
+    hashed = run_async(stored_hash(alice))
+    assert hashed is not None
+
+    async def scenario() -> list[Any]:
+        await credentials_of(headers=bearer(raw))
+        await credentials_of(headers=bearer(raw))
+        async with AuthUnitOfWork() as uow:
+            await uow.tokens.revoke_user(alice)
+            await uow.commit()
+        with pytest.raises(AuthenticationFailed):
+            await credentials_of(headers=bearer(raw))
+        client = redis_cache.create_client(None)  # type: ignore[arg-type]
+        return [(key, await client.get(key)) for key in await client.keys("*")]
+
+    with caplog.at_level(logging.DEBUG):
+        stamps = run_async(scenario())
+
+    assert stamps
+    assert hashed.value not in repr(stamps)
+    assert hashed.value not in caplog.text
+    assert not [
+        sample
+        for metric in REGISTRY.collect()
+        for sample in metric.samples
+        if hashed.value in repr(sample)
+    ]
 
 
 def test_personal_tokens_keep_their_scopes(api: Api) -> None:
@@ -1589,7 +1703,8 @@ def test_users_with_relationships_of_their_own_are_read_as_before(
     assert second is not None
     assert isinstance(second.user, Profile)
     assert [address.city for address in second.user.addresses] == ["Cairo"]  # type: ignore[attr-defined]
-    assert unloaded_password(second.user)
+    assert second.user.has_usable_password()
+    assert lent_password(second.user) == run_async(stored_hash(alice))
     assert "SELECT" in reads
     assert len(principal_cache) == 0
     gone = Entry(("token", "x"), None, loaded=second.user)
@@ -1822,6 +1937,8 @@ def test_mutable_column_values_are_each_requests_own(use_auth: UseAuth) -> None:
         columns=(("username", "alice"), ("email", ["mutable", {"deep": []}])),
         groups=(),
         permissions=(),
+        usable_password=True,
+        password=HIDDEN,
     )
 
     first, second = principal.user(), principal.user()
