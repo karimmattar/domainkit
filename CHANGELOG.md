@@ -237,6 +237,14 @@ All notable changes to domainkit. The format follows
 
 ### Fixed
 
+- Engines made and dropped on several threads at once (an event loop per
+  thread) no longer race in SQLAlchemy's listener registry, which is not
+  thread-safe and keys listeners by the ids of the target and the function.
+  domainkit's listeners were one function shared by every engine, so a
+  freed pool's reused id repeated a key: the registry's weakref callback
+  raised `KeyError` ("Exception ignored", and an error under pytest's
+  `filterwarnings = error`) and left stale entries. Each engine now listens
+  with callables of its own.
 - With `LOG_PARAMETERS` off, a value the driver cannot send no longer shows
   in the error: asyncpg's `invalid input for query argument $1: '4111...'`
   reads `$1: <hidden>`, with the reason kept, in the message, its `repr`,

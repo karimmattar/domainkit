@@ -23,12 +23,13 @@ import threading
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterator
 from datetime import UTC, datetime
+from functools import partial
 from types import SimpleNamespace
 from typing import Any
 from weakref import WeakKeyDictionary
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from starlette.datastructures import State
 from starlette.requests import HTTPConnection
 from starlette.types import Message, Receive, Scope, Send
@@ -36,7 +37,7 @@ from starlette.types import Message, Receive, Scope, Send
 from domainkit import clock as clock_module
 from domainkit import tasks
 from domainkit.broker import Broker, BrokerHandler, MemoryBroker
-from domainkit.conf import override_settings
+from domainkit.conf import DatabaseConfig, override_settings
 from domainkit.contrib.audit import personal
 from domainkit.contrib.auth import AllowAny, principals
 from domainkit.contrib.auth import middleware as middleware_module
@@ -45,6 +46,17 @@ from domainkit.contrib.auth.middleware import AuthenticationMiddleware
 from domainkit.contrib.auth.principals import ALL, Entry, PrincipalCache
 from domainkit.contrib.messaging import MessagingSettings, dispatch
 from domainkit.db import Reads, connections
+from domainkit.db.connections import (
+    _begin_snapshot,
+    _drop_detail,
+    _read_alone,
+    _read_alone_no_params,
+    _require_read_only,
+    _reset_session,
+    _take_open,
+    create_engine,
+    create_read_engine,
+)
 from domainkit.ddd import DomainEvent, EventBus
 from domainkit.http import live, metrics, ratelimit
 from domainkit.http.client import BREAKER_HOSTS, CircuitBreaker
@@ -738,6 +750,55 @@ def test_loops_on_threads_get_their_own_engines(
         asyncio.run(use(close=True))
     with connections._lock:
         assert len(list(engines)) <= THREADS * LOOPS // 2 + 1  # Unclosed loops'.
+
+
+def own_listeners(engine: AsyncEngine) -> list[Any]:
+    """The listeners domainkit added to ``engine``, its dialect, and its pool."""
+    sync = engine.sync_engine
+    dialect, pool = sync.dialect.dispatch, sync.pool.dispatch
+    found = [
+        *dialect.do_execute,
+        *dialect.do_execute_no_params,
+        *dialect.handle_error,
+        *pool.connect,
+        *pool.checkout,
+        *pool.reset,
+        *sync.dispatch.begin,
+    ]
+    return [listener for listener in found if isinstance(listener, partial)]
+
+
+def test_engines_never_share_a_listener() -> None:
+    """Each engine listens with callables of its own, so no registry key repeats.
+
+    SQLAlchemy keys its listener registry by the ids of the target and the
+    function, and is not thread-safe. With one function for every engine, a
+    freed pool's reused id repeated a key, and threads making and dropping
+    engines raced on it: a ``KeyError`` in the registry's weakref callback.
+    """
+    network = DatabaseConfig.model_validate(
+        {"URL": "postgresql+asyncpg://app@db.invalid/app"}
+    )
+    local = DatabaseConfig.model_validate({"URL": "sqlite+aiosqlite://"})
+    read = [
+        _read_alone,
+        _read_alone_no_params,
+        _drop_detail,
+        _require_read_only,
+        _take_open,
+        _reset_session,
+    ]
+    for build, config, functions in [
+        (create_read_engine, network, read),
+        (create_engine, local, [_drop_detail, _begin_snapshot]),
+    ]:
+        first, second = own_listeners(build(config)), own_listeners(build(config))
+
+        assert [listener.func for listener in first] == functions
+        assert [listener.func for listener in second] == functions
+        assert not {id(listener) for listener in first} & {
+            id(listener) for listener in second
+        }
 
 
 def test_subject_keys_kept_by_transactions_on_every_thread(
