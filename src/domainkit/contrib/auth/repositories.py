@@ -57,6 +57,7 @@ from .models import (
     same_email,
 )
 from .principals import (
+    HANDLED,
     PASSWORD,
     Credential,
     GrantedPermission,
@@ -263,6 +264,7 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
             update(table)
             .where(table.c.id == user_id, table.c.password == verified)
             .values(password=rehashed)
+            .execution_options(**HANDLED)  # The same password: principals hold.
         )
 
     async def active_superusers(self) -> int:
@@ -284,7 +286,10 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         when = utc_now()
         table = get_user_table()
         await self.session.execute(
-            update(table).where(table.c.id == user.id).values(last_login=when)
+            update(table)
+            .where(table.c.id == user.id)
+            .values(last_login=when)
+            .execution_options(**HANDLED)  # Marked below.
         )
         set_committed_value(user, "last_login", when)
         invalidate_after_commit(self.session, [user_target(user.id)])
@@ -518,6 +523,7 @@ class TokenStore:
                 | (tokens.c.last_used_at <= now - LAST_USED_EVERY),
             )
             .values(last_used_at=now)
+            .execution_options(**HANDLED)  # A last use changes no principal.
         )
         return _count(result) == 1
 
@@ -557,6 +563,7 @@ class TokenStore:
             update(tokens)
             .where(tokens.c.id == token.id, tokens.c.used_at.is_(None))
             .values(used_at=when)
+            .execution_options(**HANDLED)  # Logins rest on tokens, not their use.
         )
         set_committed_value(token, "used_at", when)
         return _count(result) == 1
@@ -589,14 +596,21 @@ class TokenStore:
 
         No principal rests on them: every request checks expiry.
         """
-        statement = delete(tokens).where(tokens.c.expires_at <= (now or utc_now()))
+        statement = (
+            delete(tokens)
+            .where(tokens.c.expires_at <= (now or utc_now()))
+            .execution_options(**HANDLED)
+        )
         return _count(await self.session.execute(statement))
 
     async def _revoke(self, condition: Any, *targets: str) -> int:  # noqa: ANN401 - a SQL clause.
         """Delete matching tokens, and their principals once committed; how many."""
         deleted = (
             await self.session.execute(
-                delete(tokens).where(condition).returning(tokens.c.id, tokens.c.family)
+                delete(tokens)
+                .where(condition)
+                .returning(tokens.c.id, tokens.c.family)
+                .execution_options(**HANDLED)  # Marked below, by what it deleted.
             )
         ).all()
         dropped = set(targets)

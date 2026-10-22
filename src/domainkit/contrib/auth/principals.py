@@ -48,10 +48,11 @@ from typing import Any, Final, Self, cast
 from uuid import UUID
 
 import sqlalchemy
-from sqlalchemy import event
+from sqlalchemy import Table, event
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import (
     Mapper,
+    ORMExecuteState,
     Session,
     class_mapper,
     make_transient_to_detached,
@@ -63,12 +64,20 @@ from sqlalchemy.sql.elements import ColumnElement
 from domainkit import clock
 from domainkit.cache import CacheError, caches
 from domainkit.contrib.contenttypes.models import ContentType
+from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.log import SECURITY_LOGGER
 
 from . import tokens
 from .models import USABLE_PASSWORD, AbstractBaseUser, Group, PasswordHash, Permission
 from .settings import MAX_PRINCIPAL_TTL, PrincipalCacheSettings
+from .tables import (
+    group_permissions,
+    groups,
+    permissions,
+    user_link_tables,
+)
+from .tables import tokens as token_rows
 from .tokens import LAST_USED_EVERY, AuthToken
 
 try:
@@ -126,6 +135,16 @@ PENDING: Final = "domainkit.auth.principals.pending"
 """``Session.info`` key: what to drop when the session commits."""
 COMMITTED: Final = "domainkit.auth.principals.committed"
 """``Session.info`` key: what the last commit dropped, still to stamp."""
+HANDLED: Final = {"domainkit_principals_handled": True}
+"""Execution options of a statement whose effect on principals is handled.
+
+The auth repositories' own writes mark what they change themselves (a
+revocation's ``RETURNING``), or change nothing a principal holds (a last
+use): ``.execution_options(**HANDLED)`` keeps them from dropping every
+principal as other bulk statements do (``watch``)."""
+_BULK_WATCHED: Final[dict[str, frozenset[str]]] = {}
+"""Table names whose bulk ``UPDATE``, ``DELETE`` (or ``INSERT``) through a
+session drop every principal, with the statements that do (``watch``)."""
 
 
 def user_target(user_id: UUID) -> str:
@@ -756,13 +775,30 @@ def _count_dropped(entries: Iterable[Entry], event: str) -> None:
 
 
 def watch(user_model: type[AbstractBaseUser]) -> None:
-    """Drop principals when the ORM changes what they hold (idempotent).
+    """Drop principals when a session changes what they hold (idempotent).
 
     A user updated (any field, a group joined or left, a permission given
-    or taken) or deleted drops that user's principals; a group or a
-    permission changed or deleted drops every principal; a token updated
-    or deleted, its own. Each takes effect when its session commits.
+    or taken) or deleted drops that user's principals; a group, a
+    permission, or a content type changed or deleted drops every principal;
+    a token updated or deleted, its own. A bulk statement executed through
+    a session (``update_rows``, ``delete_rows``, ``update(User)``, a Core
+    ``UPDATE``) on the tables principals are read from drops every
+    principal. Each takes effect when its session commits. Statements run
+    on a connection, outside any session, are not seen.
     """
+    user_table = cast(Table, class_mapper(user_model).local_table)
+    links = user_link_tables(user_table)
+    changes = frozenset({"update", "delete"})
+    _BULK_WATCHED.clear()
+    _BULK_WATCHED.update(
+        {
+            table.name: changes
+            for table in (user_table, groups, permissions, content_types, token_rows)
+        }
+    )
+    _BULK_WATCHED.update(
+        {table.name: changes | {"insert"} for table in (*links, group_permissions)}
+    )
     listeners: list[tuple[type, str, Any]] = [
         (user_model, "after_update", _user_changed),
         (user_model, "after_delete", _user_changed),
@@ -770,13 +806,38 @@ def watch(user_model: type[AbstractBaseUser]) -> None:
         (Group, "after_delete", _everyone_changed),
         (Permission, "after_update", _everyone_changed),
         (Permission, "after_delete", _everyone_changed),
+        (ContentType, "after_update", _everyone_changed),
+        (ContentType, "after_delete", _everyone_changed),
         (AuthToken, "after_update", _token_changed),
         (AuthToken, "after_delete", _token_changed),
         (Session, "after_commit", _committed),
+        (Session, "do_orm_execute", _executed),
     ]
     for target, name, listener in listeners:
         if not event.contains(target, name, listener):
             event.listen(target, name, listener, propagate=True)
+
+
+def _executed(state: ORMExecuteState) -> None:
+    """A bulk statement on what principals hold: drop every principal at commit.
+
+    Which rows it changes is unknown without reading them, and bulk changes
+    are rare: every principal is read again.
+    """
+    if state.is_update:
+        change = "update"
+    elif state.is_delete:
+        change = "delete"
+    elif state.is_insert:
+        change = "insert"
+    else:
+        return
+    table = getattr(state.statement, "table", None)
+    if change not in _BULK_WATCHED.get(getattr(table, "name", ""), ()):
+        return
+    if state.execution_options.get("domainkit_principals_handled"):
+        return
+    invalidate_after_commit(state.session, [ALL])
 
 
 def _user_changed(mapper: Mapper[Any], connection: object, user: Any) -> None:  # noqa: ANN401 - the mapped user.

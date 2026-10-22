@@ -6,16 +6,36 @@ bulk statement, after the shared cache lost its stamps, after a cancelled
 commit. Interleavings are forced with events, never with sleeps.
 """
 
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import Final
+from uuid import UUID
 
-from domainkit.contrib.auth import AuthenticationFailed, AuthUnitOfWork
+import pytest
+from sqlalchemy import delete, insert, update
+
+from domainkit.clock import freeze_time
+from domainkit.contrib.auth import (
+    AuthenticationFailed,
+    AuthUnitOfWork,
+    User,
+    UserId,
+)
 from domainkit.contrib.auth.principals import principal_cache
-from domainkit.contrib.auth.tokens import token_digest
+from domainkit.contrib.auth.tables import group_permissions, tokens, user_link_tables
+from domainkit.contrib.auth.tokens import token_digest, utc_now
+from domainkit.contrib.auth.users import get_user_table
+from domainkit.contrib.contenttypes.tables import content_types
+from domainkit.ddd import F
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import Api
 from domainkit_tests.test_auth_http import bearer, create_user
-from domainkit_tests.test_auth_principals import credentials_of, issue
+from domainkit_tests.test_auth_principals import (
+    credentials_of,
+    editors_with,
+    issue,
+)
+from domainkit_tests.test_auth_principals import statements as statements
 
 LONG: Final = {"TTL": timedelta(minutes=5)}
 """Principals kept long enough that only an invalidation drops them."""
@@ -88,3 +108,172 @@ def test_a_revocation_before_a_savepoint_drops_its_principal_at_the_commit(
     assert meanwhile in {"served", "Invalid token."}
     assert after == "Invalid token."
     assert len(principal_cache) == 0
+
+
+# Bulk statements through a session.
+
+
+async def deactivate_with_update_rows(uow: AuthUnitOfWork, alice: UUID) -> None:
+    """``UserRepository.update_rows``: an ORM ``UPDATE``, no aggregate loaded."""
+    await uow.users.update_rows(F("username") == "alice", is_active=False)
+
+
+async def deactivate_with_orm_update(uow: AuthUnitOfWork, alice: UUID) -> None:
+    """``update(User)`` executed by the session."""
+    await uow.session.execute(
+        update(User).where(User.id == alice).values(is_active=False)  # type: ignore[arg-type,misc]
+    )
+
+
+async def deactivate_with_core_update(uow: AuthUnitOfWork, alice: UUID) -> None:
+    """``update(table)``, Core, executed by the session."""
+    table = get_user_table()
+    await uow.session.execute(
+        update(table).where(table.c.id == alice).values(is_active=False)
+    )
+
+
+async def delete_with_delete_rows(uow: AuthUnitOfWork, alice: UUID) -> None:
+    """``UserRepository.delete_rows``."""
+    await uow.users.delete_rows(F("username") == "alice")
+
+
+async def delete_tokens_with_core(uow: AuthUnitOfWork, alice: UUID) -> None:
+    """A Core ``DELETE`` of the user's tokens, executed by the session."""
+    await uow.session.execute(delete(tokens).where(tokens.c.user_id == alice))
+
+
+@pytest.mark.parametrize(
+    ("change", "refusal"),
+    [
+        (deactivate_with_update_rows, "User inactive or deleted."),
+        (deactivate_with_orm_update, "User inactive or deleted."),
+        (deactivate_with_core_update, "User inactive or deleted."),
+        (delete_with_delete_rows, "User inactive or deleted."),
+        (delete_tokens_with_core, "Invalid token."),
+    ],
+)
+def test_bulk_statements_on_users_and_tokens_drop_principals(
+    api: Api, change: Callable[[AuthUnitOfWork, UUID], Awaitable[None]], refusal: str
+) -> None:
+    """No mapper event runs for them: the session's statements are watched."""
+    alice = create_user("alice")
+    api(PRINCIPAL_CACHE=LONG)
+    raw = run_async(issue("alice"))
+
+    async def scenario() -> list[str]:
+        seen = [await outcome(raw)]
+        async with AuthUnitOfWork() as uow:
+            await change(uow, alice)
+            await uow.commit()
+        seen.append(await outcome(raw))
+        return seen
+
+    assert run_async(scenario()) == ["served", refusal]
+
+
+async def delete_group_with_delete_rows(uow: AuthUnitOfWork) -> None:
+    """``GroupRepository.delete_rows``: the group, and its links by cascade."""
+    await uow.groups.delete_rows(F("name") == "editors")
+
+
+async def empty_group_with_core(uow: AuthUnitOfWork) -> None:
+    """A Core ``DELETE`` of the group's permissions."""
+    await uow.session.execute(delete(group_permissions))
+
+
+async def rename_content_type_with_core(uow: AuthUnitOfWork) -> None:
+    """A Core ``UPDATE`` of content types: their permissions' keys change."""
+    await uow.session.execute(
+        update(content_types)
+        .where(content_types.c.domain == "shop")
+        .values(domain="store")
+    )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        delete_group_with_delete_rows,
+        empty_group_with_core,
+        rename_content_type_with_core,
+    ],
+)
+def test_bulk_statements_on_grants_drop_principals(
+    api: Api, change: Callable[[AuthUnitOfWork], Awaitable[None]]
+) -> None:
+    """A permission taken by a bulk statement is gone at the commit."""
+    create_user("alice")
+    api(PRINCIPAL_CACHE=LONG)
+    run_async(editors_with("alice", "shop.view_product"))
+    raw = run_async(issue("alice"))
+
+    async def holds() -> bool:
+        found = await credentials_of(headers=bearer(raw))
+        assert found is not None
+        return found.user.has_perm("shop.view_product")
+
+    async def scenario() -> list[bool]:
+        seen = [await holds()]
+        async with AuthUnitOfWork() as uow:
+            await change(uow)
+            await uow.commit()
+        seen.append(await holds())
+        return seen
+
+    assert run_async(scenario()) == [True, False]
+
+
+def test_bulk_grants_reach_principals_at_once(api: Api) -> None:
+    """A Core ``INSERT`` of a link gives the permission at the commit."""
+    alice = create_user("alice")
+    api(PRINCIPAL_CACHE=LONG)
+    raw = run_async(issue("alice"))
+    _, user_permissions = user_link_tables(get_user_table())
+
+    async def holds() -> bool:
+        found = await credentials_of(headers=bearer(raw))
+        assert found is not None
+        return found.user.has_perm("shop.view_product")
+
+    async def scenario() -> list[bool]:
+        seen = [await holds()]
+        async with AuthUnitOfWork() as uow:
+            permission = await uow.permissions.get("shop.view_product")
+            await uow.session.execute(
+                insert(user_permissions).values(
+                    user_id=alice, permission_id=permission.id
+                )
+            )
+            await uow.commit()
+        seen.append(await holds())
+        return seen
+
+    assert run_async(scenario()) == [False, True]
+
+
+def test_the_repositories_own_writes_keep_principals(
+    api: Api, statements: list[str]
+) -> None:
+    """A last use, a login, a rehash, expired tokens cleared: nothing is read again."""
+    alice = create_user("alice")
+    api(PRINCIPAL_CACHE=LONG)
+    raw = run_async(issue("alice"))
+    bob = create_user("bob")
+
+    async def writes() -> None:
+        async with AuthUnitOfWork() as uow:
+            user = await uow.users.get(UserId(bob))
+            await uow.users.record_login(user)
+            await uow.users.store_rehash(alice, user.password, user.password)
+            await uow.tokens.touch_digest(token_digest(raw), utc_now())
+            await uow.tokens.clear_expired()
+            await uow.commit()
+
+    with freeze_time("2026-05-01T10:00:00Z"):
+        assert run_async(outcome(raw)) == "served"
+        run_async(writes())
+        statements.clear()
+        assert run_async(outcome(raw)) == "served"
+    assert "SELECT" not in statements
+    assert len(principal_cache) == 1
