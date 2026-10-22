@@ -1622,16 +1622,19 @@ def test_counters_name_the_class_never_the_user(api: Api) -> None:
     """Hits, misses, invalidations, and evictions, by authentication class."""
     create_user("alice")
     api()
-    raw = run_async(issue("alice"))
+    raw, other = run_async(issue("alice")), run_async(issue("alice"))
     before = {name: sample(name) for name in ("hit", "miss", "invalidation")}
 
-    run_async(credentials_of(headers=bearer(raw)))
-    run_async(credentials_of(headers=bearer(raw)))
-    principals.invalidate([ALL])
+    with freeze_time("2026-05-01T10:00:00Z"):
+        run_async(credentials_of(headers=bearer(raw)))
+        run_async(credentials_of(headers=bearer(raw)))
+        run_async(credentials_of(headers=bearer(other)))
+        dropped = principals.invalidate([ALL])
 
-    assert sample("miss") == before["miss"] + 1
+    assert dropped == 2
+    assert sample("miss") == before["miss"] + 2
     assert sample("hit") == before["hit"] + 1
-    assert sample("invalidation") == before["invalidation"] + 1
+    assert sample("invalidation") == before["invalidation"] + 2  # One each.
     labels = {
         tuple(sorted(sample_.labels))
         for metric in REGISTRY.collect()
