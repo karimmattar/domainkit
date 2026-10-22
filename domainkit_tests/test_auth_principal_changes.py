@@ -353,6 +353,27 @@ def test_guessed_tokens_write_no_stamps(api: Api, shared: FakeServer) -> None:
     assert not [key for key in keys if any(digest in key for digest in digests)]
 
 
+def test_refresh_tokens_are_refused_as_bearer_tokens_with_stamps(
+    api: Api, shared: FakeServer
+) -> None:
+    """A login's refresh token has a family, stamped too: still invalid, not kept."""
+    create_user("alice")
+    api(PRINCIPAL_CACHE=STAMPED)
+
+    async def scenario() -> str:
+        async with AuthUnitOfWork() as uow:
+            user = await uow.users.get_by_natural_key("alice")
+            assert user is not None
+            raw = await uow.tokens.issue(
+                user.id, kind=TokenKind.REFRESH, ttl=None, family=uuid4()
+            )
+            await uow.commit()
+        return await outcome(raw)
+
+    assert run_async(scenario()) == "Invalid token."
+    assert len(principal_cache) == 0
+
+
 # Stamps written whatever happens after the commit.
 
 
