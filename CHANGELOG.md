@@ -77,7 +77,8 @@ All notable changes to domainkit. The format follows
   What projects meet:
   - FastAPI now depends on `opentelemetry-api` and traces requests itself
     when an OpenTelemetry SDK is configured. `get_asgi_application` turns
-    that off, as it was: its spans record query strings and its logs
+    that off, as it was, in its application and in every FastAPI
+    application mounted in it: its spans record query strings and its logs
     exception messages. Trace requests with `opentelemetry-instrument`.
   - SQLAlchemy 2.1, in a project's own code: `Result.tuples()` is
     deprecated (rows unpack as they are); statements are typed by column

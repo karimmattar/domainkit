@@ -8,6 +8,7 @@ from typing import Any, Final
 
 from fastapi import APIRouter, FastAPI
 from fastapi.telemetry import TelemetryConfig
+from starlette.types import Receive, Scope, Send
 
 from domainkit import setup
 from domainkit.apps import registry
@@ -43,6 +44,35 @@ FASTAPI_TELEMETRY: Final[TelemetryConfig] = {
     "logs": False,
 }
 """FastAPI's native telemetry, off: domainkit traces its own work."""
+MEASURED: Final = "fastapi.telemetry"
+"""The scope key by which FastAPI knows a request is measured already.
+
+A FastAPI application (0.142 and later) skips its own telemetry for a
+request whose scope has it, as it does when an enclosing one measures it.
+"""
+REQUESTS: Final = frozenset({"http", "websocket"})
+"""The scope types FastAPI measures."""
+
+
+class Application(FastAPI):
+    """The application ``get_asgi_application`` builds: telemetry off below it too.
+
+    domainkit's own FastAPI is built with its telemetry off
+    (``FASTAPI_TELEMETRY``), but a FastAPI application a project mounts in it
+    keeps FastAPI's defaults: once an OpenTelemetry SDK is set, it would
+    record each request's query string in a span, exception messages in
+    logs, and metrics. Before any application or middleware sees a request,
+    this marks it as measured already (``MEASURED``, to None), so every
+    FastAPI application below skips its telemetry, whatever ``MIDDLEWARE``
+    lists. A mark set by an application above, which measures the request
+    itself, is kept.
+    """
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Mark an HTTP or WebSocket request as measured, then serve it."""
+        if scope["type"] in REQUESTS:
+            scope.setdefault(MEASURED, None)
+        await super().__call__(scope, receive, send)
 
 
 @asynccontextmanager
@@ -72,7 +102,7 @@ def get_asgi_application() -> FastAPI:
     for database in settings.DATABASES.values():
         connect_args(database)
     docs = settings.API_DOCS
-    app = FastAPI(
+    app = Application(
         title=settings.PROJECT_NAME,
         version=settings.VERSION,
         debug=settings.DEBUG,
@@ -89,7 +119,8 @@ def get_asgi_application() -> FastAPI:
         generate_unique_id_function=operation_id,
         # FastAPI's own OpenTelemetry (0.142+) stays off, as before: its spans
         # record query strings and its logs raw exception messages, which
-        # domainkit keeps out of logs and error reports.
+        # domainkit keeps out of logs and error reports. Application turns it
+        # off for the FastAPI applications mounted below too.
         telemetry=FASTAPI_TELEMETRY,
     )
     install_exception_handlers(app)

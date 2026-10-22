@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from types import SimpleNamespace
 
 import pytest
+from fastapi import APIRouter, FastAPI, Request, WebSocket
 from fastapi.testclient import TestClient
 from opentelemetry import _logs, metrics, trace
 from opentelemetry.sdk._logs import LoggerProvider
@@ -32,6 +33,7 @@ from domainkit.contrib.messaging.registry import qualified_name
 from domainkit.contrib.messaging.tables import messages
 from domainkit.db import connections
 from domainkit.http import get_asgi_application
+from domainkit.http.application import MEASURED, Application
 from domainkit.log import ContextFilter, JsonFormatter
 from domainkit.management import call_command
 from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork, notes
@@ -183,6 +185,134 @@ def test_fastapi_records_nothing_of_its_own(database: None) -> None:
     assert EXPORTER.get_finished_spans() == ()
     assert LOGS.get_finished_logs() == ()
     assert fastapi_requests_measured() == measured
+
+
+partner = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+"""A FastAPI application of a project's own, with FastAPI's defaults: telemetry on."""
+
+
+@partner.get("/lookup")
+async def lookup(q: str) -> dict[str, int]:
+    """Answer with the query's length."""
+    return {"length": len(q)}
+
+
+@partner.get("/boom")
+async def partner_boom() -> None:
+    """Fail with a message domainkit keeps out of what it records."""
+    raise RuntimeError("card 4111111111111111 refused for alice@example.com")
+
+
+@partner.websocket("/socket")
+async def partner_socket(websocket: WebSocket) -> None:
+    """Greet, then close."""
+    await websocket.accept()
+    await websocket.send_text("hello")
+    await websocket.close()
+
+
+mounting = APIRouter()
+mounting.mount("/partner", partner)
+
+
+@mounting.get("/mark")
+async def mark(request: Request) -> dict[str, object]:
+    """How the request is marked for FastAPI's telemetry."""
+    return {"mark": request.scope.get(MEASURED, "absent")}
+
+
+def fastapi_records() -> tuple[int, int, int]:
+    """FastAPI's spans and log records so far, and requests it measured."""
+    fastapi_spans = [
+        span
+        for span in EXPORTER.get_finished_spans()
+        if span.instrumentation_scope is not None
+        and span.instrumentation_scope.name == "fastapi"
+    ]
+    logs = [
+        each
+        for each in LOGS.get_finished_logs()
+        if each.instrumentation_scope is not None
+        and each.instrumentation_scope.name == "fastapi"
+    ]
+    return len(fastapi_spans), len(logs), fastapi_requests_measured()
+
+
+def call_partner(client: TestClient, prefix: str = "/partner") -> None:
+    """A query string with a secret, a failure, and a WebSocket."""
+    assert client.get(f"{prefix}/lookup?q=x&api_key=SECRET-42").status_code == 200
+    assert client.get(f"{prefix}/boom").status_code == 500
+    with client.websocket_connect(f"{prefix}/socket") as websocket:
+        assert websocket.receive_text() == "hello"
+
+
+def test_the_mounted_application_records_on_its_own() -> None:
+    """Served alone, the project's application traces, logs, and measures.
+
+    So the providers are set, and the next test would see what it records.
+    """
+    before = fastapi_records()
+
+    call_partner(TestClient(partner, raise_server_exceptions=False), prefix="")
+
+    spans, logs, measured = fastapi_records()
+    assert spans > before[0]
+    assert logs > before[1]
+    assert measured == before[2] + 2
+
+
+@pytest.mark.parametrize(
+    "middleware",
+    [None, [], ["domainkit.http.middleware.RequestContextMiddleware"]],
+    ids=["default", "none", "custom"],
+)
+def test_mounted_fastapi_applications_record_nothing(
+    middleware: list[str] | None,
+) -> None:
+    """FastAPI's telemetry stays off in every FastAPI application below.
+
+    ``get_asgi_application`` marks each HTTP and WebSocket request as
+    measured before any application sees it, so a project's FastAPI
+    application mounted in domainkit's skips its own telemetry: no span
+    with the query string, no log of the exception's message, no metric.
+    It does so whatever ``MIDDLEWARE`` lists.
+    """
+    before = fastapi_records()
+    settings = {} if middleware is None else {"MIDDLEWARE": middleware}
+    with override_settings(ROOT_ROUTER=f"{__name__}.mounting", **settings):
+        client = TestClient(get_asgi_application(), raise_server_exceptions=False)
+        call_partner(client)
+
+    assert fastapi_records() == before
+    assert all(
+        "SECRET-42" not in str(dict(span.attributes or {}))
+        for span in EXPORTER.get_finished_spans()
+    )
+
+
+def test_requests_are_marked_and_lifespans_are_not() -> None:
+    """Each HTTP request gets the mark; the lifespan's scope is left alone.
+
+    A mark an enclosing application set, because it measures the request
+    itself, is kept as it is.
+    """
+    with override_settings(ROOT_ROUTER=f"{__name__}.mounting", MIDDLEWARE=[]):
+        app = get_asgi_application()
+    seen: list[Scope] = []
+
+    async def enclosing(scope: Scope, receive: Receive, send: Send) -> None:
+        seen.append(scope)
+        if scope.get("query_string") == b"above":
+            scope[MEASURED] = "measured above"
+        await app(scope, receive, send)
+
+    with TestClient(enclosing) as client:
+        marks = [client.get("/mark").json(), client.get("/mark?above").json()]
+
+    assert marks == [{"mark": None}, {"mark": "measured above"}]
+    assert type(app) is Application
+    assert [scope["type"] for scope in seen] == ["lifespan", "http", "http"]
+    assert MEASURED not in seen[0]
 
 
 def test_request_metrics_use_route_templates(database: None) -> None:

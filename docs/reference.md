@@ -783,6 +783,16 @@ strings, and its log records exception messages, which domainkit keeps out
 of logs and error reports. To trace requests, run under
 `opentelemetry-instrument`, as before.
 
+It is off in the FastAPI applications mounted in domainkit's too, which
+keep FastAPI's defaults otherwise: the application `get_asgi_application`
+returns (`domainkit.http.application.Application`, a `FastAPI`) sets
+`scope["fastapi.telemetry"]` to None on each HTTP and WebSocket request
+before any middleware or application sees it, whatever `MIDDLEWARE` lists,
+and FastAPI skips its telemetry for a request so marked, as it does for
+one an enclosing application measures. A mark an enclosing application
+set is kept. An application served on its own, outside domainkit's, is
+the project's to configure (`FastAPI(telemetry=...)`).
+
 ## Testing
 
 `domainkit.testing` is a pytest plugin, like pytest-django. Install it with
