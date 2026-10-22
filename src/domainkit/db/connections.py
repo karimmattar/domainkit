@@ -74,7 +74,8 @@ INTERNAL: Final = "domainkit_internal"
 """Execution option of the framework's own statements, such as the timeouts
 a transaction sets; ``assert_num_queries`` does not count them."""
 SNAPSHOT_BEGIN: Final = "domainkit_snapshot"
-"""Execution option asking SQLite to begin a transaction before reading."""
+"""Execution option asking SQLite to begin a transaction before reading, for
+every read-only session."""
 READS_SUFFIX: Final = ":reads"
 """Added to an alias to name its ``STATEMENTS`` engine in ``pool_stats``."""
 _DETAIL: Final = re.compile(
@@ -579,10 +580,12 @@ def _set_local(config: DatabaseConfig, connection: Connection) -> None:
 
 
 def _begin_snapshot(connection: Connection) -> None:
-    """Begin the transaction now for a ``SNAPSHOT`` read, outside PostgreSQL.
+    """Begin the transaction now for a read-only session, outside PostgreSQL.
 
-    SQLite's driver begins one only before a write, so reads would not
-    share a snapshot without it.
+    SQLite's driver begins one only before ``INSERT``, ``UPDATE``,
+    ``DELETE`` or ``REPLACE``: reads would not share a snapshot without it,
+    and DDL or a ``WITH ... INSERT`` sent as SQL text would commit at once,
+    beyond the rollback that ends a read-only session.
     """
     if connection.get_execution_options().get(SNAPSHOT_BEGIN):
         connection.exec_driver_sql("BEGIN", execution_options={INTERNAL: True})
@@ -750,17 +753,19 @@ class ConnectionHandler:
         """Open a session; objects stay readable after commit.
 
         A ``readonly`` session's transactions are ``READ ONLY`` on
-        PostgreSQL, so even a replica's primary refuses its writes. ``reads``
-        says how it reads (see ``Reads``); with ``STATEMENTS`` or
-        ``SNAPSHOT`` the session itself also refuses to flush or to run a
-        statement that writes (``ReadOnlyError``).
+        PostgreSQL, so even a replica's primary refuses its writes. On
+        SQLite they begin before the first read, so that SQL text that
+        writes is rolled back with them. ``reads`` says how it reads (see
+        ``Reads``); with ``STATEMENTS`` or ``SNAPSHOT`` the session itself
+        also refuses to flush or to run a statement that writes
+        (``ReadOnlyError``).
         """
         engine, sessions = self._pool(alias)
         if not readonly:
             return sessions()
         if reads is Reads.TRANSACTION:
             return AsyncSession(
-                engine.execution_options(postgresql_readonly=True),
+                engine.execution_options(**_read_only_options(engine)),
                 expire_on_commit=False,
             )
         if reads is Reads.STATEMENTS and reads_alone(self.config(alias)):
@@ -768,7 +773,7 @@ class ConnectionHandler:
         elif reads is Reads.SNAPSHOT:
             bind = engine.execution_options(**_snapshot_options(engine))
         else:
-            bind = engine.execution_options(postgresql_readonly=True)
+            bind = engine.execution_options(**_read_only_options(engine))
         return AsyncSession(
             bind, expire_on_commit=False, sync_session_class=ReadOnlySession
         )
@@ -883,6 +888,17 @@ def _snapshot_options(engine: AsyncEngine) -> dict[str, Any]:
     """Execution options for one read snapshot on ``engine``'s database."""
     if engine.dialect.name == "postgresql":
         return {"postgresql_readonly": True, "isolation_level": "REPEATABLE READ"}
+    return {SNAPSHOT_BEGIN: True}
+
+
+def _read_only_options(engine: AsyncEngine) -> dict[str, Any]:
+    """Execution options for a read-only transaction on ``engine``'s database.
+
+    ``READ ONLY`` on PostgreSQL; elsewhere, a transaction begun before the
+    first read, which the session's end rolls back.
+    """
+    if engine.dialect.name == "postgresql":
+        return {"postgresql_readonly": True}
     return {SNAPSHOT_BEGIN: True}
 
 

@@ -99,6 +99,10 @@ in the identity map, and tracking its version, which is the work those
   - `STATEMENTS` runs each statement on its own.
   - `SNAPSHOT` reads one snapshot: `REPEATABLE READ`, `READ ONLY` on
     PostgreSQL, and an explicit `BEGIN` on SQLite.
+  - On SQLite every read-only session begins explicitly, whichever way it
+    reads: its driver begins only before `INSERT`, `UPDATE`, `DELETE` or
+    `REPLACE`, so DDL or a `WITH … INSERT` sent as SQL text committed at
+    once, past the rollback that ends the session. (Amended 2026-10-22.)
 - **`STATEMENTS`** reads on an engine of its own per alias (the
   `<alias>:reads` pool), on PostgreSQL through asyncpg or psycopg:
   - The engine runs in `AUTOCOMMIT`, and its connections start with

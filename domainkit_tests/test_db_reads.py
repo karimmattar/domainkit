@@ -324,10 +324,12 @@ async def test_a_snapshot_reads_the_data_as_it_was(tables: None) -> None:
 
 
 @sqlite_only
-async def test_a_snapshot_on_sqlite_begins_before_it_reads(tables: None) -> None:
-    """SQLite's driver begins only before writes; a snapshot begins itself.
+async def test_read_only_work_on_sqlite_begins_before_it_reads(tables: None) -> None:
+    """SQLite's driver begins only before writes; read-only sessions begin themselves.
 
-    The ``BEGIN`` is the framework's: it is not counted.
+    Every way of reading, so a snapshot's reads agree and the rollback
+    that ends the unit of work undoes what SQL text wrote. The ``BEGIN``
+    is the framework's: it is not counted.
     """
 
     async def driver_in_transaction(uow: GadgetsUnitOfWork) -> bool:
@@ -335,13 +337,38 @@ async def test_a_snapshot_on_sqlite_begins_before_it_reads(tables: None) -> None
         driver: Any = connection.sync_connection.connection.driver_connection  # type: ignore[union-attr]
         return bool(driver.in_transaction)
 
-    with assert_num_queries(3):
-        async with GadgetsUnitOfWork(reads=Reads.SNAPSHOT) as uow:
-            await uow.gadgets.filter()
-            assert await driver_in_transaction(uow)
-    async with GadgetsUnitOfWork(reads=Reads.TRANSACTION) as uow:
+    for reads in Reads:
+        with assert_num_queries(3):
+            async with GadgetsUnitOfWork(reads=reads) as uow:
+                await uow.gadgets.filter()
+                assert await driver_in_transaction(uow), reads
+    async with GadgetsUnitOfWork() as uow:
         await uow.gadgets.filter()
-        assert not await driver_in_transaction(uow)
+        assert not await driver_in_transaction(uow)  # A writer begins to write.
+
+
+@sqlite_only
+@pytest.mark.parametrize("reads", list(Reads))
+async def test_sql_text_that_writes_on_sqlite_is_rolled_back(
+    tables: None, reads: Reads
+) -> None:
+    """DDL and ``WITH ... INSERT`` would commit at once without the ``BEGIN``."""
+    async with connections.engine().begin() as connection:
+        await connection.execute(text("CREATE TABLE framework_test_kept (a int)"))
+    async with GadgetsUnitOfWork(reads=reads) as uow:
+        await uow.session.execute(
+            text(
+                "WITH added AS (SELECT 1 AS a) "
+                "INSERT INTO framework_test_kept SELECT a FROM added"
+            )
+        )
+        await uow.session.execute(text("CREATE TABLE framework_test_made (a int)"))
+    async with connections.engine().connect() as connection:
+        kept = await connection.scalar(text("SELECT count(*) FROM framework_test_kept"))
+        made = await connection.scalar(
+            text("SELECT count(*) FROM sqlite_master WHERE name LIKE '%test_made'")
+        )
+    assert (kept, made) == (0, 0)
 
 
 # Refusing writes ------------------------------------------------------------------

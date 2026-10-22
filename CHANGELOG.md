@@ -161,6 +161,11 @@ All notable changes to domainkit. The format follows
   untyped values are refused), is hidden too, and so is the `CONTEXT` it
   adds (`JSON data, line 1: ...`). A `DETAIL` that spans lines is dropped
   whole.
+- On SQLite, a read-only unit of work begins its transaction before it
+  reads, so DDL or a `WITH ... INSERT` sent as SQL text is rolled back with
+  it. They committed at once, since SQLite's driver begins a transaction
+  only before `INSERT`, `UPDATE`, `DELETE` or `REPLACE`. The reader now
+  holds SQLite's read lock until it ends.
 
 ## [0.8.0] - 2026-10-21
 

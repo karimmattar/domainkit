@@ -419,7 +419,9 @@ class ReportsUnitOfWork(SqlAlchemyUnitOfWork):
   `commit()` always raises `ReadOnlyError`. Changes left unflushed at the
   end are dropped. With `STATEMENTS`, the server's refusal rests on the
   session's `default_transaction_read_only`: SQL text in the unit of work
-  that turns it off could write until the unit of work ends.
+  that turns it off could write until the unit of work ends. On SQLite,
+  every read-only unit of work runs in a transaction that is rolled back,
+  so whatever SQL text writes there is undone.
 - **One statement, one transaction.** In `STATEMENTS`, `SET LOCAL` and
   transaction-scoped advisory locks (`pg_advisory_xact_lock`) end with the
   statement that takes them: they do nothing for the next one. What you
@@ -445,8 +447,10 @@ class ReportsUnitOfWork(SqlAlchemyUnitOfWork):
   PostgreSQL through asyncpg or psycopg, on a pool of its own (see
   [databases.md](databases.md#connection-pools)). Through PgBouncer
   (`PGBOUNCER`), which keeps no timeouts in the session, and on SQLite, it
-  reads in the `READ ONLY` transaction. SQLite reads without a transaction
-  anyway; `SNAPSHOT` begins one there so its reads agree.
+  reads in the `READ ONLY` transaction. SQLite's driver begins a
+  transaction only to write; there every read-only unit of work begins its
+  own before it reads, so its reads agree, and holds SQLite's read lock
+  until it ends.
 - **Streaming** (`session.stream()`) needs a transaction: use
   `TRANSACTION` or `SNAPSHOT` for it.
 
