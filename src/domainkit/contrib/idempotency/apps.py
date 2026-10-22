@@ -38,9 +38,10 @@ class IdempotencyConfig(DomainConfig):
         """Mark the keyed request committed here, or pin its key; refuse a lost key.
 
         On ``IDEMPOTENCY.DATABASE`` the mark joins this transaction. Elsewhere
-        the key is pinned first, in its own transaction, and the operation
-        notes it: whether or not the commit lands, or reports back, no retry
-        can take the key over and the request never releases it.
+        the key is pinned first, by a statement that commits on its own, and
+        the operation notes it: whether or not the commit lands, or reports
+        back, no retry can take the key over and the request never releases
+        it.
         """
         operation = running_operation()
         if operation is None:
@@ -51,7 +52,7 @@ class IdempotencyConfig(DomainConfig):
             connection = await sql_uow.session.connection()
             held = await connection.execute(mark_committed(operation))
         else:
-            async with connections.engine(database).begin() as connection:
+            async with connections.autocommit(database) as connection:
                 held = await connection.execute(pin_lease(operation))
             if held.rowcount:
                 operation.pinned = True  # Before the commit, whatever it reports.
@@ -69,7 +70,7 @@ class IdempotencyConfig(DomainConfig):
         operation.committed = True
         database = self.get_settings().DATABASE
         if cast(SqlAlchemyUnitOfWork, uow).alias != database:
-            async with connections.engine(database).begin() as connection:
+            async with connections.autocommit(database) as connection:
                 await connection.execute(mark_committed(operation))
 
     def databases(self, router: DatabaseRouter) -> frozenset[str]:

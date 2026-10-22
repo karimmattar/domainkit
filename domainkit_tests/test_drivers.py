@@ -15,10 +15,12 @@ from domainkit.db import drivers
 from domainkit.db.drivers import (
     DEADLINE_SLACK,
     MAX_MILLISECONDS,
+    READ_ONLY,
     _server_settings,
     client_ssl_context,
     command_timeout,
     connect_args,
+    read_only_args,
     statement_name,
     transaction_settings,
 )
@@ -191,6 +193,41 @@ def test_psycopg_arguments(client_certificate: tuple[Path, Path]) -> None:
             "-c idle_in_transaction_session_timeout=60000"
         ),
     }
+
+
+def test_read_only_connections_are_held_read_only_by_the_server() -> None:
+    """Reads on their own connect read-only; CONNECT_ARGS cannot undo it."""
+    off = {"default_transaction_read_only": "off", "jit": "off"}
+    asyncpg = read_only_args(config(CONNECT_ARGS={"server_settings": off}))
+
+    assert asyncpg["server_settings"] == {
+        "statement_timeout": "30000",
+        "lock_timeout": "10000",
+        "idle_in_transaction_session_timeout": "60000",
+        "default_transaction_read_only": "on",
+        "jit": "off",
+    }
+    untimed = config(
+        STATEMENT_TIMEOUT=None, LOCK_TIMEOUT=None, IDLE_IN_TRANSACTION_TIMEOUT=None
+    )
+    assert read_only_args(untimed)["server_settings"] == READ_ONLY
+
+    psycopg = "postgresql+psycopg://app@db/app"
+    options = read_only_args(
+        config(
+            psycopg,
+            CONNECT_ARGS={"options": "-c default_transaction_read_only=off"},
+        )
+    )["options"]
+    assert options.endswith(
+        "-c default_transaction_read_only=off -c default_transaction_read_only=on"
+    )  # libpq applies the last one.
+    untimed_psycopg = untimed.model_copy(
+        update={"URL": config(psycopg).URL, "CONNECT_ARGS": {}}
+    )
+    assert read_only_args(untimed_psycopg)["options"] == (
+        "-c default_transaction_read_only=on"
+    )
 
 
 def test_other_drivers() -> None:

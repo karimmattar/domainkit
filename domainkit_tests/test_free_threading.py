@@ -26,6 +26,7 @@ from typing import Any
 from weakref import WeakKeyDictionary
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import State
 from starlette.requests import HTTPConnection
 from starlette.types import Message, Receive, Scope, Send
@@ -34,11 +35,13 @@ from domainkit import clock as clock_module
 from domainkit import tasks
 from domainkit.broker import Broker, BrokerHandler, MemoryBroker
 from domainkit.conf import override_settings
+from domainkit.contrib.audit import personal
 from domainkit.contrib.auth import AllowAny
 from domainkit.contrib.auth import middleware as middleware_module
 from domainkit.contrib.auth.hashers import HashingPool
 from domainkit.contrib.auth.middleware import AuthenticationMiddleware
 from domainkit.contrib.messaging import MessagingSettings, dispatch
+from domainkit.db import Reads, connections
 from domainkit.ddd import DomainEvent, EventBus
 from domainkit.http import live, metrics, ratelimit
 from domainkit.http.client import BREAKER_HOSTS, CircuitBreaker
@@ -570,6 +573,58 @@ def test_the_guards_lookups_are_counted_from_every_thread(
 
     assert sum(found) > 0
     assert (resolver.running, resolver._running) == (0, {})
+
+
+def test_loops_on_threads_get_their_own_engines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each loop makes its own engines, reads alone too; closing drops them."""
+    engines = CheckedRegistry[asyncio.AbstractEventLoop, Any](connections._lock)
+    monkeypatch.setattr(connections, "_engines", engines)
+    network = "postgresql+asyncpg://app@db.invalid/app"  # Never connected to.
+
+    async def use(close: bool) -> bool:
+        engine = connections.engine()
+        reads = connections.session(readonly=True, reads=Reads.STATEMENTS).bind
+        same = connections.engine() is engine
+        again = connections.session(readonly=True, reads=Reads.STATEMENTS).bind
+        if close:
+            await connections.close_all()
+        return same and again is reads and reads is not engine
+
+    def loops(index: int) -> list[bool]:
+        return [asyncio.run(use(n % 2 == 0)) for n in range(LOOPS)]
+
+    with override_settings(DATABASES={"default": {"URL": network}}):
+        assert on_threads(loops) == [[True] * LOOPS] * THREADS
+        asyncio.run(use(close=True))
+    with connections._lock:
+        assert len(list(engines)) <= THREADS * LOOPS // 2 + 1  # Unclosed loops'.
+
+
+def test_subject_keys_kept_by_transactions_on_every_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Transactions on many threads keep their own keys; forgetting reaches all."""
+    held = CheckedRegistry[Any, dict[str, bytes]](personal._held_lock)
+    monkeypatch.setattr(personal, "_held", held)
+
+    def work(index: int) -> list[bool]:
+        results = []
+        for attempt in range(LOOPS):
+            session = AsyncSession()
+            session.sync_session.begin()
+            mine = {f"s{index}": bytes([index]), "shared": bytes([attempt])}
+            personal._keep(session, mine)
+            personal._drop({f"s{(index + 1) % THREADS}"}.__contains__)
+            kept = personal._kept(session, ["shared", f"s{index}"])
+            results.append(kept.get("shared") == bytes([attempt]))
+            personal._drop({"shared"}.__contains__)
+            results.append("shared" not in personal._kept(session, ["shared"]))
+            session.sync_session.close()
+        return results
+
+    assert on_threads(work) == [[True] * 2 * LOOPS] * THREADS
 
 
 IMPORT_EVERYTHING = """

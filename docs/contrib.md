@@ -687,6 +687,13 @@ a schedule to keep anonymous callers' addresses only as long as you need
 them. Rows written before this release keep their values in clear; the
 append-only protection keeps them as they are.
 
+A transaction reads the keys of all the subjects it writes about with one
+query, and makes a new subject's key with an insert that returns it, so
+each key is read once per transaction. No key is kept past its
+transaction: `forget` reaches every process through the database, for
+every transaction that starts after it, and drops at once the keys that
+open transactions of its own process hold.
+
 The application only inserts. To make sure a compromised API cannot rewrite
 history, make the table append-only in the database itself. Add a revision
 that calls `domainkit.contrib.audit.protection.protect(op)` in `upgrade()`
@@ -926,6 +933,17 @@ messaging installed, expired keys are purged hourly; without it, each new
 key deletes up to 100 expired ones, skipping those another request is
 deleting (`SKIP LOCKED` on PostgreSQL), so concurrent requests never queue
 behind one another's purge.
+
+**What a key costs.** A request claims its key with one statement, an
+upsert that inserts the in-progress row or replaces an expired one, and
+stores its response with one more. Each commits as it runs, without
+`BEGIN` and `COMMIT`; through PgBouncer each is a transaction of its own,
+which sets the timeouts. The commit mark is one `UPDATE` in the request's
+own transaction. With authentication and one unit of work on PostgreSQL,
+a first request makes 2 transactions and 4 pool checkouts (16 round
+trips), and a replay 1 transaction and 2 checkouts (10 round trips). ADR
+[0062](adr/0062-claim-idempotency-keys-in-one-statement.md) explains the
+choices.
 
 | `IDEMPOTENCY` key | Default | Meaning |
 | --- | --- | --- |
