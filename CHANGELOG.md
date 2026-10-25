@@ -28,6 +28,13 @@ All notable changes to domainkit. The format follows
   job's limit. CI's `test` and `integration` jobs have 30 minutes instead
   of 20, and `integration` keeps its JUnit report and log when the suite
   fails (TEST-01, TEST-02).
+- The `domainkit.testing` plugin empties the memory backends' outboxes
+  (`mail.outbox`, `sms_outbox`, `push_outbox`) before every test, as
+  Django's runner empties `mail.outbox`, and every `Factory` numbers its
+  objects from 0 again: a project's tests see the same messages and
+  `Sequence` values in any order. What a module- or session-scoped fixture
+  sends is gone by the time a test runs; send it from the test, or from a
+  function-scoped fixture (TEST-05).
 
 ## [0.9.0] - 2026-10-22
 

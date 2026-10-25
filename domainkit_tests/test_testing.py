@@ -3,6 +3,7 @@
 import asyncio
 import io
 import os
+import sys
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -28,6 +29,7 @@ import domainkit.db.migrations  # noqa: F401
 import domainkit_tests.sample_auth_routes
 import domainkit_tests.sample_routes  # noqa: F401
 from domainkit import clock
+from domainkit import testing as plugin
 from domainkit.conf import override_settings, settings
 from domainkit.conf.env import project_prefix
 from domainkit.conf.global_settings import DatabaseConfig
@@ -157,6 +159,75 @@ def test_memory_caches_start_empty_in_every_test(
     )
 
     result.assert_outcomes(passed=2)
+
+
+def test_outboxes_start_empty_in_every_test(
+    pytester: pytest.Pytester, prefix: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mail, SMS, and push sent in one test are gone in the next, as in Django."""
+    # A backend module nothing imported is passed over, not imported.
+    monkeypatch.setattr(
+        plugin,
+        "OUTBOXES",
+        (("domainkit_tests.never_imported", "outbox"), *plugin.OUTBOXES),
+    )
+    pytester.makepyfile(
+        test_outboxes="""
+        from domainkit.contrib import mail
+        from domainkit.contrib.notifications import backends
+
+        OUTBOXES = (mail.outbox, backends.sms_outbox, backends.push_outbox)
+
+        def test_sends():
+            for outbox in OUTBOXES:
+                outbox.append("sent")
+
+        def test_sees_none():
+            assert OUTBOXES == ([], [], [])
+        """
+    )
+
+    run_plugin(pytester).assert_outcomes(passed=2)
+    assert "domainkit_tests.never_imported" not in sys.modules
+
+
+def test_factories_number_from_zero_in_every_test(
+    pytester: pytest.Pytester, prefix: str
+) -> None:
+    """Every factory, subclasses of factories too, starts again at 0."""
+    pytester.makepyfile(
+        test_sequences="""
+        from dataclasses import dataclass
+
+        from domainkit.testing import Factory, Sequence
+
+        @dataclass
+        class Thing:
+            name: str
+
+        class ThingFactory(Factory[Thing]):
+            class Meta:
+                model = Thing
+
+            name = Sequence(lambda n: f"thing-{n}")
+
+        class OtherThingFactory(ThingFactory):
+            pass
+
+        def test_first():
+            assert [t.name for t in ThingFactory.build_batch(2)] == [
+                "thing-0",
+                "thing-1",
+            ]
+            assert OtherThingFactory.build_batch(2)[1].name == "thing-1"
+
+        def test_second():
+            assert ThingFactory.build().name == "thing-0"
+            assert OtherThingFactory.build().name == "thing-0"
+        """
+    )
+
+    run_plugin(pytester).assert_outcomes(passed=2)
 
 
 def test_reports_and_logs_are_written_after_every_test(

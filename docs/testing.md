@@ -41,7 +41,13 @@ The `.env` file is never read during tests. The test settings must say
 
 Memory caches are emptied before every test, so no test sees what another
 cached. Redis caches are left alone: give the test settings their own
-`KEY_PREFIX`.
+`KEY_PREFIX`. The memory backends' outboxes (`mail.outbox`, and
+`sms_outbox` and `push_outbox` of `domainkit.contrib.notifications`) are
+emptied before every test too, as Django's runner empties `mail.outbox`,
+and every [factory](#factories) numbers its objects from 0 again, so a test
+sees the same `Sequence` values in any order. What a module- or
+session-scoped fixture sends is gone by the time a test runs: send it in
+the test, or in a function-scoped fixture.
 
 Error reporters (`ERROR_REPORTERS`) and the logging thread work in the
 background ([runtime.md](runtime.md#logging-and-error-reports)): what a test
@@ -231,7 +237,8 @@ class InvoiceFactory(Factory[Invoice]):
 - Keyword arguments replace defaults; `total__amount=Decimal(5)` reaches
   the sub-factory; fields the factory does not declare pass through.
 - Each object takes its factory's next number, from 0, which all its
-  `Sequence` fields share; `reset_sequence()` starts again.
+  `Sequence` fields share; `reset_sequence()` starts again, and the
+  plugin does it for every factory before each test.
 - Plain defaults are copied for each object, so a list default is never
   shared. `LazyAttribute` reads the other fields in any order; fields that
   depend on each other in a circle are refused.
