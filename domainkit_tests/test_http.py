@@ -32,6 +32,7 @@ from domainkit.http.middleware import (
     RequestBodyTooLarge,
     RequestContextMiddleware,
     host_allowed,
+    request_path,
     security_headers,
 )
 from domainkit.ledger import ledgers
@@ -278,7 +279,9 @@ def test_untrusted_hosts_are_rejected(
 
     assert (response.status_code, response.json()["code"]) == (400, "invalid_host")
     assert response.json()["detail"] == "Invalid host header."
-    client.get("/ok", headers={"Host": "x" * 300})
+    # Another caller: one caller's repeats are throttled (test_security_log).
+    other = TestClient(client.app, client=("198.51.100.7", 50000))
+    other.get("/ok", headers={"Host": "x" * 300})
     assert [
         record.getMessage()
         for record in caplog.records
@@ -520,6 +523,77 @@ def test_access_log_levels(
         "/missing": logging.WARNING,
     }
     assert "secret" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("path", "root", "expected"),
+    [
+        ("/ready", "", "/ready"),
+        ("/api/ready", "/api", "/ready"),
+        ("/api/ready", "/api/", "/ready"),
+        ("/api", "/api", ""),
+        ("/apiary/ready", "/api", "/apiary/ready"),  # Not at a "/": kept whole.
+        ("/ready", "/api", "/ready"),  # A server that left the root out.
+        ("/ready", "/", "/ready"),
+    ],
+)
+def test_request_paths_leave_the_root_path_out(
+    path: str, root: str, expected: str
+) -> None:
+    """Every list of paths in settings is compared with this path."""
+    assert request_path({"path": path, "root_path": root}) == expected
+    assert request_path({"path": path}) == path
+
+
+def test_exempt_and_quiet_paths_hold_behind_a_root_path(
+    make_client: MakeClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Under ``--root-path /api`` probes are neither counted nor logged at INFO."""
+    caplog.set_level(logging.DEBUG, logger="domainkit.access")
+    app = make_client(
+        RATE_LIMIT="1/minute",
+        MIDDLEWARE=[
+            "domainkit.http.middleware.RequestContextMiddleware",
+            "domainkit.http.ratelimit.RateLimitMiddleware",
+        ],
+    ).app
+    client = TestClient(app, root_path="/api")
+
+    probes = [client.get("/api/health").status_code for _ in range(3)]
+    counted = [client.get("/api/ok").status_code for _ in range(2)]
+
+    assert probes == [200, 200, 200]
+    assert counted == [200, 429]
+    levels = {
+        record.getMessage().split()[1]: record.levelno
+        for record in caplog.records
+        if record.name == "domainkit.access"
+    }
+    assert levels == {"/api/health": logging.DEBUG, "/api/ok": logging.WARNING}
+
+
+def test_refusals_are_logged_once_per_caller_a_while(
+    make_client: MakeClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A flood of bad hosts or bodies from one caller writes a line, then counts.
+
+    Another caller is written at once; the count comes with the caller's
+    next line after ``THROTTLE_INTERVAL``.
+    """
+    app = make_client(MAX_REQUEST_BODY_SIZE=10).app
+    flood = TestClient(app, client=("203.0.113.9", 1))
+    other = TestClient(app, client=("198.51.100.7", 1))
+
+    for _ in range(3):
+        flood.get("/ok", headers={"Host": "evil.example"})
+        flood.post("/echo", content=b"x" * 11)
+    other.get("/ok", headers={"Host": "evil.example"})
+
+    assert [r.getMessage() for r in caplog.records if r.name == SECURITY_LOGGER] == [
+        "Rejected untrusted Host header 'evil.example'",
+        "Rejected request body of 11 bytes (limit 10)",
+        "Rejected untrusted Host header 'evil.example'",
+    ]
 
 
 def test_cors_preflight(make_client: MakeClient) -> None:

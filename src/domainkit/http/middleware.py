@@ -40,7 +40,7 @@ from domainkit.http.errors import (
     error_response,
     refusal_reason,
 )
-from domainkit.log import ACCESS_LOGGER, SECURITY_LOGGER, AccessSampler
+from domainkit.log import ACCESS_LOGGER, SECURITY_LOGGER, AccessSampler, ThrottledLog
 from domainkit.reporting import report_error
 
 REQUEST_ID_HEADER: Final = "X-Request-ID"
@@ -215,6 +215,37 @@ def request_headers(scope: Scope) -> RawHeaders:
     if type(headers) is not list:
         headers = scope["headers"] = list(headers)
     return headers
+
+
+def refused_caller(scope: Scope) -> str:
+    """Whom a refused request is from, for ``ThrottledLog``: its address's key.
+
+    It is the key rate limits count an address by (``address_key``): an
+    IPv6 client's network, so a client that changes its address within
+    its network is still one caller.
+    """
+    from domainkit.http.ratelimit import address_key  # It imports this module.
+
+    return address_key(scope)
+
+
+def request_path(scope: Scope) -> str:
+    """The request's path within the application: without its ``root_path``.
+
+    Every list of paths in settings (``RATE_LIMIT_EXEMPT_PATHS``,
+    ``CONCURRENCY_EXEMPT_PATHS``, ``AUTHENTICATION_EXEMPT_PATHS``,
+    ``ACCESS_LOG_QUIET_PATHS``) is compared with it, so they hold the same
+    under ``--root-path /api`` as without. A root path the path does not
+    start with, at a ``/``, is left on.
+    """
+    path: str = scope["path"]
+    # No method call while there is no root path: every request asks.
+    if "root_path" not in scope or not scope["root_path"]:
+        return path
+    root: str = scope["root_path"].rstrip("/")
+    if root and path.startswith(root) and path[len(root) : len(root) + 1] in {"", "/"}:
+        return path[len(root) :]
+    return path
 
 
 def _header(scope: Scope, name: bytes) -> str | None:
@@ -432,7 +463,13 @@ class RequestContextMiddleware:
                 )
                 await response(scope, receive, send_with_id)
             finally:
-                self._log_access(context, response_status, started)
+                self._log_access(
+                    context,
+                    response_status,
+                    started,
+                    quiet=response_status == status.HTTP_200_OK
+                    and request_path(scope) in self.quiet_paths,
+                )
 
     async def _refuse(
         self, refusal: APIError, scope: Scope, receive: Receive, send: Send
@@ -453,14 +490,19 @@ class RequestContextMiddleware:
         await response(scope, receive, send)
 
     def _log_access(
-        self, context: RequestContext, response_status: int | None, started: float
+        self,
+        context: RequestContext,
+        response_status: int | None,
+        started: float,
+        *,
+        quiet: bool = False,
     ) -> None:
         """Log method, path (never the query string), status, and duration.
 
         Nothing is built for a line the logger's level would drop, or that
         ``ACCESS_LOG_SAMPLE_RATE`` leaves out of the sample.
         """
-        if context.path in self.quiet_paths and response_status == status.HTTP_200_OK:
+        if quiet and response_status == status.HTTP_200_OK:
             level = logging.DEBUG
         elif response_status is None or response_status >= 500:
             level = logging.ERROR
@@ -534,6 +576,7 @@ class AllowedHostsMiddleware:
         """Wrap ``app`` with the configured host patterns."""
         self.app = app
         self.allowed_hosts = tuple(settings.ALLOWED_HOSTS)
+        self.log = ThrottledLog(security_logger)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Pass trusted hosts through; answer 400 and log everything else."""
@@ -544,7 +587,12 @@ class AllowedHostsMiddleware:
         if host_allowed(host, self.allowed_hosts):
             await self.app(scope, receive, send)
             return
-        security_logger.warning("Rejected untrusted Host header %r", host[:255])
+        self.log.warning(
+            "invalid_host",
+            refused_caller(scope),
+            "Rejected untrusted Host header %r",
+            host[:255],
+        )
         if scope["type"] == "websocket":
             await send({"type": "websocket.close", "code": 1008})
             return
@@ -626,6 +674,7 @@ class RequestBodyLimitMiddleware:
         self.app = app
         self.max_body_size = settings.MAX_REQUEST_BODY_SIZE
         self.body_timeout = settings.REQUEST_BODY_TIMEOUT
+        self.log = ThrottledLog(security_logger)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Check ``Content-Length`` first, then count streamed bytes."""
@@ -644,7 +693,7 @@ class RequestBodyLimitMiddleware:
                 )(scope, receive, send)
                 return
             if int(declared) > self.max_body_size:
-                self._reject(int(declared))
+                self._reject(scope, int(declared))
                 await error_response(
                     413, "Request body too large.", code="content_too_large"
                 )(scope, receive, send)
@@ -663,7 +712,7 @@ class RequestBodyLimitMiddleware:
                 async with asyncio.timeout(self.body_timeout - waited):
                     return await receive()
             except TimeoutError:
-                self._too_slow()
+                self._too_slow(scope)
                 raise RequestBodyTimeout from None
             finally:
                 waited += clock.monotonic() - began
@@ -677,7 +726,7 @@ class RequestBodyLimitMiddleware:
             body_read = not message.get("more_body", False)
             received += len(message.get("body", b""))
             if received > self.max_body_size:
-                self._reject(received)
+                self._reject(scope, received)
                 raise RequestBodyTooLarge
             return message
 
@@ -711,7 +760,7 @@ class RequestBodyLimitMiddleware:
                     message.get("text") or ""
                 )
                 if size > self.max_body_size:
-                    self._reject(size)
+                    self._reject(scope, size)
                     closed = True
                     await send({"type": "websocket.close", "code": MESSAGE_TOO_BIG})
                     return {"type": "websocket.disconnect", "code": MESSAGE_TOO_BIG}
@@ -723,14 +772,21 @@ class RequestBodyLimitMiddleware:
 
         await self.app(scope, limited_receive, open_send)
 
-    def _reject(self, size: int) -> None:
-        """Log an oversized request as a security event."""
-        security_logger.warning(
-            "Rejected request body of %d bytes (limit %d)", size, self.max_body_size
+    def _reject(self, scope: Scope, size: int) -> None:
+        """Log an oversized request as a security event, throttled."""
+        self.log.warning(
+            "body_too_large",
+            refused_caller(scope),
+            "Rejected request body of %d bytes (limit %d)",
+            size,
+            self.max_body_size,
         )
 
-    def _too_slow(self) -> None:
-        """Log a body that took too long as a security event."""
-        security_logger.warning(
-            "Rejected request body that took over %gs to arrive", self.body_timeout
+    def _too_slow(self, scope: Scope) -> None:
+        """Log a body that took too long as a security event, throttled."""
+        self.log.warning(
+            "body_too_slow",
+            refused_caller(scope),
+            "Rejected request body that took over %gs to arrive",
+            self.body_timeout,
         )

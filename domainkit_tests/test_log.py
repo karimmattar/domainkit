@@ -23,6 +23,7 @@ from hypothesis import strategies as st
 from starlette.types import Message, Receive, Scope, Send
 
 from domainkit import log
+from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.context import RequestContext, bind_request, current_request
 from domainkit.ddd.exceptions import NotFound
@@ -38,6 +39,7 @@ from domainkit.log import (
     ContextFilter,
     JsonFormatter,
     TextFormatter,
+    ThrottledLog,
     build_logging_config,
     configure_logging,
     flush_logs,
@@ -1645,3 +1647,77 @@ def test_stopping_waits_for_room_no_longer_than_it_may(
     assert not stopped
     assert records.waits == [5.0]
     assert not worker.is_alive()
+
+
+def throttled_lines(caplog: pytest.LogCaptureFixture, name: str) -> list[str]:
+    """The lines ``name`` wrote, in order."""
+    return [record.getMessage() for record in caplog.records if record.name == name]
+
+
+def test_a_throttled_log_writes_the_first_line_and_counts_the_rest(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Repeats of an event from a key are held back, then counted on the next line.
+
+    Other keys and other events are written at once.
+    """
+    throttled = ThrottledLog(logging.getLogger("test.throttled"), interval=10.0)
+    with freeze_time("2026-01-01") as clock:
+        for _ in range(3):
+            throttled.warning("host", "ip:203.0.113.9", "Rejected %r", "evil")
+        throttled.warning("host", "ip:198.51.100.7", "Rejected %r", "evil")
+        throttled.warning("body", "ip:203.0.113.9", "Too large")
+        clock.tick(9.9)
+        throttled.warning("host", "ip:203.0.113.9", "Rejected %r", "evil")
+        clock.tick(0.1)
+        throttled.warning("host", "ip:203.0.113.9", "Rejected %r", "worse")
+        throttled.warning("host", "ip:203.0.113.9", "Rejected %r", "worse")
+        clock.tick(10)
+        throttled.warning("host", "ip:203.0.113.9", "Rejected %r", "%s")
+        throttled.warning("body", "ip:203.0.113.9", "Too %s", "large")
+
+    assert throttled_lines(caplog, "test.throttled") == [
+        "Rejected 'evil'",
+        "Rejected 'evil'",
+        "Too large",
+        "Rejected 'worse' (and 3 more like it since the last line)",
+        "Rejected '%s' (and 1 more like it since the last line)",
+        "Too large",
+    ]
+
+
+def test_a_throttled_log_forgets_the_oldest_keys_but_not_their_counts(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Past ``keys``, the oldest is let go: with a line for what it held back."""
+    throttled = ThrottledLog(logging.getLogger("test.throttled"), keys=2)
+    with freeze_time("2026-01-01"):
+        throttled.warning("host", "a", "From a")
+        throttled.warning("host", "a", "From a")
+        throttled.warning("host", "b", "From b")
+        throttled.warning("host", "c", "From c")  # Lets a go, which held one.
+        throttled.warning("host", "d", "From d")  # Lets b go, which held none.
+        throttled.warning("host", "a", "From a")  # New again: written.
+
+    assert throttled_lines(caplog, "test.throttled") == [
+        "From a",
+        "From b",
+        "From c",
+        "1 more host line(s) for a were held back",
+        "From d",
+        "From a",
+    ]
+    assert list(throttled._seen) == [("host", "d"), ("host", "a")]
+
+
+def test_a_throttled_log_does_nothing_where_warnings_are_off(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Nothing is counted or kept for a logger that would drop the line."""
+    logger = logging.getLogger("test.throttled.quiet")
+    throttled = ThrottledLog(logger)
+    with caplog.at_level(logging.ERROR, "test.throttled.quiet"):
+        throttled.warning("host", "a", "From a")
+
+    assert throttled._seen == {}
+    assert throttled_lines(caplog, "test.throttled.quiet") == []

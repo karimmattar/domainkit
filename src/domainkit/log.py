@@ -31,12 +31,14 @@ import random
 import threading
 import time
 import weakref
-from collections import Counter
+from collections import Counter, OrderedDict
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from json.encoder import encode_basestring
 from typing import Any, Final
 
+from domainkit import clock
 from domainkit.context import current_request
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.tracing import current_ids
@@ -141,6 +143,88 @@ class AccessSampler:
         if status is None or status >= ALWAYS_LOGGED_FROM or seconds >= self.slow:
             return True
         return self._draw() < self.rate
+
+
+THROTTLE_INTERVAL: Final = 10.0
+"""Seconds ``ThrottledLog`` holds back repeats of one event from one key."""
+THROTTLE_KEYS: Final = 1024
+"""Events and keys a ``ThrottledLog`` remembers; the oldest go first."""
+
+
+@dataclass(slots=True)
+class _Throttled:
+    """One event from one key: when its repeats may be written again."""
+
+    until: float
+    held: int = 0
+    """Repeats held back since its last line."""
+
+
+class ThrottledLog:
+    """Warnings written once per event and key each ``interval``, with a count.
+
+    A flood of refused requests (bad ``Host`` headers, oversized bodies,
+    bad credentials) would otherwise write a line each, fill the logging
+    queue, and crowd out lines that matter. The first line of an event
+    from a key (a caller's address, or its user) is always written; its
+    repeats within ``interval`` seconds are counted, and the next line
+    written for them says how many were held back. When more than
+    ``keys`` are remembered the oldest is let go, with a line for its
+    held-back repeats if it has any. Keys come from callers, so they are
+    bounded: an address, never a header's text. Event loops on several
+    threads share one (free-threaded Python), so its state changes only
+    under its lock.
+    """
+
+    def __init__(
+        self,
+        logger: logging.Logger,
+        *,
+        interval: float = THROTTLE_INTERVAL,
+        keys: int = THROTTLE_KEYS,
+    ) -> None:
+        """Write to ``logger``; hold repeats back for ``interval`` seconds."""
+        self.logger = logger
+        self.interval = interval
+        self.keys = keys
+        self._seen: OrderedDict[tuple[str, str], _Throttled] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def warning(self, event: str, key: str, message: str, *args: object) -> None:
+        """Warn ``message % args`` unless ``event`` from ``key`` was just written.
+
+        ``event`` names the kind of line (``invalid_host``), ``key`` whom
+        it is about. Nothing is formatted for a line that is held back.
+        """
+        if not self.logger.isEnabledFor(logging.WARNING):
+            return
+        evicted: tuple[tuple[str, str], int] | None = None
+        with self._lock:
+            now = clock.monotonic()
+            seen = self._seen.get((event, key))
+            if seen is not None and now < seen.until:
+                seen.held += 1
+                return
+            held = 0 if seen is None else seen.held
+            self._seen[(event, key)] = _Throttled(now + self.interval)
+            self._seen.move_to_end((event, key))
+            if len(self._seen) > self.keys:
+                oldest, gone = self._seen.popitem(last=False)
+                if gone.held:
+                    evicted = oldest, gone.held
+        if held:
+            self.logger.warning(
+                "%s (and %d more like it since the last line)",
+                message % args if args else message,
+                held,
+            )
+        else:
+            self.logger.warning(message, *args)
+        if evicted is not None:
+            (gone_event, gone_key), count = evicted
+            self.logger.warning(
+                "%d more %s line(s) for %s were held back", count, gone_event, gone_key
+            )
 
 
 class JsonFormatter(logging.Formatter):

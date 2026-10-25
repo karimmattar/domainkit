@@ -50,6 +50,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from domainkit import clock
 from domainkit.conf import settings
 from domainkit.http.errors import APIError, error_response
+from domainkit.http.middleware import request_path
 
 try:
     from domainkit.http.metrics import observe_admitted, observe_queued, observe_shed
@@ -177,7 +178,11 @@ class ConcurrencyLimitMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Serve the request in a slot, or refuse it when none frees in time."""
-        if self.limit is None or scope["type"] != "http" or _path(scope) in self.exempt:
+        if (
+            self.limit is None
+            or scope["type"] != "http"
+            or request_path(scope) in self.exempt
+        ):
             await self.app(scope, receive, send)
             return
         slots = self.slots(self.limit)
@@ -312,15 +317,6 @@ class _Hold:
             raise Overloaded
         self.held = True
         observe_admitted(1)
-
-
-def _path(scope: Scope) -> str:
-    """The request's path, without the root path the application is mounted at."""
-    path: str = scope["path"]
-    root = scope.get("root_path", "").rstrip("/")
-    if root and path.startswith(root):
-        return path[len(root) :]
-    return path
 
 
 class ShedReport:
