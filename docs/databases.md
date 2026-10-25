@@ -509,6 +509,21 @@ Column("total", ExactDecimal(14, 2), nullable=False)  # up to 999,999,999,999.99
 An aggregate's table also needs its [`version`](#versions) column, or
 concurrent changes to an amount overwrite each other.
 
+**As text.** Wherever domainkit writes an amount as text, it writes it in
+fixed point (`domainkit.utils.decimals.decimal_text`): `Decimal("1E+3")`
+is `"1000"`, `Decimal("0E-8")` is `"0.00000000"`, and `Decimal("-0.00")`
+is `"0.00"`, with the value's own places and no sign on zero. That holds
+in responses of `schema_for` schemas, CSV and NDJSON exports, outbox
+events and task arguments, webhook payloads, audit details, evidence
+facts, cursors, `dumpdata`, dynamic settings, privacy exports, and the
+admin API's user fields, so the same amount has one text in every record.
+The audit trail's pseudonyms of personal values hash that text too, so
+equal amounts have one pseudonym. JSON strings stay strings. A value with more than 100 digits before or
+after the point is no amount, and is written as `str()` does
+(`1E+999999999`), so its text stays short. Your own response models can
+write amounts the same way:
+`Annotated[Decimal, PlainSerializer(decimal_text, return_type=str, when_used="json")]`.
+
 SQLite has no decimal type. It keeps `NUMERIC` values as floats, which
 hold 15 to 17 significant digits, so `12345678901234567.89` comes back as
 `12345678901234568.00`, silently. Since SQLite is the default development

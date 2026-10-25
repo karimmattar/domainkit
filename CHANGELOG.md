@@ -42,6 +42,22 @@ All notable changes to domainkit. The format follows
   `domainkit.clock`, as the rest of the framework does: under
   `freeze_time`, a receiver's test checks a delivery's timestamp against
   the frozen clock instead of the wall clock (FIN-83).
+- An amount has one text wherever domainkit writes it: fixed point, at the
+  value's own places, with no sign on zero
+  (`domainkit.utils.decimals.decimal_text`). `Decimal("1E+3")` was
+  `"1E+3"` in API responses of `schema_for` schemas, CSV and NDJSON
+  exports, outbox events and task arguments,
+  webhook payloads, audit details, privacy exports, `dumpdata`, dynamic
+  settings, and the admin API's user fields, but `"1000"` in evidence; it
+  is `"1000"` everywhere, `Decimal("0E-8")` is `"0.00000000"`, and
+  `Decimal("-0.00")` is `"0.00"`, in evidence and cursors too. Personal
+  amounts in the audit trail are pseudonymized from that text, so
+  `pseudonym_of` finds `Decimal("1E+3")` as it finds `Decimal("1000")`; a
+  pseudonym stored earlier of an amount written with an exponent is found
+  with that text (`"1E+3"`). JSON strings stay strings, Python-mode dumps still give `Decimal`, and a value past
+  100 digits on either side of the point is written as `str()` does, so
+  its text stays short (`docs/databases.md`, "Exact amounts"; ADR 0066)
+  (FIN-82).
 
 ## [0.9.0] - 2026-10-22
 

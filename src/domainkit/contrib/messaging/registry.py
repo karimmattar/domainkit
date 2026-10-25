@@ -14,12 +14,12 @@ from functools import cache
 from typing import Any, Final, overload
 
 from pydantic import TypeAdapter, validate_call
-from pydantic_core import to_jsonable_python
 
 from domainkit.apps import registry
 from domainkit.conf.global_settings import NAME_PATTERN
 from domainkit.ddd import DomainEvent, EventBus
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.utils.decimals import jsonable, with_decimal_text
 from domainkit.utils.rates import parse_rate
 
 from .cron import Cron, CronError
@@ -318,8 +318,10 @@ def _adapter(event_type: type[DomainEvent]) -> TypeAdapter[Any]:
 
 
 def dump_event(event: DomainEvent) -> dict[str, Any]:
-    """Serialize ``event`` to JSON-compatible values."""
-    payload: dict[str, Any] = _adapter(type(event)).dump_python(event, mode="json")
+    """Serialize ``event`` to JSON-compatible values, amounts in fixed point."""
+    payload: dict[str, Any] = with_decimal_text(
+        event, _adapter(type(event)).dump_python(event, mode="json")
+    )
     return payload
 
 
@@ -330,8 +332,8 @@ def load_event[E: DomainEvent](event_type: type[E], payload: Mapping[str, Any]) 
 
 
 def dump_arguments(arguments: Mapping[str, object]) -> dict[str, Any]:
-    """Serialize task arguments to JSON-compatible values."""
-    payload: dict[str, Any] = to_jsonable_python(dict(arguments))
+    """Serialize task arguments to JSON-compatible values, amounts in fixed point."""
+    payload: dict[str, Any] = jsonable(dict(arguments))
     return payload
 
 

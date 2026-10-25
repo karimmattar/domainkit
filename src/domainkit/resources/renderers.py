@@ -18,11 +18,13 @@ import io
 import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
+from decimal import Decimal
 from typing import Any, Final
 
 from fastapi import status
 
 from domainkit.http.errors import APIError
+from domainkit.utils.decimals import decimal_text
 
 JSON: Final = "application/json"
 CSV: Final = "text/csv"
@@ -137,6 +139,8 @@ def cell(value: object) -> str:
         return "true" if value else "false"
     if isinstance(value, Mapping | list):
         return guarded(json.dumps(value, ensure_ascii=False))
+    if isinstance(value, Decimal):
+        return guarded(decimal_text(value))
     return guarded(str(value))
 
 

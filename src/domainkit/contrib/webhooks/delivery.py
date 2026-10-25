@@ -21,7 +21,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
-from pydantic_core import to_jsonable_python
 from sqlalchemy import Executable, Row, delete, insert, select, update
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
@@ -44,6 +43,7 @@ from domainkit.ddd import DomainEvent, EventBus, event_bus
 from domainkit.encryption import DecryptionFailed
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.reporting import report_error
+from domainkit.utils.decimals import jsonable
 
 from . import client
 from .models import ALL_EVENTS, EVENT_TYPE, previous_signs, secret_box
@@ -145,7 +145,7 @@ def body_of(event_type: str, data: Mapping[str, Any], occurred_at: datetime) -> 
     stamp = occurred_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
     document = {"type": event_type, "timestamp": stamp, "data": data}
     return json.dumps(
-        to_jsonable_python(document), separators=(",", ":"), ensure_ascii=False
+        jsonable(document), separators=(",", ":"), ensure_ascii=False
     ).encode()
 
 

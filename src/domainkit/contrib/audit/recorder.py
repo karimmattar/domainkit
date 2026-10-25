@@ -18,7 +18,6 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic_core import to_jsonable_python
 from sqlalchemy import insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
@@ -28,6 +27,7 @@ from domainkit.context import SYSTEM_ACTOR, current_request
 from domainkit.db import connections
 from domainkit.ddd import DomainEvent
 from domainkit.ddd.personal import personal_fields
+from domainkit.utils.decimals import jsonable
 from domainkit.utils.text import snake_case
 
 from .personal import anonymous_subject, pseudonym, subject_keys
@@ -128,7 +128,7 @@ def audit_row(
         "request_id": request.request_id if request else None,
         "client_ip": None,
         "event_id": event_id,
-        "details": to_jsonable_python(dict(details or {})),
+        "details": jsonable(dict(details or {})),
     }
     personal = dict(personal or {})
     if taken := sorted(personal.keys() & row["details"].keys()):
@@ -156,7 +156,7 @@ def event_rows(events: Sequence[DomainEvent], config: AuditSettings) -> list[Dra
         action = action_for(type(event))
         if any(fnmatch.fnmatchcase(action, pattern) for pattern in config.EXCLUDE):
             continue
-        details = to_jsonable_python(event)
+        details = jsonable(event)
         details.pop("event_id", None)
         details.pop("occurred_at", None)
         personal = {

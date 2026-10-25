@@ -34,7 +34,6 @@ from pydantic import (
     TypeAdapter,
     ValidationError,
 )
-from pydantic_core import to_jsonable_python
 
 from domainkit.ddd import PermissionDenied
 from domainkit.ddd.query import F
@@ -43,6 +42,7 @@ from domainkit.http import Pagination, error_responses
 from domainkit.resources import HasModelPermission as HasModelPermission
 from domainkit.resources import ModelActions, ResourceRouter
 from domainkit.resources.access import ModelLike
+from domainkit.utils.decimals import jsonable
 
 from .access import IsAdminUser, IsSuperuser, IsUnscoped, Require
 from .backends import ModelBackend, get_all_permissions, get_backends
@@ -128,9 +128,7 @@ class AdminUserOut(BaseModel):
             last_login=user.last_login,
             groups=sorted(group.name for group in user.groups),
             permissions=sorted(permission.key for permission in user.user_permissions),
-            fields={
-                name: to_jsonable_python(getattr(user, name)) for name in sorted(shown)
-            },
+            fields={name: jsonable(getattr(user, name)) for name in sorted(shown)},
         )
 
 

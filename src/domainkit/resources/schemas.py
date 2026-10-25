@@ -42,7 +42,14 @@ from typing import (
     get_type_hints,
 )
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, create_model
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    create_model,
+)
 
 from domainkit.contrib.auth.models import PasswordHash
 from domainkit.ddd.fields import (
@@ -58,11 +65,16 @@ from domainkit.ddd.fields import (
 from domainkit.ddd.messages import UNSET, Unset
 from domainkit.ddd.model import ValueObject
 from domainkit.ddd.repository import DELETED_AT
+from domainkit.utils.decimals import decimal_text
 
 GENERATED: Final = frozenset({"id", "version", DELETED_AT})
 """Fields a write schema leaves out: the domain and the database set them."""
 INT64: Final = 2**63
 REFERENCE_DESCRIPTION: Final = "The id of another aggregate."
+FIXED_POINT: Final = PlainSerializer(
+    decimal_text, return_type=str, when_used="json-unless-none"
+)
+"""Amounts are written as fixed-point text (``"1000"``, never ``"1E+3"``)."""
 
 type Present = Callable[[object], object]
 """Turns a field's value into what a schema holds."""
@@ -252,10 +264,13 @@ def _scalar(field: FieldInfo, kind: type, hint: object, *, write: bool) -> Any: 
     """Text, amounts, integers, and times with their limits; other types as hinted."""
     if kind is str and (limit := field.marker(MaxLength)) is not None:
         return Annotated[str, Field(max_length=limit.length)]
-    if kind is Decimal and (digits := field.marker(Digits)) is not None:
+    if kind is Decimal:
+        if (digits := field.marker(Digits)) is None:
+            return Annotated[Decimal, FIXED_POINT]
         return Annotated[
             Decimal,
             Field(max_digits=digits.precision, decimal_places=digits.scale),
+            FIXED_POINT,
         ]
     if write and kind is int:
         return Annotated[int, Field(ge=-INT64, lt=INT64)]
