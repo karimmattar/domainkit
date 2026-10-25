@@ -1,8 +1,9 @@
 # Every push and pull request: lint, tests, build, a bill of materials, and
 # audits. release.yml runs it on each release tag and publishes what its
-# build job built. Weekly (and on demand): a full mutation testing run.
-# Actions are pinned to commit SHAs and images to digests; Renovate updates
-# both.
+# build job built. Pull requests, and weekly: the tests against the newest
+# releases the ranges in pyproject.toml allow. Weekly (and on demand): a full
+# mutation testing run. Actions are pinned to commit SHAs and images to
+# digests; Renovate updates both.
 name: CI
 
 on:
@@ -479,6 +480,49 @@ jobs:
       - run: >-
           semgrep scan --config p/python --config p/owasp-top-ten
           --metrics off --error --timeout 30 src .github
+
+  # The newest releases the ranges in pyproject.toml allow, not the lock:
+  # what "pip install domainkit[...]" resolves today. The other jobs test
+  # the locked set; this one tests the top of every range, on pull requests
+  # and weekly, as releases land upstream. It gates no release: a release
+  # upstream must not hold back a fix here.
+  newest:
+    if: >-
+      github.event_name == 'pull_request' || github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: pipx install "poetry==${POETRY_VERSION}"
+      - run: poetry build --format wheel
+      # Every extra and the dev group, each at the newest release its range
+      # allows; the versions go to the job summary.
+      - name: Install the wheel with the newest releases its ranges allow
+        shell: bash
+        run: |
+          extras="$(python -c 'import tomllib; print(",".join(tomllib.load(open("pyproject.toml", "rb"))["project"]["optional-dependencies"]))')"
+          python -m venv .newest
+          .newest/bin/python -m pip install "$(ls dist/*.whl)[$extras]" --group dev
+          .newest/bin/python -m pip check
+          {
+            echo "### Newest releases the ranges allow"
+            echo '```'
+            .newest/bin/python -m pip freeze --exclude domainkit
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - run: .newest/bin/python -m pytest --junitxml=junit.xml
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-results-newest
+          path: junit.xml
+          retention-days: 14
 
   # The whole package's mutants take longer than one job may run, so they run
   # in shards, balanced by the time their mutants' tests take: about 200
