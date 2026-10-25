@@ -314,9 +314,10 @@ All notable changes to domainkit. The format follows
   digests no longer reach a log that formats them. The tokens, codes,
   passwords, secrets, and hashes that logging in, refreshing, second
   factors, links, signup, personal tokens, CSRF, and the admin API take or
-  return (`IssuedTokens`, `TokenOut`, `LoginIn`, `EnrolmentOut`,
-  `NewToken`, `PasswordCheck`, and the others) are left out of their
-  `repr` too (AUTH-13).
+  return (`IssuedTokens`, `TokenOut`, `MfaChallengeOut`, `LoginIn`,
+  `EnrolmentOut`, `NewToken`, `PasswordCheck`, and the others) are left
+  out of their `repr` too, and so is the password of an immudb ledger's
+  parsed address (AUTH-13, SEC-r1-6).
 - Mail, text messages, and push notifications no longer stay in the outbox
   once they are sent. The worker blanks a message's arguments (`payload`)
   in the statement that marks it done, and `messages --cancel` when it
