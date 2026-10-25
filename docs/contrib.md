@@ -146,6 +146,7 @@ inspects any outbox.
 | `TASK_TIMEOUT` | `240.0` | Seconds a message may run; longer counts as a failure (at most a day). |
 | `VISIBILITY_TIMEOUT` | `300.0` | Seconds a claim lasts; must exceed `TASK_TIMEOUT` (at most two days). |
 | `POLL_INTERVAL` | `1.0` | Seconds an idle worker waits before looking again (at most an hour). |
+| `POLL_INTERVAL_IDLE` | `None` | While commits wake the worker (`NOTIFY`, on PostgreSQL): the longest it waits between polls, from `POLL_INTERVAL` to an hour. Each poll that finds nothing doubles the wait up to this; work or a commit starts again from `POLL_INTERVAL`. A message no commit announces (a retry, a delay, an expired lock) can wait this long. `None`: every wait is `POLL_INTERVAL`. |
 | `BATCH_SIZE` | `50` | Most messages claimed at once (1 to 10,000). |
 | `CONCURRENCY` | `10` | Messages one worker process runs at the same time, from all its outboxes and queues together (1 to 65,535, RabbitMQ's largest prefetch). |
 | `SHUTDOWN_TIMEOUT` | `20.0` | Seconds a stopping worker lets running messages finish; the rest are stopped and run again (at most an hour). |
@@ -171,6 +172,20 @@ leave it waiting, and a commit wakes idle workers at once
 messages are deleted in small batches, by a task of each worker's own, so
 cleanup never holds up claiming. [runtime.md](runtime.md), "Workers and
 the outbox", has the details.
+
+**Idle workers.** An idle worker still polls every `POLL_INTERVAL`, even
+while commits wake it: each poll is a claim that finds nothing, a round
+trip a second per worker on the primary. `POLL_INTERVAL_IDLE` lets it
+back off while it listens: each empty poll doubles the wait, up to that
+value, and work or a commit starts again from `POLL_INTERVAL`. With `30`,
+an idle worker made 7 claims in its first idle minute instead of 61, and
+then one every 30 seconds. Commits still start their messages at once;
+what no commit announces (a retry coming due, a delayed task, the lock
+of a crashed worker running out, a notification that never arrived)
+waits up to `POLL_INTERVAL_IDLE` instead of `POLL_INTERVAL`, so set it
+no higher than the delay such messages can take. Workers that cannot
+listen (SQLite, PgBouncer, `NOTIFY = False`, a listening connection that
+dropped) poll every `POLL_INTERVAL`, as before.
 
 **Watching PostgreSQL's notification queue.** PostgreSQL keeps sent
 notifications in one queue per server (8 GB by default) until every
@@ -324,6 +339,34 @@ project that installs messaging.
 **Upgrading to 0.7.** The outbox gained `priority` and `started_at`
 columns, an index, and a `cancelled` status. Run `makemigrations` and
 `migrate` before deploying the new code.
+
+**Upgrading to 0.9.2.** The outbox gained an index for its cleanup,
+`ix_domainkit_messages_finished`: `finished_at`, of done and cancelled
+messages only. Without it, each cleanup read the whole outbox (460 ms
+and 28,000 pages at 2 million rows, against 1.7 ms with it). Run
+`makemigrations` and `migrate` in each project that installs messaging.
+The revision builds the index in the migration's transaction, which
+blocks writes to the outbox while it runs: about half a second per
+million rows on a small server. For an outbox too large for that, edit
+the revision to build it without blocking writes (PostgreSQL only):
+
+```python
+def upgrade() -> None:
+    """Build the outbox's cleanup index without blocking writes."""
+    with op.get_context().autocommit_block():
+        op.create_index(
+            "ix_domainkit_messages_finished",
+            "domainkit_messages",
+            ["finished_at"],
+            unique=False,
+            postgresql_where=sa.text("status IN ('done', 'cancelled')"),
+            postgresql_concurrently=True,
+        )
+```
+
+If a concurrent build fails, it leaves an invalid index behind: drop it
+(`DROP INDEX CONCURRENTLY ix_domainkit_messages_finished`) and migrate
+again.
 
 ### Task options
 
@@ -881,6 +924,14 @@ person (`auditforget`) deletes a key, not a row, so the chain stays intact.
 **Upgrading.** The seals table has a new `late` column: run
 `makemigrations` and `migrate` in each project that installs audit.
 
+**Two sealers at once.** One sealer seals a database at a time: on
+PostgreSQL each batch takes a transaction-scoped advisory lock. A sealer
+that finds it taken (`auditseal` run by hand while the worker seals, or
+two outboxes' workers sealing one database) stops at once, logs that
+another sealer is at work, and leaves it the rest; what it sealed before
+stays sealed. Until 0.9.2 it waited for the lock, and failed after
+`LOCK_TIMEOUT`.
+
 ### In staging and production
 
 The trail is tamper-evident only with four things in place, and each is
@@ -1137,11 +1188,14 @@ actor, keys are scoped to the client address and a hash of the request's
 `X-API-Key`): list the header your project authenticates with if it is
 another. Add `IdempotencyMiddleware` last in `MIDDLEWARE`: it reads whole
 bodies, which `RequestBodyLimitMiddleware` has already bounded. With
-messaging installed, expired keys are purged hourly; without it, each new
+messaging installed, expired keys are purged hourly; without it, a new
 key deletes up to 100 expired ones once it has claimed its own, skipping
 those another request is deleting (`SKIP LOCKED` on PostgreSQL), so
 concurrent requests never queue behind one another's purge, nor deadlock
-through PgBouncer.
+through PgBouncer. A process does this once a minute, and again on the
+next key while each sweep deletes a full 100, so a backlog drains as
+fast as before; until 0.9.2 every keyed request did it, one more
+statement each.
 
 **What a key costs.** A request claims its key with one statement, an
 upsert that inserts the in-progress row or replaces an expired one, and

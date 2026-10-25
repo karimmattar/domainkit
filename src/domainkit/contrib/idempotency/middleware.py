@@ -46,6 +46,7 @@ import asyncio
 import hashlib
 import logging
 import secrets
+import threading
 from collections.abc import Callable
 from datetime import timedelta
 from typing import Any, Final
@@ -56,6 +57,7 @@ from sqlalchemy.dialects import postgresql, sqlite
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from domainkit import clock
 from domainkit.apps import registry
 from domainkit.context import current_request
 from domainkit.db import connections, dbclock
@@ -74,10 +76,18 @@ logger = logging.getLogger(__name__)
 
 MESSAGING: Final = "domainkit.contrib.messaging"
 PURGE_BATCH: Final = 100
-"""Expired keys deleted with each claim when no worker purges them hourly.
+"""Expired keys one sweep deletes when no worker purges them hourly.
 
 Rows another claim is deleting are skipped (``SKIP LOCKED`` on PostgreSQL),
 so concurrent claims never queue behind one another's purge.
+"""
+SWEEP_EVERY: Final = 60.0
+"""Seconds between sweeps of expired keys by one middleware, once they are few.
+
+Without the hourly purge, a claim sweeps when this long has passed since
+the last sweep, or when the last one deleted a whole ``PURGE_BATCH`` (more
+may be waiting): a backlog drains as fast as when every claim swept, and
+then costs a statement a minute instead of one per keyed request (PERF-10).
 """
 SETTLE_TIMEOUT: Final = 5.0
 """Seconds to store a response or release a key, whatever befalls the request."""
@@ -103,12 +113,41 @@ def _hash(*parts: str | bytes) -> str:
     return digest.hexdigest()
 
 
+class Sweeps:
+    """When a claim sweeps expired keys, for one middleware (``SWEEP_EVERY``).
+
+    Shared by every loop and thread that serves the middleware's
+    application, so it takes a lock; time is ``domainkit.clock``'s.
+    """
+
+    def __init__(self) -> None:
+        """Let the first claim sweep."""
+        self._lock = threading.Lock()
+        self._next = float("-inf")
+
+    def due(self) -> bool:
+        """Whether this claim sweeps; if so, the next ones wait ``SWEEP_EVERY``."""
+        with self._lock:
+            now = clock.monotonic()
+            if now < self._next:
+                return False
+            self._next = now + SWEEP_EVERY
+            return True
+
+    def swept(self, deleted: int) -> None:
+        """Let the next claim sweep at once if this sweep found a whole batch."""
+        if deleted >= PURGE_BATCH:
+            with self._lock:
+                self._next = float("-inf")
+
+
 class IdempotencyMiddleware:
     """Store and replay responses of requests carrying ``Idempotency-Key``."""
 
     def __init__(self, app: ASGIApp) -> None:
         """Wrap ``app``."""
         self.app = app
+        self.sweeps = Sweeps()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Run the request once per key; replay or refuse repeats."""
@@ -152,9 +191,10 @@ class IdempotencyMiddleware:
         statement commits as it runs (``connections.autocommit``), so a
         claim is visible at once to every retry, and only one of them
         claims the key. Without the hourly purge, a few expired keys are
-        deleted last: through PgBouncer the statements share a transaction,
-        and a sweep run first would hold its locks while the upsert waited
-        for another claim's, which may wait for this one's.
+        deleted last, when a sweep is due (``Sweeps``): through PgBouncer
+        the statements share a transaction, and a sweep run first would
+        hold its locks while the upsert waited for another claim's, which
+        may wait for this one's.
 
         The times written and compared are the database's (``dbclock``),
         and so is whether a held key's lease ran out, read with its row.
@@ -200,8 +240,10 @@ class IdempotencyMiddleware:
                         )
                     )
                 ).first()
-            if not registry.is_installed(MESSAGING):  # No hourly purge: sweep a few.
-                await connection.execute(_sweep(now))
+            if not registry.is_installed(MESSAGING) and self.sweeps.due():
+                # No hourly purge: sweep a few now and then.
+                swept = await connection.execute(_sweep(now))
+                self.sweeps.swept(swept.rowcount)
         if claimed is not None:
             return None
         return dict(row._mapping) if row is not None else {}

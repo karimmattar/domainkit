@@ -37,6 +37,16 @@ All notable changes to domainkit. The format follows
   class. It no longer shares its name with the CQRS message
   `domainkit.ddd.Query`. `docs/queries.md` uses the new name (DSGN-09).
 
+- `MESSAGING.POLL_INTERVAL_IDLE` (`None`, or `POLL_INTERVAL` to an hour):
+  a worker or relay whose listener hears commits (PostgreSQL, `NOTIFY`)
+  doubles its wait after each poll that finds nothing, up to this, and
+  starts again from `POLL_INTERVAL` on work or a commit. With `30`, an
+  idle worker claims once every 30 seconds instead of every second (7
+  claims instead of 61 in its first idle minute). What no commit
+  announces (a retry, a delay, an expired lock, a lost notification)
+  waits up to this long; without a listener every wait is
+  `POLL_INTERVAL`, as it is by default (PERF-08; ADR 0043).
+
 ### Changed
 
 - Shutdown closers come from one table: the framework's own kinds are
@@ -53,6 +63,22 @@ All notable changes to domainkit. The format follows
   the core into one; the 30 that exist are listed for 0.10 (DSGN-04).
 - `domainkit.contrib.evidence.model` is now `models`, as in every other
   app; the old module re-exports the same names (DSGN-09).
+
+- The outbox has a new index for its cleanup, on `finished_at` of done and
+  cancelled messages: run `makemigrations` and `migrate` in projects that
+  install messaging. The revision builds it in the migration's
+  transaction, which blocks writes to the outbox while it runs (about
+  half a second per million rows); `docs/contrib.md` shows the revision
+  that builds it `CONCURRENTLY` instead, for large outboxes. A cleanup
+  that has caught up no longer reads the whole outbox: 1.7 ms instead of
+  460 ms at 2 million rows. The cleanup's statement writes its statuses,
+  retention and batch size into the SQL, so a prepared statement's
+  generic plan uses the index too (PERF-02; ADR 0043).
+- Without messaging, keyed requests sweep expired idempotency keys once a
+  minute per process, and on each request while a sweep finds a whole
+  batch, instead of on every keyed request: one statement less on almost
+  all of them, and a backlog still drains 100 keys a request (PERF-10;
+  ADR 0062).
 
 ### Fixed
 
@@ -77,6 +103,13 @@ All notable changes to domainkit. The format follows
 - `makemigrations` with no changes no longer reformats every Python file
   in the working directory when ruff is installed: ruff, given no paths,
   formatted all of them (INFRA-05).
+
+- A second audit sealer on PostgreSQL (`auditseal` while the worker
+  seals, or two outboxes' workers sealing one database) no longer waits
+  for the first and fails with SQLSTATE 55P03 after `LOCK_TIMEOUT`: each
+  batch tries the advisory lock, and a sealer that finds it taken stops,
+  logs it, and leaves the first the rest. Two sealers still never seal at
+  once (PERF-09; ADR 0047).
 
 ## [0.9.1] - 2026-10-25
 
