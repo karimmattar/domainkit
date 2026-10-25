@@ -554,13 +554,16 @@ saved:
   the same events. It holds its lookups until the system's resolver gives
   up; then its host fails at once for a minute, so retries of its
   deliveries do not take the threads again. A receiver whose DNS answers
-  slowly, or fails in under 5 seconds, takes a thread on each attempt
+  after 5 seconds or more has its answer kept for a minute, so its next
+  attempts take no thread either; one whose DNS fails in under 5 seconds
+  takes a thread on each attempt
   ([runtime.md](runtime.md#outgoing-http-calls)).
 - Subscriptions have no owner yet, so the share is per subscription, not
   per tenant. One subscription holds at most 2 threads (its host's
   bound), but whoever may create many subscriptions can point them at
-  hosts that never answer and hold many threads: all 16 of the default
-  with eight. The admin API lets only staff create subscriptions; a
+  hosts that never answer, or answer slowly, and hold many threads: all
+  16 of the default with eight, for the first round of lookups (later
+  rounds find their hosts backed off or their answers kept). The admin API lets only staff create subscriptions; a
   project that lets its own users create them should bound how many each
   may have, until 0.10 gives subscriptions an owner to share by.
 

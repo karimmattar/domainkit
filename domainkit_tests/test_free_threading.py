@@ -63,6 +63,7 @@ from domainkit.db.connections import (
     create_read_engine,
 )
 from domainkit.ddd import DomainEvent, EventBus
+from domainkit.http import guard as guard_module
 from domainkit.http import live, metrics, ratelimit
 from domainkit.http.client import BREAKER_HOSTS, CircuitBreaker
 from domainkit.http.guard import GuardResolver, lookups_for
@@ -943,6 +944,53 @@ def test_the_guards_owners_are_counted_from_every_thread(
 
     assert sum(found) > 0
     assert (resolver.running, resolver._running, resolver._owners) == (0, {}, {})
+
+
+def test_the_guards_slow_answers_are_kept_and_let_go_from_every_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Answers kept, given, expired, and let go at once: each host gets its own.
+
+    The cache is read and written under the resolver's lock only, and stays
+    within ``SLOW_ANSWERS``.
+    """
+    resolver: GuardResolver
+    ticks = itertools.count()
+    tick = threading.Lock()
+
+    def monotonic() -> float:
+        assert resolver._lock.locked()
+        with tick:
+            return next(ticks) / 10  # A kept answer runs out after 100 reads.
+
+    def getaddrinfo(host: str, port: int, **options: object) -> list[object]:
+        number = int(host.removeprefix("h").removesuffix(".test"))
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (f"192.0.2.{number}", port))
+        ]
+
+    monkeypatch.setattr(clock_module, "monotonic", monotonic)
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    monkeypatch.setattr(guard_module, "SLOW_ANSWERS", 3)
+    resolver = GuardResolver(threads=8, per_host=8, hung_after=0.0, back_off=10.0)
+
+    async def lookups(index: int) -> bool:
+        right = True
+        for attempt in range(60):
+            number = (index + attempt) % 7
+            try:
+                found = await resolver.lookup(f"h{number}.test", 443)
+            except socket.gaierror:
+                continue  # Past a bound: refused at once.
+            right &= found == [ipaddress.ip_address(f"192.0.2.{number}")]
+        return right
+
+    right = on_threads(lambda index: asyncio.run(lookups(index)))
+    asyncio.run(resolver.close())
+
+    assert right == [True] * THREADS
+    assert len(resolver._answered) <= 3
+    assert (resolver.running, resolver._running) == (0, {})
 
 
 def test_a_throttled_log_counts_every_repeat_from_every_thread(

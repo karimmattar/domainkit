@@ -971,14 +971,18 @@ failed fails at once for 5 seconds, or for a minute if the lookup took 5
 seconds or more to fail (the system's resolver timed out: its DNS does not
 answer). A lookup past those bounds fails at once, as a connection error,
 so hosts one owner chose that never answer cost the other owners
-nothing. A lookup that succeeds is never held against its host, however
-slow: the system's resolver tries the next name server after 5 seconds,
-so a slow success is what one name server down looks like, and refusing
-the host for it would refuse a host that resolves. A host whose DNS
-answers slowly, or fails in under 5 seconds, therefore takes a thread
-on each new lookup, at most 2 at once. The share is per owner, not per
-tenant: whoever controls many owners (many webhook subscriptions, many
-users) can still hold many threads. (A lookup cannot be interrupted,
+nothing. A lookup that succeeds after 5 seconds or more is not held
+against its host (the system's resolver tries the next name server after
+5 seconds, so a slow success is what one name server down looks like, and
+the host resolves): its answer is kept for a minute instead, for that
+host and port, and lookups meanwhile get it at once, without a thread.
+Callers check its addresses every time, as they check a fresh answer's.
+At most 1,024 such answers are kept, the least recently used let go
+first; a kept answer can be up to a minute older than the host's DNS
+says. A host whose DNS fails in under 5 seconds takes a thread on each
+new lookup, at most 2 at once. The share is per owner, not per tenant:
+whoever controls many owners (many webhook subscriptions, many users) can
+still hold many threads, for the first round of slow lookups at least. (A lookup cannot be interrupted,
 which an asynchronous resolver will change.) A guarded client takes no `transport=`, which would skip
 its address checks; tests use `stub`.
 

@@ -252,13 +252,17 @@ All notable changes to domainkit. The format follows
   hung hosts failed every other subscriber's delivery with `EAI_AGAIN`. A
   host whose lookup failed after 5 seconds or more fails at once for a
   minute rather than 5 seconds, so retries do not take the threads again.
-  What still holds: a host whose DNS answers slowly, or fails in under 5
-  seconds, takes a thread on each new lookup (at most 2 at once); a
-  success is never held against its host, since a slow one is what one
-  name server down looks like. The share is per subscription, not per
-  tenant, and one subscription holds at most 2 threads (its host's
-  bound): whoever may create eight subscriptions can still hold all 16,
-  until 0.10 gives subscriptions an owner (WEB-04, SEC-r1-1, SEC-r1-4).
+  A lookup that succeeds after 5 seconds or more is not held against its
+  host, since that is what one name server down looks like: its answer
+  is kept for that minute instead (at most 1,024 hosts), so a host whose
+  DNS answers slowly does not take the threads again on every retry
+  either; callers check the kept addresses as they check fresh ones.
+  What still holds: a host whose DNS fails in under 5 seconds takes a
+  thread on each new lookup (at most 2 at once). The share is per
+  subscription, not per tenant, and one subscription holds at most 2
+  threads (its host's bound): whoever may create eight subscriptions can
+  still hold all 16 for a first round of slow lookups, until 0.10 gives
+  subscriptions an owner (WEB-04, SEC-r1-1, SEC-r1-4, SEC-r1-5).
 - Only failed attempts use up the login and second-factor counts. A login,
   a password change, or a code that works is given back to its counts, so
   a service account that logs in often, or an office or carrier behind one
