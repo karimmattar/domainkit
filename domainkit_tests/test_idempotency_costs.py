@@ -178,13 +178,17 @@ class Pausing:
             await self.go.wait()
         return result
 
-    async def execute(self, statement: Executable) -> Any:  # noqa: ANN401
+    async def execute(
+        self, statement: Executable, parameters: dict[str, Any] | None = None
+    ) -> Any:  # noqa: ANN401
         """Run ``statement``; the first one waits afterwards."""
-        return await self._after(await self.connection.execute(statement))
+        return await self._after(await self.connection.execute(statement, parameters))
 
-    async def scalar(self, statement: Executable) -> Any:  # noqa: ANN401
+    async def scalar(
+        self, statement: Executable, parameters: dict[str, Any] | None = None
+    ) -> Any:  # noqa: ANN401
         """Run ``statement`` for one value; the first one waits afterwards."""
-        return await self._after(await self.connection.scalar(statement))
+        return await self._after(await self.connection.scalar(statement, parameters))
 
 
 @postgres_only
