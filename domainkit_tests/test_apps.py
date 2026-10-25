@@ -319,6 +319,16 @@ def test_a_requirement_installed_in_any_order_is_met(
     assert AlphaConfig.calls == ["needy ready", "ready"]
 
 
+def test_requires_may_list_up_to_the_bound(make_package: MakePackage) -> None:
+    """Thirty-two requirements are checked as such, not refused as too many."""
+    requiring(make_package, "needy", "tuple(f'pkg{n}' for n in range(32))")
+    with (
+        override_settings(INSTALLED_DOMAINS=[ALPHA, "needy"]),
+        pytest.raises(ImproperlyConfigured, match="needy needs 'pkg0' in"),
+    ):
+        DomainRegistry().populate([ALPHA, "needy"])
+
+
 @pytest.mark.parametrize(
     ("requires", "message"),
     [

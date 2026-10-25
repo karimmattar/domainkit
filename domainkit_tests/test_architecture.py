@@ -357,3 +357,61 @@ def test_a_table_replaced_the_old_way_still_applies(
     found = found_in(check_domain(layered, ["arch.billing", "arch.shipping"]))
     assert ("domain.model", "sqlalchemy") not in found
     assert ("domain.model", "arch.billing.settings") in found
+
+
+def test_rules_given_to_check_domains_win_over_the_settings(layered: str) -> None:
+    """``check_domains(..., rules=...)`` hands those rules to every domain."""
+    installed = ["arch.billing", "arch.shipping"]
+    rules = LayerRules().extend(domain_allowed=["sqlalchemy"])
+    with override_settings(ARCHITECTURE={"DOMAIN_ALLOWED": ["arch"]}):
+        given = found_in(check_domains(installed, rules))
+        configured = found_in(check_domains(installed))
+    assert ("domain.model", "sqlalchemy") not in given
+    assert ("domain.model", "arch.billing.settings") in given
+    assert ("domain.model", "sqlalchemy") in configured
+    assert ("domain.model", "arch.billing.settings") not in configured
+
+
+def test_rules_read_as_one_line_each(make_package: MakePackage) -> None:
+    """Library rules name the top package; cross-domain rules every way in."""
+    make_package(
+        "arch.billing",
+        {
+            "application/services.py": "import fastapi.status\n",
+            "domain/values/money.py": "import sqlalchemy.types\n",
+        },
+    )
+    make_package(
+        "arch.shipping",
+        {"api/routes.py": "from arch.billing.infrastructure import repo\n"},
+    )
+    rules = LayerRules().extend(public_surface=["domain.values"])
+    installed = ["arch.shipping", "arch.billing"]
+
+    shipping = {
+        (v.imported, v.rule) for v in check_domain("arch.shipping", installed, rules)
+    }
+    billing = {
+        (v.module, v.rule) for v in check_domain("arch.billing", installed, rules)
+    }
+
+    assert (
+        "arch.billing.infrastructure",
+        (
+            "use another domain only through arch.billing.application or "
+            "arch.billing.domain.events or arch.billing.domain.values"
+        ),
+    ) in shipping
+    assert (
+        "arch.billing.application.services",
+        "the application layer must not use fastapi",
+    ) in billing
+    assert any(module == "arch.billing.domain.values.money" for module, _ in billing)
+
+
+def test_a_rule_for_a_layer_not_in_the_rules_does_nothing(layered: str) -> None:
+    """Only modules inside a known layer are held to a layer's rules."""
+    rules = LayerRules().extend(forbidden_libraries={"settings": ["pydantic"]})
+    found = found_in(check_domain(layered, rules=rules))
+    assert not any(module == "settings" for module, _ in found)
+    assert ("domain.model", "sqlalchemy") in found

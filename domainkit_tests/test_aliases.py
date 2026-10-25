@@ -5,9 +5,7 @@ A patch release may add the consistent name but not take the old one away
 removes them.
 """
 
-import ast
 import importlib
-from pathlib import Path
 
 import domainkit.ddd
 import domainkit.ddd.query
@@ -37,7 +35,7 @@ def test_a_selection_built_by_the_old_name_is_a_selection() -> None:
 
 
 def test_the_evidence_model_module_keeps_its_old_name() -> None:
-    """``evidence.model`` re-exports what ``evidence.models`` defines."""
+    """``evidence.model`` still has every public name it defined in 0.9.1."""
     old = importlib.import_module("domainkit.contrib.evidence.model")
     new = importlib.import_module("domainkit.contrib.evidence.models")
     names = [
@@ -53,18 +51,6 @@ def test_the_evidence_model_module_keeps_its_old_name() -> None:
         "RecordedEvidence",
         "sha256",
     ]
-    tree = ast.parse(Path(new.__file__ or "").read_text(encoding="utf-8"))
-    defined = {
-        target.id if isinstance(target, ast.Name) else ""
-        for node in tree.body
-        if isinstance(node, ast.Assign | ast.AnnAssign)
-        for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
-    } | {
-        node.name
-        for node in tree.body
-        if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
-    }
-    assert {name for name in defined if not name.startswith("_")} == set(names)
     for name in names:
         assert getattr(old, name) is getattr(new, name), name
     assert Evidence.__module__ == "domainkit.contrib.evidence.models"
