@@ -1,5 +1,6 @@
 """Trusted proxies, error reporters, and timezone-safe timestamps."""
 
+import ipaddress
 import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta, timezone
@@ -12,13 +13,15 @@ from starlette.types import Message, Receive, Scope, Send
 
 from domainkit import setup
 from domainkit.apps import registry
+from domainkit.clock import freeze_time
 from domainkit.conf import Settings, override_settings
 from domainkit.contrib.messaging.outbox import insert_statements, message_row
 from domainkit.db import UTCDateTime
 from domainkit.ddd import DomainEvent, EventBus, event_bus
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
-from domainkit.http.middleware import ProxyHeadersMiddleware
+from domainkit.http.middleware import PEER, UNIX_PEER, ProxyHeadersMiddleware
+from domainkit.log import SECURITY_LOGGER, THROTTLE_INTERVAL
 from domainkit.reporting import flush_reports, report_error, reporters
 
 pytestmark = pytest.mark.anyio
@@ -45,12 +48,16 @@ def clear_reports() -> None:
 
 async def through_proxy(
     scope_type: str,
-    peer: str,
+    peer: str | None,
     headers: dict[str, str] | list[tuple[str, str]],
     trusted: list[str],
     scheme: str | None = None,
+    **options: object,
 ) -> tuple[object, object]:
-    """Return the ``client`` and ``scheme`` the wrapped app sees."""
+    """Return the ``client`` and ``scheme`` the wrapped app sees.
+
+    A ``peer`` of None is a unix socket's; ``options`` are other settings.
+    """
     seen: list[tuple[object, object]] = []
 
     async def app(scope: Scope, receive: Receive, send: Send) -> None:
@@ -63,11 +70,11 @@ async def through_proxy(
     async def send(message: Message) -> None:
         return None
 
-    with override_settings(TRUSTED_PROXIES=trusted):
+    with override_settings(TRUSTED_PROXIES=trusted, **options):
         middleware = ProxyHeadersMiddleware(app)
     scope = {
         "type": scope_type,
-        "client": (peer, 1234),
+        "client": None if peer is None else (peer, 1234),
         "scheme": scheme or ("ws" if scope_type == "websocket" else "http"),
         "headers": [
             (k.encode(), v.encode())
@@ -233,6 +240,242 @@ def test_trusted_proxies_must_be_networks() -> None:
     """Malformed proxy entries fail at startup."""
     with pytest.raises(ValueError, match="TRUSTED_PROXIES"):
         Settings.model_validate({"TRUSTED_PROXIES": ["not a network"]})
+
+
+PROXIED_MIDDLEWARE = [
+    "domainkit.http.middleware.ProxyHeadersMiddleware",
+    "domainkit.http.middleware.RequestContextMiddleware",
+    "domainkit.http.ratelimit.RateLimitMiddleware",
+]
+
+
+@pytest.mark.parametrize(
+    ("hops", "expected"),
+    [
+        ("garbage, 203.0.113.9", "203.0.113.9"),
+        ("garbage, 203.0.113.9, 10.0.0.7", "203.0.113.9"),
+        ("[2001:db8::1, 203.0.113.9:80", "203.0.113.9"),
+        ("unknown, 198.51.100.4, 10.0.0.7", "198.51.100.4"),
+    ],
+)
+async def test_a_clients_own_malformed_hop_is_never_read(
+    hops: str, expected: str
+) -> None:
+    """The walk stops at the client's hop: what it wrote further left is not read."""
+    assert await through_proxy(
+        "http", "10.0.0.5", {"x-forwarded-for": hops}, ["10.0.0.0/8"]
+    ) == ((expected, 0), "http")
+
+
+def test_client_hop_names_the_client_and_its_place() -> None:
+    """Counted from the right; None where the client's hop is no address."""
+    with override_settings(TRUSTED_PROXIES=["10.0.0.0/8"]):
+        proxy = ProxyHeadersMiddleware(app=lambda *args: None)  # type: ignore[arg-type]
+
+    assert proxy.client_hop(["203.0.113.9", "10.0.0.7"]) == ("203.0.113.9", 2)
+    assert proxy.client_hop(["10.0.0.8", "10.0.0.9"]) == ("10.0.0.8", 2)
+    # The client's hop is no address: the proxy that wrote it, at the client's place.
+    assert proxy.client_hop(["junk", "10.0.0.7"]) == ("10.0.0.7", 2)
+    assert proxy.client_hop(["203.0.113.9", "junk"]) is None
+    assert proxy.client_hop([]) is None
+
+
+async def test_an_unreadable_hop_where_the_client_is_counts_the_last_proxy(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A trusted proxy wrote a hop that is no address: its own is the client's.
+
+    The walk never goes past it, and the warning names the proxy, never
+    the hop's text.
+    """
+    trusted = ["10.0.0.0/8"]
+    forwarded = {
+        "x-forwarded-for": "203.0.113.9, secret-name, 10.0.0.7",
+        "x-forwarded-proto": "https, http",
+    }
+
+    seen = await through_proxy("http", "10.0.0.5", forwarded, trusted)
+    rightmost = await through_proxy(
+        "http", "10.0.0.5", {"x-forwarded-for": "secret-name"}, trusted
+    )
+
+    assert seen == (("10.0.0.7", 0), "https")  # The scheme at the client's place.
+    assert rightmost == (("10.0.0.5", 1234), "http")
+    warnings = [r.getMessage() for r in caplog.records if r.name == SECURITY_LOGGER]
+    said = (
+        "X-Forwarded-For from trusted proxy 10.0.0.5 holds a hop that is no address "
+        "where the client's should be; counting the client as"
+    )
+    assert warnings == [f"{said} 10.0.0.7", f"{said} 10.0.0.5"]
+    assert "secret-name" not in caplog.text
+
+
+async def test_unreadable_hops_are_logged_once_a_while(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A proxy that keeps writing them gets a line, then a count, not a flood."""
+    seen: list[object] = []
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        seen.append(scope["client"])
+
+    with override_settings(TRUSTED_PROXIES=["10.0.0.0/8"]):
+        middleware = ProxyHeadersMiddleware(app)
+    scope = {
+        "type": "http",
+        "client": ("10.0.0.5", 1234),
+        "scheme": "http",
+        "headers": [(b"x-forwarded-for", b"unknown")],
+    }
+    with freeze_time("2026-01-01") as clock:
+        for _ in range(3):
+            await middleware(dict(scope), None, None)  # type: ignore[arg-type]
+        clock.tick(THROTTLE_INTERVAL)
+        await middleware(dict(scope), None, None)  # type: ignore[arg-type]
+
+    assert seen == [("10.0.0.5", 1234)] * 4
+    warnings = [r.getMessage() for r in caplog.records if r.name == SECURITY_LOGGER]
+    assert len(warnings) == 2
+    assert warnings[1].endswith("(and 2 more like it since the last line)")
+
+
+def test_a_malformed_hop_of_its_own_keeps_a_client_in_its_bucket() -> None:
+    """Rate limits count the client, not the proxy, whatever it sends left."""
+    with override_settings(
+        MIDDLEWARE=PROXIED_MIDDLEWARE,
+        TRUSTED_PROXIES=["10.0.0.0/8"],
+        RATE_LIMIT="2/minute",
+    ):
+        client = TestClient(get_asgi_application(), client=("10.0.0.5", 1234))
+        own = {"X-Forwarded-For": "203.0.113.9"}
+        spoofed = {"X-Forwarded-For": "garbage, 203.0.113.9"}
+        answers = [client.get("/ok", headers=headers) for headers in (own, own)]
+        answers.append(client.get("/ok", headers=spoofed))
+        answers.append(client.get("/ok", headers={"X-Forwarded-For": "198.51.100.2"}))
+
+    assert [answer.status_code for answer in answers] == [200, 200, 429, 200]
+
+
+@pytest.mark.parametrize("scope_type", ["http", "websocket"])
+async def test_a_unix_socket_peer_is_trusted_when_named(scope_type: str) -> None:
+    """``"unix"`` believes the proxy on a unix socket, which has no address."""
+    forwarded = {"x-forwarded-for": "203.0.113.9", "x-forwarded-proto": "https"}
+
+    believed = await through_proxy(scope_type, None, forwarded, ["unix"])
+    networks_only = await through_proxy(scope_type, None, forwarded, ["10.0.0.0/8"])
+    tcp_peer = await through_proxy(scope_type, "10.0.0.5", forwarded, ["unix"])
+    no_header = await through_proxy(scope_type, None, {}, ["unix"])
+
+    secure, plain = ("wss", "ws") if scope_type == "websocket" else ("https", "http")
+    assert believed == (("203.0.113.9", 0), secure)
+    assert networks_only == (None, plain)
+    assert tcp_peer == (("10.0.0.5", 1234), plain)
+    assert no_header == (None, plain)
+
+
+async def test_a_unix_socket_peer_is_kept_as_no_address() -> None:
+    """``PEER`` names the socket, which no network of addresses holds."""
+    seen: list[Scope] = []
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        seen.append(scope)
+
+    with override_settings(TRUSTED_PROXIES=["unix", "10.0.0.0/8"]):
+        middleware = ProxyHeadersMiddleware(app)
+    scope = {
+        "type": "http",
+        "client": None,
+        "scheme": "http",
+        "headers": [(b"x-forwarded-for", b"10.0.0.9, 203.0.113.9")],
+    }
+    await middleware(scope, None, None)  # type: ignore[arg-type]
+
+    assert seen[0][PEER] == UNIX_PEER == ("unix", 0)
+    assert seen[0]["client"] == ("203.0.113.9", 0)
+    assert (middleware.networks, middleware.unix) == (
+        (ipaddress.ip_network("10.0.0.0/8"),),
+        True,
+    )
+
+
+def test_callers_behind_a_unix_socket_get_buckets_of_their_own() -> None:
+    """One caller over the limit no longer refuses everyone behind the socket."""
+    with override_settings(
+        MIDDLEWARE=PROXIED_MIDDLEWARE, TRUSTED_PROXIES=["unix"], RATE_LIMIT="2/minute"
+    ):
+        client = TestClient(get_asgi_application(), client=None)  # type: ignore[arg-type]
+        answers = [
+            client.get("/ok", headers={"X-Forwarded-For": address})
+            for address in ("203.0.113.9", "203.0.113.9", "203.0.113.9", "192.0.2.1")
+        ]
+
+    assert [answer.status_code for answer in answers] == [200, 200, 429, 200]
+
+
+def test_trusted_proxies_take_unix_but_no_other_word() -> None:
+    """``"unix"`` is the one name; prefix 0 is still refused where deployed."""
+    loaded = Settings.model_validate({"TRUSTED_PROXIES": ["unix", "10.0.0.0/8"]})
+    assert ("unix", ipaddress.ip_network("10.0.0.0/8")) == loaded.TRUSTED_PROXIES
+    with pytest.raises(ValueError, match="TRUSTED_PROXIES"):
+        Settings.model_validate({"TRUSTED_PROXIES": ["socket"]})
+    with pytest.raises(ValueError, match="not every address"):
+        Settings.model_validate(
+            {
+                "ENVIRONMENT": "production",
+                "API_DOCS": False,
+                "TRUSTED_PROXIES": ["unix", "0.0.0.0/0"],
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("headers", "options", "expected"),
+    [
+        (  # The proxy writes no scheme: the client's own line is not read.
+            {"x-forwarded-for": "203.0.113.9", "x-forwarded-proto": "http"},
+            {"PROXY_SCHEME_HEADER": None},
+            (("203.0.113.9", 0), "https"),
+        ),
+        (  # The proxy's own header, and only it.
+            {
+                "x-forwarded-for": "203.0.113.9",
+                "x-forwarded-proto": "http",
+                "x-forwarded-scheme": "https",
+            },
+            {"PROXY_SCHEME_HEADER": "X-Forwarded-Scheme"},
+            (("203.0.113.9", 0), "https"),
+        ),
+        (  # Fewer values than hops: the nearest proxy's, not the left-most.
+            {
+                "x-forwarded-for": "203.0.113.9, 10.0.0.7, 10.0.0.8",
+                "x-forwarded-proto": "http, https",
+            },
+            {},
+            (("203.0.113.9", 0), "https"),
+        ),
+    ],
+)
+async def test_the_scheme_comes_only_from_what_the_proxy_writes(
+    headers: dict[str, str], options: dict[str, object], expected: tuple[object, ...]
+) -> None:
+    """``PROXY_SCHEME_HEADER`` names the proxy's header; None believes none."""
+    assert (
+        await through_proxy(
+            "http", "10.0.0.5", headers, ["10.0.0.0/8"], scheme="https", **options
+        )
+        == expected
+    )
+
+
+def test_the_proxy_scheme_header_is_a_header_name() -> None:
+    """Anything but a header name, or None, fails at startup."""
+    assert Settings().PROXY_SCHEME_HEADER == "X-Forwarded-Proto"
+    assert (
+        Settings.model_validate({"PROXY_SCHEME_HEADER": None}).PROXY_SCHEME_HEADER
+        is None
+    )
+    with pytest.raises(ValueError, match="PROXY_SCHEME_HEADER"):
+        Settings.model_validate({"PROXY_SCHEME_HEADER": "X-Proto: https"})
 
 
 def test_reporters_are_validated() -> None:

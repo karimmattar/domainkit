@@ -24,6 +24,7 @@ from domainkit.http.openapi import (
     operation_id,
 )
 from domainkit.http.routing import flatten_routes
+from domainkit.http.servers import unix_socket_warnings
 from domainkit.http.versioning import DeprecationHeadersMiddleware
 from domainkit.http.websockets import server_warnings
 from domainkit.lifecycle import serving
@@ -144,6 +145,8 @@ def get_asgi_application() -> FastAPI:
     if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
         # The server's own command line, here.
         for warning in server_warnings(app):
+            logger.warning(warning)
+        for warning in unix_socket_warnings(settings.TRUSTED_PROXIES):
             logger.warning(warning)
     return app
 

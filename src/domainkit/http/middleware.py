@@ -81,25 +81,53 @@ MAX_CACHED_ADDRESS: Final = 64
 """Longer texts are parsed every time, never kept: an IPv6 zone can be any length."""
 
 
+UNIX: Final = "unix"
+"""In ``TRUSTED_PROXIES``: the peer of a unix socket, which has no address."""
+UNIX_PEER: Final = (UNIX, 0)
+"""``scope["domainkit.peer"]`` for a proxy that connected over a unix socket."""
+_PROXIED: Final = frozenset({"http", "websocket"})
+
+
 class ProxyHeadersMiddleware:
     """Take the client address and scheme from trusted proxies' headers.
 
-    Only connections from ``TRUSTED_PROXIES`` are believed. The client is the
-    right-most ``X-Forwarded-For`` address that is not itself a trusted proxy,
-    so a client cannot spoof its address by sending the header itself. Every
-    line of a header counts (some proxies add a line instead of extending
-    one), in order. The scheme is the ``X-Forwarded-Proto`` value at the
-    client's place, counted from the right as its address was, or the last
-    value when there are fewer. The proxy's own address stays in
-    ``scope["domainkit.peer"]`` (``PEER``), for what only a trusted proxy may
-    say (a client certificate it checked). Without trusted proxies this
-    middleware does nothing.
+    Only connections from ``TRUSTED_PROXIES`` are believed; ``"unix"``
+    there believes the peer of a unix socket, which has no address
+    (``scope["client"]`` is None). The client is found by walking
+    ``X-Forwarded-For`` from the right, through trusted proxies only: it
+    is the first hop that is not one, so a client cannot spoof its address
+    by sending the header itself, and what it wrote to the left of its own
+    hop is never read. Every line of a header counts (some proxies add a
+    line instead of extending one), in order. A hop that is no address,
+    where the walk stops, is the client's, written by a trusted proxy: the
+    client is then the last proxy the walk passed (the peer, if none), and
+    a warning says so, throttled (``ThrottledLog``).
+
+    The scheme is the ``PROXY_SCHEME_HEADER`` value (``X-Forwarded-Proto``)
+    at the client's place, counted from the right as its address was, or
+    the right-most value, the nearest proxy's, when there are fewer. With
+    ``PROXY_SCHEME_HEADER = None`` the scheme is never taken from a header:
+    set it so when the proxies do not set the header, or a client's own
+    value would be read. The proxy's own address stays in
+    ``scope["domainkit.peer"]`` (``PEER``; ``UNIX_PEER`` for a unix
+    socket), for what only a trusted proxy may say (a client certificate
+    it checked). Without trusted proxies this middleware does nothing.
     """
 
     def __init__(self, app: ASGIApp) -> None:
         """Wrap ``app`` with the configured proxy networks."""
         self.app = app
-        self.networks: tuple[_Network, ...] = tuple(settings.TRUSTED_PROXIES)
+        trusted = settings.TRUSTED_PROXIES
+        self.networks: tuple[_Network, ...] = tuple(
+            network for network in trusted if not isinstance(network, str)
+        )
+        self.unix = UNIX in trusted
+        """Whether the peer of a unix socket is a trusted proxy."""
+        self.enabled = bool(self.networks) or self.unix
+        header = settings.PROXY_SCHEME_HEADER
+        self.scheme_header = None if header is None else header.lower().encode()
+        """The header that carries the client's scheme, as ASGI names it."""
+        self.log = ThrottledLog(security_logger)
         self._addresses: functools._lru_cache_wrapper[tuple[str, bool] | None] = (
             functools.lru_cache(maxsize=ADDRESS_CACHE)(
                 functools.partial(_address, self.networks)
@@ -111,25 +139,27 @@ class ProxyHeadersMiddleware:
         """Rewrite ``client`` and ``scheme`` for requests from a trusted proxy."""
         client = scope.get("client")
         if (
-            self.networks
-            and scope["type"] in {"http", "websocket"}
-            and client
-            and self.trusted(client[0])
+            self.enabled
+            and scope["type"] in _PROXIED
+            and (self.trusted(client[0]) if client else self.unix)
         ):
             scope = dict(scope)
-            scope[PEER] = client
-            place = 1  # From the right: the hop the scheme describes.
-            if found := self.client_hop(_values(scope, b"x-forwarded-for")):
-                address, place = found
+            peer = scope[PEER] = client or UNIX_PEER
+            address, place, unreadable = self._walk(_values(scope, b"x-forwarded-for"))
+            if address is not None:
                 scope["client"] = (address, 0)
-            protos = _values(scope, b"x-forwarded-proto")
-            proto = protos[-min(place, len(protos))].lower() if protos else ""
-            if proto in {"http", "https"}:
-                secure = proto == "https"
-                if scope["type"] == "websocket":
-                    scope["scheme"] = "wss" if secure else "ws"
-                else:
-                    scope["scheme"] = proto
+            if unreadable:
+                self.log.warning(
+                    "unreadable_forwarded_for",
+                    peer[0],
+                    "X-Forwarded-For from trusted proxy %s holds a hop that is "
+                    "no address where the client's should be; counting the "
+                    "client as %s",
+                    peer[0],
+                    address or peer[0],
+                )
+            if self.scheme_header is not None:
+                _set_scheme(scope, _values(scope, self.scheme_header), place)
         await self.app(scope, receive, send)
 
     def trusted(self, address: str) -> bool:
@@ -138,20 +168,35 @@ class ProxyHeadersMiddleware:
         return found is not None and found[1]
 
     def client_hop(self, hops: list[str]) -> tuple[str, int] | None:
-        """The first untrusted hop from the right, and its place; None if malformed.
+        """The client's hop and its place from the right; None if it is no address.
 
-        Hops may carry a port (``203.0.113.9:4711``, ``[2001:db8::1]:443``),
-        and IPv4 addresses mapped into IPv6 count as IPv4.
+        The walk goes from the right through trusted proxies and stops at
+        the first hop that is not one: the client's. Every hop trusted, the
+        left-most is the client. A hop that is no address stops the walk
+        too: the client is then the last trusted hop passed, at the
+        unreadable hop's place, or None if it is the right-most. Hops may
+        carry a port (``203.0.113.9:4711``, ``[2001:db8::1]:443``), and IPv4
+        addresses mapped into IPv6 count as IPv4.
         """
-        addresses = []
-        for hop in hops:
-            if (found := self.address(hop)) is None:
-                return None
-            addresses.append(found)
-        for place, (address, trusted) in enumerate(reversed(addresses), start=1):
+        address, place, _ = self._walk(hops)
+        return None if address is None else (address, place)
+
+    def _walk(self, hops: list[str]) -> tuple[str | None, int, bool]:
+        """``client_hop``'s address and place, and whether a hop was unreadable.
+
+        Only the hops up to the client's are parsed.
+        """
+        passed: str | None = None
+        place = 0
+        for place, hop in enumerate(reversed(hops), start=1):
+            found = self.address(hop)
+            if found is None:
+                return passed, place, True
+            address, trusted = found
             if not trusted:
-                return address, place
-        return (addresses[0][0], len(addresses)) if addresses else None
+                return address, place, False
+            passed = address
+        return passed, max(place, 1), False
 
     def address(self, text: str) -> tuple[str, bool] | None:
         """``text`` as an address, and whether a trusted proxy has it; None if not one.
@@ -164,6 +209,23 @@ class ProxyHeadersMiddleware:
         if len(text) > MAX_CACHED_ADDRESS:
             return _address(self.networks, text)
         return self._addresses(text)
+
+
+def _set_scheme(scope: Scope, protos: list[str], place: int) -> None:
+    """Set the scheme of ``protos`` at the client's ``place`` from the right.
+
+    With fewer values than that, the right-most is taken: the nearest
+    proxy's, never one further left that a client may have written.
+    """
+    if not protos:
+        return
+    proto = (protos[-place] if place <= len(protos) else protos[-1]).lower()
+    if proto in {"http", "https"}:
+        secure = proto == "https"
+        if scope["type"] == "websocket":
+            scope["scheme"] = "wss" if secure else "ws"
+        else:
+            scope["scheme"] = proto
 
 
 def _address(networks: tuple[_Network, ...], text: str) -> tuple[str, bool] | None:

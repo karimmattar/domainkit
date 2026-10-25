@@ -561,6 +561,8 @@ class HttpClientConfig(BaseModel):
 
 ABSOLUTE_URI: Final = r"^[A-Za-z][A-Za-z0-9+.-]*:[^\s]+$"
 """An absolute URI without whitespace (``https://...``, ``urn:...``)."""
+HEADER_NAME: Final = r"^[A-Za-z0-9-]{1,64}$"
+"""A header name: letters, digits, and hyphens."""
 
 
 class Settings(BaseModel):
@@ -669,8 +671,15 @@ class Settings(BaseModel):
     """Share of access lines written; from status 400 up, and slow ones: all of them."""
     ACCESS_LOG_SLOW_DURATION: float = Field(default=1.0, gt=0, le=MAX_REQUEST_SECONDS)
     """Seconds after which a request's access line is written whatever the rate."""
-    TRUSTED_PROXIES: tuple[IPvAnyNetwork, ...] = ()
-    """Load balancers whose ``X-Forwarded-For``/``-Proto`` headers are believed."""
+    TRUSTED_PROXIES: tuple[IPvAnyNetwork | Literal["unix"], ...] = ()
+    """Load balancers whose ``X-Forwarded-For``/``-Proto`` headers are believed.
+
+    ``"unix"`` names the peer of a unix socket (``uvicorn --uds``), which
+    has no address: the proxy that connects to it."""
+    PROXY_SCHEME_HEADER: str | None = Field(
+        default="X-Forwarded-Proto", pattern=HEADER_NAME
+    )
+    """The header in which trusted proxies say the client's scheme; None: none does."""
     RATE_LIMIT: str | None = None
     """Requests per caller, e.g. ``"300/minute"``; None disables the limit."""
     RATE_LIMIT_EXEMPT_PATHS: tuple[str, ...] = ("/health", "/ready", "/metrics")
@@ -960,7 +969,10 @@ class Settings(BaseModel):
             )
         if "*" in self.ALLOWED_HOSTS:
             raise ValueError(f"ALLOWED_HOSTS must list real host names {where}")
-        if any(network.prefixlen == 0 for network in self.TRUSTED_PROXIES):
+        if any(
+            not isinstance(network, str) and network.prefixlen == 0
+            for network in self.TRUSTED_PROXIES
+        ):
             raise ValueError(
                 f"TRUSTED_PROXIES must list the proxies' networks, not every "
                 f"address {where}: any caller could choose its own address"
