@@ -281,8 +281,9 @@ class AuthSettings(BaseModel):
 
     ``RedisBackend`` lets requests through while Redis fails, so a brute
     force timed with an outage goes uncounted. True refuses password and
-    code checks, link checks, and mail requests instead, until it counts
-    again; other requests are not affected.
+    code checks, and requests that send mail, instead, until it counts
+    again; other requests are not affected (links are counted after their
+    check, so nothing is guessed through them).
     """
     JWT: JWTSettings = JWTSettings()
     """Signing and lifetimes of JSON Web Tokens (``JWTAuthentication``)."""

@@ -63,5 +63,5 @@ they counted one (`Decision.counted`), for the attempt throttles of
 `domainkit.contrib.auth` ([0068](0068-count-failed-attempts-and-hold-back-only-guesses.md)).
 `RedisBackend` gives back in a second Lua script, on the server's clock,
 with the same commands. Requests still pass while Redis is down; only
-password and code checks, links, and mail requests may be refused then,
-with `AUTH.THROTTLE_FAIL_CLOSED`.
+password and code checks and mail requests may be refused then, with
+`AUTH.THROTTLE_FAIL_CLOSED`.

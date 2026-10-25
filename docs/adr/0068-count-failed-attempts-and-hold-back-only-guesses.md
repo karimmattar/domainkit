@@ -64,8 +64,9 @@ client certificate, which takes its private key.
   are `guessable` (the default). `CookieAuthentication` and
   `ClientCertificateAuthentication` are not.
 - `Decision.counted` says whether a backend counted a request. With
-  `AUTH.THROTTLE_FAIL_CLOSED`, an attempt it could not count is refused
-  with `503 throttle_unavailable`; by default it is let through, as before.
+  `AUTH.THROTTLE_FAIL_CLOSED`, a password or code check, or a request for
+  mail, it could not count is refused with `503 throttle_unavailable`; by
+  default it is let through, as before.
 
 ## Consequences
 

@@ -910,8 +910,8 @@ that do not hold (401) count: a cookie request refused by the CSRF checks
 would let that site lock out everyone behind the browser's address.
 
 When `RATE_LIMIT_BACKEND` cannot count (`RedisBackend` while Redis fails),
-password and code checks, link checks, and requests for mail are let
-through uncounted, as other requests are. Set `AUTH.THROTTLE_FAIL_CLOSED
+password and code checks, and requests for mail, are let through
+uncounted, as other requests are. Set `AUTH.THROTTLE_FAIL_CLOSED
 = True` to refuse them instead, with `503 throttle_unavailable` and
 `Retry-After`, until the backend counts again: a brute force timed with a
 cache outage then gets no attempts, and neither do your users.
@@ -1329,7 +1329,7 @@ changed what.
 | `MAX_LIVE_TOKENS` | `100` | Live access tokens (logins and personal tokens) a user may hold and still make a personal token; past it, `409 too_many_tokens` (1 to 10,000). |
 | `LOGIN_RATE` | `"10/minute"` | Wrong passwords at login per client address and per username, and at password changes per user; reset, verification, signup, and second-factor links that do not hold, per client address. Checks that succeed are not counted. `None` for no limit. |
 | `EMAIL_RATE` | `"5/hour"` | Requests that send mail (resets, verifications, signups) per client address and per email address or user. |
-| `THROTTLE_FAIL_CLOSED` | `False` | While `RATE_LIMIT_BACKEND` cannot count (Redis failing), refuse password and code checks, link checks, and requests for mail with `503 throttle_unavailable`, rather than let them through uncounted. |
+| `THROTTLE_FAIL_CLOSED` | `False` | While `RATE_LIMIT_BACKEND` cannot count (Redis failing), refuse password and code checks, and requests for mail, with `503 throttle_unavailable`, rather than let them through uncounted. |
 | `PASSWORD_RESET_TIMEOUT` | 1 hour | How long a reset link works. |
 | `PASSWORD_RESET_URL` | `None` | Your page that takes a reset token: `{token}` marks where. Staging and production refuse `http://`, here and in the other link URLs. |
 | `EMAIL_VERIFICATION_TIMEOUT` | 3 days | How long a verification link works. |

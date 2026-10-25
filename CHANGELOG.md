@@ -32,8 +32,9 @@ All notable changes to domainkit. The format follows
 - `check` warns in staging and production when the login, code, link, and
   mail throttles count in a backend each process keeps alone
   (`MemoryBackend`): with several processes each allowed the rates on its
-  own. `AUTH.THROTTLE_FAIL_CLOSED = True` refuses those attempts with
-  `503 throttle_unavailable` while `RATE_LIMIT_BACKEND` cannot count
+  own. `AUTH.THROTTLE_FAIL_CLOSED = True` refuses password and code checks
+  and requests for mail with `503 throttle_unavailable` while
+  `RATE_LIMIT_BACKEND` cannot count
   (Redis failing), instead of letting them through uncounted; off by
   default (AUTH-09).
 - Routes included after `get_asgi_application` returned (in `asgi.py`, or by
