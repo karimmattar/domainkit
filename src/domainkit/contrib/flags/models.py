@@ -103,10 +103,16 @@ class DynamicSetting(AggregateRoot[str]):
         verbose_name = "dynamic setting"
         default_permissions = ("change", "view")
 
-    def change(self, value: object) -> None:
-        """Store ``value`` (already validated, as JSON) and record it."""
+    def change(self, value: object, *, secret: bool = False) -> None:
+        """Store ``value`` (already validated, as JSON) and record it.
+
+        A ``secret`` value is recorded as changed, without the value: the
+        audit trail keeps what it is given for good.
+        """
         self.value = value
-        self.record(SettingChanged(key=self.id, value=value))
+        self.record(
+            SettingChanged(key=self.id, value=None if secret else value, secret=secret)
+        )
 
     def reset(self) -> None:
         """Record that the setting goes back to its default."""
