@@ -25,10 +25,14 @@ address gets 429, and its requests with an ``Authorization`` header are
 refused before any lookup until ``Retry-After`` has passed. Credentials in
 other headers, which only a project's own class reads, are refused too,
 once read, even when they hold: a guess that works gets the same 429.
-Only credentials that do not hold (401) count: a refusal of credentials
-that do, such as a cookie request that fails its CSRF checks (403), is a
-request another site can make a browser send, and counting it would let
-that site lock everyone behind the browser's address out.
+Only what can be guessed is held back: a session cookie or a client
+certificate that holds is served (their classes are not ``guessable``),
+so guesses from an address shared with browsers (an office, a carrier, a
+proxy) never log its users out. Only credentials that do not hold (401)
+count: a refusal of credentials that do, such as a cookie request that
+fails its CSRF checks (403), is a request another site can make a browser
+send, and counting it would let that site lock everyone behind the
+browser's address out.
 
 An open WebSocket or event stream has its credentials checked again while
 it lasts (``reauthenticate``, called by ``domainkit.http.live``), so a
@@ -109,15 +113,16 @@ class AuthenticationMiddleware:
             await refuse(scope, receive, send, *held)
             return
         try:
-            credentials = await self._authenticate(connection)
+            found = await self._identify(connection)
         except _Refused as refused:
             await self._refuse(scope, receive, send, refused)
             return
-        if held is not None and credentials is not None:
+        if held is not None and found is not None and found[0].guessable:
             # Credentials in another header, read by a project's own class,
             # are refused once read: a guess that works must not stand out.
             await refuse(scope, receive, send, *held)
             return
+        credentials = None if found is None else found[1]
         scope["user"] = AnonymousUser() if credentials is None else credentials.user
         scope["auth"] = credentials
         scope[REAUTHENTICATE] = self.reauthenticate
@@ -163,13 +168,20 @@ class AuthenticationMiddleware:
 
     async def _authenticate(self, connection: HTTPConnection) -> Credentials | None:
         """The first class's verdict on the request's credentials."""
+        found = await self._identify(connection)
+        return None if found is None else found[1]
+
+    async def _identify(
+        self, connection: HTTPConnection
+    ) -> tuple[BaseAuthentication, Credentials] | None:
+        """The class that recognized the request's credentials, and them."""
         for authenticator in self.authenticators:
             try:
                 credentials = await authenticator.authenticate(connection)
             except AuthenticationFailed as exc:
                 raise _Refused(authenticator, exc) from None
             if credentials is not None:
-                return credentials
+                return authenticator, credentials
         return None
 
     async def _refuse(

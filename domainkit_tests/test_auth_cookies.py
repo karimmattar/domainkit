@@ -266,6 +266,43 @@ def test_csrf_refusals_never_hold_the_address(identity: Api) -> None:
     assert [r.status_code for r in guesses] == [401] * 10 + [429]
 
 
+def test_held_addresses_still_serve_their_browser_sessions(identity: Api) -> None:
+    """Bad bearer tokens hold the address's tokens back, never its cookies.
+
+    A session cookie cannot be guessed (one that does not hold leaves the
+    request anonymous): browsers behind an address shared with a guesser
+    (an office, a carrier, a proxy) stay logged in (AUTH-03).
+    """
+    create_user("alice")
+    create_user("bob")
+    with override_settings(RATE_LIMIT="3/minute"):
+        victim = browser(identity)
+        csrf = start(victim)
+        bob = bearer(
+            login(TestClient(victim.app, base_url=SITE), "bob")["access_token"]
+        )
+        guesser = TestClient(victim.app, base_url=SITE)  # The same address.
+        guess = bearer("dkt_" + "A" * 43)
+        guesses = [guesser.get("/whoami", headers=guess).status_code for _ in range(4)]
+        read = victim.get("/whoami")
+        wrote = victim.post("/notes", headers={**TRUSTED, "X-CSRF-Token": csrf})
+        # TestClient opens sockets over ws://, and sends the cookie if told.
+        handshake = {
+            "Origin": "http://testserver",
+            "Cookie": f"{SESSION}={victim.cookies[SESSION]}",
+        }
+        with victim.websocket_connect("/live", headers=handshake) as socket:
+            greeted = socket.receive_json()
+        token = victim.get("/whoami", headers=bob)
+
+    assert guesses == [401, 401, 401, 429]
+    assert read.json() == {"user": "alice", "scheme": "cookie"}
+    assert wrote.status_code == 200
+    assert greeted == {"user": "alice"}
+    # A request with a token is still held back, even with a session cookie.
+    assert (token.status_code, token.json()["code"]) == (429, "rate_limited")
+
+
 def test_csrf_tokens_belong_to_one_session(identity: Api) -> None:
     """Another session's token, even in both places, is refused."""
     create_user("alice")

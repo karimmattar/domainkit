@@ -71,7 +71,14 @@ type IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 
 class ClientCertificateAuthentication(BaseAuthentication):
-    """Users named by a client certificate the server or a trusted proxy checked."""
+    """Users named by a client certificate the server or a trusted proxy checked.
+
+    Presenting a certificate takes its private key, so certificates are not
+    guessed: one that holds is served while its address is held for
+    refused tokens.
+    """
+
+    guessable = False
 
     async def authenticate(self, connection: HTTPConnection) -> Credentials | None:
         """The active user the request's client certificate names.
