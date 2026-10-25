@@ -226,5 +226,5 @@ def test_cursors_fixtures_flags_and_webhooks_write_amounts_in_fixed_point() -> N
     assert pagination._to_json(THOUSAND) == "1000"
     assert fixtures._encoded(table.c.x, TINY_ZERO) == "0.00000000"
     assert setting.default_json() == "1000"
-    assert setting.checked(Decimal("2.5E+1")) == "25"
+    assert setting.checked(Decimal("3E+1")) == "30"
     assert json.loads(body)["data"] == {"amount": "1000"}
