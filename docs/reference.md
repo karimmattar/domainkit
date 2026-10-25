@@ -6,7 +6,7 @@ see [databases.md](databases.md); for caches see [cache.md](cache.md); for
 releases and deprecations see [versioning.md](versioning.md).
 
 `domainkit_tests/test_docs.py` fails when a setting or a command is missing
-from this page.
+from this page, or when a table's default or limits differ from the code's.
 
 ## Settings
 
