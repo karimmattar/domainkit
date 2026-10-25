@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
+from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.webhooks import client, guard, signing
 from domainkit.contrib.webhooks.guard import (
@@ -182,6 +183,25 @@ def test_verify_uses_the_clock_by_default() -> None:
     assert verify(SPEC_SECRET, headers, SPEC_BODY) == SPEC_ID
     with pytest.raises(InvalidSignature, match="No webhook signature matches"):
         verify(SPEC_SECRET, headers, b"tampered")
+
+
+def test_verify_follows_a_frozen_clock() -> None:
+    """``domainkit.clock`` decides, not the host's: a frozen replay test holds.
+
+    Signed in 2030, a delivery is fresh at that time, and stale five minutes
+    and a second later, whatever the wall clock says.
+    """
+    signed_at = datetime(2030, 1, 1, tzinfo=UTC)
+    stamp = int(signed_at.timestamp())
+    headers = signing.signed_headers([SPEC_SECRET], SPEC_ID, stamp, SPEC_BODY)
+
+    with freeze_time(signed_at) as frozen:
+        assert verify(SPEC_SECRET, headers, SPEC_BODY) == SPEC_ID
+        frozen.tick(signing.DEFAULT_TOLERANCE)
+        assert verify(SPEC_SECRET, headers, SPEC_BODY) == SPEC_ID
+        frozen.tick(1)
+        with pytest.raises(InvalidSignature, match="too old or too new"):
+            verify(SPEC_SECRET, headers, SPEC_BODY)
 
 
 # Subscriptions ------------------------------------------------------------------

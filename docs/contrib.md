@@ -502,7 +502,8 @@ base64 HMAC-SHA256 of `<id>.<timestamp>.<body>` keyed with the secret's
 bytes. Secrets look like `whsec_` and 32 random bytes in base64; their
 libraries verify them. In Python, `domainkit.contrib.webhooks.verify(secret,
 headers, body)` checks one in constant time and refuses timestamps more
-than five minutes away. After a rotation, deliveries carry a second
+than five minutes away from `domainkit.clock` (frozen under
+`freeze_time`). After a rotation, deliveries carry a second
 signature with the old secret for `SECRET_OVERLAP_SECONDS`.
 
 **What may be called.** Before every attempt, and when a subscription is

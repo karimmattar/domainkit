@@ -38,6 +38,10 @@ All notable changes to domainkit. The format follows
   so a keyed request makes no more round trips. SQLite, and tests under
   `freeze_time`, read `domainkit.clock` as before. `domainkit.db.dbclock`
   is the outbox's clock, now shared (ADR 0062) (FIN-79).
+- `domainkit.contrib.webhooks.signing.verify` reads the time from
+  `domainkit.clock`, as the rest of the framework does: under
+  `freeze_time`, a receiver's test checks a delivery's timestamp against
+  the frozen clock instead of the wall clock (FIN-83).
 
 ## [0.9.0] - 2026-10-22
 

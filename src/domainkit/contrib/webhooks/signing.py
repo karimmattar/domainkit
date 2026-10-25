@@ -17,9 +17,10 @@ import binascii
 import hashlib
 import hmac
 import secrets
-import time
 from collections.abc import Iterable, Mapping
 from typing import Final
+
+from domainkit import clock
 
 SECRET_PREFIX: Final = "whsec_"  # noqa: S105 - a prefix, not a secret.
 SECRET_BYTES: Final = 32
@@ -89,7 +90,8 @@ def verify(
     """Check a delivery as a receiver would; return its id.
 
     ``headers`` names are matched in lower case. Signatures are compared in
-    constant time.
+    constant time. The time is ``now`` (seconds since the epoch), or else
+    ``domainkit.clock``'s, so a frozen clock moves it too.
 
     Raises:
         InvalidSignature: a header is missing or malformed, the timestamp is
@@ -103,7 +105,7 @@ def verify(
     if not (message_id and well_formed and signatures):
         raise InvalidSignature("The webhook headers are missing or malformed.")
     timestamp = int(stamp)
-    if abs((time.time() if now is None else now) - timestamp) > tolerance:
+    if abs((clock.now().timestamp() if now is None else now) - timestamp) > tolerance:
         raise InvalidSignature("The webhook timestamp is too old or too new.")
     expected = sign(secret, message_id, timestamp, body).encode()
     if not any(
