@@ -267,14 +267,14 @@ def _dependencies(signature: inspect.Signature) -> list[Callable[..., Any]]:
     return found
 
 
-def _forms(call: object) -> list[object]:
+def _forms(call: Any) -> list[Any]:  # noqa: ANN401 - any dependency.
     """``call`` as FastAPI looks at it: through ``partial`` and through ``wraps``."""
     while isinstance(call, partial):
         call = call.func
-    return [call, inspect.unwrap(call)] if callable(call) else []
+    return [call, inspect.unwrap(call)]
 
 
-def _yields(call: object) -> bool:
+def _yields(call: Any) -> bool:  # noqa: ANN401 - any dependency.
     """Whether FastAPI takes a dependency for one that holds a resource.
 
     As FastAPI 0.143 decides it (``fastapi.dependencies.models``): the
@@ -287,9 +287,7 @@ def _yields(call: object) -> bool:
     if any(inspect.isclass(form) for form in _forms(call)):
         return False
     return any(
-        _generator(inner)
-        for form in _forms(call)
-        for inner in _forms(getattr(form, "__call__", None))  # noqa: B004
+        _generator(inner) for form in _forms(call) for inner in _forms(form.__call__)
     )
 
 

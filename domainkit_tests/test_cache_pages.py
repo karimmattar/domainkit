@@ -703,6 +703,7 @@ def test_detached_pages_refuse_dependencies_that_hold_a_resource() -> None:
     async def plain(
         request: Request,
         kept: Annotated[Plain, Depends()],
+        built: Annotated[Held, Depends(Held)],  # Built; its __call__ is not run.
         month: int = 1,
         held: int = Depends(len),
         wrapped: int = Depends(partial(_logged(len), "")),
