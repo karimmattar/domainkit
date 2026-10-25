@@ -1246,6 +1246,7 @@ def test_keys_live_until_the_instant_they_expire(
 
     assert at_expiry.headers["Idempotent-Replayed"] == "true"
     assert len(sample_routes.created) == 1
+    assert len(stored_keys()) == 1  # Neither replaced nor swept.
 
 
 # The keys' database decides when leases and keys run out (FIN-79) ----------------
@@ -1341,6 +1342,11 @@ def test_keyed_routes_that_outlast_the_lease_are_problems() -> None:
     outer.post("/nested", dependencies=[Depends(slow)])(unbounded)
     outer.get("/report", dependencies=[Depends(RequestTimeout(None))])(unbounded)
     outer.put("/put", dependencies=[Depends(RequestTimeout(None))])(unbounded)
+    outer.api_route(
+        "/both",
+        methods=["PATCH", "POST", "PUT"],
+        dependencies=[Depends(RequestTimeout(None))],
+    )(unbounded)
     inner = APIRouter(dependencies=[Depends(RequestTimeout(None))])
     inner.post("/batch")(unbounded)
     mounted = FastAPI()
@@ -1368,6 +1374,7 @@ def test_keyed_routes_that_outlast_the_lease_are_problems() -> None:
         f"POST /export may run for 300s (RequestTimeout), {tail}",
         f"PATCH /edit may run for 60s (RequestTimeout), {tail}",
         f"POST /nested may run for 120s (RequestTimeout), {tail}",
+        f"PATCH POST /both may run without a deadline (RequestTimeout), {tail}",
         f"POST /v1/batch may run without a deadline (RequestTimeout), {tail}",
         f"POST /files/upload may run without a deadline (RequestTimeout), {tail}",
         f"POST /hook may run for 90s (RequestTimeout), {tail}",
