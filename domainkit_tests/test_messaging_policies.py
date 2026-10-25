@@ -92,13 +92,6 @@ async def quick(seconds: float) -> None:
     await asyncio.sleep(seconds)
 
 
-@task(name="tests.patient", timeout=0.5, max_attempts=1)
-async def patient(seconds: float) -> None:
-    """Sleep longer than TASK_TIMEOUT, within the task's own."""
-    await asyncio.sleep(seconds)
-    ran.append("patient")
-
-
 @task(name="tests.low", priority=-10)
 async def low(label: str) -> None:
     """Record the order of runs."""
@@ -375,15 +368,36 @@ async def test_a_task_retries_after_its_own_backoff() -> None:
 
 @pytest.mark.usefixtures("tables")
 async def test_a_task_runs_under_its_own_timeout() -> None:
-    """A task's timeout replaces TASK_TIMEOUT, shorter or longer."""
-    await enqueue(quick, seconds=0.15)  # Under TASK_TIMEOUT (0.2), over its own.
-    await enqueue(patient, seconds=0.3)  # Over TASK_TIMEOUT, under its own.
+    """A task's timeout replaces TASK_TIMEOUT, shorter or longer.
 
-    await Worker().run_once()
+    Each task sleeps ten times one of the two timeouts and a tenth of the
+    other, so only the timeout that applies explains how it ends, however
+    slow the machine: a sleep never ends early, and a tenth leaves room.
+    """
+
+    @task(name="tests.shorter", timeout=0.05, max_attempts=1)
+    async def shorter() -> None:
+        await asyncio.sleep(0.5)
+        ran.append("shorter")
+
+    @task(name="tests.longer", timeout=5, max_attempts=1)
+    async def longer() -> None:
+        await asyncio.sleep(0.5)
+        ran.append("longer")
+
+    def config(task_timeout: float) -> MessagingSettings:
+        return MessagingSettings(
+            **{**FAST, "TASK_TIMEOUT": task_timeout, "VISIBILITY_TIMEOUT": 60}
+        )
+
+    await enqueue(shorter)
+    await Worker(config(task_timeout=5)).run_once()
+    await enqueue(longer)
+    await Worker(config(task_timeout=0.05)).run_once()
 
     statuses = {row["target"]: row["status"] for row in await rows()}
-    assert statuses == {"tests.quick": DEAD, "tests.patient": DONE}
-    assert ran == ["patient"]
+    assert statuses == {"tests.shorter": DEAD, "tests.longer": DONE}
+    assert ran == ["longer"]
 
 
 @pytest.mark.usefixtures("messaging")
@@ -889,7 +903,9 @@ def test_the_messages_command_lists_and_cancels() -> None:
         await enqueue(low, label="a")
         await enqueue(high, label="b")
         await enqueue(with_policy, error="broken")
-        worker = Worker()
+        # A lease that outlasts the commands below on any machine: --locked
+        # must still see it, whatever the commands cost.
+        worker = Worker(MessagingSettings(**{**FAST, "VISIBILITY_TIMEOUT": 60}))
         (claimed,) = await worker.claim(1)
         ids = [claimed.id]
         await set_rows(available_at=datetime.now(UTC) - timedelta(seconds=3))

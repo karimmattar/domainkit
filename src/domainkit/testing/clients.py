@@ -14,9 +14,21 @@ as the ``client_for`` fixtures do.
 
 import asyncio
 import inspect
-from collections.abc import Awaitable, Callable, Generator, Mapping, MutableMapping
+from collections.abc import (
+    AsyncGenerator,
+    Awaitable,
+    Callable,
+    Generator,
+    Mapping,
+    MutableMapping,
+)
 from concurrent.futures import Future
-from contextlib import contextmanager
+from contextlib import (
+    AbstractAsyncContextManager,
+    AbstractContextManager,
+    asynccontextmanager,
+    contextmanager,
+)
 from contextvars import Context, copy_context
 from functools import partial
 from types import TracebackType
@@ -80,7 +92,15 @@ class TestClient(StarletteTestClient):
 
 
 class CarryingPortal:
-    """A blocking portal whose calls start with the caller's context values."""
+    """A blocking portal whose calls start with the caller's context values.
+
+    Every method that starts work in the event loop from another thread
+    (``call``, ``start_task_soon``, ``start_task`` and
+    ``wrap_async_context_manager``, the whole of anyio's) runs it with a
+    copy of the calling thread's context. Starlette's ``TestClient`` runs
+    the application through these; which ones depends on its version.
+    Anything else is the wrapped portal's own.
+    """
 
     def __init__(self, portal: BlockingPortal) -> None:
         """Wrap ``portal``."""
@@ -90,6 +110,17 @@ class CarryingPortal:
         """Run ``func(*args)`` in the event loop; return what it returns."""
         return self.portal.call(_carried, copy_context(), func, *args)
 
+    def start_task_soon(
+        self, func: Callable[..., Any], *args: object, name: object = None
+    ) -> Future[Any]:
+        """Start ``func(*args)`` in the event loop; return a future of its result.
+
+        Cancelling the future cancels the task, as the wrapped portal's does.
+        """
+        return self.portal.start_task_soon(
+            _carried, copy_context(), func, *args, name=name
+        )
+
     def start_task(
         self, func: Callable[..., Awaitable[Any]], *args: object, name: object = None
     ) -> tuple[Future[Any], Any]:
@@ -97,6 +128,18 @@ class CarryingPortal:
         return self.portal.start_task(
             _carried_task, copy_context(), func, *args, name=name
         )
+
+    def wrap_async_context_manager[T](
+        self, manager: AbstractAsyncContextManager[T]
+    ) -> AbstractContextManager[T]:
+        """Return a context manager that enters and exits ``manager`` in the loop."""
+        return self.portal.wrap_async_context_manager(
+            _carried_manager(copy_context(), manager)
+        )
+
+    def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - the portal's attribute.
+        """Read any other attribute from the wrapped portal."""
+        return getattr(self.portal, name)
 
 
 class AsyncTestClient(httpx2.AsyncClient):
@@ -261,6 +304,16 @@ async def _carried(context: Context, func: Callable[..., Any], *args: object) ->
     if inspect.isawaitable(result):
         return await result
     return result
+
+
+@asynccontextmanager
+async def _carried_manager[T](
+    context: Context, manager: AbstractAsyncContextManager[T]
+) -> AsyncGenerator[T]:
+    """Enter and exit ``manager`` with ``context``'s values."""
+    _adopt(context)
+    async with manager as value:
+        yield value
 
 
 async def _carried_task(

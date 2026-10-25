@@ -35,6 +35,7 @@ from domainkit.lifecycle import (
 )
 from domainkit.management.base import run_async
 from domainkit.tasks import spawn
+from domainkit.utils import closing as closing_module
 from domainkit.utils.closing import (
     RESERVED_SHARE,
     close_each,
@@ -556,10 +557,58 @@ async def test_failures_after_a_close_that_worked_are_raised() -> None:
         await close_in_turn(["fine", "fails"], close)
 
 
+class Turns:
+    """``asyncio`` as ``close_in_turn`` sees it, on a clock only its waits move.
+
+    A wait gives the item a few turns of the event loop and ends, with no
+    time passed if the item has closed by then. An item still open has used
+    its whole share: the clock moves on by it, and the item is cut off, for
+    real. So the shares are exact, however slow the machine, and the tests
+    take no time.
+    """
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Stand in for ``asyncio`` in ``domainkit.utils.closing``."""
+        self.now = 0.0
+        self.shares: list[float | None] = []
+        monkeypatch.setattr(closing_module, "asyncio", self)
+
+    def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - asyncio's names.
+        """Everything else is asyncio's own."""
+        return getattr(asyncio, name)
+
+    def get_running_loop(self) -> "Turns":
+        """The loop whose clock ``close_in_turn`` reads: this one."""
+        return self
+
+    def time(self) -> float:
+        """The clock, in seconds."""
+        return self.now
+
+    async def wait(
+        self,
+        futures: list["asyncio.Future[Any]"],
+        *,
+        timeout: float | None,  # noqa: ASYNC109 - asyncio.wait's signature.
+    ) -> tuple[set["asyncio.Future[Any]"], set["asyncio.Future[Any]"]]:
+        """Note the share; return what closed, using all of it if not."""
+        self.shares.append(timeout)
+        if timeout is None:  # No limit: as long as it takes.
+            return await asyncio.wait(futures)
+        for _ in range(5):
+            await asyncio.sleep(0)
+        done = {future for future in futures if future.done()}
+        pending = set(futures) - done
+        if pending:
+            self.now += timeout
+        return done, pending
+
+
 async def test_close_in_turn_shares_the_time_and_tries_every_item(
-    caplog: pytest.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """One that hangs is cut off at its share; the next still gets its own."""
+    turns = Turns(monkeypatch)
     closed: list[str] = []
 
     async def close(item: str) -> None:
@@ -571,11 +620,13 @@ async def test_close_in_turn_shares_the_time_and_tries_every_item(
 
     with (
         caplog.at_level(logging.ERROR, "domainkit.utils.closing"),
-        pytest.raises(TimeoutError, match=r"^'hung' did not close within 0\.0\d*s$"),
+        pytest.raises(TimeoutError, match=r"^'hung' did not close within 0\.50s$"),
     ):
         async with asyncio.timeout(5):
-            await close_in_turn(["hung", "fails", "last"], close, within=0.03)
+            await close_in_turn(["hung", "fails", "last"], close, within=0.6)
     assert closed == ["hung", "fails", "last"]
+    # Each keeps a reserve of 0.05 s for every item after it.
+    assert turns.shares == pytest.approx([0.5, 0.05, 0.1])
     assert caplog.messages == ["Could not close 'fails'"]
     cause = caplog.records[0].exc_info
     assert cause
@@ -584,10 +635,14 @@ async def test_close_in_turn_shares_the_time_and_tries_every_item(
     closed.clear()
     await close_in_turn(["a", "b"], close)  # No limit: in order.
     assert closed == ["a", "b"]
+    assert turns.shares[3:] == [None, None]
 
 
-async def test_close_in_turn_lets_one_item_use_most_of_the_time() -> None:
+async def test_close_in_turn_lets_one_item_use_most_of_the_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Less only the reserves of the items after it, not an equal split."""
+    turns = Turns(monkeypatch)
     closed: list[str] = []
 
     async def close(item: str) -> None:
@@ -600,22 +655,20 @@ async def test_close_in_turn_lets_one_item_use_most_of_the_time() -> None:
         async with asyncio.timeout(5):
             await close_in_turn(["slow", "quick"], close, within=0.4)
     assert closed == ["quick"]
+    assert turns.shares == pytest.approx([0.35, 0.05])
     assert RESERVED_SHARE == 0.25
     await close_in_turn([], close, within=1)  # Nothing to close.
 
 
 async def test_close_in_turn_keeps_only_the_later_items_reserves(
-    caplog: pytest.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The last item may use all that is left: no reserve is kept after it."""
-    loop = asyncio.get_running_loop()
-    started: dict[str, float] = {}
+    turns = Turns(monkeypatch)
 
     async def hangs(item: str) -> None:
-        started[item] = loop.time()
         await asyncio.Event().wait()
 
-    end = loop.time() + 0.4
     with (
         caplog.at_level(logging.ERROR, "domainkit.utils.closing"),
         pytest.raises(TimeoutError, match=r"^'first' did not close"),
@@ -625,9 +678,9 @@ async def test_close_in_turn_keeps_only_the_later_items_reserves(
 
     cause = caplog.records[0].exc_info
     assert cause
-    reported = float(str(cause[1]).removeprefix("'last' did not close within ")[:-1])
-    # Measured from when "last" started, so a slow machine changes nothing.
-    assert reported == pytest.approx(end - started["last"], abs=0.02)
+    # "first" used 0.35 s of 0.4, keeping 0.05 for "last"; "last" keeps none.
+    assert str(cause[1]) == "'last' did not close within 0.05s"
+    assert turns.shares == pytest.approx([0.35, 0.05])
 
 
 class Stubborn:
@@ -663,8 +716,11 @@ class Stubborn:
             await asyncio.wait(self.tasks, timeout=5)
 
 
-async def test_close_in_turn_leaves_an_item_that_ignores_cancellation_behind() -> None:
+async def test_close_in_turn_leaves_an_item_that_ignores_cancellation_behind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Cut off at its share and cancelled, it holds up none of the later items."""
+    Turns(monkeypatch)
     stubborn = Stubborn()
     closed: list[str] = []
 
@@ -675,10 +731,10 @@ async def test_close_in_turn_leaves_an_item_that_ignores_cancellation_behind() -
 
     try:
         with pytest.raises(
-            TimeoutError, match=r"^'stubborn' did not close within 0\.\d+s$"
+            TimeoutError, match=r"^'stubborn' did not close within 0\.35s$"
         ):
             async with asyncio.timeout(5):
-                await close_in_turn(["stubborn", "last"], close, within=0.05)
+                await close_in_turn(["stubborn", "last"], close, within=0.4)
         assert closed == ["stubborn", "last"]
         [held] = stubborn.tasks
         assert not held.done()  # Left behind, still running.

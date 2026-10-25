@@ -1059,7 +1059,12 @@ async def test_proxies_from_the_environment_are_ignored(
 
 
 async def test_connecting_has_its_own_timeout() -> None:
-    """A receiver that never accepts fails after CONNECT_TIMEOUT, not TIMEOUT."""
+    """A receiver that never accepts fails after CONNECT_TIMEOUT, not TIMEOUT.
+
+    TIMEOUT is two hundred times CONNECT_TIMEOUT, and it is the whole
+    attempt's: had the connect waited for it, the attempt would end with
+    "No answer within 60s", not with ConnectTimeout.
+    """
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", 0))
     listener.listen(0)
@@ -1075,7 +1080,7 @@ async def test_connecting_has_its_own_timeout() -> None:
             f"http://127.0.0.1:{port}/",
             b"{}",
             HEADERS,
-            settings_for(TIMEOUT=3, CONNECT_TIMEOUT=0.3),
+            settings_for(TIMEOUT=60, CONNECT_TIMEOUT=0.3),
             allow_http=True,
         )
     finally:
@@ -1086,4 +1091,3 @@ async def test_connecting_has_its_own_timeout() -> None:
     assert outcome.status is None
     assert outcome.error is not None
     assert outcome.error.startswith("ConnectTimeout")
-    assert outcome.seconds < 2

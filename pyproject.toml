@@ -91,6 +91,8 @@ packages = [{ include = "domainkit", from = "src" }]
 dev = [
     "pytest (>=9.1.1,<10.0.0)",
     "pytest-cov (>=7.1.0,<8.0.0)",
+    # A test that hangs ends the run within its time limit, naming itself.
+    "pytest-timeout (>=2.4.0,<3.0.0)",
     "ruff (>=0.16.8,<0.17.0)",
     "mypy (>=2.3.1,<3.0.0)",
     "pip-audit (>=2.9.0,<3.0.0)",
@@ -149,6 +151,11 @@ pythonpath = ["."]
 # pytester: the testing plugin is checked by running a pytest session in a test.
 addopts = "-ra --strict-markers --strict-config -p pytester"
 filterwarnings = ["error"]
+# The slowest test takes seconds; one that runs two minutes hangs. The thread
+# method stops even a hang inside C code or another thread: it prints every
+# thread's stack, the hung test's among them, and ends the run.
+timeout = 120
+timeout_method = "thread"
 
 [tool.coverage.run]
 branch = true
