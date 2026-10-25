@@ -24,7 +24,7 @@ from typing import Any, ClassVar, Final
 import pytest
 from prometheus_client import REGISTRY
 from pydantic import BaseModel, TypeAdapter, ValidationError
-from sqlalchemy import select, update
+from sqlalchemy import insert, select, update
 
 from domainkit import setup
 from domainkit.apps import registry
@@ -63,7 +63,14 @@ from domainkit.contrib.messaging.dispatch import (
     commit_publisher,
 )
 from domainkit.contrib.messaging.outbox import insert_statements, message_row
-from domainkit.contrib.messaging.tables import BLANKED, DEAD, DONE, PENDING, messages
+from domainkit.contrib.messaging.tables import (
+    BLANKED,
+    CANCELLED,
+    DEAD,
+    DONE,
+    PENDING,
+    messages,
+)
 from domainkit.contrib.messaging.worker import Claimed, backoff
 from domainkit.db import connections
 from domainkit.ddd import DomainEvent, event_bus
@@ -942,6 +949,77 @@ def test_retries_and_cancels_are_audited_with_their_operator(
     assert cancelled["operator_source"] == "option"
     assert missed["cancelled"] is False
     assert {row["outcome"] for row in rows} == {"success"}
+
+
+def test_retries_and_cancels_reach_the_outbox_named(
+    database_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--database`` picks the outbox acted on, and the record says which."""
+    monkeypatch.setenv("DOMAINKIT_OPERATOR", "ops-1")
+    other = f"sqlite+aiosqlite:///{tmp_path / 'other.sqlite3'}"
+    registry.clear()
+    with override_settings(
+        INSTALLED_DOMAINS=[MESSAGING, "domainkit.contrib.audit", ALPHA],
+        DATABASES={"default": {"URL": database_url}, "other": {"URL": other}},
+        MESSAGING=FAST,
+    ):
+        setup()
+        dead, waiting = (
+            message_row(
+                kind="task", target=target, payload={}, headers={}, max_attempts=1
+            )
+            for target in ("tests.always_fails", "tests.always_fails")
+        )
+
+        async def prepare() -> None:
+            async with connections.engine().begin() as connection:
+                for table in (messages, audit_log, audit_keys, audit_seals):
+                    await connection.run_sync(table.create)
+            async with connections.engine("other").begin() as connection:
+                await connection.run_sync(messages.create)
+                await connection.execute(insert(messages), [dead, waiting])
+                await connection.execute(
+                    update(messages)
+                    .where(messages.c.id == dead["id"])
+                    .values(status=DEAD)
+                )
+            await connections.close_all()
+
+        async def statuses() -> tuple[list[str], list[dict[str, Any]]]:
+            async with connections.engine("other").connect() as connection:
+                found = list(
+                    await connection.scalars(
+                        select(messages.c.status).order_by(messages.c.status)
+                    )
+                )
+            async with connections.engine().connect() as connection:
+                rows = await connection.execute(
+                    select(audit_log.c.details)
+                    .where(audit_log.c.action.startswith("operator.messages"))
+                    .order_by(audit_log.c.occurred_at)
+                )
+                details = [row.details for row in rows]
+            await connections.close_all()
+            return found, details
+
+        asyncio.run(prepare())
+        assert run("messages", "--retry", "all") == "Queued 0 message(s).\n"
+        assert run("messages", "--retry", "all", "--database", "other") == (
+            "Queued 1 message(s).\n"
+        )
+        cancelled = run(
+            "messages", "--cancel", str(waiting["id"]), "--database", "other"
+        )
+        found, details = asyncio.run(statuses())
+    registry.clear()
+
+    assert cancelled == f"Cancelled {waiting['id']}.\n"
+    assert found == [CANCELLED, PENDING]
+    assert [(each["database"], each.get("queued")) for each in details] == [
+        ("default", 0),
+        ("other", 1),
+        ("other", None),
+    ]
 
 
 def test_sensitive_is_a_task_option() -> None:
