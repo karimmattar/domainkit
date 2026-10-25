@@ -288,10 +288,9 @@ async def _close_all(closers: Mapping[str, Closer], deadline: float) -> None:
     Closers still running at the deadline are cancelled and left: one that
     ignores cancellation cannot hold the phase. They are owned tasks from
     then on (``domainkit.tasks``), so the ``tasks`` phase waits for them to
-    end before the resources they use close.
+    end before the resources they use close. ``closers`` holds one at
+    least: ``closers(phase)`` leaves empty steps out.
     """
-    if not closers:
-        return
 
     async def close(closer: Closer) -> None:
         await closer()
