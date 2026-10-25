@@ -1,6 +1,6 @@
 """Install ``domainkit.contrib.mail`` (with ``domainkit.contrib.messaging``)."""
 
-from domainkit.apps import DomainConfig, registry
+from domainkit.apps import DomainConfig, Requirement, registry
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.contrib.messaging import task
@@ -18,19 +18,15 @@ class MailConfig(DomainConfig):
     label = "mail"
     verbose_name = "Mail"
     settings_class = MailSettings
+    requires = (Requirement(MESSAGING, "the worker sends the mail"),)
 
     def ready(self) -> None:
         """Register the sending task, and check the backend now, not at first use.
 
         Raises:
-            ImproperlyConfigured: Messaging is missing, the backend is
-                unusable, or it is made for development where deployed.
+            ImproperlyConfigured: The backend is unusable, or it is made for
+                development where deployed.
         """
-        if not registry.is_installed(MESSAGING):
-            raise ImproperlyConfigured(
-                f"domainkit.contrib.mail needs {MESSAGING!r} in INSTALLED_DOMAINS: "
-                "the worker sends the mail."
-            )
         config = registry.settings(MailSettings)
         # Mail holds addresses, and often links and codes: blanked once dead too.
         task(

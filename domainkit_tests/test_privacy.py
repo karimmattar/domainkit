@@ -253,7 +253,10 @@ def test_privacy_needs_the_audit_trail() -> None:
     registry.clear()
     with (
         override_settings(INSTALLED_DOMAINS=[PRIVACY, ALPHA]),
-        pytest.raises(ImproperlyConfigured, match=r"add 'domainkit\.contrib\.audit'"),
+        pytest.raises(
+            ImproperlyConfigured,
+            match=r"needs 'domainkit\.contrib\.audit' in INSTALLED_DOMAINS: it records",
+        ),
     ):
         setup()
     registry.clear()

@@ -18,6 +18,12 @@ All notable changes to domainkit. The format follows
   (`domainkit.architecture.LayerRules`) and otherwise apply the settings'
   (DSGN-12; ADR 0003).
 
+- `DomainConfig.requires` lists the domain packages a domain cannot work
+  without, as names or `domainkit.apps.Requirement(name, reason)`;
+  `setup()` refuses a missing one before any domain's `ready()` runs, with
+  one error naming every one missing. Every contrib app declares it
+  (DSGN-04; ADR 0077).
+
 ### Changed
 
 - Shutdown closers come from one table: the framework's own kinds are
@@ -25,6 +31,13 @@ All notable changes to domainkit. The format follows
   `lifecycle.register` adds, and the new `lifecycle.closers(phase)` lists
   what a phase closes, in the steps it runs them. Order, shares, and
   behaviour are unchanged; `register` stays the way to add one (DSGN-13).
+- The contrib apps' checks for the apps they need moved from each app's
+  `ready()` to their `requires`, so they run before any app is wired. The
+  messages keep their form, except privacy's, which now reads
+  "domainkit.contrib.privacy needs 'domainkit.contrib.audit' in
+  INSTALLED_DOMAINS: it records every operation in the audit trail."
+  A test fails on any new import of another app's internal modules, or of
+  the core into one; the 41 that exist are listed for 0.10 (DSGN-04).
 
 ## [0.9.1] - 2026-10-25
 

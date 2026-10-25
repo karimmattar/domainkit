@@ -1098,6 +1098,7 @@ revision: the test database migrates up, down, and up again.
 | --- | --- | --- |
 | A bounded context | a package with `apps.py` (`DomainConfig`) | `INSTALLED_DOMAINS` |
 | Domain settings | a Pydantic model | `DomainConfig.settings_class` |
+| Domains a domain cannot work without | `DomainConfig.requires`: package names, or `apps.Requirement(name, reason)` | (checked by `setup()` before any `ready()`; a missing one is refused by name) |
 | Startup wiring | `DomainConfig.ready()` | (called by `setup()`) |
 | Process resources (clients, pools) | `async DomainConfig.startup()` / `shutdown()` | (called by the app lifespan; after the domains stop, the framework closes its caches, databases, ledgers, and brokers, in that order, each within 5 seconds, and a failure is logged without keeping the rest open; management commands close them too) |
 | A readiness check | `async DomainConfig.check()` | (called by `/ready`) |
@@ -1113,6 +1114,7 @@ revision: the test database migrates up, down, and up again.
 | How errors name a column | `info={"field": "<API name>"}` on the `Column` | (read by unique, foreign key, NOT NULL, and CHECK errors) |
 | A table fixtures or `flush` leave alone | `info={"fixtures": False}`, `{"flush": False}`, or `{"append_only": True}` on the `Table` | (read by `dumpdata`, `loaddata`, and `flush`) |
 | A deprecated route or version | `Depends(Deprecation(...))`, `versioned_router(...)` | `domainkit.http.versioning` |
+| Packages a domain layer may import, layers of the project's own | the `ARCHITECTURE` keys | `ARCHITECTURE` ([Layer rules](#layer-rules)) |
 | Tables a domain stops using | `DomainConfig.holds_table(table)` | (asked by migrations and content types; a swapped user table answers no) |
 | A user model | a subclass of `AbstractUser` or `AbstractBaseUser`, and its table | `AUTH.USER_MODEL`, `AUTH.USER_TABLE` |
 | An authentication or permission backend | `auth.backends.BaseBackend` | `AUTH.BACKENDS` |

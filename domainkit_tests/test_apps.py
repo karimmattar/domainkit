@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from domainkit import setup
-from domainkit.apps import DomainConfig, DomainRegistry, registry
+from domainkit.apps import DomainConfig, DomainRegistry, Requirement, registry
 from domainkit.conf import override_settings
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit_tests.conftest import MakePackage
@@ -228,3 +228,136 @@ def test_setup_is_idempotent() -> None:
 
     assert [config.label for config in registry] == ["alpha"]
     assert AlphaConfig.calls == ["ready"]
+
+
+CONTRIB_APPS = {
+    "domainkit.contrib.audit": (),
+    "domainkit.contrib.auth": ("domainkit.contrib.contenttypes",),
+    "domainkit.contrib.contenttypes": (),
+    "domainkit.contrib.evidence": (),
+    "domainkit.contrib.flags": (),
+    "domainkit.contrib.idempotency": (),
+    "domainkit.contrib.mail": ("domainkit.contrib.messaging",),
+    "domainkit.contrib.messaging": (),
+    "domainkit.contrib.notifications": ("domainkit.contrib.messaging",),
+    "domainkit.contrib.objectpermissions": (),
+    "domainkit.contrib.privacy": ("domainkit.contrib.audit",),
+    "domainkit.contrib.webhooks": ("domainkit.contrib.messaging",),
+}
+"""Every installable contrib app, and the apps it cannot work without."""
+
+
+def requiring(make_package: MakePackage, name: str, requires: str) -> None:
+    """Write domain ``name`` whose config declares ``requires`` (Python source)."""
+    make_package(
+        name,
+        {
+            "apps.py": f"""
+                from domainkit.apps import DomainConfig, Requirement
+                from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
+
+                class NeedyConfig(DomainConfig):
+                    requires = {requires}
+
+                    def ready(self) -> None:
+                        AlphaConfig.calls.append("needy ready")
+            """
+        },
+    )
+
+
+def test_a_missing_requirement_is_refused_before_any_domain_is_ready(
+    make_package: MakePackage,
+) -> None:
+    """``setup`` names the package and the setting; no ``ready()`` has run."""
+    requiring(make_package, "needy", '("domainkit_tests.sample_domains.beta",)')
+    domains = DomainRegistry()
+    with (
+        override_settings(INSTALLED_DOMAINS=[ALPHA, "needy"]),
+        pytest.raises(ImproperlyConfigured) as raised,
+    ):
+        domains.populate([ALPHA, "needy"])
+
+    assert str(raised.value) == (
+        "needy needs 'domainkit_tests.sample_domains.beta' in INSTALLED_DOMAINS."
+    )
+    assert AlphaConfig.calls == []
+    assert not domains.ready
+
+
+def test_every_missing_requirement_is_named_with_its_reason(
+    make_package: MakePackage,
+) -> None:
+    """One error lists each missing package, in ``INSTALLED_DOMAINS`` order."""
+    requiring(
+        make_package,
+        "needy",
+        f'(Requirement("gone.first", "it keeps the rows"), "gone.second", "{ALPHA}")',
+    )
+    with (
+        override_settings(INSTALLED_DOMAINS=["needy", ALPHA]),
+        pytest.raises(ImproperlyConfigured) as raised,
+    ):
+        DomainRegistry().populate(["needy", ALPHA])
+
+    assert str(raised.value) == (
+        "needy needs 'gone.first' in INSTALLED_DOMAINS: it keeps the rows. "
+        "needy needs 'gone.second' in INSTALLED_DOMAINS."
+    )
+
+
+def test_a_requirement_installed_in_any_order_is_met(
+    make_package: MakePackage,
+) -> None:
+    """Order does not matter: a requirement after its dependant is enough."""
+    requiring(make_package, "needy", f'("{ALPHA}",)')
+    domains = DomainRegistry()
+    with override_settings(INSTALLED_DOMAINS=["needy", ALPHA]):
+        domains.populate(["needy", ALPHA])
+
+    assert domains.ready
+    assert AlphaConfig.calls == ["needy ready", "ready"]
+
+
+@pytest.mark.parametrize(
+    ("requires", "message"),
+    [
+        ("(3,)", "NeedyConfig.requires takes package names or Requirement, not 3"),
+        ('("not a package",)', "names 'not a package', which is not a package name"),
+        ('(Requirement(""),)', "names '', which is not a package name"),
+        ('("needy",)', "NeedyConfig.requires names the domain itself"),
+        (
+            "tuple(f'pkg{n}' for n in range(33))",
+            "NeedyConfig.requires lists 33 domains; at most 32",
+        ),
+    ],
+)
+def test_requires_is_validated(
+    make_package: MakePackage, requires: str, message: str
+) -> None:
+    """Entries are package names, other than the domain's, and few."""
+    requiring(make_package, "needy", requires)
+    with (
+        override_settings(INSTALLED_DOMAINS=[ALPHA, "needy"]),
+        pytest.raises(ImproperlyConfigured, match=message),
+    ):
+        DomainRegistry().populate([ALPHA, "needy"])
+
+
+def test_every_contrib_app_declares_what_it_requires() -> None:
+    """Each app states its requirements itself, and they are installable apps."""
+    for name, required in CONTRIB_APPS.items():
+        config = DomainConfig.create(name)
+        assert "requires" in vars(type(config)), name
+        assert [r.name for r in config.requirements()] == list(required), name
+        assert set(required) <= set(CONTRIB_APPS)
+
+
+def test_requirements_read_as_one_sentence_each() -> None:
+    """A bare name and a reasoned requirement, as errors show them."""
+    assert Requirement.of("pkg") == Requirement("pkg")
+    assert Requirement.of(Requirement("pkg", "why")).reason == "why"
+    assert Requirement("pkg").problem("app") == "app needs 'pkg' in INSTALLED_DOMAINS."
+    assert Requirement("pkg", "it needs it").problem("app") == (
+        "app needs 'pkg' in INSTALLED_DOMAINS: it needs it."
+    )
