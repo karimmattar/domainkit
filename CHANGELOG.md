@@ -9,6 +9,64 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `docs/tutorial.md`: from `pip install` to an authenticated resource with
+  one aggregate, created, changed, and refused by its rules over HTTP. Its
+  commands, and the README quick start's, are run as written by the tests
+  (`test_walkthroughs.py`): every command up to `runserver` in a new
+  directory, then every `curl` line against the generated application
+  (DOCS-05).
+- `python -m domainkit` runs the `domainkit` program, for an interpreter
+  whose scripts are not on the `PATH`; it answered "No module named
+  domainkit.__main__" (DOCS-06).
+- `docs/audit/0.9.0.md` gives every review id the CHANGELOG cites, such as
+  `(FIN-77)` or `(R22)`, a title and a status; the preamble links it. Open
+  security findings are listed by id and severity only (DOCS-11).
+- `docs/threat-model.md`, a first draft: what a service protects, its
+  trust boundaries, the threats at each and what domainkit does about
+  them, the risks left for 0.10, and what a project must do itself
+  (FIN-85, DOCS-04).
+- `docs/versioning.md` drafts which releases get security fixes and for
+  how long, for the owner to confirm; until then `SECURITY.md`'s "latest
+  minor only" holds (FIN-85).
+- ADRs 0078 (events delivered in process after commit, or durably through
+  the outbox) and 0079 (every setting validated at startup by a model),
+  for decisions taken in 0.1.0; the ADR index lists those still without a
+  record (DSGN-15).
+
+### Changed
+
+- `startdomain`'s next steps end with a login and a first `curl` of the
+  new resource, at `/api/v1/<name>/<plural>`, and the README quick start
+  creates its superuser without prompts, logs in, and lists the invoices
+  (DOCS-02).
+- Each ADR's status names what amended it (a later record, dated sections
+  at its end, or earlier corrections in place), the index is in order and
+  repeats each status, and the rule for amending is written down: append a
+  dated section, or supersede with a new record. ADR 0003 records that the
+  domain layer may import `domainkit.clock` (DOCS-08).
+- The settings tables state every limit their models enforce, and
+  `test_docs.py` checks each row's default and limits against the models,
+  not only that the name is on the page; mail.md's tables are headed
+  `MAIL` and `NOTIFICATIONS` (DOCS-09).
+- `test_docs.py` checks every relative link and anchor in `docs/`, the
+  README, `SECURITY.md`, and the CHANGELOG, and the middleware table's
+  order against the template's and `DEFAULT_MIDDLEWARE` (DOCS-07).
+
+### Fixed
+
+- The first request a newcomer made after the quick start, to the
+  `/api/v1/invoices` that `startdomain` said it mounted, answered 404: the
+  resource is `/invoices` within that router (DOCS-02).
+- The README listed `docs/runtime.md` three times and 14 of the 17 extras
+  (DOCS-06).
+- `docs/reference.md` called its middleware table the template's order,
+  which installs eleven of them, `LocaleMiddleware` before
+  `SecurityHeadersMiddleware` where the table had it after; the
+  `flags` row left out `set`'s options; `docs/privacy.md` linked a heading
+  that does not exist; `DEBUG_TOOLBAR` had no row (DOCS-07, DOCS-09).
+
 ## [0.9.1] - 2026-10-25
 
 ### Added
