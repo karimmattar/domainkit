@@ -186,6 +186,7 @@ Each `BROKERS` entry:
 | `REQUEST_QUEUE_TIMEOUT` | `1.0` | Seconds (at most 60) a request past the cap waits for a slot before it is answered 503 `overloaded`. |
 | `CONCURRENCY_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths never counted against the cap, so probes and scrapes are never refused; compared without the root path the application is mounted at (`--root-path`). |
 | `HTTP_CLIENT` | see [Outgoing HTTP calls](#outgoing-http-calls) | Defaults of outgoing calls through `domainkit.http.client`. |
+| `GUARD_LOOKUP_THREADS` | `16` | Threads (1 to 256) that look host names up for guarded calls and webhooks, in each process. One caller (a user, or an address) may hold a quarter of them, so hosts one caller chose that never answer leave the rest to others ([runtime.md](runtime.md#outgoing-http-calls)). |
 | `READINESS_TIMEOUT` | `5.0` | Seconds each readiness check may take (at most 60). |
 | `READINESS_CACHE_SECONDS` | `1.0` | How long a `/ready` result is reused, from when its checks ended; probes that come while checks run wait for them, so probe floods cannot load the database. |
 | `READINESS_DETAILS` | `False` | Name failing components in `/ready` responses (always logged). |

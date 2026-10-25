@@ -3,7 +3,8 @@
 Free-threaded Python (3.14t), and servers that run a loop per thread, share
 one rate limiter, one middleware, one hashing pool, one application's live
 connection slots, the event bus, an HTTP client's circuit breaker, the
-guard's lookup threads, the remembered client addresses, the handles of
+guard's lookup threads and its owners' shares, a throttled log's counts,
+the remembered client addresses, the handles of
 the request metrics, the principal cache, and the grants principals share
 between threads, and the registries that keep each loop's tasks,
 publishers, and brokers. Each test drives them from several threads at
@@ -13,6 +14,7 @@ with the lock held (where there is one).
 
 import asyncio
 import ipaddress
+import logging
 import os
 import random
 import socket
@@ -60,7 +62,7 @@ from domainkit.db.connections import (
 from domainkit.ddd import DomainEvent, EventBus
 from domainkit.http import live, metrics, ratelimit
 from domainkit.http.client import BREAKER_HOSTS, CircuitBreaker
-from domainkit.http.guard import GuardResolver
+from domainkit.http.guard import GuardResolver, lookups_for
 from domainkit.http.live import Slots
 from domainkit.http.live_events import LiveEvents
 from domainkit.http.metrics import REQUESTS, MetricsMiddleware
@@ -68,7 +70,7 @@ from domainkit.http.middleware import ProxyHeadersMiddleware, _address
 from domainkit.http.ratelimit import MemoryBackend, client_group
 from domainkit.http.shedding import QUEUE_FULL, ShedReport
 from domainkit.http.websockets import WebSocketLimitsMiddleware
-from domainkit.log import JsonFormatter
+from domainkit.log import JsonFormatter, ThrottledLog
 from domainkit_tests.conftest import UseAuth
 
 THREADS = 8
@@ -723,6 +725,57 @@ def test_the_guards_lookups_are_counted_from_every_thread(
 
     assert sum(found) > 0
     assert (resolver.running, resolver._running) == (0, {})
+
+
+def test_the_guards_owners_are_counted_from_every_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each owner's share holds across threads; no count is lost or leaked."""
+
+    def getaddrinfo(host: str, port: int, **options: object) -> list[object]:
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", port))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    resolver = GuardResolver(threads=8, per_host=8)
+
+    async def lookups(index: int) -> int:
+        found = 0
+        with lookups_for(f"owner{index % 3}"):
+            for attempt in range(40):
+                try:
+                    await resolver.lookup(f"h{(index + attempt) % 5}.test", 443)
+                except socket.gaierror:
+                    continue  # Past a bound: refused at once.
+                found += 1
+        return found
+
+    found = on_threads(lambda index: asyncio.run(lookups(index)))
+    asyncio.run(resolver.close())
+
+    assert sum(found) > 0
+    assert (resolver.running, resolver._running, resolver._owners) == (0, {}, {})
+
+
+def test_a_throttled_log_counts_every_repeat_from_every_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One line per key is written; every other is counted, under the lock."""
+    throttled = ThrottledLog(logging.getLogger("domainkit_tests.threads"))
+
+    def monotonic() -> float:
+        assert throttled._lock.locked()
+        return 1000.0  # Frozen: nothing is let through again.
+
+    monkeypatch.setattr(clock_module, "monotonic", monotonic)
+
+    def repeat(index: int) -> None:
+        for _ in range(2_000):
+            throttled.warning("event", f"key{index % 2}", "A line")
+
+    on_threads(repeat)
+
+    assert sorted(throttled._seen) == [("event", "key0"), ("event", "key1")]
+    assert sum(seen.held for seen in throttled._seen.values()) == THREADS * 2_000 - 2
 
 
 def test_loops_on_threads_get_their_own_engines(

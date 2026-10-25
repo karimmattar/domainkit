@@ -103,6 +103,8 @@ MAX_RESPONSE_SIZE: Final = 1_073_741_824
 """The largest answer an outgoing call may be allowed to read: 1 GiB."""
 MAX_REQUESTS_AT_ONCE: Final = 100_000
 """The most requests an event loop may admit, or queue, at once."""
+MAX_LOOKUP_THREADS: Final = 256
+"""The most threads the URL guard may look host names up on (each holds a stack)."""
 
 
 class DatabaseConfig(BaseModel):
@@ -659,6 +661,8 @@ class Settings(BaseModel):
     """Exact paths never counted against the cap, so probes are never refused."""
     HTTP_CLIENT: HttpClientConfig = Field(default_factory=HttpClientConfig)
     """Defaults of outgoing calls through ``domainkit.http.client``."""
+    GUARD_LOOKUP_THREADS: int = Field(default=16, ge=1, le=MAX_LOOKUP_THREADS)
+    """Threads that look host names up for guarded calls and webhooks, per process."""
     READINESS_TIMEOUT: float = Field(default=5.0, gt=0, le=60)
     """Seconds each readiness check may take before it counts as failed."""
     READINESS_CACHE_SECONDS: float = Field(default=1.0, ge=0)
