@@ -13,6 +13,7 @@ class ObjectPermissionsConfig(DomainConfig):
 
     label = "objectpermissions"
     verbose_name = "Object permissions"
+    requires = ()
 
     def ready(self) -> None:
         """Map the aggregate; compile ``VisibleTo``; delete grants with objects."""

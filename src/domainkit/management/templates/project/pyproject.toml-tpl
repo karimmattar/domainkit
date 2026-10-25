@@ -5,7 +5,12 @@ requires-python = ">=3.13"
 dependencies = ["{{ dependency }}"]
 
 [dependency-groups]
-dev = ["domainkit[testing]"]                # pytest and httpx2, for the fixtures
+dev = [
+    "domainkit[testing]",                   # pytest and httpx2, for the fixtures
+    # Formats what the generators write; this is the range domainkit's own
+    # templates are checked with.
+    "ruff>=0.16.8,<0.17",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

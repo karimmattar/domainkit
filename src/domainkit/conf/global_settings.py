@@ -9,7 +9,7 @@ so a misspelled setting fails at startup instead of being silently ignored.
 import re
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
-from typing import Any, Final, Literal, Self
+from typing import Annotated, Any, Final, Literal, Self
 from urllib.parse import SplitResult, parse_qs, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -24,6 +24,7 @@ from pydantic import (
     model_validator,
 )
 
+from domainkit.architecture import LAYERS
 from domainkit.conf.env import project_root
 from domainkit.utils.rates import parse_rate
 from domainkit.utils.redis_urls import REDIS_SCHEMES as REDIS_SCHEMES
@@ -569,6 +570,91 @@ class HttpClientConfig(BaseModel):
     """CA certificates that sign the servers' certificates; default: the system's."""
 
 
+MODULE_NAME: Final = r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){0,15}$"
+"""A dotted module name, as ``myproject.kernel`` (16 parts at most)."""
+LAYER_NAME: Final = r"^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+"""A layer package's name, as ``ports``."""
+MAX_ARCHITECTURE_ENTRIES: Final = 64
+"""The most names one ``ARCHITECTURE`` list may hold."""
+MAX_EXTRA_LAYERS: Final = 8
+"""The most layers ``ARCHITECTURE.EXTRA_LAYERS`` may add."""
+
+type _ModuleName = Annotated[str, Field(pattern=MODULE_NAME, max_length=256)]
+type _LayerName = Annotated[str, Field(pattern=LAYER_NAME)]
+type _Modules = Annotated[
+    tuple[_ModuleName, ...], Field(max_length=MAX_ARCHITECTURE_ENTRIES)
+]
+
+
+class ArchitectureConfig(BaseModel):
+    """``ARCHITECTURE``: what the project adds to the layer rules ``check`` enforces.
+
+    Each entry extends ``domainkit.architecture``'s defaults; none removes a
+    rule. Empty, the rules are the framework's own.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    DOMAIN_ALLOWED: _Modules = ()
+    """More packages a domain layer may import, such as a shared kernel."""
+    FORBIDDEN_LIBRARIES: dict[_LayerName, _Modules] = Field(
+        default_factory=dict, max_length=MAX_EXTRA_LAYERS + 4
+    )
+    """More libraries a layer must not import: ``{"application": ("httpx",)}``."""
+    EXTRA_LAYERS: tuple[_LayerName, ...] = Field(
+        default=(), max_length=MAX_EXTRA_LAYERS
+    )
+    """Layer packages of the project's own, such as ``ports``; rules name them below."""
+    FORBIDDEN_LAYERS: dict[_LayerName, tuple[_LayerName, ...]] = Field(
+        default_factory=dict, max_length=MAX_EXTRA_LAYERS + 4
+    )
+    """More layers of the same domain a layer must not import, by layer."""
+    PUBLIC_SURFACE: _Modules = ()
+    """More parts of a domain other domains may import, as ``domain.values``."""
+
+    @model_validator(mode="after")
+    def check_layers(self) -> Self:
+        """Every layer named is known, and the domain layer keeps its allowlist."""
+        builtin = LAYERS
+        if clash := sorted(set(self.EXTRA_LAYERS) & set(builtin)):
+            raise ValueError(f"EXTRA_LAYERS repeats a built-in layer: {clash}")
+        if len(set(self.EXTRA_LAYERS)) != len(self.EXTRA_LAYERS):
+            raise ValueError("EXTRA_LAYERS names a layer twice")
+        layers = {*builtin, *self.EXTRA_LAYERS}
+        for name, table in (
+            ("FORBIDDEN_LIBRARIES", self.FORBIDDEN_LIBRARIES),
+            ("FORBIDDEN_LAYERS", self.FORBIDDEN_LAYERS),
+        ):
+            if unknown := sorted(set(table) - layers):
+                raise ValueError(
+                    f"{name} names layers that are not in the layer rules: "
+                    f"{unknown}; add them to EXTRA_LAYERS"
+                )
+            if "domain" in table:
+                raise ValueError(
+                    f"{name} cannot name the domain layer: it may import only "
+                    "what the rules allow; add packages to DOMAIN_ALLOWED"
+                )
+        for layer, forbidden in self.FORBIDDEN_LAYERS.items():
+            if unknown := sorted(set(forbidden) - layers):
+                raise ValueError(
+                    f"FORBIDDEN_LAYERS[{layer!r}] names layers that are not in "
+                    f"the layer rules: {unknown}; add them to EXTRA_LAYERS"
+                )
+            if layer in forbidden:
+                raise ValueError(
+                    f"FORBIDDEN_LAYERS[{layer!r}] forbids the layer itself"
+                )
+        if outside := sorted(
+            part for part in self.PUBLIC_SURFACE if part.partition(".")[0] not in layers
+        ):
+            raise ValueError(
+                f"PUBLIC_SURFACE names parts outside the layers: {outside}; "
+                "start each with a layer, as domain.values"
+            )
+        return self
+
+
 ABSOLUTE_URI: Final = r"^[A-Za-z][A-Za-z0-9+.-]*:[^\s]+$"
 """An absolute URI without whitespace (``https://...``, ``urn:...``)."""
 HEADER_NAME: Final = r"^[A-Za-z0-9-]{1,64}$"
@@ -598,6 +684,8 @@ class Settings(BaseModel):
 
     INSTALLED_DOMAINS: tuple[str, ...] = ()
     """Domain packages, started in order and stopped in reverse order."""
+    ARCHITECTURE: ArchitectureConfig = Field(default_factory=ArchitectureConfig)
+    """What the project adds to the layer rules ``check`` enforces (none)."""
     MIDDLEWARE: tuple[str, ...] = DEFAULT_MIDDLEWARE
     """ASGI middleware classes by dotted path; the first one is outermost."""
     ROOT_ROUTER: str | None = None

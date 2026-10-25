@@ -16,7 +16,7 @@ from typing import Any, Self
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import event, insert, select
+from sqlalchemy import event, func, insert, select
 from sqlalchemy.engine import Connection, Engine, ExecutionContext
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -24,7 +24,7 @@ from sqlalchemy.pool import Pool
 from sqlalchemy.sql import Executable
 from starlette.types import Message, Receive, Scope, Send
 
-from domainkit import deadlines, setup
+from domainkit import clock, deadlines, setup
 from domainkit.apps import registry
 from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
@@ -203,6 +203,7 @@ def test_claims_through_pgbouncer_never_wait_holding_their_sweep(
     would wait for each other: a deadlock (SQLSTATE 40P01), refused as 503.
     """
     monkeypatch.setattr(idempotency, "MESSAGING", "not.installed")
+    monkeypatch.setattr(idempotency, "SWEEP_EVERY", 0.0)  # Both claims sweep.
     expired = datetime.now(UTC) - timedelta(days=3)
     real = connections.autocommit
     pauses = {name: (asyncio.Event(), asyncio.Event()) for name in ("A", "B")}
@@ -468,3 +469,184 @@ def test_a_deadline_that_passed_changes_nothing_for_the_pin_and_mark(
 
     assert (row["status_code"], row["pinned"]) == (201, True)
     assert row["committed_at"] is not None
+
+
+@pytest.fixture
+def keys_alone(database_url: str) -> Iterator[None]:
+    """Idempotency without messaging (no hourly purge), its table created."""
+    registry.clear()
+    with override_settings(
+        INSTALLED_DOMAINS=[
+            "domainkit.contrib.idempotency",
+            "domainkit_tests.sample_domains.alpha",
+        ],
+        DATABASES={"default": {"URL": database_url}},
+    ):
+        setup()
+
+        async def create() -> None:
+            async with connections.engine().begin() as connection:
+                await connection.run_sync(idempotency_keys.create)
+            await connections.close_all()
+
+        asyncio.run(create())
+        yield
+    registry.clear()
+
+
+async def expire(count: int, *, prefix: str = "e") -> None:
+    """Store ``count`` keys that expired an hour ago (on the current clock)."""
+    gone = clock.now() - timedelta(hours=1)
+    async with connections.engine().begin() as connection:
+        await connection.execute(
+            insert(idempotency_keys),
+            [
+                {
+                    "key_hash": f"{prefix}{n:063d}",
+                    "fingerprint": "f" * 64,
+                    "created_at": gone,
+                    "expires_at": gone,
+                    "token": "old",
+                    "locked_until": gone,
+                }
+                for n in range(count)
+            ],
+        )
+
+
+async def expired_left() -> int:
+    """How many stored keys have expired (on the current clock)."""
+    async with connections.engine().connect() as connection:
+        count = await connection.scalar(
+            select(func.count()).where(idempotency_keys.c.expires_at < clock.now())
+        )
+    return int(count or 0)
+
+
+async def sweeps_of(middleware: idempotency.IdempotencyMiddleware) -> int:
+    """Claim a new key through ``middleware``; count the sweeps the claim made."""
+    operation = Operation(secrets.token_hex(32), secrets.token_hex(16))
+    with Costs() as costs:
+        assert (
+            await middleware._claim(IdempotencySettings(), operation, "f" * 64) is None
+        )
+    return costs.statements.count("DELETE")
+
+
+@pytest.mark.usefixtures("keys_alone")
+def test_without_a_worker_claims_sweep_once_per_interval() -> None:
+    """A claim sweeps, then none until SWEEP_EVERY has passed (PERF-10).
+
+    At 0.9.1 every keyed request without messaging swept: a fourth
+    statement on each.
+    """
+
+    async def scenario() -> tuple[list[int], int]:
+        middleware = idempotency.IdempotencyMiddleware(app=None)  # type: ignore[arg-type]
+        swept = []
+        with freeze_time("2026-10-01T00:00:00Z") as frozen:
+            await expire(3)
+            swept.append(await sweeps_of(middleware))
+            await expire(2, prefix="f")
+            swept.append(await sweeps_of(middleware))
+            frozen.tick(idempotency.SWEEP_EVERY - 0.5)
+            swept.append(await sweeps_of(middleware))
+            frozen.tick(0.5)
+            swept.append(await sweeps_of(middleware))
+            left = await expired_left()
+        await connections.close_all()
+        return swept, left
+
+    swept, left = asyncio.run(scenario())
+
+    assert swept == [1, 0, 0, 1]
+    assert left == 0  # The purge still happens, without messaging.
+
+
+@pytest.mark.usefixtures("keys_alone")
+def test_a_sweep_that_finds_a_whole_batch_lets_the_next_claim_sweep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A backlog drains a batch per claim, as when every claim swept."""
+    monkeypatch.setattr(idempotency, "PURGE_BATCH", 2)
+
+    async def scenario() -> tuple[list[int], list[int]]:
+        middleware = idempotency.IdempotencyMiddleware(app=None)  # type: ignore[arg-type]
+        swept, left = [], []
+        with freeze_time("2026-10-01T00:00:00Z"):
+            await expire(5)
+            for _ in range(4):
+                swept.append(await sweeps_of(middleware))
+                left.append(await expired_left())
+        await connections.close_all()
+        return swept, left
+
+    swept, left = asyncio.run(scenario())
+
+    assert swept == [1, 1, 1, 0]  # 2, 2, then 1: the backlog is gone.
+    assert left == [3, 1, 0, 0]
+
+
+@pytest.mark.usefixtures("keys_alone")
+def test_replicas_sweeping_while_claiming_one_expired_key_let_one_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two replicas race claims of one expired key while both sweep.
+
+    Exactly one claim gets the key: a sweep never deletes the key a claim
+    just took, nor a live one, so no request runs twice.
+    """
+    monkeypatch.setattr(idempotency, "SWEEP_EVERY", 0.0)  # Every claim sweeps.
+    contested = "c" * 64
+
+    async def scenario() -> tuple[
+        list[dict[str, Any] | None], dict[str, Any], int, int
+    ]:
+        replicas = [
+            idempotency.IdempotencyMiddleware(app=None),  # type: ignore[arg-type]
+            idempotency.IdempotencyMiddleware(app=None),  # type: ignore[arg-type]
+        ]
+        gone = datetime.now(UTC) - timedelta(hours=1)
+        live = datetime.now(UTC) + timedelta(hours=1)
+        await expire(2 * idempotency.PURGE_BATCH)
+        async with connections.engine().begin() as connection:
+            await connection.execute(
+                insert(idempotency_keys),
+                [
+                    {
+                        "key_hash": key,
+                        "fingerprint": "f" * 64,
+                        "created_at": gone,
+                        "expires_at": when,
+                        "token": "old",
+                        "locked_until": gone,
+                    }
+                    for key, when in ((contested, gone), ("l" * 64, live))
+                ],
+            )
+
+        async def claim(number: int) -> dict[str, Any] | None:
+            operation = Operation(contested, f"{number:032d}")
+            middleware = replicas[number % 2]
+            return await middleware._claim(IdempotencySettings(), operation, "g" * 64)
+
+        async with asyncio.timeout(30):
+            claims = list(await asyncio.gather(*(claim(n) for n in range(RACERS))))
+        async with connections.engine().connect() as connection:
+            rows = {
+                row.key_hash: dict(row._mapping)
+                for row in await connection.execute(select(idempotency_keys))
+            }
+        left = await expired_left()
+        await connections.close_all()
+        live_kept = "l" * 64 in rows
+        return claims, rows[contested], len(rows) - live_kept, left
+
+    claims, row, stored, left = asyncio.run(scenario())
+
+    winners = [n for n, claimed in enumerate(claims) if claimed is None]
+    assert len(winners) == 1
+    assert row["token"] == f"{winners[0]:032d}"
+    losers = [claimed for claimed in claims if claimed is not None]
+    assert [claimed["token"] for claimed in losers] == [row["token"]] * (RACERS - 1)
+    assert stored == 1 + left  # The contested key and what is left; the live one too.

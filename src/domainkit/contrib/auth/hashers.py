@@ -41,6 +41,15 @@ from domainkit.utils.module_loading import import_string
 
 from .models import UNUSABLE_PASSWORD_PREFIX
 
+__all__ = [
+    "Argon2PasswordHasher",
+    "FastPBKDF2PasswordHasher",
+    "PBKDF2PasswordHasher",
+    "PBKDF2SHA1PasswordHasher",
+    "PasswordHasher",
+    "ScryptPasswordHasher",
+]
+
 SALT_CHARS: Final = string.ascii_letters + string.digits
 
 

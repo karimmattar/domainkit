@@ -68,6 +68,11 @@ except ImportError:  # pragma: no cover - only without the [metrics] extra.
         """Record nothing: ``prometheus_client`` is not installed."""
 
 
+__all__ = [
+    "ConcurrencyLimitMiddleware",
+]
+
+
 OVERLOADED: Final = "overloaded"
 """The error code of a request refused for want of a slot."""
 QUEUE_FULL: Final = "queue_full"

@@ -14,6 +14,10 @@ from typing import Any, Literal
 
 from domainkit.exceptions import ImproperlyConfigured
 
+__all__ = [
+    "loop_factory",
+]
+
 type LoopKind = Literal["auto", "asyncio", "uvloop"]
 """``auto`` (uvloop when installed), ``asyncio``, or ``uvloop``."""
 type LoopFactory = Callable[[], asyncio.AbstractEventLoop]

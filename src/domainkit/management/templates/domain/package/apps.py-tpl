@@ -2,6 +2,7 @@
 
 from domainkit.apps import DomainConfig
 from domainkit.ddd import event_bus
+
 from {{ package }}.application.handlers import log_{{ aggregate }}_created
 from {{ package }}.domain.events import {{ Aggregate }}Created
 from {{ package }}.infrastructure.orm import start_mappers
@@ -14,6 +15,4 @@ class {{ Domain }}Config(DomainConfig):
         """Connect the layers once settings are loaded."""
         start_mappers()
         # Durable: stored with the commit, run (and retried) by the worker.
-        event_bus.subscribe(
-            {{ Aggregate }}Created, log_{{ aggregate }}_created, durable=True
-        )
+        event_bus.subscribe({{ Aggregate }}Created, log_{{ aggregate }}_created, durable=True)

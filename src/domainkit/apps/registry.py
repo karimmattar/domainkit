@@ -51,6 +51,7 @@ class DomainRegistry:
             configs[config.label] = config
         self._changed(configs)
         self._check_settings()
+        self._check_requirements()
         for config in configs.values():
             config.ready()
         self.ready = True
@@ -182,6 +183,20 @@ class DomainRegistry:
                 + ", ".join(_describe_unknown(label, labels) for label in unrouted)
                 + "."
             )
+
+    def _check_requirements(self) -> None:
+        """Refuse a domain whose ``requires`` names a package not installed.
+
+        Every missing package is named, in ``INSTALLED_DOMAINS`` order.
+        """
+        installed = {config.name for config in self}
+        if problems := [
+            requirement.problem(config.name)
+            for config in self
+            for requirement in config.requirements()
+            if requirement.name not in installed
+        ]:
+            raise ImproperlyConfigured(" ".join(problems))
 
 
 class _ValidatedSettings(NamedTuple):

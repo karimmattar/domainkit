@@ -6,8 +6,9 @@ connection slots, the event bus, an HTTP client's circuit breaker, the
 guard's lookup threads and its owners' shares, a throttled log's counts,
 the remembered client addresses, the handles of the request metrics, the
 principal cache, and the grants principals share between threads, an
-application's throttle backend and attempt counter, and the registries
-that keep each loop's tasks, publishers, brokers, and caches. Each test
+application's throttle backend and attempt counter, the idempotency
+middleware's sweep schedule, and the registries that keep each loop's
+tasks, publishers, brokers, and caches. Each test
 drives them from several threads at once and checks what must always
 hold, and that the state is only touched with the lock held (where there
 is one).
@@ -59,6 +60,7 @@ from domainkit.contrib.auth.principals import ALL, Entry, PrincipalCache
 from domainkit.contrib.contenttypes import InstalledModel, content_type_key
 from domainkit.contrib.contenttypes import registry as content_registry
 from domainkit.contrib.idempotency import statements as idempotency_statements
+from domainkit.contrib.idempotency.middleware import PURGE_BATCH, Sweeps
 from domainkit.contrib.messaging import MessagingSettings, dispatch
 from domainkit.db import Reads, connections
 from domainkit.db.connections import (
@@ -1478,3 +1480,27 @@ def test_idempotency_statements_are_built_once_from_every_thread(
     assert sorted(builds) == [("postgresql", True), ("sqlite", False)]
     assert all(result == results[0] for result in results)
     assert results[0][0] is built[("postgresql", True)]
+
+
+def test_idempotency_sweeps_are_due_once_per_interval_from_every_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Claims on all threads at once: one sweeps, and one more after a full sweep."""
+    sweeps = Sweeps()
+
+    def monotonic() -> float:
+        assert sweeps._lock.locked()  # The schedule is read under its lock.
+        return 1000.0  # Frozen: SWEEP_EVERY never passes.
+
+    monkeypatch.setattr(clock_module, "monotonic", monotonic)
+
+    def claims(index: int) -> int:
+        return sum(sweeps.due() for _ in range(500))
+
+    first = on_threads(claims)
+    sweeps.swept(PURGE_BATCH - 1)  # Short: the backlog is gone.
+    short = on_threads(claims)
+    sweeps.swept(PURGE_BATCH)  # Full: more may wait.
+    full = on_threads(claims)
+
+    assert (sum(first), sum(short), sum(full)) == (1, 0, 1)

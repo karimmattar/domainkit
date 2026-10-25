@@ -8,6 +8,7 @@ import pytest
 from pydantic import BaseModel
 
 from domainkit.conf.global_settings import (
+    ArchitectureConfig,
     BrokerConfig,
     CacheConfig,
     DatabaseConfig,
@@ -66,6 +67,7 @@ def documented(page: str) -> set[str]:
         (StorageConfig, "reference.md"),
         (DebugToolbarConfig, "reference.md"),
         (HttpClientConfig, "reference.md"),
+        (ArchitectureConfig, "reference.md"),
         (MessagingSettings, "contrib.md"),
         (AuditSettings, "contrib.md"),
         (IdempotencySettings, "contrib.md"),

@@ -23,6 +23,10 @@ from typing import Any, Final
 from pydantic import BaseModel
 from pydantic_core import to_jsonable_python
 
+__all__ = [
+    "decimal_text",
+]
+
 MAX_FIXED_DIGITS: Final = 100
 """Digits a value may have before the point, and after it, to be written fixed."""
 

@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import Final
 
-from domainkit.contrib.evidence.model import (
+from domainkit.contrib.evidence.models import (
     Evidence,
     EvidenceConflict,
     EvidenceNotFound,

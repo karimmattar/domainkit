@@ -18,6 +18,7 @@ class FlagsConfig(DomainConfig):
     label = "flags"
     verbose_name = "Feature flags"
     settings_class = FlagsSettings
+    requires = ()
 
     def ready(self) -> None:
         """Check the cache and the database, map, and subscribe."""

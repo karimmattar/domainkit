@@ -43,6 +43,7 @@ URLs; an unreadable port is refused without quoting the URL.
 | `SECRET_KEY` | `None` | Signs what the service hands out: reset links, cookies, MFA challenges ([Signing](#signing)). Required in staging and production, with 50 random characters or more; shown as `**********`. |
 | `SECRET_KEY_FALLBACKS` | `()` | Earlier keys: what they signed still verifies while `SECRET_KEY` signs, so a key can be replaced without logging anyone out. Held to the same rules. |
 | `INSTALLED_DOMAINS` | `()` | Domain packages (Django's `INSTALLED_APPS`), started in order and stopped in reverse. |
+| `ARCHITECTURE` | none added | What the project adds to the layer rules `check` enforces: packages its domain layers may import, libraries and layers a layer must not use, layers of its own ([Layer rules](#layer-rules)). |
 | `MIDDLEWARE` | see [Middleware](#middleware) | ASGI middleware by dotted path, outermost first. |
 | `ROOT_ROUTER` | `None` | Dotted path to the `APIRouter` that mounts every route (Django's `ROOT_URLCONF`). |
 | `FLATTEN_ROUTERS` | `True` | Serve the routes of the routers `ROOT_ROUTER` includes from the top of the application, each matched once ([Included routers](#included-routers)); `False` keeps FastAPI's nesting, which matches a request again at each level. |
@@ -52,6 +53,35 @@ URLs; an unreadable port is refused without quoting the URL.
 | `ERROR_REPORTERS` | `()` | Callables `(exc, context) -> None` by dotted path, called for every unexpected error (500s, dead-lettered messages), on a reporting thread and in the caller's context; 100 reports may wait, and more are dropped and counted. A reporter that raises is logged and skipped. |
 | `EVENT_HANDLER_TIMEOUT` | `10.0` | Seconds an in-process event handler may run after a commit, up to 3600; one still running then is cancelled, logged, and reported (`HandlerTimedOut`), and the request goes on. `event_bus.subscribe(..., timeout=30)` sets one handler's limit; `durable=True` runs a handler from the outbox instead ([runtime.md](runtime.md#event-handlers)). |
 | `SHUTDOWN_TIMEOUT` | `15.0` | Seconds a shutdown may take in all, from 0 to 300: domain hooks, work in flight, background tasks, then connections, each phase within its share ([runtime.md](runtime.md#shutting-down-within-a-budget)). Add the server's graceful shutdown (`uvicorn --timeout-graceful-shutdown 10`) and keep the sum under the orchestrator's grace period: 30 s in Kubernetes. |
+
+### Layer rules
+
+`check` holds every installed domain to `domainkit.architecture`'s rules
+([ADR 0003](adr/0003-enforced-layer-rules.md)): `api → infrastructure →
+application → domain`; the domain layer imports only the standard library,
+`domainkit.ddd`, `domainkit.clock`, and itself; the application layer uses
+no web or database library; another domain is reached only through its
+`application` or `domain.events`. `ARCHITECTURE` adds to these rules, and
+only adds: a rule the framework states always holds.
+
+| `ARCHITECTURE` key | Default | Meaning |
+| --- | --- | --- |
+| `DOMAIN_ALLOWED` | `()` | More packages a domain layer may import, such as a shared kernel (`"myproject.kernel"`) or a money library. Up to 64 dotted names. |
+| `FORBIDDEN_LIBRARIES` | `{}` | More libraries a layer must not import, by layer: `{"application": ("httpx",)}`. Not the domain layer, which is an allowlist: use `DOMAIN_ALLOWED`. Up to 64 names a layer. |
+| `EXTRA_LAYERS` | `()` | Layer packages of the project's own, such as `ports`, so the two tables here can name them. Up to 8, none a built-in layer. |
+| `FORBIDDEN_LAYERS` | `{}` | More layers of the same domain a layer must not import: `{"ports": ("infrastructure", "api")}`. Every layer named must be built in or in `EXTRA_LAYERS`, and none may forbid itself. |
+| `PUBLIC_SURFACE` | `()` | More parts of a domain other domains may import, each starting with a layer: `("domain.values",)`. |
+
+```python
+ARCHITECTURE = {
+    "DOMAIN_ALLOWED": ("myproject.kernel",),
+    "FORBIDDEN_LIBRARIES": {"application": ("httpx",)},
+}
+```
+
+Tests check a domain the same way: `check_domain("billing")` applies the
+settings' rules, and `check_domain(..., rules=LayerRules().extend(...))`
+others.
 
 ### Databases and migrations
 
@@ -897,7 +927,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 
 | Command | Options | Purpose |
 | --- | --- | --- |
-| `init` | `name`, `[directory]` | Create a project: base, local, test, and production settings, routes, `manage.py`, `.env`, and a first test. The name sets the environment prefix; the directory (default `./<name>`) must be empty or missing. |
+| `init` | `name`, `[directory]` | Create a project: base, local, test, and production settings, routes, `manage.py`, `.env`, and a first test. The name sets the environment prefix; the directory (default `./<name>`) must be empty or missing. What it writes passes the project's own `ruff check` and `ruff format --check`; its dev group installs ruff, which formats what the generators write. |
 | `check` | | Settings, domains, routes and their access rules, middleware, layer rules, and a single migration head. It warns about route handlers and dependencies of the installed domains written as `def`, which run on FastAPI's thread pool ([runtime.md](runtime.md#finding-blocking-code)); in staging and production it also lists [weak choices](#deployment-checks) as warnings. |
 | `broker` | `check\|declare`, `[ALIAS ...]` | Connect to brokers (all by default), or declare the exchange and every queue the worker's tasks use on `MESSAGING.BROKER`. |
 | `compilemessages` | `[DIRECTORY ...]`, `-l/--locale`, `--check` | Compile translation catalogs (`.po`) to `.mo` files: in the directories named, or in `LOCALE_PATHS` and each installed domain's `locale` directory. `--check` writes nothing and fails if one is missing or out of date ([i18n.md](i18n.md)). |
@@ -1068,6 +1098,7 @@ revision: the test database migrates up, down, and up again.
 | --- | --- | --- |
 | A bounded context | a package with `apps.py` (`DomainConfig`) | `INSTALLED_DOMAINS` |
 | Domain settings | a Pydantic model | `DomainConfig.settings_class` |
+| Domains a domain cannot work without | `DomainConfig.requires`: package names, or `apps.Requirement(name, reason)` | (checked by `setup()` before any `ready()`; a missing one is refused by name) |
 | Startup wiring | `DomainConfig.ready()` | (called by `setup()`) |
 | Process resources (clients, pools) | `async DomainConfig.startup()` / `shutdown()` | (called by the app lifespan; after the domains stop, the framework closes its caches, databases, ledgers, and brokers, in that order, each within 5 seconds, and a failure is logged without keeping the rest open; management commands close them too) |
 | A readiness check | `async DomainConfig.check()` | (called by `/ready`) |
@@ -1083,6 +1114,7 @@ revision: the test database migrates up, down, and up again.
 | How errors name a column | `info={"field": "<API name>"}` on the `Column` | (read by unique, foreign key, NOT NULL, and CHECK errors) |
 | A table fixtures or `flush` leave alone | `info={"fixtures": False}`, `{"flush": False}`, or `{"append_only": True}` on the `Table` | (read by `dumpdata`, `loaddata`, and `flush`) |
 | A deprecated route or version | `Depends(Deprecation(...))`, `versioned_router(...)` | `domainkit.http.versioning` |
+| Packages a domain layer may import, layers of the project's own | the `ARCHITECTURE` keys | `ARCHITECTURE` ([Layer rules](#layer-rules)) |
 | Tables a domain stops using | `DomainConfig.holds_table(table)` | (asked by migrations and content types; a swapped user table answers no) |
 | A user model | a subclass of `AbstractUser` or `AbstractBaseUser`, and its table | `AUTH.USER_MODEL`, `AUTH.USER_TABLE` |
 | An authentication or permission backend | `auth.backends.BaseBackend` | `AUTH.BACKENDS` |

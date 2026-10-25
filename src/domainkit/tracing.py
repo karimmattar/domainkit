@@ -24,6 +24,12 @@ try:
 except ImportError:  # pragma: no cover - only without the [tracing] extra.
     trace = None  # type: ignore[assignment]
 
+__all__ = [
+    "remote_parent",
+    "span",
+    "trace_headers",
+]
+
 TRACER: Final = "domainkit"
 TRACEPARENT: Final = "traceparent"
 TRACESTATE: Final = "tracestate"
