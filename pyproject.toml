@@ -137,7 +137,7 @@ python_version = "3.13"
 strict = true
 plugins = ["pydantic.mypy"]
 mypy_path = "src:."
-files = ["src", "domainkit_tests", "benchmarks"]
+files = ["src", "domainkit_tests", "benchmarks", ".github/scripts"]
 exclude = ["/management/templates/", "/mutants/"]
 
 # immudb-py and grpcio ship no type information.
