@@ -363,7 +363,8 @@ ACCESS_LOG_SLOW_DURATION = 1.0  # Seconds.
   log up to the process's last line before concluding a burst's size.
 - An address held back for refused credentials (past `RATE_LIMIT`) is
   logged when the hold starts (`Holding back credentials from ... for N s:
-  over RATE_LIMIT (100 refused)`), and the requests the hold refuses
+  more refused than RATE_LIMIT allows (100/minute)`), and the requests the
+  hold refuses
   unread are counted on that line's key (`held_credentials`), throttled
   like the rest.
 - `1.0`, the default, writes every line, as before.
