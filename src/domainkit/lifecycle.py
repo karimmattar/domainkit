@@ -26,10 +26,14 @@ it may still use close. Domain hooks run one after another, in reverse order;
 each may use what is left of their phase, less a little kept for each hook
 still to run.
 
-Other parts of the framework add their closers with ``register``::
+Every closer goes through one table. The framework's own kinds are declared
+in it; other parts of the framework, and projects,
+add theirs with ``register``::
 
     lifecycle.register("search index", index.close)
     lifecycle.register("publishers", close_publishers, phase=Phase.DRAIN)
+
+``closers(phase)`` lists what a phase will close, in the steps it runs them.
 """
 
 import asyncio
@@ -39,6 +43,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Final, Self
 
 from domainkit import tasks
@@ -90,25 +95,79 @@ DEFAULT_SHUTDOWN_TIMEOUT: Final[float] = Settings.model_fields[
 _registered: Final[dict[Phase, dict[str, Closer]]] = {
     phase: {} for phase in REGISTERED_PHASES
 }
+"""The closers ``register`` added, by phase."""
+
+
+@dataclass(frozen=True, slots=True)
+class _FrameworkCloser:
+    """One of the framework's own kinds of things to close, and when.
+
+    ``step`` orders closers within the phase: step 0 runs with the
+    registered closers, all at once; each later step runs alone, after the
+    one before it, in turn. ``lookup`` finds the closer when shutting down,
+    not when declared, so what it closes is the handler in place then.
+    """
+
+    phase: Phase
+    step: int
+    lookup: Callable[[], Closer]
+
+
+_FRAMEWORK_CLOSERS: Final[Mapping[str, _FrameworkCloser]] = MappingProxyType(
+    {
+        "caches": _FrameworkCloser(Phase.RESOURCES, 0, lambda: caches.close_all),
+        "HTTP clients": _FrameworkCloser(
+            Phase.RESOURCES, 0, lambda: close_http_clients
+        ),
+        "databases": _FrameworkCloser(
+            Phase.RESOURCES, 0, lambda: connections.close_all
+        ),
+        "ledgers": _FrameworkCloser(Phase.RESOURCES, 0, lambda: ledgers.close_all),
+        "brokers": _FrameworkCloser(Phase.RESOURCES, 0, lambda: brokers.close_all),
+        # Last: the counts of lines held back, the reports, and the logs, so
+        # what closing the others logged or reported is written too.
+        "held-back log lines": _FrameworkCloser(
+            Phase.FLUSH, 1, lambda: aflush_throttled
+        ),
+        "error reports": _FrameworkCloser(Phase.FLUSH, 2, lambda: aflush_reports),
+        "logs": _FrameworkCloser(Phase.FLUSH, 3, lambda: aflush_logs),
+    }
+)
+"""The framework's own kinds, by name; ``register`` refuses these names."""
+
+
+def closers(phase: Phase) -> list[dict[str, Closer]]:
+    """The closers ``phase`` runs, as steps: each at once, the steps in turn.
+
+    The first step holds the framework's own kinds of the phase, then those
+    ``register`` added, in the order they were added; the framework's last
+    flushes follow, one per step. Steps without closers are left out: the
+    domains and tasks phases have none.
+    """
+    steps: dict[int, dict[str, Closer]] = {0: {}}
+    for name, closer in _FRAMEWORK_CLOSERS.items():
+        if closer.phase is phase:
+            steps.setdefault(closer.step, {})[name] = closer.lookup()
+    steps[0].update(_registered.get(phase, {}))
+    return [steps[step] for step in sorted(steps) if steps[step]]
 
 
 def _builtin() -> dict[str, Closer]:
-    """The framework's own kinds of resources, looked up when shutting down."""
-    return {
-        "caches": caches.close_all,
-        "HTTP clients": close_http_clients,
-        "databases": connections.close_all,
-        "ledgers": ledgers.close_all,
-        "brokers": brokers.close_all,
-    }
+    """The framework's own kinds of resources (``_FRAMEWORK_CLOSERS``)."""
+    return _framework(Phase.RESOURCES)
 
 
 def _flushes() -> dict[str, Closer]:
     """The framework's own last steps: held-back counts, error reports, then logs."""
+    return _framework(Phase.FLUSH)
+
+
+def _framework(phase: Phase) -> dict[str, Closer]:
+    """The framework's own closers of ``phase``, in step order."""
     return {
-        "held-back log lines": aflush_throttled,
-        "error reports": aflush_reports,
-        "logs": aflush_logs,
+        name: closer.lookup()
+        for name, closer in _FRAMEWORK_CLOSERS.items()
+        if closer.phase is phase
     }
 
 
@@ -116,6 +175,8 @@ def register(name: str, close: Closer, *, phase: Phase = Phase.RESOURCES) -> Non
     """Call ``close`` for the running loop when it shuts down, in ``phase``.
 
     ``name`` labels log lines; registering a name again replaces its closer.
+    The closer runs in the phase's first step, with the framework's own
+    kinds of that phase (``closers``).
 
     Raises:
         ValueError: ``phase`` is not ``drain``, ``resources``, or ``flush``,
@@ -125,7 +186,7 @@ def register(name: str, close: Closer, *, phase: Phase = Phase.RESOURCES) -> Non
         raise ValueError(
             f"Closers go in the drain, resources, or flush phase, not {phase}."
         )
-    if name in _builtin() or name in _flushes():
+    if name in _FRAMEWORK_CLOSERS:
         raise ValueError(f"{name!r} is closed by the framework already.")
     unregister(name)
     _registered[phase][name] = close
@@ -133,8 +194,8 @@ def register(name: str, close: Closer, *, phase: Phase = Phase.RESOURCES) -> Non
 
 def unregister(name: str) -> None:
     """Stop closing ``name`` at shutdown; an unknown name is ignored."""
-    for closers in _registered.values():
-        closers.pop(name, None)
+    for table in _registered.values():
+        table.pop(name, None)
 
 
 def shutdown_timeout() -> float:
@@ -191,18 +252,21 @@ async def close_resources(budget: Budget | None = None) -> None:
     failure is logged, and every closer is tried.
     """
     budget = budget or Budget.begin()
-    await _close_all(_registered[Phase.DRAIN], budget.end(Phase.DRAIN))
+    await _close_phase(Phase.DRAIN, budget)
     caches.stop_computations()  # Said, not inferred: their callers compute alone.
     if stuck := await tasks.shutdown(budget.end(Phase.TASKS)):
         logger.error(
             "Background tasks still running at the end of their shutdown phase: %s",
             ", ".join(stuck),
         )
-    resources = _builtin() | _registered[Phase.RESOURCES]
-    await _close_all(resources, budget.end(Phase.RESOURCES))
-    await _close_all(_registered[Phase.FLUSH], budget.end(Phase.FLUSH))
-    for name, flush in _flushes().items():
-        await _close_all({name: flush}, budget.end(Phase.FLUSH))
+    await _close_phase(Phase.RESOURCES, budget)
+    await _close_phase(Phase.FLUSH, budget)
+
+
+async def _close_phase(phase: Phase, budget: Budget) -> None:
+    """Run the steps of ``phase`` in turn, each until the phase's end."""
+    for step in closers(phase):
+        await _close_all(step, budget.end(phase))
 
 
 async def _close_all(closers: Mapping[str, Closer], deadline: float) -> None:

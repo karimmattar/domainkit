@@ -6,6 +6,14 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Shutdown closers come from one table: the framework's own kinds are
+  declared in it with their phase and step, next to the closers
+  `lifecycle.register` adds, and the new `lifecycle.closers(phase)` lists
+  what a phase closes, in the steps it runs them. Order, shares, and
+  behaviour are unchanged; `register` stays the way to add one (DSGN-13).
+
 ## [0.9.1] - 2026-10-25
 
 ### Added
