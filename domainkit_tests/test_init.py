@@ -2,6 +2,7 @@
 
 import io
 import os
+import runpy
 import sqlite3
 import subprocess
 import sys
@@ -318,6 +319,29 @@ def test_the_domainkit_program_runs_init(
     assert script.load() is execute_from_command_line
     assert (tmp_path / "b" / "manage.py").is_file()
     assert "    init\n" in capsys.readouterr().out
+
+
+def test_python_dash_m_domainkit_is_the_domainkit_program(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``python -m domainkit`` runs the same dispatcher, under its own name."""
+    import domainkit.__main__ as main_module
+
+    def run_module(*args: str) -> None:
+        monkeypatch.setattr(sys, "argv", [main_module.__file__, *args])
+        runpy.run_path(main_module.__file__, run_name="__main__")
+
+    monkeypatch.chdir(tmp_path)
+    run_module("init", "billingAPI", "b")
+    run_module()
+    with pytest.raises(SystemExit) as exited:
+        run_module("migrat")
+
+    assert (tmp_path / "b" / "manage.py").is_file()
+    out, err = capsys.readouterr()
+    assert "Usage: python -m domainkit <command> [options]\n" in out
+    assert err == "Error: Unknown command 'migrat'. Did you mean 'migrate'?\n"
+    assert exited.value.code == 1
 
 
 ROUTED_BASE = '''"""Settings shared by every environment."""

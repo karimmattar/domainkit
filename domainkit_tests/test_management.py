@@ -396,6 +396,15 @@ def test_startdomain_generates_a_working_domain(
         "  4. python manage.py migrate\n"
         "  5. Grant shop.view_orderline (and add_, change_, delete_) to the users "
         "or groups that need them; superusers have them.\n"
+        "  6. python manage.py runserver; then, from another shell, log in as a "
+        "superuser and list the order lines:\n"
+        "       TOKEN=$(curl -s http://127.0.0.1:8000/auth/login "
+        '-H "Content-Type: application/json" '
+        """-d '{"username": "<username>", "password": "<password>"}' """
+        '| python -c "import json, sys; '
+        """print(json.load(sys.stdin)['access_token'])")\n"""
+        "       curl http://127.0.0.1:8000/api/v1/shop/order_lines "
+        '-H "Authorization: Bearer $TOKEN"\n'
     )
     assert sorted(
         path.relative_to(package).as_posix() for path in package.rglob("*.py")
