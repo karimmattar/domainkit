@@ -6,6 +6,54 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `ARCHITECTURE` extends the layer rules `check` enforces, and only
+  extends them: `DOMAIN_ALLOWED` (packages a domain layer may import, such
+  as a shared kernel), `FORBIDDEN_LIBRARIES` and `FORBIDDEN_LAYERS` by
+  layer, `EXTRA_LAYERS` (layers of the project's own), and
+  `PUBLIC_SURFACE`. Every layer named must be known, the domain layer stays
+  an allowlist, and each list is bounded. Empty by default: the rules are
+  today's. `check_domain` and `check_domains` take `rules=`
+  (`domainkit.architecture.LayerRules`) and otherwise apply the settings'
+  (DSGN-12; ADR 0003).
+- `DomainConfig.requires` lists the domain packages a domain cannot work
+  without, as names or `domainkit.apps.Requirement(name, reason)`;
+  `setup()` refuses a missing one before any domain's `ready()` runs, with
+  one error naming every one missing. Every contrib app declares it
+  (DSGN-04; ADR 0077).
+- `docs/api.md`, the public API by module, one line a name: every name in
+  an `__all__`, and only those. `docs/versioning.md` now calls exactly these
+  public. Modules whose names the pages use got an `__all__`: the
+  middleware, `domainkit.http.application`, `.ratelimit`, `.sse`,
+  `.uploads`, `.versioning`, `domainkit.clock`, `.deadlines`, `.tasks`,
+  `.log`, `.lifecycle`, `.signing`, `.encryption`, the contrib apps'
+  routers, backends, and hashers: 66 modules in all; `domainkit.conf` adds
+  `Env`, and `domainkit` itself `setup`. A test keeps the page and the code
+  in step, and fails when a page tells users to import a name not listed
+  (DSGN-05; ADR 0076).
+- `domainkit.ddd.Selection`: the aggregate query of `filter` and `first`,
+  so far `domainkit.ddd.query.Query`, a name that still works and the same
+  class. It no longer shares its name with the CQRS message
+  `domainkit.ddd.Query`. `docs/queries.md` uses the new name (DSGN-09).
+
+### Changed
+
+- Shutdown closers come from one table: the framework's own kinds are
+  declared in it with their phase and step, next to the closers
+  `lifecycle.register` adds, and the new `lifecycle.closers(phase)` lists
+  what a phase closes, in the steps it runs them. Order, shares, and
+  behaviour are unchanged; `register` stays the way to add one (DSGN-13).
+- The contrib apps' checks for the apps they need moved from each app's
+  `ready()` to their `requires`, so they run before any app is wired. The
+  messages keep their form, except privacy's, which now reads
+  "domainkit.contrib.privacy needs 'domainkit.contrib.audit' in
+  INSTALLED_DOMAINS: it records every operation in the audit trail."
+  A test fails on any new import of another app's internal modules, or of
+  the core into one; the 30 that exist are listed for 0.10 (DSGN-04).
+- `domainkit.contrib.evidence.model` is now `models`, as in every other
+  app; the old module re-exports the same names (DSGN-09).
+
 ### Fixed
 
 - Every package domainkit imports is declared, so that pip knows what it

@@ -14,6 +14,7 @@ class ContentTypesConfig(DomainConfig):
 
     label = "contenttypes"
     verbose_name = "Content types"
+    requires = ()
 
     @property
     def database(self) -> str:

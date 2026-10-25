@@ -62,6 +62,10 @@ from .settings import PrincipalCacheSettings, auth_settings
 from .tokens import TokenKind
 from .uow import AuthUnitOfWork
 
+__all__ = [
+    "ClientCertificateAuthentication",
+]
+
 SCHEME: Final = "certificate"
 """``request.auth.scheme`` of requests a client certificate authenticates."""
 VERIFIED: Final = "SUCCESS"

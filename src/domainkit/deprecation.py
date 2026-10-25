@@ -16,6 +16,10 @@ error in their test settings::
     filterwarnings = ["error::domainkit.deprecation.DomainkitDeprecationWarning"]
 """
 
+__all__ = [
+    "DomainkitDeprecationWarning",
+]
+
 
 class DomainkitDeprecationWarning(DeprecationWarning):
     """A domainkit API that a later release removes; the message says what to use."""

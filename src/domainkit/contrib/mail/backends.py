@@ -22,6 +22,15 @@ from domainkit.exceptions import ImproperlyConfigured
 from .message import EmailMessage
 from .settings import MailSettings, SmtpSettings
 
+__all__ = [
+    "BaseEmailBackend",
+    "ConsoleBackend",
+    "MailDeliveryFailed",
+    "MemoryBackend",
+    "SmtpBackend",
+    "outbox",
+]
+
 logger = logging.getLogger(__name__)
 
 outbox: Final[list[EmailMessage]] = []

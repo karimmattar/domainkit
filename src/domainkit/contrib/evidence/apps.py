@@ -20,6 +20,7 @@ class EvidenceConfig(DomainConfig):
     label = "evidence"
     verbose_name = "Evidence"
     settings_class = EvidenceSettings
+    requires = ()
 
     def ready(self) -> None:
         """Fail fast unless ``EVIDENCE.LEDGER`` names a ledger.
