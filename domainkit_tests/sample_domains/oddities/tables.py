@@ -51,9 +51,9 @@ secrets = Table(
 
 
 def start_mappers() -> None:
-    """Map the aggregates."""
-    map_imperatively(Note, notes)
-    map_imperatively(Memo, memos)
-    map_imperatively(Ticket, tickets)
-    map_imperatively(Basket, baskets)
-    map_imperatively(Secret, secrets)
+    """Map the aggregates, without versions: odd tables, on purpose."""
+    map_imperatively(Note, notes, versioned=False)
+    map_imperatively(Memo, memos, versioned=False)
+    map_imperatively(Ticket, tickets, versioned=False)
+    map_imperatively(Basket, baskets, versioned=False)
+    map_imperatively(Secret, secrets, versioned=False)
