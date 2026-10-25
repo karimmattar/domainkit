@@ -1311,6 +1311,8 @@ async def test_redis_rate_limits_follow_their_cache() -> None:
         backend = RedisBackend()
     with pytest.raises(ImproperlyConfigured, match=r"CACHES\['default'\] is not Redis"):
         await backend.hit("ip:203.0.113.9", 10, 60)
+    with pytest.raises(ImproperlyConfigured, match=r"CACHES\['default'\] is not Redis"):
+        await backend.refund("ip:203.0.113.9", 10, 60)
 
 
 async def test_redis_rate_limits_fail_open() -> None:
@@ -1322,6 +1324,7 @@ async def test_redis_rate_limits_fail_open() -> None:
             await caches.close_all()
 
     assert (decision.allowed, decision.remaining, decision.retry_after) == (True, 9, 0)
+    assert decision.counted is False  # AUTH.THROTTLE_FAIL_CLOSED refuses it.
 
 
 def run(*args: str) -> str:

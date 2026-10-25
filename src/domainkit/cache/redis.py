@@ -76,6 +76,27 @@ It compares the debt (``arrival - now``) with the tolerance, never sums of
 large clock readings, and keeps each caller only until its quota is full.
 """
 
+_GCRA_REFUND: Final = """
+local time = redis.call('TIME')
+local now = tonumber(time[1]) * 1000000 + tonumber(time[2])
+local stored = redis.call('GET', KEYS[1])
+if not stored then
+  return 0
+end
+local arrival = tonumber(stored) - tonumber(ARGV[1])
+if arrival <= now then
+  redis.call('DEL', KEYS[1])
+  return 1
+end
+redis.call('SET', KEYS[1], string.format('%.17g', arrival),
+  'PX', math.ceil((arrival - now) / 1000))
+return 1
+"""
+"""Give back one request ``_GCRA`` counted: its arrival moves one interval back.
+
+A caller left owing nothing is deleted, as ``_GCRA`` would let it expire.
+"""
+
 
 if TYPE_CHECKING:
     _TLSConnection = SSLConnection
@@ -276,6 +297,7 @@ class RedisStore(Store):
         self.client = client
         self._incr = client.register_script(_INCR)
         self._gcra = client.register_script(_GCRA)
+        self._gcra_refund = client.register_script(_GCRA_REFUND)
 
     @classmethod
     def from_config(cls, config: CacheConfig) -> "RedisStore":
@@ -350,6 +372,10 @@ class RedisStore(Store):
         """Count one request for ``key``; return (allowed, debt), in microseconds."""
         allowed, debt = await _run(self._gcra(keys=[key], args=[interval, tolerance]))
         return bool(allowed), float(debt)
+
+    async def gcra_refund(self, key: str, interval: float) -> None:
+        """Give back one request ``gcra`` counted for ``key`` (microseconds)."""
+        await _run(self._gcra_refund(keys=[key], args=[interval]))
 
     async def check(self) -> None:
         """``PING``."""

@@ -24,6 +24,7 @@ the global limit, with the same backends::
     async def export(...): ...
 """
 
+import contextlib
 import functools
 import hashlib
 import inspect
@@ -67,13 +68,30 @@ class Decision:
     """Seconds until the caller's full quota is available again."""
     retry_after: float
     """Seconds until the next request would be allowed (0 if allowed)."""
+    counted: bool = True
+    """False: the backend could not count the request (Redis failed) and
+    let it through; ``AUTH.THROTTLE_FAIL_CLOSED`` refuses such attempts."""
 
 
 class Backend(Protocol):
-    """Where rate-limit state lives."""
+    """Where rate-limit state lives.
+
+    A backend may also give a counted request back, with ``refund(key,
+    limit, period)`` (``RefundingBackend``): the attempt throttles of
+    ``domainkit.contrib.auth`` then count only the attempts that fail.
+    Without it, they count every attempt.
+    """
 
     async def hit(self, key: str, limit: int, period: float) -> Decision:
         """Count one request for ``key`` and decide whether to allow it."""
+        ...
+
+
+class RefundingBackend(Backend, Protocol):
+    """A backend that can give a counted request back."""
+
+    async def refund(self, key: str, limit: int, period: float) -> None:
+        """Give back one request ``hit`` counted for ``key`` at that rate."""
         ...
 
 
@@ -159,6 +177,26 @@ class MemoryBackend:
             retry_after=0.0,
         )
 
+    async def refund(self, key: str, limit: int, period: float) -> None:
+        """Give back one request counted for ``key``, as if it never came.
+
+        A caller left owing nothing is forgotten.
+        """
+        with self._lock:
+            caller = self._callers.get(key)
+            if caller is None:
+                return
+            now = self.clock()
+            interval = period / limit
+            owed = caller.owed
+            if caller.interval != interval:  # The key's rate changed.
+                owed = owed * caller.interval / interval
+            owed = max(owed - (now - caller.seen) / interval, 0.0) - 1
+            if owed <= 0:
+                del self._callers[key]
+            else:
+                self._callers[key] = _Caller(now, owed, interval)
+
     def _forget_idle(self, now: float) -> None:
         """Forget the longest-unseen callers while their quota is full again.
 
@@ -206,7 +244,11 @@ class RedisBackend:
         interval = period * 1_000_000 / limit
         tolerance = period * 1_000_000 - interval
         let_through = Decision(
-            allowed=True, remaining=limit - 1, reset_after=0.0, retry_after=0.0
+            allowed=True,
+            remaining=limit - 1,
+            reset_after=0.0,
+            retry_after=0.0,
+            counted=False,
         )
         if time.monotonic() < self._skip_until:
             return let_through
@@ -238,6 +280,26 @@ class RedisBackend:
             reset_after=(debt + interval) / 1_000_000,
             retry_after=0.0,
         )
+
+    async def refund(self, key: str, limit: int, period: float) -> None:
+        """Give back one request counted for ``key``; nothing if Redis fails.
+
+        A refund missed counts a request that should not count, which only
+        errs toward the limit.
+        """
+        from domainkit.cache.redis import RedisStore
+
+        cache = caches[self.cache]
+        store = cache.store
+        if not isinstance(store, RedisStore):  # Settings changed since __init__.
+            raise ImproperlyConfigured(f"CACHES[{self.cache!r}] is not Redis.")
+        if time.monotonic() < self._skip_until:
+            return
+        interval = period * 1_000_000 / limit
+        with contextlib.suppress(CacheError):
+            await cache.call(
+                store.gcra_refund, f"{cache.namespace}ratelimit:{key}", interval
+            )
 
 
 def load_backend() -> Backend:
