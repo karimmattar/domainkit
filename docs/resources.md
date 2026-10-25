@@ -52,7 +52,7 @@ returns a unit of work (a class is called without arguments), and
 `schema_for(model)`; pass `schema=` (and `present=`, a function from the
 aggregate to it) for one of your own. The id's path parameter is
 `<basename>_id`, `product_id` here, typed as the aggregate's ids are.
-`filters` is a `FilterSet`, or any dependency that returns a `Query` or
+`filters` is a `FilterSet`, or any dependency that returns a `Selection` or
 criteria. Every route, its parameters, and the errors it may answer with
 are in OpenAPI.
 

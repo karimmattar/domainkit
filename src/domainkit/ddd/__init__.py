@@ -33,7 +33,14 @@ from domainkit.ddd.messages import UNSET, Command, Query, Unset
 from domainkit.ddd.model import AggregateRoot, Entity, ValueObject
 from domainkit.ddd.pagination import Page
 from domainkit.ddd.personal import Counted, Personal
-from domainkit.ddd.query import Criteria, F, Ordering, RowLock, Specification
+from domainkit.ddd.query import (
+    Criteria,
+    F,
+    Ordering,
+    RowLock,
+    Selection,
+    Specification,
+)
 from domainkit.ddd.repository import (
     InMemoryRepository,
     LockNotAvailable,
@@ -78,6 +85,7 @@ __all__ = [
     "Repository",
     "RowLock",
     "RowLocks",
+    "Selection",
     "SoftDeletable",
     "Specification",
     "UnitOfWork",

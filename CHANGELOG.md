@@ -24,6 +24,11 @@ All notable changes to domainkit. The format follows
   one error naming every one missing. Every contrib app declares it
   (DSGN-04; ADR 0077).
 
+- `domainkit.ddd.Selection`: the aggregate query of `filter` and `first`,
+  so far `domainkit.ddd.query.Query`, a name that still works and the same
+  class. It no longer shares its name with the CQRS message
+  `domainkit.ddd.Query`. `docs/queries.md` uses the new name (DSGN-09).
+
 ### Changed
 
 - Shutdown closers come from one table: the framework's own kinds are
@@ -38,6 +43,8 @@ All notable changes to domainkit. The format follows
   INSTALLED_DOMAINS: it records every operation in the audit trail."
   A test fails on any new import of another app's internal modules, or of
   the core into one; the 41 that exist are listed for 0.10 (DSGN-04).
+- `domainkit.contrib.evidence.model` is now `models`, as in every other
+  app; the old module re-exports the same names (DSGN-09).
 
 ## [0.9.1] - 2026-10-25
 

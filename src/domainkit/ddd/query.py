@@ -2,10 +2,10 @@
 
 A repository answers queries built from field expressions::
 
-    from domainkit.ddd.query import F, Query
+    from domainkit.ddd import F, Selection
 
     late = (F("status") == "open") & (F("due") < today)
-    invoices = await uow.invoices.filter(Query(late, ordering=["-due"], limit=20))
+    invoices = await uow.invoices.filter(Selection(late, ordering=["-due"], limit=20))
     count = await uow.invoices.count(late)
 
 Conditions compose with ``&``, ``|``, and ``~``. A dotted name reaches into
@@ -27,7 +27,8 @@ Python, the SQL one in the database:
   exactly, a datetime must be aware, an enum field takes a member or its
   value. Single-field value objects compare by what they wrap.
 
-``Query`` here selects aggregates; ``domainkit.ddd.Query`` is the base of
+``Selection`` says which aggregates to load. It was called ``Query`` before
+0.9.2, and that name still works here; ``domainkit.ddd.Query`` is the base of
 CQRS query messages, a different thing.
 """
 
@@ -423,7 +424,7 @@ class RowLock:
 
 
 @dataclass(frozen=True, slots=True, init=False)
-class Query:
+class Selection:
     """Which aggregates to load, in which order, and how many.
 
     ``after`` continues past a position: the values of the ordering's fields,
@@ -467,14 +468,14 @@ class Query:
         assign(self, "lock", lock)
         assign(self, "include_deleted", include_deleted)
 
-    def where(self, *criteria: CriteriaLike) -> "Query":
+    def where(self, *criteria: CriteriaLike) -> "Selection":
         """This query, with ``criteria`` also required."""
         if not criteria:
             return self
         parts = [] if self.criteria is None else [self.criteria]
         return self.replace(criteria=And.of(*parts, *map(as_criteria, criteria)))
 
-    def replace(self, **changes: Any) -> "Query":  # noqa: ANN401 - any field.
+    def replace(self, **changes: Any) -> "Selection":  # noqa: ANN401 - any field.
         """A copy with ``changes`` (the constructor's keywords)."""
         fields = {
             "criteria": self.criteria,
@@ -485,7 +486,11 @@ class Query:
             "lock": self.lock,
             "include_deleted": self.include_deleted,
         }
-        return Query(**{**fields, **changes})
+        return Selection(**{**fields, **changes})
+
+
+Query = Selection
+"""``Selection``'s name before 0.9.2; 0.10 deprecates it, see ``docs/versioning.md``."""
 
 
 class Specification[T](ABC):
