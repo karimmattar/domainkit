@@ -43,6 +43,7 @@ from domainkit.log import (
     build_logging_config,
     configure_logging,
     flush_logs,
+    flush_throttled,
 )
 
 CONTEXT = RequestContext(
@@ -1727,3 +1728,84 @@ def test_a_throttled_log_does_nothing_where_warnings_are_off(
 
     assert throttled._seen == {}
     assert throttled_lines(caplog, "test.throttled.quiet") == []
+
+
+def test_a_throttled_log_writes_a_stopped_bursts_count_with_any_later_line(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A key that goes quiet has its count written by the next line of any key.
+
+    Only once its interval has passed, and then it is forgotten; keys that
+    held nothing back are forgotten without a line.
+    """
+    throttled = ThrottledLog(logging.getLogger("test.throttled"), interval=10.0)
+    with freeze_time("2026-01-01") as clock:
+        for _ in range(500):
+            throttled.warning("token", "a", "Refused from a")
+        throttled.warning("token", "quiet", "Refused from quiet")
+        clock.tick(5)
+        for _ in range(3):
+            throttled.warning("token", "b", "Refused from b")
+        clock.tick(4.9)
+        throttled.warning("host", "c", "Rejected from c")  # a's interval is not over.
+        clock.tick(0.1)
+        throttled.warning("host", "c", "Rejected from c")  # It is: a's count.
+        kept = list(throttled._seen)
+        clock.tick(5)
+        throttled.warning("host", "c", "Rejected from c")  # b's.
+
+    assert throttled_lines(caplog, "test.throttled") == [
+        "Refused from a",
+        "Refused from quiet",
+        "Refused from b",
+        "Rejected from c",
+        "499 more token line(s) for a were held back",
+        "2 more token line(s) for b were held back",
+    ]
+    assert kept == [("token", "b"), ("host", "c")]
+    assert list(throttled._seen) == [("host", "c")]
+
+
+def test_flushing_throttled_logs_writes_every_count_held_back(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``flush_throttled`` writes each live log's counts, once, and forgets the keys."""
+    first = ThrottledLog(logging.getLogger("test.throttled"))
+    second = ThrottledLog(logging.getLogger("test.throttled.other"))
+    with freeze_time("2026-01-01"):
+        for _ in range(3):
+            first.warning("token", "a", "Refused from a")
+        first.warning("token", "b", "Refused from b")
+        second.warning("host", "a", "Rejected from a")
+        second.warning("host", "a", "Rejected from a")
+
+        flush_throttled()
+        flush_throttled()
+
+    assert throttled_lines(caplog, "test.throttled") == [
+        "Refused from a",
+        "Refused from b",
+        "2 more token line(s) for a were held back",
+    ]
+    assert throttled_lines(caplog, "test.throttled.other") == [
+        "Rejected from a",
+        "1 more host line(s) for a were held back",
+    ]
+    assert (first._seen, second._seen) == ({}, {})
+
+
+@pytest.mark.anyio
+async def test_shutting_down_writes_the_counts_held_back(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The process's shutdown writes a burst's count that nothing followed."""
+    throttled = ThrottledLog(logging.getLogger("test.throttled"))
+    for _ in range(4):
+        throttled.warning("token", "a", "Refused from a")
+
+    await close_resources()
+
+    assert throttled_lines(caplog, "test.throttled") == [
+        "Refused from a",
+        "3 more token line(s) for a were held back",
+    ]

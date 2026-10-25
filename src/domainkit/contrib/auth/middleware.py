@@ -34,6 +34,11 @@ fails its CSRF checks (403), is a request another site can make a browser
 send, and counting it would let that site lock everyone behind the
 browser's address out.
 
+The security log has a line when an address is held, and counts what it
+refuses while held, as it counts refused credentials: throttled per
+address (``domainkit.log.ThrottledLog``), so a burst that stops still
+shows its size.
+
 An open WebSocket or event stream has its credentials checked again while
 it lasts (``reauthenticate``, called by ``domainkit.http.live``), so a
 revoked or expired token, or a deactivated user, does not keep it open.
@@ -42,6 +47,7 @@ change as soon as requests of this process do (``principals``).
 """
 
 import logging
+import math
 import threading
 from collections import OrderedDict
 from dataclasses import replace
@@ -116,6 +122,7 @@ class AuthenticationMiddleware:
         # request, as if this one had come first.
         held = self._held(address_key(scope)) if self.held else None
         if held is not None and "authorization" in connection.headers:
+            self._log_held(address_key(scope), *held)
             await refuse(scope, receive, send, *held)
             return
         try:
@@ -126,6 +133,7 @@ class AuthenticationMiddleware:
         if held is not None and found is not None and found[0].guessable:
             # Credentials in another header, read by a project's own class,
             # are refused once read: a guess that works must not stand out.
+            self._log_held(address_key(scope), *held)
             await refuse(scope, receive, send, *held)
             return
         credentials = None if found is None else found[1]
@@ -211,6 +219,7 @@ class AuthenticationMiddleware:
             decision = await self.limiter.hit(f"refused:{address}", limit, period)
             if not decision.allowed:
                 self._hold(address, decision.retry_after)
+                self._log_held(address, limit, decision)
                 await refuse(scope, receive, send, limit, decision)
                 return
         if scope["type"] == "websocket":
@@ -234,6 +243,17 @@ class AuthenticationMiddleware:
             self.held.move_to_end(address)
             if len(self.held) > MAX_HELD:
                 self.held.popitem(last=False)
+
+    def _log_held(self, address: str, limit: int, refusal: Decision) -> None:
+        """Log that ``address``'s credentials are refused unread: throttled, counted."""
+        self.log.warning(
+            "held_credentials",
+            address,
+            "Holding back credentials from %s for %d s: over RATE_LIMIT (%d refused)",
+            address,
+            math.ceil(refusal.retry_after),
+            limit,
+        )
 
     def _held(self, address: str) -> tuple[int, Decision] | None:
         """The limit and the refusal ``address`` is still held to, if any."""

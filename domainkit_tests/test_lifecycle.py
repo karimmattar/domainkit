@@ -163,9 +163,10 @@ async def test_phases_run_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_error_reports_then_logs_are_flushed_last(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The framework flushes reports, then logs, after the flush phase's closers.
+    """The framework flushes held-back counts, reports, then logs, after the closers.
 
-    What closing everything else reported or logged is then written too.
+    What closing everything else reported or logged is then written too, and
+    the counts of security lines held back are among it.
     """
     closed: list[str] = []
     record_closes(monkeypatch, closed)
@@ -173,14 +174,15 @@ async def test_error_reports_then_logs_are_flushed_last(
     async def note(name: str) -> None:
         closed.append(name)
 
+    monkeypatch.setattr(lifecycle, "aflush_throttled", partial(note, "held back"))
     monkeypatch.setattr(lifecycle, "aflush_reports", partial(note, "error reports"))
     monkeypatch.setattr(lifecycle, "aflush_logs", partial(note, "logs"))
     register("exports", partial(note, "exports"), phase=Phase.FLUSH)
 
     await close_resources()
 
-    assert closed[-3:] == ["exports", "error reports", "logs"]
-    for name in ("error reports", "logs"):
+    assert closed[-4:] == ["exports", "held back", "error reports", "logs"]
+    for name in ("held-back log lines", "error reports", "logs"):
         with pytest.raises(ValueError, match="closed by the framework already"):
             register(name, partial(note, name), phase=Phase.FLUSH)
 

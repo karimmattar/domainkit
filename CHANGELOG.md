@@ -12,7 +12,9 @@ All notable changes to domainkit. The format follows
   (`"X-Forwarded-Proto"`, or `None`), and `"unix"` in `TRUSTED_PROXIES`
   (WEB-02, WEB-04, WEB-06).
 - `domainkit.log.ThrottledLog`: warnings written once per event and
-  caller each 10 seconds, with a count of those held back (WEB-11).
+  caller each 10 seconds, with a count of those held back; `flush()`, and
+  `domainkit.log.flush_throttled()` for every live one, write the counts
+  still held (WEB-11).
 - Rate-limit backends (`domainkit.http.ratelimit.Backend`) may give a counted request back
   (`refund(key, limit, period)`, `RefundingBackend`); `MemoryBackend` and
   `RedisBackend` do. `Decision.counted` is `False` for a request a backend
@@ -70,10 +72,15 @@ All notable changes to domainkit. The format follows
   and staging and production do not start with one (ADR 0062) (FIN-79).
 - Security-log lines of refusals (a rejected `Host` header, a body too
   large or too slow, refused credentials, a refused live connection) are
-  written once per caller every 10 seconds, the next line saying how many
-  were held back, instead of one per request: a flood no longer fills the
-  logging queue and crowds out the lines that matter. Each caller's first
-  line is still written (WEB-11).
+  written once per caller every 10 seconds, with a count of those held
+  back, instead of one per request: a flood no longer fills the logging
+  queue and crowds out the lines that matter. Each caller's first line is
+  still written. The count is written with the caller's next line or, if
+  none comes, by the next security line of any caller once its 10 seconds
+  have passed, and at the latest when the process shuts down, so a burst
+  that stops still shows its size. An address held back for refused
+  credentials is logged when the hold starts, and the requests the hold
+  refuses unread are counted the same way (WEB-11, SEC-r1-3).
 - `privacy` takes `--operator` before its action (`privacy --operator
   alice purge`); its exports, erasures, and purges are audited as that
   operator rather than `system` (DATA-07).

@@ -14,6 +14,7 @@ with the lock held (where there is one).
 
 import asyncio
 import ipaddress
+import itertools
 import logging
 import os
 import random
@@ -70,7 +71,7 @@ from domainkit.http.middleware import ProxyHeadersMiddleware, _address
 from domainkit.http.ratelimit import MemoryBackend, client_group
 from domainkit.http.shedding import QUEUE_FULL, ShedReport
 from domainkit.http.websockets import WebSocketLimitsMiddleware
-from domainkit.log import JsonFormatter, ThrottledLog
+from domainkit.log import JsonFormatter, ThrottledLog, flush_throttled
 from domainkit_tests.conftest import UseAuth
 
 THREADS = 8
@@ -801,6 +802,68 @@ def test_a_throttled_log_counts_every_repeat_from_every_thread(
 
     assert sorted(throttled._seen) == [("event", "key0"), ("event", "key1")]
     assert sum(seen.held for seen in throttled._seen.values()) == THREADS * 2_000 - 2
+
+
+class _Counting(logging.Handler):
+    """How many events the lines a ``ThrottledLog`` wrote stand for."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.events = 0
+        self._count = threading.Lock()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """A line is one event, plus the repeats it reports held back."""
+        args = record.args
+        assert isinstance(args, tuple)
+        events = 1
+        if record.msg.startswith("%d more"):
+            events = int(str(args[0]))
+        elif record.msg.startswith("%s (and"):
+            events += int(str(args[1]))
+        with self._count:
+            self.events += events
+
+
+def test_throttled_logs_lose_no_count_to_sweeps_and_flushes_on_threads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lines, sweeps, flushes, and new logs at once: every event is reported once.
+
+    Keys come and go (an interval passes for some while others are held),
+    and ``flush_throttled`` runs meanwhile on every thread; the counts the
+    lines report add up to the warnings made.
+    """
+    logger = logging.getLogger("domainkit_tests.threads.sweep")
+    counting = _Counting()
+    logger.addHandler(counting)
+    monkeypatch.setattr(logger, "propagate", False)
+    throttled = ThrottledLog(logger, interval=1.0, keys=4)
+    ticks = itertools.count()
+    tick = threading.Lock()
+
+    def monotonic() -> float:
+        assert throttled._lock.locked()
+        with tick:
+            return next(ticks) / 100  # An interval passes every 100 reads.
+
+    monkeypatch.setattr(clock_module, "monotonic", monotonic)
+
+    def repeat(index: int) -> None:
+        for number in range(2_000):
+            throttled.warning("event", f"key{(index + number) % 6}", "A line")
+            if number % 250 == 0:
+                ThrottledLog(logger)  # Registered, then let go.
+                flush_throttled()
+
+    try:
+        on_threads(repeat)
+        flush_throttled()
+    finally:
+        logger.removeHandler(counting)
+
+    assert throttled._seen == {}
+    assert counting.events == THREADS * 2_000
 
 
 def test_loops_on_threads_get_their_own_engines(

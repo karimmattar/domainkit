@@ -341,6 +341,17 @@ ACCESS_LOG_SLOW_DURATION = 1.0  # Seconds.
   request, and cannot crowd the logging queue; each new caller's first
   line is still written. The 1,024 latest callers are remembered per
   middleware; one let go writes a line for what it held back.
+- A caller that stops still has its count written: by the next line of
+  any caller once its 10 seconds have passed (`N more refused_credentials
+  line(s) for ip:203.0.113.9 were held back`), and at the latest by the
+  shutdown's last phase, before the logs are flushed. A quiet service
+  that gets no other refusal writes it at shutdown, so read the security
+  log up to the process's last line before concluding a burst's size.
+- An address held back for refused credentials (past `RATE_LIMIT`) is
+  logged when the hold starts (`Holding back credentials from ... for N s:
+  over RATE_LIMIT (100 refused)`), and the requests the hold refuses
+  unread are counted on that line's key (`held_credentials`), throttled
+  like the rest.
 - `1.0`, the default, writes every line, as before.
 
 ## Finding blocking code

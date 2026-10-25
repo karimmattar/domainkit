@@ -15,6 +15,7 @@ from starlette.requests import HTTPConnection
 from starlette.testclient import WebSocketDenialResponse
 from starlette.websockets import WebSocketDisconnect
 
+from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.audit.tables import audit_log
 from domainkit.contrib.auth import (
@@ -45,7 +46,7 @@ from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.http.ratelimit import Decision, MemoryBackend, address_key
 from domainkit.http.websockets import MIDDLEWARE as WEBSOCKET_LIMITS
-from domainkit.log import SECURITY_LOGGER
+from domainkit.log import SECURITY_LOGGER, THROTTLE_INTERVAL
 from domainkit.management import call_command
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import AUTH, MIDDLEWARE, Api, UseAuth
@@ -592,6 +593,43 @@ def test_refused_credentials_are_logged_once_per_address_a_while(
     assert elsewhere.get("/whoami", headers=bearer("dkt_unknown")).status_code == 401
 
     assert caplog.messages.count("Refused credentials: Invalid token.") == 2
+
+
+def test_a_burst_of_refused_credentials_that_stops_is_counted(
+    api: Api, caplog: pytest.LogCaptureFixture
+) -> None:
+    """500 bad tokens from one address, then nothing: the log says 500.
+
+    The hold is logged when it starts, and what it refuses is counted as
+    refused credentials are; both counts are written by the next security
+    line once their 10 seconds have passed, whoever it is for.
+    """
+    with override_settings(RATE_LIMIT="100/minute"), freeze_time() as clock:
+        client = api()
+        attacker = TestClient(client.app, client=("203.0.113.9", 1))
+        codes = [
+            attacker.get("/whoami", headers=bearer(f"dkt_{i:043d}")).status_code
+            for i in range(500)
+        ]
+        clock.tick(THROTTLE_INTERVAL)
+        other = TestClient(client.app, client=("198.51.100.7", 1))
+        assert other.get("/whoami", headers=bearer("dkt_unknown")).status_code == 401
+
+    assert (codes.count(401), codes.count(429)) == (100, 400)
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == SECURITY_LOGGER
+    ] == [
+        "Refused credentials: Invalid token.",
+        (
+            "Holding back credentials from ip:203.0.113.9 for 1 s: "
+            "over RATE_LIMIT (100 refused)"
+        ),
+        "Refused credentials: Invalid token.",  # The other address's.
+        "100 more refused_credentials line(s) for ip:203.0.113.9 were held back",
+        "399 more held_credentials line(s) for ip:203.0.113.9 were held back",
+    ]
 
 
 def test_authentication_exempt_paths_hold_behind_a_root_path(api: Api) -> None:
