@@ -694,6 +694,24 @@ def test_grants_go_with_the_object_they_are_about(project: str) -> None:
     assert [grant.object_id for grant in run(grants_on(stock))] == [gone.id]
 
 
+def test_grants_go_with_the_user_they_are_for(project: str) -> None:
+    """Deleting a user deletes the grants they held; others keep theirs (AUTH-04)."""
+    (product,) = products("shared")
+    root = person("root", is_superuser=True)
+    ada, bob = person("ada"), person("bob")
+    for each in (ada, bob):
+        run(grant_permission(root, VIEW, product, user=each.id))
+
+    async def delete() -> None:
+        async with AuthUnitOfWork() as uow:
+            await uow.users.remove(await uow.users.get(ada.id))
+            await uow.commit()
+
+    run(delete())
+
+    assert [grant.user_id for grant in run(grants_on(product))] == [bob.id]
+
+
 def test_deletes_leave_grants_alone_where_nothing_is_granted(
     use_auth: UseAuth,
 ) -> None:

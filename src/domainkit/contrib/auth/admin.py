@@ -359,15 +359,14 @@ async def update_user(
 async def delete_user(
     user_id: UUID, actor: Annotated[AnyUser, _users("delete")]
 ) -> None:
-    """Delete a user and every token of theirs."""
+    """Delete a user, every token of theirs, and their second factor."""
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
         await _may_change(actor, user)
         if user.is_superuser and user.is_active:
             await _not_the_last_superuser(uow)
         user.delete()
-        await uow.tokens.revoke_user(user.id)
-        await uow.users.remove(user)
+        await uow.users.remove(user)  # With its credentials (forget_credentials).
         await uow.commit()
 
 

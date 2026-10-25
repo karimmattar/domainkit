@@ -140,6 +140,26 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         statement = select(exists().where(column.in_(names)))
         return bool(await self.session.scalar(statement))
 
+    async def _remove(self, aggregate: AbstractBaseUser) -> None:
+        """Delete the user, with every credential of theirs (``forget_credentials``).
+
+        Their object permissions go with the row too, where
+        ``domainkit.contrib.objectpermissions`` is installed.
+        """
+        await self.forget_credentials(aggregate.id)
+        await super()._remove(aggregate)
+
+    async def forget_credentials(self, user_id: UUID) -> None:
+        """Delete every token and the second factor of ``user_id``.
+
+        Its sessions, personal tokens, refresh tokens, and client
+        certificates, and its authenticator's secret and recovery codes:
+        secrets of an account nobody may use. Every principal of the user
+        is read again after the commit. The caller commits.
+        """
+        await TokenStore(self.session).revoke_user(user_id)
+        await MfaStore(self.session).remove(user_id)
+
     async def _add(self, aggregate: AbstractBaseUser) -> None:
         """Store a new user, unless privacy erased its username from another.
 

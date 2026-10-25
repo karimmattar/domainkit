@@ -954,7 +954,10 @@ def test_jwt_logins_refresh_and_end(api: Api, caplog: pytest.LogCaptureFixture) 
 
 
 def test_reused_refresh_tokens_of_deleted_users_still_fail(api: Api) -> None:
-    """Tokens have no foreign key: one can outlive a user removed without them."""
+    """Tokens have no foreign key: one can outlive a user's row deleted in bulk.
+
+    ``remove`` deletes them with the user; ``delete_rows`` bypasses it.
+    """
     create_user("alice")
     client = api(**JWT)
     first = login(client, "alice")["refresh_token"]
@@ -962,9 +965,7 @@ def test_reused_refresh_tokens_of_deleted_users_still_fail(api: Api) -> None:
 
     async def remove() -> None:
         async with AuthUnitOfWork() as uow:
-            user = await uow.users.get_by_natural_key("alice")
-            assert user is not None
-            await uow.users.remove(user)
+            assert await uow.users.delete_rows(F("username") == "alice") == 1
             await uow.commit()
 
     run_async(remove())
