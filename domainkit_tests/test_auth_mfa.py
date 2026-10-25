@@ -530,15 +530,24 @@ def test_forged_challenges_use_up_no_count_of_the_user(
         stranger = TestClient(client.app, client=(f"203.0.113.{number}", 1))
         refused = finish(stranger, forged, "000000")
         assert (refused.status_code, refused.json()["code"]) == (400, "invalid_token")
-    by_address = [finish(client, forged, "000000").status_code for _ in range(4)]
+    by_address = [finish(client, forged, "000000") for _ in range(4)]
+    other = TestClient(client.app, client=("198.51.100.9", 1))
+    elsewhere = [finish(other, forged, "000000").status_code for _ in range(3)]
     clock[0] += 30
     token = log_in(client).json()["mfa_token"]
 
-    assert by_address == [400, 400, 429, 429]  # Each address still has its count.
+    # Each address still has its count.
+    assert [response.status_code for response in by_address] == [400, 400, 429, 429]
+    assert elsewhere == [400, 400, 429]
+    assert by_address[2].json()["code"] == "throttled"
+    assert by_address[2].json()["detail"] == "Too many attempts; try again later."
+    assert int(by_address[2].headers["Retry-After"]) > 0
     assert finish(client, token, code_at(secret, clock[0])).status_code == 200
-    assert [row["details"] for row in audited("auth.mfa")] == [
-        {"reason": "invalid_token"}
-    ] * 5 + [{"reason": "throttled"}]  # Once per count and period.
+    reasons = [row["details"]["reason"] for row in audited("auth.mfa")]
+    # Each count's first refusal in a period, and no other.
+    assert reasons == ["invalid_token"] * 5 + ["throttled"] + ["invalid_token"] * 2 + [
+        "throttled"
+    ]
     unlimited = identity(LOGIN_RATE=None)
     assert {finish(unlimited, forged, "0").status_code for _ in range(3)} == {400}
 
