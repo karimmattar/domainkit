@@ -167,13 +167,15 @@ class ThrottledLog:
     bad credentials) would otherwise write a line each, fill the logging
     queue, and crowd out lines that matter. The first line of an event
     from a key (a caller's address, or its user) is always written; its
-    repeats within ``interval`` seconds are counted, and the next line
-    written for them says how many were held back. When more than
-    ``keys`` are remembered the oldest is let go, with a line for its
-    held-back repeats if it has any. Keys come from callers, so they are
-    bounded: an address, never a header's text. Event loops on several
-    threads share one (free-threaded Python), so its state changes only
-    under its lock.
+    repeats within ``interval`` seconds are counted. The count is written
+    with the key's next line or, if none comes, by the next warning for
+    any key once the key's ``interval`` has passed, or when the process
+    shuts down (``flush_throttled``): a burst that stops still shows its
+    size. When more than ``keys`` are remembered the oldest is let go,
+    with a line for its held-back repeats if it has any. Keys come from
+    callers, so they are bounded: an address, never a header's text. Event
+    loops on several threads share one (free-threaded Python), so its
+    state changes only under its lock.
     """
 
     def __init__(
@@ -188,43 +190,74 @@ class ThrottledLog:
         self.interval = interval
         self.keys = keys
         self._seen: OrderedDict[tuple[str, str], _Throttled] = OrderedDict()
+        """Events and keys by the time of their last line, the oldest first."""
         self._lock = threading.Lock()
+        with _handlers_lock:
+            _throttled_logs.add(self)
 
     def warning(self, event: str, key: str, message: str, *args: object) -> None:
         """Warn ``message % args`` unless ``event`` from ``key`` was just written.
 
         ``event`` names the kind of line (``invalid_host``), ``key`` whom
         it is about. Nothing is formatted for a line that is held back.
+        Every call also writes the counts of other keys whose ``interval``
+        has passed, and forgets those keys.
         """
         if not self.logger.isEnabledFor(logging.WARNING):
             return
-        evicted: tuple[tuple[str, str], int] | None = None
         with self._lock:
             now = clock.monotonic()
             seen = self._seen.get((event, key))
+            held: int | None = None
             if seen is not None and now < seen.until:
                 seen.held += 1
-                return
-            held = 0 if seen is None else seen.held
-            self._seen[(event, key)] = _Throttled(now + self.interval)
-            self._seen.move_to_end((event, key))
+            else:
+                held = 0 if seen is None else seen.held
+                self._seen[(event, key)] = _Throttled(now + self.interval)
+                self._seen.move_to_end((event, key))
+            gone = self._expired(now)
             if len(self._seen) > self.keys:
-                oldest, gone = self._seen.popitem(last=False)
-                if gone.held:
-                    evicted = oldest, gone.held
+                oldest, evicted = self._seen.popitem(last=False)
+                gone.append((oldest, evicted.held))
         if held:
             self.logger.warning(
                 "%s (and %d more like it since the last line)",
                 message % args if args else message,
                 held,
             )
-        else:
+        elif held == 0:
             self.logger.warning(message, *args)
-        if evicted is not None:
-            (gone_event, gone_key), count = evicted
-            self.logger.warning(
-                "%d more %s line(s) for %s were held back", count, gone_event, gone_key
-            )
+        self._write_held(gone)
+
+    def flush(self) -> None:
+        """Write every count held back, and forget every key."""
+        with self._lock:
+            gone = [(seen, kept.held) for seen, kept in self._seen.items()]
+            self._seen.clear()
+        self._write_held(gone)
+
+    def _expired(self, now: float) -> list[tuple[tuple[str, str], int]]:
+        """Forget the keys whose interval has passed; each with what it held back.
+
+        Keys are kept in the order of their last line, and every line holds
+        its key back for the same ``interval``, so the expired ones are at
+        the front. Called under the lock.
+        """
+        gone: list[tuple[tuple[str, str], int]] = []
+        while self._seen:
+            first = next(iter(self._seen))
+            if self._seen[first].until > now:
+                break
+            gone.append((first, self._seen.pop(first).held))
+        return gone
+
+    def _write_held(self, gone: list[tuple[tuple[str, str], int]]) -> None:
+        """A line for each forgotten key that held repeats back."""
+        for (event, key), count in gone:
+            if count:
+                self.logger.warning(
+                    "%d more %s line(s) for %s were held back", count, event, key
+                )
 
 
 class JsonFormatter(logging.Formatter):
@@ -688,8 +721,11 @@ class BackgroundHandler(logging.handlers.QueueHandler):
 
 _handlers: "weakref.WeakSet[BackgroundHandler]" = weakref.WeakSet()
 _handlers_lock = threading.RLock()
-"""Guards ``_handlers``. Reentrant, as ``logging``'s own lock: a fork from a
-signal handler that interrupted the thread holding it takes it again."""
+"""Guards ``_handlers`` and ``_throttled_logs``. Reentrant, as ``logging``'s
+own lock: a fork from a signal handler that interrupted the thread holding
+it takes it again."""
+_throttled_logs: "weakref.WeakSet[ThrottledLog]" = weakref.WeakSet()
+"""Every ``ThrottledLog`` in use, for ``flush_throttled`` at shutdown."""
 
 
 def _remember(handler: BackgroundHandler) -> None:
@@ -749,6 +785,19 @@ async def aflush_logs(seconds: float = FLUSH_TIMEOUT) -> None:
     """``flush_logs`` on a worker thread, for the lifespan's shutdown."""
     if _live_handlers():
         await asyncio.to_thread(flush_logs, seconds)
+
+
+def flush_throttled() -> None:
+    """Write the counts every live ``ThrottledLog`` still holds back."""
+    with _handlers_lock:
+        throttled = list(_throttled_logs)
+    for log in throttled:
+        log.flush()
+
+
+async def aflush_throttled() -> None:
+    """``flush_throttled``, for the shutdown's last phase, before the logs'."""
+    flush_throttled()
 
 
 def build_logging_config(

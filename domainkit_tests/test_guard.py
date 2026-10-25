@@ -406,7 +406,8 @@ async def test_a_host_whose_lookup_hung_backs_off_longer(lookups: Lookups) -> No
     """A failure after ``HUNG_LOOKUP_SECONDS`` keeps its host out for a minute.
 
     A quick failure is remembered for ``FAILED_LOOKUP_SECONDS`` only, and a
-    slow success not at all.
+    slow success not at all: it is what one name server down looks like,
+    and the host resolves.
     """
     resolver = GuardResolver()
     lookups.answers["hung.test"] = socket.gaierror(socket.EAI_AGAIN, "Timed out")

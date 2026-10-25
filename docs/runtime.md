@@ -355,6 +355,17 @@ ACCESS_LOG_SLOW_DURATION = 1.0  # Seconds.
   request, and cannot crowd the logging queue; each new caller's first
   line is still written. The 1,024 latest callers are remembered per
   middleware; one let go writes a line for what it held back.
+- A caller that stops still has its count written: by the next line of
+  any caller once its 10 seconds have passed (`N more refused_credentials
+  line(s) for ip:203.0.113.9 were held back`), and at the latest by the
+  shutdown's last phase, before the logs are flushed. A quiet service
+  that gets no other refusal writes it at shutdown, so read the security
+  log up to the process's last line before concluding a burst's size.
+- An address held back for refused credentials (past `RATE_LIMIT`) is
+  logged when the hold starts (`Holding back credentials from ... for N s:
+  over RATE_LIMIT (100 refused)`), and the requests the hold refuses
+  unread are counted on that line's key (`held_credentials`), throttled
+  like the rest.
 - `1.0`, the default, writes every line, as before.
 
 ## Finding blocking code
@@ -471,7 +482,13 @@ the limits for each.
 
 - **uvicorn** is Python on uvloop and httptools. It answers 503 past
   `--limit-concurrency`, limits WebSocket messages (`--ws-max-size`), and
-  closes connections left open past `--timeout-graceful-shutdown`.
+  closes connections left open past `--timeout-graceful-shutdown`. Run it
+  with `--no-proxy-headers`: by default it reads `X-Forwarded-For` and
+  `X-Forwarded-Proto` itself, from `FORWARDED_ALLOW_IPS` (`127.0.0.1`),
+  before domainkit does, so neither `TRUSTED_PROXIES` nor
+  `PROXY_SCHEME_HEADER` decides the client's address and scheme then; with
+  `PROXY_SCHEME_HEADER = None`, a client's own `X-Forwarded-Proto` passed
+  through a proxy on the same host still sets the scheme.
 - **Granian** is an HTTP server in Rust that runs the same ASGI
   application, lifespan included (`--interface asgi`). It parses HTTP/1
   and HTTP/2 outside Python, bounds requests in flight per worker
@@ -654,8 +671,13 @@ before its key's lease does, or a retry may take the key over while it
 runs: `REQUEST_TIMEOUT` must be below `IDEMPOTENCY.LEASE_SECONDS` (startup
 fails otherwise), and `check` reports a `POST` or `PATCH` route whose own
 deadline is at the lease or past it, or removed, as the export above is
-with the default lease of 60 seconds. Raise the lease above the longest
-such deadline, or shorten the route's
+with the default lease of 60 seconds, and staging and production refuse
+to start with one. Raise the lease above the longest such deadline, or
+shorten the route's. With no deadline at all (`REQUEST_TIMEOUT = None`,
+or no `DeadlineMiddleware`), `check` warns where deployed that keyed
+requests can outlive the lease; 0.10 refuses to start. A keyed
+response's background tasks run after its response is stored, so they
+run once however long they take
 ([contrib.md](contrib.md#idempotency-safe-retries-of-unsafe-requests)).
 
 **What has no deadline.** The deadline is lifted as soon as the response
@@ -943,13 +965,21 @@ never the event loop's default executor, which `asyncio.to_thread` and new
 database connections need: at most `GUARD_LOOKUP_THREADS` (16) lookups at
 once, 2 of one host, and a quarter of the threads for one owner: the
 request's user, or its address (an IPv6 network), or whom
-`guard.lookups_for(owner)` names around the calls. A host whose lookup
+`guard.lookups_for(owner)` names around the calls (each webhook
+delivery's subscription, `webhook:<id>`). A host whose lookup
 failed fails at once for 5 seconds, or for a minute if the lookup took 5
 seconds or more to fail (the system's resolver timed out: its DNS does not
 answer). A lookup past those bounds fails at once, as a connection error,
-so hosts one caller chose that never answer cost the other callers
-nothing. (A lookup cannot be interrupted, which an asynchronous resolver
-will change.) A guarded client takes no `transport=`, which would skip
+so hosts one owner chose that never answer cost the other owners
+nothing. A lookup that succeeds is never held against its host, however
+slow: the system's resolver tries the next name server after 5 seconds,
+so a slow success is what one name server down looks like, and refusing
+the host for it would refuse a host that resolves. A host whose DNS
+answers slowly, or fails in under 5 seconds, therefore takes a thread
+on each new lookup, at most 2 at once. The share is per owner, not per
+tenant: whoever controls many owners (many webhook subscriptions, many
+users) can still hold many threads. (A lookup cannot be interrupted,
+which an asynchronous resolver will change.) A guarded client takes no `transport=`, which would skip
 its address checks; tests use `stub`.
 
 | Raised | When |

@@ -4,6 +4,8 @@ import getpass
 import io
 import logging
 from collections.abc import Iterator
+from importlib import import_module
+from typing import Final
 
 import pytest
 from sqlalchemy.exc import DBAPIError
@@ -128,6 +130,55 @@ def test_only_commands_that_change_data_take_an_operator() -> None:
     assert "--operator" not in plain
     with pytest.raises(TypeError, match="Unknown options for 'check'"):
         call_command("check", operator="alice", stdout=io.StringIO())
+
+
+OPERATED: Final = {
+    "domainkit.contrib.audit": ["auditforget"],
+    "domainkit.contrib.auth": [
+        "addcertificate",
+        "changepassword",
+        "cleartokens",
+        "createsuperuser",
+        "createtoken",
+        "resetmfa",
+    ],
+    "domainkit.contrib.flags": ["flags"],
+    "domainkit.contrib.messaging": ["messages"],
+    "domainkit.contrib.privacy": ["privacy"],
+    "domainkit.contrib.webhooks": ["webhooks"],
+    "domainkit": ["flush", "loaddata", "partitions"],
+}
+"""The commands that change or erase stored data, or credentials, by package."""
+
+
+def test_commands_that_change_data_or_credentials_name_their_operator() -> None:
+    """Each runs as ``operator:<name>``, so its audit rows say who (SEC-r2-2).
+
+    Those that only read (``evidence``, ``auditlog``, ``auditverify``) do not
+    ask for one.
+    """
+    operated = {
+        name
+        for package, names in OPERATED.items()
+        for name in names
+        if import_module(
+            f"{package}.management.commands.{name}"
+        ).Command.operator_actions
+    }
+    readers = {
+        name
+        for package, name in (
+            ("domainkit.contrib.evidence", "evidence"),
+            ("domainkit.contrib.audit", "auditlog"),
+            ("domainkit.contrib.audit", "auditverify"),
+        )
+        if not import_module(
+            f"{package}.management.commands.{name}"
+        ).Command.operator_actions
+    }
+
+    assert operated == {name for names in OPERATED.values() for name in names}
+    assert readers == {"evidence", "auditlog", "auditverify"}
 
 
 def test_recording_needs_an_operator() -> None:

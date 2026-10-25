@@ -187,7 +187,7 @@ Each `BROKERS` entry:
 | `REQUEST_QUEUE_TIMEOUT` | `1.0` | Seconds (at most 60) a request past the cap waits for a slot before it is answered 503 `overloaded`. |
 | `CONCURRENCY_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths never counted against the cap, so probes and scrapes are never refused; compared without the root path the application is mounted at (`--root-path`). |
 | `HTTP_CLIENT` | see [Outgoing HTTP calls](#outgoing-http-calls) | Defaults of outgoing calls through `domainkit.http.client`. |
-| `GUARD_LOOKUP_THREADS` | `16` | Threads (1 to 256) that look host names up for guarded calls and webhooks, in each process. One caller (a user, or an address) may hold a quarter of them, so hosts one caller chose that never answer leave the rest to others ([runtime.md](runtime.md#outgoing-http-calls)). |
+| `GUARD_LOOKUP_THREADS` | `16` | Threads (1 to 256) that look host names up for guarded calls and webhooks, in each process. One owner (a request's user or address, or a webhook delivery's subscription) may hold a quarter of them, so hosts one owner chose that never answer leave the rest to others ([runtime.md](runtime.md#outgoing-http-calls)). |
 | `READINESS_TIMEOUT` | `5.0` | Seconds each readiness check may take (at most 60). |
 | `READINESS_CACHE_SECONDS` | `1.0` | How long a `/ready` result is reused, from when its checks ended; probes that come while checks run wait for them, so probe floods cannot load the database. |
 | `READINESS_DETAILS` | `False` | Name failing components in `/ready` responses (always logged). A group of checks that raises instead of reporting is named as its group (`domains`, `databases`, `ledgers`, `caches`), logged, and kept like any failed round: a 503, never a 500. |
@@ -195,7 +195,7 @@ Each `BROKERS` entry:
 | `ACCESS_LOG_SAMPLE_RATE` | `1.0` | Share of access lines written, from 0 to 1: `0.1` writes about one request in ten, each drawn on its own. Responses from 400 up (client errors, refusals, and server errors), requests without a response, and requests that take `ACCESS_LOG_SLOW_DURATION` or longer are always written, so only successes and redirects are sampled; `domainkit.security` and the audit trail are never sampled ([runtime.md](runtime.md#sampling-the-access-log)). |
 | `ACCESS_LOG_SLOW_DURATION` | `1.0` | Seconds (at most 3600): a request this slow or slower has its access line written whatever `ACCESS_LOG_SAMPLE_RATE` says. |
 | `TRUSTED_PROXIES` | `()` | Networks (`10.0.0.0/8`) whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed, and `"unix"` for the proxy on the other end of a unix socket (`uvicorn --uds`), which has no address. The client is found by walking `X-Forwarded-For` from the right, across every line of the header, through trusted proxies: it is the first hop that is not one, and nothing left of it is read. Hops may carry a port. A hop there that is no address (a proxy's `unknown`) counts the client as the last proxy passed, logged on `domainkit.security`. The scheme is the `PROXY_SCHEME_HEADER` value at the client's place from the right, or the right-most one when there are fewer. Empty: the socket peer is the client. |
-| `PROXY_SCHEME_HEADER` | `"X-Forwarded-Proto"` | The header in which the trusted proxies say the client's scheme (a header name). `None`: the scheme is never taken from a header. Set it to `None` when they do not set it (HAProxy's `option forwardfor` alone, an NLB), or a client's own `X-Forwarded-Proto` would be read, and choose whether cookies are `Secure`. |
+| `PROXY_SCHEME_HEADER` | `"X-Forwarded-Proto"` | The header in which the trusted proxies say the client's scheme (a header name). `None`: the scheme is never taken from a header. Set it to `None` when they do not set it (HAProxy's `option forwardfor` alone, an NLB), or a client's own `X-Forwarded-Proto` would be read, and choose whether cookies are `Secure`. `None` holds only where the server reads no proxy header itself: uvicorn, unless run with `--no-proxy-headers`, sets the scheme from `X-Forwarded-Proto` before domainkit sees the request, for every request from `FORWARDED_ALLOW_IPS` (`127.0.0.1` by default: a proxy on the same host). Granian reads none. |
 | `RATE_LIMIT` | `None` | Requests per caller, such as `"300/minute"` (`second`, `minute`, `hour`, `day`). `None` disables it. |
 | `RATE_LIMIT_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths never counted; compared without the root path (`--root-path`). |
 | `RATE_LIMIT_BACKEND` | `domainkit.http.ratelimit.MemoryBackend` | Where counts live. The default is per process, and keeps the 100,000 most recently seen callers; one seen longer ago starts afresh. Behind several replicas, use `domainkit.http.ratelimit.RedisBackend`: one count per caller in Redis, on the server's clock. If Redis fails, or refuses the count (out of memory, a read-only replica after a failover), requests are let through, and Redis is skipped for the cache's `FAILURE_COOLDOWN`; `AUTH.THROTTLE_FAIL_CLOSED` refuses password and code checks meanwhile instead ([auth.md](auth.md#logging-in-and-out)). |
@@ -341,11 +341,14 @@ well (`websocket_max_message_size`, in its configuration file), and
 gunicorn with a worker class named only in its configuration file, are not
 recognised: `check` says nothing about them, so set their limits yourself.
 
-`--no-proxy-headers` leaves `X-Forwarded-*` to `TRUSTED_PROXIES`: uvicorn
-otherwise reads them itself, from `127.0.0.1` or from whatever
-`FORWARDED_ALLOW_IPS` allows (`*` lets any client choose its address, and
-so its rate limit and login throttle). Granian reads none. `runserver`
-runs this way, with either server.
+`--no-proxy-headers` leaves `X-Forwarded-*` to `TRUSTED_PROXIES` and
+`PROXY_SCHEME_HEADER`: uvicorn otherwise reads them itself, from
+`127.0.0.1` or from whatever `FORWARDED_ALLOW_IPS` allows (`*` lets any
+client choose its address, and so its rate limit and login throttle), and
+sets the scheme from `X-Forwarded-Proto` before domainkit runs, so
+`PROXY_SCHEME_HEADER = None` does not stop a client's own header from
+choosing it. Granian reads none. `runserver` runs this way, with either
+server.
 
 Behind a proxy on a unix socket (`uvicorn --uds`, `granian --uds`,
 `gunicorn --bind unix:...`), no caller has an address: without `"unix"`
@@ -940,13 +943,22 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 Commands that change or erase stored data as a person, not as the
 application, say who runs them and leave a row in the audit trail (with
 `domainkit.contrib.audit` installed): `messages --retry` and `--cancel`,
-`auditforget`, `loaddata`, `flush`, `partitions --prune`, and `privacy`.
+`auditforget`, `loaddata`, `flush`, `partitions --prune`, and `privacy`;
+and so do those that change credentials, flags, settings, and deliveries:
+`resetmfa`, `createtoken`, `changepassword`, `createsuperuser`,
+`addcertificate`, `cleartokens`, `flags`, and `webhooks`. Their listings
+(`flags list`, `webhooks deliveries`, ...) take the operator too but record
+nothing; `evidence`, `auditlog`, and `auditverify` only read and take none.
 The operator is, in this order:
 
 1. `--operator NAME` (before the action for `privacy`:
-   `privacy --operator alice purge`);
+   `privacy --operator alice purge`, and for `flags`: `flags --operator
+   alice set beta --everyone on`);
 2. the `DOMAINKIT_OPERATOR` environment variable;
-3. the user the process runs as.
+3. the login name `getpass.getuser()` reports: the `LOGNAME`, `USER`,
+   `LNAME`, or `USERNAME` environment variable, else the name of the
+   process's user id. Whoever runs the command can set any of these, so
+   this names the operator no better than the other two.
 
 A name is 1 to 64 letters, digits, `.`, `_`, `@`, `+`, or `-`, starting
 with a letter or digit; another is refused before the command runs, and so
@@ -959,11 +971,14 @@ anyone, so keep who can run `manage.py` against production as narrow as
 who can reach its database.
 
 The command runs as the actor `operator:<name>`, so what it records itself
-(`privacy.erase`, `privacy.purge`) names the operator instead of `system`.
-Each action is recorded once it ends as `operator.<command>`
+(`privacy.erase`, `privacy.purge`, `auth.mfa_disabled`,
+`auth.token_created`, `auth.password_changed`, `auth.user_created`,
+`auth.user_logged_out`, `flags.flag_changed`, `flags.setting_changed`)
+names the operator instead of `system`. An action that records nothing
+itself is recorded once it ends as `operator.<command>`
 (`operator.messages.retry`, `operator.messages.cancel`,
 `operator.auditforget`, `operator.loaddata`, `operator.flush`,
-`operator.partitions.prune`), `success` or `failure` (with the error's
+`operator.partitions.prune`, `operator.webhooks.replay`), `success` or `failure` (with the error's
 class), with what it acted on and counts, and `operator_source`: `option`,
 `environment`, or `system`. Dry runs, listings, and refusals before the
 action (no `--force`) are not recorded. A successful action whose row

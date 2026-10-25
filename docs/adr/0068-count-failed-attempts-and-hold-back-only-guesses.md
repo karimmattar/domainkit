@@ -81,3 +81,28 @@ client certificate, which takes its private key.
   `refund`; one that does not keeps the old.
 - A per-account lockout with audited unlock stays for 0.10; it will rest on
   these counts of failures.
+
+## Amendment (2026-10-25): what the counts do not stop
+
+The first wording of this change said that a user who logs in often, or
+an office behind one address, "is never refused for logging in". That
+holds for their own logins only. A security review of 0.9.1 (SEC-r1-2)
+showed, as was already true in 0.9.0:
+
+- `LOGIN_RATE` wrong passwords a period for a username, sent from any
+  addresses, fill the account's count, and its user's right password is
+  then refused with 429 before it is checked. The count frees a place
+  every `period / limit` seconds, so one wrong password that often keeps
+  the user out for as long as it is sent.
+- `LOGIN_RATE` wrong passwords from one address, for any usernames, fill
+  the address's count, and every login from that address is refused the
+  same way: an office or a carrier behind one address can be kept out by
+  one person there.
+
+Both follow from counting before the check, which is what keeps the bound
+on guessing one account from many addresses exact; giving successes back
+does not change them. 0.9.1 changes no behaviour here: its docstrings,
+`docs/auth.md`, and CHANGELOG now say what holds and what does not. The
+per-account lockout planned for 0.10 is to be stored in the database, with
+an audited unlock, and to let the account's user in by a way a stranger's
+failures cannot use up, without checking more guesses per account.

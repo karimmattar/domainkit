@@ -93,7 +93,7 @@ class SignupIn(BaseModel):
 class SignupConfirmIn(TokenIn):
     """A signup link's token, and the password of the account it makes."""
 
-    password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH)
+    password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False)
 
 
 class SignupTaken(APIError):

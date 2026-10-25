@@ -102,8 +102,8 @@ class PasswordResetConfirmIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    token: str = Field(min_length=1, max_length=TOKEN_MAX_LENGTH)
-    new_password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH)
+    token: str = Field(min_length=1, max_length=TOKEN_MAX_LENGTH, repr=False)
+    new_password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False)
 
 
 class TokenIn(BaseModel):
@@ -111,7 +111,7 @@ class TokenIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    token: str = Field(min_length=1, max_length=TOKEN_MAX_LENGTH)
+    token: str = Field(min_length=1, max_length=TOKEN_MAX_LENGTH, repr=False)
 
 
 class AcceptedOut(BaseModel):

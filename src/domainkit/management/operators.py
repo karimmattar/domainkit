@@ -1,9 +1,12 @@
 """Who runs a command that changes or erases data, and the record of it.
 
-Commands that act on stored data as an operator, not as the application
-(``messages --retry``, ``auditforget``, ``loaddata``, ``flush``,
-``partitions --prune``, ``privacy``), say who runs them: ``--operator``,
-else ``DOMAINKIT_OPERATOR``, else the user the process runs as. The command
+Commands that act on stored data or credentials as an operator, not as
+the application (``messages --retry``, ``auditforget``, ``loaddata``,
+``flush``, ``partitions --prune``, ``privacy``, ``resetmfa``,
+``createtoken``, ``flags``, ``webhooks replay``, ...), say who runs them:
+``--operator``, else ``DOMAINKIT_OPERATOR``, else the login name
+``getpass.getuser()`` reports (``LOGNAME`` or ``USER`` first, then the
+process's user id's name), which the caller can set as easily. The command
 runs as the actor ``operator:<name>``, so what it writes to the audit trail
 names them, and it records each action it takes there
 (``operator.<command>``) with its outcome, when ``domainkit.contrib.audit``
@@ -44,7 +47,8 @@ class Operator:
     name: str
     source: Source
     """``option`` (``--operator``), ``environment`` (``DOMAINKIT_OPERATOR``),
-    or ``system`` (the user the process runs as: the weakest)."""
+    or ``system`` (the login name ``getpass.getuser()`` reports, from the
+    environment first: the weakest)."""
 
     @property
     def actor(self) -> str:

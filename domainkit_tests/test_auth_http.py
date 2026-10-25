@@ -15,6 +15,7 @@ from starlette.requests import HTTPConnection
 from starlette.testclient import WebSocketDenialResponse
 from starlette.websockets import WebSocketDisconnect
 
+from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.audit.tables import audit_log
 from domainkit.contrib.auth import (
@@ -45,7 +46,7 @@ from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.http.ratelimit import Decision, MemoryBackend, address_key
 from domainkit.http.websockets import MIDDLEWARE as WEBSOCKET_LIMITS
-from domainkit.log import SECURITY_LOGGER
+from domainkit.log import SECURITY_LOGGER, THROTTLE_INTERVAL, flush_throttled
 from domainkit.management import call_command
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import AUTH, MIDDLEWARE, Api, UseAuth
@@ -353,6 +354,41 @@ def test_logins_that_work_use_up_no_count(api: Api) -> None:
     assert (after.status_code, after.json()["code"]) == (429, "login_throttled")
 
 
+def test_wrong_passwords_from_anywhere_hold_an_accounts_right_one_back(
+    api: Api,
+) -> None:
+    """What the per-account count costs, until 0.10's lockout (SEC-r1-2).
+
+    ``LOGIN_RATE`` wrong passwords for alice, from as many addresses, get
+    her right password refused before it is checked, from anywhere, until
+    the count frees a place (every ``period / limit`` seconds); a wrong
+    password sent in that place keeps her out again. Guessing her password
+    from many addresses stays bounded by the same count.
+    """
+    create_user("alice")
+    client = api(LOGIN_RATE="2/minute")
+    right = {"username": "alice", "password": PASSWORD}
+
+    def wrong_from(number: int) -> int:
+        caller = TestClient(client.app, client=(f"198.51.100.{number}", 1))
+        guess = {"username": "alice", "password": f"guess-{number}"}
+        return caller.post("/auth/login", json=guess).status_code
+
+    alice = TestClient(client.app, client=("203.0.113.50", 1))
+    with freeze_time() as clock:
+        guesses = [wrong_from(number) for number in range(1, 4)]
+        held = alice.post("/auth/login", json=right)
+        clock.tick(30)  # One place freed: taken by another wrong password.
+        again = [wrong_from(4), alice.post("/auth/login", json=right).status_code]
+        clock.tick(30)  # Freed again: alice gets in, and gives the place back.
+        logins = [alice.post("/auth/login", json=right).status_code for _ in range(2)]
+
+    assert guesses == [401, 401, 429]
+    assert (held.status_code, held.json()["code"]) == (429, "login_throttled")
+    assert again == [401, 429]
+    assert logins == [200, 200]
+
+
 class NoRefunds:
     """A backend of a project's own that cannot give a request back."""
 
@@ -592,6 +628,43 @@ def test_refused_credentials_are_logged_once_per_address_a_while(
     assert elsewhere.get("/whoami", headers=bearer("dkt_unknown")).status_code == 401
 
     assert caplog.messages.count("Refused credentials: Invalid token.") == 2
+
+
+def test_a_burst_of_refused_credentials_that_stops_is_counted(
+    api: Api, caplog: pytest.LogCaptureFixture
+) -> None:
+    """500 bad tokens from one address, then nothing: the log says 500.
+
+    The hold is logged when it starts, and what it refuses is counted as
+    refused credentials are; both counts are written by the next security
+    line once their 10 seconds have passed, whoever it is for.
+    """
+    with override_settings(RATE_LIMIT="100/minute"), freeze_time() as clock:
+        client = api()
+        attacker = TestClient(client.app, client=("203.0.113.9", 1))
+        codes = [
+            attacker.get("/whoami", headers=bearer(f"dkt_{i:043d}")).status_code
+            for i in range(500)
+        ]
+        clock.tick(THROTTLE_INTERVAL)
+        other = TestClient(client.app, client=("198.51.100.7", 1))
+        assert other.get("/whoami", headers=bearer("dkt_unknown")).status_code == 401
+
+    assert (codes.count(401), codes.count(429)) == (100, 400)
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == SECURITY_LOGGER
+    ] == [
+        "Refused credentials: Invalid token.",
+        (
+            "Holding back credentials from ip:203.0.113.9 for 1 s: "
+            "over RATE_LIMIT (100 refused)"
+        ),
+        "Refused credentials: Invalid token.",  # The other address's.
+        "100 more refused_credentials line(s) for ip:203.0.113.9 were held back",
+        "399 more held_credentials line(s) for ip:203.0.113.9 were held back",
+    ]
 
 
 def test_authentication_exempt_paths_hold_behind_a_root_path(api: Api) -> None:
@@ -1309,11 +1382,14 @@ def test_projects_add_their_own_authentication(api: Api) -> None:
     assert client.get("/private", headers={"X-User": "alice"}).status_code == 200
 
 
-def test_held_addresses_guess_other_headers_in_vain(api: Api) -> None:
+def test_held_addresses_guess_other_headers_in_vain(
+    api: Api, caplog: pytest.LogCaptureFixture
+) -> None:
     """A held address's guess that works, in a project's own header, gets 429 too.
 
     Only requests with ``Authorization`` are refused unread; others are
-    read, and the right name used to be served among the 429s.
+    read, and the right name used to be served among the 429s. The security
+    log counts it against the address's hold.
     """
     create_user("alice")
     with override_settings(RATE_LIMIT="3/minute"):
@@ -1331,7 +1407,18 @@ def test_held_addresses_guess_other_headers_in_vain(api: Api) -> None:
         anonymous = client.get("/whoami")
         elsewhere = TestClient(client.app, client=("203.0.113.9", 1))
         served = elsewhere.get("/whoami", headers={"X-User": "alice"})
+    flush_throttled()
+    held = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == SECURITY_LOGGER
+        and ("Holding" in record.getMessage() or "held_cred" in record.getMessage())
+    ]
 
+    assert len(held) == 2
+    assert held[0].startswith("Holding back credentials from ip:")
+    key = held[0].removeprefix("Holding back credentials from ").split()[0]
+    assert held[1] == f"1 more held_credentials line(s) for {key} were held back"
     assert guesses == [401, 401, 401, 429]
     assert (right.status_code, right.json()["code"]) == (429, "rate_limited")
     assert int(right.headers["Retry-After"]) > 0
@@ -1376,18 +1463,27 @@ def test_openapi_documents_tokens_and_errors(api: Api) -> None:
     }
 
 
-def test_token_commands_are_audited(api: Api) -> None:
-    """Creating a token and logging a user out everywhere leave events."""
+def test_token_commands_are_audited(api: Api, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Creating a token and logging a user out everywhere leave events.
+
+    They name the operator who ran the command (SEC-r2-2): an insider who
+    mints a token for someone else is named, not ``system``.
+    """
+    monkeypatch.setenv("DOMAINKIT_OPERATOR", "mallory")
     alice = create_user("alice")
     call_command("createtoken", "alice", "--name", "ci", stdout=io.StringIO())
-    call_command("cleartokens", "--user", "alice", stdout=io.StringIO())
+    call_command(
+        "cleartokens", "--user", "alice", "--operator", "bob", stdout=io.StringIO()
+    )
+    call_command("cleartokens", stdout=io.StringIO())  # Records nothing more.
 
     (created,) = audited("auth.token_created")
     assert (created["actor"], created["details"]) == (
-        "system",
+        "operator:mallory",
         {"user_id": str(alice), "name": "ci", "scopes": None},
     )
     (logged_out,) = audited("auth.user_logged_out")
+    assert logged_out["actor"] == "operator:bob"
     assert logged_out["details"] == {"user_id": str(alice), "everywhere": True}
 
 

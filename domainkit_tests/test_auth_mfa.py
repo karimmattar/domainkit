@@ -779,16 +779,20 @@ def test_jwt_logins_take_a_second_factor_too(identity: Api, clock: list[float]) 
 
 
 def test_resetmfa_turns_it_off_for_a_user_who_lost_it(
-    identity: Api, clock: list[float]
+    identity: Api, clock: list[float], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """For staff, once they know who is asking: sessions end too."""
+    """For staff, once they know who is asking: sessions end too.
+
+    The trail names the operator who turned it off (SEC-r2-2), not ``system``.
+    """
+    monkeypatch.setenv("DOMAINKIT_OPERATOR", "mallory")
     alice = create_user("alice")
     client = identity()
     enrol(client, bearer(login(client, "alice")["access_token"]), clock)
     out = io.StringIO()
 
     call_command("resetmfa", "alice", stdout=out)
-    call_command("resetmfa", "alice", stdout=out)
+    call_command("resetmfa", "alice", "--operator", "bob", stdout=out)
 
     assert out.getvalue() == (
         "The second factor of 'alice' is off; log in to set one.\n"
@@ -797,7 +801,9 @@ def test_resetmfa_turns_it_off_for_a_user_who_lost_it(
     assert stored_tokens(alice) == []
     assert device_rows() == []
     assert log_in(client).status_code == 200
-    assert len(audited("auth.mfa_disabled")) == 1
+    (disabled,) = audited("auth.mfa_disabled")
+    assert disabled["actor"] == "operator:mallory"
+    assert audited("auth.user_logged_out")[-1]["actor"] == "operator:mallory"
     with pytest.raises(CommandError, match="does not exist"):
         call_command("resetmfa", "nobody", stdout=out)
 

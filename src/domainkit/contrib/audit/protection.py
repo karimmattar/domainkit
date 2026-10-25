@@ -17,14 +17,24 @@ revision::
 Protect the seals of the hash chain the same way, in the revision that
 creates them: ``protect(op, audit_seals)``. On other databases both do
 nothing. In staging and production the application checks at startup that
-both tables have their triggers, enabled (``baseline``).
+both tables have their triggers, enabled, firing when and as these make
+them, and running the function these write (``baseline``).
 """
 
-from typing import Protocol
+from typing import Final, Protocol
 
 from sqlalchemy import Connection, Table
 
 from .tables import audit_log
+
+ROW_TRIGGER: Final = 1 | 2 | 8 | 16
+"""``pg_trigger.tgtype`` of ``BEFORE UPDATE OR DELETE ... FOR EACH ROW``.
+
+The bits are ``ROW`` (1), ``BEFORE`` (2), ``DELETE`` (8), and ``UPDATE``
+(16), as PostgreSQL's ``catalog/pg_trigger.h`` defines them."""
+TRUNCATE_TRIGGER: Final = 2 | 32
+"""``pg_trigger.tgtype`` of ``BEFORE TRUNCATE ... FOR EACH STATEMENT``
+(``BEFORE``, 2, and ``TRUNCATE``, 32)."""
 
 
 def trigger_names(table: Table) -> tuple[str, str]:
@@ -33,17 +43,23 @@ def trigger_names(table: Table) -> tuple[str, str]:
     return function, f"{function}_truncate"
 
 
-def statements(table: Table) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """The statements that protect ``table``, and those that undo them."""
-    function, truncate = trigger_names(table)
-    protect = (
-        f"""
-    CREATE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS $$
+def function_body(table: Table) -> str:
+    """The body of the triggers' function for ``table``, as ``protect`` writes it."""
+    return f"""
     BEGIN
         RAISE EXCEPTION '{table.name} is append-only'
             USING ERRCODE = 'insufficient_privilege';
     END
-    $$
+    """
+
+
+def statements(table: Table) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The statements that protect ``table``, and those that undo them."""
+    function, truncate = trigger_names(table)
+    body = function_body(table)
+    protect = (
+        f"""
+    CREATE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS $${body}$$
     """,
         (
             f"CREATE TRIGGER {function} BEFORE UPDATE OR DELETE ON {table.name} "

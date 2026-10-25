@@ -12,6 +12,7 @@ class Command(BaseCommand):
     """Purge expired tokens (Django's ``clearsessions``), or log a user out."""
 
     help = "Delete expired tokens; with --user, every token of that user."
+    operator_actions = True
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         """Optionally, the user to log out everywhere."""

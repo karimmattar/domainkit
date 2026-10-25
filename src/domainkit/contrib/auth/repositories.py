@@ -37,7 +37,7 @@ from sqlalchemy.orm.attributes import set_committed_value
 from domainkit.conf import settings
 from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.db import SqlAlchemyRepository
-from domainkit.ddd import F, Page, RowLock
+from domainkit.ddd import F, Page, RowLock, SoftDeletable
 from domainkit.ddd.query import Query
 from domainkit.signing import derive_keys
 
@@ -139,6 +139,21 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         ]
         statement = select(exists().where(column.in_(names)))
         return bool(await self.session.scalar(statement))
+
+    async def remove(self, aggregate: AbstractBaseUser, *, hard: bool = False) -> None:
+        """Delete the user, with every credential of theirs.
+
+        A user model that is ``SoftDeletable`` keeps the row, marked deleted:
+        its user is deactivated too (``set_active(False)``, recorded) and
+        loses its credentials as a deleted one does, since logging in, and
+        the tokens and principals of requests, read the row and its
+        ``is_active``, not ``deleted_at``. Restoring it leaves it inactive
+        until staff activate it again.
+        """
+        if isinstance(aggregate, SoftDeletable) and not hard:
+            await self.forget_credentials(aggregate.id)
+            aggregate.set_active(False)
+        await super().remove(aggregate, hard=hard)
 
     async def _remove(self, aggregate: AbstractBaseUser) -> None:
         """Delete the user, with every credential of theirs (``forget_credentials``).
@@ -874,7 +889,7 @@ class TotpDevice:
 
     id: UUID
     user_id: UUID
-    secret: bytes
+    secret: bytes = dataclasses.field(repr=False)
     """Encrypted; ``mfa.secret_box()`` opens it."""
     created_at: datetime
     confirmed_at: datetime | None

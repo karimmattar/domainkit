@@ -10,11 +10,20 @@ addresses are counted by digest: the counts hold no personal data.
 Checks of what can be guessed (passwords, codes) are counted before they
 are made, and given back when they succeed (``Attempt.succeeded``), so
 only failures use a count up: a user who logs in often, or an office
-behind one address, is never refused for logging in. Checks of what
-cannot be guessed (signed tokens) are counted after they fail
-(``count_failure``), so a flood of forged tokens never holds a valid one
-back. With ``AUTH.THROTTLE_FAIL_CLOSED``, an attempt the counter cannot
-count (Redis is down) is refused with 503 rather than let through.
+behind one address, never uses its counts up with its own logins. Failures
+do use them up, whoever sends them, and a full count refuses the next
+attempt before its password is checked, the right one too: ``LOGIN_RATE``
+wrong passwords for a username in a period, from any addresses, refuse
+its user's right password with 429 until the count frees a place (one
+every ``period / limit`` seconds), and ``LOGIN_RATE`` wrong passwords from
+one address refuse every login from it, an office's or a carrier's
+included. That is the price of the per-account count, which bounds
+guessing one account from many addresses; a stored per-account lockout
+with an audited unlock is planned for 0.10. Checks of what cannot be
+guessed (signed tokens) are counted after they fail (``count_failure``),
+so a flood of forged tokens never holds a valid one back. With
+``AUTH.THROTTLE_FAIL_CLOSED``, an attempt the counter cannot count (Redis
+is down) is refused with 503 rather than let through.
 """
 
 import hashlib

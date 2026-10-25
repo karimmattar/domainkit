@@ -143,3 +143,38 @@ that a request ends before its lease does (audit 0.9.0, FIN-79).
   extending the lease to a route's deadline when its dependency runs; it
   would put an `UPDATE` on every such request, and a lease that silently
   outgrows the setting.
+
+## Amendment (2026-10-25): the response, then what runs after it
+
+A security review of 0.9.1 (SEC-r2-1, SEC-r2-4) found the lease bound
+short in two places. `DeadlineMiddleware` lifts the deadline when the
+response starts, but the middleware stored the response only once the
+application returned, after the body and after Starlette's
+`BackgroundTasks`. A provider call made in a background task could
+outlive the lease, a retry then took the key over and called the
+provider again, and a background task that raised released the key. And
+with no deadline at all (`REQUEST_TIMEOUT = None`, or no
+`DeadlineMiddleware`), nothing bounded a keyed request.
+
+- A response the key keeps (a success, or a refusal after a commit), or
+  whose status it keeps (a commit or a pin, with no body to store), is
+  settled when its last body part (`more_body` false) has been sent,
+  before the application goes on. The settle is the one it was, moved:
+  the keyed write still makes 4 statements, 3 transactions and 3
+  checkouts in the ladder. A failure to store reaches the application
+  where it sent the response, so the work after it does not run with the
+  key unsettled; a cancellation there leaves the settle running, as
+  before, and is not settled twice.
+- A response the key does not keep is settled when the application
+  returns, as before: a commit made by work after the response must still
+  keep the key, and without one the key is released, so a retry runs the
+  request and its background work again, as for any refused request.
+- Renewing `locked_until` until the application returns was considered:
+  it keeps the bound but adds a write per lease interval and a timer per
+  keyed request, and a retry would still wait on work the client is not
+  waiting for. Storing the response first answers the retry at once.
+- A keyed response that streams is held by its lease alone while it
+  streams. With no deadline at all, `check` warns in staging and
+  production; startup does not refuse in a patch release, since such
+  deployments run today. 0.10 refuses to start without a deadline where
+  idempotency is installed.

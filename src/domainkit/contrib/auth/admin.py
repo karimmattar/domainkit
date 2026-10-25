@@ -145,7 +145,9 @@ class AdminUserIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     username: str = Field(min_length=1, max_length=255)
-    password: str | None = Field(default=None, min_length=1, max_length=4096)
+    password: str | None = Field(
+        default=None, min_length=1, max_length=4096, repr=False
+    )
     is_active: bool = True
     is_staff: bool = False
     is_superuser: bool = False
@@ -169,7 +171,7 @@ class AdminPasswordIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    password: str | None = Field(min_length=1, max_length=4096)
+    password: str | None = Field(min_length=1, max_length=4096, repr=False)
 
 
 class GroupsIn(BaseModel):

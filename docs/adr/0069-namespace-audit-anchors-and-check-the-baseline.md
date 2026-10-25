@@ -71,3 +71,24 @@ that run today, and a check of the triggers needs the database, which
   there gets no trigger warning, since `protect()` does nothing on it.
 - The trigger check runs at application startup, not in the worker or in
   `check`; `auditverify` remains the check of what the triggers protect.
+
+## Amendment (2026-10-25): what counts as a trigger
+
+The probe first counted a trigger by its name and `tgenabled <> 'D'`. A
+security review of 0.9.1 (SEC-r2-3) showed two ways to keep the names and
+lose the protection: `ENABLE REPLICA TRIGGER` (it then fires only in
+replica sessions, never the application's), and `CREATE OR REPLACE` of the
+function with a body that lets everything through. Re-creating a trigger
+on fewer events, with a `WHEN` condition, or for some columns only, does
+the same.
+
+A trigger now counts only as `protect()` makes it: `tgenabled` `O` or `A`;
+`tgtype` that of `BEFORE UPDATE OR DELETE ... FOR EACH ROW` (27) or
+`BEFORE TRUNCATE ... FOR EACH STATEMENT` (34); no `WHEN` (`tgqual`), no
+columns (`tgattr`), no arguments; and its function (`tgfoid`) the plpgsql
+one named `<table>_append_only` whose source (`pg_proc.prosrc`) equals the
+body `protect()` writes, whitespace collapsed (`protection.function_body`).
+That body has not changed since 0.1.0, so a database protected by any
+release passes. A project that wrote its own equivalent SQL with another
+message is reported, and calls `protect()` instead. The probe runs in the
+query it ran before, so startup makes no more round trips.

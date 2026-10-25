@@ -19,6 +19,7 @@ class Command(BaseCommand):
         "Let a client certificate (PEM) authenticate as a user, with "
         'AUTH.CLIENT_CERT.MATCH = "fingerprint"; cleartokens --user removes it.'
     )
+    operator_actions = True
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         """The user, the certificate file, and a name."""

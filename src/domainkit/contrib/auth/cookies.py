@@ -47,7 +47,7 @@ from typing import Final
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Request, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.requests import HTTPConnection
 
 from domainkit.conf import settings
@@ -232,7 +232,7 @@ def csrf_token(session: str) -> str:
 class CsrfOut(BaseModel):
     """The token to send back in ``X-CSRF-Token`` with unsafe methods."""
 
-    csrf_token: str
+    csrf_token: str = Field(repr=False)
 
 
 @router.post(

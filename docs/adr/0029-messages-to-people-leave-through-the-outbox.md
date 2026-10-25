@@ -91,3 +91,14 @@ task keeps its arguments, so it can still be retried. A queued message
 is still readable in the table until it is sent: queuing ids and building
 links and codes in the worker (`deliver`) stays the way for secrets.
 
+
+## Amendment (2026-10-25): chains
+
+A chain's next step is handed the arguments of the step before, or what
+it returned (`next_arguments`), so a sensitive step's code or address
+reached the next step's row and stayed there when that step died
+(SEC-r2-5). The worker now marks each step written after a sensitive one
+with a `sensitive` header, carried down the rest of the chain, and blanks
+such a step's arguments when it dies, as it blanks the sensitive task's
+own. A chain with no sensitive step keeps a dead step's arguments, to be
+retried, as before.

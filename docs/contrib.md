@@ -339,8 +339,10 @@ async def push_invoice(invoice_id: UUID) -> None:
   unless its task is `sensitive`: then they are blanked with its error
   recorded, its headers say `payload_blanked`, and a retry refuses it.
   Mark a task sensitive when its arguments hold secrets or personal data;
-  mail, text messages, and push notifications are. Better still, queue
-  ids and build the secret in the task.
+  mail, text messages, and push notifications are. In a chain, every step
+  after a sensitive one is treated as sensitive too (its headers say
+  `sensitive`): it is handed that step's arguments, or what it returned.
+  Better still, queue ids and build the secret in the task.
 
 Durable event handlers use the `MESSAGING` settings.
 
@@ -545,10 +547,22 @@ saved:
 - Proxies from the environment are not used. An attempt has `TIMEOUT`
   seconds in all, and at most `MAX_RESPONSE_BYTES` of the answer are read.
 - Host names are looked up on the guard's own threads
-  (`GUARD_LOOKUP_THREADS`, 2 at once per host). A receiver whose DNS never
-  answers holds its lookups until the system's resolver gives up; then
-  its host fails at once for a minute, so retries of its deliveries do
-  not take the threads again ([runtime.md](runtime.md#outgoing-http-calls)).
+  (`GUARD_LOOKUP_THREADS`, 2 at once per host). Each delivery's lookups
+  are its subscription's (`webhook:<id>`), whoever caused the event, and
+  one subscription may hold a quarter of the threads: a receiver whose
+  DNS never answers leaves the rest to other subscriptions' deliveries of
+  the same events. It holds its lookups until the system's resolver gives
+  up; then its host fails at once for a minute, so retries of its
+  deliveries do not take the threads again. A receiver whose DNS answers
+  slowly, or fails in under 5 seconds, takes a thread on each attempt
+  ([runtime.md](runtime.md#outgoing-http-calls)).
+- Subscriptions have no owner yet, so the share is per subscription, not
+  per tenant. One subscription holds at most 2 threads (its host's
+  bound), but whoever may create many subscriptions can point them at
+  hosts that never answer and hold many threads: all 16 of the default
+  with eight. The admin API lets only staff create subscriptions; a
+  project that lets its own users create them should bound how many each
+  may have, until 0.10 gives subscriptions an owner to share by.
 
 `ALLOWED_PRIVATE_NETWORKS` lets receivers in named private networks
 through (`["10.20.0.0/16"]`); staging and production refuse loopback and
@@ -834,9 +848,16 @@ with `AUDIT.SEALED_EXTERNALLY = True`), and the `protect()` triggers on
 both tables. In staging and production, `manage.py check` warns about each
 setting that is missing, and the application, when it starts, asks each
 audited PostgreSQL database whether `domainkit_audit_log` and
-`domainkit_audit_seals` have their triggers, enabled (a disabled trigger
-counts as missing), and logs a warning for each database without them, or
-that did not answer within 10 seconds.
+`domainkit_audit_seals` have their triggers as `protect()` makes them, and
+logs a warning for each database without them, or that did not answer
+within 10 seconds. A trigger that is disabled, or fires only in replica
+sessions (`ENABLE REPLICA TRIGGER`), on other events, under a `WHEN`
+condition, or for some columns only, or whose function is not the one
+`protect()` writes (its body is compared, whitespace aside), counts as
+missing. The probe cannot see a session that sets
+`session_replication_role = replica`, which only a superuser may do, nor
+stop a table owner from dropping the triggers between two starts:
+`auditverify` checks what they protect.
 
 These are warnings in 0.9.1. `AUDIT.REQUIRE_BASELINE = True` turns them
 into a refusal to start, listing what is missing; 0.10 makes that the
@@ -988,7 +1009,29 @@ longest a request may run:
 - a `POST` or `PATCH` route that gives itself a deadline at the lease or
   past it (`Depends(RequestTimeout(300))`), or none (`RequestTimeout(None)`),
   is reported by `check`, and staging and production do not start with it;
+- with no deadline for any request (`REQUEST_TIMEOUT = None`, or no
+  `DeadlineMiddleware` in `MIDDLEWARE`) nothing bounds a keyed request by
+  the lease: `check` warns in staging and production, and the
+  application still starts; 0.10 refuses to start. A route without a
+  deadline is a refusal already because it is one route's exception,
+  made in code; the whole application without one is a deployment
+  choice that 0.9.1 leaves running;
 - your server's or proxy's timeout, if it is longer, counts too.
+
+**What the key covers.** The key holds the request until its response is
+sent: the handler, its commits, and the response's body, streamed or not.
+Once the last part of a response the key keeps is sent (a success, or a
+refusal after a commit), the response, or its status, is stored before
+anything runs after it, so the work a route does after its response
+(Starlette's `BackgroundTasks`, which no deadline bounds) runs once
+however long it takes: a retry meanwhile gets the stored response, or a
+409 `idempotency_response_unavailable`. A response the key does not keep
+(a refusal or a server error before any commit) is settled once the
+application returns, as before: a commit made after it still keeps the
+key, and otherwise the key is released and a retry runs the request,
+and its background work, again. A streamed response is held only by
+the lease while it streams, since its deadline is lifted when it starts:
+keep a keyed response's streaming within `LEASE_SECONDS`.
 
 The keys' database decides when a lease or a key runs out. On PostgreSQL,
 the claim, the take-over and the purge compare and write

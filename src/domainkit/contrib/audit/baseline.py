@@ -25,7 +25,7 @@ from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 
 from .personal import audited_databases
-from .protection import trigger_names
+from .protection import ROW_TRIGGER, TRUNCATE_TRIGGER, function_body, trigger_names
 from .settings import AuditSettings
 from .tables import audit_log, audit_seals
 
@@ -33,18 +33,43 @@ MESSAGING: Final = "domainkit.contrib.messaging"
 PROBE_TIMEOUT: Final = 10.0
 """Seconds the startup probe of a database's triggers may take."""
 _TRIGGERS: Final = text(
-    "SELECT c.relname, t.tgname FROM pg_trigger AS t "
+    "SELECT c.relname, t.tgname, t.tgenabled::text AS enabled, t.tgtype, "
+    "t.tgqual IS NULL AND t.tgnargs = 0 AND cardinality(t.tgattr::int2[]) = 0 "
+    "AS plain, p.proname, p.prosrc, l.lanname "
+    "FROM pg_trigger AS t "
     "JOIN pg_class AS c ON c.oid = t.tgrelid "
+    "JOIN pg_proc AS p ON p.oid = t.tgfoid "
+    "JOIN pg_language AS l ON l.oid = p.prolang "
     "WHERE t.tgrelid IN (to_regclass(:log), to_regclass(:seals)) "
-    "AND NOT t.tgisinternal AND t.tgenabled <> 'D'"
+    "AND NOT t.tgisinternal"
 )
-"""The enabled triggers on the trail and its seals, as ``search_path`` finds them."""
-PROTECTED: Final = frozenset(
-    (table.name, name)
-    for table in (audit_log, audit_seals)
-    for name in trigger_names(table)
-)
-"""The triggers ``protect()`` makes on both tables, by table."""
+"""The triggers on the trail and its seals, as ``search_path`` finds them,
+with what decides whether they fire and what they run."""
+FIRING: Final = frozenset({"O", "A"})
+"""``tgenabled`` of a trigger that fires for the application's sessions.
+
+``O`` fires unless the session is a replica's, ``A`` always; ``R`` fires
+only in replica sessions, ``D`` never."""
+type Expected = tuple[int, str, str]
+"""A trigger's ``tgtype``, its function's name, and the function's body."""
+
+
+def _protected() -> dict[tuple[str, str], Expected]:
+    """The triggers ``protect()`` makes on both tables, by table and name.
+
+    Bodies have their whitespace collapsed, as the probe compares them.
+    """
+    expected = {}
+    for table in (audit_log, audit_seals):
+        rows, truncate = trigger_names(table)
+        body = " ".join(function_body(table).split())
+        expected[(table.name, rows)] = (ROW_TRIGGER, rows, body)
+        expected[(table.name, truncate)] = (TRUNCATE_TRIGGER, rows, body)
+    return expected
+
+
+PROTECTED: Final = _protected()
+"""The triggers ``protect()`` makes on both tables, and what they must be."""
 
 logger = logging.getLogger(__name__)
 
@@ -77,10 +102,14 @@ def settings_problems() -> list[str]:
 
 
 async def missing_triggers(database: str) -> list[str]:
-    """The ``protect()`` triggers ``database`` lacks, or has disabled.
+    """The ``protect()`` triggers ``database`` lacks, has disabled, or changed.
 
-    None on databases other than PostgreSQL: ``protect()`` does nothing
-    there.
+    A trigger counts only as ``protect()`` makes it: firing for the
+    application's sessions (not ``ENABLE REPLICA`` or ``DISABLE``), on the
+    same events, for each row or statement, with no ``WHEN``, columns, or
+    arguments, and running the plpgsql function ``protect()`` writes, its
+    body the same but for whitespace. None on databases other than
+    PostgreSQL: ``protect()`` does nothing there.
     """
     async with connections.engine(database).connect() as connection:
         if connection.dialect.name != "postgresql":
@@ -88,8 +117,16 @@ async def missing_triggers(database: str) -> list[str]:
         found = await connection.execute(
             _TRIGGERS, {"log": audit_log.name, "seals": audit_seals.name}
         )
-        present = {(row.relname, row.tgname) for row in found}
-    return sorted(name for table, name in PROTECTED - present)
+        present = {
+            (row.relname, row.tgname)
+            for row in found
+            if row.enabled in FIRING
+            and row.plain
+            and row.lanname == "plpgsql"
+            and PROTECTED.get((row.relname, row.tgname))
+            == (row.tgtype, row.proname, " ".join(row.prosrc.split()))
+        }
+    return sorted(name for table, name in PROTECTED.keys() - present)
 
 
 async def protection_problems() -> list[str]:
@@ -109,7 +146,7 @@ async def protection_problems() -> list[str]:
         if missing:
             problems.append(
                 f"The audit trail in {database!r} is not append-only: triggers "
-                f"{', '.join(missing)} are missing or disabled. Call "
+                f"{', '.join(missing)} are missing, disabled, or changed. Call "
                 "protect(op) and protect(op, audit_seals) from a revision "
                 "(domainkit.contrib.audit.protection) and migrate."
             )

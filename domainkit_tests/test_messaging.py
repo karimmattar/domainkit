@@ -48,6 +48,7 @@ from domainkit.contrib.messaging import (
     MessagingSettings,
     Worker,
     admin,
+    chain,
     dispatch,
     enqueue,
     periodic,
@@ -69,6 +70,7 @@ from domainkit.contrib.messaging.tables import (
     DEAD,
     DONE,
     PENDING,
+    SENSITIVE,
     messages,
 )
 from domainkit.contrib.messaging.worker import Claimed, backoff
@@ -125,6 +127,24 @@ async def fails_once(key: str) -> None:
 async def sends_a_code(to: str, code: str = "") -> None:
     """Fail to send a one-time code, which must not stay in the outbox."""
     raise RuntimeError("gateway down")
+
+
+@task(name="tests.sends_a_code_once", max_attempts=1, sensitive=True)
+async def sends_a_code_once(to: str, code: str) -> None:
+    """Send a one-time code; it works, and hands its arguments on."""
+    ran.append(("sent", to))
+
+
+@task(name="tests.notes_it", max_attempts=1)
+async def notes_it(to: str, code: str) -> None:
+    """A step after the sensitive one, handed the same arguments; it works."""
+    ran.append(("noted", to))
+
+
+@task(name="tests.files_it", max_attempts=1)
+async def files_it(to: str, code: str) -> None:
+    """The step after that, handed them again; it fails."""
+    raise RuntimeError("bookkeeping down")
 
 
 @task(queue="emails")
@@ -838,6 +858,37 @@ async def test_dead_messages_of_other_tasks_keep_their_arguments(
     assert await admin.retry_dead(registry.settings(MessagingSettings), None) == 1
     await Worker().run_once()
     assert ran == ["k", "k:ok"]
+
+
+async def test_steps_after_a_sensitive_one_are_blanked_when_they_die(
+    tables: None,
+) -> None:
+    """A chain's steps after a sensitive task are sensitive too (SEC-r2-5).
+
+    They are handed its arguments, or what it made of them: dead, at any
+    distance from it, they keep none. A chain without a sensitive step
+    keeps a dead step's arguments, to be retried.
+    """
+    await enqueue(chain(sends_a_code_once, notes_it, files_it), to="+336", code="4930")
+    await enqueue(chain(notes_it, files_it), to="+337", code="5151")
+
+    for _ in range(3):
+        await Worker().run_once()
+
+    rows = await outbox()
+    assert sorted(ran) == [("noted", "+336"), ("noted", "+337"), ("sent", "+336")]
+    assert [row["status"] for row in rows].count(DONE) == 3
+    blanked, kept = sorted(
+        (row for row in rows if row["status"] == DEAD),
+        key=lambda row: bool(row["payload"]),
+    )
+    assert (blanked["target"], blanked["payload"]) == ("tests.files_it", {})
+    assert blanked["headers"][SENSITIVE] is True  # type: ignore[index]
+    assert blanked["headers"][BLANKED] is True  # type: ignore[index]
+    assert blanked["last_error"] == "RuntimeError: bookkeeping down"
+    assert kept["payload"] == {"to": "+337", "code": "5151"}
+    assert SENSITIVE not in kept["headers"]  # type: ignore[operator]
+    assert BLANKED not in kept["headers"]  # type: ignore[operator]
 
 
 def test_retrying_a_blanked_message_says_why_it_cannot(messaging: None) -> None:

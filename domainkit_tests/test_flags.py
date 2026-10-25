@@ -386,10 +386,28 @@ def test_secret_settings_record_that_they_changed_not_their_value(
     assert "S3CR3T" not in repr(audited("flags.setting_changed"))
 
 
+def test_a_stored_settings_repr_shows_no_value() -> None:
+    """A secret value is not in the aggregate's ``repr`` (tracebacks, ``%r``)."""
+    stored = DynamicSetting(id="payments.api_key")
+    stored.change("sk_live_S3CR3T", secret=True)
+
+    assert "S3CR3T" not in repr(stored)
+    assert "payments.api_key" in repr(stored)
+    assert stored.value == "sk_live_S3CR3T"
+
+
 def test_the_trail_counts_a_flags_users(project: None) -> None:
-    """Users of a flag are audited as a count; groups and rules as they are."""
+    """Users of a flag are audited as a count; groups and rules as they are.
+
+    The rows name the operator who ran the command (SEC-r2-2).
+    """
     run("flags", "set", "beta", "--users", "u2", "u1", "--groups", "staff")
-    run("flags", "set", "beta", "--users")
+    run("flags", "set", "beta", "--users", operator="mallory")
+    run("flags", "list", operator="mallory")  # Reads: records nothing.
+
+    assert [row["actor"] for row in audited("flags.flag_changed")][1:] == [
+        "operator:mallory"
+    ]
 
     assert [row["details"] for row in audited("flags.flag_changed")] == [
         {

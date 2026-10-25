@@ -109,8 +109,8 @@ class MfaLoginIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    mfa_token: str = Field(min_length=1, max_length=TOKEN_MAX_LENGTH)
-    code: str = Field(min_length=1, max_length=64)
+    mfa_token: str = Field(min_length=1, max_length=TOKEN_MAX_LENGTH, repr=False)
+    code: str = Field(min_length=1, max_length=64, repr=False)
 
 
 class PasswordIn(BaseModel):
@@ -118,7 +118,7 @@ class PasswordIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH)
+    password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False)
 
 
 class CodeIn(BaseModel):
@@ -126,28 +126,28 @@ class CodeIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    code: str = Field(min_length=1, max_length=64)
+    code: str = Field(min_length=1, max_length=64, repr=False)
 
 
 class ReauthenticateIn(PasswordIn):
     """The password, and a code (or a recovery code)."""
 
-    code: str = Field(min_length=1, max_length=64)
+    code: str = Field(min_length=1, max_length=64, repr=False)
 
 
 class EnrolmentOut(BaseModel):
     """The secret to put in the authenticator app, shown once."""
 
-    secret: str
+    secret: str = Field(repr=False)
     """In base 32, for typing in."""
-    otpauth_uri: str
+    otpauth_uri: str = Field(repr=False)
     """For a QR code."""
 
 
 class RecoveryCodesOut(BaseModel):
     """Recovery codes, shown once: each stands in for the app, once."""
 
-    recovery_codes: list[str]
+    recovery_codes: list[str] = Field(repr=False)
 
 
 class MfaStatusOut(BaseModel):

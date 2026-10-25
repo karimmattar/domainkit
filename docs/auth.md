@@ -160,8 +160,12 @@ passwords. `set_password(user, None)` makes a password unusable.
 `remove(user)` deletes the user with every credential of theirs, in the
 same transaction: tokens, sessions, refresh tokens, client certificates,
 and the second factor's secret and recovery codes
-(`forget_credentials(user_id)`, which privacy erasure uses too). A bulk
-`delete_rows` bypasses it, and leaves them.
+(`forget_credentials(user_id)`, which privacy erasure uses too). A user
+model that is `SoftDeletable` keeps the row, marked deleted: `remove`
+forgets the credentials all the same and deactivates the user
+(`UserStatusChanged`), since logging in and every request read
+`is_active`, not `deleted_at`; `restore` brings the row back inactive,
+for staff to activate. A bulk `delete_rows` bypasses it, and leaves them.
 
 Changes are recorded as events, never with passwords or hashes in them:
 `UserCreated`, `PasswordChanged`, `UserStatusChanged`, `UserJoinedGroup`,
@@ -877,8 +881,10 @@ the `RATE_LIMIT_BACKEND` (use `RedisBackend` behind several replicas:
 process). Each attempt is counted before the password is checked, and
 given back if it holds, so logins that work never use the count up: a
 service account that logs in often, or an office behind one address, is
-not throttled by its own logins. A backend of your own without `refund`
-counts every attempt. Names
+not throttled by its own logins. Wrong passwords do use it up, whoever
+sends them, and once a count is full the next attempt is refused before
+its password is checked, a right one too (see below). A backend of your
+own without `refund` counts every attempt. Names
 that logging in treats as one account (`alice`, `ALICE`, and their
 full-width or mathematical look-alikes, under NFKC) share one count.
 Password changes have a count of their own per user, so throttled logins
@@ -917,11 +923,31 @@ uncounted, as other requests are. Set `AUTH.THROTTLE_FAIL_CLOSED
 cache outage then gets no attempts, and neither do your users.
 
 The count per account is what stops guessing one user's password from many
-addresses, and it also lets anyone hold that user's logins back: attempts
-for a name count whoever sends them, so a caller who keeps sending
-`LOGIN_RATE` wrong passwords for it leaves its user few attempts of their
-own. Sessions already open are not affected, and password changes have
-their own count. The audited `throttled` refusals show such a flood.
+addresses, and it also lets anyone hold that user's logins back. What
+holds, and what does not:
+
+- At most `LOGIN_RATE` wrong passwords a period are checked for one
+  account, from however many addresses, and at most `LOGIN_RATE` from one
+  address (an IPv6 network), for however many accounts.
+- Logins that work never use a count up, so many users behind one address,
+  or one that logs in often, are never refused for their own logins.
+- Wrong passwords use the counts up whoever sends them. `LOGIN_RATE` wrong
+  passwords for a username in a period, from any addresses, get its
+  user's right password refused with 429 everywhere; the count frees a
+  place every `period / limit` seconds (6 for `"10/minute"`), so a caller
+  who keeps sending one wrong password that often keeps the user out.
+  `LOGIN_RATE` wrong passwords from one address, for any usernames, get
+  every login from that address refused the same way: one person behind
+  an office's or a carrier's address can keep everyone there out.
+- Sessions and tokens already issued are not affected, and password
+  changes have their own count per user. The audited `throttled`
+  refusals (once per count and period) show such a flood.
+
+A per-account lockout stored in the database, with an audited unlock and
+a way for the user to sign in that a stranger's failures do not block, is
+planned for 0.10, on these counts of failures. Until then, a service
+where this matters can raise `LOGIN_RATE` (which raises the guessing bound
+with it) or put its own measures in front of `/auth/login`.
 
 ## Two-factor logins
 

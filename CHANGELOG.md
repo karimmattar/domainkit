@@ -12,7 +12,9 @@ All notable changes to domainkit. The format follows
   (`"X-Forwarded-Proto"`, or `None`), and `"unix"` in `TRUSTED_PROXIES`
   (WEB-02, WEB-04, WEB-06).
 - `domainkit.log.ThrottledLog`: warnings written once per event and
-  caller each 10 seconds, with a count of those held back (WEB-11).
+  caller each 10 seconds, with a count of those held back; `flush()`, and
+  `domainkit.log.flush_throttled()` for every live one, write the counts
+  still held (WEB-11).
 - Rate-limit backends (`domainkit.http.ratelimit.Backend`) may give a counted request back
   (`refund(key, limit, period)`, `RefundingBackend`); `MemoryBackend` and
   `RedisBackend` do. `Decision.counted` is `False` for a request a backend
@@ -21,9 +23,13 @@ All notable changes to domainkit. The format follows
   tamper-evident: no `AUDIT.LEDGER`, no `AUDIT.NAMESPACE` on it, or
   nothing sealing on a schedule (no messaging, and no new
   `AUDIT.SEALED_EXTERNALLY`); and the application, when it starts, logs
-  each audited PostgreSQL database whose `protect()` triggers are missing
-  or disabled. `AUDIT.REQUIRE_BASELINE = True` refuses to start instead;
-  0.10 makes that the default (N5, DATA-04; ADR 0069).
+  each audited PostgreSQL database whose `protect()` triggers are missing,
+  disabled, or changed: a trigger counts only as `protect()` makes it,
+  firing for the application's sessions (not `ENABLE REPLICA`), on the
+  same events, with no `WHEN` or column list, and running the function
+  `protect()` writes, its body the same but for whitespace.
+  `AUDIT.REQUIRE_BASELINE = True` refuses to start instead; 0.10 makes
+  that the default (N5, DATA-04, SEC-r2-3; ADR 0069).
 - `@task(sensitive=True)` blanks a task's arguments when it dies, as
   every message's are once done or cancelled, for arguments that hold
   secrets or personal data; `admin.blanked_dead_letters` counts them
@@ -78,13 +84,33 @@ All notable changes to domainkit. The format follows
   key to a retry, which ran it again while its own commit failed with 409
   `idempotency_key_taken_over`. `check` reports a `POST` or `PATCH` route
   whose own `RequestTimeout` reaches the lease, or removes the deadline,
-  and staging and production do not start with one (ADR 0062) (FIN-79).
+  and staging and production do not start with one. This bounds a keyed
+  request until its response starts, and only where there is a deadline:
+  with none at all (`REQUEST_TIMEOUT = None`, or no `DeadlineMiddleware`),
+  `check` now warns in staging and production that keyed requests can
+  outlive the lease, and 0.10 refuses to start; a streamed response is
+  held by the lease alone while it streams. What runs after the response
+  is covered by the next entry (ADR 0062) (FIN-79, SEC-r2-4).
+- A keyed response that the key keeps is stored as soon as its last part
+  is sent, before the route's `BackgroundTasks` run, instead of once the
+  application returned. The deadline is lifted when the response starts,
+  so a provider call made after it could outlive the lease, and a retry
+  then took the key over and called the provider again; a background task
+  that raised released the key the same way. A retry now gets the stored
+  response however long that work runs. A response the key does not keep
+  is still settled once the application returns, and a keyed request
+  makes no more round trips (FIN-79, SEC-r2-1).
 - Security-log lines of refusals (a rejected `Host` header, a body too
   large or too slow, refused credentials, a refused live connection) are
-  written once per caller every 10 seconds, the next line saying how many
-  were held back, instead of one per request: a flood no longer fills the
-  logging queue and crowds out the lines that matter. Each caller's first
-  line is still written (WEB-11).
+  written once per caller every 10 seconds, with a count of those held
+  back, instead of one per request: a flood no longer fills the logging
+  queue and crowds out the lines that matter. Each caller's first line is
+  still written. The count is written with the caller's next line or, if
+  none comes, by the next security line of any caller once its 10 seconds
+  have passed, and at the latest when the process shuts down, so a burst
+  that stops still shows its size. An address held back for refused
+  credentials is logged when the hold starts, and the requests the hold
+  refuses unread are counted the same way (WEB-11, SEC-r1-3).
 - `privacy` takes `--operator` before its action (`privacy --operator
   alice purge`); its exports, erasures, and purges are audited as that
   operator rather than `system` (DATA-07).
@@ -206,7 +232,9 @@ All notable changes to domainkit. The format follows
   none, for proxies that do not set it and would pass a client's own line
   through (it chose whether its cookies were `Secure`). With fewer values
   than proxies, the nearest proxy's is taken, never the left-most, which
-  a client may have written (WEB-06; ADR 0072).
+  a client may have written. uvicorn sets the scheme itself unless run
+  with `--no-proxy-headers`, before domainkit sees the request, so `None`
+  holds there only with that flag (WEB-06; ADR 0072).
 - Outgoing calls bound an answer as it comes as well as decompressed, so
   bytes that inflate to nothing are not read without end, and guarded
   clients refuse (`httpx2.DecodingError`) an answer compressed in a way
@@ -216,22 +244,37 @@ All notable changes to domainkit. The format follows
   (WEB-03).
 - Hosts that never answer DNS no longer stop every guarded call and
   webhook in the process: the guard looks up on `GUARD_LOOKUP_THREADS`
-  (16, was 4) threads, one caller (the request's user or address, or the
-  owner `guard.lookups_for` names) may hold a quarter of them, and a host
-  whose lookup failed after 5 seconds or more fails at once for a minute
-  rather than 5 seconds, so retries do not take the threads again
-  (WEB-04).
+  (16, was 4) threads, and one owner may hold a quarter of them: the
+  request's user or address, the owner `guard.lookups_for` names, and for
+  a webhook delivery its subscription (`webhook:<id>`), not the actor of
+  the event it carries. Before, every delivery of an event shared that
+  actor's share (often `ip:unknown` or `system`), so one subscriber's four
+  hung hosts failed every other subscriber's delivery with `EAI_AGAIN`. A
+  host whose lookup failed after 5 seconds or more fails at once for a
+  minute rather than 5 seconds, so retries do not take the threads again.
+  What still holds: a host whose DNS answers slowly, or fails in under 5
+  seconds, takes a thread on each new lookup (at most 2 at once); a
+  success is never held against its host, since a slow one is what one
+  name server down looks like. The share is per subscription, not per
+  tenant, and one subscription holds at most 2 threads (its host's
+  bound): whoever may create eight subscriptions can still hold all 16,
+  until 0.10 gives subscriptions an owner (WEB-04, SEC-r1-1, SEC-r1-4).
 - Only failed attempts use up the login and second-factor counts. A login,
   a password change, or a code that works is given back to its counts, so
   a service account that logs in often, or an office or carrier behind one
-  address, is never throttled by its own logins. Wrong codes count against
-  `AUTH.MFA.RATE` per user and, at `/mfa/login`, against the new
-  `AUTH.MFA.ADDRESS_RATE` (60 an hour) per client address, only once the
+  address, is never throttled by its own logins. Failures still use the
+  counts up whoever sends them, and a full count refuses a right password
+  too: `LOGIN_RATE` wrong passwords a minute for a username, from any
+  addresses, keep its user out with 429, and as many from one address keep
+  everyone behind it out, as in 0.9.0; a stored per-account lockout is
+  planned for 0.10 (`docs/auth.md`, "Logging in and out"). Wrong codes
+  count against `AUTH.MFA.RATE` per user and, at `/mfa/login`, against the
+  new `AUTH.MFA.ADDRESS_RATE` (60 an hour) per client address, only once the
   challenge holds: `MFA.RATE` used to count every check per address, so
   one address had ten second-factor logins an hour in all. Challenges and
   reset, verification, and signup links that do not hold count against
   `LOGIN_RATE` per address after they are checked, so forged ones never
-  hold a valid one back (AUTH-02).
+  hold a valid one back (AUTH-02, SEC-r1-2).
 - An address held for refused tokens no longer refuses its session cookies
   and client certificates: four bad bearer tokens from a shared address
   used to log every browser user behind it out. Requests with an
@@ -241,7 +284,10 @@ All notable changes to domainkit. The format follows
   `UserRepository.remove`) deletes their TOTP secret, recovery codes, and
   tokens in the same transaction, as privacy erasure does, and with
   `domainkit.contrib.objectpermissions` the object permissions they held.
-  They used to stay in the database (AUTH-04).
+  They used to stay in the database. A user model that is `SoftDeletable`
+  keeps the row: deleting such a user now forgets its credentials too and
+  deactivates it, where before its tokens kept working and its password
+  still checked; restoring it leaves it inactive (AUTH-04).
 - `check` warns in staging and production when the login, code, link, and
   mail throttles count in a backend each process keeps alone
   (`MemoryBackend`): with several processes each allowed the rates on its
@@ -261,7 +307,12 @@ All notable changes to domainkit. The format follows
   (AUTH-12).
 - A user's `repr` shows its id and status flags, and `request.auth`'s the
   user's id, the scheme, and the scopes: names, email addresses, and token
-  digests no longer reach a log that formats them (AUTH-13).
+  digests no longer reach a log that formats them. The tokens, codes,
+  passwords, secrets, and hashes that logging in, refreshing, second
+  factors, links, signup, personal tokens, CSRF, and the admin API take or
+  return (`IssuedTokens`, `TokenOut`, `LoginIn`, `EnrolmentOut`,
+  `NewToken`, `PasswordCheck`, and the others) are left out of their
+  `repr` too (AUTH-13).
 - Mail, text messages, and push notifications no longer stay in the outbox
   once they are sent. The worker blanks a message's arguments (`payload`)
   in the statement that marks it done, and `messages --cancel` when it
@@ -271,8 +322,10 @@ All notable changes to domainkit. The format follows
   are blanked too, its error kept, and `messages --retry` refuses it
   instead of keeping an address or a code for good. Every other task's
   finished messages are blanked the same way; their dead letters keep
-  their arguments, to be retried. `docs/mail.md` says what the outbox
-  keeps, and for how long (DATA-01; ADR 0029 amended).
+  their arguments, to be retried, except a chain's steps after a
+  sensitive one, which are handed its arguments or its result and are
+  blanked as it is. `docs/mail.md` says what the outbox keeps, and for
+  how long (DATA-01, SEC-r2-5; ADR 0029 amended).
 - Audit anchors can be kept apart on a shared ledger: `AUDIT.NAMESPACE`
   writes them under `domainkit/audit/<namespace>/<alias>`, so another
   project or environment on the same immudb no longer holds yours back or
@@ -287,10 +340,20 @@ All notable changes to domainkit. The format follows
 - The commands that change or erase stored data as an operator,
   `messages --retry` and `--cancel`, `auditforget`, `loaddata`, `flush`,
   `partitions --prune`, and `privacy`, now know who runs them
-  (`--operator`, else `DOMAINKIT_OPERATOR`, else the system user), run as
-  the actor `operator:<name>` instead of `system`, and record each action
-  in the audit trail as `operator.<command>` with its outcome and counts
-  (N8, DATA-07; ADR 0070).
+  (`--operator`, else `DOMAINKIT_OPERATOR`, else the login name
+  `getpass.getuser()` reports, from `LOGNAME` or `USER` before the
+  process's user id), run as the actor `operator:<name>` instead of
+  `system`, and record each action in the audit trail as
+  `operator.<command>` with its outcome and counts. So do the commands
+  that change credentials and settings: `resetmfa`, `createtoken`,
+  `changepassword`, `createsuperuser`, `addcertificate`, `cleartokens`,
+  `flags`, and `webhooks`. Their audit rows (`auth.mfa_disabled`,
+  `auth.token_created`, `flags.flag_changed`, ...) name the operator
+  instead of `system`, and `webhooks replay` is recorded as
+  `operator.webhooks.replay`; their listings record nothing. Each of them
+  now needs a name: in a container whose user has none, set
+  `DOMAINKIT_OPERATOR`, for `cleartokens` from cron too (N8, DATA-07,
+  SEC-r2-2; ADR 0070).
 - Changing a webhook subscription's URL is audited with the new host and
   the one before (`SubscriptionChanged.host`, `previous_host`), never the
   path or query: a subscription pointed elsewhere can now be traced in the
@@ -298,7 +361,9 @@ All notable changes to domainkit. The format follows
 - A dynamic setting declared `secret=True` is audited as changed, without
   its value, and the staff API and `flags settings` show no value; a
   flag's users are audited as a count. Until now both went into the
-  append-only trail in clear, for good (DATA-10).
+  append-only trail in clear, for good. A stored setting's `repr`
+  (`DynamicSetting`) leaves its value out, so a traceback or a `%r` does
+  not write a secret one either (DATA-10, SEC-r2-6).
 
 ## [0.9.0] - 2026-10-22
 

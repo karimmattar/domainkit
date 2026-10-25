@@ -1,8 +1,11 @@
 """Webhook deliveries: from a committed event through the outbox to the receiver."""
 
+import asyncio
 import json
 import logging
+import socket
 import sys
+import threading
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
@@ -11,9 +14,10 @@ from typing import Any
 import pytest
 from sqlalchemy import select, update
 
-from domainkit import setup
+from domainkit import lifecycle, setup
 from domainkit.apps import registry
 from domainkit.conf import UNSET, override_settings
+from domainkit.context import RequestContext, bind_request
 from domainkit.contrib.messaging import Worker
 from domainkit.contrib.messaging import worker as worker_module
 from domainkit.contrib.messaging.tables import DONE, messages
@@ -35,6 +39,8 @@ from domainkit.contrib.webhooks.uow import WebhooksUnitOfWork
 from domainkit.db import connections
 from domainkit.ddd import DomainEvent
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.http import guard
+from domainkit.lifecycle import Phase
 from domainkit.reporting import flush_reports
 from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork, NoteWritten, notes
 from domainkit_tests.test_messaging import FAST, reported
@@ -412,6 +418,74 @@ async def test_a_direct_call_makes_one_final_attempt(hooks: Receiver) -> None:
 
     (done,) = await rows(deliveries)
     assert (done.status, done.attempts) == (FAILED, 1)
+
+
+class HungDns:
+    """``getaddrinfo``: ``*.hang.test`` waits for ``release``; the rest are local."""
+
+    def __init__(self, hung: int) -> None:
+        """Let ``all_hung`` be set once ``hung`` lookups wait."""
+        self.hung = hung
+        self.waiting = 0
+        self.all_hung = threading.Event()
+        self.release = threading.Event()
+        self._lock = threading.Lock()
+
+    def __call__(self, host: str, port: int, **options: Any) -> list[Any]:  # noqa: ANN401
+        """Wait for ``release`` and fail, for a hung host; else answer at once."""
+        if host.endswith(".hang.test"):
+            with self._lock:
+                self.waiting += 1
+                if self.waiting == self.hung:
+                    self.all_hung.set()
+            assert self.release.wait(30)
+            raise socket.gaierror(socket.EAI_AGAIN, "Temporary failure")
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))]
+
+
+async def test_one_subscribers_hung_hosts_leave_lookups_for_the_others(
+    hooks: Receiver, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Four subscriptions whose DNS never answers; another's delivery still goes.
+
+    The worker runs every delivery of an event as the event's actor (here an
+    anonymous request's, ``ip:unknown``): the lookups are each
+    subscription's own, so the hung ones fill no shared quarter.
+    """
+    dns = HungDns(hung=4)
+    monkeypatch.setattr(socket, "getaddrinfo", dns)
+    monkeypatch.setattr(guard, "resolver", guard.GuardResolver())
+    saved = dict(lifecycle._registered[Phase.RESOURCES])
+    hung = [
+        (await subscribe(f"http://s{i}.hang.test:{hooks.port}/hook", "note.written"))[0]
+        for i in range(4)
+    ]
+    victim, _ = await subscribe(hooks.url(host="victim.test"), "note.written")
+    await queue_deliveries("note.written", {}, key="k", occurred_at=datetime.now(UTC))
+    by_subscription = {row.subscription_id: row.id for row in await rows(deliveries)}
+    queued_by = RequestContext("req-1", None, "TASK", "webhooks.deliver")
+    try:
+        with bind_request(queued_by):
+            waiting = [
+                asyncio.create_task(delivery_module.deliver(by_subscription[s.id]))
+                for s in hung
+            ]
+            assert await asyncio.to_thread(dns.all_hung.wait, 30)
+            owners = dict(guard.resolver._owners)
+            await delivery_module.deliver(by_subscription[victim.id])
+        dns.release.set()
+        await asyncio.gather(*waiting)
+    finally:
+        dns.release.set()
+        await guard.resolver.close()
+        lifecycle._registered[Phase.RESOURCES].clear()
+        lifecycle._registered[Phase.RESOURCES].update(saved)
+
+    statuses = {row.subscription_id: row.status for row in await rows(deliveries)}
+    assert statuses[victim.id] == SUCCEEDED
+    assert owners == {f"webhook:{s.id}": 1 for s in hung}
+    assert [statuses[s.id] for s in hung] == [FAILED] * 4
+    assert [request.target for request in hooks.requests] == ["/hook"]
 
 
 async def test_rotated_secrets_sign_side_by_side(hooks: Receiver) -> None:

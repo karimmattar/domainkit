@@ -58,3 +58,37 @@ leave unset); a flag, then an environment variable, then the OS user.
 - `privacy`'s option goes before its action (`privacy --operator alice
   purge`), as argparse reads a command's own options before its
   subcommand's.
+
+## Amendment (2026-10-25): credentials and settings, and what "the OS user" is
+
+A security review of 0.9.1 (SEC-r2-2) found that the commands an insider
+would use against another person still ran as `system`: `resetmfa` turns
+a user's second factor off, `createtoken` and `addcertificate` mint
+credentials for a user, `changepassword` and `createsuperuser` set
+passwords, `cleartokens` logs a user out, `flags` changes flags and
+dynamic settings (a provider's key among them), and `webhooks replay`
+sends events to receivers again. Their audit rows said `system`.
+
+- These commands set `operator_actions = True` too. What they change is
+  already audited by domain events (`auth.mfa_disabled`,
+  `auth.token_created`, `auth.password_changed`, `auth.user_created`,
+  `auth.user_logged_out`, `flags.flag_changed`, `flags.setting_changed`,
+  `flags.setting_reset`), which now name `operator:<name>`; they add no
+  `operator.<command>` row, as `privacy` adds none. `webhooks replay`,
+  which no event records, is recorded as `operator.webhooks.replay` with
+  how many deliveries were asked for and queued.
+- Their listings (`flags list`, `flags settings`, `webhooks
+  subscriptions`, `webhooks deliveries`) run as the operator too, since
+  the operator is found before the command parses its action, but record
+  nothing. `evidence`, `auditlog`, and `auditverify` only read, and take
+  no operator.
+- Each now needs a name, as `partitions` does: a container whose user has
+  none sets `DOMAINKIT_OPERATOR`, for `cleartokens` run from cron too.
+
+The decision above calls the last source "the OS user". It is the login
+name `getpass.getuser()` returns: the `LOGNAME`, `USER`, `LNAME`, or
+`USERNAME` environment variable, the first set, and only without them the
+name of the process's user id. Whoever runs the command sets those as
+easily as `DOMAINKIT_OPERATOR`, so `operator_source = system` is no
+stronger than the other sources; the name attributes, it does not
+authenticate, as the decision says.

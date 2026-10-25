@@ -19,7 +19,7 @@ other credentials (a gateway's header, API keys elsewhere)::
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from functools import cache
 from typing import Any, ClassVar, Final
@@ -88,12 +88,15 @@ class Credentials:
 
 @dataclass(frozen=True, slots=True)
 class IssuedTokens:
-    """What logging in or refreshing returns (OAuth 2's token response)."""
+    """What logging in or refreshing returns (OAuth 2's token response).
 
-    access_token: str
+    Its ``repr`` leaves the tokens out.
+    """
+
+    access_token: str = field(repr=False)
     expires_in: int | None
     """Seconds the access token works; None: until revoked."""
-    refresh_token: str | None = None
+    refresh_token: str | None = field(default=None, repr=False)
 
 
 TOKEN_SCHEME: Final = "token"  # noqa: S105 - a scheme, not a secret.
