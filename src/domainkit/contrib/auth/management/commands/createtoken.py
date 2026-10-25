@@ -19,6 +19,7 @@ class Command(BaseCommand):
     """Print a new opaque token for a user; it is shown this once."""
 
     help = "Create a token for a user's scripts; it is shown once, then only hashed."
+    operator_actions = True
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         """The user, a name for the token, and its lifetime."""

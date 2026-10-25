@@ -938,13 +938,22 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 Commands that change or erase stored data as a person, not as the
 application, say who runs them and leave a row in the audit trail (with
 `domainkit.contrib.audit` installed): `messages --retry` and `--cancel`,
-`auditforget`, `loaddata`, `flush`, `partitions --prune`, and `privacy`.
+`auditforget`, `loaddata`, `flush`, `partitions --prune`, and `privacy`;
+and so do those that change credentials, flags, settings, and deliveries:
+`resetmfa`, `createtoken`, `changepassword`, `createsuperuser`,
+`addcertificate`, `cleartokens`, `flags`, and `webhooks`. Their listings
+(`flags list`, `webhooks deliveries`, ...) take the operator too but record
+nothing; `evidence`, `auditlog`, and `auditverify` only read and take none.
 The operator is, in this order:
 
 1. `--operator NAME` (before the action for `privacy`:
-   `privacy --operator alice purge`);
+   `privacy --operator alice purge`, and for `flags`: `flags --operator
+   alice set beta --everyone on`);
 2. the `DOMAINKIT_OPERATOR` environment variable;
-3. the user the process runs as.
+3. the login name `getpass.getuser()` reports: the `LOGNAME`, `USER`,
+   `LNAME`, or `USERNAME` environment variable, else the name of the
+   process's user id. Whoever runs the command can set any of these, so
+   this names the operator no better than the other two.
 
 A name is 1 to 64 letters, digits, `.`, `_`, `@`, `+`, or `-`, starting
 with a letter or digit; another is refused before the command runs, and so
@@ -957,11 +966,14 @@ anyone, so keep who can run `manage.py` against production as narrow as
 who can reach its database.
 
 The command runs as the actor `operator:<name>`, so what it records itself
-(`privacy.erase`, `privacy.purge`) names the operator instead of `system`.
-Each action is recorded once it ends as `operator.<command>`
+(`privacy.erase`, `privacy.purge`, `auth.mfa_disabled`,
+`auth.token_created`, `auth.password_changed`, `auth.user_created`,
+`auth.user_logged_out`, `flags.flag_changed`, `flags.setting_changed`)
+names the operator instead of `system`. An action that records nothing
+itself is recorded once it ends as `operator.<command>`
 (`operator.messages.retry`, `operator.messages.cancel`,
 `operator.auditforget`, `operator.loaddata`, `operator.flush`,
-`operator.partitions.prune`), `success` or `failure` (with the error's
+`operator.partitions.prune`, `operator.webhooks.replay`), `success` or `failure` (with the error's
 class), with what it acted on and counts, and `operator_source`: `option`,
 `environment`, or `system`. Dry runs, listings, and refusals before the
 action (no `--force`) are not recorded. A successful action whose row

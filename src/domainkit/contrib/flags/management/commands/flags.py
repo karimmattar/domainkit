@@ -25,6 +25,7 @@ class Command(BaseCommand):
     """
 
     help = "List or change feature flags (set, delete) and dynamic settings."
+    operator_actions = True
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         """Declare the actions and their options."""

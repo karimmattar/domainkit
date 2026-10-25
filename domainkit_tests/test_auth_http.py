@@ -1449,18 +1449,27 @@ def test_openapi_documents_tokens_and_errors(api: Api) -> None:
     }
 
 
-def test_token_commands_are_audited(api: Api) -> None:
-    """Creating a token and logging a user out everywhere leave events."""
+def test_token_commands_are_audited(api: Api, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Creating a token and logging a user out everywhere leave events.
+
+    They name the operator who ran the command (SEC-r2-2): an insider who
+    mints a token for someone else is named, not ``system``.
+    """
+    monkeypatch.setenv("DOMAINKIT_OPERATOR", "mallory")
     alice = create_user("alice")
     call_command("createtoken", "alice", "--name", "ci", stdout=io.StringIO())
-    call_command("cleartokens", "--user", "alice", stdout=io.StringIO())
+    call_command(
+        "cleartokens", "--user", "alice", "--operator", "bob", stdout=io.StringIO()
+    )
+    call_command("cleartokens", stdout=io.StringIO())  # Records nothing more.
 
     (created,) = audited("auth.token_created")
     assert (created["actor"], created["details"]) == (
-        "system",
+        "operator:mallory",
         {"user_id": str(alice), "name": "ci", "scopes": None},
     )
     (logged_out,) = audited("auth.user_logged_out")
+    assert logged_out["actor"] == "operator:bob"
     assert logged_out["details"] == {"user_id": str(alice), "everywhere": True}
 
 

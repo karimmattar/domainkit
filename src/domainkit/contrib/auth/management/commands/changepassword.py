@@ -16,6 +16,7 @@ class Command(BaseCommand):
     """Ask twice for a new password that passes the validators, then store it."""
 
     help = "Change a user's password (default user: your login name here)."
+    operator_actions = True
 
     ask_secret: Callable[[str], str] = staticmethod(getpass.getpass)
     attempts = 3

@@ -397,9 +397,17 @@ def test_a_stored_settings_repr_shows_no_value() -> None:
 
 
 def test_the_trail_counts_a_flags_users(project: None) -> None:
-    """Users of a flag are audited as a count; groups and rules as they are."""
+    """Users of a flag are audited as a count; groups and rules as they are.
+
+    The rows name the operator who ran the command (SEC-r2-2).
+    """
     run("flags", "set", "beta", "--users", "u2", "u1", "--groups", "staff")
-    run("flags", "set", "beta", "--users")
+    run("flags", "set", "beta", "--users", operator="mallory")
+    run("flags", "list", operator="mallory")  # Reads: records nothing.
+
+    assert [row["actor"] for row in audited("flags.flag_changed")][1:] == [
+        "operator:mallory"
+    ]
 
     assert [row["details"] for row in audited("flags.flag_changed")] == [
         {

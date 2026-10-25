@@ -36,6 +36,7 @@ class Command(BaseCommand):
     """Create a superuser, interactively or from options and variables."""
 
     help = "Create a superuser, asking for whatever the options leave out."
+    operator_actions = True
 
     ask: Callable[[str], str] = staticmethod(input)
     ask_secret: Callable[[str], str] = staticmethod(getpass.getpass)

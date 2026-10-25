@@ -283,10 +283,20 @@ All notable changes to domainkit. The format follows
 - The commands that change or erase stored data as an operator,
   `messages --retry` and `--cancel`, `auditforget`, `loaddata`, `flush`,
   `partitions --prune`, and `privacy`, now know who runs them
-  (`--operator`, else `DOMAINKIT_OPERATOR`, else the system user), run as
-  the actor `operator:<name>` instead of `system`, and record each action
-  in the audit trail as `operator.<command>` with its outcome and counts
-  (N8, DATA-07; ADR 0070).
+  (`--operator`, else `DOMAINKIT_OPERATOR`, else the login name
+  `getpass.getuser()` reports, from `LOGNAME` or `USER` before the
+  process's user id), run as the actor `operator:<name>` instead of
+  `system`, and record each action in the audit trail as
+  `operator.<command>` with its outcome and counts. So do the commands
+  that change credentials and settings: `resetmfa`, `createtoken`,
+  `changepassword`, `createsuperuser`, `addcertificate`, `cleartokens`,
+  `flags`, and `webhooks`. Their audit rows (`auth.mfa_disabled`,
+  `auth.token_created`, `flags.flag_changed`, ...) name the operator
+  instead of `system`, and `webhooks replay` is recorded as
+  `operator.webhooks.replay`; their listings record nothing. Each of them
+  now needs a name: in a container whose user has none, set
+  `DOMAINKIT_OPERATOR`, for `cleartokens` from cron too (N8, DATA-07,
+  SEC-r2-2; ADR 0070).
 - Changing a webhook subscription's URL is audited with the new host and
   the one before (`SubscriptionChanged.host`, `previous_host`), never the
   path or query: a subscription pointed elsewhere can now be traced in the
