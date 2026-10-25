@@ -141,6 +141,13 @@ class Unlocking(Account):
     EDITABLE_FIELDS = Account.EDITABLE_FIELDS | {"username", "is_superuser"}
 
 
+class Narrowing(Account):
+    """Protects nothing of its own, and lets staff edit status flags."""
+
+    PROTECTED_FIELDS = frozenset()
+    EDITABLE_FIELDS = Account.EDITABLE_FIELDS | {"is_superuser", "email_verified"}
+
+
 not_a_table = object()
 detached = Table("detached_users", MetaData(), Column("id", Uuid, primary_key=True))
 narrow = Table(
@@ -491,6 +498,14 @@ def test_backend_settings_are_checked(use_auth: UseAuth) -> None:
             (
                 f"AUTH.USER_MODEL: EDITABLE_FIELDS of '{HERE}.Unlocking' names fields "
                 "that change only through their own methods: is_superuser, username."
+            ),
+        ),
+        (
+            {"USER_MODEL": f"{HERE}.Narrowing"},
+            (
+                f"AUTH.USER_MODEL: EDITABLE_FIELDS of '{HERE}.Narrowing' names fields "
+                "that change only through their own methods: email_verified, "
+                "is_superuser."
             ),
         ),
         (

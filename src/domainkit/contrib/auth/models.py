@@ -185,6 +185,29 @@ class Group(AggregateRoot[GroupId]):
         return self.name
 
 
+PROTECTED_FLOOR: Final = frozenset(
+    {
+        "id",
+        "version",
+        "password",
+        "last_login",
+        "date_joined",
+        "email_verified",
+        "is_active",
+        "is_staff",
+        "is_superuser",
+        "groups",
+        "user_permissions",
+    }
+)
+"""Fields no user model lets ``update`` change, whatever its ``PROTECTED_FIELDS``.
+
+Credentials, status flags, and grants change through their own methods,
+which the admin API guards (only superusers make superusers) and which
+record their own events.
+"""
+
+
 class AbstractBaseUser(AggregateRoot[UserId]):
     """Credentials, status, groups, and permissions of a user.
 
@@ -196,22 +219,12 @@ class AbstractBaseUser(AggregateRoot[UserId]):
     USERNAME_FIELD: ClassVar[str]
     EMAIL_FIELD: ClassVar[str | None] = None
     REQUIRED_FIELDS: ClassVar[tuple[str, ...]] = ()
-    PROTECTED_FIELDS: ClassVar[frozenset[str]] = frozenset(
-        {
-            "id",
-            "version",
-            "password",
-            "last_login",
-            "date_joined",
-            "email_verified",
-            "is_active",
-            "is_staff",
-            "is_superuser",
-            "groups",
-            "user_permissions",
-        }
-    )
-    """Fields that change through their own methods, never ``update``."""
+    PROTECTED_FIELDS: ClassVar[frozenset[str]] = PROTECTED_FLOOR
+    """Fields that change through their own methods, never ``update``.
+
+    A subclass may add to them; ``PROTECTED_FLOOR`` stays protected
+    whatever it says, so a status flag never becomes a field staff edit.
+    """
     EDITABLE_FIELDS: ClassVar[frozenset[str]] = frozenset()
     """Fields staff may change in the admin API (``update``).
 
@@ -230,6 +243,23 @@ class AbstractBaseUser(AggregateRoot[UserId]):
     is_superuser: bool = False
     groups: set[Group] = field(default_factory=set)
     user_permissions: set[Permission] = field(default_factory=set)
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:  # noqa: ANN401 - passed on.
+        """Give every user model the ``repr`` without personal data.
+
+        Each subclass becomes a dataclass of its own, whose generated
+        ``repr`` would list every field; one it defines itself is kept.
+        """
+        super().__init_subclass__(**kwargs)
+        if "__repr__" not in cls.__dict__:
+            cls.__repr__ = AbstractBaseUser.__repr__  # type: ignore[method-assign]
+
+    def __repr__(self) -> str:
+        """The id and status only: names and addresses are personal data."""
+        return (
+            f"{type(self).__name__}(id={self.id!r}, is_active={self.is_active!r}, "
+            f"is_superuser={self.is_superuser!r})"
+        )
 
     @classmethod
     def create(cls, *, password: PasswordHash, **fields: Any) -> Self:  # noqa: ANN401 - the fields of each user model.
@@ -365,8 +395,13 @@ class AbstractBaseUser(AggregateRoot[UserId]):
 
     @classmethod
     def editable_fields(cls) -> frozenset[str]:
-        """``EDITABLE_FIELDS``, never the username, credentials, or grants."""
-        return cls.EDITABLE_FIELDS - cls.PROTECTED_FIELDS - {cls.USERNAME_FIELD}
+        """``EDITABLE_FIELDS``, never the username, credentials, status, or grants.
+
+        ``PROTECTED_FLOOR`` is left out even where ``PROTECTED_FIELDS``
+        names less.
+        """
+        protected = cls.PROTECTED_FIELDS | PROTECTED_FLOOR
+        return cls.EDITABLE_FIELDS - protected - {cls.USERNAME_FIELD}
 
     @classmethod
     def admin_fields(cls) -> frozenset[str]:

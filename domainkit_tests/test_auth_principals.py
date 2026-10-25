@@ -390,6 +390,10 @@ def test_principals_hide_their_fields(api: Api) -> None:
         repr(instance_state(credentials.user).callables),
     ]
     assert not [each for each in shown if hashed.value in each]
+    assert not [each for each in shown if "alice" in each]  # Personal data.
+    assert repr(credentials) == (
+        f"Credentials(user_id={alice!r}, scheme='token', scopes=None)"
+    )
 
 
 # A kept principal is what a query builds.

@@ -78,6 +78,13 @@ class Credentials:
         """Whether the credentials' scopes cover every one of ``perms``."""
         return self.scopes is None or self.scopes.issuperset(perms)
 
+    def __repr__(self) -> str:
+        """The user's id, the scheme, and the scopes: no personal data, no digest."""
+        return (
+            f"Credentials(user_id={self.user.id!r}, scheme={self.scheme!r}, "
+            f"scopes={self.scopes!r})"
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class IssuedTokens:

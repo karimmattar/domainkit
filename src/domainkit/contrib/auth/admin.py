@@ -295,7 +295,10 @@ router.include_router(groups)
 async def create_user(
     body: AdminUserIn, actor: Annotated[AnyUser, _users("add")]
 ) -> AdminUserOut:
-    """Create a user; a password is checked by ``AUTH.PASSWORD_VALIDATORS``."""
+    """Create a user; a password is checked by ``AUTH.PASSWORD_VALIDATORS``.
+
+    ``fields`` are tidied by the model's ``clean_field``, as on a change.
+    """
     if body.is_superuser:
         _superusers_only(actor, "Only superusers may make superusers.")
     model = get_user_model()
@@ -315,6 +318,8 @@ async def create_user(
         user = await uow.users.create_user(
             body.username, body.password, **fields, **flags
         )
+        for name, value in fields.items():
+            setattr(user, name, user.clean_field(name, value))
         await uow.commit()
     return AdminUserOut.of(user)
 

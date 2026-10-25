@@ -1177,6 +1177,33 @@ def test_custom_user_fields(swapped: TestClient) -> None:
     )
 
 
+@pytest.mark.parametrize("swapped", [ACCOUNTS], indirect=True)
+def test_custom_fields_are_cleaned_when_users_are_made_too(
+    swapped: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``clean_field`` tidies ``fields`` on creation, as on a change (AUTH-13)."""
+    from domainkit_tests.sample_domains.accounts.models import Account
+
+    def clean_field(self: Account, name: str, value: object) -> object:
+        return str(value).replace(" ", "") if name == "phone" else value
+
+    monkeypatch.setattr(Account, "clean_field", clean_field)
+    client = swapped
+    root = staff("root", is_superuser=True)
+    url = f"{ADMIN}/users"
+
+    made = client.post(
+        url, json={"username": "carol", "fields": {"phone": "+20 100"}}, headers=root
+    ).json()
+    stored = client.get(f"{url}/{made['id']}", headers=root).json()
+    changed = client.patch(
+        f"{url}/{made['id']}", json={"fields": {"phone": "+20 111"}}, headers=root
+    )
+
+    assert made["fields"]["phone"] == stored["fields"]["phone"] == "+20100"
+    assert changed.json()["fields"]["phone"] == "+20111"
+
+
 def test_admin_rules_need_staff_and_the_model_permission(use_auth: UseAuth) -> None:
     """Called directly: the dependencies the endpoints declare at import."""
     use_auth()

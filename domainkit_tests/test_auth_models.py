@@ -27,6 +27,7 @@ from domainkit.contrib.auth.events import (
     UserStatusChanged,
 )
 from domainkit.contrib.auth.models import (
+    PROTECTED_FLOOR,
     erased_username,
     normalize_email,
     reserved_username,
@@ -375,6 +376,55 @@ class Overreaching(Unlisted):
     EDITABLE_FIELDS: ClassVar[frozenset[str]] = frozenset(
         {"code", "is_superuser", "password", "nickname"}
     )
+
+
+class Narrowing(Badge):
+    """Protects nothing, and lists status flags as editable."""
+
+    PROTECTED_FIELDS: ClassVar[frozenset[str]] = frozenset()
+    EDITABLE_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {"nickname", "is_superuser", "is_active", "last_login"}
+    )
+
+
+class Shown(Badge):
+    """Shows its own ``repr``."""
+
+    def __repr__(self) -> str:
+        """The badge code: this model's own choice."""
+        return f"<Badge {self.code}>"
+
+
+def test_protected_fields_are_a_floor_no_model_lowers() -> None:
+    """A model's own ``PROTECTED_FIELDS`` add to the floor, never remove (AUTH-12).
+
+    Narrowing them let staff set ``is_superuser`` through ``fields``,
+    without the superuser check or a ``UserStatusChanged`` event.
+    """
+    assert PROTECTED_FLOOR <= AbstractBaseUser.PROTECTED_FIELDS
+    assert Narrowing.editable_fields() == {"nickname"}
+    user = Narrowing(id=UserId(uuid4()), password=HASH, code="N-1")
+    with pytest.raises(UnknownUserField) as refused:
+        user.update(is_superuser=True)
+    assert str(refused.value) == (
+        "These user fields cannot be changed here: is_superuser."
+    )
+    assert user.is_superuser is False
+
+
+def test_users_show_no_personal_data_in_their_repr() -> None:
+    """Names and addresses stay out of ``repr``, and so out of logs (AUTH-13)."""
+    user = new_user(email="alice@example.com", first_name="Alice", last_name="Liddell")
+    badge = Badge(id=UserId(uuid4()), password=HASH, code="B-7", nickname="Seven")
+
+    assert repr(user) == (f"User(id={user.id!r}, is_active=True, is_superuser=False)")
+    assert repr(badge) == (
+        f"Badge(id={badge.id!r}, is_active=True, is_superuser=False)"
+    )
+    for shown in (repr(user), repr(badge)):
+        for personal in ("alice", "Alice", "Liddell", "B-7", "Seven", "pbkdf2"):
+            assert personal not in shown
+    assert repr(Shown(id=UserId(uuid4()), password=HASH, code="S-1")) == "<Badge S-1>"
 
 
 def test_staff_see_and_change_only_the_fields_a_model_names() -> None:
