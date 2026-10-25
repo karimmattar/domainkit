@@ -7,10 +7,12 @@ import secrets
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import anyio
 import pytest
 from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, Response
+from fastapi.responses import FileResponse
 from fastapi.testclient import TestClient
 from sqlalchemy import ColumnElement, Table, false, insert, select
 from sqlalchemy.sql import Select
@@ -1525,6 +1527,15 @@ async def discard(message: Message) -> None:
     """Send nowhere."""
 
 
+def collect(into: list[Message]) -> Send:
+    """A ``send`` that keeps what it is sent in ``into``."""
+
+    async def send(message: Message) -> None:
+        into.append(message)
+
+    return send
+
+
 async def cancel_while_running(*, settle: bool = True) -> None:
     """Send a keyed POST, then cancel it as anyio does, mid-request.
 
@@ -1892,9 +1903,41 @@ def test_work_after_a_keyed_response_runs_once_however_long_it_takes() -> None:
 
 
 @pytest.mark.usefixtures("idempotent")
-def test_work_after_a_kept_response_that_fails_keeps_the_key() -> None:
-    """The response was stored before the work failed: a retry replays it."""
+def test_work_that_fails_after_a_kept_response_releases_the_key() -> None:
+    """The stored 202 was stored too soon: with nothing committed, a retry runs.
+
+    The response no longer says what happened, so the key is released as
+    for any request that raised, and the work that failed runs again
+    instead of being replayed as accepted (SEC-r2-7).
+    """
     after = AfterResponse(fails=True)
+    after.release.set()
+
+    async def scenario() -> list[Message]:
+        with pytest.raises(RuntimeError, match="answer was lost"):
+            await after.post()
+        assert await asyncio.to_thread(stored_keys) == []
+        retried: list[Message] = []
+        with pytest.raises(RuntimeError, match="answer was lost"):
+            await after.app(PAY_SCOPE, receive_empty_body, collect(retried))
+        await connections.close_all()
+        return retried
+
+    retried = asyncio.run(scenario())
+
+    assert (b"idempotent-replayed", b"true") not in retried[0]["headers"]
+    assert after.calls == 2
+    assert stored_keys() == []
+
+
+@pytest.mark.usefixtures("idempotent")
+def test_work_that_commits_then_fails_after_the_response_keeps_its_status() -> None:
+    """Something committed: the key keeps the status, not the response.
+
+    A retry gets 409 ``idempotency_response_unavailable`` and runs nothing:
+    the commit may be all the work did, so the client looks it up.
+    """
+    after = AfterResponse(fails=True, records=True)
     after.release.set()
 
     async def scenario() -> list[Message]:
@@ -1906,9 +1949,10 @@ def test_work_after_a_kept_response_that_fails_keeps_the_key() -> None:
 
     retried = asyncio.run(scenario())
 
-    assert (b"idempotent-replayed", b"true") in retried[0]["headers"]
-    assert after.calls == 1
-    assert [row["status_code"] for row in stored_keys()] == [202]
+    assert retried[0]["status"] == 409
+    assert b"idempotency_response_unavailable" in retried[-1]["body"]
+    assert (after.calls, payments_on()) == (1, 1)
+    assert [(row["status_code"], row["body"]) for row in stored_keys()] == [(202, None)]
 
 
 @pytest.mark.usefixtures("idempotent")
@@ -1944,10 +1988,13 @@ def test_a_response_the_key_could_not_keep_stops_the_work_after_it(
 ) -> None:
     """The store fails: the error reaches the application, which runs nothing more.
 
-    Work that ran with the key unsettled could run again for a retry.
+    Work that ran with the key unsettled could run again for a retry, and
+    the failed store is not tried again as the error leaves.
     """
+    attempts: list[object] = []
 
     async def unavailable(*args: object) -> None:
+        attempts.append(args[-1])
         raise ConnectionError("the keys' database is down")
 
     monkeypatch.setattr(idempotency, "_finish", unavailable)
@@ -1962,6 +2009,7 @@ def test_a_response_the_key_could_not_keep_stops_the_work_after_it(
     asyncio.run(scenario())
 
     assert after.calls == 0
+    assert attempts == [b'{"status":"accepted"}']  # Not settled a second time.
 
 
 @pytest.mark.usefixtures("idempotent")
@@ -2012,3 +2060,102 @@ def test_a_commit_after_a_refusal_keeps_the_refusal() -> None:
     assert (b"idempotent-replayed", b"true") in retried[0]["headers"]
     assert retried[-1]["body"] == b'{"status":"accepted"}'
     assert (after.calls, payments_on()) == (1, 1)
+
+
+# Bodies sent by path or file descriptor (SEC-r2-8) ---------------------------
+
+
+def test_a_file_sent_by_path_is_run_again_not_replayed_empty(
+    idempotent: TestClient, tmp_path: Path
+) -> None:
+    """``FileResponse`` with ``http.response.pathsend``: the body is never seen.
+
+    The key cannot keep it, so it is released, and the retry gets the file.
+    """
+    export = tmp_path / "export.csv"
+    export.write_bytes(b"id,amount\n1,10.00\n")
+    api = FastAPI()
+
+    @api.post("/pay")
+    async def pay() -> FileResponse:
+        return FileResponse(export)
+
+    app = idempotency.IdempotencyMiddleware(api)
+    # ASGI 2.4: the file is sent without listening for a disconnect meanwhile.
+    by_body = {**PAY_SCOPE, "asgi": {"version": "3.0", "spec_version": "2.4"}}
+    by_path = {**by_body, "extensions": {"http.response.pathsend": {}}}
+
+    async def scenario() -> tuple[
+        list[Message], list[dict[str, object]], list[Message]
+    ]:
+        first: list[Message] = []
+        retried: list[Message] = []
+        await app(by_path, receive_empty_body, collect(first))
+        after_first = await asyncio.to_thread(stored_keys)
+        await app(by_body, receive_empty_body, collect(retried))
+        await connections.close_all()
+        return first, after_first, retried
+
+    first, after_first, retried = asyncio.run(scenario())
+
+    assert [message["type"] for message in first][-1] == "http.response.pathsend"
+    assert after_first == []
+    assert (b"idempotent-replayed", b"true") not in retried[0]["headers"]
+    assert b"".join(m.get("body", b"") for m in retried) == export.read_bytes()
+
+
+class UnseenBody:
+    """An application that sends its body as ``kind`` (by path, or by descriptor)."""
+
+    def __init__(self, kind: str, *, commits: bool) -> None:
+        """Send ``kind``; with ``commits``, commit a payment first."""
+        self.kind = kind
+        self.commits = commits
+        self.calls = 0
+        self.app = idempotency.IdempotencyMiddleware(self.serve)
+
+    async def serve(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Answer 200, its body sent past the middleware."""
+        self.calls += 1
+        if self.commits:
+            await record_payment()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": self.kind, "path": "/srv/export.csv", "more_body": False})
+
+    def post_twice(self) -> list[Message]:
+        """The keyed POST, then its retry; what the retry was sent."""
+
+        async def scenario() -> list[Message]:
+            retried: list[Message] = []
+            await self.app(PAY_SCOPE, receive_empty_body, discard)
+            await self.app(PAY_SCOPE, receive_empty_body, collect(retried))
+            await connections.close_all()
+            return retried
+
+        return asyncio.run(scenario())
+
+
+@pytest.mark.usefixtures("idempotent")
+@pytest.mark.parametrize("kind", sorted(idempotency.UNSEEN_BODIES))
+def test_a_body_the_middleware_never_sees_is_not_replayed(kind: str) -> None:
+    """Nothing committed: the key is released, and the retry runs again."""
+    unseen = UnseenBody(kind, commits=False)
+
+    retried = unseen.post_twice()
+
+    assert retried[-1]["type"] == kind
+    assert unseen.calls == 2
+    assert stored_keys() == []
+
+
+@pytest.mark.usefixtures("idempotent")
+@pytest.mark.parametrize("kind", sorted(idempotency.UNSEEN_BODIES))
+def test_a_body_never_seen_after_a_commit_keeps_only_the_status(kind: str) -> None:
+    """Committed: the key keeps the status, and the retry gets a 409."""
+    unseen = UnseenBody(kind, commits=True)
+
+    retried = unseen.post_twice()
+
+    assert retried[0]["status"] == 409
+    assert unseen.calls == 1
+    assert [(row["status_code"], row["body"]) for row in stored_keys()] == [(200, None)]

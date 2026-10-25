@@ -99,7 +99,12 @@ All notable changes to domainkit. The format follows
   that raised released the key the same way. A retry now gets the stored
   response however long that work runs. A response the key does not keep
   is still settled once the application returns, and a keyed request
-  makes no more round trips (FIN-79, SEC-r2-1).
+  makes no more round trips. If the work after the response raises, the
+  key is settled again as before 0.9.1: released when nothing committed,
+  so a retry runs the work that failed instead of being told for a day
+  that it was accepted, or else kept with its status, a 409. A retry that
+  arrives while the work still runs gets the stored response, which says
+  nothing of how the work ends (FIN-79, SEC-r2-1, SEC-r2-7).
 - Security-log lines of refusals (a rejected `Host` header, a body too
   large or too slow, refused credentials, a refused live connection) are
   written once per caller every 10 seconds, with a count of those held
@@ -120,6 +125,13 @@ All notable changes to domainkit. The format follows
 
 ### Fixed
 
+- A keyed response whose body is sent by path or by file descriptor
+  (`FileResponse` on a server with the ASGI `http.response.pathsend`
+  extension, or `http.response.zerocopysend`) is no longer stored as an
+  empty body and replayed as an empty `200`: the middleware never sees
+  that body, so the key does not keep it, and a retry runs the request
+  again, or gets 409 `idempotency_response_unavailable` after a commit
+  (SEC-r2-8).
 - `TestClient` works with Starlette 1.9 and 1.10, which a fresh
   `pip install domainkit` resolves: a project made by `domainkit init`
   passes its own tests again instead of failing every test that uses a
