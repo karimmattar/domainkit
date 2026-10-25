@@ -18,6 +18,17 @@ All notable changes to domainkit. The format follows
   only on the event loops installed; with 4.10 or 4.11, a new project's
   async test failed on trio. CI's lint job runs deptry so that an
   undeclared import fails it (INFRA-04).
+- A project `init` creates passes its own `ruff check` and
+  `ruff format --check` as written: the templates sorted `domainkit` as a
+  first-party package, as the framework's repository does, so a project
+  without ruff where `init` ran failed on its own lint. The project's dev
+  group now installs ruff, in the range the templates are checked with,
+  so that the generators (`startdomain`, `startaggregate`, `addcommand`,
+  `addquery`, `addevent`) and `makemigrations` format what they write;
+  without ruff they log a warning saying how instead of nothing (INFRA-05).
+- `makemigrations` with no changes no longer reformats every Python file
+  in the working directory when ruff is installed: ruff, given no paths,
+  formatted all of them (INFRA-05).
 
 ## [0.9.1] - 2026-10-25
 

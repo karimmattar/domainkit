@@ -7,6 +7,7 @@ body to create one; the generators' tests start from them.
 from uuid import uuid4
 
 from domainkit.ddd import EventBus, InMemoryRepository
+
 from {{ package }}.application.unit_of_work import {{ Domain }}UnitOfWork
 from {{ package }}.domain.model import (
     OwnerId,
