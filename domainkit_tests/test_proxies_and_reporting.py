@@ -313,7 +313,11 @@ async def test_an_unreadable_hop_where_the_client_is_counts_the_last_proxy(
 async def test_unreadable_hops_are_logged_once_a_while(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A proxy that keeps writing them gets a line, then a count, not a flood."""
+    """A proxy that keeps writing them gets a line, then a count, not a flood.
+
+    It is counted by its address, whichever of its connections they come on;
+    hops that are all addresses are never logged.
+    """
     seen: list[object] = []
 
     async def app(scope: Scope, receive: Receive, send: Send) -> None:
@@ -328,12 +332,20 @@ async def test_unreadable_hops_are_logged_once_a_while(
         "headers": [(b"x-forwarded-for", b"unknown")],
     }
     with freeze_time("2026-01-01") as clock:
-        for _ in range(3):
-            await middleware(dict(scope), None, None)  # type: ignore[arg-type]
+        for port in range(3):
+            await middleware({**scope, "client": ("10.0.0.5", port)}, None, None)  # type: ignore[arg-type]
+        for hops in (b"203.0.113.9, 10.0.0.7", b"10.0.0.8, 10.0.0.9"):
+            readable = {**scope, "headers": [(b"x-forwarded-for", hops)]}
+            await middleware(readable, None, None)  # type: ignore[arg-type]
         clock.tick(THROTTLE_INTERVAL)
         await middleware(dict(scope), None, None)  # type: ignore[arg-type]
 
-    assert seen == [("10.0.0.5", 1234)] * 4
+    assert seen == [
+        *(("10.0.0.5", port) for port in range(3)),
+        ("203.0.113.9", 0),
+        ("10.0.0.8", 0),
+        ("10.0.0.5", 1234),
+    ]
     warnings = [r.getMessage() for r in caplog.records if r.name == SECURITY_LOGGER]
     assert len(warnings) == 2
     assert warnings[1].endswith("(and 2 more like it since the last line)")

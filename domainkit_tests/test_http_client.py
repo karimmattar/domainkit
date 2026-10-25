@@ -887,6 +887,7 @@ async def test_a_guarded_client_refuses_an_answer_it_did_not_ask_to_inflate(
         ("*", "deflate"),
         ("GZIP", "gzip"),
         ("gzip;q=high", "gzip"),  # A weight that is no number: not a refusal.
+        ("gzip;q=0, deflate", "deflate"),  # The codings after a refused one count.
         ("identity", "identity"),
     ],
 )
@@ -901,6 +902,29 @@ async def test_a_guarded_client_inflates_what_its_call_asked_for(
         )
 
     assert response.json() == {}
+
+
+async def test_a_refusal_names_the_codings_and_takes_empty_ones_for_none() -> None:
+    """Every coding used is named; an empty ``Content-Encoding`` is identity."""
+    both = Upstream(
+        lambda request: httpx2.Response(
+            200, headers={"Content-Encoding": "deflate, gzip"}, content=b"x"
+        )
+    )
+    empty = Upstream(
+        lambda request: httpx2.Response(
+            200, headers={"Content-Encoding": ""}, content=b"{}"
+        )
+    )
+    guarded = HttpClient(guard=True, retries=0)
+    with stub(both), pytest.raises(httpx2.DecodingError) as raised:
+        await guarded.get("https://hooks.example/")
+    with stub(empty):
+        assert (await guarded.get("https://hooks.example/")).json() == {}
+
+    assert str(raised.value) == (
+        "The answer is compressed (deflate, gzip), which the request did not accept."
+    )
 
 
 @pytest.mark.parametrize("accept", ["gzip;q=0", "gzip; q=0.000, deflate", "br"])

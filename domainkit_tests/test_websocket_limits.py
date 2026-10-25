@@ -279,6 +279,17 @@ async def test_a_refusal_without_its_slots_is_logged_each_time(
         )
         == 2
     )
+    caplog.clear()
+    slots = live.Slots(1, 1)
+    other = {**scope, "client": ("198.51.100.7", 1)}
+    for refused in (scope, scope, other):
+        await live.refuse(refused, receive, send, "LIVE_MAX_CONNECTIONS", slots=slots)
+    assert (  # With its slots: once per caller.
+        caplog.messages.count(
+            "Refused a live connection: LIVE_MAX_CONNECTIONS is reached"
+        )
+        == 2
+    )
 
 
 # The send queue, raw -----------------------------------------------------------------

@@ -306,9 +306,10 @@ async def test_the_lookup_threads_follow_the_setting(lookups: Lookups) -> None:
     with override_settings(GUARD_LOOKUP_THREADS=3):
         resolver = GuardResolver()
         await resolver.lookup("a.test", 443)
-    assert resolver._size == 3
-    assert resolver._executor is not None
-    assert resolver._executor._max_workers == 3
+    started = resolver._executor
+    await resolver.lookup("b.test", 443)  # The same threads, as they started.
+    assert resolver._executor is started is not None
+    assert resolver._size == started._max_workers == 3
     await resolver.close()
     for bad in (0, 257):
         with pytest.raises(ValidationError, match="GUARD_LOOKUP_THREADS"):
@@ -338,17 +339,39 @@ async def test_the_guard_needs_no_settings(
 
 
 @pytest.mark.usefixtures("registered")
+async def test_running_threads_bound_lookups_whatever_the_setting_says_since(
+    lookups: Lookups,
+) -> None:
+    """The threads that started are the bound until they stop."""
+    with override_settings(GUARD_LOOKUP_THREADS=2):
+        resolver = GuardResolver()
+        first = asyncio.create_task(resolver.lookup("a.test", 443))
+        await lookups.started.reach(1)
+    second = asyncio.create_task(resolver.lookup("b.test", 443))
+    await lookups.started.reach(2)
+
+    refused_at_once(resolver, "c.test")  # Two threads, though 16 are set now.
+    lookups.release.set()
+    await asyncio.gather(first, second)
+    await resolver.close()
+
+
+@pytest.mark.usefixtures("registered")
 async def test_one_owner_takes_at_most_a_quarter_of_the_threads(
     lookups: Lookups,
 ) -> None:
     """Past its share an owner is refused at once; other owners are not."""
-    resolver = GuardResolver(threads=3)  # A quarter of 3: still one.
+    resolver = GuardResolver(threads=7)  # A quarter of 7, rounded down: one.
     first = asyncio.create_task(resolver.lookup("a.test", 443))
     with lookups_for("tenant-a"):
         mine = asyncio.create_task(resolver.lookup("b.test", 443))
         await lookups.started.reach(2)
-        with pytest.raises(socket.gaierror, match="of one caller"):
+        with pytest.raises(socket.gaierror) as refused:
             resolver._start("c.test", 443, "tenant-a")
+    assert (refused.value.errno, refused.value.strerror) == (
+        socket.EAI_AGAIN,
+        "Too many host name lookups of one caller are under way.",
+    )
     with lookups_for("tenant-b"):
         theirs = asyncio.create_task(resolver.lookup("c.test", 443))
         await lookups.started.reach(3)

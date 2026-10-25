@@ -1675,6 +1675,10 @@ def test_a_throttled_log_writes_the_first_line_and_counts_the_rest(
         clock.tick(10)
         throttled.warning("host", "ip:203.0.113.9", "Rejected %r", "%s")
         throttled.warning("body", "ip:203.0.113.9", "Too %s", "large")
+        for _ in range(2):  # No arguments: the message is not a format.
+            throttled.warning("rate", "ip:203.0.113.9", "Over 100%")
+        clock.tick(10)
+        throttled.warning("rate", "ip:203.0.113.9", "Over 100%")
 
     assert throttled_lines(caplog, "test.throttled") == [
         "Rejected 'evil'",
@@ -1683,6 +1687,8 @@ def test_a_throttled_log_writes_the_first_line_and_counts_the_rest(
         "Rejected 'worse' (and 3 more like it since the last line)",
         "Rejected '%s' (and 1 more like it since the last line)",
         "Too large",
+        "Over 100%",
+        "Over 100% (and 1 more like it since the last line)",
     ]
 
 
