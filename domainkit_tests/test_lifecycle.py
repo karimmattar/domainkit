@@ -81,6 +81,18 @@ async def hang_until_cancelled(closed: list[str], name: str) -> None:
     await asyncio.Event().wait()
 
 
+def spent_through(phase: Phase, seconds: float = 100.0) -> Budget:
+    """A budget whose ``phase`` (and those before it) ended just now.
+
+    Closers of those phases are cut off at once, after their first step:
+    one that hangs is cut off whatever the machine's speed. The later
+    phases keep their whole share, tens of seconds, which no closer here
+    comes near; so no test depends on how fast the host runs.
+    """
+    loop = asyncio.get_running_loop()
+    return Budget(loop.time() - seconds * PHASE_ENDS[phase], seconds)
+
+
 async def test_every_resource_closes_even_when_one_fails_or_hangs(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -103,10 +115,11 @@ async def test_every_resource_closes_even_when_one_fails_or_hangs(
 
     monkeypatch.setattr(lifecycle, "aflush_reports", flushed)
     monkeypatch.setattr(lifecycle, "aflush_logs", flushed)
+    monkeypatch.setattr(lifecycle, "close_http_clients", flushed)
 
     with caplog.at_level(logging.ERROR, "domainkit.lifecycle"):
-        async with asyncio.timeout(5):
-            await close_resources(Budget.begin(0.5))
+        async with asyncio.timeout(5):  # Its share is over: the hang is cut at once.
+            await close_resources(spent_through(Phase.RESOURCES))
 
     assert closed == ["caches", "databases", "ledgers", "brokers"]
     assert sorted(caplog.messages) == [
@@ -211,7 +224,8 @@ async def test_a_hung_phase_leaves_the_later_phases_their_share(
     try:
         with caplog.at_level(logging.ERROR, "domainkit.lifecycle"):
             async with asyncio.timeout(5):
-                await close_resources(Budget.begin(0.05))
+                # The drain's and the tasks' shares are over; the others are not.
+                await close_resources(spent_through(Phase.TASKS))
     finally:
         release.set()  # Fail fast, not hang, if anything above goes wrong.
 
@@ -255,12 +269,9 @@ async def test_a_close_cut_off_ends_before_the_resources_close(
             raise
 
     register("publishers", slow_to_stop, phase=Phase.DRAIN)
-    loop = asyncio.get_running_loop()
-    seconds = 100.0  # The drain's share is over at once; the others are not.
-    budget = Budget(loop.time() - seconds * PHASE_ENDS[Phase.DRAIN], seconds)
 
     async with asyncio.timeout(30):
-        await close_resources(budget)
+        await close_resources(spent_through(Phase.DRAIN))
 
     assert closed[:3] == ["draining", "drained", "caches"]
 
@@ -289,8 +300,8 @@ async def test_tasks_that_will_not_stop_are_named(
     await asyncio.sleep(0)
     try:
         with caplog.at_level(logging.ERROR, "domainkit.lifecycle"):
-            async with asyncio.timeout(5):
-                await close_resources(Budget.begin(0.02))
+            async with asyncio.timeout(5):  # The tasks' share is over at once.
+                await close_resources(spent_through(Phase.TASKS))
     finally:
         release.set()
         await asyncio.wait(stuck, timeout=5)
