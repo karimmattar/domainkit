@@ -72,6 +72,10 @@ from .throttling import (
 )
 from .uow import AuthUnitOfWork
 
+__all__ = [
+    "router",
+]
+
 RECOVERY_ALPHABET: Final = "abcdefghijklmnopqrstuvwxyz234567"
 RECOVERY_LENGTH: Final = 16
 """Characters of a recovery code: 80 random bits, in groups of four."""

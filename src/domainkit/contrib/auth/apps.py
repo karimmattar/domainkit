@@ -59,6 +59,7 @@ class AuthConfig(DomainConfig):
     label = "auth"
     verbose_name = "Authentication and authorization"
     settings_class = AuthSettings
+    requires = (CONTENTTYPES,)
 
     user_model: type[AbstractBaseUser] = User
     """The user class in use (``AUTH.USER_MODEL``)."""
@@ -79,10 +80,6 @@ class AuthConfig(DomainConfig):
 
     def ready(self) -> None:
         """Load the user model, check the configuration, and map the tables."""
-        if not registry.is_installed(CONTENTTYPES):
-            raise ImproperlyConfigured(
-                f"domainkit.contrib.auth needs {CONTENTTYPES!r} in INSTALLED_DOMAINS."
-            )
         config = auth_settings()
         self.user_model = _user_model(config.USER_MODEL)
         self.user_table = _user_table(config, self.user_model)

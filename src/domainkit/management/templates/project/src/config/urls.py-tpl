@@ -5,11 +5,10 @@ Every route must say who may call it: ``Depends(Require(...))``, or
 do not, and staging and production refuse to start with any.
 """
 
-from fastapi import APIRouter
-
 from domainkit.contrib.auth.admin import router as admin_router
 from domainkit.contrib.auth.api import router as auth_router
 from domainkit.http.health import router as health_router
+from fastapi import APIRouter
 
 router = APIRouter()
 router.include_router(health_router)

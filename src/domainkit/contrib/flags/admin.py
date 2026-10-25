@@ -27,6 +27,10 @@ from .models import DynamicSetting, Flag
 from .store import NAME, DynamicSettingDefinition, declared, declared_settings
 from .uow import FlagsUnitOfWork
 
+__all__ = [
+    "router",
+]
+
 router = APIRouter(tags=["flags admin"])
 
 Name = Annotated[str, Path(pattern=f"^{NAME.pattern}$")]

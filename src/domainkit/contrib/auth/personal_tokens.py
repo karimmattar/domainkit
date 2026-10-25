@@ -48,6 +48,10 @@ from .settings import auth_settings
 from .tokens import AuthToken, TokenKind
 from .uow import AuthUnitOfWork
 
+__all__ = [
+    "router",
+]
+
 PAGE_SIZE: Final = 50
 MAX_PAGE_SIZE: Final = 100
 MAX_SCOPES: Final = 100

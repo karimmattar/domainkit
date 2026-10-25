@@ -19,6 +19,10 @@ from domainkit.conf import settings
 from domainkit.i18n.translation import negotiate, override
 from domainkit.utils.headers import patch_vary
 
+__all__ = [
+    "LocaleMiddleware",
+]
+
 
 class LocaleMiddleware:
     """Make the language ``Accept-Language`` asks for the request's language."""

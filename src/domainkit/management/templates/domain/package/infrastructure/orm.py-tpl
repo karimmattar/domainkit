@@ -5,9 +5,9 @@ model stays free of SQLAlchemy. Notes are child entities: their table holds
 the foreign key, and they load, save, and go with the {{ aggregate }}.
 """
 
+from domainkit.db import children, map_imperatively, table_for
 from sqlalchemy import Column, ForeignKey, Index
 
-from domainkit.db import children, map_imperatively, table_for
 from {{ package }}.domain.model import {{ Aggregate }}, {{ Aggregate }}Note
 
 {{ aggregates }} = table_for(

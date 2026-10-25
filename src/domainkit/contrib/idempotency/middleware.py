@@ -68,6 +68,10 @@ from .operations import Operation, run_operation
 from .settings import IdempotencySettings
 from .tables import idempotency_keys
 
+__all__ = [
+    "IdempotencyMiddleware",
+]
+
 logger = logging.getLogger(__name__)
 
 MESSAGING: Final = "domainkit.contrib.messaging"

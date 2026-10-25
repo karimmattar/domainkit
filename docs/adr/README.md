@@ -78,3 +78,5 @@ accepted record: supersede it with a new one and link both ways.
 | [0070](0070-name-the-operator-of-data-changing-commands.md) | Name the operator of data-changing commands, and audit what they do | Accepted |
 | [0071](0071-bind-cache-computations-to-their-owner.md) | Detach shared cache computations; bind those that borrow to their owner | Accepted |
 | [0072](0072-walk-proxy-headers-from-the-right-and-trust-unix-sockets.md) | Walk proxy headers from the right, trust unix sockets by name, and name the scheme header | Accepted |
+| [0076](0076-public-api-is-docs-api-md.md) | The public API is what docs/api.md lists, which is every `__all__` | Accepted |
+| [0077](0077-declare-what-apps-require.md) | Declare what apps require, and reach other apps only through their public names | Accepted |

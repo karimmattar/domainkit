@@ -24,6 +24,13 @@ from domainkit.utils.module_loading import import_string
 from .exceptions import InvalidPassword
 from .settings import PasswordValidatorConfig, auth_settings
 
+__all__ = [
+    "CommonPasswordValidator",
+    "MinimumLengthValidator",
+    "NumericPasswordValidator",
+    "UserAttributeSimilarityValidator",
+]
+
 COMMON_PASSWORDS: Final = Path(__file__).with_name("common-passwords.txt.gz")
 """Django's list of 20,000 common passwords (see ``common-passwords.NOTICE``)."""
 

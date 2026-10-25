@@ -24,6 +24,7 @@ class AuditConfig(DomainConfig):
     label = "audit"
     verbose_name = "Audit trail"
     settings_class = AuditSettings
+    requires = ()
 
     def ready(self) -> None:
         """Check where explicit records go; seal on a schedule with messaging.

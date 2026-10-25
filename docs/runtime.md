@@ -145,7 +145,12 @@ lifecycle.register("publishers", close_publishers, phase=Phase.DRAIN)
 ```
 
 A closer closes what the running loop opened; registering a name again
-replaces its closer.
+replaces its closer. The framework's own kinds (`caches`, `HTTP clients`,
+`databases`, `ledgers`, `brokers`, and the last flushes) sit in the same
+table, so their names are taken. `lifecycle.closers(phase)` lists what a
+phase will close, in the steps it runs them: a registered closer runs in the
+first step, at once with the framework's kinds of its phase; the flush phase
+then writes held-back counts, error reports, and logs, one step each.
 
 The budget covers what happens after the server stops taking requests. The
 server first waits for the requests in flight: tell it how long, and keep

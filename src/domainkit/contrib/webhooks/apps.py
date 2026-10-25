@@ -25,6 +25,7 @@ class WebhooksConfig(DomainConfig):
     label = "webhooks"
     verbose_name = "Webhooks"
     settings_class = WebhookSettings
+    requires = (MESSAGING,)
 
     def ready(self) -> None:
         """Check the requirements and settings; map the tables; register tasks.
@@ -34,10 +35,6 @@ class WebhooksConfig(DomainConfig):
         from ``SECRET_KEY``. Staging and production refuse loopback and
         link-local networks among ``ALLOWED_PRIVATE_NETWORKS``.
         """
-        if not registry.is_installed(MESSAGING):
-            raise ImproperlyConfigured(
-                f"domainkit.contrib.webhooks needs {MESSAGING!r} in INSTALLED_DOMAINS."
-            )
         if settings.SECRET_KEY is None:
             raise ImproperlyConfigured(
                 "domainkit.contrib.webhooks encrypts subscription secrets under a "

@@ -28,6 +28,11 @@ from domainkit.management.base import CommandError
 from domainkit.utils.formatting import format_python
 from domainkit.utils.text import pluralize, snake_case
 
+__all__ = [
+    "FieldType",
+    "register_field_type",
+]
+
 SNAKE: Final = re.compile(r"[a-z][a-z0-9_]*")
 CAMEL: Final = re.compile(r"[A-Z][A-Za-z0-9]*")
 SETTINGS_FILE: Final = Path("src/config/settings/base.py")

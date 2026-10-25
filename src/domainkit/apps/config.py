@@ -1,10 +1,12 @@
 """``DomainConfig``: Django's ``AppConfig`` for a bounded context."""
 
+import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, Final
 
 from pydantic import BaseModel
 
@@ -20,6 +22,34 @@ if TYPE_CHECKING:
     from domainkit.ddd import DeferredTask, DomainEvent, UnitOfWork
 
 CONFIG_MODULE = "apps"
+PACKAGE_NAME: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
+"""A dotted package name, as ``domainkit.contrib.messaging``."""
+MAX_REQUIREMENTS: Final = 32
+"""The most domains one domain may require."""
+
+
+@dataclass(frozen=True, slots=True)
+class Requirement:
+    """A domain package another needs in ``INSTALLED_DOMAINS``, and why.
+
+    ``DomainConfig.requires`` lists these, or bare package names when the
+    reason goes without saying.
+    """
+
+    name: str
+    """The package, as ``INSTALLED_DOMAINS`` lists it."""
+    reason: str = ""
+    """Why, ending the error that names it: "the worker sends the mail"."""
+
+    @classmethod
+    def of(cls, entry: "str | Requirement") -> "Requirement":
+        """``entry`` as a requirement; a bare name has no reason."""
+        return entry if isinstance(entry, Requirement) else cls(entry)
+
+    def problem(self, needed_by: str) -> str:
+        """The sentence ``check`` and ``setup`` refuse a missing package with."""
+        reason = f": {self.reason}" if self.reason else ""
+        return f"{needed_by} needs {self.name!r} in INSTALLED_DOMAINS{reason}."
 
 
 class DomainConfig:
@@ -37,6 +67,14 @@ class DomainConfig:
     """Schema for this domain's settings, read from ``settings_name``."""
     RETENTION: ClassVar[Sequence["Retention"]] = ()
     """How long rows of its tables are kept (``domainkit.contrib.privacy``)."""
+    requires: ClassVar[Sequence["str | Requirement"]] = ()
+    """Domain packages this one cannot work without, checked by ``setup()``.
+
+    Each must be in ``INSTALLED_DOMAINS``, in any order; ``setup()`` refuses
+    to load the domains otherwise, naming every one missing, before any
+    domain's ``ready()`` runs. List optional companions here only if the
+    domain cannot work without them.
+    """
 
     def __init__(self, name: str, module: ModuleType) -> None:
         """Bind the config to the domain package ``name``."""
@@ -52,6 +90,35 @@ class DomainConfig:
     def __repr__(self) -> str:
         """Show the class and the domain label."""
         return f"<{type(self).__name__}: {self.label}>"
+
+    def requirements(self) -> tuple[Requirement, ...]:
+        """``requires``, checked: package names, at most ``MAX_REQUIREMENTS``.
+
+        Raises:
+            ImproperlyConfigured: An entry is not a package name or a
+                ``Requirement``, names this domain, or there are too many.
+        """
+        entries = tuple(self.requires)
+        where = f"{type(self).__qualname__}.requires"
+        if len(entries) > MAX_REQUIREMENTS:
+            raise ImproperlyConfigured(
+                f"{where} lists {len(entries)} domains; at most {MAX_REQUIREMENTS}."
+            )
+        requirements = []
+        for entry in entries:
+            if not isinstance(entry, str | Requirement):
+                raise ImproperlyConfigured(
+                    f"{where} takes package names or Requirement, not {entry!r}."
+                )
+            requirement = Requirement.of(entry)
+            if not PACKAGE_NAME.fullmatch(requirement.name):
+                raise ImproperlyConfigured(
+                    f"{where} names {requirement.name!r}, which is not a package name."
+                )
+            if requirement.name == self.name:
+                raise ImproperlyConfigured(f"{where} names the domain itself.")
+            requirements.append(requirement)
+        return tuple(requirements)
 
     @property
     def settings_name(self) -> str:
