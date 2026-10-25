@@ -128,6 +128,15 @@ All notable changes to domainkit. The format follows
 
 ### Fixed
 
+- Work a keyed request queues with `messaging.enqueue`, which commits on
+  its own, now holds the `Idempotency-Key` as a unit of work's commit
+  does: a request that queued a task and then failed (a background task
+  that raised after a `202`, say) keeps its key, and a retry gets 409
+  `idempotency_response_unavailable` instead of queueing the task a
+  second time. New `DomainConfig` hooks, `stage_transaction` and
+  `transaction_committed`, let installed domains join such a commit.
+  Writes through `connections.autocommit()` or a raw `engine.begin()`
+  stay outside the key (ADR 0062) (SEC-r2-9).
 - A keyed response whose body is sent by path or by file descriptor
   (`FileResponse` on a server with the ASGI `http.response.pathsend`
   extension, or `http.response.zerocopysend`) is no longer stored as an

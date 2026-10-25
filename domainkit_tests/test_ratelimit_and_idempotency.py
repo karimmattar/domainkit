@@ -14,7 +14,7 @@ import pytest
 from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, Response
 from fastapi.responses import FileResponse
 from fastapi.testclient import TestClient
-from sqlalchemy import ColumnElement, Table, false, insert, select
+from sqlalchemy import ColumnElement, Table, false, func, insert, select
 from sqlalchemy.sql import Select
 from starlette.testclient import WebSocketDenialResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -27,9 +27,13 @@ from domainkit.conf.global_settings import DEADLINE_MIDDLEWARE, DEFAULT_MIDDLEWA
 from domainkit.context import RequestContext, bind_request
 from domainkit.contrib.idempotency import apps as idempotency_apps
 from domainkit.contrib.idempotency import middleware as idempotency
+from domainkit.contrib.idempotency import operations as idempotency_operations
 from domainkit.contrib.idempotency.operations import Operation, running_operation
 from domainkit.contrib.idempotency.settings import IdempotencySettings
 from domainkit.contrib.idempotency.tables import idempotency_keys
+from domainkit.contrib.messaging import enqueue, task
+from domainkit.contrib.messaging import outbox as messaging_outbox
+from domainkit.contrib.messaging.tables import messages
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
@@ -2100,6 +2104,168 @@ def test_a_commit_after_a_refusal_keeps_the_refusal() -> None:
     assert (b"idempotent-replayed", b"true") in retried[0]["headers"]
     assert retried[-1]["body"] == b'{"status":"accepted"}'
     assert (after.calls, payments_on()) == (1, 1)
+
+
+# Work queued by a keyed request (SEC-r2-9) ------------------------------------
+
+
+@task(name="tests.idempotency.ship")
+async def ship(order: str) -> None:
+    """Ship an order: work a keyed request queues with ``enqueue``."""
+
+
+async def queued() -> int:
+    """How many messages the outbox holds."""
+    async with connections.engine().connect() as connection:
+        count = await connection.scalar(select(func.count()).select_from(messages))
+    return int(count or 0)
+
+
+async def create_outbox() -> None:
+    """The outbox table, beside the keys' and the payments'."""
+    async with connections.engine().begin() as connection:
+        await connection.run_sync(messages.create)
+
+
+@pytest.mark.usefixtures("idempotent")
+def test_work_queued_by_a_keyed_request_is_queued_once() -> None:
+    """``enqueue`` commits on its own: that commit holds the key as a unit of work's.
+
+    The request then fails after its 202 (a background task raises): the
+    key keeps its status, so a retry gets a 409 instead of queueing the
+    task a second time.
+    """
+    api = FastAPI()
+
+    async def receipt() -> None:
+        raise RuntimeError("the mail server is down")
+
+    @api.post("/pay", status_code=202)
+    async def pay(background: BackgroundTasks) -> dict[str, str]:
+        await enqueue(ship, order="42")
+        background.add_task(receipt)
+        return {"status": "accepted"}
+
+    keyed = idempotency.IdempotencyMiddleware(api)
+
+    async def scenario() -> tuple[list[Message], int]:
+        await create_outbox()
+        with pytest.raises(RuntimeError, match="mail server is down"):
+            await keyed(PAY_SCOPE, receive_empty_body, discard)
+        retried: list[Message] = []
+        await keyed(PAY_SCOPE, receive_empty_body, collect(retried))
+        count = await queued()
+        await connections.close_all()
+        return retried, count
+
+    retried, count = asyncio.run(scenario())
+
+    assert count == 1
+    assert retried[0]["status"] == 409
+    assert b"idempotency_response_unavailable" in retried[-1]["body"]
+    [row] = stored_keys()
+    assert (row["status_code"], row["committed_at"] is not None) == (202, True)
+
+
+@pytest.mark.usefixtures("idempotent")
+def test_work_queued_after_the_key_was_taken_over_is_not_queued() -> None:
+    """A request that lost its key cannot queue work: its transaction rolls back."""
+    plant("order-42", token="first")
+
+    async def scenario() -> int:
+        await create_outbox()
+        with (
+            idempotency_operations.run_operation(Operation(keyed("order-42"), "lost")),
+            pytest.raises(idempotency_operations.KeyTakenOver),
+        ):
+            await enqueue(ship, order="42")
+        count = await queued()
+        await connections.close_all()
+        return count
+
+    assert asyncio.run(scenario()) == 0
+
+
+@pytest.mark.usefixtures("idempotent")
+def test_work_queued_on_another_database_pins_the_key_then_marks_it() -> None:
+    """Elsewhere than the keys' database, the key is pinned, then marked.
+
+    As for a unit of work there: pinned before the commit, whatever it
+    reports, and marked committed after it.
+    """
+    plant("order-42", token="first")
+    operation = Operation(keyed("order-42"), "first")
+    config = registry.get_domain_config("idempotency")
+
+    async def scenario() -> list[dict[str, object]]:
+        with idempotency_operations.run_operation(operation):
+            async with connections.engine().connect() as connection:
+                await config.stage_transaction(connection, "other")
+            pinned = await asyncio.to_thread(stored_keys)
+            await config.transaction_committed("other")
+        await connections.close_all()
+        return pinned
+
+    pinned = asyncio.run(scenario())
+
+    assert (operation.pinned, operation.committed) == (True, True)
+    assert [(row["pinned"], row["committed_at"]) for row in pinned] == [(True, None)]
+    [row] = stored_keys()
+    assert row["committed_at"] is not None
+
+
+@pytest.mark.usefixtures("idempotent")
+def test_a_commit_on_the_keys_database_is_marked_in_it_not_after() -> None:
+    """There the mark joined the transaction: nothing is written after it."""
+    plant("order-42", token="first")
+    operation = Operation(keyed("order-42"), "first")
+    config = registry.get_domain_config("idempotency")
+
+    async def scenario() -> None:
+        with idempotency_operations.run_operation(operation):
+            await config.transaction_committed("default")
+        await connections.close_all()
+
+    asyncio.run(scenario())
+
+    assert operation.committed
+    assert [row["committed_at"] for row in stored_keys()] == [None]
+
+
+@pytest.mark.usefixtures("idempotent")
+def test_a_failed_follow_up_after_enqueue_is_reported_not_raised(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The task is queued: what follows its commit cannot take it back."""
+    told: list[str] = []
+    reports: list[tuple[BaseException, dict[str, object]]] = []
+    away = ConnectionError("the keys' database is away")
+
+    async def unreachable(self: object, database: str) -> None:
+        told.append(database)
+        raise away
+
+    def report(exc: BaseException, **context: object) -> None:
+        reports.append((exc, context))
+
+    monkeypatch.setattr(
+        idempotency_apps.IdempotencyConfig, "transaction_committed", unreachable
+    )
+    monkeypatch.setattr(messaging_outbox, "report_error", report)
+
+    async def scenario() -> int:
+        await create_outbox()
+        await enqueue(ship, order="42")
+        count = await queued()
+        await connections.close_all()
+        return count
+
+    with caplog.at_level(logging.ERROR, "domainkit.contrib.messaging"):
+        assert asyncio.run(scenario()) == 1
+
+    assert caplog.messages == ["After-commit work of 'idempotency' failed"]
+    assert told == ["default"]
+    assert reports == [(away, {"domain": "idempotency"})]
 
 
 # Bodies sent by path or file descriptor (SEC-r2-8) ---------------------------

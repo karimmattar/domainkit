@@ -198,6 +198,23 @@ with no deadline at all (`REQUEST_TIMEOUT = None`, or no
   the application at that `send`, as before. A response the key does not
   keep is still released when the application returns, so a retry in
   that moment can still get the 409 `Retry-After: 1`, as at 0.9.0.
+- `messaging.enqueue` commits its task in a transaction of its own,
+  which no unit of work saw: a keyed request that queued work and then
+  failed was released, and its retry queued the work again (SEC-r2-9; at
+  0.9.0 too). Two hooks on `DomainConfig`, `stage_transaction(connection,
+  database)` and `transaction_committed(database)`, let installed domains
+  join such a transaction as they join a unit of work's; `enqueue` calls
+  them, and idempotency marks the key in that transaction on its own
+  database, or pins it before the commit and marks it after elsewhere,
+  with the same code as for a unit of work. A neutral hook in
+  `domainkit.apps` keeps messaging from importing idempotency, and serves
+  any later commit made outside a unit of work. Rebuilding `enqueue` on
+  a unit of work was considered: it would change its statements and every
+  domain's staging for one row. A task deferred with `uow.defer` commits
+  with its unit of work and was always seen; an `enqueue` inside a unit of
+  work's block is its own commit, and holds the key on its own. Writes
+  through `connections.autocommit()` or a raw `engine.begin()` stay
+  outside the key.
 - A keyed response that streams is held by its lease alone while it
   streams. With no deadline at all, `check` warns in staging and
   production; startup does not refuse in a patch release, since such

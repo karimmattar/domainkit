@@ -1,6 +1,6 @@
 """Install ``domainkit.contrib.idempotency`` and add its middleware."""
 
-from collections.abc import AsyncIterator, Iterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 from contextlib import asynccontextmanager
 from importlib import import_module
 from typing import cast
@@ -8,6 +8,7 @@ from typing import cast
 from fastapi import FastAPI
 from fastapi.dependencies.models import Dependant
 from fastapi.routing import APIRoute, iter_route_contexts
+from sqlalchemy.ext.asyncio import AsyncConnection
 from starlette.routing import BaseRoute, Host, Mount
 
 from domainkit import deadlines
@@ -69,13 +70,33 @@ class IdempotencyConfig(DomainConfig):
         back, no retry can take the key over and the request never releases
         it. The pin keeps to the deadline (``_within_deadline``).
         """
+        sql_uow = cast(SqlAlchemyUnitOfWork, uow)
+        await self._hold(sql_uow.alias, sql_uow.session.connection)
+
+    async def stage_transaction(
+        self, connection: AsyncConnection, database: str
+    ) -> None:
+        """Hold the key for a commit made outside a unit of work, as ``stage`` does.
+
+        ``enqueue`` commits its task on its own: queued work is a change the
+        keyed request made, and its retry must not queue it again.
+        """
+
+        async def joined() -> AsyncConnection:
+            return connection
+
+        await self._hold(database, joined)
+
+    async def _hold(
+        self, alias: str, connect: Callable[[], Awaitable[AsyncConnection]]
+    ) -> None:
+        """Mark the key in the commit on ``alias``, or pin it first elsewhere."""
         operation = running_operation()
         if operation is None:
             return
-        sql_uow = cast(SqlAlchemyUnitOfWork, uow)
         database = self.get_settings().DATABASE
-        if sql_uow.alias == database:
-            connection = await sql_uow.session.connection()
+        if alias == database:
+            connection = await connect()
             held = await connection.execute(mark_committed(operation))
         else:
             async with (
@@ -97,12 +118,20 @@ class IdempotencyConfig(DomainConfig):
         The mark keeps to the deadline (``_within_deadline``); cut off, the
         key stays pinned, so the changes still never run twice.
         """
+        await self._note_commit(cast(SqlAlchemyUnitOfWork, uow).alias)
+
+    async def transaction_committed(self, database: str) -> None:
+        """Note a commit made outside a unit of work, as ``committed`` does."""
+        await self._note_commit(database)
+
+    async def _note_commit(self, alias: str) -> None:
+        """Note that changes committed on ``alias``; mark the key there if elsewhere."""
         operation = running_operation()
         if operation is None:
             return
         operation.committed = True
         database = self.get_settings().DATABASE
-        if cast(SqlAlchemyUnitOfWork, uow).alias != database:
+        if alias != database:
             async with (
                 _within_deadline(),
                 connections.autocommit(database) as connection,

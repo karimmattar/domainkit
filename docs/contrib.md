@@ -986,9 +986,13 @@ saved. When a SQL unit of work commits during a keyed request, the key is
 marked committed in the same transaction, and a committed key is never released, even if the reply
 to the commit was lost. A retry then gets the stored response or, when the
 response could not be kept, a 409 telling the client to look up the result
-instead. Only units of work are seen: call payment providers and other
-services from a deferred task (`uow.defer`), which the outbox runs once, not
-from the handler.
+instead. Only units of work, and `enqueue` (which commits its task on its
+own, and holds the key as a unit of work's commit does), are seen: call
+payment providers and other services from a deferred task (`uow.defer` or
+`enqueue`), which the outbox runs once, not from the handler. Writes made
+through `connections.autocommit()` or a raw `engine.begin()` inside a keyed
+request are outside the key: a request that made them and then failed is
+released, and its retry makes them again.
 
 **After the TTL, a key is forgotten.** A key is remembered for
 `TTL_SECONDS` (24 hours) from its first request. After that, a request
@@ -1022,7 +1026,9 @@ longest a request may run:
 - your server's or proxy's timeout, if it is longer, counts too.
 
 **What the key covers.** The key holds the request until its response is
-sent: the handler, its commits, and the response's body, streamed or not.
+sent: the handler, its commits (through units of work and `enqueue`; not
+through `connections.autocommit()` or a raw `engine.begin()`), and the
+response's body, streamed or not.
 Before the last part of a response the key keeps is sent (a success, or
 a refusal after a commit), the response, or its status, is stored, so a
 client that has the whole response and retries at once gets the replay;

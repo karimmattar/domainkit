@@ -1075,6 +1075,7 @@ revision: the test database migrates up, down, and up again.
 | Warnings about a domain's weak settings where deployed | `DomainConfig.deployment_warnings()`, returning warnings (none outside staging and production) | (listed by `check` after the framework's own) |
 | Work staged with each commit | `async DomainConfig.stage(uow, events, tasks)` | (called by the unit of work) |
 | Work after each commit | `async DomainConfig.committed(uow)` | (called by the unit of work; failures are reported, never raised) |
+| The same, for a commit outside a unit of work | `async DomainConfig.stage_transaction(connection, database)` / `transaction_committed(database)` | (called by `messaging.enqueue` around its own transaction; idempotency uses them to hold the key) |
 | Rows after each `migrate` (`post_migrate`) | `async DomainConfig.migrated(connection, database)` | (called by `migrate` for each database it upgraded, in one transaction as the schema owner, and by `flush`) |
 | Sample or default data | `async DomainConfig.seed()` | (called by `seed`, in `INSTALLED_DOMAINS` order) |
 | How long a domain keeps rows | `DomainConfig.RETENTION`, a sequence of `privacy.Retention` | (checked when the app is built; applied by `privacy purge`; see [privacy.md](privacy.md)) |
