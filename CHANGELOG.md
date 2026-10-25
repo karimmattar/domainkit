@@ -3,6 +3,9 @@
 All notable changes to domainkit. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/); see `docs/versioning.md`.
+Entries end with the ids of the review findings they answer, such as
+`(FIN-77)`: [docs/audit/0.9.0.md](docs/audit/0.9.0.md) gives each a title
+and a status.
 
 ## [Unreleased]
 
