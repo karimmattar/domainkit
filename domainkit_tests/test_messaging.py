@@ -964,12 +964,13 @@ def test_retries_and_cancels_reach_the_outbox_named(
         MESSAGING=FAST,
     ):
         setup()
-        dead, waiting = (
+        dead, waiting, blanked = (
             message_row(
                 kind="task", target=target, payload={}, headers={}, max_attempts=1
             )
-            for target in ("tests.always_fails", "tests.always_fails")
+            for target in ("tests.always_fails",) * 2 + ("tests.sends_a_code",)
         )
+        blanked["headers"] = {BLANKED: True}
 
         async def prepare() -> None:
             async with connections.engine().begin() as connection:
@@ -977,10 +978,10 @@ def test_retries_and_cancels_reach_the_outbox_named(
                     await connection.run_sync(table.create)
             async with connections.engine("other").begin() as connection:
                 await connection.run_sync(messages.create)
-                await connection.execute(insert(messages), [dead, waiting])
+                await connection.execute(insert(messages), [dead, waiting, blanked])
                 await connection.execute(
                     update(messages)
-                    .where(messages.c.id == dead["id"])
+                    .where(messages.c.id.in_([dead["id"], blanked["id"]]))
                     .values(status=DEAD)
                 )
             await connections.close_all()
@@ -1006,6 +1007,8 @@ def test_retries_and_cancels_reach_the_outbox_named(
         assert run("messages", "--retry", "all") == "Queued 0 message(s).\n"
         assert run("messages", "--retry", "all", "--database", "other") == (
             "Queued 1 message(s).\n"
+            "Left 1 dead message(s) of sensitive tasks: their arguments were "
+            "blanked when they died.\n"
         )
         cancelled = run(
             "messages", "--cancel", str(waiting["id"]), "--database", "other"
@@ -1014,8 +1017,8 @@ def test_retries_and_cancels_reach_the_outbox_named(
     registry.clear()
 
     assert cancelled == f"Cancelled {waiting['id']}.\n"
-    assert found == [CANCELLED, PENDING]
-    assert [(each["database"], each.get("queued")) for each in details] == [
+    assert found == [CANCELLED, DEAD, PENDING]
+    assert [(each["database"], each.get("blanked")) for each in details] == [
         ("default", 0),
         ("other", 1),
         ("other", None),
