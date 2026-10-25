@@ -10,13 +10,22 @@ import uuid
 from datetime import datetime
 from typing import Any, Final, Literal
 
-from sqlalchemy import ColumnElement, and_, case, func, not_, select, update
+from sqlalchemy import (
+    ColumnElement,
+    and_,
+    case,
+    false,
+    func,
+    not_,
+    select,
+    update,
+)
 
 from domainkit import clock
 from domainkit.db import connections
 
 from .settings import MessagingSettings
-from .tables import CANCELLED, DEAD, PENDING, messages
+from .tables import BLANKED, CANCELLED, DEAD, PENDING, messages
 
 type State = Literal["pending", "locked", "dead"]
 """What ``list_messages`` lists: waiting, locked (running or published), dead."""
@@ -133,15 +142,24 @@ async def dead_letters(
     return await list_messages(config, "dead", limit, database)
 
 
+def blanked() -> ColumnElement[bool]:
+    """Messages whose arguments the worker blanked when they died (``sensitive``)."""
+    return func.coalesce(messages.c.headers[BLANKED].as_boolean(), false())
+
+
 async def retry_dead(
     config: MessagingSettings,
     message_id: uuid.UUID | None,
     database: str | None = None,
 ) -> int:
-    """Return dead messages (one, or all) to the queue with fresh attempts."""
+    """Return dead messages (one, or all) to the queue with fresh attempts.
+
+    Those whose arguments were blanked (``blanked``) stay dead: they have
+    nothing left to run with.
+    """
     statement = (
         update(messages)
-        .where(messages.c.status == DEAD)
+        .where(messages.c.status == DEAD, not_(blanked()))
         .values(
             status=PENDING,
             attempts=0,
@@ -157,6 +175,23 @@ async def retry_dead(
     return int(result.rowcount)
 
 
+async def blanked_dead_letters(
+    config: MessagingSettings,
+    message_id: uuid.UUID | None,
+    database: str | None = None,
+) -> int:
+    """Count dead messages (one, or all) whose arguments were blanked."""
+    statement = (
+        select(func.count())
+        .select_from(messages)
+        .where(messages.c.status == DEAD, blanked())
+    )
+    if message_id is not None:
+        statement = statement.where(messages.c.id == message_id)
+    async with connections.engine(database or config.DATABASE).connect() as connection:
+        return int(await connection.scalar(statement) or 0)
+
+
 async def cancel(
     config: MessagingSettings, message_id: uuid.UUID, database: str | None = None
 ) -> bool:
@@ -165,7 +200,7 @@ async def cancel(
     One condition picks the row, so a worker that claims it first wins and
     the cancel changes nothing; a cancelled message is never claimed. A
     published one is skipped when its delivery arrives. The rest of a chain
-    is never queued.
+    is never queued. Its arguments are blanked, as a done message's are.
     """
     now = _now()
     statement = (
@@ -177,6 +212,7 @@ async def cancel(
             locked_until=None,
             lock_id=None,
             last_error="Cancelled by an operator.",
+            payload={},
         )
     )
     async with connections.engine(database or config.DATABASE).begin() as connection:

@@ -1,5 +1,6 @@
 """Text messages and push notifications through the outbox."""
 
+import json
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from contextlib import ExitStack
@@ -15,7 +16,7 @@ from domainkit.conf import override_settings
 from domainkit.contrib import notifications
 from domainkit.contrib.messaging import Worker
 from domainkit.contrib.messaging import worker as worker_module
-from domainkit.contrib.messaging.tables import DEAD, messages
+from domainkit.contrib.messaging.tables import BLANKED, DEAD, DONE, messages
 from domainkit.contrib.notifications import (
     NotificationFailed,
     PushBackend,
@@ -245,6 +246,43 @@ async def test_settings_set_attempts_and_queue(tables: Install) -> None:
         DEAD,
         "NotificationFailed: gateway answered 503",
     )
+
+
+async def test_sent_notifications_leave_no_code_or_number_in_the_outbox(
+    tables: Install,
+) -> None:
+    """Once sent, the rows keep no code, number, or token (DATA-01).
+
+    At 0.9.0 they stayed in ``payload`` for 7 days after sending.
+    """
+    await send_sms(PHONE, "Your one-time code is 493021")
+    await send_push("device-T0K3N", "Sign in", "Code 493021")
+
+    assert await Worker().run_once() == 2
+
+    rows = await outbox_rows()
+    assert [(row["status"], row["payload"]) for row in rows] == [(DONE, {})] * 2
+    kept = json.dumps(
+        [row["payload"] for row in rows] + [row["headers"] for row in rows]
+    )
+    for secret in ("493021", PHONE, "T0K3N"):
+        assert secret not in kept
+
+
+async def test_dead_text_messages_keep_their_error_not_their_code(
+    tables: Install,
+) -> None:
+    """Text messages are sensitive tasks: blanked once dead, error recorded."""
+    tables(SMS_BACKEND="domainkit_tests.test_notifications.GatewaySms", MAX_ATTEMPTS=2)
+    GatewaySms.failures = 5
+    await send_sms(PHONE, "Your one-time code is 493021")
+
+    await Worker().run_once()
+
+    (row,) = await outbox_rows()
+    assert (row["status"], row["payload"], row["attempts"]) == (DEAD, {}, 2)
+    assert row["last_error"] == "NotificationFailed: gateway answered 503"
+    assert row["headers"][BLANKED] is True
 
 
 async def test_deliver_sends_at_once(tables: Install) -> None:

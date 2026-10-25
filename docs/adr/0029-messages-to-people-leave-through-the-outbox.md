@@ -75,3 +75,19 @@ Messages to people are tasks in the outbox (option c).
 - Templates are files rendered by a small substitution helper (values only,
   escaped in HTML), not a template engine: there is no new dependency, and
   no logic in templates to review.
+
+## Amendment (2026-10-25)
+
+What a queued message holds no longer stays in the outbox after it is
+sent (audit 0.9.0 DATA-01). The worker blanks every message's arguments
+(`payload = {}`) in the statement that marks it done, and `cancel` in the
+one that cancels it; the row keeps what operators need (target, ids,
+times, attempts, error) for `RETENTION_SECONDS`. Tasks registered with
+`sensitive=True`, which the mail and notifications tasks are, have their
+arguments blanked when they die too, after the error is recorded, with a
+`payload_blanked` header: `messages --retry` refuses them, and
+`--retry all` leaves them and says how many. A dead message of another
+task keeps its arguments, so it can still be retried. A queued message
+is still readable in the table until it is sent: queuing ids and building
+links and codes in the worker (`deliver`) stays the way for secrets.
+

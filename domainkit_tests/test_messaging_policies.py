@@ -500,9 +500,8 @@ async def test_chains_pass_results_from_step_to_step() -> None:
         2,
     )
     assert second["dedupe_key"] == f"chain:{first['id']}"
-    assert second["payload"] == {"order": 7, "receipt": "r-7"}
-    assert stored["tests.archive"]["payload"] == {"order": 7, "receipt": "r-7"}
-    assert stored["tests.total"]["payload"] == {"result": 70}
+    # What each step was given is in ``ran``; once done, the rows keep none.
+    assert [row["payload"] for row in stored.values()] == [{}] * len(stored)
     assert "chain" not in stored["tests.total"]["headers"]
     assert stored["tests.archive"]["headers"]["chain"] == ["tests.total"]
 
@@ -782,10 +781,10 @@ async def test_waiting_messages_can_be_cancelled_running_ones_not() -> None:
         [Worker()], ["default"], MessagingSettings(**{**FAST, "BROKER": "x"})
     )
     await consumer.deliver(delivery(json.loads(body), answers=answers))
-    statuses = {
-        row["payload"].get("label", "chain"): row["status"] for row in await rows()
-    }
-    assert statuses == {
+    labels = {row["id"]: label for label, row in by_label.items()}
+    labels[claimed.id] = "run"
+    finished = {labels[row["id"]]: row for row in await rows()}
+    assert {label: row["status"] for label, row in finished.items()} == {
         "run": DONE,
         "wait": CANCELLED,
         "publish": CANCELLED,
@@ -793,9 +792,9 @@ async def test_waiting_messages_can_be_cancelled_running_ones_not() -> None:
     }
     assert answers == ["ack"]
     assert [entry for entry in ran if isinstance(entry, str)] == ["run"]
-    cancelled = {row["payload"].get("label"): row for row in await rows()}
-    assert cancelled["wait"]["last_error"] == "Cancelled by an operator."
-    assert cancelled["wait"]["finished_at"] is not None
+    assert finished["wait"]["last_error"] == "Cancelled by an operator."
+    assert finished["wait"]["finished_at"] is not None
+    assert {row["payload"] == {} for row in finished.values()} == {True}
 
 
 @pytest.mark.usefixtures("tables")
