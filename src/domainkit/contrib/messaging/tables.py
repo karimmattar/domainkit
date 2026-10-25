@@ -15,6 +15,11 @@ CANCELLED: Final = "cancelled"
 STATUSES: Final = (PENDING, DONE, DEAD, CANCELLED)
 BLANKED: Final = "payload_blanked"
 """The header set on a dead message whose arguments were blanked (``sensitive``)."""
+SENSITIVE: Final = "sensitive"
+"""The header of a chain's step that follows a ``sensitive`` one, at any distance.
+
+It is handed what the sensitive step had, or made, so its arguments are
+blanked when it dies, as the sensitive step's would be."""
 
 messages = Table(
     "domainkit_messages",

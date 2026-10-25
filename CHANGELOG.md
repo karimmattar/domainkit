@@ -246,8 +246,10 @@ All notable changes to domainkit. The format follows
   are blanked too, its error kept, and `messages --retry` refuses it
   instead of keeping an address or a code for good. Every other task's
   finished messages are blanked the same way; their dead letters keep
-  their arguments, to be retried. `docs/mail.md` says what the outbox
-  keeps, and for how long (DATA-01; ADR 0029 amended).
+  their arguments, to be retried, except a chain's steps after a
+  sensitive one, which are handed its arguments or its result and are
+  blanked as it is. `docs/mail.md` says what the outbox keeps, and for
+  how long (DATA-01, SEC-r2-5; ADR 0029 amended).
 - Audit anchors can be kept apart on a shared ledger: `AUDIT.NAMESPACE`
   writes them under `domainkit/audit/<namespace>/<alias>`, so another
   project or environment on the same immudb no longer holds yours back or

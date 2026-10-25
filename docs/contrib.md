@@ -336,8 +336,10 @@ async def push_invoice(invoice_id: UUID) -> None:
   unless its task is `sensitive`: then they are blanked with its error
   recorded, its headers say `payload_blanked`, and a retry refuses it.
   Mark a task sensitive when its arguments hold secrets or personal data;
-  mail, text messages, and push notifications are. Better still, queue
-  ids and build the secret in the task.
+  mail, text messages, and push notifications are. In a chain, every step
+  after a sensitive one is treated as sensitive too (its headers say
+  `sensitive`): it is handed that step's arguments, or what it returned.
+  Better still, queue ids and build the secret in the task.
 
 Durable event handlers use the `MESSAGING` settings.
 

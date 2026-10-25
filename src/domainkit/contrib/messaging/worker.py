@@ -78,7 +78,16 @@ from .registry import (
 )
 from .retry import Backoff, retryable
 from .settings import MessagingSettings
-from .tables import BLANKED, CANCELLED, DEAD, DEFAULT_QUEUE, DONE, PENDING, messages
+from .tables import (
+    BLANKED,
+    CANCELLED,
+    DEAD,
+    DEFAULT_QUEUE,
+    DONE,
+    PENDING,
+    SENSITIVE,
+    messages,
+)
 
 if TYPE_CHECKING:
     from domainkit.http.ratelimit import Backend
@@ -153,6 +162,15 @@ def _without_input(exc: BaseException) -> BaseException:
         for error in exc.errors()
     )
     return InvalidData(f"{exc.title}: {problems}").with_traceback(exc.__traceback__)
+
+
+def _sensitive(message: "Claimed", spec: TaskSpec | None) -> bool:
+    """Whether ``message``'s arguments are blanked when it dies.
+
+    Its task is ``sensitive``, or it is a chain's step after one: it was
+    handed what that step had, or made from it.
+    """
+    return (spec is not None and spec.sensitive) or bool(message.headers.get(SENSITIVE))
 
 
 @dataclass(frozen=True, slots=True)
@@ -794,6 +812,9 @@ class Worker:
         headers.pop(CHAIN)
         if rest:
             headers[CHAIN] = rest
+        if _sensitive(message, get_task(message.target)):
+            # It is handed what this step had, or made from it.
+            headers[SENSITIVE] = True
         return message_row(
             kind="task",
             target=target,
@@ -867,14 +888,15 @@ class Worker:
         """Schedule a retry, or dead-letter and report; return the outcome.
 
         The delay comes from the task's ``backoff``, or ``MESSAGING``'s. A
-        ``sensitive`` task's arguments are blanked when it dies, with its
-        error recorded, and its headers say so (``BLANKED``).
+        ``sensitive`` task's arguments are blanked when it dies, and so are
+        those of a chain's step after one (``SENSITIVE``), with its error
+        recorded, and its headers say so (``BLANKED``).
         """
         exc = _without_input(exc)
         error = f"{type(exc).__name__}: {exc}"[:_ERROR_LENGTH]
         if permanent or message.attempts >= message.max_attempts:
             blanked: dict[str, object] = {}
-            if spec is not None and spec.sensitive:
+            if _sensitive(message, spec):
                 blanked = {"payload": {}, "headers": {**message.headers, BLANKED: True}}
             await self._release(
                 message,
