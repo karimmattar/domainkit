@@ -318,12 +318,24 @@ belongs to none of them (ADR 0071):
   runs on, stores its value, and later requests are served from the
   cache. A factory slower than one request's deadline still fills the
   cache, so a slow upstream heals instead of failing every request.
-- **It has a deadline of its own**, the cache's `COMPUTE_TIMEOUT` (30
-  seconds by default, `None` for none): its transactions lower
-  `statement_timeout` to the time it has left, and its outgoing calls
-  through `domainkit.http.client` are bounded by it. No caller's deadline
-  reaches it, so one short request never fails the others: when it runs
-  out, every caller waiting gets the same `TimeoutError`.
+- **No caller's deadline reaches it**, so one short request never fails
+  the others. Its bound is the cache's own `COMPUTE_TIMEOUT`: its
+  transactions lower `statement_timeout` to the time it has left, its
+  outgoing calls through `domainkit.http.client` are bounded by it, and
+  when it runs out, every caller waiting gets the same `TimeoutError`.
+  It is `None` (unbounded) by default, as in 0.9.0. Set it, for example
+  to `REQUEST_TIMEOUT`'s value: `check` warns where deployed while it is
+  unset, and the `init` template sets it to 30 seconds.
+
+  Each choice has its failure. Unbounded, one computation that hangs (an
+  upstream that never answers) holds its key until the process restarts:
+  every later caller waits on it, as in 0.9.0. Bounded, a healthy
+  computation slower than the bound fails for every caller and never
+  fills the cache: with 30 seconds, a 31-second computation fails at 30,
+  where 0.9.0 cached it, while a hung one frees its key at 30. The patch
+  release keeps 0.9.0's default, so no project's cache breaks on
+  upgrade, and the hang is fixed by setting the bound; 0.10 plans a
+  bounded default.
 - **So the factory must use nothing a caller holds and releases**: not the
   session of the caller's unit of work, not a client the request closes.
   It opens what it needs (`async with ReportsUnitOfWork() as uow: ...`)

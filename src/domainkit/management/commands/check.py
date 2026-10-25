@@ -2,6 +2,7 @@
 
 from domainkit.apps import registry
 from domainkit.architecture import check_domains
+from domainkit.cache.handler import deployment_warnings as cache_deployment_warnings
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db import migrations
@@ -43,6 +44,7 @@ class Command(BaseCommand):
             )
         labels = ", ".join(config.label for config in registry) or "none"
         warnings = settings.deployment_warnings()
+        warnings += cache_deployment_warnings()
         warnings += websockets.deployment_warnings(app)
         warnings += [
             found for config in registry for found in config.deployment_warnings()

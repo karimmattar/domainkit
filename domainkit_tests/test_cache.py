@@ -41,6 +41,7 @@ from domainkit.cache import (
     invalidate_on,
 )
 from domainkit.cache.core import COMPUTE_TASK, split
+from domainkit.cache.handler import deployment_warnings as cache_deployment_warnings
 from domainkit.cache.redis import (
     RedisStore,
     SharedTLSConnection,
@@ -643,7 +644,8 @@ async def test_detached_computations_work_under_compute_timeout() -> None:
     """A computation that borrows nothing has a deadline of its own.
 
     It is ``COMPUTE_TIMEOUT``, whatever its first caller had left, and its
-    own timer enforces it; None leaves it unbounded, as before 0.9.1.
+    own timer enforces it; None, the default as in 0.9.0, leaves it
+    unbounded, whatever its first caller had left too.
     """
     seen: list[object] = []
 
@@ -653,7 +655,7 @@ async def test_detached_computations_work_under_compute_timeout() -> None:
 
     async with deadlines.timeout(5):
         assert await make_cache(COMPUTE_TIMEOUT=60).get_or_set("k", factory) == 1
-    assert await make_cache(COMPUTE_TIMEOUT=None).get_or_set("k", factory) == 1
+        assert await make_cache().get_or_set("default", factory) == 1
 
     left, enforced, unbounded, not_enforced = seen
     assert isinstance(left, float)
@@ -662,17 +664,22 @@ async def test_detached_computations_work_under_compute_timeout() -> None:
     assert (unbounded, not_enforced) == (None, False)
 
 
-async def test_a_detached_computation_past_compute_timeout_fails_for_everyone(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Its own bound ends it: every caller gets the same TimeoutError."""
-    cache = make_cache(COMPUTE_TIMEOUT=0.01)
-    started = asyncio.Event()
+async def test_compute_timeout_frees_a_key_whose_computation_hangs() -> None:
+    """Its own bound ends it: every caller gets the same TimeoutError, then heals.
+
+    The next caller starts a computation of its own, and its value is
+    stored. With the default (None, as in 0.9.0) a computation that hangs
+    holds its key until a restart: every later caller waits on it. That is
+    the known behaviour ``check`` warns about where deployed.
+    """
+    cache = make_cache(COMPUTE_TIMEOUT=0.05)
 
     async def hangs() -> int:
-        started.set()
-        await asyncio.Event().wait()
+        await asyncio.Event().wait()  # An upstream that never answers.
         return 1
+
+    async def healthy() -> int:
+        return 2
 
     callers = [asyncio.create_task(cache.get_or_set("k", hangs, int)) for _ in "ab"]
     results = await within(asyncio.gather(*callers, return_exceptions=True))
@@ -681,6 +688,26 @@ async def test_a_detached_computation_past_compute_timeout_fails_for_everyone(
     assert not any(isinstance(r, deadlines.DeadlineExceeded) for r in results)
     assert await cache.get("k") is None
     assert cache._computing == {}
+    assert await within(cache.get_or_set("k", healthy, int)) == 2
+    assert await cache.get("k", int) == 2
+
+
+def test_deployed_caches_without_a_compute_timeout_are_warned_about() -> None:
+    """One computation that hangs holds its key until a restart; check says so."""
+    bounded = {"URL": "memory://", "COMPUTE_TIMEOUT": 30}
+    with override_settings(
+        ENVIRONMENT="production", CACHES={"default": bounded, "reports": {}}
+    ):
+        assert cache_deployment_warnings() == [
+            (
+                "CACHES['reports'] has no COMPUTE_TIMEOUT, so one get_or_set "
+                "computation that hangs holds its key until the process "
+                "restarts; set CACHES['reports']['COMPUTE_TIMEOUT'] "
+                "(REQUEST_TIMEOUT's value, for example)."
+            )
+        ]
+    with override_settings(ENVIRONMENT="local", CACHES={"default": {}}):
+        assert cache_deployment_warnings() == []
 
 
 async def test_a_slow_factory_fills_the_cache_after_its_callers_gave_up() -> None:

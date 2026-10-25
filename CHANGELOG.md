@@ -34,10 +34,12 @@ All notable changes to domainkit. The format follows
   caller's deadline, and `domainkit.tasks.adopt(task)` makes a task
   started some other way owned, so the shutdown waits for it (CONC-02,
   CONC-05).
-- `CACHES[...]["COMPUTE_TIMEOUT"]` (30 seconds, at most an hour, `None`
-  for none) bounds a shared `get_or_set` computation, and
-  `get_or_set(..., borrows=True)` binds one to the caller whose resources
-  its factory uses (CONC-02; ADR 0071).
+- `CACHES[...]["COMPUTE_TIMEOUT"]` (at most an hour; `None`, unbounded,
+  by default, as in 0.9.0) bounds a shared `get_or_set` computation:
+  setting it is recommended, for example to `REQUEST_TIMEOUT`'s value,
+  and 0.10 plans a bounded default. `get_or_set(..., borrows=True)` binds
+  a computation to the caller whose resources its factory uses (CONC-02;
+  ADR 0071).
 
 ### Changed
 
@@ -147,8 +149,9 @@ All notable changes to domainkit. The format follows
   computation share one of their own, and never get an error its owner's
   deadline caused. Other computations go on when their callers stop
   waiting, as in 0.9.0, so a factory slower than one request still fills
-  the cache; they are now bounded by the cache's `COMPUTE_TIMEOUT` (30
-  seconds), which their statements and outgoing calls keep to.
+  the cache, and no caller's deadline reaches them; the cache's new
+  `COMPUTE_TIMEOUT` bounds them when set (unbounded by default, as in
+  0.9.0), and their statements and outgoing calls then keep to it.
   `docs/cache.md` says what a factory may use (CONC-02; ADR 0071).
 - The login attempt counter (`AUTH` throttling) is made once per
   application when event loops on several threads see their first

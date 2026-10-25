@@ -43,6 +43,9 @@ RATE_LIMIT = env.str("RATE_LIMIT", "300/minute")
 # works up to 5 seconds longer in the other replicas; with a Redis cache in
 # CACHES, every replica sees a revocation at once:
 # AUTH = {"PRINCIPAL_CACHE": {"STAMPS": "shared"}}
+# A cache computation goes on after the request that started it ends; bound
+# it, so one that hangs frees its key instead of holding it until a restart:
+CACHES = {"default": {"COMPUTE_TIMEOUT": 30.0}}  # REQUEST_TIMEOUT's default.
 LOGGING = build_logging_config(log_format="json", level=env.str("LOG_LEVEL", "INFO"))
 # 0.1 writes about one successful request in ten (docs/runtime.md, "Sampling
 # the access log"); every answer from 400 up, and slow ones, are always written.

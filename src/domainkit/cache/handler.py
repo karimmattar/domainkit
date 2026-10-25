@@ -18,7 +18,7 @@ from domainkit.cache.base import Store
 from domainkit.cache.core import Cache
 from domainkit.cache.memory import DummyStore, MemoryStore
 from domainkit.conf import DEFAULT_CACHE_ALIAS, CacheConfig, settings
-from domainkit.conf.global_settings import REDIS_SCHEMES
+from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS, REDIS_SCHEMES
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.utils.closing import close_each
 from domainkit.utils.readiness import failing_checks
@@ -150,6 +150,25 @@ class CacheHandler:
         for store in stores:
             if isinstance(store, MemoryStore):
                 store.reset()
+
+
+def deployment_warnings() -> list[str]:
+    """Caches whose computations are unbounded, in staging and production.
+
+    ``check`` lists them. A detached ``get_or_set`` computation goes on after
+    its callers stop waiting; without ``COMPUTE_TIMEOUT``, one that hangs
+    holds its key until the process restarts.
+    """
+    if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
+        return []
+    return [
+        f"CACHES[{alias!r}] has no COMPUTE_TIMEOUT, so one get_or_set "
+        f"computation that hangs holds its key until the process restarts; "
+        f"set CACHES[{alias!r}]['COMPUTE_TIMEOUT'] (REQUEST_TIMEOUT's value, "
+        f"for example)."
+        for alias, config in settings.CACHES.items()
+        if config.COMPUTE_TIMEOUT is None
+    ]
 
 
 caches: Final = CacheHandler()

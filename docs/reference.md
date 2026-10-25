@@ -129,7 +129,7 @@ Each `CACHES` entry:
 | `MAX_CONNECTIONS` | `50` | Redis connections per process and event loop. |
 | `FAILURE_COOLDOWN` | `5.0` | Seconds a failed cache is skipped, so requests do not each wait for timeouts. `0` retries at once. |
 | `EARLY_RECOMPUTE` | `1.0` | How early `get_or_set` refreshes hot entries before they expire (XFetch's beta); `0` turns it off. |
-| `COMPUTE_TIMEOUT` | `30.0` | Seconds a shared `get_or_set` computation may run (at most an hour). It goes on after its callers stop waiting, so a slow factory still fills the cache, within this; its statements and outgoing calls keep to it. `None` leaves it unbounded, as before 0.9.1. Factories that borrow their caller's resources (`borrows=True`) run under their caller's deadline instead ([cache.md](cache.md#what-a-factory-may-use)). |
+| `COMPUTE_TIMEOUT` | `None` | Seconds a shared `get_or_set` computation may run (at most an hour). It goes on after its callers stop waiting, so a slow factory still fills the cache, within this; its statements and outgoing calls keep to it. `None` leaves it unbounded, as in 0.9.0; setting it is recommended, for example to `REQUEST_TIMEOUT`'s value, and 0.10 plans a bounded default. Factories that borrow their caller's resources (`borrows=True`) run under their caller's deadline instead ([cache.md](cache.md#what-a-factory-may-use)). |
 | `TLS_CA` | system CAs | CA bundle that signed the server's certificate (`rediss://` only). |
 | `TLS_CERT`, `TLS_KEY` | `None` | Client certificate and key for mutual TLS (`rediss://` only). |
 | `READINESS` | `False` | Fail `/ready` while this cache is unreachable. Leave it off for caches the service can run without, or an outage takes every replica out of rotation. |
@@ -462,6 +462,10 @@ passes, so an API that is public on purpose can keep them:
   application also logs it at start)
 - no `REQUEST_TIMEOUT`, or `DeadlineMiddleware` missing from `MIDDLEWARE`;
   no `MAX_CONCURRENT_REQUESTS`, or `ConcurrencyLimitMiddleware` missing
+- a cache without `COMPUTE_TIMEOUT` (`CACHES[alias]["COMPUTE_TIMEOUT"]`):
+  one `get_or_set` computation that hangs holds its key until the process
+  restarts ([cache.md](cache.md#what-a-factory-may-use)); the `init`
+  template sets it
 - a database that seems to go through PgBouncer (port 6432, or a statement
   cache turned off in `CONNECT_ARGS`) without `PGBOUNCER = True`
 - auth: `AUTH.LOGIN_RATE` or `AUTH.MFA.RATE` set to `None` (guesses

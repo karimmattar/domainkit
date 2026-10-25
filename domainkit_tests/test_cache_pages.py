@@ -651,9 +651,15 @@ async def test_a_page_runs_under_its_computations_deadline() -> None:
         seen.append(deadlines.remaining())
         return {"rows": 1}
 
-    async with AsyncTestClient(app, lifespan=False) as client, deadlines.timeout(5):
-        await client.get("/report")
+    bounded = {"default": {"URL": "memory://", "COMPUTE_TIMEOUT": 60}}
+    async with AsyncTestClient(app, lifespan=False) as client:
+        with override_settings(CACHES=bounded):
+            async with deadlines.timeout(5):
+                await client.get("/report")
+        async with deadlines.timeout(5):  # The default: unbounded.
+            await client.get("/report?fresh=1")
 
-    (left,) = seen
+    left, unbounded = seen
     assert left is not None
-    assert 5 < left <= 30  # COMPUTE_TIMEOUT, not the caller's 5 seconds.
+    assert 5 < left <= 60  # COMPUTE_TIMEOUT, not the caller's 5 seconds.
+    assert unbounded is None

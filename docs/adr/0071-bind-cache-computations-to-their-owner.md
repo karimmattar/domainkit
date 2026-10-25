@@ -55,13 +55,14 @@ Options considered:
 
 - **A computation is detached unless its factory borrows.** It runs in a
   clean context, under a deadline of its own, the cache's
-  `COMPUTE_TIMEOUT` (30 seconds, at most an hour, `None` for none, as in
-  0.9.0). No caller's deadline reaches it: callers that stop waiting stop
-  waiting, and it goes on, stores its value, and later callers are served.
-  When it runs out, every caller waiting gets the same `TimeoutError`.
-  The default is 30 seconds, `REQUEST_TIMEOUT`'s default: a computation
-  serving requests should not run longer than one may, and the audit
-  counted the unbounded run as part of CONC-02.
+  `COMPUTE_TIMEOUT` (at most an hour; `None`, unbounded, by default). No
+  caller's deadline reaches it: callers that stop waiting stop waiting,
+  and it goes on, stores its value, and later callers are served. When it
+  runs out, every caller waiting gets the same `TimeoutError`.
+  The default stays unbounded in 0.9.1, as in 0.9.0: a detached
+  computation holds none of its caller's resources, so running unbounded
+  is not the CONC-02 bug, and a bounded default would fail, after a patch
+  upgrade, any computation that takes longer.
 - **A factory that uses what its caller holds borrows**: `@cache_page`
   passes `borrows=True` when the endpoint takes a dependency (`Depends`,
   `Security`, also through `Annotated`); `get_or_set(..., borrows=True)`
@@ -97,9 +98,16 @@ with dependencies, is detected.
   a cancelled `get_or_set(..., borrows=True)`.
 - One short request never answers 503 for those waiting with time left,
   and a slow upstream heals a cached route (the SEC-r3 tests).
-- A computation that takes longer than `COMPUTE_TIMEOUT` now fails where
-  0.9.0 let it run; projects with slower factories raise it, or set it to
-  `None`.
+- A detached computation is unbounded unless the project sets
+  `COMPUTE_TIMEOUT`, as in 0.9.0. The two defaults were tried on PoCs:
+  with a 30-second default, a healthy 31-second computation failed with
+  `TimeoutError` at 30.0 seconds and never filled the cache, bringing
+  SEC-r3-2 back for any factory over the bound; with `None`, one hung
+  computation held its key for good (0.9.0's behaviour), and setting
+  `COMPUTE_TIMEOUT = 30` healed the key at 30.4 seconds. The patch release
+  keeps `None`: no regression from 0.9.0, and the hang is fixed by opting
+  in. `check` warns where deployed for each cache without it, and the
+  `init` template sets it. 0.10 plans a bounded default.
 - A `@cache_page` endpoint with dependencies fills the cache only within
   its requests' deadlines: when that is too short, open a unit of work in
   the endpoint instead of depending on one.
