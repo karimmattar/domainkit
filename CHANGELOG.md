@@ -6,6 +6,16 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `TestClient` works with Starlette 1.9 and 1.10, which a fresh
+  `pip install domainkit` resolves: a project made by `domainkit init`
+  passes its own tests again instead of failing every test that uses a
+  client with `'CarryingPortal' object has no attribute 'start_task_soon'`.
+  The client now carries the caller's context (a frozen clock) through
+  every method of the AnyIO portal Starlette starts the application's work
+  with, not only the two Starlette 1.8 used (DOCS-01).
+
 ## [0.9.0] - 2026-10-22
 
 ### Added

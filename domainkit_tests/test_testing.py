@@ -873,6 +873,89 @@ def test_portal_tasks_start_with_the_callers_context() -> None:
     assert seen == [1, 2, NEW_YEAR, "probe"]
 
 
+def test_portal_tasks_started_soon_carry_the_callers_context() -> None:
+    """Starlette 1.9 runs each request with ``start_task_soon``: it carries too."""
+
+    async def task(first: int) -> tuple[int, datetime, str]:
+        running = asyncio.current_task()
+        assert running is not None
+        return first, clock.now(), running.get_name()
+
+    def stamp() -> datetime:
+        return clock.now()
+
+    with (
+        anyio.from_thread.start_blocking_portal() as portal,
+        freeze_time(NEW_YEAR),
+    ):
+        carrying = CarryingPortal(portal)
+        assert carrying.start_task_soon(task, 1, name="probe").result() == (
+            1,
+            NEW_YEAR,
+            "probe",
+        )
+        assert carrying.start_task_soon(stamp).result() == NEW_YEAR
+
+
+def test_cancelling_a_task_started_soon_cancels_it() -> None:
+    """The future cancels the task it stands for, as the portal's own does."""
+    with anyio.from_thread.start_blocking_portal() as portal:
+        carrying = CarryingPortal(portal)
+        started = carrying.call(anyio.Event)
+        stopped = carrying.call(anyio.Event)
+
+        async def forever() -> None:
+            started.set()
+            try:
+                await anyio.sleep_forever()
+            finally:
+                stopped.set()
+
+        future = carrying.start_task_soon(forever)
+        carrying.call(started.wait)
+        future.cancel()
+        carrying.call(stopped.wait)
+
+    assert future.cancelled()
+
+
+def test_portal_context_managers_carry_the_callers_context() -> None:
+    """``wrap_async_context_manager`` enters and exits in the caller's context."""
+    seen: list[object] = []
+
+    @asynccontextmanager
+    async def manager() -> AsyncIterator[str]:
+        seen.append(clock.now())
+        try:
+            yield "entered"
+        except KeyError as error:
+            seen.append(error.args)
+        finally:
+            seen.append(clock.now())
+
+    with (
+        anyio.from_thread.start_blocking_portal() as portal,
+        freeze_time(NEW_YEAR),
+    ):
+        carrying = CarryingPortal(portal)
+        with carrying.wrap_async_context_manager(manager()) as value:
+            assert value == "entered"
+        with carrying.wrap_async_context_manager(manager()):
+            raise KeyError("suppressed")  # The manager swallows it; so does the wrap.
+
+    assert seen == [NEW_YEAR, NEW_YEAR, NEW_YEAR, ("suppressed",), NEW_YEAR]
+
+
+def test_the_portals_other_attributes_are_the_wrapped_portals() -> None:
+    """Whatever the portal offers beyond starting work reads through."""
+    with anyio.from_thread.start_blocking_portal() as portal:
+        carrying = CarryingPortal(portal)
+        assert carrying.stop == portal.stop
+        assert carrying.sleep_until_stopped == portal.sleep_until_stopped
+        with pytest.raises(AttributeError, match="no_such_method"):
+            carrying.no_such_method  # noqa: B018 - reading it is the test.
+
+
 def test_errors_name_the_entry(tmp_path: Path) -> None:
     """A refused test database names the ``DATABASES`` entry it comes from."""
     reports = DatabaseConfig.model_validate(
