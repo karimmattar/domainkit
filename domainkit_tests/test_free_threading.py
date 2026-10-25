@@ -6,10 +6,11 @@ connection slots, the event bus, an HTTP client's circuit breaker, the
 guard's lookup threads and its owners' shares, a throttled log's counts,
 the remembered client addresses, the handles of
 the request metrics, the principal cache, and the grants principals share
-between threads, and the registries that keep each loop's tasks,
-publishers, and brokers. Each test drives them from several threads at
-once and checks what must always hold, and that the state is only touched
-with the lock held (where there is one).
+between threads, an application's throttle backend, and the registries
+that keep each loop's tasks, publishers, brokers, and caches. Each test
+drives them from several threads at once and checks what must always
+hold, and that the state is only touched with the lock held (where there
+is one).
 """
 
 import asyncio
@@ -27,7 +28,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from datetime import UTC, datetime
 from functools import partial
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
 from weakref import WeakKeyDictionary
 
 import pytest
@@ -39,7 +40,8 @@ from starlette.types import Message, Receive, Scope, Send
 from domainkit import clock as clock_module
 from domainkit import tasks
 from domainkit.broker import Broker, BrokerHandler, MemoryBroker
-from domainkit.conf import DatabaseConfig, override_settings
+from domainkit.cache import CacheHandler, Store
+from domainkit.conf import CacheConfig, DatabaseConfig, override_settings
 from domainkit.contrib.audit import personal
 from domainkit.contrib.auth import AllowAny, principals
 from domainkit.contrib.auth import middleware as middleware_module
@@ -555,6 +557,123 @@ def test_an_application_gets_one_set_of_slots_from_every_thread() -> None:
 
     assert all(slots is found[0] for slots in found)
     assert scope["app"].state._state == {"live_slots": found[0]}
+
+
+class CheckedThrottleState(State):
+    """An application's state, whose throttle backend is set only under the lock."""
+
+    def __setattr__(self, name: str, value: Any) -> None:  # noqa: ANN401 - any state.
+        """Set ``name``; the throttle backend only with its lock held."""
+        if name == "throttle_backend":
+            assert ratelimit._app_backend_lock.locked()
+        super().__setattr__(name, value)
+
+
+class RacedState:
+    """An application's state where another thread makes the backend first.
+
+    The first look finds none; by the time the lock is held, it is there.
+    """
+
+    def __init__(self, made: MemoryBackend) -> None:
+        """Have ``made`` appear after the first look."""
+        self.looks = 0
+        self.made = made
+
+    @property
+    def throttle_backend(self) -> MemoryBackend | None:
+        """None the first time; the other thread's backend after."""
+        self.looks += 1
+        return None if self.looks == 1 else self.made
+
+
+def test_a_throttle_backend_made_meanwhile_is_the_one_used() -> None:
+    """A loop that lost the race to make it uses the winner's, not a second."""
+    made = MemoryBackend()
+    connection = HTTPConnection(
+        {"type": "http", "app": SimpleNamespace(state=RacedState(made))}
+    )
+
+    assert ratelimit._app_backend(connection) is made
+
+
+class CountedBackend(MemoryBackend):
+    """A memory backend that counts how many were made."""
+
+    made: ClassVar[list["CountedBackend"]] = []
+
+    def __init__(self) -> None:
+        """Count this one."""
+        super().__init__()
+        CountedBackend.made.append(self)
+
+
+def test_an_application_gets_one_throttle_backend_from_every_thread() -> None:
+    """The first throttled requests, on several loops at once, share one count.
+
+    Two memory backends for one application would each let the limit through.
+    """
+    CountedBackend.made.clear()
+    app = SimpleNamespace(state=CheckedThrottleState())
+    connection = HTTPConnection({"type": "http", "app": app})
+    backend = f"{__name__}.CountedBackend"
+
+    with override_settings(RATE_LIMIT_BACKEND=backend):
+        found = on_threads(lambda _: ratelimit._app_backend(connection))
+
+    assert all(made is found[0] for made in found)
+    assert CountedBackend.made == [found[0]]
+
+
+class CheckedStores(dict[tuple[str, CacheConfig], Store]):
+    """The process's memory stores, added only with the handler's lock held."""
+
+    def __init__(self, lock: threading.Lock) -> None:
+        """Check against ``lock``."""
+        super().__init__()
+        self.lock = lock
+
+    def __setitem__(self, key: tuple[str, CacheConfig], value: Store) -> None:
+        """Add a store, with the lock held."""
+        assert self.lock.locked()
+        super().__setitem__(key, value)
+
+
+def test_loops_on_threads_share_one_memory_store_per_cache() -> None:
+    """Loops looking a memory cache up at once all see the same entries.
+
+    A second store for one alias would never see the others' writes, their
+    invalidations, or ``caches.reset()``.
+    """
+    handler = CacheHandler()
+    handler._caches = CheckedRegistry(handler._lock)
+    handler._replaced = CheckedRegistry(handler._lock)
+    handler._shared = CheckedStores(handler._lock)
+
+    async def use(index: int, close: bool) -> Store:
+        cache = handler["default"]
+        await cache.set(f"from-{index}", index)
+        if close:
+            await handler.close_all()
+        return cache.store
+
+    def loops(index: int) -> list[Store]:
+        return [asyncio.run(use(index, n % 2 == 0)) for n in range(LOOPS)]
+
+    with override_settings(CACHES={"default": {"URL": "memory://"}}):
+        stores = {id(store) for found in on_threads(loops) for store in found}
+
+        async def read() -> list[int | None]:
+            cache = handler["default"]
+            found = [await cache.get(f"from-{n}", int) for n in range(THREADS)]
+            with override_settings(CACHES={"default": {"URL": "dummy://"}}):
+                handler["default"]  # Replaced: kept, under the lock, to close.
+            await handler.close_all()
+            return found
+
+        assert asyncio.run(read()) == list(range(THREADS))
+    assert len(stores) == 1
+    handler.reset()
 
 
 class CheckedList(list[Any]):

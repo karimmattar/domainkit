@@ -34,9 +34,10 @@ from domainkit.lifecycle import (
     unregister,
 )
 from domainkit.management.base import run_async
-from domainkit.tasks import spawn
+from domainkit.tasks import owned, spawn
 from domainkit.utils import closing as closing_module
 from domainkit.utils.closing import (
+    LEFT_BEHIND,
     RESERVED_SHARE,
     close_each,
     close_in_turn,
@@ -223,8 +224,45 @@ async def test_a_hung_phase_leaves_the_later_phases_their_share(
         "exports",
     ]
     assert caplog.messages == [
-        "Could not close the stubborn within the shutdown budget; closing the rest"
+        "Could not close the stubborn within the shutdown budget; closing the rest",
+        # Left behind, owned: the tasks phase waited for it, to its end.
+        (
+            "Background tasks still running at the end of their shutdown phase: "
+            "domainkit.close:stubborn"
+        ),
     ]
+
+
+async def test_a_close_cut_off_ends_before_the_resources_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A drain cut off at its share still ends before what it uses is closed.
+
+    It is cancelled and left behind as an owned task, so the tasks phase
+    waits for it to end, then the resources phase closes the databases.
+    """
+    closed: list[str] = []
+    record_closes(monkeypatch, closed)
+
+    async def slow_to_stop() -> None:
+        closed.append("draining")
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            for _ in range(20):  # Writing its last rows, after being cut off.
+                await asyncio.sleep(0)
+            closed.append("drained")
+            raise
+
+    register("publishers", slow_to_stop, phase=Phase.DRAIN)
+    loop = asyncio.get_running_loop()
+    seconds = 100.0  # The drain's share is over at once; the others are not.
+    budget = Budget(loop.time() - seconds * PHASE_ENDS[Phase.DRAIN], seconds)
+
+    async with asyncio.timeout(30):
+        await close_resources(budget)
+
+    assert closed[:3] == ["draining", "drained", "caches"]
 
 
 async def test_tasks_that_will_not_stop_are_named(
@@ -739,6 +777,8 @@ async def test_close_in_turn_leaves_an_item_that_ignores_cancellation_behind(
         [held] = stubborn.tasks
         assert not held.done()  # Left behind, still running.
         assert held.cancelling()
+        assert held in owned()  # The shutdown's tasks phase waits for it.
+        assert held.get_name() == LEFT_BEHIND
     finally:
         await stubborn.let_go()
     assert held._log_traceback is False  # Its failure is not logged...

@@ -120,3 +120,23 @@ The second was chosen. Details:
 Paths in `CONCURRENCY_EXEMPT_PATHS` are compared without the root path
 the application is mounted at (`--root-path`), so the probes stay exempt
 behind one.
+
+## Addendum (2026-10-25): the deadline in the queue, and constant costs
+
+An audit of 0.9.0 (CONC-11, CONC-07) found that the queue's wait was timed
+on its own, so a request whose deadline passed while it waited was not
+counted as shed, and that counting the waiters and leaving the queue
+walked it: a refused request cost time in proportion to
+`MAX_QUEUED_REQUESTS`. Admission is unchanged; what changed:
+
+- The wait is a `deadlines.timeout(REQUEST_QUEUE_TIMEOUT)` block. Under a
+  request's deadline, which `DeadlineMiddleware`'s timer enforces, the
+  smaller of the two decides: the queue's seconds answer 503 `overloaded`
+  as before, and the deadline answers 503 `deadline_exceeded`, as for any
+  other wait in the request, and the request is now also counted and
+  logged as shed (`queue_timeout`). Racing a timer of the queue's own
+  against the deadline's would answer one or the other by chance.
+- The waiters are counted as they join and leave; a waiter that leaves
+  stays in the queue, cancelled, until it is passed over or swept (at
+  either end at once, in the middle once such waiters outnumber the
+  others), so each operation costs O(1) on average.

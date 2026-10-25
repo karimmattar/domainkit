@@ -289,11 +289,10 @@ it at once, and the database takes the whole load. `get_or_set` (and so
 - **One computation per key per process.** Concurrent misses on the same
   key wait for one computation, also while the cache fails, when every
   call is a miss. Each caller still gets its own copy, so no two requests
-  share a mutable object. If the first caller is cancelled, the
-  computation goes on for the others. Errors reach every waiting caller and
-  are never cached. The computation serves every caller, so it runs as
-  none of them: in a clean context, without the first caller's request,
-  actor, language, span, or `Idempotency-Key` (see
+  share a mutable object. Errors reach every waiting caller and are never
+  cached. The computation serves every caller, so it runs as none of
+  them: in a clean context, without the first caller's request, actor,
+  language, span, or `Idempotency-Key` (see
   [runtime.md](runtime.md#clean-contexts)). A factory that needs one of
   them takes it as an argument, and the key must hold it.
   `@cache_page`, whose keys hold the user and the language, runs the
@@ -308,6 +307,37 @@ it at once, and the database takes the whole load. `get_or_set` (and so
 
 With several replicas, each replica may still recompute a hot key once.
 That is the worst case, not one recomputation per request.
+
+### What a factory may use
+
+The computation runs the factory of the caller that started it, its
+*owner*, and is bound to that caller (ADR 0071):
+
+- **It never outlives its owner's wait.** When the owner is cancelled
+  (its deadline passed, its client went away), the computation is
+  cancelled, and the owner's cancellation goes on only once the factory
+  has stopped. So a factory may use what its caller holds and releases on
+  the way out: the session of the caller's unit of work, the dependencies
+  FastAPI resolved for a `@cache_page` endpoint. Nothing runs on them
+  after the caller closed them, and no connection is left checked out.
+- **The others start again.** Callers still waiting for that key share a
+  new computation, started by one of them with its own factory, so they
+  never get a result made with resources that are gone. A caller that
+  stops waiting without having started the computation leaves it running
+  for the others.
+- **It runs under its owner's deadline** (`domainkit.deadlines`): its
+  transactions lower `statement_timeout` to the time left, and its
+  outgoing calls through `domainkit.http.client` are bounded by it. The
+  owner's timer cuts it off, through the owner.
+- **Shutdown and `close()` stop it**, as before; callers still waiting
+  then compute their own value, without the cache.
+
+A factory must not hand what it borrowed to anything that outlives the
+call: a task it starts and does not await, or the value it returns (which
+is stored as JSON, so it holds data, never a session). Work that should go
+on after the caller has gone belongs in a task of its own
+([runtime.md](runtime.md#background-tasks-spawn-and-supervise)) or the
+outbox.
 
 Computations are background tasks of their event loop
 (`domainkit.tasks.spawn`). At shutdown they are cancelled before caches,

@@ -38,6 +38,7 @@ from domainkit.broker import (
     Subscription,
     brokers,
 )
+from domainkit.cache import caches
 from domainkit.conf import override_settings
 from domainkit.context import RequestContext, bind_request, current_request
 from domainkit.contrib.idempotency.operations import (
@@ -68,6 +69,8 @@ from domainkit.contrib.messaging.tables import DONE, PENDING, messages
 from domainkit.contrib.messaging.worker import LEASE_MARGIN, Claimed
 from domainkit.db import connections
 from domainkit.db.routing import router
+from domainkit.lifecycle import Budget as ShutdownBudget
+from domainkit.lifecycle import close_resources
 from domainkit.management import call_command
 from domainkit_tests.test_messaging import (  # noqa: F401 - fixtures.
     ALPHA,
@@ -613,11 +616,46 @@ async def test_a_second_cancellation_cannot_stop_the_give_back(
         await within(relaying)
     (still,) = await rows()
     go_on.set()
-    await within(asyncio.gather(*worker_module._settling))
+    settles = [t for t in tasks.owned() if t.get_name() == worker_module.SETTLE_TASK]
+    await within(asyncio.gather(*settles))
 
     assert still["lock_id"] is not None
     (row,) = await rows()
     assert (row["lock_id"], row["locked_until"]) == (None, None)
+
+
+async def test_a_give_back_ends_before_shutdown_closes_the_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The relay was cancelled; its give-back runs on, and shutdown waits for it.
+
+    It is an owned task that the tasks phase cannot cut short, so the
+    resources phase closes the database only once the leases are back.
+    """
+    events: list[str] = []
+    for name, handler in {"caches": caches, "databases": connections}.items():
+
+        async def close_all(name: str = name) -> None:
+            events.append(name)
+
+        monkeypatch.setattr(handler, "close_all", close_all)
+    started = asyncio.Event()
+
+    async def give_back() -> None:
+        started.set()
+        for _ in range(20):  # Statements on the outbox's database.
+            await asyncio.sleep(0)
+        events.append("given back")
+
+    relaying = asyncio.create_task(worker_module._shielded(give_back(), "settle"))
+    await within(started.wait())
+    relaying.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await within(relaying)
+
+    await within(close_resources(ShutdownBudget.begin(60)))
+
+    assert events[:3] == ["given back", "caches", "databases"]
 
 
 @pytest.mark.usefixtures("tables")

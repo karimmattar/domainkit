@@ -30,6 +30,10 @@ All notable changes to domainkit. The format follows
   (DATA-01).
 - `domainkit.ddd.Counted`: a field marked `Annotated[..., Counted()]` is
   audited as its number of items (DATA-10).
+- `domainkit.tasks.spawn(..., deadline=...)` runs a task under its
+  caller's deadline, and `domainkit.tasks.adopt(task)` makes a task
+  started some other way owned, so the shutdown waits for it (CONC-02,
+  CONC-05).
 
 ### Changed
 
@@ -130,6 +134,39 @@ All notable changes to domainkit. The format follows
   traceback, rather than a 500 and a new round for every probe (WEB-12).
 - The admin API tidies a new user's `fields` with the model's
   `clean_field`, as it does a change (AUTH-13).
+- A `get_or_set`, `@cached`, or `@cache_page` caller cut off during a
+  miss (its deadline passed, its client went away) no longer leaves its
+  computation running on what it closed: the computation runs the factory
+  of the caller that started it, is cancelled with that caller, and the
+  caller's cancellation goes on only once the factory has stopped. A
+  `@cache_page` endpoint that takes a unit of work, or a factory that uses
+  its caller's session, no longer leaks a pooled connection per cut-off
+  request. Callers still waiting share a new computation of their own;
+  computations run under the deadline of the caller that started them,
+  so their statements and outgoing calls keep to it. `docs/cache.md` says
+  what a factory may use (CONC-02; ADR 0071).
+- Event loops on several threads (free-threaded Python, a loop per
+  thread) looking up a memory cache for the first time at once get one
+  store per alias, and an application's throttle backend is made once:
+  a loop could keep a private store that never saw the others' writes,
+  invalidations, or `caches.reset()`, and a second memory throttle
+  backend let each route's limit through twice (CONC-01).
+- Messaging tasks and durable handlers run under a deadline of their
+  timeout, as the `deadlines` module said: on PostgreSQL their
+  transactions lower `statement_timeout` to the time left, and their
+  calls through `domainkit.http.client` are bounded by it. A run past its
+  timeout still raises `TimeoutError` (CONC-03).
+- Shutdown waits, in its `tasks` phase, for a relay's give-back cut short
+  by the drain phase, and for closes cancelled at the end of their phase,
+  before the resources phase closes the database they write through: the
+  leases of a slow broker's last round go back instead of expiring
+  (CONC-05).
+- A request whose deadline passes while it waits for a slot is counted
+  and logged as shed (`http_requests_shed_total{reason="queue_timeout"}`),
+  besides its 503 `deadline_exceeded`; the queue's wait keeps to a
+  deadline no timer enforces too. Queueing, refusing a request, and
+  leaving the queue no longer cost time in proportion to
+  `MAX_QUEUED_REQUESTS` (CONC-11, CONC-07).
 
 ### Security
 
