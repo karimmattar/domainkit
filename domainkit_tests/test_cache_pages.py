@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from starlette.authentication import AuthCredentials
 
+from domainkit import deadlines
 from domainkit.cache import cache_page, caches
 from domainkit.cache.core import COMPUTE_TASK
 from domainkit.cache.pages import (
@@ -622,6 +623,11 @@ def test_pages_borrow_only_when_a_parameter_is_a_dependency() -> None:
     async def secured(session: Annotated[str, Security(_session)]) -> int:
         return 1
 
+    async def documented(
+        session: Annotated[str, "the session"] = Depends(_session),
+    ) -> int:
+        return 1
+
     def borrows(endpoint: Any) -> bool:  # noqa: ANN401 - any endpoint.
         hints = get_type_hints(endpoint, include_extras=True)
         return _takes_dependencies(_signature(endpoint, hints))
@@ -630,3 +636,24 @@ def test_pages_borrow_only_when_a_parameter_is_a_dependency() -> None:
     assert borrows(by_default)
     assert borrows(annotated)
     assert borrows(secured)
+    assert borrows(documented)
+
+
+@pytest.mark.anyio
+async def test_a_page_runs_under_its_computations_deadline() -> None:
+    """Not its caller's: one short request must not cut the page short for all."""
+    app = FastAPI()
+    seen: list[float | None] = []
+
+    @app.get("/report")
+    @cache_page(ttl=60)
+    async def report() -> dict[str, int]:
+        seen.append(deadlines.remaining())
+        return {"rows": 1}
+
+    async with AsyncTestClient(app, lifespan=False) as client, deadlines.timeout(5):
+        await client.get("/report")
+
+    (left,) = seen
+    assert left is not None
+    assert 5 < left <= 30  # COMPUTE_TIMEOUT, not the caller's 5 seconds.

@@ -787,6 +787,41 @@ async def test_a_failure_of_the_owners_deadline_reaches_only_the_owner() -> None
     assert calls == [0.0, None]  # The second ran under its own (no) deadline.
 
 
+async def test_any_failure_after_the_owners_deadline_is_the_owners() -> None:
+    """A statement cut off by the owner's ``statement_timeout`` fails it too.
+
+    That is a database error, not a ``TimeoutError``; it came once the
+    owner's deadline had passed, so only the owner gets it.
+    """
+    cache = make_cache()
+    go = asyncio.Event()
+    calls = []
+
+    async def query() -> str:
+        calls.append(1)
+        if len(calls) == 1:
+            await go.wait()
+            raise RuntimeError("canceling statement due to statement timeout")
+        return "rows"
+
+    async def owner() -> str:
+        token = deadlines._current.set(deadlines.Deadline(0.0))
+        try:
+            return await cache.get_or_set("q", query, str, borrows=True)
+        finally:
+            deadlines._current.reset(token)
+
+    first = asyncio.create_task(owner())
+    await asyncio.sleep(0)
+    second = asyncio.create_task(cache.get_or_set("q", query, str, borrows=True))
+    await asyncio.sleep(0)
+    go.set()
+
+    with pytest.raises(RuntimeError, match="statement timeout"):
+        await within(first)
+    assert await within(second) == "rows"
+
+
 async def test_errors_of_a_computation_that_borrows_still_reach_every_caller() -> None:
     """Only the owner's deadline is kept from the others; other errors are shared."""
     cache = make_cache()
