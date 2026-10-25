@@ -154,7 +154,11 @@ so a round takes about one timeout at worst, however many dependencies
 hang. Probes that arrive during a round wait for it rather than starting
 their own, and its result is reused for `READINESS_CACHE_SECONDS` from when
 it ended. The round runs as a background task in a clean context: a probe
-that gives up stops no one else, and shutdown cancels it.
+that gives up stops no one else, and shutdown cancels it. A group of
+checks that raises, rather than reporting what failed, fails under its
+group's name (`domains`, `databases`, `ledgers`, `caches`), is logged with
+its traceback, and is kept as the round's result: probes get a 503 for
+`READINESS_CACHE_SECONDS`, not a 500 and a new round each.
 
 ## Event handlers
 
@@ -327,6 +331,16 @@ ACCESS_LOG_SLOW_DURATION = 1.0  # Seconds.
   other logger are written as before, and the audit trail
   (`domainkit.contrib.audit`) is a table, not a log: sampling never touches
   either.
+- Refusals are throttled instead, by caller (`domainkit.log.ThrottledLog`):
+  the first rejected host, body (too large or too slow), refused
+  credentials, refused live connection, or unreadable `X-Forwarded-For`
+  hop of a caller (its address's rate-limit key, or the proxy's) is
+  always written; its repeats in the next 10 seconds are counted, and the
+  caller's next line ends `(and N more like it since the last line)`. A
+  flood from one caller writes a line every 10 seconds, not one per
+  request, and cannot crowd the logging queue; each new caller's first
+  line is still written. The 1,024 latest callers are remembered per
+  middleware; one let go writes a line for what it held back.
 - `1.0`, the default, writes every line, as before.
 
 ## Finding blocking code
@@ -873,8 +887,12 @@ Every call:
   `breaker=False` keeps no circuits.
 - sends the request id (`X-Request-ID`) and the trace context
   (`traceparent`, `tracestate`) of the work it serves.
-- reads at most `MAX_RESPONSE_BYTES` of the answer (10 MiB, counted after
-  decompression), or raises `ResponseTooLarge`, and follows no redirects.
+- reads at most `MAX_RESPONSE_BYTES` of the answer (10 MiB, counted as it
+  comes and after decompression), or raises `ResponseTooLarge`, and follows
+  no redirects. httpx2 inflates a compressed answer a piece of at most
+  1 MiB at a time, and each piece is counted before the next, so a small
+  answer that inflates a thousandfold costs the limit and a piece, never
+  its whole inflated size; bytes that inflate to nothing still count.
 - is logged by method, origin, and path: never a query string, a header,
   or a body. Keep secrets out of paths, or use a guarded client, whose
   logs show only the origin.
@@ -890,15 +908,22 @@ and the connection goes to an address that was checked, so DNS rebinding
 gains nothing; TLS still checks the certificate against the host name.
 A guarded client ignores proxy settings from the environment, and the CAs
 it names (`SSL_CERT_FILE`, `SSL_CERT_DIR`): it trusts `CA_BUNDLE`, or the
-system's CAs. It asks for uncompressed answers, and sends no request id or
-trace context unless `propagate=True`. A refused URL raises `UnsafeURL`, a
-422 `unsafe_url` when the request does not catch it. Host names are looked
-up on threads of the guard's own, never the event loop's default
-executor, which `asyncio.to_thread` and new database connections need: at
-most 4 lookups at once, 2 of one host, and a host whose lookup failed
-fails at once for 5 seconds. A lookup past those bounds fails at once, as
-a connection error, so a host whose DNS never answers costs the other
-calls nothing. A guarded client takes no `transport=`, which would skip
+system's CAs. It asks for uncompressed answers, and refuses one compressed
+anyway (`httpx2.DecodingError`) unless the call's own `Accept-Encoding`
+took it; it sends no request id or trace context unless `propagate=True`.
+A refused URL raises `UnsafeURL`, a 422 `unsafe_url` when the request does
+not catch it. Host names are looked up on threads of the guard's own,
+never the event loop's default executor, which `asyncio.to_thread` and new
+database connections need: at most `GUARD_LOOKUP_THREADS` (16) lookups at
+once, 2 of one host, and a quarter of the threads for one owner: the
+request's user, or its address (an IPv6 network), or whom
+`guard.lookups_for(owner)` names around the calls. A host whose lookup
+failed fails at once for 5 seconds, or for a minute if the lookup took 5
+seconds or more to fail (the system's resolver timed out: its DNS does not
+answer). A lookup past those bounds fails at once, as a connection error,
+so hosts one caller chose that never answer cost the other callers
+nothing. (A lookup cannot be interrupted, which an asynchronous resolver
+will change.) A guarded client takes no `transport=`, which would skip
 its address checks; tests use `stub`.
 
 | Raised | When |

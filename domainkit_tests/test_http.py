@@ -32,6 +32,7 @@ from domainkit.http.middleware import (
     RequestBodyTooLarge,
     RequestContextMiddleware,
     host_allowed,
+    request_path,
     security_headers,
 )
 from domainkit.ledger import ledgers
@@ -278,7 +279,9 @@ def test_untrusted_hosts_are_rejected(
 
     assert (response.status_code, response.json()["code"]) == (400, "invalid_host")
     assert response.json()["detail"] == "Invalid host header."
-    client.get("/ok", headers={"Host": "x" * 300})
+    # Another caller: one caller's repeats are throttled (test_security_log).
+    other = TestClient(client.app, client=("198.51.100.7", 50000))
+    other.get("/ok", headers={"Host": "x" * 300})
     assert [
         record.getMessage()
         for record in caplog.records
@@ -522,6 +525,77 @@ def test_access_log_levels(
     assert "secret" not in caplog.text
 
 
+@pytest.mark.parametrize(
+    ("path", "root", "expected"),
+    [
+        ("/ready", "", "/ready"),
+        ("/api/ready", "/api", "/ready"),
+        ("/api/ready", "/api/", "/ready"),
+        ("/api", "/api", ""),
+        ("/apiary/ready", "/api", "/apiary/ready"),  # Not at a "/": kept whole.
+        ("/ready", "/api", "/ready"),  # A server that left the root out.
+        ("/ready", "/", "/ready"),
+    ],
+)
+def test_request_paths_leave_the_root_path_out(
+    path: str, root: str, expected: str
+) -> None:
+    """Every list of paths in settings is compared with this path."""
+    assert request_path({"path": path, "root_path": root}) == expected
+    assert request_path({"path": path}) == path
+
+
+def test_exempt_and_quiet_paths_hold_behind_a_root_path(
+    make_client: MakeClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Under ``--root-path /api`` probes are neither counted nor logged at INFO."""
+    caplog.set_level(logging.DEBUG, logger="domainkit.access")
+    app = make_client(
+        RATE_LIMIT="1/minute",
+        MIDDLEWARE=[
+            "domainkit.http.middleware.RequestContextMiddleware",
+            "domainkit.http.ratelimit.RateLimitMiddleware",
+        ],
+    ).app
+    client = TestClient(app, root_path="/api")
+
+    probes = [client.get("/api/health").status_code for _ in range(3)]
+    counted = [client.get("/api/ok").status_code for _ in range(2)]
+
+    assert probes == [200, 200, 200]
+    assert counted == [200, 429]
+    levels = {
+        record.getMessage().split()[1]: record.levelno
+        for record in caplog.records
+        if record.name == "domainkit.access"
+    }
+    assert levels == {"/api/health": logging.DEBUG, "/api/ok": logging.WARNING}
+
+
+def test_refusals_are_logged_once_per_caller_a_while(
+    make_client: MakeClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A flood of bad hosts or bodies from one caller writes a line, then counts.
+
+    Another caller is written at once; the count comes with the caller's
+    next line after ``THROTTLE_INTERVAL``.
+    """
+    app = make_client(MAX_REQUEST_BODY_SIZE=10).app
+    flood = TestClient(app, client=("203.0.113.9", 1))
+    other = TestClient(app, client=("198.51.100.7", 1))
+
+    for _ in range(3):
+        flood.get("/ok", headers={"Host": "evil.example"})
+        flood.post("/echo", content=b"x" * 11)
+    other.get("/ok", headers={"Host": "evil.example"})
+
+    assert [r.getMessage() for r in caplog.records if r.name == SECURITY_LOGGER] == [
+        "Rejected untrusted Host header 'evil.example'",
+        "Rejected request body of 11 bytes (limit 10)",
+        "Rejected untrusted Host header 'evil.example'",
+    ]
+
+
 def test_cors_preflight(make_client: MakeClient) -> None:
     """Allowed origins get CORS headers when CORSMiddleware is installed."""
     client = make_client(
@@ -710,20 +784,26 @@ def test_readiness_checks_every_kind_at_once(monkeypatch: pytest.MonkeyPatch) ->
     assert rounds == {"domainkit.readiness"}
 
 
-def test_a_round_that_fails_is_raised_to_its_probes_not_logged_twice(
+def test_a_round_whose_checks_raise_is_kept_as_failing(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The other checks finish first; the round's own task logs nothing."""
+    """A group that raises fails, by name, and is cached: a 503, not a 500 each.
+
+    The other checks finish first, the error is logged once by the round,
+    and the round's own task logs nothing.
+    """
     finished: list[str] = []
+    calls: list[str] = []
 
     async def broken(seconds: float) -> list[str]:
+        calls.append("domains")
         raise RuntimeError("checks broke")
 
     async def slower(seconds: float) -> list[str]:
         for _ in range(50):  # Many loop passes: longer than the error takes.
             await asyncio.sleep(0)
         finished.append("databases")
-        return []
+        return ["database:default"]
 
     async def quick(seconds: float) -> list[str]:
         return []
@@ -734,15 +814,67 @@ def test_a_round_that_fails_is_raised_to_its_probes_not_logged_twice(
         monkeypatch.setattr(checked, "check_all", quick)
     request = SimpleNamespace(app=SimpleNamespace(state=State()))
 
-    async def probe() -> None:
-        with pytest.raises(RuntimeError, match="checks broke"):
-            await health._failing_checks(request)  # type: ignore[arg-type]
+    async def probe() -> list[list[str]]:
+        first = await health._failing_checks(request)  # type: ignore[arg-type]
         assert finished == ["databases"]  # None left running behind.
+        again = await health._failing_checks(request)  # type: ignore[arg-type]
         await asyncio.sleep(0)  # Done callbacks run on the next loop pass.
+        return [first, again]
 
-    with caplog.at_level(logging.DEBUG, "domainkit.tasks"):
-        asyncio.run(probe())
+    with (
+        override_settings(READINESS_CACHE_SECONDS=60),
+        caplog.at_level(logging.DEBUG, "domainkit.tasks"),
+    ):
+        answers = asyncio.run(probe())
+    assert answers == [["domains", "database:default"]] * 2
+    assert calls == ["domains"]  # The second probe read the kept round.
     assert [r for r in caplog.records if r.name == "domainkit.tasks"] == []
+    [logged] = [r for r in caplog.records if r.name == "domainkit.http.health"]
+    assert logged.getMessage() == "Readiness checks of domains raised"
+    assert logged.exc_info is not None
+    assert str(logged.exc_info[1]) == "checks broke"
+
+
+def test_a_raising_readiness_check_answers_503(
+    make_client: MakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Through the route: unavailable, and the group named with details on."""
+
+    async def broken(seconds: float) -> list[str]:
+        raise RuntimeError("checks broke")
+
+    monkeypatch.setattr(caches, "check_all", broken)
+    client = make_client(READINESS_DETAILS=True)
+
+    response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"status": "unavailable", "failing": ["caches"]}
+
+
+def test_a_cancelled_group_still_cancels_the_round(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only errors count as failing; a group cancelled under it is not one."""
+
+    async def cancelled(seconds: float) -> list[str]:
+        raise asyncio.CancelledError
+
+    async def quick(seconds: float) -> list[str]:
+        return []
+
+    monkeypatch.setattr(registry, "check", quick)
+    monkeypatch.setattr(connections, "check_all", cancelled)
+    for checked in (ledgers, caches):
+        monkeypatch.setattr(checked, "check_all", quick)
+    state = State()
+
+    async def check() -> None:
+        with pytest.raises(asyncio.CancelledError):
+            await health._check(state)
+
+    asyncio.run(check())
+    assert not hasattr(state, "readiness")
 
 
 def test_a_round_left_on_another_loop_is_not_awaited(

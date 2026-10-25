@@ -24,12 +24,18 @@ stop an application starting.
 The request line and headers have the server's own default limits (h11's
 16 KiB under uvicorn), already below any body limit, so they are not
 checked against it.
+
+A server that listens on a unix socket (``uvicorn --uds``, ``granian
+--uds``, ``gunicorn --bind unix:...``, or their ``UVICORN_UDS``,
+``GRANIAN_UDS`` and ``GUNICORN_CMD_ARGS``) gives no caller an address:
+``unix_socket_warnings`` says so unless ``TRUSTED_PROXIES`` holds
+``"unix"``, which believes the proxy on the other end of the socket.
 """
 
 import os
 import shlex
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -172,6 +178,68 @@ def _how(limits: ServerLimits, size: int) -> str:
     if limits.launcher == "fastapi":
         return f"fastapi run cannot set it: run uvicorn with --ws-max-size {size}."
     return f"start it with --ws-max-size {size} (UVICORN_WS_MAX_SIZE)."
+
+
+UNIX_SOCKET_WARNING: Final = (
+    "The server listens on a unix socket, where callers have no address: they "
+    "all share one rate limit and one hold on refused credentials, and the "
+    'audit trail records no address. Add "unix" to TRUSTED_PROXIES, so the '
+    "X-Forwarded-For of the proxy on the other end names each caller."
+)
+
+
+def unix_socket_warnings(
+    trusted: Collection[object],
+    argv: Sequence[str] | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> list[str]:
+    """What to change when the server listens on a unix socket; empty if nothing.
+
+    ``trusted`` is ``TRUSTED_PROXIES``: with ``"unix"`` in it, the proxy
+    on the socket's other end is believed, and nothing needs saying.
+    """
+    if "unix" in trusted or not listens_on_unix_socket(argv, environ):
+        return []
+    return [UNIX_SOCKET_WARNING]
+
+
+def listens_on_unix_socket(
+    argv: Sequence[str] | None = None, environ: Mapping[str, str] | None = None
+) -> bool:
+    """Whether the server listens on a unix socket, by ``argv`` and ``environ``.
+
+    They default to this process's: ``--uds`` (uvicorn, Granian), a
+    ``unix:`` bind (gunicorn), or the variables that set them.
+    """
+    argv = sys.argv if argv is None else argv
+    environ = os.environ if environ is None else environ
+    program = _program(argv)
+    if program in {"uvicorn", "granian"} and _option(argv, "--uds"):
+        return True
+    if program == "gunicorn" and _binds_unix(argv[1:]):
+        return True
+    if environ.get("UVICORN_UDS") or environ.get("GRANIAN_UDS"):
+        return True
+    try:
+        return _binds_unix(shlex.split(environ.get("GUNICORN_CMD_ARGS", "")))
+    except ValueError:  # Unbalanced quotes: gunicorn would refuse it too.
+        return False
+
+
+def _binds_unix(args: Sequence[str]) -> bool:
+    """Whether gunicorn's ``args`` bind a unix socket (``-b unix:PATH``)."""
+    for index, argument in enumerate(args):
+        if argument in {"-b", "--bind"}:
+            bound = args[index + 1] if index + 1 < len(args) else ""
+        elif argument.startswith("--bind="):
+            bound = argument.partition("=")[2]
+        elif argument.startswith("-b"):
+            bound = argument[2:]
+        else:
+            continue
+        if bound.startswith("unix:"):
+            return True
+    return False
 
 
 def _program(argv: Sequence[str]) -> str:

@@ -50,7 +50,12 @@ from domainkit.conf.global_settings import REDIS_SCHEMES
 from domainkit.context import current_request
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import APIError, error_response
-from domainkit.http.middleware import ADDRESS_CACHE, MAX_CACHED_ADDRESS, set_headers
+from domainkit.http.middleware import (
+    ADDRESS_CACHE,
+    MAX_CACHED_ADDRESS,
+    request_path,
+    set_headers,
+)
 from domainkit.utils.module_loading import import_string
 from domainkit.utils.rates import parse_rate
 
@@ -280,7 +285,7 @@ class RateLimitMiddleware:
         if (
             self.rate is None
             or scope["type"] not in {"http", "websocket"}
-            or scope["path"] in self.exempt
+            or request_path(scope) in self.exempt
         ):
             await self.app(scope, receive, send)
             return

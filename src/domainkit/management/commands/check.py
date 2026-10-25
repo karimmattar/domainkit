@@ -8,6 +8,7 @@ from domainkit.db import migrations
 from domainkit.http import get_asgi_application, websockets
 from domainkit.http.application import application_problems
 from domainkit.http.blocking import sync_calls
+from domainkit.http.servers import unix_socket_warnings
 from domainkit.management.base import BaseCommand, CommandError
 
 
@@ -48,6 +49,7 @@ class Command(BaseCommand):
         ]
         if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
             warnings += websockets.server_warnings(app)
+            warnings += unix_socket_warnings(settings.TRUSTED_PROXIES)
         warnings += sync_calls(app, _project_domains())
         plural = "s" if len(warnings) > 1 else ""
         found = f" and {len(warnings)} warning{plural}" if warnings else ""

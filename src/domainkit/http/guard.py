@@ -21,13 +21,17 @@ nothing. ``domainkit.contrib.webhooks`` checks subscriptions with it, and
 ``domainkit.http.client`` the calls of a client made with ``guard=True``.
 
 Host names are looked up on threads of the guard's own (``GuardResolver``),
-at most ``LOOKUP_THREADS`` at once and ``LOOKUPS_PER_HOST`` of one host,
-never on the event loop's default executor: a name whose DNS never answers
+at most ``GUARD_LOOKUP_THREADS`` at once, ``LOOKUPS_PER_HOST`` of one host,
+and a quarter of the threads (``OWNER_SHARE``) for one owner: the caller of
+the request (its user, or its address), or whom ``lookups_for`` names.
+Never on the event loop's default executor: a name whose DNS never answers
 holds its thread until the system's resolver gives up, long after the
 caller stopped waiting, and would otherwise hold up ``asyncio.to_thread``
 and new database connections. A lookup past those bounds fails at once, as
 does one of a host whose lookup failed in the last
-``FAILED_LOOKUP_SECONDS``.
+``FAILED_LOOKUP_SECONDS``, or in the last ``HUNG_LOOKUP_BACKOFF`` if it
+failed after ``HUNG_LOOKUP_SECONDS`` or more: one caller's hosts that
+never answer cannot hold every thread, nor take them again at once.
 
 TLS for those calls (``tls_context``) trusts the system's CAs, or a bundle
 of the project's, and nothing the environment adds: ``SSL_CERT_FILE`` and
@@ -44,8 +48,9 @@ import ssl
 import sys
 import threading
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager
 from functools import cache
 from pathlib import Path
 from typing import Any, Final
@@ -53,6 +58,8 @@ from typing import Any, Final
 import httpx2
 
 from domainkit import clock
+from domainkit.conf import settings
+from domainkit.context import current_request
 from domainkit.ddd import BusinessRuleViolation
 from domainkit.exceptions import ImproperlyConfigured
 
@@ -97,12 +104,21 @@ SYSTEM_BUNDLES: Final = (
 """Where systems keep their CA bundle, when OpenSSL was built to look elsewhere."""
 OS_TRUST_STORES: Final = frozenset({"darwin", "win32"})
 """Platforms whose trust store the operating system keeps, not OpenSSL."""
-LOOKUP_THREADS: Final = 4
-"""Threads that look host names up for the guard, in each process."""
+LOOKUP_THREADS: Final = 16
+"""Threads that look host names up for the guard, in each process, by default.
+
+``GUARD_LOOKUP_THREADS`` sets them."""
 LOOKUPS_PER_HOST: Final = 2
 """Lookups of one host name under way at once; another fails at once."""
+OWNER_SHARE: Final = 4
+"""One owner's lookups may take this part of the threads (a quarter), at least 1."""
 FAILED_LOOKUP_SECONDS: Final = 5.0
 """How long a failed lookup is remembered: its host fails at once meanwhile."""
+HUNG_LOOKUP_SECONDS: Final = 5.0
+"""A lookup that failed after this long hung: the resolver timed out on it."""
+HUNG_LOOKUP_BACKOFF: Final = 60.0
+"""How long a host whose lookup hung fails at once, instead of a retry's taking
+a thread for as long again."""
 FAILED_LOOKUPS: Final = 1024
 """Hosts whose failed lookups are remembered at most; the oldest go first."""
 LOOKUPS: Final = "guard lookups"
@@ -201,29 +217,42 @@ def checked_url(
 class GuardResolver:
     """Looks host names up on a few threads of its own, a few at a time.
 
-    At most ``threads`` lookups run at once, ``per_host`` of them for one
-    host; one past either bound fails at once. A lookup counts until its
-    thread is done, even when its caller stopped waiting: the system's
-    resolver cannot be interrupted. A failed lookup is remembered for
-    ``remember`` seconds, and its error raised again at once meanwhile.
-    Event loops on several threads share one resolver, under its lock.
-    The threads start with the first lookup and stop at shutdown
-    (``close``), registered with ``domainkit.lifecycle``.
+    At most ``threads`` lookups run at once (default:
+    ``GUARD_LOOKUP_THREADS``, read when the threads start), ``per_host``
+    of them for one host, and a quarter of the threads (``OWNER_SHARE``)
+    for one owner (``lookup_owner``); one past a bound fails at once. A
+    lookup counts until its thread is done, even when its caller stopped
+    waiting: the system's resolver cannot be interrupted. A failed lookup
+    is remembered for ``remember`` seconds, and its error raised again at
+    once meanwhile; one that failed after ``hung_after`` seconds or more
+    hung, and is remembered for ``back_off`` seconds. Event loops on
+    several threads share one resolver, under its lock. The threads start
+    with the first lookup and stop at shutdown (``close``), registered
+    with ``domainkit.lifecycle``.
     """
 
     def __init__(
         self,
-        threads: int = LOOKUP_THREADS,
+        threads: int | None = None,
         per_host: int = LOOKUPS_PER_HOST,
         remember: float = FAILED_LOOKUP_SECONDS,
+        *,
+        hung_after: float = HUNG_LOOKUP_SECONDS,
+        back_off: float = HUNG_LOOKUP_BACKOFF,
     ) -> None:
         """Run ``threads`` lookups at once, ``per_host`` per host."""
         self.threads = threads
         self.per_host = per_host
         self.remember = remember
+        self.hung_after = hung_after
+        self.back_off = back_off
         self._lock = threading.Lock()
         self._executor: ThreadPoolExecutor | None = None
+        self._size = 0
+        """Threads of the running executor; 0 while there is none."""
         self._running: dict[str, int] = {}
+        self._owners: dict[str, int] = {}
+        """Lookups under way per owner; owners with none are forgotten."""
         self._failed: OrderedDict[str, tuple[float, int, str]] = OrderedDict()
 
     @property
@@ -239,63 +268,153 @@ class GuardResolver:
             OSError: The host could not be resolved, failed to be a moment
                 ago, or too many lookups are under way (``EAI_AGAIN``).
         """
-        infos = await asyncio.wrap_future(self._start(host, port))
+        infos = await asyncio.wrap_future(self._start(host, port, lookup_owner()))
         return list(dict.fromkeys(ipaddress.ip_address(info[4][0]) for info in infos))
 
     async def close(self) -> None:
         """Stop the threads once their lookups end; the next lookup starts others."""
         with self._lock:
             executor, self._executor = self._executor, None
+            self._size = 0
         if executor is not None:
             executor.shutdown(wait=False, cancel_futures=True)
 
-    def _start(self, host: str, port: int) -> "Future[list[Any]]":
+    def _start(
+        self, host: str, port: int, owner: str | None = None
+    ) -> "Future[list[Any]]":
         """Hand the lookup to a thread, or refuse it at once."""
         with self._lock:
+            now = clock.monotonic()
             failed = self._failed.get(host)
             if failed is not None:
                 until, number, reason = failed
-                if clock.monotonic() < until:
+                if now < until:
                     raise socket.gaierror(number, reason)
                 del self._failed[host]
+            size = self._size or self.threads or _configured_threads()
             if (
-                sum(self._running.values()) >= self.threads
+                sum(self._running.values()) >= size
                 or self._running.get(host, 0) >= self.per_host
             ):
                 raise socket.gaierror(
                     socket.EAI_AGAIN, "Too many host name lookups are under way."
                 )
+            if owner is not None and self._owners.get(owner, 0) >= max(
+                1, size // OWNER_SHARE
+            ):
+                raise socket.gaierror(
+                    socket.EAI_AGAIN,
+                    "Too many host name lookups of one caller are under way.",
+                )
             executor = self._executor
             starting = executor is None
             if executor is None:
                 executor = self._executor = ThreadPoolExecutor(
-                    self.threads, thread_name_prefix="domainkit-lookup"
+                    size, thread_name_prefix="domainkit-lookup"
                 )
+                self._size = size
             future = executor.submit(
                 socket.getaddrinfo, host, port, type=socket.SOCK_STREAM
             )
             self._running[host] = self._running.get(host, 0) + 1
+            if owner is not None:
+                self._owners[owner] = self._owners.get(owner, 0) + 1
         if starting:
             _register(self)
         # Its clock is the caller's, frozen in tests, whichever thread ends it.
         context = contextvars.copy_context()
-        future.add_done_callback(lambda done: context.run(self._finished, host, done))
+        future.add_done_callback(
+            lambda done: context.run(self._finished, host, done, owner, now)
+        )
         return future
 
-    def _finished(self, host: str, future: "Future[list[Any]]") -> None:
-        """Count the lookup's thread free; remember its host if it failed."""
+    def _finished(
+        self,
+        host: str,
+        future: "Future[list[Any]]",
+        owner: str | None = None,
+        started: float | None = None,
+    ) -> None:
+        """Count the lookup's thread free; remember its host if it failed.
+
+        A failure after ``hung_after`` seconds or more, since ``started``,
+        is remembered for ``back_off`` seconds, not ``remember``.
+        """
         error = None if future.cancelled() else future.exception()
         with self._lock:
-            if self._running[host] > 1:
-                self._running[host] -= 1
-            else:
-                del self._running[host]
+            _count_off(self._running, host)
+            if owner is not None:
+                _count_off(self._owners, owner)
             if isinstance(error, OSError):
-                until = clock.monotonic() + self.remember
+                now = clock.monotonic()
+                hung = started is not None and now - started >= self.hung_after
+                until = now + (self.back_off if hung else self.remember)
                 reason = error.strerror or str(error)
                 self._failed[host] = (until, error.errno or 0, reason)
                 if len(self._failed) > FAILED_LOOKUPS:
                     self._failed.popitem(last=False)
+
+
+def _configured_threads() -> int:
+    """``GUARD_LOOKUP_THREADS``; ``LOOKUP_THREADS`` where no settings are loaded.
+
+    The guard serves scripts that load no settings too, as it always has.
+    """
+    try:
+        threads: int = settings.GUARD_LOOKUP_THREADS
+    except ImproperlyConfigured:
+        return LOOKUP_THREADS
+    return threads
+
+
+def _count_off(counts: dict[str, int], key: str) -> None:
+    """One fewer of ``key`` under way; a key with none left is forgotten."""
+    if counts[key] > 1:
+        counts[key] -= 1
+    else:
+        del counts[key]
+
+
+_owner: Final[contextvars.ContextVar[str | None]] = contextvars.ContextVar(
+    "domainkit_lookup_owner", default=None
+)
+
+
+@contextmanager
+def lookups_for(owner: str) -> Iterator[None]:
+    """Count the guard's lookups in the block, and tasks it starts, as ``owner``'s.
+
+    One owner's lookups may take a quarter of the threads (``OWNER_SHARE``),
+    so hosts one owner chose that never answer leave the rest to others.
+    """
+    token = _owner.set(owner)
+    try:
+        yield
+    finally:
+        _owner.reset(token)
+
+
+def lookup_owner() -> str | None:
+    """Whose lookups these are: as ``lookups_for`` says, else the request's caller.
+
+    The caller is the request's user (``actor:<id>``), or its address
+    (``ip:<address>``, an IPv6 address's network, as rate limits count
+    it). Outside a request, and unnamed, nobody's: only the other bounds
+    hold.
+    """
+    owner = _owner.get()
+    if owner is not None:
+        return owner
+    request = current_request()
+    if request is None:
+        return None
+    if request.actor:
+        return f"actor:{request.actor}"
+    if request.client_ip is None:
+        return "ip:unknown"
+    from domainkit.http.ratelimit import client_group  # It imports the HTTP stack.
+
+    return f"ip:{client_group(request.client_ip)}"
 
 
 def _register(resolver: GuardResolver) -> None:

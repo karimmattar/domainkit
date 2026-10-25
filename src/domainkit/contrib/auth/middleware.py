@@ -52,8 +52,9 @@ from domainkit.conf import settings
 from domainkit.context import bind_request, current_request
 from domainkit.http.errors import error_response
 from domainkit.http.live import REAUTHENTICATE
+from domainkit.http.middleware import request_path
 from domainkit.http.ratelimit import Backend, Decision, address_key, refuse
-from domainkit.log import SECURITY_LOGGER
+from domainkit.log import SECURITY_LOGGER, ThrottledLog
 from domainkit.utils.module_loading import import_string
 from domainkit.utils.rates import parse_rate
 
@@ -89,6 +90,8 @@ class AuthenticationMiddleware:
         self.limiter: Backend | None = (
             import_string(settings.RATE_LIMIT_BACKEND)() if self.rate else None
         )
+        self.log = ThrottledLog(security_logger)
+        """Refused credentials, at most a line per address a while."""
         self.held: OrderedDict[str, float] = OrderedDict()
         """Addresses over the limit, and until when (``monotonic()``)."""
         # Event loops on several threads (free-threaded Python) share it.
@@ -96,7 +99,10 @@ class AuthenticationMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Authenticate, then serve the request as its user."""
-        if scope["type"] not in {"http", "websocket"} or scope["path"] in self.exempt:
+        if (
+            scope["type"] not in {"http", "websocket"}
+            or request_path(scope) in self.exempt
+        ):
             await self.app(scope, receive, send)
             return
         connection = HTTPConnection(scope)
@@ -180,7 +186,12 @@ class AuthenticationMiddleware:
         A 401 counts against ``RATE_LIMIT`` for the address, and past it is
         a 429 instead; other refusals (a 403 for CSRF) are not counted.
         """
-        security_logger.warning("Refused credentials: %s", refused.error.detail)
+        self.log.warning(
+            "refused_credentials",
+            address_key(scope),
+            "Refused credentials: %s",
+            refused.error.detail,
+        )
         unauthorized = refused.error.status_code == status.HTTP_401_UNAUTHORIZED
         if unauthorized and self.rate is not None and self.limiter is not None:
             limit, period = self.rate

@@ -477,6 +477,28 @@ def test_refused_credentials_count_against_the_rate_limit(
     assert served.json()["user"] == "alice"
 
 
+def test_refused_credentials_are_logged_once_per_address_a_while(
+    api: Api, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A flood of bad tokens writes a line per address, not one per request."""
+    client = api()
+    elsewhere = TestClient(client.app, client=("203.0.113.9", 1))
+
+    for _ in range(3):
+        assert client.get("/whoami", headers=bearer("dkt_unknown")).status_code == 401
+    assert elsewhere.get("/whoami", headers=bearer("dkt_unknown")).status_code == 401
+
+    assert caplog.messages.count("Refused credentials: Invalid token.") == 2
+
+
+def test_authentication_exempt_paths_hold_behind_a_root_path(api: Api) -> None:
+    """Under ``--root-path /api`` probes are exempt as they are without it."""
+    client = TestClient(api().app, root_path="/api")
+
+    assert client.get("/api/health", headers=bearer("dkt_unknown")).status_code == 200
+    assert client.get("/api/whoami", headers=bearer("dkt_unknown")).status_code == 401
+
+
 def test_held_addresses_are_let_go(api: Api, monkeypatch: pytest.MonkeyPatch) -> None:
     """After ``Retry-After``, and when too many others are held, first in first out."""
     create_user("alice")
