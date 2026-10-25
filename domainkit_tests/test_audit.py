@@ -42,6 +42,7 @@ from domainkit.db import connections
 from domainkit.ddd import Counted, DomainEvent, Personal, ValueObject
 from domainkit.ddd.personal import counted_fields, personal_fields
 from domainkit.management import CommandError, call_command
+from domainkit.management.commands import partitions as partitions_command
 from domainkit.testing import assert_num_queries
 from domainkit.testing.queries import CapturedQueries
 from domainkit_tests.conftest import POSTGRES_VARIABLE
@@ -677,7 +678,7 @@ def test_auditforget_command(
             )
             found = [tuple(row) for row in rows]
         await connections.close_all()
-        return found  # type: ignore[return-value]
+        return found
 
     runs = asyncio.run(recorded())
     assert [(actor, outcome) for actor, outcome, _ in runs] == [
@@ -711,17 +712,37 @@ def test_pruning_partitions_is_audited(
             )
             found = [tuple(row) for row in rows]
         await connections.close_all()
-        return found  # type: ignore[return-value]
+        return found
+
+    calls: list[tuple[str, dict[str, bool]]] = []
+
+    async def maintain(alias: str, **options: bool) -> list[str]:
+        calls.append((alias, options))
+        return ["DROP TABLE events_p20200101"] if options.get("prune") else []
 
     asyncio.run(prepare())
+    monkeypatch.setattr(partitions_command, "maintain", maintain)
+    outputs = []
     for arguments in (("--prune", "--dry-run"), (), ("--prune", "--operator", "ops")):
-        call_command("partitions", *arguments, stdout=io.StringIO())
+        output = io.StringIO()
+        call_command("partitions", *arguments, stdout=output)
+        outputs.append(output.getvalue())
 
+    assert calls == [
+        ("default", {"prune": True, "dry_run": True}),
+        ("default", {"prune": False, "dry_run": False}),
+        ("default", {"prune": True}),
+    ]
+    assert outputs == [
+        "DROP TABLE events_p20200101;\n",
+        "Partitions of 'default' are up to date.\n",
+        "Partitions of 'default': 1 change(s).\n",
+    ]
     assert asyncio.run(recorded()) == [
         (
             "operator.partitions.prune",
             "operator:ops",
-            {"database": "default", "changes": 0, "operator_source": "option"},
+            {"database": "default", "changes": 1, "operator_source": "option"},
         )
     ]
 

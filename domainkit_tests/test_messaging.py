@@ -810,6 +810,8 @@ async def test_finished_messages_keep_their_row_not_their_arguments(
             select(messages.c.payload).where(messages.c.id == cancelled)
         )
     assert stopped == {}
+    assert await admin.blanked_dead_letters(config, None) == 1  # Of 2 dead.
+    assert await admin.blanked_dead_letters(config, dead["id"]) == 0  # type: ignore[arg-type]
     assert await admin.retry_dead(config, None) == 1  # always_fails only.
     assert await admin.blanked_dead_letters(config, None) == 1
 
@@ -834,19 +836,17 @@ async def test_dead_messages_of_other_tasks_keep_their_arguments(
 def test_retrying_a_blanked_message_says_why_it_cannot(messaging: None) -> None:
     """``messages --retry`` refuses one blanked message, and counts them in all."""
 
-    async def prepare() -> uuid.UUID:
+    async def prepare() -> tuple[uuid.UUID, uuid.UUID]:
         async with connections.engine().begin() as connection:
             await connection.run_sync(messages.create)
         await enqueue(sends_a_code, to="+33612345678", code="493021")
         await enqueue(always_fails)
         await Worker().run_once()
-        (blanked_id,) = [
-            row["id"] for row in await outbox() if row["target"] == "tests.sends_a_code"
-        ]
+        ids = {row["target"]: row["id"] for row in await outbox()}
         await connections.close_all()
-        return blanked_id  # type: ignore[return-value]
+        return ids["tests.sends_a_code"], ids["tests.always_fails"]  # type: ignore[return-value]
 
-    blanked_id = asyncio.run(prepare())
+    blanked_id, failed_id = asyncio.run(prepare())
 
     with pytest.raises(CommandError) as refused:
         run("messages", "--retry", str(blanked_id))
@@ -855,8 +855,9 @@ def test_retrying_a_blanked_message_says_why_it_cannot(messaging: None) -> None:
         "were blanked when it died. Make and send it again from where it came "
         "from."
     )
+    assert run("messages", "--retry", str(failed_id)) == "Queued 1 message(s).\n"
     assert run("messages", "--retry", "all") == (
-        "Queued 1 message(s).\n"
+        "Queued 0 message(s).\n"
         "Left 1 dead message(s) of sensitive tasks: their arguments were blanked "
         "when they died.\n"
     )
@@ -878,17 +879,22 @@ def test_retries_and_cancels_are_audited_with_their_operator(
     ):
         setup()
 
-        async def prepare() -> uuid.UUID:
+        async def prepare() -> tuple[uuid.UUID, uuid.UUID]:
             async with connections.engine().begin() as connection:
                 await connection.run_sync(messages.create)
                 for table in (audit_log, audit_keys, audit_seals):
                     await connection.run_sync(table.create)
             await enqueue(always_fails)
             await Worker().run_once()
+            (dead,) = [
+                row["id"]
+                for row in await outbox()
+                if row["target"] == "tests.always_fails"
+            ]
             await enqueue(remember, value=uuid.uuid4())
             waiting = (await outbox())[-1]["id"]
             await connections.close_all()
-            return waiting  # type: ignore[return-value]
+            return dead, waiting  # type: ignore[return-value]
 
         async def recorded() -> list[dict[str, Any]]:
             async with connections.engine().connect() as connection:
@@ -899,10 +905,11 @@ def test_retries_and_cancels_are_audited_with_their_operator(
             await connections.close_all()
             return found
 
-        waiting = asyncio.run(prepare())
+        dead, waiting = asyncio.run(prepare())
+        run("messages", "--retry", str(dead))
         run("messages", "--retry", "all")
         run("messages", "--cancel", str(waiting), "--operator", "alice")
-        with pytest.raises(CommandError, match="was not cancelled"):
+        with pytest.raises(CommandError) as refused:
             run("messages", "--cancel", str(waiting))
         run("messages", "--dead")  # Reading is not recorded.
         rows = [
@@ -912,19 +919,25 @@ def test_retries_and_cancels_are_audited_with_their_operator(
         ]
     registry.clear()
 
+    assert str(refused.value) == (
+        f"{waiting} was not cancelled: it is running, already finished, or not in "
+        "this outbox."
+    )
     assert [(row["action"], row["actor"]) for row in rows] == [
+        ("operator.messages.retry", "operator:ops-1"),
         ("operator.messages.retry", "operator:ops-1"),
         ("operator.messages.cancel", "operator:alice"),
         ("operator.messages.cancel", "operator:ops-1"),
     ]
-    retried, cancelled, missed = (row["details"] for row in rows)
-    assert retried == {
-        "message": "all",
+    one, every, cancelled, missed = (row["details"] for row in rows)
+    assert one == {
+        "message": str(dead),
         "database": "default",
         "queued": 1,
         "blanked": 0,
         "operator_source": "environment",
     }
+    assert (every["message"], every["queued"]) == ("all", 0)
     assert (cancelled["message"], cancelled["cancelled"]) == (str(waiting), True)
     assert cancelled["operator_source"] == "option"
     assert missed["cancelled"] is False

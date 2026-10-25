@@ -31,7 +31,7 @@ from domainkit.contrib.flags import (
 )
 from domainkit.contrib.flags import store as store_module
 from domainkit.contrib.flags.events import FlagChanged
-from domainkit.contrib.flags.models import bucket
+from domainkit.contrib.flags.models import DynamicSetting, bucket
 from domainkit.contrib.flags.tables import dynamic_settings, flags
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
@@ -599,6 +599,10 @@ def test_changes_are_recorded_with_their_rules() -> None:
     assert isinstance(event, FlagChanged)
     assert (event.name, event.everyone, event.percentage) == ("beta", False, 5)
     assert (event.users, event.groups) == (("u1", "u2"), ("g",))
+    setting = DynamicSetting(id="checkout.max_items")
+    setting.change(25)  # Not secret unless said.
+    (changed,) = setting.pull_events()
+    assert (changed.value, changed.secret) == (25, False)  # type: ignore[attr-defined]
 
 
 def test_flags_are_read_with_the_stored_rules(project: None) -> None:

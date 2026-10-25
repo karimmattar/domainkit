@@ -243,6 +243,35 @@ async def test_a_database_that_does_not_answer_is_named(
     ]
 
 
+async def test_every_audited_database_is_probed(
+    tables: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One that does not answer is named, and the others are still checked."""
+
+    async def probe(database: str) -> list[str]:
+        if database == "default":
+            raise TimeoutError
+        return ["first_trigger", "second_trigger"] if database == "reports" else []
+
+    monkeypatch.setattr(
+        baseline, "audited_databases", lambda: ["default", "reports", "x"]
+    )
+    monkeypatch.setattr(baseline, "missing_triggers", probe)
+
+    assert await protection_problems() == [
+        (
+            "Could not check the audit trail's triggers in 'default' "
+            "(TimeoutError); run 'manage.py auditverify' once it answers."
+        ),
+        (
+            "The audit trail in 'reports' is not append-only: triggers "
+            "first_trigger, second_trigger are missing or disabled. Call "
+            "protect(op) and protect(op, audit_seals) from a revision "
+            "(domainkit.contrib.audit.protection) and migrate."
+        ),
+    ]
+
+
 @on_postgres
 async def test_the_probe_finds_missing_and_disabled_triggers(tables: None) -> None:
     """Every ``protect()`` trigger must be there, and enabled, on both tables."""
