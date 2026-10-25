@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 
 import anyio
 import pytest
-from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI
+from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, Response
 from fastapi.testclient import TestClient
 from sqlalchemy import ColumnElement, Table, false, insert, select
 from sqlalchemy.sql import Select
@@ -1794,6 +1794,13 @@ PAY_SCOPE: Scope = {
 """A keyed ``POST /pay``, as a server hands it to the application."""
 
 
+async def record_payment() -> None:
+    """Commit a payment through a unit of work, as a keyed request's work does."""
+    async with sample_routes.PaymentsUnitOfWork() as uow:
+        await uow.session.execute(insert(sample_routes.payments))
+        await uow.commit()
+
+
 class AfterResponse:
     """A keyed ``POST /pay`` whose provider call runs after the response.
 
@@ -1801,17 +1808,33 @@ class AfterResponse:
     a second run shows instead of hanging.
     """
 
-    def __init__(self, *, status_code: int = 202, fails: bool = False) -> None:
-        """Answer ``status_code``; with ``fails``, the provider call raises."""
+    def __init__(
+        self,
+        *,
+        status_code: int = 202,
+        fails: bool = False,
+        pays: bool = False,
+        records: bool = False,
+    ) -> None:
+        """Answer ``status_code``; with ``fails``, the provider call raises.
+
+        With ``pays``, the handler commits a payment and answers
+        ``Cache-Control: no-store``; with ``records``, the provider call
+        commits one.
+        """
         self.calls = 0
         self.started = asyncio.Event()
         self.release = asyncio.Event()
         self.fails = fails
+        self.records = records
         api = FastAPI()
 
         @api.post("/pay", status_code=status_code)
-        async def pay(background: BackgroundTasks) -> dict[str, str]:
+        async def pay(background: BackgroundTasks, response: Response) -> object:
             background.add_task(self.call_provider)
+            if pays:
+                await record_payment()
+                response.headers["Cache-Control"] = "no-store"
             return {"status": "accepted"}
 
         self.app = idempotency.IdempotencyMiddleware(api)
@@ -1822,6 +1845,8 @@ class AfterResponse:
         if self.calls == 1:
             self.started.set()
             await self.release.wait()
+        if self.records:
+            await record_payment()
         if self.fails:
             raise RuntimeError("the provider's answer was lost")
 
@@ -1937,3 +1962,53 @@ def test_a_response_the_key_could_not_keep_stops_the_work_after_it(
     asyncio.run(scenario())
 
     assert after.calls == 0
+
+
+@pytest.mark.usefixtures("idempotent")
+def test_a_kept_status_is_settled_before_the_work_after_it() -> None:
+    """A committed response the key cannot keep (``no-store``) keeps its status.
+
+    It is settled before the work after it runs, so a retry meanwhile gets
+    a 409 ``idempotency_response_unavailable`` rather than running again.
+    """
+    after = AfterResponse(status_code=201, pays=True)
+
+    async def scenario() -> tuple[list[dict[str, object]], list[Message]]:
+        first = asyncio.create_task(after.post())
+        await after.started.wait()
+        during = await asyncio.to_thread(stored_keys)
+        retried = await after.post()
+        after.release.set()
+        await first
+        await connections.close_all()
+        return during, retried
+
+    during, retried = asyncio.run(scenario())
+
+    assert [(row["status_code"], row["body"]) for row in during] == [(201, None)]
+    assert retried[0]["status"] == 409
+    assert b"idempotency_response_unavailable" in retried[-1]["body"]
+    assert (after.calls, payments_on()) == (1, 1)
+
+
+@pytest.mark.usefixtures("idempotent")
+def test_a_commit_after_a_refusal_keeps_the_refusal() -> None:
+    """A 402 then a commit in the work after it: the key keeps the 402.
+
+    The release waits for the application to return, and sees the commit.
+    """
+    after = AfterResponse(status_code=402, records=True)
+    after.release.set()
+
+    async def scenario() -> list[Message]:
+        await after.post()
+        retried = await after.post()
+        await connections.close_all()
+        return retried
+
+    retried = asyncio.run(scenario())
+
+    assert retried[0]["status"] == 402
+    assert (b"idempotent-replayed", b"true") in retried[0]["headers"]
+    assert retried[-1]["body"] == b'{"status":"accepted"}'
+    assert (after.calls, payments_on()) == (1, 1)

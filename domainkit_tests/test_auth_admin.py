@@ -835,6 +835,7 @@ def test_deleting_a_user_deletes_their_second_factor(api: Api) -> None:
     assert client.get("/private", headers=token).status_code == 401
     assert stored_tokens(bob) == []
     assert second_factor_rows() == ([dan], [dan, dan])
+    assert audited("auth.user_status_changed") == []  # Deleted, not deactivated.
 
 
 def test_staff_set_groups_and_permissions_they_have(api: Api) -> None:
@@ -1325,6 +1326,19 @@ def test_a_soft_deleted_user_logs_in_no_more(swapped: TestClient) -> None:
 
     restored = run_async(remove_and_restore("carol"))
     again = client.post("/auth/login", json={"username": "bob", "password": PASSWORD})
+    dan = create_user("dan")
+    with_second_factor(dan)
+
+    async def remove_for_good() -> bool:
+        async with AuthUnitOfWork() as uow:
+            found = await uow.users.get_by_natural_key("dan")
+            assert found is not None
+            await uow.users.remove(found, hard=True)
+            await uow.commit()
+        async with AuthUnitOfWork() as uow:
+            return await uow.users.find(UserId(dan), include_deleted=True) is None
+
+    gone = run_async(remove_for_good())
 
     assert deleted.status_code == 204
     assert client.get("/private", headers=token).status_code == 401
@@ -1332,6 +1346,7 @@ def test_a_soft_deleted_user_logs_in_no_more(swapped: TestClient) -> None:
     assert stored_tokens(bob) == []
     assert second_factor_rows() == ([], [])
     assert restored == (False, False)
+    assert gone  # hard=True deletes the row, its second factor too (below).
     assert [row["details"] for row in audited("auth.user_status_changed")] == [
         {"user_id": str(bob), "field": "is_active", "value": False},
         {"user_id": str(carol), "field": "is_active", "value": False},

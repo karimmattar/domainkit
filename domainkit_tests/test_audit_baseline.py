@@ -15,12 +15,19 @@ from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.contrib.audit import baseline
 from domainkit.contrib.audit.baseline import (
+    PROTECTED,
     check_at_startup,
     missing_triggers,
     protection_problems,
     settings_problems,
 )
-from domainkit.contrib.audit.protection import protect, unprotect
+from domainkit.contrib.audit.protection import (
+    ROW_TRIGGER,
+    TRUNCATE_TRIGGER,
+    protect,
+    trigger_names,
+    unprotect,
+)
 from domainkit.contrib.audit.tables import audit_keys, audit_log, audit_seals
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
@@ -315,6 +322,22 @@ async def test_the_probe_finds_missing_and_disabled_triggers(tables: None) -> No
             "(domainkit.contrib.audit.protection) and migrate."
         )
     ]
+
+
+def test_the_probe_expects_each_trigger_as_protect_makes_it() -> None:
+    """Its events, its function, and its body, whitespace collapsed (SEC-r2-3)."""
+    body = (
+        "BEGIN RAISE EXCEPTION '{} is append-only' "
+        "USING ERRCODE = 'insufficient_privilege'; END"
+    )
+    expected = {
+        (table.name, name): (kind, f"{table.name}_append_only", body.format(table.name))
+        for table in (audit_log, audit_seals)
+        for name, kind in zip(trigger_names(table), (27, 34), strict=True)
+    }
+
+    assert baseline._protected() == expected == PROTECTED
+    assert (ROW_TRIGGER, TRUNCATE_TRIGGER) == (27, 34)
 
 
 LOG_ROWS = "domainkit_audit_log_append_only"

@@ -46,7 +46,7 @@ from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.http.ratelimit import Decision, MemoryBackend, address_key
 from domainkit.http.websockets import MIDDLEWARE as WEBSOCKET_LIMITS
-from domainkit.log import SECURITY_LOGGER, THROTTLE_INTERVAL
+from domainkit.log import SECURITY_LOGGER, THROTTLE_INTERVAL, flush_throttled
 from domainkit.management import call_command
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import AUTH, MIDDLEWARE, Api, UseAuth
@@ -1382,11 +1382,14 @@ def test_projects_add_their_own_authentication(api: Api) -> None:
     assert client.get("/private", headers={"X-User": "alice"}).status_code == 200
 
 
-def test_held_addresses_guess_other_headers_in_vain(api: Api) -> None:
+def test_held_addresses_guess_other_headers_in_vain(
+    api: Api, caplog: pytest.LogCaptureFixture
+) -> None:
     """A held address's guess that works, in a project's own header, gets 429 too.
 
     Only requests with ``Authorization`` are refused unread; others are
-    read, and the right name used to be served among the 429s.
+    read, and the right name used to be served among the 429s. The security
+    log counts it against the address's hold.
     """
     create_user("alice")
     with override_settings(RATE_LIMIT="3/minute"):
@@ -1404,7 +1407,18 @@ def test_held_addresses_guess_other_headers_in_vain(api: Api) -> None:
         anonymous = client.get("/whoami")
         elsewhere = TestClient(client.app, client=("203.0.113.9", 1))
         served = elsewhere.get("/whoami", headers={"X-User": "alice"})
+    flush_throttled()
+    held = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == SECURITY_LOGGER
+        and ("Holding" in record.getMessage() or "held_cred" in record.getMessage())
+    ]
 
+    assert len(held) == 2
+    assert held[0].startswith("Holding back credentials from ip:")
+    key = held[0].removeprefix("Holding back credentials from ").split()[0]
+    assert held[1] == f"1 more held_credentials line(s) for {key} were held back"
     assert guesses == [401, 401, 401, 429]
     assert (right.status_code, right.json()["code"]) == (429, "rate_limited")
     assert int(right.headers["Retry-After"]) > 0
