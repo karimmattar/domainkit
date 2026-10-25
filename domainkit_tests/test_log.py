@@ -1766,6 +1766,19 @@ def test_a_throttled_log_writes_a_stopped_bursts_count_with_any_later_line(
     assert list(throttled._seen) == [("host", "c")]
 
 
+def test_a_throttled_log_without_an_interval_writes_every_line(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``interval=0`` holds nothing back, and remembers no key after its line."""
+    throttled = ThrottledLog(logging.getLogger("test.throttled"), interval=0.0)
+    with freeze_time("2026-01-01"):
+        for _ in range(2):
+            throttled.warning("token", "a", "Refused from a")
+
+    assert throttled_lines(caplog, "test.throttled") == ["Refused from a"] * 2
+    assert throttled._seen == {}
+
+
 def test_flushing_throttled_logs_writes_every_count_held_back(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
