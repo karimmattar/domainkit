@@ -6,6 +6,18 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `ARCHITECTURE` extends the layer rules `check` enforces, and only
+  extends them: `DOMAIN_ALLOWED` (packages a domain layer may import, such
+  as a shared kernel), `FORBIDDEN_LIBRARIES` and `FORBIDDEN_LAYERS` by
+  layer, `EXTRA_LAYERS` (layers of the project's own), and
+  `PUBLIC_SURFACE`. Every layer named must be known, the domain layer stays
+  an allowlist, and each list is bounded. Empty by default: the rules are
+  today's. `check_domain` and `check_domains` take `rules=`
+  (`domainkit.architecture.LayerRules`) and otherwise apply the settings'
+  (DSGN-12; ADR 0003).
+
 ### Changed
 
 - Shutdown closers come from one table: the framework's own kinds are
