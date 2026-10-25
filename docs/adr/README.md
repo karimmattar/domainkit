@@ -89,3 +89,24 @@ statuses, and the amendments they name.
 | [0070](0070-name-the-operator-of-data-changing-commands.md) | Name the operator of data-changing commands, and audit what they do | Accepted; amended 2026-10-25 (at the end) |
 | [0071](0071-bind-cache-computations-to-their-owner.md) | Detach shared cache computations; bind those that borrow to their owner | Accepted |
 | [0072](0072-walk-proxy-headers-from-the-right-and-trust-unix-sockets.md) | Walk proxy headers from the right, trust unix sockets by name, and name the scheme header | Accepted |
+| [0078](0078-deliver-events-in-process-after-commit-or-durably-through-the-outbox.md) | Deliver events in process after commit, or durably through the outbox | Accepted |
+| [0079](0079-validate-every-setting-in-one-model-and-each-app-in-its-own.md) | Validate every setting at startup: one model, and each app's own | Accepted |
+
+### Decisions still without a record
+
+Taken, and in the code, but not yet written down (DSGN-15); planned for
+0.10, beside the changes the audit proposes for each:
+
+- `DomainConfig`'s hooks, `stage` and `committed` among them, called on
+  every installed domain (DSGN-03).
+- `domainkit.resources` depending on `contrib.auth` and
+  `contrib.contenttypes` for its access rules (DSGN-02).
+- Module-level singletons (the registry, the settings, the event bus, the
+  caches) and test overrides that act on them (DSGN-07).
+- No common exception root, and HTTP errors raised from modules below
+  `http` (DSGN-06).
+- How closers are registered for shutdown (DSGN-13), unless 0.9.2's change
+  to them comes with its own record.
+- Whether the flags and webhooks admin APIs, built on `contrib.auth.admin`,
+  keep to [0025](0025-resources-commands-and-expected-versions.md)'s
+  "registry of resources, not a second kit"; amend 0025 or the code.
