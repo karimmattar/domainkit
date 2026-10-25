@@ -349,7 +349,9 @@ its route's, router's, or application's, `request.state` set by a
 middleware, a context variable). `@cache_page(borrows=False)` says the
 endpoint uses none of them, so its computation fills the cache after the
 request is cut off (below). It refuses an endpoint whose own dependencies
-hold a resource (one written with `yield`, also beneath another), and a
+hold a resource (one written with `yield`, also beneath another, behind
+`functools.partial` or a `functools.wraps` decorator: as FastAPI finds
+them, since it closes them when the request ends), and a
 request whose route, router, or application adds one borrows anyway; a
 router the route was included through, `request.state`, and context
 variables are not in the request to check, so they stay yours to keep
