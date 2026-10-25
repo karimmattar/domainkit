@@ -542,10 +542,22 @@ saved:
 - Proxies from the environment are not used. An attempt has `TIMEOUT`
   seconds in all, and at most `MAX_RESPONSE_BYTES` of the answer are read.
 - Host names are looked up on the guard's own threads
-  (`GUARD_LOOKUP_THREADS`, 2 at once per host). A receiver whose DNS never
-  answers holds its lookups until the system's resolver gives up; then
-  its host fails at once for a minute, so retries of its deliveries do
-  not take the threads again ([runtime.md](runtime.md#outgoing-http-calls)).
+  (`GUARD_LOOKUP_THREADS`, 2 at once per host). Each delivery's lookups
+  are its subscription's (`webhook:<id>`), whoever caused the event, and
+  one subscription may hold a quarter of the threads: a receiver whose
+  DNS never answers leaves the rest to other subscriptions' deliveries of
+  the same events. It holds its lookups until the system's resolver gives
+  up; then its host fails at once for a minute, so retries of its
+  deliveries do not take the threads again. A receiver whose DNS answers
+  slowly, or fails in under 5 seconds, takes a thread on each attempt
+  ([runtime.md](runtime.md#outgoing-http-calls)).
+- Subscriptions have no owner yet, so the share is per subscription, not
+  per tenant. One subscription holds at most 2 threads (its host's
+  bound), but whoever may create many subscriptions can point them at
+  hosts that never answer and hold many threads: all 16 of the default
+  with eight. The admin API lets only staff create subscriptions; a
+  project that lets its own users create them should bound how many each
+  may have, until 0.10 gives subscriptions an owner to share by.
 
 `ALLOWED_PRIVATE_NETWORKS` lets receivers in named private networks
 through (`["10.20.0.0/16"]`); staging and production refuse loopback and

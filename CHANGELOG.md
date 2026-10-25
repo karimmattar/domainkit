@@ -169,11 +169,21 @@ All notable changes to domainkit. The format follows
   (WEB-03).
 - Hosts that never answer DNS no longer stop every guarded call and
   webhook in the process: the guard looks up on `GUARD_LOOKUP_THREADS`
-  (16, was 4) threads, one caller (the request's user or address, or the
-  owner `guard.lookups_for` names) may hold a quarter of them, and a host
-  whose lookup failed after 5 seconds or more fails at once for a minute
-  rather than 5 seconds, so retries do not take the threads again
-  (WEB-04).
+  (16, was 4) threads, and one owner may hold a quarter of them: the
+  request's user or address, the owner `guard.lookups_for` names, and for
+  a webhook delivery its subscription (`webhook:<id>`), not the actor of
+  the event it carries. Before, every delivery of an event shared that
+  actor's share (often `ip:unknown` or `system`), so one subscriber's four
+  hung hosts failed every other subscriber's delivery with `EAI_AGAIN`. A
+  host whose lookup failed after 5 seconds or more fails at once for a
+  minute rather than 5 seconds, so retries do not take the threads again.
+  What still holds: a host whose DNS answers slowly, or fails in under 5
+  seconds, takes a thread on each new lookup (at most 2 at once); a
+  success is never held against its host, since a slow one is what one
+  name server down looks like. The share is per subscription, not per
+  tenant, and one subscription holds at most 2 threads (its host's
+  bound): whoever may create eight subscriptions can still hold all 16,
+  until 0.10 gives subscriptions an owner (WEB-04, SEC-r1-1, SEC-r1-4).
 - Only failed attempts use up the login and second-factor counts. A login,
   a password change, or a code that works is given back to its counts, so
   a service account that logs in often, or an office or carrier behind one

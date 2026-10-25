@@ -928,13 +928,21 @@ never the event loop's default executor, which `asyncio.to_thread` and new
 database connections need: at most `GUARD_LOOKUP_THREADS` (16) lookups at
 once, 2 of one host, and a quarter of the threads for one owner: the
 request's user, or its address (an IPv6 network), or whom
-`guard.lookups_for(owner)` names around the calls. A host whose lookup
+`guard.lookups_for(owner)` names around the calls (each webhook
+delivery's subscription, `webhook:<id>`). A host whose lookup
 failed fails at once for 5 seconds, or for a minute if the lookup took 5
 seconds or more to fail (the system's resolver timed out: its DNS does not
 answer). A lookup past those bounds fails at once, as a connection error,
-so hosts one caller chose that never answer cost the other callers
-nothing. (A lookup cannot be interrupted, which an asynchronous resolver
-will change.) A guarded client takes no `transport=`, which would skip
+so hosts one owner chose that never answer cost the other owners
+nothing. A lookup that succeeds is never held against its host, however
+slow: the system's resolver tries the next name server after 5 seconds,
+so a slow success is what one name server down looks like, and refusing
+the host for it would refuse a host that resolves. A host whose DNS
+answers slowly, or fails in under 5 seconds, therefore takes a thread
+on each new lookup, at most 2 at once. The share is per owner, not per
+tenant: whoever controls many owners (many webhook subscriptions, many
+users) can still hold many threads. (A lookup cannot be interrupted,
+which an asynchronous resolver will change.) A guarded client takes no `transport=`, which would skip
 its address checks; tests use `stub`.
 
 | Raised | When |

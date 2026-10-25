@@ -23,7 +23,8 @@ nothing. ``domainkit.contrib.webhooks`` checks subscriptions with it, and
 Host names are looked up on threads of the guard's own (``GuardResolver``),
 at most ``GUARD_LOOKUP_THREADS`` at once, ``LOOKUPS_PER_HOST`` of one host,
 and a quarter of the threads (``OWNER_SHARE``) for one owner: the caller of
-the request (its user, or its address), or whom ``lookups_for`` names.
+the request (its user, or its address), or whom ``lookups_for`` names
+(``domainkit.contrib.webhooks`` names each delivery's subscription).
 Never on the event loop's default executor: a name whose DNS never answers
 holds its thread until the system's resolver gives up, long after the
 caller stopped waiting, and would otherwise hold up ``asyncio.to_thread``
@@ -31,7 +32,9 @@ and new database connections. A lookup past those bounds fails at once, as
 does one of a host whose lookup failed in the last
 ``FAILED_LOOKUP_SECONDS``, or in the last ``HUNG_LOOKUP_BACKOFF`` if it
 failed after ``HUNG_LOOKUP_SECONDS`` or more: one caller's hosts that
-never answer cannot hold every thread, nor take them again at once.
+never answer cannot hold every thread, nor take them again at once. A
+lookup that succeeds, however slowly, is not remembered: see
+``GuardResolver``.
 
 TLS for those calls (``tls_context``) trusts the system's CAs, or a bundle
 of the project's, and nothing the environment adds: ``SSL_CERT_FILE`` and
@@ -229,6 +232,15 @@ class GuardResolver:
     several threads share one resolver, under its lock. The threads start
     with the first lookup and stop at shutdown (``close``), registered
     with ``domainkit.lifecycle``.
+
+    A lookup that succeeds is never remembered, however long it took. The
+    system's resolver waits 5 seconds for a name server before it asks the
+    next (``timeout`` in resolv.conf), so a lookup that succeeds after 5
+    seconds or more is what one name server down, or one lost packet,
+    looks like: backing such a host off would refuse calls to a host that
+    resolves, for a minute each time. So a host whose DNS answers slowly,
+    or fails in under ``hung_after``, takes a thread on each new lookup;
+    ``per_host`` and the owner's share bound how many it holds at once.
     """
 
     def __init__(
