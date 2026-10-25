@@ -263,9 +263,11 @@ async def update_subscription(
     body: SubscriptionPatch,
     actor: Annotated[AnyUser, _staff("change")],
 ) -> SubscriptionOut:
-    """Change a subscription's URL, event types, description, or activity."""
-    if body.url is not None:
-        _checked(body.url)
+    """Change a subscription's URL, event types, description, or activity.
+
+    A new URL is audited with its host and the one before.
+    """
+    host = None if body.url is None else _checked(body.url)
     async with WebhooksUnitOfWork() as uow:
         subscription = await _subscription(uow, subscription_id)
         subscription.change(
@@ -273,6 +275,7 @@ async def update_subscription(
             event_types=body.event_types,
             active=body.active,
             description=body.description,
+            host=host,
         )
         await uow.commit()
     return SubscriptionOut.of(subscription)
