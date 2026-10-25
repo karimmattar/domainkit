@@ -423,7 +423,10 @@ never across an `await`:
 - the open live connections counted against `LIVE_MAX_CONNECTIONS` and
   `LIVE_MAX_CONNECTIONS_PER_CALLER`, and the making of them on first use;
 - the event bus's subscriptions, so a handler subscribed from several
-  threads at once (live events, as clients connect) is subscribed once.
+  threads at once (live events, as clients connect) is subscribed once;
+- the caches of each loop and the memory stores they share
+  (`caches[...]`), so every loop of the process sees one memory store per
+  alias, and an application's throttle backend, made once for all loops.
 
 A project's own module-level state needs the same care: a dict two threads
 change at once needs a `threading.Lock` on free-threaded Python, as it would

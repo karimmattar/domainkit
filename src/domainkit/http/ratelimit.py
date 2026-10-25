@@ -507,12 +507,23 @@ class Throttle:
         return f"key:{hashlib.sha256(found.encode()).hexdigest()[:32]}"
 
 
+_app_backend_lock: Final = threading.Lock()
+"""Held to make an application's throttle backend: loops on threads ask at once."""
+
+
 def _app_backend(connection: HTTPConnection) -> Backend:
-    """The application's throttle backend (``RATE_LIMIT_BACKEND``), made once."""
+    """The application's throttle backend (``RATE_LIMIT_BACKEND``), made once.
+
+    Loops on two threads that ask at once get the same backend, so a
+    memory backend counts every request in one place.
+    """
     state = connection.app.state
     backend: Backend | None = getattr(state, "throttle_backend", None)
     if backend is None:
-        backend = state.throttle_backend = load_backend()
+        with _app_backend_lock:
+            backend = getattr(state, "throttle_backend", None)
+            if backend is None:
+                backend = state.throttle_backend = load_backend()
     return backend
 
 

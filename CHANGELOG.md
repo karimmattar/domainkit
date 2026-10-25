@@ -6,6 +6,15 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Event loops on several threads (free-threaded Python, a loop per
+  thread) looking up a memory cache for the first time at once get one
+  store per alias, and an application's throttle backend is made once:
+  a loop could keep a private store that never saw the others' writes,
+  invalidations, or `caches.reset()`, and a second memory throttle
+  backend let each route's limit through twice (CONC-01).
+
 ## [0.9.0] - 2026-10-22
 
 ### Added
