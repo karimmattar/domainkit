@@ -22,12 +22,13 @@ from domainkit.contrib.auth import (
     BaseBackend,
     Permission,
     User,
+    UserId,
     admin,
     get_user_model,
 )
 from domainkit.contrib.auth.tables import mfa_devices, recovery_codes
 from domainkit.db import connections
-from domainkit.ddd import PermissionDenied
+from domainkit.ddd import PermissionDenied, SoftDeletable
 from domainkit.http import ErrorResponse, encode_cursor, get_asgi_application
 from domainkit.management import call_command
 from domainkit.management.base import run_async
@@ -1285,3 +1286,53 @@ def test_pages_continue_after_a_name_and_search(auth_project: str) -> None:
         )
 
     assert run_async(scenario()) == (["bob"], ["amy", "bob"], True)
+
+
+ARCHIVES = ("archives", "ArchivedUser", "archived_users")
+
+
+@pytest.mark.parametrize("swapped", [ARCHIVES], indirect=True)
+def test_a_soft_deleted_user_logs_in_no_more(swapped: TestClient) -> None:
+    """A ``SoftDeletable`` user model keeps the row, and nothing of the access.
+
+    Deleting such a user used to mark it deleted and leave its tokens, its
+    second factor, and ``is_active``: its old token still worked, and its
+    password still checked (the login then failed with a 404, which told a
+    guesser the password was right). It is now deactivated and its
+    credentials forgotten, from the admin API and from project code alike;
+    restoring it leaves it inactive.
+    """
+    client = swapped
+    root = staff("root", is_superuser=True)
+    bob, carol = create_user("bob"), create_user("carol")
+    token = bearer(login(client, "bob")["access_token"])
+    for each in (bob, carol):
+        with_second_factor(each)
+
+    deleted = client.delete(f"{ADMIN}/users/{bob}", headers=root)
+
+    async def remove_and_restore(username: str) -> tuple[bool, bool]:
+        async with AuthUnitOfWork() as uow:
+            found = await uow.users.get_by_natural_key(username)
+            assert found is not None
+            await uow.users.remove(found)
+            await uow.commit()
+        async with AuthUnitOfWork() as uow:
+            restored = await uow.users.restore(UserId(found.id))
+            await uow.commit()
+        assert isinstance(restored, SoftDeletable)
+        return restored.is_active, restored.is_deleted
+
+    restored = run_async(remove_and_restore("carol"))
+    again = client.post("/auth/login", json={"username": "bob", "password": PASSWORD})
+
+    assert deleted.status_code == 204
+    assert client.get("/private", headers=token).status_code == 401
+    assert again.status_code == 401
+    assert stored_tokens(bob) == []
+    assert second_factor_rows() == ([], [])
+    assert restored == (False, False)
+    assert [row["details"] for row in audited("auth.user_status_changed")] == [
+        {"user_id": str(bob), "field": "is_active", "value": False},
+        {"user_id": str(carol), "field": "is_active", "value": False},
+    ]

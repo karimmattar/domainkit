@@ -230,7 +230,10 @@ All notable changes to domainkit. The format follows
   `UserRepository.remove`) deletes their TOTP secret, recovery codes, and
   tokens in the same transaction, as privacy erasure does, and with
   `domainkit.contrib.objectpermissions` the object permissions they held.
-  They used to stay in the database (AUTH-04).
+  They used to stay in the database. A user model that is `SoftDeletable`
+  keeps the row: deleting such a user now forgets its credentials too and
+  deactivates it, where before its tokens kept working and its password
+  still checked; restoring it leaves it inactive (AUTH-04).
 - `check` warns in staging and production when the login, code, link, and
   mail throttles count in a backend each process keeps alone
   (`MemoryBackend`): with several processes each allowed the rates on its

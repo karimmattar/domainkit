@@ -160,8 +160,12 @@ passwords. `set_password(user, None)` makes a password unusable.
 `remove(user)` deletes the user with every credential of theirs, in the
 same transaction: tokens, sessions, refresh tokens, client certificates,
 and the second factor's secret and recovery codes
-(`forget_credentials(user_id)`, which privacy erasure uses too). A bulk
-`delete_rows` bypasses it, and leaves them.
+(`forget_credentials(user_id)`, which privacy erasure uses too). A user
+model that is `SoftDeletable` keeps the row, marked deleted: `remove`
+forgets the credentials all the same and deactivates the user
+(`UserStatusChanged`), since logging in and every request read
+`is_active`, not `deleted_at`; `restore` brings the row back inactive,
+for staff to activate. A bulk `delete_rows` bypasses it, and leaves them.
 
 Changes are recorded as events, never with passwords or hashes in them:
 `UserCreated`, `PasswordChanged`, `UserStatusChanged`, `UserJoinedGroup`,
