@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 from fastapi import APIRouter, Depends, FastAPI, WebSocket
+from fastapi.testclient import TestClient
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
@@ -251,6 +252,77 @@ def test_deployments_refuse_open_routes(environment: str) -> None:
     ):
         get_asgi_application()
     assert str(raised.value) == f"The application has problems:\n{listed}"
+
+
+def late_router() -> APIRouter:
+    """A router with a route that declares no rule, as ``asgi.py`` might add."""
+    late = APIRouter()
+
+    @late.get("/late-report")
+    async def late_report() -> dict[str, str]:
+        return {"secret": "quarterly numbers"}
+
+    return late
+
+
+LATE = f"GET /late-report declares no access rule: {FIX}"
+
+
+def test_routes_added_after_the_build_are_checked_as_it_starts(
+    use_auth: UseAuth, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Routes included once the factory returned escaped the check (AUTH-06).
+
+    The application is checked again as it starts serving; where people
+    develop, what is new is logged.
+    """
+    use_auth(settings={"ROOT_ROUTER": None, "MIDDLEWARE": MIDDLEWARE[:3]})
+    app = get_asgi_application()
+    app.include_router(late_router())
+
+    with (
+        caplog.at_level(logging.WARNING, logger="domainkit.http.application"),
+        TestClient(app),
+    ):
+        pass
+
+    assert caplog.messages == [
+        f"The application has problems since it was built:\n  {LATE}"
+    ]
+
+
+@pytest.mark.parametrize("environment", ["staging", "production"])
+def test_deployments_refuse_to_start_with_routes_added_late(
+    use_auth: UseAuth, environment: str
+) -> None:
+    """Staging and production refuse to start, as they refuse to build."""
+    use_auth(settings={"ROOT_ROUTER": None, "MIDDLEWARE": MIDDLEWARE[:3]})
+    with override_settings(ENVIRONMENT=environment):
+        app = get_asgi_application()
+        app.include_router(late_router())
+        with pytest.raises(ImproperlyConfigured) as raised, TestClient(app):
+            pass  # pragma: no cover - the start is refused.
+
+    assert str(raised.value) == (
+        f"The application has problems since it was built:\n  {LATE}"
+    )
+
+
+@pytest.mark.usefixtures("open_project")
+def test_problems_found_at_the_build_are_not_logged_again(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Starting logs only what the build did not."""
+    app = get_asgi_application()
+    assert len(caplog.messages) == 1  # The build's.
+    caplog.clear()
+    with (
+        caplog.at_level(logging.WARNING, logger="domainkit.http.application"),
+        TestClient(app),
+    ):
+        pass
+
+    assert caplog.messages == []
 
 
 @pytest.mark.usefixtures("open_project")

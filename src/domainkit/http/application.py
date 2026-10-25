@@ -52,6 +52,8 @@ request whose scope has it, as it does when an enclosing one measures it.
 """
 REQUESTS: Final = frozenset({"http", "websocket"})
 """The scope types FastAPI measures."""
+BUILT_PROBLEMS: Final = "domainkit_problems"
+"""``app.state`` key: the problems found when the application was built."""
 
 
 class Application(FastAPI):
@@ -79,9 +81,11 @@ class Application(FastAPI):
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Start the domains; then stop them, and close what they opened, in budget.
 
-    With ``DEBUG``, the loop logs steps that hold it for
-    ``SLOW_CALLBACK_DURATION`` (``domainkit.http.blocking``) while the
-    application runs.
+    Once the domains have started, the application is checked again
+    (``check_started``): routes added after it was built, in ``asgi.py`` or
+    by a domain's startup, must say who may call them too. With ``DEBUG``,
+    the loop logs steps that hold it for ``SLOW_CALLBACK_DURATION``
+    (``domainkit.http.blocking``) while the application runs.
     """
     loop = asyncio.get_running_loop()
     debug, slow = loop.get_debug(), loop.slow_callback_duration
@@ -89,6 +93,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         watch_event_loop(loop, settings.SLOW_CALLBACK_DURATION)
     try:
         async with serving():
+            check_started(app)
             yield
     finally:
         loop.set_debug(debug)
@@ -136,11 +141,9 @@ def get_asgi_application() -> FastAPI:
     for path in reversed(settings.MIDDLEWARE):
         middleware: Any = _load(path, type, "MIDDLEWARE")
         app.add_middleware(middleware)
-    if problems := application_problems(app):
-        listed = "\n".join(f"  {problem}" for problem in problems)
-        if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
-            raise ImproperlyConfigured(f"The application has problems:\n{listed}")
-        logger.warning("The application has problems:\n%s", listed)
+    problems = application_problems(app)
+    _report(problems, "The application has problems")
+    setattr(app.state, BUILT_PROBLEMS, tuple(problems))
     if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
         # The server's own command line, here.
         for warning in server_warnings(app):
@@ -158,6 +161,37 @@ def application_problems(app: FastAPI) -> list[str]:
         problem for config in registry for problem in config.check_application(app)
     )
     return problems
+
+
+def check_started(app: FastAPI) -> None:
+    """Check ``app`` again as it starts serving, routes added since included.
+
+    Routes included after ``get_asgi_application`` returned (in ``asgi.py``,
+    by a plugin, or by a domain's startup) were not there when it was
+    checked. Staging and production refuse to start with a problem, as at
+    build time; elsewhere, problems not reported then are logged. It runs
+    once per start, never per request.
+
+    Raises:
+        ImproperlyConfigured: A problem, in staging or production.
+    """
+    built = getattr(app.state, BUILT_PROBLEMS, ())
+    found = [problem for problem in application_problems(app) if problem not in built]
+    _report(found, "The application has problems since it was built")
+
+
+def _report(problems: list[str], heading: str) -> None:
+    """Refuse ``problems`` in staging and production; log them elsewhere.
+
+    Raises:
+        ImproperlyConfigured: A problem, in staging or production.
+    """
+    if not problems:
+        return
+    listed = "\n".join(f"  {problem}" for problem in problems)
+    if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
+        raise ImproperlyConfigured(f"{heading}:\n{listed}")
+    logger.warning("%s:\n%s", heading, listed)
 
 
 def _load[T](path: str, expected: type[T], setting: str) -> T:
