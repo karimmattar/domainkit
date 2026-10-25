@@ -9,10 +9,14 @@ for it, so a flood of probes costs at most one round of checks per interval.
 A round checks domains, databases, ledgers, and caches at once, each check
 within ``READINESS_TIMEOUT``, so a round takes about that long at worst. It
 runs as a background task in a clean context (``domainkit.tasks.spawn``):
-it serves every waiting probe, so it carries none's request.
+it serves every waiting probe, so it carries none's request. A group of
+checks that raises instead of reporting (a bug in a domain's ``check``)
+counts as failing, under its group's name (``GROUPS``), and is logged:
+the round is still kept, so probes get a 503, never a 500 each.
 """
 
 import asyncio
+import logging
 import time
 from typing import Final
 
@@ -29,6 +33,10 @@ from domainkit.tasks import spawn
 
 READINESS_TASK: Final = "domainkit.readiness"
 """The name of a round of readiness checks' task."""
+GROUPS: Final = ("domains", "databases", "ledgers", "caches")
+"""What a round checks, in order: how a group that raised is named as failing."""
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["health"])
 
@@ -84,9 +92,13 @@ async def _check(state: State) -> list[str]:
         return_exceptions=True,
     )
     failing: list[str] = []
-    for group in groups:
-        if isinstance(group, BaseException):
+    for name, group in zip(GROUPS, groups, strict=True):
+        if isinstance(group, Exception):
+            logger.error("Readiness checks of %s raised", name, exc_info=group)
+            failing.append(name)
+        elif isinstance(group, BaseException):
             raise group
-        failing.extend(group)
+        else:
+            failing.extend(group)
     state.readiness = (time.monotonic(), failing)
     return failing
