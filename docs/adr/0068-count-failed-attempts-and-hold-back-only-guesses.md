@@ -1,6 +1,6 @@
 # 0068. Count failed attempts, and hold back only what can be guessed
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-25 (at the end)
 - Date: 2026-10-25
 
 ## Context

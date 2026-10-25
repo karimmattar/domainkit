@@ -37,10 +37,11 @@ URLs; an unreadable port is refused without quoting the URL.
 | `BASE_DIR` | the project root | The directory holding `pyproject.toml`. |
 | `ENVIRONMENT` | `"local"` | `local`, `test`, `staging`, or `production`. Staging and production get the [deployment checks](#deployment-checks). |
 | `DEBUG` | `False` | Development conveniences; refused in staging and production. |
+| `DEBUG_TOOLBAR` | see [Debug toolbar](#debug-toolbar) | The options of `DebugToolbarMiddleware`, which development settings list in `MIDDLEWARE`. |
 | `SLOW_CALLBACK_DURATION` | `0.1` | With `DEBUG`, the application's loop runs in asyncio's debug mode and logs each step that holds it this many seconds or more ([runtime.md](runtime.md#finding-blocking-code)); `None` turns it off. |
 | `PROJECT_NAME` | `"API"` | The OpenAPI title. |
 | `VERSION` | `"0.1.0"` | The OpenAPI version. |
-| `SECRET_KEY` | `None` | Signs what the service hands out: reset links, cookies, MFA challenges ([Signing](#signing)). Required in staging and production, with 50 random characters or more; shown as `**********`. |
+| `SECRET_KEY` | `None` | Signs what the service hands out: reset links, cookies, MFA challenges ([Signing](#signing)). Required in staging and production, with 50 random characters or more; never empty (leave it `None` instead); shown as `**********`. |
 | `SECRET_KEY_FALLBACKS` | `()` | Earlier keys: what they signed still verifies while `SECRET_KEY` signs, so a key can be replaced without logging anyone out. Held to the same rules. |
 | `INSTALLED_DOMAINS` | `()` | Domain packages (Django's `INSTALLED_APPS`), started in order and stopped in reverse. |
 | `MIDDLEWARE` | see [Middleware](#middleware) | ASGI middleware by dotted path, outermost first. |
@@ -76,10 +77,10 @@ Each `DATABASES` entry:
 | `SSLMODE` | `None` | libpq names: `disable`, `require`, `verify-ca`, `verify-full`. Staging and production need `verify-full` for network databases. |
 | `SSLROOTCERT`, `SSLCERT`, `SSLKEY` | `None` | CA bundle, and client certificate and key for mutual TLS. |
 | `STATEMENT_TIMEOUT` | `30.0` | Seconds; PostgreSQL cancels longer statements. Migrations are exempt. This and the four timeouts below are at most 2147483.647 seconds (24.8 days), the longest PostgreSQL takes; a transaction's `statement_timeout` from a longer deadline asks for that much. |
-| `LOCK_TIMEOUT` | `10.0` | Seconds a statement waits for a lock. Migrations are exempt. |
-| `IDLE_IN_TRANSACTION_TIMEOUT` | `60.0` | Seconds before PostgreSQL ends a session idling inside a transaction. |
-| `CONNECT_TIMEOUT` | `10.0` | Seconds to open a connection (asyncpg's `timeout`; libpq's `connect_timeout`, in whole seconds), migrations included. A request that needs a new connection waits this long at most, after its `POOL_TIMEOUT`. |
-| `COMMAND_TIMEOUT` | `STATEMENT_TIMEOUT` plus 5 | Seconds asyncpg waits for one statement before giving up on it (a network or server that stopped answering). Longer than `STATEMENT_TIMEOUT`, so the server ends a slow statement first, with an error that keeps the connection. None without `STATEMENT_TIMEOUT`; migrations are exempt. |
+| `LOCK_TIMEOUT` | `10.0` | Seconds a statement waits for a lock (at most 2147483.647). Migrations are exempt. |
+| `IDLE_IN_TRANSACTION_TIMEOUT` | `60.0` | Seconds before PostgreSQL ends a session idling inside a transaction (at most 2147483.647). |
+| `CONNECT_TIMEOUT` | `10.0` | Seconds to open a connection (asyncpg's `timeout`; libpq's `connect_timeout`, in whole seconds; at most 2147483.647), migrations included. A request that needs a new connection waits this long at most, after its `POOL_TIMEOUT`. |
+| `COMMAND_TIMEOUT` | `STATEMENT_TIMEOUT` plus 5 | Seconds asyncpg waits for one statement before giving up on it (a network or server that stopped answering; at most 2147483.647). Longer than `STATEMENT_TIMEOUT`, so the server ends a slow statement first, with an error that keeps the connection. None without `STATEMENT_TIMEOUT`; migrations are exempt. |
 | `PGBOUNCER` | `False` | The database is reached through PgBouncer's transaction pooling: no statement cache, a unique name for every prepared statement, and the timeouts above set in each transaction (`SET LOCAL`) rather than for the session. PostgreSQL URLs only ([runtime.md](runtime.md#database-timeouts-and-pgbouncer)). |
 | `POOL_SIZE`, `MAX_OVERFLOW`, `POOL_RECYCLE` | SQLAlchemy's | Connection pool sizing. |
 | `POOL_TIMEOUT` | `10.0` for network databases, else SQLAlchemy's | Seconds a request waits for a connection; past it the request gets 503 `database_busy`. |
@@ -101,8 +102,8 @@ Each `SHARDS` group:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `DATABASES` | required | The group's SQL aliases (not `default`); `makemigrations` compares against the first. |
-| `BUCKETS` | `4096` | Hash buckets keys spread over. Never change it once the group holds data. |
+| `DATABASES` | required | The group's SQL aliases (at least one, not `default`); `makemigrations` compares against the first. |
+| `BUCKETS` | `4096` | Hash buckets keys spread over (1 to 1,048,576). Never change it once the group holds data. |
 | `RANGES` | equal ranges | Inclusive bucket ranges per alias, such as `{"accounts_0": [[0, 2047]], "accounts_1": [[2048, 4095]]}`; they must cover every bucket once. |
 | `PINNED` | `{}` | Shard keys (as text) that always go to one alias, such as a large tenant. |
 
@@ -200,7 +201,7 @@ Each `BROKERS` entry:
 | `RATE_LIMIT_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths never counted; compared without the root path (`--root-path`). |
 | `RATE_LIMIT_BACKEND` | `domainkit.http.ratelimit.MemoryBackend` | Where counts live. The default is per process, and keeps the 100,000 most recently seen callers; one seen longer ago starts afresh. Behind several replicas, use `domainkit.http.ratelimit.RedisBackend`: one count per caller in Redis, on the server's clock. If Redis fails, or refuses the count (out of memory, a read-only replica after a failover), requests are let through, and Redis is skipped for the cache's `FAILURE_COOLDOWN`; `AUTH.THROTTLE_FAIL_CLOSED` refuses password and code checks meanwhile instead ([auth.md](auth.md#logging-in-and-out)). |
 | `RATE_LIMIT_CACHE` | `"default"` | The Redis cache `RedisBackend` counts in; keys are `<KEY_PREFIX>:ratelimit:<caller>`. |
-| `RATE_LIMIT_IPV6_PREFIX` | `64` | IPv6 clients are counted per network of this prefix length, since one customer usually holds a whole /64; login throttling counts the same way. IPv4 clients are counted per address. |
+| `RATE_LIMIT_IPV6_PREFIX` | `64` | IPv6 clients are counted per network of this prefix length (1 to 128), since one customer usually holds a whole /64; login throttling counts the same way. IPv4 clients are counted per address. |
 | `METRICS_TOKEN` | `None` | Bearer token for `/metrics`. Without it, `/metrics` answers 403 in staging and production. |
 | `SECURE_HSTS_SECONDS` | `0` | `Strict-Transport-Security` max-age; 0 omits the header. |
 | `SECURE_HSTS_INCLUDE_SUBDOMAINS` | `False` | Adds `includeSubDomains`. |
@@ -374,8 +375,8 @@ re-authorized while they stay open; see [live.md](live.md).
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `LIVE_MAX_CONNECTIONS` | `1000` | Open WebSockets and event streams per process; one more is refused with 503 and `Retry-After` (a WebSocket where the server cannot answer a handshake with a status: a 1013 close). |
-| `LIVE_MAX_CONNECTIONS_PER_CALLER` | `10` | The same per user, or per address for anonymous callers (IPv6 per `RATE_LIMIT_IPV6_PREFIX` network). At most `LIVE_MAX_CONNECTIONS`. |
+| `LIVE_MAX_CONNECTIONS` | `1000` | Open WebSockets and event streams per process (at most 1,000,000); one more is refused with 503 and `Retry-After` (a WebSocket where the server cannot answer a handshake with a status: a 1013 close). |
+| `LIVE_MAX_CONNECTIONS_PER_CALLER` | `10` | The same per user, or per address for anonymous callers (IPv6 per `RATE_LIMIT_IPV6_PREFIX` network). At most `LIVE_MAX_CONNECTIONS` (and 1,000,000). |
 | `LIVE_SEND_QUEUE` | `64` | Messages or events that may wait for one client (1 to 10,000); a sender waits while they do. Live events count only those the client may see; 16 times as many may wait for its rule ([live.md](live.md#live-committed-events)). |
 | `LIVE_SEND_TIMEOUT` | `10.0` | Seconds one message may take to reach the client; a slower client is closed (1013). |
 | `LIVE_REAUTH_INTERVAL` | `60.0` | Seconds between re-checks of an open connection's credentials and its route's rules (each between three quarters of it and all of it; at most 3,600); closed with 1008 when they fail. `None` turns them off; `check` warns about that in staging and production. What re-checks cannot do: [live.md](live.md#what-re-checks-cannot-do). |
@@ -406,7 +407,7 @@ toolbar, then keep them in check with `assert_max_queries` in a test.
 
 | `DEBUG_TOOLBAR` key | Default | Meaning |
 | --- | --- | --- |
-| `REPEATED_QUERIES` | `5` | Runs of one statement shape in one request that log a likely N+1. |
+| `REPEATED_QUERIES` | `5` | Runs of one statement shape in one request that log a likely N+1 (2 or more). |
 | `HEADERS` | `False` | Also send `X-Debug-Queries`, `X-Debug-Query-Time` (milliseconds), and `X-Debug-Repeated-Queries`. |
 | `PROFILE_DIR` | `None` | A directory: a request sent with `X-Debug-Profile: 1` leaves a cProfile file there, named in the response's `X-Debug-Profile` (one request at a time; read it with `python -m pstats`). |
 
@@ -501,15 +502,17 @@ for `TRUSTED_PROXIES`: leave it empty only when callers connect directly.
 
 ## Middleware
 
-The order matters; this is the order the project template uses, outermost
-first:
+The order matters; this is the order to keep, outermost first. The project
+template installs eleven of these, in this order (not the metrics, CORS,
+idempotency, or debug toolbar middleware), and `DEFAULT_MIDDLEWARE` eight
+(below):
 
 | Middleware | Why here |
 | --- | --- |
 | `domainkit.http.middleware.ProxyHeadersMiddleware` | First, so everything after it sees the real client address and scheme. Remembers the latest 4,096 addresses it parsed, and whether each is a trusted proxy's. |
 | `domainkit.http.metrics.MetricsMiddleware` | Counts every response, including ones refused below. |
-| `domainkit.http.middleware.SecurityHeadersMiddleware` | Adds the `SECURE_*` headers to every response. |
 | `domainkit.http.locale.LocaleMiddleware` | Picks the request's language from `Accept-Language`, before anything below answers, so their errors are translated; adds `Content-Language` and `Vary: Accept-Language` ([i18n.md](i18n.md)). |
+| `domainkit.http.middleware.SecurityHeadersMiddleware` | Adds the `SECURE_*` headers to every response. |
 | `domainkit.http.middleware.CORSMiddleware` | Answers preflights before any work. |
 | `domainkit.http.middleware.RequestContextMiddleware` | Request id (`X-Request-ID`: a caller's valid one, else 32 lowercase hex digits), access log, the context that logs and audit rows read. WebSocket connections get one too: method `WS`, the request id sent with the accept, one access log line when the connection ends (101 if accepted, 403 if closed first). |
 | `domainkit.http.deadlines.DeadlineMiddleware` | Starts the request's deadline (`REQUEST_TIMEOUT`) before any work, and answers 503 `deadline_exceeded` when it passes; lifted once the response starts ([runtime.md](runtime.md#request-deadlines)). |
@@ -937,7 +940,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `cleartokens` | `--user` | Delete expired tokens, or every token of one user (auth). |
 | `resetmfa` | `username` | Turn a user's second factor off, and end their sessions (auth). |
 | `addcertificate` | `username`, `certificate`, `--name` | Let a client certificate log in as a user, by its SHA-256 (auth). |
-| `flags` | `list`, `set NAME`, `delete NAME`, `settings`, `setting KEY [VALUE] [--reset]` | List and change feature flags and dynamic settings (flags; see [contrib.md](contrib.md#flags-feature-flags-and-dynamic-settings)). |
+| `flags` | `list`, `set NAME [--everyone {on,off,rules}] [--percentage N] [--users USER_ID ...] [--groups GROUP ...] [--note TEXT]`, `delete NAME`, `settings`, `setting KEY [VALUE] [--reset]` | List and change feature flags and dynamic settings (flags; see [contrib.md](contrib.md#flags-feature-flags-and-dynamic-settings)). |
 
 ### Operators
 

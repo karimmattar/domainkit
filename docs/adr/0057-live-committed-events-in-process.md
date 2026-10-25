@@ -1,6 +1,6 @@
 # 0057. Stream committed events to clients in process, filtered per event by an access rule
 
-- Status: Accepted
+- Status: Accepted; amended in place 2026-10-21
 - Date: 2026-10-20
 
 ## Context

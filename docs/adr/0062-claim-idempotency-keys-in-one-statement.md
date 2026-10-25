@@ -1,6 +1,6 @@
 # 0062. Claim idempotency keys in one statement, and commit the framework's short writes as they run
 
-- Status: Accepted
+- Status: Accepted; amended in place 2026-10-22, and 2026-10-25 (at the end)
 - Date: 2026-10-21; amended 2026-10-22 (the sweep comes last), 2026-10-25 (the database's clock decides leases)
 
 ## Context

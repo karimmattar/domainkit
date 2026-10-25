@@ -1,6 +1,6 @@
 # 0047. Seal the audit trail from a high-water mark, with a short late window
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-21 (at the end)
 - Date: 2026-10-20; amended 2026-10-21 (the database's clock, sealing late rows)
 
 ## Context

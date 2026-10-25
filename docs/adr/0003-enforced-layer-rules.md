@@ -1,6 +1,6 @@
 # 0003. Layer rules enforced by `check`
 
-- Status: Accepted
+- Status: Accepted; amended by [0037](0037-one-clock-frozen-per-context.md), and 2026-10-25 (at the end)
 - Date: 2026-10-14
 
 ## Context
@@ -27,3 +27,12 @@ a violation.
 Violations fail CI, not review. Some code needs an extra port or event where
 a direct import would have been shorter; that cost is intended. Framework
 packages are exempt from the cross-domain rule.
+
+## Amendment (2026-10-25): the clock
+
+[0037](0037-one-clock-frozen-per-context.md) let the domain layer import
+`domainkit.clock` as well, and `domainkit.architecture` has allowed it
+since (`DOMAIN_ALLOWED_PREFIXES`): reading the time through it is as pure as
+the standard library's, and tests can freeze it. The domain layer imports
+the standard library, `domainkit.ddd`, and `domainkit.clock`. This record
+did not say so until now.

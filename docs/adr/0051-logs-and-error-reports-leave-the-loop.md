@@ -1,6 +1,6 @@
 # 0051. Write logs and error reports from threads, dropping what does not fit
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-21 (at the end)
 - Date: 2026-10-20
 
 ## Context

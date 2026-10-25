@@ -1,6 +1,6 @@
 # 0020. Lease idempotency keys, and write them only under the holder's token
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-21 (at the end)
 - Date: 2026-10-18; amended 2026-10-21 (a pinned key is never released)
 - Amends: [0019](0019-idempotency-keys-commit-with-changes.md)
 
