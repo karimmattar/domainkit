@@ -33,8 +33,11 @@ does one of a host whose lookup failed in the last
 ``FAILED_LOOKUP_SECONDS``, or in the last ``HUNG_LOOKUP_BACKOFF`` if it
 failed after ``HUNG_LOOKUP_SECONDS`` or more: one caller's hosts that
 never answer cannot hold every thread, nor take them again at once. A
-lookup that succeeds, however slowly, is not remembered: see
-``GuardResolver``.
+lookup that succeeds after ``HUNG_LOOKUP_SECONDS`` or more has its answer
+kept for ``HUNG_LOOKUP_BACKOFF`` (at most ``SLOW_ANSWERS`` hosts), so a
+host whose DNS answers slowly does not take the threads again either: see
+``GuardResolver``. A kept answer is checked again by its caller, as every
+lookup's is.
 
 TLS for those calls (``tls_context``) trusts the system's CAs, or a bundle
 of the project's, and nothing the environment adds: ``SSL_CERT_FILE`` and
@@ -124,6 +127,8 @@ HUNG_LOOKUP_BACKOFF: Final = 60.0
 a thread for as long again."""
 FAILED_LOOKUPS: Final = 1024
 """Hosts whose failed lookups are remembered at most; the oldest go first."""
+SLOW_ANSWERS: Final = 1024
+"""Hosts whose slow answers are kept at most; the least recently used go first."""
 LOOKUPS: Final = "guard lookups"
 """The resolver's name among the resources closed at shutdown."""
 SUBJECT: Final = "The URL"
@@ -233,14 +238,19 @@ class GuardResolver:
     with the first lookup and stop at shutdown (``close``), registered
     with ``domainkit.lifecycle``.
 
-    A lookup that succeeds is never remembered, however long it took. The
-    system's resolver waits 5 seconds for a name server before it asks the
-    next (``timeout`` in resolv.conf), so a lookup that succeeds after 5
-    seconds or more is what one name server down, or one lost packet,
-    looks like: backing such a host off would refuse calls to a host that
-    resolves, for a minute each time. So a host whose DNS answers slowly,
-    or fails in under ``hung_after``, takes a thread on each new lookup;
-    ``per_host`` and the owner's share bound how many it holds at once.
+    A lookup that succeeds after ``hung_after`` seconds or more has its
+    answer kept for ``back_off`` seconds, and lookups of the host and port
+    meanwhile get it at once, without a thread. The host is not refused:
+    the system's resolver waits 5 seconds for a name server before it
+    asks the next (``timeout`` in resolv.conf), so a slow success is what
+    one name server down looks like, and the host resolves. Keeping the
+    answer is what keeps a host whose DNS answers slowly, which its owner
+    may control, from taking the threads again on every retry. The answer
+    was the system resolver's; callers check its addresses on every use
+    (``checked_host``), so a kept answer passes the same checks a fresh
+    one would. A quick success is not kept, and a host that fails in
+    under ``hung_after`` takes a thread on each new lookup; ``per_host``
+    and the owner's share bound how many it holds at once.
     """
 
     def __init__(
@@ -266,6 +276,10 @@ class GuardResolver:
         self._owners: dict[str, int] = {}
         """Lookups under way per owner; owners with none are forgotten."""
         self._failed: OrderedDict[str, tuple[float, int, str]] = OrderedDict()
+        self._answered: OrderedDict[tuple[str, int], tuple[float, list[Any]]] = (
+            OrderedDict()
+        )
+        """Slow answers by host and port: until when (``monotonic()``), and what."""
 
     @property
     def running(self) -> int:
@@ -303,6 +317,8 @@ class GuardResolver:
                 if now < until:
                     raise socket.gaierror(number, reason)
                 del self._failed[host]
+            if (kept := self._kept(host, port, now)) is not None:
+                return kept
             size = self._size or self.threads or _configured_threads()
             if (
                 sum(self._running.values()) >= size
@@ -336,9 +352,26 @@ class GuardResolver:
         # Its clock is the caller's, frozen in tests, whichever thread ends it.
         context = contextvars.copy_context()
         future.add_done_callback(
-            lambda done: context.run(self._finished, host, done, owner, now)
+            lambda done: context.run(self._finished, host, done, owner, now, port)
         )
         return future
+
+    def _kept(self, host: str, port: int, now: float) -> "Future[list[Any]] | None":
+        """A done lookup with ``host``'s kept slow answer, if it has not run out.
+
+        Called under the lock.
+        """
+        answered = self._answered.get((host, port))
+        if answered is None:
+            return None
+        until, infos = answered
+        if now >= until:
+            del self._answered[(host, port)]
+            return None
+        self._answered.move_to_end((host, port))
+        kept: Future[list[Any]] = Future()
+        kept.set_result(list(infos))
+        return kept
 
     def _finished(
         self,
@@ -346,20 +379,28 @@ class GuardResolver:
         future: "Future[list[Any]]",
         owner: str | None = None,
         started: float | None = None,
+        port: int | None = None,
     ) -> None:
         """Count the lookup's thread free; remember its host if it failed.
 
         A failure after ``hung_after`` seconds or more, since ``started``,
-        is remembered for ``back_off`` seconds, not ``remember``.
+        is remembered for ``back_off`` seconds, not ``remember``; a success
+        that slow is kept for ``back_off`` seconds, for ``host`` and ``port``.
         """
-        error = None if future.cancelled() else future.exception()
+        cancelled = future.cancelled()
+        error = None if cancelled else future.exception()
         with self._lock:
             _count_off(self._running, host)
             if owner is not None:
                 _count_off(self._owners, owner)
+            now = clock.monotonic()
+            hung = started is not None and now - started >= self.hung_after
+            if hung and port is not None and not cancelled and error is None:
+                self._answered[(host, port)] = (now + self.back_off, future.result())
+                self._answered.move_to_end((host, port))
+                if len(self._answered) > SLOW_ANSWERS:
+                    self._answered.popitem(last=False)
             if isinstance(error, OSError):
-                now = clock.monotonic()
-                hung = started is not None and now - started >= self.hung_after
                 until = now + (self.back_off if hung else self.remember)
                 reason = error.strerror or str(error)
                 self._failed[host] = (until, error.errno or 0, reason)

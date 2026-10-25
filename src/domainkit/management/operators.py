@@ -6,7 +6,10 @@ the application (``messages --retry``, ``auditforget``, ``loaddata``,
 ``createtoken``, ``flags``, ``webhooks replay``, ...), say who runs them:
 ``--operator``, else ``DOMAINKIT_OPERATOR``, else the login name
 ``getpass.getuser()`` reports (``LOGNAME`` or ``USER`` first, then the
-process's user id's name), which the caller can set as easily. The command
+process's user id's name), which the caller can set as easily. A process
+whose user has no name, or none ``OPERATOR`` allows (a container run under
+an arbitrary uid, from cron), runs as ``uid-<n>``, its user id, so commands
+that ran unattended keep running; the source says ``system``. The command
 runs as the actor ``operator:<name>``, so what it writes to the audit trail
 names them, and it records each action it takes there
 (``operator.<command>``) with its outcome, when ``domainkit.contrib.audit``
@@ -32,6 +35,8 @@ OPERATOR_VARIABLE: Final = "DOMAINKIT_OPERATOR"
 """The environment variable naming the operator when ``--operator`` does not."""
 OPERATOR: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@+-]{0,63}")
 """An operator's name: up to 64 letters, digits, ``.``, ``_``, ``@``, ``+``, ``-``."""
+UNNAMED: Final = "unnamed"
+"""The operator of a process with no user name nor user id (no ``os.getuid``)."""
 AUDIT: Final = "domainkit.contrib.audit"
 ACTOR_PREFIX: Final = "operator:"
 
@@ -48,7 +53,7 @@ class Operator:
     source: Source
     """``option`` (``--operator``), ``environment`` (``DOMAINKIT_OPERATOR``),
     or ``system`` (the login name ``getpass.getuser()`` reports, from the
-    environment first: the weakest)."""
+    environment first, or else ``uid-<n>``: the weakest)."""
 
     @property
     def actor(self) -> str:
@@ -59,9 +64,16 @@ class Operator:
 def operator(option: str | None = None) -> Operator:
     """The operator: ``option``, ``DOMAINKIT_OPERATOR``, or the process's user.
 
+    The process's user is its login name, if ``OPERATOR`` allows it, else
+    ``uid-<n>`` (``unnamed`` where there are no user ids): a container
+    under an arbitrary uid has no name, and a Windows domain account or a
+    name with a space is none ``OPERATOR`` allows. Such a name is never
+    kept or shown.
+
     Raises:
-        CommandError: The name is not one ``OPERATOR`` allows, or none is
-            found. The message never quotes the name.
+        CommandError: The name given with ``--operator`` or
+            ``DOMAINKIT_OPERATOR`` is not one ``OPERATOR`` allows. The
+            message never quotes the name.
     """
     if option is not None:
         return _checked(option, "option", "--operator")
@@ -71,12 +83,15 @@ def operator(option: str | None = None) -> Operator:
         user = getpass.getuser()
     except OSError:  # No name for the process's user id (a bare container).
         user = ""
-    if not user:
-        raise CommandError(
-            f"Name the operator who runs this command: --operator NAME, or "
-            f"{OPERATOR_VARIABLE}."
-        )
-    return _checked(user, "system", "the system user name")
+    if OPERATOR.fullmatch(user):
+        return Operator(user, "system")
+    return Operator(_process_user_id(), "system")
+
+
+def _process_user_id() -> str:
+    """``uid-<n>`` of the process, or ``unnamed`` without user ids (Windows)."""
+    getuid = getattr(os, "getuid", None)
+    return UNNAMED if getuid is None else f"uid-{getuid()}"
 
 
 def _checked(name: str, source: Source, where: str) -> Operator:

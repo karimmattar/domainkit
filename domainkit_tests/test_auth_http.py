@@ -659,7 +659,7 @@ def test_a_burst_of_refused_credentials_that_stops_is_counted(
         "Refused credentials: Invalid token.",
         (
             "Holding back credentials from ip:203.0.113.9 for 1 s: "
-            "over RATE_LIMIT (100 refused)"
+            "more refused than RATE_LIMIT allows (100/minute)"
         ),
         "Refused credentials: Invalid token.",  # The other address's.
         "100 more refused_credentials line(s) for ip:203.0.113.9 were held back",

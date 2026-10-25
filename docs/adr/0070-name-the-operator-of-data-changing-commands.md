@@ -82,8 +82,7 @@ sends events to receivers again. Their audit rows said `system`.
   the operator is found before the command parses its action, but record
   nothing. `evidence`, `auditlog`, and `auditverify` only read, and take
   no operator.
-- Each now needs a name, as `partitions` does: a container whose user has
-  none sets `DOMAINKIT_OPERATOR`, for `cleartokens` run from cron too.
+- They keep running unattended, as below.
 
 The decision above calls the last source "the OS user". It is the login
 name `getpass.getuser()` returns: the `LOGNAME`, `USER`, `LNAME`, or
@@ -92,3 +91,25 @@ name of the process's user id. Whoever runs the command sets those as
 easily as `DOMAINKIT_OPERATOR`, so `operator_source = system` is no
 stronger than the other sources; the name attributes, it does not
 authenticate, as the decision says.
+
+The decision also refused a command when no name was found, or the system
+name was not one an operator may have. A container run under an arbitrary
+uid (OpenShift, Kubernetes `runAsUser`) has no passwd entry, and from cron
+or an entrypoint no `LOGNAME` or `USER`: `getpass.getuser()` raises. So
+`cleartokens` from cron, `createsuperuser --noinput` in an entrypoint, and
+`partitions`, `messages`, `flush`, `loaddata`, `auditforget`, and
+`privacy` run unattended, all of which 0.9.0 ran there, stopped with
+"Name the operator who runs this command". A patch release must not break
+them. Instead:
+
+- Without a login name an operator may have (none, or a Windows domain
+  account, or a name with a space), the operator is `uid-<n>`, the
+  process's user id (`:` is not allowed in a name), or `unnamed` where
+  `os.getuid` does not exist. Its source is `system`, so the trail shows
+  that no name was given. The name the system had is neither kept in the
+  trail nor logged.
+- A bad `--operator` or `DOMAINKIT_OPERATOR` is still refused, with the
+  message that names where it came from and never quotes it: the operator
+  typed it, and can type it again.
+- 0.10 may require a name, from the option or the variable, in staging
+  and production.

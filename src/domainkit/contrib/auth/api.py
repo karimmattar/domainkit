@@ -114,7 +114,8 @@ class MfaChallengeOut(BaseModel):
     """The password holds; send this token and a code to ``/mfa/login``."""
 
     mfa_required: Literal[True] = True
-    mfa_token: str
+    mfa_token: str = Field(repr=False)
+    """Stands for a password that held: left out of ``repr``."""
     expires_in: int
     """Seconds the token works."""
 

@@ -452,6 +452,7 @@ def test_tokens_codes_and_passwords_stay_out_of_reprs() -> None:
     shown = [
         IssuedTokens(access_token=SECRET, expires_in=300, refresh_token=SECRET),
         api.TokenOut(access_token=SECRET, expires_in=300, refresh_token=SECRET),
+        api.MfaChallengeOut(mfa_token=SECRET, expires_in=300),
         api.LoginIn(username="alice", password=SECRET),
         api.RefreshIn(refresh_token=SECRET),
         api.PasswordIn(old_password=SECRET, new_password=SECRET),
@@ -486,8 +487,9 @@ def test_tokens_codes_and_passwords_stay_out_of_reprs() -> None:
     for value in (*shown, made):
         assert SECRET not in repr(value), type(value).__name__
     assert "expires_in=300" in repr(shown[0])
-    assert "username='alice'" in repr(shown[2])
+    assert "username='alice'" in repr(shown[3])
     assert "correct=True" in repr(shown[-3])
+    assert "expires_in=300" in repr(shown[2])
 
 
 def test_staff_see_and_change_only_the_fields_a_model_names() -> None:

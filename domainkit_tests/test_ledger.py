@@ -585,9 +585,14 @@ async def test_slow_ledgers_time_out() -> None:
 
 
 def test_immudb_urls_name_server_user_and_database() -> None:
-    """Credentials are URL-decoded; port and database have defaults."""
-    assert address_of(immudb_config()) == Address(
-        "ledger.internal:3323", "writer", "p@ss", "evidence"
+    """Credentials are URL-decoded; port and database have defaults.
+
+    The password is not in the address's ``repr`` (SEC-r1-6).
+    """
+    address = address_of(immudb_config())
+    assert address == Address("ledger.internal:3323", "writer", "p@ss", "evidence")
+    assert repr(address) == (
+        "Address(target='ledger.internal:3323', user='writer', database='evidence')"
     )
     assert address_of(
         LedgerConfig.model_validate({"URL": "immudb://ledger.internal"})

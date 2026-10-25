@@ -405,13 +405,15 @@ async def test_lookups_belong_to_the_requests_caller() -> None:
 async def test_a_host_whose_lookup_hung_backs_off_longer(lookups: Lookups) -> None:
     """A failure after ``HUNG_LOOKUP_SECONDS`` keeps its host out for a minute.
 
-    A quick failure is remembered for ``FAILED_LOOKUP_SECONDS`` only, and a
-    slow success not at all: it is what one name server down looks like,
-    and the host resolves.
+    A quick failure is remembered for ``FAILED_LOOKUP_SECONDS`` only. A slow
+    success is not held against its host (it is what one name server down
+    looks like): its answer is kept for the minute instead, and given at
+    once without a thread, as its port's only (SEC-r1-5).
     """
     resolver = GuardResolver()
     lookups.answers["hung.test"] = socket.gaierror(socket.EAI_AGAIN, "Timed out")
     lookups.answers["quick.test"] = socket.gaierror(socket.EAI_AGAIN, "No answer")
+    lookups.answers["slow.test"] = ["192.0.2.7"]
     with freeze_time("2026-01-01") as clock:
         clock.tick(3600)  # Far from the real clock: the failure is timed on this one.
         hung = asyncio.create_task(resolver.lookup("hung.test", 443))
@@ -421,9 +423,12 @@ async def test_a_host_whose_lookup_hung_backs_off_longer(lookups: Lookups) -> No
         lookups.release.set()
         with pytest.raises(socket.gaierror, match="Timed out"):
             await hung
-        assert await slow == [ipaddress.ip_address("192.0.2.1")]
+        assert await slow == [ipaddress.ip_address("192.0.2.7")]
         with pytest.raises(socket.gaierror, match="No answer"):
             await resolver.lookup("quick.test", 443)
+        lookups.answers["slow.test"] = ["192.0.2.8"]  # What a new lookup would say.
+        kept = await resolver.lookup("slow.test", 443)
+        other_port = await resolver.lookup("slow.test", 8443)
         clock.tick(FAILED_LOOKUP_SECONDS)
         for host in ("hung.test", "quick.test", "slow.test"):
             with suppress(socket.gaierror):
@@ -432,15 +437,48 @@ async def test_a_host_whose_lookup_hung_backs_off_longer(lookups: Lookups) -> No
             "hung.test",
             "slow.test",
             "quick.test",
+            "slow.test",  # Port 8443: a lookup of its own, quick, so not kept.
             "quick.test",
-            "slow.test",
         ]
+        assert resolver.running == 0
         clock.tick(HUNG_LOOKUP_BACKOFF - FAILED_LOOKUP_SECONDS)
         lookups.answers["hung.test"] = ["192.0.2.9"]
         assert await resolver.lookup("hung.test", 443) == [
             ipaddress.ip_address("192.0.2.9")
         ]
+        fresh = await resolver.lookup("slow.test", 443)
+    assert kept == [ipaddress.ip_address("192.0.2.7")]
+    assert other_port == [ipaddress.ip_address("192.0.2.8")]
+    assert fresh == [ipaddress.ip_address("192.0.2.8")]
+    assert list(resolver._answered) == []
     await resolver.close()
+
+
+@pytest.mark.usefixtures("registered")
+async def test_kept_slow_answers_are_bounded(
+    lookups: Lookups, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The least recently used answer goes first, and its host is looked up again."""
+    monkeypatch.setattr(guard, "SLOW_ANSWERS", 2)
+    lookups.release.set()
+    resolver = GuardResolver(hung_after=0.0)  # Every answer counts as slow.
+    for host in ("a.test", "b.test", "a.test", "c.test", "b.test"):
+        await resolver.lookup(host, 443)
+
+    assert lookups.hosts == ["a.test", "b.test", "c.test", "b.test"]
+    assert list(resolver._answered) == [("c.test", 443), ("b.test", 443)]
+    await resolver.close()
+
+
+async def test_a_cancelled_lookup_keeps_no_answer() -> None:
+    """A lookup the threads never ran is not kept, however long it waited."""
+    resolver = GuardResolver(hung_after=0.0)
+    resolver._running["queued.test"] = 1
+    cancelled: Future[list[Any]] = Future()
+    assert cancelled.cancel()
+    resolver._finished("queued.test", cancelled, None, 0.0, 443)
+
+    assert (resolver._running, resolver._answered) == ({}, {})
 
 
 # TLS --------------------------------------------------------------------------

@@ -266,13 +266,17 @@ All notable changes to domainkit. The format follows
   hung hosts failed every other subscriber's delivery with `EAI_AGAIN`. A
   host whose lookup failed after 5 seconds or more fails at once for a
   minute rather than 5 seconds, so retries do not take the threads again.
-  What still holds: a host whose DNS answers slowly, or fails in under 5
-  seconds, takes a thread on each new lookup (at most 2 at once); a
-  success is never held against its host, since a slow one is what one
-  name server down looks like. The share is per subscription, not per
-  tenant, and one subscription holds at most 2 threads (its host's
-  bound): whoever may create eight subscriptions can still hold all 16,
-  until 0.10 gives subscriptions an owner (WEB-04, SEC-r1-1, SEC-r1-4).
+  A lookup that succeeds after 5 seconds or more is not held against its
+  host, since that is what one name server down looks like: its answer
+  is kept for that minute instead (at most 1,024 hosts), so a host whose
+  DNS answers slowly does not take the threads again on every retry
+  either; callers check the kept addresses as they check fresh ones.
+  What still holds: a host whose DNS fails in under 5 seconds takes a
+  thread on each new lookup (at most 2 at once). The share is per
+  subscription, not per tenant, and one subscription holds at most 2
+  threads (its host's bound): whoever may create eight subscriptions can
+  still hold all 16 for a first round of slow lookups, until 0.10 gives
+  subscriptions an owner (WEB-04, SEC-r1-1, SEC-r1-4, SEC-r1-5).
 - Only failed attempts use up the login and second-factor counts. A login,
   a password change, or a code that works is given back to its counts, so
   a service account that logs in often, or an office or carrier behind one
@@ -324,9 +328,10 @@ All notable changes to domainkit. The format follows
   digests no longer reach a log that formats them. The tokens, codes,
   passwords, secrets, and hashes that logging in, refreshing, second
   factors, links, signup, personal tokens, CSRF, and the admin API take or
-  return (`IssuedTokens`, `TokenOut`, `LoginIn`, `EnrolmentOut`,
-  `NewToken`, `PasswordCheck`, and the others) are left out of their
-  `repr` too (AUTH-13).
+  return (`IssuedTokens`, `TokenOut`, `MfaChallengeOut`, `LoginIn`,
+  `EnrolmentOut`, `NewToken`, `PasswordCheck`, and the others) are left
+  out of their `repr` too, and so is the password of an immudb ledger's
+  parsed address (AUTH-13, SEC-r1-6).
 - Mail, text messages, and push notifications no longer stay in the outbox
   once they are sent. The worker blanks a message's arguments (`payload`)
   in the statement that marks it done, and `messages --cancel` when it
@@ -364,9 +369,13 @@ All notable changes to domainkit. The format follows
   `flags`, and `webhooks`. Their audit rows (`auth.mfa_disabled`,
   `auth.token_created`, `flags.flag_changed`, ...) name the operator
   instead of `system`, and `webhooks replay` is recorded as
-  `operator.webhooks.replay`; their listings record nothing. Each of them
-  now needs a name: in a container whose user has none, set
-  `DOMAINKIT_OPERATOR`, for `cleartokens` from cron too (N8, DATA-07,
+  `operator.webhooks.replay`; their listings record nothing. Every one of
+  these commands still runs unattended where 0.9.0 ran it: a process
+  whose user has no name, or none an operator may have (a container under
+  an arbitrary uid, from cron or an entrypoint; a Windows domain account),
+  runs as `operator:uid-<n>`, its user id, recorded with the source
+  `system`. Only a bad `--operator` or `DOMAINKIT_OPERATOR` is refused.
+  0.10 may require a name in staging and production (N8, DATA-07,
   SEC-r2-2; ADR 0070).
 - Changing a webhook subscription's URL is audited with the new host and
   the one before (`SubscriptionChanged.host`, `previous_host`), never the

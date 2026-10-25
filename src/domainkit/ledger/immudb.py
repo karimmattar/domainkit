@@ -18,7 +18,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Final, Protocol
 from urllib.parse import unquote, urlsplit
@@ -102,7 +102,8 @@ class Address:
 
     target: str
     user: str
-    password: str
+    password: str = field(repr=False)
+    """Left out of ``repr``: tracebacks and ``%r`` would show it."""
     database: str
 
 

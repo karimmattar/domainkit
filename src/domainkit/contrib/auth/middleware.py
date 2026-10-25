@@ -122,7 +122,7 @@ class AuthenticationMiddleware:
         # request, as if this one had come first.
         held = self._held(address_key(scope)) if self.held else None
         if held is not None and "authorization" in connection.headers:
-            self._log_held(address_key(scope), *held)
+            self._log_held(address_key(scope), held[1])
             await refuse(scope, receive, send, *held)
             return
         try:
@@ -133,7 +133,7 @@ class AuthenticationMiddleware:
         if held is not None and found is not None and found[0].guessable:
             # Credentials in another header, read by a project's own class,
             # are refused once read: a guess that works must not stand out.
-            self._log_held(address_key(scope), *held)
+            self._log_held(address_key(scope), held[1])
             await refuse(scope, receive, send, *held)
             return
         credentials = None if found is None else found[1]
@@ -219,7 +219,7 @@ class AuthenticationMiddleware:
             decision = await self.limiter.hit(f"refused:{address}", limit, period)
             if not decision.allowed:
                 self._hold(address, decision.retry_after)
-                self._log_held(address, limit, decision)
+                self._log_held(address, decision)
                 await refuse(scope, receive, send, limit, decision)
                 return
         if scope["type"] == "websocket":
@@ -244,15 +244,20 @@ class AuthenticationMiddleware:
             if len(self.held) > MAX_HELD:
                 self.held.popitem(last=False)
 
-    def _log_held(self, address: str, limit: int, refusal: Decision) -> None:
-        """Log that ``address``'s credentials are refused unread: throttled, counted."""
+    def _log_held(self, address: str, refusal: Decision) -> None:
+        """Log that ``address``'s credentials are refused unread: throttled, counted.
+
+        The line names the rate the address went past (``RATE_LIMIT``), not a
+        count: the backend says only that it was past it.
+        """
         self.log.warning(
             "held_credentials",
             address,
-            "Holding back credentials from %s for %d s: over RATE_LIMIT (%d refused)",
+            "Holding back credentials from %s for %d s: more refused than "
+            "RATE_LIMIT allows (%s)",
             address,
             math.ceil(refusal.retry_after),
-            limit,
+            settings.RATE_LIMIT,
         )
 
     def _held(self, address: str) -> tuple[int, Decision] | None:
