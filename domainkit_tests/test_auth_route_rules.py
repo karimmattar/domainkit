@@ -26,7 +26,7 @@ from domainkit.contrib.auth import (
 from domainkit.contrib.auth.access import routes_need_users
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
-from domainkit.http.application import application_problems
+from domainkit.http.application import application_problems, check_started
 from domainkit.management import call_command
 from domainkit.management.base import CommandError
 from domainkit_tests import sample_auth_routes, sample_open_routes
@@ -285,6 +285,19 @@ def test_routes_added_after_the_build_are_checked_as_it_starts(
         TestClient(app),
     ):
         pass
+
+    assert caplog.messages == [
+        f"The application has problems since it was built:\n  {LATE}"
+    ]
+
+
+def test_applications_built_elsewhere_are_checked_whole_as_they_start(
+    use_auth: UseAuth, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An application ``get_asgi_application`` did not build reports everything."""
+    use_auth(settings={"ROOT_ROUTER": None, "MIDDLEWARE": MIDDLEWARE[:3]})
+    with caplog.at_level(logging.WARNING, logger="domainkit.http.application"):
+        check_started(app_of(late_router()))
 
     assert caplog.messages == [
         f"The application has problems since it was built:\n  {LATE}"

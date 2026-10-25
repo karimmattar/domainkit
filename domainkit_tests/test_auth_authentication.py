@@ -391,7 +391,11 @@ def test_counts_taken_are_given_back_only_when_an_attempt_is_refused(
     app = FastAPI()
     backend = app.state.login_limiter = PartlyDown()
     request = Request({"type": "http", "headers": [], "app": app})
-    limits = [("login:ip:unknown", "5/minute"), ("login:user:alice", "5/minute")]
+    limits = [
+        ("login:ip:unknown", "5/minute"),
+        ("login:user:alice", "5/minute"),
+        ("signup:ip:unknown", "5/minute"),
+    ]
 
     def attempt() -> throttling.Attempt:
         return asyncio.run(
@@ -405,9 +409,12 @@ def test_counts_taken_are_given_back_only_when_an_attempt_is_refused(
             attempt()
         assert refused.value.status_code == 503
         assert backend.refunded == ["login:ip:unknown"]
-        assert "login:ip:unknown" not in backend.memory._callers
+        assert list(backend.memory._callers) == []  # Given back; the last unread.
     else:
         taken = attempt()
-        assert taken.counted == [("login:ip:unknown", 5, 60)]
+        assert taken.counted == [
+            ("login:ip:unknown", 5, 60),
+            ("signup:ip:unknown", 5, 60),  # Counted on past the uncounted one.
+        ]
         assert backend.refunded == []
         assert backend.memory._callers["login:ip:unknown"].owed == 1
