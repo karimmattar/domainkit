@@ -78,3 +78,4 @@ accepted record: supersede it with a new one and link both ways.
 | [0070](0070-name-the-operator-of-data-changing-commands.md) | Name the operator of data-changing commands, and audit what they do | Accepted |
 | [0071](0071-bind-cache-computations-to-their-owner.md) | Detach shared cache computations; bind those that borrow to their owner | Accepted |
 | [0072](0072-walk-proxy-headers-from-the-right-and-trust-unix-sockets.md) | Walk proxy headers from the right, trust unix sockets by name, and name the scheme header | Accepted |
+| [0075](0075-ranges-to-the-next-major-tested-at-the-top.md) | Declare ranges to the next major, and test the newest releases they allow | Accepted |

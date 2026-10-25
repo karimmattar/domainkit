@@ -110,3 +110,11 @@ statement cache keys, and its results are compiled code).
 - Database paths cost 5–14% fewer Python calls. The authenticated reads
   and the 429 took 12–21% less CPU in each of three interleaved runs; the
   writes' difference was within noise (docs/performance.md).
+
+## Amendment (2026-10-25)
+
+ADR 0075 widens the FastAPI range to `>=0.143.1,<1.0.0`, and asyncpg's to
+`<1.0.0`: ranges now run to the next major, and a `newest` CI job tests
+the newest releases they allow. The suite and the ladder passed on FastAPI
+0.162.0. The floors, the telemetry decision and the SQLAlchemy range
+(`<2.2`) stand.

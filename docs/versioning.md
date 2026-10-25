@@ -64,6 +64,16 @@ Each release supports the Python versions in `requires-python` (currently
 SQLAlchemy, Alembic, and the database drivers. Raising a minimum version is
 a minor-release change and appears in the changelog.
 
+The ranges follow one rule (ADR 0075): from the oldest version CI tests up
+to the dependency's next major version, `<1.0.0` for one still at 0.x.
+SQLAlchemy stops before its next minor (`<2.2`), since its second number
+marks API changes; `tzdata`, being data, has no top. Nothing is pinned
+with `==`. The lock file pins the set CI's jobs test, and the `newest` job
+installs the wheel with the newest releases the ranges allow and runs the
+suite, on every pull request and weekly. When an upstream release breaks
+it, the next patch release fixes domainkit or lowers that range's top.
+Renovate widens a range when a new major appears, once CI passes with it.
+
 ## Making a release
 
 1. Move the changelog's **Unreleased** entries under the new version and date.
