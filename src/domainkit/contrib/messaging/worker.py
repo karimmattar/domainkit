@@ -47,7 +47,6 @@ from pydantic import ValidationError
 from sqlalchemy import (
     DateTime,
     Delete,
-    Interval,
     delete,
     func,
     literal,
@@ -1150,7 +1149,7 @@ class Worker:
         cutoff: dbclock.Moment
         if dbclock.uses_database(dialect):
             cutoff = func.statement_timestamp(type_=DateTime(timezone=True)) + literal(
-                retention, Interval(), literal_execute=True
+                retention, literal_execute=True
             )
         else:
             cutoff = dbclock.at(dialect, retention.total_seconds())

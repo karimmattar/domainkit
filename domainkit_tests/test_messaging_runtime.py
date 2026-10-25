@@ -1562,6 +1562,56 @@ async def test_workers_cleaning_up_at_once_delete_each_old_message_once() -> Non
     assert {row["id"] for row in await rows()} == {ids[name] for name in kept}
 
 
+@pytest.mark.usefixtures("tables")
+async def test_cleanup_keeps_messages_until_their_retention_has_passed() -> None:
+    """A message finished exactly RETENTION_SECONDS ago stays; one older goes."""
+    config = MessagingSettings(**FAST)
+    retention = timedelta(seconds=config.RETENTION_SECONDS)
+    with clock.freeze_time("2026-10-01T00:00:00Z"):
+        now = clock.now()
+        rows_written = [
+            {
+                **message_row(
+                    kind="task", target="t", payload={}, headers={}, max_attempts=3
+                ),
+                "status": DONE,
+                "finished_at": now - retention - extra,
+            }
+            for extra in (timedelta(0), timedelta(microseconds=1))
+        ]
+        async with connections.engine().begin() as connection:
+            await connection.execute(insert(messages), rows_written)
+
+        assert await Worker(config).cleanup() == 1
+        [kept] = await rows()
+
+    assert kept["id"] == rows_written[0]["id"]
+
+
+@pytest.mark.usefixtures("tables")
+async def test_cleanup_skips_a_message_another_transaction_locked() -> None:
+    """On PostgreSQL a locked old message is left for later, never waited for."""
+    if not postgres():
+        return  # SQLite has no row locks; its writers take turns.
+    ids = await outbox_rows(
+        locked=(DONE, timedelta(days=30)), free=(DONE, timedelta(days=30))
+    )
+    worker = Worker(MessagingSettings(**FAST))
+    async with connections.engine().connect() as other:
+        await other.execute(
+            select(messages.c.id)
+            .where(messages.c.id == ids["locked"])
+            .with_for_update()
+        )
+        async with asyncio.timeout(WAIT):  # Waiting would outlast LOCK_TIMEOUT.
+            first = await worker.cleanup()
+        await other.rollback()
+
+    assert first == 1
+    assert await worker.cleanup() == 1
+    assert await rows() == []
+
+
 def test_existing_outboxes_get_the_cleanup_index_from_makemigrations(
     database_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2196,7 +2246,9 @@ class VirtualPolls:
         async def deaf(
             worker: Worker, stop: asyncio.Event, wake: asyncio.Event
         ) -> None:
-            worker_module._hearing(wake, listening)  # Every NOTIFY is missed.
+            if not listening:
+                return  # Nothing listens, as on SQLite: polling is all there is.
+            worker_module._hearing(wake, True)  # It listens; every NOTIFY is missed.
             await stop.wait()
 
         monkeypatch.setattr(worker_module, "pause", self.pause)
