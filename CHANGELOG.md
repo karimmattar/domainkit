@@ -148,7 +148,9 @@ All notable changes to domainkit. The format follows
   default, so the computation is cancelled with the request, which goes on
   only once the endpoint has stopped. `@cache_page(borrows=False)` detaches
   a page that holds nothing of the request, so it fills the cache after a
-  cut-off request; it refuses dependencies written with `yield`. A
+  cut-off request; it refuses dependencies written with `yield`, as
+  FastAPI finds them, also behind `functools.partial` or `functools.wraps`
+  (SEC-r3-7). A
   `get_or_set` factory that uses its caller's session says so with
   `borrows=True` and gets the same. Callers still waiting on such a
   computation share one of their own, and never get an error its owner's

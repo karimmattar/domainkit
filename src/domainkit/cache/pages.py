@@ -34,10 +34,12 @@ import inspect
 import json
 from collections.abc import Awaitable, Callable, Sequence
 from contextvars import copy_context
-from functools import update_wrapper
+from functools import partial, update_wrapper
 from typing import Annotated, Any, Final, get_args, get_origin, get_type_hints
 
 from fastapi import Request, Response, params, status
+from fastapi.dependencies.models import Dependant
+from fastapi.dependencies.utils import get_dependant
 from pydantic_core import to_json
 
 from domainkit import deadlines
@@ -265,26 +267,54 @@ def _dependencies(signature: inspect.Signature) -> list[Callable[..., Any]]:
     return found
 
 
-def _yields(call: Callable[..., Any]) -> bool:
-    """Whether a dependency holds a resource: it (or its ``__call__``) yields.
+def _forms(call: object) -> list[object]:
+    """``call`` as FastAPI looks at it: through ``partial`` and through ``wraps``."""
+    while isinstance(call, partial):
+        call = call.func
+    return [call, inspect.unwrap(call)] if callable(call) else []
 
+
+def _yields(call: object) -> bool:
+    """Whether FastAPI takes a dependency for one that holds a resource.
+
+    As FastAPI 0.143 decides it (``fastapi.dependencies.models``): the
+    function, or its ``__call__``, yields, seen through ``functools.partial``
+    (nested too) and ``functools.wraps``; a class is built, so it never does.
     FastAPI closes such a dependency when the request ends.
     """
-    target: object = call
-    if not inspect.isroutine(call) and not inspect.isclass(call):
-        target = type(call).__call__
-    return inspect.isasyncgenfunction(target) or inspect.isgeneratorfunction(target)
+    if any(_generator(form) for form in _forms(call)):
+        return True
+    if any(inspect.isclass(form) for form in _forms(call)):
+        return False
+    return any(
+        _generator(inner)
+        for form in _forms(call)
+        for inner in _forms(getattr(form, "__call__", None))  # noqa: B004
+    )
+
+
+def _generator(call: object) -> bool:
+    """Whether calling ``call`` makes a generator, async or not."""
+    return inspect.isgeneratorfunction(call) or inspect.isasyncgenfunction(call)
 
 
 def _holds(call: Callable[..., Any]) -> bool:
-    """Whether a dependency, or one it depends on, holds a resource."""
-    if _yields(call):
-        return True
-    try:
-        signature = inspect.signature(call)
-    except (TypeError, ValueError):  # A builtin: nothing to resolve.
-        return False
-    return any(_holds(inner) for inner in _dependencies(signature))
+    """Whether a dependency, or one beneath it, holds a resource.
+
+    The dependencies beneath are found as FastAPI finds them (``get_dependant``).
+    """
+    return _tree_holds(get_dependant(path="", call=call))
+
+
+def _tree_holds(dependant: Dependant) -> bool:
+    """Whether ``dependant``, or a dependency beneath it, holds a resource."""
+    stack = [dependant]
+    while stack:
+        dependency = stack.pop()
+        if _yields(dependency.call):
+            return True
+        stack += dependency.dependencies
+    return False
 
 
 def _route_holds(request: Request) -> bool:
@@ -295,12 +325,8 @@ def _route_holds(request: Request) -> bool:
     through on the way are not in the request, so they cannot be seen here.
     """
     dependant = getattr(request.scope.get("route"), "dependant", None)
-    stack = list(getattr(dependant, "dependencies", ()))
-    while stack:
-        dependency = stack.pop()
-        if _yields(dependency.call):
-            return True
-        stack += dependency.dependencies
+    if dependant is not None and _tree_holds(dependant):
+        return True
     application = getattr(request.scope.get("router"), "dependencies", ())
     return any(_holds(marker.dependency) for marker in application)
 

@@ -3,9 +3,10 @@
 import asyncio
 import inspect
 import re
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextvars import ContextVar
 from datetime import timedelta
+from functools import partial, wraps
 from typing import Annotated, Any, Final
 
 import pytest
@@ -634,6 +635,31 @@ def _sync_session() -> Iterator[str]:
     yield "session"
 
 
+def _logged[**P, R](dependency: Callable[P, R]) -> Callable[P, R]:
+    """A project's decorator for dependencies; FastAPI sees through it."""
+
+    @wraps(dependency)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        return dependency(*args, **kwargs)
+
+    return wrapper
+
+
+async def _labelled(label: str = "notes") -> AsyncIterator[str]:
+    yield label
+
+
+WRAPPED: Final = {
+    "partial": partial(_labelled, "reports"),
+    "nested partials": partial(partial(_labelled), "reports"),
+    "wraps": _logged(_labelled),
+    "partial of wraps": partial(_logged(_labelled), "reports"),
+    "wraps of a generator": _logged(_sync_session),
+    "partial of an instance": partial(Held()),
+}
+"""Dependencies with ``yield`` that FastAPI sees through, and so must we."""
+
+
 REFUSED: Final = (
     r"^@cache_page\(borrows=False\) cannot run an endpoint whose dependencies "
     r"hold a resource \(a dependency with yield\): its computation would use "
@@ -646,7 +672,9 @@ def test_detached_pages_refuse_dependencies_that_hold_a_resource() -> None:
 
     Dependencies with ``yield`` are found as defaults, in ``Annotated``,
     through ``Security``, beneath other dependencies, as instances with a
-    ``__call__`` that yields, and behind ``Depends()`` naming a class.
+    ``__call__`` that yields, behind ``Depends()`` naming a class, and
+    through ``functools.partial`` (nested too) and ``functools.wraps``,
+    as FastAPI finds them (SEC-r3-7).
     """
 
     async def by_default(session: str = Depends(_session)) -> int:
@@ -677,11 +705,19 @@ def test_detached_pages_refuse_dependencies_that_hold_a_resource() -> None:
         kept: Annotated[Plain, Depends()],
         month: int = 1,
         held: int = Depends(len),
-        largest: int = Depends(max),  # No signature to look into.
+        wrapped: int = Depends(partial(_logged(len), "")),
     ) -> int:
         return month
 
-    held = (by_default, annotated, secured, documented, beneath, instance, synchronous)
+    held = [by_default, annotated, secured, documented, beneath, instance, synchronous]
+    for dependency in WRAPPED.values():
+
+        async def wrapped(
+            session: Annotated[str, Depends(dependency)],
+        ) -> int:
+            return 1
+
+        held.append(wrapped)
     for endpoint in held:
         with pytest.raises(TypeError, match=REFUSED):
             cache_page(borrows=False)(endpoint)
@@ -783,6 +819,9 @@ async def _cut_off_during_a_miss(
         ("route", False),  # A route's dependency with yield: it borrows anyway.
         ("router", False),
         ("application", False),
+        ("route, partial", False),  # FastAPI sees through partial and wraps.
+        ("route, wraps", False),
+        ("route, partial of wraps", False),
         ("outer router", True),  # Not in the request: only borrowing covers it.
         ("middleware state", True),
         ("context variable", True),
@@ -803,7 +842,14 @@ async def test_every_way_a_page_reaches_the_requests_unit_of_work_is_safe(
     """
     started, release = asyncio.Event(), asyncio.Event()
     ran: list[int] = []
-    on_route = [Depends(_open_unit_of_work)] if handed == "route" else []
+    on_route = {
+        "route": [Depends(_open_unit_of_work)],
+        "route, partial": [Depends(partial(_open_unit_of_work))],
+        "route, wraps": [Depends(_logged(_open_unit_of_work))],
+        "route, partial of wraps": [
+            Depends(partial(partial(_logged(_open_unit_of_work))))
+        ],
+    }.get(handed, [])
     router = APIRouter(
         dependencies=[Depends(_open_unit_of_work)] if handed == "router" else []
     )

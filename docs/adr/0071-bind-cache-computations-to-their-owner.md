@@ -87,7 +87,12 @@ out: 1". Two designs were tried by PoC:
   borrows unless told `borrows=False`, which it refuses for an endpoint
   whose own dependencies (or theirs) hold a resource with `yield`, and
   overrides at request time when the route, its router, or the
-  application adds one; `get_or_set(..., borrows=True)` says so for other
+  application adds one. Both look as FastAPI does, since FastAPI decides
+  what it closes when the request ends: its `get_dependant` for the
+  dependencies beneath, and its test for `yield` through
+  `functools.partial` (nested) and `functools.wraps`. The final review
+  found a wrapped dependency passing a check that looked at the callable
+  as given (SEC-r3-7: `[1, 2]`, one connection left checked out); `get_or_set(..., borrows=True)` says so for other
   factories. A computation that borrows is its owner's:
   - it runs under the owner's deadline;
   - when the owner is cancelled, it is marked abandoned, no longer shared,
