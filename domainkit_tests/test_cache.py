@@ -849,6 +849,36 @@ async def test_any_failure_after_the_owners_deadline_is_the_owners() -> None:
     assert await within(second) == "rows"
 
 
+async def test_a_factorys_own_timeout_is_shared_while_its_owner_has_time() -> None:
+    """Single flight holds when the upstream hangs: one computation fails for all.
+
+    The factory's own bound (``asyncio.timeout`` around a hung upstream)
+    ran out while every caller, the owner too, still had time: that is not
+    the owner's failure, so the others get it instead of computing again
+    one after another.
+    """
+    cache = make_cache()
+    give_up = asyncio.Event()
+    calls = []
+
+    async def factory() -> str:
+        calls.append(1)
+        await give_up.wait()
+        raise TimeoutError  # Its own timeout around a hung upstream.
+
+    async def caller() -> str:
+        async with deadlines.timeout(30):
+            return await cache.get_or_set("report", factory, str, borrows=True)
+
+    callers = [asyncio.create_task(caller()) for _ in range(5)]
+    await asyncio.sleep(0)
+    give_up.set()
+    results = await within(asyncio.gather(*callers, return_exceptions=True))
+
+    assert [type(result) for result in results] == [TimeoutError] * 5
+    assert len(calls) == 1
+
+
 async def test_errors_of_a_computation_that_borrows_still_reach_every_caller() -> None:
     """Only the owner's deadline is kept from the others; other errors are shared."""
     cache = make_cache()

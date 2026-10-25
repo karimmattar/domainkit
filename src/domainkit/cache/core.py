@@ -549,12 +549,11 @@ class Cache:
             else:
                 async with deadlines.timeout(self.config.COMPUTE_TIMEOUT):
                     payload = encode(await factory())
-        except Exception as exc:
+        except Exception:
+            # Only once the owner's deadline has passed is a failure the
+            # owner's: the factory's own timeout is every caller's.
             deadline = computation.deadline
-            computation.owner_failed = computation.borrows and (
-                isinstance(exc, TimeoutError)
-                or (deadline is not None and deadline.expired())
-            )
+            computation.owner_failed = deadline is not None and deadline.expired()
             raise
         if not write:
             return payload

@@ -64,6 +64,7 @@ def cache_page(
     vary_on_user: bool = False,
     max_age: int = 0,
     name: str | None = None,
+    borrows: bool = True,
 ) -> Callable[[Endpoint], Endpoint]:
     """Cache what an async GET endpoint returns, for ``ttl``, in ``cache``.
 
@@ -72,8 +73,20 @@ def cache_page(
     ``max_age`` lets clients reuse an answer that long without asking
     again. ``name`` (default: the endpoint's import path) starts every key.
 
+    The endpoint runs for every caller of its entry, as the caller that
+    missed it. By default it may use what that request holds (its
+    dependencies, ``request.state``, a context variable a middleware set):
+    the computation borrows the request (``get_or_set(..., borrows=True)``),
+    runs under its deadline, and ends with it. ``borrows=False`` says the
+    endpoint uses nothing the request holds: its computation then goes on
+    after the request, fills the cache, and runs under the cache's
+    ``COMPUTE_TIMEOUT``. Dependencies that hold a resource (written with
+    ``yield``) are refused then, the endpoint's own here and the route's,
+    router's, and application's when a request comes, which then borrows.
+
     Raises:
-        TypeError: The endpoint is not async, or returns a ``Response``.
+        TypeError: The endpoint is not async, returns a ``Response``, or
+            takes a dependency that holds a resource with ``borrows=False``.
         ValueError: ``max_age`` is negative.
     """
     if max_age < 0:
@@ -91,7 +104,12 @@ def cache_page(
             )
         prefix = name or f"{endpoint.__module__}.{endpoint.__qualname__}"
         signature = _signature(endpoint, hints)
-        borrows = _takes_dependencies(signature)
+        if not borrows and any(_holds(call) for call in _dependencies(signature)):
+            raise TypeError(
+                "@cache_page(borrows=False) cannot run an endpoint whose "
+                "dependencies hold a resource (a dependency with yield): its "
+                "computation would use it after the request closed it."
+            )
         request_name = _parameter_of(signature, Request)
         response_name = _parameter_of(signature, Response)
 
@@ -123,7 +141,7 @@ def cache_page(
                 return adapter(returns).validate_python(result, from_attributes=True)
 
             value = await caches[cache].get_or_set(
-                key, compute, returns, ttl, borrows=borrows
+                key, compute, returns, ttl, borrows=borrows or _route_holds(request)
             )
             etag = f'W/"{hashlib.sha256(to_json(value)).hexdigest()[:32]}"'
             control = "private" if vary_on_user else "public"
@@ -228,21 +246,63 @@ def _signature(endpoint: Endpoint, hints: dict[str, Any]) -> inspect.Signature:
     )
 
 
-def _takes_dependencies(signature: inspect.Signature) -> bool:
-    """Whether FastAPI resolves a parameter of the endpoint with a dependency.
+def _dependencies(signature: inspect.Signature) -> list[Callable[..., Any]]:
+    """What FastAPI calls to resolve the parameters of ``signature``.
 
-    A dependency (a unit of work, a client) belongs to the request, which
-    closes it when it ends, so the computation must end with the request
-    (``get_or_set(..., borrows=True)``). Query, path and header values, the
-    request, and the response are data the computation may keep using.
+    ``Depends()`` without a callable means the parameter's annotation.
     """
+    found: list[Callable[..., Any]] = []
     for parameter in signature.parameters.values():
-        markers = [parameter.default]
-        if get_origin(parameter.annotation) is Annotated:
-            markers += get_args(parameter.annotation)[1:]
-        if any(isinstance(marker, params.Depends) for marker in markers):
+        annotation, markers = parameter.annotation, [parameter.default]
+        if get_origin(annotation) is Annotated:
+            annotation, *metadata = get_args(annotation)
+            markers += metadata
+        found += [
+            marker.dependency or annotation
+            for marker in markers
+            if isinstance(marker, params.Depends)
+        ]
+    return found
+
+
+def _yields(call: Callable[..., Any]) -> bool:
+    """Whether a dependency holds a resource: it (or its ``__call__``) yields.
+
+    FastAPI closes such a dependency when the request ends.
+    """
+    target: object = call
+    if not inspect.isroutine(call) and not inspect.isclass(call):
+        target = type(call).__call__
+    return inspect.isasyncgenfunction(target) or inspect.isgeneratorfunction(target)
+
+
+def _holds(call: Callable[..., Any]) -> bool:
+    """Whether a dependency, or one it depends on, holds a resource."""
+    if _yields(call):
+        return True
+    try:
+        signature = inspect.signature(call)
+    except (TypeError, ValueError):  # A builtin: nothing to resolve.
+        return False
+    return any(_holds(inner) for inner in _dependencies(signature))
+
+
+def _route_holds(request: Request) -> bool:
+    """Whether the request's route or application adds a dependency with ``yield``.
+
+    The route's own dependencies and its router's are in ``route.dependant``;
+    the application's in its router's. Those of routers it was included
+    through on the way are not in the request, so they cannot be seen here.
+    """
+    dependant = getattr(request.scope.get("route"), "dependant", None)
+    stack = list(getattr(dependant, "dependencies", ()))
+    while stack:
+        dependency = stack.pop()
+        if _yields(dependency.call):
             return True
-    return False
+        stack += dependency.dependencies
+    application = getattr(request.scope.get("router"), "dependencies", ())
+    return any(_holds(marker.dependency) for marker in application)
 
 
 def _parameter_of(signature: inspect.Signature, kind: type) -> str:

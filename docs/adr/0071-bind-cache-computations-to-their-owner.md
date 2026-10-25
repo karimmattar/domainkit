@@ -38,9 +38,8 @@ reproduced:
 The two failure modes pull apart. A computation that outlives its caller
 is wrong when it uses the caller's resources; one that dies with its
 caller is wrong for everyone else when it does not. Whether a factory
-borrows cannot be seen from a closure in general, but the framework knows
-it where it creates the borrowing: a `@cache_page` endpoint borrows
-exactly when one of its parameters is a dependency.
+borrows cannot be seen from a closure in general, and, it turned out, not
+from a `@cache_page` endpoint either (below).
 
 Options considered:
 
@@ -48,8 +47,29 @@ Options considered:
   but fails correct code, the common case, as above.
 - **Detach every computation** (0.9.0): heals and isolates callers, but
   `@cache_page` with a unit of work leaks a connection per cut-off request.
-- **Detach by default; bind where the factory borrows**, detected for
-  `@cache_page`, declared with `borrows=True` for `get_or_set`.
+- **Detach by default; bind where the factory borrows**, declared with
+  `borrows=True` for `get_or_set`; for `@cache_page`, first detected from
+  the endpoint's parameters, then made the default (below).
+
+A second review found that detection missed borrowing (SEC-r3-5): a
+route's dependency (`dependencies=[Depends(open_uow)]`), or a middleware
+putting a session in `request.state`, hands the endpoint the request's
+unit of work while it takes only `request`. Its PoC printed "statements
+after the request closed its session: [1, 2]; connections left checked
+out: 1". Two designs were tried by PoC:
+
+- **Detect at request time** from `route.dependant`, treating an endpoint
+  that takes the request as borrowing. FastAPI 0.143 keeps the route's and
+  its router's dependencies there and the application's in
+  `scope["router"]`, but not those of a router the route was included
+  through; and a context variable a middleware sets, read by an endpoint
+  with no parameters at all, leaked the same way (`[1, 2]`, one
+  connection) and cannot be seen by any check.
+- **Borrow by default for pages**, `borrows=False` to detach: every path
+  above returns its connection (the six cases of
+  `test_every_way_a_page_reaches_the_requests_unit_of_work_is_safe`). It
+  regresses nothing from 0.9.0, whose pages already failed a slow fill
+  (`[503, 503, 503]`); pages that hold nothing opt in to the fill.
 
 ## Decision
 
@@ -64,18 +84,23 @@ Options considered:
   is not the CONC-02 bug, and a bounded default would fail, after a patch
   upgrade, any computation that takes longer.
 - **A factory that uses what its caller holds borrows**: `@cache_page`
-  passes `borrows=True` when the endpoint takes a dependency (`Depends`,
-  `Security`, also through `Annotated`); `get_or_set(..., borrows=True)`
-  says so for other factories. A computation that borrows is its owner's:
+  borrows unless told `borrows=False`, which it refuses for an endpoint
+  whose own dependencies (or theirs) hold a resource with `yield`, and
+  overrides at request time when the route, its router, or the
+  application adds one; `get_or_set(..., borrows=True)` says so for other
+  factories. A computation that borrows is its owner's:
   - it runs under the owner's deadline;
   - when the owner is cancelled, it is marked abandoned, no longer shared,
     and cancelled, and the owner waits for it to stop before its own
     cancellation goes on (a second cancellation stops the wait);
-  - a failure that is the owner's (a `TimeoutError`, or any error once the
-    owner's deadline has passed, noted by the computation as it fails)
-    reaches only the owner. Callers still waiting share a new computation,
-    started by one of them with its own factory, under its own deadline.
-    Other errors reach every waiting caller.
+  - a failure once the owner's deadline has passed, noted by the
+    computation as it fails, is the owner's and reaches only the owner.
+    Callers still waiting share a new computation, started by one of them
+    with its own factory, under its own deadline. Every other error, the
+    factory's own timeout among them, reaches every waiting caller: the
+    review found that counting any `TimeoutError` as the owner's turned a
+    hung upstream into one computation per caller, one after another
+    ("5 factory calls for one key", SEC-r3-6).
 - **Shutdown and `close()` say so.** They mark the computations they stop
   (`Cache.stop_computations`, which the lifecycle's `tasks` phase calls
   through `caches.stop_computations()` before cancelling the loop's
@@ -87,8 +112,8 @@ Options considered:
 The default is detached because its failure needs code that breaks the
 documented contract (a factory closing over its caller's session without
 `borrows=True`), while binding's failures hit correct code and every
-caller of a key. The case the framework creates itself, `@cache_page`
-with dependencies, is detected.
+caller of a key. Pages, where the framework itself hands the endpoint
+the request, borrow by default, because no check sees every way it does.
 
 ## Consequences
 
@@ -108,8 +133,11 @@ with dependencies, is detected.
   keeps `None`: no regression from 0.9.0, and the hang is fixed by opting
   in. `check` warns where deployed for each cache without it, and the
   `init` template sets it. 0.10 plans a bounded default.
-- A `@cache_page` endpoint with dependencies fills the cache only within
-  its requests' deadlines: when that is too short, open a unit of work in
-  the endpoint instead of depending on one.
+- A `@cache_page` page fills the cache only within its requests'
+  deadlines, as in 0.9.0, unless it says `borrows=False`: then it opens
+  what it needs itself, and a dependency with `yield` of the endpoint, its
+  route, its router, or the application is refused or overridden; one of
+  an outer router, `request.state`, and context variables are the
+  author's to keep out.
 - A factory that uses its caller's resources without saying so still
   leaks as in 0.9.0; `docs/cache.md` states the contract.

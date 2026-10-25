@@ -4,14 +4,16 @@ import asyncio
 import inspect
 import re
 from collections.abc import AsyncIterator, Iterator
+from contextvars import ContextVar
 from datetime import timedelta
-from typing import Annotated, Any, Final, get_type_hints
+from typing import Annotated, Any, Final
 
 import pytest
-from fastapi import Depends, FastAPI, Request, Response, Security
+from fastapi import APIRouter, Depends, FastAPI, Request, Response, Security
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from starlette.authentication import AuthCredentials
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from domainkit import deadlines
 from domainkit.cache import cache_page, caches
@@ -20,8 +22,8 @@ from domainkit.cache.pages import (
     REQUEST,
     RESPONSE,
     _matches,
+    _route_holds,
     _signature,
-    _takes_dependencies,
     _user,
 )
 from domainkit.clock import freeze_time
@@ -570,18 +572,18 @@ async def test_a_request_cut_off_during_a_miss_returns_its_connection() -> None:
 
 
 @pytest.mark.anyio
-async def test_a_page_without_dependencies_is_cached_after_its_caller_left() -> None:
-    """Its computation borrows nothing, so it goes on and fills the cache.
+async def test_a_page_that_borrows_nothing_is_cached_after_its_caller_left() -> None:
+    """With ``borrows=False`` its computation goes on and fills the cache.
 
-    A page slower than one request's deadline heals instead of failing
-    every request.
+    A page slower than one request's deadline then heals instead of
+    failing every request.
     """
     app = FastAPI()
     started, release = asyncio.Event(), asyncio.Event()
     computed: list[str] = []
 
     @app.get("/report")
-    @cache_page(ttl=60)
+    @cache_page(ttl=60, borrows=False)
     async def report(month: int = 1) -> dict[str, int]:
         computed.append("report")
         started.set()
@@ -608,11 +610,33 @@ async def _session() -> AsyncIterator[str]:
     yield "session"
 
 
-def test_pages_borrow_only_when_a_parameter_is_a_dependency() -> None:
-    """Dependencies belong to the request; plain values and the request do not."""
+class Held:
+    """A dependency object whose ``__call__`` holds a resource."""
 
-    async def plain(request: Request, month: int = 1) -> int:
-        return month
+    async def __call__(self) -> AsyncIterator[str]:
+        """Open, yield, close."""
+        yield "held"
+
+
+class Plain:
+    """A class dependency: FastAPI builds one per request."""
+
+    def __init__(self, month: int = 1) -> None:
+        """Keep the month."""
+        self.month = month
+
+
+async def _opens(session: Annotated[str, Depends(_session)]) -> str:
+    return session
+
+
+def test_detached_pages_refuse_dependencies_that_hold_a_resource() -> None:
+    """``borrows=False`` cannot run an endpoint that uses what the request closes.
+
+    Dependencies with ``yield`` are found as defaults, in ``Annotated``,
+    through ``Security``, beneath other dependencies, as instances with a
+    ``__call__`` that yields, and behind ``Depends()`` naming a class.
+    """
 
     async def by_default(session: str = Depends(_session)) -> int:
         return 1
@@ -628,25 +652,176 @@ def test_pages_borrow_only_when_a_parameter_is_a_dependency() -> None:
     ) -> int:
         return 1
 
-    def borrows(endpoint: Any) -> bool:  # noqa: ANN401 - any endpoint.
-        hints = get_type_hints(endpoint, include_extras=True)
-        return _takes_dependencies(_signature(endpoint, hints))
+    async def beneath(session: Annotated[str, Depends(_opens)]) -> int:
+        return 1
 
-    assert not borrows(plain)
-    assert borrows(by_default)
-    assert borrows(annotated)
-    assert borrows(secured)
-    assert borrows(documented)
+    async def instance(session: Annotated[str, Depends(Held())]) -> int:
+        return 1
+
+    async def plain(
+        request: Request,
+        kept: Annotated[Plain, Depends()],
+        month: int = 1,
+        held: int = Depends(len),
+        largest: int = Depends(max),  # No signature to look into.
+    ) -> int:
+        return month
+
+    for endpoint in (by_default, annotated, secured, documented, beneath, instance):
+        with pytest.raises(TypeError, match=r"borrows=False\) cannot run"):
+            cache_page(borrows=False)(endpoint)
+        cache_page()(endpoint)  # Borrowing, the default, takes them all.
+    cache_page(borrows=False)(plain)  # Values, the request, a class: nothing held.
+
+
+def test_requests_see_dependencies_with_yield_beneath_the_routes() -> None:
+    """A route dependency that holds nothing itself, but depends on one that does."""
+
+    async def plain() -> None:
+        return None
+
+    async def via(opened: Annotated[None, Depends(_open_unit_of_work)]) -> None:
+        return None
+
+    app = FastAPI()
+
+    @app.get("/holds", dependencies=[Depends(plain), Depends(via)])
+    async def holds() -> int:
+        return 1
+
+    @app.get("/free", dependencies=[Depends(plain)])
+    async def free() -> int:
+        return 1
+
+    def holds_on(path: str) -> bool:
+        (route,) = [r for r in app.routes if getattr(r, "path", None) == path]
+        scope = {"type": "http", "route": route, "router": app.router}
+        return _route_holds(Request(scope))
+
+    assert holds_on("/holds")
+    assert not holds_on("/free")
+
+
+async def _open_unit_of_work(request: Request) -> AsyncIterator[None]:
+    async with NotesUnitOfWork() as uow:
+        request.state.uow = uow
+        yield
+
+
+_current_uow: ContextVar[NotesUnitOfWork] = ContextVar("current_uow")
+
+
+class UnitOfWorkMiddleware:
+    """A project's unit of work per request, in ``request.state`` and a context var."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        """Wrap ``app``."""
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Open a unit of work around the request; close it when it ends."""
+        async with NotesUnitOfWork() as uow:
+            scope.setdefault("state", {})["uow"] = uow
+            token = _current_uow.set(uow)
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                _current_uow.reset(token)
+
+
+async def _cut_off_during_a_miss(
+    app: ASGIApp, started: asyncio.Event, release: asyncio.Event
+) -> list[asyncio.Task[Any]]:
+    """Ask for ``/report``, cancel the request once its endpoint started, release."""
+    async with AsyncTestClient(app, lifespan=False) as client:
+        asking = asyncio.create_task(client.get("/report"))
+        async with asyncio.timeout(30):
+            await started.wait()
+        computing = [t for t in owned() if t.get_name() == COMPUTE_TASK]
+        asking.cancel()
+        await asyncio.wait([asking], timeout=30)
+        release.set()
+        if computing:
+            await asyncio.wait(computing, timeout=30)
+    assert asking.cancelled()
+    return computing
 
 
 @pytest.mark.anyio
-async def test_a_page_runs_under_its_computations_deadline() -> None:
+@pytest.mark.usefixtures("database")
+@pytest.mark.parametrize(
+    ("handed", "borrows"),
+    [
+        ("route", True),
+        ("route", False),  # A route's dependency with yield: it borrows anyway.
+        ("router", False),
+        ("application", False),
+        ("outer router", True),  # Not in the request: only borrowing covers it.
+        ("middleware state", True),
+        ("context variable", True),
+    ],
+)
+async def test_every_way_a_page_reaches_the_requests_unit_of_work_is_safe(
+    handed: str, borrows: bool
+) -> None:
+    """A cut-off request's unit of work is never used after it closed it.
+
+    Pages borrow by default, so whatever hands the endpoint the request's
+    unit of work (a route, router, or application dependency, a middleware
+    through ``request.state`` or a context variable, which nothing can
+    detect) the computation ends with the request. With ``borrows=False``,
+    a dependency with ``yield`` of the route, its router, or the application
+    makes the request borrow anyway; one of a router it was included
+    through is not in the request, which is why pages borrow by default.
+    """
+    started, release = asyncio.Event(), asyncio.Event()
+    ran: list[int] = []
+    on_route = [Depends(_open_unit_of_work)] if handed == "route" else []
+    router = APIRouter(
+        dependencies=[Depends(_open_unit_of_work)] if handed == "router" else []
+    )
+    app = FastAPI(
+        dependencies=[Depends(_open_unit_of_work)] if handed == "application" else []
+    )
+
+    @router.get("/report", dependencies=on_route)
+    @cache_page(ttl=60, borrows=borrows)
+    async def report(request: Request) -> dict[str, int]:
+        uow = _current_uow.get() if handed == "context variable" else request.state.uow
+        ran.append(await uow.session.scalar(text("SELECT 1")) or 0)
+        started.set()
+        await release.wait()
+        ran.append(await uow.session.scalar(text("SELECT 2")) or 0)
+        return {"rows": 2}
+
+    if handed == "outer router":
+        outer = APIRouter(dependencies=[Depends(_open_unit_of_work)])
+        outer.include_router(router)
+        app.include_router(outer)
+    else:
+        app.include_router(router)
+    served: ASGIApp = app
+    if handed in {"middleware state", "context variable"}:
+        served = UnitOfWorkMiddleware(app)
+    engine = connections.engine()
+    try:
+        await _cut_off_during_a_miss(served, started, release)
+
+        assert engine.pool.checkedout() == 0  # type: ignore[attr-defined]
+        assert ran == [1]
+    finally:
+        release.set()
+        await connections.close_all()
+
+
+@pytest.mark.anyio
+async def test_a_page_that_borrows_nothing_runs_under_its_own_deadline() -> None:
     """Not its caller's: one short request must not cut the page short for all."""
     app = FastAPI()
     seen: list[float | None] = []
 
     @app.get("/report")
-    @cache_page(ttl=60)
+    @cache_page(ttl=60, borrows=False)
     async def report() -> dict[str, int]:
         seen.append(deadlines.remaining())
         return {"rows": 1}

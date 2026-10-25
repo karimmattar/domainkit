@@ -38,7 +38,8 @@ All notable changes to domainkit. The format follows
   by default, as in 0.9.0) bounds a shared `get_or_set` computation:
   setting it is recommended, for example to `REQUEST_TIMEOUT`'s value,
   and 0.10 plans a bounded default. `get_or_set(..., borrows=True)` binds
-  a computation to the caller whose resources its factory uses (CONC-02;
+  a computation to the caller whose resources its factory uses, and
+  `@cache_page(borrows=False)` detaches a page that uses none (CONC-02;
   ADR 0071).
 
 ### Changed
@@ -140,14 +141,19 @@ All notable changes to domainkit. The format follows
   traceback, rather than a 500 and a new round for every probe (WEB-12).
 - The admin API tidies a new user's `fields` with the model's
   `clean_field`, as it does a change (AUTH-13).
-- A `@cache_page` endpoint that takes a dependency (a unit of work)
-  no longer leaks a pooled connection when its request is cut off during
-  a miss: its computation borrows the request's resources, so it is
-  cancelled with the request, which goes on only once the endpoint has
-  stopped. A `get_or_set` factory that uses its caller's session says so
-  with `borrows=True` and gets the same. Callers still waiting on such a
+- A `@cache_page` endpoint no longer leaks a pooled connection when its
+  request is cut off during a miss, however it reaches the request's unit
+  of work (its dependencies, its route's, router's, or application's,
+  `request.state`, a context variable): pages borrow their request by
+  default, so the computation is cancelled with the request, which goes on
+  only once the endpoint has stopped. `@cache_page(borrows=False)` detaches
+  a page that holds nothing of the request, so it fills the cache after a
+  cut-off request; it refuses dependencies written with `yield`. A
+  `get_or_set` factory that uses its caller's session says so with
+  `borrows=True` and gets the same. Callers still waiting on such a
   computation share one of their own, and never get an error its owner's
-  deadline caused. Other computations go on when their callers stop
+  deadline caused; the factory's own timeout still reaches them all, once
+  (SEC-r3-5, SEC-r3-6). Other computations go on when their callers stop
   waiting, as in 0.9.0, so a factory slower than one request still fills
   the cache, and no caller's deadline reaches them; the cache's new
   `COMPUTE_TIMEOUT` bounds them when set (unbounded by default, as in
