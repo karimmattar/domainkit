@@ -220,12 +220,14 @@ async def test_waiters_that_left_the_middle_are_swept_together(
     waiting = [asyncio.create_task(wait(n)) for n in range(100)]
     async with asyncio.timeout(30):
         await queued.reach(100)
-    for task in waiting[10:90]:
+    for task in waiting[10:90]:  # One after another, each off the queue first.
         task.cancel()
-    await asyncio.wait(waiting[10:90])
+        await asyncio.wait([task])
 
     assert slots.waiting == 20
-    assert len(slots._waiters) <= 2 * 20 + shedding._SWEEP_SLACK
+    # Swept once 41 waited, as the 59 that left outnumbered them (2 x 41 + 16):
+    # the 21 that left since stay until passed over.
+    assert len(slots._waiters) == 41
     slots.release()
     await asyncio.gather(*waiting[:10], *waiting[90:])
     assert order == [*range(10), *range(90, 100)]

@@ -549,6 +549,41 @@ async def test_a_cancelled_owner_stops_its_computation_before_it_ends() -> None:
     assert cache._computing == {}
 
 
+async def test_callers_after_an_owner_left_never_join_its_computation() -> None:
+    """While the abandoned computation is still stopping, a new caller starts one.
+
+    It is no longer shared from the moment its owner is cancelled.
+    """
+    cache = make_cache()
+    stopping, stop = asyncio.Event(), asyncio.Event()
+    started = asyncio.Event()
+
+    async def slow_to_stop() -> str:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            stopping.set()
+            await stop.wait()  # Its statement is being cancelled on the server.
+            raise
+        return "never"
+
+    async def fresh() -> str:
+        return "fresh"
+
+    first = asyncio.create_task(cache.get_or_set("k", slow_to_stop))
+    await within(started.wait())
+    first.cancel()
+    await within(stopping.wait())
+
+    assert cache._computing == {}
+    assert await within(cache.get_or_set("k", fresh)) == "fresh"
+    assert not first.done()  # The owner still waits for its factory to stop.
+    stop.set()
+    with pytest.raises(asyncio.CancelledError):
+        await within(first)
+
+
 async def test_an_owner_cancelled_while_shutdown_stops_its_computation(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -1009,13 +1044,14 @@ def test_memory_caches_do_not_share_entries() -> None:
     """Two memory caches with the same settings still keep their own entries."""
     handler = CacheHandler()
 
-    async def use() -> tuple[object, object]:
+    async def use() -> tuple[object, object, bool]:
         await handler["one"].set("k", "one")
         await handler["two"].set("k", "two")
-        return await handler["one"].get("k"), handler["two"].alias
+        apart = handler["one"].store is not handler["two"].store
+        return await handler["one"].get("k"), handler["two"].alias, apart
 
     with override_settings(CACHES={"default": {}, "one": {}, "two": {}}):
-        assert asyncio.run(use()) == ("one", "two")
+        assert asyncio.run(use()) == ("one", "two", True)
 
 
 async def test_cached_keys_are_stable() -> None:

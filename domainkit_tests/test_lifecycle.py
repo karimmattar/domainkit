@@ -34,8 +34,9 @@ from domainkit.lifecycle import (
     unregister,
 )
 from domainkit.management.base import run_async
-from domainkit.tasks import spawn
+from domainkit.tasks import owned, spawn
 from domainkit.utils.closing import (
+    LEFT_BEHIND,
     RESERVED_SHARE,
     close_each,
     close_in_turn,
@@ -720,6 +721,8 @@ async def test_close_in_turn_leaves_an_item_that_ignores_cancellation_behind() -
         [held] = stubborn.tasks
         assert not held.done()  # Left behind, still running.
         assert held.cancelling()
+        assert held in owned()  # The shutdown's tasks phase waits for it.
+        assert held.get_name() == LEFT_BEHIND
     finally:
         await stubborn.let_go()
     assert held._log_traceback is False  # Its failure is not logged...
