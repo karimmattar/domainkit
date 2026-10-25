@@ -9,6 +9,7 @@ import os
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -16,7 +17,7 @@ from typing import Any
 import pytest
 from prometheus_client import REGISTRY
 from pydantic import ValidationError
-from sqlalchemy import delete, event, func, insert, select, update
+from sqlalchemy import delete, event, func, insert, select, text, update
 
 from domainkit import clock, setup
 from domainkit.apps import registry
@@ -1249,6 +1250,134 @@ async def test_protected_seals_refuse_changes(tables: None) -> None:
 
     with pytest.raises(Exception, match="domainkit_audit_seals is append-only"):
         await change(update(audit_seals).values(link="0" * 64))
+
+
+SEALING_LOCK = "SELECT pg_advisory_xact_lock(hashtext('domainkit.audit.seal'))"
+"""What a sealer in the middle of a batch holds."""
+
+
+@on_postgres
+async def test_a_sealer_skips_while_another_seals(
+    tables: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A run that finds the lock taken stops at once instead of queueing (PERF-09).
+
+    At 0.9.1 it waited behind the other sealer, and failed with SQLSTATE
+    55P03 once ``LOCK_TIMEOUT`` passed, reported as an outage. Its rows are
+    left to the sealer that holds the lock, or to the next run.
+    """
+    for _ in range(3):
+        await add()
+    name = "domainkit.contrib.audit.seals"
+    async with connections.engine().connect() as other:
+        await other.execute(text(SEALING_LOCK))  # Another sealer, mid-batch.
+        with caplog.at_level(logging.INFO, name):
+            async with asyncio.timeout(30):  # Queueing would outlast LOCK_TIMEOUT.
+                skipped = await seal("default")
+        await other.rollback()
+
+    assert skipped == 0
+    assert await seals() == []
+    assert [r.getMessage() for r in caplog.records if r.name == name] == [
+        (
+            "Another sealer is sealing 'default'; this one leaves it the rest "
+            "after sealing 0 row(s)"
+        )
+    ]
+    assert await seal("default") == 3  # The lock is free: the next run seals.
+    assert (await verify("default")).intact
+
+
+@on_postgres
+async def test_a_sealer_that_meets_another_between_batches_leaves_it_the_rest(
+    tables: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A gives way to B between its batches; no row is sealed twice or left out.
+
+    A seals a batch, then B takes the lock and holds it while A tries for
+    its second batch: A stops, counting its first batch, and B seals the
+    rest after A's. Each batch reads the head under the lock, so the chain
+    runs on unbroken.
+    """
+    start = datetime.now(UTC)
+    for n in range(30):
+        await add(start + timedelta(seconds=n))
+    a_paused, a_go = asyncio.Event(), asyncio.Event()
+    b_holds, b_go = asyncio.Event(), asyncio.Event()
+    real_engine, real_now = connections.engine, seals_module._database_now
+    begun = {"A": 0}
+
+    def task_name() -> str:
+        task = asyncio.current_task()
+        return task.get_name() if task else ""
+
+    class Hesitant:
+        """A's engine: its second transaction waits until the test lets it go."""
+
+        def __init__(self, engine: Any) -> None:  # noqa: ANN401 - an AsyncEngine.
+            self.engine = engine
+
+        @asynccontextmanager
+        async def begin(self) -> AsyncIterator[Any]:
+            begun["A"] += 1
+            if begun["A"] == 2:
+                a_paused.set()
+                await a_go.wait()
+            async with self.engine.begin() as connection:
+                yield connection
+
+    def engine(alias: str = "default") -> Any:  # noqa: ANN401 - an AsyncEngine.
+        found = real_engine(alias)
+        return Hesitant(found) if task_name() == "A" else found
+
+    async def holding(connection: Any) -> datetime:  # noqa: ANN401
+        if task_name() == "B" and not b_holds.is_set():
+            b_holds.set()  # B has the lock: its transaction took it first.
+            await b_go.wait()
+        return await real_now(connection)
+
+    monkeypatch.setattr(connections, "engine", engine)
+    monkeypatch.setattr(seals_module, "_database_now", holding)
+    async with asyncio.timeout(30):  # Queueing would deadlock until LOCK_TIMEOUT.
+        a = asyncio.create_task(seal("default", batch=3), name="A")
+        await a_paused.wait()
+        b = asyncio.create_task(seal("default", batch=3), name="B")
+        await b_holds.wait()
+        a_go.set()
+        sealed_by_a = await a
+        b_go.set()
+        sealed_by_b = await b
+    monkeypatch.setattr(connections, "engine", real_engine)
+
+    chain = await seals()
+    assert (sealed_by_a, sealed_by_b) == (3, 27)
+    assert [each["seq"] for each in chain] == list(range(1, 31))
+    assert len({each["entry_id"] for each in chain}) == 30
+    assert (await verify("default")).intact
+
+
+@on_postgres
+async def test_many_sealers_at_once_seal_every_row_once(tables: None) -> None:
+    """Five sealers racing while rows arrive: one chain, each row in it once."""
+    start = datetime.now(UTC)
+    for n in range(40):
+        await add(start + timedelta(seconds=n))
+
+    async def arriving() -> int:
+        for n in range(10):
+            await add(start + timedelta(seconds=40 + n))
+        return 0
+
+    counts = await asyncio.gather(
+        *(seal("default", batch=4) for _ in range(5)), arriving()
+    )
+    counts.append(await seal("default"))  # Whatever arrived after the race.
+
+    chain = await seals()
+    assert sum(counts) == 50
+    assert [each["seq"] for each in chain] == list(range(1, 51))
+    assert len({each["entry_id"] for each in chain}) == 50
+    assert (await verify("default")).intact
 
 
 @on_postgres

@@ -96,7 +96,15 @@ COLUMNS: Final = (
     "details",
 )
 """The columns a row's digest covers."""
-_LOCK: Final = text("SELECT pg_advisory_xact_lock(hashtext('domainkit.audit.seal'))")
+_LOCK: Final = text(
+    "SELECT pg_try_advisory_xact_lock(hashtext('domainkit.audit.seal'))"
+)
+"""One sealer per database: each batch's transaction takes it or gives up.
+
+A sealer that finds it taken leaves the work to the one holding it instead
+of queueing behind it (PERF-09). Transaction-scoped, so it ends with its
+batch whatever happens to the connection, and works through PgBouncer.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,6 +234,10 @@ async def seal(
     With ``late``, rows from before that window are sealed afterwards
     too, flagged late, in at most ``batches`` more transactions: finding
     them reads the whole trail.
+
+    On PostgreSQL, while another sealer of the database seals a batch,
+    this one stops, logs it, and leaves that sealer the rest (counting
+    what it sealed before), instead of waiting for it.
     """
     config = registry.settings(AuditSettings)
     batches = config.SEAL_BATCHES if batches is None else batches
@@ -233,7 +245,7 @@ async def seal(
     sealed, caught_up = await _seal_pass(database, batch, batches, late_window)
     if caught_up:
         _observe_backlog(database, 0)
-    else:
+    elif caught_up is not None:
         await _report_backlog(database, late_window, config.SEAL_BACKLOG_WARNING)
     if late:
         more, _ = await _seal_pass(database, batch, batches, late_window, late=True)
@@ -387,20 +399,29 @@ async def _seal_pass(
     late_window: timedelta,
     *,
     late: bool = False,
-) -> tuple[int, bool]:
+) -> tuple[int, bool | None]:
     """Seal up to ``batches`` batches; count them, and say whether it caught up.
 
     The horizon is taken in the first batch. A pass of rows sealed in time
     looks from it on; a ``late`` pass, below it (none without a horizon:
-    then every row is within reach).
+    then every row is within reach). None instead of whether it caught
+    up: another sealer holds the lock, and this pass left it the rest.
     """
     sealed = 0
     after: _Mark | None = None
     horizon: datetime | None = None
     for number in range(batches):
         async with connections.engine(database).begin() as connection:
-            if connection.dialect.name == "postgresql":
-                await connection.execute(_LOCK)  # One sealer per database.
+            if connection.dialect.name == "postgresql" and not await connection.scalar(
+                _LOCK
+            ):
+                logger.info(
+                    "Another sealer is sealing %r; this one leaves it the rest "
+                    "after sealing %d row(s)",
+                    database,
+                    sealed,
+                )
+                return sealed, None
             sealed_at = await _database_now(connection)
             if number == 0:
                 horizon = await _horizon(connection, sealed_at, late_window)
