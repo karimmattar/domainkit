@@ -9,6 +9,7 @@ percentage stays the same, and stays in as it grows.
 
 import hashlib
 from collections.abc import Iterable
+from dataclasses import field
 from typing import Final
 
 from domainkit.ddd import AggregateRoot, BusinessRuleViolation
@@ -95,7 +96,8 @@ class Flag(AggregateRoot[str]):
 class DynamicSetting(AggregateRoot[str]):
     """The stored value of a dynamic setting; ``id`` is its key."""
 
-    value: object = None
+    value: object = field(default=None, repr=False)
+    """Left out of ``repr``: a setting declared ``secret`` holds a secret."""
 
     class Meta:
         """Settings are declared in code: they are only viewed and changed."""

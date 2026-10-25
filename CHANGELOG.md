@@ -273,7 +273,9 @@ All notable changes to domainkit. The format follows
 - A dynamic setting declared `secret=True` is audited as changed, without
   its value, and the staff API and `flags settings` show no value; a
   flag's users are audited as a count. Until now both went into the
-  append-only trail in clear, for good (DATA-10).
+  append-only trail in clear, for good. A stored setting's `repr`
+  (`DynamicSetting`) leaves its value out, so a traceback or a `%r` does
+  not write a secret one either (DATA-10, SEC-r2-6).
 
 ## [0.9.0] - 2026-10-22
 
