@@ -1,7 +1,7 @@
 # 0062. Claim idempotency keys in one statement, and commit the framework's short writes as they run
 
 - Status: Accepted
-- Date: 2026-10-21; amended 2026-10-22 (the sweep comes last), 2026-10-25 (the database's clock decides leases)
+- Date: 2026-10-21; amended 2026-10-22 (the sweep comes last), 2026-10-25 (the database's clock decides leases; the sweep once a minute)
 
 ## Context
 
@@ -220,3 +220,29 @@ with no deadline at all (`REQUEST_TIMEOUT = None`, or no
   production; startup does not refuse in a patch release, since such
   deployments run today. 0.10 refuses to start without a deadline where
   idempotency is installed.
+
+## Amendment (2026-10-25): the sweep runs once a minute, not on every claim
+
+Without messaging, every claim swept up to 100 expired keys: a fourth
+statement, and up to 100 deletes, on each keyed request, however few keys
+had expired (PERF-10).
+
+- A claim sweeps when `SWEEP_EVERY` (60 seconds, on `domainkit.clock`)
+  has passed since the middleware's last sweep, or when that sweep
+  deleted a whole `PURGE_BATCH`, since more may wait. The sweep is the
+  same statement, still the last on the claim's connection. The schedule
+  is the middleware's, behind a lock: loops on several threads share it.
+- Measured on PostgreSQL, 3,000 claims at 20 a second with 5,000 keys
+  expired beforehand and a 30-second TTL: sweeping on every claim made
+  3,000 sweeps; sweeping with probability 1/10, the audit's option, 307;
+  this schedule, 71. All three deleted the backlog. Expired keys left
+  waiting stay below what expires in a minute, plus a batch; a claim of
+  an expired key replaces it whatever the sweep does. The schedule is
+  deterministic, so its tests need no seeded randomness.
+- Moving the sweep off the request path, into a background task, was
+  considered: an application served without its lifespan would never
+  purge, and the sweep needs no request's time once it runs a minute
+  apart.
+- With messaging installed nothing changes: the hourly task purges, and
+  claims never sweep. The keyed write of the ladder makes 4 statements,
+  3 transactions and 3 checkouts, as before.
