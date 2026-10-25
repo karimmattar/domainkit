@@ -198,13 +198,19 @@ Background work in the stores is bounded too:
 
 - **Idempotency keys.** A keyed request that raises or is cancelled
   releases its key in a task of its own, within 5 seconds, so a retry need
-  not wait out the lease. Without messaging, each claim's purge of expired
-  keys skips those another claim is deleting ([contrib.md](contrib.md)).
+  not wait out the lease. Without messaging, a claim purges expired keys
+  once a minute per process, and on each claim while a purge finds a full
+  batch; it skips those another claim is deleting ([contrib.md](contrib.md)).
 - **Audit sealing.** A run looks for unsealed rows from a high-water mark,
   the newest sealed row, less `AUDIT.SEAL_LATE_WINDOW`, so its cost follows
   what is new, not the length of the trail; it seals at most
   `AUDIT.SEAL_BATCHES` batches and counts what it leaves in
   `audit_unsealed_rows` ([ADR 0047](adr/0047-seal-from-a-high-water-mark.md)).
+  A second sealer never queues behind the first: finding the lock taken,
+  it leaves the work to it ([contrib.md](contrib.md#tamper-evidence)).
+- **Outbox cleanup** reads the oldest done and cancelled messages from an
+  index of their own, so a run costs what it deletes, not the size of the
+  outbox ([contrib.md](contrib.md), "Upgrading to 0.9.2").
 - **Password hashing.** A call keeps its place in the pool until its hash is
   done, refusals ask clients to come back when the queue will have drained,
   and `AUTH.HASHING_RESERVED` places are kept for password changes
@@ -611,7 +617,9 @@ clock of the host that writes them.
 writes messages due at once also sends `NOTIFY domainkit_messages` with
 each queue's name, and polling and relaying workers `LISTEN` on one
 connection of their pool. An idle worker then starts a committed message
-right away instead of on its next poll, so `POLL_INTERVAL` can be longer.
+right away instead of on its next poll, so `POLL_INTERVAL` can be longer,
+or `POLL_INTERVAL_IDLE` can let a listening worker poll less often while
+it finds nothing ([contrib.md](contrib.md), "Idle workers").
 Polling stays: a notification is only a hint, sent when the transaction
 commits and lost harmlessly when nobody listens, and a worker whose
 listening connection drops polls until it listens again. Only rows the

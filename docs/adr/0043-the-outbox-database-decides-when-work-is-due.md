@@ -1,7 +1,7 @@
 # 0043. Let the outbox's database decide when work is due, and wake workers
 
 - Status: Accepted
-- Date: 2026-10-20
+- Date: 2026-10-20; amended 2026-10-25 (idle polls back off, the cleanup's index)
 
 ## Context
 
@@ -83,3 +83,41 @@ or keep one table, delete in small batches, and wake workers with
 - Cleanup can no longer stall claiming, and statement timeouts slow it
   down instead of stopping it. Revisit partitioning if deletes cannot keep
   up with the write rate at the chosen `RETENTION_SECONDS`; measure first.
+
+## Amendment (2026-10-25): idle polls back off, and cleanup has an index
+
+The 0.9.0 performance audit measured what this decision left (PERF-08,
+PERF-02).
+
+- **Idle polls.** With `NOTIFY` on, a commit wakes an idle worker at
+  once, yet the worker still polled every `POLL_INTERVAL`: on PostgreSQL
+  an empty claim each second per worker, 61 claims a minute against 7
+  with the back-off below. A new setting, `MESSAGING.POLL_INTERVAL_IDLE`
+  (`None` by default, at least `POLL_INTERVAL`, at most an hour), lets a
+  worker that listens double its wait after each empty poll up to that
+  value; a claim or a wake-up starts again from `POLL_INTERVAL`. The
+  worker knows it listens from the listener itself, which says so once
+  `LISTEN` holds and stops saying so when the connection ends; without
+  one (SQLite, PgBouncer, `NOTIFY` off, a connection lost), every wait is
+  `POLL_INTERVAL`. A notification only ever shortens a wait, so a missed
+  one delays a message by `POLL_INTERVAL_IDLE` at most. The default keeps
+  the latency of what no commit announces (retries, delays, expired
+  locks) at `POLL_INTERVAL`; a back-off that also knows when the next
+  such message comes due (a second statement on each empty poll, and a
+  notification for rows written to come due later) is left for 0.10.
+  The relay's polling loop backs off the same way.
+- **The cleanup's index.** Cleanup selected done and cancelled messages by
+  `finished_at`, which no index covered: each run read the whole outbox,
+  and a run that had caught up read every row to find the few left (460 ms
+  and 28,000 pages at 2 million rows). A partial index on `finished_at`,
+  of done and cancelled messages only, makes it 1.7 ms and 700 pages; it
+  costs a write only when a message finishes. The statement writes its
+  statuses, retention and size into the SQL rather than binding them: a
+  prepared statement's generic plan cannot match bound statuses to the
+  index's condition, and estimates a bound limit at a tenth of the table,
+  and either way scans the outbox. Existing projects get the index from
+  `makemigrations`; the revision builds it in the migration's
+  transaction, which blocks outbox writes for about half a second per
+  million rows, and `docs/contrib.md` shows the `CONCURRENTLY` revision
+  for outboxes too large for that. `ix_domainkit_messages_ready` stays:
+  no index is dropped in a patch release.

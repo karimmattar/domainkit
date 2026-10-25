@@ -17,15 +17,17 @@ import uuid
 import weakref
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Final
 
 import pytest
 from prometheus_client import REGISTRY
-from sqlalchemy import event, select, update
+from pydantic import ValidationError
+from sqlalchemy import event, insert, select, text, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from domainkit import clock, tasks
+from domainkit import clock, setup, tasks
 from domainkit.apps import registry
 from domainkit.broker import (
     Broker,
@@ -39,7 +41,7 @@ from domainkit.broker import (
     brokers,
 )
 from domainkit.cache import caches
-from domainkit.conf import override_settings
+from domainkit.conf import UNSET, override_settings
 from domainkit.context import RequestContext, bind_request, current_request
 from domainkit.contrib.idempotency.operations import (
     Operation,
@@ -64,14 +66,22 @@ from domainkit.contrib.messaging.dispatch import (
     commit_publisher,
 )
 from domainkit.contrib.messaging.metrics import refresh_outbox
-from domainkit.contrib.messaging.outbox import notifies
-from domainkit.contrib.messaging.tables import DONE, PENDING, messages
+from domainkit.contrib.messaging.outbox import message_row, notifies
+from domainkit.contrib.messaging.tables import (
+    CANCELLED,
+    DEAD,
+    DONE,
+    FINISHED_INDEX,
+    PENDING,
+    messages,
+)
 from domainkit.contrib.messaging.worker import LEASE_MARGIN, Claimed
 from domainkit.db import connections
 from domainkit.db.routing import router
 from domainkit.lifecycle import Budget as ShutdownBudget
 from domainkit.lifecycle import close_resources
 from domainkit.management import call_command
+from domainkit_tests import test_messaging as test_messaging_module
 from domainkit_tests.test_messaging import (  # noqa: F401 - fixtures.
     ALPHA,
     BROKERED,
@@ -1510,6 +1520,218 @@ async def test_cleanup_deletes_in_small_batches() -> None:
     assert await worker.cleanup() == 0
 
 
+async def outbox_rows(**statuses: tuple[str, timedelta | None]) -> dict[str, Any]:
+    """Store one message per name: its status, and how long ago it finished."""
+    ids = {}
+    rows_written = []
+    for name, (status, ago) in statuses.items():
+        row = message_row(
+            kind="task", target="tests.noop", payload={}, headers={}, max_attempts=3
+        )
+        finished = None if ago is None else datetime.now(UTC) - ago
+        rows_written.append({**row, "status": status, "finished_at": finished})
+        ids[name] = row["id"]
+    async with connections.engine().begin() as connection:
+        await connection.execute(insert(messages), rows_written)
+    return ids
+
+
+@pytest.mark.usefixtures("tables")
+async def test_workers_cleaning_up_at_once_delete_each_old_message_once() -> None:
+    """Two workers' cleanups race: old done and cancelled messages go, once each.
+
+    Nothing else is touched: dead letters, a pending message that once
+    finished (a dead letter queued again), and recent ones stay. On
+    PostgreSQL the batches skip what the other worker locked.
+    """
+    month = timedelta(days=30)
+    old = {f"done{n}": (DONE, month) for n in range(7)}
+    old |= {f"cancelled{n}": (CANCELLED, month) for n in range(3)}
+    kept = {
+        "dead": (DEAD, month),
+        "retried": (PENDING, month),
+        "recent": (DONE, timedelta(hours=1)),
+        "running": (PENDING, None),
+    }
+    ids = await outbox_rows(**old, **kept)
+    config = MessagingSettings(**{**FAST, "CLEANUP_BATCH_SIZE": 2})
+
+    deleted = await asyncio.gather(Worker(config).cleanup(), Worker(config).cleanup())
+
+    assert sum(deleted) == len(old)
+    assert {row["id"] for row in await rows()} == {ids[name] for name in kept}
+
+
+def test_existing_outboxes_get_the_cleanup_index_from_makemigrations(
+    database_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An outbox migrated at 0.9.1 gets the partial index from its next revision.
+
+    ``makemigrations`` writes a revision with that one index and nothing
+    else, ``migrate`` builds it, and nothing is left to migrate after.
+    """
+    registry.clear()
+    with override_settings(
+        INSTALLED_DOMAINS=[MESSAGING],
+        DATABASES={"default": {"URL": database_url}},
+        MIGRATIONS_DIR=tmp_path / "migrations",
+        ALPHA=UNSET,
+    ):
+        setup()
+        with monkeypatch.context() as at_0_9_1:
+            at_0_9_1.setattr(messages, "indexes", messages.indexes - {FINISHED_INDEX})
+            call_command("makemigrations", "-m", "outbox", stdout=io.StringIO())
+            call_command("migrate", stdout=io.StringIO())
+        output = io.StringIO()
+        call_command("makemigrations", "-m", "cleanup index", stdout=output)
+        revision = Path(output.getvalue().split()[1].rstrip("."))
+        call_command("migrate", stdout=io.StringIO())
+        checked = io.StringIO()
+        call_command("makemigrations", "--check", stdout=checked)
+
+        async def index_sql() -> str:
+            async with connections.engine().connect() as connection:
+                if connection.dialect.name == "postgresql":
+                    found = await connection.scalar(
+                        text(
+                            "SELECT indexdef FROM pg_indexes "
+                            "WHERE indexname = 'ix_domainkit_messages_finished'"
+                        )
+                    )
+                else:
+                    found = await connection.scalar(
+                        text(
+                            "SELECT sql FROM sqlite_master "
+                            "WHERE name = 'ix_domainkit_messages_finished'"
+                        )
+                    )
+            await connections.close_all()
+            return str(found)
+
+        built = asyncio.run(index_sql())
+    registry.clear()
+
+    upgrade = revision.read_text(encoding="utf-8").split("def downgrade")[0]
+    assert upgrade.count("create_index(") == 1
+    assert '"ix_domainkit_messages_finished"' in upgrade
+    assert "postgresql_where" in upgrade
+    assert "sqlite_where" in upgrade
+    assert "drop_" not in upgrade
+    assert checked.getvalue() == "No changes detected.\n"
+    assert "(finished_at)" in built
+    assert "WHERE" in built.upper()
+    assert "done" in built
+    assert "cancelled" in built
+
+
+CONCURRENT_UPGRADE: Final = '''
+    """Build the outbox's cleanup index without blocking writes."""
+    with op.get_context().autocommit_block():
+        op.create_index(
+            "ix_domainkit_messages_finished",
+            "domainkit_messages",
+            ["finished_at"],
+            unique=False,
+            postgresql_where=sa.text("status IN ('done', 'cancelled')"),
+            postgresql_concurrently=True,
+        )
+
+
+'''
+"""The upgrade docs/contrib.md gives for outboxes too large to lock."""
+
+
+def test_the_cleanup_index_can_be_built_concurrently(
+    database_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The documented revision builds a valid index outside a transaction."""
+    if not database_url.startswith("postgresql"):
+        return  # CONCURRENTLY is PostgreSQL's.
+    registry.clear()
+    with override_settings(
+        INSTALLED_DOMAINS=[MESSAGING],
+        DATABASES={"default": {"URL": database_url}},
+        MIGRATIONS_DIR=tmp_path / "migrations",
+        ALPHA=UNSET,
+    ):
+        setup()
+        with monkeypatch.context() as at_0_9_1:
+            at_0_9_1.setattr(messages, "indexes", messages.indexes - {FINISHED_INDEX})
+            call_command("makemigrations", "-m", "outbox", stdout=io.StringIO())
+            call_command("migrate", stdout=io.StringIO())
+        output = io.StringIO()
+        call_command("makemigrations", "-m", "cleanup index", stdout=output)
+        revision = Path(output.getvalue().split()[1].rstrip("."))
+        source = revision.read_text(encoding="utf-8")
+        generated = source.split("def upgrade() -> None:")[1].split("def downgrade")[0]
+        revision.write_text(source.replace(generated, CONCURRENT_UPGRADE))
+        call_command("migrate", stdout=io.StringIO())
+        checked = io.StringIO()
+        call_command("makemigrations", "--check", stdout=checked)
+
+        async def validity() -> object:
+            async with connections.engine().connect() as connection:
+                found = await connection.scalar(
+                    text(
+                        "SELECT indisvalid FROM pg_index WHERE indexrelid = "
+                        "'ix_domainkit_messages_finished'::regclass"
+                    )
+                )
+            await connections.close_all()
+            return found
+
+        valid = asyncio.run(validity())
+    registry.clear()
+
+    assert valid is True
+    assert checked.getvalue() == "No changes detected.\n"
+
+
+@pytest.mark.usefixtures("tables")
+async def test_cleanup_finds_old_messages_through_their_index() -> None:
+    """On PostgreSQL the cleanup's subquery reads the partial index (PERF-02).
+
+    At 0.9.1 no index covered ``finished_at``: each cleanup scanned the
+    whole outbox, and its last batch of a run, which finds fewer old rows
+    than it may delete, read every row. The statement binds nothing, so a
+    prepared statement's generic plan, forced here, uses the index too.
+    """
+    if not postgres():
+        return  # SQLite plans without statistics; the index is there too.
+    async with connections.engine().begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO domainkit_messages (id, kind, target, queue, priority, "
+                "payload, headers, status, attempts, max_attempts, available_at, "
+                "created_at, finished_at) SELECT gen_random_uuid(), 'task', 't', "
+                "'default', 0, '{}', '{}', 'done', 1, 3, now(), now(), CASE WHEN "
+                "g % 1000 = 0 THEN now() - interval '8 days' ELSE now() - g * "
+                "interval '1 second' END FROM generate_series(1, 20000) g"
+            )
+        )
+        await connection.execute(text("ANALYZE domainkit_messages"))
+    worker = Worker(MessagingSettings(**FAST))
+    statement = worker.cleanup_statement("postgresql", 1000)
+    sql = str(
+        statement.compile(
+            dialect=worker.engine.dialect,
+            compile_kwargs={"render_postcompile": True},
+        )
+    )
+    async with connections.engine().begin() as connection:
+        await connection.execute(text("SET LOCAL plan_cache_mode = force_generic_plan"))
+        await connection.exec_driver_sql(f"PREPARE cleanup AS {sql}")
+        plan = "\n".join(
+            (await connection.exec_driver_sql("EXPLAIN EXECUTE cleanup")).scalars()
+        )
+        await connection.exec_driver_sql("DEALLOCATE cleanup")
+
+    assert "status IN ('done', 'cancelled')" in sql
+    assert "LIMIT 1000" in sql
+    assert "ix_domainkit_messages_finished" in plan
+    assert await worker.cleanup() == 20
+
+
 class FlakyEngine:
     """An engine whose transactions fail to start while failures are left."""
 
@@ -1898,6 +2120,222 @@ async def test_an_idle_relay_publishes_a_commit_at_once(
         await gate.until(lambda: gate.finished == ["woken"])
         stop.set()
         await within(running)
+
+
+# Idle polls while listening (PERF-08) -----------------------------------------------
+
+IDLE: Final = {**FAST, "VISIBILITY_TIMEOUT": 86_400, "TASK_TIMEOUT": 30}
+"""Locks that outlast any virtual time a test lets pass: nothing runs twice."""
+
+
+def test_idle_polls_double_up_to_the_idle_interval_only_while_listening() -> None:
+    """1, 2, 4... up to POLL_INTERVAL_IDLE; a claim, a commit or no listener: 1."""
+    polls = worker_module.IdlePolls(
+        MessagingSettings(POLL_INTERVAL=1.0, POLL_INTERVAL_IDLE=30.0)
+    )
+
+    assert [polls.wait(True) for _ in range(7)] == [1, 2, 4, 8, 16, 30, 30]
+    polls.reset()
+    assert [polls.wait(True) for _ in range(2)] == [1, 2]
+    assert polls.wait(False) == 1  # The listener is gone: poll as before.
+    assert polls.wait(True) == 1  # And start again from POLL_INTERVAL.
+
+    as_before = worker_module.IdlePolls(MessagingSettings(POLL_INTERVAL=0.5))
+    assert {as_before.wait(True) for _ in range(5)} == {0.5}
+
+
+@pytest.mark.parametrize(
+    ("values", "error"),
+    [
+        ({"POLL_INTERVAL": 5, "POLL_INTERVAL_IDLE": 4}, "at least POLL_INTERVAL"),
+        ({"POLL_INTERVAL_IDLE": 0}, "greater than 0"),
+        ({"POLL_INTERVAL_IDLE": 3601}, "less than or equal to 3600"),
+        ({"POLL_INTERVAL_IDLE": float("inf")}, "finite number"),
+    ],
+)
+def test_the_idle_interval_is_bounded(values: dict[str, float], error: str) -> None:
+    """It is never shorter than POLL_INTERVAL, nor over an hour."""
+    with pytest.raises(ValidationError, match=error):
+        MessagingSettings(**values)
+    assert MessagingSettings().POLL_INTERVAL_IDLE is None  # As before 0.9.2.
+    assert MessagingSettings(POLL_INTERVAL=5, POLL_INTERVAL_IDLE=5).POLL_INTERVAL_IDLE
+
+
+class VirtualPolls:
+    """Waits that move a frozen clock instead of the loop's; it records them.
+
+    A wait ends at once if the worker was woken; otherwise the clock moves
+    on by the whole wait. Claims are recorded with the clock's time.
+    """
+
+    def __init__(self, frozen: clock.FrozenClock) -> None:
+        """Record nothing yet."""
+        self.frozen = frozen
+        self.waits: list[float] = []
+        self.claims: list[tuple[datetime, int]] = []
+        self.changed = asyncio.Event()
+
+    async def pause(self, wake: asyncio.Event, seconds: float) -> None:
+        """Move the clock by ``seconds`` unless ``wake`` is set."""
+        self.waits.append(seconds)
+        if not wake.is_set():
+            self.frozen.tick(seconds)
+        self.changed.set()
+        await asyncio.sleep(0)
+
+    def install(self, monkeypatch: pytest.MonkeyPatch, *, listening: bool) -> None:
+        """Use these waits, and a listener that hears nothing (or none at all)."""
+        claim = Worker.claim
+
+        async def claiming(worker: Worker, limit: int) -> list[Claimed]:
+            claimed = await claim(worker, limit)
+            self.claims.append((clock.now(), len(claimed)))
+            self.changed.set()
+            return claimed
+
+        async def deaf(
+            worker: Worker, stop: asyncio.Event, wake: asyncio.Event
+        ) -> None:
+            worker_module._hearing(wake, listening)  # Every NOTIFY is missed.
+            await stop.wait()
+
+        monkeypatch.setattr(worker_module, "pause", self.pause)
+        monkeypatch.setattr(Worker, "claim", claiming)
+        monkeypatch.setattr(Worker, "listen", deaf)
+
+    async def until(self, condition: Callable[[], bool]) -> None:
+        """Wait until ``condition`` holds."""
+        async with asyncio.timeout(WAIT):
+            while not condition():
+                self.changed.clear()
+                await self.changed.wait()
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_message_nobody_announces_starts_within_the_idle_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A delayed message, its NOTIFY missed, is claimed within POLL_INTERVAL_IDLE.
+
+    Time is a frozen clock that each wait moves: the worker backs off to
+    one poll every 30 seconds, and the message, due at 100 s, is claimed at
+    121 s (after waits of 1, 2, 4, 8, 16, 30, 30, 30). A wake-up starts the
+    waits from POLL_INTERVAL again.
+    """
+    config = MessagingSettings(**{**IDLE, "POLL_INTERVAL_IDLE": 30})
+    with clock.freeze_time("2026-10-01T00:00:00Z") as frozen:
+        polls = VirtualPolls(frozen)
+        polls.install(monkeypatch, listening=True)
+        start = clock.now()
+        await enqueue(remember, value=uuid.uuid4(), delay=timedelta(seconds=100))
+        stop = asyncio.Event()
+        running = asyncio.create_task(Worker(config).run(stop))
+        await polls.until(lambda: any(count for _, count in polls.claims))
+        [claimed_at] = [at for at, count in polls.claims if count]
+        waits_before = len(polls.waits)
+        await polls.until(lambda: len(polls.waits) >= waits_before + 3)
+        stop.set()
+        await within(running)
+
+    due = start + timedelta(seconds=100)
+    assert due <= claimed_at <= due + timedelta(seconds=30)
+    assert claimed_at == start + timedelta(seconds=121)
+    assert polls.waits[:9] == [1, 2, 4, 8, 16, 30, 30, 30, 1]  # Work: from 1 again.
+    assert max(polls.waits) == 30
+
+
+@pytest.mark.parametrize("idle", [None, 30.0])
+@pytest.mark.usefixtures("tables")
+async def test_workers_poll_every_interval_as_before_unless_listening_and_set(
+    monkeypatch: pytest.MonkeyPatch, idle: float | None
+) -> None:
+    """Without a listener, or without POLL_INTERVAL_IDLE, each wait is POLL_INTERVAL."""
+    config = MessagingSettings(**{**IDLE, "POLL_INTERVAL_IDLE": idle})
+    with clock.freeze_time("2026-10-01T00:00:00Z") as frozen:
+        polls = VirtualPolls(frozen)
+        polls.install(monkeypatch, listening=idle is None)
+        stop = asyncio.Event()
+        running = asyncio.create_task(Worker(config).run(stop))
+        await polls.until(lambda: len(polls.waits) >= 8)
+        stop.set()
+        await within(running)
+
+    assert set(polls.waits) == {config.POLL_INTERVAL}
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_wake_up_starts_the_waits_from_the_poll_interval_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A commit's notification (here, set by hand) resets the back-off."""
+    config = MessagingSettings(**{**IDLE, "POLL_INTERVAL_IDLE": 30})
+    with clock.freeze_time("2026-10-01T00:00:00Z") as frozen:
+        polls = VirtualPolls(frozen)
+        real_pause = polls.pause
+
+        async def pause(wake: asyncio.Event, seconds: float) -> None:
+            if len(polls.waits) == 4:
+                wake.set()  # A commit, heard during the fifth wait.
+            await real_pause(wake, seconds)
+
+        polls.install(monkeypatch, listening=True)
+        monkeypatch.setattr(worker_module, "pause", pause)
+        stop = asyncio.Event()
+        running = asyncio.create_task(Worker(config).run(stop))
+        await polls.until(lambda: len(polls.waits) >= 8)
+        stop.set()
+        await within(running)
+
+    assert polls.waits[:8] == [1, 2, 4, 8, 16, 1, 2, 4]
+
+
+@pytest.mark.usefixtures("tables")
+async def test_backed_off_workers_run_every_message_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two backed-off workers, every NOTIFY missed: each message runs once, none lost.
+
+    Messages due at once and later ones are shared out by the claims'
+    locks, whatever the waits: a back-off delays work, never doubles or
+    drops it.
+    """
+    config = MessagingSettings(**{**IDLE, "POLL_INTERVAL_IDLE": 30})
+    values = [uuid.uuid4() for _ in range(12)]
+    with clock.freeze_time("2026-10-01T00:00:00Z") as frozen:
+        polls = VirtualPolls(frozen)
+        polls.install(monkeypatch, listening=True)
+        for n, value in enumerate(values):
+            delay = timedelta(seconds=17 * (n % 6))  # 0 to 85 seconds.
+            await enqueue(remember, value=value, delay=delay)
+        stop = asyncio.Event()
+        workers = [Worker(config), Worker(config)]
+        running = [asyncio.create_task(worker.run(stop)) for worker in workers]
+        await polls.until(lambda: len(test_messaging_module.ran) >= len(values))
+        stop.set()
+        for each in running:
+            await within(each)
+        finished = await rows()
+
+    assert sorted(str(value) for value, _, _ in test_messaging_module.ran) == sorted(
+        str(value) for value in values
+    )
+    assert {row["status"] for row in finished} == {DONE}
+    assert len(finished) == len(values)
+
+
+@pytest.mark.usefixtures("tables")
+async def test_the_listener_says_while_it_hears_commits() -> None:
+    """``Wake.listening`` is true while the LISTEN connection is up (PostgreSQL)."""
+    worker = Worker(MessagingSettings(**FAST))
+    stop, wake = asyncio.Event(), worker_module.Wake()
+    listening = asyncio.create_task(worker.listen(stop, wake))
+    if postgres():
+        await within(wake.wait())
+        assert wake.listening
+        stop.set()
+    await within(listening)
+
+    assert not wake.listening  # Never on SQLite; no longer, once stopped.
 
 
 # The outbox gauges ------------------------------------------------------------------

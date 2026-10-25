@@ -43,6 +43,8 @@ from .worker import (
     HELPER_GRACE,
     OUTAGE_MAX_PAUSE,
     RELEASE_TIMEOUT,
+    IdlePolls,
+    Wake,
     Worker,
     finish,
     pause,
@@ -189,7 +191,8 @@ class BrokerWorkers:
         """Schedule and relay until ``stop``; poll (or wait for a commit) when idle."""
         batch = self.config.BATCH_SIZE
         outage = worker.outage()
-        wake = asyncio.Event()
+        wake = Wake()
+        polls = IdlePolls(self.config)
         async with asyncio.TaskGroup() as group:
             helpers = [
                 group.create_task(set_when(stop, wake)),
@@ -205,8 +208,12 @@ class BrokerWorkers:
                         await outage.failed(exc, stop)
                         continue
                     outage.recovered()
+                    if relayed:
+                        polls.reset()
                     if relayed < batch:
-                        await pause(wake, self.config.POLL_INTERVAL)
+                        await pause(wake, polls.wait(wake.listening))
+                        if wake.is_set():
+                            polls.reset()
                 await wind_down(helpers, HELPER_GRACE)
             finally:
                 for helper in helpers:
