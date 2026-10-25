@@ -6,6 +6,8 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-25
+
 ### Added
 
 - `GUARD_LOOKUP_THREADS` (16, 1 to 256), `PROXY_SCHEME_HEADER`
@@ -136,7 +138,10 @@ All notable changes to domainkit. The format follows
   second time. New `DomainConfig` hooks, `stage_transaction` and
   `transaction_committed`, let installed domains join such a commit.
   Writes through `connections.autocommit()` or a raw `engine.begin()`
-  stay outside the key (ADR 0062) (SEC-r2-9).
+  stay outside the key. Mail, text messages, push notifications and the
+  auth reset and verification links are queued this way, so a keyed
+  request that sends one and then fails now keeps its key too: a retry
+  gets the 409 rather than sending it again (ADR 0062) (SEC-r2-9).
 - A keyed response whose body is sent by path or by file descriptor
   (`FileResponse` on a server with the ASGI `http.response.pathsend`
   extension, or `http.response.zerocopysend`) is no longer stored as an
@@ -2366,7 +2371,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/karimmattar/domainkit/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/karimmattar/domainkit/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/karimmattar/domainkit/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/karimmattar/domainkit/compare/v0.6.2...v0.7.0
