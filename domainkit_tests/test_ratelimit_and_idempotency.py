@@ -215,6 +215,10 @@ def test_memory_backend_gives_back_a_request_counted() -> None:
     assert hit() == Decision(allowed=True, remaining=1, reset_after=30, retry_after=0)
     refund(limit=4)  # At a new rate, a request owes half the seconds.
     assert backend._callers["k"].owed == 1  # 30 seconds owed is two at 4/minute.
+    hit()  # At 2/minute again: half a request owed, then one more.
+    clock[0] = 21  # Six seconds paid back: a fifth of a request.
+    refund()
+    assert backend._callers["k"].owed == pytest.approx(0.3)
 
 
 def test_memory_backend_keeps_at_most_max_keys_callers() -> None:
