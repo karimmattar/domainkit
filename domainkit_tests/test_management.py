@@ -598,3 +598,32 @@ async def test_migrations_run_from_async_code(migration_project: Path) -> None:
     migrations_module.upgrade()
 
     assert [revision.applied for revision in migrations_module.status()] == [True]
+
+
+def test_startdomain_next_steps_leave_out_what_it_did(tmp_path: Path) -> None:
+    """Installed and mounted: the steps start at the migration, end at the curl."""
+    context = startdomain.template_context("invoices", "domains", "Invoice", None)
+    done = ["Added 'domains.invoices' to INSTALLED_DOMAINS in base.py."]
+
+    output = startdomain._next_steps(context, tmp_path / "p", tmp_path / "t", done)
+
+    assert output.splitlines() == [
+        f"Created {tmp_path / 'p'} and {tmp_path / 't'}.",
+        *done,
+        "Next steps:",
+        '  1. python manage.py makemigrations -m "create invoices"',
+        "  2. python manage.py migrate",
+        (
+            "  3. Grant invoices.view_invoice (and add_, change_, delete_) to the "
+            "users or groups that need them; superusers have them."
+        ),
+        (
+            "  4. python manage.py runserver; then, from another shell, log in as "
+            "a superuser and list the invoices:"
+        ),
+        f"       {startdomain.LOGIN_CURL}",
+        (
+            "       curl http://127.0.0.1:8000/api/v1/invoices/invoices "
+            '-H "Authorization: Bearer $TOKEN"'
+        ),
+    ]
