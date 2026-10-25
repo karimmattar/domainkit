@@ -32,9 +32,13 @@ class MailConfig(DomainConfig):
                 "the worker sends the mail."
             )
         config = registry.settings(MailSettings)
-        task(name=SEND_TASK, max_attempts=config.MAX_ATTEMPTS, queue=config.QUEUE)(
-            send_queued
-        )
+        # Mail holds addresses, and often links and codes: blanked once dead too.
+        task(
+            name=SEND_TASK,
+            max_attempts=config.MAX_ATTEMPTS,
+            queue=config.QUEUE,
+            sensitive=True,
+        )(send_queued)
         backend = get_backend()
         if not backend.deployable and settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
             raise ImproperlyConfigured(

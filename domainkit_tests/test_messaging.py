@@ -24,7 +24,7 @@ from typing import Any, ClassVar, Final
 import pytest
 from prometheus_client import REGISTRY
 from pydantic import BaseModel, TypeAdapter, ValidationError
-from sqlalchemy import select, update
+from sqlalchemy import insert, select, update
 
 from domainkit import setup
 from domainkit.apps import registry
@@ -43,9 +43,11 @@ from domainkit.context import (
     bind_request,
     current_request,
 )
+from domainkit.contrib.audit.tables import audit_keys, audit_log, audit_seals
 from domainkit.contrib.messaging import (
     MessagingSettings,
     Worker,
+    admin,
     dispatch,
     enqueue,
     periodic,
@@ -61,7 +63,14 @@ from domainkit.contrib.messaging.dispatch import (
     commit_publisher,
 )
 from domainkit.contrib.messaging.outbox import insert_statements, message_row
-from domainkit.contrib.messaging.tables import DEAD, DONE, PENDING, messages
+from domainkit.contrib.messaging.tables import (
+    BLANKED,
+    CANCELLED,
+    DEAD,
+    DONE,
+    PENDING,
+    messages,
+)
 from domainkit.contrib.messaging.worker import Claimed, backoff
 from domainkit.db import connections
 from domainkit.ddd import DomainEvent, event_bus
@@ -110,6 +119,12 @@ async def fails_once(key: str) -> None:
         ran.append(key)
         raise RuntimeError("first run fails")
     ran.append(f"{key}:ok")
+
+
+@task(name="tests.sends_a_code", max_attempts=1, sensitive=True)
+async def sends_a_code(to: str, code: str = "") -> None:
+    """Fail to send a one-time code, which must not stay in the outbox."""
+    raise RuntimeError("gateway down")
 
 
 @task(queue="emails")
@@ -764,6 +779,256 @@ def test_commands(
     assert (
         run("runworker") == "Worker started; press Ctrl+C to stop.\nWorker stopped.\n"
     )
+
+
+async def test_finished_messages_keep_their_row_not_their_arguments(
+    tables: None,
+) -> None:
+    """Done and cancelled messages are blanked; dead ones keep theirs to retry.
+
+    A sensitive task's dead message is blanked too, and says so in its
+    headers, so a retry leaves it alone.
+    """
+    await enqueue(remember, value=uuid.uuid4(), label="secret-label")
+    await enqueue(always_fails)
+    await enqueue(sends_a_code, to="+33612345678", code="493021")
+    async with NotesUnitOfWork() as uow:
+        uow.defer(remember, value=uuid.uuid4(), label="cancelled-label")
+        await uow.commit()
+    cancelled = (await outbox())[-1]["id"]
+    config = registry.settings(MessagingSettings)
+    assert await admin.cancel(config, cancelled)  # type: ignore[arg-type]
+
+    await Worker().run_once()
+
+    rows = {row["target"]: row for row in await outbox() if row["id"] != cancelled}
+    done = rows[tasks.qualified_name(remember)]
+    assert (done["status"], done["payload"]) == (DONE, {})
+    assert BLANKED not in done["headers"]  # type: ignore[operator]
+    dead = rows["tests.always_fails"]
+    assert (dead["status"], dead["payload"]) == (DEAD, {})  # It takes none.
+    assert BLANKED not in dead["headers"]  # type: ignore[operator]
+    code = rows["tests.sends_a_code"]
+    assert (code["status"], code["payload"]) == (DEAD, {})
+    assert code["headers"][BLANKED] is True  # type: ignore[index]
+    assert code["last_error"] == "RuntimeError: gateway down"
+    async with connections.engine().connect() as connection:
+        stopped = await connection.scalar(
+            select(messages.c.payload).where(messages.c.id == cancelled)
+        )
+    assert stopped == {}
+    assert await admin.blanked_dead_letters(config, None) == 1  # Of 2 dead.
+    assert await admin.blanked_dead_letters(config, dead["id"]) == 0  # type: ignore[arg-type]
+    assert await admin.retry_dead(config, None) == 1  # always_fails only.
+    assert await admin.blanked_dead_letters(config, None) == 1
+
+
+async def test_dead_messages_of_other_tasks_keep_their_arguments(
+    tables: None,
+) -> None:
+    """A task that is not sensitive keeps its arguments dead, so it can be retried."""
+    await enqueue(fails_once, key="k")
+    async with connections.engine().begin() as connection:
+        await connection.execute(update(messages).values(max_attempts=1))
+
+    await Worker().run_once()
+
+    (row,) = await outbox()
+    assert (row["status"], row["payload"]) == (DEAD, {"key": "k"})
+    assert await admin.retry_dead(registry.settings(MessagingSettings), None) == 1
+    await Worker().run_once()
+    assert ran == ["k", "k:ok"]
+
+
+def test_retrying_a_blanked_message_says_why_it_cannot(messaging: None) -> None:
+    """``messages --retry`` refuses one blanked message, and counts them in all."""
+
+    async def prepare() -> tuple[uuid.UUID, uuid.UUID]:
+        async with connections.engine().begin() as connection:
+            await connection.run_sync(messages.create)
+        await enqueue(sends_a_code, to="+33612345678", code="493021")
+        await enqueue(always_fails)
+        await Worker().run_once()
+        ids = {row["target"]: row["id"] for row in await outbox()}
+        await connections.close_all()
+        return ids["tests.sends_a_code"], ids["tests.always_fails"]  # type: ignore[return-value]
+
+    blanked_id, failed_id = asyncio.run(prepare())
+
+    with pytest.raises(CommandError) as refused:
+        run("messages", "--retry", str(blanked_id))
+    assert str(refused.value) == (
+        f"{blanked_id} was not queued: its task is sensitive, so its arguments "
+        "were blanked when it died. Make and send it again from where it came "
+        "from."
+    )
+    assert run("messages", "--retry", str(failed_id)) == "Queued 1 message(s).\n"
+    assert run("messages", "--retry", "all") == (
+        "Queued 0 message(s).\n"
+        "Left 1 dead message(s) of sensitive tasks: their arguments were blanked "
+        "when they died.\n"
+    )
+
+
+def test_retries_and_cancels_are_audited_with_their_operator(
+    database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``messages --retry`` and ``--cancel`` leave a row naming who ran them.
+
+    At 0.9.0 re-running every dead handler (``--retry all``) left no trace.
+    """
+    monkeypatch.setenv("DOMAINKIT_OPERATOR", "ops-1")
+    registry.clear()
+    with override_settings(
+        INSTALLED_DOMAINS=[MESSAGING, "domainkit.contrib.audit", ALPHA],
+        DATABASES={"default": {"URL": database_url}},
+        MESSAGING=FAST,
+    ):
+        setup()
+
+        async def prepare() -> tuple[uuid.UUID, uuid.UUID]:
+            async with connections.engine().begin() as connection:
+                await connection.run_sync(messages.create)
+                for table in (audit_log, audit_keys, audit_seals):
+                    await connection.run_sync(table.create)
+            await enqueue(always_fails)
+            await Worker().run_once()
+            (dead,) = [
+                row["id"]
+                for row in await outbox()
+                if row["target"] == "tests.always_fails"
+            ]
+            await enqueue(remember, value=uuid.uuid4())
+            waiting = (await outbox())[-1]["id"]
+            await connections.close_all()
+            return dead, waiting  # type: ignore[return-value]
+
+        async def recorded() -> list[dict[str, Any]]:
+            async with connections.engine().connect() as connection:
+                rows = await connection.execute(
+                    select(audit_log).order_by(audit_log.c.occurred_at)
+                )
+                found = [dict(row._mapping) for row in rows]
+            await connections.close_all()
+            return found
+
+        dead, waiting = asyncio.run(prepare())
+        run("messages", "--retry", str(dead))
+        run("messages", "--retry", "all")
+        run("messages", "--cancel", str(waiting), "--operator", "alice")
+        with pytest.raises(CommandError) as refused:
+            run("messages", "--cancel", str(waiting))
+        run("messages", "--dead")  # Reading is not recorded.
+        rows = [
+            row
+            for row in asyncio.run(recorded())
+            if row["action"].startswith("operator.")
+        ]
+    registry.clear()
+
+    assert str(refused.value) == (
+        f"{waiting} was not cancelled: it is running, already finished, or not in "
+        "this outbox."
+    )
+    assert [(row["action"], row["actor"]) for row in rows] == [
+        ("operator.messages.retry", "operator:ops-1"),
+        ("operator.messages.retry", "operator:ops-1"),
+        ("operator.messages.cancel", "operator:alice"),
+        ("operator.messages.cancel", "operator:ops-1"),
+    ]
+    one, every, cancelled, missed = (row["details"] for row in rows)
+    assert one == {
+        "message": str(dead),
+        "database": "default",
+        "queued": 1,
+        "blanked": 0,
+        "operator_source": "environment",
+    }
+    assert (every["message"], every["queued"]) == ("all", 0)
+    assert (cancelled["message"], cancelled["cancelled"]) == (str(waiting), True)
+    assert cancelled["operator_source"] == "option"
+    assert missed["cancelled"] is False
+    assert {row["outcome"] for row in rows} == {"success"}
+
+
+def test_retries_and_cancels_reach_the_outbox_named(
+    database_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--database`` picks the outbox acted on, and the record says which."""
+    monkeypatch.setenv("DOMAINKIT_OPERATOR", "ops-1")
+    other = f"sqlite+aiosqlite:///{tmp_path / 'other.sqlite3'}"
+    registry.clear()
+    with override_settings(
+        INSTALLED_DOMAINS=[MESSAGING, "domainkit.contrib.audit", ALPHA],
+        DATABASES={"default": {"URL": database_url}, "other": {"URL": other}},
+        MESSAGING=FAST,
+    ):
+        setup()
+        dead, waiting, blanked = (
+            message_row(
+                kind="task", target=target, payload={}, headers={}, max_attempts=1
+            )
+            for target in ("tests.always_fails",) * 2 + ("tests.sends_a_code",)
+        )
+        blanked["headers"] = {BLANKED: True}
+
+        async def prepare() -> None:
+            async with connections.engine().begin() as connection:
+                for table in (messages, audit_log, audit_keys, audit_seals):
+                    await connection.run_sync(table.create)
+            async with connections.engine("other").begin() as connection:
+                await connection.run_sync(messages.create)
+                await connection.execute(insert(messages), [dead, waiting, blanked])
+                await connection.execute(
+                    update(messages)
+                    .where(messages.c.id.in_([dead["id"], blanked["id"]]))
+                    .values(status=DEAD)
+                )
+            await connections.close_all()
+
+        async def statuses() -> tuple[list[str], list[dict[str, Any]]]:
+            async with connections.engine("other").connect() as connection:
+                found = list(
+                    await connection.scalars(
+                        select(messages.c.status).order_by(messages.c.status)
+                    )
+                )
+            async with connections.engine().connect() as connection:
+                rows = await connection.execute(
+                    select(audit_log.c.details)
+                    .where(audit_log.c.action.startswith("operator.messages"))
+                    .order_by(audit_log.c.occurred_at)
+                )
+                details = [row.details for row in rows]
+            await connections.close_all()
+            return found, details
+
+        asyncio.run(prepare())
+        assert run("messages", "--retry", "all") == "Queued 0 message(s).\n"
+        assert run("messages", "--retry", "all", "--database", "other") == (
+            "Queued 1 message(s).\n"
+            "Left 1 dead message(s) of sensitive tasks: their arguments were "
+            "blanked when they died.\n"
+        )
+        cancelled = run(
+            "messages", "--cancel", str(waiting["id"]), "--database", "other"
+        )
+        found, details = asyncio.run(statuses())
+    registry.clear()
+
+    assert cancelled == f"Cancelled {waiting['id']}.\n"
+    assert found == [CANCELLED, DEAD, PENDING]
+    assert [(each["database"], each.get("blanked")) for each in details] == [
+        ("default", 0),
+        ("other", 1),
+        ("other", None),
+    ]
+
+
+def test_sensitive_is_a_task_option() -> None:
+    """``sensitive`` is off unless asked for."""
+    assert tasks.spec_for(sends_a_code).sensitive is True
+    assert tasks.spec_for(remember).sensitive is False
 
 
 def test_contrib_periodic_tasks_follow_their_app(messaging: None) -> None:

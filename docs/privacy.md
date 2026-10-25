@@ -182,4 +182,8 @@ python manage.py privacy purge             # in a nightly job
 | `privacy.personal_data_erased` | | `model`, `aggregate_id`, `fields`, `reason` |
 | `privacy.purge` | `<domain>.<table>` | `database`, `before`, `operation` (`deleted` or `erased`), `rows`; `reason` when refused |
 
-The actor is whoever runs them: `system` from a command.
+The actor is whoever runs them. From the `privacy` command it is the
+operator, `operator:<name>`, from `--operator` (before the action:
+`privacy --operator alice erase --subject ...`), `DOMAINKIT_OPERATOR`, or
+the system user ([operators](reference.md#operators)); from code run
+outside a request, `system`.

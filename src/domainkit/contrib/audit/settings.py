@@ -1,10 +1,14 @@
 """Settings of ``domainkit.contrib.audit``: ``AUDIT = {...}``."""
 
 from datetime import timedelta
+from typing import Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from domainkit.conf import DEFAULT_DB_ALIAS
+
+NAMESPACE_PATTERN: Final = r"^[a-z][a-z0-9_-]{0,31}$"
+"""Namespaces: a lower-case letter, then up to 31 letters, digits, ``_``, ``-``."""
 
 
 class AuditSettings(BaseModel):
@@ -20,10 +24,26 @@ class AuditSettings(BaseModel):
     """Actions to skip, as shell patterns (``catalog.*``, ``*.viewed``)."""
     LEDGER: str | None = None
     """Alias in ``LEDGERS`` to anchor the chain's head on; None anchors nowhere."""
+    NAMESPACE: str | None = Field(default=None, pattern=NAMESPACE_PATTERN)
+    """Part of the ledger key anchors go under, ``domainkit/audit/<NAMESPACE>/<alias>``,
+    so several projects or environments can share one ledger. None keeps the
+    key of 0.9.0, ``domainkit/audit/<alias>``, which they would all share;
+    staging and production warn about it."""
+    PREVIOUS_ANCHORS: bool = True
+    """With ``NAMESPACE``, also verify the heads anchored before it was set,
+    under ``domainkit/audit/<alias>``, so the trail stays verified across
+    the change. Turn it off when other projects anchored under that key too."""
     ANCHOR_EVERY: timedelta = timedelta(hours=1)
     """Anchor a new head at most this often (the window a rewrite can hide in)."""
     SEAL_EVERY: timedelta = timedelta(minutes=5)
     """How often the worker seals new rows (with ``domainkit.contrib.messaging``)."""
+    SEALED_EXTERNALLY: bool = False
+    """``auditseal`` runs on a schedule of the project's own (cron), not in
+    the worker: staging and production then do not warn that nothing seals."""
+    REQUIRE_BASELINE: bool = False
+    """Refuse to start in staging and production without a ledger, a
+    namespace, a sealing schedule, and the ``protect()`` triggers, instead
+    of warning (0.10 refuses by default)."""
     SEAL_LATE_WINDOW: timedelta = Field(
         default=timedelta(minutes=15), gt=timedelta(0), le=timedelta(days=1)
     )

@@ -1,4 +1,7 @@
-"""Mark the event fields that hold personal data, and whose data it is."""
+"""Mark the event fields that hold personal data, and whose data it is.
+
+``Counted`` marks fields the audit trail keeps only the size of.
+"""
 
 from dataclasses import dataclass, is_dataclass
 from functools import cache
@@ -24,6 +27,32 @@ class Personal:
 
     of: str
     """The field whose value identifies the person (the subject)."""
+
+
+@dataclass(frozen=True, slots=True)
+class Counted:
+    """``Annotated`` metadata: the audit trail keeps how many items, not which.
+
+    For collections that grow long or name people, such as the users a
+    feature flag is on for::
+
+        class FlagChanged(DomainEvent):
+            users: Annotated[tuple[str, ...], Counted()]
+
+    The event itself carries the items; only its audit row has the count.
+    """
+
+
+@cache
+def counted_fields(cls: type) -> frozenset[str]:
+    """The fields of ``cls`` marked ``Counted``."""
+    hints = get_type_hints(cls, include_extras=True)
+    return frozenset(
+        name
+        for name, hint in hints.items()
+        if get_origin(hint) is Annotated
+        and any(isinstance(marker, Counted) for marker in hint.__metadata__)
+    )
 
 
 @cache

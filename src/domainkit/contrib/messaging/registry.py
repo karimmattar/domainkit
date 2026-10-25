@@ -58,6 +58,10 @@ class TaskSpec:
     """Higher runs first, among the due messages of a queue."""
     rate: tuple[int, int] | None = None
     """At most ``(count, seconds)`` runs, enforced by the workers."""
+    sensitive: bool = False
+    """Its arguments hold secrets or personal data (a link, a code, an
+    address): the worker blanks them once it dies, as it does for every
+    message once it is done or cancelled, so it cannot be retried."""
 
 
 _tasks: dict[str, TaskSpec] = {}
@@ -141,6 +145,7 @@ def task(
     dont_retry_on: Iterable[type[Exception]] = (),
     priority: int = 0,
     rate: str | None = None,
+    sensitive: bool = False,
 ) -> Callable[[Task], Task]: ...
 
 
@@ -157,6 +162,7 @@ def task(
     dont_retry_on: Iterable[type[Exception]] = (),
     priority: int = 0,
     rate: str | None = None,
+    sensitive: bool = False,
 ) -> Task | Callable[[Task], Task]:
     """Register an async function as a background task (``uow.defer(task)``).
 
@@ -170,6 +176,11 @@ def task(
     ``dont_retry_on`` (dead-letter these at once), and ``rate``
     (``"10/minute"``: at most that many runs, across the workers that share
     ``RATE_LIMIT_BACKEND``).
+
+    Every message's arguments are blanked in the outbox once it is done or
+    cancelled. ``sensitive`` blanks them once it dies too, for arguments
+    that hold secrets or personal data; such a dead message cannot be
+    retried.
     """
     options = _options(
         max_attempts=max_attempts,
@@ -183,7 +194,8 @@ def task(
     )
 
     def register(func: Task) -> Task:
-        _register(TaskSpec(name or qualified_name(func), func, **options))
+        key = name or qualified_name(func)
+        _register(TaskSpec(key, func, sensitive=sensitive, **options))
         return func
 
     return register(function) if function is not None else register

@@ -35,11 +35,14 @@ from domainkit.contrib.audit import (
 from domainkit.contrib.audit.management.commands.auditforget import Command
 from domainkit.contrib.audit.personal import audited_databases, pseudonym, subject_keys
 from domainkit.contrib.audit.protection import PROTECT, UNPROTECT, protect, unprotect
+from domainkit.contrib.audit.recorder import event_rows
+from domainkit.contrib.audit.settings import AuditSettings
 from domainkit.contrib.audit.tables import audit_keys, audit_log
 from domainkit.db import connections
-from domainkit.ddd import DomainEvent, Personal, ValueObject
-from domainkit.ddd.personal import personal_fields
+from domainkit.ddd import Counted, DomainEvent, Personal, ValueObject
+from domainkit.ddd.personal import counted_fields, personal_fields
 from domainkit.management import CommandError, call_command
+from domainkit.management.commands import partitions as partitions_command
 from domainkit.testing import assert_num_queries
 from domainkit.testing.queries import CapturedQueries
 from domainkit_tests.conftest import POSTGRES_VARIABLE
@@ -284,6 +287,26 @@ def test_personal_fields_are_found_by_their_markers() -> None:
         )
         with pytest.raises(TypeError, match=refused):
             personal_fields(event)
+
+
+class ListChanged(DomainEvent):
+    """An event with lists the trail keeps only the size of."""
+
+    members: Annotated[tuple[str, ...], Counted()]
+    owners: Annotated[list[str] | None, Counted()] = None
+    tags: tuple[str, ...] = ()
+
+
+def test_counted_fields_are_audited_as_their_size() -> None:
+    """``Counted`` keeps the number of items in the row; the event keeps them."""
+    event = ListChanged(members=("u1", "u2", "u3"), tags=("a",))
+
+    (draft,) = event_rows([event], AuditSettings())
+
+    assert counted_fields(ListChanged) == {"members", "owners"}
+    assert draft.row["details"] == {"members": 3, "owners": None, "tags": ["a"]}
+    assert event.members == ("u1", "u2", "u3")
+    assert counted_fields(MemberJoined) == frozenset()
 
 
 class MemberMoved(DomainEvent):
@@ -601,8 +624,14 @@ async def test_forgetting_reaches_every_audited_database(
     assert str(member) not in await subjects()
 
 
-def test_auditforget_command(audited: str, local_zone: Callable[[str], None]) -> None:
-    """Subjects, anonymous days (counted in UTC), or both; one is needed."""
+def test_auditforget_command(
+    audited: str, local_zone: Callable[[str], None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Subjects, anonymous days (counted in UTC), or both; one is needed.
+
+    Each run is audited as its operator, with counts but not the subjects.
+    """
+    monkeypatch.setenv("DOMAINKIT_OPERATOR", "dpo")
     # A zone whose date differs from UTC's now, so a local "today" would show.
     local_zone("Etc/GMT-14" if datetime.now(UTC).hour >= 12 else "Etc/GMT+12")
 
@@ -612,6 +641,7 @@ def test_auditforget_command(audited: str, local_zone: Callable[[str], None]) ->
         names += [f"anonymous:{today - timedelta(days=days)}" for days in (31, 30, 0)]
         async with connections.engine().begin() as connection:
             await connection.run_sync(audit_keys.create)
+            await connection.run_sync(audit_log.create)
             await connection.execute(
                 insert(audit_keys),
                 [
@@ -638,6 +668,83 @@ def test_auditforget_command(audited: str, local_zone: Callable[[str], None]) ->
         run()
     with pytest.raises(CommandError, match=r"^--anonymous-days cannot be negative\.$"):
         run("--anonymous-days", "-1")
+
+    async def recorded() -> list[tuple[str, str, dict[str, Any]]]:
+        async with connections.engine().connect() as connection:
+            rows = await connection.execute(
+                select(audit_log.c.actor, audit_log.c.outcome, audit_log.c.details)
+                .where(audit_log.c.action == "operator.auditforget")
+                .order_by(audit_log.c.occurred_at)
+            )
+            found = [tuple(row) for row in rows]
+        await connections.close_all()
+        return found
+
+    runs = asyncio.run(recorded())
+    assert [(actor, outcome) for actor, outcome, _ in runs] == [
+        ("operator:dpo", "success")
+    ] * 4  # Refused runs did nothing, and are not recorded.
+    assert runs[2][2] == {
+        "subjects": 1,
+        "anonymous_days": 0,
+        "keys": 2,
+        "operator_source": "environment",
+    }
+    assert "alice" not in repr(runs)
+
+
+def test_pruning_partitions_is_audited(
+    audited: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``partitions --prune`` records each database it pruned, and who ran it."""
+    monkeypatch.delenv("DOMAINKIT_OPERATOR", raising=False)
+
+    async def prepare() -> None:
+        async with connections.engine().begin() as connection:
+            await connection.run_sync(audit_log.create)
+            await connection.run_sync(audit_keys.create)
+        await connections.close_all()
+
+    async def recorded() -> list[tuple[str, str, dict[str, Any]]]:
+        async with connections.engine().connect() as connection:
+            rows = await connection.execute(
+                select(audit_log.c.action, audit_log.c.actor, audit_log.c.details)
+            )
+            found = [tuple(row) for row in rows]
+        await connections.close_all()
+        return found
+
+    calls: list[tuple[str, dict[str, bool]]] = []
+
+    async def maintain(alias: str, **options: bool) -> list[str]:
+        calls.append((alias, options))
+        return ["DROP TABLE events_p20200101"] if options.get("prune") else []
+
+    asyncio.run(prepare())
+    monkeypatch.setattr(partitions_command, "maintain", maintain)
+    outputs = []
+    for arguments in (("--prune", "--dry-run"), (), ("--prune", "--operator", "ops")):
+        output = io.StringIO()
+        call_command("partitions", *arguments, stdout=output)
+        outputs.append(output.getvalue())
+
+    assert calls == [
+        ("default", {"prune": True, "dry_run": True}),
+        ("default", {"prune": False, "dry_run": False}),
+        ("default", {"prune": True}),
+    ]
+    assert outputs == [
+        "DROP TABLE events_p20200101;\n",
+        "Partitions of 'default' are up to date.\n",
+        "Partitions of 'default': 1 change(s).\n",
+    ]
+    assert asyncio.run(recorded()) == [
+        (
+            "operator.partitions.prune",
+            "operator:ops",
+            {"database": "default", "changes": 1, "operator_source": "option"},
+        )
+    ]
 
 
 @pytest.fixture

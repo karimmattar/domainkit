@@ -242,11 +242,37 @@ def test_subscriptions_record_their_changes_without_secrets() -> None:
     assert isinstance(changed, SubscriptionChanged)
     assert changed.fields == ("url", "event_types", "active", "description")
     assert changed.subscription_id == subscription.id
+    # The hosts, never the path that held the token (DATA-06).
+    assert (changed.host, changed.previous_host) == (
+        "other.example.com",
+        "hooks.example.com",
+    )
+    assert "SECRET-TOKEN" not in repr(changed)
     assert (subscription.url, subscription.event_types) == (
         "https://other.example.com/",
         ["*"],
     )
     assert (subscription.active, subscription.description) == (False, "d")
+
+    subscription.change(
+        url="https://User:pw@Attacker.Example:8443/in/T0K3N?x=1", host="checked"
+    )
+    subscription.change(active=True)
+    redirected, activated = subscription.pull_events()
+    assert (redirected.host, redirected.previous_host) == (  # type: ignore[attr-defined]
+        "checked",
+        "other.example.com",
+    )
+    subscription.change(url="https:///in/T0K3N")  # No host at all.
+    (hostless,) = subscription.pull_events()
+    assert (hostless.host, hostless.previous_host) == ("", "attacker.example")  # type: ignore[attr-defined]
+    subscription.change(url="https://[::1/")  # Unparsable: no host to record.
+    (unparsable,) = subscription.pull_events()
+    assert (unparsable.host, unparsable.previous_host) == (  # type: ignore[attr-defined]
+        "",
+        "",
+    )
+    assert (activated.host, activated.previous_host) == (None, None)  # type: ignore[attr-defined]
 
     now = datetime.now(UTC)
     sealed = subscription.secret

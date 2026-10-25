@@ -83,13 +83,17 @@ class SettingIn(BaseModel):
 
 
 class SettingOut(BaseModel):
-    """A dynamic setting: its value, default, and the schema values follow."""
+    """A dynamic setting: its value, default, and the schema values follow.
+
+    A ``secret`` setting shows None for its value and default.
+    """
 
     key: str
     value: JsonValue
     default: JsonValue
     description: str
     json_schema: dict[str, Any]
+    secret: bool = False
 
     @classmethod
     def of(
@@ -97,12 +101,16 @@ class SettingOut(BaseModel):
     ) -> Self:
         """Describe ``definition`` with its ``stored`` value, if any."""
         default = cast(JsonValue, definition.default_json())
+        value = default if stored is None else cast(JsonValue, stored.value)
+        if definition.secret:
+            default = value = None
         return cls(
             key=definition.key,
-            value=default if stored is None else cast(JsonValue, stored.value),
+            value=value,
             default=default,
             description=definition.description,
             json_schema=definition.json_schema(),
+            secret=definition.secret,
         )
 
 
@@ -192,7 +200,7 @@ async def change_setting(
         if stored is None:
             stored = DynamicSetting(id=key)
             await uow.settings.add(stored)
-        stored.change(value)
+        stored.change(value, secret=definition.secret)
         await uow.commit()
     return SettingOut.of(definition, stored)
 

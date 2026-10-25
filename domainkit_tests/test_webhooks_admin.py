@@ -274,6 +274,11 @@ def test_staff_change_rotate_and_delete_subscriptions(
         SubscriptionDeleted,
     ]
     assert recorded[1].fields == ("url", "event_types", "active")  # type: ignore[attr-defined]
+    # The trail can tell where events went before and after (DATA-06).
+    assert (recorded[1].host, recorded[1].previous_host) == (  # type: ignore[attr-defined]
+        "new.example.com",
+        "hooks.example.com",
+    )
 
 
 def test_missing_subscriptions_are_404(client: TestClient, admin: Headers) -> None:

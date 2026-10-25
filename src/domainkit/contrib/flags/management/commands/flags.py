@@ -13,6 +13,8 @@ from domainkit.management import BaseCommand, CommandError
 
 EVERYONE = {"on": True, "off": False, "rules": None}
 """``--everyone`` values: on or off for all, or decided by the rules."""
+HIDDEN = "********"
+"""What is shown of a secret setting's value."""
 
 
 class Command(BaseCommand):
@@ -114,6 +116,9 @@ class Command(BaseCommand):
         """One line per declared setting."""
         async with FlagsUnitOfWork() as uow:
             for definition in declared_settings():
+                if definition.secret:
+                    self.write(f"{definition.key} = {HIDDEN} (secret)")
+                    continue
                 stored = await uow.settings.find(definition.key)
                 default = json.dumps(definition.default_json())
                 value = default if stored is None else json.dumps(stored.value)
@@ -133,7 +138,10 @@ class Command(BaseCommand):
                     stored.reset()
                     await uow.settings.remove(stored)
                     await uow.commit()
-                self.write(f"{key} is back to {json.dumps(definition.default_json())}.")
+                default = json.dumps(definition.default_json())
+                self.write(
+                    f"{key} is back to {HIDDEN if definition.secret else default}."
+                )
                 return
             try:
                 parsed = json.loads(value)
@@ -143,9 +151,9 @@ class Command(BaseCommand):
             if stored is None:
                 stored = DynamicSetting(id=key)
                 await uow.settings.add(stored)
-            stored.change(checked)
+            stored.change(checked, secret=definition.secret)
             await uow.commit()
-        self.write(f"{key} = {json.dumps(checked)}")
+        self.write(f"{key} = {HIDDEN if definition.secret else json.dumps(checked)}")
 
 
 def _describe(flag: Flag) -> str:

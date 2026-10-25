@@ -31,7 +31,7 @@ from domainkit.contrib.flags import (
 )
 from domainkit.contrib.flags import store as store_module
 from domainkit.contrib.flags.events import FlagChanged
-from domainkit.contrib.flags.models import bucket
+from domainkit.contrib.flags.models import DynamicSetting, bucket
 from domainkit.contrib.flags.tables import dynamic_settings, flags
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
@@ -353,10 +353,60 @@ def test_the_command_sets_dynamic_settings(project: None) -> None:
         with pytest.raises(CommandError, match=message):
             run("flags", "setting", *arguments)
     assert [row["details"] for row in audited("flags.setting_changed")] == [
-        {"key": "checkout.max_items", "value": 30},
-        {"key": "checkout.max_items", "value": 40},
+        {"key": "checkout.max_items", "value": 30, "secret": False},
+        {"key": "checkout.max_items", "value": 40, "secret": False},
     ]
     assert audited("flags.setting_reset")[0]["details"] == {"key": "checkout.max_items"}
+
+
+def test_secret_settings_record_that_they_changed_not_their_value(
+    project: None,
+) -> None:
+    """``secret=True`` keeps the value out of the trail and the listings (DATA-10).
+
+    At 0.9.0 the value went into the append-only trail, for good.
+    """
+    api_key = dynamic_setting("payments.api_key", str, default="", secret=True)
+
+    assert run("flags", "setting", "payments.api_key", '"sk_live_S3CR3T"') == (
+        "payments.api_key = ********\n"
+    )
+    assert run("flags", "settings") == "payments.api_key = ******** (secret)\n"
+    assert run_async(api_key.get()) == "sk_live_S3CR3T"  # Still stored and read.
+    assert run("flags", "setting", "payments.api_key", "--reset") == (
+        "payments.api_key is back to ********.\n"
+    )
+    (changed,) = audited("flags.setting_changed")
+    assert changed["details"] == {
+        "key": "payments.api_key",
+        "value": None,
+        "secret": True,
+    }
+    assert audited("flags.setting_reset")[0]["details"] == {"key": "payments.api_key"}
+    assert "S3CR3T" not in repr(audited("flags.setting_changed"))
+
+
+def test_the_trail_counts_a_flags_users(project: None) -> None:
+    """Users of a flag are audited as a count; groups and rules as they are."""
+    run("flags", "set", "beta", "--users", "u2", "u1", "--groups", "staff")
+    run("flags", "set", "beta", "--users")
+
+    assert [row["details"] for row in audited("flags.flag_changed")] == [
+        {
+            "name": "beta",
+            "everyone": None,
+            "percentage": 0,
+            "users": 2,
+            "groups": ["staff"],
+        },
+        {
+            "name": "beta",
+            "everyone": None,
+            "percentage": 0,
+            "users": 0,
+            "groups": ["staff"],
+        },
+    ]
 
 
 # Routes and the staff API ---------------------------------------------------------
@@ -442,6 +492,7 @@ def test_staff_manage_dynamic_settings(client: TestClient) -> None:
             "default": 10,
             "description": "Items per order.",
             "json_schema": {"maximum": 100, "minimum": 1, "type": "integer"},
+            "secret": False,
         }
     ]
     changed = client.put(
@@ -473,6 +524,26 @@ def test_staff_manage_dynamic_settings(client: TestClient) -> None:
         == 204
     )
     assert client.get(f"{ADMIN}/settings", headers=headers).json()[0]["value"] == 10
+
+
+def test_staff_see_no_value_of_a_secret_setting(client: TestClient) -> None:
+    """The staff API shows that a secret setting is set, not its value."""
+    dynamic_setting("payments.api_key", str, default="none", secret=True)
+    headers = staff("ops", *FLAG_PERMISSIONS)
+
+    changed = client.put(
+        f"{ADMIN}/settings/payments.api_key",
+        json={"value": "sk_live_S3CR3T"},
+        headers=headers,
+    )
+    listed = client.get(f"{ADMIN}/settings", headers=headers).json()
+
+    assert changed.status_code == 200
+    assert (changed.json()["value"], changed.json()["secret"]) == (None, True)
+    assert (listed[0]["value"], listed[0]["default"]) == (None, None)
+    assert "S3CR3T" not in changed.text
+    (row,) = audited("flags.setting_changed")
+    assert row["details"]["value"] is None
 
 
 def test_migrate_creates_the_flag_permissions(project: None) -> None:
@@ -528,6 +599,10 @@ def test_changes_are_recorded_with_their_rules() -> None:
     assert isinstance(event, FlagChanged)
     assert (event.name, event.everyone, event.percentage) == ("beta", False, 5)
     assert (event.users, event.groups) == (("u1", "u2"), ("g",))
+    setting = DynamicSetting(id="checkout.max_items")
+    setting.change(25)  # Not secret unless said.
+    (changed,) = setting.pull_events()
+    assert (changed.value, changed.secret) == (25, False)  # type: ignore[attr-defined]
 
 
 def test_flags_are_read_with_the_stored_rules(project: None) -> None:

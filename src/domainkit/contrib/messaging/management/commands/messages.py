@@ -9,6 +9,7 @@ from domainkit import clock
 from domainkit.apps import registry
 from domainkit.contrib.messaging.admin import (
     State,
+    blanked_dead_letters,
     cancel,
     list_messages,
     queue_counts,
@@ -25,6 +26,7 @@ class Command(BaseCommand):
     """Show counts and lag, list messages, retry dead ones, or cancel one."""
 
     help = "Inspect the messaging outbox."
+    operator_actions = True
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         """Accept the listing, retry, and cancel options."""
@@ -69,9 +71,7 @@ class Command(BaseCommand):
         config = registry.settings(MessagingSettings)
         if retry is not None:
             message_id = None if retry == "all" else _message_id(retry, "or 'all'")
-            self.write(
-                f"Queued {await retry_dead(config, message_id, database)} message(s)."
-            )
+            await self._retry(config, message_id, database)
             return
         if cancel is not None:
             await self._cancel(config, _message_id(cancel), database)
@@ -90,11 +90,48 @@ class Command(BaseCommand):
         for name, seconds in sorted((await queue_lag(config, database)).items()):
             self.write(f"lag {name}: {seconds:.1f}s")
 
+    async def _retry(
+        self,
+        config: MessagingSettings,
+        message_id: uuid.UUID | None,
+        database: str | None,
+    ) -> None:
+        """Queue dead messages again; say which ones cannot be, and why.
+
+        The retry is recorded in the audit trail, with how many went.
+        """
+        async with self.recorded(
+            "messages.retry",
+            message="all" if message_id is None else str(message_id),
+            database=database or config.DATABASE,
+        ) as action:
+            queued = await retry_dead(config, message_id, database)
+            left = await blanked_dead_letters(config, message_id, database)
+            action.update(queued=queued, blanked=left)
+            if message_id is not None and left:
+                raise CommandError(
+                    f"{message_id} was not queued: its task is sensitive, so its "
+                    "arguments were blanked when it died. Make and send it again "
+                    "from where it came from."
+                )
+        self.write(f"Queued {queued} message(s).")
+        if left:
+            self.write(
+                f"Left {left} dead message(s) of sensitive tasks: their "
+                "arguments were blanked when they died."
+            )
+
     async def _cancel(
         self, config: MessagingSettings, message_id: uuid.UUID, database: str | None
     ) -> None:
-        """Cancel one message, or explain why it was not."""
-        if await cancel(config, message_id, database):
+        """Cancel one message, or explain why it was not; record the attempt."""
+        async with self.recorded(
+            "messages.cancel",
+            message=str(message_id),
+            database=database or config.DATABASE,
+        ) as action:
+            action["cancelled"] = cancelled = await cancel(config, message_id, database)
+        if cancelled:
             self.write(f"Cancelled {message_id}.")
             return
         raise CommandError(

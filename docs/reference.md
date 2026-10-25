@@ -481,6 +481,12 @@ passes, so an API that is public on purpose can keep them:
   without
   `WebSocketLimitsMiddleware`
   ([live.md](live.md#message-size))
+- audit: no `AUDIT.LEDGER`, no `AUDIT.NAMESPACE` on it, or nothing that
+  seals on a schedule (no messaging, and no `AUDIT.SEALED_EXTERNALLY`); at
+  startup the application also logs audited PostgreSQL databases without
+  the `protect()` triggers. `AUDIT.REQUIRE_BASELINE` refuses to start
+  instead, and 0.10 makes that the default
+  ([contrib.md](contrib.md#in-staging-and-production))
 
 The production settings that `init` create avoid the first three, and ask
 for `TRUSTED_PROXIES`: leave it empty only when callers connect directly.
@@ -897,24 +903,24 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `migrate` | `[revision]`, `--downgrade`, `--allow-data-loss`, `--database`, `--plan`, `--sql`, `--from`, `--fake` | Apply revisions (or revert down to one) on every database of every target, then create partitions. A revision id needs `--database` when there are several targets. `--plan` lists the revisions that would run; `--sql` prints their SQL, rendered offline by Alembic, from the database's revision or `--from`; `--fake` records the revision without running anything, for a schema made by other means. None of the three changes the schema, but `--fake --downgrade` still needs `--allow-data-loss` in staging and production. |
 | `squashmigrations` | `[end]`, `--start`, `--database`, `-m/--message` | Replace a target's revisions, `--start` (default: the first) to `end` (default: the head), with one; see [Squashing migrations](#squashing-migrations). |
 | `showmigrations` | `--database` | Applied and pending revisions; a shard group lists each database. |
-| `partitions` | `--database`, `--prune`, `--dry-run` | Create the current and upcoming partitions of partitioned tables; `--prune` drops those past `retain`. |
+| `partitions` | `--database`, `--prune`, `--dry-run`, `--operator` | Create the current and upcoming partitions of partitioned tables; `--prune` drops those past `retain`, and is audited ([operators](#operators)). |
 | `runserver` | `[addr:port]`, `--noreload`, `--server uvicorn\|granian` | Development server, on uvicorn or Granian (the `granian` extra). Production runs the server directly ([Server limits](#server-limits)). |
 | `shell` | `-c/--command`, `--no-imports` | An asyncio Python console, where `await` works at the top level, with settings, the registry, connections, `asyncio`, and every installed domain's models, repositories, and units of work by name (unless `--no-imports`). `-c` runs code and exits. |
 | `dbshell` | `--database`, `--owner`, `--allow-production`, `-- [ARG ...]` | Open `psql` or `sqlite3` on an alias, as its `URL`'s user (`--owner`: `MIGRATION_URL`'s). The connection and password reach `psql` in libpq's environment variables, never on its command line; TLS follows `SSLMODE` and its files. Production refuses without `--allow-production`. Arguments after `--` go to the client. |
 | `diffsettings` | `--all` | The settings that differ from the defaults; `--all` lists every one, defaults marked `###`. Secrets stay hidden as in `repr(settings)`, and so do entries of free-form settings named like secrets (`password`, `token`, `key`, ...) and passwords in URLs. |
 | `dumpdata` | `[TABLE_OR_DOMAIN ...]`, `--database`, `--output`, `--indent` | Write rows as a JSON fixture; see [Data: fixtures, flush, and seeds](#data-fixtures-flush-and-seeds). |
-| `loaddata` | `FIXTURE ...`, `--database`, `--dry-run`, `--force` | Load fixtures, saying first what each table gets and how many stored rows it replaces. Staging and production refuse without `--force`. |
-| `flush` | `--database`, `--dry-run`, `--force` | Delete every row but the audit trail's, saying first what goes, then rerun the `migrated` hooks (content types, permissions). Staging and production refuse without `--force`. |
+| `loaddata` | `FIXTURE ...`, `--database`, `--dry-run`, `--force`, `--operator` | Load fixtures, saying first what each table gets and how many stored rows it replaces. Staging and production refuse without `--force`. Each load is audited ([operators](#operators)). |
+| `flush` | `--database`, `--dry-run`, `--force`, `--operator` | Delete every row but the audit trail's, saying first what goes, then rerun the `migrated` hooks (content types, permissions). Staging and production refuse without `--force`. Audited ([operators](#operators)). |
 | `seed` | `[LABEL ...]` | Run installed domains' `DomainConfig.seed` hooks, in `INSTALLED_DOMAINS` order. |
 | `openapi` | `--output`, `--indent`, `--diff OLD` | Print or write the OpenAPI schema; `--diff` lists breaking changes since `OLD` and exits 1 if any (see [The API surface](#the-api-surface)). |
 | `runworker` | `--once`, `--metrics-port`, `--metrics-address`, `--database`, `--queue`, `--no-relay` | Run outbox messages (messaging): one worker per outbox, every hosting database by default; `--queue` (repeatable) limits them to some queues. With `MESSAGING.BROKER`, relay to the broker and run what it delivers; `--no-relay` only consumes. `--once` always works from the outbox. Whatever it serves, the process runs at most `MESSAGING.CONCURRENCY` messages at once. |
-| `messages` | `--pending\|--locked\|--dead`, `--queue`, `--limit`, `--retry ID\|all`, `--cancel ID`, `--database` | Count an outbox's messages and show each queue's lag, list them, requeue dead letters, or cancel a message no worker runs (messaging). |
+| `messages` | `--pending\|--locked\|--dead`, `--queue`, `--limit`, `--retry ID\|all`, `--cancel ID`, `--database`, `--operator` | Count an outbox's messages and show each queue's lag, list them, requeue dead letters (not those of `sensitive` tasks, whose arguments were blanked), or cancel a message no worker runs; retries and cancels are audited (messaging; [operators](#operators)). |
 | `webhooks` | `subscriptions\|deliveries\|replay`, `[ID ...]`, `--failed`, `--status`, `--subscription`, `--limit` | List webhook subscriptions or deliveries, or send finished deliveries again (webhooks). |
 | `auditlog` | `--actor`, `--action`, `--limit`, `--database`, `--target`, `--aggregate FIELD=ID` | Read the audit trail, or one record's history with what each entry changed (audit; see [contrib.md](contrib.md#history)). |
 | `auditseal` | `--late` | Seal new audit rows into each database's hash chain and anchor its head on `AUDIT.LEDGER`; `--late` also seals rows that committed later than `AUDIT.SEAL_LATE_WINDOW`, flagged as sealed late (audit). |
 | `auditverify` | `--database` | Check the audit trail against its seals and anchors; fails if anything changed (audit). |
-| `auditforget` | `subject ...`, `--anonymous-days` | Make people's pseudonyms in the audit trail unlinkable, in every audited database (audit). |
-| `privacy` | `export --subject ID [--output FILE]`, `erase --subject ID [--reason] [--noinput]`, `purge [--dry-run]` | Export or erase what every installed domain holds about a person, from `Personal` markers on aggregates, or apply the domains' retention policies; each is audited (privacy; see [privacy.md](privacy.md)). |
+| `auditforget` | `subject ...`, `--anonymous-days`, `--operator` | Make people's pseudonyms in the audit trail unlinkable, in every audited database; each run is audited (audit; [operators](#operators)). |
+| `privacy` | `[--operator NAME]`, then `export --subject ID [--output FILE]`, `erase --subject ID [--reason] [--noinput]`, `purge [--dry-run]` | Export or erase what every installed domain holds about a person, from `Personal` markers on aggregates, or apply the domains' retention policies; each is audited, as the operator (privacy; see [privacy.md](privacy.md), [operators](#operators)). |
 | `evidence` | `--subject`, `--verify KEY`, `--limit` | List a subject's evidence, or verify one record (evidence). |
 | `createsuperuser` | `--<USERNAME_FIELD>`, `--<field>` per `REQUIRED_FIELDS`, `--noinput` | Create a superuser, asking for what the options leave out; `--noinput` reads `<PREFIX>SUPERUSER_<FIELD>` (auth; see [auth.md](auth.md)). |
 | `changepassword` | `[username]` | Set a user's password, asked twice and validated; the user's tokens end (auth). |
@@ -923,6 +929,40 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `resetmfa` | `username` | Turn a user's second factor off, and end their sessions (auth). |
 | `addcertificate` | `username`, `certificate`, `--name` | Let a client certificate log in as a user, by its SHA-256 (auth). |
 | `flags` | `list`, `set NAME`, `delete NAME`, `settings`, `setting KEY [VALUE] [--reset]` | List and change feature flags and dynamic settings (flags; see [contrib.md](contrib.md#flags-feature-flags-and-dynamic-settings)). |
+
+### Operators
+
+Commands that change or erase stored data as a person, not as the
+application, say who runs them and leave a row in the audit trail (with
+`domainkit.contrib.audit` installed): `messages --retry` and `--cancel`,
+`auditforget`, `loaddata`, `flush`, `partitions --prune`, and `privacy`.
+The operator is, in this order:
+
+1. `--operator NAME` (before the action for `privacy`:
+   `privacy --operator alice purge`);
+2. the `DOMAINKIT_OPERATOR` environment variable;
+3. the user the process runs as.
+
+A name is 1 to 64 letters, digits, `.`, `_`, `@`, `+`, or `-`, starting
+with a letter or digit; another is refused before the command runs, and so
+is a process with no user name. In a container that runs as `root` or
+`app`, the last one names nobody: set `DOMAINKIT_OPERATOR` from your
+access tooling, or pass `--operator`. Prefer a staff id or handle to an
+email address: the trail keeps what it is given for good. The name is what
+the operator says: it attributes an action, it does not authenticate
+anyone, so keep who can run `manage.py` against production as narrow as
+who can reach its database.
+
+The command runs as the actor `operator:<name>`, so what it records itself
+(`privacy.erase`, `privacy.purge`) names the operator instead of `system`.
+Each action is recorded once it ends as `operator.<command>`
+(`operator.messages.retry`, `operator.messages.cancel`,
+`operator.auditforget`, `operator.loaddata`, `operator.flush`,
+`operator.partitions.prune`), `success` or `failure` (with the error's
+class), with what it acted on and counts, and `operator_source`: `option`,
+`environment`, or `system`. Dry runs, listings, and refusals before the
+action (no `--force`) are not recorded. A successful action whose row
+cannot be written fails the command.
 
 ### Data: fixtures, flush, and seeds
 

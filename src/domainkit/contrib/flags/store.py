@@ -106,8 +106,20 @@ def _group_names(user: object) -> Iterator[str]:
 class DynamicSettingDefinition[T]:
     """A setting changed at runtime, declared with ``dynamic_setting``."""
 
-    def __init__(self, key: str, type_: Any, default: T, description: str) -> None:  # noqa: ANN401 - any type form.
-        """Check the key and that the default fits the type."""
+    def __init__(
+        self,
+        key: str,
+        type_: Any,  # noqa: ANN401 - any type form.
+        default: T,
+        description: str,
+        *,
+        secret: bool = False,
+    ) -> None:
+        """Check the key and that the default fits the type.
+
+        A ``secret`` setting's values stay out of the audit trail, the staff
+        API, and ``flags settings``.
+        """
         if not NAME.fullmatch(key):
             raise ImproperlyConfigured(
                 f"Dynamic setting key {key!r} must be lower-case letters, digits, "
@@ -115,6 +127,7 @@ class DynamicSettingDefinition[T]:
             )
         self.key = key
         self.description = description
+        self.secret = secret
         self.adapter: TypeAdapter[T] = TypeAdapter(type_)
         try:
             self.default: T = self.adapter.validate_python(default)
@@ -177,6 +190,7 @@ def dynamic_setting[T](
     *,
     default: T,
     description: str = "",
+    secret: bool = False,
 ) -> DynamicSettingDefinition[T]:
     """Declare a setting staff can change at runtime, typed and validated.
 
@@ -187,9 +201,15 @@ def dynamic_setting[T](
         )
         limit = await MAX_ITEMS.get()
 
+    ``secret`` keeps its values out of the audit trail (which records that
+    it changed), the staff API, and ``flags settings``. They are still
+    stored in the table and its cache as they are.
+
     Declaring a key again replaces its definition.
     """
-    definition = DynamicSettingDefinition(key, type_, default, description)
+    definition = DynamicSettingDefinition(
+        key, type_, default, description, secret=secret
+    )
     _declared[key] = definition
     return definition
 

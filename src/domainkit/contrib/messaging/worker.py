@@ -78,7 +78,7 @@ from .registry import (
 )
 from .retry import Backoff, retryable
 from .settings import MessagingSettings
-from .tables import CANCELLED, DEAD, DEFAULT_QUEUE, DONE, PENDING, messages
+from .tables import BLANKED, CANCELLED, DEAD, DEFAULT_QUEUE, DONE, PENDING, messages
 
 if TYPE_CHECKING:
     from domainkit.http.ratelimit import Backend
@@ -806,7 +806,12 @@ class Worker:
         )
 
     async def _done(self, message: Claimed, follow_up: dict[str, Any] | None) -> None:
-        """Record ``message`` as done, and queue its chain's next step with it."""
+        """Record ``message`` as done, and queue its chain's next step with it.
+
+        Its arguments are blanked in the same statement: a finished message
+        keeps what operators need (its target, times, attempts), not what it
+        carried, such as a reset link in a mail.
+        """
         statement = (
             update(messages)
             .where(messages.c.id == message.id, messages.c.lock_id == message.lock_id)
@@ -815,6 +820,7 @@ class Worker:
                 lock_id=None,
                 status=DONE,
                 finished_at=dbclock.now(self.dialect),
+                payload={},
             )
         )
         async with self.engine.begin() as connection:
@@ -860,16 +866,22 @@ class Worker:
     ) -> str:
         """Schedule a retry, or dead-letter and report; return the outcome.
 
-        The delay comes from the task's ``backoff``, or ``MESSAGING``'s.
+        The delay comes from the task's ``backoff``, or ``MESSAGING``'s. A
+        ``sensitive`` task's arguments are blanked when it dies, with its
+        error recorded, and its headers say so (``BLANKED``).
         """
         exc = _without_input(exc)
         error = f"{type(exc).__name__}: {exc}"[:_ERROR_LENGTH]
         if permanent or message.attempts >= message.max_attempts:
+            blanked: dict[str, object] = {}
+            if spec is not None and spec.sensitive:
+                blanked = {"payload": {}, "headers": {**message.headers, BLANKED: True}}
             await self._release(
                 message,
                 status=DEAD,
                 finished_at=dbclock.now(self.dialect),
                 last_error=error,
+                **blanked,
             )
             logger.error(
                 "Dead-lettered %s %s after %d attempts",
