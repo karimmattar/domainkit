@@ -164,10 +164,9 @@ application's errors in the test. Clients from `client_for` and
 its database connections; the async ones share the test's. Both clients
 start each request with the context variables of the code that sends it,
 so a frozen clock reaches the application. WebSockets need the sync client
-(`client.websocket_connect`). The sync client carries the context through
-every method of the AnyIO portal that Starlette's client starts the
-application's work with, so it works with Starlette 1.8 through 1.10
-whichever of them a release uses.
+(`client.websocket_connect`). The sync client works with Starlette 1.8 to
+1.10: whichever of AnyIO's portal methods a release starts the
+application's work with, the request still sees the sender's context.
 
 Outside the fixtures, `TestClient(app)` and `AsyncTestClient(app)` work the
 same way; enter them with `with` and `async with` to run the lifespan.
