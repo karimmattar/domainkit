@@ -6,6 +6,21 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `map_imperatively` refuses an aggregate whose table has no `version`
+  column, with `ImproperlyConfigured` at startup naming the class, the
+  table, and the fix. Such a table got no optimistic locking at all, so
+  concurrent changes overwrote each other with no error: in the audit, 50
+  concurrent withdrawals from one account all answered 201 and 48 were
+  lost. Add `Column("version", Integer, nullable=False)` (with
+  `server_default="0"` in the migration, for existing rows), or pass
+  `versioned=False` to map the aggregate without optimistic locking on
+  purpose. This is a breaking change in a patch release, made because the
+  failure is silent; tables from `table_for`, the generators, and
+  domainkit's own apps all have the column (`docs/databases.md`,
+  "Versions"; ADR 0004) (FIN-77).
+
 ## [0.9.0] - 2026-10-22
 
 ### Added
