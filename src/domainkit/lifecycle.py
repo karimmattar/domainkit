@@ -187,6 +187,7 @@ async def close_resources(budget: Budget | None = None) -> None:
     """
     budget = budget or Budget.begin()
     await _close_all(_registered[Phase.DRAIN], budget.end(Phase.DRAIN))
+    caches.stop_computations()  # Said, not inferred: their callers compute alone.
     if stuck := await tasks.shutdown(budget.end(Phase.TASKS)):
         logger.error(
             "Background tasks still running at the end of their shutdown phase: %s",

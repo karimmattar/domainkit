@@ -354,6 +354,12 @@ class CacheConfig(BaseModel):
     """Seconds the cache is skipped after it fails, so requests do not each wait."""
     EARLY_RECOMPUTE: float = Field(default=1.0, ge=0)
     """How early ``get_or_set`` refreshes hot entries (XFetch's beta); 0 disables."""
+    COMPUTE_TIMEOUT: float | None = Field(default=30.0, gt=0, le=MAX_REQUEST_SECONDS)
+    """Seconds a shared ``get_or_set`` computation may run (at most an hour).
+
+    It goes on after its callers stop waiting, so a slow factory still fills
+    the cache; this bounds it. None leaves it unbounded, as before 0.9.1.
+    """
     TLS_CA: Path | None = None
     """CA bundle for ``rediss://``; default: the system's."""
     TLS_CERT: Path | None = None

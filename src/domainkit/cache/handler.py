@@ -129,6 +129,20 @@ class CacheHandler:
             replaced = self._replaced.pop(loop, [])
         await close_each([*current.values(), *replaced], Cache.close)
 
+    def stop_computations(self) -> list[asyncio.Task[bytes]]:
+        """Stop the running loop's cache computations, as shutdown does.
+
+        Callers still waiting compute their own value. Returns the tasks,
+        which the shutdown's ``tasks`` phase waits for.
+        """
+        loop = asyncio.get_running_loop()
+        with self._lock:
+            current = list(self._caches.get(loop, {}).values())
+            replaced = list(self._replaced.get(loop, []))
+        return [
+            task for cache in current + replaced for task in cache.stop_computations()
+        ]
+
     def reset(self) -> None:
         """Forget every memory entry of the process (between tests)."""
         with self._lock:

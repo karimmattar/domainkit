@@ -74,7 +74,8 @@ under them (CONC-05).
 - `spawn(..., deadline=...)` carries a deadline into the clean context,
   besides the frozen clock: the task's transactions and outgoing calls are
   bounded by it, and no timer of the task's own enforces it. Cache
-  computations pass their owner's (ADR 0071).
+  computations that borrow their caller's resources pass that caller's
+  (ADR 0071).
 - `adopt(task)` owns a task started some other way. A close cut off at the
   end of its phase (`lifecycle`, `close_each`, `close_in_turn`) is
   adopted, so the `tasks` phase waits for it to end.

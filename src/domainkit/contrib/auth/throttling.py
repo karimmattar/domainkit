@@ -19,9 +19,11 @@ count (Redis is down) is refused with 503 rather than let through.
 
 import hashlib
 import math
+import threading
 import unicodedata
 from collections import OrderedDict
 from collections.abc import Iterable
+from typing import Final
 
 from fastapi import Request, status
 
@@ -207,13 +209,24 @@ def first_refusal(request: Request, key: str, period: int) -> bool:
     return True
 
 
+_making_limiter: Final = threading.Lock()
+"""Held to make an application's attempt counter: loops on threads ask at once."""
+
+
 def limiter(request: Request) -> Backend:
-    """The application's attempt counter (``RATE_LIMIT_BACKEND``), made once."""
+    """The application's attempt counter (``RATE_LIMIT_BACKEND``), made once.
+
+    Loops on two threads that ask at once get the same counter, so a memory
+    counter sees every attempt.
+    """
     state = request.app.state
     counter: Backend | None = getattr(state, "login_limiter", None)
     if counter is None:
-        counter = import_string(settings.RATE_LIMIT_BACKEND)()
-        state.login_limiter = counter
+        with _making_limiter:
+            counter = getattr(state, "login_limiter", None)
+            if counter is None:
+                counter = import_string(settings.RATE_LIMIT_BACKEND)()
+                state.login_limiter = counter
     return counter
 
 

@@ -5,17 +5,24 @@ import inspect
 import re
 from collections.abc import AsyncIterator, Iterator
 from datetime import timedelta
-from typing import Annotated, Any, Final
+from typing import Annotated, Any, Final, get_type_hints
 
 import pytest
-from fastapi import Depends, FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request, Response, Security
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from starlette.authentication import AuthCredentials
 
 from domainkit.cache import cache_page, caches
 from domainkit.cache.core import COMPUTE_TASK
-from domainkit.cache.pages import REQUEST, RESPONSE, _matches, _signature, _user
+from domainkit.cache.pages import (
+    REQUEST,
+    RESPONSE,
+    _matches,
+    _signature,
+    _takes_dependencies,
+    _user,
+)
 from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.auth.authentication import Credentials
@@ -559,3 +566,67 @@ async def test_a_request_cut_off_during_a_miss_returns_its_connection() -> None:
     finally:
         release.set()
         await connections.close_all()
+
+
+@pytest.mark.anyio
+async def test_a_page_without_dependencies_is_cached_after_its_caller_left() -> None:
+    """Its computation borrows nothing, so it goes on and fills the cache.
+
+    A page slower than one request's deadline heals instead of failing
+    every request.
+    """
+    app = FastAPI()
+    started, release = asyncio.Event(), asyncio.Event()
+    computed: list[str] = []
+
+    @app.get("/report")
+    @cache_page(ttl=60)
+    async def report(month: int = 1) -> dict[str, int]:
+        computed.append("report")
+        started.set()
+        await release.wait()
+        return {"month": month}
+
+    async with AsyncTestClient(app, lifespan=False) as client:
+        asking = asyncio.create_task(client.get("/report"))
+        async with asyncio.timeout(30):
+            await started.wait()
+        (computing,) = {t for t in owned() if t.get_name() == COMPUTE_TASK}
+        asking.cancel()
+        await asyncio.wait([asking], timeout=30)
+        release.set()
+        await asyncio.wait([computing], timeout=30)
+        later = await client.get("/report")
+
+    assert asking.cancelled()
+    assert later.json() == {"month": 1}
+    assert computed == ["report"]  # Served from the entry the computation stored.
+
+
+async def _session() -> AsyncIterator[str]:
+    yield "session"
+
+
+def test_pages_borrow_only_when_a_parameter_is_a_dependency() -> None:
+    """Dependencies belong to the request; plain values and the request do not."""
+
+    async def plain(request: Request, month: int = 1) -> int:
+        return month
+
+    async def by_default(session: str = Depends(_session)) -> int:
+        return 1
+
+    async def annotated(session: Annotated[str, Depends(_session)]) -> int:
+        return 1
+
+    async def secured(session: Annotated[str, Security(_session)]) -> int:
+        return 1
+
+    def borrows(endpoint: Any) -> bool:  # noqa: ANN401 - any endpoint.
+        hints = get_type_hints(endpoint, include_extras=True)
+        return _takes_dependencies(_signature(endpoint, hints))
+
+    assert not borrows(plain)
+    assert borrows(by_default)
+    assert borrows(annotated)
+    assert borrows(secured)

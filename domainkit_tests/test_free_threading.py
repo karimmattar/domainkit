@@ -4,9 +4,9 @@ Free-threaded Python (3.14t), and servers that run a loop per thread, share
 one rate limiter, one middleware, one hashing pool, one application's live
 connection slots, the event bus, an HTTP client's circuit breaker, the
 guard's lookup threads and its owners' shares, a throttled log's counts,
-the remembered client addresses, the handles of
-the request metrics, the principal cache, and the grants principals share
-between threads, an application's throttle backend, and the registries
+the remembered client addresses, the handles of the request metrics, the
+principal cache, and the grants principals share between threads, an
+application's throttle backend and attempt counter, and the registries
 that keep each loop's tasks, publishers, brokers, and caches. Each test
 drives them from several threads at once and checks what must always
 hold, and that the state is only touched with the lock held (where there
@@ -34,7 +34,7 @@ from weakref import WeakKeyDictionary
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from starlette.datastructures import State
-from starlette.requests import HTTPConnection
+from starlette.requests import HTTPConnection, Request
 from starlette.types import Message, Receive, Scope, Send
 
 from domainkit import clock as clock_module
@@ -43,7 +43,7 @@ from domainkit.broker import Broker, BrokerHandler, MemoryBroker
 from domainkit.cache import CacheHandler, Store
 from domainkit.conf import CacheConfig, DatabaseConfig, override_settings
 from domainkit.contrib.audit import personal
-from domainkit.contrib.auth import AllowAny, principals
+from domainkit.contrib.auth import AllowAny, principals, throttling
 from domainkit.contrib.auth import middleware as middleware_module
 from domainkit.contrib.auth.hashers import HashingPool
 from domainkit.contrib.auth.middleware import AuthenticationMiddleware
@@ -595,6 +595,50 @@ def test_a_throttle_backend_made_meanwhile_is_the_one_used() -> None:
     )
 
     assert ratelimit._app_backend(connection) is made
+
+
+class CheckedLoginState(State):
+    """An application's state, whose attempt counter is set only under the lock."""
+
+    def __setattr__(self, name: str, value: Any) -> None:  # noqa: ANN401 - any state.
+        """Set ``name``; the attempt counter only with its lock held."""
+        if name == "login_limiter":
+            assert throttling._making_limiter.locked()
+        super().__setattr__(name, value)
+
+
+class RacedLoginState:
+    """An application's state where another thread makes the counter first."""
+
+    def __init__(self, made: MemoryBackend) -> None:
+        """Have ``made`` appear after the first look."""
+        self.looks = 0
+        self.made = made
+
+    @property
+    def login_limiter(self) -> MemoryBackend | None:
+        """None the first time; the other thread's counter after."""
+        self.looks += 1
+        return None if self.looks == 1 else self.made
+
+
+def test_first_login_attempts_on_every_thread_share_one_counter() -> None:
+    """Two attempt counters for one application would each allow the limit."""
+    CountedBackend.made.clear()
+    request = Request(
+        {"type": "http", "app": SimpleNamespace(state=CheckedLoginState())}
+    )
+
+    with override_settings(RATE_LIMIT_BACKEND=f"{__name__}.CountedBackend"):
+        found = on_threads(lambda _: throttling.limiter(request))
+
+    assert all(made is found[0] for made in found)
+    assert CountedBackend.made == [found[0]]
+    made = MemoryBackend()
+    raced = Request(
+        {"type": "http", "app": SimpleNamespace(state=RacedLoginState(made))}
+    )
+    assert throttling.limiter(raced) is made  # The winner's, not a second one.
 
 
 class CountedBackend(MemoryBackend):

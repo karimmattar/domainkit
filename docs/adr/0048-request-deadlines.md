@@ -120,4 +120,7 @@ would (audit CONC-03). It now runs each message in `deadlines.timeout` of
 its timeout: a task's transactions lower `statement_timeout` to the time
 left and its outgoing calls keep to it, and a timeout still raises
 `TimeoutError`, retried as before. A shared cache computation works under
-the deadline of the caller that started it (ADR 0071).
+a deadline of its own, the cache's `COMPUTE_TIMEOUT`, so no caller's
+deadline fails the others; one that borrows its caller's resources works
+under that caller's deadline, whose failures reach only that caller
+(ADR 0071).

@@ -310,34 +310,61 @@ That is the worst case, not one recomputation per request.
 
 ### What a factory may use
 
-The computation runs the factory of the caller that started it, its
-*owner*, and is bound to that caller (ADR 0071):
+A computation serves every caller waiting for its key, so by default it
+belongs to none of them (ADR 0071):
 
-- **It never outlives its owner's wait.** When the owner is cancelled
-  (its deadline passed, its client went away), the computation is
-  cancelled, and the owner's cancellation goes on only once the factory
-  has stopped. So a factory may use what its caller holds and releases on
-  the way out: the session of the caller's unit of work, the dependencies
-  FastAPI resolved for a `@cache_page` endpoint. Nothing runs on them
-  after the caller closed them, and no connection is left checked out.
-- **The others start again.** Callers still waiting for that key share a
-  new computation, started by one of them with its own factory, so they
-  never get a result made with resources that are gone. A caller that
-  stops waiting without having started the computation leaves it running
-  for the others.
-- **It runs under its owner's deadline** (`domainkit.deadlines`): its
-  transactions lower `statement_timeout` to the time left, and its
-  outgoing calls through `domainkit.http.client` are bounded by it. The
-  owner's timer cuts it off, through the owner.
-- **Shutdown and `close()` stop it**, as before; callers still waiting
-  then compute their own value, without the cache.
+- **It goes on when its callers stop waiting.** A caller cut off by its
+  deadline, or whose client went away, stops waiting; the computation
+  runs on, stores its value, and later requests are served from the
+  cache. A factory slower than one request's deadline still fills the
+  cache, so a slow upstream heals instead of failing every request.
+- **It has a deadline of its own**, the cache's `COMPUTE_TIMEOUT` (30
+  seconds by default, `None` for none): its transactions lower
+  `statement_timeout` to the time it has left, and its outgoing calls
+  through `domainkit.http.client` are bounded by it. No caller's deadline
+  reaches it, so one short request never fails the others: when it runs
+  out, every caller waiting gets the same `TimeoutError`.
+- **So the factory must use nothing a caller holds and releases**: not the
+  session of the caller's unit of work, not a client the request closes.
+  It opens what it needs (`async with ReportsUnitOfWork() as uow: ...`)
+  and takes values as arguments. `@cached` functions take only JSON
+  values, so they keep to this already.
+
+A factory that does use what its caller holds says so with
+`borrows=True`. `@cache_page` does it for you when the endpoint takes a
+dependency (`Depends`, `Security`), such as a unit of work:
+
+```python
+async with ReportsUnitOfWork() as uow:
+    report = await caches["default"].get_or_set(
+        f"report:{month}", lambda: uow.reports.month(month), Report, borrows=True
+    )
+```
+
+A computation that borrows is bound to the caller that started it, its
+*owner*:
+
+- **It never outlives its owner's wait.** When the owner is cancelled, the
+  computation is cancelled, and the owner's cancellation goes on only once
+  the factory has stopped. Nothing runs on the owner's session after it
+  closed it, and no connection is left checked out.
+- **It runs under the owner's deadline**, which the owner's timer enforces.
+- **What is the owner's stays the owner's.** When the owner is cancelled,
+  or its deadline makes the factory fail (a `TimeoutError`, or any error
+  once the owner's deadline has passed), the callers still waiting do not
+  get that: they share a new computation, started by one of them with
+  its own factory, under its own deadline. Other errors reach every
+  waiting caller, as for any computation.
+- It stores nothing once its owner is gone, so a factory slower than
+  its callers' deadlines never fills the cache: give such pages and
+  factories their own unit of work instead of borrowing.
 
 A factory must not hand what it borrowed to anything that outlives the
 call: a task it starts and does not await, or the value it returns (which
-is stored as JSON, so it holds data, never a session). Work that should go
-on after the caller has gone belongs in a task of its own
-([runtime.md](runtime.md#background-tasks-spawn-and-supervise)) or the
-outbox.
+is stored as JSON, so it holds data, never a session).
+
+Shutdown and `close()` stop every computation, and say so: callers still
+waiting then compute their own value, without the cache.
 
 Computations are background tasks of their event loop
 (`domainkit.tasks.spawn`). At shutdown they are cancelled before caches,

@@ -90,8 +90,9 @@ A cached value is shared by every caller of its key, so its factory must
 not depend on who asked: pass what it needs as arguments, and make them
 part of the key. `@cache_page` keys entries by user and language, so it runs
 the endpoint as the caller, in a copy of the caller's context, inside the
-clean computation. A computation carries the deadline of the caller that
-started it, and never outlives that caller's wait
+clean computation. A computation has a deadline of its own, the cache's
+`COMPUTE_TIMEOUT`; one that borrows its caller's resources is bound to
+that caller and its deadline instead
 ([cache.md](cache.md#what-a-factory-may-use)).
 
 ## Shutting down within a budget
@@ -720,8 +721,9 @@ timers that cancel work run on the event loop's own clock.
 - **Worker tasks.** The messaging worker runs each message under a
   deadline of its timeout (the task's `timeout`, or `TASK_TIMEOUT`), so a
   task's transactions and outgoing calls keep to it as a request's do.
-- **Cache computations** run under the deadline of the caller that started
-  them ([cache.md](cache.md#what-a-factory-may-use)).
+- **Cache computations** run under the cache's `COMPUTE_TIMEOUT`, or,
+  when they borrow their caller's resources, under that caller's deadline
+  ([cache.md](cache.md#what-a-factory-may-use)).
 - **Ledgers and caches** keep their own `TIMEOUT`: a request's call to
   either is cancelled at the deadline like anything else it awaits, and
   the request answers 503. Code of your own can bound one await by both,

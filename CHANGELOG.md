@@ -34,6 +34,10 @@ All notable changes to domainkit. The format follows
   caller's deadline, and `domainkit.tasks.adopt(task)` makes a task
   started some other way owned, so the shutdown waits for it (CONC-02,
   CONC-05).
+- `CACHES[...]["COMPUTE_TIMEOUT"]` (30 seconds, at most an hour, `None`
+  for none) bounds a shared `get_or_set` computation, and
+  `get_or_set(..., borrows=True)` binds one to the caller whose resources
+  its factory uses (CONC-02; ADR 0071).
 
 ### Changed
 
@@ -134,17 +138,21 @@ All notable changes to domainkit. The format follows
   traceback, rather than a 500 and a new round for every probe (WEB-12).
 - The admin API tidies a new user's `fields` with the model's
   `clean_field`, as it does a change (AUTH-13).
-- A `get_or_set`, `@cached`, or `@cache_page` caller cut off during a
-  miss (its deadline passed, its client went away) no longer leaves its
-  computation running on what it closed: the computation runs the factory
-  of the caller that started it, is cancelled with that caller, and the
-  caller's cancellation goes on only once the factory has stopped. A
-  `@cache_page` endpoint that takes a unit of work, or a factory that uses
-  its caller's session, no longer leaks a pooled connection per cut-off
-  request. Callers still waiting share a new computation of their own;
-  computations run under the deadline of the caller that started them,
-  so their statements and outgoing calls keep to it. `docs/cache.md` says
-  what a factory may use (CONC-02; ADR 0071).
+- A `@cache_page` endpoint that takes a dependency (a unit of work)
+  no longer leaks a pooled connection when its request is cut off during
+  a miss: its computation borrows the request's resources, so it is
+  cancelled with the request, which goes on only once the endpoint has
+  stopped. A `get_or_set` factory that uses its caller's session says so
+  with `borrows=True` and gets the same. Callers still waiting on such a
+  computation share one of their own, and never get an error its owner's
+  deadline caused. Other computations go on when their callers stop
+  waiting, as in 0.9.0, so a factory slower than one request still fills
+  the cache; they are now bounded by the cache's `COMPUTE_TIMEOUT` (30
+  seconds), which their statements and outgoing calls keep to.
+  `docs/cache.md` says what a factory may use (CONC-02; ADR 0071).
+- The login attempt counter (`AUTH` throttling) is made once per
+  application when event loops on several threads see their first
+  attempts at once, so a memory counter sees every attempt (SEC-r3-3).
 - Event loops on several threads (free-threaded Python, a loop per
   thread) looking up a memory cache for the first time at once get one
   store per alias, and an application's throttle backend is made once:

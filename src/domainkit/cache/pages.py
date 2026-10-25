@@ -35,11 +35,12 @@ import json
 from collections.abc import Awaitable, Callable, Sequence
 from contextvars import copy_context
 from functools import update_wrapper
-from typing import Any, Final, get_type_hints
+from typing import Annotated, Any, Final, get_args, get_origin, get_type_hints
 
-from fastapi import Request, Response, status
+from fastapi import Request, Response, params, status
 from pydantic_core import to_json
 
+from domainkit import deadlines
 from domainkit.cache.core import DEFAULT_TTL, TTL, adapter
 from domainkit.cache.handler import caches
 from domainkit.conf import DEFAULT_CACHE_ALIAS
@@ -90,6 +91,7 @@ def cache_page(
             )
         prefix = name or f"{endpoint.__module__}.{endpoint.__qualname__}"
         signature = _signature(endpoint, hints)
+        borrows = _takes_dependencies(signature)
         request_name = _parameter_of(signature, Request)
         response_name = _parameter_of(signature, Response)
 
@@ -111,14 +113,18 @@ def cache_page(
             async def compute() -> Any:  # noqa: ANN401 - the endpoint's.
                 # Computations run in a clean context; the endpoint runs as
                 # the caller, whose user and language the key holds, so every
-                # caller sharing the entry shares them.
+                # caller sharing the entry shares them, under the
+                # computation's deadline, not the caller's.
+                caller.run(deadlines._current.set, deadlines.current_deadline())
                 result = await asyncio.get_running_loop().create_task(
                     endpoint(*args, **kwargs), context=caller
                 )
                 # Typed now, so fields the return type leaves out are not cached.
                 return adapter(returns).validate_python(result, from_attributes=True)
 
-            value = await caches[cache].get_or_set(key, compute, returns, ttl)
+            value = await caches[cache].get_or_set(
+                key, compute, returns, ttl, borrows=borrows
+            )
             etag = f'W/"{hashlib.sha256(to_json(value)).hexdigest()[:32]}"'
             control = "private" if vary_on_user else "public"
             answer = {
@@ -220,6 +226,23 @@ def _signature(endpoint: Endpoint, hints: dict[str, Any]) -> inspect.Signature:
         parameters=[*fixed, *added, *variadic],
         return_annotation=hints.get("return", signature.return_annotation),
     )
+
+
+def _takes_dependencies(signature: inspect.Signature) -> bool:
+    """Whether FastAPI resolves a parameter of the endpoint with a dependency.
+
+    A dependency (a unit of work, a client) belongs to the request, which
+    closes it when it ends, so the computation must end with the request
+    (``get_or_set(..., borrows=True)``). Query, path and header values, the
+    request, and the response are data the computation may keep using.
+    """
+    for parameter in signature.parameters.values():
+        markers = [parameter.default]
+        if get_origin(parameter.annotation) is Annotated:
+            markers += get_args(parameter.annotation)[1:]
+        if any(isinstance(marker, params.Depends) for marker in markers):
+            return True
+    return False
 
 
 def _parameter_of(signature: inspect.Signature, kind: type) -> str:
