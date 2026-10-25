@@ -213,9 +213,9 @@ All notable changes to domainkit. The format follows
   too: `LOGIN_RATE` wrong passwords a minute for a username, from any
   addresses, keep its user out with 429, and as many from one address keep
   everyone behind it out, as in 0.9.0; a stored per-account lockout is
-  planned for 0.10 (`docs/auth.md`, "Logging in and out"). Wrong codes count against
-  `AUTH.MFA.RATE` per user and, at `/mfa/login`, against the new
-  `AUTH.MFA.ADDRESS_RATE` (60 an hour) per client address, only once the
+  planned for 0.10 (`docs/auth.md`, "Logging in and out"). Wrong codes
+  count against `AUTH.MFA.RATE` per user and, at `/mfa/login`, against the
+  new `AUTH.MFA.ADDRESS_RATE` (60 an hour) per client address, only once the
   challenge holds: `MFA.RATE` used to count every check per address, so
   one address had ten second-factor logins an hour in all. Challenges and
   reset, verification, and signup links that do not hold count against
