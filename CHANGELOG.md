@@ -6,6 +6,19 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Every package domainkit imports is declared, so that pip knows what it
+  needs: `anyio` and `pydantic-core` in the dependencies, `aiormq` in the
+  `rabbitmq` extra, `httpcore2` in `httpclient`, and `grpcio` and `ecdsa`
+  in `immudb`. Starlette, pydantic, aio-pika, httpx2, and immudb-py
+  already installed each of them, and still do at the same versions:
+  nothing new is installed. The `testing` extra needs anyio 4.12 or
+  later, the first whose pytest plugin runs `@pytest.mark.anyio` tests
+  only on the event loops installed; with 4.10 or 4.11, a new project's
+  async test failed on trio. CI's lint job runs deptry so that an
+  undeclared import fails it (INFRA-04).
+
 ## [0.9.1] - 2026-10-25
 
 ### Added

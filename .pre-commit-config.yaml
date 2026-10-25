@@ -36,3 +36,9 @@ repos:
         language: system
         types_or: [python, pyi]
         pass_filenames: false
+      - id: deptry
+        name: deptry
+        entry: poetry run deptry .
+        language: system
+        files: ^(pyproject\.toml|src/.*\.py)$
+        pass_filenames: false
