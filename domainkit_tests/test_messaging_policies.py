@@ -3,14 +3,16 @@
 import asyncio
 import json
 import math
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
 import pytest
 from prometheus_client import REGISTRY
-from sqlalchemy import update
+from sqlalchemy import text, update
 
+from domainkit import deadlines
 from domainkit.broker import MemoryBroker
 from domainkit.conf import override_settings
 from domainkit.context import RequestContext, bind_request, current_request
@@ -97,6 +99,22 @@ async def patient(seconds: float) -> None:
     """Sleep longer than TASK_TIMEOUT, within the task's own."""
     await asyncio.sleep(seconds)
     ran.append("patient")
+
+
+@task(name="tests.bounded", timeout=0.5, max_attempts=1)
+async def bounded() -> None:
+    """Record the deadline the task runs under, and its statements' timeout."""
+    shown = None
+    async with NotesUnitOfWork() as uow:
+        if connections.engine().dialect.name == "postgresql":
+            shown = await uow.session.scalar(text("SHOW statement_timeout"))
+    ran.append(("bounded", deadlines.remaining(), deadlines.enforced(), shown))
+
+
+@task(name="tests.unbounded", max_attempts=1)
+async def unbounded() -> None:
+    """Record the deadline the task runs under: ``TASK_TIMEOUT``'s."""
+    ran.append(("unbounded", deadlines.remaining(), deadlines.enforced(), None))
 
 
 @task(name="tests.low", priority=-10)
@@ -384,6 +402,32 @@ async def test_a_task_runs_under_its_own_timeout() -> None:
     statuses = {row["target"]: row["status"] for row in await rows()}
     assert statuses == {"tests.quick": DEAD, "tests.patient": DONE}
     assert ran == ["patient"]
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_task_runs_under_a_deadline_of_its_timeout() -> None:
+    """What a task waits on is bounded by the time it has left.
+
+    Its statements' ``statement_timeout`` (on PostgreSQL) and outgoing calls
+    see the deadline, as in a request, and its own timer enforces it.
+    """
+    await enqueue(bounded)
+    await enqueue(unbounded)
+
+    await Worker().run_once()
+
+    statuses = {row["target"]: row["status"] for row in await rows()}
+    assert statuses == {"tests.bounded": DONE, "tests.unbounded": DONE}
+    seen = {name: rest for name, *rest in ran}
+    for name, timeout in (("bounded", 0.5), ("unbounded", FAST["TASK_TIMEOUT"])):
+        left, enforced, _ = seen[name]
+        assert isinstance(left, float)
+        assert 0 < left <= timeout
+        assert enforced is True
+    shown = seen["bounded"][2]
+    if shown is not None:  # PostgreSQL: SET LOCAL from the deadline.
+        assert re.fullmatch(r"\d+ms", shown)
+        assert 0 < int(shown.removesuffix("ms")) <= 500
 
 
 @pytest.mark.usefixtures("messaging")

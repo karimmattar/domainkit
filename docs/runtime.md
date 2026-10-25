@@ -737,7 +737,10 @@ Retry-After: 1
   refusals by `reason` (`queue_full`, `queue_timeout`).
 - List it right after `DeadlineMiddleware` (the wait counts against the
   deadline) and before `AuthenticationMiddleware`, so a refused request
-  costs no database lookup. Both are in `DEFAULT_MIDDLEWARE` and in the
+  costs no database lookup. A request whose deadline passes while it waits
+  in the queue is answered 503 `deadline_exceeded`, and counted and logged
+  as shed (`queue_timeout`) too, since it never got a slot. Queueing,
+  refusing, and leaving the queue cost the same however long it is. Both are in `DEFAULT_MIDDLEWARE` and in the
   settings `init` writes; `check` warns in staging and production when
   either is missing.
 

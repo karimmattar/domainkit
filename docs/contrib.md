@@ -316,6 +316,9 @@ async def push_invoice(invoice_id: UUID) -> None:
   every error is retried. A run past its timeout raises `TimeoutError`.
 - **Timeouts** must stay under `VISIBILITY_TIMEOUT`, or the worker refuses
   to start: a claim that ends while the task still runs would run it twice.
+  A run's timeout is its deadline (`domainkit.deadlines`): on PostgreSQL its
+  transactions lower `statement_timeout` to the time left, and its calls
+  through `domainkit.http.client` are bounded by it, as in a request.
 - **Priorities** order the due messages of a queue: higher first, then the
   oldest. They do not reorder queues; give urgent work a queue of its own.
   On a broker, the relay publishes each round in priority order, but

@@ -48,7 +48,7 @@ from sqlalchemy import delete, or_, select, update
 from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from domainkit import clock
+from domainkit import clock, deadlines
 from domainkit.apps import registry
 from domainkit.broker import Broker, BrokerError
 from domainkit.conf import settings
@@ -748,7 +748,9 @@ class Worker:
                     "The worker stopped during the last attempt (a crash, "
                     "or a kill before TASK_TIMEOUT)."
                 )
-            async with asyncio.timeout(timeout):
+            # A deadline, not only a timer: the task's statements and outgoing
+            # calls are bounded by the time it has left (statement_timeout).
+            async with deadlines.timeout(timeout):
                 result = await self._execute(message)
             follow_up = self._follow_up(message, result)
         except Exception as exc:  # noqa: BLE001 - logged and retried by _failed.

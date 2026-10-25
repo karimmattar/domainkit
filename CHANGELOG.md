@@ -25,6 +25,11 @@ All notable changes to domainkit. The format follows
   a loop could keep a private store that never saw the others' writes,
   invalidations, or `caches.reset()`, and a second memory throttle
   backend let each route's limit through twice (CONC-01).
+- Messaging tasks and durable handlers run under a deadline of their
+  timeout, as the `deadlines` module said: on PostgreSQL their
+  transactions lower `statement_timeout` to the time left, and their
+  calls through `domainkit.http.client` are bounded by it. A run past its
+  timeout still raises `TimeoutError` (CONC-03).
 
 ## [0.9.0] - 2026-10-22
 
