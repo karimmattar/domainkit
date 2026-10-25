@@ -630,6 +630,17 @@ async def _opens(session: Annotated[str, Depends(_session)]) -> str:
     return session
 
 
+def _sync_session() -> Iterator[str]:
+    yield "session"
+
+
+REFUSED: Final = (
+    r"^@cache_page\(borrows=False\) cannot run an endpoint whose dependencies "
+    r"hold a resource \(a dependency with yield\): its computation would use "
+    r"it after the request closed it\.$"
+)
+
+
 def test_detached_pages_refuse_dependencies_that_hold_a_resource() -> None:
     """``borrows=False`` cannot run an endpoint that uses what the request closes.
 
@@ -658,6 +669,9 @@ def test_detached_pages_refuse_dependencies_that_hold_a_resource() -> None:
     async def instance(session: Annotated[str, Depends(Held())]) -> int:
         return 1
 
+    async def synchronous(session: Annotated[str, Depends(_sync_session)]) -> int:
+        return 1
+
     async def plain(
         request: Request,
         kept: Annotated[Plain, Depends()],
@@ -667,8 +681,9 @@ def test_detached_pages_refuse_dependencies_that_hold_a_resource() -> None:
     ) -> int:
         return month
 
-    for endpoint in (by_default, annotated, secured, documented, beneath, instance):
-        with pytest.raises(TypeError, match=r"borrows=False\) cannot run"):
+    held = (by_default, annotated, secured, documented, beneath, instance, synchronous)
+    for endpoint in held:
+        with pytest.raises(TypeError, match=REFUSED):
             cache_page(borrows=False)(endpoint)
         cache_page()(endpoint)  # Borrowing, the default, takes them all.
     cache_page(borrows=False)(plain)  # Values, the request, a class: nothing held.
@@ -689,6 +704,16 @@ def test_requests_see_dependencies_with_yield_beneath_the_routes() -> None:
     async def holds() -> int:
         return 1
 
+    async def beneath_plain(nothing: Annotated[None, Depends(plain)]) -> None:
+        return None
+
+    # The last is looked at first; the one before it still is, after.
+    @app.get(
+        "/first", dependencies=[Depends(_open_unit_of_work), Depends(beneath_plain)]
+    )
+    async def first() -> int:
+        return 1
+
     @app.get("/free", dependencies=[Depends(plain)])
     async def free() -> int:
         return 1
@@ -699,7 +724,9 @@ def test_requests_see_dependencies_with_yield_beneath_the_routes() -> None:
         return _route_holds(Request(scope))
 
     assert holds_on("/holds")
+    assert holds_on("/first")
     assert not holds_on("/free")
+    assert not _route_holds(Request({"type": "http"}))  # Not routed (yet).
 
 
 async def _open_unit_of_work(request: Request) -> AsyncIterator[None]:
