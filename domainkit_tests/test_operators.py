@@ -3,6 +3,7 @@
 import getpass
 import io
 import logging
+import os
 from collections.abc import Iterator
 from importlib import import_module
 from typing import Final
@@ -15,7 +16,7 @@ from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.context import current_request
 from domainkit.db import connections
-from domainkit.management import BaseCommand, CommandError, call_command
+from domainkit.management import BaseCommand, CommandError, call_command, operators
 from domainkit.management.commands.flush import Command as FlushCommand
 from domainkit.management.operators import (
     Operator,
@@ -78,32 +79,99 @@ def test_operator_names_are_checked_without_being_quoted(name: str) -> None:
     )
 
 
-def test_a_bad_variable_or_user_name_says_where_it_came_from(
+ARBITRARY_UID: Final = 1000870000
+"""A uid as OpenShift assigns one: no passwd entry, no name."""
+
+
+def test_a_bad_variable_is_refused_and_says_where_it_came_from(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The message names ``DOMAINKIT_OPERATOR`` or the system user."""
-    monkeypatch.setattr(getpass, "getuser", lambda: "Domain Users\\x")
-    with pytest.raises(CommandError, match=r"^The operator from the system user name"):
-        operator()
+    """``DOMAINKIT_OPERATOR`` is the operator's own word: a bad one is refused."""
     monkeypatch.setenv("DOMAINKIT_OPERATOR", "a b")
     with pytest.raises(CommandError, match=r"^The operator from DOMAINKIT_OPERATOR"):
         operator()
 
 
-def test_without_any_name_the_operator_must_be_given(
+@pytest.mark.parametrize("login", ["Domain Users\\x", "two words", "", "-x"])
+def test_a_login_name_no_operator_could_have_is_the_process_uid(
+    login: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A system name ``OPERATOR`` refuses is replaced, never refused nor kept.
+
+    The command runs as ``uid-<n>``, and the source says ``system``: the
+    trail shows that nobody gave a name.
+    """
+    monkeypatch.setattr(getpass, "getuser", lambda: login)
+    monkeypatch.setattr(os, "getuid", lambda: ARBITRARY_UID)
+
+    assert operator() == Operator(f"uid-{ARBITRARY_UID}", "system")
+
+
+def nameless() -> str:
+    """``getpass.getuser`` for a uid with no name and no LOGNAME or USER."""
+    raise OSError("No username set in the environment")
+
+
+def test_a_process_without_a_name_runs_as_its_uid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A process whose user has no name (a bare container) must say who runs it."""
-
-    def nameless() -> str:
-        raise OSError("No username set in the environment")
-
+    """A container under an arbitrary uid runs as it; with no uids, ``unnamed``."""
     monkeypatch.setattr(getpass, "getuser", nameless)
-    with pytest.raises(CommandError, match=r"^Name the operator who runs"):
-        operator()
-    monkeypatch.setattr(getpass, "getuser", lambda: "")
-    with pytest.raises(CommandError, match=r"^Name the operator who runs"):
-        operator()
+    monkeypatch.setattr(os, "getuid", lambda: ARBITRARY_UID)
+
+    assert operator() == Operator(f"uid-{ARBITRARY_UID}", "system")
+    assert operator().actor == f"operator:uid-{ARBITRARY_UID}"
+    monkeypatch.delattr(os, "getuid")
+    assert operator() == Operator("unnamed", "system")
+    assert operator("ops") == Operator("ops", "option")
+
+
+@pytest.fixture
+def nameless_container(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No passwd entry for the uid, and none of the variables naming a user."""
+    for name in ("LOGNAME", "USER", "LNAME", "USERNAME"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(getpass, "getuser", nameless)
+    monkeypatch.setattr(os, "getuid", lambda: ARBITRARY_UID)
+
+
+@pytest.mark.usefixtures("auth_project", "nameless_container")
+def test_unattended_commands_run_in_a_nameless_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cron and entrypoint commands that ran in 0.9.0 still run there.
+
+    ``cleartokens`` from cron, ``createsuperuser --noinput`` from an
+    entrypoint, and ``partitions --prune``, whose action is recorded as
+    the uid's, from ``system``.
+    """
+    recorded: list[tuple[str, str, str]] = []
+
+    async def record(
+        who: Operator, action: str, outcome: str, details: dict[str, object]
+    ) -> None:
+        recorded.append((who.actor, who.source, action))
+
+    monkeypatch.setattr(operators, "_record", record)
+    out = io.StringIO()
+
+    call_command("cleartokens", stdout=out)
+    call_command(
+        "createsuperuser",
+        "--noinput",
+        "--username",
+        "ops",
+        "--email",
+        "ops@example.com",
+        stdout=out,
+    )
+    call_command("partitions", "--prune", stdout=out)
+
+    assert out.getvalue().splitlines()[:2] == [
+        "Deleted 0 expired token(s).",
+        "Superuser created successfully.",
+    ]
+    assert recorded == [(f"operator:uid-{ARBITRARY_UID}", "system", "partitions.prune")]
 
 
 def test_commands_run_as_their_operator() -> None:

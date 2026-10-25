@@ -350,9 +350,13 @@ All notable changes to domainkit. The format follows
   `flags`, and `webhooks`. Their audit rows (`auth.mfa_disabled`,
   `auth.token_created`, `flags.flag_changed`, ...) name the operator
   instead of `system`, and `webhooks replay` is recorded as
-  `operator.webhooks.replay`; their listings record nothing. Each of them
-  now needs a name: in a container whose user has none, set
-  `DOMAINKIT_OPERATOR`, for `cleartokens` from cron too (N8, DATA-07,
+  `operator.webhooks.replay`; their listings record nothing. Every one of
+  these commands still runs unattended where 0.9.0 ran it: a process
+  whose user has no name, or none an operator may have (a container under
+  an arbitrary uid, from cron or an entrypoint; a Windows domain account),
+  runs as `operator:uid-<n>`, its user id, recorded with the source
+  `system`. Only a bad `--operator` or `DOMAINKIT_OPERATOR` is refused.
+  0.10 may require a name in staging and production (N8, DATA-07,
   SEC-r2-2; ADR 0070).
 - Changing a webhook subscription's URL is audited with the new host and
   the one before (`SubscriptionChanged.host`, `previous_host`), never the

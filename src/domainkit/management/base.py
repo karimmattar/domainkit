@@ -60,7 +60,7 @@ class BaseCommand:
                 "--operator",
                 metavar="NAME",
                 help="who runs this, for the audit trail (default: "
-                "$DOMAINKIT_OPERATOR, else your login name)",
+                "$DOMAINKIT_OPERATOR, else your login name, else uid-<n>)",
             )
         return parser
 

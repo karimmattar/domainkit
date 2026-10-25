@@ -958,13 +958,21 @@ The operator is, in this order:
 3. the login name `getpass.getuser()` reports: the `LOGNAME`, `USER`,
    `LNAME`, or `USERNAME` environment variable, else the name of the
    process's user id. Whoever runs the command can set any of these, so
-   this names the operator no better than the other two.
+   this names the operator no better than the other two;
+4. without a login name an operator may have (a container under an
+   arbitrary uid, with no passwd entry; a Windows domain account; a name
+   with a space), `uid-<n>`, the process's user id, or `unnamed` where
+   there are no user ids. Commands run from cron or an entrypoint keep
+   running, as in 0.9.0, and the name they had is neither kept nor shown.
 
 A name is 1 to 64 letters, digits, `.`, `_`, `@`, `+`, or `-`, starting
-with a letter or digit; another is refused before the command runs, and so
-is a process with no user name. In a container that runs as `root` or
-`app`, the last one names nobody: set `DOMAINKIT_OPERATOR` from your
-access tooling, or pass `--operator`. Prefer a staff id or handle to an
+with a letter or digit. A bad `--operator` or `DOMAINKIT_OPERATOR` is
+refused before the command runs, since the operator typed it. The last two
+sources are recorded as `operator_source` `system`, so the trail shows
+that nobody gave a name; and in a container that runs as `root` or `app`,
+or under a uid, they name nobody: set `DOMAINKIT_OPERATOR` from your
+access tooling, or pass `--operator`. 0.10 may require a name in staging
+and production. Prefer a staff id or handle to an
 email address: the trail keeps what it is given for good. The name is what
 the operator says: it attributes an action, it does not authenticate
 anyone, so keep who can run `manage.py` against production as narrow as
