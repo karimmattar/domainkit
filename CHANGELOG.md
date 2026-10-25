@@ -6,16 +6,6 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
-### Fixed
-
-- `TestClient` works with Starlette 1.9 and 1.10, which a fresh
-  `pip install domainkit` resolves: a project made by `domainkit init`
-  passes its own tests again instead of failing every test that uses a
-  client with `'CarryingPortal' object has no attribute 'start_task_soon'`.
-  The client now carries the caller's context (a frozen clock) through
-  every method of the AnyIO portal Starlette starts the application's work
-  with, not only the two Starlette 1.8 used (DOCS-01).
-
 ### Changed
 
 - The framework's own tests no longer race the wall clock: the eleven that
@@ -35,6 +25,63 @@ All notable changes to domainkit. The format follows
   `Sequence` values in any order. What a module- or session-scoped fixture
   sends is gone by the time a test runs; send it from the test, or from a
   function-scoped fixture (TEST-05).
+- `map_imperatively` refuses an aggregate whose table has no `version`
+  column, with `ImproperlyConfigured` at startup naming the class, the
+  table, and the fix. Such a table got no optimistic locking at all, so
+  concurrent changes overwrote each other with no error: in the audit, 50
+  concurrent withdrawals from one account all answered 201 and 48 were
+  lost. Add `Column("version", Integer, nullable=False)` (with
+  `server_default="0"` in the migration, for existing rows), or pass
+  `versioned=False` to map the aggregate without optimistic locking on
+  purpose. This is a breaking change in a patch release, made because the
+  failure is silent; tables from `table_for`, the generators, and
+  domainkit's own apps all have the column (`docs/databases.md`,
+  "Versions"; ADR 0004) (FIN-77).
+- `IDEMPOTENCY.LEASE_SECONDS` must be above `REQUEST_TIMEOUT`, or startup
+  fails naming both: a request still within its deadline could lose its
+  key to a retry, which ran it again while its own commit failed with 409
+  `idempotency_key_taken_over`. `check` reports a `POST` or `PATCH` route
+  whose own `RequestTimeout` reaches the lease, or removes the deadline,
+  and staging and production do not start with one (ADR 0062) (FIN-79).
+
+### Fixed
+
+- `TestClient` works with Starlette 1.9 and 1.10, which a fresh
+  `pip install domainkit` resolves: a project made by `domainkit init`
+  passes its own tests again instead of failing every test that uses a
+  client with `'CarryingPortal' object has no attribute 'start_task_soon'`.
+  The client now carries the caller's context (a frozen clock) through
+  every method of the AnyIO portal Starlette starts the application's work
+  with, not only the two Starlette 1.8 used (DOCS-01).
+- Idempotency leases and key expiry follow the keys' database's clock on
+  PostgreSQL, as the outbox and the audit sealer already did: a host whose
+  clock runs ahead no longer takes a key from a request still running,
+  runs a committed key's request again before its TTL ends, or purges keys
+  that have not expired, and a host running behind no longer leaves a dead
+  request's key held. The comparisons sit in the claim's own statements,
+  so a keyed request makes no more round trips. SQLite, and tests under
+  `freeze_time`, read `domainkit.clock` as before. `domainkit.db.dbclock`
+  is the outbox's clock, now shared (ADR 0062) (FIN-79).
+- `domainkit.contrib.webhooks.signing.verify` reads the time from
+  `domainkit.clock`, as the rest of the framework does: under
+  `freeze_time`, a receiver's test checks a delivery's timestamp against
+  the frozen clock instead of the wall clock (FIN-83).
+- An amount has one text wherever domainkit writes it: fixed point, at the
+  value's own places, with no sign on zero
+  (`domainkit.utils.decimals.decimal_text`). `Decimal("1E+3")` was
+  `"1E+3"` in API responses of `schema_for` schemas, CSV and NDJSON
+  exports, outbox events and task arguments,
+  webhook payloads, audit details, privacy exports, `dumpdata`, dynamic
+  settings, and the admin API's user fields, but `"1000"` in evidence; it
+  is `"1000"` everywhere, `Decimal("0E-8")` is `"0.00000000"`, and
+  `Decimal("-0.00")` is `"0.00"`, in evidence and cursors too. Personal
+  amounts in the audit trail are pseudonymized from that text, so
+  `pseudonym_of` finds `Decimal("1E+3")` as it finds `Decimal("1000")`; a
+  pseudonym stored earlier of an amount written with an exponent is found
+  with that text (`"1E+3"`). JSON strings stay strings, Python-mode dumps still give `Decimal`, and a value past
+  100 digits on either side of the point is written as `str()` does, so
+  its text stays short (`docs/databases.md`, "Exact amounts"; ADR 0066)
+  (FIN-82).
 
 ## [0.9.0] - 2026-10-22
 

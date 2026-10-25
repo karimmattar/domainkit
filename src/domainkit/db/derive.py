@@ -66,11 +66,11 @@ from sqlalchemy.engine import Dialect
 from sqlalchemy.sql.schema import SchemaItem
 from sqlalchemy.types import TypeDecorator, TypeEngine
 
+from domainkit.db.orm import VERSION
 from domainkit.db.orm import metadata as default_metadata
 from domainkit.db.types import ExactDecimal, UTCDateTime
 from domainkit.ddd.fields import Digits, FieldInfo, MaxLength, fields_of, wrapped_field
 
-VERSION: Final = "version"
 _column_types: dict[type, TypeEngine[Any] | Callable[[], TypeEngine[Any]]] = {}
 
 

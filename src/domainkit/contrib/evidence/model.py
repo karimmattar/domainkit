@@ -20,6 +20,7 @@ from typing import Any, Final
 from domainkit import clock
 from domainkit.context import current_request
 from domainkit.ddd import Conflict, NotFound
+from domainkit.utils.decimals import decimal_text
 
 KIND: Final = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*")
 """Dotted lowercase names, such as ``kyc.document_verified``."""
@@ -75,7 +76,7 @@ def _exact(value: Any, path: str) -> Any:  # noqa: ANN401 - JSON values.
     if isinstance(value, Decimal):
         if not value.is_finite():
             raise ValueError(f"Evidence facts must be finite numbers ({path}).")
-        return format(value, "f")
+        return decimal_text(value)
     if isinstance(value, Mapping):
         return {key: _exact(item, f"{path}.{key}") for key, item in value.items()}
     if isinstance(value, list | tuple):

@@ -9,6 +9,11 @@ dies before committing anything, a retry after the lease takes the key over
 and runs (see ``operations``). A client that disconnects before sending its
 whole body claims no key and runs nothing.
 
+Leases and expiry are decided by the keys' database's clock on PostgreSQL
+(``domainkit.db.dbclock``), so hosts whose clocks disagree never take a key
+from a request still running, and by ``domainkit.clock`` on SQLite and
+under ``freeze_time``.
+
 A request that fails or is refused (a 4xx) before committing anything, or
 that raises, releases its key, so it can be retried. The response is stored,
 or the key released, in a task of its own within ``SETTLE_TIMEOUT``, so a
@@ -38,7 +43,7 @@ import hashlib
 import logging
 import secrets
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any, Final
 
 from fastapi import status
@@ -47,10 +52,9 @@ from sqlalchemy.dialects import postgresql, sqlite
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from domainkit import clock
 from domainkit.apps import registry
 from domainkit.context import current_request
-from domainkit.db import connections
+from domainkit.db import connections, dbclock
 from domainkit.http.errors import error_response
 from domainkit.tasks import spawn
 
@@ -73,11 +77,8 @@ SETTLE_TASK: Final = "domainkit.idempotency.settle"
 HEADER: Final = "idempotency-key"
 REPLAYED: Final = "Idempotent-Replayed"
 _STORED_HEADERS: Final = frozenset({"content-type", "location", "content-language"})
-
-
-def _now() -> datetime:
-    """Return the current time in UTC."""
-    return clock.now()
+LAPSED: Final = "lapsed"
+"""Read with a held key's row: whether its lease ran out, on the database's clock."""
 
 
 def _hash(*parts: str | bytes) -> str:
@@ -142,17 +143,20 @@ class IdempotencyMiddleware:
         deleted last: through PgBouncer the statements share a transaction,
         and a sweep run first would hold its locks while the upsert waited
         for another claim's, which may wait for this one's.
+
+        The times written and compared are the database's (``dbclock``),
+        and so is whether a held key's lease ran out, read with its row.
         """
-        now = _now()
-        lease = now + timedelta(seconds=config.LEASE_SECONDS)
         async with connections.autocommit(config.DATABASE) as connection:
-            claim = _upsert(connection.dialect.name)(idempotency_keys).values(
+            dialect = connection.dialect.name
+            now = dbclock.now(dialect)
+            claim = _upsert(dialect)(idempotency_keys).values(
                 key_hash=operation.key_hash,
                 fingerprint=fingerprint,
                 created_at=now,
-                expires_at=now + timedelta(seconds=config.TTL_SECONDS),
+                expires_at=_later(now, config.TTL_SECONDS),
                 token=operation.token,
-                locked_until=lease,
+                locked_until=_later(now, config.LEASE_SECONDS),
                 pinned=False,
             )
             fresh = claim.excluded
@@ -176,9 +180,10 @@ class IdempotencyMiddleware:
             )
             row = None
             if claimed is None:
+                lapsed = idempotency_keys.c.locked_until < now
                 row = (
                     await connection.execute(
-                        select(idempotency_keys).where(
+                        select(idempotency_keys, lapsed.label(LAPSED)).where(
                             idempotency_keys.c.key_hash == operation.key_hash
                         )
                     )
@@ -200,6 +205,7 @@ class IdempotencyMiddleware:
         first.
         """
         async with connections.autocommit(config.DATABASE) as connection:
+            now = dbclock.now(connection.dialect.name)
             taken = await connection.execute(
                 update(idempotency_keys)
                 .where(
@@ -211,7 +217,7 @@ class IdempotencyMiddleware:
                 )
                 .values(
                     token=operation.token,
-                    locked_until=_now() + timedelta(seconds=config.LEASE_SECONDS),
+                    locked_until=_later(now, config.LEASE_SECONDS),
                 )
             )
         return bool(taken.rowcount)
@@ -395,7 +401,7 @@ async def _finish(
         )
 
 
-def _sweep(now: datetime) -> Delete:
+def _sweep(now: dbclock.Moment) -> Delete:
     """Delete up to ``PURGE_BATCH`` expired keys, skipping those being claimed."""
     oldest = (
         select(idempotency_keys.c.key_hash)
@@ -406,6 +412,11 @@ def _sweep(now: datetime) -> Delete:
     return delete(idempotency_keys).where(
         idempotency_keys.c.key_hash.in_(oldest.scalar_subquery())
     )
+
+
+def _later(now: dbclock.Moment, seconds: float) -> dbclock.Moment:
+    """``seconds`` after ``now``, a value or the database's clock in SQL."""
+    return now + timedelta(seconds=seconds)
 
 
 def _upsert(dialect: str) -> Callable[[Table], postgresql.Insert | sqlite.Insert]:
@@ -419,15 +430,13 @@ def _abandoned(existing: dict[str, Any], fingerprint: str) -> bool:
         existing.get("fingerprint") == fingerprint
         and existing["status_code"] is None
         and existing["committed_at"] is None
-        and existing["locked_until"] < _now()
+        and bool(existing[LAPSED])
     )
 
 
 def _died_after_commit(existing: dict[str, Any]) -> bool:
     """Whether a committed request's lease ran out before it finished."""
-    return (
-        existing.get("committed_at") is not None and existing["locked_until"] < _now()
-    )
+    return existing.get("committed_at") is not None and bool(existing[LAPSED])
 
 
 def _caller(scope: Scope, credential_headers: tuple[str, ...]) -> str:

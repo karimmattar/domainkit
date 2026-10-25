@@ -73,6 +73,7 @@ from domainkit.ddd.query import (
 )
 from domainkit.ddd.repository import Repository
 from domainkit.http.errors import APIError
+from domainkit.utils.decimals import decimal_text
 
 CURSOR_PATTERN: Final = r"^[A-Za-z0-9_-]+$"
 """Cursors are base64url; use as ``Query(pattern=CURSOR_PATTERN)``."""
@@ -342,7 +343,7 @@ def _to_json(value: object) -> object:
             and exponent >= -_AMOUNT_DIGITS
             and value.adjusted() < _AMOUNT_DIGITS
         )
-        return format(value, "f") if plain else str(value)  # Not 1E+999999999.
+        return decimal_text(value) if plain else str(value)  # Not 1E+999999999.
     if isinstance(value, UUID):
         return str(value)
     if isinstance(value, date | time):  # A datetime is a date.

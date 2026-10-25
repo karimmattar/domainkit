@@ -20,6 +20,7 @@ from domainkit.cache import caches
 from domainkit.db import connections
 from domainkit.db.routing import router
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.utils.decimals import with_decimal_text
 
 from .exceptions import InvalidSettingValue, UnknownSetting
 from .models import Flag
@@ -154,11 +155,13 @@ class DynamicSettingDefinition[T]:
                 for error in exc.errors(include_url=False, include_input=False)
             )
             raise InvalidSettingValue(f"{self.key}: {reasons}.") from None
-        return self.adapter.dump_python(valid, mode="json")
+        return with_decimal_text(valid, self.adapter.dump_python(valid, mode="json"))
 
     def default_json(self) -> object:
         """The default, as JSON."""
-        return self.adapter.dump_python(self.default, mode="json")
+        return with_decimal_text(
+            self.default, self.adapter.dump_python(self.default, mode="json")
+        )
 
     def json_schema(self) -> dict[str, Any]:
         """The JSON schema of the setting's values."""

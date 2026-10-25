@@ -618,6 +618,15 @@ async def export(...): ...
 The body is read before route dependencies run, so it is read under
 `REQUEST_TIMEOUT`.
 
+With `domainkit.contrib.idempotency` installed, a keyed request must end
+before its key's lease does, or a retry may take the key over while it
+runs: `REQUEST_TIMEOUT` must be below `IDEMPOTENCY.LEASE_SECONDS` (startup
+fails otherwise), and `check` reports a `POST` or `PATCH` route whose own
+deadline is at the lease or past it, or removed, as the export above is
+with the default lease of 60 seconds. Raise the lease above the longest
+such deadline, or shorten the route's
+([contrib.md](contrib.md#idempotency-safe-retries-of-unsafe-requests)).
+
 **What has no deadline.** The deadline is lifted as soon as the response
 starts: a streamed response (an export, Server-Sent Events) runs as long
 as it streams, and background tasks that run after the response are not

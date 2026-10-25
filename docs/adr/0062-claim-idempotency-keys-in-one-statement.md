@@ -1,7 +1,7 @@
 # 0062. Claim idempotency keys in one statement, and commit the framework's short writes as they run
 
 - Status: Accepted
-- Date: 2026-10-21; amended 2026-10-22 (the sweep comes last)
+- Date: 2026-10-21; amended 2026-10-22 (the sweep comes last), 2026-10-25 (the database's clock decides leases)
 
 ## Context
 
@@ -108,3 +108,38 @@ code that needs several to commit together must use a transaction.
 The guarantees above are tested unchanged. New tests count the
 statements, transactions and checkouts of a keyed write, race five claims
 of one key, and run the claim through PgBouncer's mode.
+
+## Amendment (2026-10-25): the database's clock decides leases
+
+The claim, the take-over and the checks of a held key compared
+`locked_until` and `expires_at` with the host's clock, while the outbox
+(ADR 0043) and the sealer (ADR 0047) had moved to the database's. Two
+hosts whose clocks differ by more than a lease's slack disagree on whether
+it ran out: a host ahead took a key from a request still running (whose
+commit then failed with 409 `idempotency_key_taken_over`, after anything
+it did outside its transaction), replaced a committed key before its TTL
+and ran it again, and its purge deleted live keys. Nothing checked either
+that a request ends before its lease does (audit 0.9.0, FIN-79).
+
+- On PostgreSQL, the claim writes `created_at`, `expires_at` and
+  `locked_until` from `statement_timestamp()`, and replaces only a row
+  whose `expires_at` is before it. On a conflict, the read of the live row
+  returns `locked_until < statement_timestamp()` with it, and the
+  take-over and the check of a request that died after committing use
+  that. The take-over writes its lease, and the purge (hourly, or the
+  claim's sweep) compares, on the same clock. `domainkit.db.dbclock`, the
+  outbox's clock moved where both apps use it, decides: SQLite and a
+  frozen clock read `domainkit.clock`, as before.
+- No statement is added: the comparisons are columns and conditions of
+  the statements above. The keyed write still makes 4 statements, 3
+  transactions and 3 checkouts in the ladder.
+- The commit mark (`committed_at`) keeps the host's clock: only whether it
+  is set is ever read.
+- `IDEMPOTENCY.LEASE_SECONDS` must be above `REQUEST_TIMEOUT`, or startup
+  fails naming both. A `POST` or `PATCH` route whose own `RequestTimeout`
+  is at the lease or past it, or `None`, is a problem `check` reports, and
+  staging and production refuse to start with it; elsewhere it is logged.
+  A deadline was considered as the bound instead of a refusal, by
+  extending the lease to a route's deadline when its dependency runs; it
+  would put an `UPDATE` on every such request, and a lease that silently
+  outgrows the setting.

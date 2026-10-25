@@ -19,7 +19,8 @@ class IdempotencySettings(BaseModel):
     LEASE_SECONDS: float = Field(default=60.0, gt=0, le=24 * 3600)
     """How long a request holds its key before a retry may take it over.
 
-    Set it above the longest a request may run (the server's timeout).
+    It must be above ``REQUEST_TIMEOUT`` (checked at startup), and above the
+    ``RequestTimeout`` of keyed routes that set their own (``check``).
     """
     METHODS: tuple[str, ...] = ("POST", "PATCH")
     MAX_RESPONSE_BYTES: int = Field(default=1_048_576, ge=1)

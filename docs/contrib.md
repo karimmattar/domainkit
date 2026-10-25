@@ -502,7 +502,8 @@ base64 HMAC-SHA256 of `<id>.<timestamp>.<body>` keyed with the secret's
 bytes. Secrets look like `whsec_` and 32 random bytes in base64; their
 libraries verify them. In Python, `domainkit.contrib.webhooks.verify(secret,
 headers, body)` checks one in constant time and refuses timestamps more
-than five minutes away. After a rotation, deliveries carry a second
+than five minutes away from `domainkit.clock` (frozen under
+`freeze_time`). After a rotation, deliveries carry a second
 signature with the old secret for `SECRET_OVERLAP_SECONDS`.
 
 **What may be called.** Before every attempt, and when a subscription is
@@ -889,22 +890,48 @@ the same request gets the stored response, with `Idempotent-Replayed: true`.
 | First request's commit on another database raised (its reply lost, refused, or cancelled while it ran) | 409 `idempotency_response_unavailable`: it may have committed, so it never runs again |
 | First request ran past its lease and a retry took its key | The first gets 409 `idempotency_key_taken_over`; its changes are not saved |
 | Client disconnected before sending the whole body | Nothing runs and no key is claimed: retry with the same key |
+| Same key after `TTL_SECONDS`, even if the first request committed | A new request: it runs again (below) |
 
-A request runs twice only if nothing it did was saved. When a SQL unit of
-work commits during a keyed request, the key is marked committed in the
-same transaction, and a committed key is never released, even if the reply
+Within its TTL, a key's request runs twice only if nothing it did was
+saved. When a SQL unit of work commits during a keyed request, the key is
+marked committed in the same transaction, and a committed key is never released, even if the reply
 to the commit was lost. A retry then gets the stored response or, when the
 response could not be kept, a 409 telling the client to look up the result
 instead. Only units of work are seen: call payment providers and other
 services from a deferred task (`uow.defer`), which the outbox runs once, not
 from the handler.
 
+**After the TTL, a key is forgotten.** A key is remembered for
+`TTL_SECONDS` (24 hours) from its first request. After that, a request
+with the same key is a new request: it runs again, even if the first one
+committed, and its response replaces the old one. A client that retries a
+payment with a key older than the TTL (after a long outage, from a queue
+it replays) is charged twice. Keys are replays of recent requests, not a
+record of what was ever done: keep the TTL above the longest your clients
+retry for (at most 30 days), and refuse duplicates your domain must never
+accept, such as a payment reference, with a unique column of their own.
+
 A request holds its key for `LEASE_SECONDS`. If the process dies before the
 request commits anything, a retry after the lease takes the key over and
 runs. Each holder has a random token, and the mark is written only under
 it: a request that ran past its lease and lost its key to a retry cannot
 commit, so the changes are made once. Set `LEASE_SECONDS` above the
-longest a request may run, such as your server's or proxy's timeout.
+longest a request may run:
+
+- it must be above `REQUEST_TIMEOUT`, or startup fails naming both
+  settings;
+- a `POST` or `PATCH` route that gives itself a deadline at the lease or
+  past it (`Depends(RequestTimeout(300))`), or none (`RequestTimeout(None)`),
+  is reported by `check`, and staging and production do not start with it;
+- your server's or proxy's timeout, if it is longer, counts too.
+
+The keys' database decides when a lease or a key runs out. On PostgreSQL,
+the claim, the take-over and the purge compare and write
+`statement_timestamp()`, as the outbox does, so hosts whose clocks
+disagree never take a key from a request still running, nor replace or
+purge a key that has not expired. SQLite's clock is the host's, and under
+`freeze_time` the frozen clock decides on every database, so tests move
+leases and expiry with it.
 
 A request that raises, or is cancelled (its client gone, a deadline, an
 anyio cancel scope that cancels every wait inside it), still releases its
@@ -956,7 +983,7 @@ choices.
 | --- | --- | --- |
 | `DATABASE` | `"default"` | Alias holding the keys. |
 | `TTL_SECONDS` | `86400.0` | How long a key is remembered (24 hours; at most 30 days, and at least `LEASE_SECONDS`, or startup fails). |
-| `LEASE_SECONDS` | `60.0` | How long a request holds its key before a retry may take it over (at most a day). |
+| `LEASE_SECONDS` | `60.0` | How long a request holds its key before a retry may take it over (at most a day, and above `REQUEST_TIMEOUT`, or startup fails). |
 | `METHODS` | `POST`, `PATCH` | Methods that honour the header; others ignore it. |
 | `MAX_RESPONSE_BYTES` | `1048576` | Larger responses are passed through but not stored. |
 | `CREDENTIAL_HEADERS` | `authorization`, `proxy-authorization`, `cookie`, `x-api-key` | Headers that tell callers without an actor apart. |

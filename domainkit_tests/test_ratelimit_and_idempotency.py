@@ -5,19 +5,21 @@ import logging
 import os
 import secrets
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime, timedelta
 
 import anyio
 import pytest
+from fastapi import APIRouter, Depends, FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import Table, false, insert, select
+from sqlalchemy import ColumnElement, Table, false, insert, select
 from sqlalchemy.sql import Select
 from starlette.testclient import WebSocketDenialResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from domainkit import setup
+from domainkit import clock, setup
 from domainkit.apps import registry
+from domainkit.clock import freeze_time
 from domainkit.conf import Settings, override_settings
 from domainkit.context import RequestContext, bind_request
 from domainkit.contrib.idempotency import apps as idempotency_apps
@@ -28,6 +30,7 @@ from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
+from domainkit.http.deadlines import RequestTimeout
 from domainkit.http.ratelimit import (
     EVICTIONS_PER_HIT,
     Decision,
@@ -39,7 +42,7 @@ from domainkit.http.ratelimit import (
 from domainkit.tasks import owned, shutdown
 from domainkit.utils.rates import parse_rate
 from domainkit_tests import sample_routes
-from domainkit_tests.conftest import POSTGRES_VARIABLE
+from domainkit_tests.conftest import ALPHA, POSTGRES_VARIABLE
 from domainkit_tests.test_http import headerless, started
 
 postgres_only = pytest.mark.skipif(
@@ -470,6 +473,20 @@ def idempotent(database_url: str) -> Iterator[TestClient]:
         yield client
 
 
+type Freeze = Callable[[datetime], None]
+
+
+@pytest.fixture
+def freeze() -> Iterator[Freeze]:
+    """Freeze the clock at a moment, on every database, until the test ends."""
+    with ExitStack() as frozen:
+
+        def at(when: datetime) -> None:
+            frozen.enter_context(freeze_time(when))
+
+        yield at
+
+
 def stored_keys() -> list[dict[str, object]]:
     """The rows of the idempotency table."""
 
@@ -774,11 +791,11 @@ def test_a_failed_mark_still_keeps_the_key(
 
 
 def test_keys_of_dead_requests_are_taken_over(
-    idempotent: TestClient, monkeypatch: pytest.MonkeyPatch
+    idempotent: TestClient, freeze: Freeze
 ) -> None:
     """A request that died before committing loses its key once its lease ends."""
     later = datetime.now(UTC) + timedelta(minutes=5)
-    monkeypatch.setattr(idempotency, "_now", lambda: later)
+    freeze(later)
     plant("dead", locked_until=later - timedelta(microseconds=1))
     plant("dying", locked_until=later)
 
@@ -796,12 +813,10 @@ def test_keys_of_dead_requests_are_taken_over(
     assert rows[keyed("dead")]["locked_until"] == later + timedelta(seconds=60)
 
 
-def test_new_keys_are_leased(
-    idempotent: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_new_keys_are_leased(idempotent: TestClient, freeze: Freeze) -> None:
     """A claimed key is held for LEASE_SECONDS under a fresh random token."""
     now = datetime.now(UTC)
-    monkeypatch.setattr(idempotency, "_now", lambda: now)
+    freeze(now)
     for key in ("one", "two"):
         idempotent.post("/pay", headers={"Idempotency-Key": key})
 
@@ -826,11 +841,11 @@ def test_writes_touch_only_their_own_key(
 
 
 def test_dead_requests_are_not_taken_over_when_unlike_or_committed(
-    idempotent: TestClient, monkeypatch: pytest.MonkeyPatch
+    idempotent: TestClient, freeze: Freeze
 ) -> None:
     """Another request is refused; a committed one is never run again."""
     later = datetime.now(UTC) + timedelta(minutes=5)
-    monkeypatch.setattr(idempotency, "_now", lambda: later)
+    freeze(later)
     expired = later - timedelta(microseconds=1)
     plant("unlike", "/counter", locked_until=expired)
     plant("committed", locked_until=expired, committed_at=expired)
@@ -1209,7 +1224,10 @@ def test_expired_keys_run_again_and_are_purged(idempotent: TestClient) -> None:
 
 @pytest.mark.parametrize("sweeping", [False, True], ids=["purged", "swept"])
 def test_keys_live_until_the_instant_they_expire(
-    idempotent: TestClient, monkeypatch: pytest.MonkeyPatch, sweeping: bool
+    idempotent: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    freeze: Freeze,
+    sweeping: bool,
 ) -> None:
     """At ``expires_at`` a key still replays; it is expired only afterwards.
 
@@ -1217,7 +1235,8 @@ def test_keys_live_until_the_instant_they_expire(
     """
     idempotent.post("/counter", json={}, headers={"Idempotency-Key": "edge"})
     [row] = stored_keys()
-    monkeypatch.setattr(idempotency, "_now", lambda: row["expires_at"])
+    assert isinstance(row["expires_at"], datetime)
+    freeze(row["expires_at"])
     if sweeping:
         monkeypatch.setattr(idempotency, "MESSAGING", "not.installed")
 
@@ -1227,6 +1246,139 @@ def test_keys_live_until_the_instant_they_expire(
 
     assert at_expiry.headers["Idempotent-Replayed"] == "true"
     assert len(sample_routes.created) == 1
+    assert len(stored_keys()) == 1  # Neither replaced nor swept.
+
+
+# The keys' database decides when leases and keys run out (FIN-79) ----------------
+
+
+def skew_host(monkeypatch: pytest.MonkeyPatch, by: timedelta) -> None:
+    """Run this host's clock ``by`` ahead of the database's (behind if negative)."""
+    real = clock.now
+    monkeypatch.setattr(clock, "now", lambda: real() + by)
+
+
+def test_a_host_running_ahead_never_takes_a_running_requests_key(
+    idempotent: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lease with a minute left on the database's clock is still held.
+
+    SQLite's clock is the host's, so there the host's view decides.
+    """
+    on_postgres = bool(os.environ.get(POSTGRES_VARIABLE))
+    plant("running")  # Leased for a minute from now.
+    skew_host(monkeypatch, timedelta(minutes=5))
+
+    retry = idempotent.post("/pay", headers={"Idempotency-Key": "running"})
+
+    assert retry.status_code == (409 if on_postgres else 201)
+    assert payments_on() == (0 if on_postgres else 1)
+
+
+def test_a_host_running_behind_takes_over_a_lease_that_ran_out(
+    idempotent: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """And it leases the key on the database's clock, not its own."""
+    on_postgres = bool(os.environ.get(POSTGRES_VARIABLE))
+    before = datetime.now(UTC)
+    plant("dead", locked_until=before - timedelta(seconds=1))
+    skew_host(monkeypatch, timedelta(minutes=-5))
+
+    retry = idempotent.post("/pay", headers={"Idempotency-Key": "dead"})
+
+    assert retry.status_code == (201 if on_postgres else 409)
+    [row] = stored_keys()
+    assert isinstance(row["locked_until"], datetime)
+    assert (row["locked_until"] > before) is on_postgres
+
+
+def test_a_host_running_ahead_never_runs_a_committed_key_again(
+    idempotent: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A committed key lives until it expires on the database's clock.
+
+    Its retries are not run (here a 409: the planted key kept no response),
+    and the purge leaves it.
+    """
+    from domainkit.contrib.idempotency.tasks import purge_expired
+
+    on_postgres = bool(os.environ.get(POSTGRES_VARIABLE))
+    now = datetime.now(UTC)
+    for key in ("paid", "kept"):
+        plant(key, committed_at=now, expires_at=now + timedelta(hours=1))
+    skew_host(monkeypatch, timedelta(hours=2))
+
+    retry = idempotent.post("/pay", headers={"Idempotency-Key": "paid"})
+
+    assert retry.status_code == (409 if on_postgres else 201)  # Ran, or runs again.
+    assert payments_on() == (0 if on_postgres else 1)
+
+    async def purge() -> None:
+        await purge_expired()
+        await connections.close_all()
+
+    asyncio.run(purge())
+    assert (keyed("kept") in {row["key_hash"] for row in stored_keys()}) is on_postgres
+
+
+def test_keyed_routes_that_outlast_the_lease_are_problems() -> None:
+    """A route's own ``RequestTimeout`` at or past the lease, or none, is reported.
+
+    Its router's dependencies count, and so do dependencies of dependencies
+    and the routes of mounted applications. Routes no key reaches (a GET, a
+    PUT outside ``METHODS``) and timeouts within the lease are fine.
+    """
+
+    def unbounded() -> None:
+        """No deadline."""
+
+    def slow(_: None = Depends(RequestTimeout(120))) -> None:
+        """A dependency that moves the deadline itself."""
+
+    outer = APIRouter()
+    outer.post("/export", dependencies=[Depends(RequestTimeout(300))])(unbounded)
+    outer.patch("/edit", dependencies=[Depends(RequestTimeout(60))])(unbounded)
+    outer.post("/quick", dependencies=[Depends(RequestTimeout(59.5))])(unbounded)
+    outer.post("/nested", dependencies=[Depends(slow)])(unbounded)
+    outer.get("/report", dependencies=[Depends(RequestTimeout(None))])(unbounded)
+    outer.put("/put", dependencies=[Depends(RequestTimeout(None))])(unbounded)
+    outer.api_route(
+        "/both",
+        methods=["PATCH", "POST", "PUT"],
+        dependencies=[Depends(RequestTimeout(None))],
+    )(unbounded)
+    inner = APIRouter(dependencies=[Depends(RequestTimeout(None))])
+    inner.post("/batch")(unbounded)
+    mounted = FastAPI()
+    mounted.post("/upload", dependencies=[Depends(RequestTimeout(None))])(unbounded)
+    hosted = FastAPI()
+    hosted.post("/hook", dependencies=[Depends(RequestTimeout(90))])(unbounded)
+    app = FastAPI()
+    app.include_router(outer)
+    app.include_router(inner, prefix="/v1")
+    app.mount("/files", mounted)
+    app.mount("/raw", headerless)  # An application without routes.
+    app.host("hooks.example.com", hosted)
+
+    with override_settings(INSTALLED_DOMAINS=["domainkit.contrib.idempotency", ALPHA]):
+        setup()
+        problems = registry.get_domain_config("idempotency").check_application(app)
+    registry.clear()
+
+    tail = (
+        "but IDEMPOTENCY.LEASE_SECONDS is 60: a retry with the same Idempotency-Key "
+        "could take the key over while it runs. Raise IDEMPOTENCY.LEASE_SECONDS "
+        "above the route's timeout, or shorten the timeout."
+    )
+    assert problems == [
+        f"POST /export may run for 300s (RequestTimeout), {tail}",
+        f"PATCH /edit may run for 60s (RequestTimeout), {tail}",
+        f"POST /nested may run for 120s (RequestTimeout), {tail}",
+        f"PATCH POST /both may run without a deadline (RequestTimeout), {tail}",
+        f"POST /v1/batch may run without a deadline (RequestTimeout), {tail}",
+        f"POST /files/upload may run without a deadline (RequestTimeout), {tail}",
+        f"POST /hook may run for 90s (RequestTimeout), {tail}",
+    ]
 
 
 def test_a_key_released_while_claimed_is_in_progress(
@@ -1235,8 +1387,8 @@ def test_a_key_released_while_claimed_is_in_progress(
     """A row gone between the failed insert and the read means: try again."""
     idempotent.post("/counter", json={}, headers={"Idempotency-Key": "gone"})
 
-    def nothing(table: Table) -> Select[tuple[object, ...]]:
-        return select(table).where(false())
+    def nothing(*columns: Table | ColumnElement[bool]) -> Select[tuple[object, ...]]:
+        return select(*columns).where(false())
 
     monkeypatch.setattr(idempotency, "select", nothing)
     retry = idempotent.post("/counter", json={}, headers={"Idempotency-Key": "gone"})

@@ -6,6 +6,7 @@ import time
 from collections.abc import Callable
 from contextvars import copy_context
 from datetime import UTC, date, datetime, timedelta, timezone
+from functools import partial
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -20,8 +21,8 @@ from domainkit.contrib.auth import middleware as auth_middleware
 from domainkit.contrib.auth import models as auth_models
 from domainkit.contrib.auth import tokens
 from domainkit.contrib.auth.authentication import AuthenticationFailed
-from domainkit.contrib.idempotency import middleware as idempotency
 from domainkit.contrib.messaging import outbox, worker
+from domainkit.db import dbclock
 from domainkit.ddd import DomainEvent
 from domainkit.ddd import events as ddd_events
 from domainkit.http.ratelimit import MemoryBackend
@@ -256,7 +257,7 @@ def test_reprs_show_the_time() -> None:
     [
         tokens.utc_now,
         auth_models._now,
-        idempotency._now,
+        partial(dbclock.now, "postgresql"),  # Leases: the database's, but frozen.
         outbox._now,
         worker._now,
         ddd_events._now,

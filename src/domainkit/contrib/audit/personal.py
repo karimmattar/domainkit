@@ -39,7 +39,6 @@ from datetime import date, timedelta
 from typing import Final
 from weakref import WeakKeyDictionary
 
-from pydantic_core import to_jsonable_python
 from sqlalchemy import ColumnElement, delete, select, text
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
@@ -49,6 +48,7 @@ from domainkit import clock
 from domainkit.apps import registry
 from domainkit.db import connections
 from domainkit.db.routing import router
+from domainkit.utils.decimals import jsonable
 
 from .settings import AuditSettings
 from .tables import audit_keys
@@ -88,10 +88,11 @@ def pseudonym(key: bytes, field: str, value: object) -> str:
 
     The field's name is part of it, so equal values in different fields do
     not give away that they are equal. Lone surrogates in strings are
-    encoded as they are, so every value has a pseudonym.
+    encoded as they are, so every value has a pseudonym. An amount is
+    hashed as its fixed-point text, as audit details hold it.
     """
     data = json.dumps(
-        to_jsonable_python(value),
+        jsonable(value),
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,

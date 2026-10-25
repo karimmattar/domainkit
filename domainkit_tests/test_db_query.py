@@ -429,7 +429,7 @@ async def test_bulk_updates_bypass_aggregates_but_bump_versions(tables: None) ->
 
 
 class Plain(AggregateRoot[int]):
-    """An aggregate whose table has no version column."""
+    """An aggregate whose table has no version column, on purpose."""
 
     text: str
 
@@ -440,7 +440,7 @@ plain = Table(
     Column("id", Integer, primary_key=True),
     Column("text", String(10), nullable=False),
 )
-map_imperatively(Plain, plain)
+map_imperatively(Plain, plain, versioned=False)
 
 
 class PlainRepository(SqlAlchemyRepository[Plain, int]):

@@ -1,15 +1,23 @@
 """Install ``domainkit.contrib.idempotency`` and add its middleware."""
 
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Sequence
 from contextlib import asynccontextmanager
 from importlib import import_module
 from typing import cast
 
+from fastapi import FastAPI
+from fastapi.dependencies.models import Dependant
+from fastapi.routing import APIRoute, iter_route_contexts
+from starlette.routing import BaseRoute, Host, Mount
+
 from domainkit import deadlines
 from domainkit.apps import DomainConfig, registry
+from domainkit.conf import settings
 from domainkit.db import SqlAlchemyUnitOfWork, connections
 from domainkit.db.routing import DatabaseRouter, router
 from domainkit.ddd import DeferredTask, DomainEvent, UnitOfWork
+from domainkit.exceptions import ImproperlyConfigured
+from domainkit.http.deadlines import RequestTimeout
 
 from .operations import KeyTakenOver, mark_committed, pin_lease, running_operation
 from .settings import IdempotencySettings
@@ -25,9 +33,24 @@ class IdempotencyConfig(DomainConfig):
     settings_class = IdempotencySettings
 
     def ready(self) -> None:
-        """Check the keys' database; schedule the hourly purge with messaging."""
+        """Check the keys' database and lease; schedule the purge with messaging.
+
+        Raises:
+            ImproperlyConfigured: ``LEASE_SECONDS`` is not above
+                ``REQUEST_TIMEOUT``, or the keys' database is a shard.
+        """
         config = self.get_settings()
         router.require_standalone(config.DATABASE, "IDEMPOTENCY.DATABASE")
+        timeout = settings.REQUEST_TIMEOUT
+        if timeout is not None and timeout >= config.LEASE_SECONDS:
+            raise ImproperlyConfigured(
+                f"IDEMPOTENCY.LEASE_SECONDS ({config.LEASE_SECONDS:g}) must be above "
+                f"REQUEST_TIMEOUT ({timeout:g}): a retry with the same "
+                "Idempotency-Key could take the key over from a request still "
+                "running, and repeat what that request did outside its "
+                "transaction. Raise IDEMPOTENCY.LEASE_SECONDS, or lower "
+                "REQUEST_TIMEOUT."
+            )
         if registry.is_installed(MESSAGING):
             import_module(f"{self.name}.tasks")
 
@@ -85,6 +108,27 @@ class IdempotencyConfig(DomainConfig):
             ):
                 await connection.execute(mark_committed(operation))
 
+    def check_application(self, app: FastAPI) -> list[str]:
+        """Keyed routes whose own ``RequestTimeout`` outlasts the keys' lease.
+
+        ``ready`` keeps ``REQUEST_TIMEOUT`` below ``LEASE_SECONDS``; a route
+        that moves its deadline (``Depends(RequestTimeout(...))``) to the
+        lease or past it, or removes it, could still lose its key to a retry
+        while it runs.
+        """
+        config = self.get_settings()
+        lease = config.LEASE_SECONDS
+        return [
+            f"{route} may run "
+            + ("without a deadline" if seconds is None else f"for {seconds:g}s")
+            + f" (RequestTimeout), but IDEMPOTENCY.LEASE_SECONDS is {lease:g}: a "
+            "retry with the same Idempotency-Key could take the key over while it "
+            "runs. Raise IDEMPOTENCY.LEASE_SECONDS above the route's timeout, or "
+            "shorten the timeout."
+            for route, seconds in _route_timeouts(app.routes, config.METHODS)
+            if seconds is None or seconds >= lease
+        ]
+
     def databases(self, router: DatabaseRouter) -> frozenset[str]:
         """Only ``IDEMPOTENCY.DATABASE``: keys are stored apart from business data."""
         return frozenset({self.get_settings().DATABASE})
@@ -110,3 +154,33 @@ async def _within_deadline() -> AsyncIterator[None]:
         return
     async with deadlines.timeout(None):
         yield
+
+
+def _route_timeouts(
+    routes: Sequence[BaseRoute], methods: Sequence[str], prefix: str = ""
+) -> Iterator[tuple[str, float | None]]:
+    """``METHODS /path`` and seconds of each ``RequestTimeout`` of keyed routes.
+
+    Routes of included routers carry their routers' dependencies, and the
+    routes of mounted applications are walked too: the middleware sees
+    their requests as well.
+    """
+    for context in iter_route_contexts(routes):
+        route = context.original_route
+        if isinstance(route, Mount | Host):
+            inner = prefix + str(context.path) if isinstance(route, Mount) else prefix
+            yield from _route_timeouts(context.routes or (), methods, inner)
+        elif isinstance(route, APIRoute) and (
+            keyed := set(methods).intersection(route.methods or ())
+        ):
+            name = f"{' '.join(sorted(keyed))} {prefix}{context.path}"
+            for timeout in _timeouts(context.dependant):
+                yield name, timeout.seconds
+
+
+def _timeouts(dependant: Dependant) -> Iterator[RequestTimeout]:
+    """The ``RequestTimeout`` dependencies of ``dependant``, at any depth."""
+    for dependency in dependant.dependencies:
+        if isinstance(dependency.call, RequestTimeout):
+            yield dependency.call
+        yield from _timeouts(dependency)

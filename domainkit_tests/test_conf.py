@@ -6,6 +6,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from domainkit import setup
+from domainkit.apps import registry
 from domainkit.conf import (
     UNSET,
     Settings,
@@ -31,7 +32,7 @@ from domainkit.contrib.auth.settings import AuthSettings
 from domainkit.contrib.idempotency.settings import IdempotencySettings
 from domainkit.contrib.messaging.settings import MessagingSettings
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit_tests.conftest import MakePackage
+from domainkit_tests.conftest import ALPHA, MakePackage
 from domainkit_tests.settings import SECRET_KEY
 
 
@@ -728,6 +729,44 @@ def test_idempotency_keys_live_at_least_as_long_as_their_lease() -> None:
         pytest.raises(ImproperlyConfigured, match=f"(?s)IDEMPOTENCY.*{refused}"),
     ):
         setup()
+
+
+@pytest.mark.parametrize(("lease", "timeout"), [(60.0, 60.0), (60.0, 90.0), (5, 30.0)])
+def test_idempotency_leases_outlast_the_request_timeout(
+    lease: float, timeout: float
+) -> None:
+    """A retry could take a key from a request still within its deadline (FIN-79)."""
+    with (
+        override_settings(
+            INSTALLED_DOMAINS=["domainkit.contrib.idempotency", ALPHA],
+            IDEMPOTENCY={"LEASE_SECONDS": lease},
+            REQUEST_TIMEOUT=timeout,
+        ),
+        pytest.raises(ImproperlyConfigured) as refused,
+    ):
+        setup()
+
+    assert str(refused.value) == (
+        f"IDEMPOTENCY.LEASE_SECONDS ({lease:g}) must be above REQUEST_TIMEOUT "
+        f"({timeout:g}): a retry with the same Idempotency-Key could take the key "
+        "over from a request still running, and repeat what that request did "
+        "outside its transaction. Raise IDEMPOTENCY.LEASE_SECONDS, or lower "
+        "REQUEST_TIMEOUT."
+    )
+
+
+@pytest.mark.parametrize(("lease", "timeout"), [(60.0, 59.999), (1.0, None)])
+def test_idempotency_leases_above_the_request_timeout_start(
+    lease: float, timeout: float | None
+) -> None:
+    """Any lease is fine without a deadline, which ``check`` warns about anyway."""
+    with override_settings(
+        INSTALLED_DOMAINS=["domainkit.contrib.idempotency", ALPHA],
+        IDEMPOTENCY={"LEASE_SECONDS": lease},
+        REQUEST_TIMEOUT=timeout,
+    ):
+        setup()
+        assert lease == registry.settings(IdempotencySettings).LEASE_SECONDS
 
 
 @pytest.mark.parametrize(
