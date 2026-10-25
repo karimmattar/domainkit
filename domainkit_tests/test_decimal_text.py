@@ -132,6 +132,7 @@ def test_values_without_decimals_come_back_as_they_were() -> None:
     assert with_decimal_text(object(), {"k": "1E+3"}) == {"k": "1E+3"}
     assert with_decimal_text(THOUSAND, 1000) == 1000
     assert with_decimal_text(Fee, {"amount": "1E+3"}) == {"amount": "1E+3"}
+    assert with_decimal_text({"left_out": THOUSAND}, {}) == {}
 
 
 class Paid(DomainEvent):
