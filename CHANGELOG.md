@@ -16,6 +16,19 @@ All notable changes to domainkit. The format follows
   every method of the AnyIO portal Starlette starts the application's work
   with, not only the two Starlette 1.8 used (DOCS-01).
 
+### Changed
+
+- The framework's own tests no longer race the wall clock: the eleven that
+  depended on how fast a loaded machine runs a few lines between two
+  sub-second deadlines now move a clock of their own, or leave ten times
+  the time they need, and none asserts on elapsed time (TEST-01).
+- Each of the framework's tests has two minutes (`pytest-timeout`, a new
+  development dependency): a test that hangs ends the run with every
+  thread's stack, its own among them, instead of running into the CI
+  job's limit. CI's `test` and `integration` jobs have 30 minutes instead
+  of 20, and `integration` keeps its JUnit report and log when the suite
+  fails (TEST-01, TEST-02).
+
 ## [0.9.0] - 2026-10-22
 
 ### Added

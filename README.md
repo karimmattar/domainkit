@@ -134,7 +134,7 @@ poetry install --all-extras            # Python 3.13
 pre-commit install                     # after: pipx install pre-commit
 
 poetry run ruff check . && poetry run ruff format --check . && poetry run mypy
-poetry run pytest --cov                # random order; coverage gate in pyproject.toml
+poetry run pytest --cov                # random order, 2 minutes a test; coverage gate in pyproject.toml
 poetry run mutmut run "domainkit.http*" && poetry run mutmut results
 ```
 
