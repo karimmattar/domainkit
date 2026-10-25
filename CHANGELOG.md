@@ -20,6 +20,24 @@ All notable changes to domainkit. The format follows
   failure is silent; tables from `table_for`, the generators, and
   domainkit's own apps all have the column (`docs/databases.md`,
   "Versions"; ADR 0004) (FIN-77).
+- `IDEMPOTENCY.LEASE_SECONDS` must be above `REQUEST_TIMEOUT`, or startup
+  fails naming both: a request still within its deadline could lose its
+  key to a retry, which ran it again while its own commit failed with 409
+  `idempotency_key_taken_over`. `check` reports a `POST` or `PATCH` route
+  whose own `RequestTimeout` reaches the lease, or removes the deadline,
+  and staging and production do not start with one (ADR 0062) (FIN-79).
+
+### Fixed
+
+- Idempotency leases and key expiry follow the keys' database's clock on
+  PostgreSQL, as the outbox and the audit sealer already did: a host whose
+  clock runs ahead no longer takes a key from a request still running,
+  runs a committed key's request again before its TTL ends, or purges keys
+  that have not expired, and a host running behind no longer leaves a dead
+  request's key held. The comparisons sit in the claim's own statements,
+  so a keyed request makes no more round trips. SQLite, and tests under
+  `freeze_time`, read `domainkit.clock` as before. `domainkit.db.dbclock`
+  is the outbox's clock, now shared (ADR 0062) (FIN-79).
 
 ## [0.9.0] - 2026-10-22
 
