@@ -170,11 +170,16 @@ CI (`.github/workflows/ci.yml`) runs on every push and pull request:
 - coverage of both runs combined, which must be 100%
 - the benchmark ladder: Python calls and database round trips per request,
   against budgets (`python -m benchmarks`; docs/performance.md)
-- a wheel build, installed and imported in a clean environment
-- pip-audit, and a gitleaks scan of the whole history
+- a wheel build, installed and imported in a clean environment, and its
+  CycloneDX bill of materials
+- Semgrep's Python and OWASP Top 10 rules, pip-audit, and a gitleaks scan
+  of the whole history
+- on pull requests and weekly, the tests again with the newest releases
+  the dependency ranges allow, not the lock's
 
-A full mutation testing run happens weekly, in eight shards that run side by
-side. Releases are published to PyPI
+A full mutation testing run happens weekly, in 17 shards that run side by
+side; each writes its score and the mutants no test caught to its job
+summary. Releases are published to PyPI
 from a version tag; see [docs/versioning.md](https://github.com/karimmattar/domainkit/blob/main/docs/versioning.md).
 
 ## License

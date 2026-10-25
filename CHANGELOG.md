@@ -6,6 +6,63 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- CI writes a CycloneDX bill of materials for the wheel it builds (the
+  `sbom` job): the wheel, and every package the lock resolves for it with
+  all its extras, without the dev group. A release attests it with the
+  wheel, and attests SLSA build provenance for the wheel and the sdist,
+  through GitHub (`gh attestation verify`), before publishing (FIN-85).
+- CI runs Semgrep's Python and OWASP Top 10 rules over `src` and the
+  workflows on every push and pull request, and weekly (the `semgrep`
+  job); the five findings of today were reviewed and each carries a
+  `nosemgrep` comment and its reason (FIN-85).
+- A `newest` CI job installs the wheel with the newest releases the
+  dependency ranges allow, instead of the lock's, and runs the suite, on
+  pull requests and weekly; it is not required for a merge or a release.
+  It found that httpx2 2.16 broke a test of the macOS and Windows trust
+  stores, which now holds on both (INFRA-07; ADR 0075).
+- `.github/rulesets/` holds the branch and tag rulesets to import into
+  GitHub, and `docs/versioning.md` says how: `main` only through pull
+  requests that pass every check, with admins able to bypass only while
+  merging one; release tags created by admins and never moved or deleted.
+  `test (3.14t)`, `bench`, `sbom` and `semgrep` join the required checks,
+  and `test_ci.py` checks that the list is every job a pull request
+  runs but `newest` (INFRA-02).
+
+### Changed
+
+- Dependency ranges reach the next major version: FastAPI, uvicorn,
+  asyncpg, aiosqlite, prometheus-client, python-multipart and uvloop
+  `<1.0.0`, immudb-py `<2.0.0`, and Granian `<3.0.0`, instead of one minor
+  or an exact version (`granian ==2.8.4`, `uvloop ==0.23.0`). Floors stay;
+  SQLAlchemy stays `<2.2`. The suite and the benchmark ladder pass with
+  FastAPI 0.162.0 and Granian 2.8.5; projects may now take upstream fixes
+  without waiting for domainkit (INFRA-07; ADR 0075, which supersedes ADR
+  0065's FastAPI cap).
+- Renovate widens the ranges in `[project]` instead of moving them (its
+  rule named dependency types the poetry manager never uses), updates the
+  images CI starts with `docker run` and the tools it installs, now
+  pinned and visible to it, and leaves the runners alone (INFRA-03).
+- `test_ci.py` reads the workflows as YAML (PyYAML, in the dev group)
+  instead of matching one layout with regular expressions, and checks
+  more: which jobs each event starts, the concurrency groups, the
+  rulesets, actions pinned to commits, write permissions, and attested
+  releases (INFRA-12).
+
+### Fixed
+
+- The weekly mutation run can finish: it has a concurrency group of its
+  own, where a push to `main` cancelled it before (it never completed),
+  and the jobs that check a change no longer run with it. Its 17 shards,
+  where there were 8, are balanced by the time their mutants' tests take
+  (the largest old shards needed up to 830 minutes of a 240-minute job;
+  each new one at most about 210, in a job of 355). Each shard stops
+  mutmut before GitHub's six-hour limit, and writes its score and the
+  mutants no test caught to the job summary and to an artifact, even when
+  it ran out of time, in which case it fails (INFRA-01, TEST-07).
+
+
 ## [0.9.1] - 2026-10-25
 
 ### Added
