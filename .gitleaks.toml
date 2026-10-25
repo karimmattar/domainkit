@@ -7,10 +7,12 @@ title = "domainkit"
 useDefault = true
 
 [[allowlists]]
-description = "Made-up test keys, and the Standard Webhooks specification's published test vector"
+description = "Made-up test keys and secrets, and the Standard Webhooks specification's published test vector"
 condition = "AND"
 paths = ['''^domainkit_tests/''']
 regexes = [
   '''^jwt-key-0123456789abcdefghijklmnopqrstuv$''',
   '''^whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw$''',
+  '''^sk_live_S3CR3T$''',
+  '''^s3cret-0123456789-abcdefghij$''',
 ]
