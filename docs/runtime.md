@@ -465,7 +465,13 @@ the limits for each.
 
 - **uvicorn** is Python on uvloop and httptools. It answers 503 past
   `--limit-concurrency`, limits WebSocket messages (`--ws-max-size`), and
-  closes connections left open past `--timeout-graceful-shutdown`.
+  closes connections left open past `--timeout-graceful-shutdown`. Run it
+  with `--no-proxy-headers`: by default it reads `X-Forwarded-For` and
+  `X-Forwarded-Proto` itself, from `FORWARDED_ALLOW_IPS` (`127.0.0.1`),
+  before domainkit does, so neither `TRUSTED_PROXIES` nor
+  `PROXY_SCHEME_HEADER` decides the client's address and scheme then; with
+  `PROXY_SCHEME_HEADER = None`, a client's own `X-Forwarded-Proto` passed
+  through a proxy on the same host still sets the scheme.
 - **Granian** is an HTTP server in Rust that runs the same ASGI
   application, lifespan included (`--interface asgi`). It parses HTTP/1
   and HTTP/2 outside Python, bounds requests in flight per worker

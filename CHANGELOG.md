@@ -159,7 +159,9 @@ All notable changes to domainkit. The format follows
   none, for proxies that do not set it and would pass a client's own line
   through (it chose whether its cookies were `Secure`). With fewer values
   than proxies, the nearest proxy's is taken, never the left-most, which
-  a client may have written (WEB-06; ADR 0072).
+  a client may have written. uvicorn sets the scheme itself unless run
+  with `--no-proxy-headers`, before domainkit sees the request, so `None`
+  holds there only with that flag (WEB-06; ADR 0072).
 - Outgoing calls bound an answer as it comes as well as decompressed, so
   bytes that inflate to nothing are not read without end, and guarded
   clients refuse (`httpx2.DecodingError`) an answer compressed in a way
@@ -229,7 +231,12 @@ All notable changes to domainkit. The format follows
   (AUTH-12).
 - A user's `repr` shows its id and status flags, and `request.auth`'s the
   user's id, the scheme, and the scopes: names, email addresses, and token
-  digests no longer reach a log that formats them (AUTH-13).
+  digests no longer reach a log that formats them. The tokens, codes,
+  passwords, secrets, and hashes that logging in, refreshing, second
+  factors, links, signup, personal tokens, CSRF, and the admin API take or
+  return (`IssuedTokens`, `TokenOut`, `LoginIn`, `EnrolmentOut`,
+  `NewToken`, `PasswordCheck`, and the others) are left out of their
+  `repr` too (AUTH-13).
 - Mail, text messages, and push notifications no longer stay in the outbox
   once they are sent. The worker blanks a message's arguments (`payload`)
   in the statement that marks it done, and `messages --cancel` when it

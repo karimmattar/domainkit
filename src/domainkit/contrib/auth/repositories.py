@@ -874,7 +874,7 @@ class TotpDevice:
 
     id: UUID
     user_id: UUID
-    secret: bytes
+    secret: bytes = dataclasses.field(repr=False)
     """Encrypted; ``mfa.secret_box()`` opens it."""
     created_at: datetime
     confirmed_at: datetime | None

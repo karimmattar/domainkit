@@ -1,6 +1,7 @@
 """The auth domain model: users, groups, permissions, and password hashes."""
 
 from dataclasses import fields
+from datetime import UTC, datetime
 from typing import ClassVar
 from uuid import uuid4
 
@@ -18,7 +19,15 @@ from domainkit.contrib.auth import (
     UnknownUserField,
     User,
     UserId,
+    admin,
+    api,
+    cookies,
+    mfa,
+    personal_tokens,
+    recovery,
+    signup,
 )
+from domainkit.contrib.auth.authentication import IssuedTokens
 from domainkit.contrib.auth.events import (
     UserJoinedGroup,
     UserLeftGroup,
@@ -26,6 +35,7 @@ from domainkit.contrib.auth.events import (
     UserPermissionRevoked,
     UserStatusChanged,
 )
+from domainkit.contrib.auth.hashers import PasswordCheck
 from domainkit.contrib.auth.models import (
     PROTECTED_FLOOR,
     erased_username,
@@ -34,6 +44,8 @@ from domainkit.contrib.auth.models import (
     same_email,
     validate_email,
 )
+from domainkit.contrib.auth.principals import Credential
+from domainkit.contrib.auth.repositories import TotpDevice
 from domainkit.contrib.contenttypes import ContentType
 from domainkit.ddd import DomainEvent
 
@@ -425,6 +437,57 @@ def test_users_show_no_personal_data_in_their_repr() -> None:
         for personal in ("alice", "Alice", "Liddell", "B-7", "Seven", "pbkdf2"):
             assert personal not in shown
     assert repr(Shown(id=UserId(uuid4()), password=HASH, code="S-1")) == "<Badge S-1>"
+
+
+SECRET = "s3cret-0123456789-abcdefghij"
+
+
+def test_tokens_codes_and_passwords_stay_out_of_reprs() -> None:
+    """What logging in, codes, links, and tokens carry is not in their ``repr``.
+
+    ``repr`` is what tracebacks with locals, ``%r`` in logs, and error
+    reporters show; the other fields still are.
+    """
+    now = datetime.now(UTC)
+    shown = [
+        IssuedTokens(access_token=SECRET, expires_in=300, refresh_token=SECRET),
+        api.TokenOut(access_token=SECRET, expires_in=300, refresh_token=SECRET),
+        api.LoginIn(username="alice", password=SECRET),
+        api.RefreshIn(refresh_token=SECRET),
+        api.PasswordIn(old_password=SECRET, new_password=SECRET),
+        mfa.MfaLoginIn(mfa_token=SECRET, code=SECRET),
+        mfa.PasswordIn(password=SECRET),
+        mfa.CodeIn(code=SECRET),
+        mfa.ReauthenticateIn(password=SECRET, code=SECRET),
+        mfa.EnrolmentOut(secret=SECRET, otpauth_uri=f"otpauth://totp/a?s={SECRET}"),
+        mfa.RecoveryCodesOut(recovery_codes=[SECRET]),
+        recovery.PasswordResetConfirmIn(token=SECRET, new_password=SECRET),
+        recovery.TokenIn(token=SECRET),
+        signup.SignupConfirmIn(token=SECRET, password=SECRET),
+        admin.AdminUserIn(username="alice", password=SECRET),
+        admin.AdminPasswordIn(password=SECRET),
+        cookies.CsrfOut(csrf_token=SECRET),
+        PasswordCheck(correct=True, rehashed=SECRET),
+        TotpDevice(uuid4(), uuid4(), SECRET.encode(), now, None, None),
+        Credential(SECRET, uuid4(), "access", None, None, None, None),
+    ]
+    made = personal_tokens.NewToken(
+        id="a-digest",
+        name="ci",
+        kind="access",
+        scopes=None,
+        created_at=now,
+        expires_at=None,
+        last_used_at=None,
+        current=False,
+        token=SECRET,
+    )
+
+    for value in (*shown, made):
+        assert SECRET not in repr(value), type(value).__name__
+    assert "expires_in=300" in repr(shown[0])
+    assert "username='alice'" in repr(shown[2])
+    assert "correct=True" in repr(shown[-3])
 
 
 def test_staff_see_and_change_only_the_fields_a_model_names() -> None:

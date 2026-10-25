@@ -52,7 +52,7 @@ class LoginIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     username: str = Field(min_length=1, max_length=255)
-    password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH)
+    password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False)
 
 
 class RefreshIn(BaseModel):
@@ -60,7 +60,7 @@ class RefreshIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    refresh_token: str = Field(min_length=1, max_length=255)
+    refresh_token: str = Field(min_length=1, max_length=255, repr=False)
 
 
 class LogoutIn(BaseModel):
@@ -76,18 +76,18 @@ class PasswordIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    old_password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH)
-    new_password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH)
+    old_password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False)
+    new_password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False)
 
 
 class TokenOut(BaseModel):
     """Tokens (OAuth 2's token response): send ``Authorization: Bearer ...``."""
 
-    access_token: str
+    access_token: str = Field(repr=False)
     token_type: Literal["Bearer"] = "Bearer"  # noqa: S105 - a scheme, not a secret.
     expires_in: int | None = None
     """Seconds the access token works; absent: until revoked."""
-    refresh_token: str | None = None
+    refresh_token: str | None = Field(default=None, repr=False)
     """Exchange it at ``/refresh`` before the access token expires."""
 
 
