@@ -609,14 +609,23 @@ def test_readiness_results_are_cached(make_client: MakeClient) -> None:
 def test_readiness_probes_share_one_round_of_checks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Probes during a round wait for it; its result is cached from its end."""
+    """Probes during a round wait for it; its result is cached from its end.
+
+    The cache's clock moves only when the test moves it, so the round takes
+    ten seconds of it and the probe after it comes four seconds later, on
+    any machine.
+    """
     rounds: list[int] = []
     timeouts: list[float] = []
+    now = [0.0]
+    monkeypatch.setattr(health, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    begun, finish = asyncio.Event(), asyncio.Event()
 
     async def slow_check(seconds: float) -> list[str]:
         rounds.append(1)
         timeouts.append(seconds)
-        await asyncio.sleep(0.1)
+        begun.set()
+        await finish.wait()
         return []
 
     async def quick_check(seconds: float) -> list[str]:
@@ -631,18 +640,28 @@ def test_readiness_probes_share_one_round_of_checks(
     async def probe_flood() -> list[list[str]]:
         check = health._failing_checks
         probes = [asyncio.ensure_future(check(request)) for _ in range(20)]  # type: ignore[arg-type]
-        await asyncio.sleep(0.01)
+        await begun.wait()  # Every probe has joined the round by now.
         probes[0].cancel()  # A probe that gives up stops no one else.
+        now[0] = 10.0
+        finish.set()  # The round ends ten seconds after it began.
         answers = await asyncio.gather(*probes[1:])
+        now[0] = 14.0
         again = await health._failing_checks(request)  # type: ignore[arg-type]
-        return [*answers, again]
+        assert rounds == [1]  # Cached 5 s from its end (10), not its start (0).
+        now[0] = 15.0
+        begun.clear()
+        finish.clear()
+        expired = asyncio.ensure_future(check(request))  # type: ignore[arg-type]
+        await begun.wait()
+        finish.set()
+        return [*answers, again, await expired]
 
-    with override_settings(READINESS_CACHE_SECONDS=0.05, READINESS_TIMEOUT=0.5):
+    with override_settings(READINESS_CACHE_SECONDS=5, READINESS_TIMEOUT=0.5):
         answers = asyncio.run(probe_flood())
 
-    assert rounds == [1]  # One round; cached 0.05 s from its end, not its start.
-    assert answers == [[]] * 20
-    assert timeouts == [0.5] * 4  # Each kind of check, bounded by the setting.
+    assert rounds == [1, 1]  # At 15 s the result is stale: a second round.
+    assert answers == [[]] * 21
+    assert timeouts == [0.5] * 8  # Each kind of check, bounded by the setting.
 
 
 TRACEPARENT = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"

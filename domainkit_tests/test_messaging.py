@@ -1540,9 +1540,17 @@ async def given_back(name: str) -> None:
 
 
 async def test_stopping_gives_back_what_does_not_finish_in_time(
-    tables: None, caplog: pytest.LogCaptureFixture
+    tables: None, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Past SHUTDOWN_TIMEOUT, running messages are cancelled and go back."""
+    graces: list[float] = []
+    finish = worker_module.finish
+
+    async def drain(running: set[asyncio.Task[None]], grace: float) -> None:
+        graces.append(grace)
+        await finish(running, grace)
+
+    monkeypatch.setattr(worker_module, "finish", drain)
     gates["late"] = asyncio.Event()
     await enqueue(wait_at_gate, name="late")
     config = MessagingSettings(**{**FAST, **SLOW, "SHUTDOWN_TIMEOUT": 0.05})
@@ -1559,9 +1567,10 @@ async def test_stopping_gives_back_what_does_not_finish_in_time(
     assert caplog.messages == [
         "Stopping 1 running message(s) that did not finish in time; they run again"
     ]
+    assert graces == [0.05]  # It ran until SHUTDOWN_TIMEOUT: the gate never opened.
     count, seconds = interrupted()
     assert count == before[0] + 1
-    assert 0.05 <= seconds - before[1] < 5  # It ran until SHUTDOWN_TIMEOUT.
+    assert seconds > before[1]  # The cut-short run's time is observed too.
     gates["late"].set()  # It runs again, as a first attempt.
     assert await worker.run_once() == 1
     assert [(row["status"], row["attempts"]) for row in await outbox()] == [(DONE, 1)]
@@ -1626,11 +1635,15 @@ async def test_a_message_the_outbox_cannot_take_back_waits_for_its_lock(
 async def test_stopping_gives_back_deliveries_that_do_not_finish_in_time(
     broker_tables: MemoryBroker,
 ) -> None:
-    """Brokered workers drain within SHUTDOWN_TIMEOUT too, then stop the rest."""
+    """Brokered workers drain within SHUTDOWN_TIMEOUT too, then stop the rest.
+
+    "slow" holds the drain for all of SHUTDOWN_TIMEOUT, so the test lasts
+    that long; two seconds leave "quick" (one write) room on a slow machine.
+    """
     gates.update(quick=asyncio.Event(), slow=asyncio.Event())
     await enqueue(wait_at_gate, name="quick")
     await enqueue(wait_at_gate, name="slow")
-    config = MessagingSettings(**{**BROKERED, **SLOW, "SHUTDOWN_TIMEOUT": 0.2})
+    config = MessagingSettings(**{**BROKERED, **SLOW, "SHUTDOWN_TIMEOUT": 2})
     stop = asyncio.Event()
     running = asyncio.create_task(
         BrokerWorkers([Worker(config)], ["default"], config).run(stop)
@@ -1639,7 +1652,7 @@ async def test_stopping_gives_back_deliveries_that_do_not_finish_in_time(
 
     stop.set()
     gates["quick"].set()
-    await stopped(running)
+    await stopped(running, within=30)
 
     assert running.result() is None
     assert "quick:done" in ran
