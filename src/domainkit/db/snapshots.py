@@ -155,8 +155,11 @@ async def _rows(connection: AsyncConnection, query: Select[Any]) -> Any:  # noqa
 async def _empty(connection: AsyncConnection, entry: TableRows) -> None:
     """Delete every row of the entry's table, its own triggers off if it has any."""
     name = connection.dialect.identifier_preparer.format_table(entry.table)
+    # The table's name, quoted by the dialect, is all the statements take.
     if entry.triggered:
+        # nosemgrep: avoid-sqlalchemy-text  # noqa: ERA001
         await connection.execute(text(f"ALTER TABLE {name} DISABLE TRIGGER USER"))
     await connection.execute(delete(entry.table))
     if entry.triggered:
+        # nosemgrep: avoid-sqlalchemy-text  # noqa: ERA001
         await connection.execute(text(f"ALTER TABLE {name} ENABLE TRIGGER USER"))
