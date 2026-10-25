@@ -108,6 +108,8 @@ dev = [
     "pytest-randomly (>=5.0.0,<6.0.0)",
     "hypothesis (>=6.169.0,<7.0.0)",
     "mutmut (>=3.8.0,<4.0.0)",
+    # The CI tests read the workflows as YAML.
+    "pyyaml (>=6.0.3,<7.0.0)",
 ]
 
 [tool.ruff]
@@ -143,6 +145,11 @@ exclude = ["/management/templates/", "/mutants/"]
 # immudb-py and grpcio ship no type information.
 [[tool.mypy.overrides]]
 module = ["immudb", "immudb.*", "grpc", "grpc.*", "ecdsa", "ecdsa.*"]
+ignore_missing_imports = true
+
+# Nor does PyYAML, which only the CI tests use.
+[[tool.mypy.overrides]]
+module = ["yaml"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
