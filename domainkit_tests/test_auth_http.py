@@ -354,6 +354,41 @@ def test_logins_that_work_use_up_no_count(api: Api) -> None:
     assert (after.status_code, after.json()["code"]) == (429, "login_throttled")
 
 
+def test_wrong_passwords_from_anywhere_hold_an_accounts_right_one_back(
+    api: Api,
+) -> None:
+    """What the per-account count costs, until 0.10's lockout (SEC-r1-2).
+
+    ``LOGIN_RATE`` wrong passwords for alice, from as many addresses, get
+    her right password refused before it is checked, from anywhere, until
+    the count frees a place (every ``period / limit`` seconds); a wrong
+    password sent in that place keeps her out again. Guessing her password
+    from many addresses stays bounded by the same count.
+    """
+    create_user("alice")
+    client = api(LOGIN_RATE="2/minute")
+    right = {"username": "alice", "password": PASSWORD}
+
+    def wrong_from(number: int) -> int:
+        caller = TestClient(client.app, client=(f"198.51.100.{number}", 1))
+        guess = {"username": "alice", "password": f"guess-{number}"}
+        return caller.post("/auth/login", json=guess).status_code
+
+    alice = TestClient(client.app, client=("203.0.113.50", 1))
+    with freeze_time() as clock:
+        guesses = [wrong_from(number) for number in range(1, 4)]
+        held = alice.post("/auth/login", json=right)
+        clock.tick(30)  # One place freed: taken by another wrong password.
+        again = [wrong_from(4), alice.post("/auth/login", json=right).status_code]
+        clock.tick(30)  # Freed again: alice gets in, and gives the place back.
+        logins = [alice.post("/auth/login", json=right).status_code for _ in range(2)]
+
+    assert guesses == [401, 401, 429]
+    assert (held.status_code, held.json()["code"]) == (429, "login_throttled")
+    assert again == [401, 429]
+    assert logins == [200, 200]
+
+
 class NoRefunds:
     """A backend of a project's own that cannot give a request back."""
 

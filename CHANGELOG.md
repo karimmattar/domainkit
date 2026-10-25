@@ -187,14 +187,19 @@ All notable changes to domainkit. The format follows
 - Only failed attempts use up the login and second-factor counts. A login,
   a password change, or a code that works is given back to its counts, so
   a service account that logs in often, or an office or carrier behind one
-  address, is never throttled by its own logins. Wrong codes count against
+  address, is never throttled by its own logins. Failures still use the
+  counts up whoever sends them, and a full count refuses a right password
+  too: `LOGIN_RATE` wrong passwords a minute for a username, from any
+  addresses, keep its user out with 429, and as many from one address keep
+  everyone behind it out, as in 0.9.0; a stored per-account lockout is
+  planned for 0.10 (`docs/auth.md`, "Logging in and out"). Wrong codes count against
   `AUTH.MFA.RATE` per user and, at `/mfa/login`, against the new
   `AUTH.MFA.ADDRESS_RATE` (60 an hour) per client address, only once the
   challenge holds: `MFA.RATE` used to count every check per address, so
   one address had ten second-factor logins an hour in all. Challenges and
   reset, verification, and signup links that do not hold count against
   `LOGIN_RATE` per address after they are checked, so forged ones never
-  hold a valid one back (AUTH-02).
+  hold a valid one back (AUTH-02, SEC-r1-2).
 - An address held for refused tokens no longer refuses its session cookies
   and client certificates: four bad bearer tokens from a shared address
   used to log every browser user behind it out. Requests with an
