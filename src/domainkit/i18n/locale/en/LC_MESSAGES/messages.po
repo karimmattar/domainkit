@@ -154,6 +154,9 @@ msgstr ""
 msgid "Too many attempts; try again later."
 msgstr ""
 
+msgid "Attempts cannot be counted right now; try again later."
+msgstr ""
+
 msgid "Too many requests for mail; try again later."
 msgstr ""
 

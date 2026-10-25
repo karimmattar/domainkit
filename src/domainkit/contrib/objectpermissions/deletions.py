@@ -6,6 +6,10 @@ transaction. An object stored later with the same id, such as a slug or an
 integer the database hands out again, starts without them. A soft delete
 keeps them, for the object may be restored.
 
+Grants to a user go with the user the same way: deleting a user's row
+(``UserRepository.remove``) deletes the grants held by that user in the
+user's database, in the same transaction.
+
 Bulk deletes (``delete_rows``) bypass the ORM, and leave their grants:
 remove such objects one by one, or delete their grants in the same
 transaction.
@@ -17,6 +21,7 @@ from sqlalchemy import Connection, delete, event
 from sqlalchemy.orm import Mapper
 
 from domainkit.apps import registry
+from domainkit.contrib.auth.models import AbstractBaseUser
 
 from .models import object_column
 from .services import describe
@@ -26,9 +31,16 @@ APP = "domainkit.contrib.objectpermissions"
 
 
 def forget_grants(mapper: Mapper[Any], connection: Connection, target: object) -> None:
-    """Delete the grants on ``target``, whose row the ORM just deleted."""
+    """Delete the grants on ``target``, whose row the ORM just deleted.
+
+    A user's own grants go too.
+    """
     if mapper.local_table is object_permissions or not registry.is_installed(APP):
         return
+    if isinstance(target, AbstractBaseUser):
+        connection.execute(
+            delete(object_permissions).where(object_permissions.c.user_id == target.id)
+        )
     try:
         content_type, object_id = describe(target)
     except (LookupError, TypeError):

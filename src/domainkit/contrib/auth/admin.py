@@ -293,7 +293,10 @@ router.include_router(groups)
 async def create_user(
     body: AdminUserIn, actor: Annotated[AnyUser, _users("add")]
 ) -> AdminUserOut:
-    """Create a user; a password is checked by ``AUTH.PASSWORD_VALIDATORS``."""
+    """Create a user; a password is checked by ``AUTH.PASSWORD_VALIDATORS``.
+
+    ``fields`` are tidied by the model's ``clean_field``, as on a change.
+    """
     if body.is_superuser:
         _superusers_only(actor, "Only superusers may make superusers.")
     model = get_user_model()
@@ -313,6 +316,8 @@ async def create_user(
         user = await uow.users.create_user(
             body.username, body.password, **fields, **flags
         )
+        for name, value in fields.items():
+            setattr(user, name, user.clean_field(name, value))
         await uow.commit()
     return AdminUserOut.of(user)
 
@@ -357,15 +362,14 @@ async def update_user(
 async def delete_user(
     user_id: UUID, actor: Annotated[AnyUser, _users("delete")]
 ) -> None:
-    """Delete a user and every token of theirs."""
+    """Delete a user, every token of theirs, and their second factor."""
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
         await _may_change(actor, user)
         if user.is_superuser and user.is_active:
             await _not_the_last_superuser(uow)
         user.delete()
-        await uow.tokens.revoke_user(user.id)
-        await uow.users.remove(user)
+        await uow.users.remove(user)  # With its credentials (forget_credentials).
         await uow.commit()
 
 

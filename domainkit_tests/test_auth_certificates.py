@@ -132,6 +132,27 @@ def test_certificates_that_do_not_hold_are_refused(
         assert response.json()["detail"] == message
 
 
+def test_held_addresses_still_serve_certificates(
+    identity: Api, alice_cert: Path
+) -> None:
+    """Guessed tokens hold an address's tokens back, not its certificates.
+
+    Presenting a certificate takes its private key: it is not guessed, so
+    a service behind an address shared with a guesser keeps working
+    (AUTH-03).
+    """
+    create_user("alice")
+    with override_settings(RATE_LIMIT="3/minute"):
+        client = identity(AUTHENTICATION_CLASSES=CLASSES)
+        register("alice", alice_cert)
+        guess = {"Authorization": "Bearer dkt_" + "A" * 43}
+        guesses = [client.get("/whoami", headers=guess).status_code for _ in range(4)]
+        served = TestClient(with_tls(client.app, [pem_of(alice_cert)])).get("/whoami")
+
+    assert guesses == [401, 401, 401, 429]
+    assert served.json() == {"user": "alice", "scheme": "certificate"}
+
+
 def test_other_tokens_are_not_certificates(identity: Api, alice_cert: Path) -> None:
     """A stored token of another kind never matches a certificate."""
     alice = create_user("alice")

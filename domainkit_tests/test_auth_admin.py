@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import event
+from sqlalchemy import event, select
 from sqlalchemy.engine import Engine
 
 from domainkit import setup
@@ -25,6 +25,8 @@ from domainkit.contrib.auth import (
     admin,
     get_user_model,
 )
+from domainkit.contrib.auth.tables import mfa_devices, recovery_codes
+from domainkit.db import connections
 from domainkit.ddd import PermissionDenied
 from domainkit.http import ErrorResponse, encode_cursor, get_asgi_application
 from domainkit.management import call_command
@@ -776,6 +778,64 @@ def test_staff_delete_users(api: Api) -> None:
     assert error(refused, 403)[1] == "Only superusers may change superusers."
 
 
+def second_factor_rows() -> tuple[list[UUID], list[UUID]]:
+    """The users of the stored authenticators, and of the recovery codes."""
+
+    async def read() -> tuple[list[UUID], list[UUID]]:
+        async with connections.engine().connect() as connection:
+            devices = await connection.scalars(select(mfa_devices.c.user_id))
+            codes = await connection.scalars(select(recovery_codes.c.user_id))
+            return sorted(devices), sorted(codes)
+
+    return run_async(read())
+
+
+def with_second_factor(user_id: UUID) -> None:
+    """Store a confirmed authenticator and two recovery codes for ``user_id``."""
+
+    async def enrol() -> None:
+        async with AuthUnitOfWork() as uow:
+            device = await uow.mfa.start(user_id, b"\x01" + bytes(40))
+            await uow.mfa.confirm(device, 1)
+            digests = [user_id.hex * 2, user_id.hex[::-1] * 2]
+            await uow.mfa.replace_codes(user_id, digests)
+            await uow.commit()
+
+    run_async(enrol())
+
+
+def test_deleting_a_user_deletes_their_second_factor(api: Api) -> None:
+    """Their TOTP secret and recovery codes go with them, and their tokens.
+
+    They used to stay in the database, with no one to use them (AUTH-04).
+    Deleting a user from project code (``UserRepository.remove``) does the
+    same.
+    """
+    client = api()
+    headers = staff("admin", "auth.delete_user", "auth.view_user")
+    bob, carol, dan = create_user("bob"), create_user("carol"), create_user("dan")
+    token = bearer(login(client, "bob")["access_token"])
+    for each in (bob, carol, dan):
+        with_second_factor(each)
+    assert client.get("/private", headers=token).status_code == 200
+
+    deleted = client.delete(f"{ADMIN}/users/{bob}", headers=headers)
+
+    async def remove(username: str) -> None:
+        async with AuthUnitOfWork() as uow:
+            found = await uow.users.get_by_natural_key(username)
+            assert found is not None
+            await uow.users.remove(found)
+            await uow.commit()
+
+    run_async(remove("carol"))
+
+    assert deleted.status_code == 204
+    assert client.get("/private", headers=token).status_code == 401
+    assert stored_tokens(bob) == []
+    assert second_factor_rows() == ([dan], [dan, dan])
+
+
 def test_staff_set_groups_and_permissions_they_have(api: Api) -> None:
     """Exactly the groups and permissions given; never more than the actor's."""
     client = api()
@@ -1115,6 +1175,33 @@ def test_custom_user_fields(swapped: TestClient) -> None:
         "invalid_user_field",
         "phone: Input should be a valid string.",
     )
+
+
+@pytest.mark.parametrize("swapped", [ACCOUNTS], indirect=True)
+def test_custom_fields_are_cleaned_when_users_are_made_too(
+    swapped: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``clean_field`` tidies ``fields`` on creation, as on a change (AUTH-13)."""
+    from domainkit_tests.sample_domains.accounts.models import Account
+
+    def clean_field(self: Account, name: str, value: object) -> object:
+        return str(value).replace(" ", "") if name == "phone" else value
+
+    monkeypatch.setattr(Account, "clean_field", clean_field)
+    client = swapped
+    root = staff("root", is_superuser=True)
+    url = f"{ADMIN}/users"
+
+    made = client.post(
+        url, json={"username": "carol", "fields": {"phone": "+20 100"}}, headers=root
+    ).json()
+    stored = client.get(f"{url}/{made['id']}", headers=root).json()
+    changed = client.patch(
+        f"{url}/{made['id']}", json={"fields": {"phone": "+20 111"}}, headers=root
+    )
+
+    assert made["fields"]["phone"] == stored["fields"]["phone"] == "+20100"
+    assert changed.json()["fields"]["phone"] == "+20111"
 
 
 def test_admin_rules_need_staff_and_the_model_permission(use_auth: UseAuth) -> None:

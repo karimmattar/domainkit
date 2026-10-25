@@ -277,6 +277,8 @@ async def test_a_least_privilege_user_is_enough(
         store = cache.store
         assert isinstance(store, RedisStore)
         assert (await store.gcra(f"{prefix}:ratelimit:x", 1e6, 0.0))[0]
+        await store.gcra_refund(f"{prefix}:ratelimit:x", 1e6)  # Deletes it.
+        assert (await store.gcra(f"{prefix}:ratelimit:x", 1e6, 0.0))[0]
         assert await cache.clear() == 4
         outside = config.model_copy(update={"KEY_PREFIX": "elsewhere"})
         with pytest.raises(CacheError, match="No permissions"):
@@ -336,6 +338,60 @@ async def test_rate_limits_are_shared_between_replicas(
     assert 0.5 < refused.reset_after <= 1.0
     assert (other.allowed, other.remaining) == (True, 1)
     assert 0 < ttl <= 1000  # Kept only until the quota is full again.
+
+
+async def test_rate_limits_give_back_what_they_counted(
+    shared: dict[str, object],
+) -> None:
+    """A refund undoes one hit on the server, whichever replica made it."""
+    first, second = RedisBackend(), RedisBackend()
+    key = f"{shared['KEY_PREFIX']}:ratelimit:ip:203.0.113.7"
+    store = caches["shared"].store
+    try:
+        await first.hit("ip:203.0.113.7", 2, 60)
+        await first.hit("ip:203.0.113.7", 2, 60)
+        await second.refund("ip:203.0.113.7", 2, 60)
+        again = await first.hit("ip:203.0.113.7", 2, 60)
+        refused = await first.hit("ip:203.0.113.7", 2, 60)
+        await second.refund("ip:203.0.113.7", 2, 60)
+        kept = await store.client.pttl(key)  # type: ignore[attr-defined]
+        await second.refund("ip:203.0.113.7", 2, 60)
+        gone = await store.client.exists(key)  # type: ignore[attr-defined]
+        await second.refund("ip:203.0.113.7", 2, 60)  # Nothing to give back.
+        fresh = await first.hit("ip:203.0.113.7", 2, 60)
+    finally:
+        await caches["shared"].clear()
+        await caches.close_all()
+
+    assert (again.allowed, refused.allowed) == (True, False)
+    assert 0 < kept <= 30_000  # One request owed: one interval.
+    assert gone == 0  # Owing nothing, the caller is forgotten.
+    assert (fresh.allowed, fresh.remaining) == (True, 1)
+
+
+async def test_refunds_skip_a_redis_that_failed(
+    server: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refund lost to a failure only counts what should not have counted."""
+    refunds: list[str] = []
+
+    async def refuse(self: RedisStore, key: str, *args: float) -> None:
+        refunds.append(key)
+        raise CacheError("OOM command not allowed when used memory > 'maxmemory'.")
+
+    monkeypatch.setattr(RedisStore, "gcra_refund", refuse)
+    with override_settings(
+        CACHES={"default": {}, "shared": server}, RATE_LIMIT_CACHE="shared"
+    ):
+        backend = RedisBackend()
+        try:
+            await backend.refund("ip:203.0.113.7", 1, 60)
+            backend._skip_until = float("inf")  # Skipped after a failed hit.
+            await backend.refund("ip:203.0.113.7", 1, 60)
+        finally:
+            await caches.close_all()
+
+    assert len(refunds) == 1
 
 
 async def test_principal_stamps_are_shared_between_replicas(

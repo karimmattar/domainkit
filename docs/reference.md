@@ -197,7 +197,7 @@ Each `BROKERS` entry:
 | `PROXY_SCHEME_HEADER` | `"X-Forwarded-Proto"` | The header in which the trusted proxies say the client's scheme (a header name). `None`: the scheme is never taken from a header. Set it to `None` when they do not set it (HAProxy's `option forwardfor` alone, an NLB), or a client's own `X-Forwarded-Proto` would be read, and choose whether cookies are `Secure`. |
 | `RATE_LIMIT` | `None` | Requests per caller, such as `"300/minute"` (`second`, `minute`, `hour`, `day`). `None` disables it. |
 | `RATE_LIMIT_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths never counted; compared without the root path (`--root-path`). |
-| `RATE_LIMIT_BACKEND` | `domainkit.http.ratelimit.MemoryBackend` | Where counts live. The default is per process, and keeps the 100,000 most recently seen callers; one seen longer ago starts afresh. Behind several replicas, use `domainkit.http.ratelimit.RedisBackend`: one count per caller in Redis, on the server's clock. If Redis fails, or refuses the count (out of memory, a read-only replica after a failover), requests are let through, and Redis is skipped for the cache's `FAILURE_COOLDOWN`. |
+| `RATE_LIMIT_BACKEND` | `domainkit.http.ratelimit.MemoryBackend` | Where counts live. The default is per process, and keeps the 100,000 most recently seen callers; one seen longer ago starts afresh. Behind several replicas, use `domainkit.http.ratelimit.RedisBackend`: one count per caller in Redis, on the server's clock. If Redis fails, or refuses the count (out of memory, a read-only replica after a failover), requests are let through, and Redis is skipped for the cache's `FAILURE_COOLDOWN`; `AUTH.THROTTLE_FAIL_CLOSED` refuses password and code checks meanwhile instead ([auth.md](auth.md#logging-in-and-out)). |
 | `RATE_LIMIT_CACHE` | `"default"` | The Redis cache `RedisBackend` counts in; keys are `<KEY_PREFIX>:ratelimit:<caller>`. |
 | `RATE_LIMIT_IPV6_PREFIX` | `64` | IPv6 clients are counted per network of this prefix length, since one customer usually holds a whole /64; login throttling counts the same way. IPv4 clients are counted per address. |
 | `METRICS_TOKEN` | `None` | Bearer token for `/metrics`. Without it, `/metrics` answers 403 in staging and production. |
@@ -467,6 +467,9 @@ passes, so an API that is public on purpose can keep them:
   without limit), and a session or CSRF cookie name without the `__Host-`
   prefix where the prefix could hold
   ([auth.md](auth.md#browser-sessions-in-cookies))
+- auth: attempt throttles counted in a `RATE_LIMIT_BACKEND` each process
+  keeps alone (`MemoryBackend`): with several processes, each allows the
+  rates on its own ([auth.md](auth.md#logging-in-and-out))
 - auth: `AUTH.PRINCIPAL_CACHE.TTL` above 5 seconds without `STAMPS`: a
   revoked token works that long in the other processes
   ([auth.md](auth.md#the-principal-cache))

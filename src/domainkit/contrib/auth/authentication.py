@@ -78,6 +78,13 @@ class Credentials:
         """Whether the credentials' scopes cover every one of ``perms``."""
         return self.scopes is None or self.scopes.issuperset(perms)
 
+    def __repr__(self) -> str:
+        """The user's id, the scheme, and the scopes: no personal data, no digest."""
+        return (
+            f"Credentials(user_id={self.user.id!r}, scheme={self.scheme!r}, "
+            f"scopes={self.scopes!r})"
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class IssuedTokens:
@@ -127,6 +134,15 @@ class BaseAuthentication:
     scheme: ClassVar[str] = "Bearer"
     """The ``WWW-Authenticate`` scheme clients are told to use."""
     realm: ClassVar[str] = "api"
+    guessable: ClassVar[bool] = True
+    """Whether anyone may send this class's credentials to guess them.
+
+    While an address is held for refused credentials, credentials of a
+    guessable class are refused even when they hold, so a guess that works
+    never stands out. Set it False for credentials no client can send at
+    will, such as a header only a trusted gateway sets: the address's
+    requests that carry them are then served while it is held.
+    """
 
     async def authenticate(self, connection: HTTPConnection) -> Credentials | None:
         """Who sent ``connection``; None if the credentials are not this class's.

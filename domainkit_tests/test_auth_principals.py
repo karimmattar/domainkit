@@ -390,6 +390,10 @@ def test_principals_hide_their_fields(api: Api) -> None:
         repr(instance_state(credentials.user).callables),
     ]
     assert not [each for each in shown if hashed.value in each]
+    assert not [each for each in shown if "alice" in each]  # Personal data.
+    assert repr(credentials) == (
+        f"Credentials(user_id={alice!r}, scheme='token', scopes=None)"
+    )
 
 
 # A kept principal is what a query builds.
@@ -1645,7 +1649,11 @@ def test_stamps_need_a_shared_redis_cache(use_auth: UseAuth) -> None:
 
 def test_deployments_warn_of_long_ttls_without_stamps(use_auth: UseAuth) -> None:
     """Above five seconds, a change takes that long to reach other processes."""
-    deployed = {"ENVIRONMENT": "production", "ALLOWED_HOSTS": ["api.example.com"]}
+    deployed = {
+        "ENVIRONMENT": "production",
+        "ALLOWED_HOSTS": ["api.example.com"],
+        "RATE_LIMIT_BACKEND": "domainkit.http.ratelimit.RedisBackend",
+    }
     hashers = [f"{AUTHENTICATION}.hashers.PBKDF2PasswordHasher"]
     redis = {"URL": "rediss://:pw@cache.internal:6380/0", "KEY_PREFIX": "svc"}
 

@@ -13,6 +13,10 @@ All notable changes to domainkit. The format follows
   (WEB-02, WEB-04, WEB-06).
 - `domainkit.log.ThrottledLog`: warnings written once per event and
   caller each 10 seconds, with a count of those held back (WEB-11).
+- Rate-limit backends (`domainkit.http.ratelimit.Backend`) may give a counted request back
+  (`refund(key, limit, period)`, `RefundingBackend`); `MemoryBackend` and
+  `RedisBackend` do. `Decision.counted` is `False` for a request a backend
+  let through without counting it (AUTH-02, AUTH-09).
 
 ### Changed
 
@@ -105,6 +109,8 @@ All notable changes to domainkit. The format follows
   503 kept for `READINESS_CACHE_SECONDS` under its group's name
   (`domains`, `databases`, `ledgers`, `caches`), logged with its
   traceback, rather than a 500 and a new round for every probe (WEB-12).
+- The admin API tidies a new user's `fields` with the model's
+  `clean_field`, as it does a change (AUTH-13).
 
 ### Security
 
@@ -142,6 +148,47 @@ All notable changes to domainkit. The format follows
   whose lookup failed after 5 seconds or more fails at once for a minute
   rather than 5 seconds, so retries do not take the threads again
   (WEB-04).
+- Only failed attempts use up the login and second-factor counts. A login,
+  a password change, or a code that works is given back to its counts, so
+  a service account that logs in often, or an office or carrier behind one
+  address, is never throttled by its own logins. Wrong codes count against
+  `AUTH.MFA.RATE` per user and, at `/mfa/login`, against the new
+  `AUTH.MFA.ADDRESS_RATE` (60 an hour) per client address, only once the
+  challenge holds: `MFA.RATE` used to count every check per address, so
+  one address had ten second-factor logins an hour in all. Challenges and
+  reset, verification, and signup links that do not hold count against
+  `LOGIN_RATE` per address after they are checked, so forged ones never
+  hold a valid one back (AUTH-02).
+- An address held for refused tokens no longer refuses its session cookies
+  and client certificates: four bad bearer tokens from a shared address
+  used to log every browser user behind it out. Requests with an
+  `Authorization` header are still refused unread, and a class of your own
+  keeps today's hold unless it sets `guessable = False` (AUTH-03).
+- Deleting a user (`DELETE /admin/auth/users/{id}`, or
+  `UserRepository.remove`) deletes their TOTP secret, recovery codes, and
+  tokens in the same transaction, as privacy erasure does, and with
+  `domainkit.contrib.objectpermissions` the object permissions they held.
+  They used to stay in the database (AUTH-04).
+- `check` warns in staging and production when the login, code, link, and
+  mail throttles count in a backend each process keeps alone
+  (`MemoryBackend`): with several processes each allowed the rates on its
+  own. `AUTH.THROTTLE_FAIL_CLOSED = True` refuses password and code checks
+  and requests for mail with `503 throttle_unavailable` while
+  `RATE_LIMIT_BACKEND` cannot count
+  (Redis failing), instead of letting them through uncounted; off by
+  default (AUTH-09).
+- Routes included after `get_asgi_application` returned (in `asgi.py`, or by
+  a domain's startup) are checked when the application starts serving:
+  staging and production refuse to start with a route that declares no
+  access rule, as they refuse to build; development and tests log it. They
+  used to escape deny by default (AUTH-06).
+- A custom user model can no longer narrow `PROTECTED_FIELDS` to let staff
+  set status flags through the admin API's `fields`: `PROTECTED_FLOOR`
+  stays protected, and startup refuses `EDITABLE_FIELDS` that name it
+  (AUTH-12).
+- A user's `repr` shows its id and status flags, and `request.auth`'s the
+  user's id, the scheme, and the scopes: names, email addresses, and token
+  digests no longer reach a log that formats them (AUTH-13).
 
 ## [0.9.0] - 2026-10-22
 

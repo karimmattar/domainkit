@@ -364,7 +364,10 @@ def test_reading_a_token_never_trusts_it() -> None:
 
 
 def test_resets_and_checks_are_throttled(identity: Api) -> None:
-    """Mail per address and per recipient; token checks per address alone."""
+    """Mail per address and per recipient; tokens that fail per address alone.
+
+    A token that holds is never counted, nor held back by forged ones.
+    """
     create_user("alice", email="alice@example.com")
     client = identity(EMAIL_RATE="2/hour", LOGIN_RATE="2/minute")
     other = from_address(client, "198.51.100.7")
@@ -392,9 +395,10 @@ def test_resets_and_checks_are_throttled(identity: Api) -> None:
     third = from_address(client, "203.0.113.9")
     assert confirm(third, "wrong").status_code == 400
     assert confirm(third, "wrong").status_code == 400
-    done = confirm(third, token)  # This address is done.
-    assert (done.status_code, done.json()["code"]) == (429, "throttled")
-    assert done.json()["detail"] == "Too many attempts; try again later."
+    refused = confirm(third, "wrong")  # This address is done guessing.
+    assert (refused.status_code, refused.json()["code"]) == (429, "throttled")
+    assert refused.json()["detail"] == "Too many attempts; try again later."
+    assert int(refused.headers["Retry-After"]) > 0
     assert [row["details"] for row in audited("auth.password_reset")] == [
         {"reason": "throttled"}
     ] * 2 + [{"reason": "invalid_token"}] * 2 + [{"reason": "throttled"}]
@@ -404,8 +408,9 @@ def test_resets_and_checks_are_throttled(identity: Api) -> None:
     fourth = from_address(client, "203.0.113.10")
     assert confirm(fourth, f"{token[:-1]}x").status_code == 400
     assert confirm(fourth, f"{token[:-2]}xx").status_code == 400
-    # Forged tokens naming alice use up no count of hers: her link works.
-    assert confirm(from_address(client, "203.0.113.11"), token).status_code == 204
+    # Forged tokens naming alice use up no count of hers, and those of an
+    # address never hold a valid one back: her link works, from there too.
+    assert confirm(third, token).status_code == 204
     create_user("bob", email="bob@example.com")
     headers = bearer(login(client, "bob")["access_token"])
     assert client.post("/auth/email-verification", headers=headers).status_code == 202

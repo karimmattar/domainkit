@@ -118,6 +118,31 @@ def test_the_memory_rate_limiter_lets_exactly_the_limit_through() -> None:
     assert sum(allowed) == 100
 
 
+def test_the_memory_rate_limiter_gives_back_exactly_what_it_counted() -> None:
+    """Hits and refunds from many threads at once leave an exact count."""
+    backend: MemoryBackend
+
+    def clock() -> float:
+        assert backend._lock.locked()  # The state is read and written under it.
+        return 1000.0
+
+    backend = MemoryBackend(clock=clock)
+
+    async def hit_and_give_back() -> int:
+        allowed = 0
+        for _ in range(50):
+            decision = await backend.hit("ip:203.0.113.5", 100, 3600)
+            if decision.allowed:
+                allowed += 1
+                await backend.refund("ip:203.0.113.5", 100, 3600)
+        return allowed
+
+    allowed = on_threads(lambda _: asyncio.run(hit_and_give_back()))
+
+    assert sum(allowed) == 50 * len(allowed)  # Each given back: none refused.
+    assert "ip:203.0.113.5" not in backend._callers
+
+
 def test_refused_credential_holds_survive_threads(
     use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
 ) -> None:

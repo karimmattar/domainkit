@@ -6,6 +6,7 @@ the account and makes its password unusable, in the same commit. Then
 ``forget_credentials`` deletes the user's tokens (sessions, personal
 tokens, refresh tokens, client certificates) and second factor (its
 secret and recovery codes): secrets of an account nobody may use.
+Deleting a user (``UserRepository.remove``) deletes them the same way.
 """
 
 from typing import TYPE_CHECKING, Final
@@ -37,8 +38,6 @@ async def forget_credentials(event: "PersonalDataErased") -> None:
         return  # A user table this project's domains do not hold.
     if event.model != f"{domain}.{model}":
         return
-    user_id = UUID(event.aggregate_id)
     async with AuthUnitOfWork() as uow:
-        await uow.tokens.revoke_user(user_id)
-        await uow.mfa.remove(user_id)
+        await uow.users.forget_credentials(UUID(event.aggregate_id))
         await uow.commit()

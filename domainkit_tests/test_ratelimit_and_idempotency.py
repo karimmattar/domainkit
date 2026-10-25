@@ -193,6 +193,37 @@ def test_memory_backend_carries_what_a_caller_owes_across_a_rate_change() -> Non
     assert faster == Decision(allowed=True, remaining=3, reset_after=30, retry_after=0)
 
 
+def test_memory_backend_gives_back_a_request_counted() -> None:
+    """A refund undoes one hit exactly: the caller is as if it never came."""
+    clock = [0.0]
+    backend = MemoryBackend(clock=lambda: clock[0])
+
+    def hit(key: str = "k") -> Decision:
+        return asyncio.run(backend.hit(key, 2, 60))
+
+    def refund(key: str = "k", limit: int = 2) -> None:
+        asyncio.run(backend.refund(key, limit, 60))
+
+    hit()
+    hit()
+    assert hit().allowed is False
+    refund()
+    clock[0] = 15  # Half an interval refilled since.
+    assert hit() == Decision(allowed=True, remaining=0, reset_after=45, retry_after=0)
+    refund()
+    refund()  # Owing nothing, the caller is forgotten.
+    assert "k" not in backend._callers
+    refund()  # Nothing to give back.
+    refund("unknown")
+    assert hit() == Decision(allowed=True, remaining=1, reset_after=30, retry_after=0)
+    refund(limit=4)  # At a new rate, a request owes half the seconds.
+    assert backend._callers["k"].owed == 1  # 30 seconds owed is two at 4/minute.
+    hit()  # At 2/minute again: half a request owed, then one more.
+    clock[0] = 21  # Six seconds paid back: a fifth of a request.
+    refund()
+    assert backend._callers["k"].owed == pytest.approx(0.3)
+
+
 def test_memory_backend_keeps_at_most_max_keys_callers() -> None:
     """Past ``max_keys``, the longest-unseen caller is forgotten and starts afresh."""
     assert MemoryBackend().max_keys == 100_000

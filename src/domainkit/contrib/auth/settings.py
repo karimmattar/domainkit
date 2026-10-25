@@ -144,9 +144,12 @@ class MfaSettings(BaseModel):
     WINDOW: int = Field(default=1, ge=0, le=10)
     """30-second steps either side of now whose codes still count (clock drift)."""
     RATE: str | None = "10/hour"
-    """Codes checked per user, and per client address at ``/mfa/login``."""
+    """Wrong codes per user, wherever they come from."""
+    ADDRESS_RATE: str | None = "60/hour"
+    """Wrong codes per client address at ``/mfa/login``, with a challenge
+    that holds: an address may be an office or a carrier's, of many users."""
 
-    @field_validator("RATE")
+    @field_validator("RATE", "ADDRESS_RATE")
     @classmethod
     def _check_rate(cls, value: str | None) -> str | None:
         """Refuse rates ``parse_rate`` cannot read."""
@@ -264,14 +267,24 @@ class AuthSettings(BaseModel):
     still make a personal token (``POST /auth/tokens``): past it, ``409
     too_many_tokens``. It bounds what one user can make the server keep."""
     LOGIN_RATE: str | None = "10/minute"
-    """Login attempts allowed per client address and per username.
+    """Wrong passwords allowed per client address and per username.
 
-    Also counts reset and verification links checked, per client address
-    (one-time codes count against ``MFA.RATE``).
+    Also counts reset, verification, signup, and second-factor links that
+    do not hold, per client address (one-time codes count against
+    ``MFA.RATE``). Checks that succeed are not counted.
     """
     EMAIL_RATE: str | None = "5/hour"
     """Requests that send mail (resets, verifications, signups) per client
     address and per email address."""
+    THROTTLE_FAIL_CLOSED: bool = False
+    """Refuse attempts with 503 while ``RATE_LIMIT_BACKEND`` cannot count them.
+
+    ``RedisBackend`` lets requests through while Redis fails, so a brute
+    force timed with an outage goes uncounted. True refuses password and
+    code checks, and requests that send mail, instead, until it counts
+    again; other requests are not affected (links are counted after their
+    check, so nothing is guessed through them).
+    """
     JWT: JWTSettings = JWTSettings()
     """Signing and lifetimes of JSON Web Tokens (``JWTAuthentication``)."""
     PASSWORD_RESET_TIMEOUT: timedelta = Field(

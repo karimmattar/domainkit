@@ -28,6 +28,8 @@ from domainkit.contrib.auth import (
     authentication,
     hashers,
 )
+from domainkit.contrib.auth import api as auth_api
+from domainkit.contrib.auth import backends as auth_backends
 from domainkit.contrib.auth import middleware as auth_middleware
 from domainkit.contrib.auth import (
     tokens as token_module,
@@ -38,9 +40,10 @@ from domainkit.contrib.auth.repositories import PrincipalStore
 from domainkit.contrib.auth.tables import tokens
 from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.db import connections
+from domainkit.ddd import F
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
-from domainkit.http.ratelimit import address_key
+from domainkit.http.ratelimit import Decision, MemoryBackend, address_key
 from domainkit.http.websockets import MIDDLEWARE as WEBSOCKET_LIMITS
 from domainkit.log import SECURITY_LOGGER
 from domainkit.management import call_command
@@ -329,6 +332,101 @@ def test_logins_are_throttled_per_address_and_per_username(api: Api) -> None:
     } == {401}
 
 
+def test_logins_that_work_use_up_no_count(api: Api) -> None:
+    """Only wrong passwords count (AUTH-02).
+
+    A service account that logs in often, or an office behind one address,
+    used to be throttled by its own logins.
+    """
+    create_user("alice")
+    create_user("bob")
+    client = api(LOGIN_RATE="2/minute")
+    right = {"username": "alice", "password": PASSWORD}
+
+    logins = [client.post("/auth/login", json=right).status_code for _ in range(5)]
+    wrong = {"username": "bob", "password": "wrong"}
+    guesses = [client.post("/auth/login", json=wrong).status_code for _ in range(2)]
+    after = client.post("/auth/login", json=right)
+
+    assert logins == [200] * 5
+    assert guesses == [401, 401]
+    assert (after.status_code, after.json()["code"]) == (429, "login_throttled")
+
+
+class NoRefunds:
+    """A backend of a project's own that cannot give a request back."""
+
+    def __init__(self) -> None:
+        """Count in memory."""
+        self.memory = MemoryBackend()
+
+    async def hit(self, key: str, limit: int, period: float) -> Decision:
+        """Count as ``MemoryBackend`` does."""
+        return await self.memory.hit(key, limit, period)
+
+
+class Uncounted:
+    """A backend whose store is down: it lets every request through, uncounted."""
+
+    async def hit(self, key: str, limit: int, period: float) -> Decision:
+        """Let the request through without counting it, as ``RedisBackend`` does."""
+        return Decision(
+            allowed=True,
+            remaining=limit - 1,
+            reset_after=0.0,
+            retry_after=0.0,
+            counted=False,
+        )
+
+
+def test_backends_without_refunds_count_every_attempt(api: Api) -> None:
+    """A backend without ``refund`` keeps counting logins that work, as before."""
+    create_user("alice")
+    right = {"username": "alice", "password": PASSWORD}
+    with override_settings(RATE_LIMIT_BACKEND=f"{__name__}.NoRefunds"):
+        client = api(LOGIN_RATE="2/minute")
+        logins = [client.post("/auth/login", json=right).status_code for _ in range(3)]
+
+    assert logins == [200, 200, 429]
+
+
+def test_attempts_the_counter_cannot_count_may_fail_closed(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """By default they are let through; ``THROTTLE_FAIL_CLOSED`` refuses them."""
+    create_user("alice")
+    checked: list[str] = []
+    real = auth_backends.authenticate
+
+    async def counted(**credentials: str) -> Any:  # noqa: ANN401 - a user.
+        checked.append(credentials["username"])
+        return await real(**credentials)
+
+    monkeypatch.setattr(auth_api, "authenticate", counted)
+    wrong = {"username": "alice", "password": "wrong"}
+    with override_settings(RATE_LIMIT_BACKEND=f"{__name__}.Uncounted"):
+        client = api(LOGIN_RATE="1/minute")
+        let_through = [
+            client.post("/auth/login", json=wrong).status_code for _ in range(3)
+        ]
+        closed = api(LOGIN_RATE="1/minute", THROTTLE_FAIL_CLOSED=True)
+        refused = closed.post("/auth/login", json=wrong)
+        unlimited = api(LOGIN_RATE=None, THROTTLE_FAIL_CLOSED=True)
+        unthrottled = unlimited.post("/auth/login", json=wrong)
+
+    assert let_through == [401] * 3
+    assert (refused.status_code, refused.json()["code"]) == (
+        503,
+        "throttle_unavailable",
+    )
+    assert refused.json()["detail"] == (
+        "Attempts cannot be counted right now; try again later."
+    )
+    assert refused.headers["Retry-After"] == "1"
+    assert unthrottled.status_code == 401  # Nothing to count, nothing refused.
+    assert checked == ["alice"] * 4  # The refused one was never checked.
+
+
 def test_a_nul_in_a_login_is_a_refused_value(api: Api, database_url: str) -> None:
     """PostgreSQL refuses a NUL in text: a 422, not a 500; SQLite takes it."""
     client = api()
@@ -410,7 +508,12 @@ def test_password_changes_have_a_count_of_their_own(api: Api) -> None:
         body = {"old_password": old, "new_password": "n3w-Passw0rd!"}
         return client.post("/auth/password", headers=alice, json=body).status_code
 
-    assert [change(PASSWORD), change("wrong"), change("wrong")] == [204, 400, 429]
+    assert [change(PASSWORD), change("wrong"), change("wrong"), change("wrong")] == [
+        204,
+        400,
+        400,
+        429,
+    ]
 
 
 def test_a_flood_of_throttled_logins_is_audited_once_per_count(api: Api) -> None:
@@ -873,7 +976,10 @@ def test_jwt_logins_refresh_and_end(api: Api, caplog: pytest.LogCaptureFixture) 
 
 
 def test_reused_refresh_tokens_of_deleted_users_still_fail(api: Api) -> None:
-    """Tokens have no foreign key: one can outlive a user removed without them."""
+    """Tokens have no foreign key: one can outlive a user's row deleted in bulk.
+
+    ``remove`` deletes them with the user; ``delete_rows`` bypasses it.
+    """
     create_user("alice")
     client = api(**JWT)
     first = login(client, "alice")["refresh_token"]
@@ -881,9 +987,7 @@ def test_reused_refresh_tokens_of_deleted_users_still_fail(api: Api) -> None:
 
     async def remove() -> None:
         async with AuthUnitOfWork() as uow:
-            user = await uow.users.get_by_natural_key("alice")
-            assert user is not None
-            await uow.users.remove(user)
+            assert await uow.users.delete_rows(F("username") == "alice") == 1
             await uow.commit()
 
     run_async(remove())

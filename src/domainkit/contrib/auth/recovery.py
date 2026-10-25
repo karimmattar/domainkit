@@ -18,10 +18,11 @@ mount the router next to the one that logs in::
 - ``POST /email-verification/confirm`` (anyone) takes the link's token.
 
 Requests that send mail count against ``AUTH.EMAIL_RATE`` per client
-address and per email address (or user); tokens checked count against
-``AUTH.LOGIN_RATE`` per client address: not per user, since a signature
-cannot be guessed, and a count anyone could use up with forged tokens
-would lock the user out of their link. Refused tokens, refusals by
+address and per email address (or user); tokens that do not hold count
+against ``AUTH.LOGIN_RATE`` per client address, once checked: not per
+user, and not before the check, since a signature cannot be guessed, and
+a count anyone could use up with forged tokens would lock people out of
+their links. Refused tokens, refusals by
 the rate, resets, and verifications go to the audit trail. Links are made
 in the worker, so no token is ever stored, not even in the outbox.
 """
@@ -59,7 +60,7 @@ from .onetime import (
     password_reset_tokens,
 )
 from .settings import TOKEN_PLACEHOLDER, auth_settings
-from .throttling import address_key, audit_refusal, email_key, throttle
+from .throttling import address_key, audit_refusal, count_failure, email_key, throttle
 from .uow import AuthUnitOfWork
 from .validators import validate_password
 
@@ -163,9 +164,7 @@ async def confirm_password_reset(
     body: PasswordResetConfirmIn, request: Request
 ) -> None:
     """Set a new password with a reset link's token; every session ends."""
-    user_id = await _limit_checks(
-        request, "password-reset", password_reset_tokens, body.token
-    )
+    user_id = password_reset_tokens.user_id(body.token)
     async with AuthUnitOfWork() as uow:
         user = await _holder(uow, password_reset_tokens, user_id, body.token)
         if user is not None:
@@ -175,6 +174,7 @@ async def confirm_password_reset(
             user.record(PasswordReset(user_id=user.id))
             await uow.commit()
     if user is None:
+        await _count_failed_check(request, "password-reset")
         await audit_refusal("auth.password_reset", "invalid_token")
         raise InvalidLink
 
@@ -208,9 +208,7 @@ async def request_email_verification(
 )
 async def confirm_email_verification(body: TokenIn, request: Request) -> None:
     """Mark the user's address verified with a link's token."""
-    user_id = await _limit_checks(
-        request, "email-verification", email_verification_tokens, body.token
-    )
+    user_id = email_verification_tokens.user_id(body.token)
     async with AuthUnitOfWork() as uow:
         user = await _holder(uow, email_verification_tokens, user_id, body.token)
         if user is not None:
@@ -218,6 +216,7 @@ async def confirm_email_verification(body: TokenIn, request: Request) -> None:
             cast(AbstractUser, user).verify_email()
             await uow.commit()
     if user is None:
+        await _count_failed_check(request, "email-verification")
         await audit_refusal("auth.email_verification", "invalid_token")
         raise InvalidLink
 
@@ -302,19 +301,20 @@ async def _limit_mail(request: Request, scope: str, recipient: str) -> None:
     )
 
 
-async def _limit_checks(
-    request: Request, scope: str, tokens: UserTokenGenerator, token: str
-) -> UserId | None:
-    """Count a token check per client address; return the user's id."""
-    await throttle(
+async def _count_failed_check(request: Request, scope: str) -> None:
+    """Count a token that did not hold, per client address (``LOGIN_RATE``).
+
+    Raises:
+        APIError: 429, past the rate.
+    """
+    await count_failure(
         request,
         auth_settings().LOGIN_RATE,
-        [address_key(request, f"{scope}-confirm")],
+        address_key(request, f"{scope}-confirm"),
         action=f"auth.{scope.replace('-', '_')}",
         detail="Too many attempts; try again later.",
         code="throttled",
     )
-    return tokens.user_id(token)
 
 
 async def _holder(

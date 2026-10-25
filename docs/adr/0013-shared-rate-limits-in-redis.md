@@ -55,3 +55,13 @@ comments).
 - `cache clear` on the limiter's cache resets every caller's quota.
 - The script needs `TIME`, `GET`, `SET`, `EVALSHA`, and `SCRIPT LOAD`, all
   in the least-privilege user `docs/cache.md` shows.
+
+## Amendment (2026-10-25)
+
+Backends may now give a counted request back (`refund`), and say whether
+they counted one (`Decision.counted`), for the attempt throttles of
+`domainkit.contrib.auth` ([0068](0068-count-failed-attempts-and-hold-back-only-guesses.md)).
+`RedisBackend` gives back in a second Lua script, on the server's clock,
+with the same commands. Requests still pass while Redis is down; only
+password and code checks and mail requests may be refused then, with
+`AUTH.THROTTLE_FAIL_CLOSED`.

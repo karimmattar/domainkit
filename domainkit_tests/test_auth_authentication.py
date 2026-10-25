@@ -26,6 +26,7 @@ from domainkit.contrib.auth.authentication import (
     load_authenticators,
 )
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.http.ratelimit import Decision, MemoryBackend
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import UseAuth
 
@@ -349,3 +350,71 @@ def test_logins_from_unknown_addresses_are_throttled_together(
     asyncio.run(_throttle(anonymous, *_login_keys(anonymous, "alice")))
     with pytest.raises(APIError, match="Too many login attempts"):
         asyncio.run(_throttle(anonymous, *_login_keys(anonymous, "bob")))
+
+
+class PartlyDown:
+    """Counts in memory, except the keys of accounts: their store is down."""
+
+    def __init__(self) -> None:
+        """Count in memory; remember what was given back."""
+        self.memory = MemoryBackend()
+        self.refunded: list[str] = []
+
+    async def hit(self, key: str, limit: int, period: float) -> Decision:
+        """Count addresses; let accounts through uncounted."""
+        if ":user:" in key:
+            return Decision(True, limit - 1, 0.0, 0.0, counted=False)
+        return await self.memory.hit(key, limit, period)
+
+    async def refund(self, key: str, limit: int, period: float) -> None:
+        """Give back in memory, and note it."""
+        self.refunded.append(key)
+        await self.memory.refund(key, limit, period)
+
+
+@pytest.mark.parametrize("closed", [False, True])
+def test_counts_taken_are_given_back_only_when_an_attempt_is_refused(
+    use_auth: UseAuth, closed: bool
+) -> None:
+    """Let through uncounted, an attempt keeps the counts it took; refused, not.
+
+    An attempt one count refuses (or cannot count, failing closed) was not
+    made: the counts before it are given back.
+    """
+    from fastapi import FastAPI
+    from starlette.requests import Request
+
+    from domainkit.contrib.auth import throttling
+    from domainkit.http.errors import APIError
+
+    use_auth(THROTTLE_FAIL_CLOSED=closed)
+    app = FastAPI()
+    backend = app.state.login_limiter = PartlyDown()
+    request = Request({"type": "http", "headers": [], "app": app})
+    limits = [
+        ("login:ip:unknown", "5/minute"),
+        ("login:user:alice", "5/minute"),
+        ("signup:ip:unknown", "5/minute"),
+    ]
+
+    def attempt() -> throttling.Attempt:
+        return asyncio.run(
+            throttling.attempt(
+                request, limits, action="auth.login", detail="No.", code="no"
+            )
+        )
+
+    if closed:
+        with pytest.raises(APIError) as refused:
+            attempt()
+        assert refused.value.status_code == 503
+        assert backend.refunded == ["login:ip:unknown"]
+        assert list(backend.memory._callers) == []  # Given back; the last unread.
+    else:
+        taken = attempt()
+        assert taken.counted == [
+            ("login:ip:unknown", 5, 60),
+            ("signup:ip:unknown", 5, 60),  # Counted on past the uncounted one.
+        ]
+        assert backend.refunded == []
+        assert backend.memory._callers["login:ip:unknown"].owed == 1
