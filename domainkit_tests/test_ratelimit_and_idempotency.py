@@ -1986,10 +1986,11 @@ def test_a_key_to_release_waits_for_the_application_to_return() -> None:
 def test_a_response_the_key_could_not_keep_stops_the_work_after_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The store fails: the error reaches the application, which runs nothing more.
+    """The store fails: the last part is not sent, and the application stops.
 
-    Work that ran with the key unsettled could run again for a retry, and
-    the failed store is not tried again as the error leaves.
+    The client gets no whole answer the key cannot stand behind, so it
+    retries; work that ran with the key unsettled could run again for that
+    retry; and the failed store is not tried again as the error leaves.
     """
     attempts: list[object] = []
 
@@ -2001,15 +2002,54 @@ def test_a_response_the_key_could_not_keep_stops_the_work_after_it(
     after = AfterResponse()
     after.release.set()
 
+    sent: list[Message] = []
+
     async def scenario() -> None:
         with pytest.raises(ConnectionError, match="keys' database is down"):
-            await after.post()
+            await after.app(PAY_SCOPE, receive_empty_body, collect(sent))
         await connections.close_all()
 
     asyncio.run(scenario())
 
+    assert [message["type"] for message in sent] == ["http.response.start"]
     assert after.calls == 0
     assert attempts == [b'{"status":"accepted"}']  # Not settled a second time.
+
+
+@pytest.mark.usefixtures("idempotent")
+@pytest.mark.parametrize("status_code", [201, 399])
+def test_a_client_holding_the_whole_response_finds_it_stored(status_code: int) -> None:
+    """The key is stored before the last part of the response goes out.
+
+    A client that retries the moment it has the whole response (here, from
+    inside ``send``, before the last part's ``send`` returns) gets the
+    replay, never a 409 for a key still in progress.
+    """
+    api = FastAPI()
+
+    @api.post("/pay", status_code=status_code)
+    async def pay() -> dict[str, str]:
+        return {"status": "paid"}
+
+    keyed = idempotency.IdempotencyMiddleware(api)
+    retried: list[Message] = []
+
+    async def send(message: Message) -> None:
+        last = message["type"] == "http.response.body" and not message.get(
+            "more_body", False
+        )
+        if last and not retried:
+            await keyed(PAY_SCOPE, receive_empty_body, collect(retried))
+
+    async def scenario() -> None:
+        await keyed(PAY_SCOPE, receive_empty_body, send)
+        await connections.close_all()
+
+    asyncio.run(scenario())
+
+    assert retried[0]["status"] == status_code
+    assert (b"idempotent-replayed", b"true") in retried[0]["headers"]
+    assert retried[-1]["body"] == b'{"status":"paid"}'
 
 
 @pytest.mark.usefixtures("idempotent")

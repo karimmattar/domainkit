@@ -1023,12 +1023,14 @@ longest a request may run:
 
 **What the key covers.** The key holds the request until its response is
 sent: the handler, its commits, and the response's body, streamed or not.
-Once the last part of a response the key keeps is sent (a success, or a
-refusal after a commit), the response, or its status, is stored before
-anything runs after it, so the work a route does after its response
-(Starlette's `BackgroundTasks`, which no deadline bounds) runs once
-however long it takes: a retry meanwhile gets the stored response, or a
-409 `idempotency_response_unavailable`. A response the key does not keep
+Before the last part of a response the key keeps is sent (a success, or
+a refusal after a commit), the response, or its status, is stored, so a
+client that has the whole response and retries at once gets the replay;
+if storing fails, that last part is not sent, and the client retries.
+Since this is before anything runs after the response, the work a route
+does after it (Starlette's `BackgroundTasks`, which no deadline bounds)
+runs once however long it takes: a retry meanwhile gets the stored
+response, or a 409 `idempotency_response_unavailable`. A response the key does not keep
 (a refusal or a server error before any commit) is settled once the
 application returns, as before: a commit made after it still keeps the
 key, and otherwise the key is released and a retry runs the request,

@@ -186,6 +186,18 @@ with no deadline at all (`REQUEST_TIMEOUT = None`, or no
   `http.response.zerocopysend`) never passes through the middleware: such
   a response is one the key does not keep. It was stored as an empty
   body, and replayed as an empty `200` (SEC-r2-8).
+- The settle comes before the last body part is sent, not after it. Sent
+  first, the whole response could reach a client that retried at once
+  while the key was still in progress, and got a 409 for a request that
+  had succeeded; settling after it made that window wider than at 0.9.0,
+  which settled as soon as the application returned. A client now never
+  holds a whole response its key does not hold too, as an API that
+  records a payment before it answers. If the store fails, the last part
+  is not sent: the client sees a broken response and retries, rather than
+  holding an answer the key cannot stand behind, and the error reaches
+  the application at that `send`, as before. A response the key does not
+  keep is still released when the application returns, so a retry in
+  that moment can still get the 409 `Retry-After: 1`, as at 0.9.0.
 - A keyed response that streams is held by its lease alone while it
   streams. With no deadline at all, `check` warns in staging and
   production; startup does not refuse in a patch release, since such

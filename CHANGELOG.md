@@ -91,9 +91,12 @@ All notable changes to domainkit. The format follows
   outlive the lease, and 0.10 refuses to start; a streamed response is
   held by the lease alone while it streams. What runs after the response
   is covered by the next entry (ADR 0062) (FIN-79, SEC-r2-4).
-- A keyed response that the key keeps is stored as soon as its last part
-  is sent, before the route's `BackgroundTasks` run, instead of once the
-  application returned. The deadline is lifted when the response starts,
+- A keyed response that the key keeps is stored just before its last part
+  is sent, so before the route's `BackgroundTasks` run, instead of once
+  the application returned. A client that retries the moment it has the
+  whole response gets the replay, never a 409 for a key still in
+  progress; if the store fails, the last part is not sent and the client
+  retries. The deadline is lifted when the response starts,
   so a provider call made after it could outlive the lease, and a retry
   then took the key over and called the provider again; a background task
   that raised released the key the same way. A retry now gets the stored

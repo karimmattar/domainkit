@@ -288,15 +288,18 @@ class IdempotencyMiddleware:
     ) -> None:
         """Run the request as the key's operation, then store or release the key.
 
-        A key that keeps the response, or its status, is settled as soon as
-        the response's last part is sent, before the application goes on to
-        anything after it (Starlette's ``BackgroundTasks``), which no longer
-        holds a deadline: a retry then gets the stored response, or a 409,
-        however long that work runs, and never runs the request again. A
-        key to be released is released once the application returns, as a
-        commit made after the response still keeps it. If storing fails,
-        the error reaches the application where it sent the response, so
-        what would have run after it does not run with the key unsettled.
+        A key that keeps the response, or its status, is settled before the
+        response's last part is sent: a client never holds a whole response
+        that a retry would find in progress, and the application goes on to
+        what runs after it (Starlette's ``BackgroundTasks``, which no longer
+        holds a deadline) only once the key is settled, so a retry gets the
+        stored response, or a 409, however long that work runs, and never
+        runs the request again. A key to be released is released once the
+        application returns, as a commit made after the response still
+        keeps it. If storing fails, the last part is not sent: the client
+        has no complete answer the key cannot stand behind, and the error
+        reaches the application where it sent that part, so what would have
+        run after it does not run with the key unsettled.
 
         If the application then raises, the response it sent no longer
         says what happened: the key is settled again as for any request
@@ -333,14 +336,13 @@ class IdempotencyMiddleware:
             size += len(message.get("body", b""))
             if size <= config.MAX_RESPONSE_BYTES:
                 chunks.append(message.get("body", b""))
+            if not (settled or message.get("more_body", False)):
+                body = kept_body()
+                if body is not None or operation.committed or operation.pinned:
+                    settled = True  # Before it runs: a cancellation must not repeat it.
+                    await _settle(config, operation, started, body)
+                    stored = True
             await send(message)
-            if settled or message.get("more_body", False):
-                return
-            body = kept_body()
-            if body is not None or operation.committed or operation.pinned:
-                settled = True  # Before it runs: a cancellation must not repeat it.
-                await _settle(config, operation, started, body)
-                stored = True
 
         with run_operation(operation):
             try:
