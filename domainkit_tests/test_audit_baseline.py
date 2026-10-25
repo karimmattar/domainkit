@@ -332,44 +332,56 @@ DROP_ROWS = f"DROP TRIGGER {LOG_ROWS} ON domainkit_audit_log"
         ),
         (  # Same names, enabled, but the function lets everything through.
             [
-                f"CREATE OR REPLACE FUNCTION {LOG_ROWS}() RETURNS trigger "
-                "LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$"
+                (
+                    f"CREATE OR REPLACE FUNCTION {LOG_ROWS}() RETURNS trigger "
+                    "LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$"
+                )
             ],
             [LOG_ROWS, LOG_TRUNCATE],
         ),
         (  # Rows may be deleted: the trigger fires on updates only.
             [
                 DROP_ROWS,
-                f"CREATE TRIGGER {LOG_ROWS} BEFORE UPDATE ON domainkit_audit_log "
-                f"FOR EACH ROW EXECUTE FUNCTION {LOG_ROWS}()",
+                (
+                    f"CREATE TRIGGER {LOG_ROWS} BEFORE UPDATE ON domainkit_audit_log "
+                    f"FOR EACH ROW EXECUTE FUNCTION {LOG_ROWS}()"
+                ),
             ],
             [LOG_ROWS],
         ),
         (  # A condition that never holds.
             [
                 DROP_ROWS,
-                f"CREATE TRIGGER {LOG_ROWS} BEFORE UPDATE OR DELETE "
-                "ON domainkit_audit_log FOR EACH ROW WHEN (false) "
-                f"EXECUTE FUNCTION {LOG_ROWS}()",
+                (
+                    f"CREATE TRIGGER {LOG_ROWS} BEFORE UPDATE OR DELETE "
+                    "ON domainkit_audit_log FOR EACH ROW WHEN (false) "
+                    f"EXECUTE FUNCTION {LOG_ROWS}()"
+                ),
             ],
             [LOG_ROWS],
         ),
         (  # Updates of other columns go through.
             [
                 DROP_ROWS,
-                f"CREATE TRIGGER {LOG_ROWS} BEFORE UPDATE OF actor OR DELETE "
-                f"ON domainkit_audit_log FOR EACH ROW EXECUTE FUNCTION {LOG_ROWS}()",
+                (
+                    f"CREATE TRIGGER {LOG_ROWS} BEFORE UPDATE OF actor OR DELETE "
+                    f"ON domainkit_audit_log FOR EACH ROW EXECUTE FUNCTION {LOG_ROWS}()"
+                ),
             ],
             [LOG_ROWS],
         ),
         (  # The same names, running another function.
             [
-                "CREATE FUNCTION let_through() RETURNS trigger LANGUAGE plpgsql "
-                "AS $$ BEGIN RETURN NULL; END $$",
+                (
+                    "CREATE FUNCTION let_through() RETURNS trigger LANGUAGE plpgsql "
+                    "AS $$ BEGIN RETURN NULL; END $$"
+                ),
                 f"DROP TRIGGER {LOG_TRUNCATE} ON domainkit_audit_log",
-                f"CREATE TRIGGER {LOG_TRUNCATE} BEFORE TRUNCATE "
-                "ON domainkit_audit_log "
-                "FOR EACH STATEMENT EXECUTE FUNCTION let_through()",
+                (
+                    f"CREATE TRIGGER {LOG_TRUNCATE} BEFORE TRUNCATE "
+                    "ON domainkit_audit_log "
+                    "FOR EACH STATEMENT EXECUTE FUNCTION let_through()"
+                ),
             ],
             [LOG_TRUNCATE],
         ),
@@ -379,10 +391,12 @@ DROP_ROWS = f"DROP TRIGGER {LOG_ROWS} ON domainkit_audit_log"
         ),
         (  # The same function written out again, laid out otherwise.
             [
-                f"CREATE OR REPLACE FUNCTION {LOG_ROWS}() RETURNS trigger "
-                "LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION "
-                "'domainkit_audit_log is append-only' "
-                "USING ERRCODE = 'insufficient_privilege'; END $$"
+                (
+                    f"CREATE OR REPLACE FUNCTION {LOG_ROWS}() RETURNS trigger "
+                    "LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION "
+                    "'domainkit_audit_log is append-only' "
+                    "USING ERRCODE = 'insufficient_privilege'; END $$"
+                )
             ],
             [],
         ),
