@@ -1,8 +1,8 @@
 """The {{ domain }} unit of work on the database, and its repositories."""
 
+from domainkit.db import SqlAlchemyRepository, SqlAlchemyUnitOfWork
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from domainkit.db import SqlAlchemyRepository, SqlAlchemyUnitOfWork
 from {{ package }}.application.unit_of_work import {{ Domain }}UnitOfWork
 from {{ package }}.domain.model import {{ Aggregate }}, {{ Aggregate }}Id, {{ Aggregate }}Repository
 

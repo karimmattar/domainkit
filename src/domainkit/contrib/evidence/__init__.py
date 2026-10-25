@@ -17,7 +17,7 @@ outbox once the change commits.
 """
 
 from domainkit.apps import registry
-from domainkit.contrib.evidence.model import (
+from domainkit.contrib.evidence.models import (
     Evidence,
     EvidenceConflict,
     EvidenceNotFound,

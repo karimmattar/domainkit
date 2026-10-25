@@ -33,6 +33,7 @@ from domainkit.lifecycle import (
     shutdown_timeout,
     unregister,
 )
+from domainkit.log import aflush_logs
 from domainkit.management.base import run_async
 from domainkit.tasks import owned, spawn
 from domainkit.utils import closing as closing_module
@@ -390,6 +391,71 @@ async def test_registering_a_name_again_replaces_its_closer(
     closed.clear()
     await close_resources()
     assert "second" not in closed
+
+
+def test_one_table_lists_every_closer_in_the_steps_it_runs() -> None:
+    """The framework's kinds and registered closers, by phase and step.
+
+    Resources close in one step, the framework's kinds first; the flush runs
+    the registered closers, then held-back counts, reports, and logs alone.
+    """
+
+    async def close() -> None:
+        return None
+
+    register("search index", close)
+    register("publishers", close, phase=Phase.DRAIN)
+    register("exports", close, phase=Phase.FLUSH)
+
+    def names(phase: Phase) -> list[list[str]]:
+        return [list(step) for step in lifecycle.closers(phase)]
+
+    assert names(Phase.DOMAINS) == names(Phase.TASKS) == []
+    assert names(Phase.DRAIN)[-1][-1] == "publishers"
+    assert names(Phase.RESOURCES)[0][:5] == [
+        "caches",
+        "HTTP clients",
+        "databases",
+        "ledgers",
+        "brokers",
+    ]
+    assert len(names(Phase.RESOURCES)) == 1
+    assert names(Phase.RESOURCES)[0][-1] == "search index"
+    assert names(Phase.FLUSH)[0][-1] == "exports"
+    flushes = [["held-back log lines"], ["error reports"], ["logs"]]
+    assert names(Phase.FLUSH)[1:] == flushes
+
+
+def test_the_framework_kinds_are_looked_up_when_shutting_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A handler or flush replaced after import is the one closed."""
+
+    async def replaced() -> None:
+        return None
+
+    monkeypatch.setattr(cache_handler, "close_all", replaced)
+    monkeypatch.setattr(lifecycle, "close_http_clients", replaced)
+    monkeypatch.setattr(lifecycle, "aflush_logs", replaced)
+
+    resources = lifecycle.closers(Phase.RESOURCES)[0]
+    assert resources["caches"] is replaced
+    assert resources["HTTP clients"] is replaced
+    assert lifecycle.closers(Phase.FLUSH)[-1] == {"logs": replaced}
+
+
+def test_the_old_tables_are_views_of_the_one_table() -> None:
+    """``_builtin`` and ``_flushes`` read the framework's part of the table."""
+    assert lifecycle._builtin() == {
+        "caches": cache_handler.close_all,
+        "HTTP clients": lifecycle.close_http_clients,
+        "databases": connections.close_all,
+        "ledgers": ledgers.close_all,
+        "brokers": brokers.close_all,
+    }
+    flushes = ["held-back log lines", "error reports", "logs"]
+    assert list(lifecycle._flushes()) == flushes
+    assert lifecycle._flushes()["logs"] is aflush_logs
 
 
 def test_management_commands_run_every_phase(monkeypatch: pytest.MonkeyPatch) -> None:

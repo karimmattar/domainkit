@@ -29,6 +29,16 @@ from .settings import auth_settings
 from .uow import AuthUnitOfWork
 from .users import get_user_model
 
+__all__ = [
+    "BaseBackend",
+    "ModelBackend",
+    "authenticate",
+    "get_all_permissions",
+    "get_user",
+    "has_perm",
+    "has_perms",
+]
+
 
 class BaseBackend:
     """A backend that knows no one and grants nothing; override what you need."""

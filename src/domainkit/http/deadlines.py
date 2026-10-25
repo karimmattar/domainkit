@@ -44,6 +44,12 @@ except ImportError:  # pragma: no cover - only without the [metrics] extra.
         """Record nothing: ``prometheus_client`` is not installed."""
 
 
+__all__ = [
+    "DeadlineMiddleware",
+    "RequestTimeout",
+]
+
+
 DEADLINE_EXCEEDED: Final = "deadline_exceeded"
 """The error code of a request answered 503 because its deadline passed."""
 RETRY_AFTER: Final = "1"

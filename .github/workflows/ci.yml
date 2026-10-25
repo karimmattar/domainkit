@@ -49,6 +49,8 @@ jobs:
       - run: poetry run ruff check .
       - run: poetry run ruff format --check .
       - run: poetry run mypy
+      # Every package src imports is declared ([tool.deptry] in pyproject.toml).
+      - run: poetry run deptry .
 
   # The main branch ruleset (.github/rulesets/main.json) requires the names
   # of the jobs that run on pull requests; rename them there in the same

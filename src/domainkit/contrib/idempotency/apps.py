@@ -33,6 +33,7 @@ class IdempotencyConfig(DomainConfig):
     label = "idempotency"
     verbose_name = "Idempotency keys"
     settings_class = IdempotencySettings
+    requires = ()
 
     def ready(self) -> None:
         """Check the keys' database and lease; schedule the purge with messaging.

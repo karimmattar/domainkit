@@ -27,6 +27,11 @@ from sqlalchemy import Connection, Table
 
 from .tables import audit_log
 
+__all__ = [
+    "protect",
+    "unprotect",
+]
+
 ROW_TRIGGER: Final = 1 | 2 | 8 | 16
 """``pg_trigger.tgtype`` of ``BEFORE UPDATE OR DELETE ... FOR EACH ROW``.
 

@@ -60,6 +60,10 @@ from .uow import AuthUnitOfWork
 from .users import get_user_model
 from .validators import validate_password
 
+__all__ = [
+    "router",
+]
+
 PAGE_SIZE: Final = 50
 MAX_PAGE_SIZE: Final = 200
 HIDDEN_FIELDS: Final = frozenset(

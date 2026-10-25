@@ -26,6 +26,10 @@ from fastapi.dependencies.models import Dependant
 from fastapi.routing import APIRoute, APIWebSocketRoute, iter_route_contexts
 from starlette.routing import BaseRoute, Host, Mount
 
+__all__ = [
+    "allow_sync",
+]
+
 SYNC_ALLOWED: Final = "__domainkit_sync_allowed__"
 """The attribute ``allow_sync`` sets."""
 ROUTES_NAMED: Final = 3

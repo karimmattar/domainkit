@@ -34,6 +34,10 @@ from domainkit.db import connections
 from .personal import audited_databases
 from .tables import audit_log
 
+__all__ = [
+    "history",
+]
+
 MAX_LIMIT: Final = 200
 FIELD: Final = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
 """A field of ``details`` that names an aggregate."""

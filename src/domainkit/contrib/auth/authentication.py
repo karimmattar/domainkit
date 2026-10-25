@@ -57,6 +57,15 @@ from .settings import (
 from .tokens import TokenKind, token_digest, utc_now, well_formed
 from .uow import AuthUnitOfWork
 
+__all__ = [
+    "AuthenticationFailed",
+    "BaseAuthentication",
+    "Credentials",
+    "JWTAuthentication",
+    "TokenAuthentication",
+    "active_user",
+]
+
 security_logger = logging.getLogger(SECURITY_LOGGER)
 
 

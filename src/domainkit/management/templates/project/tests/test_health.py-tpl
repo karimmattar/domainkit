@@ -1,7 +1,6 @@
 """The application starts, answers its probes, and knows who calls it."""
 
 import pytest
-
 from domainkit.testing import AsyncTestClient, TestClient
 
 

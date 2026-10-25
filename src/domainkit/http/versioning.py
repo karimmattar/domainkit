@@ -44,6 +44,11 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from domainkit.exceptions import ImproperlyConfigured
 
+__all__ = [
+    "Deprecation",
+    "versioned_router",
+]
+
 SCOPE_KEY: Final = "domainkit.deprecation"
 """Where the deprecation of the route serving a request is kept in its scope."""
 _VERSION: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}")

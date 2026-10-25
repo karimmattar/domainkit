@@ -35,6 +35,11 @@ from domainkit.db.orm import metadata
 from domainkit.db.routing import router
 from domainkit.exceptions import ImproperlyConfigured
 
+__all__ = [
+    "Interval",
+    "partition_by_range",
+]
+
 PARTITIONING: Final = "partitioning"
 """Key in ``Table.info`` holding a table's ``RangePartitioning``."""
 _SUFFIX: Final = re.compile(r"_p(\d{8})$")

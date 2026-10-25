@@ -18,14 +18,22 @@ upgrade one minor release at a time.
 
 These are covered by the policy:
 
-- names exported by a package's `__init__` (`domainkit.ddd`, `domainkit.http`, `domainkit.contrib.messaging`, ...)
+- the names listed in [api.md](api.md): every name a package or module
+  puts in its `__all__` (`domainkit.ddd.Selection`,
+  `domainkit.http.middleware.CORSMiddleware`, ...), and only those. A test
+  keeps the page and the code in step, and fails when another page tells
+  users to import a name that is not listed
 - documented settings and their defaults
 - management commands and their options
 - the generated domain layout (`startdomain`)
 - table schemas of the contrib apps, which change only with a migration in the release
 
-Names starting with `_`, modules not exported from a package, and the exact
-wording of log messages are internal and may change in any release.
+Names starting with `_`, modules without `__all__`, names a module does not
+list in its `__all__`, and the exact wording of log and error messages are
+internal and may change in any release. Until 0.9.2 the rule named only
+what a package's `__init__` exported, which left out most of what the pages
+told users to use, such as the middleware; those are listed now
+([ADR 0076](adr/0076-public-api-is-docs-api-md.md)).
 
 ## Deprecating
 
@@ -48,6 +56,18 @@ A public API is never removed without warning:
 
 A security fix may break compatibility in a patch release when there is no
 safe alternative. Its changelog entry says so.
+
+A patch release deprecates nothing: a new warning would fail the projects
+that make deprecations errors, as below. When a patch adds a better name,
+the old one stays without a warning, and the next minor release deprecates
+it.
+
+### Deprecations planned for 0.10
+
+| Old name | Use instead | Since |
+| --- | --- | --- |
+| `domainkit.ddd.query.Query` | `domainkit.ddd.Selection` | 0.9.2 |
+| `domainkit.contrib.evidence.model` | `domainkit.contrib.evidence` (or its `models`) | 0.9.2 |
 
 To find deprecated uses before upgrading, make the warning an error in the
 project's pytest settings:
@@ -73,6 +93,13 @@ installs the wheel with the newest releases the ranges allow and runs the
 suite, on every pull request and weekly. When an upstream release breaks
 it, the next patch release fixes domainkit or lowers that range's top.
 Renovate widens a range when a new major appears, once CI passes with it.
+
+Every package the code imports is declared, even one that another
+dependency already installs (anyio through Starlette, pydantic-core through
+pydantic): in the dependencies when the core imports it, otherwise in the
+extra of the feature that does (`aiormq` in `rabbitmq`, `httpcore2` in
+`httpclient`, `grpcio` and `ecdsa` in `immudb`). CI's lint job checks it
+with deptry (`[tool.deptry]` in `pyproject.toml`).
 
 ## Making a release
 

@@ -30,6 +30,10 @@ dependencies = [
     "sqlalchemy[asyncio] (>=2.1.4,<2.2)",
     "alembic (>=1.20.0,<2.0.0)",
     "python-dotenv (>=1.2.4,<2.0.0)",
+    # Imported directly, though Starlette and pydantic already install them:
+    # declared so that a change in theirs cannot break domainkit's import.
+    "anyio (>=4.10.0,<5.0.0)",
+    "pydantic-core (>=2.50.1,<3.0.0)",
 ]
 
 [project.optional-dependencies]
@@ -46,21 +50,35 @@ jwt = ["pyjwt[crypto] (>=2.10.1,<3.0.0)"]
 # it stores (auth.mfa).
 mfa = ["cryptography (>=50.0.2,<51.0.0)"]
 # Ledgers for evidence (WORM): immudb's SDK, with its verified operations.
-immudb = ["immudb-py (>=1.5.0,<2.0.0)"]
+# grpcio for TLS channels and ecdsa's signature error, both installed by
+# immudb-py, are imported directly.
+immudb = [
+    "immudb-py (>=1.5.0,<2.0.0)",
+    "grpcio (>=1.62.1,<2.0.0)",
+    "ecdsa (>=0.18.0,<1.0.0)",
+]
 # A message broker for the worker: RabbitMQ, through aio-pika.
-rabbitmq = ["aio-pika (>=10.1.0,<11.0.0)"]
+# aiormq, which aio-pika installs, for the one error it does not re-export.
+rabbitmq = ["aio-pika (>=10.1.0,<11.0.0)", "aiormq (>=7.1.3,<8.0.0)"]
 # Shared caches and rate limits: Redis or Valkey, through redis-py.
 redis = ["redis (>=8.1.0,<9.0.0)"]
 # File uploads (domainkit.http.uploads): FastAPI reads multipart forms with it.
 uploads = ["python-multipart (>=0.0.32,<1.0.0)"]
 # The domainkit.testing pytest plugin; Starlette's TestClient needs httpx2.
-testing = ["pytest (>=9.1.1,<10.0.0)", "httpx2 (>=2.13.0,<3.0.0)"]
+# anyio 4.12 is the first whose plugin runs "@pytest.mark.anyio" tests only
+# on the event loops that are installed (asyncio, not trio).
+testing = [
+    "pytest (>=9.1.1,<10.0.0)",
+    "httpx2 (>=2.13.0,<3.0.0)",
+    "anyio (>=4.12.0,<5.0.0)",
+]
 # Outgoing webhooks (domainkit.contrib.webhooks) send with httpx2 and encrypt
 # subscription secrets with AES-GCM.
 webhooks = ["httpx2 (>=2.13.0,<3.0.0)", "cryptography (>=50.0.2,<51.0.0)"]
 # Outgoing HTTP calls (domainkit.http.client): pooled, bounded by the
 # request's deadline, retried, with a circuit breaker per host.
-httpclient = ["httpx2 (>=2.13.0,<3.0.0)"]
+# httpcore2 (httpx2's transport) for its pool and network backend.
+httpclient = ["httpx2 (>=2.13.0,<3.0.0)", "httpcore2 (>=2.13.0,<3.0.0)"]
 # The IANA time zones for cron schedules where the system has none (Windows).
 tzdata = ["tzdata (>=2025.2)"]
 # uvloop's event loop for management commands and runserver (EVENT_LOOP).
@@ -110,6 +128,10 @@ dev = [
     "mutmut (>=3.8.0,<4.0.0)",
     # The CI tests read the workflows as YAML.
     "pyyaml (>=6.0.3,<7.0.0)",
+    # Every package the code imports is declared, and every one declared is
+    # used. Only the lint job (3.13) runs it, and it has no wheel for
+    # free-threaded 3.14t, which would have to build it with Rust.
+    "deptry (>=0.25.1,<0.26.0) ; python_version < \"3.14\"",
 ]
 
 [tool.ruff]
@@ -151,6 +173,31 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["yaml"]
 ignore_missing_imports = true
+# "deptry .": each package src imports is declared, in dependencies or the
+# extra of the feature that imports it (deptry counts extras as declared).
+[tool.deptry]
+known_first_party = ["domainkit"]
+extend_exclude = ["domainkit_tests", "benchmarks", "mutants"]
+
+# Distributions whose modules have other names, so that deptry needs no
+# installed metadata to match them.
+[tool.deptry.package_module_name_map]
+aio-pika = "aio_pika"
+argon2-cffi = "argon2"
+grpcio = "grpc"
+immudb-py = "immudb"
+opentelemetry-api = "opentelemetry"
+prometheus-client = "prometheus_client"
+pydantic-core = "pydantic_core"
+pyjwt = "jwt"
+python-dotenv = "dotenv"
+python-multipart = "python_multipart"
+tzdata = "tzdata"
+
+[tool.deptry.per_rule_ignores]
+# Loaded by name, not imported: SQLAlchemy loads the database drivers named
+# in DATABASES, FastAPI reads multipart forms, zoneinfo reads tzdata.
+DEP002 = ["asyncpg", "aiosqlite", "python-multipart", "tzdata"]
 
 [tool.pytest.ini_options]
 testpaths = ["domainkit_tests"]

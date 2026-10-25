@@ -52,7 +52,7 @@ returns a unit of work (a class is called without arguments), and
 `schema_for(model)`; pass `schema=` (and `present=`, a function from the
 aggregate to it) for one of your own. The id's path parameter is
 `<basename>_id`, `product_id` here, typed as the aggregate's ids are.
-`filters` is a `FilterSet`, or any dependency that returns a `Query` or
+`filters` is a `FilterSet`, or any dependency that returns a `Selection` or
 criteria. Every route, its parameters, and the errors it may answer with
 are in OpenAPI.
 
@@ -430,7 +430,9 @@ The generators check every name (snake_case or CamelCase identifiers, no
 keywords, nothing already defined), find what they edit by its syntax
 tree, and plan every edit in memory: a file changed beyond recognition is
 refused, and then nothing is written. They format what they wrote with
-ruff. `fakes.py` gains `new_<name>()`, a valid aggregate, and
+the project's ruff, which `init` puts in its dev group; where ruff is not
+installed, they log a warning and leave the code for
+`ruff check --fix . && ruff format .`. `fakes.py` gains `new_<name>()`, a valid aggregate, and
 `new_<name>_request()`, a valid body to create one, which the tests of
 later generators start from. What they generate passes ruff, `mypy
 --strict`, and its own tests, as the generators' own test checks.

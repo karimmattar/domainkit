@@ -56,6 +56,10 @@ from domainkit.http.ratelimit import MemoryBackend
 from domainkit.http.servers import limit_warnings, server_limits
 from domainkit.log import SECURITY_LOGGER
 
+__all__ = [
+    "WebSocketLimitsMiddleware",
+]
+
 logger = logging.getLogger(__name__)
 security_logger = logging.getLogger(SECURITY_LOGGER)
 
