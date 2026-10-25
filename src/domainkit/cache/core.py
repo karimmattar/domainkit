@@ -20,7 +20,7 @@ import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from datetime import timedelta
 from enum import Enum
-from functools import cache
+from functools import cache, partial
 from typing import Any, Final, Literal, overload
 
 from pydantic import TypeAdapter, ValidationError
@@ -28,6 +28,7 @@ from pydantic_core import PydanticSerializationError, from_json, to_json
 
 from domainkit.cache.base import CacheError, CacheUnavailable, Store
 from domainkit.conf import CacheConfig
+from domainkit.deadlines import current_deadline
 from domainkit.tasks import spawn
 
 try:
@@ -100,6 +101,19 @@ def split(raw: bytes) -> tuple[bytes, float | None, float]:
     return payload, float(expires), float(delta)
 
 
+class _Computation:
+    """A shared ``get_or_set`` computation of one key."""
+
+    __slots__ = ("abandoned", "task")
+
+    def __init__(self, task: asyncio.Task[bytes]) -> None:
+        """Share ``task``."""
+        self.task = task
+        self.abandoned = False
+        """Whether its owner was cancelled, so it was stopped: callers still
+        waiting share another one."""
+
+
 class Cache:
     """One configured cache; get it from ``domainkit.cache.caches``."""
 
@@ -124,7 +138,7 @@ class Cache:
         self._monotonic = monotonic
         self._uniform = uniform
         self._skip_until = -math.inf
-        self._computing: dict[str, asyncio.Task[bytes]] = {}
+        self._computing: dict[str, _Computation] = {}
 
     def make_key(self, key: str) -> str:
         """Return the full key stored for ``key``: namespace, version, key."""
@@ -283,7 +297,7 @@ class Cache:
         Callers still waiting for a cancelled computation compute their own
         value, as when the cache fails.
         """
-        computing = list(self._computing.values())
+        computing = [computation.task for computation in self._computing.values()]
         for task in computing:
             task.cancel()
         await asyncio.gather(*computing, return_exceptions=True)
@@ -383,32 +397,85 @@ class Cache:
     ) -> bytes:
         """Share one computation of ``full`` among concurrent callers; its JSON.
 
-        The first caller decides whether the result is written to the store.
-        The computation is a background task of its own, in a clean context
-        (``domainkit.tasks.spawn``): it serves every caller, so it runs as
-        none of them, and shutdown stops it before what it uses closes.
-        """
-        task = self._computing.get(full)
-        if task is None:
-            computation = self._compute(full, factory, milliseconds, write=write)
-            task = spawn(computation, name=COMPUTE_TASK, log_errors=False)
-            self._computing[full] = task
-            task.add_done_callback(lambda done: self._forget(full, done))
-        try:
-            # Waiting does not cancel the computation, which goes on for the
-            # other callers (asyncio.shield would, on 3.14, log its failure).
-            await asyncio.wait([task])
-            return task.result()
-        except asyncio.CancelledError:
-            caller = asyncio.current_task()
-            if caller is None or caller.cancelling():
-                raise
-            # Not cancelled itself, so shutdown or close() stopped the computation.
-            return encode(await factory())
+        The caller that starts the computation owns it: it runs that caller's
+        ``factory``, under that caller's deadline, and decides whether the
+        result is written to the store. It is a background task of its own,
+        in a clean context otherwise (``domainkit.tasks.spawn``), and
+        shutdown stops it before what it uses closes.
 
-    def _forget(self, full: str, task: asyncio.Task[bytes]) -> None:
+        The computation never outlives its owner's wait, so a factory may use
+        what its caller holds (a unit of work's session): when the owner is
+        cancelled, the computation is cancelled and the owner waits for it to
+        stop before its own cancellation goes on. The callers still waiting
+        then share a new computation, started by one of them.
+        """
+        while True:
+            computation = self._computing.get(full)
+            owner = computation is None
+            if computation is None:
+                computation = self._start(full, factory, milliseconds, write=write)
+            task = computation.task
+            try:
+                # Waiting does not cancel the computation, which goes on for the
+                # other callers (asyncio.shield would, on 3.14, log its failure).
+                await asyncio.wait([task])
+            except asyncio.CancelledError:
+                if owner:
+                    await self._abandon(full, computation)
+                raise
+            if not task.cancelled():
+                return task.result()
+            if not computation.abandoned:
+                # Shutdown or close() stopped it: compute without the store.
+                return encode(await factory())
+            # Its owner was cancelled: share another computation (or start it).
+
+    def _start(
+        self,
+        full: str,
+        factory: Callable[[], Awaitable[Any]],
+        milliseconds: int | None,
+        *,
+        write: bool,
+    ) -> "_Computation":
+        """Start computing ``full`` for the calling task, under its deadline."""
+        task = spawn(
+            self._compute(full, factory, milliseconds, write=write),
+            name=COMPUTE_TASK,
+            log_errors=False,
+            deadline=current_deadline(),
+        )
+        computation = self._computing[full] = _Computation(task)
+        task.add_done_callback(partial(self._forget, full, computation))
+        return computation
+
+    async def _abandon(self, full: str, computation: "_Computation") -> None:
+        """Stop the computation of an owner that was cancelled, and wait for it.
+
+        Its factory may be using the owner's resources, which the owner
+        releases once its cancellation goes on. A computation already being
+        stopped (shutdown, ``close()``) is only waited for. A second
+        cancellation of the owner stops the wait.
+        """
+        task = computation.task
+        if task.done():
+            return
+        if not task.cancelling():
+            computation.abandoned = True
+            self._discard(full, computation)
+            task.cancel()
+        await asyncio.wait([task])
+
+    def _discard(self, full: str, computation: "_Computation") -> None:
+        """Stop sharing ``computation``: callers that come next start another."""
+        if self._computing.get(full) is computation:
+            del self._computing[full]
+
+    def _forget(
+        self, full: str, computation: "_Computation", task: asyncio.Task[bytes]
+    ) -> None:
         """Drop a finished computation; its error reaches whoever awaited it."""
-        del self._computing[full]
+        self._discard(full, computation)
         if not task.cancelled():  # Cancelled by close(), or when its loop closes.
             task.exception()
 

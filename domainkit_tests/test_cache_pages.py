@@ -3,25 +3,31 @@
 import asyncio
 import inspect
 import re
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from datetime import timedelta
-from typing import Any, Final
+from typing import Annotated, Any, Final
 
 import pytest
-from fastapi import FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 from starlette.authentication import AuthCredentials
 
 from domainkit.cache import cache_page, caches
+from domainkit.cache.core import COMPUTE_TASK
 from domainkit.cache.pages import REQUEST, RESPONSE, _matches, _signature, _user
 from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.auth.authentication import Credentials
+from domainkit.db import connections
 from domainkit.http import get_asgi_application
+from domainkit.tasks import owned
+from domainkit.testing import AsyncTestClient
 from domainkit.testing import TestClient as DomainkitTestClient
 from domainkit_tests import sample_platform_routes
 from domainkit_tests.conftest import MakePackage, UseAuth
 from domainkit_tests.sample_platform_routes import COOKIE_USERS
+from domainkit_tests.test_db import NotesUnitOfWork, database  # noqa: F401 - a fixture.
 
 MIDDLEWARE: Final = [
     "domainkit.http.locale.LocaleMiddleware",
@@ -504,3 +510,52 @@ def test_validator_matching() -> None:
     assert not _matches("", etag)
     assert not _matches('"abcd"', etag)
     assert not _matches('W/"ab"', etag)
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("database")
+async def test_a_request_cut_off_during_a_miss_returns_its_connection() -> None:
+    """The endpoint stops before its dependencies close, so nothing leaks.
+
+    A request cancelled while its endpoint computes the entry (its deadline
+    passed, its client went away) closes its unit of work on the way out:
+    the endpoint runs no statement on it after that, and the pool gets its
+    connection back.
+    """
+    app = FastAPI()
+    started, release = asyncio.Event(), asyncio.Event()
+    ran: list[int] = []
+
+    async def unit_of_work() -> AsyncIterator[NotesUnitOfWork]:
+        async with NotesUnitOfWork() as uow:
+            yield uow
+
+    @app.get("/report")
+    @cache_page(ttl=60)
+    async def report(
+        uow: Annotated[NotesUnitOfWork, Depends(unit_of_work)],
+    ) -> dict[str, int]:
+        ran.append(await uow.session.scalar(text("SELECT 1")) or 0)
+        started.set()
+        await release.wait()
+        ran.append(await uow.session.scalar(text("SELECT 2")) or 0)
+        return {"rows": 2}
+
+    engine = connections.engine()
+    try:
+        async with AsyncTestClient(app, lifespan=False) as client:
+            asking = asyncio.create_task(client.get("/report"))
+            async with asyncio.timeout(30):
+                await started.wait()
+            computing = {t for t in owned() if t.get_name() == COMPUTE_TASK}
+            asking.cancel()
+            await asyncio.wait([asking], timeout=30)
+            release.set()
+            await asyncio.wait(computing, timeout=30)
+
+        assert asking.cancelled()
+        assert engine.pool.checkedout() == 0  # type: ignore[attr-defined]
+        assert ran == [1]
+    finally:
+        release.set()
+        await connections.close_all()

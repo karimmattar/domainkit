@@ -8,6 +8,17 @@ All notable changes to domainkit. The format follows
 
 ### Fixed
 
+- A `get_or_set`, `@cached`, or `@cache_page` caller cut off during a
+  miss (its deadline passed, its client went away) no longer leaves its
+  computation running on what it closed: the computation runs the factory
+  of the caller that started it, is cancelled with that caller, and the
+  caller's cancellation goes on only once the factory has stopped. A
+  `@cache_page` endpoint that takes a unit of work, or a factory that uses
+  its caller's session, no longer leaks a pooled connection per cut-off
+  request. Callers still waiting share a new computation of their own;
+  computations run under the deadline of the caller that started them,
+  so their statements and outgoing calls keep to it. `docs/cache.md` says
+  what a factory may use (CONC-02; ADR 0071).
 - Event loops on several threads (free-threaded Python, a loop per
   thread) looking up a memory cache for the first time at once get one
   store per alias, and an application's throttle backend is made once:
