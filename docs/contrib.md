@@ -1033,6 +1033,22 @@ and its background work, again. A streamed response is held only by
 the lease while it streams, since its deadline is lifted when it starts:
 keep a keyed response's streaming within `LEASE_SECONDS`.
 
+The key answers for the response, not for the work after it. A `202`
+stored before its background work runs is what a retry gets while that
+work runs, whether it then succeeds or not: the key does not tell the
+client how the work ended, so give it a resource to look that up. If the
+work raises, the key is settled again as for any request that raised:
+released when nothing committed or pinned it, so a later retry runs the
+request and the work again, or else kept with its status alone, a 409
+`idempotency_response_unavailable`.
+
+A body the application sends by path or by file descriptor
+(`FileResponse` on a server with the ASGI `http.response.pathsend`
+extension, or `http.response.zerocopysend`) never passes through the
+middleware, so the key cannot keep it: it is treated as a response the
+key does not keep, and a retry runs the request again, or gets the 409
+after a commit.
+
 The keys' database decides when a lease or a key runs out. On PostgreSQL,
 the claim, the take-over and the purge compare and write
 `statement_timestamp()`, as the outbox does, so hosts whose clocks

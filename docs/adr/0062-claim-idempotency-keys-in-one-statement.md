@@ -173,6 +173,19 @@ with no deadline at all (`REQUEST_TIMEOUT = None`, or no
   it keeps the bound but adds a write per lease interval and a timer per
   keyed request, and a retry would still wait on work the client is not
   waiting for. Storing the response first answers the retry at once.
+- If the application raises after that early settle (a background task
+  that failed), the key is settled again, as for any request that raised:
+  released when nothing committed or pinned it, so a retry runs the work
+  that failed, or else kept with its status alone, a 409. Replaying the
+  stored `202` would tell every retry for `TTL_SECONDS` that work that
+  never happened was accepted (SEC-r2-7). This settle is on the failure
+  path only; a settle that itself failed or was cancelled is not repeated.
+  A retry that arrives while the work runs still gets the stored
+  response, which says nothing of how the work ends.
+- A body sent by path or by file descriptor (`http.response.pathsend`,
+  `http.response.zerocopysend`) never passes through the middleware: such
+  a response is one the key does not keep. It was stored as an empty
+  body, and replayed as an empty `200` (SEC-r2-8).
 - A keyed response that streams is held by its lease alone while it
   streams. With no deadline at all, `check` warns in staging and
   production; startup does not refuse in a patch release, since such

@@ -81,6 +81,10 @@ SETTLE_TASK: Final = "domainkit.idempotency.settle"
 HEADER: Final = "idempotency-key"
 REPLAYED: Final = "Idempotent-Replayed"
 _STORED_HEADERS: Final = frozenset({"content-type", "location", "content-language"})
+UNSEEN_BODIES: Final = frozenset(
+    {"http.response.pathsend", "http.response.zerocopysend"}
+)
+"""ASGI messages that send a body the middleware never sees, so cannot keep."""
 LAPSED: Final = "lapsed"
 """Read with a held key's row: whether its lease ran out, on the database's clock."""
 
@@ -293,11 +297,20 @@ class IdempotencyMiddleware:
         commit made after the response still keeps it. If storing fails,
         the error reaches the application where it sent the response, so
         what would have run after it does not run with the key unsettled.
+
+        If the application then raises, the response it sent no longer
+        says what happened: the key is settled again as for any request
+        that raised, so it is released unless something committed or
+        pinned it, and a retry runs the work that failed. A body sent by
+        path or by file descriptor (``http.response.pathsend``,
+        ``http.response.zerocopysend``) is never seen, so it is not kept.
         """
         started: dict[str, Any] = {}
         chunks: list[bytes] = []
         size = 0
-        settled = False
+        settled = False  # A settle began: never begin another while it may run.
+        stored = False  # The early settle finished.
+        unseen = False  # Part of the body went by path or file descriptor.
 
         def kept_body() -> bytes | None:
             """The body to store, if the response is kept; None if not."""
@@ -305,16 +318,18 @@ class IdempotencyMiddleware:
             kept = (
                 (code < 400 or (code < 500 and operation.committed))
                 and size <= config.MAX_RESPONSE_BYTES
+                and not unseen
                 and not _no_store(started)
             )
             return b"".join(chunks) if kept else None
 
         async def capture(message: Message) -> None:
-            nonlocal size, settled
+            nonlocal size, settled, stored, unseen
             if message["type"] == "http.response.start":
                 started.update(message)
                 await send(message)
                 return
+            unseen = unseen or message["type"] in UNSEEN_BODIES
             size += len(message.get("body", b""))
             if size <= config.MAX_RESPONSE_BYTES:
                 chunks.append(message.get("body", b""))
@@ -325,12 +340,13 @@ class IdempotencyMiddleware:
             if body is not None or operation.committed or operation.pinned:
                 settled = True  # Before it runs: a cancellation must not repeat it.
                 await _settle(config, operation, started, body)
+                stored = True
 
         with run_operation(operation):
             try:
                 await self.app(scope, receive, capture)
             except BaseException:
-                if not settled:
+                if stored or not settled:
                     await _settle(config, operation, started, None)
                 raise
         if not settled:
