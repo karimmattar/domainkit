@@ -845,9 +845,16 @@ with `AUDIT.SEALED_EXTERNALLY = True`), and the `protect()` triggers on
 both tables. In staging and production, `manage.py check` warns about each
 setting that is missing, and the application, when it starts, asks each
 audited PostgreSQL database whether `domainkit_audit_log` and
-`domainkit_audit_seals` have their triggers, enabled (a disabled trigger
-counts as missing), and logs a warning for each database without them, or
-that did not answer within 10 seconds.
+`domainkit_audit_seals` have their triggers as `protect()` makes them, and
+logs a warning for each database without them, or that did not answer
+within 10 seconds. A trigger that is disabled, or fires only in replica
+sessions (`ENABLE REPLICA TRIGGER`), on other events, under a `WHEN`
+condition, or for some columns only, or whose function is not the one
+`protect()` writes (its body is compared, whitespace aside), counts as
+missing. The probe cannot see a session that sets
+`session_replication_role = replica`, which only a superuser may do, nor
+stop a table owner from dropping the triggers between two starts:
+`auditverify` checks what they protect.
 
 These are warnings in 0.9.1. `AUDIT.REQUIRE_BASELINE = True` turns them
 into a refusal to start, listing what is missing; 0.10 makes that the

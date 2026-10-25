@@ -23,9 +23,13 @@ All notable changes to domainkit. The format follows
   tamper-evident: no `AUDIT.LEDGER`, no `AUDIT.NAMESPACE` on it, or
   nothing sealing on a schedule (no messaging, and no new
   `AUDIT.SEALED_EXTERNALLY`); and the application, when it starts, logs
-  each audited PostgreSQL database whose `protect()` triggers are missing
-  or disabled. `AUDIT.REQUIRE_BASELINE = True` refuses to start instead;
-  0.10 makes that the default (N5, DATA-04; ADR 0069).
+  each audited PostgreSQL database whose `protect()` triggers are missing,
+  disabled, or changed: a trigger counts only as `protect()` makes it,
+  firing for the application's sessions (not `ENABLE REPLICA`), on the
+  same events, with no `WHEN` or column list, and running the function
+  `protect()` writes, its body the same but for whitespace.
+  `AUDIT.REQUIRE_BASELINE = True` refuses to start instead; 0.10 makes
+  that the default (N5, DATA-04, SEC-r2-3; ADR 0069).
 - `@task(sensitive=True)` blanks a task's arguments when it dies, as
   every message's are once done or cancelled, for arguments that hold
   secrets or personal data; `admin.blanked_dead_letters` counts them

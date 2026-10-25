@@ -265,7 +265,7 @@ async def test_every_audited_database_is_probed(
         ),
         (
             "The audit trail in 'reports' is not append-only: triggers "
-            "first_trigger, second_trigger are missing or disabled. Call "
+            "first_trigger, second_trigger are missing, disabled, or changed. Call "
             "protect(op) and protect(op, audit_seals) from a revision "
             "(domainkit.contrib.audit.protection) and migrate."
         ),
@@ -310,8 +310,111 @@ async def test_the_probe_finds_missing_and_disabled_triggers(tables: None) -> No
     assert problems == [
         (
             "The audit trail in 'default' is not append-only: triggers "
-            "domainkit_audit_log_append_only are missing or disabled. Call "
+            "domainkit_audit_log_append_only are missing, disabled, or changed. Call "
             "protect(op) and protect(op, audit_seals) from a revision "
             "(domainkit.contrib.audit.protection) and migrate."
         )
     ]
+
+
+LOG_ROWS = "domainkit_audit_log_append_only"
+LOG_TRUNCATE = "domainkit_audit_log_append_only_truncate"
+DROP_ROWS = f"DROP TRIGGER {LOG_ROWS} ON domainkit_audit_log"
+
+
+@on_postgres
+@pytest.mark.parametrize(
+    ("change", "reported"),
+    [
+        (  # Fires only in replica sessions: never for the application.
+            [f"ALTER TABLE domainkit_audit_log ENABLE REPLICA TRIGGER {LOG_TRUNCATE}"],
+            [LOG_TRUNCATE],
+        ),
+        (  # Same names, enabled, but the function lets everything through.
+            [
+                f"CREATE OR REPLACE FUNCTION {LOG_ROWS}() RETURNS trigger "
+                "LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$"
+            ],
+            [LOG_ROWS, LOG_TRUNCATE],
+        ),
+        (  # Rows may be deleted: the trigger fires on updates only.
+            [
+                DROP_ROWS,
+                f"CREATE TRIGGER {LOG_ROWS} BEFORE UPDATE ON domainkit_audit_log "
+                f"FOR EACH ROW EXECUTE FUNCTION {LOG_ROWS}()",
+            ],
+            [LOG_ROWS],
+        ),
+        (  # A condition that never holds.
+            [
+                DROP_ROWS,
+                f"CREATE TRIGGER {LOG_ROWS} BEFORE UPDATE OR DELETE "
+                "ON domainkit_audit_log FOR EACH ROW WHEN (false) "
+                f"EXECUTE FUNCTION {LOG_ROWS}()",
+            ],
+            [LOG_ROWS],
+        ),
+        (  # Updates of other columns go through.
+            [
+                DROP_ROWS,
+                f"CREATE TRIGGER {LOG_ROWS} BEFORE UPDATE OF actor OR DELETE "
+                f"ON domainkit_audit_log FOR EACH ROW EXECUTE FUNCTION {LOG_ROWS}()",
+            ],
+            [LOG_ROWS],
+        ),
+        (  # The same names, running another function.
+            [
+                "CREATE FUNCTION let_through() RETURNS trigger LANGUAGE plpgsql "
+                "AS $$ BEGIN RETURN NULL; END $$",
+                f"DROP TRIGGER {LOG_TRUNCATE} ON domainkit_audit_log",
+                f"CREATE TRIGGER {LOG_TRUNCATE} BEFORE TRUNCATE "
+                "ON domainkit_audit_log "
+                "FOR EACH STATEMENT EXECUTE FUNCTION let_through()",
+            ],
+            [LOG_TRUNCATE],
+        ),
+        (  # Fires in every session: still protected.
+            [f"ALTER TABLE domainkit_audit_log ENABLE ALWAYS TRIGGER {LOG_ROWS}"],
+            [],
+        ),
+        (  # The same function written out again, laid out otherwise.
+            [
+                f"CREATE OR REPLACE FUNCTION {LOG_ROWS}() RETURNS trigger "
+                "LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION "
+                "'domainkit_audit_log is append-only' "
+                "USING ERRCODE = 'insufficient_privilege'; END $$"
+            ],
+            [],
+        ),
+    ],
+    ids=[
+        "replica",
+        "replaced-function",
+        "fewer-events",
+        "when-false",
+        "update-of-a-column",
+        "another-function",
+        "always",
+        "relaid-function",
+    ],
+)
+async def test_the_probe_finds_triggers_that_no_longer_protect(
+    tables: None, change: list[str], reported: list[str]
+) -> None:
+    """A trigger is counted only as ``protect()`` makes it (SEC-r2-3).
+
+    Each change but the last two lets rows or the table go while the
+    triggers' names are all there, enabled.
+    """
+    async with connections.engine().begin() as connection:
+        await connection.run_sync(lambda sync: protect(Migration(sync)))
+        await connection.run_sync(lambda sync: protect(Migration(sync), audit_seals))
+        for statement in change:
+            await connection.execute(text(statement))
+    missing = await missing_triggers("default")
+    async with connections.engine().begin() as connection:
+        await connection.run_sync(lambda sync: unprotect(Migration(sync)))
+        await connection.run_sync(lambda sync: unprotect(Migration(sync), audit_seals))
+        await connection.execute(text("DROP FUNCTION IF EXISTS let_through()"))
+
+    assert missing == reported
