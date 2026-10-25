@@ -923,7 +923,10 @@ with a letter or digit; another is refused before the command runs, and so
 is a process with no user name. In a container that runs as `root` or
 `app`, the last one names nobody: set `DOMAINKIT_OPERATOR` from your
 access tooling, or pass `--operator`. Prefer a staff id or handle to an
-email address: the trail keeps what it is given for good.
+email address: the trail keeps what it is given for good. The name is what
+the operator says: it attributes an action, it does not authenticate
+anyone, so keep who can run `manage.py` against production as narrow as
+who can reach its database.
 
 The command runs as the actor `operator:<name>`, so what it records itself
 (`privacy.erase`, `privacy.purge`) names the operator instead of `system`.

@@ -1180,8 +1180,9 @@ good. Declare a setting that holds a secret, or personal data, with
 `secret=True`: its changes are recorded as `{"key": ..., "value": null,
 "secret": true}`, and the staff API and `flags settings` show no value
 (`null`, `********`). The value is still stored as it is, in the table
-and the flags' cache entry, so keep credentials such as provider API keys
-in settings or a secret store rather than here. Changes of a flag record
+and the flags' cache entry, and `flags setting KEY VALUE` leaves it in the
+shell's history, so keep credentials such as provider API keys in settings
+or a secret store rather than here. Changes of a flag record
 its rules, with its users as a count, not their ids.
 
 Change both from the command line, or through the staff API:
