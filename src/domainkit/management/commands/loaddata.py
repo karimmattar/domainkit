@@ -4,7 +4,9 @@ import json
 from argparse import ArgumentParser
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
+from sqlalchemy import Table
 from sqlalchemy.exc import IntegrityError
 
 from domainkit.conf import DEFAULT_DB_ALIAS, settings
@@ -24,6 +26,7 @@ class Command(BaseCommand):
     """
 
     help = "Load JSON fixtures; rows replace stored rows with the same primary key."
+    operator_actions = True
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         """Accept fixture files, an alias, and the safety switches."""
@@ -64,16 +67,31 @@ class Command(BaseCommand):
                     f"Loading replaces stored rows in {settings.ENVIRONMENT}; "
                     "repeat with --force after taking a backup."
                 )
-            try:
-                await fixtures.load(database, tables)
-            except IntegrityError as exc:
-                violation = integrity_violation(exc, metadata)
-                what = violation.kind.replace("_", " ") if violation else "a constraint"
-                raise CommandError(
-                    f"{path}: the database refused the rows ({what}); nothing "
-                    "was loaded."
-                ) from None
+            async with self.recorded(
+                "loaddata",
+                fixture=path.name,
+                database=database,
+                rows=sum(entry.rows for entry in loads),
+                replaced=sum(entry.replaced for entry in loads),
+            ):
+                await self._load(path, database, tables)
             self.write(f"Loaded {_rows(sum(e.rows for e in loads))} from {path}.")
+
+    async def _load(
+        self,
+        path: Path,
+        database: str,
+        tables: list[tuple[Table, list[dict[str, Any]]]],
+    ) -> None:
+        """Write the rows; a constraint the database refuses names the fixture."""
+        try:
+            await fixtures.load(database, tables)
+        except IntegrityError as exc:
+            violation = integrity_violation(exc, metadata)
+            what = violation.kind.replace("_", " ") if violation else "a constraint"
+            raise CommandError(
+                f"{path}: the database refused the rows ({what}); nothing was loaded."
+            ) from None
 
 
 def _rows(count: int) -> str:

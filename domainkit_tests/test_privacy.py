@@ -1157,6 +1157,21 @@ def test_the_command_purges(clinic: str, monkeypatch: pytest.MonkeyPatch) -> Non
     assert run("purge") == "No domain declares a RETENTION.\n"
 
 
+def test_the_command_runs_as_its_operator(
+    clinic: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What ``privacy`` records names who ran it, not ``system`` (DATA-07)."""
+    run_async(fill_old())
+    monkeypatch.setenv("DOMAINKIT_OPERATOR", "from-env")
+
+    with freeze_time(NOW):
+        run("--operator", "dpo-1", "purge")  # Before the action.
+        run("purge")
+
+    actors = {row["actor"] for row in run_async(audited("privacy.purge"))}
+    assert actors == {"operator:dpo-1", "operator:from-env"}
+
+
 def test_keys_not_about_anyone_stay(clinic: str) -> None:
     """Erasing one person forgets their audit keys only."""
 

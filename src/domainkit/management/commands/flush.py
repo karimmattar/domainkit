@@ -18,6 +18,7 @@ class Command(BaseCommand):
     """
 
     help = "Delete every row (but the audit trail's), then rerun the migrate hooks."
+    operator_actions = True
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         """Accept an alias and the safety switches."""
@@ -47,8 +48,9 @@ class Command(BaseCommand):
                 f"Flushing deletes every row in {settings.ENVIRONMENT}; repeat with "
                 "--force after taking a backup."
             )
-        await fixtures.flush(database)
-        migrations.run_migrated_hooks(database)
+        async with self.recorded("flush", database=database, rows=sum(counts.values())):
+            await fixtures.flush(database)
+            migrations.run_migrated_hooks(database)
         self.write(f"Deleted {_rows(sum(counts.values()))} from {database!r}.")
 
 
