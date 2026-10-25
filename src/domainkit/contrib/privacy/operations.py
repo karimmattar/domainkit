@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Final
 
-from pydantic_core import to_jsonable_python
 from sqlalchemy import (
     ColumnElement,
     ScalarResult,
@@ -30,6 +29,7 @@ from domainkit import clock
 from domainkit.contrib.audit import Outcome, forget, record
 from domainkit.db import SqlAlchemyRepository, SqlAlchemyUnitOfWork, connections
 from domainkit.http.errors import sqlstate
+from domainkit.utils.decimals import jsonable
 
 from .events import PersonalDataErased
 from .models import (
@@ -130,7 +130,7 @@ async def export_subject(subject: str) -> dict[str, Any]:
     return {
         "subject": subject,
         "exported_at": clock.now().isoformat(),
-        "domains": to_jsonable_python(
+        "domains": jsonable(
             {
                 domain: {
                     name: [

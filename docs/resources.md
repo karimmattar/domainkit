@@ -221,7 +221,7 @@ ProductOut.from_domain(product)
 | --- | --- |
 | `ProductId` (a `NewType` over `UUID`), `Reference[CategoryId]` | a `UUID`; a reference is described as one |
 | a single-field value object, `ProductName(value: str)` | what it wraps, with its `MaxLength` as `maxLength` |
-| `Annotated[Decimal, Digits(12, 2)]` | an amount of 12 digits, 2 decimal |
+| `Annotated[Decimal, Digits(12, 2)]` | an amount of 12 digits, 2 decimal, written as fixed-point text (`"1000.00"`, never `"1E+3"`) |
 | an `Enum` | its values |
 | a value object of several fields, a child entity, `list[Line]` | nested schemas (`MoneyOut`, `LineOut`) |
 | `set[str]` | a sorted list, so the representation is stable |

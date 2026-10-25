@@ -289,11 +289,10 @@ it at once, and the database takes the whole load. `get_or_set` (and so
 - **One computation per key per process.** Concurrent misses on the same
   key wait for one computation, also while the cache fails, when every
   call is a miss. Each caller still gets its own copy, so no two requests
-  share a mutable object. If the first caller is cancelled, the
-  computation goes on for the others. Errors reach every waiting caller and
-  are never cached. The computation serves every caller, so it runs as
-  none of them: in a clean context, without the first caller's request,
-  actor, language, span, or `Idempotency-Key` (see
+  share a mutable object. Errors reach every waiting caller and are never
+  cached. The computation serves every caller, so it runs as none of
+  them: in a clean context, without the first caller's request, actor,
+  language, span, or `Idempotency-Key` (see
   [runtime.md](runtime.md#clean-contexts)). A factory that needs one of
   them takes it as an argument, and the key must hold it.
   `@cache_page`, whose keys hold the user and the language, runs the
@@ -308,6 +307,88 @@ it at once, and the database takes the whole load. `get_or_set` (and so
 
 With several replicas, each replica may still recompute a hot key once.
 That is the worst case, not one recomputation per request.
+
+### What a factory may use
+
+A computation serves every caller waiting for its key, so by default it
+belongs to none of them (ADR 0071):
+
+- **It goes on when its callers stop waiting.** A caller cut off by its
+  deadline, or whose client went away, stops waiting; the computation
+  runs on, stores its value, and later requests are served from the
+  cache. A factory slower than one request's deadline still fills the
+  cache, so a slow upstream heals instead of failing every request.
+- **No caller's deadline reaches it**, so one short request never fails
+  the others. Its bound is the cache's own `COMPUTE_TIMEOUT`: its
+  transactions lower `statement_timeout` to the time it has left, its
+  outgoing calls through `domainkit.http.client` are bounded by it, and
+  when it runs out, every caller waiting gets the same `TimeoutError`.
+  It is `None` (unbounded) by default, as in 0.9.0. Set it, for example
+  to `REQUEST_TIMEOUT`'s value: `check` warns where deployed while it is
+  unset, and the `init` template sets it to 30 seconds.
+
+  Each choice has its failure. Unbounded, one computation that hangs (an
+  upstream that never answers) holds its key until the process restarts:
+  every later caller waits on it, as in 0.9.0. Bounded, a healthy
+  computation slower than the bound fails for every caller and never
+  fills the cache: with 30 seconds, a 31-second computation fails at 30,
+  where 0.9.0 cached it, while a hung one frees its key at 30. The patch
+  release keeps 0.9.0's default, so no project's cache breaks on
+  upgrade, and the hang is fixed by setting the bound; 0.10 plans a
+  bounded default.
+- **So the factory must use nothing a caller holds and releases**: not the
+  session of the caller's unit of work, not a client the request closes.
+  It opens what it needs (`async with ReportsUnitOfWork() as uow: ...`)
+  and takes values as arguments. `@cached` functions take only JSON
+  values, so they keep to this already.
+
+A factory that does use what its caller holds says so with
+`borrows=True`. `@cache_page` borrows by default: an endpoint can reach
+its request's resources in more ways than can be seen (its dependencies,
+its route's, router's, or application's, `request.state` set by a
+middleware, a context variable). `@cache_page(borrows=False)` says the
+endpoint uses none of them, so its computation fills the cache after the
+request is cut off (below). It refuses an endpoint whose own dependencies
+hold a resource (one written with `yield`, also beneath another, behind
+`functools.partial` or a `functools.wraps` decorator: as FastAPI finds
+them, since it closes them when the request ends), and a
+request whose route, router, or application adds one borrows anyway; a
+router the route was included through, `request.state`, and context
+variables are not in the request to check, so they stay yours to keep
+out:
+
+```python
+async with ReportsUnitOfWork() as uow:
+    report = await caches["default"].get_or_set(
+        f"report:{month}", lambda: uow.reports.month(month), Report, borrows=True
+    )
+```
+
+A computation that borrows is bound to the caller that started it, its
+*owner*:
+
+- **It never outlives its owner's wait.** When the owner is cancelled, the
+  computation is cancelled, and the owner's cancellation goes on only once
+  the factory has stopped. Nothing runs on the owner's session after it
+  closed it, and no connection is left checked out.
+- **It runs under the owner's deadline**, which the owner's timer enforces.
+- **What is the owner's stays the owner's.** When the owner is cancelled,
+  or the factory fails once the owner's deadline has passed, the callers
+  still waiting do not get that: they share a new computation, started by
+  one of them with its own factory, under its own deadline. Any other
+  error, the factory's own timeout among them, reaches every waiting
+  caller, so a hung upstream is called once, not once per caller.
+- It stores nothing once its owner is gone, so a factory slower than
+  its callers' deadlines never fills the cache, as for 0.9.0's pages:
+  give such pages their own unit of work and `borrows=False`, and such
+  factories their own unit of work instead of borrowing.
+
+A factory must not hand what it borrowed to anything that outlives the
+call: a task it starts and does not await, or the value it returns (which
+is stored as JSON, so it holds data, never a session).
+
+Shutdown and `close()` stop every computation, and say so: callers still
+waiting then compute their own value, without the cache.
 
 Computations are background tasks of their event loop
 (`domainkit.tasks.spawn`). At shutdown they are cancelled before caches,

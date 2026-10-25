@@ -1,7 +1,12 @@
-"""The weekly mutation run covers every module, each in exactly one shard."""
+"""CI's workflow: what the mutation run covers, and how long the suite may take.
+
+The weekly mutation run covers every module, each in exactly one shard; a
+hung test ends the suite well within its job's time.
+"""
 
 import ast
 import re
+import tomllib
 from fnmatch import fnmatchcase
 from pathlib import Path
 
@@ -59,3 +64,28 @@ def test_every_pattern_names_a_module() -> None:
             assert any(
                 fnmatchcase(f"{module}.x_f__mutmut_1", pattern) for module in modules
             ), (shard, pattern)
+
+
+def job(name: str) -> str:
+    """The workflow's job ``name``, up to the next line indented as a job is."""
+    after = WORKFLOW.read_text().split(f"\n  {name}:\n", 1)[1]
+    return re.split(r"\n  \S", after, maxsplit=1)[0]
+
+
+def test_a_hung_test_ends_the_suite_well_within_its_jobs_time() -> None:
+    """Two minutes a test, thirty a job; integration keeps its results on failure."""
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    options = config["tool"]["pytest"]["ini_options"]
+    assert (options["timeout"], options["timeout_method"]) == (120, "thread")
+    dev = config["dependency-groups"]["dev"]
+    assert any(each.startswith("pytest-timeout ") for each in dev)
+    for name in ("test", "integration"):
+        assert "\n    timeout-minutes: 30\n" in job(name)
+    integration = job("integration")
+    assert "pytest --cov -rs --junitxml=junit.xml" in integration
+    assert re.search(
+        r"- if: always\(\)\n\s+uses: actions/upload-artifact@\S+ # \S+\n"
+        r"\s+with:\n\s+name: test-results-integration\n\s+path: \|\n"
+        r"\s+junit\.xml\n",
+        integration,
+    )

@@ -249,6 +249,7 @@ def test_map_imperatively_is_idempotent() -> None:
         MetaData(),
         Column("id", Integer, primary_key=True),
         Column("label", String(10)),
+        Column("version", Integer, nullable=False),
     )
 
     map_imperatively(Tag, table)

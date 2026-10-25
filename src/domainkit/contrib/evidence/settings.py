@@ -1,11 +1,16 @@
 """Settings of ``domainkit.contrib.evidence``, read from ``EVIDENCE``."""
 
-from typing import Final
+from typing import Annotated, Final
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 DEVELOPMENT_SUBJECT_KEY: Final = b"domainkit-evidence-development-subject-key"
 """Used when ``SUBJECT_KEY`` is unset; public, so staging and production refuse it."""
+NAMESPACE_PATTERN: Final = r"^[a-z][a-z0-9_-]{0,31}$"
+"""Namespaces: a lower-case letter, then up to 31 letters, digits, ``_``, ``-``."""
+MAX_PREVIOUS_NAMESPACES: Final = 8
+
+type Namespace = Annotated[str, Field(pattern=NAMESPACE_PATTERN)]
 
 
 class EvidenceSettings(BaseModel):
@@ -15,8 +20,13 @@ class EvidenceSettings(BaseModel):
 
     LEDGER: str = "evidence"
     """Alias in ``LEDGERS`` (``immudb://``; ``memory://`` in tests)."""
-    NAMESPACE: str = Field(default="evidence", pattern=r"^[a-z][a-z0-9_-]{0,31}$")
+    NAMESPACE: Namespace = "evidence"
     """Key prefix, so several projects or environments can share one ledger."""
+    PREVIOUS_NAMESPACES: tuple[Namespace, ...] = Field(
+        default=(), max_length=MAX_PREVIOUS_NAMESPACES
+    )
+    """Namespaces used before ``NAMESPACE``, whose records ``get`` still
+    reads; keys under any other namespace are not found (at most 8)."""
     MAX_BYTES: int = Field(default=262_144, ge=1024, le=4_000_000)
     """Largest record in bytes; keep documents elsewhere and record their digests."""
     SUBJECT_KEY: SecretStr | None = Field(default=None, min_length=32)

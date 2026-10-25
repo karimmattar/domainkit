@@ -13,6 +13,13 @@ DONE: Final = "done"
 DEAD: Final = "dead"
 CANCELLED: Final = "cancelled"
 STATUSES: Final = (PENDING, DONE, DEAD, CANCELLED)
+BLANKED: Final = "payload_blanked"
+"""The header set on a dead message whose arguments were blanked (``sensitive``)."""
+SENSITIVE: Final = "sensitive"
+"""The header of a chain's step that follows a ``sensitive`` one, at any distance.
+
+It is handed what the sensitive step had, or made, so its arguments are
+blanked when it dies, as the sensitive step's would be."""
 
 messages = Table(
     "domainkit_messages",
@@ -43,7 +50,9 @@ messages = Table(
 ``queue`` picks the workers that run it (``runworker --queue``), and
 ``priority`` the order among a queue's due messages (higher first).
 ``started_at`` is when a worker last started it; it is cleared when the
-message goes back to wait. A pending message with ``started_at`` and a live
+message goes back to wait. ``payload`` holds the arguments until the
+message is done or cancelled, then ``{}``; a dead message keeps them, unless
+its task is ``sensitive``. A pending message with ``started_at`` and a live
 ``locked_until`` is running; with a live lock alone, a relay published it.
 """
 

@@ -9,12 +9,17 @@ from domainkit.management import BaseCommand, CommandError
 
 
 class Command(BaseCommand):
-    """Delete the keys of subjects, or of anonymous callers' old days."""
+    """Delete the keys of subjects, or of anonymous callers' old days.
+
+    Each run is recorded in the audit trail (``operator.auditforget``) with
+    how many subjects and keys, not which subjects.
+    """
 
     help = (
         "Forget subjects (user ids) in the audit trail, in every audited "
         "database: their pseudonyms can no longer be linked to them."
     )
+    operator_actions = True
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         """Accept subjects and a retention period for anonymous callers."""
@@ -35,8 +40,12 @@ class Command(BaseCommand):
             raise CommandError("Name subjects to forget, or --anonymous-days.")
         if anonymous_days is not None and anonymous_days < 0:
             raise CommandError("--anonymous-days cannot be negative.")
-        forgotten = await forget(*subjects)
-        if anonymous_days is not None:
-            today = clock.today()
-            forgotten += await forget_anonymous(today - timedelta(days=anonymous_days))
+        async with self.recorded(
+            "auditforget", subjects=len(subjects), anonymous_days=anonymous_days
+        ) as action:
+            forgotten = await forget(*subjects)
+            if anonymous_days is not None:
+                before = clock.today() - timedelta(days=anonymous_days)
+                forgotten += await forget_anonymous(before)
+            action["keys"] = forgotten
         self.write(f"Forgot {forgotten} key{'' if forgotten == 1 else 's'}.")

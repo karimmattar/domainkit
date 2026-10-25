@@ -14,12 +14,12 @@ from functools import cache
 from typing import Any, Final, overload
 
 from pydantic import TypeAdapter, validate_call
-from pydantic_core import to_jsonable_python
 
 from domainkit.apps import registry
 from domainkit.conf.global_settings import NAME_PATTERN
 from domainkit.ddd import DomainEvent, EventBus
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.utils.decimals import jsonable, with_decimal_text
 from domainkit.utils.rates import parse_rate
 
 from .cron import Cron, CronError
@@ -58,6 +58,10 @@ class TaskSpec:
     """Higher runs first, among the due messages of a queue."""
     rate: tuple[int, int] | None = None
     """At most ``(count, seconds)`` runs, enforced by the workers."""
+    sensitive: bool = False
+    """Its arguments hold secrets or personal data (a link, a code, an
+    address): the worker blanks them once it dies, as it does for every
+    message once it is done or cancelled, so it cannot be retried."""
 
 
 _tasks: dict[str, TaskSpec] = {}
@@ -141,6 +145,7 @@ def task(
     dont_retry_on: Iterable[type[Exception]] = (),
     priority: int = 0,
     rate: str | None = None,
+    sensitive: bool = False,
 ) -> Callable[[Task], Task]: ...
 
 
@@ -157,6 +162,7 @@ def task(
     dont_retry_on: Iterable[type[Exception]] = (),
     priority: int = 0,
     rate: str | None = None,
+    sensitive: bool = False,
 ) -> Task | Callable[[Task], Task]:
     """Register an async function as a background task (``uow.defer(task)``).
 
@@ -170,6 +176,11 @@ def task(
     ``dont_retry_on`` (dead-letter these at once), and ``rate``
     (``"10/minute"``: at most that many runs, across the workers that share
     ``RATE_LIMIT_BACKEND``).
+
+    Every message's arguments are blanked in the outbox once it is done or
+    cancelled. ``sensitive`` blanks them once it dies too, for arguments
+    that hold secrets or personal data; such a dead message cannot be
+    retried.
     """
     options = _options(
         max_attempts=max_attempts,
@@ -183,7 +194,8 @@ def task(
     )
 
     def register(func: Task) -> Task:
-        _register(TaskSpec(name or qualified_name(func), func, **options))
+        key = name or qualified_name(func)
+        _register(TaskSpec(key, func, sensitive=sensitive, **options))
         return func
 
     return register(function) if function is not None else register
@@ -318,8 +330,10 @@ def _adapter(event_type: type[DomainEvent]) -> TypeAdapter[Any]:
 
 
 def dump_event(event: DomainEvent) -> dict[str, Any]:
-    """Serialize ``event`` to JSON-compatible values."""
-    payload: dict[str, Any] = _adapter(type(event)).dump_python(event, mode="json")
+    """Serialize ``event`` to JSON-compatible values, amounts in fixed point."""
+    payload: dict[str, Any] = with_decimal_text(
+        event, _adapter(type(event)).dump_python(event, mode="json")
+    )
     return payload
 
 
@@ -330,8 +344,8 @@ def load_event[E: DomainEvent](event_type: type[E], payload: Mapping[str, Any]) 
 
 
 def dump_arguments(arguments: Mapping[str, object]) -> dict[str, Any]:
-    """Serialize task arguments to JSON-compatible values."""
-    payload: dict[str, Any] = to_jsonable_python(dict(arguments))
+    """Serialize task arguments to JSON-compatible values, amounts in fixed point."""
+    payload: dict[str, Any] = jsonable(dict(arguments))
     return payload
 
 

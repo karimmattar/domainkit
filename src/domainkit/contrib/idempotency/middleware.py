@@ -9,8 +9,17 @@ dies before committing anything, a retry after the lease takes the key over
 and runs (see ``operations``). A client that disconnects before sending its
 whole body claims no key and runs nothing.
 
+Leases and expiry are decided by the keys' database's clock on PostgreSQL
+(``domainkit.db.dbclock``), so hosts whose clocks disagree never take a key
+from a request still running, and by ``domainkit.clock`` on SQLite and
+under ``freeze_time``.
+
 A request that fails or is refused (a 4xx) before committing anything, or
-that raises, releases its key, so it can be retried. The response is stored,
+that raises, releases its key, so it can be retried. A response the key
+keeps is stored as soon as its last part is sent, before what the
+application runs after it (``BackgroundTasks``, which no deadline bounds),
+so a retry gets it however long that work takes; a key to be released is
+released once the application returns. The response is stored,
 or the key released, in a task of its own within ``SETTLE_TIMEOUT``, so a
 request cancelled meanwhile (its client gone, a deadline, a cancel scope)
 still lets go of its key instead of holding it until the lease runs out.
@@ -38,7 +47,7 @@ import hashlib
 import logging
 import secrets
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any, Final
 
 from fastapi import status
@@ -47,10 +56,9 @@ from sqlalchemy.dialects import postgresql, sqlite
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from domainkit import clock
 from domainkit.apps import registry
 from domainkit.context import current_request
-from domainkit.db import connections
+from domainkit.db import connections, dbclock
 from domainkit.http.errors import error_response
 from domainkit.tasks import spawn
 
@@ -73,11 +81,12 @@ SETTLE_TASK: Final = "domainkit.idempotency.settle"
 HEADER: Final = "idempotency-key"
 REPLAYED: Final = "Idempotent-Replayed"
 _STORED_HEADERS: Final = frozenset({"content-type", "location", "content-language"})
-
-
-def _now() -> datetime:
-    """Return the current time in UTC."""
-    return clock.now()
+UNSEEN_BODIES: Final = frozenset(
+    {"http.response.pathsend", "http.response.zerocopysend"}
+)
+"""ASGI messages that send a body the middleware never sees, so cannot keep."""
+LAPSED: Final = "lapsed"
+"""Read with a held key's row: whether its lease ran out, on the database's clock."""
 
 
 def _hash(*parts: str | bytes) -> str:
@@ -142,17 +151,20 @@ class IdempotencyMiddleware:
         deleted last: through PgBouncer the statements share a transaction,
         and a sweep run first would hold its locks while the upsert waited
         for another claim's, which may wait for this one's.
+
+        The times written and compared are the database's (``dbclock``),
+        and so is whether a held key's lease ran out, read with its row.
         """
-        now = _now()
-        lease = now + timedelta(seconds=config.LEASE_SECONDS)
         async with connections.autocommit(config.DATABASE) as connection:
-            claim = _upsert(connection.dialect.name)(idempotency_keys).values(
+            dialect = connection.dialect.name
+            now = dbclock.now(dialect)
+            claim = _upsert(dialect)(idempotency_keys).values(
                 key_hash=operation.key_hash,
                 fingerprint=fingerprint,
                 created_at=now,
-                expires_at=now + timedelta(seconds=config.TTL_SECONDS),
+                expires_at=_later(now, config.TTL_SECONDS),
                 token=operation.token,
-                locked_until=lease,
+                locked_until=_later(now, config.LEASE_SECONDS),
                 pinned=False,
             )
             fresh = claim.excluded
@@ -176,9 +188,10 @@ class IdempotencyMiddleware:
             )
             row = None
             if claimed is None:
+                lapsed = idempotency_keys.c.locked_until < now
                 row = (
                     await connection.execute(
-                        select(idempotency_keys).where(
+                        select(idempotency_keys, lapsed.label(LAPSED)).where(
                             idempotency_keys.c.key_hash == operation.key_hash
                         )
                     )
@@ -200,6 +213,7 @@ class IdempotencyMiddleware:
         first.
         """
         async with connections.autocommit(config.DATABASE) as connection:
+            now = dbclock.now(connection.dialect.name)
             taken = await connection.execute(
                 update(idempotency_keys)
                 .where(
@@ -211,7 +225,7 @@ class IdempotencyMiddleware:
                 )
                 .values(
                     token=operation.token,
-                    locked_until=_now() + timedelta(seconds=config.LEASE_SECONDS),
+                    locked_until=_later(now, config.LEASE_SECONDS),
                 )
             )
         return bool(taken.rowcount)
@@ -272,34 +286,73 @@ class IdempotencyMiddleware:
         receive: Receive,
         send: Send,
     ) -> None:
-        """Run the request as the key's operation, then store or release the key."""
+        """Run the request as the key's operation, then store or release the key.
+
+        A key that keeps the response, or its status, is settled before the
+        response's last part is sent: a client never holds a whole response
+        that a retry would find in progress, and the application goes on to
+        what runs after it (Starlette's ``BackgroundTasks``, which no longer
+        holds a deadline) only once the key is settled, so a retry gets the
+        stored response, or a 409, however long that work runs, and never
+        runs the request again. A key to be released is released once the
+        application returns, as a commit made after the response still
+        keeps it. If storing fails, the last part is not sent: the client
+        has no complete answer the key cannot stand behind, and the error
+        reaches the application where it sent that part, so what would have
+        run after it does not run with the key unsettled.
+
+        If the application then raises, the response it sent no longer
+        says what happened: the key is settled again as for any request
+        that raised, so it is released unless something committed or
+        pinned it, and a retry runs the work that failed. A body sent by
+        path or by file descriptor (``http.response.pathsend``,
+        ``http.response.zerocopysend``) is never seen, so it is not kept.
+        """
         started: dict[str, Any] = {}
         chunks: list[bytes] = []
         size = 0
+        settled = False  # A settle began: never begin another while it may run.
+        stored = False  # The early settle finished.
+        unseen = False  # Part of the body went by path or file descriptor.
+
+        def kept_body() -> bytes | None:
+            """The body to store, if the response is kept; None if not."""
+            code = started.get("status", status.HTTP_500_INTERNAL_SERVER_ERROR)
+            kept = (
+                (code < 400 or (code < 500 and operation.committed))
+                and size <= config.MAX_RESPONSE_BYTES
+                and not unseen
+                and not _no_store(started)
+            )
+            return b"".join(chunks) if kept else None
 
         async def capture(message: Message) -> None:
-            nonlocal size
+            nonlocal size, settled, stored, unseen
             if message["type"] == "http.response.start":
                 started.update(message)
-            else:
-                size += len(message.get("body", b""))
-                if size <= config.MAX_RESPONSE_BYTES:
-                    chunks.append(message.get("body", b""))
+                await send(message)
+                return
+            unseen = unseen or message["type"] in UNSEEN_BODIES
+            size += len(message.get("body", b""))
+            if size <= config.MAX_RESPONSE_BYTES:
+                chunks.append(message.get("body", b""))
+            if not (settled or message.get("more_body", False)):
+                body = kept_body()
+                if body is not None or operation.committed or operation.pinned:
+                    settled = True  # Before it runs: a cancellation must not repeat it.
+                    await _settle(config, operation, started, body)
+                    stored = True
             await send(message)
 
         with run_operation(operation):
             try:
                 await self.app(scope, receive, capture)
             except BaseException:
-                await _settle(config, operation, started, None)
+                if stored or not settled:
+                    await _settle(config, operation, started, None)
                 raise
-        code = started.get("status", status.HTTP_500_INTERNAL_SERVER_ERROR)
-        kept = (
-            (code < 400 or (code < 500 and operation.committed))
-            and size <= config.MAX_RESPONSE_BYTES
-            and not _no_store(started)
-        )
-        await _settle(config, operation, started, b"".join(chunks) if kept else None)
+        if not settled:
+            await _settle(config, operation, started, kept_body())
 
 
 async def _settle(
@@ -395,7 +448,7 @@ async def _finish(
         )
 
 
-def _sweep(now: datetime) -> Delete:
+def _sweep(now: dbclock.Moment) -> Delete:
     """Delete up to ``PURGE_BATCH`` expired keys, skipping those being claimed."""
     oldest = (
         select(idempotency_keys.c.key_hash)
@@ -406,6 +459,11 @@ def _sweep(now: datetime) -> Delete:
     return delete(idempotency_keys).where(
         idempotency_keys.c.key_hash.in_(oldest.scalar_subquery())
     )
+
+
+def _later(now: dbclock.Moment, seconds: float) -> dbclock.Moment:
+    """``seconds`` after ``now``, a value or the database's clock in SQL."""
+    return now + timedelta(seconds=seconds)
 
 
 def _upsert(dialect: str) -> Callable[[Table], postgresql.Insert | sqlite.Insert]:
@@ -419,15 +477,13 @@ def _abandoned(existing: dict[str, Any], fingerprint: str) -> bool:
         existing.get("fingerprint") == fingerprint
         and existing["status_code"] is None
         and existing["committed_at"] is None
-        and existing["locked_until"] < _now()
+        and bool(existing[LAPSED])
     )
 
 
 def _died_after_commit(existing: dict[str, Any]) -> bool:
     """Whether a committed request's lease ran out before it finished."""
-    return (
-        existing.get("committed_at") is not None and existing["locked_until"] < _now()
-    )
+    return existing.get("committed_at") is not None and bool(existing[LAPSED])
 
 
 def _caller(scope: Scope, credential_headers: tuple[str, ...]) -> str:

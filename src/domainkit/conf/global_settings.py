@@ -103,6 +103,8 @@ MAX_RESPONSE_SIZE: Final = 1_073_741_824
 """The largest answer an outgoing call may be allowed to read: 1 GiB."""
 MAX_REQUESTS_AT_ONCE: Final = 100_000
 """The most requests an event loop may admit, or queue, at once."""
+MAX_LOOKUP_THREADS: Final = 256
+"""The most threads the URL guard may look host names up on (each holds a stack)."""
 
 
 class DatabaseConfig(BaseModel):
@@ -352,6 +354,14 @@ class CacheConfig(BaseModel):
     """Seconds the cache is skipped after it fails, so requests do not each wait."""
     EARLY_RECOMPUTE: float = Field(default=1.0, ge=0)
     """How early ``get_or_set`` refreshes hot entries (XFetch's beta); 0 disables."""
+    COMPUTE_TIMEOUT: float | None = Field(default=None, gt=0, le=MAX_REQUEST_SECONDS)
+    """Seconds a shared ``get_or_set`` computation may run (at most an hour).
+
+    It goes on after its callers stop waiting, so a slow factory still fills
+    the cache; this bounds it. None (the default, as in 0.9.0) leaves it
+    unbounded; set it, to ``REQUEST_TIMEOUT``'s value for example. 0.10
+    plans a bounded default.
+    """
     TLS_CA: Path | None = None
     """CA bundle for ``rediss://``; default: the system's."""
     TLS_CERT: Path | None = None
@@ -561,6 +571,8 @@ class HttpClientConfig(BaseModel):
 
 ABSOLUTE_URI: Final = r"^[A-Za-z][A-Za-z0-9+.-]*:[^\s]+$"
 """An absolute URI without whitespace (``https://...``, ``urn:...``)."""
+HEADER_NAME: Final = r"^[A-Za-z0-9-]{1,64}$"
+"""A header name: letters, digits, and hyphens."""
 
 
 class Settings(BaseModel):
@@ -657,6 +669,8 @@ class Settings(BaseModel):
     """Exact paths never counted against the cap, so probes are never refused."""
     HTTP_CLIENT: HttpClientConfig = Field(default_factory=HttpClientConfig)
     """Defaults of outgoing calls through ``domainkit.http.client``."""
+    GUARD_LOOKUP_THREADS: int = Field(default=16, ge=1, le=MAX_LOOKUP_THREADS)
+    """Threads that look host names up for guarded calls and webhooks, per process."""
     READINESS_TIMEOUT: float = Field(default=5.0, gt=0, le=60)
     """Seconds each readiness check may take before it counts as failed."""
     READINESS_CACHE_SECONDS: float = Field(default=1.0, ge=0)
@@ -669,8 +683,15 @@ class Settings(BaseModel):
     """Share of access lines written; from status 400 up, and slow ones: all of them."""
     ACCESS_LOG_SLOW_DURATION: float = Field(default=1.0, gt=0, le=MAX_REQUEST_SECONDS)
     """Seconds after which a request's access line is written whatever the rate."""
-    TRUSTED_PROXIES: tuple[IPvAnyNetwork, ...] = ()
-    """Load balancers whose ``X-Forwarded-For``/``-Proto`` headers are believed."""
+    TRUSTED_PROXIES: tuple[IPvAnyNetwork | Literal["unix"], ...] = ()
+    """Load balancers whose ``X-Forwarded-For``/``-Proto`` headers are believed.
+
+    ``"unix"`` names the peer of a unix socket (``uvicorn --uds``), which
+    has no address: the proxy that connects to it."""
+    PROXY_SCHEME_HEADER: str | None = Field(
+        default="X-Forwarded-Proto", pattern=HEADER_NAME
+    )
+    """The header in which trusted proxies say the client's scheme; None: none does."""
     RATE_LIMIT: str | None = None
     """Requests per caller, e.g. ``"300/minute"``; None disables the limit."""
     RATE_LIMIT_EXEMPT_PATHS: tuple[str, ...] = ("/health", "/ready", "/metrics")
@@ -960,7 +981,10 @@ class Settings(BaseModel):
             )
         if "*" in self.ALLOWED_HOSTS:
             raise ValueError(f"ALLOWED_HOSTS must list real host names {where}")
-        if any(network.prefixlen == 0 for network in self.TRUSTED_PROXIES):
+        if any(
+            not isinstance(network, str) and network.prefixlen == 0
+            for network in self.TRUSTED_PROXIES
+        ):
             raise ValueError(
                 f"TRUSTED_PROXIES must list the proxies' networks, not every "
                 f"address {where}: any caller could choose its own address"

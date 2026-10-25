@@ -15,6 +15,7 @@ class Command(BaseCommand):
         "Turn a user's second factor off (a lost authenticator and lost recovery "
         "codes); every session of the user ends. Check who is asking first."
     )
+    operator_actions = True
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         """The user."""

@@ -16,39 +16,62 @@ revision::
 
 Protect the seals of the hash chain the same way, in the revision that
 creates them: ``protect(op, audit_seals)``. On other databases both do
-nothing.
+nothing. In staging and production the application checks at startup that
+both tables have their triggers, enabled, firing when and as these make
+them, and running the function these write (``baseline``).
 """
 
-from typing import Protocol
+from typing import Final, Protocol
 
 from sqlalchemy import Connection, Table
 
 from .tables import audit_log
 
+ROW_TRIGGER: Final = 1 | 2 | 8 | 16
+"""``pg_trigger.tgtype`` of ``BEFORE UPDATE OR DELETE ... FOR EACH ROW``.
 
-def statements(table: Table) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """The statements that protect ``table``, and those that undo them."""
+The bits are ``ROW`` (1), ``BEFORE`` (2), ``DELETE`` (8), and ``UPDATE``
+(16), as PostgreSQL's ``catalog/pg_trigger.h`` defines them."""
+TRUNCATE_TRIGGER: Final = 2 | 32
+"""``pg_trigger.tgtype`` of ``BEFORE TRUNCATE ... FOR EACH STATEMENT``
+(``BEFORE``, 2, and ``TRUNCATE``, 32)."""
+
+
+def trigger_names(table: Table) -> tuple[str, str]:
+    """The triggers that protect ``table``: of rows, and of truncation."""
     function = f"{table.name}_append_only"
-    protect = (
-        f"""
-    CREATE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS $$
+    return function, f"{function}_truncate"
+
+
+def function_body(table: Table) -> str:
+    """The body of the triggers' function for ``table``, as ``protect`` writes it."""
+    return f"""
     BEGIN
         RAISE EXCEPTION '{table.name} is append-only'
             USING ERRCODE = 'insufficient_privilege';
     END
-    $$
+    """
+
+
+def statements(table: Table) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The statements that protect ``table``, and those that undo them."""
+    function, truncate = trigger_names(table)
+    body = function_body(table)
+    protect = (
+        f"""
+    CREATE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS $${body}$$
     """,
         (
             f"CREATE TRIGGER {function} BEFORE UPDATE OR DELETE ON {table.name} "
             f"FOR EACH ROW EXECUTE FUNCTION {function}()"
         ),
         (
-            f"CREATE TRIGGER {function}_truncate BEFORE TRUNCATE ON {table.name} "
+            f"CREATE TRIGGER {truncate} BEFORE TRUNCATE ON {table.name} "
             f"FOR EACH STATEMENT EXECUTE FUNCTION {function}()"
         ),
     )
     unprotect = (
-        f"DROP TRIGGER IF EXISTS {function}_truncate ON {table.name}",
+        f"DROP TRIGGER IF EXISTS {truncate} ON {table.name}",
         f"DROP TRIGGER IF EXISTS {function} ON {table.name}",
         f"DROP FUNCTION IF EXISTS {function}()",
     )

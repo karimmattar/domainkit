@@ -3,14 +3,16 @@
 import asyncio
 import json
 import math
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
 import pytest
 from prometheus_client import REGISTRY
-from sqlalchemy import update
+from sqlalchemy import text, update
 
+from domainkit import deadlines
 from domainkit.broker import MemoryBroker
 from domainkit.conf import override_settings
 from domainkit.context import RequestContext, bind_request, current_request
@@ -92,11 +94,20 @@ async def quick(seconds: float) -> None:
     await asyncio.sleep(seconds)
 
 
-@task(name="tests.patient", timeout=0.5, max_attempts=1)
-async def patient(seconds: float) -> None:
-    """Sleep longer than TASK_TIMEOUT, within the task's own."""
-    await asyncio.sleep(seconds)
-    ran.append("patient")
+@task(name="tests.bounded", timeout=0.5, max_attempts=1)
+async def bounded() -> None:
+    """Record the deadline the task runs under, and its statements' timeout."""
+    shown = None
+    async with NotesUnitOfWork() as uow:
+        if connections.engine().dialect.name == "postgresql":
+            shown = await uow.session.scalar(text("SHOW statement_timeout"))
+    ran.append(("bounded", deadlines.remaining(), deadlines.enforced(), shown))
+
+
+@task(name="tests.unbounded", max_attempts=1)
+async def unbounded() -> None:
+    """Record the deadline the task runs under: ``TASK_TIMEOUT``'s."""
+    ran.append(("unbounded", deadlines.remaining(), deadlines.enforced(), None))
 
 
 @task(name="tests.low", priority=-10)
@@ -375,15 +386,62 @@ async def test_a_task_retries_after_its_own_backoff() -> None:
 
 @pytest.mark.usefixtures("tables")
 async def test_a_task_runs_under_its_own_timeout() -> None:
-    """A task's timeout replaces TASK_TIMEOUT, shorter or longer."""
-    await enqueue(quick, seconds=0.15)  # Under TASK_TIMEOUT (0.2), over its own.
-    await enqueue(patient, seconds=0.3)  # Over TASK_TIMEOUT, under its own.
+    """A task's timeout replaces TASK_TIMEOUT, shorter or longer.
+
+    Each task sleeps ten times one of the two timeouts and a tenth of the
+    other, so only the timeout that applies explains how it ends, however
+    slow the machine: a sleep never ends early, and a tenth leaves room.
+    """
+
+    @task(name="tests.shorter", timeout=0.05, max_attempts=1)
+    async def shorter() -> None:
+        await asyncio.sleep(0.5)
+        ran.append("shorter")
+
+    @task(name="tests.longer", timeout=5, max_attempts=1)
+    async def longer() -> None:
+        await asyncio.sleep(0.5)
+        ran.append("longer")
+
+    def config(task_timeout: float) -> MessagingSettings:
+        return MessagingSettings(
+            **{**FAST, "TASK_TIMEOUT": task_timeout, "VISIBILITY_TIMEOUT": 60}
+        )
+
+    await enqueue(shorter)
+    await Worker(config(task_timeout=5)).run_once()
+    await enqueue(longer)
+    await Worker(config(task_timeout=0.05)).run_once()
+
+    statuses = {row["target"]: row["status"] for row in await rows()}
+    assert statuses == {"tests.shorter": DEAD, "tests.longer": DONE}
+    assert ran == ["longer"]
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_task_runs_under_a_deadline_of_its_timeout() -> None:
+    """What a task waits on is bounded by the time it has left.
+
+    Its statements' ``statement_timeout`` (on PostgreSQL) and outgoing calls
+    see the deadline, as in a request, and its own timer enforces it.
+    """
+    await enqueue(bounded)
+    await enqueue(unbounded)
 
     await Worker().run_once()
 
     statuses = {row["target"]: row["status"] for row in await rows()}
-    assert statuses == {"tests.quick": DEAD, "tests.patient": DONE}
-    assert ran == ["patient"]
+    assert statuses == {"tests.bounded": DONE, "tests.unbounded": DONE}
+    seen = {name: rest for name, *rest in ran}
+    for name, timeout in (("bounded", 0.5), ("unbounded", FAST["TASK_TIMEOUT"])):
+        left, enforced, _ = seen[name]
+        assert isinstance(left, float)
+        assert 0 < left <= timeout
+        assert enforced is True
+    shown = seen["bounded"][2]
+    if shown is not None:  # PostgreSQL: SET LOCAL from the deadline.
+        assert re.fullmatch(r"\d+ms", shown)
+        assert 0 < int(shown.removesuffix("ms")) <= 500
 
 
 @pytest.mark.usefixtures("messaging")
@@ -500,9 +558,8 @@ async def test_chains_pass_results_from_step_to_step() -> None:
         2,
     )
     assert second["dedupe_key"] == f"chain:{first['id']}"
-    assert second["payload"] == {"order": 7, "receipt": "r-7"}
-    assert stored["tests.archive"]["payload"] == {"order": 7, "receipt": "r-7"}
-    assert stored["tests.total"]["payload"] == {"result": 70}
+    # What each step was given is in ``ran``; once done, the rows keep none.
+    assert [row["payload"] for row in stored.values()] == [{}] * len(stored)
     assert "chain" not in stored["tests.total"]["headers"]
     assert stored["tests.archive"]["headers"]["chain"] == ["tests.total"]
 
@@ -782,10 +839,10 @@ async def test_waiting_messages_can_be_cancelled_running_ones_not() -> None:
         [Worker()], ["default"], MessagingSettings(**{**FAST, "BROKER": "x"})
     )
     await consumer.deliver(delivery(json.loads(body), answers=answers))
-    statuses = {
-        row["payload"].get("label", "chain"): row["status"] for row in await rows()
-    }
-    assert statuses == {
+    labels = {row["id"]: label for label, row in by_label.items()}
+    labels[claimed.id] = "run"
+    finished = {labels[row["id"]]: row for row in await rows()}
+    assert {label: row["status"] for label, row in finished.items()} == {
         "run": DONE,
         "wait": CANCELLED,
         "publish": CANCELLED,
@@ -793,9 +850,9 @@ async def test_waiting_messages_can_be_cancelled_running_ones_not() -> None:
     }
     assert answers == ["ack"]
     assert [entry for entry in ran if isinstance(entry, str)] == ["run"]
-    cancelled = {row["payload"].get("label"): row for row in await rows()}
-    assert cancelled["wait"]["last_error"] == "Cancelled by an operator."
-    assert cancelled["wait"]["finished_at"] is not None
+    assert finished["wait"]["last_error"] == "Cancelled by an operator."
+    assert finished["wait"]["finished_at"] is not None
+    assert {row["payload"] == {} for row in finished.values()} == {True}
 
 
 @pytest.mark.usefixtures("tables")
@@ -889,7 +946,9 @@ def test_the_messages_command_lists_and_cancels() -> None:
         await enqueue(low, label="a")
         await enqueue(high, label="b")
         await enqueue(with_policy, error="broken")
-        worker = Worker()
+        # A lease that outlasts the commands below on any machine: --locked
+        # must still see it, whatever the commands cost.
+        worker = Worker(MessagingSettings(**{**FAST, "VISIBILITY_TIMEOUT": 60}))
         (claimed,) = await worker.claim(1)
         ids = [claimed.id]
         await set_rows(available_at=datetime.now(UTC) - timedelta(seconds=3))

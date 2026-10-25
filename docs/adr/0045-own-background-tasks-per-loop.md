@@ -61,3 +61,25 @@ Options considered:
 - Every framework task can be found (`owned()`), is stopped at shutdown,
   and fails loudly once. Projects can start theirs the same way.
 - Task names are metric labels, so they must be fixed strings.
+
+## Addendum (2026-10-25): a caller's deadline, and work left behind
+
+An audit of 0.9.0 found that a shared cache computation ran without the
+deadline of the request it served, and kept using that request's session
+after the request was cut off (CONC-02); and that a relay's give-back and
+the closes a shutdown phase gave up on were plain tasks, so the `tasks`
+phase did not wait for them and the `resources` phase closed the database
+under them (CONC-05).
+
+- `spawn(..., deadline=...)` carries a deadline into the clean context,
+  besides the frozen clock: the task's transactions and outgoing calls are
+  bounded by it, and no timer of the task's own enforces it. Cache
+  computations that borrow their caller's resources pass that caller's
+  (ADR 0071).
+- `adopt(task)` owns a task started some other way. A close cut off at the
+  end of its phase (`lifecycle`, `close_each`, `close_in_turn`) is
+  adopted, so the `tasks` phase waits for it to end.
+- A relay's give-back runs as an owned task (`domainkit.messaging.settle`)
+  that keeps its work running through the `tasks` phase's cancellation,
+  bounded by `RELEASE_TIMEOUT`, so the phase waits for the leases to go
+  back.

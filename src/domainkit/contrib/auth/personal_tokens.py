@@ -96,7 +96,7 @@ class TokenInfo(BaseModel):
 class NewToken(TokenInfo):
     """A token just made: its value is shown now, and never again."""
 
-    token: str
+    token: str = Field(repr=False)
 
 
 class TokenPage(BaseModel):

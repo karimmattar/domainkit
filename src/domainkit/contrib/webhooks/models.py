@@ -12,6 +12,7 @@ from collections.abc import Iterable
 from dataclasses import field
 from datetime import datetime, timedelta
 from typing import Final, NewType, Self
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 from domainkit import clock
@@ -52,10 +53,16 @@ class SubscriptionCreated(DomainEvent):
 
 
 class SubscriptionChanged(DomainEvent):
-    """Staff changed a subscription; ``fields`` names what changed."""
+    """Staff changed a subscription; ``fields`` names what changed.
+
+    When the URL changed, ``host`` is its new host and ``previous_host`` the
+    one before (hosts only: paths and queries may hold tokens).
+    """
 
     subscription_id: SubscriptionId
     fields: tuple[str, ...]
+    host: str | None = None
+    previous_host: str | None = None
 
 
 class SubscriptionSecretRotated(DomainEvent):
@@ -89,6 +96,14 @@ def checked_event_types(event_types: Iterable[str]) -> list[str]:
 def _now() -> datetime:
     """Return the current time in UTC (``domainkit.clock``)."""
     return clock.now()
+
+
+def host_of(url: str) -> str:
+    """The host of ``url``, lower case, without user, port, path, or query."""
+    try:
+        return urlsplit(url).hostname or ""
+    except ValueError:  # A URL stored before the guard checked it as now.
+        return ""
 
 
 def secret_box() -> SecretBox:
@@ -163,10 +178,17 @@ class Subscription(AggregateRoot[SubscriptionId]):
         event_types: Iterable[str] | None = None,
         active: bool | None = None,
         description: str | None = None,
+        host: str | None = None,
     ) -> None:
-        """Change what is given; record which fields changed, if any."""
+        """Change what is given; record which fields changed, if any.
+
+        A new URL is recorded with its host and the previous one: ``host``
+        when the caller checked it, else read from the URL.
+        """
         changed = []
+        new_host = previous_host = None
         if url is not None and url != self.url:
+            new_host, previous_host = host or host_of(url), host_of(self.url)
             self.url = url
             changed.append("url")
         if event_types is not None:
@@ -182,7 +204,12 @@ class Subscription(AggregateRoot[SubscriptionId]):
             changed.append("description")
         if changed:
             self.record(
-                SubscriptionChanged(subscription_id=self.id, fields=tuple(changed))
+                SubscriptionChanged(
+                    subscription_id=self.id,
+                    fields=tuple(changed),
+                    host=new_host,
+                    previous_host=previous_host,
+                )
             )
 
     def rotate_secret(self, overlap: timedelta) -> str:

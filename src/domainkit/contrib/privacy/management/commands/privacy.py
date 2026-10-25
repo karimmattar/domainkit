@@ -23,6 +23,8 @@ class Command(BaseCommand):
         "personal data of one person in every installed domain, or delete "
         "and erase what each domain's RETENTION no longer keeps (purge)."
     )
+    operator_actions = True
+    """Exports, erasures, and purges are audited as the operator who ran them."""
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         """Declare the three actions and their options."""

@@ -17,6 +17,7 @@ from domainkit.db import metadata
 from domainkit.db.routing import router
 from domainkit.ddd import DomainEvent, UnitOfWork, event_bus
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.http.ratelimit import MemoryBackend
 from domainkit.utils.module_loading import import_string
 
 from .access import _routes, routes_need_users, unguarded_routes
@@ -46,6 +47,8 @@ INSIDE_AUTHENTICATION = (
     "domainkit.http.websockets.WebSocketLimitsMiddleware",
 )
 """Middleware that must run after it, to count users rather than addresses."""
+REDIS_BACKEND = "domainkit.http.ratelimit.RedisBackend"
+"""The rate-limit backend every process shares."""
 RELATIONSHIPS = frozenset({"groups", "user_permissions"})
 """User fields stored in link tables, not in the user's own table."""
 
@@ -179,9 +182,10 @@ class AuthConfig(DomainConfig):
     def deployment_warnings(self) -> list[str]:
         """Weak choices in staging and production.
 
-        Login and code checks without a rate, cookies without ``__Host-``
-        where it could hold, and principals kept longer than
-        ``PRINCIPAL_TTL`` where nothing tells other processes of changes.
+        Login and code checks without a rate, or counted in each process,
+        cookies without ``__Host-`` where it could hold, and principals
+        kept longer than ``PRINCIPAL_TTL`` where nothing tells other
+        processes of changes.
         """
         if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
             return []
@@ -211,6 +215,15 @@ class AuthConfig(DomainConfig):
             warnings.append(
                 "AUTH.MFA.RATE is None, so one-time codes can be guessed without "
                 'limit; set it, such as "10/hour".'
+            )
+        if _counted_per_process(config):
+            warnings.append(
+                f"RATE_LIMIT_BACKEND {settings.RATE_LIMIT_BACKEND} counts in each "
+                "process, so with several processes or replicas each allows "
+                "AUTH.LOGIN_RATE, AUTH.MFA.RATE, and the other attempt rates "
+                "on its own: passwords and codes can be guessed that many times "
+                "faster. Set RATE_LIMIT_BACKEND to "
+                f"{REDIS_BACKEND}, shared by every process."
             )
         if (
             COOKIE_AUTHENTICATION in config.AUTHENTICATION_CLASSES
@@ -351,6 +364,23 @@ def _check_middleware() -> None:
                 f"MIDDLEWARE: list {AUTHENTICATION_MIDDLEWARE} before {path}, so it "
                 "counts users rather than client addresses."
             )
+
+
+def _counted_per_process(config: AuthSettings) -> bool:
+    """Whether attempts are throttled, in a backend each process keeps alone."""
+    rates = (
+        config.LOGIN_RATE,
+        config.EMAIL_RATE,
+        config.MFA.RATE,
+        config.MFA.ADDRESS_RATE,
+    )
+    if all(rate is None for rate in rates):
+        return False
+    try:
+        backend = import_string(settings.RATE_LIMIT_BACKEND)
+    except ImportError:
+        return False  # Not a class: loading it fails loudly where it is used.
+    return isinstance(backend, type) and issubclass(backend, MemoryBackend)
 
 
 def _user_model(path: str) -> type[AbstractBaseUser]:

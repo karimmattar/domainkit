@@ -36,8 +36,11 @@ calls. Every call:
   time tries the host again (unless the client has ``breaker=False``);
 - sends the request id (``X-Request-ID``) and the trace context
   (``traceparent``, ``tracestate``) of the work it serves;
-- reads at most ``MAX_RESPONSE_BYTES`` of the answer, decompressed, or
-  raises ``ResponseTooLarge``;
+- reads at most ``MAX_RESPONSE_BYTES`` of the answer, both as it comes
+  and decompressed, or raises ``ResponseTooLarge``: httpx2 inflates a
+  compressed answer a piece of at most 1 MiB at a time, each counted
+  before the next, so an answer that inflates a thousandfold costs no
+  more than the limit and a piece;
 - is logged by method, origin, and path: never a query string, a header,
   or a body (``build_logging_config`` quiets httpx2's own lines, which
   show the whole URL).
@@ -48,10 +51,11 @@ credentials in the URL, every address of the host public unless in
 ``allowed_networks``, and the connection made to an address that was
 checked, so DNS rebinding gains nothing. It follows no redirects, ignores
 proxy settings and CA files (``SSL_CERT_FILE``) from the environment, asks
-for uncompressed answers, logs only the origin, and sends no request id or
-trace context (unless ``propagate=True``): use it for URLs that someone
-else chose. A refused URL raises ``UnsafeURL``, a 422 if the request does
-not catch it.
+for uncompressed answers and refuses (``httpx2.DecodingError``) one
+compressed in a way it did not ask for, logs only the origin, and sends no
+request id or trace context (unless ``propagate=True``): use it for URLs
+that someone else chose. A refused URL raises ``UnsafeURL``, a 422 if the
+request does not catch it.
 
 In tests, ``stub(handler)`` sends every call to ``handler`` through
 httpx2's ``MockTransport``; the handler takes an ``httpx2.Request`` and
@@ -67,7 +71,14 @@ import re
 import ssl
 import threading
 from collections import OrderedDict
-from collections.abc import Callable, Coroutine, Iterator, Mapping, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Callable,
+    Coroutine,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -75,7 +86,7 @@ from datetime import UTC
 from email.utils import parsedate_to_datetime
 from functools import cache
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, cast
 from urllib.parse import unquote_to_bytes
 from weakref import WeakKeyDictionary, WeakSet
 
@@ -109,6 +120,8 @@ RETRY_STATUSES: Final = frozenset({429, 502, 503, 504})
 """Answers worth trying again after a while."""
 SERVER_ERROR: Final = 500
 """Answers from this status up count against the host's circuit."""
+BODILESS: Final = frozenset({204, 304})
+"""Answers that carry no body, whatever their headers say."""
 RETRIED: Final = (
     httpx2.NetworkError,
     httpx2.TimeoutException,
@@ -143,7 +156,7 @@ class CallTimeout(httpx2.TimeoutException):
 
 
 class ResponseTooLarge(httpx2.RequestError):
-    """An answer was longer than ``MAX_RESPONSE_BYTES``, decompressed."""
+    """An answer was longer than ``MAX_RESPONSE_BYTES``, as sent or decompressed."""
 
 
 @dataclass(slots=True)
@@ -478,6 +491,8 @@ class HttpClient:
         ).as_dict()
         response = await pool.send(request, stream=True)
         try:
+            if self.guard:
+                _check_encoding(response)
             body = await _read(response, config.MAX_RESPONSE_BYTES)
         finally:
             await response.aclose()
@@ -702,8 +717,94 @@ def _opened(origin: str, config: HttpClientConfig) -> None:
     )
 
 
+def _check_encoding(response: httpx2.Response) -> None:
+    """Refuse an answer compressed in a way its request did not accept.
+
+    A guarded client asks for ``identity``: an answer someone else's
+    server compresses anyway is refused before any of it is inflated. An
+    answer without a body (to ``HEAD``, a 204, a 304) is let through.
+
+    Raises:
+        httpx2.DecodingError: The answer's ``Content-Encoding`` is not one
+            the request's ``Accept-Encoding`` takes.
+    """
+    request = response.request
+    if request.method == "HEAD" or response.status_code in BODILESS:
+        return
+    used = {
+        coding.strip().lower()
+        for coding in response.headers.get_list("content-encoding", split_commas=True)
+    } - {"", "identity"}
+    accepted = _accepted(request.headers.get("accept-encoding", "identity"))
+    if used and "*" not in accepted and not used <= accepted:
+        raise httpx2.DecodingError(
+            f"The answer is compressed ({', '.join(sorted(used))}), which the "
+            "request did not accept.",
+            request=request,
+        )
+
+
+def _accepted(value: str) -> set[str]:
+    """The content codings an ``Accept-Encoding`` value takes (``q=0``: not)."""
+    accepted = set()
+    for item in value.split(","):
+        coding, _, parameter = item.partition(";")
+        name, _, weight = parameter.partition("=")
+        if name.strip().lower() == "q" and _nothing(weight):
+            continue
+        accepted.add(coding.strip().lower())
+    return accepted
+
+
+def _nothing(weight: str) -> bool:
+    """Whether a ``q`` weight is 0: the coding is not acceptable at all."""
+    try:
+        return float(weight) == 0
+    except ValueError:
+        return False
+
+
+class _Bounded(httpx2.AsyncByteStream):
+    """A response's stream as it comes, refused past ``limit`` bytes."""
+
+    def __init__(
+        self, stream: httpx2.AsyncByteStream, request: httpx2.Request, limit: int
+    ) -> None:
+        """Count what ``stream`` gives, up to ``limit`` bytes."""
+        self.stream = stream
+        self.request = request
+        self.limit = limit
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        """The chunks of the stream, until there are too many bytes.
+
+        Raises:
+            ResponseTooLarge: More than ``limit`` bytes came.
+        """
+        size = 0
+        async for chunk in self.stream:
+            size += len(chunk)
+            if size > self.limit:
+                raise ResponseTooLarge(
+                    f"The answer is longer than {self.limit} bytes.",
+                    request=self.request,
+                )
+            yield chunk
+
+    async def aclose(self) -> None:
+        """Close the stream underneath."""
+        await self.stream.aclose()
+
+
 async def _read(response: httpx2.Response, limit: int) -> bytes:
-    """The decompressed body of ``response``, unless longer than ``limit``."""
+    """The decompressed body of ``response``, unless longer than ``limit``.
+
+    The bytes as they come are bounded too (``_Bounded``): an answer that
+    inflates to little, or to nothing, is not read without end.
+    """
+    # An async client's answers stream asynchronously.
+    stream = cast(httpx2.AsyncByteStream, response.stream)
+    response.stream = _Bounded(stream, response.request, limit)
     chunks: list[bytes] = []
     size = 0
     async for chunk in response.aiter_bytes():

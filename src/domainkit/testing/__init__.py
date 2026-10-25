@@ -44,12 +44,15 @@ every database the settings name, so they refuse settings whose
 
 The async fixtures need async tests run by AnyIO (``pytest.mark.anyio``).
 Memory caches (``memory://``) are emptied before every test, so no test
-sees what another one cached. Redis caches are left alone. Error reports
-and queued logs are sent before the next test starts; call
+sees what another one cached. Redis caches are left alone. The memory
+backends' outboxes (``mail.outbox``, ``sms_outbox``, ``push_outbox``) are
+emptied too, and every ``Factory`` numbers its objects from 0 again. Error
+reports and queued logs are sent before the next test starts; call
 ``domainkit.reporting.flush_reports()`` before checking what a test reported.
 """
 
 import os
+import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from typing import Any, Final
 
@@ -92,6 +95,12 @@ __all__ = [
 ]
 
 SETTINGS_INI: Final = "domainkit_settings"
+OUTBOXES: Final = (
+    ("domainkit.contrib.mail.backends", "outbox"),
+    ("domainkit.contrib.notifications.backends", "sms_outbox"),
+    ("domainkit.contrib.notifications.backends", "push_outbox"),
+)
+"""Where the memory backends keep what they sent: (module, list)."""
 
 type ClientFor = Callable[..., TestClient]
 type AsyncClientFor = Callable[..., Awaitable[AsyncTestClient]]
@@ -124,6 +133,27 @@ def pytest_configure(config: pytest.Config) -> None:
 def empty_memory_caches() -> None:
     """Start every test with empty memory caches."""
     caches.reset()
+
+
+@pytest.fixture(autouse=True)
+def empty_outboxes() -> None:
+    """Start every test with the memory backends' outboxes empty, as Django does.
+
+    Only those of modules already imported: no other one holds anything.
+    """
+    for module, name in OUTBOXES:
+        if (loaded := sys.modules.get(module)) is not None:
+            getattr(loaded, name).clear()
+
+
+@pytest.fixture(autouse=True)
+def fresh_sequences() -> None:
+    """Number every factory's objects from 0 again, whatever ran before."""
+    factories = Factory.__subclasses__()
+    while factories:
+        factory = factories.pop()
+        factory.reset_sequence()
+        factories.extend(factory.__subclasses__())
 
 
 @pytest.fixture(autouse=True)

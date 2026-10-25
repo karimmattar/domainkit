@@ -3,25 +3,42 @@
 import asyncio
 import inspect
 import re
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextvars import ContextVar
 from datetime import timedelta
-from typing import Any, Final
+from functools import partial, wraps
+from typing import Annotated, Any, Final
 
 import pytest
-from fastapi import FastAPI, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, Request, Response, Security
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 from starlette.authentication import AuthCredentials
+from starlette.types import ASGIApp, Receive, Scope, Send
 
+from domainkit import deadlines
 from domainkit.cache import cache_page, caches
-from domainkit.cache.pages import REQUEST, RESPONSE, _matches, _signature, _user
+from domainkit.cache.core import COMPUTE_TASK
+from domainkit.cache.pages import (
+    REQUEST,
+    RESPONSE,
+    _matches,
+    _route_holds,
+    _signature,
+    _user,
+)
 from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.auth.authentication import Credentials
+from domainkit.db import connections
 from domainkit.http import get_asgi_application
+from domainkit.tasks import owned
+from domainkit.testing import AsyncTestClient
 from domainkit.testing import TestClient as DomainkitTestClient
 from domainkit_tests import sample_platform_routes
 from domainkit_tests.conftest import MakePackage, UseAuth
 from domainkit_tests.sample_platform_routes import COOKIE_USERS
+from domainkit_tests.test_db import NotesUnitOfWork, database  # noqa: F401 - a fixture.
 
 MIDDLEWARE: Final = [
     "domainkit.http.locale.LocaleMiddleware",
@@ -504,3 +521,394 @@ def test_validator_matching() -> None:
     assert not _matches("", etag)
     assert not _matches('"abcd"', etag)
     assert not _matches('W/"ab"', etag)
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("database")
+async def test_a_request_cut_off_during_a_miss_returns_its_connection() -> None:
+    """The endpoint stops before its dependencies close, so nothing leaks.
+
+    A request cancelled while its endpoint computes the entry (its deadline
+    passed, its client went away) closes its unit of work on the way out:
+    the endpoint runs no statement on it after that, and the pool gets its
+    connection back.
+    """
+    app = FastAPI()
+    started, release = asyncio.Event(), asyncio.Event()
+    ran: list[int] = []
+
+    async def unit_of_work() -> AsyncIterator[NotesUnitOfWork]:
+        async with NotesUnitOfWork() as uow:
+            yield uow
+
+    @app.get("/report")
+    @cache_page(ttl=60)
+    async def report(
+        uow: Annotated[NotesUnitOfWork, Depends(unit_of_work)],
+    ) -> dict[str, int]:
+        ran.append(await uow.session.scalar(text("SELECT 1")) or 0)
+        started.set()
+        await release.wait()
+        ran.append(await uow.session.scalar(text("SELECT 2")) or 0)
+        return {"rows": 2}
+
+    engine = connections.engine()
+    try:
+        async with AsyncTestClient(app, lifespan=False) as client:
+            asking = asyncio.create_task(client.get("/report"))
+            async with asyncio.timeout(30):
+                await started.wait()
+            computing = {t for t in owned() if t.get_name() == COMPUTE_TASK}
+            asking.cancel()
+            await asyncio.wait([asking], timeout=30)
+            release.set()
+            await asyncio.wait(computing, timeout=30)
+
+        assert asking.cancelled()
+        assert engine.pool.checkedout() == 0  # type: ignore[attr-defined]
+        assert ran == [1]
+    finally:
+        release.set()
+        await connections.close_all()
+
+
+@pytest.mark.anyio
+async def test_a_page_that_borrows_nothing_is_cached_after_its_caller_left() -> None:
+    """With ``borrows=False`` its computation goes on and fills the cache.
+
+    A page slower than one request's deadline then heals instead of
+    failing every request.
+    """
+    app = FastAPI()
+    started, release = asyncio.Event(), asyncio.Event()
+    computed: list[str] = []
+
+    @app.get("/report")
+    @cache_page(ttl=60, borrows=False)
+    async def report(month: int = 1) -> dict[str, int]:
+        computed.append("report")
+        started.set()
+        await release.wait()
+        return {"month": month}
+
+    async with AsyncTestClient(app, lifespan=False) as client:
+        asking = asyncio.create_task(client.get("/report"))
+        async with asyncio.timeout(30):
+            await started.wait()
+        (computing,) = {t for t in owned() if t.get_name() == COMPUTE_TASK}
+        asking.cancel()
+        await asyncio.wait([asking], timeout=30)
+        release.set()
+        await asyncio.wait([computing], timeout=30)
+        later = await client.get("/report")
+
+    assert asking.cancelled()
+    assert later.json() == {"month": 1}
+    assert computed == ["report"]  # Served from the entry the computation stored.
+
+
+async def _session() -> AsyncIterator[str]:
+    yield "session"
+
+
+class Held:
+    """A dependency object whose ``__call__`` holds a resource."""
+
+    async def __call__(self) -> AsyncIterator[str]:
+        """Open, yield, close."""
+        yield "held"
+
+
+class Plain:
+    """A class dependency: FastAPI builds one per request."""
+
+    def __init__(self, month: int = 1) -> None:
+        """Keep the month."""
+        self.month = month
+
+
+async def _opens(session: Annotated[str, Depends(_session)]) -> str:
+    return session
+
+
+def _sync_session() -> Iterator[str]:
+    yield "session"
+
+
+def _logged[**P, R](dependency: Callable[P, R]) -> Callable[P, R]:
+    """A project's decorator for dependencies; FastAPI sees through it."""
+
+    @wraps(dependency)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        return dependency(*args, **kwargs)
+
+    return wrapper
+
+
+async def _labelled(label: str = "notes") -> AsyncIterator[str]:
+    yield label
+
+
+WRAPPED: Final = {
+    "partial": partial(_labelled, "reports"),
+    "nested partials": partial(partial(_labelled), "reports"),
+    "wraps": _logged(_labelled),
+    "partial of wraps": partial(_logged(_labelled), "reports"),
+    "wraps of a generator": _logged(_sync_session),
+    "partial of an instance": partial(Held()),
+}
+"""Dependencies with ``yield`` that FastAPI sees through, and so must we."""
+
+
+REFUSED: Final = (
+    r"^@cache_page\(borrows=False\) cannot run an endpoint whose dependencies "
+    r"hold a resource \(a dependency with yield\): its computation would use "
+    r"it after the request closed it\.$"
+)
+
+
+def test_detached_pages_refuse_dependencies_that_hold_a_resource() -> None:
+    """``borrows=False`` cannot run an endpoint that uses what the request closes.
+
+    Dependencies with ``yield`` are found as defaults, in ``Annotated``,
+    through ``Security``, beneath other dependencies, as instances with a
+    ``__call__`` that yields, behind ``Depends()`` naming a class, and
+    through ``functools.partial`` (nested too) and ``functools.wraps``,
+    as FastAPI finds them (SEC-r3-7).
+    """
+
+    async def by_default(session: str = Depends(_session)) -> int:
+        return 1
+
+    async def annotated(session: Annotated[str, Depends(_session)]) -> int:
+        return 1
+
+    async def secured(session: Annotated[str, Security(_session)]) -> int:
+        return 1
+
+    async def documented(
+        session: Annotated[str, "the session"] = Depends(_session),
+    ) -> int:
+        return 1
+
+    async def beneath(session: Annotated[str, Depends(_opens)]) -> int:
+        return 1
+
+    async def instance(session: Annotated[str, Depends(Held())]) -> int:
+        return 1
+
+    async def synchronous(session: Annotated[str, Depends(_sync_session)]) -> int:
+        return 1
+
+    async def plain(
+        request: Request,
+        kept: Annotated[Plain, Depends()],
+        built: Annotated[Held, Depends(Held)],  # Built; its __call__ is not run.
+        month: int = 1,
+        held: int = Depends(len),
+        wrapped: int = Depends(partial(_logged(len), "")),
+    ) -> int:
+        return month
+
+    held = [by_default, annotated, secured, documented, beneath, instance, synchronous]
+    for dependency in WRAPPED.values():
+
+        async def wrapped(
+            session: Annotated[str, Depends(dependency)],
+        ) -> int:
+            return 1
+
+        held.append(wrapped)
+    for endpoint in held:
+        with pytest.raises(TypeError, match=REFUSED):
+            cache_page(borrows=False)(endpoint)
+        cache_page()(endpoint)  # Borrowing, the default, takes them all.
+    cache_page(borrows=False)(plain)  # Values, the request, a class: nothing held.
+
+
+def test_requests_see_dependencies_with_yield_beneath_the_routes() -> None:
+    """A route dependency that holds nothing itself, but depends on one that does."""
+
+    async def plain() -> None:
+        return None
+
+    async def via(opened: Annotated[None, Depends(_open_unit_of_work)]) -> None:
+        return None
+
+    app = FastAPI()
+
+    @app.get("/holds", dependencies=[Depends(plain), Depends(via)])
+    async def holds() -> int:
+        return 1
+
+    async def beneath_plain(nothing: Annotated[None, Depends(plain)]) -> None:
+        return None
+
+    # The last is looked at first; the one before it still is, after.
+    @app.get(
+        "/first", dependencies=[Depends(_open_unit_of_work), Depends(beneath_plain)]
+    )
+    async def first() -> int:
+        return 1
+
+    @app.get("/free", dependencies=[Depends(plain)])
+    async def free() -> int:
+        return 1
+
+    def holds_on(path: str) -> bool:
+        (route,) = [r for r in app.routes if getattr(r, "path", None) == path]
+        scope = {"type": "http", "route": route, "router": app.router}
+        return _route_holds(Request(scope))
+
+    assert holds_on("/holds")
+    assert holds_on("/first")
+    assert not holds_on("/free")
+    assert not _route_holds(Request({"type": "http"}))  # Not routed (yet).
+
+
+async def _open_unit_of_work(request: Request) -> AsyncIterator[None]:
+    async with NotesUnitOfWork() as uow:
+        request.state.uow = uow
+        yield
+
+
+_current_uow: ContextVar[NotesUnitOfWork] = ContextVar("current_uow")
+
+
+class UnitOfWorkMiddleware:
+    """A project's unit of work per request, in ``request.state`` and a context var."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        """Wrap ``app``."""
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Open a unit of work around the request; close it when it ends."""
+        async with NotesUnitOfWork() as uow:
+            scope.setdefault("state", {})["uow"] = uow
+            token = _current_uow.set(uow)
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                _current_uow.reset(token)
+
+
+async def _cut_off_during_a_miss(
+    app: ASGIApp, started: asyncio.Event, release: asyncio.Event
+) -> list[asyncio.Task[Any]]:
+    """Ask for ``/report``, cancel the request once its endpoint started, release."""
+    async with AsyncTestClient(app, lifespan=False) as client:
+        asking = asyncio.create_task(client.get("/report"))
+        async with asyncio.timeout(30):
+            await started.wait()
+        computing = [t for t in owned() if t.get_name() == COMPUTE_TASK]
+        asking.cancel()
+        await asyncio.wait([asking], timeout=30)
+        release.set()
+        if computing:
+            await asyncio.wait(computing, timeout=30)
+    assert asking.cancelled()
+    return computing
+
+
+@pytest.mark.anyio
+@pytest.mark.usefixtures("database")
+@pytest.mark.parametrize(
+    ("handed", "borrows"),
+    [
+        ("route", True),
+        ("route", False),  # A route's dependency with yield: it borrows anyway.
+        ("router", False),
+        ("application", False),
+        ("route, partial", False),  # FastAPI sees through partial and wraps.
+        ("route, wraps", False),
+        ("route, partial of wraps", False),
+        ("outer router", True),  # Not in the request: only borrowing covers it.
+        ("middleware state", True),
+        ("context variable", True),
+    ],
+)
+async def test_every_way_a_page_reaches_the_requests_unit_of_work_is_safe(
+    handed: str, borrows: bool
+) -> None:
+    """A cut-off request's unit of work is never used after it closed it.
+
+    Pages borrow by default, so whatever hands the endpoint the request's
+    unit of work (a route, router, or application dependency, a middleware
+    through ``request.state`` or a context variable, which nothing can
+    detect) the computation ends with the request. With ``borrows=False``,
+    a dependency with ``yield`` of the route, its router, or the application
+    makes the request borrow anyway; one of a router it was included
+    through is not in the request, which is why pages borrow by default.
+    """
+    started, release = asyncio.Event(), asyncio.Event()
+    ran: list[int] = []
+    on_route = {
+        "route": [Depends(_open_unit_of_work)],
+        "route, partial": [Depends(partial(_open_unit_of_work))],
+        "route, wraps": [Depends(_logged(_open_unit_of_work))],
+        "route, partial of wraps": [
+            Depends(partial(partial(_logged(_open_unit_of_work))))
+        ],
+    }.get(handed, [])
+    router = APIRouter(
+        dependencies=[Depends(_open_unit_of_work)] if handed == "router" else []
+    )
+    app = FastAPI(
+        dependencies=[Depends(_open_unit_of_work)] if handed == "application" else []
+    )
+
+    @router.get("/report", dependencies=on_route)
+    @cache_page(ttl=60, borrows=borrows)
+    async def report(request: Request) -> dict[str, int]:
+        uow = _current_uow.get() if handed == "context variable" else request.state.uow
+        ran.append(await uow.session.scalar(text("SELECT 1")) or 0)
+        started.set()
+        await release.wait()
+        ran.append(await uow.session.scalar(text("SELECT 2")) or 0)
+        return {"rows": 2}
+
+    if handed == "outer router":
+        outer = APIRouter(dependencies=[Depends(_open_unit_of_work)])
+        outer.include_router(router)
+        app.include_router(outer)
+    else:
+        app.include_router(router)
+    served: ASGIApp = app
+    if handed in {"middleware state", "context variable"}:
+        served = UnitOfWorkMiddleware(app)
+    engine = connections.engine()
+    try:
+        await _cut_off_during_a_miss(served, started, release)
+
+        assert engine.pool.checkedout() == 0  # type: ignore[attr-defined]
+        assert ran == [1]
+    finally:
+        release.set()
+        await connections.close_all()
+
+
+@pytest.mark.anyio
+async def test_a_page_that_borrows_nothing_runs_under_its_own_deadline() -> None:
+    """Not its caller's: one short request must not cut the page short for all."""
+    app = FastAPI()
+    seen: list[float | None] = []
+
+    @app.get("/report")
+    @cache_page(ttl=60, borrows=False)
+    async def report() -> dict[str, int]:
+        seen.append(deadlines.remaining())
+        return {"rows": 1}
+
+    bounded = {"default": {"URL": "memory://", "COMPUTE_TIMEOUT": 60}}
+    async with AsyncTestClient(app, lifespan=False) as client:
+        with override_settings(CACHES=bounded):
+            async with deadlines.timeout(5):
+                await client.get("/report")
+        async with deadlines.timeout(5):  # The default: unbounded.
+            await client.get("/report?fresh=1")
+
+    left, unbounded = seen
+    assert left is not None
+    assert 5 < left <= 60  # COMPUTE_TIMEOUT, not the caller's 5 seconds.
+    assert unbounded is None

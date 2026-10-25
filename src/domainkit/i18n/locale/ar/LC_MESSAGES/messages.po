@@ -156,6 +156,9 @@ msgstr "كلمة المرور التي أدخلتها غير صحيحة."
 msgid "Too many attempts; try again later."
 msgstr "محاولات كثيرة جدًا؛ حاول مرة أخرى لاحقًا."
 
+msgid "Attempts cannot be counted right now; try again later."
+msgstr "لا يمكن عدّ المحاولات الآن؛ حاول مرة أخرى لاحقًا."
+
 msgid "Too many requests for mail; try again later."
 msgstr "طلبات بريد كثيرة جدًا؛ حاول مرة أخرى لاحقًا."
 

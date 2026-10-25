@@ -445,10 +445,86 @@ def test_flush_empties_all_but_the_audit_trail(project: str) -> None:
     assert output.startswith(plan)
     assert output.endswith(" from 'default'.\n")
     assert (count(products), count(kinds)) == (0, 0)
-    assert count(audit_log) == 1
+    assert count(audit_log) == 2  # The one before, and the flush's own.
     assert count(content_types) > 0  # The migrate hooks put them back.
     first_id = asyncio.run(_scalar(select(func.min(content_types.c.id))))
     assert first_id == 1  # Sequences start again.
+
+
+def operator_rows() -> list[dict[str, Any]]:
+    """The audit rows of operator actions, oldest first."""
+
+    async def read() -> list[dict[str, Any]]:
+        try:
+            async with connections.engine().connect() as connection:
+                rows = await connection.execute(
+                    select(audit_log)
+                    .where(audit_log.c.action.startswith("operator."))
+                    .order_by(audit_log.c.occurred_at)
+                )
+                return [dict(row._mapping) for row in rows]
+        finally:
+            await connections.close_all()
+
+    return asyncio.run(read())
+
+
+def test_loads_and_flushes_are_audited_with_their_operator(
+    project: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Who replaced or deleted rows, how many, and whether it worked (DATA-07).
+
+    At 0.9.0 neither left a row in the audit trail, nor knew who ran it.
+    """
+    monkeypatch.setenv("DOMAINKIT_OPERATOR", "ops-env")
+    path = tmp_path / "tags.json"
+    tags = [{"kind": number, "tag": "x"} for number in range(3)]
+    document = {"format": "domainkit.fixture", "version": 1}
+    path.write_text(
+        json.dumps({**document, "tables": [{"table": kind_tags.name, "rows": tags}]}),
+        encoding="utf-8",
+    )
+    clash = tmp_path / "clash.json"
+    clash.write_text(
+        json.dumps(
+            {
+                **document,
+                "tables": [
+                    {"table": products.name, "rows": [{"id": str(uuid.uuid4())}]}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    run("loaddata", str(path), "--operator", "alice")
+    run("loaddata", str(path), "--dry-run")  # Writes nothing: not recorded.
+    with pytest.raises(CommandError, match="the database refused the rows"):
+        run("loaddata", str(clash))
+    run("flush")
+
+    loaded, refused, flushed = operator_rows()
+    assert (loaded["action"], loaded["actor"], loaded["outcome"]) == (
+        "operator.loaddata",
+        "operator:alice",
+        "success",
+    )
+    assert loaded["details"] == {
+        "fixture": "tags.json",
+        "database": "default",
+        "rows": 3,
+        "replaced": 0,
+        "operator_source": "option",
+    }
+    assert (refused["actor"], refused["outcome"]) == ("operator:ops-env", "failure")
+    assert refused["details"]["error"] == "CommandError"
+    assert refused["details"]["operator_source"] == "environment"
+    assert (flushed["action"], flushed["actor"]) == (
+        "operator.flush",
+        "operator:ops-env",
+    )
+    assert flushed["details"]["database"] == "default"
+    assert flushed["details"]["rows"] > 0
 
 
 def test_flush_is_refused_in_deployments_without_force(
@@ -710,7 +786,11 @@ def test_loading_works_in_chunks(
         plan = run("loaddata", str(path))
 
     assert f"{path}: framework_test_kind_tags: 5 rows, replacing 5\n" in plan
-    inserts = [each for each in queries.statements if each.startswith("INSERT")]
+    inserts = [
+        each
+        for each in queries.statements
+        if each.startswith(f"INSERT INTO {kind_tags.name}")
+    ]
     assert len(inserts) == 3
     assert count(kind_tags) == 5
 

@@ -12,10 +12,12 @@ class Command(BaseCommand):
     """Create the current and upcoming partitions; drop expired ones with --prune.
 
     Schedule it (cron, a Kubernetes CronJob) at least once per partition
-    period: inserts fail once the last partition is in the past.
+    period: inserts fail once the last partition is in the past. Each run
+    with ``--prune`` is recorded in the audit trail, per database.
     """
 
     help = "Create upcoming partitions; with --prune, drop those past retention."
+    operator_actions = True
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         """Accept a target, and the prune and dry-run switches."""
@@ -45,7 +47,12 @@ class Command(BaseCommand):
         """Maintain every database of the chosen targets and report each."""
         targets = (database,) if database else migrations.migration_targets()
         for alias in (alias for name in targets for alias in router.aliases_of(name)):
-            statements = await maintain(alias, prune=prune, dry_run=dry_run)
+            if prune and not dry_run:
+                async with self.recorded("partitions.prune", database=alias) as action:
+                    statements = await maintain(alias, prune=True)
+                    action["changes"] = len(statements)
+            else:
+                statements = await maintain(alias, prune=prune, dry_run=dry_run)
             if dry_run:
                 for statement in statements:
                     self.write(f"{statement};")

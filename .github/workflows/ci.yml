@@ -48,7 +48,8 @@ jobs:
     # in the same change.
     name: test (${{ matrix.python }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # The suite takes about 11 minutes; a slower runner must not fail it.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -135,7 +136,8 @@ jobs:
   # unused: fail.
   integration:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # The suite takes about 16 minutes; a slower runner must not fail it.
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
@@ -252,8 +254,18 @@ jobs:
       - run: poetry sync --all-extras --with dev
       - shell: bash
         run: |
-          poetry run pytest --cov -rs | tee pytest.log
+          poetry run pytest --cov -rs --junitxml=junit.xml | tee pytest.log
           ! grep -q "SKIPPED" pytest.log
+      # Kept when the suite fails too: which tests failed, and the log (with
+      # the stacks pytest-timeout prints for a hung test).
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-results-integration
+          path: |
+            junit.xml
+            pytest.log
+          retention-days: 14
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-integration

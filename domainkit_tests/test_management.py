@@ -153,9 +153,17 @@ def test_check_reports_success_and_violations(make_package: MakePackage) -> None
         run("check")
 
 
+BOUNDED_CACHES = {"default": {"COMPUTE_TIMEOUT": 30}}
+"""Caches ``check`` has nothing to say about where deployed."""
+
+
 def test_check_lists_weak_deployment_choices() -> None:
     """In staging and production, weak choices are warnings, not failures."""
-    production = {"ENVIRONMENT": "production", "SECURE_HSTS_SECONDS": 0}
+    production = {
+        "ENVIRONMENT": "production",
+        "SECURE_HSTS_SECONDS": 0,
+        "CACHES": BOUNDED_CACHES,
+    }
     with override_settings(**production):
         assert run("check") == (
             "System check identified no issues and 3 warnings. Domains: alpha.\n"
@@ -183,6 +191,13 @@ def test_check_lists_weak_deployment_choices() -> None:
             "  Warning: API_DOCS publishes /docs, /redoc, and /openapi.json to "
             "anyone; set it to False unless the API is public.\n"
         )
+    with override_settings(**{**hardened, "CACHES": {"default": {}}}):
+        assert run("check").endswith(
+            "  Warning: CACHES['default'] has no COMPUTE_TIMEOUT, so one get_or_set "
+            "computation that hangs holds its key until the process restarts; set "
+            "CACHES['default']['COMPUTE_TIMEOUT'] (REQUEST_TIMEOUT's value, for "
+            "example).\n"
+        )
 
 
 def test_check_lists_the_domains_warnings_too(
@@ -194,7 +209,9 @@ def test_check_lists_the_domains_warnings_too(
     monkeypatch.setattr(
         AlphaConfig, "deployment_warnings", lambda self: ["ALPHA is weak here."]
     )
-    with override_settings(ENVIRONMENT="production", API_DOCS=False):
+    with override_settings(
+        ENVIRONMENT="production", API_DOCS=False, CACHES=BOUNDED_CACHES
+    ):
         output = run("check")
 
     assert output.startswith(

@@ -7,6 +7,7 @@ stays the record: a notification is only a hint, sent when the transaction
 commits and lost harmlessly when no worker listens.
 """
 
+import logging
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime, timedelta
@@ -22,6 +23,7 @@ from domainkit.context import current_request
 from domainkit.db import UTCDateTime, connections
 from domainkit.ddd import DeferredTask, DomainEvent, EventBus
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.reporting import report_error
 from domainkit.tracing import trace_headers
 
 from . import dbclock
@@ -36,6 +38,8 @@ from .registry import (
 )
 from .settings import MessagingSettings
 from .tables import DEFAULT_QUEUE, PENDING, messages
+
+logger = logging.getLogger(__name__)
 
 CHANNEL: Final = "domainkit_messages"
 """The PostgreSQL notification channel; each payload is a queue's name."""
@@ -235,13 +239,25 @@ async def enqueue(
     """Queue ``function(**kwargs)`` now, in its own transaction.
 
     Inside a use case prefer ``uow.defer``: the task is then stored only if
-    the business change commits.
+    the business change commits. Installed domains join the transaction as
+    they join a unit of work's (``DomainConfig.stage_transaction`` and
+    ``transaction_committed``): inside a request with an
+    ``Idempotency-Key``, the queued task holds the key as a commit does,
+    so a retry does not queue it again.
     """
     config = registry.settings(MessagingSettings)
     task = DeferredTask(function, kwargs, delay, dedupe_key)
     rows = rows_for((), [task], EventBus(), config)
     async with connections.engine(config.DATABASE).begin() as connection:
         await write(connection, connection.dialect.name, rows)
+        for domain in registry:
+            await domain.stage_transaction(connection, config.DATABASE)
+    for domain in registry:
+        try:
+            await domain.transaction_committed(config.DATABASE)
+        except Exception as exc:  # The task is queued: report, carry on.
+            logger.exception("After-commit work of %r failed", domain.label)
+            report_error(exc, domain=domain.label)
     await notify_committed(config, config.DATABASE, rows)
 
 

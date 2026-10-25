@@ -182,7 +182,7 @@ class EventSourceResponse(Response):
         slots = slots_for(scope)
         caller = caller_of(scope)
         if (cap := slots.acquire(caller)) is not None:
-            await refuse(scope, receive, send, cap)
+            await refuse(scope, receive, send, cap, slots=slots)
         else:
             try:
                 await _Stream(self, scope, receive, send).serve()

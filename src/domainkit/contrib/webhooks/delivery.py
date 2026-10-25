@@ -11,6 +11,12 @@ delivery is marked failed, and ``webhooks replay`` can send it again.
 Each attempt decrypts the secrets it signs with, and stores again those a
 key in ``SECRET_KEY_FALLBACKS`` encrypted, under ``SECRET_KEY``. A secret
 no key decrypts fails the delivery: nothing is sent unsigned.
+
+Each attempt's host name lookups are its subscription's
+(``guard.lookups_for("webhook:<id>")``), not those of whoever caused the
+event: a subscription whose host's DNS never answers takes at most a
+quarter of the guard's lookup threads, and other subscribers' deliveries
+of the same events still find threads free.
 """
 
 import json
@@ -21,7 +27,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
-from pydantic_core import to_jsonable_python
 from sqlalchemy import Executable, Row, delete, insert, select, update
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
@@ -43,7 +48,9 @@ from domainkit.db.routing import router
 from domainkit.ddd import DomainEvent, EventBus, event_bus
 from domainkit.encryption import DecryptionFailed
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.http.guard import lookups_for
 from domainkit.reporting import report_error
+from domainkit.utils.decimals import jsonable
 
 from . import client
 from .models import ALL_EVENTS, EVENT_TYPE, previous_signs, secret_box
@@ -145,7 +152,7 @@ def body_of(event_type: str, data: Mapping[str, Any], occurred_at: datetime) -> 
     stamp = occurred_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
     document = {"type": event_type, "timestamp": stamp, "data": data}
     return json.dumps(
-        to_jsonable_python(document), separators=(",", ":"), ensure_ascii=False
+        jsonable(document), separators=(",", ":"), ensure_ascii=False
     ).encode()
 
 
@@ -309,9 +316,10 @@ async def deliver(delivery_id: uuid.UUID) -> None:
     headers = signed_headers(
         secrets, f"msg_{delivery_id.hex}", int(started.timestamp()), body
     )
-    outcome = await client.post(
-        subscription.url, body, headers, config, allow_http=settings.DEBUG
-    )
+    with lookups_for(f"webhook:{subscription.id}"):
+        outcome = await client.post(
+            subscription.url, body, headers, config, allow_http=settings.DEBUG
+        )
     attempt = current_attempt()
     final = outcome.ok or outcome.refused or attempt is None or attempt.last
     status = SUCCEEDED if outcome.ok else FAILED if final else PENDING

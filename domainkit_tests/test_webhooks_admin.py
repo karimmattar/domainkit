@@ -37,8 +37,9 @@ from domainkit.contrib.webhooks.tables import FAILED, deliveries, subscriptions
 from domainkit.db import connections
 from domainkit.ddd import DomainEvent, event_bus
 from domainkit.http import get_asgi_application
-from domainkit.management import CommandError, call_command
+from domainkit.management import CommandError, call_command, operators
 from domainkit.management.base import run_async
+from domainkit.management.operators import Operator
 from domainkit_tests.conftest import (
     ALPHA,
     AUTH,
@@ -274,6 +275,11 @@ def test_staff_change_rotate_and_delete_subscriptions(
         SubscriptionDeleted,
     ]
     assert recorded[1].fields == ("url", "event_types", "active")  # type: ignore[attr-defined]
+    # The trail can tell where events went before and after (DATA-06).
+    assert (recorded[1].host, recorded[1].previous_host) == (  # type: ignore[attr-defined]
+        "new.example.com",
+        "hooks.example.com",
+    )
 
 
 def test_missing_subscriptions_are_404(client: TestClient, admin: Headers) -> None:
@@ -398,8 +404,23 @@ def run(*args: str) -> str:
     return output.getvalue()
 
 
-def test_the_command_lists_and_replays(client: TestClient, admin: Headers) -> None:
-    """subscriptions, deliveries (filtered), and replay by id or --failed."""
+def test_the_command_lists_and_replays(
+    client: TestClient, admin: Headers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """subscriptions, deliveries (filtered), and replay by id or --failed.
+
+    Each replay is recorded as its operator's action (SEC-r2-2); listing
+    records nothing.
+    """
+    recorded: list[tuple[str, str, str, dict[str, object]]] = []
+
+    async def record(
+        who: Operator, action: str, outcome: str, details: dict[str, object]
+    ) -> None:
+        recorded.append((who.actor, action, outcome, details))
+
+    monkeypatch.setattr(operators, "_record", record)
+    monkeypatch.setenv("DOMAINKIT_OPERATOR", "mallory")
     created = create(client, admin)
     create(
         client,
@@ -439,6 +460,12 @@ def test_the_command_lists_and_replays(client: TestClient, admin: Headers) -> No
     ):
         with pytest.raises(CommandError, match=error):
             run("webhooks", *args)
+    replayed = ("operator:mallory", "webhooks.replay", "success")
+    assert recorded == [
+        (*replayed, {"asked": 1, "deliveries": 0}),
+        (*replayed, {"asked": 1, "deliveries": 1}),
+        (*replayed, {"asked": 1, "deliveries": 1}),
+    ]
 
 
 def test_subscription_rows_hold_no_extra_secrets(

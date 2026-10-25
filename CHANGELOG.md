@@ -6,6 +6,405 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-25
+
+### Added
+
+- `GUARD_LOOKUP_THREADS` (16, 1 to 256), `PROXY_SCHEME_HEADER`
+  (`"X-Forwarded-Proto"`, or `None`), and `"unix"` in `TRUSTED_PROXIES`
+  (WEB-02, WEB-04, WEB-06).
+- `domainkit.log.ThrottledLog`: warnings written once per event and
+  caller each 10 seconds, with a count of those held back; `flush()`, and
+  `domainkit.log.flush_throttled()` for every live one, write the counts
+  still held (WEB-11).
+- Rate-limit backends (`domainkit.http.ratelimit.Backend`) may give a counted request back
+  (`refund(key, limit, period)`, `RefundingBackend`); `MemoryBackend` and
+  `RedisBackend` do. `Decision.counted` is `False` for a request a backend
+  let through without counting it (AUTH-02, AUTH-09).
+- In staging and production, `check` warns when the audit trail is not
+  tamper-evident: no `AUDIT.LEDGER`, no `AUDIT.NAMESPACE` on it, or
+  nothing sealing on a schedule (no messaging, and no new
+  `AUDIT.SEALED_EXTERNALLY`); and the application, when it starts, logs
+  each audited PostgreSQL database whose `protect()` triggers are missing,
+  disabled, or changed: a trigger counts only as `protect()` makes it,
+  firing for the application's sessions (not `ENABLE REPLICA`), on the
+  same events, with no `WHEN` or column list, and running the function
+  `protect()` writes, its body the same but for whitespace.
+  `AUDIT.REQUIRE_BASELINE = True` refuses to start instead; 0.10 makes
+  that the default (N5, DATA-04, SEC-r2-3; ADR 0069).
+- `@task(sensitive=True)` blanks a task's arguments when it dies, as
+  every message's are once done or cancelled, for arguments that hold
+  secrets or personal data; `admin.blanked_dead_letters` counts them
+  (DATA-01).
+- `domainkit.ddd.Counted`: a field marked `Annotated[..., Counted()]` is
+  audited as its number of items (DATA-10).
+- `domainkit.tasks.spawn(..., deadline=...)` runs a task under its
+  caller's deadline, and `domainkit.tasks.adopt(task)` makes a task
+  started some other way owned, so the shutdown waits for it (CONC-02,
+  CONC-05).
+- `CACHES[...]["COMPUTE_TIMEOUT"]` (at most an hour; `None`, unbounded,
+  by default, as in 0.9.0) bounds a shared `get_or_set` computation:
+  setting it is recommended, for example to `REQUEST_TIMEOUT`'s value,
+  and 0.10 plans a bounded default. `get_or_set(..., borrows=True)` binds
+  a computation to the caller whose resources its factory uses, and
+  `@cache_page(borrows=False)` detaches a page that uses none (CONC-02;
+  ADR 0071).
+
+### Changed
+
+- The framework's own tests no longer race the wall clock: the eleven that
+  depended on how fast a loaded machine runs a few lines between two
+  sub-second deadlines now move a clock of their own, or leave ten times
+  the time they need, and none asserts on elapsed time (TEST-01).
+- Each of the framework's tests has two minutes (`pytest-timeout`, a new
+  development dependency): a test that hangs ends the run with every
+  thread's stack, its own among them, instead of running into the CI
+  job's limit. CI's `test` and `integration` jobs have 30 minutes instead
+  of 20, and `integration` keeps its JUnit report and log when the suite
+  fails (TEST-01, TEST-02).
+- The `domainkit.testing` plugin empties the memory backends' outboxes
+  (`mail.outbox`, `sms_outbox`, `push_outbox`) before every test, as
+  Django's runner empties `mail.outbox`, and every `Factory` numbers its
+  objects from 0 again: a project's tests see the same messages and
+  `Sequence` values in any order. What a module- or session-scoped fixture
+  sends is gone by the time a test runs; send it from the test, or from a
+  function-scoped fixture (TEST-05).
+- `map_imperatively` refuses an aggregate whose table has no `version`
+  column, with `ImproperlyConfigured` at startup naming the class, the
+  table, and the fix. Such a table got no optimistic locking at all, so
+  concurrent changes overwrote each other with no error: in the audit, 50
+  concurrent withdrawals from one account all answered 201 and 48 were
+  lost. Add `Column("version", Integer, nullable=False)` (with
+  `server_default="0"` in the migration, for existing rows), or pass
+  `versioned=False` to map the aggregate without optimistic locking on
+  purpose. This is a breaking change in a patch release, made because the
+  failure is silent; tables from `table_for`, the generators, and
+  domainkit's own apps all have the column (`docs/databases.md`,
+  "Versions"; ADR 0004) (FIN-77).
+- `IDEMPOTENCY.LEASE_SECONDS` must be above `REQUEST_TIMEOUT`, or startup
+  fails naming both: a request still within its deadline could lose its
+  key to a retry, which ran it again while its own commit failed with 409
+  `idempotency_key_taken_over`. `check` reports a `POST` or `PATCH` route
+  whose own `RequestTimeout` reaches the lease, or removes the deadline,
+  and staging and production do not start with one. This bounds a keyed
+  request until its response starts, and only where there is a deadline:
+  with none at all (`REQUEST_TIMEOUT = None`, or no `DeadlineMiddleware`),
+  `check` now warns in staging and production that keyed requests can
+  outlive the lease, and 0.10 refuses to start; a streamed response is
+  held by the lease alone while it streams. What runs after the response
+  is covered by the next entry (ADR 0062) (FIN-79, SEC-r2-4).
+- A keyed response that the key keeps is stored just before its last part
+  is sent, so before the route's `BackgroundTasks` run, instead of once
+  the application returned. A client that retries the moment it has the
+  whole response gets the replay, never a 409 for a key still in
+  progress; if the store fails, the last part is not sent and the client
+  retries. The deadline is lifted when the response starts,
+  so a provider call made after it could outlive the lease, and a retry
+  then took the key over and called the provider again; a background task
+  that raised released the key the same way. A retry now gets the stored
+  response however long that work runs. A response the key does not keep
+  is still settled once the application returns, and a keyed request
+  makes no more round trips. If the work after the response raises, the
+  key is settled again as before 0.9.1: released when nothing committed,
+  so a retry runs the work that failed instead of being told for a day
+  that it was accepted, or else kept with its status, a 409. A retry that
+  arrives while the work still runs gets the stored response, which says
+  nothing of how the work ends (FIN-79, SEC-r2-1, SEC-r2-7).
+- Security-log lines of refusals (a rejected `Host` header, a body too
+  large or too slow, refused credentials, a refused live connection) are
+  written once per caller every 10 seconds, with a count of those held
+  back, instead of one per request: a flood no longer fills the logging
+  queue and crowds out the lines that matter. Each caller's first line is
+  still written. The count is written with the caller's next line or, if
+  none comes, by the next security line of any caller once its 10 seconds
+  have passed, and at the latest when the process shuts down, so a burst
+  that stops still shows its size. An address held back for refused
+  credentials is logged when the hold starts, and the requests the hold
+  refuses unread are counted the same way (WEB-11, SEC-r1-3).
+- `privacy` takes `--operator` before its action (`privacy --operator
+  alice purge`); its exports, erasures, and purges are audited as that
+  operator rather than `system` (DATA-07).
+- Audit rows of `SettingChanged` carry `"secret": false` beside the value,
+  and those of `FlagChanged` the number of users instead of their ids
+  (DATA-10).
+
+### Fixed
+
+- Work a keyed request queues with `messaging.enqueue`, which commits on
+  its own, now holds the `Idempotency-Key` as a unit of work's commit
+  does: a request that queued a task and then failed (a background task
+  that raised after a `202`, say) keeps its key, and a retry gets 409
+  `idempotency_response_unavailable` instead of queueing the task a
+  second time. New `DomainConfig` hooks, `stage_transaction` and
+  `transaction_committed`, let installed domains join such a commit.
+  Writes through `connections.autocommit()` or a raw `engine.begin()`
+  stay outside the key. Mail, text messages, push notifications and the
+  auth reset and verification links are queued this way, so a keyed
+  request that sends one and then fails now keeps its key too: a retry
+  gets the 409 rather than sending it again (ADR 0062) (SEC-r2-9).
+- A keyed response whose body is sent by path or by file descriptor
+  (`FileResponse` on a server with the ASGI `http.response.pathsend`
+  extension, or `http.response.zerocopysend`) is no longer stored as an
+  empty body and replayed as an empty `200`: the middleware never sees
+  that body, so the key does not keep it, and a retry runs the request
+  again, or gets 409 `idempotency_response_unavailable` after a commit
+  (SEC-r2-8).
+- `TestClient` works with Starlette 1.9 and 1.10, which a fresh
+  `pip install domainkit` resolves: a project made by `domainkit init`
+  passes its own tests again instead of failing every test that uses a
+  client with `'CarryingPortal' object has no attribute 'start_task_soon'`.
+  The client now carries the caller's context (a frozen clock) through
+  every method of the AnyIO portal Starlette starts the application's work
+  with, not only the two Starlette 1.8 used (DOCS-01).
+- Idempotency leases and key expiry follow the keys' database's clock on
+  PostgreSQL, as the outbox and the audit sealer already did: a host whose
+  clock runs ahead no longer takes a key from a request still running,
+  runs a committed key's request again before its TTL ends, or purges keys
+  that have not expired, and a host running behind no longer leaves a dead
+  request's key held. The comparisons sit in the claim's own statements,
+  so a keyed request makes no more round trips. SQLite, and tests under
+  `freeze_time`, read `domainkit.clock` as before. `domainkit.db.dbclock`
+  is the outbox's clock, now shared (ADR 0062) (FIN-79).
+- `domainkit.contrib.webhooks.signing.verify` reads the time from
+  `domainkit.clock`, as the rest of the framework does: under
+  `freeze_time`, a receiver's test checks a delivery's timestamp against
+  the frozen clock instead of the wall clock (FIN-83).
+- An amount has one text wherever domainkit writes it: fixed point, at the
+  value's own places, with no sign on zero
+  (`domainkit.utils.decimals.decimal_text`). `Decimal("1E+3")` was
+  `"1E+3"` in API responses of `schema_for` schemas, CSV and NDJSON
+  exports, outbox events and task arguments,
+  webhook payloads, audit details, privacy exports, `dumpdata`, dynamic
+  settings, and the admin API's user fields, but `"1000"` in evidence; it
+  is `"1000"` everywhere, `Decimal("0E-8")` is `"0.00000000"`, and
+  `Decimal("-0.00")` is `"0.00"`, in evidence and cursors too. Personal
+  amounts in the audit trail are pseudonymized from that text, so
+  `pseudonym_of` finds `Decimal("1E+3")` as it finds `Decimal("1000")`; a
+  pseudonym stored earlier of an amount written with an exponent is found
+  with that text (`"1E+3"`). JSON strings stay strings, Python-mode dumps still give `Decimal`, and a value past
+  100 digits on either side of the point is written as `str()` does, so
+  its text stays short (`docs/databases.md`, "Exact amounts"; ADR 0066)
+  (FIN-82).
+- `RATE_LIMIT_EXEMPT_PATHS`, `AUTHENTICATION_EXEMPT_PATHS`, and
+  `ACCESS_LOG_QUIET_PATHS` hold behind `--root-path`, as
+  `CONCURRENCY_EXEMPT_PATHS` did: probes under `/api/ready` are no longer
+  rate limited or asked for credentials. Every list of paths is compared
+  with `domainkit.http.middleware.request_path` (WEB-07).
+- A readiness check that raises, instead of reporting a failure, is a
+  503 kept for `READINESS_CACHE_SECONDS` under its group's name
+  (`domains`, `databases`, `ledgers`, `caches`), logged with its
+  traceback, rather than a 500 and a new round for every probe (WEB-12).
+- The admin API tidies a new user's `fields` with the model's
+  `clean_field`, as it does a change (AUTH-13).
+- A `@cache_page` endpoint no longer leaks a pooled connection when its
+  request is cut off during a miss, however it reaches the request's unit
+  of work (its dependencies, its route's, router's, or application's,
+  `request.state`, a context variable): pages borrow their request by
+  default, so the computation is cancelled with the request, which goes on
+  only once the endpoint has stopped. `@cache_page(borrows=False)` detaches
+  a page that holds nothing of the request, so it fills the cache after a
+  cut-off request; it refuses dependencies written with `yield`, as
+  FastAPI finds them, also behind `functools.partial` or `functools.wraps`
+  (SEC-r3-7). A
+  `get_or_set` factory that uses its caller's session says so with
+  `borrows=True` and gets the same. Callers still waiting on such a
+  computation share one of their own, and never get an error its owner's
+  deadline caused; the factory's own timeout still reaches them all, once
+  (SEC-r3-5, SEC-r3-6). Other computations go on when their callers stop
+  waiting, as in 0.9.0, so a factory slower than one request still fills
+  the cache, and no caller's deadline reaches them; the cache's new
+  `COMPUTE_TIMEOUT` bounds them when set (unbounded by default, as in
+  0.9.0), and their statements and outgoing calls then keep to it.
+  `docs/cache.md` says what a factory may use (CONC-02; ADR 0071).
+- The login attempt counter (`AUTH` throttling) is made once per
+  application when event loops on several threads see their first
+  attempts at once, so a memory counter sees every attempt (SEC-r3-3).
+- Event loops on several threads (free-threaded Python, a loop per
+  thread) looking up a memory cache for the first time at once get one
+  store per alias, and an application's throttle backend is made once:
+  a loop could keep a private store that never saw the others' writes,
+  invalidations, or `caches.reset()`, and a second memory throttle
+  backend let each route's limit through twice (CONC-01).
+- Messaging tasks and durable handlers run under a deadline of their
+  timeout, as the `deadlines` module said: on PostgreSQL their
+  transactions lower `statement_timeout` to the time left, and their
+  calls through `domainkit.http.client` are bounded by it. A run past its
+  timeout still raises `TimeoutError` (CONC-03).
+- Shutdown waits, in its `tasks` phase, for a relay's give-back cut short
+  by the drain phase, and for closes cancelled at the end of their phase,
+  before the resources phase closes the database they write through: the
+  leases of a slow broker's last round go back instead of expiring
+  (CONC-05).
+- A request whose deadline passes while it waits for a slot is counted
+  and logged as shed (`http_requests_shed_total{reason="queue_timeout"}`),
+  besides its 503 `deadline_exceeded`; the queue's wait keeps to a
+  deadline no timer enforces too. Queueing, refusing a request, and
+  leaving the queue no longer cost time in proportion to
+  `MAX_QUEUED_REQUESTS` (CONC-11, CONC-07).
+
+### Security
+
+- A caller can no longer put itself in its proxy's rate limit, credential
+  hold, live-connection budget, and audit address by sending a malformed
+  `X-Forwarded-For` hop of its own: the header is walked from the right,
+  through trusted proxies only, and nothing left of the client's hop is
+  read. A hop that is no address where the client's should be (a proxy's
+  `unknown`) counts the client as the last proxy passed, as before, and is
+  now logged on `domainkit.security`, throttled (WEB-01; ADR 0072).
+- Behind a proxy on a unix socket, callers are no longer all one anonymous
+  caller: `"unix"` in `TRUSTED_PROXIES` believes the proxy on the socket,
+  so each caller gets its own rate limit and credential hold, and the audit
+  trail its address. Before, one flood of bad tokens held every token user
+  back. `check` warns where deployed when the server listens on a unix
+  socket without it, and a deployed application logs it at start
+  (WEB-02; ADR 0072).
+- `PROXY_SCHEME_HEADER` (`"X-Forwarded-Proto"`) names the header the
+  trusted proxies set to the client's scheme; `None` takes the scheme from
+  none, for proxies that do not set it and would pass a client's own line
+  through (it chose whether its cookies were `Secure`). With fewer values
+  than proxies, the nearest proxy's is taken, never the left-most, which
+  a client may have written. uvicorn sets the scheme itself unless run
+  with `--no-proxy-headers`, before domainkit sees the request, so `None`
+  holds there only with that flag (WEB-06; ADR 0072).
+- Outgoing calls bound an answer as it comes as well as decompressed, so
+  bytes that inflate to nothing are not read without end, and guarded
+  clients refuse (`httpx2.DecodingError`) an answer compressed in a way
+  they did not ask for, before inflating any of it. httpx2 already
+  inflated in pieces of at most 1 MiB, each counted before the next: a
+  65 KB gzip answer costs the limit and a piece, not the 64 MiB reported
+  (WEB-03).
+- Hosts that never answer DNS no longer stop every guarded call and
+  webhook in the process: the guard looks up on `GUARD_LOOKUP_THREADS`
+  (16, was 4) threads, and one owner may hold a quarter of them: the
+  request's user or address, the owner `guard.lookups_for` names, and for
+  a webhook delivery its subscription (`webhook:<id>`), not the actor of
+  the event it carries. Before, every delivery of an event shared that
+  actor's share (often `ip:unknown` or `system`), so one subscriber's four
+  hung hosts failed every other subscriber's delivery with `EAI_AGAIN`. A
+  host whose lookup failed after 5 seconds or more fails at once for a
+  minute rather than 5 seconds, so retries do not take the threads again.
+  A lookup that succeeds after 5 seconds or more is not held against its
+  host, since that is what one name server down looks like: its answer
+  is kept for that minute instead (at most 1,024 hosts), so a host whose
+  DNS answers slowly does not take the threads again on every retry
+  either; callers check the kept addresses as they check fresh ones.
+  What still holds: a host whose DNS fails in under 5 seconds takes a
+  thread on each new lookup (at most 2 at once). The share is per
+  subscription, not per tenant, and one subscription holds at most 2
+  threads (its host's bound): whoever may create eight subscriptions can
+  still hold all 16 for a first round of slow lookups, until 0.10 gives
+  subscriptions an owner (WEB-04, SEC-r1-1, SEC-r1-4, SEC-r1-5).
+- Only failed attempts use up the login and second-factor counts. A login,
+  a password change, or a code that works is given back to its counts, so
+  a service account that logs in often, or an office or carrier behind one
+  address, is never throttled by its own logins. Failures still use the
+  counts up whoever sends them, and a full count refuses a right password
+  too: `LOGIN_RATE` wrong passwords a minute for a username, from any
+  addresses, keep its user out with 429, and as many from one address keep
+  everyone behind it out, as in 0.9.0; a stored per-account lockout is
+  planned for 0.10 (`docs/auth.md`, "Logging in and out"). Wrong codes
+  count against `AUTH.MFA.RATE` per user and, at `/mfa/login`, against the
+  new `AUTH.MFA.ADDRESS_RATE` (60 an hour) per client address, only once the
+  challenge holds: `MFA.RATE` used to count every check per address, so
+  one address had ten second-factor logins an hour in all. Challenges and
+  reset, verification, and signup links that do not hold count against
+  `LOGIN_RATE` per address after they are checked, so forged ones never
+  hold a valid one back (AUTH-02, SEC-r1-2).
+- An address held for refused tokens no longer refuses its session cookies
+  and client certificates: four bad bearer tokens from a shared address
+  used to log every browser user behind it out. Requests with an
+  `Authorization` header are still refused unread, and a class of your own
+  keeps today's hold unless it sets `guessable = False` (AUTH-03).
+- Deleting a user (`DELETE /admin/auth/users/{id}`, or
+  `UserRepository.remove`) deletes their TOTP secret, recovery codes, and
+  tokens in the same transaction, as privacy erasure does, and with
+  `domainkit.contrib.objectpermissions` the object permissions they held.
+  They used to stay in the database. A user model that is `SoftDeletable`
+  keeps the row: deleting such a user now forgets its credentials too and
+  deactivates it, where before its tokens kept working and its password
+  still checked; restoring it leaves it inactive (AUTH-04).
+- `check` warns in staging and production when the login, code, link, and
+  mail throttles count in a backend each process keeps alone
+  (`MemoryBackend`): with several processes each allowed the rates on its
+  own. `AUTH.THROTTLE_FAIL_CLOSED = True` refuses password and code checks
+  and requests for mail with `503 throttle_unavailable` while
+  `RATE_LIMIT_BACKEND` cannot count
+  (Redis failing), instead of letting them through uncounted; off by
+  default (AUTH-09).
+- Routes included after `get_asgi_application` returned (in `asgi.py`, or by
+  a domain's startup) are checked when the application starts serving:
+  staging and production refuse to start with a route that declares no
+  access rule, as they refuse to build; development and tests log it. They
+  used to escape deny by default (AUTH-06).
+- A custom user model can no longer narrow `PROTECTED_FIELDS` to let staff
+  set status flags through the admin API's `fields`: `PROTECTED_FLOOR`
+  stays protected, and startup refuses `EDITABLE_FIELDS` that name it
+  (AUTH-12).
+- A user's `repr` shows its id and status flags, and `request.auth`'s the
+  user's id, the scheme, and the scopes: names, email addresses, and token
+  digests no longer reach a log that formats them. The tokens, codes,
+  passwords, secrets, and hashes that logging in, refreshing, second
+  factors, links, signup, personal tokens, CSRF, and the admin API take or
+  return (`IssuedTokens`, `TokenOut`, `MfaChallengeOut`, `LoginIn`,
+  `EnrolmentOut`, `NewToken`, `PasswordCheck`, and the others) are left
+  out of their `repr` too, and so is the password of an immudb ledger's
+  parsed address (AUTH-13, SEC-r1-6).
+- Mail, text messages, and push notifications no longer stay in the outbox
+  once they are sent. The worker blanks a message's arguments (`payload`)
+  in the statement that marks it done, and `messages --cancel` when it
+  cancels it; for 7 days (`RETENTION_SECONDS`) the row kept the recipients,
+  and any reset link or one-time code, in clear. The mail and
+  notifications tasks are now `sensitive`: when one dies, its arguments
+  are blanked too, its error kept, and `messages --retry` refuses it
+  instead of keeping an address or a code for good. Every other task's
+  finished messages are blanked the same way; their dead letters keep
+  their arguments, to be retried, except a chain's steps after a
+  sensitive one, which are handed its arguments or its result and are
+  blanked as it is. `docs/mail.md` says what the outbox keeps, and for
+  how long (DATA-01, SEC-r2-5; ADR 0029 amended).
+- Audit anchors can be kept apart on a shared ledger: `AUDIT.NAMESPACE`
+  writes them under `domainkit/audit/<namespace>/<alias>`, so another
+  project or environment on the same immudb no longer holds yours back or
+  shows as rewritten anchors in `auditverify`. A trail anchored before
+  stays verified: `verify` also reads the heads under the old key while
+  `AUDIT.PREVIOUS_ANCHORS` is on (N11, DATA-03; ADR 0069).
+- `EvidenceStore.get` and `verify` read only evidence keys under
+  `EVIDENCE.NAMESPACE` or one of the new `EVIDENCE.PREVIOUS_NAMESPACES`;
+  any other key, another project's on a shared ledger or an audit anchor,
+  is `EvidenceNotFound`. A project that changed `NAMESPACE` lists the old
+  one there to keep reading its receipts (DATA-08).
+- The commands that change or erase stored data as an operator,
+  `messages --retry` and `--cancel`, `auditforget`, `loaddata`, `flush`,
+  `partitions --prune`, and `privacy`, now know who runs them
+  (`--operator`, else `DOMAINKIT_OPERATOR`, else the login name
+  `getpass.getuser()` reports, from `LOGNAME` or `USER` before the
+  process's user id), run as the actor `operator:<name>` instead of
+  `system`, and record each action in the audit trail as
+  `operator.<command>` with its outcome and counts. So do the commands
+  that change credentials and settings: `resetmfa`, `createtoken`,
+  `changepassword`, `createsuperuser`, `addcertificate`, `cleartokens`,
+  `flags`, and `webhooks`. Their audit rows (`auth.mfa_disabled`,
+  `auth.token_created`, `flags.flag_changed`, ...) name the operator
+  instead of `system`, and `webhooks replay` is recorded as
+  `operator.webhooks.replay`; their listings record nothing. Every one of
+  these commands still runs unattended where 0.9.0 ran it: a process
+  whose user has no name, or none an operator may have (a container under
+  an arbitrary uid, from cron or an entrypoint; a Windows domain account),
+  runs as `operator:uid-<n>`, its user id, recorded with the source
+  `system`. Only a bad `--operator` or `DOMAINKIT_OPERATOR` is refused.
+  0.10 may require a name in staging and production (N8, DATA-07,
+  SEC-r2-2; ADR 0070).
+- Changing a webhook subscription's URL is audited with the new host and
+  the one before (`SubscriptionChanged.host`, `previous_host`), never the
+  path or query: a subscription pointed elsewhere can now be traced in the
+  trail (DATA-06).
+- A dynamic setting declared `secret=True` is audited as changed, without
+  its value, and the staff API and `flags settings` show no value; a
+  flag's users are audited as a count. Until now both went into the
+  append-only trail in clear, for good. A stored setting's `repr`
+  (`DynamicSetting`) leaves its value out, so a traceback or a `%r` does
+  not write a secret one either (DATA-10, SEC-r2-6).
+
 ## [0.9.0] - 2026-10-22
 
 ### Added
@@ -1972,7 +2371,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/karimmattar/domainkit/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/karimmattar/domainkit/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/karimmattar/domainkit/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/karimmattar/domainkit/compare/v0.6.2...v0.7.0

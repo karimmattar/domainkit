@@ -61,6 +61,19 @@ same `Message-ID`, so mail clients can drop the copy. In background work
 that already runs in the worker, `await deliver([message])` sends at once,
 without storing the message in the outbox.
 
+**What the outbox keeps.** A queued message is stored whole, in clear, in
+the outbox row's `payload` (`domainkit_messages`): its recipients, subject,
+and bodies, with any reset link or code in them. It stays there only until
+it is sent: the worker blanks the payload in the statement that marks the
+message done, and a cancel does the same. The row itself (the task's
+name, its id, times, attempts, and error) is kept `MESSAGING.RETENTION_SECONDS`
+(7 days), then deleted. A message that fails `MAX_ATTEMPTS` times is
+dead-lettered with its error and its payload blanked too, so it cannot be
+retried: send it again from where it came from. Until it is sent, anyone
+who can read the table, a replica, or a backup can read it; for a link or
+a code, queue the user's id with a task of your own and build the message
+in the worker with `deliver`, as the auth flows do.
+
 A message refuses what could add a header or a recipient (header
 injection): line breaks and control characters in the subject, addresses,
 and extra headers, and extra headers that would replace `From`, `To`,
@@ -208,8 +221,10 @@ duplicates.
 | `SmsMessage` | `to`: E.164 (`+` and up to 15 digits); `body`: 1 to 1600 characters; `sender`: an alphanumeric id of 11 characters at most, or a number. |
 | `PushMessage` | `token`: one line, up to 4096 characters; `title`: one line, 255; `body`: 4096; `data`: up to 50 string pairs of 1024 characters each. |
 
-Their reprs show only the `message_id`. `deliver_sms` and `deliver_push`
-send at once, from the worker. The console backends (the defaults) print
+Their reprs show only the `message_id`. Queued messages are kept in the
+outbox as mail is, until they are sent, cancelled, or dead-lettered, then
+blanked (see [what the outbox keeps](#mail)). `deliver_sms` and
+`deliver_push` send at once, from the worker. The console backends (the defaults) print
 what they would send; the memory backends keep it in `sms_outbox` and
 `push_outbox`, for tests. Staging and production refuse both.
 

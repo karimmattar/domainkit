@@ -5,7 +5,9 @@
 - in a fresh context, so it carries none of the starting code's context
   variables: no request id or actor, no span, no language, no idempotency
   operation. Only a frozen clock (``domainkit.clock.freeze_time``) is
-  carried, since it is a test's, not a request's;
+  carried, since it is a test's, not a request's, and a deadline if the
+  starting code passes one (``deadline=``): the task then bounds what it
+  calls by it, as the code that waits for it does;
 - with a strong reference, so a task waiting on something only it holds is
   never collected half-way;
 - logging an unexpected exception once, at ERROR, with the task's name;
@@ -37,7 +39,7 @@ from contextvars import Context
 from typing import Any, Final, cast
 from weakref import WeakKeyDictionary
 
-from domainkit import clock
+from domainkit import clock, deadlines
 
 logger = logging.getLogger(__name__)
 
@@ -88,20 +90,28 @@ _owned_lock: Final = threading.Lock()
 """Held to add a loop to ``_owned`` or drop closed ones: loops run on threads."""
 
 
-def clean_context() -> Context:
+def clean_context(deadline: deadlines.Deadline | None = None) -> Context:
     """Return a new, empty context, holding only the frozen clock if one is in use.
 
-    For code that must create a task itself; ``spawn`` uses it.
+    With ``deadline``, the context holds it too: code run in it sees the
+    time it has left (``deadlines.remaining()``), but no timer of its own
+    cuts it off. For code that must create a task itself; ``spawn`` uses it.
     """
     context = Context()
     frozen = clock.frozen()
     if frozen is not None:
         context.run(clock._frozen.set, frozen)
+    if deadline is not None:
+        context.run(deadlines._current.set, deadline)
     return context
 
 
 def spawn[T](
-    coro: Coroutine[Any, Any, T], *, name: str, log_errors: bool = True
+    coro: Coroutine[Any, Any, T],
+    *,
+    name: str,
+    log_errors: bool = True,
+    deadline: deadlines.Deadline | None = None,
 ) -> asyncio.Task[T]:
     """Run ``coro`` as a task of the running loop, in a clean context, owned.
 
@@ -110,6 +120,11 @@ def spawn[T](
         name: A fixed name for logs, metrics, and ``Task.get_name()``.
         log_errors: Log an unexpected exception (and count it). Pass False
             when callers await the task and handle its errors themselves.
+        deadline: The deadline of the code that waits for the task
+            (``deadlines.current_deadline()``), for the task to work under:
+            its statements and outgoing calls are bounded by it. The task
+            is not cut off when it passes; the code that waits for it is,
+            and cancels it.
 
     Raises:
         RuntimeError: No event loop is running; ``coro`` is closed unrun.
@@ -119,7 +134,7 @@ def spawn[T](
     except RuntimeError:
         coro.close()
         raise RuntimeError(f"spawn({name!r}) needs a running event loop.") from None
-    task = loop.create_task(coro, name=name, context=clean_context())
+    task = loop.create_task(coro, name=name, context=clean_context(deadline))
     _own(loop, task)
     if log_errors:
         task.add_done_callback(_log_failure)
@@ -163,6 +178,17 @@ def backoff_delay(crashes: int, backoff: float, max_backoff: float) -> float:
     doublings = min(max(crashes - 1, 0), _MAX_DOUBLINGS)
     ceiling = min(max_backoff, backoff * 2.0**doublings)
     return ceiling * _random.uniform(0.5, 1.0)
+
+
+def adopt(task: asyncio.Task[Any]) -> None:
+    """Own ``task``, started some other way, so shutdown waits for it too.
+
+    For work given up on but still ending, such as a close cancelled at
+    the end of its shutdown phase: the ``tasks`` phase then waits for it
+    before the resources it uses close. Its context stays its own, and
+    how it ends is not logged here.
+    """
+    _own(task.get_loop(), task)
 
 
 def owned() -> frozenset[asyncio.Task[Any]]:

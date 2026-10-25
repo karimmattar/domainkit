@@ -28,7 +28,7 @@ import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cache, partial
 from typing import ClassVar, Final
 
@@ -256,7 +256,7 @@ class PasswordCheck:
     """The outcome of checking a password."""
 
     correct: bool
-    rehashed: str | None = None
+    rehashed: str | None = field(default=None, repr=False)
     """A new hash of the correct password with current settings, if needed."""
 
 

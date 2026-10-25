@@ -34,7 +34,6 @@ from decimal import Decimal
 from typing import Any, Final
 
 from pydantic import TypeAdapter, ValidationError
-from pydantic_core import to_jsonable_python
 from sqlalchemy import (
     JSON,
     Column,
@@ -54,6 +53,7 @@ from sqlalchemy.types import TypeEngine
 from domainkit.db.connections import connections, create_owner_engine
 from domainkit.db.orm import metadata
 from domainkit.db.routing import router
+from domainkit.utils.decimals import jsonable
 
 FORMAT: Final = "domainkit.fixture"
 VERSION: Final = 1
@@ -352,7 +352,7 @@ def _encoded(column: Column[Any], value: object) -> object:
         return value
     if isinstance(value, bytes):
         return base64.b64encode(value).decode()
-    return to_jsonable_python(value)
+    return jsonable(value)
 
 
 def _decoded_row(table: Table, row: object) -> dict[str, Any]:

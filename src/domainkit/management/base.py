@@ -4,10 +4,14 @@ import inspect
 import sys
 from argparse import ArgumentParser
 from collections.abc import Awaitable, Sequence
+from contextlib import AbstractAsyncContextManager, AbstractContextManager, nullcontext
 from pathlib import Path
-from typing import Any, TextIO, cast
+from typing import TYPE_CHECKING, Any, TextIO, cast
 
 from domainkit.utils import loops
+
+if TYPE_CHECKING:
+    from domainkit.management.operators import Operator
 
 
 class CommandError(Exception):
@@ -31,6 +35,12 @@ class BaseCommand:
     help: str = ""
     requires_setup: bool = True
     """Load settings and installed domains before ``handle`` runs."""
+    operator_actions: bool = False
+    """The command changes or erases stored data as an operator: it takes
+    ``--operator``, runs as that operator (``self.operator``), and records
+    its actions with ``self.recorded`` (``domainkit.management.operators``)."""
+    operator: "Operator | None" = None
+    """Who runs it, once ``execute`` starts, for commands with ``operator_actions``."""
 
     def __init__(
         self, stdout: TextIO | None = None, stderr: TextIO | None = None
@@ -45,6 +55,13 @@ class BaseCommand:
             prog=f"{Path(prog_name).name} {command}", description=self.help or None
         )
         self.add_arguments(parser)
+        if self.operator_actions:
+            parser.add_argument(
+                "--operator",
+                metavar="NAME",
+                help="who runs this, for the audit trail (default: "
+                "$DOMAINKIT_OPERATOR, else your login name, else uid-<n>)",
+            )
         return parser
 
     def add_arguments(self, parser: ArgumentParser) -> None:
@@ -56,14 +73,39 @@ class BaseCommand:
         self.execute(**vars(parser.parse_args(argv[2:])))
 
     def execute(self, **options: object) -> None:
-        """Set up the framework if needed, then run ``handle``."""
+        """Set up the framework if needed, then run ``handle``.
+
+        A command with ``operator_actions`` first finds its operator, and
+        runs as them.
+        """
+        acting: AbstractContextManager[None] = nullcontext()
+        if self.operator_actions:
+            from domainkit.management.operators import acting_as, operator
+
+            self.operator = operator(cast(str | None, options.pop("operator", None)))
+            acting = acting_as(self.operator, type(self).__module__.rpartition(".")[2])
         if self.requires_setup:
             from domainkit import setup
 
             setup()
-        result = self.handle(**options)
-        if inspect.isawaitable(result):
-            run_async(result)
+        with acting:
+            result = self.handle(**options)
+            if inspect.isawaitable(result):
+                run_async(result)
+
+    def recorded(
+        self, action: str, **details: object
+    ) -> AbstractAsyncContextManager[dict[str, object]]:
+        """Record the operator's ``action`` in the audit trail once it ends.
+
+        See ``domainkit.management.operators.recorded``; only commands with
+        ``operator_actions`` record.
+        """
+        from domainkit.management.operators import recorded
+
+        if self.operator is None:
+            raise RuntimeError(f"{type(self).__name__} has no operator_actions.")
+        return recorded(self.operator, action, **details)
 
     def handle(
         self,

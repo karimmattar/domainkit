@@ -1,6 +1,7 @@
 """The auth domain model: users, groups, permissions, and password hashes."""
 
 from dataclasses import fields
+from datetime import UTC, datetime
 from typing import ClassVar
 from uuid import uuid4
 
@@ -18,7 +19,15 @@ from domainkit.contrib.auth import (
     UnknownUserField,
     User,
     UserId,
+    admin,
+    api,
+    cookies,
+    mfa,
+    personal_tokens,
+    recovery,
+    signup,
 )
+from domainkit.contrib.auth.authentication import IssuedTokens
 from domainkit.contrib.auth.events import (
     UserJoinedGroup,
     UserLeftGroup,
@@ -26,13 +35,17 @@ from domainkit.contrib.auth.events import (
     UserPermissionRevoked,
     UserStatusChanged,
 )
+from domainkit.contrib.auth.hashers import PasswordCheck
 from domainkit.contrib.auth.models import (
+    PROTECTED_FLOOR,
     erased_username,
     normalize_email,
     reserved_username,
     same_email,
     validate_email,
 )
+from domainkit.contrib.auth.principals import Credential
+from domainkit.contrib.auth.repositories import TotpDevice
 from domainkit.contrib.contenttypes import ContentType
 from domainkit.ddd import DomainEvent
 
@@ -375,6 +388,108 @@ class Overreaching(Unlisted):
     EDITABLE_FIELDS: ClassVar[frozenset[str]] = frozenset(
         {"code", "is_superuser", "password", "nickname"}
     )
+
+
+class Narrowing(Badge):
+    """Protects nothing, and lists status flags as editable."""
+
+    PROTECTED_FIELDS: ClassVar[frozenset[str]] = frozenset()
+    EDITABLE_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {"nickname", "is_superuser", "is_active", "last_login"}
+    )
+
+
+class Shown(Badge):
+    """Shows its own ``repr``."""
+
+    def __repr__(self) -> str:
+        """The badge code: this model's own choice."""
+        return f"<Badge {self.code}>"
+
+
+def test_protected_fields_are_a_floor_no_model_lowers() -> None:
+    """A model's own ``PROTECTED_FIELDS`` add to the floor, never remove (AUTH-12).
+
+    Narrowing them let staff set ``is_superuser`` through ``fields``,
+    without the superuser check or a ``UserStatusChanged`` event.
+    """
+    assert PROTECTED_FLOOR <= AbstractBaseUser.PROTECTED_FIELDS
+    assert Narrowing.editable_fields() == {"nickname"}
+    user = Narrowing(id=UserId(uuid4()), password=HASH, code="N-1")
+    with pytest.raises(UnknownUserField) as refused:
+        user.update(is_superuser=True)
+    assert str(refused.value) == (
+        "These user fields cannot be changed here: is_superuser."
+    )
+    assert user.is_superuser is False
+
+
+def test_users_show_no_personal_data_in_their_repr() -> None:
+    """Names and addresses stay out of ``repr``, and so out of logs (AUTH-13)."""
+    user = new_user(email="alice@example.com", first_name="Alice", last_name="Liddell")
+    badge = Badge(id=UserId(uuid4()), password=HASH, code="B-7", nickname="Seven")
+
+    assert repr(user) == (f"User(id={user.id!r}, is_active=True, is_superuser=False)")
+    assert repr(badge) == (
+        f"Badge(id={badge.id!r}, is_active=True, is_superuser=False)"
+    )
+    for shown in (repr(user), repr(badge)):
+        for personal in ("alice", "Alice", "Liddell", "B-7", "Seven", "pbkdf2"):
+            assert personal not in shown
+    assert repr(Shown(id=UserId(uuid4()), password=HASH, code="S-1")) == "<Badge S-1>"
+
+
+SECRET = "s3cret-0123456789-abcdefghij"
+
+
+def test_tokens_codes_and_passwords_stay_out_of_reprs() -> None:
+    """What logging in, codes, links, and tokens carry is not in their ``repr``.
+
+    ``repr`` is what tracebacks with locals, ``%r`` in logs, and error
+    reporters show; the other fields still are.
+    """
+    now = datetime.now(UTC)
+    shown = [
+        IssuedTokens(access_token=SECRET, expires_in=300, refresh_token=SECRET),
+        api.TokenOut(access_token=SECRET, expires_in=300, refresh_token=SECRET),
+        api.MfaChallengeOut(mfa_token=SECRET, expires_in=300),
+        api.LoginIn(username="alice", password=SECRET),
+        api.RefreshIn(refresh_token=SECRET),
+        api.PasswordIn(old_password=SECRET, new_password=SECRET),
+        mfa.MfaLoginIn(mfa_token=SECRET, code=SECRET),
+        mfa.PasswordIn(password=SECRET),
+        mfa.CodeIn(code=SECRET),
+        mfa.ReauthenticateIn(password=SECRET, code=SECRET),
+        mfa.EnrolmentOut(secret=SECRET, otpauth_uri=f"otpauth://totp/a?s={SECRET}"),
+        mfa.RecoveryCodesOut(recovery_codes=[SECRET]),
+        recovery.PasswordResetConfirmIn(token=SECRET, new_password=SECRET),
+        recovery.TokenIn(token=SECRET),
+        signup.SignupConfirmIn(token=SECRET, password=SECRET),
+        admin.AdminUserIn(username="alice", password=SECRET),
+        admin.AdminPasswordIn(password=SECRET),
+        cookies.CsrfOut(csrf_token=SECRET),
+        PasswordCheck(correct=True, rehashed=SECRET),
+        TotpDevice(uuid4(), uuid4(), SECRET.encode(), now, None, None),
+        Credential(SECRET, uuid4(), "access", None, None, None, None),
+    ]
+    made = personal_tokens.NewToken(
+        id="a-digest",
+        name="ci",
+        kind="access",
+        scopes=None,
+        created_at=now,
+        expires_at=None,
+        last_used_at=None,
+        current=False,
+        token=SECRET,
+    )
+
+    for value in (*shown, made):
+        assert SECRET not in repr(value), type(value).__name__
+    assert "expires_in=300" in repr(shown[0])
+    assert "username='alice'" in repr(shown[3])
+    assert "correct=True" in repr(shown[-3])
+    assert "expires_in=300" in repr(shown[2])
 
 
 def test_staff_see_and_change_only_the_fields_a_model_names() -> None:

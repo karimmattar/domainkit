@@ -129,6 +129,7 @@ Each `CACHES` entry:
 | `MAX_CONNECTIONS` | `50` | Redis connections per process and event loop. |
 | `FAILURE_COOLDOWN` | `5.0` | Seconds a failed cache is skipped, so requests do not each wait for timeouts. `0` retries at once. |
 | `EARLY_RECOMPUTE` | `1.0` | How early `get_or_set` refreshes hot entries before they expire (XFetch's beta); `0` turns it off. |
+| `COMPUTE_TIMEOUT` | `None` | Seconds a shared `get_or_set` computation may run (at most an hour). It goes on after its callers stop waiting, so a slow factory still fills the cache, within this; its statements and outgoing calls keep to it. `None` leaves it unbounded, as in 0.9.0; setting it is recommended, for example to `REQUEST_TIMEOUT`'s value, and 0.10 plans a bounded default. Factories that borrow their caller's resources (`borrows=True`) run under their caller's deadline instead ([cache.md](cache.md#what-a-factory-may-use)). |
 | `TLS_CA` | system CAs | CA bundle that signed the server's certificate (`rediss://` only). |
 | `TLS_CERT`, `TLS_KEY` | `None` | Client certificate and key for mutual TLS (`rediss://` only). |
 | `READINESS` | `False` | Fail `/ready` while this cache is unreachable. Leave it off for caches the service can run without, or an outage takes every replica out of rotation. |
@@ -180,22 +181,24 @@ Each `BROKERS` entry:
 | `ERROR_TYPE_BASE_URL` | `None` | With problem details, each code's `type` is this absolute URL plus the code (`https://errors.example.com/` gives `https://errors.example.com/not_found`); unset, it is `about:blank`. |
 | `MAX_REQUEST_BODY_SIZE` | `1048576` | Bytes; larger bodies get 413, whether declared or streamed. A larger WebSocket message, text counted in UTF-8 bytes, closes the connection with 1009. |
 | `REQUEST_BODY_TIMEOUT` | `10.0` | Seconds (at most 3600) the application may wait for a request's body, all its chunks together (`RequestBodyLimitMiddleware`); past it the request is answered 408 `request_timeout` and the connection closed. Time spent working between chunks, or after the response starts, does not count. |
-| `REQUEST_TIMEOUT` | `30.0` | Seconds (at most 3600) an HTTP request may take until its response starts (`DeadlineMiddleware`); past it the work is cancelled and answered 503 `deadline_exceeded`. A route sets its own with `RequestTimeout`. `None`: no deadline ([runtime.md](runtime.md#request-deadlines)). |
+| `REQUEST_TIMEOUT` | `30.0` | Seconds (at most 3600) an HTTP request may take until its response starts (`DeadlineMiddleware`); past it the work is cancelled and answered 503 `deadline_exceeded`. A route sets its own with `RequestTimeout`. `None`: no deadline ([runtime.md](runtime.md#request-deadlines)). Below `IDEMPOTENCY.LEASE_SECONDS` where idempotency is installed. |
 | `MAX_CONCURRENT_REQUESTS` | `1000` | HTTP requests each event loop works on at once (`ConcurrencyLimitMiddleware`), at most 100,000; a request waiting for its body is not counted meanwhile. `None`: no cap ([runtime.md](runtime.md#load-shedding)). |
 | `MAX_QUEUED_REQUESTS` | `100` | Requests past the cap that may wait for a slot (at most 100,000); the next are answered 503 `overloaded` at once. |
 | `REQUEST_QUEUE_TIMEOUT` | `1.0` | Seconds (at most 60) a request past the cap waits for a slot before it is answered 503 `overloaded`. |
 | `CONCURRENCY_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths never counted against the cap, so probes and scrapes are never refused; compared without the root path the application is mounted at (`--root-path`). |
 | `HTTP_CLIENT` | see [Outgoing HTTP calls](#outgoing-http-calls) | Defaults of outgoing calls through `domainkit.http.client`. |
+| `GUARD_LOOKUP_THREADS` | `16` | Threads (1 to 256) that look host names up for guarded calls and webhooks, in each process. One owner (a request's user or address, or a webhook delivery's subscription) may hold a quarter of them, so hosts one owner chose that never answer leave the rest to others ([runtime.md](runtime.md#outgoing-http-calls)). |
 | `READINESS_TIMEOUT` | `5.0` | Seconds each readiness check may take (at most 60). |
 | `READINESS_CACHE_SECONDS` | `1.0` | How long a `/ready` result is reused, from when its checks ended; probes that come while checks run wait for them, so probe floods cannot load the database. |
-| `READINESS_DETAILS` | `False` | Name failing components in `/ready` responses (always logged). |
-| `ACCESS_LOG_QUIET_PATHS` | `/health`, `/ready` | Successful requests to these paths are logged at DEBUG. |
+| `READINESS_DETAILS` | `False` | Name failing components in `/ready` responses (always logged). A group of checks that raises instead of reporting is named as its group (`domains`, `databases`, `ledgers`, `caches`), logged, and kept like any failed round: a 503, never a 500. |
+| `ACCESS_LOG_QUIET_PATHS` | `/health`, `/ready` | Successful requests to these paths are logged at DEBUG; compared without the root path (`--root-path`). |
 | `ACCESS_LOG_SAMPLE_RATE` | `1.0` | Share of access lines written, from 0 to 1: `0.1` writes about one request in ten, each drawn on its own. Responses from 400 up (client errors, refusals, and server errors), requests without a response, and requests that take `ACCESS_LOG_SLOW_DURATION` or longer are always written, so only successes and redirects are sampled; `domainkit.security` and the audit trail are never sampled ([runtime.md](runtime.md#sampling-the-access-log)). |
 | `ACCESS_LOG_SLOW_DURATION` | `1.0` | Seconds (at most 3600): a request this slow or slower has its access line written whatever `ACCESS_LOG_SAMPLE_RATE` says. |
-| `TRUSTED_PROXIES` | `()` | Networks (`10.0.0.0/8`) whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed. The client is the right-most address that is not a trusted proxy, across every line of the header; hops may carry a port. The scheme is the `X-Forwarded-Proto` value at the client's place from the right, or the last one. Empty: the socket peer is the client. |
+| `TRUSTED_PROXIES` | `()` | Networks (`10.0.0.0/8`) whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed, and `"unix"` for the proxy on the other end of a unix socket (`uvicorn --uds`), which has no address. The client is found by walking `X-Forwarded-For` from the right, across every line of the header, through trusted proxies: it is the first hop that is not one, and nothing left of it is read. Hops may carry a port. A hop there that is no address (a proxy's `unknown`) counts the client as the last proxy passed, logged on `domainkit.security`. The scheme is the `PROXY_SCHEME_HEADER` value at the client's place from the right, or the right-most one when there are fewer. Empty: the socket peer is the client. |
+| `PROXY_SCHEME_HEADER` | `"X-Forwarded-Proto"` | The header in which the trusted proxies say the client's scheme (a header name). `None`: the scheme is never taken from a header. Set it to `None` when they do not set it (HAProxy's `option forwardfor` alone, an NLB), or a client's own `X-Forwarded-Proto` would be read, and choose whether cookies are `Secure`. `None` holds only where the server reads no proxy header itself: uvicorn, unless run with `--no-proxy-headers`, sets the scheme from `X-Forwarded-Proto` before domainkit sees the request, for every request from `FORWARDED_ALLOW_IPS` (`127.0.0.1` by default: a proxy on the same host). Granian reads none. |
 | `RATE_LIMIT` | `None` | Requests per caller, such as `"300/minute"` (`second`, `minute`, `hour`, `day`). `None` disables it. |
-| `RATE_LIMIT_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths never counted. |
-| `RATE_LIMIT_BACKEND` | `domainkit.http.ratelimit.MemoryBackend` | Where counts live. The default is per process, and keeps the 100,000 most recently seen callers; one seen longer ago starts afresh. Behind several replicas, use `domainkit.http.ratelimit.RedisBackend`: one count per caller in Redis, on the server's clock. If Redis fails, or refuses the count (out of memory, a read-only replica after a failover), requests are let through, and Redis is skipped for the cache's `FAILURE_COOLDOWN`. |
+| `RATE_LIMIT_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths never counted; compared without the root path (`--root-path`). |
+| `RATE_LIMIT_BACKEND` | `domainkit.http.ratelimit.MemoryBackend` | Where counts live. The default is per process, and keeps the 100,000 most recently seen callers; one seen longer ago starts afresh. Behind several replicas, use `domainkit.http.ratelimit.RedisBackend`: one count per caller in Redis, on the server's clock. If Redis fails, or refuses the count (out of memory, a read-only replica after a failover), requests are let through, and Redis is skipped for the cache's `FAILURE_COOLDOWN`; `AUTH.THROTTLE_FAIL_CLOSED` refuses password and code checks meanwhile instead ([auth.md](auth.md#logging-in-and-out)). |
 | `RATE_LIMIT_CACHE` | `"default"` | The Redis cache `RedisBackend` counts in; keys are `<KEY_PREFIX>:ratelimit:<caller>`. |
 | `RATE_LIMIT_IPV6_PREFIX` | `64` | IPv6 clients are counted per network of this prefix length, since one customer usually holds a whole /64; login throttling counts the same way. IPv4 clients are counted per address. |
 | `METRICS_TOKEN` | `None` | Bearer token for `/metrics`. Without it, `/metrics` answers 403 in staging and production. |
@@ -226,7 +229,7 @@ Each `BROKERS` entry:
 | `BREAKER_COOLDOWN` | `30.0` | Seconds (at most 3600) a host's circuit stays open; then one call at a time tries it. A client made with `breaker=False` keeps no circuits. |
 | `MAX_CONNECTIONS` | `100` | Connections per client and event loop. |
 | `MAX_KEEPALIVE_CONNECTIONS` | `20` | Idle connections each client keeps for the next calls. |
-| `MAX_RESPONSE_BYTES` | `10485760` | The largest answer read (at most 1 GiB), counted after decompression; a longer one raises `ResponseTooLarge`. |
+| `MAX_RESPONSE_BYTES` | `10485760` | The largest answer read (at most 1 GiB), counted as it comes and after decompression; a longer one raises `ResponseTooLarge`. |
 | `USER_AGENT` | `"domainkit"` | The `User-Agent` of every call (printable ASCII). |
 | `CA_BUNDLE` | `None` | CA certificates of the servers called; the system's (or httpx2's) when unset. Guarded clients never trust the CAs `SSL_CERT_FILE` or `SSL_CERT_DIR` name, unless listed here. |
 
@@ -338,11 +341,31 @@ well (`websocket_max_message_size`, in its configuration file), and
 gunicorn with a worker class named only in its configuration file, are not
 recognised: `check` says nothing about them, so set their limits yourself.
 
-`--no-proxy-headers` leaves `X-Forwarded-*` to `TRUSTED_PROXIES`: uvicorn
-otherwise reads them itself, from `127.0.0.1` or from whatever
-`FORWARDED_ALLOW_IPS` allows (`*` lets any client choose its address, and
-so its rate limit and login throttle). Granian reads none. `runserver`
-runs this way, with either server.
+`--no-proxy-headers` leaves `X-Forwarded-*` to `TRUSTED_PROXIES` and
+`PROXY_SCHEME_HEADER`: uvicorn otherwise reads them itself, from
+`127.0.0.1` or from whatever `FORWARDED_ALLOW_IPS` allows (`*` lets any
+client choose its address, and so its rate limit and login throttle), and
+sets the scheme from `X-Forwarded-Proto` before domainkit runs, so
+`PROXY_SCHEME_HEADER = None` does not stop a client's own header from
+choosing it. Granian reads none. `runserver` runs this way, with either
+server.
+
+Behind a proxy on a unix socket (`uvicorn --uds`, `granian --uds`,
+`gunicorn --bind unix:...`), no caller has an address: without `"unix"`
+in `TRUSTED_PROXIES` every caller shares one rate limit and one hold on
+refused credentials, and one anonymous flood of bad tokens holds every
+token user back. Add it, with the proxy's networks if it has more hops:
+
+```python
+TRUSTED_PROXIES = ["unix"]  # nginx: proxy_pass http://unix:/run/api.sock;
+```
+
+`check` warns where deployed when the server's variables (`UVICORN_UDS`,
+`GRANIAN_UDS`, `GUNICORN_CMD_ARGS`) put it on a unix socket and
+`TRUSTED_PROXIES` lacks `"unix"`; a deployed application logs it at start,
+from its own command line. Any connection the server reports without an
+address is then the proxy's: list `"unix"` only where the server listens
+on nothing else without one.
 
 ### Live connections
 
@@ -437,14 +460,24 @@ passes, so an API that is public on purpose can keep them:
 - no `RATE_LIMIT`, or `RateLimitMiddleware` missing from `MIDDLEWARE`
 - a rate limit with no `TRUSTED_PROXIES`: behind a load balancer, every
   caller would share its address and its count
+- a server on a unix socket without `"unix"` in `TRUSTED_PROXIES`: no
+  caller has an address ([Server limits](#server-limits); a deployed
+  application also logs it at start)
 - no `REQUEST_TIMEOUT`, or `DeadlineMiddleware` missing from `MIDDLEWARE`;
   no `MAX_CONCURRENT_REQUESTS`, or `ConcurrencyLimitMiddleware` missing
+- a cache without `COMPUTE_TIMEOUT` (`CACHES[alias]["COMPUTE_TIMEOUT"]`):
+  one `get_or_set` computation that hangs holds its key until the process
+  restarts ([cache.md](cache.md#what-a-factory-may-use)); the `init`
+  template sets it
 - a database that seems to go through PgBouncer (port 6432, or a statement
   cache turned off in `CONNECT_ARGS`) without `PGBOUNCER = True`
 - auth: `AUTH.LOGIN_RATE` or `AUTH.MFA.RATE` set to `None` (guesses
   without limit), and a session or CSRF cookie name without the `__Host-`
   prefix where the prefix could hold
   ([auth.md](auth.md#browser-sessions-in-cookies))
+- auth: attempt throttles counted in a `RATE_LIMIT_BACKEND` each process
+  keeps alone (`MemoryBackend`): with several processes, each allows the
+  rates on its own ([auth.md](auth.md#logging-in-and-out))
 - auth: `AUTH.PRINCIPAL_CACHE.TTL` above 5 seconds without `STAMPS`: a
   revoked token works that long in the other processes
   ([auth.md](auth.md#the-principal-cache))
@@ -456,6 +489,12 @@ passes, so an API that is public on purpose can keep them:
   without
   `WebSocketLimitsMiddleware`
   ([live.md](live.md#message-size))
+- audit: no `AUDIT.LEDGER`, no `AUDIT.NAMESPACE` on it, or nothing that
+  seals on a schedule (no messaging, and no `AUDIT.SEALED_EXTERNALLY`); at
+  startup the application also logs audited PostgreSQL databases without
+  the `protect()` triggers. `AUDIT.REQUIRE_BASELINE` refuses to start
+  instead, and 0.10 makes that the default
+  ([contrib.md](contrib.md#in-staging-and-production))
 
 The production settings that `init` create avoid the first three, and ask
 for `TRUSTED_PROXIES`: leave it empty only when callers connect directly.
@@ -872,24 +911,24 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `migrate` | `[revision]`, `--downgrade`, `--allow-data-loss`, `--database`, `--plan`, `--sql`, `--from`, `--fake` | Apply revisions (or revert down to one) on every database of every target, then create partitions. A revision id needs `--database` when there are several targets. `--plan` lists the revisions that would run; `--sql` prints their SQL, rendered offline by Alembic, from the database's revision or `--from`; `--fake` records the revision without running anything, for a schema made by other means. None of the three changes the schema, but `--fake --downgrade` still needs `--allow-data-loss` in staging and production. |
 | `squashmigrations` | `[end]`, `--start`, `--database`, `-m/--message` | Replace a target's revisions, `--start` (default: the first) to `end` (default: the head), with one; see [Squashing migrations](#squashing-migrations). |
 | `showmigrations` | `--database` | Applied and pending revisions; a shard group lists each database. |
-| `partitions` | `--database`, `--prune`, `--dry-run` | Create the current and upcoming partitions of partitioned tables; `--prune` drops those past `retain`. |
+| `partitions` | `--database`, `--prune`, `--dry-run`, `--operator` | Create the current and upcoming partitions of partitioned tables; `--prune` drops those past `retain`, and is audited ([operators](#operators)). |
 | `runserver` | `[addr:port]`, `--noreload`, `--server uvicorn\|granian` | Development server, on uvicorn or Granian (the `granian` extra). Production runs the server directly ([Server limits](#server-limits)). |
 | `shell` | `-c/--command`, `--no-imports` | An asyncio Python console, where `await` works at the top level, with settings, the registry, connections, `asyncio`, and every installed domain's models, repositories, and units of work by name (unless `--no-imports`). `-c` runs code and exits. |
 | `dbshell` | `--database`, `--owner`, `--allow-production`, `-- [ARG ...]` | Open `psql` or `sqlite3` on an alias, as its `URL`'s user (`--owner`: `MIGRATION_URL`'s). The connection and password reach `psql` in libpq's environment variables, never on its command line; TLS follows `SSLMODE` and its files. Production refuses without `--allow-production`. Arguments after `--` go to the client. |
 | `diffsettings` | `--all` | The settings that differ from the defaults; `--all` lists every one, defaults marked `###`. Secrets stay hidden as in `repr(settings)`, and so do entries of free-form settings named like secrets (`password`, `token`, `key`, ...) and passwords in URLs. |
 | `dumpdata` | `[TABLE_OR_DOMAIN ...]`, `--database`, `--output`, `--indent` | Write rows as a JSON fixture; see [Data: fixtures, flush, and seeds](#data-fixtures-flush-and-seeds). |
-| `loaddata` | `FIXTURE ...`, `--database`, `--dry-run`, `--force` | Load fixtures, saying first what each table gets and how many stored rows it replaces. Staging and production refuse without `--force`. |
-| `flush` | `--database`, `--dry-run`, `--force` | Delete every row but the audit trail's, saying first what goes, then rerun the `migrated` hooks (content types, permissions). Staging and production refuse without `--force`. |
+| `loaddata` | `FIXTURE ...`, `--database`, `--dry-run`, `--force`, `--operator` | Load fixtures, saying first what each table gets and how many stored rows it replaces. Staging and production refuse without `--force`. Each load is audited ([operators](#operators)). |
+| `flush` | `--database`, `--dry-run`, `--force`, `--operator` | Delete every row but the audit trail's, saying first what goes, then rerun the `migrated` hooks (content types, permissions). Staging and production refuse without `--force`. Audited ([operators](#operators)). |
 | `seed` | `[LABEL ...]` | Run installed domains' `DomainConfig.seed` hooks, in `INSTALLED_DOMAINS` order. |
 | `openapi` | `--output`, `--indent`, `--diff OLD` | Print or write the OpenAPI schema; `--diff` lists breaking changes since `OLD` and exits 1 if any (see [The API surface](#the-api-surface)). |
 | `runworker` | `--once`, `--metrics-port`, `--metrics-address`, `--database`, `--queue`, `--no-relay` | Run outbox messages (messaging): one worker per outbox, every hosting database by default; `--queue` (repeatable) limits them to some queues. With `MESSAGING.BROKER`, relay to the broker and run what it delivers; `--no-relay` only consumes. `--once` always works from the outbox. Whatever it serves, the process runs at most `MESSAGING.CONCURRENCY` messages at once. |
-| `messages` | `--pending\|--locked\|--dead`, `--queue`, `--limit`, `--retry ID\|all`, `--cancel ID`, `--database` | Count an outbox's messages and show each queue's lag, list them, requeue dead letters, or cancel a message no worker runs (messaging). |
+| `messages` | `--pending\|--locked\|--dead`, `--queue`, `--limit`, `--retry ID\|all`, `--cancel ID`, `--database`, `--operator` | Count an outbox's messages and show each queue's lag, list them, requeue dead letters (not those of `sensitive` tasks, whose arguments were blanked), or cancel a message no worker runs; retries and cancels are audited (messaging; [operators](#operators)). |
 | `webhooks` | `subscriptions\|deliveries\|replay`, `[ID ...]`, `--failed`, `--status`, `--subscription`, `--limit` | List webhook subscriptions or deliveries, or send finished deliveries again (webhooks). |
 | `auditlog` | `--actor`, `--action`, `--limit`, `--database`, `--target`, `--aggregate FIELD=ID` | Read the audit trail, or one record's history with what each entry changed (audit; see [contrib.md](contrib.md#history)). |
 | `auditseal` | `--late` | Seal new audit rows into each database's hash chain and anchor its head on `AUDIT.LEDGER`; `--late` also seals rows that committed later than `AUDIT.SEAL_LATE_WINDOW`, flagged as sealed late (audit). |
 | `auditverify` | `--database` | Check the audit trail against its seals and anchors; fails if anything changed (audit). |
-| `auditforget` | `subject ...`, `--anonymous-days` | Make people's pseudonyms in the audit trail unlinkable, in every audited database (audit). |
-| `privacy` | `export --subject ID [--output FILE]`, `erase --subject ID [--reason] [--noinput]`, `purge [--dry-run]` | Export or erase what every installed domain holds about a person, from `Personal` markers on aggregates, or apply the domains' retention policies; each is audited (privacy; see [privacy.md](privacy.md)). |
+| `auditforget` | `subject ...`, `--anonymous-days`, `--operator` | Make people's pseudonyms in the audit trail unlinkable, in every audited database; each run is audited (audit; [operators](#operators)). |
+| `privacy` | `[--operator NAME]`, then `export --subject ID [--output FILE]`, `erase --subject ID [--reason] [--noinput]`, `purge [--dry-run]` | Export or erase what every installed domain holds about a person, from `Personal` markers on aggregates, or apply the domains' retention policies; each is audited, as the operator (privacy; see [privacy.md](privacy.md), [operators](#operators)). |
 | `evidence` | `--subject`, `--verify KEY`, `--limit` | List a subject's evidence, or verify one record (evidence). |
 | `createsuperuser` | `--<USERNAME_FIELD>`, `--<field>` per `REQUIRED_FIELDS`, `--noinput` | Create a superuser, asking for what the options leave out; `--noinput` reads `<PREFIX>SUPERUSER_<FIELD>` (auth; see [auth.md](auth.md)). |
 | `changepassword` | `[username]` | Set a user's password, asked twice and validated; the user's tokens end (auth). |
@@ -898,6 +937,60 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `resetmfa` | `username` | Turn a user's second factor off, and end their sessions (auth). |
 | `addcertificate` | `username`, `certificate`, `--name` | Let a client certificate log in as a user, by its SHA-256 (auth). |
 | `flags` | `list`, `set NAME`, `delete NAME`, `settings`, `setting KEY [VALUE] [--reset]` | List and change feature flags and dynamic settings (flags; see [contrib.md](contrib.md#flags-feature-flags-and-dynamic-settings)). |
+
+### Operators
+
+Commands that change or erase stored data as a person, not as the
+application, say who runs them and leave a row in the audit trail (with
+`domainkit.contrib.audit` installed): `messages --retry` and `--cancel`,
+`auditforget`, `loaddata`, `flush`, `partitions --prune`, and `privacy`;
+and so do those that change credentials, flags, settings, and deliveries:
+`resetmfa`, `createtoken`, `changepassword`, `createsuperuser`,
+`addcertificate`, `cleartokens`, `flags`, and `webhooks`. Their listings
+(`flags list`, `webhooks deliveries`, ...) take the operator too but record
+nothing; `evidence`, `auditlog`, and `auditverify` only read and take none.
+The operator is, in this order:
+
+1. `--operator NAME` (before the action for `privacy`:
+   `privacy --operator alice purge`, and for `flags`: `flags --operator
+   alice set beta --everyone on`);
+2. the `DOMAINKIT_OPERATOR` environment variable;
+3. the login name `getpass.getuser()` reports: the `LOGNAME`, `USER`,
+   `LNAME`, or `USERNAME` environment variable, else the name of the
+   process's user id. Whoever runs the command can set any of these, so
+   this names the operator no better than the other two;
+4. without a login name an operator may have (a container under an
+   arbitrary uid, with no passwd entry; a Windows domain account; a name
+   with a space), `uid-<n>`, the process's user id, or `unnamed` where
+   there are no user ids. Commands run from cron or an entrypoint keep
+   running, as in 0.9.0, and the name they had is neither kept nor shown.
+
+A name is 1 to 64 letters, digits, `.`, `_`, `@`, `+`, or `-`, starting
+with a letter or digit. A bad `--operator` or `DOMAINKIT_OPERATOR` is
+refused before the command runs, since the operator typed it. The last two
+sources are recorded as `operator_source` `system`, so the trail shows
+that nobody gave a name; and in a container that runs as `root` or `app`,
+or under a uid, they name nobody: set `DOMAINKIT_OPERATOR` from your
+access tooling, or pass `--operator`. 0.10 may require a name in staging
+and production. Prefer a staff id or handle to an
+email address: the trail keeps what it is given for good. The name is what
+the operator says: it attributes an action, it does not authenticate
+anyone, so keep who can run `manage.py` against production as narrow as
+who can reach its database.
+
+The command runs as the actor `operator:<name>`, so what it records itself
+(`privacy.erase`, `privacy.purge`, `auth.mfa_disabled`,
+`auth.token_created`, `auth.password_changed`, `auth.user_created`,
+`auth.user_logged_out`, `flags.flag_changed`, `flags.setting_changed`)
+names the operator instead of `system`. An action that records nothing
+itself is recorded once it ends as `operator.<command>`
+(`operator.messages.retry`, `operator.messages.cancel`,
+`operator.auditforget`, `operator.loaddata`, `operator.flush`,
+`operator.partitions.prune`, `operator.webhooks.replay`), `success` or `failure` (with the error's
+class), with what it acted on and counts, and `operator_source`: `option`,
+`environment`, or `system`. Dry runs, listings, and refusals before the
+action (no `--force`) are not recorded. A successful action whose row
+cannot be written fails the command.
 
 ### Data: fixtures, flush, and seeds
 
@@ -982,6 +1075,7 @@ revision: the test database migrates up, down, and up again.
 | Warnings about a domain's weak settings where deployed | `DomainConfig.deployment_warnings()`, returning warnings (none outside staging and production) | (listed by `check` after the framework's own) |
 | Work staged with each commit | `async DomainConfig.stage(uow, events, tasks)` | (called by the unit of work) |
 | Work after each commit | `async DomainConfig.committed(uow)` | (called by the unit of work; failures are reported, never raised) |
+| The same, for a commit outside a unit of work | `async DomainConfig.stage_transaction(connection, database)` / `transaction_committed(database)` | (called by `messaging.enqueue` around its own transaction; idempotency uses them to hold the key) |
 | Rows after each `migrate` (`post_migrate`) | `async DomainConfig.migrated(connection, database)` | (called by `migrate` for each database it upgraded, in one transaction as the schema owner, and by `flush`) |
 | Sample or default data | `async DomainConfig.seed()` | (called by `seed`, in `INSTALLED_DOMAINS` order) |
 | How long a domain keeps rows | `DomainConfig.RETENTION`, a sequence of `privacy.Retention` | (checked when the app is built; applied by `privacy purge`; see [privacy.md](privacy.md)) |

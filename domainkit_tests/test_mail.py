@@ -2,6 +2,7 @@
 
 import email
 import email.policy
+import json
 import logging
 import smtplib
 import socket
@@ -34,9 +35,10 @@ from domainkit.contrib.mail import (
     send_mail,
 )
 from domainkit.contrib.mail.message import MAX_RECIPIENTS, check_address
-from domainkit.contrib.messaging import Worker
+from domainkit.contrib.messaging import MessagingSettings, Worker
 from domainkit.contrib.messaging import worker as worker_module
-from domainkit.contrib.messaging.tables import DEAD, DONE, messages
+from domainkit.contrib.messaging.admin import blanked_dead_letters, retry_dead
+from domainkit.contrib.messaging.tables import BLANKED, DEAD, DONE, messages
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit_tests.conftest import MakePackage
@@ -271,6 +273,52 @@ async def test_mail_settings_set_attempts_and_queue(tables: Install) -> None:
     assert (row["queue"], row["max_attempts"], row["status"]) == ("mail", 2, DEAD)
     assert row["last_error"] == "MailDeliveryFailed: SMTPServerDisconnected"
     assert FlakyBackend.sent == []
+
+
+async def test_sent_mail_leaves_no_link_or_address_in_the_outbox(
+    tables: Install,
+) -> None:
+    """Once sent, the outbox keeps the message's row, not what it said (DATA-01).
+
+    At 0.9.0 the reset link and the address stayed in ``payload`` for
+    ``RETENTION_SECONDS`` (7 days) after sending.
+    """
+    link = "https://app.example.com/reset?token=S3CR3T-RESET-TOKEN"
+    await send_mail("Reset your password", f"Click {link}", ["alice@example.com"])
+    (queued,) = await outbox_rows()
+    assert "S3CR3T-RESET-TOKEN" in json.dumps(queued["payload"])  # Until it runs.
+
+    await Worker().run_once()
+
+    (row,) = await outbox_rows()
+    assert (row["status"], row["payload"], row["attempts"]) == (DONE, {}, 1)
+    assert (row["target"], row["finished_at"] is not None) == (
+        "domainkit.mail.send",
+        True,
+    )
+    assert mail.outbox[0].body == f"Click {link}"
+
+
+async def test_dead_mail_keeps_its_error_not_its_message(tables: Install) -> None:
+    """Mail is a sensitive task: dead, it keeps the error and drops the rest.
+
+    ``messages --retry`` says why such a message cannot go again.
+    """
+    tables(BACKEND="domainkit_tests.test_mail.FlakyBackend", MAX_ATTEMPTS=2)
+    FlakyBackend.failures = 5
+    await send_mail("Your code", "Code 493021", ["alice@example.com"])
+
+    await Worker().run_once()
+
+    (row,) = await outbox_rows()
+    assert (row["status"], row["payload"], row["attempts"]) == (DEAD, {}, 2)
+    assert row["last_error"] == "MailDeliveryFailed: SMTPServerDisconnected"
+    assert row["headers"][BLANKED] is True
+    assert "alice@example.com" not in json.dumps(row["headers"])
+    config = registry.settings(MessagingSettings)
+    assert await retry_dead(config, row["id"]) == 0
+    assert await blanked_dead_letters(config, row["id"]) == 1
+    assert await blanked_dead_letters(config, uuid.uuid4()) == 0
 
 
 async def test_deliver_sends_at_once(tables: Install) -> None:

@@ -213,6 +213,7 @@ readings = Table(
     Column("id", Uuid, primary_key=True),
     Column("taken_at", UTCDateTime, primary_key=True),
     Column("value", ExactDecimal(12, 3), nullable=False),
+    Column("version", Integer, nullable=False),  # an aggregate's table needs it
     info={"domain": "metering"},
 )
 partition_by_range(readings, "taken_at", Interval.MONTH, premake=3, retain=24)
@@ -362,6 +363,8 @@ def start_mappers() -> None:
 
 - `id` is the primary key. A `version` field (every aggregate has one)
   turns on optimistic locking. `deleted_at` comes with `SoftDeletable`.
+  A hand-written table for an aggregate needs that column too (see
+  [Versions](#versions)).
 - Child entities (`list[OrderLine]`, `Address | None`) are not columns;
   map them as relationships (below).
 - Columns in the arguments replace the derived one of the same name
@@ -440,6 +443,58 @@ def start_mappers() -> None:
   PostgreSQL; SQLite enforces foreign keys only with `PRAGMA foreign_keys`.
 - Queries reach into children with dotted names: `F("lines.sku") == "A-1"`.
 
+## Versions
+
+An aggregate's table has a `version` column. `map_imperatively` makes every
+`UPDATE` and `DELETE` of the aggregate check and bump it, so a copy loaded
+before someone else's change fails with `ConcurrentUpdate` (409
+`concurrent_update`) instead of overwriting that change. Without it, ten
+requests that each read a balance of 1000.00, take 10.00 off, and commit
+all succeed and leave 990.00.
+
+`table_for` always derives the column. A hand-written table must declare
+it, and `map_imperatively` refuses an aggregate whose table has none:
+
+```text
+ImproperlyConfigured: billing.domain.model.Account is an aggregate, but its
+table 'billing_accounts' has no 'version' column, so concurrent changes to
+one row would overwrite each other without an error. ...
+```
+
+Add the column, with `server_default="0"` in the migration that adds it to
+a table that already has rows:
+
+```python
+accounts = Table(
+    "billing_accounts",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column("balance", ExactDecimal(18, 2), nullable=False),
+    Column("version", Integer, nullable=False),
+    info={"domain": "billing"},
+)
+```
+
+```python
+op.add_column(
+    "billing_accounts",
+    sa.Column("version", sa.Integer(), nullable=False, server_default="0"),
+)
+```
+
+Or map it without optimistic locking on purpose, for an aggregate only one
+writer changes, or one that is never changed after it is added:
+
+```python
+map_imperatively(Reading, readings, versioned=False)
+```
+
+A mapping that passes `version_id_col` (a column of another name) has
+chosen already, and a subclass mapped with `inherits` shares its base's
+version. Optimistic locking makes all but one of the concurrent writers
+fail; to make them wait their turn instead, load the aggregate with
+`get_for_update` (see [queries](queries.md)).
+
 ## Exact amounts
 
 Store money, and any amount that must not drift, in `ExactDecimal(precision,
@@ -450,6 +505,24 @@ from domainkit.db import ExactDecimal
 
 Column("total", ExactDecimal(14, 2), nullable=False)  # up to 999,999,999,999.99
 ```
+
+An aggregate's table also needs its [`version`](#versions) column, or
+concurrent changes to an amount overwrite each other.
+
+**As text.** Wherever domainkit writes an amount as text, it writes it in
+fixed point (`domainkit.utils.decimals.decimal_text`): `Decimal("1E+3")`
+is `"1000"`, `Decimal("0E-8")` is `"0.00000000"`, and `Decimal("-0.00")`
+is `"0.00"`, with the value's own places and no sign on zero. That holds
+in responses of `schema_for` schemas, CSV and NDJSON exports, outbox
+events and task arguments, webhook payloads, audit details, evidence
+facts, cursors, `dumpdata`, dynamic settings, privacy exports, and the
+admin API's user fields, so the same amount has one text in every record.
+The audit trail's pseudonyms of personal values hash that text too, so
+equal amounts have one pseudonym. JSON strings stay strings. A value with more than 100 digits before or
+after the point is no amount, and is written as `str()` does
+(`1E+999999999`), so its text stays short. Your own response models can
+write amounts the same way:
+`Annotated[Decimal, PlainSerializer(decimal_text, return_type=str, when_used="json")]`.
 
 SQLite has no decimal type. It keeps `NUMERIC` values as floats, which
 hold 15 to 17 significant digits, so `12345678901234567.89` comes back as

@@ -111,3 +111,16 @@ waits on.
   it is. A frozen clock stops `remaining()`, not the timers.
 - Long-lived endpoints that work before answering must say so with
   `RequestTimeout`; streams that answer at once need nothing.
+
+## Addendum (2026-10-25): worker tasks and cache computations
+
+The worker bounded a message with `asyncio.timeout`, so nothing a task did
+saw the time it had left, as this ADR and the `deadlines` module said it
+would (audit CONC-03). It now runs each message in `deadlines.timeout` of
+its timeout: a task's transactions lower `statement_timeout` to the time
+left and its outgoing calls keep to it, and a timeout still raises
+`TimeoutError`, retried as before. A shared cache computation works under
+a deadline of its own, the cache's `COMPUTE_TIMEOUT`, so no caller's
+deadline fails the others; one that borrows its caller's resources works
+under that caller's deadline, whose failures reach only that caller
+(ADR 0071).

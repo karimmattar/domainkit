@@ -20,14 +20,16 @@ import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from datetime import timedelta
 from enum import Enum
-from functools import cache
+from functools import cache, partial
 from typing import Any, Final, Literal, overload
 
 from pydantic import TypeAdapter, ValidationError
 from pydantic_core import PydanticSerializationError, from_json, to_json
 
+from domainkit import deadlines
 from domainkit.cache.base import CacheError, CacheUnavailable, Store
 from domainkit.conf import CacheConfig
+from domainkit.deadlines import Deadline, current_deadline
 from domainkit.tasks import spawn
 
 try:
@@ -100,6 +102,31 @@ def split(raw: bytes) -> tuple[bytes, float | None, float]:
     return payload, float(expires), float(delta)
 
 
+class _Computation:
+    """A shared ``get_or_set`` computation of one key, and how it ended."""
+
+    __slots__ = ("abandoned", "borrows", "deadline", "owner_failed", "stopped", "task")
+
+    task: asyncio.Task[bytes]
+
+    def __init__(self, *, borrows: bool, deadline: Deadline | None) -> None:
+        """Compute for callers; with ``borrows``, bound to its owner's ``deadline``."""
+        self.borrows = borrows
+        """Whether the factory uses what its owner holds: the computation is
+        then the owner's, and ends with it."""
+        self.deadline = deadline
+        """The owner's deadline, which a computation that borrows works under."""
+        self.abandoned = False
+        """Its owner was cancelled, so it was stopped: callers still waiting
+        share another one."""
+        self.stopped = False
+        """Shutdown or ``close()`` stopped it: callers still waiting compute
+        their own value, without the store."""
+        self.owner_failed = False
+        """It failed for its owner's sake (the owner's deadline): only the
+        owner gets the error; callers still waiting share another one."""
+
+
 class Cache:
     """One configured cache; get it from ``domainkit.cache.caches``."""
 
@@ -124,7 +151,7 @@ class Cache:
         self._monotonic = monotonic
         self._uniform = uniform
         self._skip_until = -math.inf
-        self._computing: dict[str, asyncio.Task[bytes]] = {}
+        self._computing: dict[str, _Computation] = {}
 
     def make_key(self, key: str) -> str:
         """Return the full key stored for ``key``: namespace, version, key."""
@@ -220,6 +247,8 @@ class Cache:
         factory: Callable[[], Awaitable[T]],
         type: type[T],
         ttl: TTL = DEFAULT_TTL,
+        *,
+        borrows: bool = False,
     ) -> T: ...
 
     @overload
@@ -229,6 +258,8 @@ class Cache:
         factory: Callable[[], Awaitable[object]],
         type: None = None,
         ttl: TTL = DEFAULT_TTL,
+        *,
+        borrows: bool = False,
     ) -> Any: ...  # noqa: ANN401 - JSON values.
 
     async def get_or_set(
@@ -237,6 +268,8 @@ class Cache:
         factory: Callable[[], Awaitable[Any]],
         type: TypeForm = None,
         ttl: TTL = DEFAULT_TTL,
+        *,
+        borrows: bool = False,
     ) -> Any:
         """Return the cached value of ``key``, or compute, store, and return it.
 
@@ -248,21 +281,31 @@ class Cache:
         and the value is returned anyway. Every caller gets its own copy,
         decoded from JSON, so hits and misses look alike and no two requests
         share a mutable object.
+
+        The computation serves every caller, so by default it belongs to
+        none: it runs on when they stop waiting, within ``COMPUTE_TIMEOUT``,
+        and stores its value, and the factory must use nothing a caller
+        holds. Pass ``borrows=True`` for a factory that uses what its caller
+        holds and releases (the session of the caller's unit of work): the
+        computation is then bound to the caller that starts it, under that
+        caller's deadline, and ends with it (ADR 0071).
         """
         full, milliseconds = self.make_key(key), self._milliseconds(ttl)
+        compute = partial(
+            self._compute_once, full, factory, milliseconds, borrows=borrows
+        )
         try:
             (raw,) = await self.call(self.store.get_many, [full])
         except CacheError as exc:
             self._worked_around("read", exc)
-            payload = await self._compute_once(full, factory, milliseconds, write=False)
-            return decode(payload, type)
+            return decode(await compute(write=False), type)
         value, refresh = self._load(raw, type, early=True)
         if value is _MISS:
-            return decode(await self._compute_once(full, factory, milliseconds), type)
+            return decode(await compute(), type)
         if not refresh:
             return value
         try:
-            payload = await self._compute_once(full, factory, milliseconds)
+            payload = await compute()
         except Exception:
             logger.warning(
                 "Cache %r could not refresh an entry early; serving it until it "
@@ -278,16 +321,26 @@ class Cache:
         await self.store.check()
 
     async def close(self) -> None:
-        """Cancel the computations still running, then close the store.
+        """Stop the computations still running, then close the store.
 
-        Callers still waiting for a cancelled computation compute their own
+        Callers still waiting for a stopped computation compute their own
         value, as when the cache fails.
         """
-        computing = list(self._computing.values())
-        for task in computing:
-            task.cancel()
-        await asyncio.gather(*computing, return_exceptions=True)
+        await asyncio.gather(*self.stop_computations(), return_exceptions=True)
         await self.store.close()
+
+    def stop_computations(self) -> list[asyncio.Task[bytes]]:
+        """Cancel the computations still running, as stopped; return their tasks.
+
+        For shutdown and ``close()``: callers still waiting compute their
+        own value. The caller awaits the tasks.
+        """
+        stopping = []
+        for computation in self._computing.values():
+            computation.stopped = True
+            computation.task.cancel()
+            stopping.append(computation.task)
+        return stopping
 
     async def call[**P, R](
         self, operation: Callable[P, Awaitable[R]], *args: P.args, **kwargs: P.kwargs
@@ -380,40 +433,102 @@ class Cache:
         milliseconds: int | None,
         *,
         write: bool = True,
+        borrows: bool = False,
     ) -> bytes:
         """Share one computation of ``full`` among concurrent callers; its JSON.
 
-        The first caller decides whether the result is written to the store.
-        The computation is a background task of its own, in a clean context
-        (``domainkit.tasks.spawn``): it serves every caller, so it runs as
-        none of them, and shutdown stops it before what it uses closes.
-        """
-        task = self._computing.get(full)
-        if task is None:
-            computation = self._compute(full, factory, milliseconds, write=write)
-            task = spawn(computation, name=COMPUTE_TASK, log_errors=False)
-            self._computing[full] = task
-            task.add_done_callback(lambda done: self._forget(full, done))
-        try:
-            # Waiting does not cancel the computation, which goes on for the
-            # other callers (asyncio.shield would, on 3.14, log its failure).
-            await asyncio.wait([task])
-            return task.result()
-        except asyncio.CancelledError:
-            caller = asyncio.current_task()
-            if caller is None or caller.cancelling():
-                raise
-            # Not cancelled itself, so shutdown or close() stopped the computation.
-            return encode(await factory())
+        The caller that starts the computation decides whether the result is
+        written to the store. It is a background task of its own, in a clean
+        context (``domainkit.tasks.spawn``), which shutdown stops.
 
-    def _forget(self, full: str, task: asyncio.Task[bytes]) -> None:
+        By default the computation is detached: it runs the factory within
+        the cache's ``COMPUTE_TIMEOUT`` and goes on when its callers stop
+        waiting, so a slow factory still fills the cache. With ``borrows``,
+        it is its owner's: it runs under the owner's deadline, and when the
+        owner is cancelled, it is cancelled and the owner waits for it to
+        stop. A failure that is the owner's (its deadline passed) reaches
+        only the owner. Callers still waiting then share a new computation.
+        """
+        while True:
+            computation = self._computing.get(full)
+            owner = computation is None
+            if computation is None:
+                computation = self._start(
+                    full, factory, milliseconds, write=write, borrows=borrows
+                )
+            task = computation.task
+            try:
+                # Waiting does not cancel the computation, which goes on for the
+                # other callers (asyncio.shield would, on 3.14, log its failure).
+                await asyncio.wait([task])
+            except asyncio.CancelledError:
+                if owner and computation.borrows:
+                    await self._abandon(full, computation)
+                raise
+            if task.cancelled():
+                if computation.abandoned:
+                    continue  # Its owner left: share another one (or start it).
+                # Shutdown or close() stopped it: compute without the store.
+                return encode(await factory())
+            if computation.owner_failed and not owner:
+                continue  # The owner's deadline failed it, not this caller's.
+            return task.result()
+
+    def _start(
+        self,
+        full: str,
+        factory: Callable[[], Awaitable[Any]],
+        milliseconds: int | None,
+        *,
+        write: bool,
+        borrows: bool,
+    ) -> _Computation:
+        """Start computing ``full``; one that borrows, under the caller's deadline."""
+        deadline = current_deadline() if borrows else None
+        computation = _Computation(borrows=borrows, deadline=deadline)
+        computation.task = spawn(
+            self._compute(computation, full, factory, milliseconds, write=write),
+            name=COMPUTE_TASK,
+            log_errors=False,
+            deadline=deadline,
+        )
+        self._computing[full] = computation
+        computation.task.add_done_callback(partial(self._forget, full, computation))
+        return computation
+
+    async def _abandon(self, full: str, computation: _Computation) -> None:
+        """Stop the computation of an owner that was cancelled, and wait for it.
+
+        Its factory may be using the owner's resources, which the owner
+        releases once its cancellation goes on. One that shutdown or
+        ``close()`` stopped is only waited for. A second cancellation of the
+        owner stops the wait.
+        """
+        task = computation.task
+        if task.done():
+            return
+        if not computation.stopped:
+            computation.abandoned = True
+            self._discard(full, computation)
+            task.cancel()
+        await asyncio.wait([task])
+
+    def _discard(self, full: str, computation: _Computation) -> None:
+        """Stop sharing ``computation``: callers that come next start another."""
+        if self._computing.get(full) is computation:
+            del self._computing[full]
+
+    def _forget(
+        self, full: str, computation: _Computation, task: asyncio.Task[bytes]
+    ) -> None:
         """Drop a finished computation; its error reaches whoever awaited it."""
-        del self._computing[full]
-        if not task.cancelled():  # Cancelled by close(), or when its loop closes.
+        self._discard(full, computation)
+        if not task.cancelled():  # Stopped, abandoned, or its loop closed.
             task.exception()
 
     async def _compute(
         self,
+        computation: _Computation,
         full: str,
         factory: Callable[[], Awaitable[Any]],
         milliseconds: int | None,
@@ -422,10 +537,24 @@ class Cache:
     ) -> bytes:
         """Call ``factory``, store its JSON with its expiry and cost, return it.
 
-        Without ``write``, the cache just failed a read, so nothing is stored.
+        A detached computation is bounded by ``COMPUTE_TIMEOUT``; one that
+        borrows, by its owner's deadline, and a failure once that has passed
+        is marked as the owner's. Without ``write``, the cache just failed a
+        read, so nothing is stored.
         """
         started = time.perf_counter()
-        payload = encode(await factory())
+        try:
+            if computation.borrows:
+                payload = encode(await factory())
+            else:
+                async with deadlines.timeout(self.config.COMPUTE_TIMEOUT):
+                    payload = encode(await factory())
+        except Exception:
+            # Only once the owner's deadline has passed is a failure the
+            # owner's: the factory's own timeout is every caller's.
+            deadline = computation.deadline
+            computation.owner_failed = deadline is not None and deadline.expired()
+            raise
         if not write:
             return payload
         delta = time.perf_counter() - started

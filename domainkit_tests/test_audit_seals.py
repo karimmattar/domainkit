@@ -710,6 +710,116 @@ async def test_a_first_anchor_written_meanwhile_is_not_written_again(
     assert await ledger.revision_count(anchor_key("default"), limit=5) == 1
 
 
+def test_anchor_keys_carry_the_namespace() -> None:
+    """``domainkit/audit/<namespace>/<alias>``; no namespace keeps the 0.9.0 key."""
+    assert anchor_key("default", "shop") == b"domainkit/audit/shop/default"
+    assert anchor_key("default") == b"domainkit/audit/default"
+
+
+@pytest.mark.parametrize(
+    "namespace", ["", "Shop", "1shop", "shop/eu", "shop\n", "s" * 33, "shop.eu"]
+)
+def test_audit_namespaces_are_checked(namespace: str) -> None:
+    """A namespace is a short lower-case name, so it cannot reach another key."""
+    with pytest.raises(ValidationError, match="NAMESPACE"):
+        AuditSettings(NAMESPACE=namespace)
+
+
+def test_audit_namespaces_accept_short_names() -> None:
+    """Letters, digits, ``_`` and ``-``, up to 32, starting with a letter."""
+    assert AuditSettings(NAMESPACE="shop-eu_2").NAMESPACE == "shop-eu_2"
+    assert AuditSettings(NAMESPACE="s" * 32).NAMESPACE == "s" * 32
+    assert AuditSettings().NAMESPACE is None
+    assert AuditSettings().PREVIOUS_ANCHORS is True
+
+
+async def test_projects_sharing_a_ledger_keep_their_anchors_apart(
+    tables: None,
+) -> None:
+    """Another project's anchor neither holds ours back nor fails our chain (N11).
+
+    At 0.9.0 both wrote ``domainkit/audit/default``: ours was skipped as
+    too recent, and its head read as our rewritten anchor.
+    """
+    ledger = ledgers["audit"]
+    now = datetime(2026, 10, 18, 9, 0, tzinfo=UTC)
+    theirs = Anchor(seq=5, link="ab" * 32, anchored_at=now - timedelta(minutes=1))
+    await ledger.append(anchor_key("default", "billing"), theirs.encode())
+    await add(now - timedelta(seconds=2))
+    await add(now - timedelta(seconds=1))
+    assert await seal("default") == 2
+
+    with override_settings(AUDIT={"LEDGER": "audit", "NAMESPACE": "shop"}):
+        ours = await anchor("default", ledger, every=timedelta(hours=1), now=now)
+        report = await verify("default", ledger, now=now)
+
+    assert ours == Anchor(2, (await seals())[-1]["link"], now)
+    assert report.intact
+    assert (report.anchors, report.rewritten) == (1, [])
+    stored = await ledger.read(anchor_key("default", "shop"))
+    assert Anchor.decode(stored.value) == ours
+
+
+async def test_heads_anchored_before_the_namespace_still_verify(
+    tables: None,
+) -> None:
+    """Setting ``NAMESPACE`` on a running trail keeps its anchors checked.
+
+    The heads anchored under the old key are read with the new key's, so the
+    trail verifies across the change, and a rewrite of a head anchored
+    before it is still found.
+    """
+    ledger = ledgers["audit"]
+    now = datetime(2026, 10, 18, 9, 0, tzinfo=UTC)
+    every = timedelta(hours=1)
+    await add(now - timedelta(seconds=2))
+    await seal("default")
+    before = await anchor("default", ledger, every=every, now=now)
+    namespaced = {"LEDGER": "audit", "NAMESPACE": "shop"}
+
+    with override_settings(AUDIT=namespaced):
+        unchanged = await verify("default", ledger, now=now)
+        await add(now - timedelta(seconds=1))
+        await seal("default")
+        after = await anchor("default", ledger, every=every, now=now + every)
+        both = await verify("default", ledger, now=now + every)
+        await change(
+            update(audit_seals).where(audit_seals.c.seq == 1).values(link="f" * 64)
+        )
+        rewritten = await verify("default", ledger, now=now + every)
+    with override_settings(AUDIT={**namespaced, "PREVIOUS_ANCHORS": False}):
+        new_key_only = await verify("default", ledger, now=now + every)
+
+    assert before is not None
+    assert after is not None
+    assert (before.seq, after.seq) == (1, 2)
+    assert (unchanged.intact, unchanged.anchors) == (True, 1)
+    assert (both.intact, both.anchors) == (True, 2)
+    assert rewritten.rewritten == [1]
+    assert new_key_only.anchors == 1  # Only the head anchored under "shop".
+    assert new_key_only.rewritten == []
+
+
+async def test_other_projects_on_the_old_key_can_be_left_out(tables: None) -> None:
+    """Without ``PREVIOUS_ANCHORS``, heads others wrote to the old key are ignored."""
+    ledger = ledgers["audit"]
+    now = datetime(2026, 10, 18, 9, 0, tzinfo=UTC)
+    theirs = Anchor(seq=1, link="ab" * 32, anchored_at=now - timedelta(minutes=1))
+    await ledger.append(anchor_key("default"), theirs.encode())
+    await add(now - timedelta(seconds=1))
+    await seal("default")
+    namespaced = {"LEDGER": "audit", "NAMESPACE": "shop"}
+
+    with override_settings(AUDIT=namespaced):
+        await anchor("default", ledger, every=timedelta(hours=1), now=now)
+        continued = await verify("default", ledger, now=now)
+    with override_settings(AUDIT={**namespaced, "PREVIOUS_ANCHORS": False}):
+        own = await verify("default", ledger, now=now)
+
+    assert continued.rewritten == [1]  # Two links anchored for seal 1.
+    assert own.intact
+
+
 async def test_seals_left_unanchored_are_reported(tables: None) -> None:
     """Seals the newest anchor misses for over ``every`` + ``LOOKBACK``."""
     every = timedelta(hours=2)

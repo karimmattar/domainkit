@@ -48,7 +48,7 @@ from sqlalchemy import delete, or_, select, update
 from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from domainkit import clock
+from domainkit import clock, deadlines
 from domainkit.apps import registry
 from domainkit.broker import Broker, BrokerError
 from domainkit.conf import settings
@@ -57,6 +57,7 @@ from domainkit.db import connections
 from domainkit.ddd import DomainEvent, EventBus, event_bus
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.reporting import report_error
+from domainkit.tasks import spawn
 from domainkit.tracing import remote_parent, span, trace_headers
 from domainkit.utils.module_loading import import_string
 
@@ -78,7 +79,16 @@ from .registry import (
 )
 from .retry import Backoff, retryable
 from .settings import MessagingSettings
-from .tables import CANCELLED, DEAD, DEFAULT_QUEUE, DONE, PENDING, messages
+from .tables import (
+    BLANKED,
+    CANCELLED,
+    DEAD,
+    DEFAULT_QUEUE,
+    DONE,
+    PENDING,
+    SENSITIVE,
+    messages,
+)
 
 if TYPE_CHECKING:
     from domainkit.http.ratelimit import Backend
@@ -155,6 +165,15 @@ def _without_input(exc: BaseException) -> BaseException:
     return InvalidData(f"{exc.title}: {problems}").with_traceback(exc.__traceback__)
 
 
+def _sensitive(message: "Claimed", spec: TaskSpec | None) -> bool:
+    """Whether ``message``'s arguments are blanked when it dies.
+
+    Its task is ``sensitive``, or it is a chain's step after one: it was
+    handed what that step had, or made from it.
+    """
+    return (spec is not None and spec.sensitive) or bool(message.headers.get(SENSITIVE))
+
+
 @dataclass(frozen=True, slots=True)
 class Attempt:
     """The run a worker is making of a message, as its task sees it."""
@@ -219,15 +238,18 @@ def _now() -> datetime:
     return clock.now()
 
 
-_settling: set[asyncio.Task[None]] = set()
-"""Shielded clean-ups still running after their caller was cancelled."""
+SETTLE_TASK: Final = "domainkit.messaging.settle"
+"""The name of the tasks that give leases back (``_shielded``)."""
 
 
 async def _shielded(work: Coroutine[Any, Any, None], what: str) -> None:
     """Run ``work`` to the end within ``RELEASE_TIMEOUT``, even if cancelled.
 
-    The caller's cancellation does not stop it: a lock left behind would
-    hold its messages until it expires. A failure is logged, never raised.
+    Neither the caller's cancellation nor the shutdown's stops it: a lock
+    left behind would hold its messages until it expires. It runs as an
+    owned task (``domainkit.tasks``), so the shutdown's ``tasks`` phase
+    waits for it before the ``resources`` phase closes the database it
+    writes to. A failure is logged, never raised.
     """
 
     async def bounded() -> None:
@@ -237,10 +259,13 @@ async def _shielded(work: Coroutine[Any, Any, None], what: str) -> None:
         except Exception as exc:  # Logged; the locks expire.
             logger.error("Could not %s; their locks expire", what, exc_info=exc)
 
-    task = asyncio.ensure_future(bounded())
-    _settling.add(task)
-    task.add_done_callback(_settling.discard)
-    await asyncio.shield(task)
+    async def settle() -> None:
+        running = asyncio.ensure_future(bounded())
+        while not running.done():  # Bounded: cancelling it waits for the end.
+            with suppress(asyncio.CancelledError):
+                await asyncio.shield(running)
+
+    await asyncio.shield(spawn(settle(), name=SETTLE_TASK))
 
 
 def backoff(attempts: int, config: MessagingSettings) -> float:
@@ -748,7 +773,9 @@ class Worker:
                     "The worker stopped during the last attempt (a crash, "
                     "or a kill before TASK_TIMEOUT)."
                 )
-            async with asyncio.timeout(timeout):
+            # A deadline, not only a timer: the task's statements and outgoing
+            # calls are bounded by the time it has left (statement_timeout).
+            async with deadlines.timeout(timeout):
                 result = await self._execute(message)
             follow_up = self._follow_up(message, result)
         except Exception as exc:  # noqa: BLE001 - logged and retried by _failed.
@@ -794,6 +821,9 @@ class Worker:
         headers.pop(CHAIN)
         if rest:
             headers[CHAIN] = rest
+        if _sensitive(message, get_task(message.target)):
+            # It is handed what this step had, or made from it.
+            headers[SENSITIVE] = True
         return message_row(
             kind="task",
             target=target,
@@ -806,7 +836,12 @@ class Worker:
         )
 
     async def _done(self, message: Claimed, follow_up: dict[str, Any] | None) -> None:
-        """Record ``message`` as done, and queue its chain's next step with it."""
+        """Record ``message`` as done, and queue its chain's next step with it.
+
+        Its arguments are blanked in the same statement: a finished message
+        keeps what operators need (its target, times, attempts), not what it
+        carried, such as a reset link in a mail.
+        """
         statement = (
             update(messages)
             .where(messages.c.id == message.id, messages.c.lock_id == message.lock_id)
@@ -815,6 +850,7 @@ class Worker:
                 lock_id=None,
                 status=DONE,
                 finished_at=dbclock.now(self.dialect),
+                payload={},
             )
         )
         async with self.engine.begin() as connection:
@@ -860,16 +896,23 @@ class Worker:
     ) -> str:
         """Schedule a retry, or dead-letter and report; return the outcome.
 
-        The delay comes from the task's ``backoff``, or ``MESSAGING``'s.
+        The delay comes from the task's ``backoff``, or ``MESSAGING``'s. A
+        ``sensitive`` task's arguments are blanked when it dies, and so are
+        those of a chain's step after one (``SENSITIVE``), with its error
+        recorded, and its headers say so (``BLANKED``).
         """
         exc = _without_input(exc)
         error = f"{type(exc).__name__}: {exc}"[:_ERROR_LENGTH]
         if permanent or message.attempts >= message.max_attempts:
+            blanked: dict[str, object] = {}
+            if _sensitive(message, spec):
+                blanked = {"payload": {}, "headers": {**message.headers, BLANKED: True}}
             await self._release(
                 message,
                 status=DEAD,
                 finished_at=dbclock.now(self.dialect),
                 last_error=error,
+                **blanked,
             )
             logger.error(
                 "Dead-lettered %s %s after %d attempts",

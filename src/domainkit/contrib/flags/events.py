@@ -1,15 +1,20 @@
 """What happens to flags and dynamic settings; the audit trail records each."""
 
-from domainkit.ddd import DomainEvent
+from typing import Annotated
+
+from domainkit.ddd import Counted, DomainEvent
 
 
 class FlagChanged(DomainEvent):
-    """A flag was created, or its rules changed."""
+    """A flag was created, or its rules changed.
+
+    The audit trail keeps how many users it names, not which (``Counted``).
+    """
 
     name: str
     everyone: bool | None
     percentage: int
-    users: tuple[str, ...]
+    users: Annotated[tuple[str, ...], Counted()]
     groups: tuple[str, ...]
 
 
@@ -20,10 +25,14 @@ class FlagDeleted(DomainEvent):
 
 
 class SettingChanged(DomainEvent):
-    """A dynamic setting got a new value (JSON)."""
+    """A dynamic setting got a new value (JSON).
+
+    A secret setting's event says that it changed, with ``value`` None.
+    """
 
     key: str
     value: object
+    secret: bool = False
 
 
 class SettingReset(DomainEvent):

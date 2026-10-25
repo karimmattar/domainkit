@@ -47,7 +47,7 @@ from typing import Final
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Request, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.requests import HTTPConnection
 
 from domainkit.conf import settings
@@ -105,8 +105,12 @@ class CookieAuthentication(BaseAuthentication):
     """Browser sessions: the session cookie, checked against CSRF.
 
     Sessions start at ``POST /session`` (``router``); this class issues no
-    tokens for ``/login``, so list another class first.
+    tokens for ``/login``, so list another class first. A cookie that does
+    not hold leaves the request anonymous, so cookies are never guessed:
+    a session is served while its address is held for refused tokens.
     """
+
+    guessable = False
 
     async def authenticate(self, connection: HTTPConnection) -> Credentials | None:
         """The user of a live session cookie, if the request may use it.
@@ -228,7 +232,7 @@ def csrf_token(session: str) -> str:
 class CsrfOut(BaseModel):
     """The token to send back in ``X-CSRF-Token`` with unsafe methods."""
 
-    csrf_token: str
+    csrf_token: str = Field(repr=False)
 
 
 @router.post(

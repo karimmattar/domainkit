@@ -9,9 +9,10 @@ Mount the router where the API keeps them, ``/auth`` for example::
 ``POST /login`` checks a username and password with ``AUTH.BACKENDS`` and
 returns tokens from the first ``AUTH.AUTHENTICATION_CLASSES`` class, in
 OAuth 2's token response format; a user with a second factor gets 202 and
-a challenge for ``/mfa/login`` instead (``auth.mfa``). Attempts are limited
-to ``AUTH.LOGIN_RATE`` per client address and per username, and refusals
-go to the audit trail when ``domainkit.contrib.audit`` is installed.
+a challenge for ``/mfa/login`` instead (``auth.mfa``). Wrong passwords are
+limited to ``AUTH.LOGIN_RATE`` per client address and per username (logins
+that succeed are not counted), and refusals go to the audit trail when
+``domainkit.contrib.audit`` is installed.
 """
 
 from collections.abc import Iterator
@@ -35,7 +36,7 @@ from .events import UserLoggedOut
 from .hashers import acheck_password
 from .models import AbstractBaseUser, UserId
 from .settings import auth_settings
-from .throttling import account_key, address_key, audit_refusal, throttle
+from .throttling import Attempt, account_key, address_key, audit_refusal, throttle
 from .uow import AuthUnitOfWork
 from .validators import validate_password
 
@@ -51,7 +52,7 @@ class LoginIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     username: str = Field(min_length=1, max_length=255)
-    password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH)
+    password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False)
 
 
 class RefreshIn(BaseModel):
@@ -59,7 +60,7 @@ class RefreshIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    refresh_token: str = Field(min_length=1, max_length=255)
+    refresh_token: str = Field(min_length=1, max_length=255, repr=False)
 
 
 class LogoutIn(BaseModel):
@@ -75,18 +76,18 @@ class PasswordIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    old_password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH)
-    new_password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH)
+    old_password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False)
+    new_password: str = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH, repr=False)
 
 
 class TokenOut(BaseModel):
     """Tokens (OAuth 2's token response): send ``Authorization: Bearer ...``."""
 
-    access_token: str
+    access_token: str = Field(repr=False)
     token_type: Literal["Bearer"] = "Bearer"  # noqa: S105 - a scheme, not a secret.
     expires_in: int | None = None
     """Seconds the access token works; absent: until revoked."""
-    refresh_token: str | None = None
+    refresh_token: str | None = Field(default=None, repr=False)
     """Exchange it at ``/refresh`` before the access token expires."""
 
 
@@ -113,7 +114,8 @@ class MfaChallengeOut(BaseModel):
     """The password holds; send this token and a code to ``/mfa/login``."""
 
     mfa_required: Literal[True] = True
-    mfa_token: str
+    mfa_token: str = Field(repr=False)
+    """Stands for a password that held: left out of ``repr``."""
     expires_in: int
     """Seconds the token works."""
 
@@ -144,10 +146,12 @@ async def login(
 async def check_password(request: Request, body: LoginIn) -> AbstractBaseUser:
     """The user a login's username and password prove, counted and audited.
 
+    Only wrong credentials count against ``AUTH.LOGIN_RATE``.
+
     Raises:
         APIError: 401 for wrong credentials; 429 past ``AUTH.LOGIN_RATE``.
     """
-    await _throttle(request, *_login_keys(request, body.username))
+    counted = await _throttle(request, *_login_keys(request, body.username))
     user = await authenticate(username=body.username, password=body.password)
     if user is None:
         await _audit_refusal("invalid_credentials")
@@ -156,6 +160,7 @@ async def check_password(request: Request, body: LoginIn) -> AbstractBaseUser:
             "Unable to log in with the given credentials.",
             code="invalid_credentials",
         )
+    await counted.succeeded()
     return user
 
 
@@ -255,13 +260,14 @@ async def change_password(
     request: Request, body: PasswordIn, user: AuthenticatedUser
 ) -> None:
     """Change the password; every other session of the user ends."""
-    await _throttle(request, f"password:user:{user.id}")
+    counted = await _throttle(request, f"password:user:{user.id}")
     if not await password_holds(user, body.old_password, priority=True):
         raise APIError(
             status.HTTP_400_BAD_REQUEST,
             "Your old password was entered incorrectly.",
             code="wrong_password",
         )
+    await counted.succeeded()
     validate_password(body.new_password, user)
     credentials = _credentials(request)
     async with AuthUnitOfWork() as uow:
@@ -288,13 +294,14 @@ async def password_holds(
     )
 
 
-async def _throttle(request: Request, *keys: str) -> None:
+async def _throttle(request: Request, *keys: str) -> Attempt:
     """Refuse a password check past ``AUTH.LOGIN_RATE`` for any of ``keys``.
 
     The first refusal of each key in a period is audited, not every one, so
-    a flood of attempts writes no rows to the append-only trail.
+    a flood of attempts writes no rows to the append-only trail. Give the
+    result ``succeeded()`` once the password holds: only wrong ones count.
     """
-    await throttle(
+    return await throttle(
         request,
         auth_settings().LOGIN_RATE,
         keys,

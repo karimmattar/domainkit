@@ -23,6 +23,12 @@ a lazy load needs I/O, which an attribute access in async code cannot do,
 so it would fail elsewhere with ``MissingGreenlet``. Load it in the query
 (``selectinload``), or ask for lazy loading on purpose with ``lazy=True``,
 for ``AsyncAttrs.awaitable_attrs`` or ``run_sync``.
+
+An aggregate's table needs a ``version`` column: it is what makes a stale
+copy fail with ``ConcurrentUpdate`` instead of overwriting a concurrent
+change. ``map_imperatively`` refuses an aggregate table without one, unless
+the mapping says ``versioned=False`` (an aggregate written by one writer
+only, or read-only).
 """
 
 from typing import Any, Final
@@ -32,6 +38,10 @@ from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import RelationshipProperty, registry, relationship
 
 from domainkit.ddd import AggregateRoot
+from domainkit.exceptions import ImproperlyConfigured
+
+VERSION: Final = "version"
+"""The column that holds an aggregate's version (``AggregateRoot.version``)."""
 
 DEFAULT_LAZY: Final = "select"
 """SQLAlchemy's default ``lazy``, which ``map_imperatively`` makes raise."""
@@ -51,22 +61,64 @@ metadata: Final = MetaData(naming_convention=NAMING_CONVENTION)
 mapper_registry: Final = registry(metadata=metadata)
 
 
-def map_imperatively(class_: type, table: Table, **options: Any) -> None:  # noqa: ANN401 - SQLAlchemy mapper options.
+def map_imperatively(
+    class_: type,
+    table: Table,
+    *,
+    versioned: bool = True,
+    **options: Any,  # noqa: ANN401 - SQLAlchemy mapper options.
+) -> None:
     """Map ``class_`` to ``table`` once; later calls are ignored.
 
-    An aggregate whose table has a ``version`` column gets optimistic locking:
-    every UPDATE and DELETE checks and bumps the version. Relationships in
+    An aggregate gets optimistic locking from its table's ``version``
+    column: every UPDATE and DELETE checks and bumps the version, so saving
+    a stale copy raises ``ConcurrentUpdate``. Relationships in
     ``properties`` that leave ``lazy`` at its default raise on an unloaded
     access, their backrefs too (see the module's docstring).
+
+    Args:
+        class_: The class to map.
+        table: Its table.
+        versioned: False maps an aggregate without optimistic locking, on
+            purpose: concurrent changes to one row then overwrite each
+            other. Classes other than aggregates ignore it.
+        **options: SQLAlchemy mapper options; ``version_id_col`` names
+            another version column.
+
+    Raises:
+        ImproperlyConfigured: ``class_`` is an aggregate, ``versioned`` is
+            true, and ``table`` has no ``version`` column.
     """
     if sa_inspect(class_, raiseerr=False) is not None:
         return
-    if "version" in table.c and issubclass(class_, AggregateRoot):
-        options.setdefault("version_id_col", table.c.version)
+    if issubclass(class_, AggregateRoot) and versioned:
+        _version_aggregate(class_, table, options)
     for prop in dict(options.get("properties") or {}).values():
         if isinstance(prop, RelationshipProperty):
             _raise_on_lazy_loads(prop)
     mapper_registry.map_imperatively(class_, table, **options)
+
+
+def _version_aggregate(class_: type, table: Table, options: dict[str, Any]) -> None:
+    """Point the aggregate's mapping at its version column, or refuse it.
+
+    A subclass mapped with ``inherits`` shares its base's version, and a
+    mapping that passes ``version_id_col`` has chosen; neither needs a
+    ``version`` column.
+    """
+    if options.get("inherits") is not None or "version_id_col" in options:
+        return
+    if VERSION not in table.c:
+        raise ImproperlyConfigured(
+            f"{class_.__module__}.{class_.__qualname__} is an aggregate, but its "
+            f"table {table.name!r} has no {VERSION!r} column, so concurrent "
+            "changes to one row would overwrite each other without an error. "
+            f'Add Column("{VERSION}", Integer, nullable=False) to the table '
+            '(server_default="0" in the migration for existing rows), or pass '
+            "versioned=False to map_imperatively to map it without optimistic "
+            "locking on purpose."
+        )
+    options["version_id_col"] = table.c[VERSION]
 
 
 def _raise_on_lazy_loads(prop: RelationshipProperty[Any]) -> None:

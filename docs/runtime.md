@@ -41,7 +41,14 @@ supervise(lambda: watch_rates(feed), name="billing.rates", max_backoff=30)
   in `tasks_failed_total{task}`. Pass `log_errors=False` when callers await
   the task and handle its errors themselves;
 - belongs to the event loop that runs it, which cancels it at
-  [shutdown](#shutting-down-within-a-budget).
+  [shutdown](#shutting-down-within-a-budget);
+- with `deadline=` (the caller's `deadlines.current_deadline()`), works
+  under that deadline: its transactions and outgoing calls are bounded by
+  it. Nothing cuts the task off when it passes; the caller that waits for
+  it is cut off, and should cancel it.
+
+`tasks.adopt(task)` makes a task started some other way owned too, so the
+shutdown waits for it: the framework does this for closes it gave up on.
 
 `supervise(factory, name=..., backoff=1.0, max_backoff=60.0)` calls
 `factory()` for each run, in a task of its own. A run that crashes (or that
@@ -77,12 +84,16 @@ to a request. The framework's own background work runs this way:
 | A `get_or_set` (or `@cached`) computation shared by concurrent callers | `domainkit.cache.compute` |
 | A round of readiness checks shared by concurrent probes | `domainkit.readiness` |
 | Storing a keyed response, or releasing the key | `domainkit.idempotency.settle` |
+| Giving back the leases of a relay round, even once the relay is cancelled | `domainkit.messaging.settle` |
 
 A cached value is shared by every caller of its key, so its factory must
 not depend on who asked: pass what it needs as arguments, and make them
 part of the key. `@cache_page` keys entries by user and language, so it runs
 the endpoint as the caller, in a copy of the caller's context, inside the
-clean computation.
+clean computation. A computation has a deadline of its own, the cache's
+`COMPUTE_TIMEOUT`; one that borrows its caller's resources is bound to
+that caller and its deadline instead
+([cache.md](cache.md#what-a-factory-may-use)).
 
 ## Shutting down within a budget
 
@@ -108,7 +119,10 @@ phase:
   so one database that hangs neither delays the caches nor keeps the other
   databases open;
 - a closer still running at the end of its phase is cancelled, named in
-  the log, and left behind, even one that ignores cancellation;
+  the log, and left behind, even one that ignores cancellation. It is
+  owned from then on, so the `tasks` phase waits for it to end (and names
+  it, as `domainkit.close:<name>`, if it is still running when that phase
+  ends) before the resources it may use close;
 - domain hooks run one after another, in reverse order. Each may use what
   is left of their phase, less a reserve kept for every hook still to run
   (a quarter of the phase, split among the hooks), so one slow hook may
@@ -154,7 +168,11 @@ so a round takes about one timeout at worst, however many dependencies
 hang. Probes that arrive during a round wait for it rather than starting
 their own, and its result is reused for `READINESS_CACHE_SECONDS` from when
 it ended. The round runs as a background task in a clean context: a probe
-that gives up stops no one else, and shutdown cancels it.
+that gives up stops no one else, and shutdown cancels it. A group of
+checks that raises, rather than reporting what failed, fails under its
+group's name (`domains`, `databases`, `ledgers`, `caches`), is logged with
+its traceback, and is kept as the round's result: probes get a 503 for
+`READINESS_CACHE_SECONDS`, not a 500 and a new round each.
 
 ## Event handlers
 
@@ -327,6 +345,28 @@ ACCESS_LOG_SLOW_DURATION = 1.0  # Seconds.
   other logger are written as before, and the audit trail
   (`domainkit.contrib.audit`) is a table, not a log: sampling never touches
   either.
+- Refusals are throttled instead, by caller (`domainkit.log.ThrottledLog`):
+  the first rejected host, body (too large or too slow), refused
+  credentials, refused live connection, or unreadable `X-Forwarded-For`
+  hop of a caller (its address's rate-limit key, or the proxy's) is
+  always written; its repeats in the next 10 seconds are counted, and the
+  caller's next line ends `(and N more like it since the last line)`. A
+  flood from one caller writes a line every 10 seconds, not one per
+  request, and cannot crowd the logging queue; each new caller's first
+  line is still written. The 1,024 latest callers are remembered per
+  middleware; one let go writes a line for what it held back.
+- A caller that stops still has its count written: by the next line of
+  any caller once its 10 seconds have passed (`N more refused_credentials
+  line(s) for ip:203.0.113.9 were held back`), and at the latest by the
+  shutdown's last phase, before the logs are flushed. A quiet service
+  that gets no other refusal writes it at shutdown, so read the security
+  log up to the process's last line before concluding a burst's size.
+- An address held back for refused credentials (past `RATE_LIMIT`) is
+  logged when the hold starts (`Holding back credentials from ... for N s:
+  more refused than RATE_LIMIT allows (100/minute)`), and the requests the
+  hold refuses
+  unread are counted on that line's key (`held_credentials`), throttled
+  like the rest.
 - `1.0`, the default, writes every line, as before.
 
 ## Finding blocking code
@@ -423,7 +463,10 @@ never across an `await`:
 - the open live connections counted against `LIVE_MAX_CONNECTIONS` and
   `LIVE_MAX_CONNECTIONS_PER_CALLER`, and the making of them on first use;
 - the event bus's subscriptions, so a handler subscribed from several
-  threads at once (live events, as clients connect) is subscribed once.
+  threads at once (live events, as clients connect) is subscribed once;
+- the caches of each loop and the memory stores they share
+  (`caches[...]`), so every loop of the process sees one memory store per
+  alias, and an application's throttle backend, made once for all loops.
 
 A project's own module-level state needs the same care: a dict two threads
 change at once needs a `threading.Lock` on free-threaded Python, as it would
@@ -440,7 +483,13 @@ the limits for each.
 
 - **uvicorn** is Python on uvloop and httptools. It answers 503 past
   `--limit-concurrency`, limits WebSocket messages (`--ws-max-size`), and
-  closes connections left open past `--timeout-graceful-shutdown`.
+  closes connections left open past `--timeout-graceful-shutdown`. Run it
+  with `--no-proxy-headers`: by default it reads `X-Forwarded-For` and
+  `X-Forwarded-Proto` itself, from `FORWARDED_ALLOW_IPS` (`127.0.0.1`),
+  before domainkit does, so neither `TRUSTED_PROXIES` nor
+  `PROXY_SCHEME_HEADER` decides the client's address and scheme then; with
+  `PROXY_SCHEME_HEADER = None`, a client's own `X-Forwarded-Proto` passed
+  through a proxy on the same host still sets the scheme.
 - **Granian** is an HTTP server in Rust that runs the same ASGI
   application, lifespan included (`--interface asgi`). It parses HTTP/1
   and HTTP/2 outside Python, bounds requests in flight per worker
@@ -618,6 +667,20 @@ async def export(...): ...
 The body is read before route dependencies run, so it is read under
 `REQUEST_TIMEOUT`.
 
+With `domainkit.contrib.idempotency` installed, a keyed request must end
+before its key's lease does, or a retry may take the key over while it
+runs: `REQUEST_TIMEOUT` must be below `IDEMPOTENCY.LEASE_SECONDS` (startup
+fails otherwise), and `check` reports a `POST` or `PATCH` route whose own
+deadline is at the lease or past it, or removed, as the export above is
+with the default lease of 60 seconds, and staging and production refuse
+to start with one. Raise the lease above the longest such deadline, or
+shorten the route's. With no deadline at all (`REQUEST_TIMEOUT = None`,
+or no `DeadlineMiddleware`), `check` warns where deployed that keyed
+requests can outlive the lease; 0.10 refuses to start. A keyed
+response's background tasks run after its response is stored, so they
+run once however long they take
+([contrib.md](contrib.md#idempotency-safe-retries-of-unsafe-requests)).
+
 **What has no deadline.** The deadline is lifted as soon as the response
 starts: a streamed response (an export, Server-Sent Events) runs as long
 as it streams, and background tasks that run after the response are not
@@ -678,6 +741,12 @@ timers that cancel work run on the event loop's own clock.
   claim, run that way too, within `STATEMENT_TIMEOUT`.
 - **Outgoing HTTP calls** through `domainkit.http.client` are bounded by it
   (below).
+- **Worker tasks.** The messaging worker runs each message under a
+  deadline of its timeout (the task's `timeout`, or `TASK_TIMEOUT`), so a
+  task's transactions and outgoing calls keep to it as a request's do.
+- **Cache computations** run under the cache's `COMPUTE_TIMEOUT`, or,
+  when they borrow their caller's resources, under that caller's deadline
+  ([cache.md](cache.md#what-a-factory-may-use)).
 - **Ledgers and caches** keep their own `TIMEOUT`: a request's call to
   either is cancelled at the deadline like anything else it awaits, and
   the request answers 503. Code of your own can bound one await by both,
@@ -734,7 +803,10 @@ Retry-After: 1
   refusals by `reason` (`queue_full`, `queue_timeout`).
 - List it right after `DeadlineMiddleware` (the wait counts against the
   deadline) and before `AuthenticationMiddleware`, so a refused request
-  costs no database lookup. Both are in `DEFAULT_MIDDLEWARE` and in the
+  costs no database lookup. A request whose deadline passes while it waits
+  in the queue is answered 503 `deadline_exceeded`, and counted and logged
+  as shed (`queue_timeout`) too, since it never got a slot. Queueing,
+  refusing, and leaving the queue cost the same however long it is. Both are in `DEFAULT_MIDDLEWARE` and in the
   settings `init` writes; `check` warns in staging and production when
   either is missing.
 
@@ -864,8 +936,12 @@ Every call:
   `breaker=False` keeps no circuits.
 - sends the request id (`X-Request-ID`) and the trace context
   (`traceparent`, `tracestate`) of the work it serves.
-- reads at most `MAX_RESPONSE_BYTES` of the answer (10 MiB, counted after
-  decompression), or raises `ResponseTooLarge`, and follows no redirects.
+- reads at most `MAX_RESPONSE_BYTES` of the answer (10 MiB, counted as it
+  comes and after decompression), or raises `ResponseTooLarge`, and follows
+  no redirects. httpx2 inflates a compressed answer a piece of at most
+  1 MiB at a time, and each piece is counted before the next, so a small
+  answer that inflates a thousandfold costs the limit and a piece, never
+  its whole inflated size; bytes that inflate to nothing still count.
 - is logged by method, origin, and path: never a query string, a header,
   or a body. Keep secrets out of paths, or use a guarded client, whose
   logs show only the origin.
@@ -881,15 +957,34 @@ and the connection goes to an address that was checked, so DNS rebinding
 gains nothing; TLS still checks the certificate against the host name.
 A guarded client ignores proxy settings from the environment, and the CAs
 it names (`SSL_CERT_FILE`, `SSL_CERT_DIR`): it trusts `CA_BUNDLE`, or the
-system's CAs. It asks for uncompressed answers, and sends no request id or
-trace context unless `propagate=True`. A refused URL raises `UnsafeURL`, a
-422 `unsafe_url` when the request does not catch it. Host names are looked
-up on threads of the guard's own, never the event loop's default
-executor, which `asyncio.to_thread` and new database connections need: at
-most 4 lookups at once, 2 of one host, and a host whose lookup failed
-fails at once for 5 seconds. A lookup past those bounds fails at once, as
-a connection error, so a host whose DNS never answers costs the other
-calls nothing. A guarded client takes no `transport=`, which would skip
+system's CAs. It asks for uncompressed answers, and refuses one compressed
+anyway (`httpx2.DecodingError`) unless the call's own `Accept-Encoding`
+took it; it sends no request id or trace context unless `propagate=True`.
+A refused URL raises `UnsafeURL`, a 422 `unsafe_url` when the request does
+not catch it. Host names are looked up on threads of the guard's own,
+never the event loop's default executor, which `asyncio.to_thread` and new
+database connections need: at most `GUARD_LOOKUP_THREADS` (16) lookups at
+once, 2 of one host, and a quarter of the threads for one owner: the
+request's user, or its address (an IPv6 network), or whom
+`guard.lookups_for(owner)` names around the calls (each webhook
+delivery's subscription, `webhook:<id>`). A host whose lookup
+failed fails at once for 5 seconds, or for a minute if the lookup took 5
+seconds or more to fail (the system's resolver timed out: its DNS does not
+answer). A lookup past those bounds fails at once, as a connection error,
+so hosts one owner chose that never answer cost the other owners
+nothing. A lookup that succeeds after 5 seconds or more is not held
+against its host (the system's resolver tries the next name server after
+5 seconds, so a slow success is what one name server down looks like, and
+the host resolves): its answer is kept for a minute instead, for that
+host and port, and lookups meanwhile get it at once, without a thread.
+Callers check its addresses every time, as they check a fresh answer's.
+At most 1,024 such answers are kept, the least recently used let go
+first; a kept answer can be up to a minute older than the host's DNS
+says. A host whose DNS fails in under 5 seconds takes a thread on each
+new lookup, at most 2 at once. The share is per owner, not per tenant:
+whoever controls many owners (many webhook subscriptions, many users) can
+still hold many threads, for the first round of slow lookups at least. (A lookup cannot be interrupted,
+which an asynchronous resolver will change.) A guarded client takes no `transport=`, which would skip
 its address checks; tests use `stub`.
 
 | Raised | When |

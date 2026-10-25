@@ -12,7 +12,7 @@ import ssl
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -24,8 +24,9 @@ from prometheus_client import REGISTRY
 from pydantic import BaseModel, ValidationError
 from redis.asyncio import Redis
 from redis.asyncio.connection import Connection, RedisSSLContext, SSLConnection
+from sqlalchemy import text
 
-from domainkit import clock
+from domainkit import clock, deadlines
 from domainkit.broker import brokers
 from domainkit.cache import (
     Cache,
@@ -39,7 +40,8 @@ from domainkit.cache import (
     caches,
     invalidate_on,
 )
-from domainkit.cache.core import split
+from domainkit.cache.core import COMPUTE_TASK, split
+from domainkit.cache.handler import deployment_warnings as cache_deployment_warnings
 from domainkit.cache.redis import (
     RedisStore,
     SharedTLSConnection,
@@ -65,6 +67,7 @@ from domainkit.tasks import owned
 from domainkit.tracing import current_ids, remote_parent
 from domainkit_tests.settings import SECRET_KEY
 from domainkit_tests.test_broker import certificate
+from domainkit_tests.test_db import NotesUnitOfWork, database  # noqa: F401 - a fixture.
 
 pytestmark = pytest.mark.anyio
 
@@ -169,6 +172,12 @@ def make_cache(
         clock=clock or Clock(),
         uniform=uniform,
     )
+
+
+async def within[T](awaitable: Awaitable[T]) -> T:
+    """Await ``awaitable``; a regression fails after 30 seconds, never hangs."""
+    async with asyncio.timeout(30):
+        return await awaitable
 
 
 def sample(name: str, labels: dict[str, str]) -> float:
@@ -475,25 +484,461 @@ async def test_concurrent_misses_share_one_computation() -> None:
         await cache.get_or_set("b", broken)
 
 
-async def test_a_cancelled_caller_does_not_cancel_the_computation() -> None:
-    """Others waiting on the same key still get the value."""
+async def test_a_waiter_that_gives_up_does_not_cancel_the_computation() -> None:
+    """The caller that started it, and the others, still get the value."""
     cache = make_cache()
     release = asyncio.Event()
+    calls = []
 
     async def slow() -> str:
+        calls.append(1)
         await release.wait()
         return "done"
 
     first = asyncio.create_task(cache.get_or_set("k", slow))
     second = asyncio.create_task(cache.get_or_set("k", slow))
+    third = asyncio.create_task(cache.get_or_set("k", slow))
     await asyncio.sleep(0)
-    first.cancel()
+    second.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await second
     release.set()
 
-    assert await second == "done"
-    with pytest.raises(asyncio.CancelledError):
-        await first
+    assert [await first, await third] == ["done", "done"]
+    assert len(calls) == 1
     assert await cache.get("k") == "done"
+
+
+async def test_a_cancelled_owner_stops_its_computation_before_it_ends() -> None:
+    """A computation that borrows never outlives the caller it borrows from.
+
+    The starter's cancellation goes on only once its factory has stopped;
+    the callers still waiting share one new computation, of their own.
+    """
+    cache = make_cache()
+    events: list[str] = []
+    owner = Stuck(on_cancel=lambda: events.append("factory stopped"))
+    release = asyncio.Event()
+
+    def labelled(label: str) -> Callable[[], Awaitable[str]]:
+        async def compute() -> str:
+            events.append(f"{label} computes")
+            await release.wait()
+            return label
+
+        return compute
+
+    first = asyncio.create_task(cache.get_or_set("k", owner, borrows=True))
+    await within(owner.started.wait())
+    others = [
+        asyncio.create_task(cache.get_or_set("k", labelled(label), borrows=True))
+        for label in ("second", "third")
+    ]
+    await asyncio.sleep(0)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await within(first)
+    events.append("owner cancelled")
+    release.set()
+
+    assert await within(asyncio.gather(*others)) == ["second", "second"]
+    # The owner's factory stopped first; then one of the others computed.
+    assert events[0] == "factory stopped"
+    assert sorted(events[1:]) == ["owner cancelled", "second computes"]
+    assert owner.calls == 1
+    assert await cache.get("k") == "second"
+    assert cache._computing == {}
+
+
+async def test_callers_after_an_owner_left_never_join_its_computation() -> None:
+    """While the abandoned computation is still stopping, a new caller starts one.
+
+    It is no longer shared from the moment its owner is cancelled.
+    """
+    cache = make_cache()
+    stopping, stop = asyncio.Event(), asyncio.Event()
+    started = asyncio.Event()
+
+    async def slow_to_stop() -> str:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            stopping.set()
+            await stop.wait()  # Its statement is being cancelled on the server.
+            raise
+        return "never"
+
+    async def fresh() -> str:
+        return "fresh"
+
+    first = asyncio.create_task(cache.get_or_set("k", slow_to_stop, borrows=True))
+    await within(started.wait())
+    first.cancel()
+    await within(stopping.wait())
+
+    assert cache._computing == {}
+    assert await within(cache.get_or_set("k", fresh, borrows=True)) == "fresh"
+    assert not first.done()  # The owner still waits for its factory to stop.
+    stop.set()
+    with pytest.raises(asyncio.CancelledError):
+        await within(first)
+
+
+async def test_an_owner_cancelled_while_shutdown_stops_its_computation(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """It waits for the computation to stop; the others compute their own.
+
+    Shutdown says so (``stop_computations``); a cancellation alone is not
+    taken for it.
+    """
+    cache = make_cache()
+    factory = Stuck()
+    first = asyncio.create_task(cache.get_or_set("k", factory, int, borrows=True))
+    await within(factory.started.wait())
+    second = asyncio.create_task(cache.get_or_set("k", factory, int, borrows=True))
+    await asyncio.sleep(0)
+    (computation,) = cache._computing.values()
+
+    with caplog.at_level(logging.DEBUG):
+        first.cancel()
+        assert cache.stop_computations() == [computation.task]  # In the same turn.
+        with pytest.raises(asyncio.CancelledError):
+            await within(first)
+
+    assert computation.task.cancelled()
+    assert computation.stopped
+    assert not computation.abandoned
+    assert await within(second) == 7  # Its own factory call, not a shared one.
+    assert factory.calls == 2
+    assert await cache.get("k") is None
+    assert [r.getMessage() for r in caplog.records if r.name == "asyncio"] == []
+
+
+async def test_computations_that_borrow_work_under_their_owners_deadline() -> None:
+    """What a factory that borrows calls sees the deadline of its owner.
+
+    Its statements and outgoing calls are bounded by it; the caller's own
+    timer cuts it off, through the caller.
+    """
+    seen: list[object] = []
+
+    async def factory() -> int:
+        seen.extend([deadlines.remaining(), deadlines.enforced()])
+        return 1
+
+    cache = make_cache(COMPUTE_TIMEOUT=60)
+    async with deadlines.timeout(30):
+        assert await cache.get_or_set("k", factory, int, borrows=True) == 1
+    assert await cache.get_or_set("other", factory, int, borrows=True) == 1
+
+    left, enforced, without, _ = seen
+    assert isinstance(left, float)
+    assert 0 < left <= 30
+    assert enforced is False
+    assert without is None
+
+
+async def test_detached_computations_work_under_compute_timeout() -> None:
+    """A computation that borrows nothing has a deadline of its own.
+
+    It is ``COMPUTE_TIMEOUT``, whatever its first caller had left, and its
+    own timer enforces it; None, the default as in 0.9.0, leaves it
+    unbounded, whatever its first caller had left too.
+    """
+    seen: list[object] = []
+
+    async def factory() -> int:
+        seen.extend([deadlines.remaining(), deadlines.enforced()])
+        return 1
+
+    async with deadlines.timeout(5):
+        assert await make_cache(COMPUTE_TIMEOUT=60).get_or_set("k", factory) == 1
+        assert await make_cache().get_or_set("default", factory) == 1
+
+    left, enforced, unbounded, not_enforced = seen
+    assert isinstance(left, float)
+    assert 5 < left <= 60
+    assert enforced is True
+    assert (unbounded, not_enforced) == (None, False)
+
+
+async def test_compute_timeout_frees_a_key_whose_computation_hangs() -> None:
+    """Its own bound ends it: every caller gets the same TimeoutError, then heals.
+
+    The next caller starts a computation of its own, and its value is
+    stored. With the default (None, as in 0.9.0) a computation that hangs
+    holds its key until a restart: every later caller waits on it. That is
+    the known behaviour ``check`` warns about where deployed.
+    """
+    cache = make_cache(COMPUTE_TIMEOUT=0.05)
+
+    async def hangs() -> int:
+        await asyncio.Event().wait()  # An upstream that never answers.
+        return 1
+
+    async def healthy() -> int:
+        return 2
+
+    callers = [asyncio.create_task(cache.get_or_set("k", hangs, int)) for _ in "ab"]
+    results = await within(asyncio.gather(*callers, return_exceptions=True))
+
+    assert [type(result) for result in results] == [TimeoutError, TimeoutError]
+    assert not any(isinstance(r, deadlines.DeadlineExceeded) for r in results)
+    assert await cache.get("k") is None
+    assert cache._computing == {}
+    assert await within(cache.get_or_set("k", healthy, int)) == 2
+    assert await cache.get("k", int) == 2
+
+
+def test_deployed_caches_without_a_compute_timeout_are_warned_about() -> None:
+    """One computation that hangs holds its key until a restart; check says so."""
+    bounded = {"URL": "memory://", "COMPUTE_TIMEOUT": 30}
+    with override_settings(
+        ENVIRONMENT="production", CACHES={"default": bounded, "reports": {}}
+    ):
+        assert cache_deployment_warnings() == [
+            (
+                "CACHES['reports'] has no COMPUTE_TIMEOUT, so one get_or_set "
+                "computation that hangs holds its key until the process "
+                "restarts; set CACHES['reports']['COMPUTE_TIMEOUT'] "
+                "(REQUEST_TIMEOUT's value, for example)."
+            )
+        ]
+    with override_settings(ENVIRONMENT="local", CACHES={"default": {}}):
+        assert cache_deployment_warnings() == []
+
+
+async def test_a_slow_factory_fills_the_cache_after_its_callers_gave_up() -> None:
+    """A computation that borrows nothing goes on when every caller stops waiting.
+
+    A factory slower than any one request's deadline still stores its value,
+    so a slow upstream heals the route instead of failing every request.
+    """
+    cache = make_cache()
+    started, release = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def slow() -> str:
+        calls.append(1)
+        started.set()
+        await release.wait()
+        return "report"
+
+    async def request() -> str:
+        async with deadlines.timeout(0.01):  # A request nearly out of time.
+            return await cache.get_or_set("report", slow, str)
+
+    with pytest.raises(TimeoutError):  # Its own 0.01 seconds ran out.
+        await within(request())
+    assert cache._computing  # The request returned at once; the factory runs on.
+    gone = asyncio.create_task(cache.get_or_set("report", slow))
+    await within(started.wait())
+    gone.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await gone
+    (computation,) = cache._computing.values()
+    release.set()
+    await within(asyncio.wait([computation.task]))
+
+    assert await cache.get_or_set("report", slow) == "report"
+    assert len(calls) == 1  # One computation, served from the cache after.
+
+
+async def test_an_owners_deadline_never_fails_a_caller_with_time_left() -> None:
+    """The callers waiting on a computation get its value, not the owner's 503.
+
+    Detached, the factory's own calls are bounded by the computation's
+    deadline, so the owner's passing ends only the owner's wait.
+    """
+    cache = make_cache()
+    release = asyncio.Event()
+
+    async def outgoing() -> str:
+        await deadlines.within(release.wait())  # As domainkit.http.client bounds.
+        return "rates"
+
+    async def owner() -> str:
+        async with deadlines.timeout(0.01):
+            return await cache.get_or_set("fx", outgoing, str)
+
+    async def waiter() -> str:
+        async with deadlines.timeout(30):
+            return await cache.get_or_set("fx", outgoing, str)
+
+    first = asyncio.create_task(owner())
+    await asyncio.sleep(0)
+    second = asyncio.create_task(waiter())
+    with pytest.raises(TimeoutError):  # Its own 0.01 seconds ran out.
+        await within(first)
+    release.set()
+
+    assert await within(second) == "rates"
+
+
+async def test_a_failure_of_the_owners_deadline_reaches_only_the_owner() -> None:
+    """With ``borrows``, the owner's deadline failing the factory is the owner's.
+
+    The callers still waiting share a computation of their own instead, so
+    a short request never answers 503 for those with time left.
+    """
+    cache = make_cache()
+    go = asyncio.Event()
+    calls: list[float | None] = []
+
+    async def outgoing() -> str:
+        calls.append(deadlines.remaining())
+        await go.wait()
+        await deadlines.within(asyncio.sleep(0))  # Refused: no time is left.
+        return "rates"
+
+    async def owner() -> str:
+        # A deadline no timer of the owner's enforces, already passed: the
+        # factory fails before the owner is cancelled.
+        token = deadlines._current.set(deadlines.Deadline(0.0))
+        try:
+            return await cache.get_or_set("fx", outgoing, str, borrows=True)
+        finally:
+            deadlines._current.reset(token)
+
+    first = asyncio.create_task(owner())
+    await asyncio.sleep(0)
+    second = asyncio.create_task(cache.get_or_set("fx", outgoing, borrows=True))
+    await asyncio.sleep(0)
+    go.set()
+
+    with pytest.raises(deadlines.DeadlineExceeded):
+        await within(first)
+    assert await within(second) == "rates"
+    assert calls == [0.0, None]  # The second ran under its own (no) deadline.
+
+
+async def test_any_failure_after_the_owners_deadline_is_the_owners() -> None:
+    """A statement cut off by the owner's ``statement_timeout`` fails it too.
+
+    That is a database error, not a ``TimeoutError``; it came once the
+    owner's deadline had passed, so only the owner gets it.
+    """
+    cache = make_cache()
+    go = asyncio.Event()
+    calls = []
+
+    async def query() -> str:
+        calls.append(1)
+        if len(calls) == 1:
+            await go.wait()
+            raise RuntimeError("canceling statement due to statement timeout")
+        return "rows"
+
+    async def owner() -> str:
+        token = deadlines._current.set(deadlines.Deadline(0.0))
+        try:
+            return await cache.get_or_set("q", query, str, borrows=True)
+        finally:
+            deadlines._current.reset(token)
+
+    first = asyncio.create_task(owner())
+    await asyncio.sleep(0)
+    second = asyncio.create_task(cache.get_or_set("q", query, str, borrows=True))
+    await asyncio.sleep(0)
+    go.set()
+
+    with pytest.raises(RuntimeError, match="statement timeout"):
+        await within(first)
+    assert await within(second) == "rows"
+
+
+async def test_a_factorys_own_timeout_is_shared_while_its_owner_has_time() -> None:
+    """Single flight holds when the upstream hangs: one computation fails for all.
+
+    The factory's own bound (``asyncio.timeout`` around a hung upstream)
+    ran out while every caller, the owner too, still had time: that is not
+    the owner's failure, so the others get it instead of computing again
+    one after another.
+    """
+    cache = make_cache()
+    give_up = asyncio.Event()
+    calls = []
+
+    async def factory() -> str:
+        calls.append(1)
+        await give_up.wait()
+        raise TimeoutError  # Its own timeout around a hung upstream.
+
+    async def caller() -> str:
+        async with deadlines.timeout(30):
+            return await cache.get_or_set("report", factory, str, borrows=True)
+
+    callers = [asyncio.create_task(caller()) for _ in range(5)]
+    await asyncio.sleep(0)
+    give_up.set()
+    results = await within(asyncio.gather(*callers, return_exceptions=True))
+
+    assert [type(result) for result in results] == [TimeoutError] * 5
+    assert len(calls) == 1
+
+
+async def test_errors_of_a_computation_that_borrows_still_reach_every_caller() -> None:
+    """Only the owner's deadline is kept from the others; other errors are shared."""
+    cache = make_cache()
+    calls = []
+
+    async def broken() -> int:
+        calls.append(1)
+        await asyncio.sleep(0)
+        raise RuntimeError("database down")
+
+    results = await asyncio.gather(
+        *(cache.get_or_set("b", broken, borrows=True) for _ in range(3)),
+        return_exceptions=True,
+    )
+    assert all(isinstance(result, RuntimeError) for result in results)
+    assert len(calls) == 1
+
+
+@pytest.mark.usefixtures("database")
+async def test_a_cancelled_miss_leaves_no_connection_checked_out() -> None:
+    """A factory that uses its caller's unit of work stops before it closes.
+
+    The caller is cancelled while its factory runs (a deadline, a client
+    gone); its unit of work closes on the way out. The factory never runs
+    another statement on that session, so the pool gets every connection
+    back, and nothing is cached.
+    """
+    cache = make_cache()
+    engine = connections.engine()
+    started, release = asyncio.Event(), asyncio.Event()
+    ran: list[int] = []
+
+    async def caller() -> None:
+        async with NotesUnitOfWork() as uow:
+
+            async def factory() -> int:
+                ran.append(await uow.session.scalar(text("SELECT 1")) or 0)
+                started.set()
+                await release.wait()
+                ran.append(await uow.session.scalar(text("SELECT 2")) or 0)
+                return 42
+
+            await cache.get_or_set("k", factory, int, borrows=True)
+
+    try:
+        calling = asyncio.create_task(caller())
+        await within(started.wait())
+        computing = {t for t in owned() if t.get_name() == COMPUTE_TASK}
+        calling.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await within(calling)
+        release.set()
+        await within(asyncio.wait(computing))
+
+        assert engine.pool.checkedout() == 0  # type: ignore[attr-defined]
+        assert ran == [1]
+        assert await cache.get("k") is None
+    finally:
+        release.set()
+        await connections.close_all()
 
 
 async def test_every_caller_gets_its_own_copy() -> None:
@@ -862,13 +1307,14 @@ def test_memory_caches_do_not_share_entries() -> None:
     """Two memory caches with the same settings still keep their own entries."""
     handler = CacheHandler()
 
-    async def use() -> tuple[object, object]:
+    async def use() -> tuple[object, object, bool]:
         await handler["one"].set("k", "one")
         await handler["two"].set("k", "two")
-        return await handler["one"].get("k"), handler["two"].alias
+        apart = handler["one"].store is not handler["two"].store
+        return await handler["one"].get("k"), handler["two"].alias, apart
 
     with override_settings(CACHES={"default": {}, "one": {}, "two": {}}):
-        assert asyncio.run(use()) == ("one", "two")
+        assert asyncio.run(use()) == ("one", "two", True)
 
 
 async def test_cached_keys_are_stable() -> None:
@@ -985,7 +1431,7 @@ async def test_a_caller_cancelled_while_its_cache_closes_stays_cancelled() -> No
     cache = make_cache(DummyStore())
     waiting: asyncio.Task[int]
     factory = Stuck(on_cancel=lambda: waiting.cancel())
-    waiting = asyncio.create_task(cache.get_or_set("k", factory, int))
+    waiting = asyncio.create_task(cache.get_or_set("k", factory, int, borrows=True))
     async with asyncio.timeout(5):
         await factory.started.wait()
 
@@ -1010,8 +1456,8 @@ async def test_a_failure_after_a_caller_gave_up_reaches_only_the_others(
 
     cache = make_cache()
     with caplog.at_level(logging.DEBUG):
-        gave_up = asyncio.create_task(cache.get_or_set("k", factory, int))
         waiting = asyncio.create_task(cache.get_or_set("k", factory, int))
+        gave_up = asyncio.create_task(cache.get_or_set("k", factory, int))
         await started.wait()
         gave_up.cancel()
         await asyncio.wait([gave_up], timeout=5)
@@ -1022,6 +1468,26 @@ async def test_a_failure_after_a_caller_gave_up_reaches_only_the_others(
 
     assert gave_up.cancelled()
     assert [r.getMessage() for r in caplog.records if r.name == "asyncio"] == []
+
+
+async def test_shutdown_stops_every_computation_of_the_loop_as_stopped() -> None:
+    """Replaced caches' too; their callers then compute their own value."""
+    handler = CacheHandler()
+    factories = [Stuck(), Stuck()]
+    with override_settings(CACHES={"default": {"URL": "memory://"}}):
+        replaced = asyncio.create_task(handler["default"].get_or_set("k", factories[0]))
+        await within(factories[0].started.wait())
+        with override_settings(CACHES={"default": {"URL": "memory://", "TTL": 9}}):
+            current = asyncio.create_task(
+                handler["default"].get_or_set("k", factories[1])
+            )
+            await within(factories[1].started.wait())
+            stopped = handler.stop_computations()
+
+            assert len(stopped) == 2
+            assert list(await within(asyncio.gather(replaced, current))) == [7, 7]
+            assert all(task.cancelled() for task in stopped)
+            await handler.close_all()
 
 
 def test_caches_close_before_what_their_computations_use(
@@ -1311,6 +1777,8 @@ async def test_redis_rate_limits_follow_their_cache() -> None:
         backend = RedisBackend()
     with pytest.raises(ImproperlyConfigured, match=r"CACHES\['default'\] is not Redis"):
         await backend.hit("ip:203.0.113.9", 10, 60)
+    with pytest.raises(ImproperlyConfigured, match=r"CACHES\['default'\] is not Redis"):
+        await backend.refund("ip:203.0.113.9", 10, 60)
 
 
 async def test_redis_rate_limits_fail_open() -> None:
@@ -1322,6 +1790,7 @@ async def test_redis_rate_limits_fail_open() -> None:
             await caches.close_all()
 
     assert (decision.allowed, decision.remaining, decision.retry_after) == (True, 9, 0)
+    assert decision.counted is False  # AUTH.THROTTLE_FAIL_CLOSED refuses it.
 
 
 def run(*args: str) -> str:

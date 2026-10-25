@@ -19,7 +19,7 @@ other credentials (a gateway's header, API keys elsewhere)::
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from functools import cache
 from typing import Any, ClassVar, Final
@@ -78,15 +78,25 @@ class Credentials:
         """Whether the credentials' scopes cover every one of ``perms``."""
         return self.scopes is None or self.scopes.issuperset(perms)
 
+    def __repr__(self) -> str:
+        """The user's id, the scheme, and the scopes: no personal data, no digest."""
+        return (
+            f"Credentials(user_id={self.user.id!r}, scheme={self.scheme!r}, "
+            f"scopes={self.scopes!r})"
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class IssuedTokens:
-    """What logging in or refreshing returns (OAuth 2's token response)."""
+    """What logging in or refreshing returns (OAuth 2's token response).
 
-    access_token: str
+    Its ``repr`` leaves the tokens out.
+    """
+
+    access_token: str = field(repr=False)
     expires_in: int | None
     """Seconds the access token works; None: until revoked."""
-    refresh_token: str | None = None
+    refresh_token: str | None = field(default=None, repr=False)
 
 
 TOKEN_SCHEME: Final = "token"  # noqa: S105 - a scheme, not a secret.
@@ -127,6 +137,15 @@ class BaseAuthentication:
     scheme: ClassVar[str] = "Bearer"
     """The ``WWW-Authenticate`` scheme clients are told to use."""
     realm: ClassVar[str] = "api"
+    guessable: ClassVar[bool] = True
+    """Whether anyone may send this class's credentials to guess them.
+
+    While an address is held for refused credentials, credentials of a
+    guessable class are refused even when they hold, so a guess that works
+    never stands out. Set it False for credentials no client can send at
+    will, such as a header only a trusted gateway sets: the address's
+    requests that carry them are then served while it is held.
+    """
 
     async def authenticate(self, connection: HTTPConnection) -> Credentials | None:
         """Who sent ``connection``; None if the credentials are not this class's.

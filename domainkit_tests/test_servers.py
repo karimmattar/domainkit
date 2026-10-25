@@ -21,10 +21,13 @@ from domainkit.conf import override_settings
 from domainkit.conf.env import project_prefix
 from domainkit.http import get_asgi_application, websockets
 from domainkit.http.servers import (
+    UNIX_SOCKET_WARNING,
     UVICORN_WS_MAX_SIZE,
     ServerLimits,
     limit_warnings,
+    listens_on_unix_socket,
     server_limits,
+    unix_socket_warnings,
 )
 from domainkit.management import call_command
 from domainkit.management.base import CommandError
@@ -293,6 +296,67 @@ def test_deployed_applications_log_server_limits_when_built(
         for message in deployed
     )
     assert not any("reads WebSocket" in message for message in caplog.messages)
+
+
+@pytest.mark.parametrize(
+    ("argv", "environ", "unix"),
+    [
+        ([UVICORN, "--uds", "/run/api.sock", "app:app"], {}, True),
+        ([UVICORN, "--uds=/run/api.sock"], {}, True),
+        ([UVICORN, "--host", "0.0.0.0"], {}, False),  # noqa: S104 - a command line.
+        ([GRANIAN, "--uds", "/run/api.sock"], {}, True),
+        ([GUNICORN, "-b", "unix:/run/api.sock", "-k", WORKER], {}, True),
+        ([GUNICORN, "--bind=unix:/run/api.sock"], {}, True),
+        ([GUNICORN, "-bunix:/run/api.sock"], {}, True),
+        ([GUNICORN, "--bind", "0.0.0.0:8000", "--bind", "unix:/run/a"], {}, True),
+        ([GUNICORN, "--bind", "0.0.0.0:8000"], {}, False),
+        ([GUNICORN, "-b"], {}, False),
+        ([GUNICORN, "app:app"], {}, False),
+        (["manage.py", "check"], {"UVICORN_UDS": "/run/api.sock"}, True),
+        (["manage.py", "check"], {"GRANIAN_UDS": "/run/api.sock"}, True),
+        (["manage.py", "check"], {"UVICORN_UDS": ""}, False),
+        (["manage.py", "check"], {"GUNICORN_CMD_ARGS": "--bind unix:/run/a"}, True),
+        (["manage.py", "check"], {"GUNICORN_CMD_ARGS": "--bind 'unix:/run/a"}, False),
+        (["manage.py", "check"], {}, False),
+        ([], {}, False),
+    ],
+)
+def test_servers_on_unix_sockets_are_found(
+    argv: list[str], environ: dict[str, str], unix: bool
+) -> None:
+    """``--uds``, a ``unix:`` bind, or the variables that set them."""
+    assert listens_on_unix_socket(argv, environ) is unix
+
+
+def test_a_unix_socket_without_unix_in_trusted_proxies_is_warned() -> None:
+    """Callers there have no address, unless the proxy on the socket is believed."""
+    uds = [UVICORN, "--uds", "/run/api.sock"]
+
+    assert unix_socket_warnings((), uds, {}) == [UNIX_SOCKET_WARNING]
+    assert unix_socket_warnings(("unix",), uds, {}) == []
+    assert unix_socket_warnings((), [UVICORN], {}) == []
+    assert 'Add "unix" to TRUSTED_PROXIES' in UNIX_SOCKET_WARNING
+
+
+def test_check_and_deployed_applications_warn_about_unix_sockets(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Where deployed: ``check`` from the variables, the start from its argv."""
+    monkeypatch.setenv("UVICORN_UDS", "/run/api.sock")
+    monkeypatch.setattr(sys, "argv", [UVICORN, "--uds", "/run/api.sock"])
+
+    with override_settings(**PRODUCTION):
+        call_command("check", stdout=(deployed := io.StringIO()))
+        with caplog.at_level(logging.WARNING):
+            get_asgi_application()
+    with override_settings(**PRODUCTION, TRUSTED_PROXIES=["unix"]):
+        call_command("check", stdout=(trusted := io.StringIO()))
+    call_command("check", stdout=(local := io.StringIO()))
+
+    assert f"  Warning: {UNIX_SOCKET_WARNING}" in deployed.getvalue()
+    assert UNIX_SOCKET_WARNING in caplog.messages
+    assert UNIX_SOCKET_WARNING not in trusted.getvalue()
+    assert UNIX_SOCKET_WARNING not in local.getvalue()
 
 
 @pytest.mark.parametrize(

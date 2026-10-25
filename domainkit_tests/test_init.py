@@ -168,8 +168,11 @@ def test_production_settings_come_from_the_environment(tmp_path: Path) -> None:
     # Empty: callers connect directly, and check says what that means.
     assert directly.returncode == 0
     assert directly.stdout.splitlines()[1].split()[1] == "TRUSTED_PROXIES"
-    # Docs are off, HSTS is on, and callers are rate limited: nothing to warn about.
-    assert ready.stdout == CHECKED
+    # Docs are off, HSTS is on, and callers are rate limited; only the
+    # per-process count of password and code guesses is left to warn about.
+    summary, warning = ready.stdout.splitlines()
+    assert summary == CHECKED.replace("issues.", "issues and 1 warning.").strip()
+    assert warning.split()[1] == "RATE_LIMIT_BACKEND"
     assert without_key.returncode == 1
     assert "Set the BILLING_API_SECRET_KEY environment variable." in (
         without_key.stderr
@@ -201,12 +204,13 @@ def test_production_hardening_can_be_relaxed_from_the_environment(
 
     summary, *warnings = checked.stdout.splitlines()
     assert summary == (
-        "System check identified no issues and 2 warnings. "
+        "System check identified no issues and 3 warnings. "
         "Domains: messaging, contenttypes, auth."
     )
     assert [warning.split()[1] for warning in warnings] == [
         "API_DOCS",
         "SECURE_HSTS_SECONDS",
+        "RATE_LIMIT_BACKEND",
     ]
 
 

@@ -32,7 +32,7 @@ from domainkit.ddd.fields import (
 from domainkit.ddd.messages import UNSET, Command, Query, Unset
 from domainkit.ddd.model import AggregateRoot, Entity, ValueObject
 from domainkit.ddd.pagination import Page
-from domainkit.ddd.personal import Personal
+from domainkit.ddd.personal import Counted, Personal
 from domainkit.ddd.query import Criteria, F, Ordering, RowLock, Specification
 from domainkit.ddd.repository import (
     InMemoryRepository,
@@ -50,6 +50,7 @@ __all__ = [
     "Command",
     "ConcurrentUpdate",
     "Conflict",
+    "Counted",
     "Criteria",
     "DeferredTask",
     "Digits",

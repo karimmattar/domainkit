@@ -3,16 +3,20 @@
 Free-threaded Python (3.14t), and servers that run a loop per thread, share
 one rate limiter, one middleware, one hashing pool, one application's live
 connection slots, the event bus, an HTTP client's circuit breaker, the
-guard's lookup threads, the remembered client addresses, the handles of
-the request metrics, the principal cache, and the grants principals share
-between threads, and the registries that keep each loop's tasks,
-publishers, and brokers. Each test drives them from several threads at
-once and checks what must always hold, and that the state is only touched
-with the lock held (where there is one).
+guard's lookup threads and its owners' shares, a throttled log's counts,
+the remembered client addresses, the handles of the request metrics, the
+principal cache, and the grants principals share between threads, an
+application's throttle backend and attempt counter, and the registries
+that keep each loop's tasks, publishers, brokers, and caches. Each test
+drives them from several threads at once and checks what must always
+hold, and that the state is only touched with the lock held (where there
+is one).
 """
 
 import asyncio
 import ipaddress
+import itertools
+import logging
 import os
 import random
 import socket
@@ -25,21 +29,22 @@ from collections.abc import Awaitable, Callable, Iterator
 from datetime import UTC, datetime
 from functools import partial
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
 from weakref import WeakKeyDictionary
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from starlette.datastructures import State
-from starlette.requests import HTTPConnection
+from starlette.requests import HTTPConnection, Request
 from starlette.types import Message, Receive, Scope, Send
 
 from domainkit import clock as clock_module
 from domainkit import tasks
 from domainkit.broker import Broker, BrokerHandler, MemoryBroker
-from domainkit.conf import DatabaseConfig, override_settings
+from domainkit.cache import CacheHandler, Store
+from domainkit.conf import CacheConfig, DatabaseConfig, override_settings
 from domainkit.contrib.audit import personal
-from domainkit.contrib.auth import AllowAny, principals
+from domainkit.contrib.auth import AllowAny, principals, throttling
 from domainkit.contrib.auth import middleware as middleware_module
 from domainkit.contrib.auth.hashers import HashingPool
 from domainkit.contrib.auth.middleware import AuthenticationMiddleware
@@ -58,9 +63,10 @@ from domainkit.db.connections import (
     create_read_engine,
 )
 from domainkit.ddd import DomainEvent, EventBus
+from domainkit.http import guard as guard_module
 from domainkit.http import live, metrics, ratelimit
 from domainkit.http.client import BREAKER_HOSTS, CircuitBreaker
-from domainkit.http.guard import GuardResolver
+from domainkit.http.guard import GuardResolver, lookups_for
 from domainkit.http.live import Slots
 from domainkit.http.live_events import LiveEvents
 from domainkit.http.metrics import REQUESTS, MetricsMiddleware
@@ -68,7 +74,7 @@ from domainkit.http.middleware import ProxyHeadersMiddleware, _address
 from domainkit.http.ratelimit import MemoryBackend, client_group
 from domainkit.http.shedding import QUEUE_FULL, ShedReport
 from domainkit.http.websockets import WebSocketLimitsMiddleware
-from domainkit.log import JsonFormatter
+from domainkit.log import JsonFormatter, ThrottledLog, flush_throttled
 from domainkit_tests.conftest import UseAuth
 
 THREADS = 8
@@ -114,6 +120,31 @@ def test_the_memory_rate_limiter_lets_exactly_the_limit_through() -> None:
     allowed = on_threads(lambda _: asyncio.run(hits()))
 
     assert sum(allowed) == 100
+
+
+def test_the_memory_rate_limiter_gives_back_exactly_what_it_counted() -> None:
+    """Hits and refunds from many threads at once leave an exact count."""
+    backend: MemoryBackend
+
+    def clock() -> float:
+        assert backend._lock.locked()  # The state is read and written under it.
+        return 1000.0
+
+    backend = MemoryBackend(clock=clock)
+
+    async def hit_and_give_back() -> int:
+        allowed = 0
+        for _ in range(50):
+            decision = await backend.hit("ip:203.0.113.5", 100, 3600)
+            if decision.allowed:
+                allowed += 1
+                await backend.refund("ip:203.0.113.5", 100, 3600)
+        return allowed
+
+    allowed = on_threads(lambda _: asyncio.run(hit_and_give_back()))
+
+    assert sum(allowed) == 50 * len(allowed)  # Each given back: none refused.
+    assert "ip:203.0.113.5" not in backend._callers
 
 
 def test_refused_credential_holds_survive_threads(
@@ -530,6 +561,167 @@ def test_an_application_gets_one_set_of_slots_from_every_thread() -> None:
     assert scope["app"].state._state == {"live_slots": found[0]}
 
 
+class CheckedThrottleState(State):
+    """An application's state, whose throttle backend is set only under the lock."""
+
+    def __setattr__(self, name: str, value: Any) -> None:  # noqa: ANN401 - any state.
+        """Set ``name``; the throttle backend only with its lock held."""
+        if name == "throttle_backend":
+            assert ratelimit._app_backend_lock.locked()
+        super().__setattr__(name, value)
+
+
+class RacedState:
+    """An application's state where another thread makes the backend first.
+
+    The first look finds none; by the time the lock is held, it is there.
+    """
+
+    def __init__(self, made: MemoryBackend) -> None:
+        """Have ``made`` appear after the first look."""
+        self.looks = 0
+        self.made = made
+
+    @property
+    def throttle_backend(self) -> MemoryBackend | None:
+        """None the first time; the other thread's backend after."""
+        self.looks += 1
+        return None if self.looks == 1 else self.made
+
+
+def test_a_throttle_backend_made_meanwhile_is_the_one_used() -> None:
+    """A loop that lost the race to make it uses the winner's, not a second."""
+    made = MemoryBackend()
+    connection = HTTPConnection(
+        {"type": "http", "app": SimpleNamespace(state=RacedState(made))}
+    )
+
+    assert ratelimit._app_backend(connection) is made
+
+
+class CheckedLoginState(State):
+    """An application's state, whose attempt counter is set only under the lock."""
+
+    def __setattr__(self, name: str, value: Any) -> None:  # noqa: ANN401 - any state.
+        """Set ``name``; the attempt counter only with its lock held."""
+        if name == "login_limiter":
+            assert throttling._making_limiter.locked()
+        super().__setattr__(name, value)
+
+
+class RacedLoginState:
+    """An application's state where another thread makes the counter first."""
+
+    def __init__(self, made: MemoryBackend) -> None:
+        """Have ``made`` appear after the first look."""
+        self.looks = 0
+        self.made = made
+
+    @property
+    def login_limiter(self) -> MemoryBackend | None:
+        """None the first time; the other thread's counter after."""
+        self.looks += 1
+        return None if self.looks == 1 else self.made
+
+
+def test_first_login_attempts_on_every_thread_share_one_counter() -> None:
+    """Two attempt counters for one application would each allow the limit."""
+    CountedBackend.made.clear()
+    request = Request(
+        {"type": "http", "app": SimpleNamespace(state=CheckedLoginState())}
+    )
+
+    with override_settings(RATE_LIMIT_BACKEND=f"{__name__}.CountedBackend"):
+        found = on_threads(lambda _: throttling.limiter(request))
+
+    assert all(made is found[0] for made in found)
+    assert CountedBackend.made == [found[0]]
+    made = MemoryBackend()
+    raced = Request(
+        {"type": "http", "app": SimpleNamespace(state=RacedLoginState(made))}
+    )
+    assert throttling.limiter(raced) is made  # The winner's, not a second one.
+
+
+class CountedBackend(MemoryBackend):
+    """A memory backend that counts how many were made."""
+
+    made: ClassVar[list["CountedBackend"]] = []
+
+    def __init__(self) -> None:
+        """Count this one."""
+        super().__init__()
+        CountedBackend.made.append(self)
+
+
+def test_an_application_gets_one_throttle_backend_from_every_thread() -> None:
+    """The first throttled requests, on several loops at once, share one count.
+
+    Two memory backends for one application would each let the limit through.
+    """
+    CountedBackend.made.clear()
+    app = SimpleNamespace(state=CheckedThrottleState())
+    connection = HTTPConnection({"type": "http", "app": app})
+    backend = f"{__name__}.CountedBackend"
+
+    with override_settings(RATE_LIMIT_BACKEND=backend):
+        found = on_threads(lambda _: ratelimit._app_backend(connection))
+
+    assert all(made is found[0] for made in found)
+    assert CountedBackend.made == [found[0]]
+
+
+class CheckedStores(dict[tuple[str, CacheConfig], Store]):
+    """The process's memory stores, added only with the handler's lock held."""
+
+    def __init__(self, lock: threading.Lock) -> None:
+        """Check against ``lock``."""
+        super().__init__()
+        self.lock = lock
+
+    def __setitem__(self, key: tuple[str, CacheConfig], value: Store) -> None:
+        """Add a store, with the lock held."""
+        assert self.lock.locked()
+        super().__setitem__(key, value)
+
+
+def test_loops_on_threads_share_one_memory_store_per_cache() -> None:
+    """Loops looking a memory cache up at once all see the same entries.
+
+    A second store for one alias would never see the others' writes, their
+    invalidations, or ``caches.reset()``.
+    """
+    handler = CacheHandler()
+    handler._caches = CheckedRegistry(handler._lock)
+    handler._replaced = CheckedRegistry(handler._lock)
+    handler._shared = CheckedStores(handler._lock)
+
+    async def use(index: int, close: bool) -> Store:
+        cache = handler["default"]
+        await cache.set(f"from-{index}", index)
+        if close:
+            await handler.close_all()
+        return cache.store
+
+    def loops(index: int) -> list[Store]:
+        return [asyncio.run(use(index, n % 2 == 0)) for n in range(LOOPS)]
+
+    with override_settings(CACHES={"default": {"URL": "memory://"}}):
+        stores = {id(store) for found in on_threads(loops) for store in found}
+
+        async def read() -> list[int | None]:
+            cache = handler["default"]
+            found = [await cache.get(f"from-{n}", int) for n in range(THREADS)]
+            with override_settings(CACHES={"default": {"URL": "dummy://"}}):
+                handler["default"]  # Replaced: kept, under the lock, to close.
+            await handler.close_all()
+            return found
+
+        assert asyncio.run(read()) == list(range(THREADS))
+    assert len(stores) == 1
+    handler.reset()
+
+
 class CheckedList(list[Any]):
     """One event type's subscriptions, changed only with the bus's lock held."""
 
@@ -723,6 +915,166 @@ def test_the_guards_lookups_are_counted_from_every_thread(
 
     assert sum(found) > 0
     assert (resolver.running, resolver._running) == (0, {})
+
+
+def test_the_guards_owners_are_counted_from_every_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each owner's share holds across threads; no count is lost or leaked."""
+
+    def getaddrinfo(host: str, port: int, **options: object) -> list[object]:
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", port))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    resolver = GuardResolver(threads=8, per_host=8)
+
+    async def lookups(index: int) -> int:
+        found = 0
+        with lookups_for(f"owner{index % 3}"):
+            for attempt in range(40):
+                try:
+                    await resolver.lookup(f"h{(index + attempt) % 5}.test", 443)
+                except socket.gaierror:
+                    continue  # Past a bound: refused at once.
+                found += 1
+        return found
+
+    found = on_threads(lambda index: asyncio.run(lookups(index)))
+    asyncio.run(resolver.close())
+
+    assert sum(found) > 0
+    assert (resolver.running, resolver._running, resolver._owners) == (0, {}, {})
+
+
+def test_the_guards_slow_answers_are_kept_and_let_go_from_every_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Answers kept, given, expired, and let go at once: each host gets its own.
+
+    The cache is read and written under the resolver's lock only, and stays
+    within ``SLOW_ANSWERS``.
+    """
+    resolver: GuardResolver
+    ticks = itertools.count()
+    tick = threading.Lock()
+
+    def monotonic() -> float:
+        assert resolver._lock.locked()
+        with tick:
+            return next(ticks) / 10  # A kept answer runs out after 100 reads.
+
+    def getaddrinfo(host: str, port: int, **options: object) -> list[object]:
+        number = int(host.removeprefix("h").removesuffix(".test"))
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (f"192.0.2.{number}", port))
+        ]
+
+    monkeypatch.setattr(clock_module, "monotonic", monotonic)
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    monkeypatch.setattr(guard_module, "SLOW_ANSWERS", 3)
+    resolver = GuardResolver(threads=8, per_host=8, hung_after=0.0, back_off=10.0)
+
+    async def lookups(index: int) -> bool:
+        right = True
+        for attempt in range(60):
+            number = (index + attempt) % 7
+            try:
+                found = await resolver.lookup(f"h{number}.test", 443)
+            except socket.gaierror:
+                continue  # Past a bound: refused at once.
+            right &= found == [ipaddress.ip_address(f"192.0.2.{number}")]
+        return right
+
+    right = on_threads(lambda index: asyncio.run(lookups(index)))
+    asyncio.run(resolver.close())
+
+    assert right == [True] * THREADS
+    assert len(resolver._answered) <= 3
+    assert (resolver.running, resolver._running) == (0, {})
+
+
+def test_a_throttled_log_counts_every_repeat_from_every_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One line per key is written; every other is counted, under the lock."""
+    throttled = ThrottledLog(logging.getLogger("domainkit_tests.threads"))
+
+    def monotonic() -> float:
+        assert throttled._lock.locked()
+        return 1000.0  # Frozen: nothing is let through again.
+
+    monkeypatch.setattr(clock_module, "monotonic", monotonic)
+
+    def repeat(index: int) -> None:
+        for _ in range(2_000):
+            throttled.warning("event", f"key{index % 2}", "A line")
+
+    on_threads(repeat)
+
+    assert sorted(throttled._seen) == [("event", "key0"), ("event", "key1")]
+    assert sum(seen.held for seen in throttled._seen.values()) == THREADS * 2_000 - 2
+
+
+class _Counting(logging.Handler):
+    """How many events the lines a ``ThrottledLog`` wrote stand for."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.events = 0
+        self._count = threading.Lock()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """A line is one event, plus the repeats it reports held back."""
+        args = record.args
+        assert isinstance(args, tuple)
+        events = 1
+        if record.msg.startswith("%d more"):
+            events = int(str(args[0]))
+        elif record.msg.startswith("%s (and"):
+            events += int(str(args[1]))
+        with self._count:
+            self.events += events
+
+
+def test_throttled_logs_lose_no_count_to_sweeps_and_flushes_on_threads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lines, sweeps, flushes, and new logs at once: every event is reported once.
+
+    Keys come and go (an interval passes for some while others are held),
+    and ``flush_throttled`` runs meanwhile on every thread; the counts the
+    lines report add up to the warnings made.
+    """
+    logger = logging.getLogger("domainkit_tests.threads.sweep")
+    counting = _Counting()
+    logger.addHandler(counting)
+    monkeypatch.setattr(logger, "propagate", False)
+    throttled = ThrottledLog(logger, interval=1.0, keys=4)
+    ticks = itertools.count()
+    tick = threading.Lock()
+
+    def monotonic() -> float:
+        assert throttled._lock.locked()
+        with tick:
+            return next(ticks) / 100  # An interval passes every 100 reads.
+
+    monkeypatch.setattr(clock_module, "monotonic", monotonic)
+
+    def repeat(index: int) -> None:
+        for number in range(2_000):
+            throttled.warning("event", f"key{(index + number) % 6}", "A line")
+            if number % 250 == 0:
+                ThrottledLog(logger)  # Registered, then let go.
+                flush_throttled()
+
+    try:
+        on_threads(repeat)
+        flush_throttled()
+    finally:
+        logger.removeHandler(counting)
+
+    assert throttled._seen == {}
+    assert counting.events == THREADS * 2_000
 
 
 def test_loops_on_threads_get_their_own_engines(

@@ -34,8 +34,10 @@ from domainkit.lifecycle import (
     unregister,
 )
 from domainkit.management.base import run_async
-from domainkit.tasks import spawn
+from domainkit.tasks import owned, spawn
+from domainkit.utils import closing as closing_module
 from domainkit.utils.closing import (
+    LEFT_BEHIND,
     RESERVED_SHARE,
     close_each,
     close_in_turn,
@@ -79,6 +81,18 @@ async def hang_until_cancelled(closed: list[str], name: str) -> None:
     await asyncio.Event().wait()
 
 
+def spent_through(phase: Phase, seconds: float = 100.0) -> Budget:
+    """A budget whose ``phase`` (and those before it) ended just now.
+
+    Closers of those phases are cut off at once, after their first step:
+    one that hangs is cut off whatever the machine's speed. The later
+    phases keep their whole share, tens of seconds, which no closer here
+    comes near; so no test depends on how fast the host runs.
+    """
+    loop = asyncio.get_running_loop()
+    return Budget(loop.time() - seconds * PHASE_ENDS[phase], seconds)
+
+
 async def test_every_resource_closes_even_when_one_fails_or_hangs(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -101,10 +115,11 @@ async def test_every_resource_closes_even_when_one_fails_or_hangs(
 
     monkeypatch.setattr(lifecycle, "aflush_reports", flushed)
     monkeypatch.setattr(lifecycle, "aflush_logs", flushed)
+    monkeypatch.setattr(lifecycle, "close_http_clients", flushed)
 
     with caplog.at_level(logging.ERROR, "domainkit.lifecycle"):
-        async with asyncio.timeout(5):
-            await close_resources(Budget.begin(0.5))
+        async with asyncio.timeout(5):  # Its share is over: the hang is cut at once.
+            await close_resources(spent_through(Phase.RESOURCES))
 
     assert closed == ["caches", "databases", "ledgers", "brokers"]
     assert sorted(caplog.messages) == [
@@ -162,9 +177,10 @@ async def test_phases_run_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_error_reports_then_logs_are_flushed_last(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The framework flushes reports, then logs, after the flush phase's closers.
+    """The framework flushes held-back counts, reports, then logs, after the closers.
 
-    What closing everything else reported or logged is then written too.
+    What closing everything else reported or logged is then written too, and
+    the counts of security lines held back are among it.
     """
     closed: list[str] = []
     record_closes(monkeypatch, closed)
@@ -172,14 +188,15 @@ async def test_error_reports_then_logs_are_flushed_last(
     async def note(name: str) -> None:
         closed.append(name)
 
+    monkeypatch.setattr(lifecycle, "aflush_throttled", partial(note, "held back"))
     monkeypatch.setattr(lifecycle, "aflush_reports", partial(note, "error reports"))
     monkeypatch.setattr(lifecycle, "aflush_logs", partial(note, "logs"))
     register("exports", partial(note, "exports"), phase=Phase.FLUSH)
 
     await close_resources()
 
-    assert closed[-3:] == ["exports", "error reports", "logs"]
-    for name in ("error reports", "logs"):
+    assert closed[-4:] == ["exports", "held back", "error reports", "logs"]
+    for name in ("held-back log lines", "error reports", "logs"):
         with pytest.raises(ValueError, match="closed by the framework already"):
             register(name, partial(note, name), phase=Phase.FLUSH)
 
@@ -209,7 +226,8 @@ async def test_a_hung_phase_leaves_the_later_phases_their_share(
     try:
         with caplog.at_level(logging.ERROR, "domainkit.lifecycle"):
             async with asyncio.timeout(5):
-                await close_resources(Budget.begin(0.05))
+                # The drain's and the tasks' shares are over; the others are not.
+                await close_resources(spent_through(Phase.TASKS))
     finally:
         release.set()  # Fail fast, not hang, if anything above goes wrong.
 
@@ -222,8 +240,42 @@ async def test_a_hung_phase_leaves_the_later_phases_their_share(
         "exports",
     ]
     assert caplog.messages == [
-        "Could not close the stubborn within the shutdown budget; closing the rest"
+        "Could not close the stubborn within the shutdown budget; closing the rest",
+        # Left behind, owned: the tasks phase waited for it, to its end.
+        (
+            "Background tasks still running at the end of their shutdown phase: "
+            "domainkit.close:stubborn"
+        ),
     ]
+
+
+async def test_a_close_cut_off_ends_before_the_resources_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A drain cut off at its share still ends before what it uses is closed.
+
+    It is cancelled and left behind as an owned task, so the tasks phase
+    waits for it to end, then the resources phase closes the databases.
+    """
+    closed: list[str] = []
+    record_closes(monkeypatch, closed)
+
+    async def slow_to_stop() -> None:
+        closed.append("draining")
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            for _ in range(20):  # Writing its last rows, after being cut off.
+                await asyncio.sleep(0)
+            closed.append("drained")
+            raise
+
+    register("publishers", slow_to_stop, phase=Phase.DRAIN)
+
+    async with asyncio.timeout(30):
+        await close_resources(spent_through(Phase.DRAIN))
+
+    assert closed[:3] == ["draining", "drained", "caches"]
 
 
 async def test_tasks_that_will_not_stop_are_named(
@@ -250,8 +302,8 @@ async def test_tasks_that_will_not_stop_are_named(
     await asyncio.sleep(0)
     try:
         with caplog.at_level(logging.ERROR, "domainkit.lifecycle"):
-            async with asyncio.timeout(5):
-                await close_resources(Budget.begin(0.02))
+            async with asyncio.timeout(5):  # The tasks' share is over at once.
+                await close_resources(spent_through(Phase.TASKS))
     finally:
         release.set()
         await asyncio.wait(stuck, timeout=5)
@@ -556,10 +608,58 @@ async def test_failures_after_a_close_that_worked_are_raised() -> None:
         await close_in_turn(["fine", "fails"], close)
 
 
+class Turns:
+    """``asyncio`` as ``close_in_turn`` sees it, on a clock only its waits move.
+
+    A wait gives the item a few turns of the event loop and ends, with no
+    time passed if the item has closed by then. An item still open has used
+    its whole share: the clock moves on by it, and the item is cut off, for
+    real. So the shares are exact, however slow the machine, and the tests
+    take no time.
+    """
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Stand in for ``asyncio`` in ``domainkit.utils.closing``."""
+        self.now = 0.0
+        self.shares: list[float | None] = []
+        monkeypatch.setattr(closing_module, "asyncio", self)
+
+    def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - asyncio's names.
+        """Everything else is asyncio's own."""
+        return getattr(asyncio, name)
+
+    def get_running_loop(self) -> "Turns":
+        """The loop whose clock ``close_in_turn`` reads: this one."""
+        return self
+
+    def time(self) -> float:
+        """The clock, in seconds."""
+        return self.now
+
+    async def wait(
+        self,
+        futures: list["asyncio.Future[Any]"],
+        *,
+        timeout: float | None,  # noqa: ASYNC109 - asyncio.wait's signature.
+    ) -> tuple[set["asyncio.Future[Any]"], set["asyncio.Future[Any]"]]:
+        """Note the share; return what closed, using all of it if not."""
+        self.shares.append(timeout)
+        if timeout is None:  # No limit: as long as it takes.
+            return await asyncio.wait(futures)
+        for _ in range(5):
+            await asyncio.sleep(0)
+        done = {future for future in futures if future.done()}
+        pending = set(futures) - done
+        if pending:
+            self.now += timeout
+        return done, pending
+
+
 async def test_close_in_turn_shares_the_time_and_tries_every_item(
-    caplog: pytest.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """One that hangs is cut off at its share; the next still gets its own."""
+    turns = Turns(monkeypatch)
     closed: list[str] = []
 
     async def close(item: str) -> None:
@@ -571,11 +671,13 @@ async def test_close_in_turn_shares_the_time_and_tries_every_item(
 
     with (
         caplog.at_level(logging.ERROR, "domainkit.utils.closing"),
-        pytest.raises(TimeoutError, match=r"^'hung' did not close within 0\.0\d*s$"),
+        pytest.raises(TimeoutError, match=r"^'hung' did not close within 0\.50s$"),
     ):
         async with asyncio.timeout(5):
-            await close_in_turn(["hung", "fails", "last"], close, within=0.03)
+            await close_in_turn(["hung", "fails", "last"], close, within=0.6)
     assert closed == ["hung", "fails", "last"]
+    # Each keeps a reserve of 0.05 s for every item after it.
+    assert turns.shares == pytest.approx([0.5, 0.05, 0.1])
     assert caplog.messages == ["Could not close 'fails'"]
     cause = caplog.records[0].exc_info
     assert cause
@@ -584,10 +686,14 @@ async def test_close_in_turn_shares_the_time_and_tries_every_item(
     closed.clear()
     await close_in_turn(["a", "b"], close)  # No limit: in order.
     assert closed == ["a", "b"]
+    assert turns.shares[3:] == [None, None]
 
 
-async def test_close_in_turn_lets_one_item_use_most_of_the_time() -> None:
+async def test_close_in_turn_lets_one_item_use_most_of_the_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Less only the reserves of the items after it, not an equal split."""
+    turns = Turns(monkeypatch)
     closed: list[str] = []
 
     async def close(item: str) -> None:
@@ -600,22 +706,20 @@ async def test_close_in_turn_lets_one_item_use_most_of_the_time() -> None:
         async with asyncio.timeout(5):
             await close_in_turn(["slow", "quick"], close, within=0.4)
     assert closed == ["quick"]
+    assert turns.shares == pytest.approx([0.35, 0.05])
     assert RESERVED_SHARE == 0.25
     await close_in_turn([], close, within=1)  # Nothing to close.
 
 
 async def test_close_in_turn_keeps_only_the_later_items_reserves(
-    caplog: pytest.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The last item may use all that is left: no reserve is kept after it."""
-    loop = asyncio.get_running_loop()
-    started: dict[str, float] = {}
+    turns = Turns(monkeypatch)
 
     async def hangs(item: str) -> None:
-        started[item] = loop.time()
         await asyncio.Event().wait()
 
-    end = loop.time() + 0.4
     with (
         caplog.at_level(logging.ERROR, "domainkit.utils.closing"),
         pytest.raises(TimeoutError, match=r"^'first' did not close"),
@@ -625,9 +729,9 @@ async def test_close_in_turn_keeps_only_the_later_items_reserves(
 
     cause = caplog.records[0].exc_info
     assert cause
-    reported = float(str(cause[1]).removeprefix("'last' did not close within ")[:-1])
-    # Measured from when "last" started, so a slow machine changes nothing.
-    assert reported == pytest.approx(end - started["last"], abs=0.02)
+    # "first" used 0.35 s of 0.4, keeping 0.05 for "last"; "last" keeps none.
+    assert str(cause[1]) == "'last' did not close within 0.05s"
+    assert turns.shares == pytest.approx([0.35, 0.05])
 
 
 class Stubborn:
@@ -663,8 +767,11 @@ class Stubborn:
             await asyncio.wait(self.tasks, timeout=5)
 
 
-async def test_close_in_turn_leaves_an_item_that_ignores_cancellation_behind() -> None:
+async def test_close_in_turn_leaves_an_item_that_ignores_cancellation_behind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Cut off at its share and cancelled, it holds up none of the later items."""
+    Turns(monkeypatch)
     stubborn = Stubborn()
     closed: list[str] = []
 
@@ -675,14 +782,16 @@ async def test_close_in_turn_leaves_an_item_that_ignores_cancellation_behind() -
 
     try:
         with pytest.raises(
-            TimeoutError, match=r"^'stubborn' did not close within 0\.\d+s$"
+            TimeoutError, match=r"^'stubborn' did not close within 0\.35s$"
         ):
             async with asyncio.timeout(5):
-                await close_in_turn(["stubborn", "last"], close, within=0.05)
+                await close_in_turn(["stubborn", "last"], close, within=0.4)
         assert closed == ["stubborn", "last"]
         [held] = stubborn.tasks
         assert not held.done()  # Left behind, still running.
         assert held.cancelling()
+        assert held in owned()  # The shutdown's tasks phase waits for it.
+        assert held.get_name() == LEFT_BEHIND
     finally:
         await stubborn.let_go()
     assert held._log_traceback is False  # Its failure is not logged...

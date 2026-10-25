@@ -47,7 +47,7 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from functools import cache
@@ -402,7 +402,7 @@ def user_shape(model: type[AbstractBaseUser]) -> UserShape | None:
 class Credential:
     """What the token table says of a credential (never the token itself)."""
 
-    id: str
+    id: str = field(repr=False)
     """The token's digest (a certificate's SHA-256)."""
     user_id: UUID
     kind: str

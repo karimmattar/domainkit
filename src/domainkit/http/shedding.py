@@ -30,9 +30,12 @@ are their own.
 
 List it after ``DeadlineMiddleware``, so the wait counts against the
 request's deadline, and before ``AuthenticationMiddleware``, so a refused
-request costs no database lookup. With ``domainkit[metrics]`` it exports
-``http_requests_admitted``, ``http_requests_queued``, and
-``http_requests_shed_total`` by reason (``queue_full``, ``queue_timeout``).
+request costs no database lookup. A request whose deadline passes while it
+waits is answered 503 ``deadline_exceeded`` by ``DeadlineMiddleware``, and
+counted and logged as shed (``queue_timeout``) too: it never got a slot.
+With ``domainkit[metrics]`` it exports ``http_requests_admitted``,
+``http_requests_queued``, and ``http_requests_shed_total`` by reason
+(``queue_full``, ``queue_timeout``).
 """
 
 import asyncio
@@ -40,16 +43,16 @@ import logging
 import math
 import threading
 from collections import deque
-from contextlib import suppress
 from typing import Any, Final
 from weakref import WeakKeyDictionary
 
 from fastapi import status
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from domainkit import clock
+from domainkit import clock, deadlines
 from domainkit.conf import settings
 from domainkit.http.errors import APIError, error_response
+from domainkit.http.middleware import request_path
 
 try:
     from domainkit.http.metrics import observe_admitted, observe_queued, observe_shed
@@ -83,6 +86,8 @@ class Slots:
     """At most ``limit`` holders at once; up to ``queue`` more wait in turn.
 
     Each event loop needs its own: the waiters are futures of one loop.
+    Taking a slot, refusing one, and leaving the queue cost the same
+    however long the queue is.
     """
 
     def __init__(self, limit: int, queue: int) -> None:
@@ -91,30 +96,37 @@ class Slots:
         self.queue = queue
         self.held = 0
         """Slots taken, including those handed to a waiter not yet resumed."""
-        self._waiters: deque[asyncio.Future[None]] = deque()
+        self._waiters: deque[_Waiter] = deque()
+        """Waiters in turn; those that stopped waiting stay until passed over."""
+        self._waiting = 0
 
     @property
     def waiting(self) -> int:
         """Requests waiting for a slot now."""
-        return sum(not waiter.done() for waiter in self._waiters)
+        return self._waiting
 
     async def acquire(self, wait: float) -> str | None:
         """Take a slot, waiting up to ``wait`` seconds for one.
+
+        The wait is bounded by the deadline too (``domainkit.deadlines``):
+        a deadline that a timer enforces (a request's) cancels it, and one
+        that none enforces ends it as ``wait`` running out does.
 
         Returns None once a slot is taken, or why none was:
         ``QUEUE_FULL`` or ``QUEUE_TIMEOUT``. Cancelled while waiting, it
         takes none, and passes on a slot it was handed meanwhile.
         """
-        if self.held < self.limit and not self.waiting:
+        if self.held < self.limit and not self._waiting:
             self.held += 1
             return None
-        if wait <= 0 or self.waiting >= self.queue:
+        if wait <= 0 or self._waiting >= self.queue:
             return QUEUE_FULL
-        waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        waiter = _Waiter(self, asyncio.get_running_loop())
         self._waiters.append(waiter)
+        self._waiting += 1
         observe_queued(1)
         try:
-            async with asyncio.timeout(wait):
+            async with deadlines.timeout(wait):
                 await waiter
         except TimeoutError:
             pass  # Handed a slot as the wait ran out, it keeps it (below).
@@ -124,8 +136,8 @@ class Slots:
             raise
         finally:
             observe_queued(-1)
-            with suppress(ValueError):  # Already taken off by release().
-                self._waiters.remove(waiter)
+            waiter.cancel()  # Unless handed: then release() took it off.
+            self._sweep()
         return None if _handed(waiter) else QUEUE_TIMEOUT
 
     def release(self) -> None:
@@ -134,8 +146,47 @@ class Slots:
             waiter = self._waiters.popleft()
             if not waiter.done():
                 waiter.set_result(None)
+                self._waiting -= 1
                 return
         self.held -= 1
+
+    def _sweep(self) -> None:
+        """Drop waiters that stopped waiting, cheaply, so the queue stays small.
+
+        Those at either end go at once; those in the middle go together once
+        they outnumber the waiters, so each costs O(1) on average.
+        """
+        waiters = self._waiters
+        while waiters and waiters[-1].done():
+            waiters.pop()
+        while waiters and waiters[0].done():
+            waiters.popleft()
+        if len(waiters) > 2 * self._waiting + _SWEEP_SLACK:
+            self._waiters = deque(waiter for waiter in waiters if not waiter.done())
+
+
+_SWEEP_SLACK: Final = 16
+"""Waiters that stopped waiting may stay in the queue up to this many more."""
+
+
+class _Waiter(asyncio.Future[None]):
+    """A place in the queue; cancelling it takes it out of the count at once.
+
+    A request cancelled while it waits cancels its place before it runs
+    again, so ``waiting`` never counts it, as ``acquire`` must not.
+    """
+
+    def __init__(self, slots: Slots, loop: asyncio.AbstractEventLoop) -> None:
+        """A place in ``slots``' queue."""
+        super().__init__(loop=loop)
+        self._slots = slots
+
+    def cancel(self, msg: Any | None = None) -> bool:  # noqa: ANN401 - asyncio's.
+        """Stop waiting; return whether this place was still waiting."""
+        cancelled = super().cancel(msg)
+        if cancelled:
+            self._slots._waiting -= 1
+        return cancelled
 
 
 def _handed(waiter: asyncio.Future[None]) -> bool:
@@ -177,11 +228,15 @@ class ConcurrencyLimitMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Serve the request in a slot, or refuse it when none frees in time."""
-        if self.limit is None or scope["type"] != "http" or _path(scope) in self.exempt:
+        if (
+            self.limit is None
+            or scope["type"] != "http"
+            or request_path(scope) in self.exempt
+        ):
             await self.app(scope, receive, send)
             return
         slots = self.slots(self.limit)
-        refused = await slots.acquire(self.wait)
+        refused = await self.admit(slots)
         if refused is not None:
             self.refused(refused)
             await _answer(scope, receive, send)
@@ -198,6 +253,21 @@ class ConcurrencyLimitMiddleware:
             await _answer(scope, receive, send)
         finally:
             hold.give_back()
+
+    async def admit(self, slots: Slots) -> str | None:
+        """Take a slot of ``slots``; None, or why none was (``Slots.acquire``).
+
+        The queue's wait ends at the deadline too. A request whose deadline
+        passes while it waits is answered by ``DeadlineMiddleware``, whose
+        timer cancels it, and is counted here as shed (``queue_timeout``).
+        """
+        try:
+            return await slots.acquire(self.wait)
+        except asyncio.CancelledError:
+            deadline = deadlines.current_deadline()
+            if deadline is not None and deadline.expired():
+                self.refused(QUEUE_TIMEOUT)
+            raise
 
     def refused(self, reason: str) -> None:
         """Count and report a request refused for want of a slot."""
@@ -302,7 +372,7 @@ class _Hold:
             Overloaded: The queue was full, or no slot freed in time.
         """
         self.lent = False
-        refused = await self.slots.acquire(self.middleware.wait)
+        refused = await self.middleware.admit(self.slots)
         if self.started:  # The response started meanwhile: no slot is needed.
             if refused is None:
                 self.slots.release()
@@ -312,15 +382,6 @@ class _Hold:
             raise Overloaded
         self.held = True
         observe_admitted(1)
-
-
-def _path(scope: Scope) -> str:
-    """The request's path, without the root path the application is mounted at."""
-    path: str = scope["path"]
-    root = scope.get("root_path", "").rstrip("/")
-    if root and path.startswith(root):
-        return path[len(root) :]
-    return path
 
 
 class ShedReport:

@@ -9,6 +9,7 @@ percentage stays the same, and stays in as it grows.
 
 import hashlib
 from collections.abc import Iterable
+from dataclasses import field
 from typing import Final
 
 from domainkit.ddd import AggregateRoot, BusinessRuleViolation
@@ -95,7 +96,8 @@ class Flag(AggregateRoot[str]):
 class DynamicSetting(AggregateRoot[str]):
     """The stored value of a dynamic setting; ``id`` is its key."""
 
-    value: object = None
+    value: object = field(default=None, repr=False)
+    """Left out of ``repr``: a setting declared ``secret`` holds a secret."""
 
     class Meta:
         """Settings are declared in code: they are only viewed and changed."""
@@ -103,10 +105,16 @@ class DynamicSetting(AggregateRoot[str]):
         verbose_name = "dynamic setting"
         default_permissions = ("change", "view")
 
-    def change(self, value: object) -> None:
-        """Store ``value`` (already validated, as JSON) and record it."""
+    def change(self, value: object, *, secret: bool = False) -> None:
+        """Store ``value`` (already validated, as JSON) and record it.
+
+        A ``secret`` value is recorded as changed, without the value: the
+        audit trail keeps what it is given for good.
+        """
         self.value = value
-        self.record(SettingChanged(key=self.id, value=value))
+        self.record(
+            SettingChanged(key=self.id, value=None if secret else value, secret=secret)
+        )
 
     def reset(self) -> None:
         """Record that the setting goes back to its default."""

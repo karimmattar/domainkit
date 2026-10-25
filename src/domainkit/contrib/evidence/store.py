@@ -2,7 +2,9 @@
 
 import hashlib
 import hmac
+import re
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from typing import Final
 
 from domainkit.contrib.evidence.model import (
@@ -18,6 +20,10 @@ from domainkit.ledger import Ledger, LedgerKeyExists, LedgerKeyNotFound, LedgerT
 
 _SUBJECT_DIGEST_LENGTH: Final = 32
 _TAMPER_CHECK_LIMIT: Final = 2
+_KEY: Final = re.compile(
+    rf"(?P<namespace>[^/]+)/[0-9a-f]{{{_SUBJECT_DIGEST_LENGTH}}}/[^/]+"
+)
+"""An evidence key: ``<namespace>/<subject digest>/<evidence id>``."""
 
 
 class EvidenceStore(ABC):
@@ -77,14 +83,23 @@ class LedgerEvidenceStore(EvidenceStore):
     """Evidence on a ``Ledger``: immudb in deployments, ``MemoryLedger`` in tests."""
 
     def __init__(
-        self, ledger: Ledger, *, namespace: str, max_bytes: int, subject_key: bytes
+        self,
+        ledger: Ledger,
+        *,
+        namespace: str,
+        max_bytes: int,
+        subject_key: bytes,
+        previous_namespaces: Sequence[str] = (),
     ) -> None:
         """Keep records under ``namespace``, refusing ones over ``max_bytes``.
 
         ``subject_key`` is the secret the subject digests in keys use.
+        ``get`` reads keys under ``namespace`` and ``previous_namespaces``
+        only.
         """
         self.ledger = ledger
         self.namespace = namespace
+        self.previous_namespaces = tuple(previous_namespaces)
         self.max_bytes = max_bytes
         self.subject_key = subject_key
 
@@ -130,10 +145,15 @@ class LedgerEvidenceStore(EvidenceStore):
     async def get(self, key: str) -> RecordedEvidence:
         """Read revision 1, the original, and count the key's revisions.
 
-        A record must end its own key: one copied under another key is
-        tampering. The rest of the key is not checked, since a new
-        ``NAMESPACE`` or ``SUBJECT_KEY`` leaves earlier keys valid.
+        Only evidence keys under the store's namespace, or one of its
+        previous namespaces, are read: any other key, such as another
+        project's on a shared ledger or an audit anchor, is not found. A
+        record must end its own key: one copied under another key is
+        tampering. The subject digest is not checked, since a new
+        ``SUBJECT_KEY`` leaves earlier keys valid.
         """
+        if not self._owns(key):
+            raise EvidenceNotFound(f"No evidence under {key}.")
         try:
             entry = await self.ledger.read(key.encode(), revision=1)
             revisions = await self.ledger.revision_count(
@@ -155,6 +175,14 @@ class LedgerEvidenceStore(EvidenceStore):
             evidence.id, key, sha256(entry.value), entry.transaction
         )
         return RecordedEvidence(evidence, receipt, revisions)
+
+    def _owns(self, key: str) -> bool:
+        """Whether ``key`` is an evidence key of this store's namespaces."""
+        shape = _KEY.fullmatch(key)
+        return shape is not None and shape["namespace"] in {
+            self.namespace,
+            *self.previous_namespaces,
+        }
 
     async def for_subject(
         self, subject: str, *, limit: int = 100

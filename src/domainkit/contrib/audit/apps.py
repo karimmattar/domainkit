@@ -9,6 +9,7 @@ from domainkit.db import SqlAlchemyUnitOfWork, map_imperatively
 from domainkit.db.routing import DatabaseRouter, router
 from domainkit.ddd import DeferredTask, DomainEvent, UnitOfWork
 
+from .baseline import check_at_startup, settings_problems
 from .models import AuditEntry
 from .recorder import event_rows, write
 from .settings import AuditSettings
@@ -34,6 +35,21 @@ class AuditConfig(DomainConfig):
         map_imperatively(AuditEntry, audit_log)
         if registry.is_installed(MESSAGING):
             import_module(f"{self.name}.tasks")
+
+    def deployment_warnings(self) -> list[str]:
+        """The settings a tamper-evident trail needs, missing in staging and production.
+
+        A ledger, a namespace on it, and a sealing schedule (``baseline``);
+        the application checks the ``protect()`` triggers when it starts.
+        """
+        return settings_problems()
+
+    async def startup(self) -> None:
+        """Warn, where deployed, about a trail that is not tamper-evident.
+
+        With ``AUDIT.REQUIRE_BASELINE``, refuse to start instead.
+        """
+        await check_at_startup()
 
     async def stage(
         self,

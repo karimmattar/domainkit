@@ -217,14 +217,18 @@ async def test_a_hung_handler_is_cut_off_logged_and_reported(
 
 
 async def test_a_handler_can_have_a_timeout_of_its_own() -> None:
-    """``subscribe(timeout=...)`` overrides the bus's limit, either way."""
+    """``subscribe(timeout=...)`` overrides the bus's limit, either way.
+
+    The handler sleeps ten times the shorter limit and a fiftieth of the
+    longer, so only the limit that applies explains how it ends.
+    """
     bus = EventBus(handler_timeout=0.01)
     seen: list[str] = []
     reported: list[BaseException] = []
     bus.error_hook = lambda exc, event: reported.append(exc)
 
     async def slow(event: OrderPaid) -> None:
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.1)
         seen.append("slow finished")
 
     bus.subscribe(OrderPaid, slow, timeout=5)

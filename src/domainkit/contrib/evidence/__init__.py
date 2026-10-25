@@ -42,6 +42,7 @@ def evidence_store() -> EvidenceStore:
     return LedgerEvidenceStore(
         ledgers[config.LEDGER],
         namespace=config.NAMESPACE,
+        previous_namespaces=config.PREVIOUS_NAMESPACES,
         max_bytes=config.MAX_BYTES,
         subject_key=config.subject_key,
     )

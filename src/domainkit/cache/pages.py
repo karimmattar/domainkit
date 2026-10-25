@@ -34,12 +34,15 @@ import inspect
 import json
 from collections.abc import Awaitable, Callable, Sequence
 from contextvars import copy_context
-from functools import update_wrapper
-from typing import Any, Final, get_type_hints
+from functools import partial, update_wrapper
+from typing import Annotated, Any, Final, get_args, get_origin, get_type_hints
 
-from fastapi import Request, Response, status
+from fastapi import Request, Response, params, status
+from fastapi.dependencies.models import Dependant
+from fastapi.dependencies.utils import get_dependant
 from pydantic_core import to_json
 
+from domainkit import deadlines
 from domainkit.cache.core import DEFAULT_TTL, TTL, adapter
 from domainkit.cache.handler import caches
 from domainkit.conf import DEFAULT_CACHE_ALIAS
@@ -63,6 +66,7 @@ def cache_page(
     vary_on_user: bool = False,
     max_age: int = 0,
     name: str | None = None,
+    borrows: bool = True,
 ) -> Callable[[Endpoint], Endpoint]:
     """Cache what an async GET endpoint returns, for ``ttl``, in ``cache``.
 
@@ -71,8 +75,20 @@ def cache_page(
     ``max_age`` lets clients reuse an answer that long without asking
     again. ``name`` (default: the endpoint's import path) starts every key.
 
+    The endpoint runs for every caller of its entry, as the caller that
+    missed it. By default it may use what that request holds (its
+    dependencies, ``request.state``, a context variable a middleware set):
+    the computation borrows the request (``get_or_set(..., borrows=True)``),
+    runs under its deadline, and ends with it. ``borrows=False`` says the
+    endpoint uses nothing the request holds: its computation then goes on
+    after the request, fills the cache, and runs under the cache's
+    ``COMPUTE_TIMEOUT``. Dependencies that hold a resource (written with
+    ``yield``) are refused then, the endpoint's own here and the route's,
+    router's, and application's when a request comes, which then borrows.
+
     Raises:
-        TypeError: The endpoint is not async, or returns a ``Response``.
+        TypeError: The endpoint is not async, returns a ``Response``, or
+            takes a dependency that holds a resource with ``borrows=False``.
         ValueError: ``max_age`` is negative.
     """
     if max_age < 0:
@@ -90,6 +106,12 @@ def cache_page(
             )
         prefix = name or f"{endpoint.__module__}.{endpoint.__qualname__}"
         signature = _signature(endpoint, hints)
+        if not borrows and any(_holds(call) for call in _dependencies(signature)):
+            raise TypeError(
+                "@cache_page(borrows=False) cannot run an endpoint whose "
+                "dependencies hold a resource (a dependency with yield): its "
+                "computation would use it after the request closed it."
+            )
         request_name = _parameter_of(signature, Request)
         response_name = _parameter_of(signature, Response)
 
@@ -111,14 +133,18 @@ def cache_page(
             async def compute() -> Any:  # noqa: ANN401 - the endpoint's.
                 # Computations run in a clean context; the endpoint runs as
                 # the caller, whose user and language the key holds, so every
-                # caller sharing the entry shares them.
+                # caller sharing the entry shares them, under the
+                # computation's deadline, not the caller's.
+                caller.run(deadlines._current.set, deadlines.current_deadline())
                 result = await asyncio.get_running_loop().create_task(
                     endpoint(*args, **kwargs), context=caller
                 )
                 # Typed now, so fields the return type leaves out are not cached.
                 return adapter(returns).validate_python(result, from_attributes=True)
 
-            value = await caches[cache].get_or_set(key, compute, returns, ttl)
+            value = await caches[cache].get_or_set(
+                key, compute, returns, ttl, borrows=borrows or _route_holds(request)
+            )
             etag = f'W/"{hashlib.sha256(to_json(value)).hexdigest()[:32]}"'
             control = "private" if vary_on_user else "public"
             answer = {
@@ -220,6 +246,87 @@ def _signature(endpoint: Endpoint, hints: dict[str, Any]) -> inspect.Signature:
         parameters=[*fixed, *added, *variadic],
         return_annotation=hints.get("return", signature.return_annotation),
     )
+
+
+def _dependencies(signature: inspect.Signature) -> list[Callable[..., Any]]:
+    """What FastAPI calls to resolve the parameters of ``signature``.
+
+    ``Depends()`` without a callable means the parameter's annotation.
+    """
+    found: list[Callable[..., Any]] = []
+    for parameter in signature.parameters.values():
+        annotation, markers = parameter.annotation, [parameter.default]
+        if get_origin(annotation) is Annotated:
+            annotation, *metadata = get_args(annotation)
+            markers += metadata
+        found += [
+            marker.dependency or annotation
+            for marker in markers
+            if isinstance(marker, params.Depends)
+        ]
+    return found
+
+
+def _forms(call: Any) -> list[Any]:  # noqa: ANN401 - any dependency.
+    """``call`` as FastAPI looks at it: through ``partial`` and through ``wraps``."""
+    while isinstance(call, partial):
+        call = call.func
+    return [call, inspect.unwrap(call)]
+
+
+def _yields(call: Any) -> bool:  # noqa: ANN401 - any dependency.
+    """Whether FastAPI takes a dependency for one that holds a resource.
+
+    As FastAPI 0.143 decides it (``fastapi.dependencies.models``): the
+    function, or its ``__call__``, yields, seen through ``functools.partial``
+    (nested too) and ``functools.wraps``; a class is built, so it never does.
+    FastAPI closes such a dependency when the request ends.
+    """
+    if any(_generator(form) for form in _forms(call)):
+        return True
+    if any(inspect.isclass(form) for form in _forms(call)):
+        return False
+    return any(
+        _generator(inner) for form in _forms(call) for inner in _forms(form.__call__)
+    )
+
+
+def _generator(call: object) -> bool:
+    """Whether calling ``call`` makes a generator, async or not."""
+    return inspect.isgeneratorfunction(call) or inspect.isasyncgenfunction(call)
+
+
+def _holds(call: Callable[..., Any]) -> bool:
+    """Whether a dependency, or one beneath it, holds a resource.
+
+    The dependencies beneath are found as FastAPI finds them (``get_dependant``).
+    """
+    return _tree_holds(get_dependant(path="", call=call))
+
+
+def _tree_holds(dependant: Dependant) -> bool:
+    """Whether ``dependant``, or a dependency beneath it, holds a resource."""
+    stack = [dependant]
+    while stack:
+        dependency = stack.pop()
+        if _yields(dependency.call):
+            return True
+        stack += dependency.dependencies
+    return False
+
+
+def _route_holds(request: Request) -> bool:
+    """Whether the request's route or application adds a dependency with ``yield``.
+
+    The route's own dependencies and its router's are in ``route.dependant``;
+    the application's in its router's. Those of routers it was included
+    through on the way are not in the request, so they cannot be seen here.
+    """
+    dependant = getattr(request.scope.get("route"), "dependant", None)
+    if dependant is not None and _tree_holds(dependant):
+        return True
+    application = getattr(request.scope.get("router"), "dependencies", ())
+    return any(_holds(marker.dependency) for marker in application)
 
 
 def _parameter_of(signature: inspect.Signature, kind: type) -> str:

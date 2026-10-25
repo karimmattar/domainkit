@@ -27,6 +27,7 @@ class Command(BaseCommand):
     """Inspect webhook subscriptions and deliveries, and send deliveries again."""
 
     help = "List webhook subscriptions and deliveries, or replay deliveries."
+    operator_actions = True
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         """Accept the action and its options."""
@@ -115,7 +116,9 @@ class Command(BaseCommand):
             raise CommandError("replay takes delivery ids or --failed, not both.")
         if failed:
             ids = await failed_deliveries(limit, owner)
-        replayed = await replay(ids)
+        async with self.recorded("webhooks.replay", asked=len(ids)) as action:
+            replayed = await replay(ids)
+            action["deliveries"] = len(replayed)
         self.write(f"Queued {len(replayed)} delivery(ies) again.")
 
 

@@ -227,25 +227,68 @@ def test_open_websockets_are_capped_per_process(make_client: MakeClient) -> None
 def test_open_websockets_are_capped_per_caller(
     make_client: MakeClient, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Past LIVE_MAX_CONNECTIONS_PER_CALLER, that caller is refused; others are not."""
+    """Past LIVE_MAX_CONNECTIONS_PER_CALLER, that caller is refused; others are not.
+
+    A caller that keeps trying is logged once a while (``ThrottledLog``).
+    """
     client = make_client(LIVE_MAX_CONNECTIONS_PER_CALLER=1)
     other = TestClient(client.app, client=("192.0.2.7", 4000))
     other.portal = client.portal
 
     with client.websocket_connect("/live/echo"):
-        with (
-            pytest.raises(WebSocketDenialResponse) as refused,
-            client.websocket_connect("/live/echo"),
-        ):
-            pass
+        for _ in range(2):
+            with (
+                pytest.raises(WebSocketDenialResponse) as refused,
+                client.websocket_connect("/live/echo"),
+            ):
+                pass
         with other.websocket_connect("/live/echo") as socket:
             socket.send_text("mine")
             assert text(socket) == "mine"
 
     assert refused.value.status_code == 503
     assert (
-        "Refused a live connection: LIVE_MAX_CONNECTIONS_PER_CALLER is reached"
-        in caplog.messages
+        caplog.messages.count(
+            "Refused a live connection: LIVE_MAX_CONNECTIONS_PER_CALLER is reached"
+        )
+        == 1
+    )
+
+
+@pytest.mark.anyio
+async def test_a_refusal_without_its_slots_is_logged_each_time(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``refuse`` called on its own, as before, warns for every connection."""
+    sent: list[Message] = []
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    async def receive() -> Message:
+        raise AssertionError("not read")  # pragma: no cover - never called.
+
+    scope = {"type": "websocket", "client": ("192.0.2.7", 1), "extensions": {}}
+    for _ in range(2):
+        await live.refuse(scope, receive, send, "LIVE_MAX_CONNECTIONS")
+
+    assert sent == [{"type": "websocket.close", "code": 1013}] * 2
+    assert (
+        caplog.messages.count(
+            "Refused a live connection: LIVE_MAX_CONNECTIONS is reached"
+        )
+        == 2
+    )
+    caplog.clear()
+    slots = live.Slots(1, 1)
+    other = {**scope, "client": ("198.51.100.7", 1)}
+    for refused in (scope, scope, other):
+        await live.refuse(refused, receive, send, "LIVE_MAX_CONNECTIONS", slots=slots)
+    assert (  # With its slots: once per caller.
+        caplog.messages.count(
+            "Refused a live connection: LIVE_MAX_CONNECTIONS is reached"
+        )
+        == 2
     )
 
 

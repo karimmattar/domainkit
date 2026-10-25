@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
+from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.webhooks import client, guard, signing
 from domainkit.contrib.webhooks.guard import (
@@ -184,6 +185,25 @@ def test_verify_uses_the_clock_by_default() -> None:
         verify(SPEC_SECRET, headers, b"tampered")
 
 
+def test_verify_follows_a_frozen_clock() -> None:
+    """``domainkit.clock`` decides, not the host's: a frozen replay test holds.
+
+    Signed in 2030, a delivery is fresh at that time, and stale five minutes
+    and a second later, whatever the wall clock says.
+    """
+    signed_at = datetime(2030, 1, 1, tzinfo=UTC)
+    stamp = int(signed_at.timestamp())
+    headers = signing.signed_headers([SPEC_SECRET], SPEC_ID, stamp, SPEC_BODY)
+
+    with freeze_time(signed_at) as frozen:
+        assert verify(SPEC_SECRET, headers, SPEC_BODY) == SPEC_ID
+        frozen.tick(signing.DEFAULT_TOLERANCE)
+        assert verify(SPEC_SECRET, headers, SPEC_BODY) == SPEC_ID
+        frozen.tick(1)
+        with pytest.raises(InvalidSignature, match="too old or too new"):
+            verify(SPEC_SECRET, headers, SPEC_BODY)
+
+
 # Subscriptions ------------------------------------------------------------------
 
 
@@ -222,11 +242,37 @@ def test_subscriptions_record_their_changes_without_secrets() -> None:
     assert isinstance(changed, SubscriptionChanged)
     assert changed.fields == ("url", "event_types", "active", "description")
     assert changed.subscription_id == subscription.id
+    # The hosts, never the path that held the token (DATA-06).
+    assert (changed.host, changed.previous_host) == (
+        "other.example.com",
+        "hooks.example.com",
+    )
+    assert "SECRET-TOKEN" not in repr(changed)
     assert (subscription.url, subscription.event_types) == (
         "https://other.example.com/",
         ["*"],
     )
     assert (subscription.active, subscription.description) == (False, "d")
+
+    subscription.change(
+        url="https://User:pw@Attacker.Example:8443/in/T0K3N?x=1", host="checked"
+    )
+    subscription.change(active=True)
+    redirected, activated = subscription.pull_events()
+    assert (redirected.host, redirected.previous_host) == (  # type: ignore[attr-defined]
+        "checked",
+        "other.example.com",
+    )
+    subscription.change(url="https:///in/T0K3N")  # No host at all.
+    (hostless,) = subscription.pull_events()
+    assert (hostless.host, hostless.previous_host) == ("", "attacker.example")  # type: ignore[attr-defined]
+    subscription.change(url="https://[::1/")  # Unparsable: no host to record.
+    (unparsable,) = subscription.pull_events()
+    assert (unparsable.host, unparsable.previous_host) == (  # type: ignore[attr-defined]
+        "",
+        "",
+    )
+    assert (activated.host, activated.previous_host) == (None, None)  # type: ignore[attr-defined]
 
     now = datetime.now(UTC)
     sealed = subscription.secret
@@ -1059,7 +1105,12 @@ async def test_proxies_from_the_environment_are_ignored(
 
 
 async def test_connecting_has_its_own_timeout() -> None:
-    """A receiver that never accepts fails after CONNECT_TIMEOUT, not TIMEOUT."""
+    """A receiver that never accepts fails after CONNECT_TIMEOUT, not TIMEOUT.
+
+    TIMEOUT is two hundred times CONNECT_TIMEOUT, and it is the whole
+    attempt's: had the connect waited for it, the attempt would end with
+    "No answer within 60s", not with ConnectTimeout.
+    """
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", 0))
     listener.listen(0)
@@ -1075,7 +1126,7 @@ async def test_connecting_has_its_own_timeout() -> None:
             f"http://127.0.0.1:{port}/",
             b"{}",
             HEADERS,
-            settings_for(TIMEOUT=3, CONNECT_TIMEOUT=0.3),
+            settings_for(TIMEOUT=60, CONNECT_TIMEOUT=0.3),
             allow_http=True,
         )
     finally:
@@ -1086,4 +1137,3 @@ async def test_connecting_has_its_own_timeout() -> None:
     assert outcome.status is None
     assert outcome.error is not None
     assert outcome.error.startswith("ConnectTimeout")
-    assert outcome.seconds < 2

@@ -115,6 +115,24 @@ class DomainConfig:
         and the unit of work carries on.
         """
 
+    async def stage_transaction(
+        self, connection: "AsyncConnection", database: str
+    ) -> None:
+        """Join a transaction the framework commits outside a unit of work.
+
+        ``domainkit.contrib.messaging.enqueue`` commits its rows in a
+        transaction of its own on alias ``database``; it calls this with
+        that transaction's ``connection`` before the commit, as a unit of
+        work calls ``stage``. Raising rolls the transaction back.
+        """
+
+    async def transaction_committed(self, database: str) -> None:
+        """Follow up after such a transaction committed (see ``committed``).
+
+        The data is already committed: a failure here is logged and
+        reported, and the caller carries on.
+        """
+
     async def migrated(self, connection: "AsyncConnection", database: str) -> None:
         """Fill alias ``database`` after ``migrate`` upgraded it (``post_migrate``).
 

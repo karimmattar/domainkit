@@ -45,7 +45,7 @@ from domainkit.context import current_request
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import error_response
 from domainkit.http.ratelimit import address_key
-from domainkit.log import SECURITY_LOGGER
+from domainkit.log import SECURITY_LOGGER, ThrottledLog
 from domainkit.utils.rates import parse_rate
 
 logger = logging.getLogger(__name__)
@@ -241,6 +241,8 @@ class Slots:
         self.open = 0
         self.callers: dict[str, int] = {}
         """Open connections per caller; callers with none are forgotten."""
+        self.log = ThrottledLog(logger)
+        """Refusals of connections, at most a line per caller a while."""
         self._lock = threading.Lock()
 
     def acquire(self, caller: str) -> str | None:
@@ -294,13 +296,26 @@ def caller_of(scope: Scope) -> str:
     return address_key(scope)
 
 
-async def refuse(scope: Scope, receive: Receive, send: Send, cap: str) -> None:
+async def refuse(
+    scope: Scope,
+    receive: Receive,
+    send: Send,
+    cap: str,
+    *,
+    slots: Slots | None = None,
+) -> None:
     """Refuse a connection over ``cap``: 503 with ``Retry-After``, or close 1013.
 
     A WebSocket handshake gets the 503 where the server can answer one with
-    a status, and a 1013 (try again later) close where it cannot.
+    a status, and a 1013 (try again later) close where it cannot. With the
+    ``slots`` that refused it, the warning is throttled per caller
+    (``ThrottledLog``).
     """
-    logger.warning("Refused a live connection: %s is reached", cap)
+    message = "Refused a live connection: %s is reached"
+    if slots is None:
+        logger.warning(message, cap)
+    else:
+        slots.log.warning("live_refused", caller_of(scope), message, cap)
     if scope["type"] == "websocket" and DENIAL not in scope.get("extensions", {}):
         await send({"type": "websocket.close", "code": TRY_AGAIN_LATER})
         return

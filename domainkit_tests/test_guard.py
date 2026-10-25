@@ -13,24 +13,30 @@ import ssl
 import threading
 from collections.abc import AsyncIterator, Iterator
 from concurrent.futures import Future
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 
 import httpx2
 import pytest
 import truststore
+from pydantic import ValidationError
 
 from domainkit import lifecycle
 from domainkit.clock import freeze_time
-from domainkit.conf import override_settings
+from domainkit.conf import Settings, override_settings
+from domainkit.context import RequestContext, bind_request
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import guard
 from domainkit.http.client import HttpClient
 from domainkit.http.guard import (
     FAILED_LOOKUP_SECONDS,
+    HUNG_LOOKUP_BACKOFF,
+    HUNG_LOOKUP_SECONDS,
     LOOKUPS,
     GuardResolver,
+    lookup_owner,
+    lookups_for,
     system_trust,
     tls_context,
 )
@@ -259,6 +265,220 @@ async def test_the_threads_stop_at_shutdown_and_start_again(
     finally:
         lifecycle._registered[Phase.RESOURCES].clear()
         lifecycle._registered[Phase.RESOURCES].update(saved)
+
+
+@pytest.mark.usefixtures("registered")
+async def test_hung_lookups_leave_threads_for_other_callers(lookups: Lookups) -> None:
+    """Four lookups that never answer no longer stop every guarded call.
+
+    The threads are ``GUARD_LOOKUP_THREADS`` (16 by default), read when
+    they start, and one owner may take a quarter of them.
+    """
+    resolver = GuardResolver()
+    with lookups_for("tenant-a"):
+        hung = [
+            asyncio.create_task(resolver.lookup(f"h{i}.slow.test", 443))
+            for i in range(4)
+        ]
+    await lookups.started.reach(4)
+    with (
+        lookups_for("tenant-a"),
+        pytest.raises(socket.gaierror, match="of one caller are under way"),
+    ):
+        await resolver.lookup("h5.slow.test", 443)
+    legit = asyncio.create_task(resolver.lookup("rates.test", 443))
+    await lookups.started.reach(5)
+
+    assert (resolver.running, resolver._size) == (5, 16)
+    assert resolver._owners == {"tenant-a": 4}
+    lookups.release.set()
+    assert await legit == [ipaddress.ip_address("192.0.2.1")]
+    await asyncio.gather(*hung)
+    assert (resolver.running, resolver._owners) == (0, {})
+    await resolver.close()
+    assert resolver._size == 0
+
+
+@pytest.mark.usefixtures("registered")
+async def test_the_lookup_threads_follow_the_setting(lookups: Lookups) -> None:
+    """``GUARD_LOOKUP_THREADS`` bounds them; an owner gets a quarter, at least 1."""
+    lookups.release.set()
+    with override_settings(GUARD_LOOKUP_THREADS=3):
+        resolver = GuardResolver()
+        await resolver.lookup("a.test", 443)
+    started = resolver._executor
+    await resolver.lookup("b.test", 443)  # The same threads, as they started.
+    assert resolver._executor is started is not None
+    assert resolver._size == started._max_workers == 3
+    await resolver.close()
+    for bad in (0, 257):
+        with pytest.raises(ValidationError, match="GUARD_LOOKUP_THREADS"):
+            Settings.model_validate({"GUARD_LOOKUP_THREADS": bad})
+
+
+class Unloaded:
+    """Settings no module was given for."""
+
+    def __getattr__(self, name: str) -> object:
+        """Refuse, as unloaded settings do."""
+        raise ImproperlyConfigured("No settings module.")
+
+
+@pytest.mark.usefixtures("registered")
+async def test_the_guard_needs_no_settings(
+    lookups: Lookups, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A script that loads none looks up on ``LOOKUP_THREADS``, as it could before."""
+    monkeypatch.setattr(guard, "settings", Unloaded())
+    lookups.release.set()
+    resolver = GuardResolver()
+
+    assert await resolver.lookup("a.test", 443)
+    assert resolver._size == guard.LOOKUP_THREADS == 16
+    await resolver.close()
+
+
+@pytest.mark.usefixtures("registered")
+async def test_running_threads_bound_lookups_whatever_the_setting_says_since(
+    lookups: Lookups,
+) -> None:
+    """The threads that started are the bound until they stop."""
+    with override_settings(GUARD_LOOKUP_THREADS=2):
+        resolver = GuardResolver()
+        first = asyncio.create_task(resolver.lookup("a.test", 443))
+        await lookups.started.reach(1)
+    second = asyncio.create_task(resolver.lookup("b.test", 443))
+    await lookups.started.reach(2)
+
+    refused_at_once(resolver, "c.test")  # Two threads, though 16 are set now.
+    lookups.release.set()
+    await asyncio.gather(first, second)
+    await resolver.close()
+
+
+@pytest.mark.usefixtures("registered")
+async def test_one_owner_takes_at_most_a_quarter_of_the_threads(
+    lookups: Lookups,
+) -> None:
+    """Past its share an owner is refused at once; other owners are not."""
+    resolver = GuardResolver(threads=7)  # A quarter of 7, rounded down: one.
+    first = asyncio.create_task(resolver.lookup("a.test", 443))
+    with lookups_for("tenant-a"):
+        mine = asyncio.create_task(resolver.lookup("b.test", 443))
+        await lookups.started.reach(2)
+        with pytest.raises(socket.gaierror) as refused:
+            resolver._start("c.test", 443, "tenant-a")
+    assert (refused.value.errno, refused.value.strerror) == (
+        socket.EAI_AGAIN,
+        "Too many host name lookups of one caller are under way.",
+    )
+    with lookups_for("tenant-b"):
+        theirs = asyncio.create_task(resolver.lookup("c.test", 443))
+        await lookups.started.reach(3)
+
+    assert resolver._owners == {"tenant-a": 1, "tenant-b": 1}
+    lookups.release.set()
+    await asyncio.gather(first, mine, theirs)
+    assert resolver._owners == {}
+    await resolver.close()
+
+
+async def test_lookups_belong_to_the_requests_caller() -> None:
+    """The user, else the address (an IPv6 network), else what ``lookups_for`` says."""
+    user = RequestContext("r", "203.0.113.9", "GET", "/", actor="42")
+    anonymous = RequestContext("r", "2001:db8::1", "GET", "/")
+    unknown = RequestContext("r", None, "GET", "/")
+
+    assert lookup_owner() is None
+    with bind_request(user):
+        assert lookup_owner() == "actor:42"
+        with lookups_for("webhook:7"):
+            assert lookup_owner() == "webhook:7"
+        assert lookup_owner() == "actor:42"
+    with bind_request(anonymous):
+        assert lookup_owner() == "ip:2001:db8::/64"
+    with bind_request(unknown):
+        assert lookup_owner() == "ip:unknown"
+
+
+@pytest.mark.usefixtures("registered")
+async def test_a_host_whose_lookup_hung_backs_off_longer(lookups: Lookups) -> None:
+    """A failure after ``HUNG_LOOKUP_SECONDS`` keeps its host out for a minute.
+
+    A quick failure is remembered for ``FAILED_LOOKUP_SECONDS`` only. A slow
+    success is not held against its host (it is what one name server down
+    looks like): its answer is kept for the minute instead, and given at
+    once without a thread, as its port's only (SEC-r1-5).
+    """
+    resolver = GuardResolver()
+    lookups.answers["hung.test"] = socket.gaierror(socket.EAI_AGAIN, "Timed out")
+    lookups.answers["quick.test"] = socket.gaierror(socket.EAI_AGAIN, "No answer")
+    lookups.answers["slow.test"] = ["192.0.2.7"]
+    with freeze_time("2026-01-01") as clock:
+        clock.tick(3600)  # Far from the real clock: the failure is timed on this one.
+        hung = asyncio.create_task(resolver.lookup("hung.test", 443))
+        slow = asyncio.create_task(resolver.lookup("slow.test", 443))
+        await lookups.started.reach(2)
+        clock.tick(HUNG_LOOKUP_SECONDS)
+        lookups.release.set()
+        with pytest.raises(socket.gaierror, match="Timed out"):
+            await hung
+        assert await slow == [ipaddress.ip_address("192.0.2.7")]
+        with pytest.raises(socket.gaierror, match="No answer"):
+            await resolver.lookup("quick.test", 443)
+        lookups.answers["slow.test"] = ["192.0.2.8"]  # What a new lookup would say.
+        kept = await resolver.lookup("slow.test", 443)
+        other_port = await resolver.lookup("slow.test", 8443)
+        clock.tick(FAILED_LOOKUP_SECONDS)
+        for host in ("hung.test", "quick.test", "slow.test"):
+            with suppress(socket.gaierror):
+                await resolver.lookup(host, 443)
+        assert lookups.hosts == [
+            "hung.test",
+            "slow.test",
+            "quick.test",
+            "slow.test",  # Port 8443: a lookup of its own, quick, so not kept.
+            "quick.test",
+        ]
+        assert resolver.running == 0
+        clock.tick(HUNG_LOOKUP_BACKOFF - FAILED_LOOKUP_SECONDS)
+        lookups.answers["hung.test"] = ["192.0.2.9"]
+        assert await resolver.lookup("hung.test", 443) == [
+            ipaddress.ip_address("192.0.2.9")
+        ]
+        fresh = await resolver.lookup("slow.test", 443)
+    assert kept == [ipaddress.ip_address("192.0.2.7")]
+    assert other_port == [ipaddress.ip_address("192.0.2.8")]
+    assert fresh == [ipaddress.ip_address("192.0.2.8")]
+    assert list(resolver._answered) == []
+    await resolver.close()
+
+
+@pytest.mark.usefixtures("registered")
+async def test_kept_slow_answers_are_bounded(
+    lookups: Lookups, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The least recently used answer goes first, and its host is looked up again."""
+    monkeypatch.setattr(guard, "SLOW_ANSWERS", 2)
+    lookups.release.set()
+    resolver = GuardResolver(hung_after=0.0)  # Every answer counts as slow.
+    for host in ("a.test", "b.test", "a.test", "c.test", "b.test"):
+        await resolver.lookup(host, 443)
+
+    assert lookups.hosts == ["a.test", "b.test", "c.test", "b.test"]
+    assert list(resolver._answered) == [("c.test", 443), ("b.test", 443)]
+    await resolver.close()
+
+
+async def test_a_cancelled_lookup_keeps_no_answer() -> None:
+    """A lookup the threads never ran is not kept, however long it waited."""
+    resolver = GuardResolver(hung_after=0.0)
+    resolver._running["queued.test"] = 1
+    cancelled: Future[list[Any]] = Future()
+    assert cancelled.cancel()
+    resolver._finished("queued.test", cancelled, None, 0.0, 443)
+
+    assert (resolver._running, resolver._answered) == ({}, {})
 
 
 # TLS --------------------------------------------------------------------------

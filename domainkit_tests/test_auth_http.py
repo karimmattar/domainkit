@@ -15,6 +15,7 @@ from starlette.requests import HTTPConnection
 from starlette.testclient import WebSocketDenialResponse
 from starlette.websockets import WebSocketDisconnect
 
+from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.audit.tables import audit_log
 from domainkit.contrib.auth import (
@@ -28,6 +29,8 @@ from domainkit.contrib.auth import (
     authentication,
     hashers,
 )
+from domainkit.contrib.auth import api as auth_api
+from domainkit.contrib.auth import backends as auth_backends
 from domainkit.contrib.auth import middleware as auth_middleware
 from domainkit.contrib.auth import (
     tokens as token_module,
@@ -38,11 +41,12 @@ from domainkit.contrib.auth.repositories import PrincipalStore
 from domainkit.contrib.auth.tables import tokens
 from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.db import connections
+from domainkit.ddd import F
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
-from domainkit.http.ratelimit import address_key
+from domainkit.http.ratelimit import Decision, MemoryBackend, address_key
 from domainkit.http.websockets import MIDDLEWARE as WEBSOCKET_LIMITS
-from domainkit.log import SECURITY_LOGGER
+from domainkit.log import SECURITY_LOGGER, THROTTLE_INTERVAL, flush_throttled
 from domainkit.management import call_command
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import AUTH, MIDDLEWARE, Api, UseAuth
@@ -329,6 +333,136 @@ def test_logins_are_throttled_per_address_and_per_username(api: Api) -> None:
     } == {401}
 
 
+def test_logins_that_work_use_up_no_count(api: Api) -> None:
+    """Only wrong passwords count (AUTH-02).
+
+    A service account that logs in often, or an office behind one address,
+    used to be throttled by its own logins.
+    """
+    create_user("alice")
+    create_user("bob")
+    client = api(LOGIN_RATE="2/minute")
+    right = {"username": "alice", "password": PASSWORD}
+
+    logins = [client.post("/auth/login", json=right).status_code for _ in range(5)]
+    wrong = {"username": "bob", "password": "wrong"}
+    guesses = [client.post("/auth/login", json=wrong).status_code for _ in range(2)]
+    after = client.post("/auth/login", json=right)
+
+    assert logins == [200] * 5
+    assert guesses == [401, 401]
+    assert (after.status_code, after.json()["code"]) == (429, "login_throttled")
+
+
+def test_wrong_passwords_from_anywhere_hold_an_accounts_right_one_back(
+    api: Api,
+) -> None:
+    """What the per-account count costs, until 0.10's lockout (SEC-r1-2).
+
+    ``LOGIN_RATE`` wrong passwords for alice, from as many addresses, get
+    her right password refused before it is checked, from anywhere, until
+    the count frees a place (every ``period / limit`` seconds); a wrong
+    password sent in that place keeps her out again. Guessing her password
+    from many addresses stays bounded by the same count.
+    """
+    create_user("alice")
+    client = api(LOGIN_RATE="2/minute")
+    right = {"username": "alice", "password": PASSWORD}
+
+    def wrong_from(number: int) -> int:
+        caller = TestClient(client.app, client=(f"198.51.100.{number}", 1))
+        guess = {"username": "alice", "password": f"guess-{number}"}
+        return caller.post("/auth/login", json=guess).status_code
+
+    alice = TestClient(client.app, client=("203.0.113.50", 1))
+    with freeze_time() as clock:
+        guesses = [wrong_from(number) for number in range(1, 4)]
+        held = alice.post("/auth/login", json=right)
+        clock.tick(30)  # One place freed: taken by another wrong password.
+        again = [wrong_from(4), alice.post("/auth/login", json=right).status_code]
+        clock.tick(30)  # Freed again: alice gets in, and gives the place back.
+        logins = [alice.post("/auth/login", json=right).status_code for _ in range(2)]
+
+    assert guesses == [401, 401, 429]
+    assert (held.status_code, held.json()["code"]) == (429, "login_throttled")
+    assert again == [401, 429]
+    assert logins == [200, 200]
+
+
+class NoRefunds:
+    """A backend of a project's own that cannot give a request back."""
+
+    def __init__(self) -> None:
+        """Count in memory."""
+        self.memory = MemoryBackend()
+
+    async def hit(self, key: str, limit: int, period: float) -> Decision:
+        """Count as ``MemoryBackend`` does."""
+        return await self.memory.hit(key, limit, period)
+
+
+class Uncounted:
+    """A backend whose store is down: it lets every request through, uncounted."""
+
+    async def hit(self, key: str, limit: int, period: float) -> Decision:
+        """Let the request through without counting it, as ``RedisBackend`` does."""
+        return Decision(
+            allowed=True,
+            remaining=limit - 1,
+            reset_after=0.0,
+            retry_after=0.0,
+            counted=False,
+        )
+
+
+def test_backends_without_refunds_count_every_attempt(api: Api) -> None:
+    """A backend without ``refund`` keeps counting logins that work, as before."""
+    create_user("alice")
+    right = {"username": "alice", "password": PASSWORD}
+    with override_settings(RATE_LIMIT_BACKEND=f"{__name__}.NoRefunds"):
+        client = api(LOGIN_RATE="2/minute")
+        logins = [client.post("/auth/login", json=right).status_code for _ in range(3)]
+
+    assert logins == [200, 200, 429]
+
+
+def test_attempts_the_counter_cannot_count_may_fail_closed(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """By default they are let through; ``THROTTLE_FAIL_CLOSED`` refuses them."""
+    create_user("alice")
+    checked: list[str] = []
+    real = auth_backends.authenticate
+
+    async def counted(**credentials: str) -> Any:  # noqa: ANN401 - a user.
+        checked.append(credentials["username"])
+        return await real(**credentials)
+
+    monkeypatch.setattr(auth_api, "authenticate", counted)
+    wrong = {"username": "alice", "password": "wrong"}
+    with override_settings(RATE_LIMIT_BACKEND=f"{__name__}.Uncounted"):
+        client = api(LOGIN_RATE="1/minute")
+        let_through = [
+            client.post("/auth/login", json=wrong).status_code for _ in range(3)
+        ]
+        closed = api(LOGIN_RATE="1/minute", THROTTLE_FAIL_CLOSED=True)
+        refused = closed.post("/auth/login", json=wrong)
+        unlimited = api(LOGIN_RATE=None, THROTTLE_FAIL_CLOSED=True)
+        unthrottled = unlimited.post("/auth/login", json=wrong)
+
+    assert let_through == [401] * 3
+    assert (refused.status_code, refused.json()["code"]) == (
+        503,
+        "throttle_unavailable",
+    )
+    assert refused.json()["detail"] == (
+        "Attempts cannot be counted right now; try again later."
+    )
+    assert refused.headers["Retry-After"] == "1"
+    assert unthrottled.status_code == 401  # Nothing to count, nothing refused.
+    assert checked == ["alice"] * 4  # The refused one was never checked.
+
+
 def test_a_nul_in_a_login_is_a_refused_value(api: Api, database_url: str) -> None:
     """PostgreSQL refuses a NUL in text: a 422, not a 500; SQLite takes it."""
     client = api()
@@ -410,7 +544,12 @@ def test_password_changes_have_a_count_of_their_own(api: Api) -> None:
         body = {"old_password": old, "new_password": "n3w-Passw0rd!"}
         return client.post("/auth/password", headers=alice, json=body).status_code
 
-    assert [change(PASSWORD), change("wrong"), change("wrong")] == [204, 400, 429]
+    assert [change(PASSWORD), change("wrong"), change("wrong"), change("wrong")] == [
+        204,
+        400,
+        400,
+        429,
+    ]
 
 
 def test_a_flood_of_throttled_logins_is_audited_once_per_count(api: Api) -> None:
@@ -475,6 +614,72 @@ def test_refused_credentials_count_against_the_rate_limit(
     assert looked_up == 4  # The held requests were refused before any lookup.
     assert anonymous.json()["user"] == ""
     assert served.json()["user"] == "alice"
+
+
+def test_refused_credentials_are_logged_once_per_address_a_while(
+    api: Api, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A flood of bad tokens writes a line per address, not one per request."""
+    client = api()
+    elsewhere = TestClient(client.app, client=("203.0.113.9", 1))
+
+    for _ in range(3):
+        assert client.get("/whoami", headers=bearer("dkt_unknown")).status_code == 401
+    assert elsewhere.get("/whoami", headers=bearer("dkt_unknown")).status_code == 401
+
+    assert caplog.messages.count("Refused credentials: Invalid token.") == 2
+
+
+def test_a_burst_of_refused_credentials_that_stops_is_counted(
+    api: Api, caplog: pytest.LogCaptureFixture
+) -> None:
+    """500 bad tokens from one address, then nothing: the log says 500.
+
+    The hold is logged when it starts, and what it refuses is counted as
+    refused credentials are; both counts are written by the next security
+    line once their 10 seconds have passed, whoever it is for, or when the
+    application shuts down, whichever comes first.
+    """
+    with override_settings(RATE_LIMIT="100/minute"), freeze_time() as clock:
+        client = api()
+        # One event loop for all 500: a client used outside ``with`` runs each
+        # request on a loop of its own, and so an engine and a connection of
+        # its own, more than CI's PostgreSQL (100 connections) allows.
+        with TestClient(client.app, client=("203.0.113.9", 1)) as attacker:
+            codes = [
+                attacker.get("/whoami", headers=bearer(f"dkt_{i:043d}")).status_code
+                for i in range(500)
+            ]
+        clock.tick(THROTTLE_INTERVAL)
+        with TestClient(client.app, client=("198.51.100.7", 1)) as other:
+            assert (
+                other.get("/whoami", headers=bearer("dkt_unknown")).status_code == 401
+            )
+
+    assert (codes.count(401), codes.count(429)) == (100, 400)
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == SECURITY_LOGGER
+    ] == [
+        "Refused credentials: Invalid token.",
+        (
+            "Holding back credentials from ip:203.0.113.9 for 1 s: "
+            "more refused than RATE_LIMIT allows (100/minute)"
+        ),
+        # Written when the attacker's client shuts its application down.
+        "100 more refused_credentials line(s) for ip:203.0.113.9 were held back",
+        "399 more held_credentials line(s) for ip:203.0.113.9 were held back",
+        "Refused credentials: Invalid token.",  # The other address's.
+    ]
+
+
+def test_authentication_exempt_paths_hold_behind_a_root_path(api: Api) -> None:
+    """Under ``--root-path /api`` probes are exempt as they are without it."""
+    client = TestClient(api().app, root_path="/api")
+
+    assert client.get("/api/health", headers=bearer("dkt_unknown")).status_code == 200
+    assert client.get("/api/whoami", headers=bearer("dkt_unknown")).status_code == 401
 
 
 def test_held_addresses_are_let_go(api: Api, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -851,7 +1056,10 @@ def test_jwt_logins_refresh_and_end(api: Api, caplog: pytest.LogCaptureFixture) 
 
 
 def test_reused_refresh_tokens_of_deleted_users_still_fail(api: Api) -> None:
-    """Tokens have no foreign key: one can outlive a user removed without them."""
+    """Tokens have no foreign key: one can outlive a user's row deleted in bulk.
+
+    ``remove`` deletes them with the user; ``delete_rows`` bypasses it.
+    """
     create_user("alice")
     client = api(**JWT)
     first = login(client, "alice")["refresh_token"]
@@ -859,9 +1067,7 @@ def test_reused_refresh_tokens_of_deleted_users_still_fail(api: Api) -> None:
 
     async def remove() -> None:
         async with AuthUnitOfWork() as uow:
-            user = await uow.users.get_by_natural_key("alice")
-            assert user is not None
-            await uow.users.remove(user)
+            assert await uow.users.delete_rows(F("username") == "alice") == 1
             await uow.commit()
 
     run_async(remove())
@@ -1183,11 +1389,14 @@ def test_projects_add_their_own_authentication(api: Api) -> None:
     assert client.get("/private", headers={"X-User": "alice"}).status_code == 200
 
 
-def test_held_addresses_guess_other_headers_in_vain(api: Api) -> None:
+def test_held_addresses_guess_other_headers_in_vain(
+    api: Api, caplog: pytest.LogCaptureFixture
+) -> None:
     """A held address's guess that works, in a project's own header, gets 429 too.
 
     Only requests with ``Authorization`` are refused unread; others are
-    read, and the right name used to be served among the 429s.
+    read, and the right name used to be served among the 429s. The security
+    log counts it against the address's hold.
     """
     create_user("alice")
     with override_settings(RATE_LIMIT="3/minute"):
@@ -1205,7 +1414,18 @@ def test_held_addresses_guess_other_headers_in_vain(api: Api) -> None:
         anonymous = client.get("/whoami")
         elsewhere = TestClient(client.app, client=("203.0.113.9", 1))
         served = elsewhere.get("/whoami", headers={"X-User": "alice"})
+    flush_throttled()
+    held = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == SECURITY_LOGGER
+        and ("Holding" in record.getMessage() or "held_cred" in record.getMessage())
+    ]
 
+    assert len(held) == 2
+    assert held[0].startswith("Holding back credentials from ip:")
+    key = held[0].removeprefix("Holding back credentials from ").split()[0]
+    assert held[1] == f"1 more held_credentials line(s) for {key} were held back"
     assert guesses == [401, 401, 401, 429]
     assert (right.status_code, right.json()["code"]) == (429, "rate_limited")
     assert int(right.headers["Retry-After"]) > 0
@@ -1250,18 +1470,27 @@ def test_openapi_documents_tokens_and_errors(api: Api) -> None:
     }
 
 
-def test_token_commands_are_audited(api: Api) -> None:
-    """Creating a token and logging a user out everywhere leave events."""
+def test_token_commands_are_audited(api: Api, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Creating a token and logging a user out everywhere leave events.
+
+    They name the operator who ran the command (SEC-r2-2): an insider who
+    mints a token for someone else is named, not ``system``.
+    """
+    monkeypatch.setenv("DOMAINKIT_OPERATOR", "mallory")
     alice = create_user("alice")
     call_command("createtoken", "alice", "--name", "ci", stdout=io.StringIO())
-    call_command("cleartokens", "--user", "alice", stdout=io.StringIO())
+    call_command(
+        "cleartokens", "--user", "alice", "--operator", "bob", stdout=io.StringIO()
+    )
+    call_command("cleartokens", stdout=io.StringIO())  # Records nothing more.
 
     (created,) = audited("auth.token_created")
     assert (created["actor"], created["details"]) == (
-        "system",
+        "operator:mallory",
         {"user_id": str(alice), "name": "ci", "scopes": None},
     )
     (logged_out,) = audited("auth.user_logged_out")
+    assert logged_out["actor"] == "operator:bob"
     assert logged_out["details"] == {"user_id": str(alice), "everywhere": True}
 
 

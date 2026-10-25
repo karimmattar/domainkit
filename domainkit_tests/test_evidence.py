@@ -424,8 +424,8 @@ async def test_ledger_verification_failures_surface_as_tampering() -> None:
         await store(CorruptWrites(), namespace="e").record(FIXED)
     with pytest.raises(EvidenceTampered) as replaying:
         await store(reads, namespace="e").record(FIXED)
-    with pytest.raises(EvidenceTampered, match="failed verification reading e/x/y"):
-        await store(reads, namespace="e").get("e/x/y")
+    with pytest.raises(EvidenceTampered, match=f"failed verification reading {key}"):
+        await store(reads, namespace="e").get(key)
 
     assert str(writing.value) == f"The ledger failed verification writing {key}."
     assert str(replaying.value) == f"The ledger failed verification reading {key}."
@@ -476,10 +476,11 @@ async def test_records_that_are_not_evidence_are_tampering() -> None:
     """Revision 1 under an evidence key must parse as a record."""
     ledger = MemoryLedger()
     evidence_store_ = store(ledger)
-    await ledger.append(b"evidence/x/y", b"not json")
-    await ledger.append(b"evidence/x/z", b'{"format": 1}')
+    keys = [f"evidence/{'0' * 32}/{uuid.uuid4()}" for _ in range(2)]
+    await ledger.append(keys[0].encode(), b"not json")
+    await ledger.append(keys[1].encode(), b'{"format": 1}')
 
-    for key in ("evidence/x/y", "evidence/x/z"):
+    for key in keys:
         with pytest.raises(EvidenceTampered, match="does not hold an evidence record"):
             await evidence_store_.get(key)
 
@@ -512,16 +513,56 @@ async def test_records_under_another_key_are_tampering() -> None:
 
 
 async def test_keys_from_an_earlier_namespace_or_subject_key_still_read() -> None:
-    """Receipts keep working after NAMESPACE or SUBJECT_KEY changes."""
+    """Receipts keep working after SUBJECT_KEY and NAMESPACE changes.
+
+    After a NAMESPACE change, while ``PREVIOUS_NAMESPACES`` lists the old one.
+    """
     ledger = MemoryLedger()
     evidence = Evidence(kind="consent.given", subject="customer:1")
     receipt = await store(ledger).record(evidence)
     later = LedgerEvidenceStore(
-        ledger, namespace="moved", max_bytes=4096, subject_key=b"k" * 32
+        ledger,
+        namespace="moved",
+        max_bytes=4096,
+        subject_key=b"k" * 32,
+        previous_namespaces=["evidence"],
+    )
+    rekeyed = LedgerEvidenceStore(
+        ledger, namespace="evidence", max_bytes=4096, subject_key=b"k" * 32
     )
 
     assert (await later.verify(receipt)).evidence == evidence
+    assert (await rekeyed.verify(receipt)).evidence == evidence
     assert await later.for_subject("customer:1") == []
+
+
+async def test_keys_outside_the_namespace_are_not_found() -> None:
+    """``get`` reads its own namespaces' evidence keys only (DATA-08).
+
+    At 0.9.0 any key ending in a record's id was read: another project's or
+    environment's evidence on a shared ledger, and an audit anchor came
+    back as tampering instead of not found.
+    """
+    ledger = MemoryLedger()
+    evidence = Evidence(kind="consent.given", subject="customer:1")
+    receipt = await store(ledger, namespace="staging").record(evidence)
+    await ledger.append(b"domainkit/audit/default", b'{"seq": 1}')
+    production = store(ledger, namespace="production")
+    digest = subject_digest("customer:1", SUBJECT_KEY)
+
+    for key in (
+        receipt.key,
+        "domainkit/audit/default",
+        f"production/{digest}",
+        f"production/{digest}/{evidence.id}/more",
+        f"production/{digest[:-1]}/{evidence.id}",
+        f"/{digest}/{evidence.id}",
+    ):
+        with pytest.raises(EvidenceNotFound, match="No evidence under"):
+            await production.get(key)
+    with pytest.raises(EvidenceNotFound):
+        await production.verify(receipt)
+    assert (await store(ledger, namespace="staging").get(receipt.key)).intact
 
 
 async def test_missing_and_oversized_evidence() -> None:
@@ -530,7 +571,7 @@ async def test_missing_and_oversized_evidence() -> None:
     big = Evidence(kind="k", subject="s", facts={"blob": "x" * 5000})
 
     with pytest.raises(EvidenceNotFound, match="No evidence under"):
-        await evidence_store_.get("evidence/none/none")
+        await evidence_store_.get(f"evidence/{'0' * 32}/{uuid.uuid4()}")
     with pytest.raises(ValueError, match="the limit is 4096"):
         await evidence_store_.record(big)
 

@@ -43,9 +43,12 @@ class NotificationsConfig(DomainConfig):
             (SMS_TASK, send_queued_sms),
             (PUSH_TASK, send_queued_push),
         ):
-            task(name=name, max_attempts=config.MAX_ATTEMPTS, queue=config.QUEUE)(
-                function
-            )
+            task(  # Numbers, tokens, codes: blanked once dead too.
+                name=name,
+                max_attempts=config.MAX_ATTEMPTS,
+                queue=config.QUEUE,
+                sensitive=True,
+            )(function)
         backends = {
             "SMS_BACKEND": get_sms_backend().deployable,
             "PUSH_BACKEND": get_push_backend().deployable,

@@ -25,10 +25,19 @@ address gets 429, and its requests with an ``Authorization`` header are
 refused before any lookup until ``Retry-After`` has passed. Credentials in
 other headers, which only a project's own class reads, are refused too,
 once read, even when they hold: a guess that works gets the same 429.
-Only credentials that do not hold (401) count: a refusal of credentials
-that do, such as a cookie request that fails its CSRF checks (403), is a
-request another site can make a browser send, and counting it would let
-that site lock everyone behind the browser's address out.
+Only what can be guessed is held back: a session cookie or a client
+certificate that holds is served (their classes are not ``guessable``),
+so guesses from an address shared with browsers (an office, a carrier, a
+proxy) never log its users out. Only credentials that do not hold (401)
+count: a refusal of credentials that do, such as a cookie request that
+fails its CSRF checks (403), is a request another site can make a browser
+send, and counting it would let that site lock everyone behind the
+browser's address out.
+
+The security log has a line when an address is held, and counts what it
+refuses while held, as it counts refused credentials: throttled per
+address (``domainkit.log.ThrottledLog``), so a burst that stops still
+shows its size.
 
 An open WebSocket or event stream has its credentials checked again while
 it lasts (``reauthenticate``, called by ``domainkit.http.live``), so a
@@ -38,6 +47,7 @@ change as soon as requests of this process do (``principals``).
 """
 
 import logging
+import math
 import threading
 from collections import OrderedDict
 from dataclasses import replace
@@ -52,8 +62,9 @@ from domainkit.conf import settings
 from domainkit.context import bind_request, current_request
 from domainkit.http.errors import error_response
 from domainkit.http.live import REAUTHENTICATE
+from domainkit.http.middleware import request_path
 from domainkit.http.ratelimit import Backend, Decision, address_key, refuse
-from domainkit.log import SECURITY_LOGGER
+from domainkit.log import SECURITY_LOGGER, ThrottledLog
 from domainkit.utils.module_loading import import_string
 from domainkit.utils.rates import parse_rate
 
@@ -89,6 +100,8 @@ class AuthenticationMiddleware:
         self.limiter: Backend | None = (
             import_string(settings.RATE_LIMIT_BACKEND)() if self.rate else None
         )
+        self.log = ThrottledLog(security_logger)
+        """Refused credentials, at most a line per address a while."""
         self.held: OrderedDict[str, float] = OrderedDict()
         """Addresses over the limit, and until when (``monotonic()``)."""
         # Event loops on several threads (free-threaded Python) share it.
@@ -96,7 +109,10 @@ class AuthenticationMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Authenticate, then serve the request as its user."""
-        if scope["type"] not in {"http", "websocket"} or scope["path"] in self.exempt:
+        if (
+            scope["type"] not in {"http", "websocket"}
+            or request_path(scope) in self.exempt
+        ):
             await self.app(scope, receive, send)
             return
         connection = HTTPConnection(scope)
@@ -106,18 +122,21 @@ class AuthenticationMiddleware:
         # request, as if this one had come first.
         held = self._held(address_key(scope)) if self.held else None
         if held is not None and "authorization" in connection.headers:
+            self._log_held(address_key(scope), held[1])
             await refuse(scope, receive, send, *held)
             return
         try:
-            credentials = await self._authenticate(connection)
+            found = await self._identify(connection)
         except _Refused as refused:
             await self._refuse(scope, receive, send, refused)
             return
-        if held is not None and credentials is not None:
+        if held is not None and found is not None and found[0].guessable:
             # Credentials in another header, read by a project's own class,
             # are refused once read: a guess that works must not stand out.
+            self._log_held(address_key(scope), held[1])
             await refuse(scope, receive, send, *held)
             return
+        credentials = None if found is None else found[1]
         scope["user"] = AnonymousUser() if credentials is None else credentials.user
         scope["auth"] = credentials
         scope[REAUTHENTICATE] = self.reauthenticate
@@ -163,13 +182,20 @@ class AuthenticationMiddleware:
 
     async def _authenticate(self, connection: HTTPConnection) -> Credentials | None:
         """The first class's verdict on the request's credentials."""
+        found = await self._identify(connection)
+        return None if found is None else found[1]
+
+    async def _identify(
+        self, connection: HTTPConnection
+    ) -> tuple[BaseAuthentication, Credentials] | None:
+        """The class that recognized the request's credentials, and them."""
         for authenticator in self.authenticators:
             try:
                 credentials = await authenticator.authenticate(connection)
             except AuthenticationFailed as exc:
                 raise _Refused(authenticator, exc) from None
             if credentials is not None:
-                return credentials
+                return authenticator, credentials
         return None
 
     async def _refuse(
@@ -180,7 +206,12 @@ class AuthenticationMiddleware:
         A 401 counts against ``RATE_LIMIT`` for the address, and past it is
         a 429 instead; other refusals (a 403 for CSRF) are not counted.
         """
-        security_logger.warning("Refused credentials: %s", refused.error.detail)
+        self.log.warning(
+            "refused_credentials",
+            address_key(scope),
+            "Refused credentials: %s",
+            refused.error.detail,
+        )
         unauthorized = refused.error.status_code == status.HTTP_401_UNAUTHORIZED
         if unauthorized and self.rate is not None and self.limiter is not None:
             limit, period = self.rate
@@ -188,6 +219,7 @@ class AuthenticationMiddleware:
             decision = await self.limiter.hit(f"refused:{address}", limit, period)
             if not decision.allowed:
                 self._hold(address, decision.retry_after)
+                self._log_held(address, decision)
                 await refuse(scope, receive, send, limit, decision)
                 return
         if scope["type"] == "websocket":
@@ -211,6 +243,22 @@ class AuthenticationMiddleware:
             self.held.move_to_end(address)
             if len(self.held) > MAX_HELD:
                 self.held.popitem(last=False)
+
+    def _log_held(self, address: str, refusal: Decision) -> None:
+        """Log that ``address``'s credentials are refused unread: throttled, counted.
+
+        The line names the rate the address went past (``RATE_LIMIT``), not a
+        count: the backend says only that it was past it.
+        """
+        self.log.warning(
+            "held_credentials",
+            address,
+            "Holding back credentials from %s for %d s: more refused than "
+            "RATE_LIMIT allows (%s)",
+            address,
+            math.ceil(refusal.retry_after),
+            settings.RATE_LIMIT,
+        )
 
     def _held(self, address: str) -> tuple[int, Decision] | None:
         """The limit and the refusal ``address`` is still held to, if any."""

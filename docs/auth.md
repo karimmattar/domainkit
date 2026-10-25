@@ -157,6 +157,15 @@ are given and refuse a taken username (`UsernameTaken`, a 409), also when
 two requests race for it and the unique constraint refuses the second; they
 do not validate it. Call `validate_password(password, user)` where people choose
 passwords. `set_password(user, None)` makes a password unusable.
+`remove(user)` deletes the user with every credential of theirs, in the
+same transaction: tokens, sessions, refresh tokens, client certificates,
+and the second factor's secret and recovery codes
+(`forget_credentials(user_id)`, which privacy erasure uses too). A user
+model that is `SoftDeletable` keeps the row, marked deleted: `remove`
+forgets the credentials all the same and deactivates the user
+(`UserStatusChanged`), since logging in and every request read
+`is_active`, not `deleted_at`; `restore` brings the row back inactive,
+for staff to activate. A bulk `delete_rows` bypasses it, and leaves them.
 
 Changes are recorded as events, never with passwords or hashes in them:
 `UserCreated`, `PasswordChanged`, `UserStatusChanged`, `UserJoinedGroup`,
@@ -203,7 +212,15 @@ lists what the admin API may change (`email`, `first_name`, and
 `READ_ONLY_FIELDS` what it only shows (`date_joined`). A new field, such
 as `risk_flag` above, stays out of the admin API until you list it.
 Startup refuses names the model lacks, and protected fields (credentials,
-status flags, grants, the username) in `EDITABLE_FIELDS`.
+status flags, grants, the username) in `EDITABLE_FIELDS`. A model may add
+to `PROTECTED_FIELDS`, never take away: `PROTECTED_FLOOR` (`id`,
+`version`, `password`, `last_login`, `date_joined`, `email_verified`,
+`is_active`, `is_staff`, `is_superuser`, `groups`, `user_permissions`)
+stays protected whatever the model says, since those change through their
+own methods, which the admin API guards and which record their own
+events. A user's `repr` shows its id and status flags only, never names or
+addresses, and `request.auth`'s shows the user's id, the scheme, and the
+scopes.
 
 ```python
 AUTH = {
@@ -375,8 +392,10 @@ products = ResourceRouter(
 - Grants are stored in the database of the objects they are about, in
   `domainkit_object_permissions`, which every database hosting a domain
   gets. Ids may be UUIDs, integers, or text, each in a column of its type.
-  User and group ids are not foreign keys: deleting a user leaves their
-  grants unused, never reused.
+  User and group ids are not foreign keys. Deleting a user (a
+  repository's `remove`, or the admin API) deletes the grants they held
+  in the user's database, in the same transaction; grants kept in another
+  database stay, unused and never reused.
 - Grants go with their object: when the ORM deletes an object's row (a
   repository's `remove`), the grants on it are deleted in the same
   transaction, so an object stored later with the same id (a slug, or an
@@ -855,9 +874,17 @@ Tokens come as OAuth 2's token response:
 {"access_token": "eyJhbGciOi...", "token_type": "Bearer", "expires_in": 300, "refresh_token": "dkt_q9Xc..."}
 ```
 
-Logins are limited to `AUTH.LOGIN_RATE` (10 a minute) per client address
-(IPv6 per network, `RATE_LIMIT_IPV6_PREFIX`) and per account, with the
-`RATE_LIMIT_BACKEND` (use `RedisBackend` behind several replicas). Names
+Wrong passwords are limited to `AUTH.LOGIN_RATE` (10 a minute) per client
+address (IPv6 per network, `RATE_LIMIT_IPV6_PREFIX`) and per account, with
+the `RATE_LIMIT_BACKEND` (use `RedisBackend` behind several replicas:
+`check` warns in staging and production when the backend counts in each
+process). Each attempt is counted before the password is checked, and
+given back if it holds, so logins that work never use the count up: a
+service account that logs in often, or an office behind one address, is
+not throttled by its own logins. Wrong passwords do use it up, whoever
+sends them, and once a count is full the next attempt is refused before
+its password is checked, a right one too (see below). A backend of your
+own without `refund` counts every attempt. Names
 that logging in treats as one account (`alice`, `ALICE`, and their
 full-width or mathematical look-alikes, under NFKC) share one count.
 Password changes have a count of their own per user, so throttled logins
@@ -872,22 +899,55 @@ attributed to the user.
 
 Refused tokens are counted too, per client address, against `RATE_LIMIT`:
 they never reach `RateLimitMiddleware`, which counts the user. Past the
-limit the address gets 429, and its requests with credentials are refused
-before any lookup until `Retry-After` has passed. Credentials in another
-header than `Authorization`, which only a class of your own reads (an
+limit the address gets 429, and its requests with an `Authorization`
+header are refused before any lookup until `Retry-After` has passed.
+Credentials in another header, which only a class of your own reads (an
 `X-API-Key`), are read, and refused with the same 429 even when they hold,
-so a guess that works never stands out. An opaque token that does not have
+so a guess that works never stands out; set `guessable = False` on a class
+whose credentials no client can send at will (a header only your gateway
+sets). Session cookies and client certificates are not guessed (a cookie
+that does not hold leaves the request anonymous; a certificate takes its
+private key), so those that hold are served while their address is held:
+guesses from an address shared with browsers (an office, a carrier, a
+proxy) never log its users out. An opaque token that does not have
 the form of an issued one is refused without a lookup. Only credentials
 that do not hold (401) count: a cookie request refused by the CSRF checks
 (403) is one any other site can make a browser send, and counting it
 would let that site lock out everyone behind the browser's address.
 
+When `RATE_LIMIT_BACKEND` cannot count (`RedisBackend` while Redis fails),
+password and code checks, and requests for mail, are let through
+uncounted, as other requests are. Set `AUTH.THROTTLE_FAIL_CLOSED
+= True` to refuse them instead, with `503 throttle_unavailable` and
+`Retry-After`, until the backend counts again: a brute force timed with a
+cache outage then gets no attempts, and neither do your users.
+
 The count per account is what stops guessing one user's password from many
-addresses, and it also lets anyone hold that user's logins back: attempts
-for a name count whoever sends them, so a caller who keeps sending
-`LOGIN_RATE` wrong passwords for it leaves its user few attempts of their
-own. Sessions already open are not affected, and password changes have
-their own count. The audited `throttled` refusals show such a flood.
+addresses, and it also lets anyone hold that user's logins back. What
+holds, and what does not:
+
+- At most `LOGIN_RATE` wrong passwords a period are checked for one
+  account, from however many addresses, and at most `LOGIN_RATE` from one
+  address (an IPv6 network), for however many accounts.
+- Logins that work never use a count up, so many users behind one address,
+  or one that logs in often, are never refused for their own logins.
+- Wrong passwords use the counts up whoever sends them. `LOGIN_RATE` wrong
+  passwords for a username in a period, from any addresses, get its
+  user's right password refused with 429 everywhere; the count frees a
+  place every `period / limit` seconds (6 for `"10/minute"`), so a caller
+  who keeps sending one wrong password that often keeps the user out.
+  `LOGIN_RATE` wrong passwords from one address, for any usernames, get
+  every login from that address refused the same way: one person behind
+  an office's or a carrier's address can keep everyone there out.
+- Sessions and tokens already issued are not affected, and password
+  changes have their own count per user. The audited `throttled`
+  refusals (once per count and period) show such a flood.
+
+A per-account lockout stored in the database, with an audited unlock and
+a way for the user to sign in that a stranger's failures do not block, is
+planned for 0.10, on these counts of failures. Until then, a service
+where this matters can raise `LOGIN_RATE` (which raises the guessing bound
+with it) or put its own measures in front of `/auth/login`.
 
 ## Two-factor logins
 
@@ -923,12 +983,16 @@ tokens. Browser sessions do the same: `POST /session` answers `202`, and
   side, is accepted once: the step is recorded, and a code of that step or
   an earlier one is refused, so a code seen over a shoulder cannot be
   replayed.
-- Code checks count against `MFA.RATE` (10 an hour) per user, wherever
-  they come from, and per client address at `/mfa/login`: a guesser who
-  has the password gets a few hundred tries a day at a one-in-a-million
-  code. At `/mfa/login` an attempt counts for the user only once its
-  challenge holds, so a forged challenge cannot use up the count; anyone
-  with the password can, and hold the user's logins back for the hour.
+- Wrong codes count against `MFA.RATE` (10 an hour) per user, wherever
+  they come from, and at `/mfa/login` against `MFA.ADDRESS_RATE` (60 an
+  hour) per client address: a guesser who has the password gets a few
+  hundred tries a day at a one-in-a-million code. Codes that work are not
+  counted, so an office or a carrier's network behind one address logs
+  in as often as it needs. At `/mfa/login` a code counts only once its
+  challenge holds, so a forged challenge cannot use up either count;
+  challenges that do not hold count against `LOGIN_RATE` per address once
+  checked, and never hold a valid one back. Anyone with the password can
+  use up the user's count, and hold the user's logins back for the hour.
   The audited `throttled` refusals show it.
 - Turning it off, and new recovery codes, need the password and a code:
   a stolen session cannot remove the factor.
@@ -998,10 +1062,11 @@ user's password hash, last login, email, and status, so it stops working
 once it is used, once the user logs in, or once any of those changes. A
 wrong token, a used or expired one, and one for no user all get the same
 `400 invalid_token`. Requests for mail count against `EMAIL_RATE` (5 an
-hour) per client address and per email address; token checks count
-against `LOGIN_RATE` per client address. They are not counted per user:
-a signature cannot be guessed, and a count that anyone could use up with
-forged tokens would lock the user out of the link they were sent.
+hour) per client address and per email address; tokens that do not hold
+count against `LOGIN_RATE` per client address, once checked. They are not
+counted per user, nor before the check: a signature cannot be guessed,
+and a count that anyone could use up with forged tokens would lock people
+out of the links they were sent. A token that holds always works.
 
 The audit trail records `auth.password_reset_requested` for each link
 mailed, `auth.password_reset` for a reset (and `denied`, with the reason
@@ -1076,7 +1141,8 @@ A row goes when its link is used, when the worker has told its address
 that the name or the address is taken, or, past
 `EMAIL_VERIFICATION_TIMEOUT`, with the hourly purge of expired tokens.
 Signups count against `EMAIL_RATE` per client address and per email
-address, links checked against `LOGIN_RATE` per client address, and new
+address, links that do not hold against `LOGIN_RATE` per client address
+(once checked, so forged ones never hold a valid one back), and new
 accounts are audited as `auth.user_signed_up`.
 Two links for one new address used at the same moment can both make an
 account: email addresses are not unique in the user table.
@@ -1155,7 +1221,10 @@ anyone may call. Each can sit on the route, on a dependency it uses, or on
 a router it is included through. Routes that say nothing are listed by
 `manage.py check`, logged when the application starts in development and
 tests, and refused in staging and production, where the application does
-not start:
+not start. The application is checked when it is built, and again when it
+starts serving (its lifespan, once the domains have started), so a router
+included afterwards, in `asgi.py` or by a domain's startup, is checked
+too; requests never pay for it:
 
 ```text
 The application has problems:
@@ -1217,7 +1286,7 @@ custom user), `auth.*_group`, or `auth.view_permission`.
 | `POST /users` | `{"username", "password", "is_active", "is_staff", "is_superuser", "fields"}` | `201` and the user. The password is validated; without one, it is unusable. |
 | `GET /users/{id}` | | The user. |
 | `PATCH /users/{id}` | `{"is_active", "is_staff", "is_superuser", "fields"}` | The user; what is left out stays. |
-| `DELETE /users/{id}` | | `204`; the user's tokens go too. |
+| `DELETE /users/{id}` | | `204`; the user's tokens, second factor (secret and recovery codes), and object permissions go too. |
 | `POST /users/{id}/password` | `{"password"}` | `204`; `null` makes it unusable. Every session of the user ends. |
 | `POST /users/{id}/logout` | | `204`: every session of the user ends. |
 | `PUT /users/{id}/groups` | `{"groups": [names]}` | The user, in exactly those groups. |
@@ -1238,7 +1307,8 @@ and `fields`: the ones the model lists in `EDITABLE_FIELDS` and
 `EDITABLE_FIELDS` (`editable_fields()`); naming any other field answers
 `422 unknown_user_field`. Values are checked against the
 field's type annotation (`422 invalid_user_field`), and `clean_field(name,
-value)`, which a custom user may override, tidies what is stored.
+value)`, which a custom user may override, tidies what is stored, when a
+user is made as when one is changed.
 
 Staff hand out only what they have:
 
@@ -1283,8 +1353,9 @@ changed what.
 | `TOKEN_TTL` | 14 days | How long a login's opaque token works; `None` until revoked. |
 | `TOKEN_PREFIX` | `"dkt_"` | Starts every opaque token; changing it invalidates existing tokens. |
 | `MAX_LIVE_TOKENS` | `100` | Live access tokens (logins and personal tokens) a user may hold and still make a personal token; past it, `409 too_many_tokens` (1 to 10,000). |
-| `LOGIN_RATE` | `"10/minute"` | Login and password-change attempts per client address and per username, and checks of link tokens per client address; `None` for no limit. |
+| `LOGIN_RATE` | `"10/minute"` | Wrong passwords at login per client address and per username, and at password changes per user; reset, verification, signup, and second-factor links that do not hold, per client address. Checks that succeed are not counted. `None` for no limit. |
 | `EMAIL_RATE` | `"5/hour"` | Requests that send mail (resets, verifications, signups) per client address and per email address or user. |
+| `THROTTLE_FAIL_CLOSED` | `False` | While `RATE_LIMIT_BACKEND` cannot count (Redis failing), refuse password and code checks, and requests for mail, with `503 throttle_unavailable`, rather than let them through uncounted. |
 | `PASSWORD_RESET_TIMEOUT` | 1 hour | How long a reset link works. |
 | `PASSWORD_RESET_URL` | `None` | Your page that takes a reset token: `{token}` marks where. Staging and production refuse `http://`, here and in the other link URLs. |
 | `EMAIL_VERIFICATION_TIMEOUT` | 3 days | How long a verification link works. |
@@ -1316,7 +1387,8 @@ changed what.
 | `CHALLENGE_TTL` | 5 minutes | How long the step between the password and the code may take (an hour at most). |
 | `RECOVERY_CODES` | `10` | Recovery codes each user gets (1 to 50). |
 | `WINDOW` | `1` | Steps of 30 seconds either side of now whose codes count (0 to 10). |
-| `RATE` | `"10/hour"` | Codes checked per user, and per client address at `/mfa/login`; `None` for no limit. |
+| `RATE` | `"10/hour"` | Wrong codes per user, wherever they come from; `None` for no limit. |
+| `ADDRESS_RATE` | `"60/hour"` | Wrong codes per client address at `/mfa/login`, with a challenge that holds; `None` for no limit. |
 
 | `AUTH["CLIENT_CERT"]` key | Default | Meaning |
 | --- | --- | --- |
