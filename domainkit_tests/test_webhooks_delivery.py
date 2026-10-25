@@ -420,8 +420,14 @@ async def test_a_direct_call_makes_one_final_attempt(hooks: Receiver) -> None:
     assert (done.status, done.attempts) == (FAILED, 1)
 
 
+# The real resolver, for names the fakes below do not own: the test database's
+# host among them (``localhost`` in CI, which asyncpg resolves through
+# ``loop.getaddrinfo`` with every argument given by position).
+REAL_GETADDRINFO = socket.getaddrinfo
+
+
 class HungDns:
-    """``getaddrinfo``: ``*.hang.test`` waits for ``release``; the rest are local."""
+    """``getaddrinfo``: ``*.hang.test`` waits, then fails; other ``.test`` are local."""
 
     def __init__(self, hung: int) -> None:
         """Let ``all_hung`` be set once ``hung`` lookups wait."""
@@ -431,8 +437,10 @@ class HungDns:
         self.release = threading.Event()
         self._lock = threading.Lock()
 
-    def __call__(self, host: str, port: int, **options: Any) -> list[Any]:  # noqa: ANN401
+    def __call__(self, host: str, port: int, *args: Any, **options: Any) -> list[Any]:  # noqa: ANN401
         """Wait for ``release`` and fail, for a hung host; else answer at once."""
+        if not host.endswith(".test"):
+            return REAL_GETADDRINFO(host, port, *args, **options)
         if host.endswith(".hang.test"):
             with self._lock:
                 self.waiting += 1
@@ -489,7 +497,7 @@ async def test_one_subscribers_hung_hosts_leave_lookups_for_the_others(
 
 
 class SlowDns:
-    """``*.slow.test`` waits for ``release``, then fails or answers; the rest are local.
+    """``*.slow.test`` waits, then fails or answers; other ``.test`` names are local.
 
     The test moves the clock past ``HUNG_LOOKUP_SECONDS`` before it lets
     them go, so each took that long.
@@ -504,8 +512,10 @@ class SlowDns:
         self.release = threading.Event()
         self._lock = threading.Lock()
 
-    def __call__(self, host: str, port: int, **options: Any) -> list[Any]:  # noqa: ANN401
+    def __call__(self, host: str, port: int, *args: Any, **options: Any) -> list[Any]:  # noqa: ANN401
         """Wait for ``release`` on a slow host; answer 127.0.0.1, or fail."""
+        if not host.endswith(".test"):
+            return REAL_GETADDRINFO(host, port, *args, **options)
         if host.endswith(".slow.test"):
             with self._lock:
                 self.slow_lookups += 1

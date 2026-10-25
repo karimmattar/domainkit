@@ -637,18 +637,24 @@ def test_a_burst_of_refused_credentials_that_stops_is_counted(
 
     The hold is logged when it starts, and what it refuses is counted as
     refused credentials are; both counts are written by the next security
-    line once their 10 seconds have passed, whoever it is for.
+    line once their 10 seconds have passed, whoever it is for, or when the
+    application shuts down, whichever comes first.
     """
     with override_settings(RATE_LIMIT="100/minute"), freeze_time() as clock:
         client = api()
-        attacker = TestClient(client.app, client=("203.0.113.9", 1))
-        codes = [
-            attacker.get("/whoami", headers=bearer(f"dkt_{i:043d}")).status_code
-            for i in range(500)
-        ]
+        # One event loop for all 500: a client used outside ``with`` runs each
+        # request on a loop of its own, and so an engine and a connection of
+        # its own, more than CI's PostgreSQL (100 connections) allows.
+        with TestClient(client.app, client=("203.0.113.9", 1)) as attacker:
+            codes = [
+                attacker.get("/whoami", headers=bearer(f"dkt_{i:043d}")).status_code
+                for i in range(500)
+            ]
         clock.tick(THROTTLE_INTERVAL)
-        other = TestClient(client.app, client=("198.51.100.7", 1))
-        assert other.get("/whoami", headers=bearer("dkt_unknown")).status_code == 401
+        with TestClient(client.app, client=("198.51.100.7", 1)) as other:
+            assert (
+                other.get("/whoami", headers=bearer("dkt_unknown")).status_code == 401
+            )
 
     assert (codes.count(401), codes.count(429)) == (100, 400)
     assert [
@@ -661,9 +667,10 @@ def test_a_burst_of_refused_credentials_that_stops_is_counted(
             "Holding back credentials from ip:203.0.113.9 for 1 s: "
             "more refused than RATE_LIMIT allows (100/minute)"
         ),
-        "Refused credentials: Invalid token.",  # The other address's.
+        # Written when the attacker's client shuts its application down.
         "100 more refused_credentials line(s) for ip:203.0.113.9 were held back",
         "399 more held_credentials line(s) for ip:203.0.113.9 were held back",
+        "Refused credentials: Invalid token.",  # The other address's.
     ]
 
 
