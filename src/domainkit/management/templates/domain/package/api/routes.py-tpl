@@ -7,12 +7,12 @@ needs its model permission: ``{{ domain }}.view_{{ model }}`` to read, and
 
 from uuid import UUID
 
-from fastapi import APIRouter
-from pydantic import BaseModel, Field
-
 from domainkit.contrib.auth import AuthenticatedUser
 from domainkit.http import Filter, FilterSet, Pagination
 from domainkit.resources import ModelActions, PatchModel, ResourceRouter, schema_for
+from fastapi import APIRouter
+from pydantic import BaseModel, Field
+
 from {{ package }}.application import services
 from {{ package }}.application.commands import (
     Add{{ Aggregate }}Note,

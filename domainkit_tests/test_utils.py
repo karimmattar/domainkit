@@ -74,6 +74,42 @@ def test_format_python_sorts_imports_and_formats(tmp_path: Path) -> None:
     assert source.read_text(encoding="utf-8") == "import os\nimport sys\n\nx = [1, 2]\n"
 
 
+def test_format_python_is_quiet_and_leaves_no_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """Nothing printed, and no ``.ruff_cache`` left in a project just made."""
+    from domainkit.utils.formatting import format_python
+
+    (tmp_path / "pyproject.toml").write_text("[tool.ruff]\n", encoding="utf-8")
+    source = tmp_path / "generated.py"
+    source.write_text("import sys\nimport os\nx=[1,2]\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    assert format_python([source]) is True
+
+    assert source.read_text(encoding="utf-8") == "import os\nimport sys\n\nx = [1, 2]\n"
+    assert capfd.readouterr() == ("", "")
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "generated.py",
+        "pyproject.toml",
+    ]
+
+
+def test_format_python_leaves_code_it_cannot_parse(
+    tmp_path: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """A file ruff cannot parse stays as it is, and the command goes on."""
+    from domainkit.utils.formatting import format_python
+
+    broken = tmp_path / "broken.py"
+    broken.write_text("def (:\n", encoding="utf-8")
+
+    assert format_python([broken]) is True
+
+    assert broken.read_text(encoding="utf-8") == "def (:\n"
+    assert "broken.py" in capfd.readouterr().out
+
+
 def test_failing_checks_are_logged(caplog: pytest.LogCaptureFixture) -> None:
     """A failing check is named in the log, with its traceback."""
     import asyncio

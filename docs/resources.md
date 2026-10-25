@@ -430,7 +430,9 @@ The generators check every name (snake_case or CamelCase identifiers, no
 keywords, nothing already defined), find what they edit by its syntax
 tree, and plan every edit in memory: a file changed beyond recognition is
 refused, and then nothing is written. They format what they wrote with
-ruff. `fakes.py` gains `new_<name>()`, a valid aggregate, and
+the project's ruff, which `init` puts in its dev group; where ruff is not
+installed, they log a warning and leave the code for
+`ruff check --fix . && ruff format .`. `fakes.py` gains `new_<name>()`, a valid aggregate, and
 `new_<name>_request()`, a valid body to create one, which the tests of
 later generators start from. What they generate passes ruff, `mypy
 --strict`, and its own tests, as the generators' own test checks.
