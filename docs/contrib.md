@@ -109,7 +109,7 @@ inspects any outbox.
 | `BATCH_SIZE` | `50` | Most messages claimed at once (1 to 10,000). |
 | `CONCURRENCY` | `10` | Messages one worker process runs at the same time, from all its outboxes and queues together (1 to 65,535, RabbitMQ's largest prefetch). |
 | `SHUTDOWN_TIMEOUT` | `20.0` | Seconds a stopping worker lets running messages finish; the rest are stopped and run again (at most an hour). |
-| `RETENTION_SECONDS` | `604800.0` | Finished messages are deleted after this (7 days; at most a year). |
+| `RETENTION_SECONDS` | `604800.0` | Finished messages are deleted after this (7 days; at most a year); their arguments are blanked when they finish. Dead letters are kept until retried. |
 | `CLEANUP_INTERVAL` | `3600.0` | Seconds between those deletions (at most a day). |
 | `CLEANUP_BATCH_SIZE` | `1000` | Most finished messages one cleanup statement deletes (1 to 100,000). |
 | `BROKER` | `None` | An alias in `BROKERS`: workers take their work from that broker instead of polling the outbox (below). |
@@ -302,6 +302,7 @@ from domainkit.contrib.messaging import Backoff, current_attempt, task
     dont_retry_on=(InvoiceVoided,),  # these dead-letter at once
     priority=10,  # -100 to 100; higher runs first
     rate="20/minute",  # at most 20 runs a minute
+    sensitive=False,  # True: blank its arguments once it is dead, too
 )
 async def push_invoice(invoice_id: UUID) -> None:
     attempt = current_attempt()  # .number, .max_attempts, .last
@@ -326,6 +327,17 @@ async def push_invoice(invoice_id: UUID) -> None:
   over the rate goes back to the outbox, without spending an attempt, and
   comes due when the rate allows; held messages are spaced one interval
   apart.
+- **Arguments** stay in the outbox row (`payload`, in clear) only while
+  the message may still run. The worker blanks them (`{}`) in the
+  statement that marks it done, and `cancel` when it cancels it; the row
+  keeps the task's name, id, times, attempts, and error, for
+  `RETENTION_SECONDS`. A dead message keeps its arguments, so
+  `messages --retry` can run it again, for as long as it stays dead,
+  unless its task is `sensitive`: then they are blanked with its error
+  recorded, its headers say `payload_blanked`, and a retry refuses it.
+  Mark a task sensitive when its arguments hold secrets or personal data;
+  mail, text messages, and push notifications are. Better still, queue
+  ids and build the secret in the task.
 
 Durable event handlers use the `MESSAGING` settings.
 
@@ -408,16 +420,21 @@ options list messages without their arguments:
   `scheduled`);
 - `--locked`: messages a worker is running (`running`) or a relay has
   handed to the broker (`published`);
-- `--dead`: dead letters; `--retry ID` (or `all`) queues them again;
+- `--dead`: dead letters; `--retry ID` (or `all`) queues them again, except
+  those of `sensitive` tasks, whose arguments were blanked: `--retry ID`
+  refuses one, and `--retry all` says how many it left;
 - `--queue NAME` and `--limit N` narrow a listing.
 
 `messages --cancel ID` cancels a message no worker is running: a waiting
 one, or one on its way through the broker (its delivery is then skipped).
 A running message is refused. A cancelled message never runs, nor does the
-rest of its chain; it is kept as `cancelled` and deleted after
-`RETENTION_SECONDS`. `domainkit.contrib.messaging.admin` has the same
-operations for your own tools: `list_messages`, `cancel`, `queue_counts`,
-`queue_lag`, `retry_dead`.
+rest of its chain; it is kept as `cancelled`, without its arguments, and
+deleted after `RETENTION_SECONDS`. Retries and cancels are recorded in the
+audit trail with the operator who ran them
+([operators](reference.md#operators)). `domainkit.contrib.messaging.admin`
+has the same operations for your own tools, unrecorded: `list_messages`,
+`cancel`, `queue_counts`, `queue_lag`, `retry_dead`, and
+`blanked_dead_letters`.
 
 With Prometheus, `messaging_outbox_lag_seconds` (per queue) is the same
 lag, next to `messaging_outbox_messages`; alert when it grows.
@@ -552,7 +569,9 @@ router.include_router(webhooks_admin, prefix="/admin/webhooks")
 Each endpoint also needs a staff user or a superuser. Secrets never appear
 in listings, logs, events, or reprs; changes are recorded as events
 (`SubscriptionCreated` and others), which the audit trail keeps, with the
-URL's host only, since URLs may hold tokens. For the same reason, neither
+URL's host only, since URLs may hold tokens: a new URL is recorded in
+`SubscriptionChanged` with its host and the host before (`host`,
+`previous_host`), so the trail shows where events went. For the same reason, neither
 a `Subscription`'s `repr` nor those of the admin API's bodies show its
 URL. The two answers that hold a secret are marked `Cache-Control:
 no-store`: no cache keeps them, and
@@ -661,6 +680,10 @@ Subjects' keys live in `domainkit_audit_keys`, which is not append-only.
   `record("auth.login", Outcome.DENIED, personal={"username": username})`.
 - **`actor` and `target`** are not pseudonymised. The actor is a user's id;
   give targets ids, not names or emails.
+- **Lists that grow long or name people** can be kept as their size: a
+  field marked `Counted()` (`users: Annotated[tuple[str, ...], Counted()]`)
+  is audited as its number of items, while the event itself keeps them.
+  Flags count the users of `FlagChanged` this way.
 
 A value and its subject always give the same pseudonym, so the trail still
 answers "did this happen to this person?":
@@ -680,8 +703,11 @@ python manage.py auditforget 4b0c6f0e-...            # or: await forget(str(user
 python manage.py auditforget --anonymous-days 30     # anonymous callers' days before that
 ```
 
-Their pseudonyms stay in the trail, unchanged, but can no longer be linked
-to them by anyone: the key was random and is gone. A later event about them
+Each run is recorded as `operator.auditforget`, with the operator who ran
+it and how many subjects and keys, not which subjects (see
+[operators](reference.md#operators)). Their pseudonyms stay in the trail,
+unchanged, but can no longer be linked to them by anyone: the key was
+random and is gone. A later event about them
 gets a new key, unlinkable to the old pseudonyms. Run `--anonymous-days` on
 a schedule to keep anonymous callers' addresses only as long as you need
 them. Rows written before this release keep their values in clear; the
@@ -758,8 +784,17 @@ rewrite.
 - **Anchoring.** With `AUDIT.LEDGER` naming a ledger in `LEDGERS` (immudb),
   sealing also writes each chain's head (its number and link) there, at
   most once per `AUDIT.ANCHOR_EVERY`, as a new revision of
-  `domainkit/audit/<alias>`. immudb keeps every revision and verifies what
-  it returns.
+  `domainkit/audit/<AUDIT.NAMESPACE>/<alias>`. immudb keeps every revision
+  and verifies what it returns. Give each project and environment that
+  shares a ledger a namespace of its own (`"shop-production"`): without
+  one, anchors go under `domainkit/audit/<alias>`, the key of 0.9.0, which
+  every project on the ledger shares, so one project's anchors hold
+  another's back and read as rewritten anchors in its `auditverify`.
+  Setting a namespace on a trail anchored before keeps it verified:
+  `auditverify` also reads the heads anchored under the old key while
+  `AUDIT.PREVIOUS_ANCHORS` is on. If other projects wrote that key too,
+  their heads read as rewritten anchors there; set `PREVIOUS_ANCHORS` to
+  `False` once your namespace holds an anchor of its own.
 - **Verifying.** `python manage.py auditverify` checks every row against
   its seal, every link against the one before, and every anchored head
   against the chain. It prints what it found and fails on changed or
@@ -779,6 +814,24 @@ person (`auditforget`) deletes a key, not a row, so the chain stays intact.
 
 **Upgrading.** The seals table has a new `late` column: run
 `makemigrations` and `migrate` in each project that installs audit.
+
+### In staging and production
+
+The trail is tamper-evident only with four things in place, and each is
+easy to leave out: a ledger (`AUDIT.LEDGER`), a namespace on it
+(`AUDIT.NAMESPACE`), something that seals on a schedule (the worker, with
+`domainkit.contrib.messaging` installed, or `auditseal` from cron, said
+with `AUDIT.SEALED_EXTERNALLY = True`), and the `protect()` triggers on
+both tables. In staging and production, `manage.py check` warns about each
+setting that is missing, and the application, when it starts, asks each
+audited PostgreSQL database whether `domainkit_audit_log` and
+`domainkit_audit_seals` have their triggers, enabled (a disabled trigger
+counts as missing), and logs a warning for each database without them, or
+that did not answer within 10 seconds.
+
+These are warnings in 0.9.1. `AUDIT.REQUIRE_BASELINE = True` turns them
+into a refusal to start, listing what is missing; 0.10 makes that the
+default, so set the four now.
 
 Protect the seals like the trail, in the revision that creates them:
 
@@ -802,8 +855,12 @@ def downgrade() -> None:
 | `EVENTS` | `True` | Record every committed domain event. |
 | `EXCLUDE` | `()` | Actions to skip, as shell patterns (`catalog.*`, `*.viewed`). |
 | `LEDGER` | `None` | `LEDGERS` alias to anchor each chain's head on; `None` seals without anchoring. |
+| `NAMESPACE` | `None` | Part of the anchors' ledger key, `domainkit/audit/<NAMESPACE>/<alias>`: a lower-case letter, then up to 31 letters, digits, `_`, or `-`. `None` keeps the key of 0.9.0, which every project on the ledger shares; staging and production warn. |
+| `PREVIOUS_ANCHORS` | `True` | With `NAMESPACE`, also verify the heads anchored under `domainkit/audit/<alias>` before it was set. Turn it off when other projects anchored there too. |
 | `ANCHOR_EVERY` | 1 hour | Anchor a new head at most this often. |
 | `SEAL_EVERY` | 5 minutes | How often the worker seals new rows. |
+| `SEALED_EXTERNALLY` | `False` | `auditseal` runs from a schedule of your own (cron), not in the worker: staging and production then do not warn that nothing seals. |
+| `REQUIRE_BASELINE` | `False` | Refuse to start in staging and production without a ledger, a namespace, a sealing schedule, and the triggers, instead of warning. 0.10 makes it the default. |
 | `SEAL_LATE_WINDOW` | 15 minutes | How far before the newest sealed row a run looks for rows that committed late, up to a day. A row later than this stays unsealed until `auditseal --late`, and `auditverify` reports it once it is a day old: keep it above your longest transaction plus the clock skew between hosts. |
 | `SEAL_BATCHES` | `100` | Batches of 1,000 rows one run seals at most (1 to 10,000); the rest wait for the next run. |
 | `SEAL_BACKLOG_WARNING` | `100000` | Rows a run leaves unsealed past which it logs a warning. |
@@ -1000,6 +1057,12 @@ recorded = await evidence_store().verify(receipt)  # raises EvidenceTampered
   HMAC-SHA-256 of the subject under `SUBJECT_KEY`, so keys show no subject
   and nobody without the key can find a subject's records by hashing
   guesses. `for_subject("customer:42")` is a prefix scan.
+- `get` and `verify` read only keys of that form under `NAMESPACE` or one
+  of `PREVIOUS_NAMESPACES`; any other key is `EvidenceNotFound`, so a
+  caller who sends a key cannot read another project's or environment's
+  records on a shared ledger, or anything else on it. Changing
+  `NAMESPACE` hides the receipts written before until the old namespace
+  is listed in `PREVIOUS_NAMESPACES` (in 0.9.0, `get` read any key).
 - Recording is idempotent by evidence id: a retry returns the same receipt,
   and another record with that id is an `EvidenceConflict` (409). The ledger
   writes a key only if it is new, so writers racing to record the same
@@ -1048,6 +1111,7 @@ receipts always work.
 | --- | --- | --- |
 | `LEDGER` | `"evidence"` | Alias in `LEDGERS` (`immudb://`; `memory://` in tests). |
 | `NAMESPACE` | `"evidence"` | Key prefix, so projects or environments can share one ledger. |
+| `PREVIOUS_NAMESPACES` | `()` | Namespaces used before `NAMESPACE`, whose records `get` and `verify` still read; at most 8, each a namespace as `NAMESPACE` is. |
 | `MAX_BYTES` | `262144` | Largest record; keep documents elsewhere and record their digests. |
 | `SUBJECT_KEY` | `None` | Secret for the subject digests in keys, 32 characters or more. Required in staging and production; elsewhere a public development key is used. Keep it for as long as the evidence: a new key hides earlier records from `for_subject`, though the keys in their receipts still work. |
 
@@ -1109,8 +1173,16 @@ limit = await MAX_ITEMS.get()
 
 `get()` returns the stored value, or the default when none is stored. A
 stored value the type no longer accepts (the declaration changed) gives the
-default, and a warning in the log. Never keep secrets in dynamic settings:
-the audit trail records their values.
+default, and a warning in the log.
+
+The audit trail records each change of a setting with its value, for
+good. Declare a setting that holds a secret, or personal data, with
+`secret=True`: its changes are recorded as `{"key": ..., "value": null,
+"secret": true}`, and the staff API and `flags settings` show no value
+(`null`, `********`). The value is still stored as it is, in the table
+and the flags' cache entry, so keep credentials such as provider API keys
+in settings or a secret store rather than here. Changes of a flag record
+its rules, with its users as a count, not their ids.
 
 Change both from the command line, or through the staff API:
 

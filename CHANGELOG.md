@@ -6,6 +6,71 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- Mail, text messages, and push notifications no longer stay in the outbox
+  once they are sent. The worker blanks a message's arguments (`payload`)
+  in the statement that marks it done, and `messages --cancel` when it
+  cancels it; for 7 days (`RETENTION_SECONDS`) the row kept the recipients,
+  and any reset link or one-time code, in clear. The mail and
+  notifications tasks are now `sensitive`: when one dies, its arguments
+  are blanked too, its error kept, and `messages --retry` refuses it
+  instead of keeping an address or a code for good. Every other task's
+  finished messages are blanked the same way; their dead letters keep
+  their arguments, to be retried. `docs/mail.md` says what the outbox
+  keeps, and for how long (DATA-01; ADR 0029 amended).
+- Audit anchors can be kept apart on a shared ledger: `AUDIT.NAMESPACE`
+  writes them under `domainkit/audit/<namespace>/<alias>`, so another
+  project or environment on the same immudb no longer holds yours back or
+  shows as rewritten anchors in `auditverify`. A trail anchored before
+  stays verified: `verify` also reads the heads under the old key while
+  `AUDIT.PREVIOUS_ANCHORS` is on (N11, DATA-03; ADR 0069).
+- `EvidenceStore.get` and `verify` read only evidence keys under
+  `EVIDENCE.NAMESPACE` or one of the new `EVIDENCE.PREVIOUS_NAMESPACES`;
+  any other key, another project's on a shared ledger or an audit anchor,
+  is `EvidenceNotFound`. A project that changed `NAMESPACE` lists the old
+  one there to keep reading its receipts (DATA-08).
+- The commands that change or erase stored data as an operator,
+  `messages --retry` and `--cancel`, `auditforget`, `loaddata`, `flush`,
+  `partitions --prune`, and `privacy`, now know who runs them
+  (`--operator`, else `DOMAINKIT_OPERATOR`, else the system user), run as
+  the actor `operator:<name>` instead of `system`, and record each action
+  in the audit trail as `operator.<command>` with its outcome and counts
+  (N8, DATA-07; ADR 0070).
+- Changing a webhook subscription's URL is audited with the new host and
+  the one before (`SubscriptionChanged.host`, `previous_host`), never the
+  path or query: a subscription pointed elsewhere can now be traced in the
+  trail (DATA-06).
+- A dynamic setting declared `secret=True` is audited as changed, without
+  its value, and the staff API and `flags settings` show no value; a
+  flag's users are audited as a count. Until now both went into the
+  append-only trail in clear, for good (DATA-10).
+
+### Added
+
+- In staging and production, `check` warns when the audit trail is not
+  tamper-evident: no `AUDIT.LEDGER`, no `AUDIT.NAMESPACE` on it, or
+  nothing sealing on a schedule (no messaging, and no new
+  `AUDIT.SEALED_EXTERNALLY`); and the application, when it starts, logs
+  each audited PostgreSQL database whose `protect()` triggers are missing
+  or disabled. `AUDIT.REQUIRE_BASELINE = True` refuses to start instead;
+  0.10 makes that the default (N5, DATA-04; ADR 0069).
+- `@task(sensitive=True)` blanks a task's arguments when it dies, as
+  every message's are once done or cancelled, for arguments that hold
+  secrets or personal data; `admin.blanked_dead_letters` counts them
+  (DATA-01).
+- `domainkit.ddd.Counted`: a field marked `Annotated[..., Counted()]` is
+  audited as its number of items (DATA-10).
+
+### Changed
+
+- `privacy` takes `--operator` before its action (`privacy --operator
+  alice purge`); its exports, erasures, and purges are audited as that
+  operator rather than `system` (DATA-07).
+- Audit rows of `SettingChanged` carry `"secret": false` beside the value,
+  and those of `FlagChanged` the number of users instead of their ids
+  (DATA-10).
+
 ## [0.9.0] - 2026-10-22
 
 ### Added
