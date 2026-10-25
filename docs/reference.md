@@ -189,14 +189,14 @@ Each `BROKERS` entry:
 | `GUARD_LOOKUP_THREADS` | `16` | Threads (1 to 256) that look host names up for guarded calls and webhooks, in each process. One caller (a user, or an address) may hold a quarter of them, so hosts one caller chose that never answer leave the rest to others ([runtime.md](runtime.md#outgoing-http-calls)). |
 | `READINESS_TIMEOUT` | `5.0` | Seconds each readiness check may take (at most 60). |
 | `READINESS_CACHE_SECONDS` | `1.0` | How long a `/ready` result is reused, from when its checks ended; probes that come while checks run wait for them, so probe floods cannot load the database. |
-| `READINESS_DETAILS` | `False` | Name failing components in `/ready` responses (always logged). |
-| `ACCESS_LOG_QUIET_PATHS` | `/health`, `/ready` | Successful requests to these paths are logged at DEBUG. |
+| `READINESS_DETAILS` | `False` | Name failing components in `/ready` responses (always logged). A group of checks that raises instead of reporting is named as its group (`domains`, `databases`, `ledgers`, `caches`), logged, and kept like any failed round: a 503, never a 500. |
+| `ACCESS_LOG_QUIET_PATHS` | `/health`, `/ready` | Successful requests to these paths are logged at DEBUG; compared without the root path (`--root-path`). |
 | `ACCESS_LOG_SAMPLE_RATE` | `1.0` | Share of access lines written, from 0 to 1: `0.1` writes about one request in ten, each drawn on its own. Responses from 400 up (client errors, refusals, and server errors), requests without a response, and requests that take `ACCESS_LOG_SLOW_DURATION` or longer are always written, so only successes and redirects are sampled; `domainkit.security` and the audit trail are never sampled ([runtime.md](runtime.md#sampling-the-access-log)). |
 | `ACCESS_LOG_SLOW_DURATION` | `1.0` | Seconds (at most 3600): a request this slow or slower has its access line written whatever `ACCESS_LOG_SAMPLE_RATE` says. |
-| `TRUSTED_PROXIES` | `()` | Networks (`10.0.0.0/8`) whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed. The client is the right-most address that is not a trusted proxy, across every line of the header; hops may carry a port. The scheme is the `X-Forwarded-Proto` value at the client's place from the right, or the last one. Empty: the socket peer is the client. |
+| `TRUSTED_PROXIES` | `()` | Networks (`10.0.0.0/8`) whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed, and `"unix"` for the proxy on the other end of a unix socket (`uvicorn --uds`), which has no address. The client is found by walking `X-Forwarded-For` from the right, across every line of the header, through trusted proxies: it is the first hop that is not one, and nothing left of it is read. Hops may carry a port. A hop there that is no address (a proxy's `unknown`) counts the client as the last proxy passed, logged on `domainkit.security`. The scheme is the `PROXY_SCHEME_HEADER` value at the client's place from the right, or the right-most one when there are fewer. Empty: the socket peer is the client. |
 | `PROXY_SCHEME_HEADER` | `"X-Forwarded-Proto"` | The header in which the trusted proxies say the client's scheme (a header name). `None`: the scheme is never taken from a header. Set it to `None` when they do not set it (HAProxy's `option forwardfor` alone, an NLB), or a client's own `X-Forwarded-Proto` would be read, and choose whether cookies are `Secure`. |
 | `RATE_LIMIT` | `None` | Requests per caller, such as `"300/minute"` (`second`, `minute`, `hour`, `day`). `None` disables it. |
-| `RATE_LIMIT_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths never counted. |
+| `RATE_LIMIT_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths never counted; compared without the root path (`--root-path`). |
 | `RATE_LIMIT_BACKEND` | `domainkit.http.ratelimit.MemoryBackend` | Where counts live. The default is per process, and keeps the 100,000 most recently seen callers; one seen longer ago starts afresh. Behind several replicas, use `domainkit.http.ratelimit.RedisBackend`: one count per caller in Redis, on the server's clock. If Redis fails, or refuses the count (out of memory, a read-only replica after a failover), requests are let through, and Redis is skipped for the cache's `FAILURE_COOLDOWN`. |
 | `RATE_LIMIT_CACHE` | `"default"` | The Redis cache `RedisBackend` counts in; keys are `<KEY_PREFIX>:ratelimit:<caller>`. |
 | `RATE_LIMIT_IPV6_PREFIX` | `64` | IPv6 clients are counted per network of this prefix length, since one customer usually holds a whole /64; login throttling counts the same way. IPv4 clients are counted per address. |
@@ -228,7 +228,7 @@ Each `BROKERS` entry:
 | `BREAKER_COOLDOWN` | `30.0` | Seconds (at most 3600) a host's circuit stays open; then one call at a time tries it. A client made with `breaker=False` keeps no circuits. |
 | `MAX_CONNECTIONS` | `100` | Connections per client and event loop. |
 | `MAX_KEEPALIVE_CONNECTIONS` | `20` | Idle connections each client keeps for the next calls. |
-| `MAX_RESPONSE_BYTES` | `10485760` | The largest answer read (at most 1 GiB), counted after decompression; a longer one raises `ResponseTooLarge`. |
+| `MAX_RESPONSE_BYTES` | `10485760` | The largest answer read (at most 1 GiB), counted as it comes and after decompression; a longer one raises `ResponseTooLarge`. |
 | `USER_AGENT` | `"domainkit"` | The `User-Agent` of every call (printable ASCII). |
 | `CA_BUNDLE` | `None` | CA certificates of the servers called; the system's (or httpx2's) when unset. Guarded clients never trust the CAs `SSL_CERT_FILE` or `SSL_CERT_DIR` name, unless listed here. |
 
@@ -346,6 +346,23 @@ otherwise reads them itself, from `127.0.0.1` or from whatever
 so its rate limit and login throttle). Granian reads none. `runserver`
 runs this way, with either server.
 
+Behind a proxy on a unix socket (`uvicorn --uds`, `granian --uds`,
+`gunicorn --bind unix:...`), no caller has an address: without `"unix"`
+in `TRUSTED_PROXIES` every caller shares one rate limit and one hold on
+refused credentials, and one anonymous flood of bad tokens holds every
+token user back. Add it, with the proxy's networks if it has more hops:
+
+```python
+TRUSTED_PROXIES = ["unix"]  # nginx: proxy_pass http://unix:/run/api.sock;
+```
+
+`check` warns where deployed when the server's variables (`UVICORN_UDS`,
+`GRANIAN_UDS`, `GUNICORN_CMD_ARGS`) put it on a unix socket and
+`TRUSTED_PROXIES` lacks `"unix"`; a deployed application logs it at start,
+from its own command line. Any connection the server reports without an
+address is then the proxy's: list `"unix"` only where the server listens
+on nothing else without one.
+
 ### Live connections
 
 WebSockets and Server-Sent Events streams are capped, queued, timed, and
@@ -439,6 +456,9 @@ passes, so an API that is public on purpose can keep them:
 - no `RATE_LIMIT`, or `RateLimitMiddleware` missing from `MIDDLEWARE`
 - a rate limit with no `TRUSTED_PROXIES`: behind a load balancer, every
   caller would share its address and its count
+- a server on a unix socket without `"unix"` in `TRUSTED_PROXIES`: no
+  caller has an address ([Server limits](#server-limits); a deployed
+  application also logs it at start)
 - no `REQUEST_TIMEOUT`, or `DeadlineMiddleware` missing from `MIDDLEWARE`;
   no `MAX_CONCURRENT_REQUESTS`, or `ConcurrencyLimitMiddleware` missing
 - a database that seems to go through PgBouncer (port 6432, or a statement

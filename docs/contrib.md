@@ -523,6 +523,11 @@ saved:
   header and for TLS: the certificate is checked against it.
 - Proxies from the environment are not used. An attempt has `TIMEOUT`
   seconds in all, and at most `MAX_RESPONSE_BYTES` of the answer are read.
+- Host names are looked up on the guard's own threads
+  (`GUARD_LOOKUP_THREADS`, 2 at once per host). A receiver whose DNS never
+  answers holds its lookups until the system's resolver gives up; then
+  its host fails at once for a minute, so retries of its deliveries do
+  not take the threads again ([runtime.md](runtime.md#outgoing-http-calls)).
 
 `ALLOWED_PRIVATE_NETWORKS` lets receivers in named private networks
 through (`["10.20.0.0/16"]`); staging and production refuse loopback and

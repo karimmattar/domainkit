@@ -72,3 +72,4 @@ accepted record: supersede it with a new one and link both ways.
 | [0063](0063-encode-json-with-pydantic-and-sample-the-access-log.md) | Encode JSON with pydantic where the bytes stay the same, and let projects sample the access log | Accepted |
 | [0064](0064-gate-performance-on-counts-not-time.md) | Gate performance in CI on counts, and report time | Accepted |
 | [0065](0065-upgrade-fastapi-sqlalchemy-asyncpg-behind-the-ladder.md) | Upgrade FastAPI, SQLAlchemy, and asyncpg behind the ladder, with FastAPI's telemetry off | Accepted |
+| [0072](0072-walk-proxy-headers-from-the-right-and-trust-unix-sockets.md) | Walk proxy headers from the right, trust unix sockets by name, and name the scheme header | Accepted |

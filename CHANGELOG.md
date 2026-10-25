@@ -6,6 +6,72 @@ All notable changes to domainkit. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- A caller can no longer put itself in its proxy's rate limit, credential
+  hold, live-connection budget, and audit address by sending a malformed
+  `X-Forwarded-For` hop of its own: the header is walked from the right,
+  through trusted proxies only, and nothing left of the client's hop is
+  read. A hop that is no address where the client's should be (a proxy's
+  `unknown`) counts the client as the last proxy passed, as before, and is
+  now logged on `domainkit.security`, throttled (WEB-01; ADR 0072).
+- Behind a proxy on a unix socket, callers are no longer all one anonymous
+  caller: `"unix"` in `TRUSTED_PROXIES` believes the proxy on the socket,
+  so each caller gets its own rate limit and credential hold, and the audit
+  trail its address. Before, one flood of bad tokens held every token user
+  back. `check` warns where deployed when the server listens on a unix
+  socket without it, and a deployed application logs it at start
+  (WEB-02; ADR 0072).
+- `PROXY_SCHEME_HEADER` (`"X-Forwarded-Proto"`) names the header the
+  trusted proxies set to the client's scheme; `None` takes the scheme from
+  none, for proxies that do not set it and would pass a client's own line
+  through (it chose whether its cookies were `Secure`). With fewer values
+  than proxies, the nearest proxy's is taken, never the left-most, which
+  a client may have written (WEB-06; ADR 0072).
+- Outgoing calls bound an answer as it comes as well as decompressed, so
+  bytes that inflate to nothing are not read without end, and guarded
+  clients refuse (`httpx2.DecodingError`) an answer compressed in a way
+  they did not ask for, before inflating any of it. httpx2 already
+  inflated in pieces of at most 1 MiB, each counted before the next: a
+  65 KB gzip answer costs the limit and a piece, not the 64 MiB reported
+  (WEB-03).
+- Hosts that never answer DNS no longer stop every guarded call and
+  webhook in the process: the guard looks up on `GUARD_LOOKUP_THREADS`
+  (16, was 4) threads, one caller (the request's user or address, or the
+  owner `guard.lookups_for` names) may hold a quarter of them, and a host
+  whose lookup failed after 5 seconds or more fails at once for a minute
+  rather than 5 seconds, so retries do not take the threads again
+  (WEB-04).
+
+### Added
+
+- `GUARD_LOOKUP_THREADS` (16, 1 to 256), `PROXY_SCHEME_HEADER`
+  (`"X-Forwarded-Proto"`, or `None`), and `"unix"` in `TRUSTED_PROXIES`
+  (WEB-02, WEB-04, WEB-06).
+- `domainkit.log.ThrottledLog`: warnings written once per event and
+  caller each 10 seconds, with a count of those held back (WEB-11).
+
+### Changed
+
+- Security-log lines of refusals (a rejected `Host` header, a body too
+  large or too slow, refused credentials, a refused live connection) are
+  written once per caller every 10 seconds, the next line saying how many
+  were held back, instead of one per request: a flood no longer fills the
+  logging queue and crowds out the lines that matter. Each caller's first
+  line is still written (WEB-11).
+
+### Fixed
+
+- `RATE_LIMIT_EXEMPT_PATHS`, `AUTHENTICATION_EXEMPT_PATHS`, and
+  `ACCESS_LOG_QUIET_PATHS` hold behind `--root-path`, as
+  `CONCURRENCY_EXEMPT_PATHS` did: probes under `/api/ready` are no longer
+  rate limited or asked for credentials. Every list of paths is compared
+  with `domainkit.http.middleware.request_path` (WEB-07).
+- A readiness check that raises, instead of reporting a failure, is a
+  503 kept for `READINESS_CACHE_SECONDS` under its group's name
+  (`domains`, `databases`, `ledgers`, `caches`), logged with its
+  traceback, rather than a 500 and a new round for every probe (WEB-12).
+
 ## [0.9.0] - 2026-10-22
 
 ### Added
