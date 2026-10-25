@@ -28,11 +28,17 @@ Violations fail CI, not review. Some code needs an extra port or event where
 a direct import would have been shorter; that cost is intended. Framework
 packages are exempt from the cross-domain rule.
 
-## Amendment (2026-10-25): the clock
+## Amendment (2026-10-25, 0.9.2)
 
-[0037](0037-one-clock-frozen-per-context.md) let the domain layer import
-`domainkit.clock` as well, and `domainkit.architecture` has allowed it
-since (`DOMAIN_ALLOWED_PREFIXES`): reading the time through it is as pure as
-the standard library's, and tests can freeze it. The domain layer imports
-the standard library, `domainkit.ddd`, and `domainkit.clock`. This record
-did not say so until now.
+- The domain layer may also import `domainkit.clock`, as the code has
+  allowed since the clock was added ([ADR 0037](0037-one-clock-frozen-per-context.md)):
+  reading the time through it keeps a domain free of I/O and testable.
+- The rules are the defaults of `domainkit.architecture.LayerRules`, and a
+  project extends them with the `ARCHITECTURE` setting: more packages its
+  domain layers may import (a shared kernel), more libraries or layers a
+  layer must not use, layers of its own (`ports`), and more of a domain
+  other domains may import. A setting adds and never removes, so every rule
+  above still holds in every project; each entry is validated and bounded,
+  and an unknown layer or a rule on the domain layer's allowlist is refused
+  when the settings load. Before, a project could change the rules only by
+  patching the module before `check` ran.

@@ -8,16 +8,20 @@ import subprocess
 import sys
 import tomllib
 from importlib.metadata import entry_points
+from importlib.util import find_spec
 from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
+from packaging.specifiers import SpecifierSet
 
 from domainkit.management import (
     CommandError,
     call_command,
     execute_from_command_line,
 )
-from domainkit.management.commands.init import requirement
+from domainkit.management.commands.init import TEMPLATE_DIR, requirement
+from domainkit.utils import formatting
 
 CHECKED = "System check identified no issues. Domains: messaging, contenttypes, auth.\n"
 PROJECT_FILES = {
@@ -128,6 +132,52 @@ def test_generated_code_never_blocks_the_event_loop(tmp_path: Path) -> None:
         "System check identified no issues. "
         "Domains: messaging, contenttypes, auth, invoices.\n"
     )
+
+
+@pytest.mark.parametrize("name", ["billingAPI", "ledger.payments-and-settlements_API"])
+def test_a_new_project_passes_its_own_ruff_as_written(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without ruff where init runs, the project still passes its own ruff.
+
+    init runs before the project's environment exists, so nothing formats
+    what it writes: the templates are sorted and formatted as the project's
+    configuration wants (``domainkit`` is a third-party package there).
+    """
+    monkeypatch.setattr(
+        formatting,
+        "find_spec",
+        lambda module: None if module == "ruff" else find_spec(module),
+    )
+    project = tmp_path / "project"
+    init(name, str(project))
+
+    linted = run(project, "-m", "ruff", "check", "--no-cache", ".")
+    formatted = run(project, "-m", "ruff", "format", "--check", "--no-cache", ".")
+
+    assert linted.returncode == 0, linted.stdout + linted.stderr
+    assert formatted.returncode == 0, formatted.stdout + formatted.stderr
+    assert "already formatted" in formatted.stdout
+
+
+def test_projects_get_the_ruff_the_templates_are_checked_with() -> None:
+    """The project's dev group installs ruff, in domainkit's own tested range."""
+    template = (TEMPLATE_DIR / "pyproject.toml-tpl").read_text(encoding="utf-8")
+    framework = Path(__file__).parents[1] / "pyproject.toml"
+
+    def ruff_in(requirements: list[str]) -> SpecifierSet:
+        (found,) = [
+            Requirement(each.replace(" (", "").replace(")", ""))
+            for each in requirements
+            if each.startswith("ruff")
+        ]
+        return found.specifier
+
+    project_dev = tomllib.loads(template)["dependency-groups"]["dev"]
+    own = tomllib.loads(framework.read_text(encoding="utf-8"))
+    own_dev = own["dependency-groups"]["dev"]
+    assert ruff_in(project_dev) == ruff_in(own_dev)
+    assert "domainkit[testing]" in project_dev
 
 
 def test_production_settings_come_from_the_environment(tmp_path: Path) -> None:

@@ -2,9 +2,8 @@
 
 from fastapi import FastAPI
 
-from domainkit.apps import DomainConfig, registry
+from domainkit.apps import DomainConfig, Requirement
 from domainkit.db.routing import DatabaseRouter
-from domainkit.exceptions import ImproperlyConfigured
 
 from .models import problems
 
@@ -16,14 +15,7 @@ class PrivacyConfig(DomainConfig):
 
     label = "privacy"
     verbose_name = "Privacy"
-
-    def ready(self) -> None:
-        """Refuse to run without the audit trail, which records every operation."""
-        if not registry.is_installed(AUDIT):
-            raise ImproperlyConfigured(
-                f"domainkit.contrib.privacy records every operation in the audit "
-                f"trail: add {AUDIT!r} to INSTALLED_DOMAINS."
-            )
+    requires = (Requirement(AUDIT, "it records every operation in the audit trail"),)
 
     def check_application(self, app: FastAPI) -> list[str]:
         """Markers and retention policies that cannot be applied.

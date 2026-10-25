@@ -91,6 +91,7 @@ and a server).
   a project
 - [docs/audit/0.9.0.md](https://github.com/karimmattar/domainkit/blob/main/docs/audit/0.9.0.md): the 0.9.0 audit's findings
   that the CHANGELOG names, with their status
+- [docs/api.md](https://github.com/karimmattar/domainkit/blob/main/docs/api.md): the public API, module by module, one line a name
 - [docs/adr/](https://github.com/karimmattar/domainkit/tree/main/docs/adr): the decisions behind the design
 - [CHANGELOG.md](https://github.com/karimmattar/domainkit/blob/main/CHANGELOG.md) and [SECURITY.md](https://github.com/karimmattar/domainkit/blob/main/SECURITY.md)
 
@@ -169,6 +170,7 @@ poetry install --all-extras            # Python 3.13
 pre-commit install                     # after: pipx install pre-commit
 
 poetry run ruff check . && poetry run ruff format --check . && poetry run mypy
+poetry run deptry .                    # every imported package is declared
 poetry run pytest --cov                # random order, 2 minutes a test; coverage gate in pyproject.toml
 poetry run mutmut run "domainkit.http*" && poetry run mutmut results
 ```
@@ -197,7 +199,7 @@ the servers, each with its own `COVERAGE_FILE`, then `coverage combine` and
 
 CI (`.github/workflows/ci.yml`) runs on every push and pull request:
 
-- lint and strict typing
+- lint, strict typing, and deptry: every package the code imports is declared
 - the tests on Python 3.13 and 3.14
 - the tests again against PostgreSQL 18, immudb with TLS and a signing key,
   Redis 8 (plain and TLS), Valkey 9, and RabbitMQ 4 (plain and TLS); no test

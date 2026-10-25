@@ -30,6 +30,11 @@ from domainkit.http.websockets import server_warnings
 from domainkit.lifecycle import serving
 from domainkit.utils.module_loading import import_string
 
+__all__ = [
+    "Application",
+    "get_asgi_application",
+]
+
 logger = logging.getLogger(__name__)
 
 FRAMEWORK_ERRORS: Final = {

@@ -13,6 +13,7 @@ from pydantic.fields import FieldInfo
 
 from domainkit.conf.env import project_root
 from domainkit.conf.global_settings import (
+    ArchitectureConfig,
     BrokerConfig,
     CacheConfig,
     DatabaseConfig,
@@ -72,6 +73,7 @@ def documented(page: str) -> set[str]:
         (StorageConfig, "reference.md"),
         (DebugToolbarConfig, "reference.md"),
         (HttpClientConfig, "reference.md"),
+        (ArchitectureConfig, "reference.md"),
         (MessagingSettings, "contrib.md"),
         (AuditSettings, "contrib.md"),
         (IdempotencySettings, "contrib.md"),
@@ -261,7 +263,7 @@ def test_every_status_names_its_amendments() -> None:
         line = status(record)
         assert _STATUS_WORD.match(line), f"{number}: {line!r}"
         dates = re.findall(
-            r"^## (?:Amendment|Addendum) \((\d{4}-\d\d-\d\d)\)", text, re.M
+            r"^## (?:Amendment|Addendum) \((\d{4}-\d\d-\d\d)[,)]", text, re.M
         ) + re.findall(r"\(Amended (\d{4}-\d\d-\d\d)\.\)", text)
         assert [date for date in dates if date not in line] == [], number
         assert [
@@ -298,7 +300,7 @@ SETTINGS_TABLES: tuple[tuple[type[BaseModel], str, str], ...] = (
 """Each settings model, the page of its table, and how the table is found."""
 PROSE_DEFAULTS = {
     "Settings": {"SETTINGS_MODULE", "BASE_DIR", "MIDDLEWARE", "LOGGING"}
-    | {"HTTP_CLIENT", "DEBUG_TOOLBAR"},
+    | {"HTTP_CLIENT", "DEBUG_TOOLBAR", "ARCHITECTURE"},
     "DatabaseConfig": {"URL", "COMMAND_TIMEOUT", "POOL_SIZE", "MAX_OVERFLOW"}
     | {"POOL_TIMEOUT", "POOL_RECYCLE"},
     "LedgerConfig": {"URL"},

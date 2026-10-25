@@ -63,7 +63,7 @@ statuses, and the amendments they name.
 | [0043](0043-the-outbox-database-decides-when-work-is-due.md) | Let the outbox's database decide when work is due, and wake workers | Accepted |
 | [0044](0044-one-concurrency-budget-per-worker-process.md) | Run one concurrency budget per worker process | Accepted |
 | [0045](0045-own-background-tasks-per-loop.md) | Own background tasks per event loop, started in clean contexts | Accepted; amended 2026-10-25 (at the end) |
-| [0046](0046-one-shutdown-budget-in-phases.md) | Shut down in phases within one budget | Accepted |
+| [0046](0046-one-shutdown-budget-in-phases.md) | Shut down in phases within one budget | Accepted; amended 2026-10-25 (at the end) |
 | [0047](0047-seal-from-a-high-water-mark.md) | Seal the audit trail from a high-water mark, with a short late window | Accepted; amended 2026-10-21 (at the end) |
 | [0048](0048-request-deadlines.md) | Give every request a deadline, answer 503 when it passes, and pass it on | Accepted; amended 2026-10-25 (at the end) |
 | [0049](0049-shed-load-past-a-concurrency-cap.md) | Shed load in the application: a cap per event loop, a short queue, and a fast 503 | Accepted; amended 2026-10-21 and 2026-10-25 (at the end) |
@@ -89,6 +89,8 @@ statuses, and the amendments they name.
 | [0070](0070-name-the-operator-of-data-changing-commands.md) | Name the operator of data-changing commands, and audit what they do | Accepted; amended 2026-10-25 (at the end) |
 | [0071](0071-bind-cache-computations-to-their-owner.md) | Detach shared cache computations; bind those that borrow to their owner | Accepted |
 | [0072](0072-walk-proxy-headers-from-the-right-and-trust-unix-sockets.md) | Walk proxy headers from the right, trust unix sockets by name, and name the scheme header | Accepted |
+| [0076](0076-public-api-is-docs-api-md.md) | The public API is what docs/api.md lists, which is every `__all__` | Accepted |
+| [0077](0077-declare-what-apps-require.md) | Declare what apps require, and reach other apps only through their public names | Accepted |
 | [0078](0078-deliver-events-in-process-after-commit-or-durably-through-the-outbox.md) | Deliver events in process after commit, or durably through the outbox | Accepted |
 | [0079](0079-validate-every-setting-in-one-model-and-each-app-in-its-own.md) | Validate every setting at startup: one model, and each app's own | Accepted |
 
@@ -105,8 +107,7 @@ Taken, and in the code, but not yet written down (DSGN-15); planned for
   caches) and test overrides that act on them (DSGN-07).
 - No common exception root, and HTTP errors raised from modules below
   `http` (DSGN-06).
-- How closers are registered for shutdown (DSGN-13), unless 0.9.2's change
-  to them comes with its own record.
+- How closers are registered for shutdown (DSGN-13).
 - Whether the flags and webhooks admin APIs, built on `contrib.auth.admin`,
   keep to [0025](0025-resources-commands-and-expected-versions.md)'s
   "registry of resources, not a second kit"; amend 0025 or the code.

@@ -99,6 +99,13 @@ except ImportError:  # pragma: no cover - only without the [metrics] extra.
         """Record nothing: ``prometheus_client`` is not installed."""
 
 
+__all__ = [
+    "invalidate",
+    "invalidate_all",
+    "invalidate_everywhere",
+]
+
+
 security_logger = logging.getLogger(SECURITY_LOGGER)
 
 type Key = tuple[str, str]

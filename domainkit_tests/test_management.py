@@ -1,6 +1,7 @@
 """Management commands: discovery, dispatch, and the built-in commands."""
 
 import io
+import logging
 import os
 import subprocess
 import sys
@@ -475,11 +476,40 @@ def test_startdomain_creates_test_packages_inside_the_project(
     assert (tests / "__init__.py").is_file()
 
 
-def test_format_python_needs_ruff(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Formatting is skipped when ruff is not installed."""
+def test_format_python_needs_ruff(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Formatting is skipped when ruff is not installed, with a warning saying so."""
     monkeypatch.setattr(formatting, "find_spec", lambda name: None)
 
-    assert formatting.format_python([Path("x.py")]) is False
+    with caplog.at_level(logging.WARNING, logger="domainkit.utils.formatting"):
+        assert formatting.format_python([Path("x.py")]) is False
+
+    assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
+        (logging.WARNING, formatting.UNFORMATTED)
+    ]
+    assert "ruff check --fix . && ruff format ." in formatting.UNFORMATTED
+
+
+def test_format_python_formats_nothing_without_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """No paths, no ruff: given none, ruff would format the whole directory.
+
+    ``makemigrations`` with no changes passes no paths; the user's own code
+    in the working directory stays as it is, and nothing is logged.
+    """
+    mine = tmp_path / "mine.py"
+    mine.write_text("import sys, os\nx = { 'a':1 }\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    with caplog.at_level(logging.DEBUG, logger="domainkit.utils.formatting"):
+        assert formatting.format_python([]) is False
+        monkeypatch.setattr(formatting, "find_spec", lambda name: None)
+        assert formatting.format_python(iter([])) is False
+
+    assert mine.read_text(encoding="utf-8") == "import sys, os\nx = { 'a':1 }\n"
+    assert not caplog.records
 
 
 def test_render_copies_plain_files_and_skips_caches(tmp_path: Path) -> None:

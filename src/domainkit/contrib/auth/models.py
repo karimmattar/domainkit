@@ -50,6 +50,19 @@ from .exceptions import (
     UnknownUserField,
 )
 
+__all__ = [
+    "AbstractBaseUser",
+    "AbstractUser",
+    "AnonymousUser",
+    "AnyUser",
+    "Group",
+    "GroupId",
+    "PasswordHash",
+    "Permission",
+    "User",
+    "UserId",
+]
+
 UserId = NewType("UserId", UUID)
 GroupId = NewType("GroupId", UUID)
 

@@ -39,6 +39,10 @@ from .settings import WebhookSettings
 from .tables import attempts, deliveries
 from .uow import WebhooksUnitOfWork
 
+__all__ = [
+    "router",
+]
+
 router = APIRouter(tags=["webhooks admin"])
 
 MAX_PAGE_SIZE: Final = 200

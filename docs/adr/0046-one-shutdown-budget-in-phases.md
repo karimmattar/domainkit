@@ -1,6 +1,6 @@
 # 0046. Shut down in phases within one budget
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-25 (at the end)
 - Date: 2026-10-20
 
 ## Context
@@ -66,3 +66,18 @@ Options considered:
   larger budget, not by taking from another; other work packages (the
   publisher flush, the HTTP client, log flushing) choose their phase and
   must finish within its share.
+
+## Amendment (2026-10-25, 0.9.2)
+
+The closers of every phase now come from one table in `domainkit.lifecycle`:
+the framework's own kinds (caches, HTTP clients, databases, ledgers,
+brokers, then held-back log counts, error reports, and logs) are declared
+there with a phase and a step, next to what `register` adds. A phase runs
+its steps in turn and the closers of a step at once; `closers(phase)` lists
+them. Order, shares, and behaviour are unchanged: the resources close in
+one step, the framework's kinds first, and the three flushes run alone,
+last, as before. The framework's kinds are still looked up when the process
+shuts down, so the HTTP client needs no import, and its names stay reserved.
+Letting each subsystem register its own kind when first used, so that
+`lifecycle` no longer imports the cache, broker, and ledger packages, is
+left for 0.10.

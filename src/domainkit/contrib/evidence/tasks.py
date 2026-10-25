@@ -1,7 +1,7 @@
 """Durable evidence: recorded by the messaging worker once the change commits."""
 
 from domainkit.apps import registry
-from domainkit.contrib.evidence.model import Evidence
+from domainkit.contrib.evidence.models import Evidence
 from domainkit.contrib.evidence.settings import EvidenceSettings
 from domainkit.contrib.evidence.store import evidence_key
 from domainkit.contrib.messaging import task

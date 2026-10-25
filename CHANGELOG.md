@@ -11,6 +11,34 @@ and a status.
 
 ### Added
 
+- `ARCHITECTURE` extends the layer rules `check` enforces, and only
+  extends them: `DOMAIN_ALLOWED` (packages a domain layer may import, such
+  as a shared kernel), `FORBIDDEN_LIBRARIES` and `FORBIDDEN_LAYERS` by
+  layer, `EXTRA_LAYERS` (layers of the project's own), and
+  `PUBLIC_SURFACE`. Every layer named must be known, the domain layer stays
+  an allowlist, and each list is bounded. Empty by default: the rules are
+  today's. `check_domain` and `check_domains` take `rules=`
+  (`domainkit.architecture.LayerRules`) and otherwise apply the settings'
+  (DSGN-12; ADR 0003).
+- `DomainConfig.requires` lists the domain packages a domain cannot work
+  without, as names or `domainkit.apps.Requirement(name, reason)`;
+  `setup()` refuses a missing one before any domain's `ready()` runs, with
+  one error naming every one missing. Every contrib app declares it
+  (DSGN-04; ADR 0077).
+- `docs/api.md`, the public API by module, one line a name: every name in
+  an `__all__`, and only those. `docs/versioning.md` now calls exactly these
+  public. Modules whose names the pages use got an `__all__`: the
+  middleware, `domainkit.http.application`, `.ratelimit`, `.sse`,
+  `.uploads`, `.versioning`, `domainkit.clock`, `.deadlines`, `.tasks`,
+  `.log`, `.lifecycle`, `.signing`, `.encryption`, the contrib apps'
+  routers, backends, and hashers: 66 modules in all; `domainkit.conf` adds
+  `Env`, and `domainkit` itself `setup`. A test keeps the page and the code
+  in step, and fails when a page tells users to import a name not listed
+  (DSGN-05; ADR 0076).
+- `domainkit.ddd.Selection`: the aggregate query of `filter` and `first`,
+  so far `domainkit.ddd.query.Query`, a name that still works and the same
+  class. It no longer shares its name with the CQRS message
+  `domainkit.ddd.Query`. `docs/queries.md` uses the new name (DSGN-09).
 - `docs/tutorial.md`: from `pip install` to an authenticated resource with
   one aggregate, created, changed, and refused by its rules over HTTP. Its
   commands, and the README quick start's, are run as written by the tests
@@ -37,6 +65,20 @@ and a status.
 
 ### Changed
 
+- Shutdown closers come from one table: the framework's own kinds are
+  declared in it with their phase and step, next to the closers
+  `lifecycle.register` adds, and the new `lifecycle.closers(phase)` lists
+  what a phase closes, in the steps it runs them. Order, shares, and
+  behaviour are unchanged; `register` stays the way to add one (DSGN-13).
+- The contrib apps' checks for the apps they need moved from each app's
+  `ready()` to their `requires`, so they run before any app is wired. The
+  messages keep their form, except privacy's, which now reads
+  "domainkit.contrib.privacy needs 'domainkit.contrib.audit' in
+  INSTALLED_DOMAINS: it records every operation in the audit trail."
+  A test fails on any new import of another app's internal modules, or of
+  the core into one; the 30 that exist are listed for 0.10 (DSGN-04).
+- `domainkit.contrib.evidence.model` is now `models`, as in every other
+  app; the old module re-exports the same names (DSGN-09).
 - `startdomain`'s next steps end with a login and a first `curl` of the
   new resource, at `/api/v1/<name>/<plural>`, and the README quick start
   creates its superuser without prompts, logs in, and lists the invoices
@@ -44,8 +86,7 @@ and a status.
 - Each ADR's status names what amended it (a later record, dated sections
   at its end, or earlier corrections in place), the index is in order and
   repeats each status, and the rule for amending is written down: append a
-  dated section, or supersede with a new record. ADR 0003 records that the
-  domain layer may import `domainkit.clock` (DOCS-08).
+  dated section, or supersede with a new record (DOCS-08).
 - The settings tables state every limit their models enforce, and
   `test_docs.py` checks each row's default and limits against the models,
   not only that the name is on the page; mail.md's tables are headed
@@ -56,6 +97,27 @@ and a status.
 
 ### Fixed
 
+- Every package domainkit imports is declared, so that pip knows what it
+  needs: `anyio` and `pydantic-core` in the dependencies, `aiormq` in the
+  `rabbitmq` extra, `httpcore2` in `httpclient`, and `grpcio` and `ecdsa`
+  in `immudb`. Starlette, pydantic, aio-pika, httpx2, and immudb-py
+  already installed each of them, and still do at the same versions:
+  nothing new is installed. The `testing` extra needs anyio 4.12 or
+  later, the first whose pytest plugin runs `@pytest.mark.anyio` tests
+  only on the event loops installed; with 4.10 or 4.11, a new project's
+  async test failed on trio. CI's lint job runs deptry so that an
+  undeclared import fails it (INFRA-04).
+- A project `init` creates passes its own `ruff check` and
+  `ruff format --check` as written: the templates sorted `domainkit` as a
+  first-party package, as the framework's repository does, so a project
+  without ruff where `init` ran failed on its own lint. The project's dev
+  group now installs ruff, in the range the templates are checked with,
+  so that the generators (`startdomain`, `startaggregate`, `addcommand`,
+  `addquery`, `addevent`) and `makemigrations` format what they write;
+  without ruff they log a warning saying how instead of nothing (INFRA-05).
+- `makemigrations` with no changes no longer reformats every Python file
+  in the working directory when ruff is installed: ruff, given no paths,
+  formatted all of them (INFRA-05).
 - The first request a newcomer made after the quick start, to the
   `/api/v1/invoices` that `startdomain` said it mounted, answered 404: the
   resource is `/invoices` within that router (DOCS-02).
@@ -66,6 +128,7 @@ and a status.
   `SecurityHeadersMiddleware` where the table had it after; the
   `flags` row left out `set`'s options; `docs/privacy.md` linked a heading
   that does not exist; `DEBUG_TOOLBAR` had no row (DOCS-07, DOCS-09).
+
 
 ## [0.9.1] - 2026-10-25
 

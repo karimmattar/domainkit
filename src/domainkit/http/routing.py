@@ -49,6 +49,11 @@ from fastapi import routing as fastapi_routing
 from fastapi.routing import APIRoute
 from starlette.routing import BaseRoute, Router
 
+__all__ = [
+    "flatten_routes",
+    "serves_itself",
+]
+
 _INCLUDED: Final[type[BaseRoute] | None] = getattr(
     fastapi_routing, "_IncludedRouter", None
 )

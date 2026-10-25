@@ -50,6 +50,14 @@ from domainkit.http.live import (
     stream_limits,
 )
 
+__all__ = [
+    "Event",
+    "EventSourceResponse",
+    "ServerSentEvent",
+    "comment",
+    "last_event_id",
+]
+
 logger = logging.getLogger(__name__)
 
 MEDIA_TYPE: Final = "text/event-stream"

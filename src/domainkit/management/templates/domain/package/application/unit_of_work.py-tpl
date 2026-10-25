@@ -3,6 +3,7 @@
 from abc import ABC
 
 from domainkit.ddd import UnitOfWork
+
 from {{ package }}.domain.model import {{ Aggregate }}Repository
 
 
