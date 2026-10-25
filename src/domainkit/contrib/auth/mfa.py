@@ -20,10 +20,12 @@ one that logs in::
 
 A code works once: its step is recorded, and an earlier or equal step is
 refused. Recovery codes are stored as digests and work once. Secrets are
-encrypted under a key derived from ``SECRET_KEY`` (``domainkit.encryption``). Codes
-checked count against ``AUTH.MFA.RATE`` per user and, at ``/mfa/login``,
-per client address (there, per user only once the challenge holds);
-passwords count against ``AUTH.LOGIN_RATE``. Credentials limited to
+encrypted under a key derived from ``SECRET_KEY`` (``domainkit.encryption``). Wrong
+codes count against ``AUTH.MFA.RATE`` per user and, at ``/mfa/login``,
+against ``AUTH.MFA.ADDRESS_RATE`` per client address, once the challenge
+holds; codes that work are not counted. Challenges that do not hold count
+against ``AUTH.LOGIN_RATE`` per client address, after they are checked;
+wrong passwords count against ``AUTH.LOGIN_RATE``. Credentials limited to
 scopes cannot change the factors. Turning it on or off, new recovery codes,
 used ones, and refusals are audited.
 """
@@ -60,7 +62,14 @@ from .models import AbstractBaseUser, UserId
 from .onetime import TOKEN_MAX_LENGTH, UserTokenGenerator
 from .repositories import TotpDevice
 from .settings import auth_settings
-from .throttling import address_key, audit_refusal, throttle
+from .throttling import (
+    Attempt,
+    Limit,
+    address_key,
+    attempt,
+    audit_refusal,
+    count_failure,
+)
 from .uow import AuthUnitOfWork
 
 RECOVERY_ALPHABET: Final = "abcdefghijklmnopqrstuvwxyz234567"
@@ -68,6 +77,8 @@ RECOVERY_LENGTH: Final = 16
 """Characters of a recovery code: 80 random bits, in groups of four."""
 BOX_PURPOSE: Final = "domainkit.auth.totp"
 """What the key that encrypts TOTP secrets is derived for."""
+TOO_MANY: Final = "Too many attempts; try again later."
+"""The detail of a throttled code check."""
 
 type Method = Literal["totp", "recovery"]
 
@@ -184,27 +195,45 @@ async def challenge(user: AbstractBaseUser) -> MfaChallengeOut | None:
 async def verify_challenge(request: Request, token: str, code: str) -> AbstractBaseUser:
     """The user a challenge and its code prove; the code is spent.
 
-    Each attempt counts against ``AUTH.MFA.RATE`` for the client address,
-    and one with a challenge that holds (it took the password) for its
-    user too: forged challenges cannot use up a user's count.
+    A code checked with a challenge that holds (it took the password)
+    counts against ``AUTH.MFA.RATE`` for its user and
+    ``AUTH.MFA.ADDRESS_RATE`` for the client address, and is given back if
+    it works: only wrong codes use the counts up. A challenge that does not
+    hold costs no count of a code; it counts against ``AUTH.LOGIN_RATE``
+    for the address once checked, so forged challenges, however many, never
+    hold a valid one back.
 
     Raises:
         InvalidChallenge: The challenge is wrong, used, or expired.
         InvalidCode: The code is wrong, or was used.
-        APIError: 429, past ``AUTH.MFA.RATE`` for the address or the user.
+        APIError: 429, past a rate for the address or the user.
     """
-    await _limit(request, [address_key(request, "mfa")])
     user_id = challenges.user_id(token)
     async with AuthUnitOfWork() as uow:
         user = None if user_id is None else await uow.users.find(user_id)
         held = challenges.check_token(user, token)  # As long without a user.
         method = None
         if user is not None and held:
-            await _limit(request, [f"mfa:user:{user.id}"])
+            counted = await _limit(
+                request,
+                [
+                    (_user_key(user), auth_settings().MFA.RATE),
+                    (address_key(request, "mfa"), auth_settings().MFA.ADDRESS_RATE),
+                ],
+            )
             method = await spend_code(uow, user, code)
             if method is not None:
                 await uow.commit()
+                await counted.succeeded()
     if user is None or not held:
+        await count_failure(
+            request,
+            auth_settings().LOGIN_RATE,
+            address_key(request, "mfa-challenge"),
+            action="auth.mfa",
+            detail=TOO_MANY,
+            code="throttled",
+        )
         await audit_refusal("auth.mfa", "invalid_token")
         raise InvalidChallenge
     if method is None:
@@ -318,7 +347,7 @@ async def confirm_enrolment(
 ) -> RecoveryCodesOut:
     """Turn the second factor on with a first code; return recovery codes."""
     _no_store(response)
-    await _limit(request, [f"mfa:user:{user.id}"])
+    counted = await _limit_user(request, user)
     codes = new_recovery_codes(auth_settings().MFA.RECOVERY_CODES)
     async with AuthUnitOfWork() as uow:
         device = await uow.mfa.device(user.id)
@@ -340,6 +369,7 @@ async def confirm_enrolment(
             stored = await uow.users.get(UserId(user.id))
             stored.record(MfaEnabled(user_id=user.id))
             await uow.commit()
+            await counted.succeeded()
     if not confirmed:
         await audit_refusal("auth.mfa", "invalid_code")
         raise InvalidCode
@@ -419,25 +449,29 @@ async def _reauthenticate(
 ) -> None:
     """Check the password (and a code) again before a change to the factors.
 
+    Only a wrong password, and a wrong code, count against the rates.
+
     Raises:
         APIError: 400 ``wrong_password``; 429 past ``AUTH.LOGIN_RATE``.
         InvalidCode: The code is wrong, or was used.
     """
-    await _throttle(request, f"password:user:{user.id}")
+    password_counted = await _throttle(request, f"password:user:{user.id}")
     if not await password_holds(user, password):
         raise APIError(
             status.HTTP_400_BAD_REQUEST,
             "Your password was entered incorrectly.",
             code="wrong_password",
         )
+    await password_counted.succeeded()
     if code is None:
         return
-    await _limit(request, [f"mfa:user:{user.id}"])
+    counted = await _limit_user(request, user)
     async with AuthUnitOfWork() as uow:
         stored = await uow.users.get(UserId(user.id))
         method = await spend_code(uow, stored, code)
         if method is not None:
             await uow.commit()
+            await counted.succeeded()
     if method is None:
         await audit_refusal("auth.mfa", "invalid_code")
         raise InvalidCode
@@ -457,16 +491,21 @@ async def _spend_totp(
     return True
 
 
-async def _limit(request: Request, keys: list[str]) -> None:
-    """Count code checks against ``AUTH.MFA.RATE``."""
-    await throttle(
-        request,
-        auth_settings().MFA.RATE,
-        keys,
-        action="auth.mfa",
-        detail="Too many attempts; try again later.",
-        code="throttled",
+async def _limit(request: Request, limits: list[Limit]) -> Attempt:
+    """Count a code check against each ``(key, rate)``."""
+    return await attempt(
+        request, limits, action="auth.mfa", detail=TOO_MANY, code="throttled"
     )
+
+
+async def _limit_user(request: Request, user: AbstractBaseUser) -> Attempt:
+    """Count a code check of ``user`` against ``AUTH.MFA.RATE``."""
+    return await _limit(request, [(_user_key(user), auth_settings().MFA.RATE)])
+
+
+def _user_key(user: AbstractBaseUser) -> str:
+    """The count of ``user``'s wrong codes, wherever they come from."""
+    return f"mfa:user:{user.id}"
 
 
 def _normalize(code: str) -> str:

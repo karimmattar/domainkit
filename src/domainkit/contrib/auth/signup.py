@@ -26,7 +26,8 @@ reserves nothing: several may name one username, and the first confirmed
 gets it; the others' links then answer 409. A username taken is told to
 whoever gives their own address, as any signup must. Attempts count
 against ``AUTH.EMAIL_RATE`` per client address and per email address,
-links checked against ``AUTH.LOGIN_RATE`` per client address. Pending
+links that do not hold against ``AUTH.LOGIN_RATE`` per client address,
+once checked (so forged ones never hold a valid one back). Pending
 signups (a username and an address, no password) are kept in a table of
 their own, never in fixtures, and deleted once used, when the address is
 taken, or hourly once their link has expired.
@@ -58,7 +59,13 @@ from .models import (
 from .recovery import AcceptedOut, EmailAddress, InvalidLink, TokenIn, describe
 from .repositories import PendingSignup
 from .settings import TOKEN_PLACEHOLDER, AuthSettings, auth_settings
-from .throttling import address_key, audit_refusal, email_key, throttle
+from .throttling import (
+    address_key,
+    audit_refusal,
+    count_failure,
+    email_key,
+    throttle,
+)
 from .uow import AuthUnitOfWork
 from .users import get_user_model
 from .validators import validate_password
@@ -159,14 +166,6 @@ async def confirm_signup(body: SignupConfirmIn, request: Request) -> None:
     another; the address is verified by the link.
     """
     config = _enabled()
-    await throttle(
-        request,
-        config.LOGIN_RATE,
-        [address_key(request, "signup-confirm")],
-        action="auth.signup",
-        detail="Too many attempts; try again later.",
-        code="throttled",
-    )
     signup_id = signup_of(body.token)
     async with AuthUnitOfWork() as uow:
         pending = None if signup_id is None else await uow.signups.get(signup_id)
@@ -183,6 +182,14 @@ async def confirm_signup(body: SignupConfirmIn, request: Request) -> None:
                 await _make_account(uow, pending, password)
                 await uow.commit()
                 return
+    await count_failure(
+        request,
+        config.LOGIN_RATE,
+        address_key(request, "signup-confirm"),
+        action="auth.signup",
+        detail="Too many attempts; try again later.",
+        code="throttled",
+    )
     await audit_refusal("auth.signup", "invalid_token")
     raise InvalidLink
 

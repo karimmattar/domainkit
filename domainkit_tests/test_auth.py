@@ -62,6 +62,7 @@ from domainkit.db import connections, metadata
 from domainkit.db.migrations import include_object, run_migrated_hooks
 from domainkit.ddd import PermissionDenied
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.http.ratelimit import MemoryBackend
 from domainkit.management import call_command
 from domainkit_tests.conftest import (
     ALPHA,
@@ -664,7 +665,11 @@ def test_deployments_refuse_links_over_plain_http(
 
 def test_deployments_warn_of_guesses_without_limit(use_auth: UseAuth) -> None:
     """``LOGIN_RATE`` and ``MFA.RATE`` set to None are warnings there."""
-    deployed = {"ENVIRONMENT": "production", "ALLOWED_HOSTS": ["api.example.com"]}
+    deployed = {
+        "ENVIRONMENT": "production",
+        "ALLOWED_HOSTS": ["api.example.com"],
+        "RATE_LIMIT_BACKEND": "domainkit.http.ratelimit.RedisBackend",
+    }
     hashers = [f"{AUTH}.hashers.PBKDF2PasswordHasher"]
 
     use_auth(
@@ -685,6 +690,47 @@ def test_deployments_warn_of_guesses_without_limit(use_auth: UseAuth) -> None:
         ),
     ]
     assert limited == []
+
+
+def test_deployments_warn_of_attempts_counted_per_process(use_auth: UseAuth) -> None:
+    """In memory, each process allows the attempt rates on its own (AUTH-09)."""
+    deployed = {"ENVIRONMENT": "production", "ALLOWED_HOSTS": ["api.example.com"]}
+    hashers = [f"{AUTH}.hashers.PBKDF2PasswordHasher"]
+    no_rates = {"LOGIN_RATE": None, "EMAIL_RATE": None}
+    no_codes = {"RATE": None, "ADDRESS_RATE": None}
+
+    def warnings(backend: str | None = None, **auth: Any) -> list[str]:  # noqa: ANN401
+        chosen = {} if backend is None else {"RATE_LIMIT_BACKEND": backend}
+        use_auth(settings={**deployed, **chosen}, PASSWORD_HASHERS=hashers, **auth)
+        found: list[str] = registry.get_domain_config("auth").deployment_warnings()
+        return [warning for warning in found if "RATE_LIMIT_BACKEND" in warning]
+
+    assert warnings() == [
+        (
+            "RATE_LIMIT_BACKEND domainkit.http.ratelimit.MemoryBackend counts in "
+            "each process, so with several processes or replicas each allows "
+            "AUTH.LOGIN_RATE, AUTH.MFA.RATE, and the other attempt rates on its "
+            "own: passwords and codes can be guessed that many times faster. Set "
+            "RATE_LIMIT_BACKEND to domainkit.http.ratelimit.RedisBackend, shared "
+            "by every process."
+        )
+    ]
+    assert len(warnings(f"{__name__}.CountsInProcess")) == 1  # A subclass too.
+    assert warnings(**no_rates, MFA={"RATE": None}) != []  # ADDRESS_RATE is one.
+    assert warnings(**no_rates, MFA=no_codes) == []
+    assert warnings("domainkit.http.ratelimit.RedisBackend") == []
+    assert warnings(f"{__name__}.Elsewhere") == []
+    assert warnings("nowhere.Backend") == []  # Loading it says what is wrong.
+    use_auth(PASSWORD_HASHERS=hashers)
+    assert registry.get_domain_config("auth").deployment_warnings() == []
+
+
+class CountsInProcess(MemoryBackend):
+    """A memory backend of a project's own."""
+
+
+class Elsewhere:
+    """A backend of a project's own that counts somewhere shared."""
 
 
 def test_declared_permissions_are_checked(monkeypatch: pytest.MonkeyPatch) -> None:

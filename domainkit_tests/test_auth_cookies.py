@@ -128,7 +128,11 @@ def test_deployments_warn_of_names_without_the_prefix(
     use_auth: UseAuth, environment: str
 ) -> None:
     """Where ``__Host-`` could hold, a name without it is a warning."""
-    deployed = {"ENVIRONMENT": environment, "ALLOWED_HOSTS": ["api.example.com"]}
+    deployed = {
+        "ENVIRONMENT": environment,
+        "ALLOWED_HOSTS": ["api.example.com"],
+        "RATE_LIMIT_BACKEND": "domainkit.http.ratelimit.RedisBackend",
+    }
     hashers = ["domainkit.contrib.auth.hashers.PBKDF2PasswordHasher"]
     classes = [
         "domainkit.contrib.auth.authentication.TokenAuthentication",

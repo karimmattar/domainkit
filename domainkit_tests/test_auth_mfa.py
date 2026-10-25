@@ -227,11 +227,14 @@ def test_mfa_settings_are_bounded() -> None:
         {"CHALLENGE_TTL": 3601},
         {"ISSUER": ""},
         {"RATE": "often"},
+        {"ADDRESS_RATE": "often"},
     ):
         with pytest.raises(ValidationError):
             MfaSettings(**options)
     assert MfaSettings(RATE=None).RATE is None
     assert MfaSettings(RATE="3/minute").RATE == "3/minute"
+    assert MfaSettings().ADDRESS_RATE == "60/hour"
+    assert MfaSettings(ADDRESS_RATE=None).ADDRESS_RATE is None
 
 
 # The API ------------------------------------------------------------------------
@@ -436,10 +439,13 @@ def test_challenges_expire_and_name_their_user(
 
 
 def test_code_checks_are_throttled_per_user(identity: Api, clock: list[float]) -> None:
-    """Guesses for one user count wherever they come from."""
+    """Wrong codes for one user count wherever they come from; right ones never."""
     create_user("alice")
-    client = identity(MFA={"RATE": "3/minute"})
-    enrol(client, bearer(login(client, "alice")["access_token"]), clock)
+    client = identity(MFA={"RATE": "2/minute"})
+    secret, _ = enrol(client, bearer(login(client, "alice")["access_token"]), clock)
+    clock[0] += 30
+    first = log_in(client).json()["mfa_token"]
+    assert finish(client, first, code_at(secret, clock[0])).status_code == 200
     token = log_in(client).json()["mfa_token"]
     elsewhere = TestClient(client.app, client=("203.0.113.9", 1))
 
@@ -448,17 +454,75 @@ def test_code_checks_are_throttled_per_user(identity: Api, clock: list[float]) -
     throttled = finish(elsewhere, token, "222222")
     assert (throttled.status_code, throttled.json()["code"]) == (429, "throttled")
     assert throttled.json()["detail"] == "Too many attempts; try again later."
+    assert int(throttled.headers["Retry-After"]) > 0
     assert [row["details"] for row in audited("auth.mfa")] == [
         {"reason": "invalid_code"}
     ] * 2 + [{"reason": "throttled"}]
 
 
+def test_codes_that_work_use_up_no_count(identity: Api, clock: list[float]) -> None:
+    """Second-factor logins that work are never counted (AUTH-02).
+
+    ``MFA.RATE`` counted every check, per user and per client address: an
+    office behind one address had ten such logins an hour in all.
+    """
+    create_user("alice")
+    create_user("bob")
+    client = identity(MFA={"RATE": "2/hour", "ADDRESS_RATE": "2/hour"})
+    alice, _ = enrol(client, bearer(login(client, "alice")["access_token"]), clock)
+    clock[0] += 30
+    bob, _ = enrol(client, bearer(login(client, "bob")["access_token"]), clock)
+
+    def log_in_with_code(username: str, secret: bytes) -> int:
+        clock[0] += 30
+        body = {"username": username, "password": PASSWORD}
+        token = client.post("/auth/login", json=body).json()["mfa_token"]
+        return int(finish(client, token, code_at(secret, clock[0])).status_code)
+
+    assert [log_in_with_code("alice", alice) for _ in range(4)] == [200] * 4
+    assert log_in_with_code("bob", bob) == 200  # The same address.
+
+
+def test_wrong_codes_count_per_address_too(identity: Api, clock: list[float]) -> None:
+    """Past ``MFA.ADDRESS_RATE`` wrong codes, an address waits; its users do not.
+
+    An attempt the address refuses was not made: it uses up no count of
+    its user, who may go on from elsewhere.
+    """
+    for name in ("alice", "bob", "carol"):
+        create_user(name)
+    client = identity(MFA={"RATE": "1/hour", "ADDRESS_RATE": "2/hour"})
+    for name in ("alice", "bob", "carol"):
+        clock[0] += 30
+        enrol(client, bearer(login(client, name)["access_token"]), clock)
+
+    def challenge(username: str) -> str:
+        body = {"username": username, "password": PASSWORD}
+        token: str = client.post("/auth/login", json=body).json()["mfa_token"]
+        return token
+
+    wrong = [finish(client, challenge(name), "000000") for name in ("alice", "bob")]
+    carol = challenge("carol")
+    refused = finish(client, carol, "000000")
+    elsewhere = TestClient(client.app, client=("203.0.113.9", 1))
+    clock[0] += 30
+
+    assert [response.status_code for response in wrong] == [401, 401]
+    assert (refused.status_code, refused.json()["code"]) == (429, "throttled")
+    assert finish(elsewhere, carol, "111111").status_code == 401
+    assert finish(elsewhere, carol, "222222").status_code == 429  # Her count now.
+
+
 def test_forged_challenges_use_up_no_count_of_the_user(
     identity: Api, clock: list[float]
 ) -> None:
-    """Only a challenge that holds (it took the password) counts for its user."""
+    """Only a challenge that holds (it took the password) counts for its user.
+
+    Forged ones count against ``LOGIN_RATE`` for their address, once
+    checked: a challenge that holds, from that address too, still works.
+    """
     alice = create_user("alice")
-    client = identity(MFA={"RATE": "2/minute"})
+    client = identity(MFA={"RATE": "2/minute"}, LOGIN_RATE="2/minute")
     secret, _ = enrol(client, bearer(login(client, "alice")["access_token"]), clock)
     forged = f"{alice.hex}:1:{'A' * 43}"
 
@@ -466,13 +530,17 @@ def test_forged_challenges_use_up_no_count_of_the_user(
         stranger = TestClient(client.app, client=(f"203.0.113.{number}", 1))
         refused = finish(stranger, forged, "000000")
         assert (refused.status_code, refused.json()["code"]) == (400, "invalid_token")
-    by_address = [finish(client, forged, "000000").status_code for _ in range(3)]
+    by_address = [finish(client, forged, "000000").status_code for _ in range(4)]
     clock[0] += 30
-    owner = TestClient(client.app, client=("198.51.100.20", 1))
-    token = log_in(owner).json()["mfa_token"]
+    token = log_in(client).json()["mfa_token"]
 
-    assert by_address == [400, 400, 429]  # Each address still has its count.
-    assert finish(owner, token, code_at(secret, clock[0])).status_code == 200
+    assert by_address == [400, 400, 429, 429]  # Each address still has its count.
+    assert finish(client, token, code_at(secret, clock[0])).status_code == 200
+    assert [row["details"] for row in audited("auth.mfa")] == [
+        {"reason": "invalid_token"}
+    ] * 5 + [{"reason": "throttled"}]  # Once per count and period.
+    unlimited = identity(LOGIN_RATE=None)
+    assert {finish(unlimited, forged, "0").status_code for _ in range(3)} == {400}
 
 
 def test_turning_it_off_needs_the_password_and_a_code(
