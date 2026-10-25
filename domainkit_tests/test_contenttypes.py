@@ -3,6 +3,7 @@
 import asyncio
 import io
 import secrets
+import threading
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -332,3 +333,30 @@ def test_a_table_removed_or_replaced_takes_its_key_away(
     alpha_table()  # As many tables as before.
     with pytest.raises(LookupError, match="Late"):
         content_type_key(replaced)
+
+
+def test_keys_another_thread_worked_out_meanwhile_are_used(
+    use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lookup that waited for the lock finds the keys done, and keeps them."""
+    use_auth()
+    done = (content_registry._state(), {User: ("auth", "user")})
+    lock = threading.Lock()
+
+    class Waited:
+        """The lock, held meanwhile by a thread that worked the keys out."""
+
+        def __enter__(self) -> None:
+            lock.acquire()
+            monkeypatch.setattr(content_registry, "_known", done)
+
+        def __exit__(self, *exc: object) -> None:
+            lock.release()
+
+    monkeypatch.setattr(content_registry, "_known", (None, {}))
+    monkeypatch.setattr(content_registry, "_lock", Waited())
+    counted = Counted(monkeypatch)
+
+    assert content_type_key(User) == ("auth", "user")
+    assert counted.calls == 0
+    assert content_registry._known is done

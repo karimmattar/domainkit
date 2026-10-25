@@ -6,6 +6,7 @@ each dialect and each clock, and send the same to the database.
 """
 
 import asyncio
+import threading
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
@@ -29,6 +30,7 @@ from sqlalchemy.sql.compiler import SQLCompiler
 from domainkit import clock
 from domainkit.clock import freeze_time
 from domainkit.conf import DatabaseConfig
+from domainkit.contrib.idempotency import statements
 from domainkit.contrib.idempotency.middleware import PURGE_BATCH
 from domainkit.contrib.idempotency.operations import (
     Operation,
@@ -310,3 +312,31 @@ def test_what_reaches_the_database_is_the_same(database_url: str) -> None:
         with freeze_time(FROZEN) if frozen else nullcontext():
             for old, new in asyncio.run(run(database_url)):
                 assert new == old
+
+
+def test_statements_another_thread_built_meanwhile_are_used(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller that waited for the lock finds them built, and builds none."""
+    done = statements._build("sqlite", False)
+    built: dict[tuple[str, bool], statements.ClockStatements] = {}
+    lock = threading.Lock()
+
+    class Waited:
+        """The lock, held meanwhile by a thread that built the statements."""
+
+        def __enter__(self) -> None:
+            lock.acquire()
+            built[("sqlite", False)] = done
+
+        def __exit__(self, *exc: object) -> None:
+            lock.release()
+
+    def never(dialect: str, database_clock: bool) -> statements.ClockStatements:
+        raise AssertionError("built twice")
+
+    monkeypatch.setattr(statements, "_built", built)
+    monkeypatch.setattr(statements, "_lock", Waited())
+    monkeypatch.setattr(statements, "_build", never)
+
+    assert clock_statements("sqlite") is done
