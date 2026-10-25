@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import threading
+from collections import deque
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -153,6 +154,111 @@ async def test_a_freed_slot_is_not_left_to_a_waiter_that_gave_up(
     assert await slots.acquire(0) is None  # Not queued behind ``gone``.
     with pytest.raises(asyncio.CancelledError):
         await gone
+
+
+class Unwalked(deque[Any]):
+    """A queue that fails the test if it is walked or searched."""
+
+    def __iter__(self) -> Iterator[Any]:
+        """Refuse: walking it costs as much as it is long."""
+        raise AssertionError("walked the queue")
+
+    def remove(self, value: Any) -> None:  # noqa: ANN401 - any waiter.
+        """Refuse: searching it costs as much as it is long."""
+        raise AssertionError("searched the queue")
+
+
+async def test_queue_operations_cost_the_same_however_long_it_is(
+    queued: Counter,
+) -> None:
+    """Refusing, counting, and leaving never walk the queue (MAX_QUEUED_REQUESTS).
+
+    Refused requests, the ones that should cost least under overload, cost
+    the same with 10 waiters or 100,000.
+    """
+    slots = Slots(limit=1, queue=100)
+    await slots.acquire(1.0)
+    slots._waiters = Unwalked()
+    waiting = [asyncio.create_task(slots.acquire(60.0)) for _ in range(100)]
+    async with asyncio.timeout(30):  # A regression fails here; it never hangs.
+        await queued.reach(100)
+
+    assert await slots.acquire(60.0) == QUEUE_FULL
+    assert slots.waiting == 100
+    waiting[50].cancel()  # In the middle: passed over later, not searched for.
+    with pytest.raises(asyncio.CancelledError):
+        await waiting[50]
+    assert slots.waiting == 99
+    assert len(slots._waiters) == 100
+    waiting[0].cancel()  # At the front: taken off at once.
+    with pytest.raises(asyncio.CancelledError):
+        await waiting[0]
+    assert (slots.waiting, len(slots._waiters)) == (98, 99)
+    for _ in range(98):
+        slots.release()
+    assert await asyncio.gather(*waiting[1:50], *waiting[51:]) == [None] * 98
+    assert (slots.held, slots.waiting, len(slots._waiters)) == (1, 0, 0)
+
+
+async def test_waiters_that_left_the_middle_are_swept_together(
+    queued: Counter,
+) -> None:
+    """Places given up in the middle go once they outnumber those still waiting.
+
+    The queue's length stays within twice the waiters (and a little), and
+    the waiters left keep their turn.
+    """
+    slots = Slots(limit=1, queue=100)
+    await slots.acquire(1.0)
+    order: list[int] = []
+
+    async def wait(n: int) -> None:
+        assert await slots.acquire(60.0) is None
+        order.append(n)
+        slots.release()
+
+    waiting = [asyncio.create_task(wait(n)) for n in range(100)]
+    async with asyncio.timeout(30):
+        await queued.reach(100)
+    for task in waiting[10:90]:
+        task.cancel()
+    await asyncio.wait(waiting[10:90])
+
+    assert slots.waiting == 20
+    assert len(slots._waiters) <= 2 * 20 + shedding._SWEEP_SLACK
+    slots.release()
+    await asyncio.gather(*waiting[:10], *waiting[90:])
+    assert order == [*range(10), *range(90, 100)]
+    assert (slots.held, slots.waiting, len(slots._waiters)) == (0, 0, 0)
+
+
+async def test_the_wait_ends_at_a_deadline_no_timer_enforces(
+    queued: Counter,
+) -> None:
+    """A task that only shares a deadline stops waiting when it passes.
+
+    It is refused as a wait that ran out is (``queue_timeout``); with no time
+    left at all, it is refused at once.
+    """
+    slots = Slots(limit=1, queue=5)
+    await slots.acquire(1.0)
+
+    async def wait_under(seconds: float) -> str | None:
+        token = deadlines._current.set(deadlines.Deadline(seconds))
+        try:
+            return await slots.acquire(60.0)
+        finally:
+            deadlines._current.reset(token)
+
+    async with asyncio.timeout(30):  # Long before the queue's own 60 seconds.
+        assert await asyncio.create_task(wait_under(0.0)) == QUEUE_TIMEOUT
+        assert await asyncio.create_task(wait_under(0.01)) == QUEUE_TIMEOUT
+    assert (slots.held, slots.waiting, len(slots._waiters), queued.value) == (
+        1,
+        0,
+        0,
+        0,
+    )
 
 
 # The middleware -----------------------------------------------------------------
@@ -324,9 +430,14 @@ async def test_cancelled_requests_give_their_slot_or_place_back(
 
 
 async def test_the_deadline_frees_the_slot_of_a_request_it_cuts_off(
-    queued: Counter,
+    queued: Counter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Running or waiting, a request past its deadline gives everything back."""
+    """Running or waiting, a request past its deadline gives everything back.
+
+    The one cut off while it waited never got a slot: it is counted as shed.
+    """
+    shed: list[str] = []
+    monkeypatch.setattr(shedding, "observe_shed", shed.append)
     app = Gated()
     given: list[deadlines.Deadline | None] = []
     with override_settings(
@@ -353,6 +464,8 @@ async def test_the_deadline_frees_the_slot_of_a_request_it_cuts_off(
         assert await call.answered() == 503
         assert b'"code":"deadline_exceeded"' in call.sent[1]["body"]
     assert (middleware.slots(1).held, middleware.slots(1).waiting) == (0, 0)
+    assert shed == [QUEUE_TIMEOUT]
+    assert middleware.report.count == 0  # Logged at once: the first in a while.
 
 
 async def test_a_streamed_response_gives_its_slot_back_when_it_starts() -> None:

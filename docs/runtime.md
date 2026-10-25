@@ -694,6 +694,11 @@ timers that cancel work run on the event loop's own clock.
   claim, run that way too, within `STATEMENT_TIMEOUT`.
 - **Outgoing HTTP calls** through `domainkit.http.client` are bounded by it
   (below).
+- **Worker tasks.** The messaging worker runs each message under a
+  deadline of its timeout (the task's `timeout`, or `TASK_TIMEOUT`), so a
+  task's transactions and outgoing calls keep to it as a request's do.
+- **Cache computations** run under the deadline of the caller that started
+  them ([cache.md](cache.md#what-a-factory-may-use)).
 - **Ledgers and caches** keep their own `TIMEOUT`: a request's call to
   either is cancelled at the deadline like anything else it awaits, and
   the request answers 503. Code of your own can bound one await by both,

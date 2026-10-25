@@ -35,6 +35,12 @@ All notable changes to domainkit. The format follows
   before the resources phase closes the database they write through: the
   leases of a slow broker's last round go back instead of expiring
   (CONC-05).
+- A request whose deadline passes while it waits for a slot is counted
+  and logged as shed (`http_requests_shed_total{reason="queue_timeout"}`),
+  besides its 503 `deadline_exceeded`; the queue's wait keeps to a
+  deadline no timer enforces too. Queueing, refusing a request, and
+  leaving the queue no longer cost time in proportion to
+  `MAX_QUEUED_REQUESTS` (CONC-11, CONC-07).
 
 ### Added
 
