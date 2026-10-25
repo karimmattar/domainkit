@@ -184,9 +184,30 @@ def link(previous: str, row_digest: str) -> str:
     return hashlib.sha256(f"{previous}{row_digest}".encode()).hexdigest()
 
 
-def anchor_key(database: str) -> bytes:
-    """The ledger key holding ``database``'s anchors, one revision each."""
-    return f"domainkit/audit/{database}".encode()
+def anchor_key(database: str, namespace: str | None = None) -> bytes:
+    """The ledger key holding ``database``'s anchors, one revision each.
+
+    ``domainkit/audit/<namespace>/<database>``, so projects and environments
+    sharing a ledger keep their anchors apart; without a namespace, the key
+    of 0.9.0 and before, ``domainkit/audit/<database>``.
+    """
+    if namespace is None:
+        return f"domainkit/audit/{database}".encode()
+    return f"domainkit/audit/{namespace}/{database}".encode()
+
+
+def anchor_keys(database: str) -> tuple[bytes, ...]:
+    """The keys ``verify`` reads ``database``'s anchors from, oldest first.
+
+    The key of ``AUDIT.NAMESPACE``, after the key without a namespace while
+    ``AUDIT.PREVIOUS_ANCHORS`` keeps the heads anchored there before the
+    namespace was set.
+    """
+    config = registry.settings(AuditSettings)
+    current = anchor_key(database, config.NAMESPACE)
+    if config.NAMESPACE is None or not config.PREVIOUS_ANCHORS:
+        return (current,)
+    return (anchor_key(database), current)
 
 
 async def seal(
@@ -259,8 +280,9 @@ async def anchor(
         head = await _head(connection)
     if head is None:
         return None
+    key = anchor_key(database, registry.settings(AuditSettings).NAMESPACE)
     try:
-        entry = await ledger.read(anchor_key(database))
+        entry = await ledger.read(key)
     except LedgerKeyNotFound:
         latest, read_at = None, 0
     else:
@@ -271,9 +293,7 @@ async def anchor(
         return None
     written = Anchor(head.seq, head.link, now)
     try:
-        await ledger.append(
-            anchor_key(database), written.encode(), unchanged_since=read_at
-        )
+        await ledger.append(key, written.encode(), unchanged_since=read_at)
     except LedgerChanged:
         return None
     return written
@@ -342,7 +362,7 @@ async def verify(
                 report.missing.append(seal_row["entry_id"])
             elif digest(seal_row) != seal_row["digest"]:
                 report.changed.append(seal_row["entry_id"])
-            if anchored.pop(seal_row["seq"], seal_row["link"]) != seal_row["link"]:
+            if anchored.pop(seal_row["seq"], {seal_row["link"]}) != {seal_row["link"]}:
                 report.rewritten.append(seal_row["seq"])
             if (
                 overdue is not None
@@ -537,19 +557,23 @@ async def _unsealed(connection: AsyncConnection, now: datetime) -> int:
     return int(count or 0)
 
 
-async def _anchors(database: str, ledger: Ledger) -> dict[int, str]:
-    """Every anchored head of ``database``: its link by number."""
-    key = anchor_key(database)
-    try:
-        latest = await ledger.read(key)
-    except LedgerKeyNotFound:
-        return {}
-    anchors: dict[int, str] = {}
-    for revision in range(1, latest.revision):
-        written = Anchor.decode((await ledger.read(key, revision)).value)
-        anchors[written.seq] = written.link
-    newest = Anchor.decode(latest.value)
-    anchors[newest.seq] = newest.link
+async def _anchors(database: str, ledger: Ledger) -> dict[int, set[str]]:
+    """Every anchored head of ``database``: the links anchored for each number.
+
+    Read from every key in ``anchor_keys``. A number anchored with two
+    links (under two keys) cannot match the chain at both.
+    """
+    anchors: dict[int, set[str]] = {}
+    for key in anchor_keys(database):
+        try:
+            latest = await ledger.read(key)
+        except LedgerKeyNotFound:
+            continue
+        for revision in range(1, latest.revision):
+            written = Anchor.decode((await ledger.read(key, revision)).value)
+            anchors.setdefault(written.seq, set()).add(written.link)
+        newest = Anchor.decode(latest.value)
+        anchors.setdefault(newest.seq, set()).add(newest.link)
     return anchors
 
 

@@ -16,7 +16,8 @@ revision::
 
 Protect the seals of the hash chain the same way, in the revision that
 creates them: ``protect(op, audit_seals)``. On other databases both do
-nothing.
+nothing. In staging and production the application checks at startup that
+both tables have their triggers, enabled (``baseline``).
 """
 
 from typing import Protocol
@@ -26,9 +27,15 @@ from sqlalchemy import Connection, Table
 from .tables import audit_log
 
 
+def trigger_names(table: Table) -> tuple[str, str]:
+    """The triggers that protect ``table``: of rows, and of truncation."""
+    function = f"{table.name}_append_only"
+    return function, f"{function}_truncate"
+
+
 def statements(table: Table) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """The statements that protect ``table``, and those that undo them."""
-    function = f"{table.name}_append_only"
+    function, truncate = trigger_names(table)
     protect = (
         f"""
     CREATE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -43,12 +50,12 @@ def statements(table: Table) -> tuple[tuple[str, ...], tuple[str, ...]]:
             f"FOR EACH ROW EXECUTE FUNCTION {function}()"
         ),
         (
-            f"CREATE TRIGGER {function}_truncate BEFORE TRUNCATE ON {table.name} "
+            f"CREATE TRIGGER {truncate} BEFORE TRUNCATE ON {table.name} "
             f"FOR EACH STATEMENT EXECUTE FUNCTION {function}()"
         ),
     )
     unprotect = (
-        f"DROP TRIGGER IF EXISTS {function}_truncate ON {table.name}",
+        f"DROP TRIGGER IF EXISTS {truncate} ON {table.name}",
         f"DROP TRIGGER IF EXISTS {function} ON {table.name}",
         f"DROP FUNCTION IF EXISTS {function}()",
     )
