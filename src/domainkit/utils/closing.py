@@ -5,10 +5,14 @@ import logging
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from typing import Any, Final
 
+from domainkit import tasks
+
 logger = logging.getLogger(__name__)
 
 RESERVED_SHARE: Final = 0.25
 """The part of ``close_in_turn``'s time kept back for the items still to close."""
+LEFT_BEHIND: Final = "domainkit.close"
+"""The name of a close given up on and left to end (``tasks.owned()``)."""
 
 
 async def close_each[T](
@@ -21,6 +25,8 @@ async def close_each[T](
     logged, since only one can be raised. If the wait is cancelled (a
     deadline passed), the items still closing are named in the log and
     cancelled, those that failed are logged, and the cancellation goes on.
+    Items given up on are left to end as owned tasks (``domainkit.tasks``),
+    which a shutdown's ``tasks`` phase waits for.
     """
     items = list(items)
 
@@ -35,8 +41,7 @@ async def close_each[T](
     except asyncio.CancelledError:
         for item, task in zip(items, closing, strict=True):
             if not task.done():
-                task.cancel()
-                task.add_done_callback(forget_outcome)
+                _leave_behind(task)
                 logger.error("Gave up closing %r", item)
             elif not task.cancelled() and (exc := task.exception()) is not None:
                 logger.error("Could not close %r", item, exc_info=exc)
@@ -66,7 +71,9 @@ async def close_in_turn[T](
     and left behind, so a close that ignores cancellation holds up neither
     the items after it nor the caller. Every item is tried; later failures
     are logged. If the wait is cancelled, the close running is cancelled
-    and left behind too, and the cancellation goes on.
+    and left behind too, and the cancellation goes on. What is left behind
+    is owned (``domainkit.tasks``), so a shutdown's ``tasks`` phase waits
+    for it to end.
     """
     loop = asyncio.get_running_loop()
     end = None if within is None else loop.time() + within
@@ -96,10 +103,16 @@ async def close_in_turn[T](
     _raise_first(items, failures)
 
 
-def _leave_behind(task: "asyncio.Future[Any]") -> None:
-    """Cancel ``task`` and stop waiting for it; how it ends is not logged."""
+def _leave_behind(task: "asyncio.Task[Any]") -> None:
+    """Cancel ``task`` and stop waiting for it; how it ends is not logged.
+
+    It is owned from then on (``domainkit.tasks.adopt``), so a shutdown's
+    ``tasks`` phase waits for it to end.
+    """
     task.cancel()
     task.add_done_callback(forget_outcome)
+    task.set_name(LEFT_BEHIND)
+    tasks.adopt(task)
 
 
 def forget_outcome(task: "asyncio.Future[Any]") -> None:

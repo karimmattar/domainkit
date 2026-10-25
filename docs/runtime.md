@@ -41,7 +41,14 @@ supervise(lambda: watch_rates(feed), name="billing.rates", max_backoff=30)
   in `tasks_failed_total{task}`. Pass `log_errors=False` when callers await
   the task and handle its errors themselves;
 - belongs to the event loop that runs it, which cancels it at
-  [shutdown](#shutting-down-within-a-budget).
+  [shutdown](#shutting-down-within-a-budget);
+- with `deadline=` (the caller's `deadlines.current_deadline()`), works
+  under that deadline: its transactions and outgoing calls are bounded by
+  it. Nothing cuts the task off when it passes; the caller that waits for
+  it is cut off, and should cancel it.
+
+`tasks.adopt(task)` makes a task started some other way owned too, so the
+shutdown waits for it: the framework does this for closes it gave up on.
 
 `supervise(factory, name=..., backoff=1.0, max_backoff=60.0)` calls
 `factory()` for each run, in a task of its own. A run that crashes (or that
@@ -77,12 +84,15 @@ to a request. The framework's own background work runs this way:
 | A `get_or_set` (or `@cached`) computation shared by concurrent callers | `domainkit.cache.compute` |
 | A round of readiness checks shared by concurrent probes | `domainkit.readiness` |
 | Storing a keyed response, or releasing the key | `domainkit.idempotency.settle` |
+| Giving back the leases of a relay round, even once the relay is cancelled | `domainkit.messaging.settle` |
 
 A cached value is shared by every caller of its key, so its factory must
 not depend on who asked: pass what it needs as arguments, and make them
 part of the key. `@cache_page` keys entries by user and language, so it runs
 the endpoint as the caller, in a copy of the caller's context, inside the
-clean computation.
+clean computation. A computation carries the deadline of the caller that
+started it, and never outlives that caller's wait
+([cache.md](cache.md#what-a-factory-may-use)).
 
 ## Shutting down within a budget
 
@@ -108,7 +118,10 @@ phase:
   so one database that hangs neither delays the caches nor keeps the other
   databases open;
 - a closer still running at the end of its phase is cancelled, named in
-  the log, and left behind, even one that ignores cancellation;
+  the log, and left behind, even one that ignores cancellation. It is
+  owned from then on, so the `tasks` phase waits for it to end (and names
+  it, as `domainkit.close:<name>`, if it is still running when that phase
+  ends) before the resources it may use close;
 - domain hooks run one after another, in reverse order. Each may use what
   is left of their phase, less a reserve kept for every hook still to run
   (a quarter of the phase, split among the hooks), so one slow hook may

@@ -30,6 +30,18 @@ All notable changes to domainkit. The format follows
   transactions lower `statement_timeout` to the time left, and their
   calls through `domainkit.http.client` are bounded by it. A run past its
   timeout still raises `TimeoutError` (CONC-03).
+- Shutdown waits, in its `tasks` phase, for a relay's give-back cut short
+  by the drain phase, and for closes cancelled at the end of their phase,
+  before the resources phase closes the database they write through: the
+  leases of a slow broker's last round go back instead of expiring
+  (CONC-05).
+
+### Added
+
+- `domainkit.tasks.spawn(..., deadline=...)` runs a task under its
+  caller's deadline, and `domainkit.tasks.adopt(task)` makes a task
+  started some other way owned, so the shutdown waits for it (CONC-02,
+  CONC-05).
 
 ## [0.9.0] - 2026-10-22
 

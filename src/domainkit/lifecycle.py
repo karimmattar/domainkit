@@ -19,7 +19,9 @@ the start of the shutdown (``PHASE_ENDS``: 30%, 50%, 60%, 90%, then 100%),
 so time one phase does not use goes to the next, and every phase keeps its
 own share whatever the ones before it did. Inside a phase, a closer that
 fails or overruns is logged and the others still close: one hung item never
-keeps the rest open. Domain hooks run one after another, in reverse order;
+keeps the rest open. One cut off is cancelled and left behind, as an owned
+task: the ``tasks`` phase waits for it too, so it ends before the resources
+it may still use close. Domain hooks run one after another, in reverse order;
 each may use what is left of their phase, less a little kept for each hook
 still to run.
 
@@ -75,6 +77,8 @@ PHASE_ENDS: Final[Mapping[Phase, float]] = {
     Phase.FLUSH: 1.0,
 }
 """The share of the budget, from the start of the shutdown, each phase ends at."""
+CLOSE_TASK: Final = "domainkit.close"
+"""Starts the names of closers' tasks; a closer's own name follows."""
 REGISTERED_PHASES: Final = frozenset({Phase.DRAIN, Phase.RESOURCES, Phase.FLUSH})
 """The phases ``register`` adds closers to."""
 DEFAULT_SHUTDOWN_TIMEOUT: Final[float] = Settings.model_fields[
@@ -199,7 +203,9 @@ async def _close_all(closers: Mapping[str, Closer], deadline: float) -> None:
     """Run ``closers`` at once until ``deadline``; log what failed or overran.
 
     Closers still running at the deadline are cancelled and left: one that
-    ignores cancellation cannot hold the shutdown.
+    ignores cancellation cannot hold the phase. They are owned tasks from
+    then on (``domainkit.tasks``), so the ``tasks`` phase waits for them to
+    end before the resources they use close.
     """
     if not closers:
         return
@@ -207,15 +213,17 @@ async def _close_all(closers: Mapping[str, Closer], deadline: float) -> None:
     async def close(closer: Closer) -> None:
         await closer()
 
-    running = {
-        name: asyncio.ensure_future(close(closer)) for name, closer in closers.items()
-    }
     loop = asyncio.get_running_loop()
+    running = {
+        name: loop.create_task(close(closer), name=f"{CLOSE_TASK}:{name}")
+        for name, closer in closers.items()
+    }
     await asyncio.wait(running.values(), timeout=max(deadline - loop.time(), 0))
     for name, task in running.items():
         if not task.done():
             task.cancel()
             task.add_done_callback(forget_outcome)
+            tasks.adopt(task)
             logger.error(
                 "Could not close the %s within the shutdown budget; closing the rest",
                 name,

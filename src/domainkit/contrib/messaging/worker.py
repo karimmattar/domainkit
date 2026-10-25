@@ -57,6 +57,7 @@ from domainkit.db import connections
 from domainkit.ddd import DomainEvent, EventBus, event_bus
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.reporting import report_error
+from domainkit.tasks import spawn
 from domainkit.tracing import remote_parent, span, trace_headers
 from domainkit.utils.module_loading import import_string
 
@@ -219,15 +220,18 @@ def _now() -> datetime:
     return clock.now()
 
 
-_settling: set[asyncio.Task[None]] = set()
-"""Shielded clean-ups still running after their caller was cancelled."""
+SETTLE_TASK: Final = "domainkit.messaging.settle"
+"""The name of the tasks that give leases back (``_shielded``)."""
 
 
 async def _shielded(work: Coroutine[Any, Any, None], what: str) -> None:
     """Run ``work`` to the end within ``RELEASE_TIMEOUT``, even if cancelled.
 
-    The caller's cancellation does not stop it: a lock left behind would
-    hold its messages until it expires. A failure is logged, never raised.
+    Neither the caller's cancellation nor the shutdown's stops it: a lock
+    left behind would hold its messages until it expires. It runs as an
+    owned task (``domainkit.tasks``), so the shutdown's ``tasks`` phase
+    waits for it before the ``resources`` phase closes the database it
+    writes to. A failure is logged, never raised.
     """
 
     async def bounded() -> None:
@@ -237,10 +241,13 @@ async def _shielded(work: Coroutine[Any, Any, None], what: str) -> None:
         except Exception as exc:  # Logged; the locks expire.
             logger.error("Could not %s; their locks expire", what, exc_info=exc)
 
-    task = asyncio.ensure_future(bounded())
-    _settling.add(task)
-    task.add_done_callback(_settling.discard)
-    await asyncio.shield(task)
+    async def settle() -> None:
+        running = asyncio.ensure_future(bounded())
+        while not running.done():  # Bounded: cancelling it waits for the end.
+            with suppress(asyncio.CancelledError):
+                await asyncio.shield(running)
+
+    await asyncio.shield(spawn(settle(), name=SETTLE_TASK))
 
 
 def backoff(attempts: int, config: MessagingSettings) -> float:

@@ -180,6 +180,17 @@ def backoff_delay(crashes: int, backoff: float, max_backoff: float) -> float:
     return ceiling * _random.uniform(0.5, 1.0)
 
 
+def adopt(task: asyncio.Task[Any]) -> None:
+    """Own ``task``, started some other way, so shutdown waits for it too.
+
+    For work given up on but still ending, such as a close cancelled at
+    the end of its shutdown phase: the ``tasks`` phase then waits for it
+    before the resources it uses close. Its context stays its own, and
+    how it ends is not logged here.
+    """
+    _own(task.get_loop(), task)
+
+
 def owned() -> frozenset[asyncio.Task[Any]]:
     """The running loop's ``spawn``-ed tasks that have not finished."""
     return frozenset(_owned.get(asyncio.get_running_loop(), ()))
