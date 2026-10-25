@@ -1006,7 +1006,29 @@ longest a request may run:
 - a `POST` or `PATCH` route that gives itself a deadline at the lease or
   past it (`Depends(RequestTimeout(300))`), or none (`RequestTimeout(None)`),
   is reported by `check`, and staging and production do not start with it;
+- with no deadline for any request (`REQUEST_TIMEOUT = None`, or no
+  `DeadlineMiddleware` in `MIDDLEWARE`) nothing bounds a keyed request by
+  the lease: `check` warns in staging and production, and the
+  application still starts; 0.10 refuses to start. A route without a
+  deadline is a refusal already because it is one route's exception,
+  made in code; the whole application without one is a deployment
+  choice that 0.9.1 leaves running;
 - your server's or proxy's timeout, if it is longer, counts too.
+
+**What the key covers.** The key holds the request until its response is
+sent: the handler, its commits, and the response's body, streamed or not.
+Once the last part of a response the key keeps is sent (a success, or a
+refusal after a commit), the response, or its status, is stored before
+anything runs after it, so the work a route does after its response
+(Starlette's `BackgroundTasks`, which no deadline bounds) runs once
+however long it takes: a retry meanwhile gets the stored response, or a
+409 `idempotency_response_unavailable`. A response the key does not keep
+(a refusal or a server error before any commit) is settled once the
+application returns, as before: a commit made after it still keeps the
+key, and otherwise the key is released and a retry runs the request,
+and its background work, again. A streamed response is held only by
+the lease while it streams, since its deadline is lifted when it starts:
+keep a keyed response's streaming within `LEASE_SECONDS`.
 
 The keys' database decides when a lease or a key runs out. On PostgreSQL,
 the claim, the take-over and the purge compare and write

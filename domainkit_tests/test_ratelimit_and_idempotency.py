@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 
 import anyio
 import pytest
-from fastapi import APIRouter, Depends, FastAPI
+from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import ColumnElement, Table, false, insert, select
 from sqlalchemy.sql import Select
@@ -21,6 +21,7 @@ from domainkit import clock, setup
 from domainkit.apps import registry
 from domainkit.clock import freeze_time
 from domainkit.conf import Settings, override_settings
+from domainkit.conf.global_settings import DEADLINE_MIDDLEWARE, DEFAULT_MIDDLEWARE
 from domainkit.context import RequestContext, bind_request
 from domainkit.contrib.idempotency import apps as idempotency_apps
 from domainkit.contrib.idempotency import middleware as idempotency
@@ -1412,6 +1413,57 @@ def test_keyed_routes_that_outlast_the_lease_are_problems() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("unbounded", "missing"),
+    [
+        ({"REQUEST_TIMEOUT": None}, "REQUEST_TIMEOUT is None"),
+        (
+            {
+                "MIDDLEWARE": tuple(
+                    m for m in DEFAULT_MIDDLEWARE if m != DEADLINE_MIDDLEWARE
+                )
+            },
+            f"{DEADLINE_MIDDLEWARE} is not in MIDDLEWARE",
+        ),
+    ],
+    ids=["no-timeout", "no-deadline-middleware"],
+)
+def test_keyed_requests_without_any_deadline_are_a_warning_where_deployed(
+    unbounded: dict[str, object], missing: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing bounds them by the lease: ``check`` says so (SEC-r2-4).
+
+    A warning, not a refusal: deployments that run this way keep
+    starting until 0.10. Outside staging and production, nothing.
+    """
+
+    def warnings(**options: object) -> list[str]:
+        registry.clear()
+        try:
+            with override_settings(
+                INSTALLED_DOMAINS=["domainkit.contrib.idempotency", ALPHA], **options
+            ):
+                setup()  # Starts: no refusal.
+                return registry.get_domain_config("idempotency").deployment_warnings()
+        finally:
+            registry.clear()
+
+    elsewhere = warnings(**unbounded)
+    monkeypatch.setattr(idempotency_apps, "DEPLOYED_ENVIRONMENTS", {"test"})
+
+    assert warnings(**unbounded) == [
+        (
+            f"Requests with an Idempotency-Key run without a deadline ({missing}): one "
+            "that runs past IDEMPOTENCY.LEASE_SECONDS (60s) can lose its key to a "
+            "retry, which runs it again. Set REQUEST_TIMEOUT below "
+            f"IDEMPOTENCY.LEASE_SECONDS and list {DEADLINE_MIDDLEWARE} in MIDDLEWARE; "
+            "0.10 refuses to start without a deadline."
+        )
+    ]
+    assert warnings() == []
+    assert elsewhere == []
+
+
 def test_a_key_released_while_claimed_is_in_progress(
     idempotent: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1720,3 +1772,168 @@ def test_purge_is_scheduled_only_with_messaging(
     registry.clear()
 
     assert imported == ["domainkit.contrib.idempotency.tasks"]
+
+
+# What runs after the response (SEC-r2-1) --------------------------------------
+
+
+PAY_SCOPE: Scope = {
+    "type": "http",
+    "asgi": {"version": "3.0"},
+    "http_version": "1.1",
+    "method": "POST",
+    "scheme": "http",
+    "path": "/pay",
+    "raw_path": b"/pay",
+    "root_path": "",
+    "query_string": b"",
+    "headers": [(b"idempotency-key", b"order-42")],
+    "client": ("testclient", 50000),
+    "server": ("testserver", 80),
+}
+"""A keyed ``POST /pay``, as a server hands it to the application."""
+
+
+class AfterResponse:
+    """A keyed ``POST /pay`` whose provider call runs after the response.
+
+    The first call waits until ``release``; later ones return at once, so
+    a second run shows instead of hanging.
+    """
+
+    def __init__(self, *, status_code: int = 202, fails: bool = False) -> None:
+        """Answer ``status_code``; with ``fails``, the provider call raises."""
+        self.calls = 0
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.fails = fails
+        api = FastAPI()
+
+        @api.post("/pay", status_code=status_code)
+        async def pay(background: BackgroundTasks) -> dict[str, str]:
+            background.add_task(self.call_provider)
+            return {"status": "accepted"}
+
+        self.app = idempotency.IdempotencyMiddleware(api)
+
+    async def call_provider(self) -> None:
+        """Charge: once the response is sent, with no deadline left."""
+        self.calls += 1
+        if self.calls == 1:
+            self.started.set()
+            await self.release.wait()
+        if self.fails:
+            raise RuntimeError("the provider's answer was lost")
+
+    async def post(self) -> list[Message]:
+        """Send ``POST /pay`` with the key ``order-42``; what was sent back."""
+        sent: list[Message] = []
+
+        async def send(message: Message) -> None:
+            sent.append(message)
+
+        await self.app(PAY_SCOPE, receive_empty_body, send)
+        return sent
+
+
+@pytest.mark.usefixtures("idempotent")
+def test_work_after_a_keyed_response_runs_once_however_long_it_takes() -> None:
+    """The key keeps the response before ``BackgroundTasks`` run.
+
+    The deadline is lifted once the response starts, so the provider call
+    may outlive the lease; a retry then gets the stored response instead
+    of taking the key over and charging again.
+    """
+    after = AfterResponse()
+
+    async def scenario() -> tuple[list[dict[str, object]], list[Message]]:
+        with freeze_time() as frozen:
+            first = asyncio.create_task(after.post())
+            await after.started.wait()
+            during = await asyncio.to_thread(stored_keys)
+            frozen.tick(IdempotencySettings().LEASE_SECONDS + 1)
+            retried = await after.post()
+            after.release.set()
+            await first
+        await connections.close_all()
+        return during, retried
+
+    during, retried = asyncio.run(scenario())
+
+    assert after.calls == 1
+    assert [row["status_code"] for row in during] == [202]
+    assert retried[0]["status"] == 202
+    assert (b"idempotent-replayed", b"true") in retried[0]["headers"]
+
+
+@pytest.mark.usefixtures("idempotent")
+def test_work_after_a_kept_response_that_fails_keeps_the_key() -> None:
+    """The response was stored before the work failed: a retry replays it."""
+    after = AfterResponse(fails=True)
+    after.release.set()
+
+    async def scenario() -> list[Message]:
+        with pytest.raises(RuntimeError, match="answer was lost"):
+            await after.post()
+        retried = await after.post()
+        await connections.close_all()
+        return retried
+
+    retried = asyncio.run(scenario())
+
+    assert (b"idempotent-replayed", b"true") in retried[0]["headers"]
+    assert after.calls == 1
+    assert [row["status_code"] for row in stored_keys()] == [202]
+
+
+@pytest.mark.usefixtures("idempotent")
+def test_a_key_to_release_waits_for_the_application_to_return() -> None:
+    """A refusal is settled once the work after it ends, as before.
+
+    Such a key is released, unless something after the response
+    committed: the release must see that commit, so it waits.
+    """
+    after = AfterResponse(status_code=402)
+
+    async def scenario() -> tuple[list[dict[str, object]], list[Message]]:
+        first = asyncio.create_task(after.post())
+        await after.started.wait()
+        during = await asyncio.to_thread(stored_keys)
+        after.release.set()
+        await first
+        retried = await after.post()
+        await connections.close_all()
+        return during, retried
+
+    during, retried = asyncio.run(scenario())
+
+    assert [row["status_code"] for row in during] == [None]  # Still held.
+    assert stored_keys() == []  # Released once it returned: nothing committed.
+    assert retried[0]["status"] == 402
+    assert after.calls == 2
+
+
+@pytest.mark.usefixtures("idempotent")
+def test_a_response_the_key_could_not_keep_stops_the_work_after_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The store fails: the error reaches the application, which runs nothing more.
+
+    Work that ran with the key unsettled could run again for a retry.
+    """
+
+    async def unavailable(*args: object) -> None:
+        raise ConnectionError("the keys' database is down")
+
+    monkeypatch.setattr(idempotency, "_finish", unavailable)
+    after = AfterResponse()
+    after.release.set()
+
+    async def scenario() -> None:
+        with pytest.raises(ConnectionError, match="keys' database is down"):
+            await after.post()
+        await connections.close_all()
+
+    asyncio.run(scenario())
+
+    assert after.calls == 0

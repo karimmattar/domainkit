@@ -13,6 +13,7 @@ from starlette.routing import BaseRoute, Host, Mount
 from domainkit import deadlines
 from domainkit.apps import DomainConfig, registry
 from domainkit.conf import settings
+from domainkit.conf.global_settings import DEADLINE_MIDDLEWARE, DEPLOYED_ENVIRONMENTS
 from domainkit.db import SqlAlchemyUnitOfWork, connections
 from domainkit.db.routing import DatabaseRouter, router
 from domainkit.ddd import DeferredTask, DomainEvent, UnitOfWork
@@ -128,6 +129,34 @@ class IdempotencyConfig(DomainConfig):
             for route, seconds in _route_timeouts(app.routes, config.METHODS)
             if seconds is None or seconds >= lease
         ]
+
+    def deployment_warnings(self) -> list[str]:
+        """Keyed requests without a deadline, in staging and production.
+
+        ``ready`` and ``check_application`` hold each keyed request's
+        deadline below the lease; with no deadline at all (no
+        ``REQUEST_TIMEOUT``, or no ``DeadlineMiddleware``) nothing does,
+        and a request that runs past the lease can lose its key to a
+        retry. A warning in 0.9.1, so deployments that run this way keep
+        starting; 0.10 refuses to start.
+        """
+        if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
+            return []
+        if settings.REQUEST_TIMEOUT is None:
+            missing = "REQUEST_TIMEOUT is None"
+        elif DEADLINE_MIDDLEWARE not in settings.MIDDLEWARE:
+            missing = f"{DEADLINE_MIDDLEWARE} is not in MIDDLEWARE"
+        else:
+            return []
+        lease = self.get_settings().LEASE_SECONDS
+        warning = (
+            f"Requests with an Idempotency-Key run without a deadline ({missing}): "
+            f"one that runs past IDEMPOTENCY.LEASE_SECONDS ({lease:g}s) can lose "
+            "its key to a retry, which runs it again. Set REQUEST_TIMEOUT below "
+            f"IDEMPOTENCY.LEASE_SECONDS and list {DEADLINE_MIDDLEWARE} in "
+            "MIDDLEWARE; 0.10 refuses to start without a deadline."
+        )
+        return [warning]
 
     def databases(self, router: DatabaseRouter) -> frozenset[str]:
         """Only ``IDEMPOTENCY.DATABASE``: keys are stored apart from business data."""

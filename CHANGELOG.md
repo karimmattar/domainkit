@@ -73,7 +73,22 @@ All notable changes to domainkit. The format follows
   key to a retry, which ran it again while its own commit failed with 409
   `idempotency_key_taken_over`. `check` reports a `POST` or `PATCH` route
   whose own `RequestTimeout` reaches the lease, or removes the deadline,
-  and staging and production do not start with one (ADR 0062) (FIN-79).
+  and staging and production do not start with one. This bounds a keyed
+  request until its response starts, and only where there is a deadline:
+  with none at all (`REQUEST_TIMEOUT = None`, or no `DeadlineMiddleware`),
+  `check` now warns in staging and production that keyed requests can
+  outlive the lease, and 0.10 refuses to start; a streamed response is
+  held by the lease alone while it streams. What runs after the response
+  is covered by the next entry (ADR 0062) (FIN-79, SEC-r2-4).
+- A keyed response that the key keeps is stored as soon as its last part
+  is sent, before the route's `BackgroundTasks` run, instead of once the
+  application returned. The deadline is lifted when the response starts,
+  so a provider call made after it could outlive the lease, and a retry
+  then took the key over and called the provider again; a background task
+  that raised released the key the same way. A retry now gets the stored
+  response however long that work runs. A response the key does not keep
+  is still settled once the application returns, and a keyed request
+  makes no more round trips (FIN-79, SEC-r2-1).
 - Security-log lines of refusals (a rejected `Host` header, a body too
   large or too slow, refused credentials, a refused live connection) are
   written once per caller every 10 seconds, with a count of those held

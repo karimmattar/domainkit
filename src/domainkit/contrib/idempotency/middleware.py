@@ -15,7 +15,11 @@ from a request still running, and by ``domainkit.clock`` on SQLite and
 under ``freeze_time``.
 
 A request that fails or is refused (a 4xx) before committing anything, or
-that raises, releases its key, so it can be retried. The response is stored,
+that raises, releases its key, so it can be retried. A response the key
+keeps is stored as soon as its last part is sent, before what the
+application runs after it (``BackgroundTasks``, which no deadline bounds),
+so a retry gets it however long that work takes; a key to be released is
+released once the application returns. The response is stored,
 or the key released, in a task of its own within ``SETTLE_TIMEOUT``, so a
 request cancelled meanwhile (its client gone, a deadline, a cancel scope)
 still lets go of its key instead of holding it until the lease runs out.
@@ -278,34 +282,59 @@ class IdempotencyMiddleware:
         receive: Receive,
         send: Send,
     ) -> None:
-        """Run the request as the key's operation, then store or release the key."""
+        """Run the request as the key's operation, then store or release the key.
+
+        A key that keeps the response, or its status, is settled as soon as
+        the response's last part is sent, before the application goes on to
+        anything after it (Starlette's ``BackgroundTasks``), which no longer
+        holds a deadline: a retry then gets the stored response, or a 409,
+        however long that work runs, and never runs the request again. A
+        key to be released is released once the application returns, as a
+        commit made after the response still keeps it. If storing fails,
+        the error reaches the application where it sent the response, so
+        what would have run after it does not run with the key unsettled.
+        """
         started: dict[str, Any] = {}
         chunks: list[bytes] = []
         size = 0
+        settled = False
+
+        def kept_body() -> bytes | None:
+            """The body to store, if the response is kept; None if not."""
+            code = started.get("status", status.HTTP_500_INTERNAL_SERVER_ERROR)
+            kept = (
+                (code < 400 or (code < 500 and operation.committed))
+                and size <= config.MAX_RESPONSE_BYTES
+                and not _no_store(started)
+            )
+            return b"".join(chunks) if kept else None
 
         async def capture(message: Message) -> None:
-            nonlocal size
+            nonlocal size, settled
             if message["type"] == "http.response.start":
                 started.update(message)
-            else:
-                size += len(message.get("body", b""))
-                if size <= config.MAX_RESPONSE_BYTES:
-                    chunks.append(message.get("body", b""))
+                await send(message)
+                return
+            size += len(message.get("body", b""))
+            if size <= config.MAX_RESPONSE_BYTES:
+                chunks.append(message.get("body", b""))
             await send(message)
+            if settled or message.get("more_body", False):
+                return
+            body = kept_body()
+            if body is not None or operation.committed or operation.pinned:
+                settled = True  # Before it runs: a cancellation must not repeat it.
+                await _settle(config, operation, started, body)
 
         with run_operation(operation):
             try:
                 await self.app(scope, receive, capture)
             except BaseException:
-                await _settle(config, operation, started, None)
+                if not settled:
+                    await _settle(config, operation, started, None)
                 raise
-        code = started.get("status", status.HTTP_500_INTERNAL_SERVER_ERROR)
-        kept = (
-            (code < 400 or (code < 500 and operation.committed))
-            and size <= config.MAX_RESPONSE_BYTES
-            and not _no_store(started)
-        )
-        await _settle(config, operation, started, b"".join(chunks) if kept else None)
+        if not settled:
+            await _settle(config, operation, started, kept_body())
 
 
 async def _settle(
