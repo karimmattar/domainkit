@@ -126,8 +126,10 @@ dev = [
     "pytest-randomly (>=5.0.0,<6.0.0)",
     "hypothesis (>=6.169.0,<7.0.0)",
     "mutmut (>=3.8.0,<4.0.0)",
-    # Every package the code imports is declared, and every one declared is used.
-    "deptry (>=0.25.1,<0.26.0)",
+    # Every package the code imports is declared, and every one declared is
+    # used. Only the lint job (3.13) runs it, and it has no wheel for
+    # free-threaded 3.14t, which would have to build it with Rust.
+    "deptry (>=0.25.1,<0.26.0) ; python_version < \"3.14\"",
 ]
 
 [tool.ruff]
