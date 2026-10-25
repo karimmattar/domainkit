@@ -41,6 +41,15 @@ from weakref import WeakKeyDictionary
 
 from domainkit import clock, deadlines
 
+__all__ = [
+    "Factory",
+    "adopt",
+    "clean_context",
+    "owned",
+    "spawn",
+    "supervise",
+]
+
 logger = logging.getLogger(__name__)
 
 try:

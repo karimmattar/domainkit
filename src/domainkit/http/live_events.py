@@ -56,6 +56,10 @@ from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.live import TOO_SLOW, Closed, Closure, send_queue
 from domainkit.http.sse import EventSourceResponse, ServerSentEvent
 
+__all__ = [
+    "live_events",
+]
+
 INTAKE_FACTOR: Final = 16
 """Events of its types, allowed or not, that a connection may hold before
 its rule has seen them: this many times its send queue. One more is too

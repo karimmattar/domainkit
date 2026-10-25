@@ -75,6 +75,7 @@ pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, m
 - [docs/performance.md](https://github.com/karimmattar/domainkit/blob/main/docs/performance.md): what a request costs, the
   benchmark ladder CI gates on, and how to make requests cheaper
 - [docs/versioning.md](https://github.com/karimmattar/domainkit/blob/main/docs/versioning.md): compatibility, deprecations, and releases
+- [docs/api.md](https://github.com/karimmattar/domainkit/blob/main/docs/api.md): the public API, module by module, one line a name
 - [docs/adr/](https://github.com/karimmattar/domainkit/tree/main/docs/adr): the decisions behind the design
 - [CHANGELOG.md](https://github.com/karimmattar/domainkit/blob/main/CHANGELOG.md) and [SECURITY.md](https://github.com/karimmattar/domainkit/blob/main/SECURITY.md)
 

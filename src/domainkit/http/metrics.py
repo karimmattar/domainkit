@@ -31,6 +31,10 @@ from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db.connections import connections
 from domainkit.http.errors import APIError
 
+__all__ = [
+    "MetricsMiddleware",
+]
+
 METHODS: Final = frozenset(
     {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE"}
 )

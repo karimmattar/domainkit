@@ -27,6 +27,15 @@ from domainkit.db import connections
 from .settings import MessagingSettings
 from .tables import BLANKED, CANCELLED, DEAD, PENDING, messages
 
+__all__ = [
+    "blanked_dead_letters",
+    "cancel",
+    "list_messages",
+    "queue_counts",
+    "queue_lag",
+    "retry_dead",
+]
+
 type State = Literal["pending", "locked", "dead"]
 """What ``list_messages`` lists: waiting, locked (running or published), dead."""
 STATES: Final = ("pending", "locked", "dead")

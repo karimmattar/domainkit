@@ -64,6 +64,10 @@ from .throttling import address_key, audit_refusal, count_failure, email_key, th
 from .uow import AuthUnitOfWork
 from .validators import validate_password
 
+__all__ = [
+    "router",
+]
+
 EMAIL_PATTERN: Final = r"^[^@\s\x00-\x1f\x7f]{1,64}@[^@\s\x00-\x1f\x7f]{1,253}$"
 """The shape of an address, checked first; ``EmailAddress`` checks the rest."""
 RESET_TASK: Final = "domainkit.auth.send_password_reset"

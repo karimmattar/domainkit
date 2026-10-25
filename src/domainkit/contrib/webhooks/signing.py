@@ -22,6 +22,12 @@ from typing import Final
 
 from domainkit import clock
 
+__all__ = [
+    "InvalidSignature",
+    "sign",
+    "verify",
+]
+
 SECRET_PREFIX: Final = "whsec_"  # noqa: S105 - a prefix, not a secret.
 SECRET_BYTES: Final = 32
 ID_HEADER: Final = "webhook-id"

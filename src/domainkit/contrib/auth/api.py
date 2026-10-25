@@ -40,6 +40,11 @@ from .throttling import Attempt, account_key, address_key, audit_refusal, thrott
 from .uow import AuthUnitOfWork
 from .validators import validate_password
 
+__all__ = [
+    "password_holds",
+    "router",
+]
+
 PASSWORD_MAX_LENGTH = 4096
 """Longer passwords are refused before hashing, which they would slow down."""
 

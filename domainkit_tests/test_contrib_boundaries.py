@@ -23,12 +23,11 @@ SRC: Final = Path(__file__).parents[1] / "src"
 ALLOWED: Final = frozenset(
     {
         # The generic admin shows audit history and guards with auth's rules.
-        ("domainkit.contrib.admin.sites", "domainkit.contrib.audit.api"),
-        ("domainkit.contrib.admin.sites", "domainkit.contrib.audit.history"),
+        ("domainkit.contrib.admin.sites", "domainkit.contrib.audit.api.HistoryPageOut"),
+        ("domainkit.contrib.admin.sites", "domainkit.contrib.audit.api.read_history"),
+        ("domainkit.contrib.admin.sites", "domainkit.contrib.audit.history.MAX_LIMIT"),
         ("domainkit.contrib.admin.sites", "domainkit.contrib.auth.access"),
-        ("domainkit.contrib.admin.sites", "domainkit.contrib.auth.models"),
         ("domainkit.contrib.audit.api", "domainkit.contrib.auth.access"),
-        ("domainkit.contrib.audit.api", "domainkit.contrib.auth.models"),
         # Auth hangs its permissions off content types (it requires them).
         ("domainkit.contrib.auth.apps", "domainkit.contrib.contenttypes.sync"),
         ("domainkit.contrib.auth.erasure", "domainkit.contrib.contenttypes.registry"),
@@ -44,52 +43,27 @@ ALLOWED: Final = frozenset(
         # E-mail address syntax, which belongs in domainkit.utils.
         ("domainkit.contrib.auth.models", "domainkit.contrib.mail.message"),
         # Admin APIs of flags and webhooks reuse auth's admin plumbing.
-        ("domainkit.contrib.flags.admin", "domainkit.contrib.auth.admin"),
-        ("domainkit.contrib.flags.admin", "domainkit.contrib.auth.models"),
-        ("domainkit.contrib.webhooks.admin", "domainkit.contrib.auth.admin"),
-        # Object permissions extend auth's backends and units of work.
-        (
-            "domainkit.contrib.objectpermissions.backends",
-            "domainkit.contrib.auth.backends",
-        ),
-        (
-            "domainkit.contrib.objectpermissions.backends",
-            "domainkit.contrib.auth.models",
-        ),
+        ("domainkit.contrib.flags.admin", "domainkit.contrib.auth.admin.staff"),
+        ("domainkit.contrib.webhooks.admin", "domainkit.contrib.auth.admin.staff"),
+        # Object permissions extend auth's access rules and units of work.
         (
             "domainkit.contrib.objectpermissions.criteria",
             "domainkit.contrib.auth.access",
         ),
-        (
-            "domainkit.contrib.objectpermissions.criteria",
-            "domainkit.contrib.auth.backends",
-        ),
-        (
-            "domainkit.contrib.objectpermissions.criteria",
-            "domainkit.contrib.auth.models",
-        ),
-        (
-            "domainkit.contrib.objectpermissions.deletions",
-            "domainkit.contrib.auth.models",
-        ),
-        (
-            "domainkit.contrib.objectpermissions.services",
-            "domainkit.contrib.auth.backends",
-        ),
-        (
-            "domainkit.contrib.objectpermissions.services",
-            "domainkit.contrib.auth.models",
-        ),
         ("domainkit.contrib.objectpermissions.services", "domainkit.contrib.auth.uow"),
         # Privacy writes the audit trail and finds models by content type.
-        ("domainkit.contrib.privacy.models", "domainkit.contrib.audit.tables"),
+        (
+            "domainkit.contrib.privacy.models",
+            "domainkit.contrib.audit.tables.audit_log",
+        ),
         ("domainkit.contrib.privacy.models", "domainkit.contrib.contenttypes.registry"),
         # Webhook delivery is an outbox task with messaging's retry policy.
         ("domainkit.contrib.webhooks.delivery", "domainkit.contrib.messaging.outbox"),
         ("domainkit.contrib.webhooks.delivery", "domainkit.contrib.messaging.registry"),
         ("domainkit.contrib.webhooks.delivery", "domainkit.contrib.messaging.settings"),
         ("domainkit.contrib.webhooks.settings", "domainkit.contrib.messaging.retry"),
-        # The core: the broker command, and resources' access rules (DSGN-02).
+        # The core: the broker command, resources' access rules (DSGN-02), and
+        # the test clients, which authenticate as the application does.
         (
             "domainkit.management.commands.broker",
             "domainkit.contrib.messaging.registry",
@@ -99,11 +73,12 @@ ALLOWED: Final = frozenset(
             "domainkit.contrib.messaging.settings",
         ),
         ("domainkit.resources.access", "domainkit.contrib.auth.access"),
-        ("domainkit.resources.access", "domainkit.contrib.auth.models"),
         ("domainkit.resources.policies", "domainkit.contrib.auth.access"),
         ("domainkit.resources.routing", "domainkit.contrib.auth.access"),
-        ("domainkit.resources.schemas", "domainkit.contrib.auth.models"),
-        ("domainkit.testing.clients", "domainkit.contrib.auth.authentication"),
+        (
+            "domainkit.testing.clients",
+            "domainkit.contrib.auth.authentication.get_authenticators",
+        ),
     }
 )
 """``(importer, private target)`` pairs that existed in 0.9.2; 0.10 removes them."""

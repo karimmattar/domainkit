@@ -23,6 +23,10 @@ from sqlalchemy import (
 
 from domainkit.db import UTCDateTime, metadata
 
+__all__ = [
+    "audit_seals",
+]
+
 audit_log = Table(
     "domainkit_audit_log",
     metadata,

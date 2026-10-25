@@ -27,6 +27,11 @@ from typing import Final
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.signing import derive_keys
 
+__all__ = [
+    "DecryptionFailed",
+    "SecretBox",
+]
+
 VERSION: Final = b"\x01"
 """AES-256-GCM, a 96-bit nonce, and a key derived from ``SECRET_KEY``."""
 NONCE_BYTES: Final = 12

@@ -8,7 +8,6 @@ from pydantic import ValidationError
 import domainkit.conf
 from domainkit import architecture
 from domainkit.architecture import (
-    DEFAULT_RULES,
     LayerRules,
     Violation,
     check_domain,
@@ -140,15 +139,15 @@ def found_in(violations: list[Violation]) -> set[tuple[str, str]]:
 
 def test_the_default_rules_are_the_tables() -> None:
     """Without ``ARCHITECTURE``, the rules are exactly the module's tables."""
-    assert LayerRules() == DEFAULT_RULES
-    assert DEFAULT_RULES.layers == architecture.LAYERS
-    assert DEFAULT_RULES.domain_allowed == architecture.DOMAIN_ALLOWED_PREFIXES
-    assert dict(DEFAULT_RULES.forbidden_libraries) == architecture.FORBIDDEN_LIBRARIES
-    assert dict(DEFAULT_RULES.forbidden_layers) == architecture.FORBIDDEN_LAYERS
-    assert DEFAULT_RULES.public_surface == architecture.PUBLIC_SURFACE
+    rules = LayerRules()
+    assert rules.layers == architecture.LAYERS
+    assert rules.domain_allowed == architecture.DOMAIN_ALLOWED_PREFIXES
+    assert dict(rules.forbidden_libraries) == architecture.FORBIDDEN_LIBRARIES
+    assert dict(rules.forbidden_layers) == architecture.FORBIDDEN_LAYERS
+    assert rules.public_surface == architecture.PUBLIC_SURFACE
     assert ArchitectureConfig() == Settings().ARCHITECTURE
-    assert project_rules() == DEFAULT_RULES
-    assert DEFAULT_RULES.extend() == DEFAULT_RULES
+    assert project_rules() == rules
+    assert rules.extend() == rules
 
 
 def test_without_settings_the_default_rules_apply(
@@ -161,7 +160,7 @@ def test_without_settings_the_default_rules_apply(
             raise ImproperlyConfigured("No settings module.")
 
     monkeypatch.setattr(domainkit.conf, "settings", Unloaded())
-    assert project_rules() is DEFAULT_RULES
+    assert project_rules() == LayerRules()
 
 
 def test_a_project_lets_its_domain_layers_import_a_shared_kernel(layered: str) -> None:
@@ -248,7 +247,7 @@ def test_a_project_opens_more_of_a_domain_to_the_others(layered: str) -> None:
 
 def test_rules_given_outright_win_over_the_settings(layered: str) -> None:
     """``check_domain(..., rules=...)`` uses those rules, whatever is set."""
-    rules = DEFAULT_RULES.extend(domain_allowed=["sqlalchemy"])
+    rules = LayerRules().extend(domain_allowed=["sqlalchemy"])
     with override_settings(ARCHITECTURE={"DOMAIN_ALLOWED": ["arch"]}):
         found = found_in(check_domain(layered, rules=rules))
     assert ("domain.model", "sqlalchemy") not in found
@@ -257,7 +256,7 @@ def test_rules_given_outright_win_over_the_settings(layered: str) -> None:
 
 def test_extending_keeps_every_default_and_adds_each_entry_once() -> None:
     """Nothing is removed, and an entry already present is not repeated."""
-    rules = DEFAULT_RULES.extend(
+    rules = LayerRules().extend(
         layers=["ports", "ports"],
         domain_allowed=["domainkit.ddd", "kernel"],
         forbidden_libraries={"application": ["httpx", "fastapi"]},
@@ -346,3 +345,15 @@ def test_extra_layers_may_be_named_by_the_rules() -> None:
     assert rules.layers[-1] == "ports"
     assert rules.forbidden_layers["api"] == ("ports", "domain")
     assert rules.public_surface[-1] == "ports.events"
+
+
+def test_a_table_replaced_the_old_way_still_applies(
+    layered: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Before ``ARCHITECTURE``, projects replaced a table; that keeps working."""
+    monkeypatch.setattr(
+        architecture, "DOMAIN_ALLOWED_PREFIXES", ("domainkit.ddd", "sqlalchemy")
+    )
+    found = found_in(check_domain(layered, ["arch.billing", "arch.shipping"]))
+    assert ("domain.model", "sqlalchemy") not in found
+    assert ("domain.model", "arch.billing.settings") in found

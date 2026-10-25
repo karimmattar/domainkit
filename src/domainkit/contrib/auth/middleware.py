@@ -77,6 +77,10 @@ from .authentication import (
 from .models import AnonymousUser
 from .settings import auth_settings
 
+__all__ = [
+    "AuthenticationMiddleware",
+]
+
 security_logger = logging.getLogger(SECURITY_LOGGER)
 
 MAX_HELD: Final = 10_000

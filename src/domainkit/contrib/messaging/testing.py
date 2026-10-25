@@ -49,6 +49,16 @@ from .registry import Chain, Task, TaskSpec, dump_arguments, qualified_name, spe
 from .tables import PENDING, messages
 from .worker import Claimed, Worker, _without_input
 
+__all__ = [
+    "CapturedEvents",
+    "DeferredExecutor",
+    "Drained",
+    "Outbox",
+    "QueuedMessage",
+    "QueuedWorkFailed",
+    "drain",
+]
+
 MAX_ROUNDS: Final = 100
 """Rounds ``run_queued`` makes before it decides the work never ends."""
 

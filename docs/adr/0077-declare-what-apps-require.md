@@ -12,8 +12,9 @@ the audit trail). Each checked for it in its own `ready()` with
 a project learned of the dependency only when that app's `ready()` ran,
 after the apps before it had wired themselves, and could not read the
 dependencies anywhere. Apps also imported 33 internal modules of other apps,
-and the core 8 (the 0.9.0 design audit, DSGN-04), so no app could change
-its internals, or be replaced by a project's own, without breaking others.
+and the core 8 (as measured in 0.9.1 for DSGN-04 of the 0.9.0 design audit),
+so no app could change its internals, or be replaced by a project's own,
+without breaking others.
 
 Django leaves dependencies between apps undeclared and fails at first use.
 Declaring them is cheap and gives one message for every app.
@@ -43,7 +44,9 @@ Declaring them is cheap and gives one message for every app.
 - A project reads an app's dependencies in one place, and a missing one is
   refused before anything is wired, with one message format.
 - The privacy app's message changed wording to that format.
-- New coupling between apps, or from the core into an app, fails CI; the
-  41 listed imports are 0.10's work: move e-mail syntax to `domainkit.utils`,
+- New coupling between apps, or from the core into an app, fails CI. Once
+  the modules the pages use had their `__all__`, 30 imports were left (24
+  between apps, 6 from the core); they are 0.10's work: move e-mail syntax
+  to `domainkit.utils`,
   give auth, content types, and messaging the public names the others use,
   and move the access rules out of `contrib.auth` (DSGN-02).

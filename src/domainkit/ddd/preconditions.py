@@ -25,6 +25,10 @@ from dataclasses import dataclass
 
 from domainkit.ddd.exceptions import PreconditionFailed
 
+__all__ = [
+    "expect_version",
+]
+
 
 @dataclass(slots=True)
 class Expectation:

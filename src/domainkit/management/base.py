@@ -13,6 +13,12 @@ from domainkit.utils import loops
 if TYPE_CHECKING:
     from domainkit.management.operators import Operator
 
+__all__ = [
+    "BaseCommand",
+    "CommandError",
+    "run_async",
+]
+
 
 class CommandError(Exception):
     """Stop the command and print the message; the process exits with ``returncode``."""

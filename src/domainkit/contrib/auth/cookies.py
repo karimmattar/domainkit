@@ -80,6 +80,11 @@ from .settings import auth_settings
 from .tokens import TokenKind, token_digest, well_formed
 from .uow import AuthUnitOfWork
 
+__all__ = [
+    "CookieAuthentication",
+    "router",
+]
+
 SCHEME: Final = "cookie"
 """``request.auth.scheme`` of requests a session cookie authenticates."""
 WEB_SCHEMES: Final = {"ws": "http", "wss": "https"}

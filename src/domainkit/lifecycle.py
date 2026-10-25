@@ -59,6 +59,19 @@ from domainkit.log import aflush_logs, aflush_throttled
 from domainkit.reporting import aflush_reports
 from domainkit.utils.closing import forget_outcome
 
+__all__ = [
+    "PHASE_ENDS",
+    "Budget",
+    "Closer",
+    "Phase",
+    "close_resources",
+    "closers",
+    "register",
+    "serving",
+    "shutdown_timeout",
+    "unregister",
+]
+
 logger = logging.getLogger(__name__)
 
 type Closer = Callable[[], Awaitable[object]]

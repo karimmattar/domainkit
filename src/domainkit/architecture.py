@@ -31,7 +31,23 @@ from typing import TYPE_CHECKING, Final, Self
 if TYPE_CHECKING:
     from domainkit.conf.global_settings import ArchitectureConfig
 
+__all__ = [
+    "DOMAIN_ALLOWED_PREFIXES",
+    "FORBIDDEN_LAYERS",
+    "FORBIDDEN_LIBRARIES",
+    "FRAMEWORK_PACKAGES",
+    "LAYERS",
+    "PUBLIC_SURFACE",
+    "LayerRules",
+    "Violation",
+    "check_domain",
+    "check_domains",
+    "iter_imports",
+    "project_rules",
+]
+
 LAYERS: Final = ("domain", "application", "infrastructure", "api")
+"""Layer packages of a domain, innermost first."""
 
 DOMAIN_ALLOWED_PREFIXES: Final = ("domainkit.ddd", "domainkit.clock")
 """Non-stdlib modules a domain layer may import (besides its own layer)."""
@@ -75,12 +91,16 @@ class LayerRules:
 
     Projects do not build these by hand: ``ARCHITECTURE`` extends the
     defaults (``project_rules``), and only extends them, so every rule the
-    framework states still holds.
+    framework states still holds. The defaults are read from the tables
+    when the rules are made, so a project that replaced a table before
+    0.9.2 still has its way.
     """
 
-    layers: tuple[str, ...] = LAYERS
+    layers: tuple[str, ...] = field(default_factory=lambda: LAYERS)
     """Layer packages a domain may have, innermost first."""
-    domain_allowed: tuple[str, ...] = DOMAIN_ALLOWED_PREFIXES
+    domain_allowed: tuple[str, ...] = field(
+        default_factory=lambda: DOMAIN_ALLOWED_PREFIXES
+    )
     """Non-stdlib modules a domain layer may import (besides its own layer)."""
     forbidden_libraries: Mapping[str, tuple[str, ...]] = field(
         default_factory=lambda: _frozen(FORBIDDEN_LIBRARIES)
@@ -90,7 +110,7 @@ class LayerRules:
         default_factory=lambda: _frozen(FORBIDDEN_LAYERS)
     )
     """Layers of the same domain that each layer must not import."""
-    public_surface: tuple[str, ...] = PUBLIC_SURFACE
+    public_surface: tuple[str, ...] = field(default_factory=lambda: PUBLIC_SURFACE)
     """Parts of a domain that other domains may import."""
 
     def extend(
@@ -127,10 +147,6 @@ class LayerRules:
         )
 
 
-DEFAULT_RULES: Final = LayerRules()
-"""The framework's rules, as ``check`` applies them without ``ARCHITECTURE``."""
-
-
 def project_rules() -> LayerRules:
     """The rules of the loaded settings' ``ARCHITECTURE``, or the defaults.
 
@@ -143,7 +159,7 @@ def project_rules() -> LayerRules:
     try:
         config: ArchitectureConfig = settings.ARCHITECTURE
     except ImproperlyConfigured:
-        return DEFAULT_RULES
+        return LayerRules()
     return LayerRules.from_config(config)
 
 
