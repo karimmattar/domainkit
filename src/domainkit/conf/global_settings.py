@@ -64,6 +64,16 @@ DEADLINE_MIDDLEWARE: Final = "domainkit.http.deadlines.DeadlineMiddleware"
 CONCURRENCY_MIDDLEWARE: Final = "domainkit.http.shedding.ConcurrencyLimitMiddleware"
 """Sheds requests past ``MAX_CONCURRENT_REQUESTS``."""
 HEADER_VALUE: Final = r"^[\x20-\x7e]{1,4096}$"
+_REFERRER: Final = (
+    r"(?:no-referrer|no-referrer-when-downgrade|origin|origin-when-cross-origin|"
+    r"same-origin|strict-origin|strict-origin-when-cross-origin|unsafe-url)"
+)
+REFERRER_POLICY: Final = rf"^{_REFERRER}(?:, ?{_REFERRER})*$"
+"""``Referrer-Policy``: one of its policies, or several, comma-separated."""
+CORS_NAME: Final = r"^(?:\*|[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64})$"
+"""A method or header name a CORS answer lists (RFC 9110 token), or ``*``."""
+ORIGIN: Final = r"^(?:\*|[A-Za-z][A-Za-z0-9+.-]*://[^\s/,]{1,253})$"
+"""A CORS origin: ``*``, or a scheme and host (and port), without a path."""
 """A header value a setting gives: printable ASCII, no line breaks, bounded."""
 DEFAULT_CONTENT_SECURITY_POLICY: Final = "default-src 'none'; frame-ancestors 'none'"
 """An API answers data: nothing in it may load, run, or be framed."""
@@ -871,7 +881,10 @@ class Settings(BaseModel):
     """``Strict-Transport-Security`` max-age; 0 omits the header."""
     SECURE_HSTS_INCLUDE_SUBDOMAINS: bool = False
     SECURE_CONTENT_TYPE_NOSNIFF: bool = True
-    SECURE_REFERRER_POLICY: str | None = "no-referrer"
+    SECURE_REFERRER_POLICY: str | None = Field(
+        default="no-referrer", pattern=REFERRER_POLICY
+    )
+    """``Referrer-Policy``: its policies, comma-separated; None omits it."""
     X_FRAME_OPTIONS: Literal["DENY", "SAMEORIGIN"] = "DENY"
     SECURE_CONTENT_SECURITY_POLICY: str | None = Field(
         default=DEFAULT_CONTENT_SECURITY_POLICY, pattern=HEADER_VALUE
@@ -886,9 +899,15 @@ class Settings(BaseModel):
     ) = "same-origin"
     """``Cross-Origin-Opener-Policy`` of responses that set none; None omits it."""
 
-    CORS_ALLOWED_ORIGINS: tuple[str, ...] = ()
-    CORS_ALLOWED_METHODS: tuple[str, ...] = ("GET", "POST", "PUT", "PATCH", "DELETE")
-    CORS_ALLOWED_HEADERS: tuple[str, ...] = (
+    CORS_ALLOWED_ORIGINS: tuple[Annotated[str, Field(pattern=ORIGIN)], ...] = ()
+    CORS_ALLOWED_METHODS: tuple[Annotated[str, Field(pattern=CORS_NAME)], ...] = (
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+    )
+    CORS_ALLOWED_HEADERS: tuple[Annotated[str, Field(pattern=CORS_NAME)], ...] = (
         "Authorization",
         "Content-Type",
         "X-Request-ID",

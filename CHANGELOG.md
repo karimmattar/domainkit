@@ -524,6 +524,27 @@ and a status.
   per subscription, and whoever could make eight subscriptions to hosts
   whose DNS never answers held all 16 threads for a first round of
   lookups; now eight of one owner's hold 4 (WEB-04, DATA-11).
+- A request that ran past its deadline was logged with the path it was
+  sent to, and so were the debug toolbar's likely N+1 queries: a token in
+  a path reached the logs that 0.10 keeps paths out of. Both now show the
+  route's template, as the access log does, or the path as sent with
+  `ACCESS_LOG_PATH = "raw"` (WEB-10).
+- While Redis was down, the rate limit's fallback forgot its
+  longest-unseen caller once 10,000 others had come, so a flood of other
+  keys gave a throttled one its full quota back. It now never forgets a
+  caller who still owes requests, and refuses new callers while every
+  place holds one (`MemoryBackend(full="refuse")`; the default backend
+  keeps forgetting the oldest) (WEB-14).
+- A body read before routing (`IdempotencyMiddleware`) to a route of a
+  mounted application, or of a router kept included, was held to
+  `MAX_REQUEST_BODY_SIZE` instead of the route's own limit. The route is
+  now matched into mounts and routers; where none of a mount's routes can
+  be told yet, its strictest limit holds (WEB-05).
+- `SECURE_REFERRER_POLICY` took any text, line breaks included, and sent
+  it as a header; it now takes `Referrer-Policy`'s own policies. The
+  origins, methods, and header names of `CORS_*` are checked too: an
+  origin is a scheme and host, a method or header name an HTTP token
+  (WEB-08).
 
 ## [0.9.3] - 2026-10-26
 
