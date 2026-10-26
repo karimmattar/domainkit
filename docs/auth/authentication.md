@@ -95,12 +95,12 @@ router it is included through:
   only if both do, and `~A` never.
 
 `SCOPED_CREDENTIALS` decides what happens on a route that declares none.
-In 0.10 it is `"warn"`: the request is served as before, with a
-`DomainkitDeprecationWarning` (your tests fail on it when they make
-deprecations errors) and a line on the `domainkit.security` logger, once
-per route a while (what deployments find). `"refuse"` answers
-`403 permission_denied` ("Credentials limited to scopes cannot call this
-route"), which 0.11 makes the default. It is decided once a request,
+By default (`"refuse"`, since 0.11) it answers `403 permission_denied`
+("Credentials limited to scopes cannot call this route"). `"warn"`, 0.10's
+default, serves the request as before, with a line on the
+`domainkit.security` logger once per route a while: a project that still
+has such routes keeps them working while it adds their rules. It is
+decided once a request,
 wherever the principal is first read: `Require`, `CurrentUser`,
 `AuthenticatedUser`, and `current_user` itself, so a dependency of your
 own that reads the principal through it, and a `Public` route that reads
