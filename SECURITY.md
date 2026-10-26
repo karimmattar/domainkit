@@ -51,7 +51,10 @@ settings reference
 | Control | Where |
 | --- | --- |
 | Lint with bandit rules (ruff `S`), strict typing (mypy) | `pyproject.toml`, CI |
-| Dependency audit (pip-audit) and secret scan (gitleaks) on every push | `.github/workflows/ci.yml` |
-| Actions pinned to commit SHAs; dependencies updated by Renovate after 14 days, security fixes at once | `.github/workflows/`, `renovate.json` |
-| Releases only from commits on `main` that pass the whole CI workflow, built in CI, approved in the `pypi` environment, and published to PyPI with trusted publishing (no API tokens) and attestations | `.github/workflows/release.yml` |
-| Property-based and mutation tests, random test order | `domainkit_tests/` |
+| Dependency audit (pip-audit) and secret scan (gitleaks) on every push, and weekly | `.github/workflows/ci.yml` |
+| Static analysis with Semgrep's Python and OWASP Top 10 rules on every push, and weekly | `.github/workflows/ci.yml` |
+| A CycloneDX bill of materials for every wheel CI builds: the packages the lock resolves for it | `.github/workflows/ci.yml` |
+| Actions pinned to commit SHAs and CI's images to digests; dependencies updated by Renovate after 14 days, security fixes at once | `.github/workflows/`, `renovate.json` |
+| `main` changes only through pull requests that pass CI; release tags are never moved or deleted (once the rulesets are imported, see `docs/versioning.md`) | `.github/rulesets/` |
+| Releases only from commits on `main` that pass the whole CI workflow, built in CI, attested by GitHub (SLSA build provenance, and the bill of materials), approved in the `pypi` environment by the maintainer (there is one today), and published to PyPI with trusted publishing (no API tokens) and attestations | `.github/workflows/release.yml` |
+| Property-based tests, random test order, and a weekly mutation run whose score each shard reports | `domainkit_tests/`, `.github/workflows/ci.yml` |

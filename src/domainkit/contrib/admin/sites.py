@@ -501,6 +501,8 @@ def _path(request: HTTPConnection, operation: Operation) -> str:
     path = request.app.url_path_for(
         operation.name, **{name: f"{{{name}}}" for name in names}
     )
+    # A path for the OpenAPI document, not a response (a Flask rule).
+    # nosemgrep: directly-returned-format-string  # noqa: ERA001
     return f"{request.scope.get('root_path', '')}{path}"
 
 

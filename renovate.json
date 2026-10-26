@@ -15,17 +15,51 @@
     "schedule": ["at any time"],
     "labels": ["dependencies", "security"]
   },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Images CI starts with docker run, each on a line of its own as name:tag@digest. The services' images are the github-actions manager's.",
+      "managerFilePatterns": ["/^\\.github/workflows/[^/]+\\.ya?ml$/"],
+      "matchStrings": [
+        "\\n\\s+(?<depName>[a-z0-9][a-z0-9._/-]*):(?<currentValue>[A-Za-z0-9][A-Za-z0-9._-]*)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker",
+      "depTypeTemplate": "docker-run"
+    },
+    {
+      "customType": "regex",
+      "description": "Tools CI installs with pipx, each version under a renovate comment.",
+      "managerFilePatterns": ["/^\\.github/workflows/[^/]+\\.ya?ml$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n\\s+[A-Z_]+: \"(?<currentValue>[^\"]+)\""
+      ],
+      "depTypeTemplate": "ci-tool"
+    }
+  ],
   "packageRules": [
     {
-      "description": "A library widens its supported ranges instead of moving them, so projects keep their choice.",
-      "matchDepTypes": ["dependencies", "optional-dependencies"],
+      "description": "A library widens its supported ranges instead of moving them, so projects keep their choice. The poetry manager names PEP 621 tables by their path.",
+      "matchManagers": ["poetry"],
+      "matchDepTypes": ["project.dependencies", "project.optional-dependencies"],
       "rangeStrategy": "widen"
     },
     {
-      "description": "Dev tools and actions: one grouped pull request for patches and digests.",
-      "matchDepTypes": ["dev", "action"],
+      "description": "Dev tools, actions and CI's images and tools: one grouped pull request for patches and digests.",
+      "matchDepTypes": [
+        "dependency-groups",
+        "action",
+        "service",
+        "docker-run",
+        "ci-tool"
+      ],
       "matchUpdateTypes": ["patch", "digest", "pinDigest"],
       "groupName": "tooling patches"
+    },
+    {
+      "description": "Runners move by hand, with the whole of CI.",
+      "matchManagers": ["github-actions"],
+      "matchDepTypes": ["github-runner"],
+      "enabled": false
     }
   ]
 }

@@ -1,7 +1,11 @@
 # Push a tag "vX.Y.Z" on a commit of main, matching pyproject.toml's
 # version, to publish it to PyPI. The tagged commit must pass the whole CI
-# workflow here (lint, types, tests, integration, coverage, build, audit),
-# and the package published is the one CI built and smoke-tested.
+# workflow here (lint, types, tests, integration, coverage, benchmarks,
+# build, bill of materials, Semgrep, audit), and the package published is
+# the one CI built and smoke-tested.
+# Before publishing, GitHub attests the wheel and sdist: SLSA build
+# provenance for both, and CI's CycloneDX bill of materials for the wheel
+# ("gh attestation verify <file> --repo karimmattar/domainkit").
 # Publishing uses trusted publishing (OIDC): no API token is stored anywhere.
 # One-time setup is in docs/versioning.md.
 name: Release
@@ -44,8 +48,9 @@ jobs:
             echo "Tag $TAG does not match version $version in pyproject.toml" >&2
             exit 1
           fi
-      # Commits reach main only through reviewed pull requests, so a tag on
-      # any other commit is refused.
+      # Commits reach main only through pull requests that pass CI
+      # (.github/rulesets/main.json, applied as docs/versioning.md says), so
+      # a tag on any other commit is refused.
       - name: Check that the tagged commit is on main
         env:
           TAG: ${{ github.ref_name }}
@@ -59,8 +64,38 @@ jobs:
     needs: tag
     uses: ./.github/workflows/ci.yml
 
-  publish:
+  # Signed statements, kept by GitHub, that these files came from this
+  # workflow at this commit, and what the wheel is made of. Its own job, so
+  # only it may write attestations.
+  attest:
     needs: ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # A Sigstore certificate naming this workflow run.
+      attestations: write # Keeps the attestations with the repository.
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist/
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sbom
+          path: sbom/
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*
+      - name: Attest the bill of materials
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*.whl
+          sbom-path: sbom/sbom.cdx.json
+
+  publish:
+    needs: [ci, attest]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment:

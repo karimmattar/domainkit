@@ -383,7 +383,8 @@ async def _reseal(
             )
             .values({column: new for column, (_, new) in stale.items()})
         )
-    logger.info(
+    # The subscription's id only: the word "secrets" is what the rule matched.
+    logger.info(  # nosemgrep: python-logger-credential-disclosure
         "Encrypted the secrets of webhook subscription %s again, under SECRET_KEY.",
         subscription_id,
     )
