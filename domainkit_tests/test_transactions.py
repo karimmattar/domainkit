@@ -8,6 +8,7 @@ transfers that lock their rows in opposite orders deadlock.
 """
 
 import asyncio
+import logging
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from pathlib import Path
@@ -193,6 +194,7 @@ async def test_work_lost_to_a_race_runs_again_whole(waits: list[float]) -> None:
     ]
     assert [event.gadget_id for event in published] == [gadget.id]
     assert uow.commits == 1
+    assert "_commits" not in vars(uow)  # repositories() walks vars(): untouched.
     assert len(waits) == 2
     assert all(0 <= wait <= 0.04 for wait in waits)
 
@@ -238,12 +240,15 @@ async def test_the_last_failure_is_raised_with_its_cause(
         await uow.run(always, retry=Retry(attempts=4, backoff=0.01, retry_on=(Lost,)))
     with pytest.raises(Lost) as once:
         await uow.run(always, retry=Retry(attempts=1, retry_on=(Lost,)))
+    with pytest.raises(Lost) as twice:
+        await uow.run(always, retry=Retry(attempts=2, backoff=0, retry_on=(Lost,)))
 
     assert raised.value is failures[3]
     assert isinstance(raised.value.__cause__, KeyError)
     assert raised.value.__notes__ == ["The work ran 4 times; each run lost a race."]
-    assert waits == [0.01, 0.02, 0.04]
+    assert waits == [0.01, 0.02, 0.04, 0]  # The two-run policy waits once.
     assert not hasattr(once.value, "__notes__")
+    assert twice.value.__notes__ == ["The work ran 2 times; each run lost a race."]
 
 
 async def test_work_that_committed_is_never_run_again(waits: list[float]) -> None:
@@ -298,14 +303,32 @@ async def test_no_wait_passes_the_deadline(waits: list[float], most: None) -> No
         lose()
 
     with freeze_time():
-        async with deadlines.timeout(0.05):
+        async with deadlines.timeout(0.5):  # A wait to the deadline is too long.
             with pytest.raises(Lost) as raised:
-                await uow.run(work, retry=Retry(backoff=0.1, retry_on=(Lost,)))
+                await uow.run(work, retry=Retry(backoff=0.5, retry_on=(Lost,)))
         async with deadlines.timeout(10):
             await uow.run(work, retry=Retry(attempts=5, backoff=0.1, retry_on=(Lost,)))
 
     assert not hasattr(raised.value, "__notes__")  # The first run's failure.
     assert waits == [0.1, 0.2, 0.4, 0.8]
+
+
+async def test_each_run_lost_is_logged(
+    waits: list[float], caplog: pytest.LogCaptureFixture
+) -> None:
+    """At INFO, by run, unit of work, and the error's class: never its text."""
+    uow = fake()
+    lose = losing(1)
+
+    async def work() -> None:
+        lose()
+
+    with caplog.at_level(logging.INFO, logger="domainkit.ddd.uow"):
+        await uow.run(work, retry=Retry(retry_on=(Lost,)))
+
+    assert [record.getMessage() for record in caplog.records] == [
+        "Run 1 of FakeGadgetsUnitOfWork lost a race (Lost); running it again"
+    ]
 
 
 async def test_waits_follow_the_frozen_clock(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -346,6 +369,7 @@ async def test_named_locks_are_held_until_the_work_ends() -> None:
             assert NAMED_LOCKS.holder("payout:acct-1") is two
     assert NAMED_LOCKS.holder("payout:acct-1") is None
     assert NAMED_LOCKS.holder("payout:acct-2") is None
+    assert (one._named_locks, two._named_locks) == (False, False)
 
 
 @pytest.mark.parametrize("name", ["", None, 7])
@@ -445,10 +469,15 @@ def test_isolation_is_declared_or_given_and_only_for_writes() -> None:
         Isolation.READ_COMMITTED
     )
     assert GadgetsUnitOfWork().isolation is None
-    with pytest.raises(ValueError, match="isolation= is for units of work that write"):
+    with pytest.raises(ValueError, match="isolation=") as refused:
         GadgetsUnitOfWork(readonly=True, isolation=Isolation.SERIALIZABLE)
     with pytest.raises(ValueError, match="isolation= is for units of work that write"):
         SerializableGadgets(readonly=True)
+
+    assert str(refused.value) == (
+        "isolation= is for units of work that write; a read-only one picks how "
+        "it reads with reads= (Reads.SNAPSHOT reads one snapshot)."
+    )
 
 
 @pytest.fixture
