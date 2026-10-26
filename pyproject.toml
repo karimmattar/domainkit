@@ -137,6 +137,13 @@ dev = [
     # free-threaded 3.14t, which would have to build it with Rust.
     "deptry (>=0.25.1,<0.26.0); python_version < \"3.14\"",
 ]
+# The documentation site (mkdocs.yml), which CI's docs-site job builds; the
+# API reference reads the source with griffe and imports nothing, so this
+# group needs neither the package nor its dependencies.
+docs = [
+    "mkdocs-material (>=9.8.0,<10.0.0)",
+    "mkdocstrings-python (>=2.0.10,<3.0.0)",
+]
 
 [tool.ruff]
 target-version = "py313"
@@ -181,7 +188,8 @@ ignore_missing_imports = true
 # extra of the feature that imports it (deptry counts extras as declared).
 [tool.deptry]
 known_first_party = ["domainkit"]
-extend_exclude = ["domainkit_tests", "benchmarks", "mutants"]
+# docs/hooks: the site's build, with the docs group, never the package.
+extend_exclude = ["domainkit_tests", "benchmarks", "mutants", "docs"]
 
 # Distributions whose modules have other names, so that deptry needs no
 # installed metadata to match them.

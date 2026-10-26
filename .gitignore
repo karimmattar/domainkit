@@ -15,6 +15,7 @@ junit.xml
 htmlcov/
 dist/
 mutants/
+site/
 
 # Local files
 .env

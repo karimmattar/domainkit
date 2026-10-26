@@ -529,3 +529,22 @@ def test_the_floors_script_reads_each_form_and_refuses_none(tmp_path: Path) -> N
     )
     assert done.returncode == 1
     assert "a has two floors: 1 and 2" in done.stderr
+
+
+def test_the_docs_site_builds_strictly_beside_the_tests() -> None:
+    """Links and public names checked; the docs group only; nothing waits for it."""
+    job = jobs()["docs-site"]
+    runs = [step.get("run", "") for step in job["steps"]]
+    assert "needs" not in job
+    assert "poetry sync --only docs --no-root" in runs
+    assert "poetry run mkdocs build --strict --site-dir site" in runs
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    docs = config["dependency-groups"]["docs"]
+    assert sorted(re.split(r"[\s(]", each, maxsplit=1)[0] for each in docs) == [
+        "mkdocs-material",
+        "mkdocstrings-python",
+    ]
+    site = yaml.safe_load((ROOT / "mkdocs.yml").read_text())
+    assert site["strict"] is True
+    assert site["hooks"] == ["docs/hooks/site.py"]
+    assert set(site["validation"].values()) == {"warn"}  # Failures, under --strict.

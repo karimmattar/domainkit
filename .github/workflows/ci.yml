@@ -483,6 +483,35 @@ jobs:
           semgrep scan --config p/python --config p/owasp-top-ten
           --metrics off --error --timeout 30 src .github
 
+  # The documentation site (mkdocs.yml): every page of docs/, and the API
+  # reference generated from the docstrings of each name docs/api.md lists
+  # (docs/hooks/site.py), built with --strict, so a link to a missing page
+  # or heading, or a public name mkdocstrings cannot find, fails. It reads
+  # the source and never imports it, so it needs only the docs group, and
+  # it runs beside the tests, never after them. The site is kept as an
+  # artifact for review.
+  docs-site:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: pipx install "poetry==${POETRY_VERSION}"
+      - run: poetry sync --only docs --no-root
+      - run: poetry run mkdocs build --strict --site-dir site
+        env:
+          NO_MKDOCS_2_WARNING: "1"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: docs-site
+          path: site/
+          retention-days: 7
+
   # The newest releases the ranges in pyproject.toml allow, not the lock:
   # what "pip install domainkit[...]" resolves today. The other jobs test
   # the locked set; this one tests the top of every range, on pull requests
