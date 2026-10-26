@@ -139,7 +139,7 @@ def audit_row(
             row["details"][name] = None  # Nothing personal to hide.
         else:
             values.append(PersonalValue(name, subject or caller, value))
-    if request and request.client_ip is not None:
+    if request and request.client_ip:  # Not a unix socket's empty host.
         values.append(
             PersonalValue("client_ip", caller, request.client_ip, in_details=False)
         )

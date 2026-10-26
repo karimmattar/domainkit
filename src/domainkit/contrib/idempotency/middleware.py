@@ -564,7 +564,8 @@ def _caller_of(
             for part in (name, str(len(values)), *values)
         )
     )
-    return f"anonymous:{client[0] if client else 'unknown'}:{credentials}"
+    host = (client[0] or "unknown") if client else "unknown"  # "": a unix socket.
+    return f"anonymous:{host}:{credentials}"
 
 
 def _unnamed(scope: Scope, config: IdempotencySettings) -> bool:

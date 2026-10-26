@@ -196,20 +196,34 @@ Decision:
   connection whose statement a cancellation cut off, in a task of its own
   that the cancellation does not reach, while the cut-off work waits, for
   at most `SETTLE_TIMEOUT` (2 seconds, as long as SQLAlchemy gives a
-  connection to close gracefully). It sends `ROLLBACK` where asyncpg or
-  SQLAlchemy began a transaction, and the ping's prepared `;` otherwise;
-  asyncpg sends either once the cancelled exchange has ended. The server
-  must then report no transaction. Both trackers are cleared, SQLAlchemy's
-  transaction is deactivated (code that goes on gets `PendingRollbackError`
-  until it rolls back, as with a discarded connection), and the
-  connection is kept: none opened, none discarded, in a transaction and
+  connection to close gracefully). It sends, in one round trip, `ROLLBACK`
+  where asyncpg or SQLAlchemy began a transaction, then what undoes the
+  session state a rollback leaves (`CLOSE ALL`,
+  `pg_advisory_unlock_all()`, `DISCARD TEMP`, and `UNLISTEN *` if
+  anything listens); asyncpg sends it once the cancelled exchange has
+  ended. The cancel can reach the server after the statement finished
+  there: an advisory lock it took, which its caller never learned of,
+  would otherwise stay held by the idle connection and hold every other
+  caller of that lock to its deadline (SEC-11b-2 of the 0.11 review).
+  The server must then report no transaction. Both trackers are cleared,
+  SQLAlchemy's transaction is deactivated (code that goes on gets
+  `PendingRollbackError` until it rolls back, as with a discarded
+  connection), and the connection is kept: none opened, none discarded, in a transaction and
   with `Reads.STATEMENTS` alike, and the 503 comes as soon after the
   deadline as before (a median of 1,018 to 1,029 ms against 1,025 to
   1,029 ms). Settling a statement cut in a transaction took a median of
   13 ms, nearly all of it the cancelled exchange, which asyncpg waits for
   before any next statement and SQLAlchemy's close waited for too:
-  `ROLLBACK` alone takes 0.1 ms, the ping 0.24 ms. Opening the connection
-  that replaced a discarded one took 20 ms, and a server process.
+  `ROLLBACK` alone takes 0.1 ms. Opening the connection
+  that replaced a discarded one took 20 ms, and a server process. Undoing
+  the session state in the same round trip adds 0.15 ms (0.20 to 0.35 ms
+  alone; with the cancelled exchange, 36.4 against 37.1 ms on a machine
+  three times as loaded).
+- Settings and the role are not reset (`RESET ALL`, `RESET ROLE`), nor
+  are prepared statements: a statement that sets one leaves it to the
+  next caller, as any statement that completes does, and a project may
+  set them when a connection is made, which a reset would undo; asyncpg
+  keeps its prepared statements by name.
 - Anything else discards it, as before: an error, the time running out, a
   transaction begun in SQL text, which nothing tracks, or a second
   cancellation. An anyio cancel scope cancels every wait until it exits,
@@ -231,11 +245,13 @@ Rejected:
   not wait: its transaction's locks and snapshot would stay held while
   the connection waits in the pool, up to `IDLE_IN_TRANSACTION_TIMEOUT`.
   Settled where it was cut, the locks go before the 503 is sent.
-- `Connection.reset()` for asyncpg's tracker: it resets the session too
-  (`RESET ALL`, `UNLISTEN *`, advisory locks), which a pooled connection
-  of SQLAlchemy's never had, takes two round trips (0.5 ms), and called
-  the event loop's exception handler for 30 cut transactions in 30.
-- asyncpg's private wait for the cancelled exchange in place of the ping:
-  it saves one round trip, only for statements outside a transaction, and
-  ties the proof to asyncpg's protocol rather than to what the server
-  answers.
+- `Connection.reset()` for asyncpg's tracker: it also resets settings and
+  the role (`RESET ALL`), which a project may set when a connection is
+  made, takes two round trips (0.5 ms), and called the event loop's
+  exception handler for 30 cut transactions in 30.
+- Keeping only connections whose cut statement domainkit wrote itself:
+  a slow statement of a project's own, the case CONC-08 measured, would
+  still cost its connection.
+- asyncpg's private wait for the cancelled exchange: settling needs a
+  round trip anyway, to roll back and undo the session state, and the
+  server's answer to it, not asyncpg's protocol, is what proves the state.

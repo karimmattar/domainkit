@@ -217,6 +217,26 @@ and a status.
 - In memory, a failed savepoint keeps the events an aggregate it first
   loaded recorded inside it no more: they are dropped, as for aggregates
   loaded before it (FIN-78).
+- A request cut off at its deadline in the middle of a statement no longer
+  costs its database connection, with asyncpg outside PgBouncer: the
+  connection is kept once it has settled, within 2 seconds, where it was
+  closed and the next request opened another. Settling waits for asyncpg
+  to finish the cancelled exchange, rolls the transaction back at once
+  (its locks go with it), undoes in the same round trip what the cut
+  statement may have left in the session that a rollback does not end
+  (session advisory locks, cursors, temporary tables, `LISTEN`: the
+  statement may have finished before the cancel arrived), and clears
+  asyncpg's and SQLAlchemy's record of the transaction, so a deadline
+  that lands while `BEGIN` is answered cannot leave the
+  kept connection in a transaction nothing tracks, which would lose the
+  next unit of work's write. Code that goes on after the cut gets
+  `PendingRollbackError` until it rolls back, as before. Ten requests cut
+  off at a 1 s deadline opened and discarded ten connections; they now
+  open and discard none. A connection that does not settle in time, one
+  cut off under an anyio cancel scope, and those of other drivers are
+  closed, as before; with `POOL_PRE_PING = False`, the request after an
+  anyio scope's cut no longer gets the connection it closed ("connection
+  is closed") (CONC-08, SEC-10b-1).
 
 ### Security
 
@@ -276,6 +296,18 @@ and a status.
   checks scopes, `stream` answers `403`, and `forward` and `subscribe`
   refuse the WebSocket or the subscription, audited, before any event
   (AUTH-01, SEC-11a-3).
+- Behind a proxy on a unix socket served by Granian (`granian --uds`),
+  `TRUSTED_PROXIES = ["unix"]` trusted nobody: Granian reports the
+  socket's peer with an empty host (`("", "0")`), where uvicorn reports
+  none, and only a missing peer was taken for the socket. `X-Forwarded-For`
+  was never read, so every caller was the client `""`: one rate-limit key
+  and one hold on refused passwords for all of them, and one anonymous
+  caller spent everyone's `RATE_LIMIT` and held back everyone's logins,
+  as before 0.9.1. The proxy's `X-Request-ID` was dropped too. An empty
+  host is now the unix socket's peer, trusted with `"unix"`, as uvicorn's
+  is; without a trusted proxy, rate limits, auth's throttles, the outgoing
+  call guard and idempotency count it as an unknown address, and audit
+  rows record no address for it (WEB-02, SEC-11c-2).
 
 ## [0.10.1] - 2026-10-26
 
