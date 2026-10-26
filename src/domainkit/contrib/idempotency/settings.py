@@ -50,7 +50,12 @@ class IdempotencySettings(BaseModel):
         "cookie",
         "x-api-key",
     )
-    """Headers that name a caller without an actor: their keys are apart."""
+    """Headers that name a caller without an actor: their keys are apart.
+
+    Not once an authentication middleware found no one in the request (its
+    principal in ``scope["user"]`` is not authenticated): the header then
+    authenticated nobody, as ``Authorization: Bearer null`` (SEC-11a-1).
+    """
     ANONYMOUS: Literal["per-address", "refuse"] = REFUSE
     """Keys sent with no actor and none of ``CREDENTIAL_HEADERS``.
 
