@@ -1,7 +1,11 @@
 """The auth domain model: users, groups, permissions, and password hashes."""
 
+import os
+import subprocess
+import sys
 from dataclasses import fields
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import ClassVar
 from uuid import uuid4
 
@@ -554,3 +558,44 @@ def test_deleting_records_who_went() -> None:
     assert facts(group.pull_events()) == [
         ("GroupDeleted", {"group_id": group.id, "name": "crew"})
     ]
+
+
+SERVED = (
+    "domainkit.contrib.auth",
+    "domainkit.contrib.auth.api",
+    "domainkit.contrib.auth.admin",
+    "domainkit.contrib.auth.recovery",
+    "domainkit.contrib.auth.signup",
+)
+"""The auth modules a process that serves the template's routes imports."""
+
+
+def test_serving_auth_loads_no_mail_until_it_checks_or_sends_one() -> None:
+    """In a process of its own: mail is imported on first use only (PERF-15)."""
+    script = (
+        "import sys\n"
+        f"for name in {SERVED!r}: __import__(name)\n"
+        "print('domainkit.contrib.mail' in sys.modules)\n"
+        "from domainkit.contrib.auth.models import validate_email\n"
+        "validate_email('user@example.com')\n"
+        "print('domainkit.contrib.mail' in sys.modules)\n"
+    )
+    root = Path(__file__).parents[1]
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("DOMAINKIT_")
+    }
+    environment["PYTHONPATH"] = os.pathsep.join([str(root), str(root / "src")])
+    done = subprocess.run(  # noqa: S603 - the test interpreter and a fixed script.
+        [sys.executable, "-c", script],
+        cwd=root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.split() == ["False", "True"]

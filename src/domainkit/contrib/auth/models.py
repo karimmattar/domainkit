@@ -22,7 +22,6 @@ from uuid import UUID, uuid4
 
 from domainkit import clock
 from domainkit.contrib.contenttypes import ContentType
-from domainkit.contrib.mail.message import address_of, check_address
 from domainkit.ddd import AggregateRoot, Entity, Personal, Sensitive, ValueObject
 from domainkit.signing import derive_key
 
@@ -736,6 +735,10 @@ def validate_email(email: str) -> str:
     Raises:
         InvalidEmail: It is not such an address.
     """
+    # Imported here: auth needs mail's rules only when it checks an address,
+    # and a process that serves no such request never loads mail (PERF-15).
+    from domainkit.contrib.mail.message import address_of, check_address
+
     try:
         checked = check_address(email)
     except ValueError:
