@@ -54,7 +54,14 @@ from .settings import (
     PrincipalCacheSettings,
     auth_settings,
 )
-from .tokens import TokenKind, token_digest, utc_now, well_formed
+from .tokens import (
+    TokenKind,
+    idle_since,
+    is_login,
+    token_digest,
+    utc_now,
+    well_formed,
+)
 from .uow import AuthUnitOfWork
 
 __all__ = [
@@ -207,15 +214,17 @@ class TokenAuthentication(BaseAuthentication):
             return None
         if not well_formed(raw, prefix):  # No database work for a guess.
             raise AuthenticationFailed("Invalid token.")
-        entry = await stored_credential(
-            TOKEN_SCHEME, token_digest(raw), config.PRINCIPAL_CACHE
-        )
+        digest = token_digest(raw)
+        entry = await stored_credential(TOKEN_SCHEME, digest, config.PRINCIPAL_CACHE)
         token = None if entry is None else entry.credential
         if entry is None or token is None or token.kind != TokenKind.ACCESS:
             raise AuthenticationFailed("Invalid token.")
         if token.expired():
             forget(entry)
             raise AuthenticationFailed("Token expired.")
+        entry = await unless_idle(entry, TOKEN_SCHEME, digest, config.PRINCIPAL_CACHE)
+        if entry is None:
+            raise AuthenticationFailed("Session ended after inactivity; log in again.")
         user = entry.user()
         if user is None:
             raise AuthenticationFailed("User inactive or deleted.")
@@ -303,6 +312,8 @@ class JWTAuthentication(BaseAuthentication):
             or token.expired()
         ):
             raise AuthenticationFailed("Invalid refresh token.")
+        if is_login(token.kind, token.name) and idle_since(token.created_at, utc_now()):
+            raise AuthenticationFailed("Session ended after inactivity; log in again.")
         if token.used_at is not None or not await uow.tokens.mark_used(token):
             await uow.tokens.revoke_family(token.family)
             security_logger.warning(
@@ -471,6 +482,25 @@ async def stored_credential(
         await stamps_before_reading(entry, config, ahead)
         snapshot = await uow.principals.principal(credential.user_id, token=digest)
     return entry.holding(snapshot)
+
+
+async def unless_idle(
+    entry: Entry, scheme: str, digest: str, config: PrincipalCacheSettings
+) -> Entry | None:
+    """``entry``, unless its login idled past ``AUTH.IDLE_TIMEOUT``; then None.
+
+    A kept entry that looks idle is read again first: another process may
+    have served the login since, and written its last use.
+    """
+    credential = entry.credential
+    if credential is None or not credential.idle(entry.last_used):
+        return entry
+    forget(entry)
+    fresh = await stored_credential(scheme, digest, config)
+    found = None if fresh is None else fresh.credential
+    if fresh is None or found is None or found.idle(fresh.last_used):
+        return None
+    return fresh
 
 
 async def accept(

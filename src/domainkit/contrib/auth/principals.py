@@ -85,7 +85,7 @@ from .tables import (
     user_link_tables,
 )
 from .tables import tokens as token_rows
-from .tokens import LAST_USED_EVERY, AuthToken
+from .tokens import AuthToken
 
 try:
     from .metrics import observe_principals
@@ -406,11 +406,30 @@ class Credential:
     expires_at: datetime | None
     scopes: frozenset[str] | None
     last_used_at: datetime | None
+    name: str = ""
+    created_at: datetime | None = None
 
     def expired(self, now: datetime | None = None) -> bool:
         """Whether the token's lifetime is over, as ``AuthToken.expired``."""
         return self.expires_at is not None and (
             (now or tokens.utc_now()) >= self.expires_at
+        )
+
+    def idle(self, written: datetime | None, now: datetime | None = None) -> bool:
+        """Whether a login's token idled past ``AUTH.IDLE_TIMEOUT``.
+
+        Its last use is the latest of the stored one, ``written`` (what this
+        process last wrote), and when it was issued. Not a login's: never.
+        """
+        uses = [
+            each
+            for each in (self.last_used_at, written, self.created_at)
+            if each is not None
+        ]
+        return (
+            bool(uses)
+            and tokens.is_login(self.kind, self.name)
+            and tokens.idle_since(max(uses), now or tokens.utc_now())
         )
 
 
@@ -599,11 +618,12 @@ class PrincipalCache:
     def claim_touch(self, entry: Entry, now: datetime) -> bool:
         """Whether this request writes the credential's ``last_used_at``.
 
-        Once per ``LAST_USED_EVERY`` per entry: the first request to find it
-        due claims it, so concurrent requests do not all write.
+        Once per ``last_used_every()`` per entry: the first request to find
+        it due claims it, so concurrent requests do not all write.
         """
+        every = tokens.last_used_every()
         with self._lock:
-            if entry.last_used is not None and now - entry.last_used < LAST_USED_EVERY:
+            if entry.last_used is not None and now - entry.last_used < every:
                 return False
             entry.last_used = now
             return True

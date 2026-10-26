@@ -18,8 +18,9 @@ its user's right password with 429 until the count frees a place (one
 every ``period / limit`` seconds), and ``LOGIN_RATE`` wrong passwords from
 one address refuse every login from it, an office's or a carrier's
 included. That is the price of the per-account count, which bounds
-guessing one account from many addresses; a stored per-account lockout
-with an audited unlock is planned for 0.10. Checks of what cannot be
+guessing one account from many addresses. A client that logged in to the
+account before sends a device proof (``devices``), and is counted per
+device instead: strangers' failures never reach its count. Checks of what cannot be
 guessed (signed tokens) are counted after they fail (``count_failure``),
 so a flood of forged tokens never holds a valid one back. With
 ``AUTH.THROTTLE_FAIL_CLOSED``, an attempt the counter cannot count (Redis
@@ -192,8 +193,15 @@ def account_key(scope: str, username: str) -> str:
     Names the lookup treats as one (``alice`` and its full-width or
     mathematical look-alikes, under NFKC) share one key, in any case.
     """
-    name = get_user_model().normalize_username(username)
-    return f"{scope}:user:{_digest(name)}"
+    return f"{scope}:user:{account_digest(username)}"
+
+
+def account_digest(username: str) -> str:
+    """The digest that names ``username``'s account in counts and proofs.
+
+    Names the lookup treats as one share it (NFKC, any case).
+    """
+    return _digest(get_user_model().normalize_username(username))
 
 
 def email_key(scope: str, email: str) -> str:

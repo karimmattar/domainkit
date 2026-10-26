@@ -346,10 +346,10 @@ def test_logins_from_unknown_addresses_are_throttled_together(
     app = FastAPI()
     anonymous = Request({"type": "http", "headers": [], "app": app})
 
-    assert _login_keys(anonymous, "alice")[0] == "login:ip:unknown"
-    asyncio.run(_throttle(anonymous, *_login_keys(anonymous, "alice")))
+    assert _login_keys(anonymous, "alice", None)[0] == "login:ip:unknown"
+    asyncio.run(_throttle(anonymous, *_login_keys(anonymous, "alice", None)))
     with pytest.raises(APIError, match="Too many login attempts"):
-        asyncio.run(_throttle(anonymous, *_login_keys(anonymous, "bob")))
+        asyncio.run(_throttle(anonymous, *_login_keys(anonymous, "bob", None)))
 
 
 class PartlyDown:

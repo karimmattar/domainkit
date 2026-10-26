@@ -27,12 +27,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from domainkit.context import bind_request, current_request
 from domainkit.ddd import PermissionDenied
-from domainkit.http.access import IsUnscoped, Public, Require
+from domainkit.http.access import AllowScoped, IsUnscoped, Public, Require
 from domainkit.http.errors import APIError, error_responses
 
 from .access import AuthenticatedUser
 from .authentication import Credentials, IssuedTokens, get_authenticators
 from .backends import authenticate, get_all_permissions
+from .devices import device_key, hand_out, proven_device
 from .events import UserLoggedOut
 from .hashers import acheck_password
 from .models import AbstractBaseUser, UserId
@@ -141,6 +142,7 @@ async def login(
     """Check a username and password; return tokens, or a second-factor challenge."""
     _no_store(response)
     user = await check_password(request, body)
+    hand_out(response, body.username, proven_device(request, body.username))
     from .mfa import challenge  # Imports this module.
 
     if (pending := await challenge(user)) is not None:
@@ -152,12 +154,15 @@ async def login(
 async def check_password(request: Request, body: LoginIn) -> AbstractBaseUser:
     """The user a login's username and password prove, counted and audited.
 
-    Only wrong credentials count against ``AUTH.LOGIN_RATE``.
+    Only wrong credentials count against ``AUTH.LOGIN_RATE``: per address
+    and per account, or, for a client with a device proof for the account,
+    per device (``devices``).
 
     Raises:
         APIError: 401 for wrong credentials; 429 past ``AUTH.LOGIN_RATE``.
     """
-    counted = await _throttle(request, *_login_keys(request, body.username))
+    device = proven_device(request, body.username)
+    counted = await _throttle(request, *_login_keys(request, body.username, device))
     user = await authenticate(username=body.username, password=body.password)
     if user is None:
         await _audit_refusal("invalid_credentials")
@@ -171,10 +176,16 @@ async def check_password(request: Request, body: LoginIn) -> AbstractBaseUser:
 
 
 async def issue_login(user: AbstractBaseUser) -> IssuedTokens:
-    """Record the user's login, and issue them tokens (the first class's)."""
+    """Record the user's login, and issue them tokens (the first class's).
+
+    Past ``AUTH.MAX_LOGINS``, the user's oldest logins end.
+    """
     with _acting_as(user):
         async with AuthUnitOfWork() as uow:
             stored = await uow.users.get(UserId(user.id))
+            await uow.tokens.end_oldest_logins(
+                stored.id, keep=auth_settings().MAX_LOGINS - 1
+            )
             tokens = await get_authenticators()[0].issue(uow, stored)
             await uow.users.record_login(stored)
             await uow.commit()
@@ -199,6 +210,7 @@ async def refresh(body: RefreshIn, response: Response) -> TokenOut:
 @router.post(
     "/logout",
     status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(Require(AllowScoped()))],
     responses=_errors(status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN),
 )
 async def logout(
@@ -226,7 +238,11 @@ async def logout(
         await uow.commit()
 
 
-@router.get("/me", responses=_errors(status.HTTP_401_UNAUTHORIZED))
+@router.get(
+    "/me",
+    dependencies=[Depends(Require(AllowScoped()))],
+    responses=_errors(status.HTTP_401_UNAUTHORIZED),
+)
 async def me(request: Request, user: AuthenticatedUser) -> UserOut:
     """The user who sent the request, and what these credentials may do.
 
@@ -326,8 +342,13 @@ def _no_store(response: Response) -> None:
     response.headers["Pragma"] = "no-cache"
 
 
-def _login_keys(request: Request, username: str) -> tuple[str, str]:
-    """The counts a login is checked against: its address's and its account's."""
+def _login_keys(request: Request, username: str, device: str | None) -> tuple[str, ...]:
+    """The counts a login is checked against: its address's and its account's.
+
+    A client with a device proof for the account: its device's alone.
+    """
+    if device is not None:
+        return (device_key(device),)
     return address_key(request, "login"), account_key("login", username)
 
 

@@ -90,9 +90,10 @@ from .tables import (
     user_link_tables,
 )
 from .tokens import (
-    LAST_USED_EVERY,
+    LOGIN_NAME,
     AuthToken,
     TokenKind,
+    last_used_every,
     new_token,
     token_digest,
     utc_now,
@@ -538,13 +539,13 @@ class TokenStore:
         return await self.session.get(AuthToken, digest)
 
     async def touch(self, token: AuthToken, now: datetime | None = None) -> bool:
-        """Record that ``token`` was used, at most once per ``LAST_USED_EVERY``.
+        """Record that ``token`` was used, at most once per ``last_used_every()``.
 
         Concurrent requests write once: the update checks the stored time.
         """
         moment = now or utc_now()
         last = token.last_used_at
-        if last is not None and moment - last < LAST_USED_EVERY:
+        if last is not None and moment - last < last_used_every():
             return False
         written = await self.touch_digest(token.id, moment)
         set_committed_value(token, "last_used_at", moment)
@@ -553,7 +554,7 @@ class TokenStore:
     async def touch_digest(self, digest: str, now: datetime) -> bool:
         """Write ``now`` as the ``last_used_at`` of token ``digest``, if it is due.
 
-        Due when none is stored, or the stored one is ``LAST_USED_EVERY``
+        Due when none is stored, or the stored one is ``last_used_every()``
         old: of concurrent writers, from any process, one wins.
         """
         result = await self.session.execute(
@@ -561,7 +562,7 @@ class TokenStore:
             .where(
                 tokens.c.id == digest,
                 tokens.c.last_used_at.is_(None)
-                | (tokens.c.last_used_at <= now - LAST_USED_EVERY),
+                | (tokens.c.last_used_at <= now - last_used_every()),
             )
             .values(last_used_at=now)
             .execution_options(**HANDLED)  # A last use changes no principal.
@@ -582,6 +583,39 @@ class TokenStore:
             tokens.c.expires_at.is_(None) | (tokens.c.expires_at > moment),
         )
         return int(await self.session.scalar(statement) or 0)
+
+    async def end_oldest_logins(self, user_id: UUID, *, keep: int) -> int:
+        """End the user's live logins but the ``keep`` newest; how many tokens.
+
+        Logins are browser sessions, login tokens, and JSON Web Token logins
+        (by their unused refresh token, which ends the whole login); not
+        personal tokens or certificates. Newest by when they were issued.
+        """
+        moment = utc_now()
+        statement = (
+            select(tokens.c.id, tokens.c.family)
+            .where(
+                tokens.c.user_id == user_id,
+                (tokens.c.kind == TokenKind.SESSION)
+                | (
+                    tokens.c.kind.in_([TokenKind.ACCESS, TokenKind.REFRESH])
+                    & (tokens.c.name == LOGIN_NAME)
+                    & tokens.c.used_at.is_(None)
+                ),
+                tokens.c.expires_at.is_(None) | (tokens.c.expires_at > moment),
+            )
+            .order_by(tokens.c.created_at.desc(), tokens.c.id.desc())
+            .offset(keep)
+        )
+        oldest = (await self.session.execute(statement)).all()
+        if not oldest:
+            return 0
+        digests = [digest for digest, family in oldest if family is None]
+        families = [family for _, family in oldest if family is not None]
+        return await self._revoke(
+            tokens.c.id.in_(digests) | tokens.c.family.in_(families),
+            *(family_target(family) for family in families),
+        )
 
     async def of_user(
         self, user_id: UUID, *, limit: int, before: tuple[datetime, str] | None = None
@@ -689,6 +723,8 @@ CREDENTIAL: Final = select(
     tokens.c.expires_at,
     tokens.c.scopes,
     tokens.c.last_used_at,
+    tokens.c.name,
+    tokens.c.created_at,
 ).where(tokens.c.id == bindparam("digest"))
 """What the token table says of one token (built once: no cache key to make)."""
 LOGIN: Final = select(

@@ -71,7 +71,9 @@ from .authentication import (
     Credentials,
     accept,
     stored_credential,
+    unless_idle,
 )
+from .devices import hand_out, proven_device
 from .events import UserLoggedOut
 from .mfa import MfaLoginIn, challenge, verify_challenge
 from .models import AbstractBaseUser, UserId
@@ -130,14 +132,16 @@ class CookieAuthentication(BaseAuthentication):
         raw = connection.cookies.get(cookie_names()[0])
         if raw is None or not well_formed(raw, config.TOKEN_PREFIX):
             return None
-        entry = await stored_credential(
-            SCHEME, token_digest(raw), config.PRINCIPAL_CACHE
-        )
+        digest = token_digest(raw)
+        entry = await stored_credential(SCHEME, digest, config.PRINCIPAL_CACHE)
         token = None if entry is None else entry.credential
         if entry is None or token is None or token.kind != TokenKind.SESSION:
             return None
         if token.expired():
             forget(entry)
+            return None
+        entry = await unless_idle(entry, SCHEME, digest, config.PRINCIPAL_CACHE)
+        if entry is None:  # Ended after inactivity: as if it had expired.
             return None
         user = entry.user()
         if user is None:
@@ -260,10 +264,11 @@ async def log_in(
     _no_store(response)
     check_origin(request)
     user = await check_password(request, body)
+    hand_out(response, body.username, proven_device(request, body.username))
     if (pending := await challenge(user)) is not None:
         response.status_code = status.HTTP_202_ACCEPTED
         return pending
-    return await start_session(user, response)
+    return await start_session(user, response, previous=_session_of(request))
 
 
 @router.post(
@@ -283,7 +288,7 @@ async def log_in_with_code(
     _no_store(response)
     check_origin(request)
     user = await verify_challenge(request, body.mfa_token, body.code)
-    return await start_session(user, response)
+    return await start_session(user, response, previous=_session_of(request))
 
 
 @router.get(
@@ -333,12 +338,25 @@ async def log_out(request: Request, response: Response) -> None:
         )
 
 
-async def start_session(user: AbstractBaseUser, response: Response) -> CsrfOut:
-    """Record the login, store a session token, and set both cookies."""
-    config = auth_settings().COOKIE
+async def start_session(
+    user: AbstractBaseUser, response: Response, *, previous: str | None = None
+) -> CsrfOut:
+    """Record the login, store a session token, and set both cookies.
+
+    The session ``previous`` names (the token of the cookie this browser
+    sent) ends, with ``COOKIE.END_PREVIOUS_SESSION``; past
+    ``AUTH.MAX_LOGINS``, the user's oldest logins end.
+    """
+    configured = auth_settings()
+    config = configured.COOKIE
     with _acting_as(user):
         async with AuthUnitOfWork() as uow:
             stored = await uow.users.get(UserId(user.id))
+            if previous is not None and config.END_PREVIOUS_SESSION:
+                await uow.tokens.revoke(previous)
+            await uow.tokens.end_oldest_logins(
+                stored.id, keep=configured.MAX_LOGINS - 1
+            )
             raw = await uow.tokens.issue(
                 stored.id, kind=TokenKind.SESSION, ttl=config.TTL, name="browser"
             )
@@ -357,6 +375,14 @@ async def start_session(user: AbstractBaseUser, response: Response) -> CsrfOut:
     )
     _set_csrf_cookie(response, token)
     return CsrfOut(csrf_token=token)
+
+
+def _session_of(request: Request) -> str | None:
+    """The session token a browser's cookie authenticated the request with."""
+    credentials = request.scope.get("auth")
+    if isinstance(credentials, Credentials) and credentials.scheme == SCHEME:
+        return credentials.token_id
+    return None
 
 
 def _set_csrf_cookie(response: Response, token: str) -> None:
