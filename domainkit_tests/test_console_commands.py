@@ -189,7 +189,9 @@ def test_diffsettings_shows_changes_with_secrets_hidden(restore_logging: None) -
     assert "DEBUG = True" in lines
     assert "ALPHA = '**********'" in lines
     assert not [
-        line for line in lines if line.startswith(("API_DOCS", "SETTINGS_MODULE"))
+        line
+        for line in lines
+        if line.startswith(("OPENAPI_OPERATION_IDS", "SETTINGS_MODULE"))
     ]
     (database,) = [line for line in lines if line.startswith("DATABASES")]
     assert "'URL': '**********'" in database
@@ -231,7 +233,8 @@ def test_diffsettings_all_marks_defaults() -> None:
     """``--all`` lists every setting, defaults marked ``###``."""
     lines = run("diffsettings", "--all").splitlines()
 
-    assert "### API_DOCS = True" in lines
+    assert "### OPENAPI_OPERATION_IDS = 'fastapi'" in lines
+    assert "API_DOCS = True" in lines  # The tests' settings turn it on.
     assert "ENVIRONMENT = 'test'" in lines
 
 

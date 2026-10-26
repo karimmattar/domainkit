@@ -14,6 +14,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from domainkit.conf import override_settings
 from domainkit.http import get_asgi_application
+from domainkit.http import middleware as middleware_module
 from domainkit.http.access import Public
 from domainkit.http.middleware import (
     MAX_ROUTE_BODY_SIZE,
@@ -325,3 +326,21 @@ def test_limits_mark_the_endpoint() -> None:
         None,
         None,
     ]
+
+
+def test_a_largest_limit_worked_out_meanwhile_is_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A thread that waited for the lock reads what the first one worked out."""
+
+    def walk(routes: object) -> int:
+        raise AssertionError("worked out once only")
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        """Answer nothing."""
+
+    middleware = RequestBodyLimitMiddleware(app)
+    middleware._largest = 64  # Another thread's, set while this one waited.
+    monkeypatch.setattr(middleware_module, "largest_body_limit", walk)
+
+    assert middleware._largest_of({"type": "http"}) == 64

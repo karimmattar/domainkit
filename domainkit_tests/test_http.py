@@ -923,9 +923,13 @@ def test_the_application_describes_the_project() -> None:
     with override_settings(API_DOCS=False):
         hidden = get_asgi_application()
 
+    paths = {getattr(route, "path", "") for route in app.routes}
+    hidden_paths = {getattr(route, "path", "") for route in hidden.routes}
     assert (app.title, app.version, app.debug) == ("billing", "1.2.3", True)
-    assert (app.docs_url, app.redoc_url) == ("/docs", "/redoc")
-    assert (hidden.docs_url, hidden.redoc_url, hidden.openapi_url) == (None,) * 3
+    assert {"/openapi.json", "/docs", "/redoc"} <= paths  # domainkit's own pages.
+    assert (app.docs_url, app.redoc_url) == (None, None)  # Not FastAPI's.
+    assert hidden.openapi_url is None
+    assert not {"/openapi.json", "/docs", "/redoc"} & hidden_paths
     responses = app.openapi()["paths"]["/ok"]["get"]["responses"]
     assert responses["413"]["description"] == "Request body too large"
 
