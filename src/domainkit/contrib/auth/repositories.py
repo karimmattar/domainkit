@@ -15,6 +15,7 @@ from uuid import UUID
 
 from sqlalchemy import (
     Executable,
+    String,
     Subquery,
     Table,
     Uuid,
@@ -28,11 +29,14 @@ from sqlalchemy import (
     null,
     select,
     true,
+    type_coerce,
     union_all,
     update,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 from sqlalchemy.orm.attributes import set_committed_value
+from sqlalchemy.sql.elements import ColumnElement
 
 from domainkit.conf import settings
 from domainkit.contrib.contenttypes.tables import content_types
@@ -46,6 +50,7 @@ from .exceptions import GroupNameTaken, UnknownGroup, UnknownPermission, Usernam
 from .hashers import amake_password
 from .models import (
     ERASED_USERNAME_PURPOSE,
+    UNUSABLE_PASSWORD_PREFIX,
     AbstractBaseUser,
     Group,
     GroupId,
@@ -67,11 +72,11 @@ from .principals import (
     Snapshot,
     family_target,
     invalidate_after_commit,
-    lend_password,
     shared,
     token_target,
     user_shape,
     user_target,
+    withhold_password,
 )
 from .settings import auth_settings
 from .tables import (
@@ -732,9 +737,9 @@ class PrincipalStore:
 
         The same statement checks that ``token`` is still stored and that
         ``username`` (normalized) is still the user's: ``current`` says.
-        The password hash is read for ``request.user.password`` only,
-        deprecated (``lend_password``). A model a snapshot cannot hold
-        (``user_shape``) is loaded by the ORM.
+        Not the password hash: only whether it is usable
+        (``withhold_password``). A model a snapshot cannot hold
+        (``user_shape``) is loaded by the ORM, the hash deferred.
         """
         model = get_user_model()
         shape = user_shape(model)
@@ -751,9 +756,8 @@ class PrincipalStore:
             if row is None:
                 return Snapshot()
             loaded: AbstractBaseUser = row[0]
-            hashed = loaded.password
-            lend_password(loaded, hashed, usable=hashed.usable)
-            return Snapshot(loaded=loaded, current=row[1])
+            withhold_password(loaded, usable=bool(row[1]))
+            return Snapshot(loaded=loaded, current=row[2])
         rows = (await self.session.execute(statement, values)).all()
         if not rows:
             return Snapshot()
@@ -761,7 +765,7 @@ class PrincipalStore:
         columns = tuple(
             (key, rows[0][index]) for index, (key, _) in enumerate(shape.columns)
         )
-        hashed = rows[0][width]
+        usable = bool(rows[0][width])
         found: dict[UUID, tuple[str, int, dict[int, GrantedPermission]]] = {}
         direct: dict[int, GrantedPermission] = {}
         for row in rows:
@@ -782,8 +786,7 @@ class PrincipalStore:
                 for group, (name, version, held) in found.items()
             ),
             permissions=_sorted(direct),
-            usable_password=hashed.usable,
-            password=hashed,
+            usable_password=usable,
         )
         return Snapshot(principal=principal, current=bool(rows[0][-1]))
 
@@ -816,17 +819,28 @@ def _principal_statement(
     ).label("current")
     shape = user_shape(model)
     if shape is None:
-        return select(model, live).where(*conditions)
+        return (
+            select(model, _usable(user_table.c[PASSWORD]), live)
+            .options(defer(getattr(model, PASSWORD)))
+            .where(*conditions)
+        )
     granted = _grants(user_table)
     return (
         select(
             *(column.label(f"u{i}") for i, (_, column) in enumerate(shape.columns)),
-            shape.password.label("password"),
+            _usable(shape.password),
             *granted.c,
             live,
         )
         .select_from(user_table.outerjoin(granted, true()))
         .where(*conditions)
+    )
+
+
+def _usable(password: ColumnElement[Any]) -> ColumnElement[bool]:
+    """Whether a stored password is usable, read without the hash itself."""
+    return (~type_coerce(password, String).startswith(UNUSABLE_PASSWORD_PREFIX)).label(
+        "usable"
     )
 
 

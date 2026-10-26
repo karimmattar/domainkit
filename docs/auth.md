@@ -833,13 +833,14 @@ how principals are read.
   reaches the others too.
 - **Open connections** are re-checked through the cache too, so they see a
   change as soon as requests do.
-- **`request.user.password` is deprecated**, and removed in 0.10. It still
-  returns the stored hash, and warns with `DomainkitDeprecationWarning` the
-  first time a request's user reads it. To check a password, read the hash
-  afresh: `await password_holds(user, raw)` (`domainkit.contrib.auth.api`),
-  or `await uow.users.password_hash(user.id)`. `has_usable_password()` keeps
-  working, without the hash and without a warning. A user's `repr` leaves
-  the password out.
+- **`request.user.password` was removed in 0.10.** The principal holds no
+  hash, and the query does not read one: reading it raises
+  `AttributeError`, naming what replaces it (so
+  `getattr(user, "password", None)` is None). To check a password, read the
+  hash afresh: `await password_holds(user, raw)`
+  (`domainkit.contrib.auth.api`), or `await uow.users.password_hash(user.id)`.
+  `has_usable_password()` keeps working, without the hash. A user's `repr`
+  leaves the password out.
 - A user model that loads relationships of its own with the user (other
   than `groups` and `user_permissions`) is read by the ORM every time, and
   never kept.
