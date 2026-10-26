@@ -12,7 +12,9 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
+from fakeredis import FakeServer
 
+from domainkit.cache import CacheError
 from domainkit.clock import FrozenClock, freeze_time
 from domainkit.contrib.auth import AuthenticationFailed, AuthUnitOfWork, principals
 from domainkit.contrib.auth.principals import (
@@ -31,7 +33,13 @@ from domainkit.contrib.auth.tokens import token_digest
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import Api
 from domainkit_tests.test_auth_http import bearer, create_user
-from domainkit_tests.test_auth_principals import credentials_of, issue, sample
+from domainkit_tests.test_auth_principals import (
+    STAMPED,
+    credentials_of,
+    issue,
+    sample,
+)
+from domainkit_tests.test_auth_principals import shared as shared
 from domainkit_tests.test_auth_principals import statements as statements
 
 KEY: Key = ("token", "digest-of-a-token")
@@ -467,3 +475,93 @@ def test_a_token_deleted_elsewhere_is_found_ahead_of_the_ttl(
                 run_async(credentials_of(headers=bearer(raw)))
         # Each reads the token, and finds none: nothing kept is served.
         assert statements.count("SELECT") == 2
+
+
+# Stamps: a revocation made in another process during a read (SEC-10a-1).
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("kept_stamps", "now", "joins"),
+    [
+        (("s-all", "s-token"), ("s-all", "s-token"), True),
+        (("s-all", "s-token"), ("s-all", "changed"), False),
+        (None, ("s-all", "s-token"), False),
+        (("s-all", "s-token"), CacheError("down"), False),
+    ],
+)
+async def test_a_waiter_checks_the_shared_stamps_of_the_read_it_joins(
+    clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+    kept_stamps: tuple[str, ...] | None,
+    now: tuple[str, ...] | Exception,
+    joins: bool,
+) -> None:
+    """Joined only while the stamps are the read's; unconfirmed: read again."""
+    asked: list[tuple[str, tuple[str, ...]]] = []
+
+    async def current(alias: str, targets: tuple[str, ...]) -> tuple[str, ...]:
+        asked.append((alias, tuple(targets)))
+        if isinstance(now, Exception):
+            raise now
+        return now
+
+    monkeypatch.setattr(principals, "read_stamps", current)
+    reads = Reads(held=True)
+    reads.answer = lambda: read_entry(stamps=kept_stamps)
+    leader = await soon(read_once(KEY, reads, "shared"))
+    waiter = await soon(read_once(KEY, reads, "shared"))
+    reads.release.set()
+
+    assert (await leader is await waiter) is joins
+    assert reads.calls == (1 if joins else 2)
+    assert asked[:1] == ([] if kept_stamps is None else [("shared", (TARGET,))])
+
+
+def test_a_request_after_a_stamped_revocation_never_joins_an_older_read(
+    api: Api,
+    shared: FakeServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Another process revokes and stamps a token while this one reads it.
+
+    A request arriving after that must be refused, as a read of its own
+    would refuse it, not served what the older read finds.
+    """
+    from domainkit.contrib.auth.repositories import PrincipalStore
+    from domainkit.contrib.auth.tables import tokens
+    from domainkit.db import connections
+
+    create_user("alice")
+    api(PRINCIPAL_CACHE=STAMPED)
+    raw = run_async(issue("alice"))
+    digest = token_digest(raw)
+    original = PrincipalStore.principal
+    read, release = asyncio.Event(), asyncio.Event()
+
+    async def slow(self: PrincipalStore, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        found = await original(self, *args, **kwargs)  # The token was stored.
+        if not release.is_set():
+            read.set()
+            await release.wait()  # Its answer arrives late.
+        return found
+
+    monkeypatch.setattr(PrincipalStore, "principal", slow)
+
+    async def scenario() -> tuple[Any, Any]:
+        principal_cache.invalidate([ALL])
+        first = asyncio.ensure_future(credentials_of(headers=bearer(raw)))
+        await read.wait()
+        async with connections.engine().begin() as connection:  # Elsewhere.
+            await connection.execute(tokens.delete().where(tokens.c.id == digest))
+        await principals.write_stamps("shared", [token_target(digest)])
+        second = await soon(credentials_of(headers=bearer(raw)))
+        release.set()
+        done = await asyncio.gather(first, second, return_exceptions=True)
+        return done[0], done[1]
+
+    first, second = run_async(scenario())
+
+    assert not isinstance(first, BaseException)  # It arrived before.
+    assert isinstance(second, AuthenticationFailed)
+    assert second.detail == "Invalid token."

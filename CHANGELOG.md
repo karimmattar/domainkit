@@ -326,7 +326,9 @@ and a status.
   and in the last fifth of the `TTL` one request reads a kept principal
   again while the others are served it, never past the `TTL`; a
   revocation committed before a request arrived is never hidden from it by
-  an older read (PERF-04; ADR 0058).
+  an older read; with `STAMPS`, a request joining another's read first
+  checks the shared stamps, so one stamped by another process is not
+  either (PERF-04, SEC-10a-1; ADR 0058).
 - `HttpClient` builds its TLS context on a thread the first time a loop
   calls, instead of on the loop: the first call held it 20 to 39 ms, now 6
   to 8 (CONC-06).
