@@ -794,8 +794,11 @@ timers that cancel work run on the event loop's own clock.
   deadline without enforcing it, and the driver then cancels it on the
   server. With asyncpg, outside PgBouncer, a statement cut off keeps its
   connection once it has settled, within 2 seconds: asyncpg has finished
-  the cancelled exchange, and the transaction is rolled back, its locks
-  with it. Code that goes on after the cut gets `PendingRollbackError`
+  the cancelled exchange, the transaction is rolled back, its locks with
+  it, and what the statement may have left in the session that outlives
+  a rollback (advisory locks, cursors, temporary tables, `LISTEN`) is
+  undone. Settings it changed stay, as after any statement. Code that
+  goes on after the cut gets `PendingRollbackError`
   until it rolls back. A connection that does not settle in time, one cut
   off under an anyio cancel scope (which cancels that wait too), and the
   other drivers' are closed instead, and the pool replaces them.

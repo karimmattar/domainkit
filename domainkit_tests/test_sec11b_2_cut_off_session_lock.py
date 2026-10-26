@@ -20,8 +20,10 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from domainkit.db import connections
 from domainkit_tests.gadgets import GadgetsUnitOfWork
 from domainkit_tests.test_db_cut_off import (  # noqa: F401 - fixtures.
+    PoolEvents,
     asyncpg_only,
     cut_off,
     database,
@@ -84,3 +86,51 @@ async def test_a_cut_off_statement_leaves_no_session_lock_in_the_pool(
             "the pool's idle connection holds the advisory lock the cut-off "
             "statement took"
         )
+
+
+@asyncpg_only
+@pytest.mark.usefixtures("patient", "tables")
+@pytest.mark.parametrize(
+    ("before", "cut", "left"),
+    [
+        (
+            [f"SELECT pg_advisory_lock({KEY})", f"SELECT pg_advisory_unlock({KEY})"],
+            f"SELECT pg_advisory_lock({KEY})",
+            (
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' "
+                "AND pid = pg_backend_pid()"
+            ),
+        ),
+        (
+            ["LISTEN domainkit_cut", "UNLISTEN domainkit_cut"],
+            "LISTEN domainkit_cut",
+            "SELECT count(*) FROM pg_listening_channels()",
+        ),
+        (
+            ["CREATE TEMP TABLE domainkit_cut (x int)", "DROP TABLE domainkit_cut"],
+            "CREATE TEMP TABLE domainkit_cut (x int)",
+            "SELECT count(*) FROM pg_tables WHERE tablename = 'domainkit_cut'",
+        ),
+    ],
+    ids=["advisory-lock", "listen", "temporary-table"],
+)
+async def test_a_statement_cut_off_on_its_own_leaves_nothing_in_the_session(
+    database_url: str, before: list[str], cut: str, left: str
+) -> None:
+    """Outside a transaction, what the statement did is not rolled back: it is undone.
+
+    The connection is kept, and the next caller, on the same connection,
+    finds none of it.
+    """
+    delay = {"s": 0.0}
+    async with through_proxy(database_url, delay):
+        with PoolEvents() as events:
+            async with connections.autocommit() as connection:
+                for statement in before:  # Prepared, as a statement run often is.
+                    await connection.execute(text(statement))
+                delay["s"] = 0.5
+                await cut_off(0.2, connection.execute(text(cut)))
+                delay["s"] = 0.0
+            async with connections.autocommit() as connection:
+                assert await connection.scalar(text(left)) == 0
+        assert events.counts == (0, 0)  # The same connection, kept.
