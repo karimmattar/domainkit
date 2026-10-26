@@ -151,3 +151,85 @@ this record stands; keeping such connections waits for 0.11.
 - `test_db_reads.py` keeps the reviewers' two cases: a write after a
   deadline cut during `BEGIN` must commit, and the request after an anyio
   scope cut must work.
+
+## Amendment (2026-10-26, 0.11): a statement the deadline cuts off keeps its connection once it has settled
+
+The 0.10 amendment left CONC-08 open until something proved that asyncpg
+and SQLAlchemy agree with the server on a cancelled connection's
+transaction. What each knows, read from asyncpg 0.32 and SQLAlchemy 2.1:
+
+- asyncpg begins every exchange by waiting for a cancelled one to end: the
+  cancel request sent, and the server's answer to the cancelled statement
+  read up to its ReadyForQuery. If that takes longer than the exchange's
+  timeout, it closes the connection. The status byte of the last
+  ReadyForQuery is public (`Connection.is_in_transaction()`); nothing
+  public waits for the cancelled exchange alone.
+- asyncpg tracks the transaction it began (`Connection._top_xact`) from
+  before `BEGIN` is sent, and keeps it when `BEGIN` is cancelled.
+  SQLAlchemy's adapter tracks it (`_transaction`) only once `BEGIN` has
+  answered. After a cut during `BEGIN`, asyncpg tracked a transaction
+  SQLAlchemy did not, and its next `BEGIN` became a `SAVEPOINT`: SEC-10b-1.
+  Neither tracker is public. asyncpg's public `Connection.reset()` clears
+  its own, but also resets the whole session, and reports the transaction
+  to the event loop's exception handler, as an error, each time.
+- SQLAlchemy discards a connection whose statement was cancelled. A kept
+  one leaves the cut transaction active for code that goes on.
+
+`test_db_cut_off.py` holds the cases: a write after a cut `BEGIN` (under
+`asyncio` and an anyio scope), a write after a statement cut in a
+transaction (both), the transaction refusing to go on, a read on its own
+(`Reads.STATEMENTS`) whose session must be reset, a settle that takes too
+long, and the cost of ten cut requests. Each checks the write on another
+connection, and that no lock or open transaction is left. Ten requests
+with a 1 s deadline whose second statement takes 2 s, on PostgreSQL 18:
+
+| Option | Opened, discarded | The SEC-10b-1 cases |
+| --- | --- | --- |
+| Discard it (0.10) | 10, 10 | Pass; with `POOL_PRE_PING` off, the request after an anyio scope's cut fails ("connection is closed") |
+| Keep it as it is (0.10's reverted listener) | 0, 0 | Fail: three acknowledged writes after a cut `BEGIN` lost (one under an anyio scope), a transaction left open after an anyio scope's cut, a cut transaction that goes on to the server's errors, not `PendingRollbackError` |
+| Settle it where it was cut, then keep it | 0, 0 | Pass |
+
+Decision:
+
+- With asyncpg outside PgBouncer, a `handle_error` listener settles a
+  connection whose statement a cancellation cut off, in a task of its own
+  that the cancellation does not reach, while the cut-off work waits, for
+  at most `SETTLE_TIMEOUT` (2 seconds, as long as SQLAlchemy gives a
+  connection to close gracefully). It sends `ROLLBACK` where asyncpg or
+  SQLAlchemy began a transaction, and the ping's prepared `;` otherwise;
+  asyncpg sends either once the cancelled exchange has ended. The server
+  must then report no transaction. Both trackers are cleared, SQLAlchemy's
+  transaction is deactivated (code that goes on gets `PendingRollbackError`
+  until it rolls back, as with a discarded connection), and the
+  connection is kept: none opened, none discarded, in a transaction and
+  with `Reads.STATEMENTS` alike, and the 503 comes as soon after the
+  deadline as before (a median of 1,018 to 1,029 ms against 1,025 to
+  1,029 ms).
+- Anything else discards it, as before: an error, the time running out, a
+  transaction begun in SQL text, which nothing tracks, or a second
+  cancellation. An anyio cancel scope cancels every wait until it exits,
+  so it cannot wait for the settling; settling on after the cut-off task
+  moved on would share the connection with that task's shielded cleanup.
+- Settling reads and clears state asyncpg and SQLAlchemy keep privately,
+  so it runs only on the releases it was proven on (`_PROVEN`: asyncpg
+  0.32, SQLAlchemy 2.1); with others, a cut-off connection is discarded,
+  and a test fails until the cases pass on them and `_PROVEN` admits them.
+- PgBouncer, psycopg and SQLite discard it, as before: nothing proves them.
+- An asyncpg pool that does not ping replaces, as it hands it out, a
+  connection asyncpg knows is closed: under an anyio scope, SQLAlchemy's
+  close of a cut connection is cancelled too, and the closed connection
+  went back to the pool.
+
+Rejected:
+
+- Settling at the connection's next checkout, so the cut-off work need
+  not wait: its transaction's locks and snapshot would stay held while
+  the connection waits in the pool, up to `IDLE_IN_TRANSACTION_TIMEOUT`.
+  Settled where it was cut, the locks go before the 503 is sent.
+- `Connection.reset()` for asyncpg's tracker: it resets the session too
+  (`RESET ALL`, `UNLISTEN *`, advisory locks), which a pooled connection
+  of SQLAlchemy's never had, and logged an error for every cut `BEGIN`.
+- asyncpg's private wait for the cancelled exchange in place of the ping:
+  it saves one round trip, only for statements outside a transaction, and
+  ties the proof to asyncpg's protocol rather than to what the server
+  answers.

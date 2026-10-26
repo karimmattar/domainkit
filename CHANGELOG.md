@@ -9,6 +9,24 @@ and a status.
 
 ## [Unreleased]
 
+### Fixed
+
+- A request cut off at its deadline in the middle of a statement no longer
+  costs its database connection, with asyncpg outside PgBouncer: the
+  connection is kept once it has settled, within 2 seconds, where it was
+  closed and the next request opened another. Settling waits for asyncpg
+  to finish the cancelled exchange, rolls the transaction back at once
+  (its locks go with it), and clears asyncpg's and SQLAlchemy's record of
+  it, so a deadline that lands while `BEGIN` is answered leaves no
+  transaction nobody tracks. Code that goes on after the cut gets
+  `PendingRollbackError` until it rolls back, as before. Ten requests cut
+  off at a 1 s deadline opened and discarded ten connections; they now
+  open and discard none. A connection that does not settle in time, one
+  cut off under an anyio cancel scope, and those of other drivers are
+  closed, as before; with `POOL_PRE_PING = False`, the request after an
+  anyio scope's cut no longer gets the connection it closed ("connection
+  is closed") (CONC-08, SEC-10b-1).
+
 ## [0.10.0] - 2026-10-26
 
 A minor release: some changes break, and some names are deprecated, to be
