@@ -10,7 +10,7 @@ the same request gets the stored response, with `Idempotent-Replayed: true`.
 | Same key, different request | 422 `idempotency_key_reused` |
 | Same key while the first is still running, within its lease | 409 `idempotency_key_in_use`, `Retry-After: 1` |
 | Key not 1 to 255 printable ASCII characters | 400 `invalid_idempotency_key` |
-| Key from a caller with no actor and no credential header, with `ANONYMOUS = "refuse"` | 400 `idempotency_key_needs_caller`: nothing runs |
+| Key from a caller with no actor and no credential header (`ANONYMOUS = "refuse"`, the default) | 400 `idempotency_key_needs_caller`: nothing runs |
 | First request failed (a 5xx or an exception) or was refused (a 4xx) before committing anything | Not stored: the retry runs again |
 | First response marked `Cache-Control: no-store` (new tokens, from `/auth/login` and `/auth/refresh`) | Never stored: a retry runs again if nothing committed, else gets the 409 below |
 | First response larger than `MAX_RESPONSE_BYTES`, nothing committed | Not stored: the retry runs again |
@@ -134,21 +134,19 @@ it first), so one user cannot replay another's response. Without an
 actor, keys are scoped to the client address and a hash of the request's
 `CREDENTIAL_HEADERS` (`Authorization`, `Proxy-Authorization`, `Cookie`,
 `X-API-Key`): list the header your project authenticates with if it is
-another. A caller with neither has only its address: every caller behind
-one NAT or proxy shares its keys, so one that sends the same key and body
-as another is replayed the other's response (its status, `Location`, and
-body), and a different body learns that the key is taken. Clients make
-this unlikely with random keys, but not impossible with predictable ones
-(counters, order numbers). Where keyed routes serve anonymous callers
-(sign-up, a contact form, a payment link before login), set `ANONYMOUS =
-"refuse"`: such a key is answered 400 `idempotency_key_needs_caller`, and
-the client authenticates or sends the request without it. A `Cookie`
-names a caller only if it carries one of `SESSION_COOKIES` (none by
-default: auth's sessions set the actor): a consent or locale cookie, which
-many callers send alike, does not (SEC-10b-7). The default,
-`"per-address"`, keeps the behaviour of 0.9; it is deprecated: 0.11
-defaults to `"refuse"`, and staging and production warn
-(`idempotency.W002`) until `ANONYMOUS` is set, to either value (DATA-09). Add `IdempotencyMiddleware` last in `MIDDLEWARE`: it reads whole
+another. A caller with neither has only its address, which every caller
+behind one NAT or proxy shares: keyed by it, one that sends the same key
+and body as another would be replayed the other's response (its status,
+`Location`, and body), and a different body would learn that the key is
+taken. Random keys make this unlikely, but predictable ones (counters,
+order numbers) do not. So by default (`ANONYMOUS = "refuse"`, since
+0.11) such a key is answered 400 `idempotency_key_needs_caller`, nothing
+runs, and the client authenticates or sends the request without it. A
+`Cookie` names a caller only if it carries one of `SESSION_COOKIES` (none
+by default: auth's sessions set the actor): a consent or locale cookie,
+which many callers send alike, does not (SEC-10b-7). `ANONYMOUS =
+"per-address"` keeps 0.10's default, keys scoped to the address, for a
+service whose anonymous callers each have their own (DATA-09). Add `IdempotencyMiddleware` last in `MIDDLEWARE`: it reads whole
 bodies, which `RequestBodyLimitMiddleware` has already bounded. With
 messaging installed, expired keys are purged hourly; without it, a new
 key deletes up to 100 expired ones once it has claimed its own, skipping
@@ -182,6 +180,6 @@ each request sent, for about 1,850 fewer Python calls a keyed write.
 | `METHODS` | `POST`, `PATCH` | Methods that honour the header; others ignore it. |
 | `MAX_RESPONSE_BYTES` | `1048576` | Larger responses are passed through but not stored. |
 | `CREDENTIAL_HEADERS` | `authorization`, `proxy-authorization`, `cookie`, `x-api-key` | Headers that tell callers without an actor apart. |
-| `ANONYMOUS` | `"per-address"` | Keys from callers with no actor and no credential header: `"per-address"` scopes them to the client address, which callers behind one NAT share; `"refuse"` answers 400 `idempotency_key_needs_caller`. Deprecated default: 0.11 defaults to `"refuse"`, and staging and production warn while it is unset (`idempotency.W002`): set `"per-address"` to keep today's behaviour, or `"refuse"` now (DATA-09). |
+| `ANONYMOUS` | `"refuse"` | Keys from callers with no actor and no credential header: `"refuse"` answers them 400 `idempotency_key_needs_caller`, and nothing runs; `"per-address"` scopes them to the client address, which callers behind one NAT share, as 0.10 did by default (DATA-09). |
 | `SESSION_COOKIES` | `()` | For `ANONYMOUS = "refuse"`: the cookies that name a caller the actor does not (a session another layer reads), at most 16 names. Any other cookie names nobody (SEC-10b-7). |
 
