@@ -459,14 +459,15 @@ def test_route_templates_and_failing_refreshers(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Nested routers keep their prefixes; a failing gauge does not fail scrapes."""
+    from domainkit.context import route_template
     from domainkit.http import metrics
 
     class Route:
         path = "/plain/{id}"
 
-    assert metrics.route_template({"route": Route()}) == "/plain/{id}"
-    assert metrics.route_template({"fastapi": "unexpected"}) == "unmatched"
-    assert metrics.route_template({}) == "unmatched"
+    assert route_template({"route": Route()}) == "/plain/{id}"
+    assert route_template({"fastapi": "unexpected"}) == "unmatched"
+    assert route_template({}) == "unmatched"
 
     async def broken() -> None:
         raise RuntimeError("gauge source down")

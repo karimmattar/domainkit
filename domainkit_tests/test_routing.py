@@ -29,6 +29,7 @@ from domainkit import setup
 from domainkit.apps import registry
 from domainkit.conf import override_settings, use_settings
 from domainkit.conf.env import PROJECT_ROOT_VARIABLE, project_prefix, project_root
+from domainkit.context import route_template
 from domainkit.contrib.auth.authentication import BaseAuthentication, Credentials
 from domainkit.contrib.auth.models import PasswordHash, User
 from domainkit.http import get_asgi_application, routing
@@ -40,7 +41,6 @@ from domainkit.http.access import (
     served_routes,
 )
 from domainkit.http.application import application_problems
-from domainkit.http.metrics import route_template
 from domainkit.http.routing import (
     flatten_routes,
     nests_routers,
