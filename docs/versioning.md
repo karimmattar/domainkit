@@ -158,9 +158,10 @@ checks it with deptry (`[tool.deptry]` in `pyproject.toml`).
      `ci.yml` on `main` at the tagged commit, on GitHub's runners;
    - waits for a reviewer to approve the `pypi` environment;
    - publishes the wheel and sdist that CI built to PyPI, with attestations.
-   - creates the GitHub Release for the tag: the CHANGELOG's section for
-     the version as its notes, and the wheel, the sdist, the bill of
-     materials, and their SHA-256 sums (`SHA256SUMS`) as its assets.
+
+   Before approving, the maintainer creates the GitHub Release for the
+   tag by hand (Releases, Draft a new release), with the CHANGELOG's
+   section for the version as its notes; the workflow makes none.
 
    CI keeps a run's `dist` and `sbom` for 90 days. To release an older
    commit, re-run its CI run (`gh run rerun <id>`) first.

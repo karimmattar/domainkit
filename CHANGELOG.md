@@ -9,6 +9,14 @@ and a status.
 
 ## [Unreleased]
 
+### Changed
+
+- A release no longer creates the GitHub Release for its tag: the
+  maintainer makes it by hand, before approving the `pypi` environment,
+  and the workflow's `github-release` job failed on the one already
+  there. The job and `.github/scripts/release_notes.py` are removed;
+  `docs/versioning.md` says when to make the release.
+
 ## [0.10.1] - 2026-10-26
 
 The release of 0.10.0 failed before publishing (below), so 0.10.0 reached
