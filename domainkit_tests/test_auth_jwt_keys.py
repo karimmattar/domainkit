@@ -444,7 +444,7 @@ def test_unsafe_key_sets_are_refused(
     with freeze_time(START), pytest.raises(CheckFailed) as refused:
         jwt_auth(use_auth, SIGNING_KEY=NEW, PREVIOUS_KEYS=previous)
 
-    assert str(refused.value) == f"AUTH.JWT keys cannot be used:\n  {problem}"
+    assert str(refused.value) == f"AUTH settings cannot be used:\n  {problem}"
 
 
 def test_a_retirement_a_day_ahead_is_within_the_bound(use_auth: UseAuth) -> None:

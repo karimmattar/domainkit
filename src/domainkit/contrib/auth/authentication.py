@@ -740,7 +740,7 @@ def _key_set(
             found, _VerifyingKey(algorithm, key, previous.RETIRED_AT + grace)
         )
     if problems:
-        raise CheckFailed("AUTH.JWT keys cannot be used", problems)
+        raise CheckFailed("AUTH settings cannot be used", problems)
     return key_id, keys
 
 
