@@ -165,7 +165,11 @@ def test_included_routers_become_their_routes_in_order(nested: Build) -> None:
 def test_each_route_is_matched_once_and_built_once(
     nested: Build, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Counted, not timed: a match per route up to the one served, no new handler."""
+    """Counted, not timed: one match per request, no new handler.
+
+    Flattened, ``/items/{name}`` is ahead of the route served, and nesting
+    tries it; indexed by first segment (``RouteIndex``), it is not tried.
+    """
     before, after = nested(), get_asgi_application()
     matched: list[str] = []
     built: list[str] = []
@@ -189,7 +193,7 @@ def test_each_route_is_matched_once_and_built_once(
     for _ in range(3):
         assert deep.get("/v1/items/new").status_code == 200
 
-    assert flattened == (["/items/{name}", "/v1/items/new"] * 3, [])
+    assert flattened == (["/v1/items/new"] * 3, [])
     assert len(matched) > len(flattened[0])
 
 
