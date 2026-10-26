@@ -261,10 +261,14 @@ def test_statements_built_once_compile_as_those_built_per_request(
                 assert compiled(new, values, dialect) == compiled(old, {}, dialect)
 
 
-def test_each_dialect_and_clock_has_statements_of_its_own() -> None:
-    """Built once for each, and told apart by the clock deciding now."""
+def test_each_dialect_and_clock_has_statements_of_its_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Built once for each, found without the lock, told apart by the clock."""
     database = clock_statements("postgresql")
-    assert clock_statements("postgresql") is database
+    with monkeypatch.context() as patched:
+        patched.setattr(statements, "_lock", None)  # Built: never taken.
+        assert clock_statements("postgresql") is database
     assert database.database_clock
     assert database.now() is None
     with freeze_time(FROZEN):
