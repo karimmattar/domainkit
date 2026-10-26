@@ -3,7 +3,9 @@
 ``VisibleTo`` filters a query with ``EXISTS`` on this table, so it must
 live in the database of the objects it is about. Grants may be dumped in
 fixtures: they hold no secrets. They are guarded, though: ``loaddata``
-writes them, and ``flush`` deletes them, only with ``--include-guarded``.
+writes them only with ``--include-guarded``, and ``flush`` keeps them
+unless it is given, but for the grants on the objects it deletes, which go
+with them (``about_model``), as with a repository's ``remove``.
 """
 
 from sqlalchemy import CheckConstraint, Index, Table
@@ -45,6 +47,7 @@ object_permissions: Table = table_for(
     domain="objectpermissions",
 )
 object_permissions.info["guarded"] = True
+object_permissions.info["about_model"] = "content_type"
 
 
 def start_mappers() -> None:

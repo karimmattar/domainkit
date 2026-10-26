@@ -78,8 +78,10 @@ and a status.
   content types, object grants, dynamic settings), and `flush` keeps the
   guarded tables, tokens, TOTP authenticators, and recovery codes
   included, with the tables they reference, listed as `kept (guarded)`.
-  **To keep the old behaviour:** `--include-guarded` on either command
-  (DATA-12).
+  The object grants on the rows it deletes still go with them, so an
+  object given a flushed one's id starts without them. **To keep the old
+  behaviour:** `--include-guarded` on either command (DATA-12,
+  SEC-11a-4).
 - **Breaking:** in staging and production, `loaddata` and `flush` need
   an operator named by `--operator` or `DOMAINKIT_OPERATOR`, beside
   `--force`; the login name is refused. **Fix:** set
@@ -92,7 +94,9 @@ and a status.
 - `operator.loaddata` names each table with its rows and replaced rows,
   the SHA-256 of the fixture as read, and whether `--replace` and
   `--include-guarded` were given; `operator.flush` each table it emptied,
-  with its rows, and the tables it kept (DATA-12).
+  with its rows, the tables it kept, and the rows of kept tables it
+  deleted with their objects (`about`: object grants) (DATA-12,
+  SEC-11a-4).
 - **Breaking:** with `domainkit.contrib.auth` and an attempt rate set
   (`LOGIN_RATE`, `EMAIL_RATE`, `MFA.RATE`, `MFA.ADDRESS_RATE`), staging and
   production refuse to start, and `check` fails, while
@@ -224,9 +228,11 @@ and a status.
   the data, turning every second factor off. Loads now only add rows
   unless `--replace`; guarded tables (credentials, grants, second
   factors, content types, dynamic settings) are written or emptied only
-  with `--include-guarded`; staging and production need a named
-  operator; and the audit row names the tables, their counts, and the
-  fixture's SHA-256 (DATA-12).
+  with `--include-guarded`, though a flush deletes the object grants on
+  the rows it deletes, which a later object with the same id would
+  otherwise inherit; staging and production need a named operator; and
+  the audit row names the tables, their counts, and the fixture's
+  SHA-256 (DATA-12, SEC-11a-4).
 - Any caller chose its request's id with `X-Request-ID`: the id its log
   lines, error reports, audit rows, queued work, and outgoing calls
   carry. A client could take another request's id, or give one id to

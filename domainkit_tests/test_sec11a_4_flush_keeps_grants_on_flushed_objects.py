@@ -25,16 +25,26 @@ from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.contrib.auth.backends import has_perm
 from domainkit.contrib.objectpermissions import grant_permission, grants_on
+from domainkit.contrib.objectpermissions.tables import object_permissions
 from domainkit.db import connections
 from domainkit.management import call_command
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import ALPHA, AUTH, CONTENTTYPES, FAST_HASHER, SHOP
 from domainkit_tests.sample_domains.oddities.models import Ticket
 from domainkit_tests.sample_domains.oddities.tables import tickets
+from domainkit_tests.test_data_commands import count, operator_rows
 from domainkit_tests.test_object_permissions import BACKENDS, OBJECTPERMISSIONS, person
 
 ODDITIES: Final = "domainkit_tests.sample_domains.oddities"
-DOMAINS: Final = [CONTENTTYPES, AUTH, OBJECTPERMISSIONS, SHOP, ALPHA, ODDITIES]
+DOMAINS: Final = [
+    CONTENTTYPES,
+    AUTH,
+    OBJECTPERMISSIONS,
+    "domainkit.contrib.audit",
+    SHOP,
+    ALPHA,
+    ODDITIES,
+]
 VIEW_TICKET: Final = "oddities.view_ticket"
 
 
@@ -94,3 +104,37 @@ def test_flushed_objects_take_their_grants_with_them(project: str) -> None:
         "Ada sees Bob's ticket through the grant on her flushed one: "
         f"{run_async(grants_on(bobs))}"
     )
+
+
+def test_flush_says_which_grants_go_and_records_them(project: str) -> None:
+    """The plan and the audit row count them; grants on kept objects stay.
+
+    A grant on a user (``auth.user``) is about an object ``flush`` keeps,
+    so it stays with it; with ``--include-guarded`` every grant goes, as
+    the table is emptied.
+    """
+    root = person("root", is_superuser=True)
+    ada = person("ada")
+    bob = person("bob")
+    run_async(
+        grant_permission(root, VIEW_TICKET, new_ticket("ada", "A-1"), user=ada.id)
+    )
+    run_async(grant_permission(root, "auth.view_user", ada, user=bob.id))
+
+    plan = io.StringIO()
+    call_command("flush", "--dry-run", stdout=plan)
+    call_command("flush", "--operator", "ops", stdout=io.StringIO())
+    kept = count(object_permissions)
+    everything = io.StringIO()
+    call_command("flush", "--dry-run", "--include-guarded", stdout=everything)
+    call_command(
+        "flush", "--include-guarded", "--operator", "ops", stdout=io.StringIO()
+    )
+
+    line = "default: domainkit_object_permissions: kept (guarded)"
+    assert f"{line}; delete 1 row about emptied tables\n" in plan.getvalue()
+    assert kept == 1  # Bob's grant on Ada, who stays.
+    assert "domainkit_object_permissions: delete 1 row\n" in everything.getvalue()
+    assert count(object_permissions) == 0
+    flushed, _ = operator_rows()
+    assert flushed["details"]["about"] == {object_permissions.name: 1}

@@ -1134,8 +1134,9 @@ itself is recorded once it ends as `operator.<command>`
 class), with what it acted on and counts, and `operator_source`: `option`,
 `environment`, or `system`. `operator.loaddata` names the fixture file,
 its SHA-256, and each table with its rows and how many it replaced;
-`operator.flush` each table emptied with its rows, and the tables kept;
-both say whether `--replace` and `--include-guarded` were given. Dry runs,
+`operator.flush` each table emptied with its rows, the tables kept, and
+the rows of kept tables it deleted with their objects (`about`: object
+grants); both say whether `--replace` and `--include-guarded` were given. Dry runs,
 listings, and refusals before the action (no `--force`) are not
 recorded. A successful action whose row cannot be written fails the
 command.
@@ -1172,7 +1173,12 @@ table with `info={"guarded": True}`. A row added there is a login or a
 privilege, so `loaddata` refuses a fixture that writes one unless
 `--include-guarded` is given, and `flush` keeps them, and every table they
 reference, unless it is given. The audit trail is never loaded or
-flushed, guarded or not.
+flushed, guarded or not. A kept table whose rows are about other tables'
+objects names the column of their model key (`info={"about_model":
+"content_type"}`, as object grants do): `flush` deletes its rows about
+the models whose tables it empties, so a grant goes with its object, as
+with a repository's `remove`, and an object given a flushed one's id
+starts bare.
 
 State is never dumped or loaded: the audit trail (a copy of its keys would
 outlive `auditforget`), tokens, the outbox, idempotency keys, webhook
@@ -1186,7 +1192,9 @@ directory cannot redirect it: delete an old fixture before dumping again.
 `flush` keeps append-only tables, those with `info={"append_only": True}`
 or, on PostgreSQL, triggers of their own, and those with
 `info={"flush": False}`: the audit trail survives it. It keeps guarded
-tables too, listed as `kept (guarded)`, unless `--include-guarded`.
+tables too, listed as `kept (guarded)`, unless `--include-guarded`, but
+not the object grants on the rows it deletes: the plan says `kept
+(guarded); delete N rows about emptied tables`.
 Serial ids start again on PostgreSQL.
 
 Each command works on one alias (`--database`, default `default`), as the
