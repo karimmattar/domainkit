@@ -54,7 +54,16 @@ from .settings import (
     PrincipalCacheSettings,
     auth_settings,
 )
-from .tokens import TokenKind, token_digest, utc_now, well_formed
+from .tokens import (
+    LAST_USED_EVERY,
+    TokenKind,
+    idle_since,
+    is_login,
+    last_used_every,
+    token_digest,
+    utc_now,
+    well_formed,
+)
 from .uow import AuthUnitOfWork
 
 __all__ = [
@@ -109,6 +118,8 @@ class IssuedTokens:
 
 
 TOKEN_SCHEME: Final = "token"  # noqa: S105 - a scheme, not a secret.
+IDLE: Final = "Session ended after inactivity; log in again."
+"""Why a login unused for ``AUTH.IDLE_TIMEOUT`` is refused."""
 """``request.auth.scheme`` of requests an opaque token authenticates."""
 JWT_SCHEME: Final = "jwt"
 """``request.auth.scheme`` of requests a JSON Web Token authenticates."""
@@ -207,19 +218,26 @@ class TokenAuthentication(BaseAuthentication):
             return None
         if not well_formed(raw, prefix):  # No database work for a guess.
             raise AuthenticationFailed("Invalid token.")
-        entry = await stored_credential(
-            TOKEN_SCHEME, token_digest(raw), config.PRINCIPAL_CACHE
-        )
+        digest = token_digest(raw)
+        entry = await stored_credential(TOKEN_SCHEME, digest, config.PRINCIPAL_CACHE)
         token = None if entry is None else entry.credential
         if entry is None or token is None or token.kind != TokenKind.ACCESS:
             raise AuthenticationFailed("Invalid token.")
         if token.expired():
             forget(entry)
             raise AuthenticationFailed("Token expired.")
+        every = LAST_USED_EVERY
+        if config.IDLE_TIMEOUT is not None:
+            every = last_used_every()
+            entry = await unless_idle(
+                entry, TOKEN_SCHEME, digest, config.PRINCIPAL_CACHE
+            )
+            if entry is None:
+                raise AuthenticationFailed(IDLE)
         user = entry.user()
         if user is None:
             raise AuthenticationFailed("User inactive or deleted.")
-        await accept(entry, config.PRINCIPAL_CACHE)
+        await accept(entry, config.PRINCIPAL_CACHE, every=every)
         return Credentials(
             user, scheme=TOKEN_SCHEME, token_id=token.id, scopes=token.scopes
         )
@@ -303,6 +321,8 @@ class JWTAuthentication(BaseAuthentication):
             or token.expired()
         ):
             raise AuthenticationFailed("Invalid refresh token.")
+        if is_login(token.kind, token.name) and idle_since(token.created_at, utc_now()):
+            raise AuthenticationFailed(IDLE)
         if token.used_at is not None or not await uow.tokens.mark_used(token):
             await uow.tokens.revoke_family(token.family)
             security_logger.warning(
@@ -474,18 +494,41 @@ async def stored_credential(
     return await kept_or_read(key, config, read)
 
 
+async def unless_idle(
+    entry: Entry, scheme: str, digest: str, config: PrincipalCacheSettings
+) -> Entry | None:
+    """``entry``, unless its login idled past ``AUTH.IDLE_TIMEOUT``; then None.
+
+    A kept entry that looks idle is read again first: another process may
+    have served the login since, and written its last use.
+    """
+    credential = entry.credential
+    if credential is None or not credential.idle(entry.last_used):
+        return entry
+    forget(entry)
+    fresh = await stored_credential(scheme, digest, config)
+    found = None if fresh is None else fresh.credential
+    if fresh is None or found is None or found.idle(fresh.last_used):
+        return None
+    return fresh
+
+
 async def accept(
-    entry: Entry, config: PrincipalCacheSettings, *, touch: bool = True
+    entry: Entry,
+    config: PrincipalCacheSettings,
+    *,
+    touch: bool = True,
+    every: timedelta = LAST_USED_EVERY,
 ) -> None:
     """Keep ``entry``, which its class accepted; record that its token was used.
 
-    ``last_used_at`` is written when due (``LAST_USED_EVERY``), by one of
-    the requests that find it due, in a transaction of its own; kept or
-    not, no other request opens one.
+    ``last_used_at`` is written when due (``every``: ``last_used_every()``),
+    by one of the requests that find it due, in a transaction of its own;
+    kept or not, no other request opens one.
     """
     if touch and entry.credential is not None:
         now = utc_now()
-        if principal_cache.claim_touch(entry, now):
+        if principal_cache.claim_touch(entry, now, every):
             async with AuthUnitOfWork() as uow:
                 if await uow.tokens.touch_digest(entry.credential.id, now):
                     await uow.commit()

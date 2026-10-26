@@ -50,6 +50,18 @@ class AuditConfig(DomainConfig):
             **cast(dict[str, Any], details),  # Never target, personal, subject.
         )
 
+    async def record_denial(self, details: Mapping[str, object]) -> None:
+        """Record ``auth.access`` denied: a principal refused (``http.access``).
+
+        The details are the route's method and template, and the rule's
+        class; the actor is the request's.
+        """
+        await record(
+            "auth.access",
+            Outcome.DENIED,
+            **cast(dict[str, Any], details),  # Never target, personal, subject.
+        )
+
     def deployment_warnings(self) -> list[str]:
         """The settings a tamper-evident trail needs, missing in staging and production.
 

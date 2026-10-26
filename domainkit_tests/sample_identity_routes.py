@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Request, WebSocket
 
 from domainkit.contrib.auth import (
     AnyUser,
+    AuthenticatedUser,
     CurrentUser,
     IsAdminUser,
     IsSuperuser,
@@ -111,3 +112,17 @@ async def scoped_staff() -> dict[str, bool]:
 async def scoped_root() -> dict[str, bool]:
     """Superusers, without scopes."""
     return {"ok": True}
+
+
+@router.get("/mine")
+async def mine(user: AuthenticatedUser) -> dict[str, str]:
+    """Users: a route that checks no scope (``AuthenticatedUser`` alone)."""
+    return {"user": user.get_username()}
+
+
+@router.get(
+    "/scoped/mine", dependencies=[Depends(Require(HasPermissions(VIEW_PRODUCT)))]
+)
+async def scoped_mine(user: AuthenticatedUser) -> dict[str, str]:
+    """Users who may view products: the rule checks the scopes."""
+    return {"user": user.get_username()}

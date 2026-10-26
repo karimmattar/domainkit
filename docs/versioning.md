@@ -77,6 +77,7 @@ it.
 | The setting `AUTH.REQUIRE_ROUTE_RULES` | `REQUIRE_ROUTE_RULES` | 0.10 |
 | `ResourceRouter(crud=True)` without `writable=`, or without both `create=` and `update=` (every plain field writable) | `writable=[...]` naming the fields, `writable=ALL_FIELDS`, or both schemas | 0.10 |
 | `Query` from `domainkit.ddd.query` (named `Selection` since 0.9.2) | `domainkit.ddd.Selection` | 0.10 |
+| Credentials limited to scopes passing a route that declares no rule that checks scopes (`SCOPED_CREDENTIALS = "warn"`, the default) | `HasScope(...)`, a permission rule, or `AllowScoped()` on the route; 0.11 refuses them (`"refuse"`) | 0.10 |
 
 To find deprecated uses before upgrading, make the warning an error in the
 project's pytest settings:

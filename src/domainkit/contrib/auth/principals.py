@@ -10,11 +10,11 @@ them here, in memory, without a query (``AUTH.PRINCIPAL_CACHE``):
   its permissions (``Principal``); and what the token table says of the
   credential: its kind, expiry, scopes, and login (``Credential``). Never a
   second factor's secret, recovery codes, or the raw token: entries are
-  keyed by the class's scheme and the credential's digest. The password
-  hash is kept only for ``request.user.password``, deprecated and removed
-  in 0.10, which warns (``DomainkitDeprecationWarning``); it is never in a
-  ``repr``, a log, a key, or a stamp. Each request gets a user built afresh
-  from the snapshot, the same as a query builds.
+  keyed by the class's scheme and the credential's digest. Nor the
+  password hash: only whether a password can log the user in, so
+  ``request.user.password`` raises ``AttributeError`` (it was removed in
+  0.10; ``api.password_holds`` checks a password). Each request gets a
+  user built afresh from the snapshot, the same as a query builds.
 - **What is checked on every request.** A token's expiry, on
   ``domainkit.clock``; a cookie's CSRF checks; a JSON Web Token's signature
   and times.
@@ -37,7 +37,6 @@ import copy
 import logging
 import secrets
 import threading
-import warnings
 from collections import OrderedDict
 from collections.abc import (
     Awaitable,
@@ -52,12 +51,10 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from functools import cache, partial
-from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final, Self, cast
 from uuid import UUID
 
-import sqlalchemy
 from sqlalchemy import Table, event
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import (
@@ -75,7 +72,6 @@ from domainkit import clock
 from domainkit.cache import CacheError, caches
 from domainkit.contrib.contenttypes import ContentType
 from domainkit.contrib.contenttypes.tables import content_types
-from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.log import SECURITY_LOGGER
 from domainkit.tasks import spawn
@@ -88,7 +84,6 @@ from .models import (
     USABLE_PASSWORD,
     AbstractBaseUser,
     Group,
-    PasswordHash,
     Permission,
 )
 from .settings import MAX_PRINCIPAL_TTL, PrincipalCacheSettings, auth_settings
@@ -99,7 +94,7 @@ from .tables import (
     user_link_tables,
 )
 from .tables import tokens as token_rows
-from .tokens import LAST_USED_EVERY, AuthToken
+from .tokens import AuthToken
 
 try:
     from .metrics import observe_principals
@@ -131,15 +126,13 @@ RECENT_INVALIDATIONS: Final = 4096
 """Targets whose last invalidation is remembered, to refuse principals read
 during it; an older one refuses every principal read before it."""
 PASSWORD: Final = "password"  # noqa: S105 - a field name, not a secret.
-"""The user field a request's user reads with a warning (``lend_password``)."""
-PASSWORD_DEPRECATED: Final = (
-    "request.user.password is deprecated and removed in domainkit 0.10: check "  # noqa: S105 - a message, not a password.
-    "a password with domainkit.contrib.auth.api.password_holds(user, password), "
-    "or read the hash with await uow.users.password_hash(user.id)."
+"""The user field a request's user does not hold (``withhold_password``)."""
+PASSWORD_REMOVED: Final = (
+    "request.user.password was removed in domainkit 0.10: check a password "  # noqa: S105 - a message, not a password.
+    "with domainkit.contrib.auth.api.password_holds(user, password), or read "
+    "the hash with await uow.users.password_hash(user.id)."
 )
-"""What reading ``password`` of a request's user warns."""
-_INTERNAL: Final = (str(Path(sqlalchemy.__file__).parent), __file__)
-"""Where the warning is not pinned: it names the code that read the password."""
+"""Why reading ``password`` of a request's user raises ``AttributeError``."""
 SNAPSHOT_RELATIONSHIPS: Final = frozenset({"groups", "user_permissions"})
 """The user's relationships a snapshot holds."""
 UNLOADED: Final = frozenset({"raise", "raise_on_sql", "noload"})
@@ -280,7 +273,7 @@ class Principal:
     ``user()`` builds a user from it, detached from any session, as a query
     would: every column, the groups with their permissions, and the
     permissions given directly. The ``repr`` names no field: some are
-    personal data, and one is the password hash.
+    personal data. It holds no password hash, only whether one is usable.
     """
 
     model: type[AbstractBaseUser]
@@ -290,8 +283,6 @@ class Principal:
     permissions: tuple[GrantedPermission, ...]
     usable_password: bool
     """Whether some password can log the user in (``has_usable_password``)."""
-    password: PasswordHash
-    """Only for ``request.user.password``, deprecated: removed in 0.10."""
     granted: Mapping[str, frozenset[str]] = field(init=False, compare=False)
     """The keys of what the user holds, by relationship, and ``EVERY`` key
     (``models.GRANTED``): what ``has_perm`` reads of a request's user."""
@@ -323,9 +314,9 @@ class Principal:
         Its groups and permissions are built the first time they are read,
         as new objects of its own, the same a query loads; until then
         ``has_perm`` answers from the keys worked out with the principal
-        (ADR 0059's amendment). Reading its ``password`` warns
-        (``lend_password``): check a password with ``password_holds``, or
-        read the hash in a unit of work.
+        (ADR 0059's amendment). Reading its ``password`` raises
+        ``AttributeError`` (``withhold_password``): check a password with
+        ``password_holds``, or read the hash in a unit of work.
         """
         built = _Grants()
         user: AbstractBaseUser = _detached(
@@ -341,7 +332,7 @@ class Principal:
             groups=partial(built.groups, self.groups),
             user_permissions=partial(built.permissions, self.permissions),
         )
-        lend_password(user, self.password, usable=self.usable_password)
+        withhold_password(user, usable=self.usable_password)
         return user
 
 
@@ -456,37 +447,33 @@ def _detached[T](cls: type[T], columns: dict[str, object], **relations: object) 
     return instance
 
 
-class _LentPassword:
-    """Loads ``password`` of a request's user: the hash read with it, and a warning."""
+class _WithheldPassword:
+    """Loads ``password`` of a request's user: refuses, naming what replaces it."""
 
-    __slots__ = ("_hashed",)
-
-    def __init__(self, hashed: PasswordHash) -> None:
-        """Lend ``hashed``."""
-        self._hashed = hashed
+    __slots__ = ()
 
     def __repr__(self) -> str:
-        """Hide the hash."""
-        return "<password lent to a request's user>"
+        """Name what it is."""
+        return "<password withheld from a request's user>"
 
-    def __call__(self, state: object, passive: object) -> PasswordHash:
-        """Warn (``PASSWORD_DEPRECATED``); SQLAlchemy keeps what this returns."""
-        warnings.warn(
-            PASSWORD_DEPRECATED,
-            DomainkitDeprecationWarning,
-            skip_file_prefixes=_INTERNAL,
-        )
-        return self._hashed
+    def __call__(self, state: object, passive: object) -> object:
+        """Raise ``AttributeError``, as for an attribute the user lacks.
+
+        Raises:
+            AttributeError: Always (``PASSWORD_REMOVED``).
+        """
+        raise AttributeError(PASSWORD_REMOVED)
 
 
-def lend_password(
-    user: AbstractBaseUser, hashed: PasswordHash, *, usable: bool
-) -> None:
-    """Let ``user`` read ``hashed`` as its ``password``, warning the first time.
+WITHHELD_PASSWORD: Final = _WithheldPassword()
 
-    ``request.user.password`` is deprecated (removed in 0.10). Until then it
-    reads the hash the user was built with, as SQLAlchemy loads a deferred
-    column; ``has_usable_password`` answers ``usable`` without it.
+
+def withhold_password(user: AbstractBaseUser, *, usable: bool) -> None:
+    """Leave the hash out of ``user``; ``has_usable_password`` answers ``usable``.
+
+    ``request.user.password`` was removed in 0.10: reading it raises
+    ``AttributeError``, so ``getattr(user, "password", None)`` is None, and
+    the hash is never in process memory with a request's user.
     """
     state = instance_state(user)
     state.dict.pop(PASSWORD, None)
@@ -494,7 +481,7 @@ def lend_password(
     state.expired_attributes.discard(PASSWORD)
     if "callables" not in state.__dict__:
         state.callables = {}
-    state.callables[PASSWORD] = _LentPassword(hashed)
+    state.callables[PASSWORD] = WITHHELD_PASSWORD
 
 
 @dataclass(frozen=True, slots=True)
@@ -504,7 +491,7 @@ class UserShape:
     columns: tuple[tuple[str, ColumnElement[Any]], ...]
     """``(attribute, column)`` of each column a query loads, but the password."""
     password: ColumnElement[Any]
-    """The password's column, read apart (``lend_password``)."""
+    """The password's column: only whether it is usable is read."""
 
 
 @cache
@@ -542,11 +529,30 @@ class Credential:
     expires_at: datetime | None
     scopes: frozenset[str] | None
     last_used_at: datetime | None
+    name: str = ""
+    created_at: datetime | None = None
 
     def expired(self, now: datetime | None = None) -> bool:
         """Whether the token's lifetime is over, as ``AuthToken.expired``."""
         return self.expires_at is not None and (
             (now or tokens.utc_now()) >= self.expires_at
+        )
+
+    def idle(self, written: datetime | None, now: datetime | None = None) -> bool:
+        """Whether a login's token idled past ``AUTH.IDLE_TIMEOUT``.
+
+        Its last use is the latest of the stored one, ``written`` (what this
+        process last wrote), and when it was issued. Not a login's: never.
+        """
+        uses = [
+            each
+            for each in (self.last_used_at, written, self.created_at)
+            if each is not None
+        ]
+        return (
+            bool(uses)
+            and tokens.is_login(self.kind, self.name)
+            and tokens.idle_since(max(uses), now or tokens.utc_now())
         )
 
 
@@ -769,14 +775,17 @@ class PrincipalCache:
         with self._lock:
             entry.refreshing = False
 
-    def claim_touch(self, entry: Entry, now: datetime) -> bool:
+    def claim_touch(
+        self, entry: Entry, now: datetime, every: timedelta = tokens.LAST_USED_EVERY
+    ) -> bool:
         """Whether this request writes the credential's ``last_used_at``.
 
-        Once per ``LAST_USED_EVERY`` per entry: the first request to find it
-        due claims it, so concurrent requests do not all write.
+        Once per ``every`` (``last_used_every()``) per entry: the first
+        request to find it due claims it, so concurrent requests do not all
+        write.
         """
         with self._lock:
-            if entry.last_used is not None and now - entry.last_used < LAST_USED_EVERY:
+            if entry.last_used is not None and now - entry.last_used < every:
                 return False
             entry.last_used = now
             return True

@@ -731,6 +731,10 @@ class Settings(BaseModel):
     REQUIRE_ROUTE_RULES: bool = True
     """Every route must say who may call it (``Require``, or ``Public``); staging
     and production refuse to start otherwise (``domainkit.http.access``)."""
+    SCOPED_CREDENTIALS: Literal["warn", "refuse"] = "warn"
+    """Credentials limited to scopes on a route that declares no rule that
+    checks scopes: ``warn`` lets them through with a deprecation warning and a
+    security log line, as before 0.10; ``refuse`` answers 403, as 0.11 will."""
     ASGI_APPLICATION: str | None = None
     """``module:attribute`` that ``runserver`` serves."""
     EVENT_LOOP: Literal["auto", "asyncio", "uvloop"] = "auto"

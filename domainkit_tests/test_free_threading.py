@@ -83,9 +83,9 @@ from domainkit.db.connections import (
     create_read_engine,
 )
 from domainkit.ddd import DomainEvent, EventBus
+from domainkit.http import access, live, metrics, ratelimit
 from domainkit.http import client as http_client
 from domainkit.http import guard as guard_module
-from domainkit.http import live, metrics, ratelimit
 from domainkit.http import middleware as body_limits
 from domainkit.http.access import AllowAny
 from domainkit.http.client import BREAKER_HOSTS, CircuitBreaker, HttpClient
@@ -1716,3 +1716,25 @@ def test_hook_points_keep_every_registration_from_every_thread() -> None:
 
     assert sorted(hook.call() for hook in point) == list(range(THREADS * 50))
     assert max(seen) <= THREADS * 50
+
+
+def test_audited_refusals_are_sampled_once_per_key_from_every_thread() -> None:
+    """One refusal per actor and route is let through, however many threads ask.
+
+    The sampler stays within its bound while keys come and go.
+    """
+    sampler = access._Sampler(interval=3600.0, keys=64)
+
+    def hammer(index: int) -> list[tuple[str, str]]:
+        chosen = random.Random(index)  # noqa: S311 - the order of the calls only.
+        let = []
+        for _ in range(2_000):
+            key = (f"user:{chosen.randrange(8)}", f"GET /r/{chosen.randrange(4)}")
+            if sampler.first(key):
+                let.append(key)
+        return let
+
+    let = [key for keys in on_threads(hammer) for key in keys]
+
+    assert len(let) == len(set(let)) == 32  # Every key once, by one thread.
+    assert len(sampler._seen) <= 64

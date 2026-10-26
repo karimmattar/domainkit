@@ -1,6 +1,6 @@
 # 0068. Count failed attempts, and hold back only what can be guessed
 
-- Status: Accepted; amended 2026-10-25 (at the end)
+- Status: Accepted; amended 2026-10-25 (at the end); amended by [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md)
 - Date: 2026-10-25
 
 ## Context

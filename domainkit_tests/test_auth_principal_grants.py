@@ -28,7 +28,7 @@ from domainkit.contrib.auth.principals import (
     Membership,
     Principal,
     _detached,
-    lend_password,
+    withhold_password,
 )
 from domainkit.contrib.contenttypes import ContentType
 from domainkit_tests.conftest import UseAuth
@@ -108,7 +108,7 @@ def built_eagerly(principal: Principal) -> AbstractBaseUser:
         groups=groups,
         user_permissions={permission(each) for each in principal.permissions},
     )
-    lend_password(user, principal.password, usable=principal.usable_password)
+    withhold_password(user, usable=principal.usable_password)
     return user
 
 
@@ -139,7 +139,6 @@ def random_principal(rng: random.Random) -> Principal:
             sorted(rng.sample(POOL, rng.randrange(0, 6)), key=lambda p: p.id)
         ),
         usable_password=True,
-        password=HIDDEN,
     )
 
 
@@ -235,12 +234,11 @@ def test_users_with_the_same_grants_share_their_keys(use_auth: UseAuth) -> None:
         groups=first.groups,
         permissions=first.permissions,
         usable_password=True,
-        password=HIDDEN,
     )
 
     for name in ("user_permissions", "groups", "*"):
         assert again.granted[name] is first.granted[name]
     assert first.user().__dict__[GRANTED] is first.granted
-    empty = Principal(User, True, (), (), (), True, HIDDEN)
+    empty = Principal(User, True, (), (), (), True)
     assert empty.granted["*"] is empty.granted["groups"]
     assert not empty.granted["*"]

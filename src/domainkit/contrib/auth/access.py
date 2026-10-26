@@ -21,7 +21,7 @@ The names that moved still import from here, and from
 """
 
 from collections.abc import Awaitable, Callable
-from typing import Annotated, Final, cast
+from typing import Annotated, ClassVar, Final, cast
 
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials
@@ -80,6 +80,8 @@ CurrentUser = Annotated[AnyUser, Depends(access.acurrent_user)]
 class IsAdminUser(access.BasePermission):
     """Staff users (``is_staff``), with credentials that are not limited to scopes."""
 
+    bounds_scopes: ClassVar[bool] = True
+
     async def has_permission(self, request: HTTPConnection, user: AnyUser) -> bool:
         """The user is staff; scopes name permissions, and staff hold more."""
         return (
@@ -91,6 +93,8 @@ class IsAdminUser(access.BasePermission):
 
 class IsSuperuser(access.BasePermission):
     """Active superusers, with credentials that are not limited to scopes."""
+
+    bounds_scopes: ClassVar[bool] = True
 
     async def has_permission(self, request: HTTPConnection, user: AnyUser) -> bool:
         """The user is an active superuser, and holds every permission here."""
@@ -106,12 +110,18 @@ async def authenticated_user(
 ) -> AbstractBaseUser:
     """The user who logged in.
 
+    Credentials limited to scopes need a rule that checks them on the route
+    (``check_scopes_bounded``).
+
     Raises:
         NotAuthenticated: The request named no user of this app.
+        PermissionDenied: With ``SCOPED_CREDENTIALS = "refuse"``, scoped
+            credentials on a route that declares no rule that checks scopes.
     """
     user = current_user(request)
     if not isinstance(user, AbstractBaseUser):
         raise access.NotAuthenticated(get_authenticators()[0].challenge())
+    await access.check_scopes_bounded(request)
     return user
 
 

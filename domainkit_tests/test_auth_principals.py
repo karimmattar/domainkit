@@ -1,8 +1,8 @@
 """The principal cache: what it keeps, what it checks, and what drops it."""
 
+import dataclasses
 import io
 import logging
-import warnings
 from collections.abc import Callable, Iterator
 from datetime import timedelta
 from pathlib import Path
@@ -10,7 +10,6 @@ from typing import Any, Final
 from uuid import UUID, uuid4
 
 import pytest
-import sqlalchemy
 from fakeredis import FakeServer
 from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
@@ -66,7 +65,6 @@ from domainkit.contrib.auth.tokens import (
 from domainkit.contrib.auth.users import get_user_table
 from domainkit.db import connections
 from domainkit.db.hooks import on_committed, on_stage
-from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import call_command
 from domainkit.management.base import run_async
@@ -101,7 +99,6 @@ CERTIFICATES = [
     f"{AUTHENTICATION}.certificates.ClientCertificateAuthentication",
 ]
 SITE = "https://testserver"
-HIDDEN: Final = PasswordHash("pbkdf2_sha256$1$salt$a-hash-no-repr-shows")
 NEW_PASSWORD = "Fresh-pa55-word"
 
 
@@ -216,15 +213,13 @@ def one_object_each(user: AbstractBaseUser) -> bool:
     )
 
 
-def lent_password(user: AbstractBaseUser) -> PasswordHash:
-    """The password hash of a request's ``user``, read with the warning it gives."""
-    with pytest.warns(DomainkitDeprecationWarning, match="password_holds") as warned:
-        hashed = user.password
-    assert len(warned) == 1
-    # Whoever read it, not the code that lends it, nor SQLAlchemy's.
-    assert warned[0].filename != principals.__file__
-    assert not warned[0].filename.startswith(str(Path(sqlalchemy.__file__).parent))
-    return hashed
+def withheld(user: AbstractBaseUser) -> bool:
+    """Whether a request's ``user`` holds no password hash, and says what to use."""
+    with pytest.raises(AttributeError, match=r"removed in domainkit 0\.10") as raised:
+        _ = user.password
+    assert "password_holds(user, password)" in str(raised.value)
+    assert "uow.users.password_hash(user.id)" in str(raised.value)
+    return getattr(user, "password", None) is None and "password" not in vars(user)
 
 
 async def stored_hash(user_id: UUID) -> PasswordHash | None:
@@ -438,59 +433,57 @@ def test_tokens_kept_and_read_build_the_same_user(
     assert (missed.scheme, missed.token_id) == (hit.scheme, hit.token_id)
     assert missed.token_id == token_digest(token)
     assert missed.scopes is hit.scopes is None
-    assert lent_password(missed.user) == lent_password(hit.user) == stored.password
-    assert missed.user.password is missed.user.password  # Warned once, then kept.
+    assert withheld(missed.user)
+    assert withheld(hit.user)
     assert hit.user.has_perm("shop.change_product")
     assert not hit.user.has_perm("shop.delete_product")
 
 
-def test_request_users_lend_their_password_hash_deprecated(api: Api) -> None:
-    """``request.user.password`` works for one more release, and warns.
+def test_request_users_hold_no_password_hash(api: Api) -> None:
+    """``request.user.password`` was removed in 0.10: no hash is read or kept.
 
-    Kept or read, it is the stored hash; projects that make the warning an
-    error (``filterwarnings``) find each use.
+    Reading it raises ``AttributeError``, naming what replaces it; the
+    principal holds only whether a password is usable.
     """
     alice = create_user("alice")
     api(PRINCIPAL_CACHE={"TTL": timedelta(minutes=5)})
     raw = run_async(issue("alice"))
     stored = run_async(stored_hash(alice))
+    assert stored is not None
 
     with freeze_time("2026-05-01T10:00:00Z"):
         missed = run_async(user_of(headers=bearer(raw)))
         hit = run_async(user_of(headers=bearer(raw)))
-        strict = run_async(user_of(headers=bearer(raw)))
-    with pytest.warns(DomainkitDeprecationWarning) as warned:
-        assert missed.password == stored
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", DomainkitDeprecationWarning)
-        with pytest.raises(DomainkitDeprecationWarning):
-            _ = strict.password
+    kept = principal_cache.get(("token", token_digest(raw)), 0)
 
-    (message,) = [str(each.message) for each in warned]
-    assert "password_holds(user, password)" in message
-    assert "uow.users.password_hash(user.id)" in message
-    assert "removed in domainkit 0.10" in message
-    assert lent_password(hit) == stored
+    assert withheld(missed)
+    assert withheld(hit)
+    assert kept is not None
+    assert kept.principal is not None
+    fields = {field.name for field in dataclasses.fields(principals.Principal)}
+    assert "password" not in fields
+    assert stored.value not in {str(value) for _, value in kept.principal.columns}
+    assert repr(principals.WITHHELD_PASSWORD) == (
+        "<password withheld from a request's user>"
+    )
 
 
-def test_a_user_lent_a_hash_again_reads_the_last_and_keeps_its_loaders(
-    use_auth: UseAuth,
-) -> None:
-    """``lend_password`` on a user lent one already (an ORM-read user read twice)."""
+def test_a_user_withheld_its_hash_again_keeps_its_loaders(use_auth: UseAuth) -> None:
+    """``withhold_password`` on a user withheld already (an ORM user read twice)."""
     use_auth()
-    first, last = PasswordHash.unusable(), PasswordHash.unusable()
-    user = User.create(password=first, username="alice")
+    user = User.create(password=PasswordHash.unusable(), username="alice")
     state = instance_state(user)
-    principals.lend_password(user, first, usable=False)
+    principals.withhold_password(user, usable=True)
 
     def own_loader(state: object, passive: object) -> str:
         return "its own"
 
     state.callables["nickname"] = own_loader
-    principals.lend_password(user, last, usable=False)
+    principals.withhold_password(user, usable=False)
 
     assert state.callables["nickname"] is own_loader
-    assert lent_password(user) == last
+    assert withheld(user)
+    assert not user.has_usable_password()
 
 
 @pytest.mark.parametrize("password", [PASSWORD, None])
@@ -509,8 +502,7 @@ def test_request_users_know_whether_their_password_is_usable(
     usable = password is not None
     assert missed.has_usable_password() is usable  # Warnings are errors here.
     assert hit.has_usable_password() is usable
-    assert lent_password(hit).usable is usable
-    assert hit.has_usable_password() is usable  # The hash read, now.
+    assert withheld(hit)
     hit.set_unusable_password()
     assert not hit.has_usable_password()
 
@@ -1739,7 +1731,7 @@ def test_users_with_relationships_of_their_own_are_read_as_before(
     assert isinstance(second.user, Profile)
     assert [address.city for address in second.user.addresses] == ["Cairo"]  # type: ignore[attr-defined]
     assert second.user.has_usable_password()
-    assert lent_password(second.user) == run_async(stored_hash(alice))
+    assert withheld(second.user)
     assert "SELECT" in reads
     assert len(principal_cache) == 0
     gone = Entry(("token", "x"), None, loaded=second.user)
@@ -1996,7 +1988,6 @@ def test_mutable_column_values_are_each_requests_own(use_auth: UseAuth) -> None:
         groups=(),
         permissions=(),
         usable_password=True,
-        password=HIDDEN,
     )
 
     first, second = principal.user(), principal.user()

@@ -33,14 +33,38 @@ keys itself (``ahas_perms``). A middleware may put the credentials in
 permission rules allow only what both the principal and the scopes allow,
 and ``IsUnscoped`` keeps a route to credentials without a limit.
 
+Credentials limited to scopes are bounded on every route, not only on
+routes that check a permission (``SCOPED_CREDENTIALS``): a route reached
+with them must declare a rule that checks scopes (``HasScope``, a permission
+rule, ``IsUnscoped``, or ``AllowScoped`` for what a scope cannot bound,
+such as logging out). In 0.10 a route that declares none still lets them
+through, with a ``DomainkitDeprecationWarning`` and a security log line;
+``SCOPED_CREDENTIALS = "refuse"`` refuses them with 403 now, as 0.11 will.
+
+A refusal of a principal who proved who they are (403) goes to the audit
+trail when an installed domain keeps one (``DenialRecorder``:
+``domainkit.contrib.audit``): the route, the rule, and the actor, at most
+once per actor and route each ``DENIAL_AUDIT_INTERVAL``.
+
 Every route must declare who may call it (``REQUIRE_ROUTE_RULES``): with
 ``Require``, ``CurrentUser``, a dependency marked ``reads_principal``, or
 ``Public``. ``open_routes`` lists those that do not.
 """
 
-from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
+import logging
+import threading
+import warnings
+from collections import OrderedDict
+from collections.abc import (
+    Callable,
+    Collection,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from dataclasses import dataclass
-from typing import Annotated, Any, ClassVar, Final, Protocol, cast
+from typing import Annotated, Any, ClassVar, Final, Protocol, cast, runtime_checkable
 
 from fastapi import Depends, FastAPI, Request, status
 from fastapi.dependencies.models import Dependant
@@ -49,21 +73,28 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.requests import HTTPConnection
 from starlette.routing import BaseRoute, Host, Mount, Route, WebSocketRoute
 
+from domainkit import clock
+from domainkit.apps import registry
+from domainkit.conf import settings
 from domainkit.db.models import model_key
 from domainkit.ddd import PermissionDenied
+from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import APIError
 from domainkit.http.live import record_check
+from domainkit.log import SECURITY_LOGGER, ThrottledLog
 
 __all__ = [
     "MODEL_ACTIONS",
     "SAFE_METHODS",
     "AllOf",
     "AllowAny",
+    "AllowScoped",
     "AnonymousPrincipal",
     "AnyOf",
     "BasePermission",
     "CurrentUser",
+    "DenialRecorder",
     "HasObjectPermissions",
     "HasPermissions",
     "HasScope",
@@ -79,6 +110,7 @@ __all__ = [
     "Rule",
     "acurrent_user",
     "check_object_permissions",
+    "check_scopes_bounded",
     "current_user",
     "mark_public",
     "open_routes",
@@ -105,6 +137,18 @@ MODEL_ACTIONS: Final = {
     "DELETE": "delete",
 }
 """The permission each method needs from ``ModelPermissions``."""
+SCOPES_UNBOUNDED: Final = (
+    "Credentials limited to scopes cannot call this route: it declares no "
+    "rule that checks scopes."
+)
+"""The detail of the 403 ``SCOPED_CREDENTIALS = "refuse"`` answers with."""
+DENIAL_AUDIT_INTERVAL: Final = 60.0
+"""Seconds during which further refusals of one actor on one route go unrecorded."""
+MAX_DENIAL_KEYS: Final = 10_000
+"""Actors and routes whose last recorded refusal is remembered."""
+
+security_logger = logging.getLogger(SECURITY_LOGGER)
+logger = logging.getLogger(__name__)
 
 
 class Principal(Protocol):
@@ -195,6 +239,17 @@ class BasePermission:
 
     message: ClassVar[str] = "You do not have permission to perform this action."
     """The detail of the 403 a refusal answers with."""
+    bounds_scopes: ClassVar[bool] = False
+    """Whether the rule, when it allows a request, has checked its scopes.
+
+    A route reached with credentials limited to scopes must declare a rule
+    that does (``SCOPED_CREDENTIALS``). A rule of a project's own that reads
+    ``scopes_of`` sets it.
+    """
+
+    def checks_scopes(self) -> bool:
+        """Whether allowing a request means its scopes were checked."""
+        return self.bounds_scopes
 
     async def has_permission(
         self,
@@ -255,6 +310,10 @@ class AllOf(BasePermission):
         """Every rule allows ``obj``."""
         return await _first_refusal(self.rules, request, user, obj) is None
 
+    def checks_scopes(self) -> bool:
+        """Some rule checks them: all must allow."""
+        return any(rule.checks_scopes() for rule in self.rules)
+
 
 class AnyOf(BasePermission):
     """One rule must allow, for the request and for the object alike."""
@@ -281,6 +340,10 @@ class AnyOf(BasePermission):
                 return True
         return False
 
+    def checks_scopes(self) -> bool:
+        """Every rule checks them: any one may allow."""
+        return all(rule.checks_scopes() for rule in self.rules)
+
 
 class Not(BasePermission):
     """Allows what ``rule`` refuses."""
@@ -302,6 +365,21 @@ class Not(BasePermission):
 
 class AllowAny(BasePermission):
     """Anyone, logged in or not."""
+
+
+class AllowScoped(BasePermission):
+    """Principals who proved who they are, credentials limited to scopes too.
+
+    For a route whose work no scope names and none needs to: logging out,
+    reading who one is. It says so on purpose, as ``Public`` does for
+    anonymous callers (``SCOPED_CREDENTIALS``).
+    """
+
+    bounds_scopes: ClassVar[bool] = True
+
+    async def has_permission(self, request: HTTPConnection, user: Principal) -> bool:
+        """The request named a principal."""
+        return user.is_authenticated
 
 
 class IsAuthenticated(BasePermission):
@@ -327,6 +405,7 @@ class IsUnscoped(BasePermission):
     """
 
     message: ClassVar[str] = "Credentials limited to scopes cannot do this."
+    bounds_scopes: ClassVar[bool] = True
 
     async def has_permission(self, request: HTTPConnection, user: Principal) -> bool:
         """A user, with credentials that carry no scopes."""
@@ -335,6 +414,8 @@ class IsUnscoped(BasePermission):
 
 class HasScope(BasePermission):
     """Users whose credentials allow every scope named; unscoped ones allow all."""
+
+    bounds_scopes: ClassVar[bool] = True
 
     def __init__(self, *scopes: str) -> None:
         """Require ``scopes`` (permission keys)."""
@@ -349,6 +430,8 @@ class HasScope(BasePermission):
 
 class HasPermissions(BasePermission):
     """Principals granted every permission named (``<domain>.<codename>``)."""
+
+    bounds_scopes: ClassVar[bool] = True
 
     def __init__(self, *perms: str) -> None:
         """Require ``perms``."""
@@ -391,6 +474,7 @@ class ModelPermissions(BasePermission):
     """
 
     actions: ClassVar[dict[str, str]] = MODEL_ACTIONS
+    bounds_scopes: ClassVar[bool] = True
 
     def __init__(self, model: type | str) -> None:
         """Check permissions of ``model``."""
@@ -444,14 +528,18 @@ class Require:
         user = current_user(request)
         refusal = await _first_refusal(self.rules, request, user)
         if refusal is not None:
-            raise _denied(user, refusal)
+            raise await _denied(request, user, refusal)
+        if _scoped(request.scope):
+            await check_scopes_bounded(request)
         record_check(request, self.allows)
         return user
 
     async def allows(self, connection: HTTPConnection) -> bool:
         """Whether every rule still allows ``connection``'s current principal."""
         user = current_user(connection)
-        return await _first_refusal(self.rules, connection, user) is None
+        return await _first_refusal(
+            self.rules, connection, user
+        ) is None and not _scopes_refused(connection)
 
 
 async def check_object_permissions(
@@ -468,7 +556,193 @@ async def check_object_permissions(
         tuple(_rule(rule) for rule in rules), request, user, obj
     )
     if refusal is not None:
-        raise _denied(user, refusal)
+        raise await _denied(request, user, refusal)
+
+
+async def check_scopes_bounded(connection: HTTPConnection) -> None:
+    """Hold credentials limited to scopes to routes with a rule that checks them.
+
+    ``Require`` calls it once its rules allow; so does a provider's
+    dependency that reads the principal (``reads_principal``), such as
+    ``AuthenticatedUser``. Credentials without scopes, and routes that
+    declare a rule that checks scopes (``bounds_scopes``: ``HasScope``, the
+    permission rules, ``IsUnscoped``, ``AllowScoped``, on the route or its
+    routers), pass. Others, with ``SCOPED_CREDENTIALS = "warn"`` (the
+    default until 0.11), pass with a ``DomainkitDeprecationWarning`` and a
+    security log line, once per route a while.
+
+    Raises:
+        PermissionDenied: With ``SCOPED_CREDENTIALS = "refuse"``, the route
+            declares no rule that checks scopes.
+    """
+    if scopes_of(connection) is None or _route_checks_scopes(connection):
+        return
+    route = _route_name(connection)
+    if settings.SCOPED_CREDENTIALS == "refuse":  # Audited, sampled, as 403s are.
+        raise await _denied(connection, current_user(connection), None)
+    scoped_log.warning(
+        "scoped_credentials",
+        route,
+        "Credentials limited to scopes called %s, which declares no rule that "
+        'checks scopes: SCOPED_CREDENTIALS = "refuse" refuses them, as 0.11 '
+        "will by default",
+        route,
+    )
+    warnings.warn(
+        f"Credentials limited to scopes called {route}, which declares no rule "
+        "that checks scopes: serving them there is deprecated, and removed in "
+        "0.11. Add HasScope(...), a permission rule, or AllowScoped() to the "
+        'route, or set SCOPED_CREDENTIALS = "refuse" to refuse them now.',
+        DomainkitDeprecationWarning,
+        stacklevel=2,
+    )
+
+
+scoped_log: Final = ThrottledLog(security_logger)
+"""Calls of routes that check no scope with scoped credentials: a line per route."""
+
+
+def _scoped(scope: Mapping[str, Any]) -> bool:
+    """Whether the request's credentials carry scopes, read without a call.
+
+    ``Require`` asks it on every request; credentials without ``scopes``
+    (a provider's own) carry none.
+    """
+    if "auth" not in scope or scope["auth"] is None:
+        return False
+    try:
+        return scope["auth"].scopes is not None
+    except AttributeError:
+        return False
+
+
+def _scopes_refused(connection: HTTPConnection) -> bool:
+    """Whether ``check_scopes_bounded`` would refuse ``connection`` now."""
+    return (
+        settings.SCOPED_CREDENTIALS == "refuse"
+        and scopes_of(connection) is not None
+        and not _route_checks_scopes(connection)
+    )
+
+
+def _effective_route(connection: HTTPConnection) -> object:
+    """The route FastAPI serves the request with, its routers' prefixes included.
+
+    A flattened route (``domainkit.http.routing``) is ``scope["route"]``; a
+    route of a router FastAPI keeps nested is served through its effective
+    context, which holds the routers' dependencies and prefixes.
+    """
+    fastapi_scope = connection.scope.get("fastapi")
+    effective = (
+        fastapi_scope.get("effective_route_context")
+        if isinstance(fastapi_scope, dict)
+        else None
+    )
+    return effective if effective is not None else connection.scope.get("route")
+
+
+def _route_checks_scopes(connection: HTTPConnection) -> bool:
+    """Whether the request's route declares a rule that checks scopes.
+
+    Through ``Require`` at any depth of its dependencies, on the route or
+    its routers. A request with no route known declares none.
+    """
+    dependant = getattr(_effective_route(connection), "dependant", None)
+    return isinstance(dependant, Dependant) and _checks_scopes(dependant)
+
+
+def _checks_scopes(dependant: Dependant) -> bool:
+    """Whether some ``Require`` that ``dependant`` uses checks scopes."""
+    call = dependant.call
+    if isinstance(call, Require) and AllOf(*call.rules).checks_scopes():
+        return True
+    return any(_checks_scopes(each) for each in dependant.dependencies)
+
+
+def _route_name(connection: HTTPConnection) -> str:
+    """``METHOD /template`` of the request's route: never its values."""
+    path = getattr(_effective_route(connection), "path", None)
+    return f"{_method(connection)} {path if isinstance(path, str) else 'unmatched'}"
+
+
+@runtime_checkable
+class DenialRecorder(Protocol):
+    """An installed domain that keeps the record of refused requests.
+
+    ``domainkit.contrib.audit`` is one: it writes ``auth.access`` with the
+    outcome ``denied`` and the actor. The details are the route's method
+    and template, and the refusing rule's class: never the request's values
+    or credentials.
+    """
+
+    async def record_denial(self, details: Mapping[str, object]) -> None:
+        """Record that a principal who proved who they are was refused."""
+        ...
+
+
+class _Sampler:
+    """Remembers when each key was last let through, to let it once per interval.
+
+    Bounded: past ``keys`` entries the oldest is forgotten. Event loops on
+    several threads (free-threaded Python) share one, so its state changes
+    only under its lock.
+    """
+
+    def __init__(self, interval: float, keys: int) -> None:
+        """Let each key through once per ``interval`` seconds; remember ``keys``."""
+        self.interval = interval
+        self.keys = keys
+        self._seen: OrderedDict[tuple[str, str], float] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def first(self, key: tuple[str, str]) -> bool:
+        """Whether ``key`` is let through now (and so not again for a while)."""
+        now = clock.monotonic()
+        with self._lock:
+            since = self._seen.get(key)
+            if since is not None and now - since < self.interval:
+                return False
+            self._seen[key] = now
+            self._seen.move_to_end(key)
+            if len(self._seen) > self.keys:
+                self._seen.popitem(last=False)
+            return True
+
+    def clear(self) -> None:
+        """Forget every key."""
+        with self._lock:
+            self._seen.clear()
+
+
+denials: Final = _Sampler(DENIAL_AUDIT_INTERVAL, MAX_DENIAL_KEYS)
+"""Refusals recorded, per actor and route."""
+
+
+async def record_denial(
+    connection: HTTPConnection, user: Principal, rule: BasePermission | None
+) -> None:
+    """Send a 403 to the audit trail, once per actor and route a while.
+
+    Every installed ``DenialRecorder`` records it. A recorder that fails is
+    logged, never raised: the refusal stands either way.
+    """
+    recorders = [config for config in registry if isinstance(config, DenialRecorder)]
+    route = _route_name(connection)
+    if not recorders or not denials.first((str(user.id), route)):
+        return
+    details = {
+        "route": route,
+        "rule": "scopes_unbounded" if rule is None else type(rule).__name__,
+    }
+    for recorder in recorders:
+        try:
+            await recorder.record_denial(details)
+        except Exception as exc:  # noqa: BLE001 - logged; the refusal stands.
+            logger.error(  # Not the error itself: it could quote the details.
+                "Could not record a refused request to %s (%s)",
+                route,
+                type(exc).__name__,
+            )
 
 
 def reads_principal[F: Callable[..., object]](dependency: F) -> F:
@@ -696,14 +970,19 @@ async def _first_refusal(
     return None
 
 
-def _denied(user: Principal, rule: BasePermission) -> Exception:
+async def _denied(
+    connection: HTTPConnection, user: Principal, rule: BasePermission | None
+) -> Exception:
     """401 for an anonymous caller, 403 with the rule's message for a known one.
 
-    The 401's challenge is the principal's own (``challenge()``), if it names one.
+    The 401's challenge is the principal's own (``challenge()``), if it
+    names one. A 403 is recorded (``record_denial``); ``rule`` None is a
+    refusal of scopes on a route that checks none (``SCOPES_UNBOUNDED``).
     """
     if not user.is_authenticated:
         challenge = getattr(user, "challenge", None)
         return NotAuthenticated(
             challenge() if challenge is not None else DEFAULT_CHALLENGE
         )
-    return PermissionDenied(rule.message)
+    await record_denial(connection, user, rule)
+    return PermissionDenied(SCOPES_UNBOUNDED if rule is None else rule.message)

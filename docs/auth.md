@@ -430,7 +430,14 @@ after repeated failures.
 `AUTH.PASSWORD_HASHERS` lists hasher classes. The first hashes new
 passwords; every one listed checks passwords it once hashed. When a
 password checks against an older or weaker hash, the login stores a new
-hash made with the first hasher.
+hash made with the first hasher. An Argon2 hash is older when its
+variant (`argon2i`, `argon2d`), version, length, or costs differ from
+today's, or its salt holds fewer than 128 bits. A wrong password against
+an older hash takes at least as long as against a current one: the first
+hasher hashes it, as a right one is hashed again, so response times do
+not tell which accounts still have a weak, migrated hash (with PBKDF2
+first, a wrong password against a `pbkdf2_sha1` hash of 20,000 iterations
+answered in 0.006 s before 0.10, against 0.56 s for a current hash).
 
 | Hasher | Notes |
 | --- | --- |
@@ -541,9 +548,42 @@ nor change or lock its account. `/me` with a scoped token lists, in
 Creating and revoking are audited (`auth.token_created` with the scopes,
 `auth.token_revoked`).
 
+#### Scopes on every route
+
+A scoped token is bounded on every route, not only on routes that check a
+permission. Before 0.10 it passed any route guarded by authentication
+alone (`Require()`, `IsAuthenticated`, `IsAuthenticatedOrReadOnly`,
+`AuthenticatedUser`): a key limited to `shop.view_product` could write
+wherever no permission was checked. A route reached with scoped
+credentials must now declare a rule that checks scopes, on itself or a
+router it is included through:
+
+- `HasScope(...)`, a permission rule (`HasPermissions`, `ModelPermissions`,
+  `HasObjectPermissions`), `IsUnscoped`, `IsAdminUser`, or `IsSuperuser`;
+- or `AllowScoped()`, for a route whose work no scope names and none needs
+  to (`/logout` and `/me` say it): it lets any principal who proved who
+  they are through, scoped or not, on purpose, as `Public` does for
+  anonymous callers;
+- or a rule of your own that reads `scopes_of(request)` and sets
+  `bounds_scopes = True`. `A & B` checks scopes if either does, `A | B`
+  only if both do, and `~A` never.
+
+`SCOPED_CREDENTIALS` decides what happens on a route that declares none.
+In 0.10 it is `"warn"`: the request is served as before, with a
+`DomainkitDeprecationWarning` (your tests fail on it when they make
+deprecations errors) and a line on the `domainkit.security` logger, once
+per route a while (what deployments find). `"refuse"` answers
+`403 permission_denied` ("Credentials limited to scopes cannot call this
+route"), which 0.11 makes the default. `Require` checks it once its rules
+allow, and so does `AuthenticatedUser`; a dependency of your own that
+reads the principal calls `await check_scopes_bounded(request)`.
+`CurrentUser` refuses no one and checks nothing: a route that reads it to
+decide for itself must check the scopes itself.
+
 Every token records when it last authenticated a request
-(`last_used_at`), written at most once every five minutes, so a key no one
-uses shows up without a write per request.
+(`last_used_at`), written at most once every five minutes (a tenth of
+`AUTH.IDLE_TIMEOUT` when that is shorter), so a key no one uses shows up
+without a write per request.
 
 ### JSON Web Tokens
 
@@ -844,13 +884,14 @@ how principals are read.
   reaches the others too.
 - **Open connections** are re-checked through the cache too, so they see a
   change as soon as requests do.
-- **`request.user.password` is deprecated**, and removed in 0.10. It still
-  returns the stored hash, and warns with `DomainkitDeprecationWarning` the
-  first time a request's user reads it. To check a password, read the hash
-  afresh: `await password_holds(user, raw)` (`domainkit.contrib.auth.api`),
-  or `await uow.users.password_hash(user.id)`. `has_usable_password()` keeps
-  working, without the hash and without a warning. A user's `repr` leaves
-  the password out.
+- **`request.user.password` was removed in 0.10.** The principal holds no
+  hash, and the query does not read one: reading it raises
+  `AttributeError`, naming what replaces it (so
+  `getattr(user, "password", None)` is None). To check a password, read the
+  hash afresh: `await password_holds(user, raw)`
+  (`domainkit.contrib.auth.api`), or `await uow.users.password_hash(user.id)`.
+  `has_usable_password()` keeps working, without the hash. A user's `repr`
+  leaves the password out.
 - A user model that loads relationships of its own with the user (other
   than `groups` and `user_permissions`) is read by the ORM every time, and
   never kept.
@@ -955,12 +996,64 @@ holds, and what does not:
 - Sessions and tokens already issued are not affected, and password
   changes have their own count per user. The audited `throttled`
   refusals (once per count and period) show such a flood.
+- Since 0.10, neither holds a client back that logged in to the account
+  before: see below.
 
-A per-account lockout stored in the database, with an audited unlock and
-a way for the user to sign in that a stranger's failures do not block, is
-planned for 0.10, on these counts of failures. Until then, a service
-where this matters can raise `LOGIN_RATE` (which raises the guessing bound
-with it) or put its own measures in front of `/auth/login`.
+### Wrong passwords and device proofs
+
+A login that works hands its client a device proof (`auth.devices`): a
+cookie, `__Host-dk_device` (`dk_device` over plain HTTP), HttpOnly,
+`SameSite=Lax`, signed with `SECRET_KEY` for that account, for
+`AUTH.DEVICE_TTL` (30 days). Browsers keep it, and so does any HTTP
+client with a cookie jar. A login to the same account that sends it is
+counted against `LOGIN_RATE` per device, and against neither the
+account's count nor the address's:
+
+- Strangers' wrong passwords, from anywhere, never fill that count: the
+  user gets in from a browser they logged in from before, and so does
+  everyone behind an office's address whom one person there is flooding.
+- It buys no guesses: only a client that knew the password holds one, and
+  its own wrong passwords are counted as strictly, per device. A proof
+  made for another account, forged, or older than `DEVICE_TTL` counts as
+  none. Each login that works renews it, for the same device.
+- A client without one (a new browser, a script without a cookie jar) is
+  counted per address and per account, as before, and may still be held
+  back while someone floods the account; a password reset, which needs
+  the user's mail, ends that for the user. Guessing from many addresses
+  stays bounded by the account's count.
+
+`DEVICE_TTL = None` hands out no proofs, as before 0.10.
+[ADR 0087](adr/0087-count-proven-devices-apart-and-bound-scopes-by-route.md)
+has the measurements behind this choice: under an hour's attack from 200
+addresses, a stored lockout checked 40 guesses and let none of the user's
+logins in; device proofs checked 609, as before, and let every login from
+a known device in.
+
+### Sessions
+
+- **A new login ends the browser's last session.** `POST /session` and
+  `/session/mfa` from a browser whose cookie still holds a session end
+  that session: the browser replaces the cookie, so a copy of the old one
+  would otherwise work on, unseen, for `COOKIE.TTL`
+  (`COOKIE.END_PREVIOUS_SESSION = False` keeps it).
+- **Logins are bounded.** A user holds at most `AUTH.MAX_LOGINS` (100)
+  logins at once: login tokens, browser sessions, and JSON Web Token
+  logins (refreshing adds none). A new one past it ends the oldest, so no
+  user is refused for their own history; personal tokens neither count
+  nor end.
+- **The session list.** `GET /auth/tokens` (`personal_tokens.router`)
+  lists them, with `kind`, `created_at`, `last_used_at`, and `current`;
+  `DELETE /auth/tokens/{id}` ends one, wherever it is used.
+- **Idle logins end.** With `AUTH.IDLE_TIMEOUT` (off by default; 5 minutes
+  to 30 days), a login token or a browser session that authenticated
+  nothing that long is refused (`401`, "Session ended after inactivity";
+  a cookie leaves the request anonymous), and a JSON Web Token login not
+  refreshed that long cannot refresh. Last uses are then written every
+  tenth of the timeout, so a login ends no sooner than the timeout and
+  within a tenth of it after, at one more `UPDATE` per active login per
+  tenth (40 an hour for 15 minutes, 12 by default). A kept principal that
+  looks idle is read again before it is refused: another process may have
+  served it since. Personal tokens and certificates have no idle timeout.
 
 ## Two-factor logins
 
@@ -1210,6 +1303,18 @@ async def greeting(user: CurrentUser): ...               # anyone; AnonymousUser
 | `HasObjectPermissions(*keys)` | Users granted every permission on the object, by a backend with object permissions. The request itself needs an active user who logged in; check each object with `check_object_permissions`. |
 | `HasScope(*keys)` | Users whose credentials' scopes cover every key; credentials without scopes cover all. |
 | `IsUnscoped` | Users whose credentials carry no scopes (a login, not a scoped token). |
+| `AllowScoped` | Users who logged in, scoped tokens too, on purpose ([Scopes on every route](#scopes-on-every-route)). |
+
+A refused user (`403`) is recorded in the audit trail when
+`domainkit.contrib.audit` is installed: `auth.access`, outcome `denied`,
+with the actor, the route's method and template (`GET /products/{owner}`,
+never its values), and the refusing rule's class (`scopes_unbounded` for
+a scoped token refused by `SCOPED_CREDENTIALS`). One actor's refusals on
+one route are recorded once a minute, so probing many object ids writes a
+row a minute per route; 401s for anonymous callers are not recorded. Any
+installed domain that implements `DenialRecorder`
+(`record_denial(details)`) gets them, with `contrib.auth` or without it.
+A recorder that fails is logged; the refusal stands.
 
 Combine rule instances with `&`, `|`, and `~`:
 `Require(IsAdminUser() | HasPermissions("billing.view_invoice"))`. A rule of
@@ -1424,8 +1529,11 @@ changed what.
 | `AUTHENTICATION_EXEMPT_PATHS` | `["/health", "/ready", "/metrics"]` | Paths served without looking at credentials. |
 | `TOKEN_TTL` | 14 days | How long a login's opaque token works; `None` until revoked. |
 | `TOKEN_PREFIX` | `"dkt_"` | Starts every opaque token; changing it invalidates existing tokens. |
+| `MAX_LOGINS` | `100` | Logins a user holds at once: login tokens, browser sessions, and JSON Web Token logins (1 to 10,000). A new one past it ends the oldest; personal tokens neither count nor end ([Sessions](#sessions)). |
+| `IDLE_TIMEOUT` | `None` | End a login (a login token, a browser session, a JSON Web Token login's refresh) unused this long, from 5 minutes to 30 days: never before, and within a tenth of it after. `None`: logins last their whole lifetime. Personal tokens and certificates have none ([Sessions](#sessions)). |
 | `MAX_LIVE_TOKENS` | `100` | Live access tokens (logins and personal tokens) a user may hold and still make a personal token; past it, `409 too_many_tokens` (1 to 10,000). |
 | `LOGIN_RATE` | `"10/minute"` | Wrong passwords at login per client address and per username, and at password changes per user; reset, verification, signup, and second-factor links that do not hold, per client address. Checks that succeed are not counted. `None` for no limit. |
+| `DEVICE_TTL` | 30 days | How long a client that logged in keeps a count of its own: a login that works hands out a signed, HttpOnly device proof for its account, and logins that send it count against `LOGIN_RATE` per device, not per account or address. From an hour to 400 days; `None` hands out none, as before 0.10 ([Wrong passwords](#wrong-passwords-and-device-proofs)). |
 | `EMAIL_RATE` | `"5/hour"` | Requests that send mail (resets, verifications, signups) per client address and per email address or user. |
 | `THROTTLE_FAIL_CLOSED` | `False` | While `RATE_LIMIT_BACKEND` cannot count (Redis failing), refuse password and code checks, and requests for mail, with `503 throttle_unavailable`, rather than let them through uncounted. |
 | `PASSWORD_RESET_TIMEOUT` | 1 hour | How long a reset link works. |
@@ -1452,6 +1560,7 @@ changed what.
 | `DOMAIN` | `None` | `None` keeps the cookies to this host. |
 | `PATH` | `"/"` | |
 | `TTL` | 14 days | How long a browser session works. |
+| `END_PREVIOUS_SESSION` | `True` | A login from a browser ends the session its cookie held; `False` keeps it, as before 0.10 ([Sessions](#sessions)). |
 
 | `AUTH["MFA"]` key | Default | Meaning |
 | --- | --- | --- |
