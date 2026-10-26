@@ -59,6 +59,10 @@ PATIENTS: Final = "domainkit_tests.sample_domains.patients"
 EMAIL: Final = "ann@example.com"
 OTHER_EMAIL: Final = "bob@example.com"
 KEY: Final = "register-ann"
+KEYED: Final = {"Idempotency-Key": KEY, "X-API-Key": "clinic"}
+"""Ann's registration, keyed by a caller the service knows (an API key, as a
+project's own authentication would): since 0.11 a key that names no caller
+is refused (``IDEMPOTENCY.ANONYMOUS = "refuse"``)."""
 
 
 class PatientRegistered(DomainEvent):
@@ -192,7 +196,7 @@ def scenario(database_url: str, tmp_path: Path) -> Iterator[Scenario]:
             response = client.post(
                 "/patients",
                 json={"name": "Ann", "email": EMAIL},
-                headers={"Idempotency-Key": KEY},
+                headers=KEYED,
             ).json()
 
             async def run() -> UUID:
@@ -224,7 +228,7 @@ def retry(scenario: Scenario) -> Any:  # noqa: ANN401 - a response.
     return scenario.client.post(
         "/patients",
         json={"name": "Ann", "email": EMAIL},
-        headers={"Idempotency-Key": KEY},
+        headers=KEYED,
     )
 
 
@@ -522,7 +526,7 @@ def test_an_export_gives_nobody_elses_personal_data(scenario: Scenario) -> None:
     """
     expose(AppointmentBooked, "appointment.booked")
     booked = scenario.client.post(
-        "/appointments", headers={"Idempotency-Key": "book-1"}
+        "/appointments", headers={**KEYED, "Idempotency-Key": "book-1"}
     ).json()
     run_async(drain(delayed=True))
 
@@ -552,7 +556,7 @@ def test_a_body_picked_by_the_project_is_withheld(scenario: Scenario) -> None:
         payload=lambda event: {"who": event.patient_name, "call": event.doctor_phone},
     )
     booked = scenario.client.post(
-        "/appointments", headers={"Idempotency-Key": "book-2"}
+        "/appointments", headers={**KEYED, "Idempotency-Key": "book-2"}
     ).json()
     run_async(drain(delayed=True))
 

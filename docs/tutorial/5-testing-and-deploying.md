@@ -75,23 +75,23 @@ queries, factories, the outbox's messages) are in
 `config.settings.production` reads its addresses and secrets from the
 environment, and refuses to start without them, or with settings that are
 unsafe there: `DEBUG`, wildcard hosts, a weak key, a database without
-verified TLS. Give it what it needs, with the key in a file outside the
-project, as a secret store would mount it, and run the same checks
-startup runs:
+verified TLS. It counts requests, and wrong passwords and codes, in Redis,
+once for every process: counted in each process, a guesser would get the
+login rate once per process, which production refuses (`auth.E105`). Give
+it what it needs, with the key in a file outside the project, as a secret
+store would mount it, and run the same checks startup runs:
 
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(50))" > ../bank-secret-key
 BANK_API_SETTINGS_MODULE=config.settings.production BANK_API_ALLOWED_HOSTS=bank.example.com \
   BANK_API_SECRET_KEY_FILE=../bank-secret-key BANK_API_TRUSTED_PROXIES=10.0.0.0/8 \
   BANK_API_DATABASE_URL=postgresql+asyncpg://bank@db.example.com/bank \
+  BANK_API_REDIS_URL=rediss://:cache-password@cache.example.com:6380/0 \
   python manage.py check
 ```
 
-It passes, with three warnings worth reading, each with its id:
+It passes, with two warnings worth reading, each with its id:
 
-- `auth.W004`: the rate limits, login attempts included, count in each
-  process, so with several processes a password can be guessed that many
-  times faster. Production wants Redis for them, as the warning says.
 - `deploy.W004` and `deploy.W006`: the database pool is SQLAlchemy's
   default, 15 connections, while each process admits up to 1,000 requests
   at once. Size `POOL_SIZE` for the database server and the number of

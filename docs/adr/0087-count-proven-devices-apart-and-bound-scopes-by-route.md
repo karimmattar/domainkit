@@ -1,6 +1,6 @@
 # 0087. Count proven devices apart, and bound scoped credentials by route
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-26 (at the end)
 - Date: 2026-10-26
 - Amends: [0017](0017-deny-by-default-and-admin-api.md), [0068](0068-count-failed-attempts-and-hold-back-only-guesses.md)
 
@@ -122,3 +122,16 @@ runs first and would refuse a token the permission rule allows.
   `scope["user"]` is not.
 - A request with scoped credentials walks its route's dependencies once;
   requests without scopes pay nothing.
+
+## Amendment (2026-10-26, 0.11): refused by default
+
+`SCOPED_CREDENTIALS` defaults to `"refuse"`, as planned (AUTH-01): a
+route reached with credentials limited to scopes, and declaring no rule
+that checks scopes, answers 403. `"warn"` stays, as the way to keep 0.10's
+answer while a project adds the routes' rules: it serves such requests
+with the throttled line on the security logger, and no longer warns with
+`DomainkitDeprecationWarning`. That warning announced a removal; `"warn"`
+is a choice a project makes, not one this release plans to take away, and
+a deprecation warning without a removal behind it would teach projects to
+ignore the category. Nothing else changes: the rules that check scopes,
+and where the decision is made, are as above.

@@ -2,10 +2,12 @@
 
 import json
 import re
+from collections.abc import Mapping
 from datetime import timedelta
 from typing import Any, Final, Literal, Self
 
 from pydantic import (
+    AwareDatetime,
     BaseModel,
     ConfigDict,
     Field,
@@ -30,12 +32,18 @@ ORIGIN: Final = re.compile(r"https?://(\*\.)?[a-z0-9.-]+(:[0-9]{1,5})?")
 """An origin: a scheme and a host, and a port; ``*.`` matches subdomains."""
 HMAC_ALGORITHMS: Final = frozenset({"HS256", "HS384", "HS512"})
 """JWT algorithms that sign and verify with one shared secret."""
+MAX_PREVIOUS_KEYS: Final = 3
+"""The most retired keys ``AUTH.JWT.PREVIOUS_KEYS`` may keep."""
+MAX_RETIREMENT_AHEAD: Final = timedelta(days=1)
+"""How far ahead of startup a previous key's ``RETIRED_AT`` may be: a rollout."""
 PRINCIPAL_TTL: Final = timedelta(seconds=5)
 """How long a cached principal is used by default (``PRINCIPAL_CACHE.TTL``).
 
 Also the longest ``check`` accepts without ``STAMPS`` where deployed."""
 MAX_PRINCIPAL_TTL: Final = timedelta(minutes=5)
 """The longest ``PRINCIPAL_CACHE.TTL`` may be: a JWT's default lifetime."""
+ROUTE_RULES: Final = "REQUIRE_ROUTE_RULES"
+"""``AUTH.REQUIRE_ROUTE_RULES``: the core's since 0.10, refused here since 0.11."""
 
 
 class PasswordValidatorConfig(BaseModel):
@@ -53,6 +61,43 @@ class PasswordValidatorConfig(BaseModel):
         return hash((self.NAME, json.dumps(self.OPTIONS, sort_keys=True, default=str)))
 
 
+type JWTAlgorithm = Literal[
+    "HS256",
+    "HS384",
+    "HS512",
+    "RS256",
+    "RS384",
+    "RS512",
+    "PS256",
+    "PS384",
+    "PS512",
+    "ES256",
+    "ES384",
+    "ES512",
+    "EdDSA",
+]
+"""The algorithms a JSON Web Token may be signed with."""
+
+
+class PreviousJWTKey(BaseModel):
+    """One ``AUTH["JWT"]["PREVIOUS_KEYS"]`` entry: a key that signed, kept to verify.
+
+    Tokens whose ``kid`` names it are verified with it, and its algorithm
+    alone, until ``RETIRED_AT`` plus ``ACCESS_TOKEN_TTL`` and ``LEEWAY``:
+    then they are refused, unexpired or not (ADR 0097).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    KEY: SecretStr
+    """The old HMAC secret, or the old public key in PEM (never a private key)."""
+    ALGORITHM: JWTAlgorithm | None = None
+    """The algorithm it signed with; None: ``AUTH.JWT.ALGORITHM``."""
+    RETIRED_AT: AwareDatetime
+    """When the last process stopped signing with it: the end of the rollout
+    of the new key, at most a day after startup."""
+
+
 class JWTSettings(BaseModel):
     """``AUTH["JWT"]``: signed access tokens (``JWTAuthentication``)."""
 
@@ -62,22 +107,14 @@ class JWTSettings(BaseModel):
     """The HMAC secret (32 bytes or more), or the private key in PEM."""
     VERIFYING_KEY: str | None = None
     """The public key in PEM, for RS*, PS*, ES*, and EdDSA."""
-    ALGORITHM: Literal[
-        "HS256",
-        "HS384",
-        "HS512",
-        "RS256",
-        "RS384",
-        "RS512",
-        "PS256",
-        "PS384",
-        "PS512",
-        "ES256",
-        "ES384",
-        "ES512",
-        "EdDSA",
-    ] = "HS256"
-    """The only algorithm accepted; the token's own header is never trusted."""
+    ALGORITHM: JWTAlgorithm = "HS256"
+    """The algorithm the signing key signs with; a token's own header never
+    chooses one."""
+    PREVIOUS_KEYS: tuple[PreviousJWTKey, ...] = Field(
+        default=(), max_length=MAX_PREVIOUS_KEYS
+    )
+    """Keys that signed before ``SIGNING_KEY``, kept to verify what they
+    signed for one token lifetime after they retired; at most 3."""
     ACCESS_TOKEN_TTL: timedelta = Field(default=timedelta(minutes=5), gt=timedelta(0))
     """How long an access token works; it cannot be revoked before."""
     REFRESH_TOKEN_TTL: timedelta = Field(default=timedelta(days=14), gt=timedelta(0))
@@ -215,6 +252,12 @@ class AuthSettings(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_removed(cls, data: object) -> object:
+        """Name the setting that replaced ``REQUIRE_ROUTE_RULES`` (DSGN-02)."""
+        return _removed_keys_refused(data)
+
     USER_MODEL: str = "domainkit.contrib.auth.models.User"
     """Dotted path to the user class (``AUTH_USER_MODEL``)."""
     USER_TABLE: str | None = None
@@ -260,9 +303,6 @@ class AuthSettings(BaseModel):
     """How requests prove who sent them, tried in order; the first logs in."""
     AUTHENTICATION_EXEMPT_PATHS: tuple[str, ...] = ("/health", "/ready", "/metrics")
     """Paths served without looking at credentials (probes, ``METRICS_TOKEN``)."""
-    REQUIRE_ROUTE_RULES: bool = True
-    """Deprecated: the core's ``REQUIRE_ROUTE_RULES``; False here still turns
-    the check off until 0.11, with a warning."""
     TOKEN_TTL: timedelta | None = Field(default=timedelta(days=14), gt=timedelta(0))
     """How long a token from logging in works (``TokenAuthentication``)."""
     TOKEN_PREFIX: str = Field(default="dkt_", pattern=r"^[A-Za-z][A-Za-z0-9]{1,15}_$")
@@ -305,15 +345,20 @@ class AuthSettings(BaseModel):
     EMAIL_RATE: str | None = "5/hour"
     """Requests that send mail (resets, verifications, signups) per client
     address and per email address."""
-    THROTTLE_FAIL_CLOSED: bool = False
+    THROTTLE_FAIL_CLOSED: bool | None = None
     """Refuse attempts with 503 while ``RATE_LIMIT_BACKEND`` cannot count them.
 
     ``RedisBackend`` lets requests through while Redis fails, so a brute
     force timed with an outage goes uncounted. True refuses password and
     code checks, and requests that send mail, instead, until it counts
     again; other requests are not affected (links are counted after their
-    check, so nothing is guessed through them).
+    check, so nothing is guessed through them). None, the default, is True
+    in staging and production (since 0.11) and False elsewhere.
     """
+    REQUIRE_SHARED_THROTTLES: bool = True
+    """Staging and production refuse to start while attempts are counted in
+    each process (a ``MemoryBackend``), since 0.11 (``auth.E105``); False
+    only warns (``auth.W004``), as 0.10 did."""
     JWT: JWTSettings = JWTSettings()
     """Signing and lifetimes of JSON Web Tokens (``JWTAuthentication``)."""
     PASSWORD_RESET_TIMEOUT: timedelta = Field(
@@ -371,6 +416,21 @@ class AuthSettings(BaseModel):
         if value is not None and TOKEN_PLACEHOLDER not in value:
             raise ValueError(f"the URL needs {TOKEN_PLACEHOLDER} where the token goes")
         return value
+
+
+def _removed_keys_refused(data: object) -> object:
+    """Return ``AUTH``'s raw ``data``, unless it sets a key removed in 0.11.
+
+    Raises:
+        ValueError: It sets ``REQUIRE_ROUTE_RULES``: the message names the
+            setting to use instead.
+    """
+    if isinstance(data, Mapping) and ROUTE_RULES in data:
+        raise ValueError(
+            f"AUTH.{ROUTE_RULES} was removed in 0.11: set {ROUTE_RULES}, "
+            "a setting of its own, outside AUTH"
+        )
+    return data
 
 
 def auth_settings() -> AuthSettings:

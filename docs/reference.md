@@ -53,8 +53,8 @@ URLs; an unreadable port is refused without quoting the URL.
 | `MIDDLEWARE` | see [Middleware](#middleware) | ASGI middleware by dotted path, outermost first. |
 | `ROOT_ROUTER` | `None` | Dotted path to the `APIRouter` that mounts every route (Django's `ROOT_URLCONF`). |
 | `FLATTEN_ROUTERS` | `True` | Serve the routes of the routers `ROOT_ROUTER` includes from the top of the application, each matched once ([Included routers](#included-routers)); `False` keeps FastAPI's nesting, which matches a request again at each level. |
-| `REQUIRE_ROUTE_RULES` | `True` | Every route must say who may call it (`Require`, a dependency that reads the principal, or `Public`), whatever authenticates requests; `check` lists those that do not, and staging and production refuse to start ([Deny by default](auth/routes.md#deny-by-default)). `AUTH.REQUIRE_ROUTE_RULES = False` still turns it off until 0.11, with a warning. |
-| `SCOPED_CREDENTIALS` | `"warn"` | Credentials limited to scopes on a route that declares no rule that checks scopes (`HasScope`, a permission rule, `IsUnscoped`, or `AllowScoped`): `"warn"` lets them through, as before 0.10, with a `DomainkitDeprecationWarning` and a security log line once per route a while; `"refuse"` answers 403, as 0.11 will by default ([Scopes on every route](auth/authentication.md#scopes-on-every-route)). |
+| `REQUIRE_ROUTE_RULES` | `True` | Every route must say who may call it (`Require`, a dependency that reads the principal, or `Public`), whatever authenticates requests; `check` lists those that do not, and staging and production refuse to start ([Deny by default](auth/routes.md#deny-by-default)). `AUTH.REQUIRE_ROUTE_RULES`, its name until 0.10, is refused since 0.11. |
+| `SCOPED_CREDENTIALS` | `"refuse"` | Credentials limited to scopes on a route that declares no rule that checks scopes (`HasScope`, a permission rule, `IsUnscoped`, or `AllowScoped`): `"refuse"` answers 403; `"warn"` lets them through, as 0.10 did by default, with a security log line once per route a while ([Scopes on every route](auth/authentication.md#scopes-on-every-route)). |
 | `ASGI_APPLICATION` | `None` | `module:attribute` that `runserver` serves. |
 | `EVENT_LOOP` | `"auto"` | The event loop of `runserver` and of commands with an `async` handle (`runworker` among them): uvloop when the `uvloop` extra is installed (`auto`), always asyncio's own (`asyncio`), or uvloop or a configuration error (`uvloop`). |
 | `LOGGING` | minimal | A `logging.config.dictConfig` mapping, applied by `setup()`. `domainkit.log.build_logging_config(log_format="json", level="INFO")` makes one that writes from a thread, through a bounded queue ([runtime.md](runtime.md#logging-and-error-reports)); the settings `init` writes use it. |
@@ -259,9 +259,10 @@ Each `BROKERS` entry:
 | `ACCESS_LOG_PATH` | `"template"` | The path access lines, the request middleware's error lines, error reports, and the request context show: the matched route's template (`/accounts/{account_id}`), or `unmatched`; `"raw"` shows the path as sent, ids and tokens included ([runtime.md](runtime.md#paths-in-logs)). |
 | `TRUSTED_PROXIES` | `()` | Networks (`10.0.0.0/8`) whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed, and `"unix"` for the proxy on the other end of a unix socket (`uvicorn --uds`), which has no address. The client is found by walking `X-Forwarded-For` from the right, across every line of the header, through trusted proxies: it is the first hop that is not one, and nothing left of it is read. Hops may carry a port. A hop there that is no address (a proxy's `unknown`) counts the client as the last proxy passed, logged on `domainkit.security`. The scheme is the `PROXY_SCHEME_HEADER` value at the client's place from the right, or the right-most one when there are fewer. Empty: the socket peer is the client. |
 | `PROXY_SCHEME_HEADER` | `"X-Forwarded-Proto"` | The header in which the trusted proxies say the client's scheme (a header name). `None`: the scheme is never taken from a header. Set it to `None` when they do not set it (HAProxy's `option forwardfor` alone, an NLB), or a client's own `X-Forwarded-Proto` would be read, and choose whether cookies are `Secure`. `None` holds only where the server reads no proxy header itself: uvicorn, unless run with `--no-proxy-headers`, sets the scheme from `X-Forwarded-Proto` before domainkit sees the request, for every request from `FORWARDED_ALLOW_IPS` (`127.0.0.1` by default: a proxy on the same host). Granian reads none. |
+| `ACCEPT_REQUEST_ID` | `"proxies"` | Whose `X-Request-ID` names a request (in log lines, error reports, audit rows, and outgoing calls): `"proxies"`, only a trusted proxy's (`TRUSTED_PROXIES`, a unix socket's peer with `"unix"`), as `ProxyHeadersMiddleware` judged the connection; `"anyone"`, any caller's, as up to 0.10; `"never"`, nobody's. The proxy must set or overwrite the header (nginx: `proxy_set_header X-Request-ID $request_id;`), or a client's own passes through it: set `"never"` if it does not. Up to 128 letters, digits, `.`, `_`, `:`, or `-`, starting with a letter or digit; another value, or none, gets a new id (32 hex digits). A caller's value is dropped, not logged ([operations.md](operations.md#request-ids)). |
 | `RATE_LIMIT` | `None` | Requests per caller, such as `"300/minute"` (`second`, `minute`, `hour`, `day`). `None` disables it. |
 | `RATE_LIMIT_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths never counted; compared without the root path (`--root-path`). |
-| `RATE_LIMIT_BACKEND` | `domainkit.http.ratelimit.MemoryBackend` | Where counts live. The default is per process, and keeps the 100,000 most recently seen callers; one seen longer ago starts afresh. Behind several replicas, use `domainkit.http.ratelimit.RedisBackend`: one count per caller in Redis, on the server's clock. If Redis fails, or refuses the count (out of memory, a read-only replica after a failover), requests are let through, and Redis is skipped for the cache's `FAILURE_COOLDOWN`; `AUTH.THROTTLE_FAIL_CLOSED` refuses password and code checks meanwhile instead ([auth.md](auth/logging-in.md#logging-in-and-out)). |
+| `RATE_LIMIT_BACKEND` | `domainkit.http.ratelimit.MemoryBackend` | Where counts live. The default is per process, and keeps the 100,000 most recently seen callers; one seen longer ago starts afresh. Behind several replicas, use `domainkit.http.ratelimit.RedisBackend`: one count per caller in Redis, on the server's clock. If Redis fails, or refuses the count (out of memory, a read-only replica after a failover), requests are let through, and Redis is skipped for the cache's `FAILURE_COOLDOWN`; password and code checks are refused meanwhile instead, in staging and production (`AUTH.THROTTLE_FAIL_CLOSED`), which also refuse to start with attempts counted in each process (`auth.E105`) ([auth.md](auth/logging-in.md#logging-in-and-out)). |
 | `RATE_LIMIT_CACHE` | `"default"` | The Redis cache `RedisBackend` counts in; keys are `<KEY_PREFIX>:ratelimit:<caller>`. |
 | `RATE_LIMIT_FALLBACK_REPLICAS` | `None` | 1 to 1024: while Redis is down, `RedisBackend` counts each caller in its own process at `RATE_LIMIT` divided by this many replicas (at most `FALLBACK_KEYS`, 10,000, callers; a caller who still owes requests is never forgotten, and while all of them do, new callers are refused); `None` lets requests through, as before. |
 | `RATE_LIMIT_IPV6_PREFIX` | `64` | IPv6 clients are counted per network of this prefix length (1 to 128), since one customer usually holds a whole /64; login throttling counts the same way. IPv4 clients are counted per address. |
@@ -512,7 +513,11 @@ Installed contrib apps add their own:
   password hasher made for tests in `AUTH.PASSWORD_HASHERS`, a cookie
   sent over plain HTTP, a network rather than one address in
   `AUTH.CLIENT_CERT.PROXIES`, and `http://` in `AUTH.PASSWORD_RESET_URL`,
-  `EMAIL_VERIFICATION_URL`, or `SIGNUP_URL` ([auth.md](auth.md))
+  `EMAIL_VERIFICATION_URL`, or `SIGNUP_URL` ([auth.md](auth.md)); and,
+  in any environment, with `JWTAuthentication`, a key of
+  `AUTH.JWT.PREVIOUS_KEYS` that is the signing key or is listed twice
+  (`auth.E008`), or that retires more than a day ahead (`auth.E009`)
+  ([auth.md](auth/authentication.md#replacing-a-key))
 - evidence: no `EVIDENCE.SUBJECT_KEY`
   ([contrib.md](contrib/evidence.md#evidence-records-that-provably-never-change))
 - mail: the console or memory backend; and in any environment without
@@ -524,14 +529,19 @@ Installed contrib apps add their own:
 
 The application refuses to start there with a route no rule guards
 (`security.E101`), operation ids that clash (`openapi.E001`), and the
-problems installed domains find (`auth.E101` to `auth.E104`;
+problems installed domains find (`auth.E101` to `auth.E104`; `auth.E105`,
+password and code attempts counted in each process (a `MemoryBackend` as
+`RATE_LIMIT_BACKEND`), unless `AUTH.REQUIRE_SHARED_THROTTLES = False`;
 `idempotency.E001`; `idempotency.E002`, keyed requests without a deadline,
 unless `IDEMPOTENCY.REQUIRE_DEADLINE = False`; `audit.E001` to `audit.E003`,
 no `AUDIT.LEDGER`, no `AUDIT.NAMESPACE` on it, or nothing that seals on a
 schedule, and at startup `audit.E004` and `audit.E005`, an audited
 PostgreSQL database whose `protect()` triggers could not be checked or are
 missing, unless `AUDIT.REQUIRE_BASELINE = False`;
-[contrib.md](contrib/audit.md#in-staging-and-production)); `setup()` refuses a domain whose `requires` is not
+[contrib.md](contrib/audit.md#in-staging-and-production); `messaging.E001`,
+an `@inbox` handler or task whose retries could outlast
+`MESSAGING.INBOX_RETENTION_SECONDS`,
+[messaging.md](contrib/messaging.md#once-in-the-database-the-inbox)); `setup()` refuses a domain whose `requires` is not
 installed (`apps.E001`), anywhere. `check` adds layer rules
 (`architecture.E001`) and migration heads (`migrations.E001`).
 `migrate --downgrade` also needs `--allow-data-loss` there.
@@ -564,14 +574,18 @@ an unsafe or broken configuration, refused until it changes.
 | `blocking.W001` | a route handler or dependency of the project's domains written as `def`, run on FastAPI's thread pool ([runtime.md](runtime.md#finding-blocking-code)); in every environment |
 | `auth.W001` | `AUTH.PRINCIPAL_CACHE.TTL` above 5 seconds without `STAMPS`: a revoked token works that long in the other processes ([auth.md](auth/authentication.md#the-principal-cache)) |
 | `auth.W002`, `auth.W003` | `AUTH.LOGIN_RATE` or `AUTH.MFA.RATE` set to `None`: guesses without limit |
-| `auth.W004` | attempt throttles counted in a `RATE_LIMIT_BACKEND` each process keeps alone (`MemoryBackend`): with several processes, each allows the rates on its own ([auth.md](auth/logging-in.md#logging-in-and-out)) |
+| `auth.W004` | with `AUTH.REQUIRE_SHARED_THROTTLES = False` only: attempt throttles counted in a `RATE_LIMIT_BACKEND` each process keeps alone (`MemoryBackend`): with several processes, each allows the rates on its own; what `auth.E105` refuses ([auth.md](auth/logging-in.md#logging-in-and-out)) |
 | `auth.W005` | a session or CSRF cookie name without the `__Host-` prefix where the prefix could hold ([auth.md](auth/authentication.md#browser-sessions-in-cookies)) |
 | `audit.W001` to `audit.W005` | with `AUDIT.REQUIRE_BASELINE = False` only: what `audit.E001` to `audit.E005` refuse |
 | `idempotency.W001` | with `IDEMPOTENCY.REQUIRE_DEADLINE = False` only: what `idempotency.E002` refuses |
-| `idempotency.W002` | `IDEMPOTENCY.ANONYMOUS` not set: anonymous callers behind one address share keys; 0.11 defaults to `"refuse"`, so set `"per-address"` to keep today's behaviour, or `"refuse"` now (DATA-09) |
+
+`idempotency.W002` (0.10: `IDEMPOTENCY.ANONYMOUS` left unset, so
+`"per-address"`) is gone since 0.11, whose default is `"refuse"`; listed
+in `SILENCED_CHECKS`, it silences nothing.
 
 The production settings that `init` create avoid the first three, and ask
 for `TRUSTED_PROXIES`: leave it empty only when callers connect directly.
+They count requests, passwords, and codes in Redis, from `REDIS_URL`.
 
 ## Middleware
 
@@ -587,7 +601,7 @@ idempotency, or debug toolbar middleware), and `DEFAULT_MIDDLEWARE` eight
 | `domainkit.http.locale.LocaleMiddleware` | Picks the request's language from `Accept-Language`, before anything below answers, so their errors are translated; adds `Content-Language` and `Vary: Accept-Language` ([i18n.md](i18n.md)). |
 | `domainkit.http.middleware.SecurityHeadersMiddleware` | Adds the `SECURE_*` headers (and `X-Frame-Options`, a Content-Security-Policy, a Permissions-Policy, and COOP) to every response that does not set them. |
 | `domainkit.http.middleware.CORSMiddleware` | Answers preflights before any work. |
-| `domainkit.http.middleware.RequestContextMiddleware` | Request id (`X-Request-ID`: a caller's valid one, else 32 lowercase hex digits), access log, the context that logs and audit rows read. WebSocket connections get one too: method `WS`, the request id sent with the accept, one access log line when the connection ends (101 if accepted, 403 if closed first). |
+| `domainkit.http.middleware.RequestContextMiddleware` | Request id (`X-Request-ID`: a trusted proxy's valid one, per `ACCEPT_REQUEST_ID`, else 32 lowercase hex digits), access log, the context that logs and audit rows read. WebSocket connections get one too: method `WS`, the request id sent with the accept, one access log line when the connection ends (101 if accepted, 403 if closed first). |
 | `domainkit.http.deadlines.DeadlineMiddleware` | Starts the request's deadline (`REQUEST_TIMEOUT`) before any work, and answers 503 `deadline_exceeded` when it passes; lifted once the response starts ([runtime.md](runtime.md#request-deadlines)). |
 | `domainkit.http.shedding.ConcurrencyLimitMiddleware` | Sheds requests past `MAX_CONCURRENT_REQUESTS` with 503 `overloaded`, before authentication looks anything up; never the probes ([runtime.md](runtime.md#load-shedding)). |
 | `domainkit.http.middleware.AllowedHostsMiddleware` | Refuses unknown `Host` headers with 400. |
@@ -1045,8 +1059,8 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `dbshell` | `--database`, `--owner`, `--allow-production`, `-- [ARG ...]` | Open `psql` or `sqlite3` on an alias, as its `URL`'s user (`--owner`: `MIGRATION_URL`'s). The connection and password reach `psql` in libpq's environment variables, never on its command line; TLS follows `SSLMODE` and its files. Production refuses without `--allow-production`. Arguments after `--` go to the client. |
 | `diffsettings` | `--all` | The settings that differ from the defaults; `--all` lists every one, defaults marked `###`. Secrets stay hidden as in `repr(settings)`, and so do entries of free-form settings named like secrets (`password`, `token`, `key`, ...) and passwords in URLs. |
 | `dumpdata` | `[TABLE_OR_DOMAIN ...]`, `--database`, `--output`, `--indent` | Write rows as a JSON fixture; see [Data: fixtures, flush, and seeds](#data-fixtures-flush-and-seeds). |
-| `loaddata` | `FIXTURE ...`, `--database`, `--dry-run`, `--force`, `--operator` | Load fixtures, saying first what each table gets and how many stored rows it replaces. Staging and production refuse without `--force`. Each load is audited ([operators](#operators)). |
-| `flush` | `--database`, `--dry-run`, `--force`, `--operator` | Delete every row but the audit trail's, saying first what goes, then rerun the `migrated` hooks (content types, permissions). Staging and production refuse without `--force`. Audited ([operators](#operators)). |
+| `loaddata` | `FIXTURE ...`, `--database`, `--dry-run`, `--force`, `--replace`, `--include-guarded`, `--operator` | Load fixtures, saying first what each table gets and how many of its rows are stored already. A row whose primary key is stored is refused without `--replace`; a fixture that writes a guarded table (users, permissions, grants, ...) without `--include-guarded` ([guarded tables](#data-fixtures-flush-and-seeds)). Staging and production refuse without `--force` and a named operator. Each load is audited with its tables and the fixture's SHA-256 ([operators](#operators)). |
+| `flush` | `--database`, `--dry-run`, `--force`, `--include-guarded`, `--operator` | Delete every row but the audit trail's and, without `--include-guarded`, the guarded tables', saying first what goes, then rerun the `migrated` hooks (content types, permissions). Staging and production refuse without `--force` and a named operator. Audited, with its tables ([operators](#operators)). |
 | `seed` | `[LABEL ...]` | Run installed domains' `DomainConfig.seed` hooks, in `INSTALLED_DOMAINS` order. |
 | `openapi` | `--output`, `--indent`, `--diff OLD` | Print or write the OpenAPI schema; `--diff` lists breaking changes since `OLD` and exits 1 if any (see [The API surface](#the-api-surface)). |
 | `runworker` | `--once`, `--metrics-port`, `--metrics-address`, `--database`, `--queue`, `--no-relay` | Run outbox messages (messaging): one worker per outbox, every hosting database by default; `--queue` (repeatable) limits them to some queues. With `MESSAGING.BROKER`, relay to the broker and run what it delivers; `--no-relay` only consumes. `--once` always works from the outbox. Whatever it serves, the process runs at most `MESSAGING.CONCURRENCY` messages at once. |
@@ -1100,8 +1114,9 @@ refused before the command runs, since the operator typed it. The last two
 sources are recorded as `operator_source` `system`, so the trail shows
 that nobody gave a name; and in a container that runs as `root` or `app`,
 or under a uid, they name nobody: set `DOMAINKIT_OPERATOR` from your
-access tooling, or pass `--operator`. 0.10 may require a name in staging
-and production. Prefer a staff id or handle to an
+access tooling, or pass `--operator`. In staging and production
+`loaddata` and `flush` need a name from one of the first two (0.11); the
+other commands keep running unattended. Prefer a staff id or handle to an
 email address: the trail keeps what it is given for good. The name is what
 the operator says: it attributes an action, it does not authenticate
 anyone, so keep who can run `manage.py` against production as narrow as
@@ -1117,9 +1132,13 @@ itself is recorded once it ends as `operator.<command>`
 `operator.auditforget`, `operator.auditprune`, `operator.loaddata`, `operator.flush`,
 `operator.partitions.prune`, `operator.webhooks.replay`), `success` or `failure` (with the error's
 class), with what it acted on and counts, and `operator_source`: `option`,
-`environment`, or `system`. Dry runs, listings, and refusals before the
-action (no `--force`) are not recorded. A successful action whose row
-cannot be written fails the command.
+`environment`, or `system`. `operator.loaddata` names the fixture file,
+its SHA-256, and each table with its rows and how many it replaced;
+`operator.flush` each table emptied with its rows, and the tables kept;
+both say whether `--replace` and `--include-guarded` were given. Dry runs,
+listings, and refusals before the action (no `--force`) are not
+recorded. A successful action whose row cannot be written fails the
+command.
 
 ### Data: fixtures, flush, and seeds
 
@@ -1136,9 +1155,24 @@ and enums as text; bytes as base64; JSON columns as JSON. `loaddata`
 converts each value back by its column's type, and refuses one that does
 not fit without quoting it. A number with a fraction reaches a decimal
 column with every digit, as written (`1234567890123456.78`), never through
-a float; other columns get it as a float. A row whose primary key is stored
-replaces the stored row. Rows load in one transaction, and on PostgreSQL
-serial ids then continue after the highest one loaded.
+a float; other columns get it as a float. Rows load in one transaction,
+and on PostgreSQL serial ids then continue after the highest one loaded.
+
+A load only adds rows: a row whose primary key is stored refuses the
+whole fixture, before anything is written, unless `--replace` is given,
+and then it replaces the stored row. A row that replaces another bypasses
+the aggregate's version, its rules, and its events: keep `--replace` for
+development data.
+
+Guarded tables hold logins, grants, and secrets: users (the
+`AUTH.USER_TABLE` too), groups, permissions and their links, tokens,
+second factors and recovery codes, content types (permissions hang from
+them), object grants, and dynamic settings (which may be secret), and any
+table with `info={"guarded": True}`. A row added there is a login or a
+privilege, so `loaddata` refuses a fixture that writes one unless
+`--include-guarded` is given, and `flush` keeps them, and every table they
+reference, unless it is given. The audit trail is never loaded or
+flushed, guarded or not.
 
 State is never dumped or loaded: the audit trail (a copy of its keys would
 outlive `auditforget`), tokens, the outbox, idempotency keys, webhook
@@ -1151,8 +1185,9 @@ directory cannot redirect it: delete an old fixture before dumping again.
 
 `flush` keeps append-only tables, those with `info={"append_only": True}`
 or, on PostgreSQL, triggers of their own, and those with
-`info={"flush": False}`: the audit trail survives it. Serial ids start
-again on PostgreSQL.
+`info={"flush": False}`: the audit trail survives it. It keeps guarded
+tables too, listed as `kept (guarded)`, unless `--include-guarded`.
+Serial ids start again on PostgreSQL.
 
 Each command works on one alias (`--database`, default `default`), as the
 schema owner (`MIGRATION_URL` when set).
@@ -1215,7 +1250,7 @@ revision: the test database migrates up, down, and up again.
 | Erasing a personal field no default fits | `erase_personal_data(fields)` on the aggregate | (called by `privacy erase` and retention erasure) |
 | Erasing, and exporting, a person's data a domain keeps outside its aggregates (copies in deliveries, kept responses, queues) | `async DomainConfig.erase_subject(subject, reason)`, returning counts by kind; `async DomainConfig.export_subject(subject)`, returning JSON-ready data | (called on every installed domain by `privacy erase` and `privacy export`; the counts are audited; see [privacy.md](privacy.md#what-erasure-reaches-and-when)) |
 | How errors name a column | `info={"field": "<API name>"}` on the `Column` | (read by unique, foreign key, NOT NULL, and CHECK errors) |
-| A table fixtures or `flush` leave alone | `info={"fixtures": False}`, `{"flush": False}`, or `{"append_only": True}` on the `Table` | (read by `dumpdata`, `loaddata`, and `flush`) |
+| A table fixtures or `flush` leave alone | `info={"fixtures": False}`, `{"flush": False}`, or `{"append_only": True}` on the `Table`; `{"guarded": True}` for one only `--include-guarded` reaches | (read by `dumpdata`, `loaddata`, and `flush`) |
 | A deprecated route or version | `Depends(Deprecation(...))`, `versioned_router(...)` | `domainkit.http.versioning` |
 | Packages a domain layer may import, layers of the project's own | the `ARCHITECTURE` keys | `ARCHITECTURE` ([Layer rules](#layer-rules)) |
 | Tables a domain stops using | `DomainConfig.holds_table(table)` | (asked by migrations and content types; a swapped user table answers no) |

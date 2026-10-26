@@ -1,6 +1,6 @@
 # 0016. Authenticating requests with tokens, and route rules
 
-- Status: Accepted; amended by [0056](0056-reauthorize-open-connections.md), [0058](0058-cache-principals-and-stamp-revocations.md), and [0059](0059-read-principals-in-two-queries-without-the-hash.md)
+- Status: Accepted; amended by [0056](0056-reauthorize-open-connections.md), [0058](0058-cache-principals-and-stamp-revocations.md), [0059](0059-read-principals-in-two-queries-without-the-hash.md), and [0097](0097-name-the-key-of-every-json-web-token-and-retire-keys-within-a-token-lifetime.md)
 - Date: 2026-10-15
 
 ## Context

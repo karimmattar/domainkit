@@ -40,7 +40,9 @@ using the task's type hints (`UUID`, `datetime`, `Decimal`, models).
 **Delivery is at least once.** A message is claimed with
 `FOR UPDATE SKIP LOCKED` (so any number of workers can share the outbox) and
 locked for `VISIBILITY_TIMEOUT`. If its worker dies, another claims it again.
-Handlers and tasks must therefore be idempotent. Order between messages is
+Handlers and tasks must therefore be idempotent, or mark themselves
+`@inbox` so their database work commits once
+([below](#once-in-the-database-the-inbox)). Order between messages is
 not guaranteed.
 
 **Failures** are retried with exponential backoff and jitter, up to
@@ -87,6 +89,7 @@ inspects any outbox.
 | `CONCURRENCY` | `10` | Messages one worker process runs at the same time, from all its outboxes and queues together (1 to 65,535, RabbitMQ's largest prefetch). |
 | `SHUTDOWN_TIMEOUT` | `20.0` | Seconds a stopping worker lets running messages finish; the rest are stopped and run again (at most an hour). |
 | `RETENTION_SECONDS` | `604800.0` | Finished messages are deleted after this (7 days; at most 365 days); their arguments are blanked when they finish. Dead letters are kept until retried. |
+| `INBOX_RETENTION_SECONDS` | `604800.0` | How long the [inbox](#once-in-the-database-the-inbox) remembers a handled message (7 days; more than `VISIBILITY_TIMEOUT`, at most 365 days). It must outlast the message's retries: `check` refuses an `@inbox` handler or task whose retries could outlast it (`messaging.E001`). |
 | `CLEANUP_INTERVAL` | `3600.0` | Seconds between those deletions (at most a day). |
 | `CLEANUP_BATCH_SIZE` | `1000` | Most finished messages one cleanup statement deletes (1 to 100,000). |
 | `BROKER` | `None` | An alias in `BROKERS`: workers take their work from that broker instead of polling the outbox (below). |
@@ -154,6 +157,81 @@ it kills the process (Kubernetes' `terminationGracePeriodSeconds`, 30 by
 default), so they are given back rather than left locked until
 `VISIBILITY_TIMEOUT`. Handlers see the cancellation as
 `asyncio.CancelledError`; let it propagate.
+
+## Once in the database: the inbox
+
+At least once means a handler may run twice for one message: its worker
+died (or lost the database) after the handler committed but before the
+message was recorded as done, RabbitMQ handed the message out again, or
+the handler failed after its commit and was retried. Mark a durable
+handler or a task `@inbox`, and its database work commits once per
+message:
+
+```python
+from domainkit.contrib.messaging import inbox, task
+
+
+@inbox
+async def credit_account(event: PaymentReceived) -> None:
+    async with LedgerUnitOfWork() as uow:
+        account = await uow.accounts.get(event.account_id)
+        account.credit(event.amount)
+        await uow.commit()  # also writes (handler, message id) to the inbox
+
+
+event_bus.subscribe(PaymentReceived, credit_account, durable=True)
+
+
+@task
+@inbox  # before or after @task
+async def close_invoice(invoice_id: UUID) -> None: ...
+```
+
+- The run's first commit writes `(target, message id)` to
+  `domainkit_inbox`, in its own transaction, on the database it commits
+  to: the row and the work commit or roll back together.
+- A later run of the same message is skipped. If it is a retry or a
+  redelivery, the worker looks the message up in the inbox of its outbox's
+  database and does not call the handler at all; otherwise (the handler
+  commits on another database, or an operator retried a dead letter) its
+  commit finds the row, raises `AlreadyHandled`, and rolls back. Either
+  way the message is recorded as done, and logged as skipped (outcome
+  `handled` in `messaging_messages_total`). Let `AlreadyHandled`
+  propagate.
+- Keep the work in one unit of work. Later commits of the same run write
+  no row, so a run whose first commit landed is skipped whole when the
+  message comes back: a second commit that had not happened yet never
+  will.
+- What the handler does outside the database, a mail or a call to another
+  service, can still happen twice: before its commit nothing tells the
+  runs apart. Give such calls an idempotency key of their own (the
+  message's id is `current_attempt().message_id`).
+- In a chain, only the last step may be `@inbox` (`chain()` refuses
+  others): a skipped run has no result to hand to the next step.
+- Rows hold the handler's or task's name, the message id, and the time,
+  nothing personal. Workers delete them after `INBOX_RETENTION_SECONDS`
+  (7 days), in batches, with finished messages. The retention must
+  outlast every later run a message may get: each attempt can wait its
+  longest retry delay, hold its lease (`VISIBILITY_TIMEOUT`), and with a
+  broker wait `REPUBLISH_AFTER`. `check` refuses an `@inbox` handler or
+  task whose `max_attempts` times that reaches it (`messaging.E001`), and
+  staging and production refuse to start with one. Retry dead letters of
+  `@inbox` handlers within the retention.
+- The inbox costs one insert in the handler's transaction, and one row per
+  message until the retention passes. Handlers not marked keep the old
+  rule: at least once, idempotent.
+
+**A run that outlived its lease cannot commit.** A handler can run past
+its claim's lease when its event loop is blocked by synchronous code, its
+process is paused, or it ignores its cancellation; another worker then
+claims the message and runs it too. Each unit of work a running handler
+commits on the database of its message's outbox first renews the lease,
+in the same transaction, if this run still holds it. If another worker
+took the message over, the commit raises `LeaseLost` and rolls back, and
+the run ends as `superseded`, logged as a warning; the worker holding the
+message runs it. A run without a commit that finishes after losing its
+lease changes nothing either. On another database there is no lease row
+to check: mark such a handler `@inbox`. Let `LeaseLost` propagate.
 
 ## Queues
 
@@ -306,6 +384,12 @@ def upgrade() -> None:
 If a concurrent build fails, it leaves an invalid index behind: drop it
 (`DROP INDEX CONCURRENTLY ix_domainkit_messages_finished`) and migrate
 again.
+
+**Upgrading to 0.11.** Messaging has a new table, the inbox
+(`domainkit_inbox`), in every database that holds an outbox. Run
+`makemigrations` and `migrate` in each project that installs messaging
+before deploying: until then, workers' cleanup logs a failure each round,
+and `@inbox` handlers fail.
 
 ## Task options
 

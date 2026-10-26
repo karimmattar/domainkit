@@ -24,6 +24,7 @@ from domainkit.utils.rates import parse_rate
 
 from .cron import Cron, CronError
 from .retry import Backoff, Errors, exception_types
+from .runs import uses_inbox
 from .tables import DEFAULT_QUEUE
 
 type Task = Callable[..., Awaitable[Any]]
@@ -396,11 +397,18 @@ class Chain:
 def chain(first: Task, *then: Task) -> Chain:
     """Run ``first``, then each task of ``then`` once the one before succeeds.
 
-    Every step must be a registered task.
+    Every step must be a registered task. Only the last may use the inbox
+    (``inbox``): a run the inbox skips has no result to hand on.
     """
     steps = (first, *then)
     for step in steps:
         spec_for(step)  # Refuse unregistered tasks now, not in the worker.
+    for step in steps[:-1]:
+        if uses_inbox(step):
+            raise ImproperlyConfigured(
+                f"{spec_for(step).key} uses the inbox, so only the last step "
+                "of a chain may be it: a skipped run has no result to hand on."
+            )
     return Chain(steps)
 
 

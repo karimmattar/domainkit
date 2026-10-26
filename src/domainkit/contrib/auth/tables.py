@@ -131,7 +131,7 @@ users = Table(
     "domainkit_users",
     metadata,
     *abstract_user_columns(),
-    info={"domain": "auth"},
+    info={"domain": "auth", "guarded": True},
 )
 """The default user's table; unused while ``AUTH.USER_TABLE`` names another."""
 
@@ -147,7 +147,7 @@ groups = Table(
         info={"duplicate": GroupNameTaken},
     ),
     Column("version", Integer, nullable=False),
-    info={"domain": "auth"},
+    info={"domain": "auth", "guarded": True},
 )
 
 permissions = Table(
@@ -163,7 +163,7 @@ permissions = Table(
     Column("codename", String(100), nullable=False),
     Column("name", String(255), nullable=False),
     UniqueConstraint("content_type_id", "codename"),
-    info={"domain": "auth"},
+    info={"domain": "auth", "guarded": True},
 )
 
 group_permissions = Table(
@@ -181,7 +181,7 @@ group_permissions = Table(
         ForeignKey(permissions.c.id, ondelete="CASCADE"),
         primary_key=True,
     ),
-    info={"domain": "auth"},
+    info={"domain": "auth", "guarded": True},
 )
 
 
@@ -205,7 +205,7 @@ tokens = Table(
     Index("ix_domainkit_tokens_user_id", "user_id"),
     Index("ix_domainkit_tokens_family", "family"),
     Index("ix_domainkit_tokens_expires_at", "expires_at"),
-    info={"domain": "auth"},
+    info={"domain": "auth", "guarded": True},
 )
 """Opaque access tokens and refresh tokens, by digest."""
 
@@ -222,7 +222,7 @@ mfa_devices = Table(
     # The step of the last code accepted: no code is accepted twice.
     Column("last_step", BigInteger),
     # Secrets: never in fixtures (dumpdata, loaddata).
-    info={"domain": "auth", "fixtures": False},
+    info={"domain": "auth", "guarded": True, "fixtures": False},
 )
 """TOTP authenticators; unconfirmed until a first code proves the app has it."""
 
@@ -234,7 +234,7 @@ recovery_codes = Table(
     Column("user_id", Uuid, nullable=False),
     Column("used_at", UTCDateTime),
     Index("ix_domainkit_recovery_codes_user_id", "user_id"),
-    info={"domain": "auth", "fixtures": False},
+    info={"domain": "auth", "guarded": True, "fixtures": False},
 )
 """Single-use codes that stand in for a lost authenticator."""
 
@@ -261,14 +261,16 @@ def user_link_tables(user_table: Table) -> tuple[Table, Table]:
 
     They are named after it (``<users>_groups``, ``<users>_permissions``),
     belong to its domain (``info["domain"]``) and metadata, and are created
-    once.
+    once. The three are guarded (``info["guarded"]``): ``loaddata`` and
+    ``flush`` leave a user table and its grants alone unless told.
     """
+    user_table.info["guarded"] = True
     groups_name = f"{user_table.name}_groups"
     permissions_name = f"{user_table.name}_permissions"
     tables = user_table.metadata.tables
     if groups_name in tables:
         return tables[groups_name], tables[permissions_name]
-    info = {"domain": user_table.info["domain"]}
+    info = {"domain": user_table.info["domain"], "guarded": True}
     # Each column takes its type from the column its foreign key names.
     user_groups = Table(
         groups_name,

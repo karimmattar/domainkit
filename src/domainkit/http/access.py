@@ -37,9 +37,9 @@ Credentials limited to scopes are bounded on every route, not only on
 routes that check a permission (``SCOPED_CREDENTIALS``): a route reached
 with them must declare a rule that checks scopes (``HasScope``, a permission
 rule, ``IsUnscoped``, or ``AllowScoped`` for what a scope cannot bound,
-such as logging out). In 0.10 a route that declares none still lets them
-through, with a ``DomainkitDeprecationWarning`` and a security log line;
-``SCOPED_CREDENTIALS = "refuse"`` refuses them with 403 now, as 0.11 will.
+such as logging out). A route that declares none answers them 403
+(``SCOPED_CREDENTIALS = "refuse"``, the default since 0.11); ``"warn"``
+lets them through with a security log line, as 0.10 did by default.
 
 A refusal of a principal who proved who they are (403) goes to the audit
 trail when an installed domain keeps one (``DenialRecorder``:
@@ -53,7 +53,6 @@ Every route must declare who may call it (``REQUIRE_ROUTE_RULES``): with
 
 import logging
 import threading
-import warnings
 from collections import OrderedDict
 from collections.abc import (
     Callable,
@@ -78,7 +77,6 @@ from domainkit.apps import registry
 from domainkit.conf import settings
 from domainkit.db.models import model_key
 from domainkit.ddd import PermissionDenied
-from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import APIError
 from domainkit.http.live import record_check
@@ -574,10 +572,10 @@ async def check_scopes_bounded(connection: HTTPConnection) -> None:
     ``reads_principal`` calls. Credentials without scopes, and routes that
     declare a rule that checks scopes (``bounds_scopes``: ``HasScope``, the
     permission rules, ``IsUnscoped``, ``AllowScoped``, on the route or its
-    routers), pass. Others, with ``SCOPED_CREDENTIALS = "warn"`` (the
-    default until 0.11), pass with a ``DomainkitDeprecationWarning`` and a
-    security log line, once per route a while. The refusal is audited
-    here; ``current_user``, which cannot wait, refuses without the record.
+    routers), pass. Others are refused, or, with ``SCOPED_CREDENTIALS =
+    "warn"`` (0.10's default), pass with a security log line, once per
+    route a while. The refusal is audited here; ``current_user``, which
+    cannot wait, refuses without the record.
 
     Raises:
         PermissionDenied: With ``SCOPED_CREDENTIALS = "refuse"``, the route
@@ -594,8 +592,7 @@ SCOPES_CHECKED: Final = "domainkit.scopes_refused"
 def _unbounded(connection: HTTPConnection) -> bool:
     """Whether to refuse the request's scoped credentials; decided once a request.
 
-    In ``"warn"`` it warns and logs instead, the first time, and answers
-    False.
+    In ``"warn"`` it logs instead, the first time, and answers False.
     """
     scope = connection.scope
     if not _scoped(scope):
@@ -609,25 +606,17 @@ def _unbounded(connection: HTTPConnection) -> bool:
 
 
 def _unchecked(connection: HTTPConnection) -> bool:
-    """A route that checks no scope, reached with scopes: refuse, or warn (False)."""
-    route = _route_name(connection)
+    """A route that checks no scope, reached with scopes: refuse, or log (False)."""
     if settings.SCOPED_CREDENTIALS == "refuse":
         return True
+    route = _route_name(connection)
     scoped_log.warning(
         "scoped_credentials",
         route,
         "Credentials limited to scopes called %s, which declares no rule that "
-        'checks scopes: SCOPED_CREDENTIALS = "refuse" refuses them, as 0.11 '
-        "will by default",
+        'checks scopes, served as SCOPED_CREDENTIALS is "warn": add '
+        "HasScope(...), a permission rule, or AllowScoped() to the route",
         route,
-    )
-    warnings.warn(
-        f"Credentials limited to scopes called {route}, which declares no rule "
-        "that checks scopes: serving them there is deprecated, and removed in "
-        "0.11. Add HasScope(...), a permission rule, or AllowScoped() to the "
-        'route, or set SCOPED_CREDENTIALS = "refuse" to refuse them now.',
-        DomainkitDeprecationWarning,
-        stacklevel=4,
     )
     return False
 

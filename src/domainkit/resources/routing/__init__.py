@@ -75,7 +75,7 @@ from starlette.routing import BaseRoute
 from domainkit.ddd.fields import fields_of
 from domainkit.ddd.messages import Command
 from domainkit.ddd.messages import Query as QueryMessage
-from domainkit.ddd.uow import UnitOfWork
+from domainkit.ddd.uow import Retry, UnitOfWork
 from domainkit.http.access import Rule, check_object_permissions
 from domainkit.http.filters import FilterSet
 from domainkit.http.middleware import body_limit
@@ -174,11 +174,11 @@ class ResourceRouter(APIRouter):
 
         ``crud=True`` writes the fields ``writable`` names (or every plain
         one, with ``ALL_FIELDS``), or takes the ``create`` and ``update``
-        schemas given; without either it writes every plain field, which is
-        deprecated. ``body_limits`` gives each kind of route that takes a
-        body (``create``, ``update``, ``command``, ``batch``) a body limit
-        in bytes of its own (``domainkit.http.middleware.body_limit``);
-        ``command_route`` and ``batch_route`` take ``body_limit=`` per route.
+        schemas given; without either it is refused. ``body_limits`` gives
+        each kind of route that takes a body (``create``, ``update``,
+        ``command``, ``batch``) a body limit in bytes of its own
+        (``domainkit.http.middleware.body_limit``); ``command_route`` and
+        ``batch_route`` take ``body_limit=`` per route.
 
         Raises:
             TypeError: A declaration does not fit the model.
@@ -299,6 +299,7 @@ class ResourceRouter(APIRouter):
         summary: str | None = None,
         provide: Mapping[str, Callable[..., object]] | None = None,
         body_limit: int | None = None,
+        retry: Retry | None = None,
     ) -> None:
         """Add a route that runs ``command`` through ``service(command, uow)``.
 
@@ -321,6 +322,13 @@ class ResourceRouter(APIRouter):
         ``body_limit`` holds its bodies to that many bytes (default: the
         resource's for commands, else ``MAX_REQUEST_BODY_SIZE``).
 
+        ``retry`` runs the service again, whole, when its transaction loses
+        a race (``UnitOfWork.run``): the check that the caller may reach the
+        aggregate and ``If-Match`` are made again with it, in its new
+        transaction. Declare it for services that change nothing outside
+        their unit of work, on a unit of work whose isolation can fail
+        (``Isolation.SERIALIZABLE``) or whose locks can deadlock.
+
         Raises:
             TypeError: The body has fields the command lacks, or the
                 command needs fields nothing gives.
@@ -340,6 +348,7 @@ class ResourceRouter(APIRouter):
             summary=summary,
             provide=provide,
             body_limit=body_limit,
+            retry=retry,
         ).declare()
 
     def batch_route(

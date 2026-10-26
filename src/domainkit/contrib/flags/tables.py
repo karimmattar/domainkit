@@ -28,7 +28,9 @@ dynamic_settings = Table(
     Column("id", String(NAME_LENGTH), primary_key=True, info={"field": "key"}),
     Column("value", JSON, nullable=False),
     Column("version", Integer, nullable=False),
-    info={"domain": "flags"},
+    # A setting may be secret (a provider's key): fixtures and flush leave
+    # these rows alone unless told (guarded, see domainkit.db.fixtures).
+    info={"domain": "flags", "guarded": True},
 )
 
 
