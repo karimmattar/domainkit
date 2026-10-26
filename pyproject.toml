@@ -32,7 +32,8 @@ dependencies = [
     "python-dotenv (>=1.2.4,<2.0.0)",
     # Imported directly, though Starlette and pydantic already install them:
     # declared so that a change in theirs cannot break domainkit's import.
-    "anyio (>=4.10.0,<5.0.0)",
+    # anyio's floor is the first release past PYSEC-2026-4024 and -4025.
+    "anyio (>=4.14.2,<5.0.0)",
     "pydantic-core (>=2.50.1,<3.0.0)",
 ]
 
@@ -51,11 +52,11 @@ jwt = ["pyjwt[crypto] (>=2.10.1,<3.0.0)"]
 mfa = ["cryptography (>=50.0.2,<51.0.0)"]
 # Ledgers for evidence (WORM): immudb's SDK, with its verified operations.
 # grpcio for TLS channels and ecdsa's signature error, both installed by
-# immudb-py, are imported directly.
+# immudb-py, are imported directly; ecdsa from 0.19.2, past PYSEC-2026-2467.
 immudb = [
     "immudb-py (>=1.5.0,<2.0.0)",
     "grpcio (>=1.62.1,<2.0.0)",
-    "ecdsa (>=0.18.0,<1.0.0)",
+    "ecdsa (>=0.19.2,<1.0.0)",
 ]
 # A message broker for the worker: RabbitMQ, through aio-pika.
 # aiormq, which aio-pika installs, for the one error it does not re-export.
@@ -70,7 +71,7 @@ uploads = ["python-multipart (>=0.0.32,<1.0.0)"]
 testing = [
     "pytest (>=9.1.1,<10.0.0)",
     "httpx2 (>=2.13.0,<3.0.0)",
-    "anyio (>=4.12.0,<5.0.0)",
+    "anyio (>=4.14.2,<5.0.0)",
 ]
 # Outgoing webhooks (domainkit.contrib.webhooks) send with httpx2 and encrypt
 # subscription secrets with AES-GCM.

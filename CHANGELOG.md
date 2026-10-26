@@ -210,6 +210,15 @@ and a status.
   logs it, and leaves the first the rest. Two sealers still never seal at
   once (PERF-09; ADR 0047).
 
+### Security
+
+- The ranges domainkit declares for anyio and ecdsa (new in this release)
+  start past their published advisories: anyio from 4.14.2
+  (PYSEC-2026-4024 and -4025, a TLS hostname check the guarded HTTP client
+  relies on) and ecdsa from 0.19.2 (PYSEC-2026-2467). The lock already
+  pinned fixed versions; this keeps a project's own resolver from choosing
+  older ones (SEC-a-2).
+
 ## [0.9.1] - 2026-10-25
 
 ### Added
