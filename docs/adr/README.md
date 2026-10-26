@@ -95,6 +95,7 @@ statuses, and the amendments they name.
 | [0078](0078-deliver-events-in-process-after-commit-or-durably-through-the-outbox.md) | Deliver events in process after commit, or durably through the outbox | Accepted |
 | [0079](0079-validate-every-setting-in-one-model-and-each-app-in-its-own.md) | Validate every setting at startup: one model, and each app's own | Accepted |
 | [0080](0080-access-rules-are-core-auth-is-one-provider.md) | Access rules are core; auth is one provider | Accepted |
+| [0086](0086-secure-defaults-at-the-http-edge.md) | Make the HTTP edge's defaults the safe ones | Accepted |
 
 ### Decisions still without a record
 

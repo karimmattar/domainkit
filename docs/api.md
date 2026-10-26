@@ -843,6 +843,14 @@ Who may call an endpoint: access rules, for any authentication (ADR 0080).
 - `reads_principal`: Mark `dependency` as one that reads the principal, as `CurrentUser` does.
 - `scopes_of`: The scopes the request's credentials are limited to; None: no limit.
 
+## `domainkit.http.apidocs`
+
+The API's documentation pages, from domainkit's own copies (`API_DOCS`).
+
+- `REDOC_POLICY`: `/redoc`'s Content-Security-Policy: `/docs`'s, with inline styles and a `blob:` worker.
+- `SWAGGER_POLICY`: `/docs`'s Content-Security-Policy: scripts and styles from the origin only.
+- `docs_router`: `/docs`, `/redoc`, and their assets, for an API called `title`.
+
 ## `domainkit.http.application`
 
 Build the FastAPI application from settings (Django's `get_asgi_application`).
@@ -913,12 +921,14 @@ Pure-ASGI middleware enforcing the HTTP security baseline.
 - `RequestBodyLimitMiddleware`: Refuse bodies over the limit, or too slow to arrive.
 - `RequestContextMiddleware`: Bind request context, echo the request id, and write the access log.
 - `SecurityHeadersMiddleware`: Add security headers unless the endpoint already set them.
+- `body_limit`: Give a route a body limit of its own: `size` bytes, above or below the global.
 - `request_path`: The request's path within the application: without its `root_path`.
 
 ## `domainkit.http.ratelimit`
 
 Request rate limiting (`RATE_LIMIT = "300/minute"`).
 
+- `FALLBACK_KEYS`: Callers the local fallback of `RedisBackend` counts at most (`MemoryBackend`).
 - `Backend`: Where rate-limit state lives.
 - `Decision`: Whether a request may proceed, and the numbers for the headers.
 - `MemoryBackend`: GCRA state in this process, for at most `max_keys` callers.
@@ -1123,6 +1133,7 @@ Send unexpected errors to error trackers (Sentry, Rollbar, ...).
 
 REST resources over aggregates: routes, schemas, conditional writes, policies.
 
+- `ALL_FIELDS`: `ResourceRouter(writable=ALL_FIELDS)`: `crud=True` writes every plain field.
 - `MERGE_PATCH`: RFC 7396's media type; `PATCH` routes take it as well as JSON.
 - `UNSET`: A field left out of a partial change (`PatchModel`, `UpdateX` commands).
 - `Actions`: Rules that depend on a route's action (`view`, `add`, ...).

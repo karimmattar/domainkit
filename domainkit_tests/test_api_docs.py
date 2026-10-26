@@ -4,12 +4,14 @@ import hashlib
 import re
 from collections.abc import Iterator
 from contextlib import ExitStack
+from pathlib import Path
 from typing import Final
 
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+import domainkit
 from domainkit.conf import UNSET, override_settings, unwrap_settings
 from domainkit.conf.global_settings import (
     DEFAULT_CONTENT_SECURITY_POLICY,
@@ -237,3 +239,17 @@ def test_baseline_header_settings_are_bounded(name: str, value: str) -> None:
         override_settings(**{name: value}),
     ):
         pass
+
+
+def test_the_project_template_documents_the_switch() -> None:
+    """``init``'s settings say where the docs are served and how to change it."""
+    settings_dir = (
+        Path(domainkit.__file__).parent
+        / "management/templates/project/src/config/settings"
+    )
+    base = (settings_dir / "base.py-tpl").read_text(encoding="utf-8")
+    production = (settings_dir / "production.py-tpl").read_text(encoding="utf-8")
+
+    assert "/docs, /redoc, and /openapi.json follow DEBUG" in base
+    assert "API_DOCS = True serves them anywhere" in base
+    assert 'API_DOCS = env.bool("API_DOCS", False)' in production

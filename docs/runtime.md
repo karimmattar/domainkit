@@ -333,6 +333,27 @@ function included), without asking the level again or walking the stack
 to find the caller, 15 Python calls fewer a line. A logger of a class of
 its own (`logging.setLoggerClass`) logs through its own `log`.
 
+### Paths in logs
+
+An access line, the request middleware's error lines, an error report,
+and the request context (`domainkit.context.current_request().path`)
+show the matched route's template, never the path the caller sent:
+
+```
+GET /accounts/{account_id}/confirm/{token} 200 3.1ms
+```
+
+An id, a token, or an email in a path stays out of the logs, as metrics
+already left it out of their labels. A request no route matched shows
+`unmatched`, as do requests refused before the router ran (a 429, a body
+refused by its declared length, an untrusted host): the status says which.
+The template is read from the scope once the router has matched, so code
+that runs before (middleware) sees `unmatched` too. Problem details'
+`instance` still names the path the caller sent: it answers that caller.
+Behind `--root-path /api`, the template leaves the root path out.
+`ACCESS_LOG_PATH = "raw"` shows the path as sent everywhere, as before
+0.10.
+
 ### Sampling the access log
 
 Every request writes an access line, which costs the event loop and the
