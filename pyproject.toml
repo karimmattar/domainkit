@@ -1,6 +1,6 @@
 [project]
 name = "domainkit"
-version = "0.9.2"
+version = "0.9.3"
 description = "A Django-style framework for domain-driven FastAPI services."
 readme = "README.md"
 license = "MIT"
@@ -233,7 +233,19 @@ exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError"]
 # full run takes a while), then "mutmut results".
 [tool.mutmut]
 source_paths = ["src"]
-also_copy = ["domainkit_tests/", "docs/", "benchmarks/", ".github/"]
+# Every file the tests read or the docs link to, as mutmut runs the tests in a
+# copy of the repository (test_ci.py checks the list).
+also_copy = [
+    "domainkit_tests/",
+    "docs/",
+    "benchmarks/",
+    ".github/",
+    "README.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "renovate.json",
+    "LICENSE",
+]
 pytest_add_cli_args_test_selection = ["domainkit_tests/", "-p", "no:randomly"]
 # Fork from a clean server: children forked after the suite ran hang on
 # database tests, which mutmut would count as killed by timeout.
