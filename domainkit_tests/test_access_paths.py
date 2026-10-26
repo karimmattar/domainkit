@@ -1,8 +1,10 @@
 """Logs show routes' templates, never the paths callers sent (WEB-10)."""
 
+import asyncio
 import dataclasses
 import logging
 from collections.abc import Iterator
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Final
 
@@ -11,6 +13,7 @@ from fastapi import APIRouter
 from fastapi.testclient import TestClient
 from starlette.routing import Host
 
+import domainkit
 from domainkit.conf import override_settings
 from domainkit.context import (
     UNMATCHED_PATH,
@@ -20,6 +23,7 @@ from domainkit.context import (
     route_template,
 )
 from domainkit.ddd import NotFound
+from domainkit.debug import DebugToolbarMiddleware
 from domainkit.http import get_asgi_application
 from domainkit.http import middleware as middleware_module
 from domainkit.http.access import Public
@@ -191,3 +195,78 @@ def test_route_templates(scope: dict[str, object], expected: str) -> None:
     assert route_template(scope) == expected
     context = RoutedRequestContext("r", None, "GET", UNMATCHED_PATH, scope=scope)
     assert context.path == expected
+
+
+@router.get("/password-reset/{token}")
+async def reset(token: str) -> None:
+    """Wait past any deadline: for an event no one sets."""
+    await asyncio.Event().wait()
+
+
+@pytest.mark.parametrize(
+    ("logged", "expected"),
+    [("template", "/password-reset/{token}"), ("raw", f"/password-reset/{TOKEN}")],
+)
+def test_a_request_past_its_deadline_is_logged_by_its_template(
+    caplog: pytest.LogCaptureFixture, logged: str, expected: str
+) -> None:
+    """SEC-10c-1: the deadline's warning names the route, unless raw is asked for."""
+    with (
+        override_settings(
+            ROOT_ROUTER=ROUTES,
+            MIDDLEWARE=("domainkit.http.deadlines.DeadlineMiddleware",),
+            REQUEST_TIMEOUT=0.05,
+            ACCESS_LOG_PATH=logged,
+        ),
+        TestClient(get_asgi_application()) as client,
+        caplog.at_level(logging.WARNING, logger="domainkit.http.deadlines"),
+    ):
+        answer = client.get(f"/password-reset/{TOKEN}")
+
+    assert answer.status_code == 503
+    assert caplog.messages == [f"GET {expected} ran past its deadline of 0.05s"]
+
+
+@pytest.mark.parametrize(
+    ("logged", "expected"),
+    [("template", CONFIRM), ("raw", f"/accounts/7/confirm/{TOKEN}")],
+)
+def test_likely_n_plus_one_queries_are_logged_by_template(
+    caplog: pytest.LogCaptureFixture, logged: str, expected: str
+) -> None:
+    """The debug toolbar's warning names the route, as the access log does."""
+    scope = {
+        "method": "GET",
+        "path": f"/accounts/7/confirm/{TOKEN}",
+        "route": SimpleNamespace(path=CONFIRM),
+    }
+    queries = SimpleNamespace(repeated=lambda times: [("SELECT ?", times)])
+    with override_settings(DEBUG=True, ACCESS_LOG_PATH=logged):
+        toolbar = DebugToolbarMiddleware(router)
+        with caplog.at_level(logging.WARNING, logger="domainkit.debug.middleware"):
+            toolbar._warn(scope, queries)  # type: ignore[arg-type]
+
+    runs = toolbar.config.REPEATED_QUERIES
+    assert caplog.messages == [
+        f"Possible N+1 in GET {expected}: {runs} runs of SELECT ?"
+    ]
+
+
+def test_no_log_line_takes_the_path_from_the_scope() -> None:
+    """Every log line names a path through ``logged_path`` (SEC-10c-1)."""
+    source = Path(domainkit.__file__).parent
+    raw = sorted(
+        str(path.relative_to(source))
+        for path in source.rglob("*.py")
+        if "templates" not in path.parts
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if 'scope["path"]' in line
+    )
+
+    assert raw == [
+        "context.py",  # logged_path, raw only when asked for.
+        "context.py",  # RoutedRequestContext.request_path: answers, not logs.
+        "contrib/idempotency/middleware.py",  # A request's fingerprint.
+        "http/middleware.py",  # request_path, compared with settings.
+        "http/middleware.py",  # The request context, ACCESS_LOG_PATH = "raw".
+    ]

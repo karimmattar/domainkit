@@ -10,6 +10,8 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from typing import Any, Final
 
+from domainkit.conf import settings
+
 SYSTEM_ACTOR: Final = "system"
 """The actor of work no caller asked for: periodic tasks, commands' messages."""
 UNMATCHED_PATH: Final = "unmatched"
@@ -101,6 +103,20 @@ def route_template(scope: MutableMapping[str, Any]) -> str:
         return UNMATCHED_PATH
     path: str = getattr(route, "path", UNMATCHED_PATH)  # A Host route has none.
     return path
+
+
+def logged_path(scope: MutableMapping[str, Any]) -> str:
+    """The path a log line about ``scope`` shows (``ACCESS_LOG_PATH``).
+
+    The route's template, or ``UNMATCHED_PATH`` (``route_template``); the
+    path as sent only with ``ACCESS_LOG_PATH = "raw"``. Every log line
+    that names a request's path goes through it, so an id, a token, or an
+    email in a path stays out of the logs.
+    """
+    if settings.ACCESS_LOG_PATH == "raw":
+        path: str = scope["path"]
+        return path
+    return route_template(scope)
 
 
 _current: ContextVar[RequestContext | None] = ContextVar("request", default=None)
