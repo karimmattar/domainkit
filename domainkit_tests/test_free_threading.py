@@ -72,8 +72,10 @@ from domainkit.db import models as content_registry
 from domainkit.db.connections import (
     _begin_snapshot,
     _drop_detail,
+    _keep_cut_off,
     _read_alone,
     _read_alone_no_params,
+    _replace_closed,
     _require_read_only,
     _reset_session,
     _set_local,
@@ -1156,18 +1158,22 @@ def test_engines_never_share_a_listener() -> None:
     network = DatabaseConfig.model_validate(
         {"URL": "postgresql+asyncpg://app@db.invalid/app"}
     )
+    unpinged = network.model_copy(update={"POOL_PRE_PING": False})
     local = DatabaseConfig.model_validate({"URL": "sqlite+aiosqlite://"})
     read = [
         _read_alone,
         _read_alone_no_params,
+        _keep_cut_off,
         _drop_detail,
         _require_read_only,
         _take_open,
         _reset_session,
     ]
+    unpinged_listeners = [_keep_cut_off, _drop_detail, _replace_closed, _set_local]
     for build, config, functions in [
         (create_read_engine, network, read),
-        (create_engine, network, [_drop_detail, _set_local]),
+        (create_engine, network, [_keep_cut_off, _drop_detail, _set_local]),
+        (create_engine, unpinged, unpinged_listeners),
         (create_engine, local, [_drop_detail, _begin_snapshot]),
     ]:
         first, second = own_listeners(build(config)), own_listeners(build(config))
