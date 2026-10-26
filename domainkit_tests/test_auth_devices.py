@@ -284,6 +284,33 @@ def test_a_copied_proof_alone_cannot_keep_the_user_out(api: Api) -> None:
     assert alice.post("/auth/login", json=RIGHT).status_code == 200
 
 
+def test_a_user_keeps_at_most_max_devices(api: Api) -> None:
+    """SEC-10a-3: proofs were minted without limit; past the cap the oldest ends.
+
+    The oldest proof then counts as none: its wrong passwords take the
+    account's count, which ``LOGIN_RATE`` fills.
+    """
+    alice = create_user("alice")
+    client = api(LOGIN_RATE="2/minute")
+    oldest, *rest = mint(client.app, devices.MAX_DEVICES + 1)
+
+    kept = len(stored_tokens(alice, devices=True)) - len(stored_tokens(alice))
+    assert kept == devices.MAX_DEVICES
+    assert guesses_with(client.app, [oldest]) == [401, 401]
+    assert guess(client.app, "198.51.100.9") == 429  # The account's count.
+    assert guesses_with(client.app, rest[-1:]) == [401, 401]  # Its own.
+
+
+def test_without_a_login_rate_a_proof_counts_without_limit(api: Api) -> None:
+    """``LOGIN_RATE = None`` limits nothing, proven or not (``auth.W002``)."""
+    create_user("alice")
+    client = api(LOGIN_RATE=None)
+    proofs = mint(client.app, 1)
+
+    assert devices.proven_limits("d", "alice", None) == [("login:device:d", None)]
+    assert guesses_with(client.app, proofs, each=4) == [401] * 4
+
+
 def test_proofs_wait_for_the_second_factor(identity: Api, clock: list[float]) -> None:
     """SEC-10a-3: a password without its second factor used to mint a proof."""
     alice = create_user("alice")

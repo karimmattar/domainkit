@@ -206,13 +206,12 @@ class MemoryBackend:
             and self.full == "refuse"
             and len(self._callers) >= self.max_keys
         ):
+            # Still full: _forget_idle let go of no one, so the oldest owes.
             oldest = next(iter(self._callers.values()))
-            # _forget_idle has let go of the oldest if it owed nothing.
             wait = oldest.seen + oldest.owed * oldest.interval - now
-            if wait > 0:
-                return Decision(
-                    allowed=False, remaining=0, reset_after=wait, retry_after=wait
-                )
+            return Decision(
+                allowed=False, remaining=0, reset_after=wait, retry_after=wait
+            )
         self._callers[key] = _Caller(now, owed + 1, interval)
         self._callers.move_to_end(key)
         if len(self._callers) > self.max_keys:
