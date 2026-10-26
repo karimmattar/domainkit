@@ -253,6 +253,11 @@ also_copy = [
     "SECURITY.md",
     "renovate.json",
     "LICENSE",
+    "CONTRIBUTING.md",
+    ".pre-commit-config.yaml",
+    "Makefile",
+    "compose.yaml",
+    "mkdocs.yml",
 ]
 pytest_add_cli_args_test_selection = ["domainkit_tests/", "-p", "no:randomly"]
 # Fork from a clean server: children forked after the suite ran hang on
