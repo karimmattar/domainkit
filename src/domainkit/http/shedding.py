@@ -44,7 +44,6 @@ import math
 import threading
 from collections import deque
 from typing import Any, Final
-from weakref import WeakKeyDictionary
 
 from fastapi import status
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -53,6 +52,7 @@ from domainkit import clock, deadlines
 from domainkit.conf import settings
 from domainkit.http.errors import APIError, error_response
 from domainkit.http.middleware import request_path
+from domainkit.utils.loops import PerLoop
 
 try:
     from domainkit.http.metrics import observe_admitted, observe_queued, observe_shed
@@ -227,9 +227,8 @@ class ConcurrencyLimitMiddleware:
         self.wait = settings.REQUEST_QUEUE_TIMEOUT
         self.exempt = frozenset(settings.CONCURRENCY_EXEMPT_PATHS)
         self.report = ShedReport(self.limit)
-        self._slots: WeakKeyDictionary[asyncio.AbstractEventLoop, Slots] = (
-            WeakKeyDictionary()
-        )
+        self._slots: PerLoop[Slots] = PerLoop()
+        """Each event loop's slots (loops on several threads share the middleware)."""
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Serve the request in a slot, or refuse it when none frees in time."""
@@ -281,10 +280,7 @@ class ConcurrencyLimitMiddleware:
 
     def slots(self, limit: int) -> Slots:
         """The running event loop's slots, ``limit`` of them."""
-        loop = asyncio.get_running_loop()
-        if loop not in self._slots:
-            self._slots[loop] = Slots(limit, self.queue)
-        return self._slots[loop]
+        return self._slots.get(lambda: Slots(limit, self.queue))
 
 
 class _Hold:

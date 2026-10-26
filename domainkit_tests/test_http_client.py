@@ -1239,12 +1239,12 @@ async def test_each_event_loop_has_a_pool_of_its_own() -> None:
     """Connections belong to one loop; another loop gets another pool."""
     transport = httpx2.MockTransport(lambda request: httpx2.Response(200))
     api = HttpClient(transport=transport)
-    here = api._pool(settings.HTTP_CLIENT)
-    assert api._pool(settings.HTTP_CLIENT) is here
+    here = await api._pool(settings.HTTP_CLIENT)
+    assert await api._pool(settings.HTTP_CLIENT) is here
     there: list[httpx2.AsyncClient] = []
 
     async def other() -> None:
-        there.append(api._pool(settings.HTTP_CLIENT))
+        there.append(await api._pool(settings.HTTP_CLIENT))
         await api.aclose()
 
     thread = threading.Thread(target=asyncio.run, args=(other(),))
