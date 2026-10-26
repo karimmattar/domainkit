@@ -9,6 +9,62 @@ and a status.
 
 ## [Unreleased]
 
+### Changed
+
+- The suite runs on every core with pytest-xdist (`pytest -n auto --dist
+  worksteal`), now in the dev group, locally and in CI's test,
+  integration, newest and oldest jobs; a plain `pytest` still works. On
+  four cores the whole suite takes 2 to 2.5 minutes on SQLite and 4.5 to
+  5.5 against PostgreSQL, from 8 and 14.5 in one process (without
+  coverage); coverage still combines across workers. Four places assumed one process: Granian's test
+  took a port found free and closed again, which another worker could
+  take first, and now serves on a unix socket of its own; the SMTP refusal
+  test reused a closed port, and now holds a bound one that never listens;
+  the nested pytest sessions of the plugin's tests named their databases
+  after the outer worker (`test_x_gw1`), and no longer inherit it; and the
+  OpenTelemetry tests now name a provider installed before theirs instead
+  of failing on an empty exporter. Tests that change `TZ` share one
+  fixture that always puts it back (TEST-04).
+- `auth_project`, `api` and `identity`, the suite's project fixtures, no
+  longer generate and apply their revisions in every test: each settings
+  shape is migrated once per run (and worker) into a template, and every
+  test gets a copy of it, `CREATE DATABASE ... TEMPLATE` on PostgreSQL and
+  a copy of the file on SQLite, still a database of its own that starts
+  from what `migrate` left. The 621 tests of the `test_auth*` files take
+  75 seconds instead of 158 on SQLite, and 165 instead of 294 on
+  PostgreSQL. Generating the revisions once and migrating per test took
+  111 and 208; restoring the plugin's snapshot into one shared database
+  per shape took 83 on SQLite and failed on PostgreSQL after 350 tests,
+  out of connections: dropping each test's database `WITH (FORCE)` is
+  what ends the connections a test leaves open. `test_conftest.py` checks
+  that a test's rows and ids are gone in the next (TEST-03).
+- A release no longer runs the CI workflow again on the tagged commit: it
+  finds the CI run of that commit's push to `main`, waits for it, requires
+  it green, and attests and publishes the `dist` and `sbom` it built
+  (kept 90 days); only pip-audit and gitleaks run again. Pushes to `main`
+  are never cancelled, so each commit keeps its run (INFRA-06; ADR 0007,
+  amended).
+- A pull request that changes only `docs/**` and the Markdown files at the
+  top of the repository skips the suite, the integration, benchmark,
+  build and dependency-range jobs: the new `changes` job decides, and the
+  new `docs` job runs the four test modules that read the docs. Both are
+  required checks; the skipped jobs still report, and the test matrix
+  skips its steps, since a matrix skipped whole would report under its
+  unexpanded name and leave `test (3.13)` pending (INFRA-06).
+
+### Fixed
+
+- `assert_num_queries` and `assert_max_queries` no longer fail a statement
+  that another thread runs as a block starts or ends ("deque mutated
+  during iteration"): each block added and removed its own listener on
+  SQLAlchemy's `Engine` class, whose lists SQLAlchemy reads without a
+  lock. One listener now stays, put on when `domainkit.testing` is
+  imported, before any test starts a thread, and blocks only come and go
+  from the list it reads. Threads running
+  statements while blocks came and went failed 3 runs of 3 before, and
+  none after. The suite's own counters do the same
+  (`domainkit_tests/engine_events.py`) (TEST-04).
+
 ## [0.9.2] - 2026-10-26
 
 ### Added
