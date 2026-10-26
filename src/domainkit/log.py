@@ -58,6 +58,7 @@ __all__ = [
     "configure_logging",
     "flush_logs",
     "flush_throttled",
+    "log_enabled",
 ]
 
 SECURITY_LOGGER: Final = "domainkit.security"

@@ -283,8 +283,10 @@ def test_content_type_keys_are_worked_out_once(
         == [("auth", "user"), ("auth", "group"), ("contenttypes", "contenttype")] * 3
     )
     assert counted.calls == 1
+    monkeypatch.setattr(content_registry, "_lock", None)  # A lookup never takes it.
     with pytest.raises(LookupError, match="Note"):
         content_type_key(Note)
+    assert content_type_key(User) == ("auth", "user")
     assert counted.calls == 1
 
 

@@ -1190,7 +1190,7 @@ async def greeting(user: CurrentUser): ...               # anyone; AnonymousUser
 | `IsAdminUser` | Staff users (`is_staff`), with credentials that carry no scopes. |
 | `IsSuperuser` | Active superusers, with credentials that carry no scopes. |
 | `HasPermissions(*keys)` | Users granted every permission (by any backend). |
-| `ModelPermissions(model)` | Django's model permissions by method: `GET`/`HEAD` need `view`, `POST` `add`, `PUT`/`PATCH` `change`, `DELETE` `delete`; `OPTIONS` needs a user, and a WebSocket handshake `view`. `model` is a mapped class or `"<domain>.<model>"`. |
+| `ModelPermissions(model)` | Django's model permissions by method: `GET`/`HEAD` need `view`, `POST` `add`, `PUT`/`PATCH` `change`, `DELETE` `delete`; `OPTIONS` needs a user, and a WebSocket handshake `view`. `model` is a mapped class or `"<domain>.<model>"`. A class's content type is worked out once, and again after `registry.populate` or `clear`, a class mapped, or a table added to or removed from the project's metadata. |
 | `HasObjectPermissions(*keys)` | Users granted every permission on the object, by a backend with object permissions. The request itself needs an active user who logged in; check each object with `check_object_permissions`. |
 | `HasScope(*keys)` | Users whose credentials' scopes cover every key; credentials without scopes cover all. |
 | `IsUnscoped` | Users whose credentials carry no scopes (a login, not a scoped token). |

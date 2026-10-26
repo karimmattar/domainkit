@@ -1050,6 +1050,7 @@ Structured logging: JSON for log pipelines, escaped text for terminals.
 - `configure_logging`: Apply a `LOGGING` mapping with `logging.config.dictConfig`.
 - `flush_logs`: Wait until every background handler has written what it queued.
 - `flush_throttled`: Write the counts every live `ThrottledLog` still holds back.
+- `log_enabled`: `logger.log(level, msg, *args, extra=extra)`, once `isEnabledFor` said yes.
 
 ## `domainkit.management`
 

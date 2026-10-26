@@ -436,6 +436,12 @@ class ReportsUnitOfWork(SqlAlchemyUnitOfWork):
   function call or a statement run many times always count as changes.
   Use `TRANSACTION` or `SNAPSHOT` when statements must share a setting
   scoped to a transaction.
+- **One engine for each way of reading.** `TRANSACTION` and `SNAPSHOT`
+  sessions (and `STATEMENTS` where it reads in a transaction) bind to the
+  alias's engine with their execution options, made once per event loop
+  and shared by every such session on it; it shares the alias's pool, and
+  `connections.close_all()` drops it with the engine. A new one for each
+  session cost 100 to 200 Python calls.
 - **Connections the server closed.** After a restart or failover, a
   `STATEMENTS` read gets a fresh connection. A statement whose connection
   closes while it runs fails, and is never run again: it may have had

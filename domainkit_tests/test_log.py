@@ -1940,3 +1940,35 @@ def test_access_lines_name_the_middleware_as_their_caller(
     [line] = [r for r in caplog.records if r.name == "domainkit.access"]
     assert (line.funcName, line.module) == ("_log_access", "middleware")
     assert line.pathname == sys.modules[RequestContextMiddleware.__module__].__file__
+
+
+def test_a_request_without_a_response_is_logged_with_a_dash(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No status: ``-`` in the line, ``None`` in its fields, at ``ERROR``."""
+    caplog.set_level(logging.INFO, logger="domainkit.access")
+    middleware = RequestContextMiddleware(answered)
+
+    middleware._log_access(RequestContext("req-1", None, "GET", "/gone"), None, 0.0)
+
+    [line] = [r for r in caplog.records if r.name == "domainkit.access"]
+    assert line.getMessage().startswith("GET /gone - ")
+    assert (line.levelno, line.__dict__["access"]["status"]) == (logging.ERROR, None)
+
+
+def test_a_record_with_no_drops_to_report_queues_without_looking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drops are looked for only when some wait to be reported."""
+    handler = BackgroundHandler.writing_to(logging.NullHandler())
+
+    def unexpected() -> None:
+        raise AssertionError("looked for drops when there were none")
+
+    monkeypatch.setattr(handler, "_take_unreported", unexpected)
+    try:
+        handler.enqueue(make_record())
+        assert handler.dropped == 0
+    finally:
+        monkeypatch.undo()
+        handler.close()
