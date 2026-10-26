@@ -80,8 +80,7 @@ and a status.
   included, with the tables they reference, listed as `kept (guarded)`.
   The object grants on the rows it deletes still go with them, so an
   object given a flushed one's id starts without them. **To keep the old
-  behaviour:** `--include-guarded` on either command (DATA-12,
-  SEC-11a-4).
+  behaviour:** `--include-guarded` on either command (DATA-12).
 - **Breaking:** in staging and production, `loaddata` and `flush` need
   an operator named by `--operator` or `DOMAINKIT_OPERATOR`, beside
   `--force`; the login name is refused. **Fix:** set
@@ -92,13 +91,12 @@ and a status.
   dropped. **Fix:** have the proxy set the header (nginx:
   `proxy_set_header X-Request-ID $request_id;`; HAProxy:
   `unique-id-header X-Request-ID`). **To keep the old behaviour:**
-  `ACCEPT_REQUEST_ID = "anyone"` (WEB-13, SEC-11c-1).
+  `ACCEPT_REQUEST_ID = "anyone"` (WEB-13).
 - `operator.loaddata` names each table with its rows and replaced rows,
   the SHA-256 of the fixture as read, and whether `--replace` and
   `--include-guarded` were given; `operator.flush` each table it emptied,
   with its rows, the tables it kept, and the rows of kept tables it
-  deleted with their objects (`about`: object grants) (DATA-12,
-  SEC-11a-4).
+  deleted with their objects (`about`: object grants) (DATA-12).
 - **Breaking:** with `domainkit.contrib.auth` and an attempt rate set
   (`LOGIN_RATE`, `EMAIL_RATE`, `MFA.RATE`, `MFA.ADDRESS_RATE`), staging and
   production refuse to start, and `check` fails, while
