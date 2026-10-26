@@ -119,7 +119,8 @@ class ProxyHeadersMiddleware:
 
     Only connections from ``TRUSTED_PROXIES`` are believed; ``"unix"``
     there believes the peer of a unix socket, which has no address
-    (``scope["client"]`` is None). The client is found by walking
+    (``scope["client"]`` is None under uvicorn, and has an empty host,
+    ``("", "0")``, under Granian). The client is found by walking
     ``X-Forwarded-For`` from the right, through trusted proxies only: it
     is the first hop that is not one, so a client cannot spoof its address
     by sending the header itself, and what it wrote to the left of its own
@@ -164,13 +165,14 @@ class ProxyHeadersMiddleware:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Rewrite ``client`` and ``scheme`` for requests from a trusted proxy."""
         client = scope.get("client")
+        socket = client if client and client[0] else None  # None: a unix socket.
         if (
             self.enabled
             and scope["type"] in _PROXIED
-            and (self.trusted(client[0]) if client else self.unix)
+            and (self.trusted(socket[0]) if socket else self.unix)
         ):
             scope = dict(scope)
-            peer = scope[PEER] = client or UNIX_PEER
+            peer = scope[PEER] = socket or UNIX_PEER
             address, place, unreadable = self._walk(_values(scope, b"x-forwarded-for"))
             if address is not None:
                 scope["client"] = (address, 0)

@@ -258,6 +258,18 @@ and a status.
   that cannot be counted are refused with `503 throttle_unavailable`; both
   are under **Changed**, with how to keep the old behaviour (AUTH-09; ADR
   0098).
+- Behind a proxy on a unix socket served by Granian (`granian --uds`),
+  `TRUSTED_PROXIES = ["unix"]` trusted nobody: Granian reports the
+  socket's peer with an empty host (`("", "0")`), where uvicorn reports
+  none, and only a missing peer was taken for the socket. `X-Forwarded-For`
+  was never read, so every caller was the client `""`: one rate-limit key
+  and one hold on refused passwords for all of them, and one anonymous
+  caller spent everyone's `RATE_LIMIT` and held back everyone's logins,
+  as before 0.9.1. The proxy's `X-Request-ID` was dropped too. An empty
+  host is now the unix socket's peer, trusted with `"unix"`, as uvicorn's
+  is; without a trusted proxy, rate limits, auth's throttles, the outgoing
+  call guard and idempotency count it as an unknown address, and audit
+  rows record no address for it (WEB-02, SEC-11c-2).
 
 ## [0.10.1] - 2026-10-26
 

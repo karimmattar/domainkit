@@ -198,9 +198,13 @@ def _uncounted(decision: Decision) -> APIError:
 
 
 def address_key(request: Request, scope: str) -> str:
-    """The count of ``scope`` attempts from the request's client address."""
-    client = client_group(request.client.host) if request.client else "unknown"
-    return f"{scope}:ip:{client}"
+    """The count of ``scope`` attempts from the request's client address.
+
+    A client without an address (none, or the empty host Granian gives a
+    unix socket's peer) counts as ``unknown``.
+    """
+    host = request.client.host if request.client else None
+    return f"{scope}:ip:{client_group(host) if host else 'unknown'}"
 
 
 def account_key(scope: str, username: str) -> str:

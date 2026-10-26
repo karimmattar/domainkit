@@ -19,7 +19,10 @@ settings say:
 
 The first test gives the middleware Granian's scope, as Granian 2.8.4 sends
 it on a unix socket (seen by serving an ASGI app that prints ``client``);
-the second serves the framework's application under Granian itself.
+the second serves the framework's application under Granian itself. The
+rest check that a client with an empty host is the socket, trusted only
+by ``"unix"``, and counted as an unknown address wherever an address is
+counted.
 """
 
 import asyncio
@@ -35,12 +38,22 @@ from pathlib import Path
 from typing import Final
 
 import pytest
+from starlette.requests import Request
 from starlette.types import Message, Receive, Scope, Send
 
 from domainkit.conf import override_settings
 from domainkit.conf.env import project_prefix
-from domainkit.context import current_request
-from domainkit.http.middleware import ProxyHeadersMiddleware, RequestContextMiddleware
+from domainkit.context import RequestContext, bind_request, current_request
+from domainkit.contrib.audit.recorder import Outcome, audit_row
+from domainkit.contrib.auth import throttling
+from domainkit.contrib.idempotency.middleware import _caller_of
+from domainkit.http.guard import lookup_owner
+from domainkit.http.middleware import (
+    PEER,
+    UNIX_PEER,
+    ProxyHeadersMiddleware,
+    RequestContextMiddleware,
+)
 from domainkit.http.ratelimit import address_key
 from domainkit_tests.test_servers import UnixHTTPConnection
 
@@ -233,3 +246,53 @@ def test_callers_behind_granian_on_a_unix_socket_are_told_apart(
         f"Alice, a caller of her own, was counted with Mallory: {alice!r}"
     )
     assert alice == (200, PROXYS_ID, "1")
+
+
+def peer_and_client(client: object, trusted: list[str]) -> tuple[object, object]:
+    """The ``PEER`` and ``client`` the application sees behind the middleware."""
+    seen: list[Scope] = []
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        seen.append(scope)
+
+    scope: Scope = {
+        "type": "http",
+        "client": client,
+        "headers": [(b"x-forwarded-for", ALICE.encode())],
+    }
+    with override_settings(TRUSTED_PROXIES=trusted):
+        middleware = ProxyHeadersMiddleware(app)
+    asyncio.run(middleware(scope, None, None))  # type: ignore[arg-type]
+    (found,) = seen
+    return found.get(PEER), found["client"]
+
+
+def test_an_empty_host_is_the_socket_trusted_only_by_unix() -> None:
+    """Granian's peer is named as uvicorn's is, and no network of addresses holds it."""
+    assert peer_and_client(GRANIAN_UNIX_PEER, ["unix"]) == (UNIX_PEER, (ALICE, 0))
+    assert peer_and_client(GRANIAN_UNIX_PEER, ["0.0.0.0/1", "128.0.0.0/1"]) == (
+        None,
+        GRANIAN_UNIX_PEER,
+    )
+
+
+@pytest.mark.parametrize("client", [UVICORN_UNIX_PEER, GRANIAN_UNIX_PEER])
+def test_a_client_without_an_address_is_counted_as_unknown(client: object) -> None:
+    """Rate limits, auth's throttles, the guard, idempotency and the audit agree.
+
+    Without a trusted proxy in front, a unix socket's callers have no
+    address: each place that counts or records one counts them as one
+    unknown address, as for uvicorn's None, rather than as the address
+    ``""``.
+    """
+    scope: Scope = {"type": "http", "client": client, "headers": []}
+    host = client[0] if isinstance(client, tuple) else None
+    with bind_request(RequestContext("req-1", host, "GET", "/")):
+        owner = lookup_owner()
+        draft = audit_row("signed_in", Outcome.SUCCESS)
+
+    assert address_key(dict(scope)) == "ip:unknown"
+    assert throttling.address_key(Request(scope), "login") == "login:ip:unknown"
+    assert owner == "ip:unknown"
+    assert _caller_of(None, scope, ()).startswith("anonymous:unknown:")
+    assert [value.name for value in draft.personal] == []
