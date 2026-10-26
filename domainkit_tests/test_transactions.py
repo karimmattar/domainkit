@@ -11,7 +11,7 @@ import asyncio
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, ClassVar, Final
 from uuid import UUID
 
 import pytest
@@ -39,11 +39,11 @@ from domainkit.ddd import (
 from domainkit.ddd import uow as uow_module
 from domainkit.ddd.query import F
 from domainkit.ddd.uow import DEFAULT_RETRY, MAX_ATTEMPTS, NAMED_LOCKS
-from domainkit.http.access import Public
+from domainkit.http.access import BasePermission, Public
 from domainkit.http.errors import install_exception_handlers
 from domainkit.http.middleware import RequestContextMiddleware
 from domainkit.resources import ResourceRouter
-from domainkit.testing import AsyncTestClient
+from domainkit.testing import AsyncTestClient, assert_num_queries
 from domainkit_tests.conftest import POSTGRES_VARIABLE
 from domainkit_tests.gadgets import (
     FakeGadgetsUnitOfWork,
@@ -57,6 +57,7 @@ from domainkit_tests.gadgets import (
     metadata,
 )
 from domainkit_tests.sample_routes import DriverError
+from domainkit_tests.test_resources_sql import Anonymous
 
 pytestmark = pytest.mark.anyio
 ON_POSTGRES: Final = bool(os.environ.get(POSTGRES_VARIABLE))
@@ -103,6 +104,7 @@ def test_retries_wait_up_to_a_doubling_capped_bound(most: None) -> None:
     assert Retry(attempts=3, backoff=0.02, max_backoff=1.0) == DEFAULT_RETRY
     assert Retry(backoff=1, max_backoff=60).delay(10_000) == 60
     assert Retry(retry_on=[Lost]).retry_on == (Lost,)  # type: ignore[arg-type]
+    assert Retry(attempts=MAX_ATTEMPTS, backoff=60, max_backoff=60).attempts == 10
 
 
 def test_jittered_waits_spread_below_the_bound() -> None:
@@ -304,12 +306,19 @@ async def test_no_wait_passes_the_deadline(waits: list[float], most: None) -> No
     assert waits == [0.1, 0.2, 0.4, 0.8]
 
 
-async def test_waits_follow_the_frozen_clock() -> None:
+async def test_waits_follow_the_frozen_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     """Under a frozen clock the wait only yields: tests never sleep for it."""
+    slept: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr(asyncio, "sleep", sleep)
     with freeze_time():
-        async with asyncio.timeout(1):
-            await uow_module._sleep(30.0)
-    await uow_module._sleep(0.0)
+        await uow_module._sleep(30.0)
+    await uow_module._sleep(0.5)
+
+    assert slept == [0, 0.5]
 
 
 # Named locks, in memory ---------------------------------------------------------------
@@ -322,8 +331,9 @@ async def test_named_locks_are_held_until_the_work_ends() -> None:
         await one.lock("payout:acct-1")
         await one.lock("payout:acct-1")  # Held already: nothing changes.
         async with two:
-            with pytest.raises(LockNotAvailable):
-                await two.lock("payout:acct-1", nowait=True)
+            async with asyncio.timeout(1):  # Refused at once, not after a wait.
+                with pytest.raises(LockNotAvailable):
+                    await two.lock("payout:acct-1", nowait=True)
             await two.lock("payout:acct-2", nowait=True)
             waiting = asyncio.create_task(two.lock("payout:acct-1"))
             done, _ = await asyncio.wait({waiting}, timeout=0.05)
@@ -528,6 +538,19 @@ async def test_sqlite_runs_serializable_work_one_at_a_time(sqlite_file: str) -> 
         await two.commit()
 
 
+async def test_sqlite_begins_without_a_statement_of_the_work(
+    sqlite_file: str,
+) -> None:
+    """``BEGIN IMMEDIATE`` is the framework's: ``assert_num_queries`` skips it."""
+    async with GadgetsUnitOfWork(isolation=Isolation.SERIALIZABLE) as one:
+        with assert_num_queries(1):
+            await one.gadgets.count()
+    async with GadgetsUnitOfWork() as two:
+        with assert_num_queries(1):
+            await two.lock("x")
+            await two.gadgets.count()
+
+
 async def test_sqlite_keeps_a_rule_across_rows_when_serializable(
     sqlite_file: str,
 ) -> None:
@@ -700,6 +723,7 @@ async def test_a_deadlocked_transfer_is_run_again(
     a, b = make_gadget("a", stock=10), make_gadget("b", stock=10)
     await store(a, b)
     both_locked = asyncio.Barrier(2)
+    settled = asyncio.Event()
 
     async def transfer(source: GadgetId, target: GadgetId) -> None:
         uow = GadgetsUnitOfWork()
@@ -708,7 +732,9 @@ async def test_a_deadlocked_transfer_is_run_again(
         async def work() -> None:
             nonlocal runs
             runs += 1
-            async with uow:
+            if runs > 1:  # Once the winner is done, as a wait would: run again
+                await settled.wait()  # at once, it could lock its first row
+            async with uow:  # before the winner relocks it, and deadlock again.
                 first = await uow.gadgets.get_for_update(source)
                 if runs == 1:
                     await both_locked.wait()
@@ -716,6 +742,7 @@ async def test_a_deadlocked_transfer_is_run_again(
                 first.stock = (first.stock or 0) - 1
                 second.stock = (second.stock or 0) + 2
                 await uow.commit()
+            settled.set()
 
         await uow.run(work, retry=NOW)
 
@@ -779,7 +806,7 @@ async def test_named_locks_are_advisory_locks_of_the_transaction(
     """Held until commit or rollback; another waits, or is refused with nowait."""
     async with GadgetsUnitOfWork() as one, GadgetsUnitOfWork() as two:
         await one.lock("payout:acct-1")
-        with pytest.raises(LockNotAvailable):
+        with pytest.raises(LockNotAvailable, match="being changed by another"):
             await two.lock("payout:acct-1", nowait=True)
         await two.lock("payout:acct-2", nowait=True)
         held = await two.session.scalar(
@@ -967,3 +994,58 @@ async def test_a_route_runs_its_check_and_service_again_in_a_new_transaction(
     assert restocked.status_code == 204
     assert waits == [0.0, 0.0]
     assert await total_stock() == 7
+
+
+class SeesGadgets(BasePermission):
+    """A rule that looks at each gadget it is asked about, and allows it."""
+
+    seen: ClassVar[list[str]] = []
+
+    async def has_object_permission(
+        self,
+        request: HTTPConnection,
+        user: Any,  # noqa: ANN401 - any principal.
+        obj: object,
+    ) -> bool:
+        """Note the gadget's name."""
+        self.seen.append(getattr(obj, "name", ""))
+        return True
+
+
+async def test_a_rule_that_looks_at_the_aggregate_is_asked_in_each_run(
+    tables: None, waits: list[float]
+) -> None:
+    """Where a rule looks at objects, each run reads the aggregate and asks it."""
+    gadget = make_gadget("one", stock=5)
+    await store(gadget)
+    lose = losing(1, conflict)
+    SeesGadgets.seen.clear()
+
+    async def take(command: Take, uow: GadgetsUnitOfWork) -> Gadget:
+        async with uow:
+            found = await uow.gadgets.get(GadgetId(command.gadget_id))
+            found.stock = (found.stock or 0) - 1
+            lose()
+            await uow.commit()
+            return found
+
+    resource = ResourceRouter(
+        "/gadgets",
+        model=Gadget,
+        unit_of_work=GadgetsUnitOfWork,
+        repository=lambda uow: uow.gadgets,
+        dependencies=[Public],
+    )
+    resource.command_route(
+        Take, service=take, path="/take", rule=SeesGadgets, retry=NOW
+    )
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.include_router(resource)
+    app.add_middleware(Anonymous)
+    async with AsyncTestClient(app) as client:
+        taken = await client.post(f"/gadgets/{gadget.id}/take", json={})
+
+    assert (taken.status_code, taken.json()["stock"]) == (200, 4)
+    assert SeesGadgets.seen == ["one", "one"]
+    assert waits == [0.0]

@@ -187,3 +187,8 @@ What to watch:
 - SQLite's "database is locked" after its busy timeout is not run again.
 - `isolation=SERIALIZABLE` without `run` (or `retry=`) answers more 503s
   under contention than before: choose both together.
+- A deadlock's loser run again at once can lock its first row before the
+  winner, which waited on the loser's transaction, locks it again, and
+  deadlock a second time: the tests saw it about once in fifteen runs
+  without a wait. The jittered wait makes it rare, and `attempts` bounds
+  it; `get_many_for_update` avoids the deadlock altogether.
