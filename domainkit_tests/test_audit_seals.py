@@ -7,7 +7,6 @@ import io
 import logging
 import os
 import re
-import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
@@ -95,23 +94,6 @@ async def tables(audited: str) -> AsyncIterator[None]:
     yield
     await connections.close_all()
     await ledgers.close_all()  # Memory ledgers are kept per process.
-
-
-@pytest.fixture
-def local_zone() -> Iterator[Callable[[str], None]]:
-    """Set the process's local time zone; the original comes back afterwards."""
-    previous = os.environ.get("TZ")
-
-    def use(name: str) -> None:
-        os.environ["TZ"] = name
-        time.tzset()
-
-    yield use
-    if previous is None:
-        os.environ.pop("TZ", None)
-    else:
-        os.environ["TZ"] = previous
-    time.tzset()
 
 
 async def add(occurred_at: datetime | None = None, **details: object) -> uuid.UUID:

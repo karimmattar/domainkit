@@ -6,9 +6,8 @@ import hashlib
 import hmac
 import io
 import re
-import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Final
@@ -224,14 +223,12 @@ def test_evidence_is_validated(changes: dict[str, Any], message: str) -> None:
         Evidence(**values)
 
 
-def test_records_keep_time_in_utc(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_records_keep_time_in_utc(local_zone: Callable[[str], None]) -> None:
     """recorded_at is written in UTC, whatever zone it has or the host uses."""
     cairo = datetime(2026, 10, 14, 11, 30, tzinfo=timezone(timedelta(hours=2)))
-    with monkeypatch.context() as patch:
-        patch.setenv("TZ", "Asia/Tokyo")
-        time.tzset()
-        body = dataclasses.replace(FIXED, recorded_at=cairo).canonical()
-    time.tzset()
+    local_zone("Asia/Tokyo")
+
+    body = dataclasses.replace(FIXED, recorded_at=cairo).canonical()
 
     assert b'"recorded_at":"2026-10-14T09:30:00.000000+00:00"' in body
 

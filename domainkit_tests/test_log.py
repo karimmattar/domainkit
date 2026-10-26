@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 import weakref
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from typing import Any
 
@@ -1567,16 +1567,14 @@ def test_json_formatter_takes_logging_formatters_arguments() -> None:
     assert positional.format(line) == reference_line(positional, line)
 
 
-def test_dates_are_utc_whatever_the_local_zone(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dates_are_utc_whatever_the_local_zone(
+    local_zone: Callable[[str], None],
+) -> None:
     """The cached date and time are UTC's, not the machine's."""
-    monkeypatch.setenv("TZ", "Asia/Tokyo")
-    time.tzset()
-    try:
-        stamp = JsonFormatter().timestamp(0.5)
-        local = datetime.fromtimestamp(0).isoformat()  # noqa: DTZ006 - the zone's.
-    finally:
-        monkeypatch.undo()
-        time.tzset()
+    local_zone("Asia/Tokyo")
+
+    stamp = JsonFormatter().timestamp(0.5)
+    local = datetime.fromtimestamp(0).isoformat()  # noqa: DTZ006 - the zone's.
 
     assert local == "1970-01-01T09:00:00"  # The zone took effect.
     assert stamp == "1970-01-01T00:00:00.500+00:00"

@@ -6,7 +6,6 @@ import hmac
 import io
 import os
 import re
-import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Collection, Iterator
 from datetime import UTC, date, datetime, timedelta, timezone
@@ -745,23 +744,6 @@ def test_pruning_partitions_is_audited(
             {"database": "default", "changes": 1, "operator_source": "option"},
         )
     ]
-
-
-@pytest.fixture
-def local_zone() -> Iterator[Callable[[str], None]]:
-    """Set the process's local time zone; the original comes back afterwards."""
-    previous = os.environ.get("TZ")
-
-    def use(name: str) -> None:
-        os.environ["TZ"] = name
-        time.tzset()
-
-    yield use
-    if previous is None:
-        os.environ.pop("TZ", None)
-    else:
-        os.environ["TZ"] = previous
-    time.tzset()
 
 
 def test_pseudonyms_are_a_keyed_hash_of_the_field_and_its_canonical_json() -> None:

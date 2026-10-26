@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 import textwrap
+import time
 import uuid
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -35,6 +36,7 @@ from domainkit.ddd import event_bus
 from domainkit.http import get_asgi_application, metrics
 from domainkit.management import call_command
 from domainkit.reporting import flush_reports
+from domainkit_tests import engine_events  # noqa: F401 - its listeners first.
 from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
 
 type MakePackage = Callable[[str, dict[str, str]], Path]
@@ -193,6 +195,30 @@ def restore_logging() -> Iterator[None]:
             handler.close()
     root.handlers[:] = handlers
     root.setLevel(level)
+
+
+@pytest.fixture
+def local_zone() -> Iterator[Callable[[str], None]]:
+    """``local_zone("Asia/Tokyo")`` sets the local time zone until the test ends.
+
+    ``TZ`` is the process's: the one place that changes it, so the original
+    always comes back, failure or not. Under pytest-xdist each worker is a
+    process of its own, so no other worker's test sees the change.
+    """
+    previous = os.environ.get("TZ")
+
+    def use(name: str) -> None:
+        os.environ["TZ"] = name
+        time.tzset()
+
+    try:
+        yield use
+    finally:
+        if previous is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
 
 
 @pytest.fixture(autouse=True)
