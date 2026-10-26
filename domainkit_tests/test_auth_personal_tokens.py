@@ -480,8 +480,8 @@ def test_scopes_are_stored_as_sorted_keys(identity: Api) -> None:
 
 def test_rules_need_something_to_check() -> None:
     """``HasScope()`` without a scope is a mistake, caught at import."""
-    from domainkit.contrib.auth import HasScope
     from domainkit.exceptions import ImproperlyConfigured
+    from domainkit.http.access import HasScope
 
     with pytest.raises(ImproperlyConfigured, match="at least one scope"):
         HasScope()

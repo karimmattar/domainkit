@@ -7,18 +7,18 @@ from fastapi import APIRouter, Depends, Request, WebSocket
 from starlette.requests import HTTPConnection
 from starlette.websockets import WebSocketDisconnect
 
-from domainkit.contrib.auth import (
+from domainkit.contrib.auth import current_user
+from domainkit.contrib.auth.api import router as auth_router
+from domainkit.contrib.auth.backends import has_perms
+from domainkit.contrib.auth.events import UserCreated, UserPermissionGranted
+from domainkit.ddd import DomainEvent
+from domainkit.http.access import (
     AllowAny,
     BasePermission,
     HasPermissions,
     Public,
     Require,
-    current_user,
 )
-from domainkit.contrib.auth.api import router as auth_router
-from domainkit.contrib.auth.backends import has_perms
-from domainkit.contrib.auth.events import UserCreated, UserPermissionGranted
-from domainkit.ddd import DomainEvent
 from domainkit.http.live import TOO_SLOW, Closed, LiveLimits
 from domainkit.http.live_events import live_events
 from domainkit.http.sse import EventSourceResponse, ServerSentEvent, last_event_id

@@ -13,7 +13,7 @@ import pytest
 from fastapi import Request
 from starlette.requests import HTTPConnection
 
-from domainkit.contrib.auth import AnyUser, BasePermission, IsAuthenticated, Public
+from domainkit.contrib.auth import AnyUser
 from domainkit.ddd import (
     Command,
     DomainEvent,
@@ -24,6 +24,7 @@ from domainkit.ddd import (
 from domainkit.ddd import Query as QueryMessage
 from domainkit.ddd.query import F
 from domainkit.http import Filter, FilterSet
+from domainkit.http.access import BasePermission, IsAuthenticated, Public
 from domainkit.resources import (
     FieldPolicy,
     ModelActions,

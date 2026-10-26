@@ -346,7 +346,7 @@ def test_credentials_go_only_with_a_user(
 
     run_async(forget_credentials(erased("shop.customer")))
     with monkeypatch.context() as patched:
-        patched.setattr(erasure, "content_type_key", Mock(side_effect=LookupError))
+        patched.setattr(erasure, "model_key", Mock(side_effect=LookupError))
         run_async(forget_credentials(erased("auth.user")))
     assert stored_tokens(alice)
     registry.clear()  # Auth is no longer installed: nothing is looked up.

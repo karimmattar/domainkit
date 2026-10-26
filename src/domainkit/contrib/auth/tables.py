@@ -37,7 +37,7 @@ from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import relationship
 from sqlalchemy.types import TypeDecorator
 
-from domainkit.contrib.contenttypes.models import ContentType
+from domainkit.contrib.contenttypes import ContentType
 from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.contrib.contenttypes.tables import start_mappers as start_content_types
 from domainkit.db import UTCDateTime, map_imperatively, metadata

@@ -16,16 +16,17 @@ from starlette.routing import Host, Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 
 from domainkit.conf import override_settings
-from domainkit.contrib.auth import (
+from domainkit.deprecation import DomainkitDeprecationWarning
+from domainkit.exceptions import ImproperlyConfigured
+from domainkit.http import get_asgi_application
+from domainkit.http.access import (
     IsAuthenticated,
     Public,
     Require,
     mark_public,
     open_routes,
+    routes_need_users,
 )
-from domainkit.contrib.auth.access import routes_need_users
-from domainkit.exceptions import ImproperlyConfigured
-from domainkit.http import get_asgi_application
 from domainkit.http.application import application_problems, check_started
 from domainkit.management import call_command
 from domainkit.management.base import CommandError
@@ -350,10 +351,13 @@ def test_check_reports_open_routes() -> None:
 
 
 def test_projects_can_allow_open_routes(use_auth: UseAuth) -> None:
-    """``AUTH.REQUIRE_ROUTE_RULES = False``: routes may stay open."""
+    """``REQUIRE_ROUTE_RULES = False``: routes may stay open."""
     use_auth(
-        REQUIRE_ROUTE_RULES=False,
-        settings={"ROOT_ROUTER": f"{ROUTES}.router", "MIDDLEWARE": MIDDLEWARE[:3]},
+        settings={
+            "ROOT_ROUTER": f"{ROUTES}.router",
+            "MIDDLEWARE": MIDDLEWARE[:3],
+            "REQUIRE_ROUTE_RULES": False,
+        },
     )
     with override_settings(ENVIRONMENT="production"):
         assert application_problems(get_asgi_application()) == []
@@ -364,11 +368,35 @@ def test_projects_can_allow_open_routes(use_auth: UseAuth) -> None:
     )
 
 
+def test_the_auth_setting_still_allows_open_routes_with_a_warning(
+    use_auth: UseAuth,
+) -> None:
+    """``AUTH.REQUIRE_ROUTE_RULES = False`` works until 0.11, and warns."""
+    with pytest.warns(
+        DomainkitDeprecationWarning,
+        match=r"^AUTH\.REQUIRE_ROUTE_RULES moved to REQUIRE_ROUTE_RULES, .* "
+        r"removed in 0\.11\.$",
+    ):
+        use_auth(
+            REQUIRE_ROUTE_RULES=False,
+            settings={"ROOT_ROUTER": f"{ROUTES}.router", "MIDDLEWARE": MIDDLEWARE[:3]},
+        )
+    with override_settings(ENVIRONMENT="production"):
+        assert application_problems(get_asgi_application()) == []
+    with override_settings(AUTH={"REQUIRE_ROUTE_RULES": True}):
+        assert application_problems(get_asgi_application()) != []
+    with override_settings(REQUIRE_ROUTE_RULES=False, AUTH={}):
+        assert application_problems(get_asgi_application()) == []
+
+
 def test_rules_need_the_middleware(use_auth: UseAuth) -> None:
     """Routes that read the user need ``AuthenticationMiddleware``."""
     use_auth(
-        REQUIRE_ROUTE_RULES=False,
-        settings={"ROOT_ROUTER": f"{ROUTES}.router", "MIDDLEWARE": MIDDLEWARE[:2]},
+        settings={
+            "ROOT_ROUTER": f"{ROUTES}.router",
+            "MIDDLEWARE": MIDDLEWARE[:2],
+            "REQUIRE_ROUTE_RULES": False,
+        },
     )
     assert application_problems(get_asgi_application()) == [LACKS]
     with override_settings(ROOT_ROUTER=f"{ROUTES}.public"):

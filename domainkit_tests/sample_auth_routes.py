@@ -6,24 +6,26 @@ from fastapi import APIRouter, Depends, Request, WebSocket
 
 from domainkit.context import current_request
 from domainkit.contrib.auth import (
-    AllowAny,
     AnyUser,
     AuthenticatedUser,
     CurrentUser,
-    HasObjectPermissions,
-    HasPermissions,
     IsAdminUser,
-    IsAuthenticated,
-    IsAuthenticatedOrReadOnly,
     IsSuperuser,
-    ModelPermissions,
-    Public,
-    Require,
-    check_object_permissions,
     current_user,
 )
 from domainkit.contrib.auth.admin import router as admin_router
 from domainkit.contrib.auth.api import router as auth_router
+from domainkit.http.access import (
+    AllowAny,
+    HasObjectPermissions,
+    HasPermissions,
+    IsAuthenticated,
+    IsAuthenticatedOrReadOnly,
+    ModelPermissions,
+    Public,
+    Require,
+    check_object_permissions,
+)
 from domainkit.http.health import router as health_router
 from domainkit_tests.sample_domains.shop.models import Product
 

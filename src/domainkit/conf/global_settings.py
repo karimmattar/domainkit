@@ -695,6 +695,9 @@ class Settings(BaseModel):
     """Dotted path to the ``APIRouter`` that mounts every route (``ROOT_URLCONF``)."""
     FLATTEN_ROUTERS: bool = True
     """Serve the routes of included routers from the top (ADR 0060); False nests."""
+    REQUIRE_ROUTE_RULES: bool = True
+    """Every route must say who may call it (``Require``, or ``Public``); staging
+    and production refuse to start otherwise (``domainkit.http.access``)."""
     ASGI_APPLICATION: str | None = None
     """``module:attribute`` that ``runserver`` serves."""
     EVENT_LOOP: Literal["auto", "asyncio", "uvloop"] = "auto"

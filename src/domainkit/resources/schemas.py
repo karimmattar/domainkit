@@ -51,11 +51,11 @@ from pydantic import (
     create_model,
 )
 
-from domainkit.contrib.auth.models import PasswordHash
 from domainkit.ddd.fields import (
     Digits,
     FieldInfo,
     MaxLength,
+    Sensitive,
     fields_of,
     primitive,
     type_arguments,
@@ -163,7 +163,8 @@ def schema_for(
     Raises:
         TypeError: A field named is not one of the model's, its type has
             no schema (exclude it, or write the schema yourself), or it
-            holds a password hash, which no schema shows or takes.
+            holds a secret (``Sensitive``, as a password hash), which no
+            schema shows or takes.
     """
     fields = fields_of(model)
     writing = write or partial
@@ -179,12 +180,11 @@ def schema_for(
     if secret := sorted(
         each
         for each in chosen
-        if isinstance(kind := fields[each].kind, type)
-        and issubclass(kind, PasswordHash)
+        if isinstance(kind := fields[each].kind, type) and issubclass(kind, Sensitive)
     ):
         raise TypeError(
-            f"{model.__name__}.{', '.join(secret)} holds a password hash, which "
-            "no schema shows or takes: exclude it."
+            f"{model.__name__}.{', '.join(secret)} holds a secret (Sensitive), "
+            "such as a password hash, which no schema shows or takes: exclude it."
         )
     suffix = "Patch" if partial else "In" if write else "Out"
     title = name or f"{model.__name__}{suffix}"

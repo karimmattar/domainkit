@@ -18,16 +18,7 @@ from pydantic import BaseModel, Field
 from starlette.requests import HTTPConnection
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from domainkit.contrib.auth import (
-    AnonymousUser,
-    AnyUser,
-    BasePermission,
-    HasObjectPermissions,
-    IsAuthenticated,
-    Public,
-    open_routes,
-)
-from domainkit.contrib.auth.access import AllOf, AnyOf, Not
+from domainkit.contrib.auth import AnonymousUser, AnyUser
 from domainkit.ddd import (
     UNSET,
     AggregateRoot,
@@ -46,6 +37,16 @@ from domainkit.ddd.fields import fields_of
 from domainkit.ddd.query import F
 from domainkit.ddd.query import Query as Listing
 from domainkit.http import Filter, FilterSet, Pagination
+from domainkit.http.access import (
+    AllOf,
+    AnyOf,
+    BasePermission,
+    HasObjectPermissions,
+    IsAuthenticated,
+    Not,
+    Public,
+    open_routes,
+)
 from domainkit.http.errors import install_exception_handlers
 from domainkit.resources import (
     MERGE_PATCH,

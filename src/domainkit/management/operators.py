@@ -12,8 +12,8 @@ an arbitrary uid, from cron), runs as ``uid-<n>``, its user id, so commands
 that ran unattended keep running; the source says ``system``. The command
 runs as the actor ``operator:<name>``, so what it writes to the audit trail
 names them, and it records each action it takes there
-(``operator.<command>``) with its outcome, when ``domainkit.contrib.audit``
-is installed.
+(``operator.<command>``) with its outcome, when an installed domain keeps
+such records (``OperatorRecorder``: ``domainkit.contrib.audit``).
 """
 
 import getpass
@@ -21,10 +21,10 @@ import logging
 import os
 import re
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
-from typing import Any, Final, Literal, cast
+from typing import Final, Literal, Protocol, runtime_checkable
 
 from domainkit.apps import registry
 from domainkit.context import RequestContext, bind_request
@@ -37,12 +37,27 @@ OPERATOR: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@+-]{0,63}")
 """An operator's name: up to 64 letters, digits, ``.``, ``_``, ``@``, ``+``, ``-``."""
 UNNAMED: Final = "unnamed"
 """The operator of a process with no user name nor user id (no ``os.getuid``)."""
-AUDIT: Final = "domainkit.contrib.audit"
 ACTOR_PREFIX: Final = "operator:"
 
 type Source = Literal["option", "environment", "system"]
 
 logger = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class OperatorRecorder(Protocol):
+    """An installed domain that keeps the record of operators' actions.
+
+    ``domainkit.contrib.audit`` is one: it writes ``operator.<action>`` to
+    the audit trail. The details never hold a target, personal data, or a
+    subject; a failure to record a successful action fails the command.
+    """
+
+    async def record_operator_action(
+        self, action: str, outcome: str, details: Mapping[str, object]
+    ) -> None:
+        """Record that the operator took ``action`` (``success``, ``failure``)."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,22 +156,19 @@ async def recorded(
 async def _record(
     who: Operator, action: str, outcome: str, details: dict[str, object]
 ) -> None:
-    """Write the audit row, unless the audit app is not installed.
+    """Write the audit row, unless no installed domain keeps one (``OperatorRecorder``).
 
     A failure to write it after the action failed is logged, so the
     action's own error is the one raised.
     """
-    if not registry.is_installed(AUDIT):
+    recorders = [config for config in registry if isinstance(config, OperatorRecorder)]
+    if not recorders:
         return
-    from domainkit.contrib.audit import Outcome, record
-
     try:
-        await record(
-            f"operator.{action}",
-            Outcome(outcome),
-            operator_source=who.source,
-            **cast(dict[str, Any], details),  # Never target, personal, subject.
-        )
+        for recorder in recorders:
+            await recorder.record_operator_action(
+                action, outcome, {"operator_source": who.source, **details}
+            )
     except Exception as exc:
         if outcome == "success":
             raise

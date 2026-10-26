@@ -3,7 +3,8 @@
 from sqlalchemy import Connection, Table, insert, inspect, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from .registry import installed_models
+from domainkit.db.models import installed_models
+
 from .tables import content_types
 
 

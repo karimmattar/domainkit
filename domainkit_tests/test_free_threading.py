@@ -51,18 +51,18 @@ from domainkit.conf import (
     unwrap_settings,
 )
 from domainkit.contrib.audit import personal
-from domainkit.contrib.auth import AllowAny, principals, throttling
 from domainkit.contrib.auth import middleware as middleware_module
+from domainkit.contrib.auth import principals, throttling
 from domainkit.contrib.auth.hashers import HashingPool
 from domainkit.contrib.auth.middleware import AuthenticationMiddleware
 from domainkit.contrib.auth.models import Group, User
 from domainkit.contrib.auth.principals import ALL, Entry, PrincipalCache
 from domainkit.contrib.contenttypes import InstalledModel, content_type_key
-from domainkit.contrib.contenttypes import registry as content_registry
 from domainkit.contrib.idempotency import statements as idempotency_statements
 from domainkit.contrib.idempotency.middleware import PURGE_BATCH, Sweeps
 from domainkit.contrib.messaging import MessagingSettings, dispatch
 from domainkit.db import Reads, connections
+from domainkit.db import models as content_registry
 from domainkit.db.connections import (
     _begin_snapshot,
     _drop_detail,
@@ -77,6 +77,7 @@ from domainkit.db.connections import (
 from domainkit.ddd import DomainEvent, EventBus
 from domainkit.http import guard as guard_module
 from domainkit.http import live, metrics, ratelimit
+from domainkit.http.access import AllowAny
 from domainkit.http.client import BREAKER_HOSTS, CircuitBreaker
 from domainkit.http.guard import GuardResolver, lookups_for
 from domainkit.http.live import Slots

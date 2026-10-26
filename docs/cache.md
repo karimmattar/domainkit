@@ -164,7 +164,7 @@ does. Put it under the route decorator:
 
 ```python
 from domainkit.cache import cache_page
-from domainkit.contrib.auth import Public
+from domainkit.http.access import Public
 
 
 @router.get("/products", dependencies=[Public])
@@ -448,7 +448,7 @@ global limit, which it does not need:
 ```python
 from fastapi import Depends
 
-from domainkit.contrib.auth import Require
+from domainkit.http.access import Require
 from domainkit.http.ratelimit import Throttle
 
 export_limit = Throttle("5/hour")  # per user, or per address when anonymous

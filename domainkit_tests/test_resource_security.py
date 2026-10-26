@@ -11,15 +11,10 @@ from typing import Any
 import pytest
 from starlette.requests import HTTPConnection
 
-from domainkit.contrib.auth import (
-    AnyUser,
-    BasePermission,
-    HasObjectPermissions,
-    IsAuthenticated,
-)
-from domainkit.contrib.auth.access import current_user
+from domainkit.contrib.auth import AnyUser, current_user
 from domainkit.ddd import Query as QueryMessage
 from domainkit.ddd.query import F
+from domainkit.http.access import BasePermission, HasObjectPermissions, IsAuthenticated
 from domainkit.resources import FieldPolicy, ModelActions, ResourceRouter, schema_for
 from domainkit_tests.conftest import UseAuth
 from domainkit_tests.gadgets import (

@@ -9,7 +9,8 @@ both, requests see the context variables of the code that sends them: a
 ``freeze_time`` block around a request freezes the application's clock too.
 
 ``user_token`` stores a user with permissions and returns an access token,
-as the ``client_for`` fixtures do.
+as the ``client_for`` fixtures do, through the installed domain that issues
+tokens (``TokenIssuer``: ``domainkit.contrib.auth``).
 """
 
 import asyncio
@@ -21,6 +22,7 @@ from collections.abc import (
     Generator,
     Mapping,
     MutableMapping,
+    Sequence,
 )
 from concurrent.futures import Future
 from contextlib import (
@@ -32,13 +34,15 @@ from contextlib import (
 from contextvars import Context, copy_context
 from functools import partial
 from types import TracebackType
-from typing import Any, Final, Self, cast
-from uuid import uuid4
+from typing import Any, Final, Protocol, Self, cast, runtime_checkable
 
 import httpx2
 from anyio.from_thread import BlockingPortal
 from fastapi.testclient import TestClient as StarletteTestClient
 from starlette.types import ASGIApp, Message, Receive, Send
+
+from domainkit.apps import registry
+from domainkit.exceptions import ImproperlyConfigured
 
 TEST_SERVER: Final = "http://testserver"
 TEST_CLIENT: Final = ("testclient", 50000)
@@ -271,24 +275,41 @@ class _WithState:
         await self.app({**scope, "state": self.state.copy()}, receive, send)
 
 
+@runtime_checkable
+class TokenIssuer(Protocol):
+    """An installed domain that issues access tokens for the users it stores.
+
+    ``domainkit.contrib.auth`` is one; ``user_token`` and the clients'
+    ``authenticated`` ask it.
+    """
+
+    async def issue_test_token(
+        self,
+        permissions: Sequence[str],
+        fields: dict[str, Any],
+    ) -> str:
+        """Store a new user granted ``permissions``, set ``fields``; its token."""
+        ...
+
+
 async def user_token(*permissions: str, **fields: Any) -> str:  # noqa: ANN401 - the user model's fields.
     """Store a new user granted ``permissions``; return an access token for them.
 
     Keyword arguments set the user's fields (``is_staff=True``); the
-    username is unique unless given. The token comes from the first
-    ``AUTH.AUTHENTICATION_CLASSES`` class, as a login's would. Needs
-    ``domainkit.contrib.auth``.
-    """
-    from domainkit.contrib.auth import AuthUnitOfWork, get_user_model
-    from domainkit.contrib.auth.authentication import get_authenticators
+    username is unique unless given. The first installed domain that issues
+    tokens (``TokenIssuer``) makes it: with ``domainkit.contrib.auth``, the
+    first ``AUTH.AUTHENTICATION_CLASSES`` class, as a login's would.
 
-    username = fields.pop(get_user_model().USERNAME_FIELD, f"user-{uuid4().hex}")
-    async with AuthUnitOfWork() as uow:
-        user = await uow.users.create_user(username, **fields)
-        user.grant(*await uow.permissions.get_many(permissions))
-        issued = await get_authenticators()[0].issue(uow, user)
-        await uow.commit()
-    return issued.access_token
+    Raises:
+        ImproperlyConfigured: No installed domain issues tokens.
+    """
+    for config in registry:
+        if isinstance(config, TokenIssuer):
+            return await config.issue_test_token(permissions, fields)
+    raise ImproperlyConfigured(
+        "user_token needs an installed domain that issues tokens, such as "
+        "domainkit.contrib.auth."
+    )
 
 
 def _adopt(context: Context) -> None:

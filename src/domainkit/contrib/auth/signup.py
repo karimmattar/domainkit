@@ -43,10 +43,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from domainkit.contrib.mail import deliver, render_mail
 from domainkit.contrib.messaging import task
+from domainkit.http.access import Public
 from domainkit.http.errors import APIError
 from domainkit.signing import BadSignature, TimestampSigner
 
-from .access import Public
 from .api import PASSWORD_MAX_LENGTH, _errors
 from .events import UserSignedUp
 from .hashers import amake_password

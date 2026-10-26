@@ -94,6 +94,7 @@ statuses, and the amendments they name.
 | [0077](0077-declare-what-apps-require.md) | Declare what apps require, and reach other apps only through their public names | Accepted |
 | [0078](0078-deliver-events-in-process-after-commit-or-durably-through-the-outbox.md) | Deliver events in process after commit, or durably through the outbox | Accepted |
 | [0079](0079-validate-every-setting-in-one-model-and-each-app-in-its-own.md) | Validate every setting at startup: one model, and each app's own | Accepted |
+| [0080](0080-access-rules-are-core-auth-is-one-provider.md) | Access rules are core; auth is one provider | Accepted |
 
 ### Decisions still without a record
 
@@ -102,8 +103,6 @@ Taken, and in the code, but not yet written down (DSGN-15); planned for
 
 - `DomainConfig`'s hooks, `stage` and `committed` among them, called on
   every installed domain (DSGN-03).
-- `domainkit.resources` depending on `contrib.auth` and
-  `contrib.contenttypes` for its access rules (DSGN-02).
 - Module-level singletons (the registry, the settings, the event bus, the
   caches) and test overrides that act on them (DSGN-07).
 - No common exception root, and HTTP errors raised from modules below

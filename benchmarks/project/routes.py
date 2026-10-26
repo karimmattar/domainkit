@@ -10,13 +10,22 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from domainkit.contrib.auth import AnyUser, ModelPermissions, Public, Require
+from domainkit.contrib.auth import AnyUser
 from domainkit.contrib.auth.admin import router as admin_router
 from domainkit.contrib.auth.api import router as auth_router
 from domainkit.http.health import router as health_router
 
 from .catalog.models import Item, ItemId
 from .catalog.uow import CatalogUnitOfWork
+
+try:
+    from domainkit.http.access import ModelPermissions, Public, Require
+except ImportError:  # A tree before 0.10 (``--baseline``): they were auth's.
+    from domainkit.contrib.auth import (  # type: ignore[no-redef]
+        ModelPermissions,
+        Public,
+        Require,
+    )
 
 router = APIRouter()
 router.include_router(health_router)

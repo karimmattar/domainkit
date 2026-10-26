@@ -27,9 +27,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from domainkit.context import bind_request, current_request
 from domainkit.ddd import PermissionDenied
+from domainkit.http.access import IsUnscoped, Public, Require
 from domainkit.http.errors import APIError, error_responses
 
-from .access import AuthenticatedUser, IsUnscoped, Public, Require
+from .access import AuthenticatedUser
 from .authentication import Credentials, IssuedTokens, get_authenticators
 from .backends import authenticate, get_all_permissions
 from .events import UserLoggedOut

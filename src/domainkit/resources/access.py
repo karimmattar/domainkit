@@ -9,6 +9,10 @@ Django's model permission of each route's action, so a command posted to
 
     ResourceRouter("/invoices", model=Invoice, rule=ModelActions(Invoice), ...)
     ResourceRouter("/users", ..., rule=ModelActions(get_user_model, IsAdminUser()))
+
+The permission keys name installed models (``domainkit.db.models``); the
+principal answers them (``Principal.ahas_perms``), whatever authenticates
+requests.
 """
 
 from collections.abc import Callable, Sequence
@@ -16,8 +20,8 @@ from typing import Final, Protocol, runtime_checkable
 
 from starlette.requests import HTTPConnection
 
-from domainkit.contrib.auth.access import BasePermission, HasPermissions, Rule
-from domainkit.contrib.auth.models import AnyUser
+from domainkit.db.models import model_key
+from domainkit.http.access import BasePermission, HasPermissions, Principal, Rule
 
 VIEW: Final = "view"
 ADD: Final = "add"
@@ -55,7 +59,7 @@ class HasModelPermission(BasePermission):
         domain, name = content_type_of(self.model)
         return f"{domain}.{self.action}_{name}"
 
-    async def has_permission(self, request: HTTPConnection, user: AnyUser) -> bool:
+    async def has_permission(self, request: HTTPConnection, user: Principal) -> bool:
         """The user holds the permission."""
         return await HasPermissions(self.permission()).has_permission(request, user)
 
@@ -96,7 +100,5 @@ def content_type_of(model: ModelLike) -> tuple[str, str]:
     if isinstance(model, str):
         domain, _, name = model.partition(".")
         return domain, name
-    from domainkit.contrib.contenttypes import content_type_key
-
     cls = model if isinstance(model, type) else model()
-    return content_type_key(cls)
+    return model_key(cls)

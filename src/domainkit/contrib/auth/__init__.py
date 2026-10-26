@@ -25,32 +25,26 @@ then ``makemigrations``, ``migrate`` (which creates the permissions), and
 ``AUTH.USER_MODEL`` swaps the user for a project's own (see ``tables``).
 
 Requests: ``AuthenticationMiddleware`` finds the user from a token
-(``authentication``), ``access`` decides what routes allow, and ``api``
-has the endpoints to log in and out.
+(``authentication``), and ``api`` has the endpoints to log in and out. What
+routes allow is the core's ``domainkit.http.access``, for any
+authentication (ADR 0080); ``access`` adds the rules about this app's users
+(``IsAdminUser``, ``IsSuperuser``, ``AuthenticatedUser``, and ``CurrentUser``
+typed as this app's users). The rule names
+that moved there still import from here until 0.11, with a
+``DomainkitDeprecationWarning``.
 """
 
+from typing import Final
+
+from domainkit.deprecation import moved
+
 from .access import (
-    AllowAny,
     AuthenticatedUser,
-    BasePermission,
     CurrentUser,
-    HasObjectPermissions,
-    HasPermissions,
-    HasScope,
     IsAdminUser,
-    IsAuthenticated,
-    IsAuthenticatedOrReadOnly,
     IsSuperuser,
-    IsUnscoped,
-    ModelPermissions,
-    NotAuthenticated,
-    Public,
-    Require,
     acurrent_user,
-    check_object_permissions,
     current_user,
-    mark_public,
-    open_routes,
 )
 from .authentication import (
     AuthenticationFailed,
@@ -111,7 +105,6 @@ from .validators import password_help_texts, validate_password
 __all__ = [
     "AbstractBaseUser",
     "AbstractUser",
-    "AllowAny",
     "AnonymousUser",
     "AnyUser",
     "AuthSettings",
@@ -121,36 +114,25 @@ __all__ = [
     "AuthenticationFailed",
     "BaseAuthentication",
     "BaseBackend",
-    "BasePermission",
     "Credentials",
     "CurrentUser",
     "Group",
     "GroupId",
     "GroupNameTaken",
     "GroupNotFound",
-    "HasObjectPermissions",
-    "HasPermissions",
-    "HasScope",
     "InvalidEmail",
     "InvalidGroupName",
     "InvalidPassword",
     "InvalidUserField",
     "InvalidUsername",
     "IsAdminUser",
-    "IsAuthenticated",
-    "IsAuthenticatedOrReadOnly",
     "IsSuperuser",
-    "IsUnscoped",
     "IssuedTokens",
     "JWTAuthentication",
     "JWTSettings",
     "ModelBackend",
-    "ModelPermissions",
-    "NotAuthenticated",
     "PasswordHash",
     "Permission",
-    "Public",
-    "Require",
     "TokenAuthentication",
     "TokenKind",
     "UnknownGroup",
@@ -164,7 +146,6 @@ __all__ = [
     "acurrent_user",
     "amake_password",
     "authenticate",
-    "check_object_permissions",
     "check_password",
     "current_user",
     "get_all_permissions",
@@ -174,8 +155,29 @@ __all__ = [
     "has_perm",
     "has_perms",
     "make_password",
-    "mark_public",
-    "open_routes",
     "password_help_texts",
     "validate_password",
 ]
+
+MOVED: Final = frozenset(
+    {
+        "AllowAny",
+        "BasePermission",
+        "HasObjectPermissions",
+        "HasPermissions",
+        "HasScope",
+        "IsAuthenticated",
+        "IsAuthenticatedOrReadOnly",
+        "IsUnscoped",
+        "ModelPermissions",
+        "NotAuthenticated",
+        "Public",
+        "Require",
+        "check_object_permissions",
+        "mark_public",
+        "open_routes",
+    }
+)
+"""Names that moved to ``domainkit.http.access`` in 0.10; removed here in 0.11."""
+
+__getattr__ = moved(__name__, dict.fromkeys(MOVED, "domainkit.http.access"), "0.11")

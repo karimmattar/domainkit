@@ -11,10 +11,10 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from domainkit.conf import override_settings
-from domainkit.contrib.auth import Public
 from domainkit.db import connections
 from domainkit.ddd import Command
 from domainkit.ddd.query import F
+from domainkit.http.access import Public
 from domainkit.http.errors import install_exception_handlers
 from domainkit.resources import ResourceRouter, routing
 from domainkit.testing import AsyncTestClient

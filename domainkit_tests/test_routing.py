@@ -29,11 +29,16 @@ from domainkit import setup
 from domainkit.apps import registry
 from domainkit.conf import override_settings, use_settings
 from domainkit.conf.env import PROJECT_ROOT_VARIABLE, project_prefix, project_root
-from domainkit.contrib.auth import IsAuthenticated, Public, Require
-from domainkit.contrib.auth.access import _routes, open_routes
 from domainkit.contrib.auth.authentication import BaseAuthentication, Credentials
 from domainkit.contrib.auth.models import PasswordHash, User
 from domainkit.http import get_asgi_application, routing
+from domainkit.http.access import (
+    IsAuthenticated,
+    Public,
+    Require,
+    open_routes,
+    served_routes,
+)
 from domainkit.http.application import application_problems
 from domainkit.http.metrics import route_template
 from domainkit.http.routing import (
@@ -200,7 +205,7 @@ def test_rules_and_dependencies_are_the_ones_nesting_gave(nested: Build) -> None
     def rules(app: FastAPI) -> list[tuple[str, list[object]]]:
         return [
             (name, [dependency.call for dependency in dependant.dependencies])
-            for name, dependant in _routes(app.routes)
+            for name, dependant in served_routes(app.routes)
             if dependant is not None
         ]
 
@@ -442,7 +447,8 @@ def test_the_template_projects_document_and_rules_stay(
             before, after = nested(), get_asgi_application()
             documents = [json.dumps(app.openapi()) for app in (before, after)]
             served = [
-                [name for name, _ in _routes(app.routes)] for app in (before, after)
+                [name for name, _ in served_routes(app.routes)]
+                for app in (before, after)
             ]
             problems = [application_problems(app) for app in (before, after)]
     finally:
@@ -732,7 +738,7 @@ def test_routers_that_serve_themselves_are_documented_and_guarded_alike(
     def rules(app: FastAPI) -> list[tuple[str, list[object]]]:
         return [
             (name, [dependency.call for dependency in dependant.dependencies])
-            for name, dependant in _routes(app.routes)
+            for name, dependant in served_routes(app.routes)
             if dependant is not None
         ]
 

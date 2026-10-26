@@ -617,6 +617,7 @@ jobs:
               domainkit.http.metrics.* domainkit.http.openapi.*
               domainkit.http.ratelimit.* domainkit.http.routing.*
               domainkit.http.shedding.* domainkit.http.sse.* domainkit.http.versioning.*
+              domainkit.http.access.*
           - name: http-2
             mutants: >-
               domainkit.http.client.* domainkit.http.deadlines.* domainkit.http.health.*
@@ -630,6 +631,7 @@ jobs:
               domainkit.db.fixtures.* domainkit.db.migrations.* domainkit.db.orm.*
               domainkit.db.query.* domainkit.db.repository.* domainkit.db.uow.*
               domainkit.ledger.*
+              domainkit.db.models.*
           - name: data-2
             mutants: >-
               domainkit.cache.* domainkit.db.connections.* domainkit.db.errors.*

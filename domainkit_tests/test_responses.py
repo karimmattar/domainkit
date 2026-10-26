@@ -26,9 +26,9 @@ from pydantic_core import to_json
 from starlette import responses as starlette
 
 import domainkit.http
-from domainkit.contrib.auth import Public
 from domainkit.http import errors, get_asgi_application
 from domainkit.http import responses as fast
+from domainkit.http.access import Public
 from domainkit.http.responses import (
     MAX_DEPTH,
     JSONResponse,

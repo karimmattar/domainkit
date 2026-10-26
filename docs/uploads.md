@@ -77,7 +77,7 @@ FastAPI reads uploads with `python-multipart`: install the `uploads` extra
 ```python
 from fastapi import Depends, UploadFile
 
-from domainkit.contrib.auth import Require
+from domainkit.http.access import Require
 from domainkit.http.uploads import IMAGES, PDF, save_upload
 
 

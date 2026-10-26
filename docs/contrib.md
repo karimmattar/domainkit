@@ -1345,8 +1345,8 @@ created is off.
 ```python
 from fastapi import Depends
 
-from domainkit.contrib.auth import Public
 from domainkit.contrib.flags import RequireFlag, flag_enabled
+from domainkit.http.access import Public
 
 if await flag_enabled("new_checkout", user=user):
     ...

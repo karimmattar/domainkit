@@ -6,10 +6,10 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
-from domainkit.contrib.auth import IsAuthenticated, Public
 from domainkit.ddd import EventBus, InMemoryRepository, UnitOfWork
 from domainkit.ddd.query import F
 from domainkit.http import Pagination
+from domainkit.http.access import IsAuthenticated, Public
 from domainkit.resources import FieldPolicy, ResourceRouter
 from domainkit_tests.gadgets import (
     FakeGadgetsUnitOfWork,

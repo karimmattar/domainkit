@@ -4,14 +4,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, WebSocket
 
-from domainkit.contrib.auth import (
-    AnyUser,
-    AuthenticatedUser,
-    CurrentUser,
-    IsAuthenticated,
-    Public,
-    Require,
-)
+from domainkit.contrib.auth import AnyUser, AuthenticatedUser, CurrentUser
+from domainkit.http.access import IsAuthenticated, Public, Require
 from domainkit.http.health import router as health_router
 
 router = APIRouter()

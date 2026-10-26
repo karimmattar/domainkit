@@ -1159,15 +1159,18 @@ without `EMAIL_FIELD` and `email_verified`.
 
 ## Protecting routes
 
-Rules decide who may call a route. `Require(*rules)` makes them a FastAPI
-dependency that returns the user, and documents the bearer token in
-OpenAPI; without rules it requires a user. A refused anonymous caller gets
-`401 not_authenticated`, so it knows to log in; a refused user gets `403`.
+Rules decide who may call a route. They are the core's,
+`domainkit.http.access`, and work with any authentication (see
+[Another authentication](#another-authentication)); this app adds the ones
+about its own users (`IsAdminUser`, `IsSuperuser`, `AuthenticatedUser`).
+`Require(*rules)` makes them a FastAPI dependency that returns the user,
+and documents the bearer token in OpenAPI; without rules it requires a
+user. A refused anonymous caller gets `401 not_authenticated`, so it knows
+to log in; a refused user gets `403`.
 
 ```python
-from domainkit.contrib.auth import (
-    AuthenticatedUser, CurrentUser, HasPermissions, ModelPermissions, Require,
-)
+from domainkit.contrib.auth import AuthenticatedUser, CurrentUser
+from domainkit.http.access import HasPermissions, ModelPermissions, Require
 
 @router.post("/invoices", dependencies=[Depends(Require(HasPermissions("billing.add_invoice")))])
 async def create_invoice(...): ...
@@ -1199,7 +1202,9 @@ Combine rule instances with `&`, `|`, and `~`:
 `Require(IsAdminUser() | HasPermissions("billing.view_invoice"))`. A rule of
 your own subclasses `BasePermission`, overrides `has_permission(request,
 user)` or `has_object_permission(request, user, obj)` (both async), and may
-set `message`. Where a route loads one object, check it:
+set `message`. `user` is the request's `Principal`; annotate it as the
+users your rule is written for, such as `AnyUser`. Where a route loads one
+object, check it:
 
 ```python
 class IsOwner(BasePermission):
@@ -1232,7 +1237,7 @@ The application has problems:
 ```
 
 ```python
-from domainkit.contrib.auth import Public
+from domainkit.http.access import Public
 
 
 @router.get("/catalog", dependencies=[Public])  # anyone, on purpose
@@ -1254,15 +1259,69 @@ is listed (`MOUNT /static`) until you serve it from a FastAPI route with
 ```python
 from starlette.staticfiles import StaticFiles
 
-from domainkit.contrib.auth import mark_public
+from domainkit.http.access import mark_public
 
 router.mount("/static", mark_public(StaticFiles(directory="static")))
 ```
 
-`AUTH.REQUIRE_ROUTE_RULES = False` turns the rule off; routes that read
-the user still need `AuthenticationMiddleware`, and startup reports them
-while it is missing. `open_routes(app)` returns the list, for a test of
-your own.
+The check is the core's: it holds with this app or without it.
+`REQUIRE_ROUTE_RULES = False` turns it off (`AUTH.REQUIRE_ROUTE_RULES`,
+its name until 0.10, still does until 0.11, with a warning); routes that
+read the user still need `AuthenticationMiddleware`, and startup reports
+them while it is missing. `open_routes(app)` returns the list, for a test
+of your own.
+
+### Another authentication
+
+`ResourceRouter`, the rules, and deny by default need no
+`domainkit.contrib.auth`, nor its tables: a project that authenticates
+requests its own way (an OpenID Connect middleware, a gateway's header)
+puts who sent each request in `scope["user"]`, from an ASGI middleware of
+its own. The rules read a `domainkit.http.access.Principal`: `id`,
+`is_authenticated`, `is_active`, and `ahas_perms(perms, obj=None)`, which
+answers permission keys (`billing.view_invoice`) as the project decides;
+`AnonymousPrincipal` stands for a caller who proved nothing. A principal
+whose class has `challenge()` names the `WWW-Authenticate` of the `401`
+an anonymous caller gets (`Bearer realm="api"` otherwise), and credentials
+in `scope["auth"]` with `scopes` limit the permission rules as a scoped
+token does ([ADR 0080](adr/0080-access-rules-are-core-auth-is-one-provider.md)):
+
+```python
+from dataclasses import dataclass
+
+from domainkit.http.access import AnonymousPrincipal
+
+
+@dataclass(frozen=True)
+class GatewayUser:
+    id: str
+    roles: frozenset[str]
+    is_authenticated = True
+    is_active = True
+
+    async def ahas_perms(self, perms, obj=None) -> bool:
+        return set(perms) <= self.roles
+
+
+class GatewayAuthentication:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in {"http", "websocket"}:
+            headers = dict(scope["headers"])
+            user = headers.get(b"x-user")
+            scope["user"] = (
+                GatewayUser(user.decode(), frozenset(...))
+                if user
+                else AnonymousPrincipal()
+            )
+        await self.app(scope, receive, send)
+```
+
+A dependency of the project's own that reads the principal counts as a
+rule for deny by default once marked with `reads_principal`, as
+`CurrentUser` and `AuthenticatedUser` are.
 
 ## The admin API
 
@@ -1367,7 +1426,7 @@ changed what.
 | `CLIENT_CERT` | see below | Client certificates, for `ClientCertificateAuthentication`. |
 | `PRINCIPAL_CACHE` | see below | Principals kept between requests ([the principal cache](#the-principal-cache)). |
 | `CSRF_TRUSTED_ORIGINS` | `()` | Origins (`https://app.example.com`, `https://*.example.com`) whose pages may send cookie requests, besides the request's own and `ALLOWED_HOSTS`. |
-| `REQUIRE_ROUTE_RULES` | `True` | Every route must say who may call it (`Require`, a user parameter, or `Public`); see "Deny by default". |
+| `REQUIRE_ROUTE_RULES` | `True` | Deprecated: the core's `REQUIRE_ROUTE_RULES` ([reference](reference.md)); `False` here still turns the check off until 0.11, with a warning. |
 | `JWT` | see below | JSON Web Tokens, for `JWTAuthentication`. |
 
 | `AUTH["COOKIE"]` key | Default | Meaning |

@@ -69,16 +69,7 @@ from pydantic import BaseModel, ConfigDict, Field, create_model
 from starlette.requests import HTTPConnection
 from starlette.routing import BaseRoute
 
-from domainkit.contrib.auth.access import (
-    AllOf,
-    AnyOf,
-    BasePermission,
-    Not,
-    NotAuthenticated,
-    Require,
-    Rule,
-    check_object_permissions,
-)
+from domainkit.db.models import model_key
 from domainkit.ddd.exceptions import PermissionDenied
 from domainkit.ddd.fields import FieldInfo, fields_of, wrapped_field
 from domainkit.ddd.messages import Command
@@ -88,6 +79,16 @@ from domainkit.ddd.preconditions import expect_version
 from domainkit.ddd.query import CriteriaLike, F, Query, as_criteria, as_query
 from domainkit.ddd.repository import Repository
 from domainkit.ddd.uow import UnitOfWork
+from domainkit.http.access import (
+    AllOf,
+    AnyOf,
+    BasePermission,
+    Not,
+    NotAuthenticated,
+    Require,
+    Rule,
+    check_object_permissions,
+)
 from domainkit.http.errors import error_responses
 from domainkit.http.filters import FilterSet
 from domainkit.http.pagination import PageRequest, Pagination
@@ -1784,10 +1785,8 @@ def _first_line(text: str | None) -> str | None:
 
 
 def _label(model: type) -> str:
-    """The content type of ``model`` (``catalog.category``), or its class name."""
+    """The key of ``model`` (``catalog.category``), or its class name."""
     try:
-        from domainkit.contrib.contenttypes import content_type_key
-
-        return ".".join(content_type_key(model))
+        return ".".join(model_key(model))
     except LookupError:
         return model.__qualname__
