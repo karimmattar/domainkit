@@ -168,7 +168,9 @@ def test_the_sampler_lets_each_key_once_per_interval_and_stays_bounded() -> None
         clock.tick(1)
         assert sampler.first(("alice", "GET /a"))
         assert sampler.first(("bob", "GET /a"))  # Forgets ("alice", "GET /b").
+        assert set(sampler._seen) == {("alice", "GET /a"), ("bob", "GET /a")}
         assert sampler.first(("alice", "GET /b"))
+        assert not sampler.first(("bob", "GET /a"))
         assert len(sampler._seen) == 2
     sampler.clear()
     assert len(sampler._seen) == 0

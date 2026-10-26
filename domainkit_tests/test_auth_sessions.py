@@ -4,7 +4,8 @@ A new login ends the browser's last session (AUTH-05); logins are bounded
 (AUTH-08); users list and end their sessions; idle logins end.
 """
 
-from datetime import timedelta
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
 import pytest
@@ -12,9 +13,22 @@ from fastapi.testclient import TestClient
 
 from domainkit.clock import freeze_time
 from domainkit.contrib.auth import AuthUnitOfWork
-from domainkit.contrib.auth.tokens import last_used_every
+from domainkit.contrib.auth.authentication import (
+    TOKEN_SCHEME,
+    stored_credential,
+    unless_idle,
+)
+from domainkit.contrib.auth.principals import Entry
+from domainkit.contrib.auth.settings import auth_settings
+from domainkit.contrib.auth.tokens import (
+    TokenKind,
+    idle_since,
+    is_login,
+    last_used_every,
+    token_digest,
+)
 from domainkit.management.base import run_async
-from domainkit_tests.conftest import Api
+from domainkit_tests.conftest import Api, UseAuth
 from domainkit_tests.test_auth_cookies import (
     SESSION,
     SITE,
@@ -24,7 +38,7 @@ from domainkit_tests.test_auth_cookies import (
 )
 from domainkit_tests.test_auth_http import PASSWORD, bearer, create_user, login
 from domainkit_tests.test_auth_personal_tokens import make, user_session
-from domainkit_tests.test_auth_principals import stored_last_used
+from domainkit_tests.test_auth_principals import issue, stored_last_used
 
 JWT: Final = {
     "AUTHENTICATION_CLASSES": [
@@ -244,3 +258,57 @@ def test_the_idle_timeout_is_bounded(identity: Api, timeout: timedelta) -> None:
     """From 5 minutes to 30 days."""
     with pytest.raises(Exception, match="IDLE_TIMEOUT"):
         identity(IDLE_TIMEOUT=timeout)
+
+
+def test_a_kept_login_that_looks_idle_is_read_again(identity: Api) -> None:
+    """``unless_idle``: what this process saw is used when it shows a recent use.
+
+    A kept entry that looks idle is read afresh, and ends only if the
+    stored login is idle too; one that does not look idle is used as is.
+    """
+    create_user("alice")
+    identity(IDLE_TIMEOUT=timedelta(minutes=15))
+    config = auth_settings().PRINCIPAL_CACHE
+    with freeze_time("2026-10-26T10:00:00Z") as clock:
+        raw = run_async(issue("alice", kind=TokenKind.SESSION))  # A login's.
+        digest = token_digest(raw)
+        entry = run_async(stored_credential(TOKEN_SCHEME, digest, config))
+        assert entry is not None
+        assert entry.credential is not None
+        clock.tick(timedelta(hours=1))
+        stale = replace(entry.credential, last_used_at=clock.now())
+        recent = Entry(entry.key, None, credential=stale, last_used=None)
+        assert run_async(unless_idle(recent, TOKEN_SCHEME, digest, config)) is recent
+        written = Entry(entry.key, None, credential=entry.credential)
+        written.last_used = clock.now()
+        assert run_async(unless_idle(written, TOKEN_SCHEME, digest, config)) is written
+
+        assert run_async(unless_idle(entry, TOKEN_SCHEME, digest, config)) is None
+        run_async(touch_now(digest, clock.now()))
+        fresh = run_async(unless_idle(entry, TOKEN_SCHEME, digest, config))
+        assert fresh is not None
+        assert fresh is not entry
+        assert fresh.credential is not None
+        assert fresh.credential.last_used_at == clock.now()
+        assert run_async(unless_idle(Entry(entry.key, None), "token", digest, config))
+
+
+def test_idle_ends_exactly_a_tenth_after_the_timeout(use_auth: UseAuth) -> None:
+    """At ``IDLE_TIMEOUT`` plus the interval of writes, not a microsecond before."""
+    use_auth(IDLE_TIMEOUT=timedelta(minutes=15))
+    last = datetime(2026, 10, 26, 10, tzinfo=UTC)
+    limit = last + timedelta(minutes=16, seconds=30)
+    assert idle_since(last, limit)
+    assert not idle_since(last, limit - timedelta(microseconds=1))
+    assert is_login(TokenKind.SESSION, "browser")
+    assert is_login(TokenKind.ACCESS, "login")
+    assert is_login(TokenKind.REFRESH, "login")
+    assert not is_login(TokenKind.ACCESS, "ci")
+    assert not is_login(TokenKind.CERTIFICATE, "login")
+
+
+async def touch_now(digest: str, now: datetime) -> None:
+    """Write ``now`` as the token's last use, as another process would."""
+    async with AuthUnitOfWork() as uow:
+        await uow.tokens.touch_digest(digest, now)
+        await uow.commit()

@@ -184,6 +184,7 @@ def test_must_update_follows_the_cost_settings() -> None:
         (low_level.Type.I, b"s" * 16, 32),
         (low_level.Type.D, b"s" * 16, 32),
         (low_level.Type.ID, b"s" * 8, 32),
+        (low_level.Type.ID, b"s" * 15, 32),  # 120 bits: one byte short.
         (low_level.Type.ID, b"s" * 16, 16),
     ],
 )
