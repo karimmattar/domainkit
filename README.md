@@ -43,8 +43,15 @@ and a server).
 
 ## Documentation
 
-- [docs/tutorial.md](https://github.com/karimmattar/domainkit/blob/main/docs/tutorial.md): from `pip install` to an
-  authenticated endpoint with one aggregate, every command run in CI
+- [docs/tutorial.md](https://github.com/karimmattar/domainkit/blob/main/docs/tutorial.md): getting started, in five
+  parts: a first resource, rules, permissions, events and the worker, and
+  tests and production; every command and code change run in CI
+- [docs/operations.md](https://github.com/karimmattar/domainkit/blob/main/docs/operations.md): running in production:
+  processes, configuration, sizing, migrations in a rollout, the worker,
+  sealing, backups, and what to alert on; [docs/runbook.md](https://github.com/karimmattar/domainkit/blob/main/docs/runbook.md)
+  for each alarm, [docs/security.md](https://github.com/karimmattar/domainkit/blob/main/docs/security.md) the hardening
+  checklist, and [docs/upgrading.md](https://github.com/karimmattar/domainkit/blob/main/docs/upgrading.md) from one minor to
+  the next
 
 - [docs/reference.md](https://github.com/karimmattar/domainkit/blob/main/docs/reference.md): settings, middleware, errors,
   the API surface (OpenAPI, versions, deprecations), observability,
@@ -91,7 +98,8 @@ and a server).
   a project
 - [docs/audit/0.9.0.md](https://github.com/karimmattar/domainkit/blob/main/docs/audit/0.9.0.md): the 0.9.0 audit's findings
   that the CHANGELOG names, with their status
-- [docs/api.md](https://github.com/karimmattar/domainkit/blob/main/docs/api.md): the public API, module by module, one line a name
+- [docs/api.md](https://github.com/karimmattar/domainkit/blob/main/docs/api.md): the public API, module by module, one line a name;
+  `mkdocs.yml` builds these pages into a site, with every name's docstring
 - [docs/adr/](https://github.com/karimmattar/domainkit/tree/main/docs/adr): the decisions behind the design
 - [CHANGELOG.md](https://github.com/karimmattar/domainkit/blob/main/CHANGELOG.md) and [SECURITY.md](https://github.com/karimmattar/domainkit/blob/main/SECURITY.md)
 
@@ -133,7 +141,8 @@ domain's router is mounted at `/api/v1/invoices`, and its resource is
 made. A route the caller may not reach answers 404, as an unknown path does,
 so check the path first (`/docs` lists every route). `createsuperuser`
 without options asks for each value instead. [docs/tutorial.md](https://github.com/karimmattar/domainkit/blob/main/docs/tutorial.md)
-goes on from here: a resource created, changed, and refused by its rules.
+goes on from here, in five parts: rules written by hand, permissions,
+events run by the worker, and tests.
 
 `domainkit init` creates a project that passes `check` and its tests as it is.
 Users, groups, and permissions are installed, requests are authenticated,
