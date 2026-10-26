@@ -836,6 +836,10 @@ class Settings(BaseModel):
         default="X-Forwarded-Proto", pattern=HEADER_NAME
     )
     """The header in which trusted proxies say the client's scheme; None: none does."""
+    ACCEPT_REQUEST_ID: Literal["proxies", "anyone", "never"] = "proxies"
+    """Whose ``X-Request-ID`` names a request: ``TRUSTED_PROXIES``' only, any
+    caller's (0.10's rule), or nobody's (always a new id). Out of format, it
+    is replaced either way."""
     RATE_LIMIT: str | None = None
     """Requests per caller, e.g. ``"300/minute"``; None disables the limit."""
     RATE_LIMIT_EXEMPT_PATHS: tuple[str, ...] = ("/health", "/ready", "/metrics")
