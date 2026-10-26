@@ -117,13 +117,7 @@ class CapturedQueries:
         return "\n".join(lines)
 
     def _record(
-        self,
-        connection: Connection,
-        cursor: object,
-        statement: str,
-        parameters: Any,  # noqa: ANN401 - never read.
-        context: ExecutionContext | None,
-        executemany: bool,
+        self, connection: Connection, statement: str, context: ExecutionContext | None
     ) -> None:
         """Keep ``statement`` if it ran on the database counted, and is the work's."""
         if context is not None and context.execution_options.get(INTERNAL):
@@ -142,7 +136,7 @@ def _dispatch(
 ) -> None:
     """Hand ``statement`` to every block entered now."""
     for capture in _capturing:
-        capture._record(connection, cursor, statement, parameters, context, executemany)
+        capture._record(connection, statement, context)
 
 
 def assert_num_queries(expected: int, *, using: str | None = None) -> CapturedQueries:
