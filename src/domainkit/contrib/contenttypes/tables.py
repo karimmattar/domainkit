@@ -13,7 +13,9 @@ content_types = Table(
     Column("domain", String(100), nullable=False),
     Column("model", String(100), nullable=False),
     UniqueConstraint("domain", "model"),
-    info={"domain": "contenttypes"},
+    # Permissions hang from these rows: replacing one re-points every
+    # permission on it, and deleting one deletes them (guarded, see fixtures).
+    info={"domain": "contenttypes", "guarded": True},
 )
 
 
