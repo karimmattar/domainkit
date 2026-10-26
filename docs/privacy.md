@@ -20,7 +20,7 @@ INSTALLED_DOMAINS = [
 
 Mark each field of an aggregate that holds personal data, with the field
 that names whose it is, as events are marked
-([contrib.md](contrib.md#audit-trail)):
+([contrib.md](contrib.md#audit-who-did-what-when-from-where)):
 
 ```python
 from typing import Annotated

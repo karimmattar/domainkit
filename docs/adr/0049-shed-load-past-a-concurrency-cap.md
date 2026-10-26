@@ -1,6 +1,6 @@
 # 0049. Shed load in the application: a cap per event loop, a short queue, and a fast 503
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-21 and 2026-10-25 (at the end)
 - Date: 2026-10-20
 
 ## Context

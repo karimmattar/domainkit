@@ -1,6 +1,6 @@
 # 0061. Read without a transaction where it is safe, and ping a connection once
 
-- Status: Accepted
+- Status: Accepted; amended in place 2026-10-22
 - Date: 2026-10-21; amended 2026-10-22 (sessions reset, no statement run
   twice)
 

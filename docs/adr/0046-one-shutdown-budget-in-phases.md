@@ -1,6 +1,6 @@
 # 0046. Shut down in phases within one budget
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-25 (at the end)
 - Date: 2026-10-20
 
 ## Context

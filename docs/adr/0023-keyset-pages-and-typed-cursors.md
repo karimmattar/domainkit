@@ -1,6 +1,6 @@
 # 0023. Keyset pages with versioned, typed cursors; filters declared per field
 
-- Status: Accepted
+- Status: Accepted; amended in place 2026-10-20
 - Date: 2026-10-19; amended 2026-10-20 (bounded cursors)
 
 ## Context

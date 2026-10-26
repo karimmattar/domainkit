@@ -77,6 +77,30 @@ project's pytest settings:
 filterwarnings = ["error::domainkit.deprecation.DomainkitDeprecationWarning"]
 ```
 
+## Security fixes and support
+
+**Draft, for the owner to confirm.** Until it is confirmed,
+[SECURITY.md](../SECURITY.md) holds: only the latest minor release gets
+fixes, and there are no backports before 1.0.
+
+| Release line | Gets | For how long |
+| --- | --- | --- |
+| The latest minor (`0.X`) | Every fix, as patch releases (`0.X.Y`) | Until the next minor is released |
+| The minor before it (`0.X-1`) | Fixes for critical and high severity vulnerabilities only, where the fix can be made without a breaking change | 90 days after the next minor is released |
+| Older minors | Nothing | |
+
+- The severity is the one `SECURITY.md`'s steps confirm; each fix is
+  published as a GitHub security advisory naming the patch releases that
+  carry it.
+- A fix that cannot be backported safely is not: the advisory says so,
+  and says what to upgrade to.
+- Only the newest patch release of a supported line is supported:
+  upgrade within a line as soon as a patch is out.
+- Python versions follow `requires-python`; a Python version that its
+  maintainers stop fixing is dropped in the next minor.
+- 1.0 will state a longer support period for its majors; nothing here
+  promises one before then.
+
 ## Supported Python and dependencies
 
 Each release supports the Python versions in `requires-python` (currently

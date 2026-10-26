@@ -3,6 +3,9 @@
 All notable changes to domainkit. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/); see `docs/versioning.md`.
+Entries end with the ids of the review findings they answer, such as
+`(FIN-77)`: [docs/audit/0.9.0.md](docs/audit/0.9.0.md) gives each a title
+and a status.
 
 ## [Unreleased]
 
@@ -57,6 +60,29 @@ All notable changes to domainkit. The format follows
   so far `domainkit.ddd.query.Query`, a name that still works and the same
   class. It no longer shares its name with the CQRS message
   `domainkit.ddd.Query`. `docs/queries.md` uses the new name (DSGN-09).
+- `docs/tutorial.md`: from `pip install` to an authenticated resource with
+  one aggregate, created, changed, and refused by its rules over HTTP. Its
+  commands, and the README quick start's, are run as written by the tests
+  (`test_walkthroughs.py`): every command up to `runserver` in a new
+  directory, then every `curl` line against the generated application
+  (DOCS-05).
+- `python -m domainkit` runs the `domainkit` program, for an interpreter
+  whose scripts are not on the `PATH`; it answered "No module named
+  domainkit.__main__" (DOCS-06).
+- `docs/audit/0.9.0.md` gives every review id the CHANGELOG cites, such as
+  `(FIN-77)` or `(R22)`, a title and a status; the preamble links it. Open
+  security findings are listed by id and severity only (DOCS-11).
+- `docs/threat-model.md`, a first draft: what a service protects, its
+  trust boundaries, the threats at each and what domainkit does about
+  them, the risks left for 0.10, and what a project must do itself
+  (FIN-85, DOCS-04).
+- `docs/versioning.md` drafts which releases get security fixes and for
+  how long, for the owner to confirm; until then `SECURITY.md`'s "latest
+  minor only" holds (FIN-85).
+- ADRs 0078 (events delivered in process after commit, or durably through
+  the outbox) and 0079 (every setting validated at startup by a model),
+  for decisions taken in 0.1.0; the ADR index lists those still without a
+  record (DSGN-15).
 
 - `MESSAGING.POLL_INTERVAL_IDLE` (`None`, or `POLL_INTERVAL` to an hour):
   a worker or relay whose listener hears commits (PostgreSQL, `NOTIFY`)
@@ -101,6 +127,21 @@ All notable changes to domainkit. The format follows
   the core into one; the 30 that exist are listed for 0.10 (DSGN-04).
 - `domainkit.contrib.evidence.model` is now `models`, as in every other
   app; the old module re-exports the same names (DSGN-09).
+- `startdomain`'s next steps end with a login and a first `curl` of the
+  new resource, at `/api/v1/<name>/<plural>`, and the README quick start
+  creates its superuser without prompts, logs in, and lists the invoices
+  (DOCS-02).
+- Each ADR's status names what amended it (a later record, dated sections
+  at its end, or earlier corrections in place), the index is in order and
+  repeats each status, and the rule for amending is written down: append a
+  dated section, or supersede with a new record (DOCS-08).
+- The settings tables state every limit their models enforce, and
+  `test_docs.py` checks each row's default and limits against the models,
+  not only that the name is on the page; mail.md's tables are headed
+  `MAIL` and `NOTIFICATIONS` (DOCS-09).
+- `test_docs.py` checks every relative link and anchor in `docs/`, the
+  README, `SECURITY.md`, and the CHANGELOG, and the middleware table's
+  order against the template's and `DEFAULT_MIDDLEWARE` (DOCS-07).
 
 - The outbox has a new index for its cleanup, on `finished_at` of done and
   cancelled messages: run `makemigrations` and `migrate` in projects that
@@ -150,6 +191,17 @@ All notable changes to domainkit. The format follows
 - `makemigrations` with no changes no longer reformats every Python file
   in the working directory when ruff is installed: ruff, given no paths,
   formatted all of them (INFRA-05).
+- The first request a newcomer made after the quick start, to the
+  `/api/v1/invoices` that `startdomain` said it mounted, answered 404: the
+  resource is `/invoices` within that router (DOCS-02).
+- The README listed `docs/runtime.md` three times and 14 of the 17 extras
+  (DOCS-06).
+- `docs/reference.md` called its middleware table the template's order,
+  which installs eleven of them, `LocaleMiddleware` before
+  `SecurityHeadersMiddleware` where the table had it after; the
+  `flags` row left out `set`'s options; `docs/privacy.md` linked a heading
+  that does not exist; `DEBUG_TOOLBAR` had no row (DOCS-07, DOCS-09).
+
 
 - A second audit sealer on PostgreSQL (`auditseal` while the worker
   seals, or two outboxes' workers sealing one database) no longer waits

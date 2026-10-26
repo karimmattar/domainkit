@@ -1,6 +1,6 @@
 # 0065. Upgrade FastAPI, SQLAlchemy, and asyncpg behind the ladder, with FastAPI's telemetry off
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-25 (at the end)
 - Date: 2026-10-21
 
 ## Context

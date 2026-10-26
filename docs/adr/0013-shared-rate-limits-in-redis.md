@@ -1,6 +1,6 @@
 # 0013. Share rate limits through Redis, with GCRA on the server's clock
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-25 (at the end)
 - Date: 2026-10-14
 
 ## Context

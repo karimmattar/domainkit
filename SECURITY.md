@@ -21,7 +21,9 @@ reporters are credited unless they ask not to be.
 ## Supported versions
 
 Only the latest minor release gets fixes. Before 1.0 there are no backports.
-See [docs/versioning.md](docs/versioning.md).
+See [docs/versioning.md](docs/versioning.md), which drafts a longer support
+statement for the owner to confirm
+([Security fixes and support](docs/versioning.md#security-fixes-and-support)).
 
 ## What domainkit does for you, and what it doesn't
 
@@ -38,7 +40,9 @@ must say who may call it (`Require`, or `Public` for anyone): `check` lists
 routes that do not, and staging and production refuse to start with any.
 Staff using the admin API can grant only the permissions they hold. The
 settings reference
-([docs/reference.md](docs/reference.md)) lists every control.
+([docs/reference.md](docs/reference.md)) lists every control, and
+[docs/threat-model.md](docs/threat-model.md) what they defend against,
+boundary by boundary, and what is left to a project.
 
 ## Known exceptions
 

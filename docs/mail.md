@@ -164,7 +164,7 @@ directory there to replace a template a contrib app ships, such as
 
 ### Settings
 
-| Setting | Default | Meaning |
+| `MAIL` key | Default | Meaning |
 | --- | --- | --- |
 | `BACKEND` | `...SmtpBackend` | Dotted path to a `BaseEmailBackend`. Checked at startup. |
 | `DEFAULT_FROM_EMAIL` | `"webmaster@localhost"` | The sender of messages that name none. |
@@ -175,8 +175,8 @@ directory there to replace a template a contrib app ships, such as
 
 | `MAIL.SMTP` | Default | Meaning |
 | --- | --- | --- |
-| `HOST` | `"localhost"` | |
-| `PORT` | `None` | 587 for `starttls`, 465 for `tls`, 25 for `none`. |
+| `HOST` | `"localhost"` | The server's name or address: not empty, and at most 253 characters. |
+| `PORT` | `None` | 1 to 65,535; `None` is 587 for `starttls`, 465 for `tls`, 25 for `none`. |
 | `SECURITY` | `"starttls"` | `starttls`, `tls`, or `none` (only with `DEBUG`). |
 | `USER`, `PASSWORD` | `None` | Set together; the password is hidden in reprs. |
 | `TIMEOUT` | `10.0` | Seconds to connect, and for each exchange. |
@@ -228,7 +228,7 @@ blanked (see [what the outbox keeps](#mail)). `deliver_sms` and
 what they would send; the memory backends keep it in `sms_outbox` and
 `push_outbox`, for tests. Staging and production refuse both.
 
-| Setting | Default | Meaning |
+| `NOTIFICATIONS` key | Default | Meaning |
 | --- | --- | --- |
 | `SMS_BACKEND` | `...ConsoleSmsBackend` | Dotted path to an `SmsBackend`. |
 | `PUSH_BACKEND` | `...ConsolePushBackend` | Dotted path to a `PushBackend`. |

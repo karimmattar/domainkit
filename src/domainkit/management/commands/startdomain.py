@@ -24,6 +24,15 @@ TEMPLATE_SUFFIX: Final = "-tpl"
 _PLACEHOLDER: Final = re.compile(r"\{\{ (\w+) \}\}")
 _SNAKE_NAME: Final = re.compile(r"[a-z][a-z0-9_]*")
 _CLASS_NAME: Final = re.compile(r"[A-Z][A-Za-z0-9]*")
+SERVER: Final = "http://127.0.0.1:8000"
+"""Where ``runserver`` listens unless told otherwise."""
+LOGIN_CURL: Final = (
+    f"TOKEN=$(curl -s {SERVER}/auth/login "
+    '-H "Content-Type: application/json" '
+    """-d '{"username": "<username>", "password": "<password>"}' """
+    "| python -c \"import json, sys; print(json.load(sys.stdin)['access_token'])\")"
+)
+"""Log in at the project template's ``/auth/login``; keep the token in ``$TOKEN``."""
 
 
 def template_context(
@@ -168,6 +177,13 @@ def _next_steps(
         (
             f"Grant {domain}.view_{context['model']} (and add_, change_, delete_) to "
             "the users or groups that need them; superusers have them."
+        ),
+        (
+            "python manage.py runserver; then, from another shell, log in as a "
+            f"superuser and list the {context['aggregates_title']}:\n"
+            f"       {LOGIN_CURL}\n"
+            f"       curl {SERVER}/api/v1/{domain}/{context['aggregates']} "
+            '-H "Authorization: Bearer $TOKEN"'
         ),
     ]
     return "\n".join(
