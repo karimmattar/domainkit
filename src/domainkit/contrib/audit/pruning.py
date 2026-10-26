@@ -298,7 +298,9 @@ async def _disable_triggers(connection: AsyncConnection) -> list[str]:
         found = await connection.scalar(_ENABLED, {"table": table.name, "name": name})
         if found is None:
             continue
+        # The names are the framework's own, quoted by the dialect.
         await connection.execute(
+            # nosemgrep: avoid-sqlalchemy-text  # noqa: ERA001
             text(f"ALTER TABLE {quote(table.name)} DISABLE TRIGGER {quote(name)}")
         )
         enable.append(f"ALTER TABLE {quote(table.name)} ENABLE TRIGGER {quote(name)}")

@@ -154,6 +154,10 @@ class FakeClient:
         self._call("state")
         return self.state
 
+    def verifiedTxById(self, tx: int) -> Any:  # noqa: ANN401 - SDK API.
+        """Not called: these ledgers keep no state to prove (test_ledger_trust)."""
+        raise AssertionError("unused")  # pragma: no cover
+
     def shutdown(self) -> None:
         """Close the channel."""
         self.shutdown_threads.append(threading.current_thread().name)

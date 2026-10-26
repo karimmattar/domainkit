@@ -175,6 +175,8 @@ def url(
         params[owner.parent.lookup] = str(context.ids[owner.parent.lookup])
     request = context.request
     path = request.app.url_path_for(name, **params)
+    # A path for a response's links, not a response (a Flask rule).
+    # nosemgrep: directly-returned-format-string  # noqa: ERA001
     return f"{request.scope.get('root_path', '')}{path}"
 
 

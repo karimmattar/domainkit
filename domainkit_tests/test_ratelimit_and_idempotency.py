@@ -1446,15 +1446,19 @@ def test_keyed_requests_without_any_deadline_are_refused_where_deployed(
     staging and production, nothing.
     """
 
-    def found(**options: object) -> tuple[list[str], list[str]]:
+    def found(
+        options: dict[str, object] | None = None, *, relaxed: bool = False
+    ) -> tuple[list[str], list[str]]:
         # ANONYMOUS chosen, so its own warning (idempotency.W002) stays out.
-        chosen = {"ANONYMOUS": "per-address", **options.pop("IDEMPOTENCY", {})}
+        chosen: dict[str, object] = {"ANONYMOUS": "per-address"}
+        if relaxed:
+            chosen["REQUIRE_DEADLINE"] = False
         registry.clear()
         try:
             with override_settings(
                 INSTALLED_DOMAINS=["domainkit.contrib.idempotency", ALPHA],
                 IDEMPOTENCY=chosen,
-                **options,
+                **(options or {}),
             ):
                 setup()  # Workers and commands start: only the application refuses.
                 config = registry.get_domain_config("idempotency")
@@ -1462,7 +1466,7 @@ def test_keyed_requests_without_any_deadline_are_refused_where_deployed(
         finally:
             registry.clear()
 
-    elsewhere = found(**unbounded)
+    elsewhere = found(unbounded)
     monkeypatch.setattr(idempotency_apps, "DEPLOYED_ENVIRONMENTS", {"test"})
     message = (
         f"Requests with an Idempotency-Key run without a deadline ({missing}): one "
@@ -1470,10 +1474,8 @@ def test_keyed_requests_without_any_deadline_are_refused_where_deployed(
         "retry, which runs it again."
     )
 
-    (refused,), warned = found(**unbounded)
-    relaxed, (only_warned,) = found(
-        **unbounded, IDEMPOTENCY={"REQUIRE_DEADLINE": False}
-    )
+    (refused,), warned = found(unbounded)
+    relaxed, (only_warned,) = found(unbounded, relaxed=True)
 
     assert (refused, warned) == (message, [])
     assert getattr(refused, "id", None) == "idempotency.E002"
