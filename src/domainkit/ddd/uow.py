@@ -26,20 +26,44 @@ same commit and run by a worker afterwards (``domainkit.contrib.messaging``).
 A read-only unit of work (``readonly=True``, or a subclass that sets
 ``readonly = True``) refuses to commit; the SQL one reads from a replica
 when ``DATABASES`` names one.
+
+``run(work)`` runs work that may lose a race with another transaction, and
+runs it again, whole, when it does (``Retry``)::
+
+    await uow.run(lambda: transfer(command, uow), retry=Retry(attempts=5))
+
+``lock(name)`` holds a lock by name until the transaction ends, for work
+that has no row to lock.
 """
 
+import asyncio
+import logging
+import math
+import secrets
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
 from types import TracebackType
-from typing import Any, Self
+from typing import Any, Final, Self
 
+from domainkit import clock, deadlines
 from domainkit.ddd.events import DomainEvent, EventBus, event_bus
 from domainkit.ddd.preconditions import check_loaded
-from domainkit.ddd.repository import Repository
+from domainkit.ddd.query import RowLock
+from domainkit.ddd.repository import Mark, Repository, RowLocks
 from domainkit.exceptions import DomainkitError
+
+MAX_ATTEMPTS: Final = 10
+"""The most runs a ``Retry`` allows."""
+MAX_BACKOFF: Final = 60.0
+"""The longest wait, in seconds, a ``Retry`` allows before a run."""
+NAMED_LOCKS: Final = RowLocks()
+"""The locks ``lock(name)`` takes in memory: one registry for the process, as
+one database would be for every transaction."""
+logger = logging.getLogger(__name__)
+_random = secrets.SystemRandom()
 
 
 class ReadOnlyError(RuntimeError, DomainkitError):
@@ -56,6 +80,68 @@ class DeferredTask:
     dedupe_key: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class Retry:
+    """How ``UnitOfWork.run`` runs its work again when the transaction lost a race.
+
+    The work runs at most ``attempts`` times, the first included. Before
+    each next run it waits a random time between 0 and ``backoff`` seconds,
+    doubled for each run so far, at most ``max_backoff`` ("full jitter"),
+    so transactions that collided do not collide again. The database's
+    serialization failures and deadlocks are run again; ``retry_on`` adds
+    errors of your own, such as ``ConcurrentUpdate``.
+    """
+
+    attempts: int = 3
+    """Runs in all, the first included: 1 to ``MAX_ATTEMPTS``."""
+    backoff: float = 0.02
+    """Seconds: the longest wait before the second run."""
+    max_backoff: float = 1.0
+    """Seconds: the longest wait before any run, at most ``MAX_BACKOFF``."""
+    retry_on: tuple[type[Exception], ...] = ()
+    """Errors that run the work again, besides the database's conflicts."""
+
+    def __post_init__(self) -> None:
+        """Refuse a policy out of bounds.
+
+        Raises:
+            ValueError: ``attempts`` is not 1 to ``MAX_ATTEMPTS``, the waits
+                are not finite with 0 <= ``backoff`` <= ``max_backoff`` <=
+                ``MAX_BACKOFF``, or ``retry_on`` holds something other than
+                exception classes.
+        """
+        attempts = self.attempts
+        if isinstance(attempts, bool) or not isinstance(attempts, int):
+            raise ValueError(f"Retry attempts is a whole number, not {attempts!r}.")
+        if not 1 <= attempts <= MAX_ATTEMPTS:
+            raise ValueError(
+                f"Retry attempts is 1 to {MAX_ATTEMPTS} runs, the first "
+                f"included, not {attempts}."
+            )
+        backoff, most = self.backoff, self.max_backoff
+        if not (
+            math.isfinite(backoff)
+            and math.isfinite(most)
+            and 0 <= backoff <= most <= MAX_BACKOFF
+        ):
+            raise ValueError(
+                f"Retry waits need 0 <= backoff <= max_backoff <= {MAX_BACKOFF:g} "
+                f"seconds, not backoff={backoff!r}, max_backoff={most!r}."
+            )
+        for error in self.retry_on:
+            if not (isinstance(error, type) and issubclass(error, Exception)):
+                raise ValueError(f"retry_on takes exception classes, not {error!r}.")
+
+    def delay(self, runs: int) -> float:
+        """A random wait, in seconds, before run ``runs + 1``."""
+        ceiling = min(self.max_backoff, self.backoff * 2.0 ** min(runs - 1, 64))
+        return _random.uniform(0.0, ceiling)
+
+
+DEFAULT_RETRY: Final = Retry()
+"""What ``UnitOfWork.run`` retries with when it is given no ``Retry``."""
+
+
 class Savepoint:
     """A savepoint's handle; in memory, the repositories restore themselves."""
 
@@ -66,11 +152,26 @@ class Savepoint:
         """Keep what happened since the savepoint."""
 
 
+class _Commits:
+    """How many commits a unit of work made while ``run`` ran its work."""
+
+    __slots__ = ("count",)
+
+    def __init__(self) -> None:
+        """None yet."""
+        self.count = 0
+
+
 class UnitOfWork(ABC):
     """Transaction boundary; subclasses expose repositories as attributes."""
 
     readonly: bool = False
     """Refuse to commit; the SQL unit of work reads from a replica if it can."""
+    _commits: _Commits | None = None
+    """Counted while ``run`` runs. Set on the instance only then, as is
+    ``_named_locks``: ``repositories()`` walks the instance's attributes."""
+    _named_locks: bool = False
+    """Whether this unit of work holds named locks in memory (``lock``)."""
 
     def __init__(
         self, *, events: EventBus | None = None, readonly: bool | None = None
@@ -135,6 +236,8 @@ class UnitOfWork(ABC):
         deferred, self._deferred = self._deferred, []
         await self._stage(events, deferred)
         await self._commit()
+        if self._commits is not None:
+            self._commits.count += 1
         self._finish()
         await self._committed()
         await self.events.publish_all(events)
@@ -172,6 +275,113 @@ class UnitOfWork(ABC):
         finally:
             self._savepoints -= 1
 
+    async def run[T](
+        self, work: Callable[[], Awaitable[T]], /, *, retry: Retry | None = None
+    ) -> T:
+        """Run ``work``, and run it again, whole, if its transaction lost a race.
+
+        ``work`` takes no arguments and does the whole job, entering this
+        unit of work itself, as a service does::
+
+            await uow.run(lambda: transfer(command, uow), retry=Retry(attempts=5))
+
+        A failure that ``retry`` names (``DEFAULT_RETRY`` if None) runs it
+        again after a short random wait: the database's serialization
+        failures and deadlocks, and the errors in ``retry_on``. What the
+        failed run wrote is gone with its transaction: rows, outbox
+        messages, audit entries, an ``Idempotency-Key``'s mark. In-memory
+        repositories are put back as they were before it. Events are
+        published, and deferred tasks kept, only by a commit that succeeds.
+
+        It is not run again, and its failure is raised as it was, once
+        ``retry.attempts`` runs failed, when this unit of work committed
+        during the run (running it again would commit twice), or when the
+        wait would pass the deadline (``domainkit.deadlines``). Under a
+        frozen clock (``freeze_time``) the wait takes no time.
+
+        Raises:
+            Exception: The last run's failure, or one that is not retried.
+        """
+        policy = DEFAULT_RETRY if retry is None else retry
+        commits = self._commits
+        outermost = commits is None
+        if commits is None:  # A run inside another's shares its count.
+            commits = self._commits = _Commits()
+        try:
+            runs = 0
+            while True:
+                runs += 1
+                before = commits.count
+                marks = self._run_marks()
+                try:
+                    return await work()
+                except Exception as exc:
+                    if commits.count != before or not (
+                        isinstance(exc, policy.retry_on) or self._conflicted(exc)
+                    ):
+                        raise
+                    wait = policy.delay(runs)
+                    left = deadlines.remaining()
+                    if runs >= policy.attempts or (left is not None and wait >= left):
+                        if runs > 1:
+                            exc.add_note(
+                                f"The work ran {runs} times; each run lost a race."
+                            )
+                        raise
+                    for repository, mark in marks:
+                        repository._rewind(mark)
+                    logger.info(
+                        "Run %d of %s lost a race (%s); running it again",
+                        runs,
+                        type(self).__name__,
+                        type(exc).__name__,
+                    )
+                await _sleep(wait)
+        finally:
+            if outermost:
+                del self._commits
+
+    async def lock(self, name: str, *, nowait: bool = False) -> None:
+        """Hold the lock called ``name`` until this unit of work's transaction ends.
+
+        For work that has no row to lock, such as "one payout per account
+        and day": another unit of work that asks for the same name waits
+        until this one commits or rolls back. ``nowait`` raises
+        ``LockNotAvailable`` instead of waiting. Take it before reading what
+        it guards. In memory the names are the process's (``NAMED_LOCKS``),
+        and a wait past its timeout raises ``LockNotAvailable``.
+
+        Raises:
+            ValueError: ``name`` is not a non-empty string.
+            ReadOnlyError: The unit of work is read-only.
+            LockNotAvailable: Another unit of work holds it, with ``nowait``.
+        """
+        self._check_lock(name)
+        self._named_locks = True
+        await NAMED_LOCKS.acquire(name, self, RowLock(nowait=nowait))
+
+    def _check_lock(self, name: str) -> None:
+        """Refuse a lock's name that is not a non-empty string, or a read-only lock.
+
+        Raises:
+            ValueError: ``name`` is not a non-empty string.
+            ReadOnlyError: The unit of work is read-only.
+        """
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"A lock's name is a non-empty string, not {name!r}.")
+        if self.readonly:
+            raise ReadOnlyError(
+                f"{type(self).__name__} is read-only; it takes no locks."
+            )
+
+    def _conflicted(self, exc: BaseException) -> bool:
+        """Whether ``exc`` says the transaction lost a race; in memory, none does."""
+        return False
+
+    def _run_marks(self) -> list[tuple[Repository[Any, Any], Mark]]:
+        """What a run of ``run`` that failed puts back: every repository's state."""
+        return [(each, each._mark()) for each in self.repositories()]
+
     async def _begin_savepoint(self) -> Savepoint:
         """Start a savepoint; the SQL unit of work starts one in the database."""
         return Savepoint()
@@ -190,9 +400,12 @@ class UnitOfWork(ABC):
         """Run follow-up work after the commit; it must not fail the commit."""
 
     def _finish(self) -> None:
-        """Let every repository release what the transaction held."""
+        """Let every repository release what the transaction held, and named locks."""
         for repository in self.repositories():
             repository._finished()
+        if self._named_locks:
+            self._named_locks = False
+            NAMED_LOCKS.release(self)
 
     def collect_new_events(self) -> list[DomainEvent]:
         """Take the pending events from every aggregate the repositories saw."""
@@ -214,3 +427,8 @@ class UnitOfWork(ABC):
     @abstractmethod
     async def _rollback(self) -> None:
         """Roll the underlying transaction back."""
+
+
+async def _sleep(seconds: float) -> None:
+    """Wait before running work again; under a frozen clock, only yield."""
+    await asyncio.sleep(0 if clock.frozen() is not None else seconds)

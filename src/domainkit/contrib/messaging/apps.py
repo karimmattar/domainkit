@@ -6,6 +6,8 @@ from importlib.util import find_spec
 from typing import Any
 from weakref import WeakKeyDictionary
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from domainkit import lifecycle
 from domainkit.apps import DomainConfig, registry
 from domainkit.broker import brokers
@@ -19,10 +21,11 @@ from .dispatch import close_publishers
 from .outbox import notify_committed, rows_for, write
 from .settings import MessagingSettings
 
-_committing: WeakKeyDictionary[SqlAlchemyUnitOfWork, list[dict[str, Any]]] = (
-    WeakKeyDictionary()
-)
-"""Messages each unit of work wrote, to publish once it commits."""
+_committing: WeakKeyDictionary[AsyncSession, list[dict[str, Any]]] = WeakKeyDictionary()
+"""Messages each unit of work's session wrote, to publish once it commits.
+
+By session: a commit that failed leaves its rows with its session, which
+the next ``async with`` of the unit of work replaces (``UnitOfWork.run``)."""
 
 
 class MessagingConfig(DomainConfig):
@@ -80,11 +83,11 @@ class MessagingConfig(DomainConfig):
         session = uow.session
         dialect = session.get_bind().dialect.name
         await write(session, dialect, rows)
-        _committing.setdefault(uow, []).extend(rows)
+        _committing[session] = rows
 
     async def publish_committed(self, uow: SqlAlchemyUnitOfWork) -> None:
         """Hand the messages the unit of work wrote to the background publisher."""
-        rows = _committing.pop(uow, [])
+        rows = _committing.pop(uow.session, [])
         await notify_committed(self.get_settings(), uow.alias, rows)
 
     async def erase_subject(self, subject: str, reason: str) -> Mapping[str, int]:

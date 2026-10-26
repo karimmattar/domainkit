@@ -17,39 +17,115 @@ otherwise; on PostgreSQL its transaction is ``READ ONLY`` either way.
 on its own, without ``BEGIN`` and ``ROLLBACK``, and ``SNAPSHOT`` reads one
 snapshot (``REPEATABLE READ``). ``savepoint()`` is a ``SAVEPOINT`` in the
 session's transaction.
+
+A unit of work that writes may choose its transaction's isolation level
+(``Isolation``), set as the transaction begins: on PostgreSQL in its
+``BEGIN``, with no round trip of its own. SQLite runs every transaction
+serializably; ``REPEATABLE_READ`` and ``SERIALIZABLE`` begin it with
+``BEGIN IMMEDIATE``, so such units of work take the database's write lock
+first and run one at a time, never failing on each other.
+
+``run`` retries PostgreSQL's serialization failures (SQLSTATE ``40001``)
+and deadlocks (``40P01``); SQLite reports neither. ``lock(name)`` is
+``pg_advisory_xact_lock`` on a 64-bit key (``lock_key``), and on SQLite
+the database's write lock.
 """
 
+import hashlib
 import logging
+import threading
 from abc import abstractmethod
 from collections.abc import Sequence
+from enum import StrEnum
+from functools import partial
 from types import TracebackType
-from typing import Final, Self
+from typing import Any, Final, Self
+from weakref import WeakKeyDictionary
 
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession, AsyncSessionTransaction
+from sqlalchemy import BigInteger, Connection, bindparam, event, func, select
+from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, AsyncSessionTransaction
 from sqlalchemy.orm.exc import StaleDataError
 
 from domainkit.apps import registry
-from domainkit.db.connections import Reads, connections
+from domainkit.db.connections import INTERNAL, Reads, connections
 from domainkit.db.errors import duplicate_value
 from domainkit.db.hooks import on_committed, on_stage
 from domainkit.db.orm import metadata
-from domainkit.db.repository import reload_expired
+from domainkit.db.repository import _sqlstate, reload_expired
 from domainkit.db.routing import ShardKey, router
 from domainkit.ddd import (
     ConcurrentUpdate,
     DeferredTask,
     DomainEvent,
     EventBus,
+    LockNotAvailable,
     UnitOfWork,
 )
+from domainkit.ddd.repository import Mark, Repository
 from domainkit.ddd.uow import Savepoint
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.reporting import report_error
 from domainkit.tracing import span
 
 MESSAGING: Final = "domainkit.contrib.messaging"
+CONFLICTS: Final = frozenset({"40001", "40P01"})
+"""PostgreSQL's SQLSTATEs of a transaction that lost a race and may succeed
+if run again: ``serialization_failure`` and ``deadlock_detected``."""
+LOCK_KEY_PERSON: Final = b"domainkit.lock"
+"""Personalizes the hash of a lock's name, so its keys are domainkit's own."""
+ADVISORY_LOCK: Final = select(
+    func.pg_advisory_xact_lock(bindparam("key", type_=BigInteger))
+)
+TRY_ADVISORY_LOCK: Final = select(
+    func.pg_try_advisory_xact_lock(bindparam("key", type_=BigInteger))
+)
 logger = logging.getLogger(__name__)
+
+
+class Isolation(StrEnum):
+    """The isolation level of a unit of work's transaction (``isolation=``).
+
+    Each value is SQLAlchemy's name for it; ``Isolation("serializable")``
+    and ``Isolation("repeatable_read")`` are read too.
+    """
+
+    READ_COMMITTED = "READ COMMITTED"
+    """Each statement sees what was committed before it began: PostgreSQL's
+    default. On SQLite, as without a level."""
+    REPEATABLE_READ = "REPEATABLE READ"
+    """Every statement sees the data as the first one did. On PostgreSQL, a
+    row another transaction changed meanwhile cannot be changed: the change
+    fails with a serialization failure, which ``run`` retries. On SQLite,
+    as ``SERIALIZABLE``."""
+    SERIALIZABLE = "SERIALIZABLE"
+    """As if the transactions ran one after another. On PostgreSQL, one that
+    could not have fails with a serialization failure, which ``run``
+    retries. On SQLite, begun with ``BEGIN IMMEDIATE``: they do run one
+    after another."""
+
+    @classmethod
+    def _missing_(cls, value: object) -> "Isolation | None":
+        """Read a level in any case, with ``_`` or a space between its words."""
+        if isinstance(value, str):
+            name = value.upper().replace("_", " ").strip()
+            for level in cls:
+                if level.value == name:
+                    return level
+        return None
+
+
+def lock_key(name: str) -> int:
+    """The 64-bit key ``lock(name)`` takes on PostgreSQL, signed, as ``bigint``.
+
+    A keyed BLAKE2b hash of the name's UTF-8, the same in every process and
+    release: ``pg_locks`` shows it as ``classid`` (the high 32 bits) and
+    ``objid`` (the low ones), with ``objsubid`` 1.
+    """
+    digest = hashlib.blake2b(
+        name.encode("utf-8"), digest_size=8, person=LOCK_KEY_PERSON
+    ).digest()
+    return int.from_bytes(digest, "big", signed=True)
 
 
 class SqlAlchemyUnitOfWork(UnitOfWork):
@@ -76,6 +152,10 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
     """How a read-only unit of work reads. A subclass that sets another
     value is read-only; with ``STATEMENTS`` or ``SNAPSHOT`` its session also
     refuses to flush or to run a statement that writes."""
+    isolation: Isolation | None = None
+    """The isolation level of its transactions (``Isolation``); None keeps
+    the database's own (``READ COMMITTED`` on PostgreSQL). For units of
+    work that write: a read-only one says how it reads with ``reads``."""
     alias: str
     """The one SQL alias this unit of work uses, resolved from the target.
 
@@ -91,16 +171,21 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         events: EventBus | None = None,
         readonly: bool | None = None,
         reads: Reads | str | None = None,
+        isolation: Isolation | str | None = None,
     ) -> None:
         """Resolve the database now, so a missing shard key fails before any work.
 
         ``reads`` makes the unit of work read-only, unless ``readonly=False``
         says otherwise, which only ``Reads.TRANSACTION`` allows.
+        ``isolation`` sets the isolation level of its transactions, in place
+        of the class's.
 
         Raises:
             ValueError: ``reads`` is not a ``Reads`` value, or asks a unit of
                 work that writes (``readonly=False``) to read without its
-                transaction: one that writes always has one.
+                transaction: one that writes always has one. Or
+                ``isolation`` is not an ``Isolation`` level, or is given to
+                a read-only unit of work.
         """
         super().__init__(events=events, readonly=readonly)
         if reads is not None:
@@ -114,6 +199,15 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
                 f"reads={self.reads.value!r} is for read-only units of work; "
                 "one that writes always runs in a transaction."
             )
+        level = self.isolation if isolation is None else isolation
+        if level is not None:
+            self.isolation = Isolation(level)
+            if self.readonly:
+                raise ValueError(
+                    "isolation= is for units of work that write; a read-only one "
+                    "picks how it reads with reads= (Reads.SNAPSHOT reads one "
+                    "snapshot)."
+                )
         self.database = (
             database or self.database or router.target_for_module(type(self).__module__)
         )
@@ -124,9 +218,15 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
 
     async def __aenter__(self) -> Self:
         """Open a session and the repositories that share it."""
-        self.session = connections.session(
-            self.alias, readonly=self.readonly, reads=self.reads
-        )
+        if self.isolation is None:
+            self.session = connections.session(
+                self.alias, readonly=self.readonly, reads=self.reads
+            )
+        else:
+            self.session = AsyncSession(
+                _isolated(connections.engine(self.alias), self.isolation),
+                expire_on_commit=False,
+            )
         self.create_repositories(self.session)
         return await super().__aenter__()
 
@@ -203,6 +303,41 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         """Roll the session's transaction back."""
         await self.session.rollback()
 
+    async def lock(self, name: str, *, nowait: bool = False) -> None:
+        """Hold the lock called ``name`` until the transaction ends.
+
+        On PostgreSQL, ``pg_advisory_xact_lock`` on ``lock_key(name)``; a
+        wait past ``LOCK_TIMEOUT`` fails as a row lock's does (503
+        ``database_busy``). On SQLite, the database's write lock: the
+        transaction begins (``BEGIN IMMEDIATE``) if it had not written yet,
+        waiting as long as any write would; ``nowait`` changes nothing there.
+
+        Raises:
+            ValueError: ``name`` is not a non-empty string.
+            ReadOnlyError: The unit of work is read-only.
+            LockNotAvailable: Another transaction holds it, with ``nowait``.
+        """
+        self._check_lock(name)
+        if self.session.get_bind().dialect.name != "postgresql":
+            connection = await self.session.connection()
+            await connection.run_sync(_begin_immediate)
+            return
+        key = {"key": lock_key(name)}
+        if not nowait:
+            await self.session.execute(ADVISORY_LOCK, key)
+        elif not await self.session.scalar(TRY_ADVISORY_LOCK, key):
+            raise LockNotAvailable(
+                "The data is being changed by another request; try again."
+            )
+
+    def _run_marks(self) -> list[tuple[Repository[Any, Any], Mark]]:
+        """Nothing: each run opens a session, and repositories, of its own."""
+        return []
+
+    def _conflicted(self, exc: BaseException) -> bool:
+        """Whether PostgreSQL refused the transaction: serialization or deadlock."""
+        return isinstance(exc, DBAPIError) and _sqlstate(exc) in CONFLICTS
+
     async def _begin_savepoint(self) -> Savepoint:
         """``SAVEPOINT`` in the session's transaction (flushing first)."""
         return _SessionSavepoint(self.session, await self.session.begin_nested())
@@ -234,3 +369,50 @@ class _SessionSavepoint(Savepoint):
     async def release(self) -> None:
         """``RELEASE SAVEPOINT``, after flushing."""
         await self.nested.commit()
+
+
+_ISOLATED: Final[WeakKeyDictionary[AsyncEngine, dict[Isolation, AsyncEngine]]] = (
+    WeakKeyDictionary()
+)
+"""Per engine, the engine with each isolation level's options (sharing its pool).
+
+Engines belong to one event loop each; loops on several threads add theirs
+with ``_ISOLATED_LOCK`` held, and read their own entry without it."""
+_ISOLATED_LOCK: Final = threading.Lock()
+
+
+def _isolated(engine: AsyncEngine, isolation: Isolation) -> AsyncEngine:
+    """``engine`` with transactions at ``isolation``, made once per engine and level.
+
+    On PostgreSQL, the ``isolation_level`` execution option: the driver puts
+    it in the ``BEGIN`` it sends, and SQLAlchemy restores the connection's
+    default when it goes back to the pool. On SQLite, a transaction that
+    asks for more than ``READ COMMITTED`` begins with ``BEGIN IMMEDIATE``.
+    """
+    levels = _ISOLATED.get(engine)
+    if levels is None:
+        with _ISOLATED_LOCK:
+            levels = _ISOLATED.setdefault(engine, {})
+    bound = levels.get(isolation)
+    if bound is None:
+        if engine.dialect.name == "postgresql":
+            bound = engine.execution_options(isolation_level=isolation.value)
+        else:
+            bound = engine.execution_options()
+            if isolation is not Isolation.READ_COMMITTED:
+                # A callable per engine, as connections._listen explains.
+                event.listen(bound.sync_engine, "begin", partial(_begin_immediate))
+        levels[isolation] = bound
+    return bound
+
+
+def _begin_immediate(connection: Connection) -> None:
+    """Begin SQLite's transaction with the database's write lock, unless begun.
+
+    The driver begins one only before a write, so the reads before it
+    would not be part of it.
+    """
+    if not connection.connection.driver_connection.in_transaction:  # type: ignore[union-attr]
+        connection.exec_driver_sql(
+            "BEGIN IMMEDIATE", execution_options={INTERNAL: True}
+        )

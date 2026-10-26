@@ -785,6 +785,37 @@ def test_a_rejected_commit_releases_the_key(idempotent: TestClient) -> None:
     assert stored_keys() == []
 
 
+def test_work_run_again_marks_its_key_once(idempotent: TestClient) -> None:
+    """FIN-78: the mark went with the lost commit; the run that commits marks it."""
+    headers = {"Idempotency-Key": "conflict"}
+    first = idempotent.post("/pay?outcome=conflict", headers=headers)
+    retry = idempotent.post("/pay?outcome=conflict", headers=headers)
+
+    assert (first.status_code, first.content) == (201, b"paid")
+    assert retry.headers["Idempotent-Replayed"] == "true"
+    assert payments_on() == 1
+    [row] = stored_keys()
+    assert row["committed_at"] is not None
+
+
+def test_work_run_again_elsewhere_pins_its_key_again(
+    make_database: Callable[[str], str],
+) -> None:
+    """The pin of the lost run stands; the next run pins again, and is marked."""
+    databases = {"default": make_database("keys"), "other": make_database("other")}
+    with idempotent_app(databases) as client:
+        headers = {"Idempotency-Key": "conflict"}
+        path = "/pay?outcome=conflict&database=other"
+        first = client.post(path, headers=headers)
+        retry = client.post(path, headers=headers)
+
+        assert (first.status_code, retry.status_code) == (201, 201)
+        assert payments_on("other") == 1
+        [row] = stored_keys()
+        assert row["committed_at"] is not None
+        assert row["pinned"]
+
+
 def test_commits_elsewhere_are_marked_after_them(
     make_database: Callable[[str], str],
 ) -> None:

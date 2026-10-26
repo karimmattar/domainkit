@@ -1,0 +1,808 @@
+"""Transactions for money (FIN-78): retries, isolation levels, and locks.
+
+The proofs of concept come first: on 0.10, under the default isolation, two
+transactions that each check a rule across rows and change a different row
+both commit and break it (write skew); a serialization failure reached the
+client as 503 ``database_busy`` with nothing to run the work again; and two
+transfers that lock their rows in opposite orders deadlock.
+"""
+
+import asyncio
+import os
+from collections.abc import AsyncIterator, Callable, Iterator
+from pathlib import Path
+from typing import Any, Final
+from uuid import UUID
+
+import pytest
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import DBAPIError, OperationalError
+
+from benchmarks.counting import SqlCounter
+from domainkit import deadlines
+from domainkit.clock import freeze_time
+from domainkit.conf import override_settings
+from domainkit.db import Isolation, connections, lock_key
+from domainkit.ddd import (
+    ConcurrentUpdate,
+    EventBus,
+    LockNotAvailable,
+    NotFound,
+    ReadOnlyError,
+    Retry,
+    RowLocks,
+)
+from domainkit.ddd import uow as uow_module
+from domainkit.ddd.uow import DEFAULT_RETRY, MAX_ATTEMPTS, NAMED_LOCKS
+from domainkit_tests.conftest import POSTGRES_VARIABLE
+from domainkit_tests.gadgets import (
+    FakeGadgetsUnitOfWork,
+    Gadget,
+    GadgetId,
+    GadgetMade,
+    GadgetsUnitOfWork,
+    InMemoryGadgets,
+    gadgets,
+    make_gadget,
+    metadata,
+)
+from domainkit_tests.sample_routes import DriverError
+
+pytestmark = pytest.mark.anyio
+ON_POSTGRES: Final = bool(os.environ.get(POSTGRES_VARIABLE))
+postgres_only = pytest.mark.skipif(not ON_POSTGRES, reason=f"set {POSTGRES_VARIABLE}")
+NOW: Final = Retry(backoff=0)
+"""Runs again at once: tests never wait for a backoff."""
+
+
+def conflict(sqlstate: str = "40001") -> DBAPIError:
+    """The error a driver raises for a serialization failure (or ``sqlstate``)."""
+    return DBAPIError("COMMIT", None, DriverError(sqlstate))
+
+
+class Lost(Exception):
+    """A failure a test asks ``run`` to retry."""
+
+
+@pytest.fixture
+def waits(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """The waits ``run`` makes before each next run, recorded instead of slept."""
+    recorded: list[float] = []
+
+    async def record(seconds: float) -> None:
+        recorded.append(seconds)
+
+    monkeypatch.setattr(uow_module, "_sleep", record)
+    return recorded
+
+
+@pytest.fixture
+def most(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every jittered wait is its longest."""
+    monkeypatch.setattr(uow_module._random, "uniform", lambda low, high: high)
+
+
+# The retry policy ---------------------------------------------------------------------
+
+
+def test_retries_wait_up_to_a_doubling_capped_bound(most: None) -> None:
+    """Full jitter: a wait is drawn up to the backoff, doubled per run, capped."""
+    policy = Retry(attempts=6, backoff=0.1, max_backoff=0.5)
+
+    assert [policy.delay(runs) for runs in range(1, 6)] == [0.1, 0.2, 0.4, 0.5, 0.5]
+    assert Retry(attempts=3, backoff=0.02, max_backoff=1.0) == DEFAULT_RETRY
+    assert Retry(backoff=1, max_backoff=60).delay(10_000) == 60
+
+
+def test_jittered_waits_spread_below_the_bound() -> None:
+    """Without the stub, waits are random and within the bound."""
+    policy = Retry(backoff=0.5, max_backoff=0.5)
+    drawn = {policy.delay(1) for _ in range(50)}
+
+    assert all(0 <= wait <= 0.5 for wait in drawn)
+    assert len(drawn) > 1
+
+
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        ({"attempts": 0}, "Retry attempts is 1 to 10 runs"),
+        ({"attempts": MAX_ATTEMPTS + 1}, "Retry attempts is 1 to 10 runs"),
+        ({"attempts": True}, "Retry attempts is a whole number"),
+        ({"attempts": 2.0}, "Retry attempts is a whole number"),
+        ({"backoff": -0.1}, "0 <= backoff <= max_backoff <= 60"),
+        ({"backoff": float("nan")}, "0 <= backoff <= max_backoff <= 60"),
+        ({"max_backoff": float("inf")}, "0 <= backoff <= max_backoff <= 60"),
+        ({"backoff": 2.0, "max_backoff": 1.0}, "0 <= backoff <= max_backoff <= 60"),
+        ({"max_backoff": 61.0}, "0 <= backoff <= max_backoff <= 60"),
+        ({"retry_on": (ValueError, "Lost")}, "retry_on takes exception classes"),
+        ({"retry_on": (KeyboardInterrupt,)}, "retry_on takes exception classes"),
+    ],
+)
+def test_retry_policies_are_bounded(options: dict[str, Any], message: str) -> None:
+    """Attempts, waits, and errors are checked when the policy is made."""
+    with pytest.raises(ValueError, match=message):
+        Retry(**options)
+
+
+# Running work again, in memory --------------------------------------------------------
+
+
+def fake(*stored: Gadget, events: EventBus | None = None) -> FakeGadgetsUnitOfWork:
+    """An in-memory unit of work over ``stored``."""
+    return FakeGadgetsUnitOfWork(InMemoryGadgets(stored), events=events)
+
+
+def losing(times: int, error: Callable[[], Exception] = Lost) -> Callable[[], None]:
+    """A check that raises ``error()`` the first ``times`` calls."""
+    calls = iter(range(times + 1))
+
+    def check() -> None:
+        if next(calls) < times:
+            raise error()
+
+    return check
+
+
+async def test_work_lost_to_a_race_runs_again_whole(waits: list[float]) -> None:
+    """Each run starts again from what was stored; events go out once, after."""
+    gadget = make_gadget("a", stock=1)
+    published: list[GadgetMade] = []
+    bus = EventBus()
+
+    async def keep(event: GadgetMade) -> None:
+        published.append(event)
+
+    bus.subscribe(GadgetMade, keep)
+    uow = fake(gadget, events=bus)
+    lose = losing(2)
+    runs: list[str] = []
+
+    async def rename() -> str:
+        async with uow:
+            found = await uow.gadgets.get(gadget.id)
+            runs.append(found.name)
+            found.rename(f"run-{len(runs)}")
+            await uow.gadgets.add(make_gadget(f"extra-{len(runs)}"))
+            lose()
+            await uow.commit()
+        return found.name
+
+    result = await uow.run(rename, retry=Retry(retry_on=(Lost,)))
+
+    assert result == "run-3"
+    assert runs == ["a", "a", "a"]  # Each run saw the stored state, not the last.
+    assert sorted(each.name for each in uow.gadgets.items.values()) == [
+        "extra-3",
+        "run-3",
+    ]
+    assert [event.gadget_id for event in published] == [gadget.id]
+    assert uow.commits == 1
+    assert len(waits) == 2
+    assert all(0 <= wait <= 0.04 for wait in waits)
+
+
+async def test_only_conflicts_and_named_errors_run_again(waits: list[float]) -> None:
+    """Other errors are raised at once, as they were; in memory, nothing conflicts."""
+    uow = fake()
+    runs: list[str] = []
+
+    async def broken() -> None:
+        runs.append("broken")
+        raise ValueError("a bug")
+
+    async def stale() -> None:
+        runs.append("stale")
+        raise ConcurrentUpdate("Someone else changed it.")
+
+    with pytest.raises(ValueError, match="a bug") as raised:
+        await uow.run(broken, retry=Retry(retry_on=(Lost,)))
+    with pytest.raises(ConcurrentUpdate):
+        await uow.run(stale)  # Not named, so not run again.
+
+    assert (runs, waits) == (["broken", "stale"], [])
+    assert not hasattr(raised.value, "__notes__")
+    assert uow._conflicted(conflict()) is False
+
+
+async def test_the_last_failure_is_raised_with_its_cause(
+    waits: list[float], most: None
+) -> None:
+    """After ``attempts`` runs, the last failure is raised itself, with a note."""
+    uow = fake()
+    failures: list[Lost] = []
+
+    async def always() -> None:
+        try:
+            raise KeyError("the driver's")
+        except KeyError as cause:
+            failures.append(Lost(len(failures)))
+            raise failures[-1] from cause
+
+    with pytest.raises(Lost) as raised:
+        await uow.run(always, retry=Retry(attempts=4, backoff=0.01, retry_on=(Lost,)))
+    with pytest.raises(Lost) as once:
+        await uow.run(always, retry=Retry(attempts=1, retry_on=(Lost,)))
+
+    assert raised.value is failures[3]
+    assert isinstance(raised.value.__cause__, KeyError)
+    assert raised.value.__notes__ == ["The work ran 4 times; each run lost a race."]
+    assert waits == [0.01, 0.02, 0.04]
+    assert not hasattr(once.value, "__notes__")
+
+
+async def test_work_that_committed_is_never_run_again(waits: list[float]) -> None:
+    """A failure after a commit of this unit of work would commit twice: raised."""
+    uow = fake(make_gadget("a"))
+    runs = 0
+
+    async def two_blocks() -> None:
+        nonlocal runs
+        runs += 1
+        async with uow:
+            await uow.commit()
+        async with uow:
+            raise Lost
+
+    with pytest.raises(Lost):
+        await uow.run(two_blocks, retry=Retry(retry_on=(Lost,)))
+
+    assert (runs, waits) == (1, [])
+
+
+async def test_a_run_inside_another_counts_its_commits_for_both(
+    waits: list[float],
+) -> None:
+    """The inner run committed, so the outer is not run again; nothing is left."""
+    uow = fake(make_gadget("a"))
+    runs = 0
+
+    async def inner() -> None:
+        async with uow:
+            await uow.commit()
+
+    async def outer() -> None:
+        nonlocal runs
+        runs += 1
+        await uow.run(inner)
+        raise Lost
+
+    with pytest.raises(Lost):
+        await uow.run(outer, retry=Retry(retry_on=(Lost,)))
+
+    assert (runs, waits) == (1, [])
+    assert "_commits" not in vars(uow)  # repositories() walks vars(): untouched.
+
+
+async def test_no_wait_passes_the_deadline(waits: list[float], most: None) -> None:
+    """A wait that would end past the deadline raises the failure instead."""
+    uow = fake()
+    lose = losing(5)
+
+    async def work() -> None:
+        lose()
+
+    with freeze_time():
+        async with deadlines.timeout(0.05):
+            with pytest.raises(Lost) as raised:
+                await uow.run(work, retry=Retry(backoff=0.1, retry_on=(Lost,)))
+        async with deadlines.timeout(10):
+            await uow.run(work, retry=Retry(attempts=5, backoff=0.1, retry_on=(Lost,)))
+
+    assert not hasattr(raised.value, "__notes__")  # The first run's failure.
+    assert waits == [0.1, 0.2, 0.4, 0.8]
+
+
+async def test_waits_follow_the_frozen_clock() -> None:
+    """Under a frozen clock the wait only yields: tests never sleep for it."""
+    with freeze_time():
+        async with asyncio.timeout(1):
+            await uow_module._sleep(30.0)
+    await uow_module._sleep(0.0)
+
+
+# Named locks, in memory ---------------------------------------------------------------
+
+
+async def test_named_locks_are_held_until_the_work_ends() -> None:
+    """A second unit of work waits for the name; nowait refuses it."""
+    one, two = fake(), fake()
+    async with one:
+        await one.lock("payout:acct-1")
+        await one.lock("payout:acct-1")  # Held already: nothing changes.
+        async with two:
+            with pytest.raises(LockNotAvailable):
+                await two.lock("payout:acct-1", nowait=True)
+            await two.lock("payout:acct-2", nowait=True)
+            waiting = asyncio.create_task(two.lock("payout:acct-1"))
+            done, _ = await asyncio.wait({waiting}, timeout=0.05)
+            assert not done
+            await one.commit()
+            async with asyncio.timeout(1):
+                await waiting
+            assert NAMED_LOCKS.holder("payout:acct-1") is two
+    assert NAMED_LOCKS.holder("payout:acct-1") is None
+    assert NAMED_LOCKS.holder("payout:acct-2") is None
+
+
+@pytest.mark.parametrize("name", ["", None, 7])
+async def test_lock_names_are_text(name: Any) -> None:  # noqa: ANN401 - wrong on purpose.
+    """A lock is named by a non-empty string."""
+    with pytest.raises(ValueError, match="A lock's name is a non-empty string"):
+        await fake().lock(name)
+
+
+async def test_read_only_work_takes_no_locks() -> None:
+    """Locks are for work that changes something."""
+    uow = FakeGadgetsUnitOfWork(InMemoryGadgets(), readonly=True)
+    with pytest.raises(ReadOnlyError, match="is read-only; it takes no locks"):
+        await uow.lock("x")
+
+
+# Locking several rows, in memory ------------------------------------------------------
+
+
+async def test_rows_are_locked_by_id_whatever_order_they_are_asked_in() -> None:
+    """The answer and the locks go by ascending id."""
+    first, second, third = sorted(
+        (make_gadget(name) for name in "abc"), key=lambda gadget: gadget.id
+    )
+    shared = InMemoryGadgets([first, second, third], locks=RowLocks(timeout=0.05))
+    other = InMemoryGadgets(locks=shared.locks)
+    other.items = shared.items
+
+    found = await shared.get_many_for_update([third.id, first.id, third.id])
+
+    assert list(found) == [first.id, third.id]
+    assert found[third.id] is third
+    assert await shared.get_many_for_update([]) == {}
+    assert list(
+        await other.get_many_for_update([second.id, third.id], skip_locked=True)
+    ) == [second.id]
+    with pytest.raises(LockNotAvailable):
+        await other.get_many_for_update([first.id], nowait=True)
+    with pytest.raises(NotFound, match="No aggregate has id"):
+        await shared.get_many_for_update([first.id, GadgetId(UUID(int=0))])
+
+
+async def test_a_failed_savepoint_drops_events_of_what_it_first_loaded() -> None:
+    """In memory, events recorded inside are dropped, also by an aggregate it loaded."""
+    gadget = make_gadget("a")
+    uow = fake(gadget)
+
+    async def rename() -> None:
+        async with uow.savepoint():
+            (await uow.gadgets.get(gadget.id)).rename("b")
+            raise Lost
+
+    async with uow:
+        with pytest.raises(Lost):
+            await rename()
+        again = await uow.gadgets.get(gadget.id)
+
+    assert (again.name, again.pending_events) == ("a", ())
+
+
+# Isolation levels ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("given", "level"),
+    [
+        ("serializable", Isolation.SERIALIZABLE),
+        ("repeatable_read", Isolation.REPEATABLE_READ),
+        (" Read Committed ", Isolation.READ_COMMITTED),
+        ("SERIALIZABLE", Isolation.SERIALIZABLE),
+    ],
+)
+def test_isolation_levels_are_read_in_any_case(given: str, level: Isolation) -> None:
+    """The names SQL uses, in any case, with ``_`` or spaces."""
+    assert Isolation(given) is level
+
+
+@pytest.mark.parametrize("given", ["snapshot", "read uncommitted", 3])
+def test_unknown_isolation_levels_are_refused(given: object) -> None:
+    """Only the three levels both databases define."""
+    with pytest.raises(ValueError, match="is not a valid Isolation"):
+        GadgetsUnitOfWork(isolation=given)  # type: ignore[arg-type]
+
+
+class SerializableGadgets(GadgetsUnitOfWork):
+    """Gadgets in serializable transactions, declared on the class."""
+
+    isolation = "serializable"  # type: ignore[assignment] # Read as Isolation.
+
+
+def test_isolation_is_declared_or_given_and_only_for_writes() -> None:
+    """The class's level, or the one given; a read-only unit of work says reads=."""
+    assert SerializableGadgets().isolation is Isolation.SERIALIZABLE
+    assert SerializableGadgets(isolation="read committed").isolation is (
+        Isolation.READ_COMMITTED
+    )
+    assert GadgetsUnitOfWork().isolation is None
+    with pytest.raises(ValueError, match="isolation= is for units of work that write"):
+        GadgetsUnitOfWork(readonly=True, isolation=Isolation.SERIALIZABLE)
+    with pytest.raises(ValueError, match="isolation= is for units of work that write"):
+        SerializableGadgets(readonly=True)
+
+
+@pytest.fixture
+def database(database_url: str) -> Iterator[str]:
+    """An empty database, selected in the settings."""
+    with override_settings(DATABASES={"default": {"URL": database_url}}):
+        yield database_url
+
+
+@pytest.fixture
+async def tables(database: str) -> AsyncIterator[None]:
+    """The gadget tables, in the running loop's engine."""
+    async with connections.engine().begin() as connection:
+        await connection.run_sync(metadata.create_all)
+    yield
+    await connections.close_all()
+
+
+async def store(*items: Gadget) -> None:
+    """Commit ``items`` in one unit of work."""
+    async with GadgetsUnitOfWork() as uow:
+        await uow.gadgets.add_all(items)
+        await uow.commit()
+
+
+async def total_stock() -> int:
+    """The stock of every gadget, summed."""
+    async with GadgetsUnitOfWork() as uow:
+        return int(await uow.session.scalar(select(func.sum(gadgets.c.stock))) or 0)
+
+
+@postgres_only
+async def test_the_level_is_set_as_the_transaction_begins(tables: None) -> None:
+    """In ``BEGIN`` itself: no statement more; the pool's connection is reset."""
+
+    async def level(**options: Any) -> tuple[str, int]:  # noqa: ANN401 - the options.
+        with SqlCounter() as sql:
+            async with GadgetsUnitOfWork(**options) as uow:
+                shown = await uow.session.scalar(text("SHOW transaction_isolation"))
+                await uow.gadgets.count()
+                await uow.commit()
+        return str(shown), sql.counts.statements
+
+    plain = await level()
+    levels = [await level(isolation=each) for each in Isolation]
+
+    assert plain == ("read committed", 2)
+    assert levels == [
+        ("read committed", 2),
+        ("repeatable read", 2),
+        ("serializable", 2),
+    ]
+    assert await level() == plain  # Back in the pool at its default.
+
+
+@pytest.fixture
+async def sqlite_file(tmp_path: Path) -> AsyncIterator[str]:
+    """The gadget tables in a SQLite file, whatever server the suite targets.
+
+    A writer waits 0.1 seconds for another's lock, then fails.
+    """
+    url = f"sqlite+aiosqlite:///{tmp_path / 'gadgets.sqlite3'}"
+    with override_settings(
+        DATABASES={"default": {"URL": url, "CONNECT_ARGS": {"timeout": 0.1}}}
+    ):
+        async with connections.engine().begin() as connection:
+            await connection.run_sync(metadata.create_all)
+        yield url
+        await connections.close_all()
+
+
+async def test_sqlite_runs_serializable_work_one_at_a_time(sqlite_file: str) -> None:
+    """``BEGIN IMMEDIATE``: the write lock is taken before the first read.
+
+    So a second such unit of work waits for the first (here, past the 0.1
+    seconds it may wait, it fails); one at ``READ COMMITTED`` reads freely.
+    """
+    gadget = make_gadget("a", stock=1)
+    await store(gadget)
+    async with GadgetsUnitOfWork(isolation=Isolation.SERIALIZABLE) as one:
+        assert (await one.gadgets.get(gadget.id)).stock == 1
+        async with GadgetsUnitOfWork(isolation="repeatable read") as two:
+            with pytest.raises(OperationalError, match="database is locked"):
+                await two.gadgets.count()
+        async with GadgetsUnitOfWork(isolation=Isolation.READ_COMMITTED) as three:
+            assert await three.gadgets.count() == 1
+        await one.commit()
+    async with GadgetsUnitOfWork(isolation=Isolation.SERIALIZABLE) as two:
+        assert await two.gadgets.count() == 1
+        await two.lock("written")  # In its transaction already: nothing to do.
+        await two.commit()
+
+
+async def test_sqlite_keeps_a_rule_across_rows_when_serializable(
+    sqlite_file: str,
+) -> None:
+    """The write skew of the proof cannot happen: the second sees the first's change."""
+    one, two = make_gadget("one", stock=1), make_gadget("two", stock=1)
+    await store(one, two)
+
+    async def take(gadget_id: GadgetId) -> str:
+        async with GadgetsUnitOfWork(isolation=Isolation.SERIALIZABLE) as uow:
+            total = await uow.session.scalar(select(func.sum(gadgets.c.stock)))
+            await asyncio.sleep(0.01)
+            if total < 2:
+                return "refused"
+            gadget = await uow.gadgets.get(gadget_id)
+            gadget.stock = (gadget.stock or 0) - 1
+            await uow.commit()
+            return "took"
+
+    with override_settings(
+        DATABASES={"default": {"URL": sqlite_file, "CONNECT_ARGS": {"timeout": 5}}}
+    ):
+        outcomes = await asyncio.gather(take(one.id), take(two.id))
+        left = await total_stock()
+        await connections.close_all()
+
+    assert sorted(outcomes) == ["refused", "took"]
+    assert left == 1
+
+
+# Write skew, and serialization failures run again -------------------------------------
+
+
+async def take_if_two_left(
+    gadget_id: GadgetId, uow: GadgetsUnitOfWork, both_read: asyncio.Barrier
+) -> str:
+    """Take one of the gadget's stock if, across gadgets, at least two are left."""
+    async with uow:
+        total = await uow.session.scalar(select(func.sum(gadgets.c.stock)))
+        await both_read.wait()
+        if total < 2:
+            return "refused"
+        gadget = await uow.gadgets.get(gadget_id)
+        gadget.stock = (gadget.stock or 0) - 1
+        await uow.commit()
+        return "took"
+
+
+@postgres_only
+async def test_write_skew_under_the_default_isolation(tables: None) -> None:
+    """The proof of FIN-78: each checks the rule, changes another row, and commits.
+
+    Versions do not help: no row is changed twice. The rule (at least one
+    left across gadgets) is broken.
+    """
+    one, two = make_gadget("one", stock=1), make_gadget("two", stock=1)
+    await store(one, two)
+    both_read = asyncio.Barrier(2)
+
+    outcomes = await asyncio.gather(
+        take_if_two_left(one.id, GadgetsUnitOfWork(), both_read),
+        take_if_two_left(two.id, GadgetsUnitOfWork(), both_read),
+    )
+
+    assert list(outcomes) == ["took", "took"]
+    assert await total_stock() == 0
+
+
+@postgres_only
+async def test_serializable_work_run_again_keeps_the_rule(
+    tables: None, waits: list[float]
+) -> None:
+    """One transaction fails to serialize; run again, it sees the other's change."""
+    one, two = make_gadget("one", stock=1), make_gadget("two", stock=1)
+    await store(one, two)
+    both_read = asyncio.Barrier(2)
+    runs: list[str] = []
+
+    async def take(gadget_id: GadgetId) -> str:
+        uow = GadgetsUnitOfWork(isolation=Isolation.SERIALIZABLE)
+
+        async def work() -> str:
+            runs.append(str(gadget_id))
+            if len(runs) > 2:  # A run again: the other has committed.
+                return await take_if_two_left(gadget_id, uow, asyncio.Barrier(1))
+            return await take_if_two_left(gadget_id, uow, both_read)
+
+        return await uow.run(work, retry=NOW)
+
+    outcomes = await asyncio.gather(take(one.id), take(two.id))
+
+    assert sorted(outcomes) == ["refused", "took"]
+    assert len(runs) == 3
+    assert waits == [0.0]
+    assert await total_stock() == 1
+
+
+@postgres_only
+async def test_conflicts_are_postgresqls_serialization_failures_and_deadlocks(
+    tables: None,
+) -> None:
+    """``40001`` and ``40P01`` run again; other database errors do not."""
+    uow = GadgetsUnitOfWork()
+
+    assert uow._conflicted(conflict("40001"))
+    assert uow._conflicted(conflict("40P01"))
+    assert not uow._conflicted(conflict("55P03"))
+    assert not uow._conflicted(Lost())
+
+
+# Locking several rows in order --------------------------------------------------------
+
+
+@postgres_only
+async def test_transfers_locking_in_opposite_orders_deadlock(tables: None) -> None:
+    """The proof: each locks its first row, then waits for the other's."""
+    a, b = make_gadget("a", stock=10), make_gadget("b", stock=10)
+    await store(a, b)
+    both_locked = asyncio.Barrier(2)
+
+    async def transfer(source: GadgetId, target: GadgetId) -> str:
+        try:
+            async with GadgetsUnitOfWork() as uow:
+                first = await uow.gadgets.get_for_update(source)
+                await both_locked.wait()
+                second = await uow.gadgets.get_for_update(target)
+                first.stock = (first.stock or 0) - 1
+                second.stock = (second.stock or 0) + 1
+                await uow.commit()
+                return "moved"
+        except DBAPIError as exc:
+            return f"SQLSTATE {getattr(exc.orig, 'sqlstate', None)}"
+
+    outcomes = await asyncio.gather(transfer(a.id, b.id), transfer(b.id, a.id))
+
+    assert sorted(outcomes) == ["SQLSTATE 40P01", "moved"]
+
+
+@postgres_only
+async def test_locking_in_id_order_cannot_deadlock(tables: None) -> None:
+    """``get_many_for_update`` locks by id, whatever order the ids come in."""
+    a, b = make_gadget("a", stock=10), make_gadget("b", stock=10)
+    await store(a, b)
+    both_asked = asyncio.Barrier(2)
+
+    async def transfer(source: GadgetId, target: GadgetId) -> str:
+        async with GadgetsUnitOfWork() as uow:
+            await both_asked.wait()
+            found = await uow.gadgets.get_many_for_update([source, target])
+            found[source].stock = (found[source].stock or 0) - 1
+            found[target].stock = (found[target].stock or 0) + 1
+            await uow.commit()
+            return "moved"
+
+    async with asyncio.timeout(10):
+        outcomes = await asyncio.gather(transfer(a.id, b.id), transfer(b.id, a.id))
+
+    assert list(outcomes) == ["moved", "moved"]
+    assert await total_stock() == 20
+
+
+@postgres_only
+async def test_a_deadlocked_transfer_is_run_again(
+    tables: None, waits: list[float]
+) -> None:
+    """With ``run``, the transfer PostgreSQL chose to fail runs again and moves."""
+    a, b = make_gadget("a", stock=10), make_gadget("b", stock=10)
+    await store(a, b)
+    both_locked = asyncio.Barrier(2)
+
+    async def transfer(source: GadgetId, target: GadgetId) -> None:
+        uow = GadgetsUnitOfWork()
+        runs = 0
+
+        async def work() -> None:
+            nonlocal runs
+            runs += 1
+            async with uow:
+                first = await uow.gadgets.get_for_update(source)
+                if runs == 1:
+                    await both_locked.wait()
+                second = await uow.gadgets.get_for_update(target)
+                first.stock = (first.stock or 0) - 1
+                second.stock = (second.stock or 0) + 2
+                await uow.commit()
+
+        await uow.run(work, retry=NOW)
+
+    async with asyncio.timeout(10):
+        await asyncio.gather(transfer(a.id, b.id), transfer(b.id, a.id))
+
+    assert waits == [0.0]
+    assert await total_stock() == 22
+
+
+async def test_several_rows_are_read_in_sql_as_in_memory(tables: None) -> None:
+    """By ascending id; missing ones are ``NotFound`` unless skipped."""
+    first, second = sorted(
+        (make_gadget("a"), make_gadget("b")), key=lambda gadget: gadget.id
+    )
+    await store(first, second)
+    async with GadgetsUnitOfWork() as uow:
+        found = await uow.gadgets.get_many_for_update([second.id, first.id])
+        skipped = await uow.gadgets.get_many_for_update(
+            [GadgetId(UUID(int=0)), second.id], skip_locked=True
+        )
+        with pytest.raises(NotFound):
+            await uow.gadgets.get_many_for_update([GadgetId(UUID(int=0))])
+
+    assert [(key, each.name) for key, each in found.items()] == [
+        (first.id, first.name),
+        (second.id, second.name),
+    ]
+    assert list(skipped) == [second.id]
+
+
+@postgres_only
+async def test_rows_another_holds_are_refused_or_skipped(tables: None) -> None:
+    """``nowait`` and ``skip_locked``, as for one row."""
+    a, b = make_gadget("a"), make_gadget("b")
+    await store(a, b)
+    async with GadgetsUnitOfWork() as one, GadgetsUnitOfWork() as two:
+        await one.gadgets.get_many_for_update([a.id])
+        with pytest.raises(LockNotAvailable):
+            await two.gadgets.get_many_for_update([b.id, a.id], nowait=True)
+        free = await two.gadgets.get_many_for_update([a.id, b.id], skip_locked=True)
+
+    assert list(free) == [b.id]
+
+
+# Named locks in the database ----------------------------------------------------------
+
+
+def test_lock_keys_are_stable_64_bit_hashes() -> None:
+    """The same in every process and release: ``pg_locks`` can be searched for them."""
+    assert lock_key("payout:acct-1") == lock_key("payout:acct-1")
+    assert lock_key("payout:acct-1") != lock_key("payout:acct-2")
+    assert lock_key("payout:acct-1") == 8519040223794619761
+    assert all(-(2**63) <= lock_key(name) < 2**63 for name in ("", "é", "x" * 999))
+
+
+@postgres_only
+async def test_named_locks_are_advisory_locks_of_the_transaction(
+    tables: None,
+) -> None:
+    """Held until commit or rollback; another waits, or is refused with nowait."""
+    async with GadgetsUnitOfWork() as one, GadgetsUnitOfWork() as two:
+        await one.lock("payout:acct-1")
+        with pytest.raises(LockNotAvailable):
+            await two.lock("payout:acct-1", nowait=True)
+        await two.lock("payout:acct-2", nowait=True)
+        held = await two.session.scalar(
+            text(
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' "
+                "AND objsubid = 1 AND ((classid::bigint << 32) | objid::bigint) "
+                "= (:key & x'FFFFFFFFFFFFFFFF'::bigint)"
+            ),
+            {"key": lock_key("payout:acct-1")},
+        )
+        waiting = asyncio.create_task(two.lock("payout:acct-1"))
+        done, _ = await asyncio.wait({waiting}, timeout=0.2)
+        assert not done
+        await one.commit()
+        async with asyncio.timeout(5):
+            await waiting
+    async with GadgetsUnitOfWork() as three:
+        await three.lock("payout:acct-1", nowait=True)  # Gone with two's rollback.
+
+    assert held == 1
+
+
+async def test_named_locks_refuse_read_only_work(tables: None) -> None:
+    """As row locks do."""
+    async with GadgetsUnitOfWork(readonly=True) as uow:
+        with pytest.raises(ReadOnlyError):
+            await uow.lock("x")
+        with pytest.raises(ValueError, match="non-empty string"):
+            await uow.lock("")
+
+
+async def test_a_named_lock_on_sqlite_is_the_write_lock(sqlite_file: str) -> None:
+    """``BEGIN IMMEDIATE``: another writer waits (here past 0.1 s, and fails)."""
+    async with GadgetsUnitOfWork() as one:
+        await one.lock("payout:acct-1", nowait=True)
+        async with GadgetsUnitOfWork() as two:
+            with pytest.raises(OperationalError, match="database is locked"):
+                await two.lock("anything")
+        await one.commit()
+    async with GadgetsUnitOfWork() as two:
+        await two.lock("anything")
