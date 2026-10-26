@@ -222,12 +222,7 @@ class AuthSettings(BaseModel):
     @classmethod
     def _refuse_removed(cls, data: object) -> object:
         """Name the setting that replaced ``REQUIRE_ROUTE_RULES`` (DSGN-02)."""
-        if isinstance(data, Mapping) and ROUTE_RULES in data:
-            raise ValueError(
-                f"AUTH.{ROUTE_RULES} was removed in 0.11: set {ROUTE_RULES}, "
-                "a setting of its own, outside AUTH"
-            )
-        return data
+        return _removed_keys_refused(data)
 
     USER_MODEL: str = "domainkit.contrib.auth.models.User"
     """Dotted path to the user class (``AUTH_USER_MODEL``)."""
@@ -382,6 +377,21 @@ class AuthSettings(BaseModel):
         if value is not None and TOKEN_PLACEHOLDER not in value:
             raise ValueError(f"the URL needs {TOKEN_PLACEHOLDER} where the token goes")
         return value
+
+
+def _removed_keys_refused(data: object) -> object:
+    """Return ``AUTH``'s raw ``data``, unless it sets a key removed in 0.11.
+
+    Raises:
+        ValueError: It sets ``REQUIRE_ROUTE_RULES``: the message names the
+            setting to use instead.
+    """
+    if isinstance(data, Mapping) and ROUTE_RULES in data:
+        raise ValueError(
+            f"AUTH.{ROUTE_RULES} was removed in 0.11: set {ROUTE_RULES}, "
+            "a setting of its own, outside AUTH"
+        )
+    return data
 
 
 def auth_settings() -> AuthSettings:
