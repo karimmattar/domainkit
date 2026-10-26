@@ -30,6 +30,7 @@ WATCHED: Final[tuple[_Key, ...]] = (
     (Engine, "begin"),
     (Pool, "checkout"),
     (Pool, "connect"),
+    (Pool, "invalidate"),
 )
 """The events a test may watch: each has its one lasting listener."""
 _lock: Final = threading.Lock()

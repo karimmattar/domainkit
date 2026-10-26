@@ -8,6 +8,7 @@ the next caller a session as it was made. Pre-ping costs one round trip.
 """
 
 import asyncio
+import contextlib
 import os
 import re
 import sys
@@ -563,6 +564,7 @@ class Invalidations:
     def __init__(self) -> None:
         """Start at none."""
         self.count = 0
+        self._watch = contextlib.ExitStack()
 
     def _invalidated(self, *args: object) -> None:
         self.count += 1
@@ -571,14 +573,12 @@ class Invalidations:
         """Start counting."""
         from sqlalchemy.pool import Pool
 
-        event.listen(Pool, "invalidate", self._invalidated)
+        self._watch.enter_context(watching(Pool, "invalidate", self._invalidated))
         return self
 
     def __exit__(self, *exc: object) -> None:
         """Stop counting."""
-        from sqlalchemy.pool import Pool
-
-        event.remove(Pool, "invalidate", self._invalidated)
+        self._watch.close()
 
 
 @asyncpg_only
