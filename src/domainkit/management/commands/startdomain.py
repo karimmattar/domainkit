@@ -38,6 +38,8 @@ LOGIN_CURL: Final = (
 """Log in at the project template's ``/auth/login`` with the password typed at
 ``PROMPT_LINE`` (sent on stdin, never in an argument); keep the token in
 ``$TOKEN``."""
+UNSET_LINE: Final = "unset PASSWORD"
+"""Forget the password once logged in, so that no later process inherits it."""
 
 
 def template_context(
@@ -189,6 +191,7 @@ def _next_steps(
             f"{context['aggregates_title']}:\n"
             f"       {PROMPT_LINE}\n"
             f"       {LOGIN_CURL}\n"
+            f"       {UNSET_LINE}\n"
             f"       curl {SERVER}/api/v1/{domain}/{context['aggregates']} "
             '-H "Authorization: Bearer $TOKEN"'
         ),

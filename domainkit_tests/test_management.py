@@ -407,6 +407,7 @@ def test_startdomain_generates_a_working_domain(
         '-H "Content-Type: application/json" -d @- '
         '| python -c "import json, sys; '
         """print(json.load(sys.stdin)['access_token'])")\n"""
+        "       unset PASSWORD\n"
         "       curl http://127.0.0.1:8000/api/v1/shop/order_lines "
         '-H "Authorization: Bearer $TOKEN"\n'
     )
@@ -626,6 +627,7 @@ def test_startdomain_next_steps_leave_out_what_it_did(tmp_path: Path) -> None:
         ),
         f"       {startdomain.PROMPT_LINE}",
         f"       {startdomain.LOGIN_CURL}",
+        f"       {startdomain.UNSET_LINE}",
         (
             "       curl http://127.0.0.1:8000/api/v1/invoices/invoices "
             '-H "Authorization: Bearer $TOKEN"'

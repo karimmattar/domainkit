@@ -15,7 +15,8 @@ harness would run differently from a shell:
 - ``NAME=$([python -c "..." |] curl ... | python -c "...")``: each part's
   output piped to the next, the last one's (stripped) kept as ``$NAME``;
 - ``read -rsp "Prompt: " NAME && export NAME``: what the user typed for
-  ``NAME``, exported to the Python lines that follow, as a shell would.
+  ``NAME``, exported to the Python lines that follow, as a shell would;
+- ``unset NAME``: ``NAME`` forgotten, for the lines that follow.
 
 A trailing ``# 401`` (any three digits) states the status the line expects;
 without one, it must succeed (2xx).
@@ -35,6 +36,7 @@ SERVER = "http://127.0.0.1:8000"
 _ASSIGNMENT = re.compile(r"(?P<name>[A-Z_]+)=\$\((?P<command>.*)\)")
 _VARIABLE = re.compile(r"\$(?P<name>[A-Z_]+)\b")
 _READ = re.compile(r'read -rsp "[^"]*" (?P<name>[A-Z_]+) && export (?P=name)')
+_UNSET = re.compile(r"unset (?P<name>[A-Z_]+)")
 _EXPECTED = re.compile(r"\s+#\s*(?P<status>\d{3})(?:\s.*)?$")
 
 
@@ -143,6 +145,10 @@ def run_line(
         if typed is None or name not in typed:
             raise Refused(f"nothing was typed for ${name}: {line}")
         variables[name] = os.environ[name] = typed[name]
+        return {"line": line, "status": None, "expected": None, "output": ""}
+    if forgotten := _UNSET.fullmatch(command.strip()):
+        variables.pop(forgotten["name"], None)
+        os.environ.pop(forgotten["name"], None)
         return {"line": line, "status": None, "expected": None, "output": ""}
     assignment = _ASSIGNMENT.fullmatch(command.strip())
     if assignment is None:

@@ -99,6 +99,10 @@ class Walk:
                 assert len(args) == 3, line
                 self.env[args[2]] = TYPED[args[2]]
                 continue
+            if program == "unset":  # Forgotten: no later line's process gets it.
+                for name in args:
+                    del self.env[name]
+                continue
             if program == "export":  # Every name set here is exported already.
                 assert all(name in self.env for name in args), line
                 continue
@@ -168,12 +172,12 @@ def test_the_quick_start_works_as_written(tmp_path: Path) -> None:
     assert login["output"].startswith("dkt_")
     assert json.loads(listed["output"]) == {"items": [], "next_cursor": None}
     assert '`{"items":[],"next_cursor":null}`' in readme
-    # startdomain prints the same three lines, for the user it cannot know.
+    # startdomain prints the same four lines, for the user it cannot know.
     started = shell.printed[
         "python manage.py startdomain invoices --aggregate Invoice"
         "   # installs and mounts it"
     ]
-    printed = [line.strip() for line in started.splitlines()[-3:]]
+    printed = [line.strip() for line in started.splitlines()[-4:]]
     printed = [line.replace("<username>", "admin") for line in printed]
     server = lines.index(
         "python manage.py runserver            # http://127.0.0.1:8000/docs"
@@ -181,13 +185,16 @@ def test_the_quick_start_works_as_written(tmp_path: Path) -> None:
     assert printed == lines[server + 1 :]
     # The password is typed at a prompt: no line holds it, for shell history.
     assert not [line for line in lines if TYPED["PASSWORD"] in line]
+    # Forgotten once the superuser exists: runserver does not inherit it.
+    assert "PASSWORD" not in shell.env
 
 
 def test_the_tutorial_works_as_written(tmp_path: Path) -> None:
     """Every command of docs/tutorial.md, the refusals it shows included."""
     tutorial = (ROOT / "docs" / "tutorial.md").read_text(encoding="utf-8")
 
-    _, results = walk(shell_lines(tutorial), tmp_path)
+    shell, results = walk(shell_lines(tutorial), tmp_path)
+    assert "PASSWORD" not in shell.env  # runserver does not inherit it.
 
     anonymous, login, created, kept, noted, archived, late, blank = results
     assert json.loads(anonymous["output"])["code"] == "not_authenticated"
@@ -224,3 +231,26 @@ def test_the_driver_refuses_what_it_would_not_run_as_a_shell(
 
     with pytest.raises(walkthrough_driver.Refused, match=re.escape(message)):
         walkthrough_driver.run_line(None, line, {})
+
+
+def test_the_driver_forgets_an_unset_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``unset NAME`` drops it for the lines, and the processes, that follow."""
+    from domainkit_tests import walkthrough_driver
+
+    monkeypatch.setenv("PASSWORD", TYPED["PASSWORD"])
+    variables = {"PASSWORD": TYPED["PASSWORD"], "TOKEN": "dkt_kept"}
+
+    result = walkthrough_driver.run_line(None, "unset PASSWORD", variables)
+
+    assert result == {
+        "line": "unset PASSWORD",
+        "status": None,
+        "expected": None,
+        "output": "",
+    }
+    assert variables == {"TOKEN": "dkt_kept"}
+    assert "PASSWORD" not in os.environ
+    with pytest.raises(walkthrough_driver.Refused, match=re.escape("$PASSWORD")):
+        walkthrough_driver.run_line(
+            None, "curl http://127.0.0.1:8000/$PASSWORD", variables
+        )

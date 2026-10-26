@@ -69,6 +69,7 @@ they pass.
 read -rsp "Password: " PASSWORD && export PASSWORD    # typed, not echoed
 BANK_API_SUPERUSER_PASSWORD="$PASSWORD" \
   python manage.py createsuperuser --noinput --username admin --email admin@example.com
+unset PASSWORD    # so that runserver, started next, does not inherit it
 ```
 
 A superuser holds every permission. Another user needs
@@ -103,6 +104,7 @@ read -rsp "Password: " PASSWORD && export PASSWORD
 TOKEN=$(python -c "import json, os; print(json.dumps({'username': 'admin', 'password': os.environ['PASSWORD']}))" \
   | curl -s http://127.0.0.1:8000/auth/login -H "Content-Type: application/json" -d @- \
   | python -c "import json, sys; print(json.load(sys.stdin)['access_token'])")
+unset PASSWORD
 ```
 
 Open an account. The answer is `201 Created`, with the new account's

@@ -264,6 +264,16 @@ and a status.
   relies on) and ecdsa from 0.19.2 (PYSEC-2026-2467). The lock already
   pinned fixed versions; this keeps a project's own resolver from choosing
   older ones (SEC-a-2).
+- The `jwt` extra needs PyJWT 2.15.0 or later, where it accepted 2.10.1:
+  2.10.1 to 2.14 have published advisories (among them PYSEC-2026-120,
+  an unenforced `crit` header, and -4149, a DER key accepted as an HMAC
+  secret). domainkit's own decoding, with one allowed algorithm and a
+  configured key, was not exposed; a project calling PyJWT itself could
+  be. The lock already pinned 2.15.1 (SEC-a-3).
+- The README quick start, the tutorial, and `startdomain`'s next steps
+  `unset PASSWORD` once it is used, so that `runserver`, `pytest`, and
+  every other process started later from that shell do not inherit the
+  superuser's password in their environment (DOCS-02).
 
 ## [0.9.1] - 2026-10-25
 
