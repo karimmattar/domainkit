@@ -59,11 +59,13 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 2
+      # No rename detection, and both paths of every line: a file moved
+      # from src/ or domainkit_tests/ into docs/ must count as code.
       - id: paths
         name: Find whether anything but docs changed
         run: >-
-          git diff --name-only HEAD^1 HEAD | python3 .github/scripts/changed.py
-          >> "$GITHUB_OUTPUT"
+          git diff --no-renames --name-status HEAD^1 HEAD
+          | python3 .github/scripts/changed.py >> "$GITHUB_OUTPUT"
 
   # Only for a pull request that changes docs alone: the tests that read
   # them (the API reference against every __all__, links, anchors and the
@@ -523,8 +525,8 @@ jobs:
 
   # A CycloneDX bill of materials for the wheel CI built: the wheel, and
   # every package the lock resolves for it with all its extras (the dev
-  # group left out), read from an environment holding just those.
-  # release.yml attests it, bound to the wheel.
+  # group left out), read from an environment holding just those. The
+  # attest job attests it, bound to the wheel.
   sbom:
     needs: [changes, build]
     if: ${{ !cancelled() && !failure() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
@@ -567,6 +569,41 @@ jobs:
           name: sbom
           path: sbom.cdx.json
           retention-days: 90
+
+  # On a push to main, the run a release of that commit reuses: signed
+  # statements, kept by GitHub, that this run built the wheel and sdist
+  # (SLSA build provenance, naming ci.yml at this commit and this run) and
+  # what the wheel is made of (the bill of materials). release.yml checks
+  # them before publishing. Its own job, which checks out nothing and runs
+  # no code of the change, and only on pushes: the only one that may mint
+  # an OIDC token or write attestations, never for a pull request.
+  attest:
+    needs: [build, sbom]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # A Sigstore certificate naming this workflow run.
+      attestations: write # Keeps the attestations with the repository.
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist/
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sbom
+          path: sbom/
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*
+      - name: Attest the bill of materials
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*.whl
+          sbom-path: sbom/sbom.cdx.json
 
   # Static analysis of the package and the workflows with Semgrep's Python
   # and OWASP Top 10 rules, from its registry: no account, no token, no

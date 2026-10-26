@@ -139,7 +139,11 @@ with deptry (`[tool.deptry]` in `pyproject.toml`).
    workflow on the merged commit: lint, types, tests on every Python,
    integration against real servers, coverage, the benchmark ladder, the
    wheel's smoke test and bill of materials, Semgrep, pip-audit, and
-   gitleaks.
+   gitleaks. That run then attests the wheel and sdist it built with SLSA
+   build provenance naming it, and the wheel's CycloneDX bill of
+   materials, signed through GitHub (check one with `gh attestation
+   verify domainkit-X.Y.Z-py3-none-any.whl --repo karimmattar/domainkit
+   --signer-workflow karimmattar/domainkit/.github/workflows/ci.yml`).
 4. Tag that commit `vX.Y.Z` and push the tag. `.github/workflows/release.yml`
    then:
    - checks that the tag matches the version and is on a commit of `main`,
@@ -149,10 +153,8 @@ with deptry (`[tool.deptry]` in `pyproject.toml`).
      (ADR [0007](adr/0007-own-repository-released-to-pypi.md#amendment-2026-10-26-010-a-release-reuses-mains-ci-run));
    - runs pip-audit and gitleaks again, as an advisory can appear after
      that run;
-   - attests the wheel and sdist that run built with SLSA build provenance,
-     and the wheel's CycloneDX bill of materials, signed through GitHub
-     (check one with `gh attestation verify domainkit-X.Y.Z-py3-none-any.whl
-     --repo karimmattar/domainkit`);
+   - checks that run's attestations of every file it publishes: signed by
+     `ci.yml` on `main` at the tagged commit, on GitHub's runners;
    - waits for a reviewer to approve the `pypi` environment;
    - publishes the wheel and sdist that CI built to PyPI, with attestations.
    - creates the GitHub Release for the tag: the CHANGELOG's section for

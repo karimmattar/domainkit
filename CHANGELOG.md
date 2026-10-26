@@ -368,15 +368,20 @@ and a status.
   that a test's rows and ids are gone in the next (TEST-03).
 - A release no longer runs the CI workflow again on the tagged commit: it
   finds the CI run of that commit's push to `main`, waits for it, requires
-  it green, and attests and publishes the `dist` and `sbom` it built
-  (kept 90 days); only pip-audit and gitleaks run again. Pushes to `main`
+  it green, and publishes the `dist` and `sbom` it built (kept 90 days);
+  only pip-audit and gitleaks run again. That run attests the files it
+  built (its new `attest` job, on pushes only), so their provenance still
+  names the run that built them, and the release checks both
+  attestations of each file before publishing. Pushes to `main`
   are never cancelled, so each commit keeps its run (INFRA-06; ADR 0007,
   amended).
 - A pull request that changes only `docs/**` and the Markdown files at the
   top of the repository skips the suite, the integration, benchmark,
   build and dependency-range jobs: the new `changes` job decides, and the
-  new `docs` job runs the four test modules that read the docs. Both are
-  required checks; the skipped jobs still report, and the test matrix
+  new `docs` job runs the four test modules that read the docs. A file
+  moved or copied into `docs/` counts by both its paths, with git's
+  rename detection off, so moving code there still runs the suite. Both
+  are required checks; the skipped jobs still report, and the test matrix
   skips its steps, since a matrix skipped whole would report under its
   unexpanded name and leave `test (3.13)` pending (INFRA-06).
 - Staging and production report every breach of the deployment baseline
