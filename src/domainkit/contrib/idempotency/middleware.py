@@ -38,6 +38,8 @@ Keys are scoped to the authenticated actor (set by
 they are scoped to the client address and the request's credentials (the
 ``CREDENTIAL_HEADERS``, hashed), so callers behind one address never share
 keys where the project authenticates on its own with one of those headers.
+A key sent with neither is shared by every caller behind the address;
+``ANONYMOUS = "refuse"`` answers it 400 instead.
 List the middleware after ``RequestContextMiddleware`` and
 ``RequestBodyLimitMiddleware`` (it reads the whole body).
 """
@@ -62,7 +64,7 @@ from domainkit.tasks import spawn
 
 from . import statements
 from .operations import Operation, run_operation
-from .settings import IdempotencySettings
+from .settings import REFUSE, IdempotencySettings
 from .statements import RELEASE, STORE, clock_statements, holder
 
 __all__ = [
@@ -158,6 +160,14 @@ class IdempotencyMiddleware:
                 status.HTTP_400_BAD_REQUEST,
                 "Idempotency-Key must be 1 to 255 printable ASCII characters.",
                 code="invalid_idempotency_key",
+            )(scope, receive, send)
+            return
+        if config.ANONYMOUS == REFUSE and _unnamed(scope, config.CREDENTIAL_HEADERS):
+            await error_response(
+                status.HTTP_400_BAD_REQUEST,
+                "An Idempotency-Key needs a caller this service knows: "
+                "authenticate, or send the request without the key.",
+                code="idempotency_key_needs_caller",
             )(scope, receive, send)
             return
         read = await _read_body(receive)
@@ -498,6 +508,19 @@ def _caller(scope: Scope, credential_headers: tuple[str, ...]) -> str:
         )
     )
     return f"anonymous:{client[0] if client else 'unknown'}:{credentials}"
+
+
+def _unnamed(scope: Scope, credential_headers: tuple[str, ...]) -> bool:
+    """Whether the request has no actor and none of ``credential_headers``.
+
+    Its key could only be scoped to its address, which callers behind one
+    NAT or proxy share.
+    """
+    request = current_request()
+    if request is not None and request.actor:
+        return False
+    headers = Headers(scope=scope)
+    return not any(name in headers for name in credential_headers)
 
 
 def _no_store(started: dict[str, Any]) -> bool:

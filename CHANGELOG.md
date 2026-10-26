@@ -9,6 +9,17 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `IDEMPOTENCY.ANONYMOUS` (`"per-address"`, or `"refuse"`): what happens
+  to an `Idempotency-Key` sent with no actor and none of the
+  `CREDENTIAL_HEADERS`. Such a key can only be scoped to the client's
+  address, so two callers behind one NAT or proxy share it: the second to
+  send the same key and body is replayed the first's response, and a
+  different body learns the key is taken. `"refuse"` answers it 400
+  `idempotency_key_needs_caller` and runs nothing; the default keeps the
+  behaviour of 0.9 (DATA-09).
+
 ### Deprecated
 
 - `domainkit.contrib.evidence.model`, the old name of the evidence models
