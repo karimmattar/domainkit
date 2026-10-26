@@ -108,7 +108,8 @@ and a status.
 - `domainkit.http.routing.RouteIndex` and `index_routes`: the
   application's router tries only the routes a request's first path segment
   can reach, and those that may match any path, in order, and serves what
-  trying every route serves. `get_asgi_application` installs it with
+  trying every route serves, however the routes change after the build
+  (SEC-10a-6). `get_asgi_application` installs it with
   `FLATTEN_ROUTERS`. One GET behind 10, 100, and 1,000 routes now costs 329
   calls each, where it cost 409, 1,129, and 8,329 (PERF-05; ADR 0060).
 - `domainkit.utils.loops.PerLoop`: one value per event loop, kept under a

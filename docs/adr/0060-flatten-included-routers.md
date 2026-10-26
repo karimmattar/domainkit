@@ -139,8 +139,12 @@ and about 1,000 on the last of 150 (PERF-05 of the 0.9.0 audit).
   answer "no match", so the first full match, or else the first partial
   one, is what `APIRouter.app` serves, with FastAPI's telemetry hook; when
   none matches, the router's own `app` answers (redirects, frontend
-  routes, 404). Lifespan events go to the router; a route added later is
-  indexed on the next request.
+  routes, 404). Lifespan events go to the router. The router's routes
+  become a list that counts its changes (`Routes`), so a route added,
+  removed, or replaced in place later, or a new list given to the router,
+  is indexed on the next request, for one comparison a request (SEC-10a-6
+  of the 0.10 review: a route replaced in place, hardened with a rule
+  after the build, was still served as it was).
 - `get_asgi_application` installs it with flattening; `FLATTEN_ROUTERS =
   False` keeps FastAPI's own matching, index included. A router with its
   own `app`, or middleware of its own, is left as it is.

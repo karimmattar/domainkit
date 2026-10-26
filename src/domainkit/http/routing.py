@@ -47,8 +47,8 @@ of its own. It answers what trying them all answers.
 
 import copy
 import dataclasses
-from collections.abc import Callable, Sequence
-from typing import Any, Final
+from collections.abc import Callable, Iterable, Sequence
+from typing import Any, Final, Self, SupportsIndex
 
 from fastapi import APIRouter
 from fastapi import routing as fastapi_routing
@@ -261,19 +261,103 @@ def first_segment(route: BaseRoute) -> str | None:
     return None if "{" in segment else segment
 
 
+class Routes(list[BaseRoute]):
+    """A router's routes that count their changes (``version``).
+
+    ``RouteIndex`` puts its router's routes in one, so a route added,
+    removed, or replaced in place, by any of a list's methods, is noticed
+    on the next request at the cost of comparing one number (SEC-10a-6 of
+    the 0.10 review: the length alone missed a route replaced in place).
+    """
+
+    __slots__ = ("version",)
+
+    def __init__(self, routes: Iterable[BaseRoute] = ()) -> None:
+        """Hold ``routes``, at version 0."""
+        super().__init__(routes)
+        self.version = 0
+
+    def _changed(self) -> None:
+        """Count one change."""
+        self.version += 1
+
+    def __setitem__(self, index: Any, value: Any) -> None:  # noqa: ANN401 - list's.
+        """Replace a route (or a slice of them)."""
+        super().__setitem__(index, value)
+        self._changed()
+
+    def __delitem__(self, index: Any) -> None:  # noqa: ANN401 - list's.
+        """Remove a route (or a slice of them)."""
+        super().__delitem__(index)
+        self._changed()
+
+    def __iadd__(self, routes: Iterable[BaseRoute]) -> Self:  # type: ignore[override,misc]
+        """Add ``routes`` at the end."""
+        result = super().__iadd__(routes)
+        self._changed()
+        return result
+
+    def __imul__(self, times: SupportsIndex) -> Self:
+        """Repeat the routes ``times`` times."""
+        result = super().__imul__(times)
+        self._changed()
+        return result
+
+    def append(self, route: BaseRoute) -> None:
+        """Add ``route`` at the end."""
+        super().append(route)
+        self._changed()
+
+    def extend(self, routes: Iterable[BaseRoute]) -> None:
+        """Add ``routes`` at the end."""
+        super().extend(routes)
+        self._changed()
+
+    def insert(self, index: SupportsIndex, route: BaseRoute) -> None:
+        """Add ``route`` before ``index``."""
+        super().insert(index, route)
+        self._changed()
+
+    def pop(self, index: SupportsIndex = -1) -> BaseRoute:
+        """Remove and return the route at ``index``."""
+        route = super().pop(index)
+        self._changed()
+        return route
+
+    def remove(self, route: BaseRoute) -> None:
+        """Remove the first ``route``."""
+        super().remove(route)
+        self._changed()
+
+    def clear(self) -> None:
+        """Remove every route."""
+        super().clear()
+        self._changed()
+
+    def sort(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401 - list's.
+        """Reorder the routes."""
+        super().sort(*args, **kwargs)
+        self._changed()
+
+    def reverse(self) -> None:
+        """Reverse the routes' order."""
+        super().reverse()
+        self._changed()
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class _Index:
     """The candidates of each first segment, worked out for one list of routes."""
 
-    routes: list[BaseRoute]
+    routes: Routes
     """The router's list, as it was indexed: a change to it is noticed."""
-    count: int
+    version: int
     by_segment: dict[str, tuple[BaseRoute, ...]]
     anywhere: tuple[BaseRoute, ...]
     """The candidates of a segment no route names."""
 
 
-def _index(routes: list[BaseRoute]) -> _Index:
+def _index(routes: Routes) -> _Index:
     """Index ``routes``: each segment's candidates, in the routes' order."""
     keys = [first_segment(route) for route in routes]
     by_segment = {
@@ -287,7 +371,7 @@ def _index(routes: list[BaseRoute]) -> _Index:
     anywhere = tuple(
         route for route, key in zip(routes, keys, strict=True) if key is None
     )
-    return _Index(routes, len(routes), by_segment, anywhere)
+    return _Index(routes, routes.version, by_segment, anywhere)
 
 
 class RouteIndex:
@@ -300,8 +384,9 @@ class RouteIndex:
     or else the first partial one (a known path, another method), as
     ``APIRouter.app`` does; when none matches, the router's own ``app``
     answers (redirects, frontend routes, 404). Lifespan events go to the
-    router. Routes added to the router later are indexed on the next
-    request.
+    router. The router's routes become ``Routes``: one added, removed, or
+    replaced later, or a new list given to the router, is indexed on the
+    next request.
     """
 
     __slots__ = ("_index", "router")
@@ -309,14 +394,21 @@ class RouteIndex:
     def __init__(self, router: APIRouter) -> None:
         """Index ``router``'s routes as they are."""
         self.router = router
-        self._index = _index(router.routes)
+        self._index = _index(self._routes())
+
+    def _routes(self) -> Routes:
+        """The router's routes, made ``Routes`` if they are not yet."""
+        routes = self.router.routes
+        if not isinstance(routes, Routes):
+            routes = self.router.routes = Routes(routes)
+        return routes
 
     def candidates(self, scope: Scope) -> Sequence[BaseRoute]:
         """The routes a request with ``scope`` may match, in order."""
         index = self._index
         routes = self.router.routes
-        if routes is not index.routes or len(routes) != index.count:
-            index = self._index = _index(routes)
+        if routes is not index.routes or index.routes.version != index.version:
+            index = self._index = _index(self._routes())
         path = get_route_path(scope)
         if not path.startswith("/"):
             return index.anywhere
@@ -340,8 +432,8 @@ class RouteIndex:
                 partial = (route, child_scope)
         if partial is not None:
             await _serve(*partial, scope, receive, send)
-            return
-        await router.app(scope, receive, send)
+        else:
+            await router.app(scope, receive, send)
 
 
 async def _serve(
