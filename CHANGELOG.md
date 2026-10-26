@@ -24,14 +24,18 @@ and a status.
   dependency ranges allow, instead of the lock's, and runs the suite, on
   pull requests and weekly; it is not required for a merge or a release.
   It found that httpx2 2.16 broke a test of the macOS and Windows trust
-  stores, which now holds on both (INFRA-07; ADR 0075).
+  stores, which now holds on both. An `oldest` job does the same with
+  every dependency and extra at the floor of its range, so the floors are
+  tested too; it found that the `immudb` extra's new grpcio floor,
+  1.62.1, cannot install on Python 3.13 (no wheel, and its source build
+  fails), and the floor is now 1.66.2 (INFRA-07; ADR 0075).
 - `.github/rulesets/` holds the branch and tag rulesets to import into
   GitHub, and `docs/versioning.md` says how: `main` only through pull
   requests that pass every check, with admins able to bypass only while
   merging one; release tags created by admins and never moved or deleted.
   `test (3.14t)`, `bench`, `sbom` and `semgrep` join the required checks,
   and `test_ci.py` checks that the list is every job a pull request
-  runs but `newest` (INFRA-02).
+  runs but `newest` and `oldest` (INFRA-02).
 - `ARCHITECTURE` extends the layer rules `check` enforces, and only
   extends them: `DOMAIN_ALLOWED` (packages a domain layer may import, such
   as a shared kernel), `FORBIDDEN_LIBRARIES` and `FORBIDDEN_LAYERS` by

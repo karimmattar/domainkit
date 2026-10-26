@@ -56,8 +56,10 @@ Options considered:
 - The lock file pins the set every other job tests. A `newest` CI job
   installs the wheel with every extra and the dev group at the newest
   releases the ranges allow, and runs the suite, on every pull request and
-  weekly. It gates no release: an upstream release must not hold back a
-  fix here.
+  weekly. An `oldest` job does the same with every dependency and extra
+  at its floor (pip constraints from `.github/scripts/floors.py`), so the
+  floors are versions CI tests too. Neither gates a release: an upstream
+  release must not hold back a fix here.
 - When it fails, the next patch release fixes domainkit or lowers the
   range's top below the breaking release.
 - Renovate widens a range when a new major appears (`rangeStrategy:
@@ -65,7 +67,9 @@ Options considered:
   `project.optional-dependencies` dependency types), and CI runs with it
   before the range moves.
 - Lower bounds stay where they are; raising one is a minor-release change
-  (`docs/versioning.md`).
+  (`docs/versioning.md`). The one exception was grpcio's, new in 0.9.2:
+  1.62.1 has no wheel for Python 3.13 and fails to build on it, so the
+  floor is 1.66.2, the first that installs; the `oldest` job found it.
 
 ## Consequences
 
@@ -77,7 +81,7 @@ Options considered:
 - FastAPI's minor releases change how forms, defaults and `null` bodies
   validate (ADR 0065); a project that upgrades FastAPI meets those changes
   in its own API, as it would without domainkit.
-- The `newest` job costs about ten job minutes per pull request and runs
-  beside the others, so the wall time does not grow.
+- The `newest` and `oldest` jobs cost about ten job minutes each per pull
+  request and run beside the others, so the wall time does not grow.
 - This supersedes ADR 0065's one-minor cap on FastAPI; the rest of 0065
   stands.

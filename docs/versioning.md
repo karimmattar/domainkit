@@ -112,10 +112,11 @@ The ranges follow one rule (ADR 0075): from the oldest version CI tests up
 to the dependency's next major version, `<1.0.0` for one still at 0.x.
 SQLAlchemy stops before its next minor (`<2.2`), since its second number
 marks API changes; `tzdata`, being data, has no top. Nothing is pinned
-with `==`. The lock file pins the set CI's jobs test, and the `newest` job
+with `==`. The lock file pins the set CI's jobs test; the `newest` job
 installs the wheel with the newest releases the ranges allow and runs the
-suite, on every pull request and weekly. When an upstream release breaks
-it, the next patch release fixes domainkit or lowers that range's top.
+suite, and the `oldest` job does the same at every range's floor, on every
+pull request and weekly. When an upstream release breaks the newest, the
+next patch release fixes domainkit or lowers that range's top.
 Renovate widens a range when a new major appears, once CI passes with it.
 
 Every package the code imports is declared, even one that another
@@ -163,9 +164,9 @@ One-time setup, before the first release:
     `lint`, `test (3.13)`, `test (3.14)`, `test (3.14t)`, `integration`,
     `bench`, `coverage`, `build`, `sbom`, `semgrep`, and `audit`. Nobody
     pushes to `main` or rewrites it; an admin may bypass the rules only
-    when merging a pull request, a choice GitHub records. The `newest` job
-    runs on pull requests too but is not required: an upstream release is
-    not the change's doing. `domainkit_tests/test_ci.py` checks that the
+    when merging a pull request, a choice GitHub records. The `newest` and
+    `oldest` jobs run on pull requests too but are not required: what
+    upstream releases is not the change's doing. `domainkit_tests/test_ci.py` checks that the
     list is every other job a pull request runs, and is this one.
   - `release-tags.json`: nobody, admins included, moves or deletes a `v*`
     tag.

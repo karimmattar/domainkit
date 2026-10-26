@@ -216,7 +216,7 @@ CI (`.github/workflows/ci.yml`) runs on every push and pull request:
 - Semgrep's Python and OWASP Top 10 rules, pip-audit, and a gitleaks scan
   of the whole history
 - on pull requests and weekly, the tests again with the newest releases
-  the dependency ranges allow, not the lock's
+  the dependency ranges allow, not the lock's, and with the oldest
 
 A full mutation testing run happens weekly, in 17 shards that run side by
 side; each writes its score and the mutants no test caught to its job
