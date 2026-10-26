@@ -25,7 +25,10 @@ the run, in its own transaction (``on_stage``):
   message committed before: the commit raises ``AlreadyHandled`` and rolls
   back, and the worker records the message as done. A run that may repeat
   an earlier one (not its first attempt) looks for the row in the outbox's
-  database before it calls the handler at all.
+  database before it calls the handler at all. A row lives as long as its
+  message may run: workers delete it once the message is done or
+  cancelled, never while it is pending (held back by its rate, waiting on a
+  broker or a paused queue) or dead (an operator may retry it).
 
 So a handler marked ``inbox`` commits its database work once, however often
 its message is delivered. What it does outside the database (a mail, a call
@@ -34,21 +37,22 @@ the runs apart.
 """
 
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final
 from weakref import WeakSet
 
 from sqlalchemy import (
-    DateTime,
+    ColumnElement,
     Delete,
+    Exists,
     Insert,
+    Select,
+    Tuple,
     Update,
     delete,
-    func,
     literal,
     select,
     tuple_,
@@ -60,13 +64,11 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 
 from . import dbclock
+from .tables import DEAD, PENDING, messages
 from .tables import inbox as inbox_table
-from .tables import messages
 
 if TYPE_CHECKING:
     from domainkit.db import SqlAlchemyUnitOfWork
-
-    from .settings import MessagingSettings
 
 
 class LeaseLost(RuntimeError, DomainkitError):
@@ -226,6 +228,7 @@ def record(run: Run, dialect: str) -> Insert:
     values = {
         "target": run.target,
         "message_id": run.message_id,
+        "outbox": run.database,
         "handled_at": dbclock.now(dialect),
     }
     inserted: Insert = statement.values(values).on_conflict_do_nothing(
@@ -245,38 +248,72 @@ async def was_handled(connection: AsyncConnection, run: Run) -> bool:
     return found is not None
 
 
-def prune_statement(dialect: str, retention: float, size: int) -> Delete:
-    """The ``DELETE`` of up to ``size`` inbox rows older than ``retention`` seconds.
+KEPT: Final = (PENDING, DEAD)
+"""The statuses of messages that may still run: their inbox rows stay.
 
-    As the outbox's cleanup does, the retention and the size are written
-    into the SQL, so a prepared statement's plan uses ``handled_at``'s index
-    (PERF-02), and rows other workers delete are skipped on PostgreSQL.
+A pending message may be waiting, held back by its rate, on its way
+through a broker, or running; an operator may retry a dead one.
+"""
+
+
+def may_run_again(message_id: ColumnElement[uuid.UUID]) -> Exists:
+    """Whether this database's outbox holds ``message_id`` pending or dead."""
+    return (
+        select(messages.c.id)
+        .where(messages.c.id == message_id, messages.c.status.in_(KEPT))
+        .exists()
+    )
+
+
+def prune_statement(outbox: str, size: int) -> Delete:
+    """The ``DELETE`` of up to ``size`` rows of ``outbox``'s messages that finished.
+
+    For rows here whose message is in this database's outbox (``outbox``
+    names it): one statement, which keeps the rows of messages that may
+    still run. Rows other workers delete are skipped on PostgreSQL.
     """
-    cutoff: dbclock.Moment
-    if dbclock.uses_database(dialect):
-        cutoff = func.statement_timestamp(type_=DateTime(timezone=True)) + literal(
-            timedelta(seconds=-retention), literal_execute=True
-        )
-    else:
-        cutoff = dbclock.at(dialect, -retention)
-    old = (
+    finished = (
         select(inbox_table.c.target, inbox_table.c.message_id)
-        .where(inbox_table.c.handled_at < cutoff)
+        .where(
+            inbox_table.c.outbox == outbox,
+            ~may_run_again(inbox_table.c.message_id),
+        )
         .limit(literal(size, literal_execute=True))
         .with_for_update(skip_locked=True)
     )
-    key = tuple_(inbox_table.c.target, inbox_table.c.message_id)
-    return delete(inbox_table).where(key.in_(old))
+    return delete(inbox_table).where(_key().in_(finished))
 
 
-def redelivery_window(
-    config: "MessagingSettings", max_attempts: int, longest_delay: float
-) -> float:
-    """The longest a message may still run again after a run that committed.
+def rows_of(outbox: str, after: tuple[str, uuid.UUID] | None, size: int) -> Select[Any]:
+    """Up to ``size`` rows here of ``outbox``'s messages, in key order, after ``after``.
 
-    Each later attempt waits up to ``longest_delay`` (its backoff's cap)
-    to come due, holds its lease up to ``VISIBILITY_TIMEOUT``, and, with a
-    broker, may wait ``REPUBLISH_AFTER`` for a lost publication to go again.
+    Their messages are in another database's outbox, which says which
+    finished (``unfinished``).
     """
-    republish = config.REPUBLISH_AFTER if config.BROKER is not None else 0.0
-    return max_attempts * (config.VISIBILITY_TIMEOUT + longest_delay + republish)
+    rows = (
+        select(inbox_table.c.target, inbox_table.c.message_id)
+        .where(inbox_table.c.outbox == outbox)
+        .order_by(inbox_table.c.target, inbox_table.c.message_id)
+        .limit(size)
+    )
+    if after is None:
+        return rows
+    types = [inbox_table.c.target.type, inbox_table.c.message_id.type]
+    return rows.where(_key() > tuple_(*after, types=types))
+
+
+def unfinished(ids: Sequence[uuid.UUID]) -> Select[Any]:
+    """The ids, of ``ids``, of messages this database's outbox may still run."""
+    return select(messages.c.id).where(
+        messages.c.id.in_(ids), messages.c.status.in_(KEPT)
+    )
+
+
+def forget(outbox: str, keys: Sequence[tuple[str, uuid.UUID]]) -> Delete:
+    """Delete the rows ``keys`` of messages in ``outbox``."""
+    return delete(inbox_table).where(inbox_table.c.outbox == outbox, _key().in_(keys))
+
+
+def _key() -> Tuple:
+    """An inbox row's key, ``(target, message_id)``."""
+    return tuple_(inbox_table.c.target, inbox_table.c.message_id)

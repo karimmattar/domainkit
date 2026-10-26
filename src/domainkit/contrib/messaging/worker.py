@@ -66,6 +66,7 @@ from domainkit.broker import Broker, BrokerError
 from domainkit.conf import settings
 from domainkit.context import SYSTEM_ACTOR, RequestContext, bind_request
 from domainkit.db import connections
+from domainkit.db.routing import router
 from domainkit.ddd import DomainEvent, EventBus, event_bus
 from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 from domainkit.reporting import report_error
@@ -90,7 +91,17 @@ from .registry import (
     qualified_name,
 )
 from .retry import Backoff, retryable
-from .runs import AlreadyHandled, Run, prune_statement, running, uses_inbox, was_handled
+from .runs import (
+    AlreadyHandled,
+    Run,
+    forget,
+    prune_statement,
+    rows_of,
+    running,
+    unfinished,
+    uses_inbox,
+    was_handled,
+)
 from .settings import MessagingSettings
 from .tables import (
     BLANKED,
@@ -1186,21 +1197,64 @@ class Worker:
         return await self._in_batches(stop, self.cleanup_statement, "_cleanup_batch")
 
     async def prune_inbox(self) -> int:
-        """Delete inbox rows older than ``INBOX_RETENTION_SECONDS``; return how many.
+        """Delete the inbox rows of messages that finished; return how many.
 
-        In batches, as ``cleanup`` deletes messages: up to
-        ``CLEANUP_BATCH_SIZE`` rows per short transaction, halved after a
-        failure and grown back after a success.
+        A row stays as long as its message may run again: while it is
+        pending (waiting, held back by its rate, on its way through a broker,
+        running) or dead (an operator may retry it), however long that is.
+        Rows of this outbox's messages go in batches, as ``cleanup`` deletes
+        messages: up to ``CLEANUP_BATCH_SIZE`` per short transaction, halved
+        after a failure and grown back after a success. Rows of messages
+        another database's outbox holds (a handler here, its event there)
+        are checked against that outbox, a batch at a time.
         """
         return await self._prune(None)
 
     async def _prune(self, stop: asyncio.Event | None) -> int:
         """Run ``prune_inbox``, stopping between batches once ``stop`` is set."""
-        return await self._in_batches(stop, self.inbox_statement, "_prune_batch")
+        pruned = await self._in_batches(stop, self.inbox_statement, "_prune_batch")
+        for outbox in self._other_outboxes():
+            pruned += await self._prune_for(outbox, stop)
+        return pruned
 
     def inbox_statement(self, dialect: str, size: int) -> Delete:
-        """The ``DELETE`` of up to ``size`` inbox rows past their retention."""
-        return prune_statement(dialect, self.config.INBOX_RETENTION_SECONDS, size)
+        """The ``DELETE`` of up to ``size`` inbox rows of finished messages here."""
+        return prune_statement(self.database, size)
+
+    def _other_outboxes(self) -> list[str]:
+        """Every other database alias holding an outbox, in routing order."""
+        aliases = (
+            alias
+            for target in router.hosting_targets()
+            for alias in router.aliases_of(target)
+        )
+        return [alias for alias in dict.fromkeys(aliases) if alias != self.database]
+
+    async def _prune_for(self, outbox: str, stop: asyncio.Event | None) -> int:
+        """Delete the rows here of ``outbox``'s messages that finished there."""
+        size = self.config.CLEANUP_BATCH_SIZE
+        pruned = 0
+        after: tuple[str, uuid.UUID] | None = None
+        while stop is None or not stop.is_set():
+            async with self.engine.connect() as connection:
+                rows = (await connection.execute(rows_of(outbox, after, size))).all()
+            if not rows:
+                break
+            async with connections.engine(outbox).connect() as connection:
+                ids = [row.message_id for row in rows]
+                live = set((await connection.execute(unfinished(ids))).scalars())
+            if finished := [
+                (row.target, row.message_id)
+                for row in rows
+                if row.message_id not in live
+            ]:
+                async with self.engine.begin() as connection:
+                    result = await connection.execute(forget(outbox, finished))
+                    pruned += int(result.rowcount)
+            if len(rows) < size:
+                break
+            after = (rows[-1].target, rows[-1].message_id)
+        return pruned
 
     async def _in_batches(
         self,

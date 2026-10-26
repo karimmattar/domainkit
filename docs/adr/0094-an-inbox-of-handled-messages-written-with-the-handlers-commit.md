@@ -57,9 +57,10 @@ it, and how long rows are kept.
 ## Decision
 
 - **`domainkit_inbox`**, owned by `contrib.messaging`, in every database
-  that holds an outbox: `(target, message_id)` as its key, and
-  `handled_at`, indexed. `target` is the handler's qualified name or the
-  task's key; rows hold no arguments. Projects create it with
+  that holds an outbox: `(target, message_id)` as its key, `outbox` (the
+  alias of the database whose outbox holds the message), indexed, and
+  `handled_at`. `target` is the handler's qualified name or the task's
+  key; rows hold no arguments. Projects create it with
   `makemigrations` and `migrate`.
 - **Opt-in, per handler or task:** `@inbox` from
   `domainkit.contrib.messaging`, on a durable handler or a task, before or
@@ -75,14 +76,26 @@ it, and how long rows are kept.
   first looks for the row on the outbox's database, and is skipped without
   calling the handler if it is there. First attempts, nearly every run,
   pay nothing for it.
-- **Pruning.** Each worker's cleanup task deletes rows older than
-  `MESSAGING.INBOX_RETENTION_SECONDS` (7 days; above `VISIBILITY_TIMEOUT`,
-  at most 365 days), in batches, as it deletes finished messages. A message
-  may still run until its last retry: `max_attempts` times its backoff's
-  longest delay, plus `VISIBILITY_TIMEOUT`, plus `REPUBLISH_AFTER` with a
-  broker. `check` refuses an inbox handler or task whose window reaches
-  the retention (`messaging.E001`), and staging and production refuse to
-  start with one.
+- **A row lives as long as its message may run.** Each row records the
+  alias of the outbox holding its message. Each worker's cleanup task
+  deletes the rows of its outbox's messages that are no longer pending
+  or dead (done, cancelled, or cleaned up), in batches, in one statement
+  per batch (`NOT EXISTS` a pending or dead message with that id). Rows
+  of messages another database's outbox holds are read a batch at a time,
+  in key order, and deleted once that outbox says their messages finished.
+  A pending message may wait without spending an attempt (a task over its
+  `rate`, a queue no worker serves, a broker whose consumers are down)
+  and a dead one may be retried at any time, so no age is safe.
+
+  The first version deleted rows by age (`INBOX_RETENTION_SECONDS`, 7
+  days), checked against a redelivery window of attempts, retry delays,
+  leases, and republishing (`messaging.E001`). The 0.11 security review
+  (SEC-11b-1) proved a `1/day` task with eight messages waiting holding
+  one for eight days: its row was pruned, and the message committed its
+  work again. The setting and the check were removed with the age. One
+  batch of 1,000 rows on PostgreSQL 18 reads 5,237 buffers (15 to 25 ms on
+  the loaded machine) tied to messages, against 2,177 (10 ms) by age: a
+  cost of the cleanup task, once per `CLEANUP_INTERVAL`, never of a run.
 - **Brokered delivery** runs through the same code: a consumer takes the
   message over and runs it as a polling worker does, so a redelivery is
   skipped the same way. In-process handlers (ADR 0078) have no message and
@@ -97,9 +110,10 @@ it, and how long rows are kept.
 - Its work must be one unit of work: a run whose first commit landed is
   skipped whole when the message comes back.
 - Each inbox message costs one insert in its transaction (one statement,
-  above), and one row until the retention passes; cleanup deletes them in
-  batches.
-- A dead letter retried by an operator after the retention, of a run that
-  had committed, runs again: retry dead letters within the retention.
+  above), and one row until its message finishes; cleanup deletes them in
+  batches. The table holds the rows of messages still pending or dead,
+  and of those finished since the last cleanup.
+- Rows of a database alias that is no longer configured stay: no outbox
+  can say their messages finished.
 - The inbox holds handler names, message ids, and times: no personal data,
   nothing for erasure to find.

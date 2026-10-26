@@ -89,7 +89,6 @@ inspects any outbox.
 | `CONCURRENCY` | `10` | Messages one worker process runs at the same time, from all its outboxes and queues together (1 to 65,535, RabbitMQ's largest prefetch). |
 | `SHUTDOWN_TIMEOUT` | `20.0` | Seconds a stopping worker lets running messages finish; the rest are stopped and run again (at most an hour). |
 | `RETENTION_SECONDS` | `604800.0` | Finished messages are deleted after this (7 days; at most 365 days); their arguments are blanked when they finish. Dead letters are kept until retried. |
-| `INBOX_RETENTION_SECONDS` | `604800.0` | How long the [inbox](#once-in-the-database-the-inbox) remembers a handled message (7 days; more than `VISIBILITY_TIMEOUT`, at most 365 days). It must outlast the message's retries: `check` refuses an `@inbox` handler or task whose retries could outlast it (`messaging.E001`). |
 | `CLEANUP_INTERVAL` | `3600.0` | Seconds between those deletions (at most a day). |
 | `CLEANUP_BATCH_SIZE` | `1000` | Most finished messages one cleanup statement deletes (1 to 100,000). |
 | `BROKER` | `None` | An alias in `BROKERS`: workers take their work from that broker instead of polling the outbox (below). |
@@ -208,17 +207,18 @@ async def close_invoice(invoice_id: UUID) -> None: ...
   message's id is `current_attempt().message_id`).
 - In a chain, only the last step may be `@inbox` (`chain()` refuses
   others): a skipped run has no result to hand to the next step.
-- Rows hold the handler's or task's name, the message id, and the time,
-  nothing personal. Workers delete them after `INBOX_RETENTION_SECONDS`
-  (7 days), in batches, with finished messages. The retention must
-  outlast every later run a message may get: each attempt can wait its
-  longest retry delay, hold its lease (`VISIBILITY_TIMEOUT`), and with a
-  broker wait `REPUBLISH_AFTER`. `check` refuses an `@inbox` handler or
-  task whose `max_attempts` times that reaches it (`messaging.E001`), and
-  staging and production refuse to start with one. Retry dead letters of
-  `@inbox` handlers within the retention.
+- Rows hold the handler's or task's name, the message id and the outbox
+  holding it, and the time: nothing personal. A row lives as long as its
+  message may run: workers delete it, with finished messages, once the
+  message is done or cancelled (or cleaned up), never while it is pending
+  or dead, however long that lasts: a task held back by its `rate`, a
+  queue no worker serves, a broker whose consumers are down, a dead
+  letter an operator retries months later. A handler that commits on
+  another database than its message's outbox has its rows there; that
+  database's worker asks the outbox which messages finished. Rows of a
+  database alias no longer configured stay.
 - The inbox costs one insert in the handler's transaction, and one row per
-  message until the retention passes. Handlers not marked keep the old
+  message until the message finishes. Handlers not marked keep the old
   rule: at least once, idempotent.
 
 **A run that outlived its lease cannot commit.** A handler can run past
