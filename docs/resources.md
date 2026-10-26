@@ -108,10 +108,11 @@ products = ResourceRouter(
 
 `writable=ALL_FIELDS` (from `domainkit.resources`) takes every plain
 field, and `create=` and `update=` replace the schemas. One of them is
-needed: a `crud=True` resource without them takes every plain field, so a
-`balance`, an `owner_id`, or an `approved_at` added to the aggregate later
-would be settable by any caller allowed to write. In 0.10 that warns
-(`DomainkitDeprecationWarning`); 0.11 refuses it. `writable` may not name
+needed: a `crud=True` resource without `writable=`, or without both
+schemas, raises `TypeError` when it is built (since 0.11; 0.10 warned and
+took every plain field), since a `balance`, an `owner_id`, or an
+`approved_at` added to the aggregate later would be settable by any
+caller allowed to write. `writable` may not name
 the id, the version, a relation, or the parent's field, which no write
 sets. `new_id=` makes ids (`uuid4`). Both writes keep to the resource's field policy (a create, as
 a partial change does) and to the caller's `scope`: a create or a change

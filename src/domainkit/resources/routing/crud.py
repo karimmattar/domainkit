@@ -8,14 +8,13 @@ permissions, and a write may not leave the caller's reach.
 
 Which fields the writes take is said explicitly: ``writable`` names them
 (or ``ALL_FIELDS``), or ``create`` and ``update`` are schemas of the
-project's. Without either, every plain field is writable, as before 0.10,
-with a ``DomainkitDeprecationWarning``: a ``balance`` or an ``owner_id``
-added to the aggregate later would be settable by any caller allowed to
-write (over-posting). 0.11 refuses it.
+project's. Without either, the router is refused when it is built (WEB-09):
+until 0.11 every plain field was writable, so a ``balance`` or an
+``owner_id`` added to the aggregate later was settable by any caller
+allowed to write (over-posting).
 """
 
 import dataclasses
-import warnings
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING
 
@@ -23,7 +22,6 @@ from fastapi import Response, status
 from pydantic import BaseModel
 
 from domainkit.ddd.fields import FieldInfo, fields_of
-from domainkit.deprecation import DomainkitDeprecationWarning
 
 from ..access import ADD, CHANGE, DELETE
 from ..events import RecordChanged, RecordCreated, RecordDeleted
@@ -59,12 +57,13 @@ class CrudRoutes:
         """Derive the schemas the writes take, and check given ones.
 
         ``writable`` names the fields the derived schemas take, or is
-        ``ALL_FIELDS``; None (deprecated) takes every plain field.
+        ``ALL_FIELDS``; None needs both schemas.
 
         Raises:
             TypeError: A schema sets what generic writes do not, the create
-                schema lacks a field the model needs, or ``writable`` names
-                what no write may set, or is given with both schemas.
+                schema lacks a field the model needs, ``writable`` names
+                what no write may set, or is given with both schemas, or
+                is missing without them.
         """
         model = router.model
         self.router = router
@@ -283,22 +282,17 @@ def _writable(
 ) -> list[str] | None:
     """The fields the derived schemas take: ``writable``'s, or None for all.
 
-    Without ``writable``, and without both schemas, every plain field is
-    writable, with a deprecation warning.
-
     Raises:
-        TypeError: ``writable`` is a string other than ``ALL_FIELDS``, names
-            a field no write sets, or is given with both schemas.
+        TypeError: ``writable`` is missing without both schemas (WEB-09), is
+            a string other than ``ALL_FIELDS``, names a field no write
+            sets, or is given with both schemas.
     """
     if writable is None:
         if create is None or update is None:
-            warnings.warn(
-                f"crud=True on {model.__name__} without writable= makes every "
-                "plain field writable; name the fields with writable=[...] "
-                "(or writable=ALL_FIELDS), or give create= and update=. "
-                "Implicit write schemas are removed in 0.11.",
-                DomainkitDeprecationWarning,
-                stacklevel=4,
+            raise TypeError(
+                f"crud=True on {model.__name__} needs the fields its writes "
+                "take: writable=[...] naming them, writable=ALL_FIELDS for "
+                "every plain field, or both create= and update=."
             )
         return None
     if create is not None and update is not None:
