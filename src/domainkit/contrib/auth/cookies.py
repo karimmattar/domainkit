@@ -79,7 +79,13 @@ from .mfa import MfaLoginIn, challenge, verify_challenge
 from .models import AbstractBaseUser, UserId
 from .principals import forget
 from .settings import auth_settings
-from .tokens import TokenKind, token_digest, well_formed
+from .tokens import (
+    LAST_USED_EVERY,
+    TokenKind,
+    last_used_every,
+    token_digest,
+    well_formed,
+)
 from .uow import AuthUnitOfWork
 
 __all__ = [
@@ -140,7 +146,9 @@ class CookieAuthentication(BaseAuthentication):
         if token.expired():
             forget(entry)
             return None
+        every = LAST_USED_EVERY
         if config.IDLE_TIMEOUT is not None:
+            every = last_used_every()
             entry = await unless_idle(entry, SCHEME, digest, config.PRINCIPAL_CACHE)
             if entry is None:  # Ended after inactivity: as if it had expired.
                 return None
@@ -148,7 +156,7 @@ class CookieAuthentication(BaseAuthentication):
         if user is None:
             return None
         check_request(connection, token.id)
-        await accept(entry, config.PRINCIPAL_CACHE)
+        await accept(entry, config.PRINCIPAL_CACHE, every=every)
         return Credentials(user, scheme=SCHEME, token_id=token.id)
 
 

@@ -30,8 +30,6 @@ LOGIN_NAME: Final = "login"
 """The name of the tokens logging in issues."""
 IDLE_PRECISION: Final = 10
 """Last uses are written this many times per ``AUTH.IDLE_TIMEOUT``."""
-SOONEST_TOUCH: Final = timedelta(seconds=30)
-"""The shortest ``last_used_every()``: a tenth of the shortest timeout."""
 
 
 class TokenKind(StrEnum):

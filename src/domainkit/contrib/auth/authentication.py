@@ -55,9 +55,11 @@ from .settings import (
     auth_settings,
 )
 from .tokens import (
+    LAST_USED_EVERY,
     TokenKind,
     idle_since,
     is_login,
+    last_used_every,
     token_digest,
     utc_now,
     well_formed,
@@ -224,7 +226,9 @@ class TokenAuthentication(BaseAuthentication):
         if token.expired():
             forget(entry)
             raise AuthenticationFailed("Token expired.")
+        every = LAST_USED_EVERY
         if config.IDLE_TIMEOUT is not None:
+            every = last_used_every()
             entry = await unless_idle(
                 entry, TOKEN_SCHEME, digest, config.PRINCIPAL_CACHE
             )
@@ -233,7 +237,7 @@ class TokenAuthentication(BaseAuthentication):
         user = entry.user()
         if user is None:
             raise AuthenticationFailed("User inactive or deleted.")
-        await accept(entry, config.PRINCIPAL_CACHE)
+        await accept(entry, config.PRINCIPAL_CACHE, every=every)
         return Credentials(
             user, scheme=TOKEN_SCHEME, token_id=token.id, scopes=token.scopes
         )
@@ -509,17 +513,21 @@ async def unless_idle(
 
 
 async def accept(
-    entry: Entry, config: PrincipalCacheSettings, *, touch: bool = True
+    entry: Entry,
+    config: PrincipalCacheSettings,
+    *,
+    touch: bool = True,
+    every: timedelta = LAST_USED_EVERY,
 ) -> None:
     """Keep ``entry``, which its class accepted; record that its token was used.
 
-    ``last_used_at`` is written when due (``LAST_USED_EVERY``), by one of
-    the requests that find it due, in a transaction of its own; kept or
-    not, no other request opens one.
+    ``last_used_at`` is written when due (``every``: ``last_used_every()``),
+    by one of the requests that find it due, in a transaction of its own;
+    kept or not, no other request opens one.
     """
     if touch and entry.credential is not None:
         now = utc_now()
-        if principal_cache.claim_touch(entry, now):
+        if principal_cache.claim_touch(entry, now, every):
             async with AuthUnitOfWork() as uow:
                 if await uow.tokens.touch_digest(entry.credential.id, now):
                     await uow.commit()

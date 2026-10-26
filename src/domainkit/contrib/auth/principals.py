@@ -615,17 +615,17 @@ class PrincipalCache:
             }
             return [entry for key in keys if (entry := self._remove(key)) is not None]
 
-    def claim_touch(self, entry: Entry, now: datetime) -> bool:
+    def claim_touch(
+        self, entry: Entry, now: datetime, every: timedelta = tokens.LAST_USED_EVERY
+    ) -> bool:
         """Whether this request writes the credential's ``last_used_at``.
 
-        Once per ``last_used_every()`` per entry: the first request to find
-        it due claims it, so concurrent requests do not all write.
+        Once per ``every`` (``last_used_every()``) per entry: the first
+        request to find it due claims it, so concurrent requests do not all
+        write.
         """
         with self._lock:
-            if entry.last_used is not None and (
-                now - entry.last_used < tokens.SOONEST_TOUCH
-                or now - entry.last_used < tokens.last_used_every()
-            ):
+            if entry.last_used is not None and now - entry.last_used < every:
                 return False
             entry.last_used = now
             return True
