@@ -210,7 +210,7 @@ class BrokerWorkers:
                     outage.recovered()
                     if relayed:
                         polls.reset()
-                    if relayed < batch:
+                    if relayed < batch and not stop.is_set():
                         await pause(wake, polls.wait(wake.listening))
                         if wake.is_set():
                             polls.reset()

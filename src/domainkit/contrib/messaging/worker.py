@@ -517,8 +517,10 @@ class Worker:
                         task.add_done_callback(running.discard)
                     if claimed:
                         polls.reset()
-                    if len(claimed) < slots:
+                    if len(claimed) < slots and not stop.is_set():
                         # Nothing more is due: wait for a poll, a commit, or stop.
+                        # Not once stopped: the clear above may have wiped the
+                        # wake-up a stop set while a slot was taken.
                         await pause(wake, polls.wait(wake.listening))
                         if wake.is_set():
                             polls.reset()

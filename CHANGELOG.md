@@ -531,6 +531,13 @@ and a status.
   statements while blocks came and went failed 3 runs of 3 before, and
   none after. The suite's own counters do the same
   (`domainkit_tests/engine_events.py`) (TEST-04).
+- A messaging worker stopped just as it took a slot of its budget stops at
+  once, instead of after waiting `POLL_INTERVAL`: it cleared its wake-up
+  after taking the slot, wiping the one the stop had set, and waited a
+  whole poll before seeing the stop. Every shutdown that landed there took
+  up to `POLL_INTERVAL` longer (the 0.9.3 release's CI timed out on it).
+  Neither the worker's poll loop nor the brokered relay's waits for a poll
+  once stopped.
 
 ### Security
 
