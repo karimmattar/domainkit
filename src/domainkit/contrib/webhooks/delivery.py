@@ -12,22 +12,42 @@ Each attempt decrypts the secrets it signs with, and stores again those a
 key in ``SECRET_KEY_FALLBACKS`` encrypted, under ``SECRET_KEY``. A secret
 no key decrypts fails the delivery: nothing is sent unsigned.
 
-Each attempt's host name lookups are its subscription's
-(``guard.lookups_for("webhook:<id>")``), not those of whoever caused the
-event: a subscription whose host's DNS never answers takes at most a
-quarter of the guard's lookup threads, and other subscribers' deliveries
-of the same events still find threads free.
+A delivery is tagged with the people its event is about (the subjects of
+its ``Personal`` fields), so ``privacy erase`` blanks its body and cancels
+it if pending (``erase_subject``), and ``privacy export`` lists it
+(``export_subject``).
+
+A subscription made through the self-service API has an owner, and
+receives only the events ``expose(..., owner=...)`` gives that owner;
+staff's subscriptions have none, and receive every event they want.
+
+Each attempt's host name lookups are its subscription's owner's
+(``guard.lookups_for("webhook-owner:<owner>")``), or for staff's, its
+own (``"webhook:<id>"``), not those of whoever caused the event: one
+owner's subscriptions whose hosts' DNS never answers take at most a
+quarter of the guard's lookup threads together, however many it made,
+and other subscribers' deliveries of the same events still find threads
+free.
 """
 
 import json
 import logging
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
-from sqlalchemy import Executable, Row, delete, insert, select, update
+from sqlalchemy import (
+    ColumnElement,
+    Executable,
+    Row,
+    delete,
+    insert,
+    or_,
+    select,
+    update,
+)
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -44,8 +64,10 @@ from domainkit.contrib.messaging.outbox import (
 from domainkit.contrib.messaging.registry import dump_event, spec_for
 from domainkit.contrib.messaging.settings import MessagingSettings
 from domainkit.db import connections
+from domainkit.db.query import contains_text
 from domainkit.db.routing import router
 from domainkit.ddd import DomainEvent, EventBus, event_bus
+from domainkit.ddd.personal import event_subjects, subject_tag, tagged_with
 from domainkit.encryption import DecryptionFailed
 from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 from domainkit.http.guard import lookups_for
@@ -58,6 +80,7 @@ from .settings import WebhookSettings
 from .signing import signed_headers
 from .tables import (
     CANCELLED,
+    ERASED,
     FAILED,
     PENDING,
     SUCCEEDED,
@@ -77,6 +100,7 @@ DATABASE_MARGIN: Final = 30.0
 NAMESPACE: Final = uuid.UUID("5d0a6c2e-6a43-4e58-9a59-5f1e3c3bd2a1")
 """Delivery ids are derived from the event and subscription in this namespace."""
 PURGE_BATCH: Final = 1000
+ERASED_ERROR: Final = "The people this delivery was about were erased."
 KEY_LOST: Final = (
     "No key decrypts the subscription's secret: SECRET_KEY changed without the "
     "old key in SECRET_KEY_FALLBACKS. Put it back, or rotate the secret, then "
@@ -84,6 +108,7 @@ KEY_LOST: Final = (
 )
 
 type Payload = Callable[[Any], Mapping[str, Any]]
+type Owner = Callable[[Any], object]
 
 
 class PayloadTooLarge(ValueError, DomainkitError):
@@ -100,6 +125,8 @@ class Exposure:
 
     name: str
     payload: Payload | None
+    owner: Owner | None = None
+    """Whose event it is, for owned subscriptions; None: theirs never get it."""
 
 
 _exposed: dict[type[DomainEvent], Exposure] = {}
@@ -110,20 +137,24 @@ def expose[E: DomainEvent](
     name: str,
     *,
     payload: Callable[[E], Mapping[str, Any]] | None = None,
+    owner: Callable[[E], object] | None = None,
     bus: EventBus = event_bus,
 ) -> None:
     """Send committed ``event_type`` events to the subscribers of ``name``.
 
     Call it in ``DomainConfig.ready()``. ``payload`` picks the event's
     ``data`` (by default every field, as JSON): leave personal data out.
-    Subclasses of ``event_type`` are sent too.
+    Subclasses of ``event_type`` are sent too. ``owner`` names whose
+    event it is (``lambda e: e.customer_id``): subscriptions that subject
+    made through the self-service API get it too. Without one, or when it
+    gives None, only staff's subscriptions do.
     """
     if not EVENT_TYPE.fullmatch(name):
         raise ImproperlyConfigured(
             f"Webhook event types are up to 128 letters, digits, '_', '.', ':', "
             f"or '-', not {name!r}."
         )
-    _exposed[event_type] = Exposure(name, payload)
+    _exposed[event_type] = Exposure(name, payload, owner)
     bus.subscribe(event_type, fan_out, durable=True)
 
 
@@ -162,9 +193,15 @@ async def fan_out(event: DomainEvent) -> None:
     if exposure is None:  # No longer exposed since it was committed.
         return
     data = exposure.payload(event) if exposure.payload else dump_event(event)
+    owner = exposure.owner(event) if exposure.owner else None
     try:
         await queue_deliveries(
-            exposure.name, data, key=str(event.event_id), occurred_at=event.occurred_at
+            exposure.name,
+            data,
+            key=str(event.event_id),
+            occurred_at=event.occurred_at,
+            subjects=event_subjects(event),
+            owner=None if owner is None else str(owner),
         )
     except PayloadTooLarge as exc:  # Trying again cannot help: report it once.
         logger.error("Dropped a webhook event: %s", exc)
@@ -204,12 +241,20 @@ def _deliver_message(delivery_id: uuid.UUID, *, dedupe: bool) -> dict[str, Any]:
 
 
 async def queue_deliveries(
-    event_type: str, data: Mapping[str, Any], *, key: str, occurred_at: datetime
+    event_type: str,
+    data: Mapping[str, Any],
+    *,
+    key: str,
+    occurred_at: datetime,
+    subjects: Iterable[str] = (),
+    owner: str | None = None,
 ) -> int:
     """Queue a delivery of one event to each subscriber; return how many.
 
     ``key`` identifies the event: queueing it again (a retried fan-out)
-    adds nothing.
+    adds nothing. ``subjects`` are the people ``data`` is about: erasing
+    one of them blanks these deliveries (``erase_subject``). Staff's
+    subscriptions get it, and with ``owner``, that subject's own too.
 
     Raises:
         PayloadTooLarge: the body is over ``MAX_PAYLOAD_BYTES``.
@@ -224,9 +269,12 @@ async def queue_deliveries(
     alias = webhooks_alias()
     now = _now()
     async with connections.engine(alias).begin() as connection:
+        whose: ColumnElement[bool] = subscriptions.c.owner.is_(None)
+        if owner is not None:
+            whose = or_(whose, subscriptions.c.owner == owner)
         found = await connection.execute(
             select(subscriptions.c.id, subscriptions.c.event_types).where(
-                subscriptions.c.active.is_(True)
+                subscriptions.c.active.is_(True), whose
             )
         )
         wanted = [
@@ -236,6 +284,7 @@ async def queue_deliveries(
         ]
         if not wanted:
             return 0
+        tag = subject_tag(subjects)
         rows = [
             {
                 "id": uuid.uuid5(NAMESPACE, f"{key}:{subscription_id}"),
@@ -245,6 +294,7 @@ async def queue_deliveries(
                 "status": PENDING,
                 "attempts": 0,
                 "created_at": now,
+                "subjects": tag,
             }
             for subscription_id in wanted
         ]
@@ -283,8 +333,8 @@ async def deliver(delivery_id: uuid.UUID) -> None:
                 ).where(deliveries.c.id == delivery_id)
             )
         ).first()
-        if delivery is None or delivery.status != PENDING:
-            return  # Gone, or finished (a duplicate run).
+        if delivery is None or delivery.status != PENDING or delivery.body == ERASED:
+            return  # Gone, finished (a duplicate run), or erased meanwhile.
         subscription = (
             await connection.execute(
                 select(subscriptions).where(
@@ -316,7 +366,7 @@ async def deliver(delivery_id: uuid.UUID) -> None:
     headers = signed_headers(
         secrets, f"msg_{delivery_id.hex}", int(started.timestamp()), body
     )
-    with lookups_for(f"webhook:{subscription.id}"):
+    with lookups_for(lookup_owner(subscription.id, subscription.owner)):
         outcome = await client.post(
             subscription.url, body, headers, config, allow_http=settings.DEBUG
         )
@@ -336,6 +386,15 @@ async def deliver(delivery_id: uuid.UUID) -> None:
     )
     if not final:
         raise DeliveryFailed(outcome.error or "The attempt failed.")
+
+
+def lookup_owner(subscription_id: uuid.UUID, owner: str | None) -> str:
+    """Whose share of the guard's lookup threads a delivery draws on.
+
+    An owned subscription's owner's, so many subscriptions of one owner
+    share one quarter of the threads; a staff subscription's own.
+    """
+    return f"webhook:{subscription_id}" if owner is None else f"webhook-owner:{owner}"
 
 
 def _unsealed(
@@ -443,7 +502,8 @@ async def _finish(
 async def replay(delivery_ids: Sequence[uuid.UUID]) -> list[uuid.UUID]:
     """Send finished deliveries again, under the same ``webhook-id``; return them.
 
-    Deliveries still being tried are left alone.
+    Deliveries still being tried are left alone, and so are erased ones:
+    they have nothing left to send.
     """
     if not delivery_ids:
         return []
@@ -456,6 +516,7 @@ async def replay(delivery_ids: Sequence[uuid.UUID]) -> list[uuid.UUID]:
                     .where(
                         deliveries.c.id.in_(delivery_ids),
                         deliveries.c.status != PENDING,
+                        deliveries.c.body != ERASED,
                     )
                     .values(status=PENDING, finished_at=None)
                     .returning(deliveries.c.id)
@@ -467,6 +528,76 @@ async def replay(delivery_ids: Sequence[uuid.UUID]) -> list[uuid.UUID]:
             await write(connection, connection.dialect.name, messages)
     await _committed(alias, messages)
     return replayed
+
+
+async def erase_subject(subject: str) -> dict[str, int]:
+    """Blank the bodies of deliveries about ``subject``; cancel the pending ones.
+
+    The subscriptions ``subject`` owns are deleted (audited as any
+    deletion), and their deliveries blanked too. Returns how many
+    deliveries were blanked, how many of those were cancelled, and how
+    many subscriptions went. Their rows and attempt logs stay, without
+    what they would have sent; ``replay`` skips them.
+    """
+    from .uow import WebhooksUnitOfWork  # Imports the models, as this module.
+
+    owned: list[uuid.UUID] = []
+    async with WebhooksUnitOfWork() as uow:
+        for subscription in await uow.subscriptions.owned_by(subject):
+            subscription.delete()
+            await uow.subscriptions.remove(subscription)
+            owned.append(subscription.id)
+        await uow.commit()
+    alias = webhooks_alias()
+    async with connections.engine(alias).begin() as connection:
+        named = or_(
+            contains_text(
+                deliveries.c.subjects, tagged_with(subject), connection.dialect.name
+            ),
+            deliveries.c.subscription_id.in_(owned),
+        )
+        cancelled = await connection.execute(
+            update(deliveries)
+            .where(named, deliveries.c.status == PENDING)
+            .values(status=CANCELLED, finished_at=_now(), last_error=ERASED_ERROR)
+        )
+        blanked = await connection.execute(
+            update(deliveries)
+            .where(named, deliveries.c.body != ERASED)
+            .values(body=ERASED, subjects=None)
+        )
+    return {
+        "deliveries": blanked.rowcount,
+        "cancelled": cancelled.rowcount,
+        "subscriptions": len(owned),
+    }
+
+
+async def export_subject(subject: str) -> list[dict[str, Any]]:
+    """The deliveries about ``subject``, oldest first, with what each sends."""
+    alias = webhooks_alias()
+    async with connections.engine(alias).connect() as connection:
+        named = contains_text(
+            deliveries.c.subjects, tagged_with(subject), connection.dialect.name
+        )
+        rows = (
+            await connection.execute(
+                select(deliveries)
+                .where(named)
+                .order_by(deliveries.c.created_at, deliveries.c.id)
+            )
+        ).all()
+    return [
+        {
+            "id": str(row.id),
+            "subscription_id": str(row.subscription_id),
+            "event_type": row.event_type,
+            "status": row.status,
+            "created_at": row.created_at.isoformat(),
+            "body": json.loads(row.body),
+        }
+        for row in rows
+    ]
 
 
 async def failed_deliveries(

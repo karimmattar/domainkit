@@ -279,9 +279,21 @@ openssl ec -in signing.key -pubout -out immudb-signing.pub
   ([contrib.md](contrib.md#evidence-records-that-provably-never-change)).
 - `/ready` checks every ledger (`ledger:<alias>`), on a thread and a
   client of its own, so a probe never waits behind a slow write.
-- Each process trusts the server's state when it first connects, then
-  verifies every later step against it. The signing key is what protects
-  across restarts.
+- A ledger's clients verify every step from one state, the ledger's: the
+  work and the probe share it, a reconnect keeps it, and each advance is
+  saved, so a process starts from where the ledger was last proved. With
+  `domainkit.contrib.audit` installed it is saved in `AUDIT.DATABASE`
+  (`domainkit_ledger_states`, one row per server and database, run
+  `makemigrations` and `migrate`), which every process and host shares;
+  without it, in memory, until the process ends. Only the very first
+  contact trusts the server's state as it is.
+- A server whose state is behind the saved one (rolled back to an older
+  copy) is refused with `LedgerRolledBack`, and one with another digest at
+  the same transaction (forked) with `LedgerTampered`, by every call and
+  by `/ready`, whatever its signature says. If you restored the ledger
+  from a backup on purpose, delete its row from `domainkit_ledger_states`
+  so the next contact trusts it again ([ADR
+  0011](adr/0011-immudb-ledger-for-evidence.md#amendment-2026-10-26-010-trust-that-outlives-a-client)).
 - A call that takes longer than `TIMEOUT` is given up on with
   `LedgerUnavailable`, but the SDK cannot interrupt it: a write may still
   land afterwards. `create`, and `append(..., unchanged_since=...)`, make a

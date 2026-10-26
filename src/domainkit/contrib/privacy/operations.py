@@ -2,12 +2,15 @@
 
 Each operation is recorded in the audit trail (``privacy.export``,
 ``privacy.erase``, ``privacy.purge``), attributed to the actor of the
-context it runs in (``system`` from a command).
+context it runs in (``system`` from a command). An erasure also records
+what each domain's ``erase_subject`` hook did to the copies it keeps
+(``privacy.copies_erased``).
 """
 
+import logging
 import re
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Final
@@ -26,8 +29,10 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domainkit import clock
+from domainkit.apps import DomainConfig, registry
 from domainkit.contrib.audit import Outcome, forget, record
 from domainkit.db import SqlAlchemyRepository, SqlAlchemyUnitOfWork, connections
+from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import sqlstate
 from domainkit.utils.decimals import jsonable
 
@@ -39,6 +44,8 @@ from .models import (
     personal_models,
     retention_policies,
 )
+
+logger = logging.getLogger(__name__)
 
 BATCH_SIZE: Final = 500
 """Rows deleted, or aggregates erased, per transaction by ``purge``."""
@@ -53,6 +60,8 @@ REFUSALS: Final = {
 _NO_MATCH: Final = object()
 _KINDS: Final = (uuid.UUID, int)
 """Column types a subject is read as; columns of other types compare it as text."""
+_COUNTED: Final = re.compile(r"[a-z][a-z0-9_]{0,63}")
+"""A kind of copy a domain's ``erase_subject`` counts: ``deliveries``."""
 
 
 def check_subject(subject: str) -> str:
@@ -97,8 +106,11 @@ async def export_subject(subject: str) -> dict[str, Any]:
     """Every field marked ``Personal`` about ``subject``, as JSON-ready data.
 
     Grouped by domain and model; each record has the aggregate's id and
-    its fields about the subject. The export is recorded in the audit
-    trail, with how many records it holds.
+    its fields about the subject. Under ``copies``, what each domain's
+    ``export_subject`` hook gives, by its label: the copies it keeps
+    outside aggregates (webhook deliveries, kept responses, queued
+    arguments). The export is recorded in the audit trail, with how many
+    records it holds and which domains gave copies.
 
     Raises:
         ValueError: ``subject`` is not 1 to 255 printable characters, or is
@@ -126,7 +138,11 @@ async def export_subject(subject: str) -> dict[str, Any]:
     count = sum(
         len(records) for models in domains.values() for records in models.values()
     )
-    await record("privacy.export", target=subject, records=count)
+    copies = {}
+    for domain in registry:
+        if kept := await domain.export_subject(subject):
+            copies[domain.label] = dict(kept)
+    await record("privacy.export", target=subject, records=count, copies=sorted(copies))
     return {
         "subject": subject,
         "exported_at": clock.now().isoformat(),
@@ -141,6 +157,7 @@ async def export_subject(subject: str) -> dict[str, Any]:
                 for domain, models in domains.items()
             }
         ),
+        "copies": jsonable(copies),
     }
 
 
@@ -151,13 +168,17 @@ async def erase_subject(subject: str, *, reason: str = REQUEST) -> int:
     says (see ``models``), and committed with a ``PersonalDataErased``
     event, so its version, the audit trail, and event handlers see the
     change. Aggregates already erased are left alone, so running it again
-    is harmless. The subject's keys in the audit trail are then forgotten,
-    and the erasure recorded.
+    is harmless. Then each installed domain's ``erase_subject`` hook erases
+    the copies it keeps, and what it did is recorded
+    (``privacy.copies_erased``, counts only). The subject's keys in the
+    audit trail are then forgotten, and the erasure recorded.
 
     Raises:
         ValueError: ``subject`` or ``reason`` is not 1 to 255 printable
             characters, or ``subject`` is an id not written as it prints
             (see ``check_subject``).
+        ImproperlyConfigured: A domain's hook answered something other
+            than counts by kind.
     """
     check_subject(subject)
     check_reason(reason)
@@ -172,9 +193,49 @@ async def erase_subject(subject: str, *, reason: str = REQUEST) -> int:
                     model, alias, model.columns[of] == value, fields, reason
                 )
                 erased += changed
+    for domain in registry:
+        done = _counts(domain, await domain.erase_subject(subject, reason))
+        if any(done.values()):
+            await record(
+                "privacy.copies_erased",
+                target=subject,
+                domain=domain.label,
+                copies=done,
+                reason=reason,
+            )
+        if done.get("pending"):
+            logger.warning(
+                "%s keeps %d cop%s of a subject's data still to finish (queued "
+                "work); they are erased once it ends: erase the subject again then",
+                domain.label,
+                done["pending"],
+                "y" if done["pending"] == 1 else "ies",
+            )
     await forget(subject)
     await record("privacy.erase", target=subject, aggregates=erased, reason=reason)
     return erased
+
+
+def _counts(domain: DomainConfig, done: Mapping[str, int]) -> dict[str, int]:
+    """``done``, if it is counts by kind: what may go into the audit trail.
+
+    Raises:
+        ImproperlyConfigured: It is not: a value that is not a count could
+            be the data itself.
+    """
+    for kind, count in done.items():
+        if not (
+            isinstance(kind, str)
+            and _COUNTED.fullmatch(kind)
+            and type(count) is int
+            and count >= 0
+        ):
+            raise ImproperlyConfigured(
+                f"{type(domain).__qualname__}.erase_subject must return counts by "
+                "kind, such as {'deliveries': 2}: lower-case names and whole "
+                "numbers, which are audited."
+            )
+    return dict(done)
 
 
 class _Aggregates(SqlAlchemyRepository[Any, Any]):

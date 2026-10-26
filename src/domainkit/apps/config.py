@@ -1,7 +1,7 @@
 """``DomainConfig``: Django's ``AppConfig`` for a bounded context."""
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
@@ -230,6 +230,29 @@ class DomainConfig:
         own units of work, and make running twice harmless: rows that exist
         stay as they are.
         """
+
+    async def erase_subject(self, subject: str, reason: str) -> Mapping[str, int]:
+        """Erase what the domain keeps about ``subject`` outside its aggregates.
+
+        ``domainkit.contrib.privacy`` erases the fields of aggregates marked
+        ``Personal`` itself, then calls this on every installed domain, for
+        the copies a store keeps elsewhere: webhook deliveries, kept
+        responses, queued arguments. ``subject`` is checked already; ``reason``
+        is the erasure's (``request``, or a ticket). Return what was done,
+        as counts by kind (``{"deliveries": 2}``): privacy records them in
+        the audit trail, so they must never hold the data itself. Count
+        copies left to finish first under ``pending``: privacy warns to
+        erase again later. Running it again must be harmless.
+        """
+        return {}
+
+    async def export_subject(self, subject: str) -> Mapping[str, object]:
+        """What the domain keeps about ``subject`` outside its aggregates, as JSON.
+
+        ``domainkit.contrib.privacy`` adds it to a subject's export, under
+        the domain's label; return nothing when there is nothing.
+        """
+        return {}
 
     def check_application(self, app: "FastAPI") -> list[str]:
         """Problems with the built application, such as routes no rule guards.

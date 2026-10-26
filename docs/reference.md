@@ -1048,7 +1048,8 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `webhooks` | `subscriptions\|deliveries\|replay`, `[ID ...]`, `--failed`, `--status`, `--subscription`, `--limit` | List webhook subscriptions or deliveries, or send finished deliveries again (webhooks). |
 | `auditlog` | `--actor`, `--action`, `--limit`, `--database`, `--target`, `--aggregate FIELD=ID` | Read the audit trail, or one record's history with what each entry changed (audit; see [contrib.md](contrib.md#history)). |
 | `auditseal` | `--late` | Seal new audit rows into each database's hash chain and anchor its head on `AUDIT.LEDGER`; `--late` also seals rows that committed later than `AUDIT.SEAL_LATE_WINDOW`, flagged as sealed late (audit). |
-| `auditverify` | `--database` | Check the audit trail against its seals and anchors; fails if anything changed (audit). |
+| `auditverify` | `--database`, `--export FILE`, `--check-export FILE --public-key PEM` | Check the audit trail against its seals, checkpoints, and anchors; fails if anything changed. `--export` then writes signed checkpoints of every trail for a third party (`AUDIT.CHECKPOINT_KEY`); `--check-export` checks such a file offline, with the public key alone (audit). |
+| `auditprune` | `--keep-days`, `--database`, `--operator` | Delete audit rows sealed more than `--keep-days` ago below a signed checkpoint, which `auditverify` then starts the chain from; refused if the chain up to it does not verify. Each run is audited (audit; [operators](#operators)). |
 | `auditforget` | `subject ...`, `--anonymous-days`, `--operator` | Make people's pseudonyms in the audit trail unlinkable, in every audited database; each run is audited (audit; [operators](#operators)). |
 | `privacy` | `[--operator NAME]`, then `export --subject ID [--output FILE]`, `erase --subject ID [--reason] [--noinput]`, `purge [--dry-run]` | Export or erase what every installed domain holds about a person, from `Personal` markers on aggregates, or apply the domains' retention policies; each is audited, as the operator (privacy; see [privacy.md](privacy.md), [operators](#operators)). |
 | `evidence` | `--subject`, `--verify KEY`, `--limit` | List a subject's evidence, or verify one record (evidence). |
@@ -1065,7 +1066,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 Commands that change or erase stored data as a person, not as the
 application, say who runs them and leave a row in the audit trail (with
 `domainkit.contrib.audit` installed): `messages --retry` and `--cancel`,
-`auditforget`, `loaddata`, `flush`, `partitions --prune`, and `privacy`;
+`auditforget`, `auditprune`, `loaddata`, `flush`, `partitions --prune`, and `privacy`;
 and so do those that change credentials, flags, settings, and deliveries:
 `resetmfa`, `createtoken`, `changepassword`, `createsuperuser`,
 `addcertificate`, `cleartokens`, `flags`, and `webhooks`. Their listings
@@ -1107,7 +1108,7 @@ The command runs as the actor `operator:<name>`, so what it records itself
 names the operator instead of `system`. An action that records nothing
 itself is recorded once it ends as `operator.<command>`
 (`operator.messages.retry`, `operator.messages.cancel`,
-`operator.auditforget`, `operator.loaddata`, `operator.flush`,
+`operator.auditforget`, `operator.auditprune`, `operator.loaddata`, `operator.flush`,
 `operator.partitions.prune`, `operator.webhooks.replay`), `success` or `failure` (with the error's
 class), with what it acted on and counts, and `operator_source`: `option`,
 `environment`, or `system`. Dry runs, listings, and refusals before the
@@ -1206,6 +1207,7 @@ revision: the test database migrates up, down, and up again.
 | Sample or default data | `async DomainConfig.seed()` | (called by `seed`, in `INSTALLED_DOMAINS` order) |
 | How long a domain keeps rows | `DomainConfig.RETENTION`, a sequence of `privacy.Retention` | (checked when the app is built; applied by `privacy purge`; see [privacy.md](privacy.md)) |
 | Erasing a personal field no default fits | `erase_personal_data(fields)` on the aggregate | (called by `privacy erase` and retention erasure) |
+| Erasing, and exporting, a person's data a domain keeps outside its aggregates (copies in deliveries, kept responses, queues) | `async DomainConfig.erase_subject(subject, reason)`, returning counts by kind; `async DomainConfig.export_subject(subject)`, returning JSON-ready data | (called on every installed domain by `privacy erase` and `privacy export`; the counts are audited; see [privacy.md](privacy.md#what-erasure-reaches-and-when)) |
 | How errors name a column | `info={"field": "<API name>"}` on the `Column` | (read by unique, foreign key, NOT NULL, and CHECK errors) |
 | A table fixtures or `flush` leave alone | `info={"fixtures": False}`, `{"flush": False}`, or `{"append_only": True}` on the `Table` | (read by `dumpdata`, `loaddata`, and `flush`) |
 | A deprecated route or version | `Depends(Deprecation(...))`, `versioned_router(...)` | `domainkit.http.versioning` |

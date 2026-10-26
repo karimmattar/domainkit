@@ -19,7 +19,6 @@ from domainkit.contrib.evidence.models import (
 from domainkit.ledger import Ledger, LedgerKeyExists, LedgerKeyNotFound, LedgerTampered
 
 _SUBJECT_DIGEST_LENGTH: Final = 32
-_TAMPER_CHECK_LIMIT: Final = 2
 _KEY: Final = re.compile(
     rf"(?P<namespace>[^/]+)/[0-9a-f]{{{_SUBJECT_DIGEST_LENGTH}}}/[^/]+"
 )
@@ -143,9 +142,12 @@ class LedgerEvidenceStore(EvidenceStore):
         return EvidenceReceipt(evidence.id, key, sha256(body), existing.transaction)
 
     async def get(self, key: str) -> RecordedEvidence:
-        """Read revision 1, the original, and count the key's revisions.
+        """Read the latest revision, verified, and revision 1, the original.
 
-        Only evidence keys under the store's namespace, or one of its
+        Both reads are proven by the ledger, so the count of revisions
+        (``intact``) rests on a proof too: the latest one's number, not an
+        unverified list of the key's history. A key written once is read
+        once. Only evidence keys under the store's namespace, or one of its
         previous namespaces, are read: any other key, such as another
         project's on a shared ledger or an audit anchor, is not found. A
         record must end its own key: one copied under another key is
@@ -155,9 +157,11 @@ class LedgerEvidenceStore(EvidenceStore):
         if not self._owns(key):
             raise EvidenceNotFound(f"No evidence under {key}.")
         try:
-            entry = await self.ledger.read(key.encode(), revision=1)
-            revisions = await self.ledger.revision_count(
-                key.encode(), limit=_TAMPER_CHECK_LIMIT
+            latest = await self.ledger.read(key.encode())
+            entry = (
+                latest
+                if latest.revision == 1
+                else await self.ledger.read(key.encode(), revision=1)
             )
         except LedgerKeyNotFound as exc:
             raise EvidenceNotFound(f"No evidence under {key}.") from exc
@@ -174,7 +178,7 @@ class LedgerEvidenceStore(EvidenceStore):
         receipt = EvidenceReceipt(
             evidence.id, key, sha256(entry.value), entry.transaction
         )
-        return RecordedEvidence(evidence, receipt, revisions)
+        return RecordedEvidence(evidence, receipt, latest.revision)
 
     def _owns(self, key: str) -> bool:
         """Whether ``key`` is an evidence key of this store's namespaces."""

@@ -27,6 +27,7 @@ from domainkit.ledger import (
     LedgerUnavailable,
 )
 from domainkit.ledger.immudb import ImmudbLedger
+from domainkit.ledger.trust import LedgerRolledBack, MemoryStateStore, TrustedState
 
 URL: Final = os.environ.get("DOMAINKIT_TEST_IMMUDB_URL", "")
 CA: Final = os.environ.get("DOMAINKIT_TEST_IMMUDB_CA")
@@ -241,3 +242,44 @@ async def test_evidence_on_immudb(ledger: ImmudbLedger) -> None:
     assert [recorded.receipt for recorded in listed] == [receipt]
     with pytest.raises(EvidenceTampered, match="written again"):
         await store.verify(receipt)
+
+
+async def test_a_rolled_back_or_forked_server_is_refused(prefix: bytes) -> None:
+    """A client that trusted a later state, or another digest, refuses the server.
+
+    immudb cannot be rolled back here, so the store holds what a client
+    would have saved before a rollback (a transaction the server has not
+    reached) or a fork (the server's latest transaction with another
+    digest). The test's own writes come first, and nothing writes between
+    the state read and the checks.
+    """
+    store = MemoryStateStore()
+    first = ImmudbLedger(config(), states=store)
+    try:
+        await first.append(prefix + b"k", b"v")
+        await first.check()
+    finally:
+        await first.close()
+    seen = await store.load(first.name)
+    assert seen is not None
+    assert seen.transaction > 0
+    other = bytes(byte ^ 0xFF for byte in seen.digest)
+    ahead, forked = MemoryStateStore(), MemoryStateStore()
+    await ahead.save(
+        first.name,
+        TrustedState(seen.database, seen.transaction + 10**6, seen.digest),
+    )
+    await forked.save(first.name, TrustedState(seen.database, seen.transaction, other))
+
+    for kept, refused, message in (
+        (ahead, LedgerRolledBack, "rolled back or replaced"),
+        (forked, LedgerTampered, "forked"),
+    ):
+        ledger = ImmudbLedger(config(), states=kept)
+        try:
+            with pytest.raises(refused, match=message):
+                await ledger.check()
+            with pytest.raises(refused):
+                await ledger.read(prefix + b"k")
+        finally:
+            await ledger.close()

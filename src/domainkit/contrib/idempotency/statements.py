@@ -70,9 +70,11 @@ STORE: Final[Update] = (
         status_code=_bound("status_code", "status_code"),
         headers=_bound("headers", "headers"),
         body=_bound("body", "body"),
+        subjects=_bound("subjects", "subjects"),
     )
 )
-"""Store the response (``status_code``, ``headers``, ``body``) under its holder."""
+"""Store the response (``status_code``, ``headers``, ``body``, and whom it is
+about, ``subjects``) under its holder."""
 PIN_LEASE: Final[Update] = (
     update(idempotency_keys)
     .where(HOLDER)
@@ -224,6 +226,7 @@ def _build(dialect: str, database_clock: bool) -> ClockStatements:
                 "token": fresh.token,
                 "locked_until": fresh.locked_until,
                 "pinned": False,
+                "subjects": null(),
             },
             where=keys.expires_at < claim_before,
         ).returning(keys.token),

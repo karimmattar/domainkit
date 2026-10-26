@@ -28,6 +28,7 @@ ALL_EVENTS: Final = "*"
 EVENT_TYPE: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 MAX_EVENT_TYPES: Final = 50
 MAX_DESCRIPTION: Final = 255
+MAX_OWNER: Final = 255
 SECRET_PURPOSE: Final = "domainkit.webhooks.secret"  # noqa: S105 - a purpose.
 """What the key that encrypts subscription secrets is derived for."""
 
@@ -45,11 +46,16 @@ class InvalidEventTypes(BusinessRuleViolation):
 
 
 class SubscriptionCreated(DomainEvent):
-    """Staff subscribed a URL to events (the host only: URLs may hold tokens)."""
+    """A URL was subscribed to events (the host only: URLs may hold tokens).
+
+    ``owner`` is the subject that subscribed it through the self-service
+    API; None when staff did.
+    """
 
     subscription_id: SubscriptionId
     host: str
     event_types: tuple[str, ...]
+    owner: str | None = None
 
 
 class SubscriptionChanged(DomainEvent):
@@ -128,6 +134,9 @@ class Subscription(AggregateRoot[SubscriptionId]):
     """The secret before the last rotation, encrypted; it signs until it expires."""
     previous_secret_expires_at: datetime | None = None
     created_at: datetime = field(default_factory=_now)
+    owner: str | None = None
+    """The subject whose events alone it receives; None for staff's, which
+    receive every event they want."""
 
     @classmethod
     def create(
@@ -138,12 +147,19 @@ class Subscription(AggregateRoot[SubscriptionId]):
         description: str = "",
         *,
         active: bool = True,
+        owner: str | None = None,
     ) -> tuple[Self, str]:
         """Subscribe ``url`` (checked by the caller) with a new secret.
+
+        ``owner`` limits it to the events of one subject (see ``expose``).
 
         Returns:
             The subscription, and its secret: shown this once, stored encrypted.
         """
+        if owner is not None and not 1 <= len(owner) <= MAX_OWNER:
+            raise BusinessRuleViolation(
+                f"A subscription's owner has 1 to {MAX_OWNER} characters."
+            )
         subscription_id = SubscriptionId(uuid4())
         secret = new_secret()
         subscription = cls(
@@ -155,12 +171,14 @@ class Subscription(AggregateRoot[SubscriptionId]):
             ),
             active=active,
             description=_description(description),
+            owner=owner,
         )
         subscription.record(
             SubscriptionCreated(
                 subscription_id=subscription.id,
                 host=host,
                 event_types=tuple(subscription.event_types),
+                owner=owner,
             )
         )
         return subscription, secret

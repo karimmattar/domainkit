@@ -51,7 +51,12 @@ from domainkit.contrib.audit.seals import (
     verify,
 )
 from domainkit.contrib.audit.settings import AuditSettings
-from domainkit.contrib.audit.tables import audit_keys, audit_log, audit_seals
+from domainkit.contrib.audit.tables import (
+    audit_checkpoints,
+    audit_keys,
+    audit_log,
+    audit_seals,
+)
 from domainkit.db import connections
 from domainkit.ledger import LedgerEntry, LedgerKeyNotFound, MemoryLedger, ledgers
 from domainkit.management import CommandError, call_command
@@ -89,7 +94,7 @@ def audited(database_url: str) -> Iterator[str]:
 async def tables(audited: str) -> AsyncIterator[None]:
     """Create the audit tables."""
     async with connections.engine().begin() as connection:
-        for table in (audit_log, audit_keys, audit_seals):
+        for table in (audit_log, audit_keys, audit_seals, audit_checkpoints):
             await connection.run_sync(table.create)
     yield
     await connections.close_all()
@@ -1073,7 +1078,12 @@ def test_seal_and_verify_commands(
         async def prepare() -> list[uuid.UUID]:
             for alias in ("default", "reports"):
                 async with connections.engine(alias).begin() as connection:
-                    for table in (audit_log, audit_keys, audit_seals):
+                    for table in (
+                        audit_log,
+                        audit_keys,
+                        audit_seals,
+                        audit_checkpoints,
+                    ):
                         await connection.run_sync(table.create)
             start = datetime.now(UTC)
             entries = [await add(start + timedelta(seconds=n)) for n in range(4)]
@@ -1156,7 +1166,7 @@ def test_auditseal_seals_late_rows_only_with_its_option(
 
     async def prepare() -> None:
         async with connections.engine().begin() as connection:
-            for table in (audit_log, audit_keys, audit_seals):
+            for table in (audit_log, audit_keys, audit_seals, audit_checkpoints):
                 await connection.run_sync(table.create)
         now = datetime.now(UTC)
         await add(now)

@@ -11,7 +11,9 @@ longer matches it.
 
 ``verify`` reports changed and missing rows, links that do not follow,
 anchors the chain no longer matches, seals left unanchored, and rows left
-unsealed.
+unsealed. A chain pruned below a signed checkpoint (``checkpoints``,
+``pruning``) starts from it instead of the genesis; a checkpoint whose
+signature does not verify is reported, and starts nothing.
 
 Rows are sealed after they commit, by the worker every ``AUDIT.SEAL_EVERY``
 or by ``auditseal``, so a row can be rewritten unnoticed until it is sealed
@@ -50,6 +52,7 @@ from domainkit.apps import registry
 from domainkit.db import UTCDateTime, connections
 from domainkit.ledger import Ledger, LedgerChanged, LedgerKeyNotFound, ledgers
 
+from .checkpoints import Checkpoint, configured_public_key, stored
 from .personal import audited_databases, prepare_anonymous_keys
 from .settings import AuditSettings
 from .tables import audit_log, audit_seals
@@ -172,11 +175,22 @@ class Report:
     Not a problem by itself: those rows were open to change unnoticed for
     longer than the others.
     """
+    pruned: int = 0
+    """Seals pruned below checkpoints that verified (``auditprune``)."""
+    forged: list[int] = field(default_factory=list)
+    """Checkpoints, by seal, whose signature does not verify under
+    ``AUDIT.CHECKPOINT_KEY`` (or no key is set): they start nothing."""
 
     @property
     def intact(self) -> bool:
         """Whether nothing was found wrong."""
-        problems = (self.changed, self.missing, self.broken, self.rewritten)
+        problems = (
+            self.changed,
+            self.missing,
+            self.broken,
+            self.rewritten,
+            self.forged,
+        )
         return not (any(problems) or self.unanchored or self.unsealed)
 
 
@@ -347,11 +361,18 @@ async def verify(
     *,
     now: datetime | None = None,
     every: timedelta | None = None,
+    upto: int | None = None,
 ) -> Report:
     """Check ``database``'s chain against its rows, and against ``ledger``.
 
     With a ledger, seals sealed more than ``every`` (default:
     ``AUDIT.ANCHOR_EVERY``) and ``LOOKBACK`` ago must be anchored.
+
+    A gap in the chain is accepted only where a checkpoint that verifies
+    ends it: the seal after the gap must follow the checkpoint's link.
+    Anchors of pruned seals are not checked, except one at a checkpoint,
+    which must be its link. ``upto`` stops at that seal (for ``auditprune``:
+    nothing after it is read, nor counted unsealed or unanchored).
     """
     now = now or clock.now()
     report = Report(database)
@@ -359,22 +380,36 @@ async def verify(
     report.anchors = len(anchored)
     newest_anchored = max(anchored, default=0)
     overdue = None  # Sealed before this, a seal must be anchored.
-    if ledger is not None:
+    if ledger is not None and upto is None:
         if every is None:
             every = registry.settings(AuditSettings).ANCHOR_EVERY
         overdue = now - every - LOOKBACK
+    public_key = configured_public_key()
     previous = Head(0, GENESIS)
     query = (
         select(audit_seals, *(audit_log.c[name] for name in COLUMNS))
         .outerjoin(audit_log, audit_log.c.id == audit_seals.c.entry_id)
         .order_by(audit_seals.c.seq)
     )
+    if upto is not None:
+        query = query.where(audit_seals.c.seq <= upto)
     async with connections.engine(database).connect() as connection:
+        points = await stored(connection, database, public_key)
+        report.forged = [point.seq for point in points if point.checkpoint is None]
+        checkpoints = {
+            point.seq: point.checkpoint for point in points if point.checkpoint
+        }
         async for row in await connection.stream(query):
             seal_row = row._mapping
             report.sealed += 1
-            if seal_row["seq"] != previous.seq + 1 or seal_row["link"] != link(
-                previous.link, seal_row["digest"]
+            start = checkpoints.get(seal_row["seq"] - 1)
+            if seal_row["seq"] > previous.seq + 1 and start is not None:
+                report.pruned += seal_row["seq"] - 1 - previous.seq
+                previous = Head(start.seq, start.link)
+            if (
+                seal_row["seq"] != previous.seq + 1
+                or seal_row["link"] != link(previous.link, seal_row["digest"])
+                or _off_checkpoint(checkpoints.get(seal_row["seq"]), seal_row["link"])
             ):
                 report.broken.append(seal_row["seq"])
             report.late += seal_row["late"]
@@ -391,9 +426,20 @@ async def verify(
             ):
                 report.unanchored += 1
             previous = Head(seal_row["seq"], seal_row["link"])
-        report.rewritten.extend(sorted(anchored))  # Anchored seals now gone.
-        report.unsealed = await _unsealed(connection, now)
+        newest = max(checkpoints, default=0)
+        for seq in sorted(anchored):  # Anchored seals now gone.
+            point = checkpoints.get(seq)
+            mismatch = point is not None and anchored[seq] != {point.link}
+            if (seq > newest or mismatch) and (upto is None or seq <= upto):
+                report.rewritten.append(seq)
+        if upto is None:
+            report.unsealed = await _unsealed(connection, now)
     return report
+
+
+def _off_checkpoint(checkpoint: Checkpoint | None, seal_link: str) -> bool:
+    """Whether a checkpoint at a seal still in the chain names another link."""
+    return checkpoint is not None and checkpoint.link != seal_link
 
 
 type _Mark = tuple[datetime, UUID]

@@ -43,7 +43,12 @@ from domainkit.context import (
     bind_request,
     current_request,
 )
-from domainkit.contrib.audit.tables import audit_keys, audit_log, audit_seals
+from domainkit.contrib.audit.tables import (
+    audit_checkpoints,
+    audit_keys,
+    audit_log,
+    audit_seals,
+)
 from domainkit.contrib.messaging import (
     MessagingSettings,
     Worker,
@@ -940,7 +945,7 @@ def test_retries_and_cancels_are_audited_with_their_operator(
         async def prepare() -> tuple[uuid.UUID, uuid.UUID]:
             async with connections.engine().begin() as connection:
                 await connection.run_sync(messages.create)
-                for table in (audit_log, audit_keys, audit_seals):
+                for table in (audit_log, audit_keys, audit_seals, audit_checkpoints):
                     await connection.run_sync(table.create)
             await enqueue(always_fails)
             await Worker().run_once()

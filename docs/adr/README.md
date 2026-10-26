@@ -28,7 +28,7 @@ statuses, and the amendments they name.
 | [0008](0008-multiple-databases-and-routing.md) | Several databases: two kinds, routed by domain | Accepted |
 | [0009](0009-sharding-with-hash-buckets.md) | Shard by key over fixed hash buckets | Accepted |
 | [0010](0010-postgresql-range-partitioning.md) | Range-partition large tables in PostgreSQL | Accepted |
-| [0011](0011-immudb-ledger-for-evidence.md) | Keep evidence in an immudb ledger, verified by the client | Accepted; keys and subjects amended by [0018](0018-evidence-subjects-are-internal-ids.md) |
+| [0011](0011-immudb-ledger-for-evidence.md) | Keep evidence in an immudb ledger, verified by the client | Accepted; keys and subjects amended by [0018](0018-evidence-subjects-are-internal-ids.md); amended 2026-10-26 (at the end) |
 | [0012](0012-caches-json-values-fail-open.md) | Caches with JSON values that fail open | Accepted |
 | [0013](0013-shared-rate-limits-in-redis.md) | Share rate limits through Redis, with GCRA on the server's clock | Accepted; amended 2026-10-25 (at the end) |
 | [0014](0014-outbox-as-record-broker-for-dispatch.md) | Keep the outbox as the record; use the broker to dispatch | Accepted |
@@ -94,7 +94,9 @@ statuses, and the amendments they name.
 | [0077](0077-declare-what-apps-require.md) | Declare what apps require, and reach other apps only through their public names | Accepted |
 | [0078](0078-deliver-events-in-process-after-commit-or-durably-through-the-outbox.md) | Deliver events in process after commit, or durably through the outbox | Accepted |
 | [0079](0079-validate-every-setting-in-one-model-and-each-app-in-its-own.md) | Validate every setting at startup: one model, and each app's own | Accepted; amended 2026-10-26 (at the end) |
+| [0079](0079-validate-every-setting-in-one-model-and-each-app-in-its-own.md) | Validate every setting at startup: one model, and each app's own | Accepted |
 | [0080](0080-access-rules-are-core-auth-is-one-provider.md) | Access rules are core; auth is one provider | Accepted |
+| [0082](0082-signed-audit-checkpoints.md) | Prune the audit chain below signed checkpoints, in a fixed format | Accepted |
 | [0084](0084-one-exception-root-mapped-to-http-at-the-boundary.md) | Root every exception at `DomainkitError`, and map errors to HTTP at the boundary | Accepted |
 | [0085](0085-register-hooks-by-type-for-the-domains-that-have-them.md) | Register commit and migration hooks by type, for the domains that have them | Accepted |
 | [0086](0086-secure-defaults-at-the-http-edge.md) | Make the HTTP edge's defaults the safe ones | Accepted |

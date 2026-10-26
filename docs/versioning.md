@@ -62,12 +62,6 @@ that make deprecations errors, as below. When a patch adds a better name,
 the old one stays without a warning, and the next minor release deprecates
 it.
 
-### Deprecations planned for 0.10
-
-| Old name | Use instead | Since |
-| --- | --- | --- |
-| `domainkit.contrib.evidence.model` | `domainkit.contrib.evidence` (or its `models`) | 0.9.2 |
-
 ### Deprecations planned for 0.11
 
 | Old name | Use instead | Since |
@@ -77,6 +71,7 @@ it.
 | The setting `AUTH.REQUIRE_ROUTE_RULES` | `REQUIRE_ROUTE_RULES` | 0.10 |
 | `ResourceRouter(crud=True)` without `writable=`, or without both `create=` and `update=` (every plain field writable) | `writable=[...]` naming the fields, `writable=ALL_FIELDS`, or both schemas | 0.10 |
 | `Query` from `domainkit.ddd.query` (named `Selection` since 0.9.2) | `domainkit.ddd.Selection` | 0.10 |
+| `domainkit.contrib.evidence.model` | `domainkit.contrib.evidence` (or its `models`) | 0.10 |
 | Credentials limited to scopes passing a route that declares no rule that checks scopes (`SCOPED_CREDENTIALS = "warn"`, the default) | `HasScope(...)`, a permission rule, or `AllowScoped()` on the route; 0.11 refuses them (`"refuse"`) | 0.10 |
 
 To find deprecated uses before upgrading, make the warning an error in the

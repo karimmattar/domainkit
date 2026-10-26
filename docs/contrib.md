@@ -586,7 +586,11 @@ expose(
 ```
 
 Without `payload`, every field of the event is sent: leave personal data
-out. Subclasses of an exposed event are sent too. A receiver gets a `POST`
+out. Subclasses of an exposed event are sent too. Each delivery is tagged
+with the people its event is about, the subjects of its `Personal`
+fields, so `privacy erase` blanks its body (and cancels it if still
+pending), and `privacy export` lists it
+([privacy.md](privacy.md#what-erasure-reaches-and-when)). A receiver gets a `POST`
 with a JSON body:
 
 ```json
@@ -634,24 +638,22 @@ saved:
   seconds in all, and at most `MAX_RESPONSE_BYTES` of the answer are read.
 - Host names are looked up on the guard's own threads
   (`GUARD_LOOKUP_THREADS`, 2 at once per host). Each delivery's lookups
-  are its subscription's (`webhook:<id>`), whoever caused the event, and
-  one subscription may hold a quarter of the threads: a receiver whose
-  DNS never answers leaves the rest to other subscriptions' deliveries of
-  the same events. It holds its lookups until the system's resolver gives
-  up; then its host fails at once for a minute, so retries of its
-  deliveries do not take the threads again. A receiver whose DNS answers
-  after 5 seconds or more has its answer kept for a minute, so its next
-  attempts take no thread either; one whose DNS fails in under 5 seconds
-  takes a thread on each attempt
+  are its subscription's owner's (`webhook-owner:<owner>`), or, for a
+  subscription staff made, its own (`webhook:<id>`), whoever caused the
+  event, and one owner may hold a quarter of the threads, however many
+  subscriptions it has: receivers whose DNS never answers leave the rest
+  to other subscribers' deliveries of the same events. A lookup holds its
+  thread until the system's resolver gives up; then its host fails at
+  once for a minute, so retries of its deliveries do not take the threads
+  again. A receiver whose DNS answers after 5 seconds or more has its
+  answer kept for a minute, so its next attempts take no thread either;
+  one whose DNS fails in under 5 seconds takes a thread on each attempt
   ([runtime.md](runtime.md#outgoing-http-calls)).
-- Subscriptions have no owner yet, so the share is per subscription, not
-  per tenant. One subscription holds at most 2 threads (its host's
-  bound), but whoever may create many subscriptions can point them at
-  hosts that never answer, or answer slowly, and hold many threads: all
-  16 of the default with eight, for the first round of lookups (later
-  rounds find their hosts backed off or their answers kept). The admin API lets only staff create subscriptions; a
-  project that lets its own users create them should bound how many each
-  may have, until 0.10 gives subscriptions an owner to share by.
+- Staff's subscriptions share by subscription: one holds at most 2
+  threads (its host's bound), and staff who create many can still hold
+  many, for a first round of slow lookups. Users' own subscriptions
+  (below) share by owner: eight of one owner's hold 4 of the 16 threads,
+  not all of them.
 
 `ALLOWED_PRIVATE_NETWORKS` lets receivers in named private networks
 through (`["10.20.0.0/16"]`); staging and production refuse loopback and
@@ -675,8 +677,8 @@ router.include_router(webhooks_admin, prefix="/admin/webhooks")
 | `POST /subscriptions/{id}/rotate-secret` | `change` | A new secret, shown once (`no-store`). |
 | `DELETE /subscriptions/{id}` | `delete` | Delete it; its pending deliveries are cancelled. |
 | `GET /subscriptions/{id}/deliveries` | `view` | Its deliveries, newest first (`status`, `limit`, `offset`). |
-| `GET /deliveries/{id}` | `view` | A delivery, its body, and every attempt (status code, latency, error). |
-| `POST /deliveries/{id}/replay` | `change` | Send a finished delivery again. |
+| `GET /deliveries/{id}` | `view` | A delivery, its body (`payload`, null once its subjects were erased), and every attempt (status code, latency, error). |
+| `POST /deliveries/{id}/replay` | `change` | Send a finished delivery again (not an erased one). |
 
 Each endpoint also needs a staff user or a superuser. Secrets never appear
 in listings, logs, events, or reprs; changes are recorded as events
@@ -707,11 +709,41 @@ log, and are reported: never sent unsigned. Put the old key back, or
 rotate the secret (a rotation drops one no key decrypts, so there is no
 overlap) and give receivers the new one; then `webhooks replay --failed`.
 
+**Users' own subscriptions.** A platform whose customers register their
+own webhooks mounts the self-service API next to its users' routes:
+
+```python
+from domainkit.contrib.webhooks.owned import router as my_webhooks
+
+router.include_router(my_webhooks, prefix="/webhooks")
+
+# In a DomainConfig.ready(): whose each event is.
+expose(InvoicePaid, "invoice.paid", owner=lambda event: event.customer_id)
+```
+
+It has the admin API's subscription routes (`GET` and `POST
+/subscriptions`, `GET`, `PATCH`, and `DELETE /subscriptions/{id}`, `POST
+/subscriptions/{id}/rotate-secret`) and `GET /subscriptions/{id}/deliveries`
+(without bodies), for any authenticated user, on the subscriptions that
+user made. The subscription's `owner` is the user's id; another user's
+subscription, or staff's, is 404, as one that does not exist. An owned
+subscription receives only the events whose `owner` (`expose(...,
+owner=...)`) is its owner, never one exposed without an owner, while
+staff's subscriptions still receive every event they want. Where
+subscriptions belong to a tenant rather than a user, name the owner
+both ways: `owned_router(owner=lambda user: str(user.tenant_id))` and
+`expose(..., owner=lambda event: event.tenant_id)`. An owner may have
+`MAX_SUBSCRIPTIONS_PER_OWNER` subscriptions (a 422
+`webhook_subscription_limit` past that, checked as one is made), and
+erasing an owner (`privacy erase`) deletes theirs. The admin API shows
+each subscription's `owner` (null for staff's). The subscriptions table
+has a new `owner` column: run `makemigrations` and `migrate`.
+
 `python manage.py webhooks subscriptions` lists subscriptions (host only),
 `webhooks deliveries [--status S] [--subscription ID]` the latest
 deliveries, and `webhooks replay ID ...` (or `--failed`) sends finished
-deliveries again under the same `webhook-id`. Finished deliveries and their
-attempts are deleted after `RETENTION_SECONDS`.
+deliveries again under the same `webhook-id`, except erased ones. Finished
+deliveries and their attempts are deleted after `RETENTION_SECONDS`.
 
 | `WEBHOOKS` key | Default | Meaning |
 | --- | --- | --- |
@@ -727,6 +759,7 @@ attempts are deleted after `RETENTION_SECONDS`.
 | `CA_BUNDLE` | `None` | Certificates to trust instead of the system's. |
 | `SECRET_OVERLAP_SECONDS` | `86400.0` | How long the old secret still signs after a rotation (at most 365 days). |
 | `RETENTION_SECONDS` | `2592000.0` | How long finished deliveries are kept (30 days). |
+| `MAX_SUBSCRIPTIONS_PER_OWNER` | `10` | Subscriptions one owner may make through the self-service API (1 to 1000). |
 | `USER_AGENT` | `"domainkit-webhooks"` | The `User-Agent` of deliveries: not empty, and at most 200 characters. |
 
 ## Audit: who did what, when, from where
@@ -927,6 +960,70 @@ person (`auditforget`) deletes a key, not a row, so the chain stays intact.
 **Upgrading.** The seals table has a new `late` column: run
 `makemigrations` and `migrate` in each project that installs audit.
 
+### Retention that keeps the chain
+
+The trail is append-only, so `privacy purge` never touches it. To keep
+it for a period and no longer, prune it below a signed checkpoint
+(`pip install "domainkit[audit]"`, for the signatures):
+
+```bash
+openssl genpkey -algorithm ed25519 -out audit-checkpoint.pem   # once, kept secret
+openssl pkey -in audit-checkpoint.pem -pubout -out audit-checkpoint.pub
+```
+
+```python
+AUDIT = {..., "CHECKPOINT_KEY": env.str("AUDIT_CHECKPOINT_KEY")}  # the PEM
+```
+
+```bash
+python manage.py auditprune --keep-days 2555   # keep seven years
+```
+
+For each audited database, `auditprune` finds the newest seal sealed
+more than `--keep-days` ago (with `AUDIT.LEDGER`, the newest anchored one,
+so the ledger vouches for it too; never the chain's head), checks the
+chain up to it as `auditverify` does, and refuses if anything there is
+wrong: pruning would hide it. It then stores a checkpoint of that seal,
+its number and link, signed with `AUDIT.CHECKPOINT_KEY` (Ed25519), in
+`domainkit_audit_checkpoints`, and deletes the rows and seals at and
+below it, the newest first, 1,000 a transaction. `auditverify` starts the
+chain from the checkpoint, so a pruned trail still verifies (it prints
+how many seals were pruned), and one tampered with still fails: a row
+changed, a seal removed, the checkpoint removed or changed, or a
+checkpoint forged to cover a deletion (signed with another key, or not
+at all) shows as a changed row, a broken link, or a checkpoint that does
+not verify. A run cut short leaves a gap the checkpoint ends, which
+verifies; the next run finishes it. Each prune is recorded, with the seal
+and the rows deleted (`audit.pruned`), and so is the command
+(`operator.auditprune`).
+
+On PostgreSQL the `protect()` triggers refuse every delete, so each batch
+disables them in its own transaction, as the tables' owner: set
+`MIGRATION_URL` to the owner's URL where the application's role is not
+it. Writers of the trail wait for that one batch (under 10 ms in our
+measurements). Run `auditprune` from cron, not more than daily.
+
+**Exports for a third party.** `python manage.py auditverify --export
+checkpoints.json` verifies every trail, then writes a new file (mode
+`0600`) with each database's stored checkpoints and one of its current
+head, each signed, and the public key's id. Whoever holds the public key
+(an auditor, a regulator) checks it without the database, the ledger, or
+your credentials:
+
+```bash
+python manage.py auditverify --check-export checkpoints.json --public-key audit-checkpoint.pub
+```
+
+or with any Ed25519 library: the format is in
+[ADR 0082](adr/0082-signed-audit-checkpoints.md). A later export of the
+same trail extends the earlier one, checkpoint by checkpoint, so an
+operator who rewrote the trail and the ledger together cannot make the
+exports agree.
+
+**Upgrading.** The checkpoints table, and the ledger states table
+([databases.md](databases.md#ledgers-immudb)), are new: run
+`makemigrations` and `migrate`.
+
 **Two sealers at once.** One sealer seals a database at a time: on
 PostgreSQL each batch takes a transaction-scoped advisory lock. A sealer
 that finds it taken (`auditseal` run by hand while the worker seals, or
@@ -997,6 +1094,7 @@ def downgrade() -> None:
 | `SEAL_LATE_WINDOW` | 15 minutes | How far before the newest sealed row a run looks for rows that committed late, up to a day. A row later than this stays unsealed until `auditseal --late`, and `auditverify` reports it once it is a day old: keep it above your longest transaction plus the clock skew between hosts. |
 | `SEAL_BATCHES` | `100` | Batches of 1,000 rows one run seals at most (1 to 10,000); the rest wait for the next run. |
 | `SEAL_BACKLOG_WARNING` | `100000` | Rows a run leaves unsealed past which it logs a warning. |
+| `CHECKPOINT_KEY` | `None` | The Ed25519 private key, in PEM (at most 1,024 characters), that signs checkpoints: those `auditprune` prunes below, and those `auditverify --export` writes. Checked when the application starts. `None`: neither runs. |
 
 ### History
 
@@ -1071,6 +1169,7 @@ the same request gets the stored response, with `Idempotent-Replayed: true`.
 | Same key, different request | 422 `idempotency_key_reused` |
 | Same key while the first is still running, within its lease | 409 `idempotency_key_in_use`, `Retry-After: 1` |
 | Key not 1 to 255 printable ASCII characters | 400 `invalid_idempotency_key` |
+| Key from a caller with no actor and no credential header, with `ANONYMOUS = "refuse"` | 400 `idempotency_key_needs_caller`: nothing runs |
 | First request failed (a 5xx or an exception) or was refused (a 4xx) before committing anything | Not stored: the retry runs again |
 | First response marked `Cache-Control: no-store` (new tokens, from `/auth/login` and `/auth/refresh`) | Never stored: a retry runs again if nothing committed, else gets the 409 below |
 | First response larger than `MAX_RESPONSE_BYTES`, nothing committed | Not stored: the retry runs again |
@@ -1195,7 +1294,16 @@ it first), so one user cannot replay another's response. Without an
 actor, keys are scoped to the client address and a hash of the request's
 `CREDENTIAL_HEADERS` (`Authorization`, `Proxy-Authorization`, `Cookie`,
 `X-API-Key`): list the header your project authenticates with if it is
-another. Add `IdempotencyMiddleware` last in `MIDDLEWARE`: it reads whole
+another. A caller with neither has only its address: every caller behind
+one NAT or proxy shares its keys, so one that sends the same key and body
+as another is replayed the other's response (its status, `Location`, and
+body), and a different body learns that the key is taken. Clients make
+this unlikely with random keys, but not impossible with predictable ones
+(counters, order numbers). Where keyed routes serve anonymous callers
+(sign-up, a contact form, a payment link before login), set `ANONYMOUS =
+"refuse"`: such a key is answered 400 `idempotency_key_needs_caller`, and
+the client authenticates or sends the request without it. The default,
+`"per-address"`, keeps the behaviour of 0.9. Add `IdempotencyMiddleware` last in `MIDDLEWARE`: it reads whole
 bodies, which `RequestBodyLimitMiddleware` has already bounded. With
 messaging installed, expired keys are purged hourly; without it, a new
 key deletes up to 100 expired ones once it has claimed its own, skipping
@@ -1228,6 +1336,7 @@ each request sent, for about 1,850 fewer Python calls a keyed write.
 | `METHODS` | `POST`, `PATCH` | Methods that honour the header; others ignore it. |
 | `MAX_RESPONSE_BYTES` | `1048576` | Larger responses are passed through but not stored. |
 | `CREDENTIAL_HEADERS` | `authorization`, `proxy-authorization`, `cookie`, `x-api-key` | Headers that tell callers without an actor apart. |
+| `ANONYMOUS` | `"per-address"` | Keys from callers with no actor and no credential header: `"per-address"` scopes them to the client address, which callers behind one NAT share; `"refuse"` answers 400 `idempotency_key_needs_caller`. |
 
 ## Evidence: records that provably never change
 

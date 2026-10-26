@@ -8,9 +8,9 @@ the remembered client addresses, the handles of the request metrics, the
 principal cache, the shedding middleware's slots and an HTTP client's
 pools per loop (``PerLoop``), and the grants principals share between threads, an
 application's throttle backend and attempt counter, the idempotency
-middleware's sweep schedule, the body limit's largest route limit, and
-the registries that keep each loop's
-tasks, publishers, brokers, and caches. Each test
+middleware's sweep schedule, the body limit's largest route limit, a
+ledger's trusted state and the store it is kept in, and the registries
+that keep each loop's tasks, publishers, brokers, and caches. Each test
 drives them from several threads at once and checks what must always
 hold, and that the state is only touched with the lock held (where there
 is one).
@@ -1738,3 +1738,45 @@ def test_audited_refusals_are_sampled_once_per_key_from_every_thread() -> None:
 
     assert len(let) == len(set(let)) == 32  # Every key once, by one thread.
     assert len(sampler._seen) <= 64
+
+
+def test_a_ledgers_trusted_state_moves_only_forward_from_every_thread() -> None:
+    """Verified calls finishing out of order on threads leave the latest state."""
+    from domainkit.ledger.immudb import SdkState, TrustedRoot
+
+    root = TrustedRoot()
+
+    def verify(index: int) -> None:
+        for tx in random.sample(range(1, 501), 500):
+            root.set(SdkState("db", tx * THREADS + index, b"h" * 32))
+            assert root.get().txId >= tx * THREADS + index
+
+    on_threads(verify)
+    saved = root.unsaved()
+
+    assert root.get().txId == 500 * THREADS + THREADS - 1
+    assert saved is not None
+    assert saved.transaction == root.get().txId
+    assert root.unsaved() is None
+
+
+def test_ledger_state_stores_are_registered_whole_from_every_thread() -> None:
+    """Threads registering and reading at once see one store, never a mix."""
+    from domainkit.ledger import trust
+
+    stores: list[trust.StateStore] = [trust.MemoryStateStore() for _ in range(THREADS)]
+
+    def register(index: int) -> set[int]:
+        seen = set()
+        for _ in range(200):
+            trust.use_states(stores[index])
+            found = trust.registered_states()
+            assert found is not None
+            seen.add(stores.index(found))
+        return seen
+
+    results = on_threads(register)
+    registry.clear()
+
+    assert set().union(*results) <= set(range(THREADS))
+    assert trust.registered_states() is None
