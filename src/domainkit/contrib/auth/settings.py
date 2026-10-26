@@ -2,6 +2,7 @@
 
 import json
 import re
+from collections.abc import Mapping
 from datetime import timedelta
 from typing import Any, Final, Literal, Self
 
@@ -36,6 +37,8 @@ PRINCIPAL_TTL: Final = timedelta(seconds=5)
 Also the longest ``check`` accepts without ``STAMPS`` where deployed."""
 MAX_PRINCIPAL_TTL: Final = timedelta(minutes=5)
 """The longest ``PRINCIPAL_CACHE.TTL`` may be: a JWT's default lifetime."""
+ROUTE_RULES: Final = "REQUIRE_ROUTE_RULES"
+"""``AUTH.REQUIRE_ROUTE_RULES``: the core's since 0.10, refused here since 0.11."""
 
 
 class PasswordValidatorConfig(BaseModel):
@@ -215,6 +218,17 @@ class AuthSettings(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_removed(cls, data: object) -> object:
+        """Name the setting that replaced ``REQUIRE_ROUTE_RULES`` (DSGN-02)."""
+        if isinstance(data, Mapping) and ROUTE_RULES in data:
+            raise ValueError(
+                f"AUTH.{ROUTE_RULES} was removed in 0.11: set {ROUTE_RULES}, "
+                "a setting of its own, outside AUTH"
+            )
+        return data
+
     USER_MODEL: str = "domainkit.contrib.auth.models.User"
     """Dotted path to the user class (``AUTH_USER_MODEL``)."""
     USER_TABLE: str | None = None
@@ -260,9 +274,6 @@ class AuthSettings(BaseModel):
     """How requests prove who sent them, tried in order; the first logs in."""
     AUTHENTICATION_EXEMPT_PATHS: tuple[str, ...] = ("/health", "/ready", "/metrics")
     """Paths served without looking at credentials (probes, ``METRICS_TOKEN``)."""
-    REQUIRE_ROUTE_RULES: bool = True
-    """Deprecated: the core's ``REQUIRE_ROUTE_RULES``; False here still turns
-    the check off until 0.11, with a warning."""
     TOKEN_TTL: timedelta | None = Field(default=timedelta(days=14), gt=timedelta(0))
     """How long a token from logging in works (``TokenAuthentication``)."""
     TOKEN_PREFIX: str = Field(default="dkt_", pattern=r"^[A-Za-z][A-Za-z0-9]{1,15}_$")

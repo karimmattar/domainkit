@@ -121,7 +121,7 @@ router.mount("/static", mark_public(StaticFiles(directory="static")))
 
 The check is the core's: it holds with this app or without it.
 `REQUIRE_ROUTE_RULES = False` turns it off (`AUTH.REQUIRE_ROUTE_RULES`,
-its name until 0.10, still does until 0.11, with a warning); routes that
+its name until 0.10, is refused since 0.11, naming it); routes that
 read the user still need `AuthenticationMiddleware`, and startup reports
 them while it is missing. `open_routes(app)` returns the list, for a test
 of your own.

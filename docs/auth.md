@@ -53,7 +53,6 @@ This page has moved, a part a page:
 | `CLIENT_CERT` | see below | Client certificates, for `ClientCertificateAuthentication`. |
 | `PRINCIPAL_CACHE` | see below | Principals kept between requests ([the principal cache](auth/authentication.md#the-principal-cache)). |
 | `CSRF_TRUSTED_ORIGINS` | `()` | Origins (`https://app.example.com`, `https://*.example.com`) whose pages may send cookie requests, besides the request's own and `ALLOWED_HOSTS`. |
-| `REQUIRE_ROUTE_RULES` | `True` | Deprecated: the core's `REQUIRE_ROUTE_RULES` ([reference](reference.md)); `False` here still turns the check off until 0.11, with a warning. |
 | `JWT` | see below | JSON Web Tokens, for `JWTAuthentication`. |
 
 | `AUTH["COOKIE"]` key | Default | Meaning |

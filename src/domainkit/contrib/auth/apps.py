@@ -1,7 +1,6 @@
 """Install ``domainkit.contrib.auth`` (after ``domainkit.contrib.contenttypes``)."""
 
 import dataclasses
-import warnings
 from collections.abc import Sequence
 from importlib import import_module
 from typing import Any
@@ -20,7 +19,6 @@ from domainkit.db import SqlAlchemyUnitOfWork, metadata
 from domainkit.db.hooks import on_committed, on_migrated, on_stage
 from domainkit.db.routing import router
 from domainkit.ddd import DomainEvent, event_bus
-from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import routes_need_users, served_routes
 from domainkit.http.ratelimit import MemoryBackend
@@ -54,8 +52,6 @@ INSIDE_AUTHENTICATION = (
 """Middleware that must run after it, to count users rather than addresses."""
 REDIS_BACKEND = "domainkit.http.ratelimit.RedisBackend"
 """The rate-limit backend every process shares."""
-ROUTE_RULES = "REQUIRE_ROUTE_RULES"
-"""``AUTH.REQUIRE_ROUTE_RULES``, deprecated for the core's setting of that name."""
 RELATIONSHIPS = frozenset({"groups", "user_permissions"})
 """User fields stored in link tables, not in the user's own table."""
 
@@ -88,14 +84,6 @@ class AuthConfig(DomainConfig):
     def ready(self) -> None:
         """Load the user model, check the configuration, and map the tables."""
         config = auth_settings()
-        if ROUTE_RULES in config.model_fields_set:
-            warnings.warn(
-                f"AUTH.{ROUTE_RULES} moved to {ROUTE_RULES}, which holds whatever "
-                "authenticates requests; set it there. The old setting is removed "
-                "in 0.11.",
-                DomainkitDeprecationWarning,
-                stacklevel=2,
-            )
         self.user_model = _user_model(config.USER_MODEL)
         self.user_table = _user_table(config, self.user_model)
         self._check_routing()
