@@ -86,6 +86,20 @@ transactions = 1
 checkouts = 1
 pings = 1
 
+[rungs.resource-read]
+calls = 3043
+statements = 1
+transactions = 1
+checkouts = 1
+pings = 1
+
+[rungs.resource-command]
+calls = 3766
+statements = 1
+transactions = 1
+checkouts = 1
+pings = 1
+
 [rungs.keyed-write]
 calls = 4044
 statements = 4

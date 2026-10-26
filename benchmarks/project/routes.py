@@ -9,11 +9,15 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
+from starlette.requests import HTTPConnection
 
 from domainkit.contrib.auth import AnyUser
 from domainkit.contrib.auth.admin import router as admin_router
 from domainkit.contrib.auth.api import router as auth_router
+from domainkit.ddd import Command, F
+from domainkit.ddd.query import CriteriaLike
 from domainkit.http.health import router as health_router
+from domainkit.resources import ModelActions, ResourceRouter
 
 from .catalog.models import Item, ItemId
 from .catalog.uow import CatalogUnitOfWork
@@ -95,3 +99,46 @@ async def create_item(body: ItemIn, user: Clerk) -> ItemOut:
         await uow.items.add(item)
         await uow.commit()
     return ItemOut(id=item.id, name=item.name, price=item.price)
+
+
+class RenameItem(Command):
+    """Rename an item."""
+
+    item_id: UUID
+    name: str
+
+
+class RenameIn(BaseModel):
+    """An item's new name."""
+
+    name: str = Field(max_length=100)
+
+
+async def rename_item(command: RenameItem, uow: CatalogUnitOfWork) -> Item:
+    """Rename the item, in the unit of work given."""
+    async with uow:
+        item = await uow.items.get(ItemId(command.item_id))
+        item.name = command.name
+        await uow.commit()
+    return item
+
+
+async def priced(request: HTTPConnection) -> CriteriaLike:
+    """What a caller reaches of the items: those with a price (all of them)."""
+    return F("price") >= 0
+
+
+resources = ResourceRouter(
+    "/resources/items",
+    model=Item,
+    unit_of_work=CatalogUnitOfWork,
+    repository=lambda uow: uow.items,
+    schema=ItemOut,
+    rule=ModelActions(Item),
+    scope=priced,
+)
+"""The items as a resource: reads and commands go through ``ResourceRouter``."""
+resources.command_route(
+    RenameItem, service=rename_item, body=RenameIn, path="/rename", action="add"
+)
+router.include_router(resources)

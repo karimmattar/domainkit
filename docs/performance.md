@@ -10,7 +10,7 @@ logging and servers in [runtime.md](runtime.md).
 
 ## What a request costs
 
-The ladder measures thirteen rungs, from a bare ASGI application to a keyed
+The ladder measures fifteen rungs, from a bare ASGI application to a keyed
 write. Requests go straight into the application, one at a time, with no
 server or socket; the database rungs run against PostgreSQL. Each rung runs
 in a process of its own.
@@ -35,12 +35,15 @@ round trips are statements, transactions, checkouts and pings.
 | `me` | Template stack, opaque token: `GET /me` | 5,892 → 1,181 | 5/1/1/1 → 0/0/0/0 | 5,007 → 341 |
 | `read` | Template stack, token, `ModelPermissions`, read through a unit of work: `GET /items/{id}` | 7,359 → 2,261 | 6/2/2/2 → 1/1/1/1 | 6,481 → 2,087 |
 | `write` | Template stack, token, `ModelPermissions`, write through a unit of work: `POST /items` | 7,648 → 2,595 | 6/2/2/2 → 1/1/1/1 | 7,567 → 2,167 |
+| `resource-read` | Template stack, token, a `ResourceRouter` read with a scope and `ModelActions`: `GET /resources/items/{id}` | 3,063 → 3,043 | 1/1/1/1 → 1/1/1/1 | 2,188 → 2,137 |
+| `resource-command` | Template stack, token, a `ResourceRouter` command on one item, with a scope: `POST /resources/items/{id}/rename` | 4,546 → 3,766 | 2/2/2/2 → 1/1/1/1 | 3,782 → 2,880 |
 | `keyed-write` | The write with an `Idempotency-Key` (`IdempotencyMiddleware` last): `POST /items` | 10,977 → 4,044 | 10/5/5/5 → 4/3/3/3 | 11,839 → 5,829 |
 | `throttled` | Template stack, token, refused by `RATE_LIMIT` (429): `GET /me` | 4,401 → 1,013 | 5/1/1/1 → 0/0/0/0 | 4,842 → 391 |
 
 The calls of `me` to `throttled` are 0.9.2's
 ([work done once](#092-work-done-once-instead-of-per-request)); the CPU
-times are 0.9.1's.
+times are 0.9.1's. The two `resource-` rungs came with 0.10: their "before"
+is 0.9.2, measured beside it in one ladder run.
 
 - **Calls** are the Python function calls cProfile counts per request,
   built-in ones included, in every thread: the JSON access log is
@@ -71,6 +74,12 @@ What the rungs show:
 - **A keyed write takes three transactions instead of five**: the claim is
   one statement outside a transaction, and so is storing the response
   ([database round trips](#database-round-trips-reads-keyed-writes-and-audit-keys)).
+- **A scoped command on one aggregate takes one transaction instead of
+  two** (0.10): the scope is checked, and the service runs, in one unit of
+  work, and the service finds the aggregate the check read
+  ([ADR 0025](adr/0025-resources-commands-and-expected-versions.md)). A
+  rule that looks at the aggregate still checks it in a transaction of its
+  own, closed before the rule runs.
 - **Plain FastAPI is slower on 0.143** than on 0.141: its own telemetry
   hooks run on every request (ADR 0065). domainkit turns its telemetry off,
   and its own rungs gained far more than that.
