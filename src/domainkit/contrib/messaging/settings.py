@@ -32,8 +32,11 @@ class MessagingSettings(BaseModel):
     Each poll that finds nothing doubles the wait, from ``POLL_INTERVAL`` up
     to this; a claim or a wake-up starts again from ``POLL_INTERVAL``. It
     is also how late a message may start that becomes due without a
-    commit waking anyone (a retry, a delay, an expired lock). ``None``
-    (the default): every wait is ``POLL_INTERVAL``, as before 0.9.2.
+    commit waking anyone (a retry, a delay, an expired lock), and how late
+    a periodic or cron run may start: the worker queues a periodic slot
+    when it next polls, and a cron run is queued ahead, due later.
+    ``None`` (the default): every wait is ``POLL_INTERVAL``, as before
+    0.9.2.
     """
     BATCH_SIZE: int = Field(default=50, ge=1, le=10_000)
     CONCURRENCY: int = Field(default=10, ge=1, le=65_535)

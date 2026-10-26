@@ -1,7 +1,7 @@
 # 0047. Seal the audit trail from a high-water mark, with a short late window
 
-- Status: Accepted; amended 2026-10-21 and 2026-10-25 (at the end)
-- Date: 2026-10-20; amended 2026-10-21 (the database's clock, sealing late rows), 2026-10-25 (a second sealer gives way)
+- Status: Accepted; amended 2026-10-21, 2026-10-25 and 2026-10-26 (at the end)
+- Date: 2026-10-20; amended 2026-10-21 (the database's clock, sealing late rows), 2026-10-25 (a second sealer gives way), 2026-10-26 (a run that gives way still reports)
 
 ## Context
 
@@ -125,3 +125,27 @@ SQLSTATE 55P03 once `LOCK_TIMEOUT` passed, reported as an outage
 - A run that gave way does not count or report a backlog: the sealer
   that holds the lock does. Its rows are sealed by that sealer, or by the
   next run.
+
+## Amendment (2026-10-26): a run that gives way still reports
+
+The security review of 0.9.2 (SEC-a-1) showed what giving way cost: a
+lock held for good (a stuck session, or anyone with a connection taking
+`pg_advisory_lock` on the sealing key, which needs no privilege) made
+every run return 0 at INFO, while the backlog gauge kept its last count
+and no warning came. At 0.9.1 the same lock failed each run with 55P03.
+
+- A run that gives way counts what waits, sets `audit_unsealed_rows`, and
+  warns past `SEAL_BACKLOG_WARNING`, as a run that hit its bound does,
+  with advice to look for the session holding the lock.
+- It also warns when the oldest row within reach is older than
+  `SEAL_EVERY` plus `SEAL_LATE_WINDOW` (20 minutes by default), whatever
+  the count: a sealer at work seals a row within `SEAL_EVERY` of its
+  commit, so a row that old means the lock has been held across runs by
+  something that does not seal. With the default threshold of 100,000
+  rows, the count alone would stay silent on a quiet trail for days. No
+  setting is added; the bound comes from the two that define how soon a
+  row is sealed. A run that gives way to a sealer at work finds only
+  rows younger than that and stays quiet.
+- A run that gives way makes six short reads more (the count and the oldest
+  row, each with the time and the horizon); other runs make none.
+

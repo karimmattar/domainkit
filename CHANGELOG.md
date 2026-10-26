@@ -209,7 +209,11 @@ and a status.
   for the first and fails with SQLSTATE 55P03 after `LOCK_TIMEOUT`: each
   batch tries the advisory lock, and a sealer that finds it taken stops,
   logs it, and leaves the first the rest. Two sealers still never seal at
-  once (PERF-09; ADR 0047).
+  once. A run that gives way still counts what waits
+  (`audit_unsealed_rows`) and warns past `AUDIT.SEAL_BACKLOG_WARNING`,
+  and warns once the oldest row waiting is older than `SEAL_EVERY` and
+  `SEAL_LATE_WINDOW` together, so a lock held by something that does not
+  seal is reported, not just logged at INFO (PERF-09, SEC-a-1; ADR 0047).
 
 ### Security
 

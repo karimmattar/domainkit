@@ -183,7 +183,10 @@ then one every 30 seconds. Commits still start their messages at once;
 what no commit announces (a retry coming due, a delayed task, the lock
 of a crashed worker running out, a notification that never arrived)
 waits up to `POLL_INTERVAL_IDLE` instead of `POLL_INTERVAL`, so set it
-no higher than the delay such messages can take. Workers that cannot
+no higher than the delay such messages can take. Periodic and cron
+tasks are among them: the worker queues a periodic slot when it next
+polls, and a cron run is queued ahead, due later, so either can start up
+to `POLL_INTERVAL_IDLE` after its time. Workers that cannot
 listen (SQLite, PgBouncer, `NOTIFY = False`, a listening connection that
 dropped) poll every `POLL_INTERVAL`, as before.
 
@@ -930,7 +933,13 @@ that finds it taken (`auditseal` run by hand while the worker seals, or
 two outboxes' workers sealing one database) stops at once, logs that
 another sealer is at work, and leaves it the rest; what it sealed before
 stays sealed. Until 0.9.2 it waited for the lock, and failed after
-`LOCK_TIMEOUT`.
+`LOCK_TIMEOUT`. A run that gives way still counts what waits
+(`audit_unsealed_rows`) and warns past `AUDIT.SEAL_BACKLOG_WARNING`, and
+it warns, whatever the count, once the oldest row waiting is older than
+`AUDIT.SEAL_EVERY` and `AUDIT.SEAL_LATE_WINDOW` together: a sealer at
+work leaves no row that long, so the lock is held by something that does
+not seal (a stuck session, or anyone's `pg_advisory_lock`). Find it in
+`pg_locks` and end it.
 
 ### In staging and production
 
