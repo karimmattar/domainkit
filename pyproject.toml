@@ -64,8 +64,9 @@ immudb = [
     # 1.66.2 is the first grpcio with wheels for Python 3.13.
     "grpcio (>=1.66.2,<2.0.0)",
     "ecdsa (>=0.19.2,<1.0.0)",
-    # immudb-py's own floor.
-    "protobuf (>=4.25.3,<8.0.0)",
+    # 5.27.0 is the first protobuf whose C extension imports on Python 3.13
+    # without a DeprecationWarning (a metaclass with a custom tp_new).
+    "protobuf (>=5.27.0,<8.0.0)",
 ]
 # A message broker for the worker: RabbitMQ, through aio-pika.
 # aiormq, which aio-pika installs, for the one error it does not re-export.

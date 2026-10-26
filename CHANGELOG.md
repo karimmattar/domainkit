@@ -279,8 +279,9 @@ removed in 0.11. `docs/upgrading.md` lists each with its fix; run `check
   read or saved there; a later one another replica saved is proven to lie
   on one chain with its own first, so a replica writing on a rolled-back
   or forked server is refused instead of saving the fork (SEC-10b-5).
-  The `immudb` extra now declares `protobuf` (from 4.25.3, immudb-py's
-  own floor), which reading the server's state imports.
+  The `immudb` extra now declares `protobuf` (from 5.27.0, the first
+  that imports on Python 3.13 without a warning), which reading the
+  server's state imports.
 
 ### Changed
 
