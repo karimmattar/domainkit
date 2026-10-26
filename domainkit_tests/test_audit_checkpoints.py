@@ -700,14 +700,19 @@ def test_checkpoint_documents_are_strict() -> None:
 
 
 @pytest.mark.parametrize(
-    ("value", "message"),
+    ("kind", "message"),
     [
-        ("not a key", "not a private key in PEM without a password"),
-        (private_pem(generate_private_key(SECP256R1())), "must be an Ed25519 key"),
+        ("text", "not a private key in PEM without a password"),
+        ("ecdsa", "must be an Ed25519 key"),
     ],
 )
-def test_a_key_that_cannot_sign_refuses_to_start(value: str, message: str) -> None:
+def test_a_key_that_cannot_sign_refuses_to_start(kind: str, message: str) -> None:
     """``AUDIT.CHECKPOINT_KEY`` is checked when the application starts."""
+    value = (
+        "not a key"
+        if kind == "text"
+        else private_pem(generate_private_key(SECP256R1()))
+    )
     registry.clear()
     try:
         with (
