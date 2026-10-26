@@ -27,7 +27,7 @@ env:
 
 jobs:
   lint:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -47,7 +47,7 @@ jobs:
     # The main branch ruleset requires these check names; rename them there
     # in the same change.
     name: test (${{ matrix.python }})
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # The suite takes about 11 minutes; a slower runner must not fail it.
     timeout-minutes: 30
     strategy:
@@ -96,7 +96,7 @@ jobs:
   # Coverage comes from the other jobs.
   free-threaded:
     name: test (3.14t)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 25
     # Poetry 2.2.1 installs the default build's wheels (cp314) on
     # free-threaded Python, whose extensions 3.14t cannot load (pydantic-core
@@ -135,7 +135,7 @@ jobs:
   # need a server are skipped elsewhere, so a skip here means a server went
   # unused: fail.
   integration:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # The suite takes about 16 minutes; a slower runner must not fail it.
     timeout-minutes: 30
     services:
@@ -279,7 +279,7 @@ jobs:
   # summary, beside the base branch's on pull requests, and is never gated:
   # a shared runner's timings are too noisy for that.
   bench:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     services:
       postgres:
@@ -324,7 +324,7 @@ jobs:
   # Every line must run in some job: a few only run on SQLite, others only
   # against the servers. The combined report is the coverage gate.
   coverage:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     needs: [test, integration]
     steps:
@@ -346,7 +346,7 @@ jobs:
   # The wheel must carry its templates and Alembic environment, and import
   # in a clean environment with only its declared dependencies.
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     needs: [lint, test]
     steps:
@@ -375,7 +375,7 @@ jobs:
           retention-days: 14
 
   audit:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -403,7 +403,7 @@ jobs:
   mutation:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     name: mutation (${{ matrix.shard.name }})
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 240
     strategy:
       fail-fast: false
