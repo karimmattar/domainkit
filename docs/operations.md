@@ -153,7 +153,8 @@ another once its lease expires, so handlers must be idempotent.
 
 `python manage.py messages` lists what waits (`--pending`), runs
 (`--locked`), or failed (`--dead`), and `--retry` or `--cancel` acts on
-one; each action is recorded in the audit trail with the operator's name.
+one; with `domainkit.contrib.audit` installed, each action is recorded in
+the audit trail with the operator's name.
 
 ## Sealing the audit trail
 

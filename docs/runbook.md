@@ -66,7 +66,8 @@ grows with it.
 - One handler failing: fix it and deploy; retries continue on their own,
   and those that ran out are [dead letters](#messages-are-dead-lettered).
 - `python manage.py messages --cancel ID` drops one message no worker is
-  running, recorded in the audit trail with your name (`--operator`).
+  running; with the audit app, the audit trail records it with your name
+  (`--operator`).
 
 Nothing is lost while the outbox backs up: messages stay until a worker
 runs them, in the same database as the changes that wrote them.
