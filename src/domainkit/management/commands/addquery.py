@@ -17,13 +17,14 @@ import ast
 import builtins
 import re
 from argparse import ArgumentParser
-from pathlib import Path
 from typing import Final
 
-from domainkit.management.base import BaseCommand, CommandError
+from domainkit.management.base import CommandError
 from domainkit.management.generators import (
+    AggregateGenerator,
     Domain,
     Names,
+    Planned,
     Source,
     class_name,
     enumeration,
@@ -38,15 +39,13 @@ PATH: Final = re.compile(r"(/[a-z0-9][a-z0-9-]*)+")
 CONTAINERS: Final = frozenset({"list", "set", "frozenset", "dict", "tuple"})
 
 
-class Command(BaseCommand):
+class Command(AggregateGenerator):
     """Add a query, its handler, its route, and tests to an aggregate."""
 
     help = "Add a query on an aggregate: the message, handler, route, and tests."
-    requires_setup = False
 
-    def add_arguments(self, parser: ArgumentParser) -> None:
-        """Accept the domain, the aggregate, the query, and what it filters by."""
-        Domain.add_arguments(parser)
+    def add_options(self, parser: ArgumentParser) -> None:
+        """Accept the query, what it filters by, and its path."""
         parser.add_argument("query", help="the query's class, e.g. ProductsByOwner")
         parser.add_argument(
             "--by",
@@ -57,22 +56,17 @@ class Command(BaseCommand):
         )
         parser.add_argument("--path", help="the route's path (default: e.g. /by-owner)")
 
-    def handle(
+    def plan_for(
         self,
+        domain: Domain,
+        names: Names,
         *,
-        domain: str,
-        aggregate: str,
         query: str,
         by: list[str],
         path: str | None,
-        plural: str | None,
-        parent: str,
-        tests_dir: Path | None,
         **options: object,
-    ) -> None:
-        """Plan every edit, then write them all."""
-        target = Domain.named(domain, parent, tests_dir)
-        names = Names.of(aggregate, plural)
+    ) -> Planned:
+        """Plan the query, its handler, route, and tests."""
         class_name(query, "query name")
         fields = [snake_name(name, "field name") for name in by]
         if len(set(fields)) != len(fields):
@@ -82,10 +76,8 @@ class Command(BaseCommand):
             raise CommandError(
                 f"{route!r} is not a path of lowercase words: /by-owner."
             )
-        add_query(target, names, query, fields, route)
-        written = target.apply()
-        self.write(f"Added {query} to {target.package}:")
-        self.write("\n".join(f"  {path}" for path in written))
+        add_query(domain, names, query, fields, route)
+        return Planned(domain, query)
 
 
 def default_path(query: str, names: Names) -> str:

@@ -1143,7 +1143,9 @@ Base class for management commands (`django.core.management.base`).
 
 What the code generators share: names, field types, and careful edits.
 
+- `AggregateGenerator`: A generator that adds to an aggregate of a domain `startdomain` made.
 - `FieldType`: How the generators write fields of one kind (`--field name:kind:options`).
+- `Generator`: A scaffolding command: plan every change, then write them all.
 - `register_field_type`: Let `--field x:<name>` generate fields of `kind`.
 
 ## `domainkit.reporting`

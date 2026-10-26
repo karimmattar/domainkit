@@ -20,52 +20,40 @@ and every file edited in memory, before anything is written.
 """
 
 from argparse import ArgumentParser
-from pathlib import Path
 
-from domainkit.management.base import BaseCommand, CommandError
+from domainkit.management.base import CommandError
 from domainkit.management.generators import (
+    AggregateGenerator,
     Domain,
     FieldSpec,
     Names,
+    Planned,
     field_help,
     parse_fields,
 )
 
 
-class Command(BaseCommand):
+class Command(AggregateGenerator):
     """Add an aggregate, and its tests, to an existing domain."""
 
     help = "Add an aggregate to a domain made by startdomain: every layer, and tests."
-    requires_setup = False
 
-    def add_arguments(self, parser: ArgumentParser) -> None:
-        """Accept the domain, the aggregate, and its fields."""
-        Domain.add_arguments(parser)
+    def add_options(self, parser: ArgumentParser) -> None:
+        """Accept the aggregate's fields."""
         parser.add_argument(
             "--field", action="append", default=[], dest="fields", help=field_help()
         )
 
-    def handle(
-        self,
-        *,
-        domain: str,
-        aggregate: str,
-        fields: list[str],
-        plural: str | None,
-        parent: str,
-        tests_dir: Path | None,
-        **options: object,
-    ) -> None:
-        """Plan every file, then write them all."""
-        target = Domain.named(domain, parent, tests_dir)
-        names = Names.of(aggregate, plural)
-        add_aggregate(target, names, parse_fields(fields))
-        written = target.apply()
-        self.write(f"Added {names.cls} to {target.package}:")
-        self.write("\n".join(f"  {path}" for path in written))
-        self.write(
+    def plan_for(
+        self, domain: Domain, names: Names, *, fields: list[str], **options: object
+    ) -> Planned:
+        """Plan every layer of the aggregate, and its tests."""
+        add_aggregate(domain, names, parse_fields(fields))
+        return Planned(
+            domain,
+            names.cls,
             f'Next: python manage.py makemigrations -m "create {names.plural}", '
-            "then migrate."
+            "then migrate.",
         )
 
 

@@ -13,13 +13,14 @@ writes:
 """
 
 from argparse import ArgumentParser
-from pathlib import Path
 
-from domainkit.management.base import BaseCommand, CommandError
+from domainkit.management.base import CommandError
 from domainkit.management.generators import (
+    AggregateGenerator,
     Domain,
     FieldSpec,
     Names,
+    Planned,
     class_name,
     field_help,
     parse_fields,
@@ -28,15 +29,13 @@ from domainkit.management.generators import (
 from domainkit.utils.text import snake_case
 
 
-class Command(BaseCommand):
+class Command(AggregateGenerator):
     """Add a domain event, a handler, its subscription, and tests."""
 
     help = "Add a domain event of an aggregate, and a durable handler of it."
-    requires_setup = False
 
-    def add_arguments(self, parser: ArgumentParser) -> None:
-        """Accept the domain, the aggregate, the event, and its fields."""
-        Domain.add_arguments(parser)
+    def add_options(self, parser: ArgumentParser) -> None:
+        """Accept the event and its fields."""
         parser.add_argument("event", help="the event's class, e.g. ProductRestocked")
         parser.add_argument(
             "--field", action="append", default=[], dest="fields", help=field_help()
@@ -48,32 +47,25 @@ class Command(BaseCommand):
             help="add the event only, without a handler",
         )
 
-    def handle(
+    def plan_for(
         self,
+        domain: Domain,
+        names: Names,
         *,
-        domain: str,
-        aggregate: str,
         event: str,
         fields: list[str],
         handler: bool,
-        plural: str | None,
-        parent: str,
-        tests_dir: Path | None,
         **options: object,
-    ) -> None:
-        """Plan every edit, then write them all."""
-        target = Domain.named(domain, parent, tests_dir)
-        names = Names.of(aggregate, plural)
+    ) -> Planned:
+        """Plan the event, and its handler and test unless left out."""
         add_event(
-            target,
+            domain,
             names,
             class_name(event, "event name"),
             parse_fields(fields),
             handler=handler,
         )
-        written = target.apply()
-        self.write(f"Added {event} to {target.package}:")
-        self.write("\n".join(f"  {path}" for path in written))
+        return Planned(domain, event)
 
 
 def add_event(
