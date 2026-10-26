@@ -51,6 +51,29 @@ and a status.
 - The `resource-read` and `resource-command` rungs of the benchmark ladder:
   a `ResourceRouter` read and a scoped command, through the template stack
   (DSGN-01).
+- `domainkit.http.routing.RouteIndex` and `index_routes`: the
+  application's router tries only the routes a request's first path segment
+  can reach, and those that may match any path, in order, and serves what
+  trying every route serves. `get_asgi_application` installs it with
+  `FLATTEN_ROUTERS`. One GET behind 10, 100, and 1,000 routes now costs 329
+  calls each, where it cost 409, 1,129, and 8,329 (PERF-05; ADR 0060).
+- `domainkit.utils.loops.PerLoop`: one value per event loop, kept under a
+  lock and dropping closed loops, for code that serves loops on several
+  threads. The shedding middleware's slots and `HttpClient`'s pools use it
+  (CONC-10).
+- `check` warns, in staging and production, when a network database's
+  pool holds fewer than a quarter of `MAX_CONCURRENT_REQUESTS` connections:
+  past about four requests per connection, requests wait for one, unseen
+  by the shedding queue, up to `POOL_TIMEOUT`, then fail with 503.
+  `docs/reference.md` has the sizing formula. The defaults stay: lower ones
+  would refuse requests they serve (PERF-14).
+- `auth_principal_cache_total` counts `coalesced` (a request served by
+  another's read), `refresh`, and `refresh_failed` events (PERF-04).
+- A `stress (3.14t)` CI job runs the free-threading tests 30 times on
+  3.14t, each in a new random order, on every push and pull request. It is
+  not required yet: on 3.14.6t some runs crash inside SQLAlchemy's compiled
+  extensions when loops on threads make engines at once, at 0.9.2 too
+  (CONC-12, ASYNC-R11).
 
 ### Changed
 
@@ -76,6 +99,38 @@ and a status.
 - A rule's `has_permission` and `has_object_permission` take the principal
   typed `Any`, so rules written for auth's `AnyUser` keep their annotation;
   the core's own rules read a `Principal` (DSGN-02).
+- **Breaking:** `BackgroundHandler` formats a record's exception on the
+  caller, into `exc_text`, as the standard library's `QueueHandler` does,
+  and the queued copy keeps no `exc_info`: a traceback in the queue kept
+  the frames that raised, and their requests, alive until the thread wrote
+  it (2,000 queued errors kept 103 MB, now 1.7 MB). Every formatter writes
+  the same text. A handler that needs the exception object rather than its
+  text: attach it to the logger itself, not behind the queue; error
+  trackers take exceptions from `ERROR_REPORTERS`, as before (CONC-04; ADR
+  0051).
+- A kept principal builds the request's groups and permissions when the
+  request first reads them, as new objects of its own, and `has_perm`,
+  `get_all_permissions`, and the rules answer from permission keys worked
+  out once per principal until then: a user with 220 permissions costs a
+  `ModelPermissions` request 12 µs, where building them all cost 2,580.
+  `inspect(request.user).unloaded` lists `groups` and `user_permissions`
+  until they are read (PERF-03; ADR 0059).
+- Requests of one credential that miss the principal cache at once read it
+  once (ten credentials with twenty requests each: 400 `SELECT`s, now 20),
+  and in the last fifth of the `TTL` one request reads a kept principal
+  again while the others are served it, never past the `TTL`; a
+  revocation committed before a request arrived is never hidden from it by
+  an older read (PERF-04; ADR 0058).
+- A statement a deadline cuts off keeps its asyncpg connection: asyncpg
+  cancels it on the server, and the rollback waits for that. Ten requests
+  cut off mid-statement opened and discarded ten connections, now none
+  (CONC-08; ADR 0048).
+- `HttpClient` builds its TLS context on a thread the first time a loop
+  calls, instead of on the loop: the first call held it 20 to 39 ms, now 6
+  to 8 (CONC-06).
+- auth imports `domainkit.contrib.mail` where it checks an address or sends
+  mail, not when it is imported: a process that serves the template loads
+  11 modules and 1 MB fewer (PERF-15).
 
 ### Deprecated
 

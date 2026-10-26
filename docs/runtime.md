@@ -270,7 +270,10 @@ LOGGING = build_logging_config(log_format="json", level="INFO")
 - The caller, the event loop included, merges the message, adds the
   request id and trace ids (they live in its context), and puts the record
   on a queue of 10,000 (`queue_size`). One thread, `domainkit-logging`,
-  formats and writes it; exceptions are formatted there too.
+  formats and writes it. An exception is formatted on the caller, into
+  `exc_text`, as the standard library's `QueueHandler` does, so no queued
+  record keeps a traceback, and with it the frames and requests that
+  raised (0.10): the record behind the queue has no `exc_info`.
 - A full queue never makes the caller wait. The record is dropped and
   counted (`handler.dropped`), and the next record that fits with it is
   preceded by a warning from `domainkit.log` that counts them by level:
@@ -450,6 +453,7 @@ while it serves:
 | RabbitMQ (`TLS_CA`, `TLS_CERT`, `TLS_KEY`) | at the first connection, on a worker thread |
 | Redis and Valkey (`rediss://`, `TLS_CA`, `TLS_CERT`, `TLS_KEY`) | at the first connection, on a worker thread, then shared by every connection of every pool with those settings (servers, Sentinel primaries, and Cluster nodes) |
 | immudb (`TLS_CA`) | on the ledger's own thread |
+| Outgoing calls (`HTTP_CLIENT.CA_BUNDLE`, `domainkit.http.client`) | at a client's first call on each loop, on a worker thread, then shared by every client with that bundle |
 
 A process keeps its contexts until it ends: restart it to use renewed
 certificate files.
@@ -460,7 +464,12 @@ domainkit runs on free-threaded CPython 3.14 (`python3.14t`, without the
 GIL). Importing domainkit and its runtime dependencies keeps the GIL off;
 the `immudb` extra is the exception, since grpcio publishes no
 free-threaded build yet. CI runs the tests of the state below, and of the
-framework's own threads, on 3.14t with the GIL off throughout. The whole
+framework's own threads, on 3.14t with the GIL off throughout, and the
+free-threading tests 30 times more, each in a new random order (`stress
+(3.14t)`, not a required check), so a race that shows in some runs only
+fails the job. On 3.14.6t some of those runs crash inside SQLAlchemy's
+compiled extensions while loops on threads make engines at once (seen at
+0.9.2 too), which waits for a fix there. The whole
 suite does not run there yet: on 3.14.6t it crashes the interpreter now
 and then (a segmentation fault inside the allocator, at a different test
 each time), as it did before any of this was added, so that waits for a
@@ -484,7 +493,11 @@ never across an `await`:
   threads at once (live events, as clients connect) is subscribed once;
 - the caches of each loop and the memory stores they share
   (`caches[...]`), so every loop of the process sees one memory store per
-  alias, and an application's throttle backend, made once for all loops.
+  alias, and an application's throttle backend, made once for all loops;
+- each loop's slots of `ConcurrencyLimitMiddleware`, each loop's pool of an
+  `HttpClient`, and each loop's principal reads under way
+  (`domainkit.utils.loops.PerLoop`, which drops closed loops as a new one
+  comes), and the principal cache's claim of who reads an entry again.
 
 A project's own module-level state needs the same care: a dict two threads
 change at once needs a `threading.Lock` on free-threaded Python, as it would
@@ -757,7 +770,9 @@ timers that cancel work run on the event loop's own clock.
   has no `SET LOCAL`: each of its statements is cut off at the deadline by
   the request's timer, or by a timer of its own in work that shares a
   deadline without enforcing it, and the driver then cancels it on the
-  server. The framework's own short writes, such as an idempotency key's
+  server. On asyncpg, a statement cut off keeps its connection: the
+  rollback after it waits for the server to confirm, and the pool keeps
+  the connection (0.10; psycopg's connections are still replaced). The framework's own short writes, such as an idempotency key's
   claim, run that way too, within `STATEMENT_TIMEOUT`.
 - **Outgoing HTTP calls** through `domainkit.http.client` are bounded by it
   (below).
