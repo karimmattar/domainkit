@@ -24,7 +24,7 @@ from starlette.requests import HTTPConnection
 
 from domainkit.ddd.exceptions import PermissionDenied
 from domainkit.ddd.preconditions import expect_version
-from domainkit.ddd.query import CriteriaLike, F, Query
+from domainkit.ddd.query import CriteriaLike, F, Selection
 from domainkit.ddd.repository import Repository
 from domainkit.ddd.uow import UnitOfWork
 from domainkit.http.access import (
@@ -120,7 +120,7 @@ async def load(
     if not within:
         found = await repository.find(id_)
     else:
-        found = await repository.first(Query(F("id") == id_).where(*within))
+        found = await repository.first(Selection(F("id") == id_).where(*within))
     if found is None:
         missing = router.missing or repository.not_found
         raise missing(id_)
@@ -215,7 +215,7 @@ async def keep_in_reach(
     within = await criteria(router, request, ids)
     if not within:
         return
-    query = Query(F("id") == id_).where(*within)
+    query = Selection(F("id") == id_).where(*within)
     if await router.repository(uow).first(query) is None:
         raise PermissionDenied(
             "You cannot create or move a record outside what you may reach."

@@ -774,7 +774,6 @@ Queries over aggregates: criteria, ordering, and specifications.
 - `Criteria`: A condition on aggregates; combine them with `&`, `|`, and `~`.
 - `F`: A field of an aggregate, by name, to build conditions and orderings.
 - `Ordering`: Sort by one field of the aggregate itself.
-- `Query`: Which aggregates to load, in which order, and how many.
 - `RowLock`: Lock the rows a query returns until the transaction ends (`FOR UPDATE`).
 - `Selection`: Which aggregates to load, in which order, and how many.
 - `Specification`: A named business rule about aggregates, for Python and for queries.

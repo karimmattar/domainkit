@@ -35,7 +35,7 @@ from domainkit.ddd import (
 from domainkit.ddd import Query as QueryMessage
 from domainkit.ddd.fields import fields_of
 from domainkit.ddd.query import F
-from domainkit.ddd.query import Query as Listing
+from domainkit.ddd.query import Selection as Listing
 from domainkit.http import Filter, FilterSet, Pagination
 from domainkit.http.access import (
     AllOf,

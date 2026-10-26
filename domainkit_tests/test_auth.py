@@ -26,6 +26,7 @@ from sqlalchemy import (
 
 from domainkit import setup
 from domainkit.apps import registry
+from domainkit.checks import CheckFailed
 from domainkit.conf import override_settings
 from domainkit.contrib.auth import (
     AbstractBaseUser,
@@ -62,7 +63,6 @@ from domainkit.db import connections, metadata
 from domainkit.db.hooks import on_migrated
 from domainkit.db.migrations import include_object, run_migrated_hooks
 from domainkit.ddd import PermissionDenied
-from domainkit.checks import CheckFailed
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.ratelimit import MemoryBackend
 from domainkit.management import call_command

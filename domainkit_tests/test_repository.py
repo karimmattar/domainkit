@@ -23,7 +23,7 @@ from domainkit.ddd import (
     UnitOfWork,
     ValueObject,
 )
-from domainkit.ddd.query import F, Query, RowLock
+from domainkit.ddd.query import F, RowLock, Selection
 from domainkit.ddd.repository import LOCK_TIMEOUT
 from domainkit_tests.gadgets import (
     Color,
@@ -75,12 +75,12 @@ async def test_queries_select_order_and_track() -> None:
     """filter, first, count, and exists, with every result tracked."""
     repository = stocked("a", "b", "c")
 
-    found = await repository.filter(Query(F("stock") >= 1, ordering=["-stock"]))
+    found = await repository.filter(Selection(F("stock") >= 1, ordering=["-stock"]))
     assert [each.name for each in found] == ["c", "b"]
     assert repository.seen == tuple(found)
     assert [each.name for each in await repository.filter(F("name") == "a")] == ["a"]
     assert len(await repository.filter()) == 3
-    first = await repository.first(Query(ordering=["name"]))
+    first = await repository.first(Selection(ordering=["name"]))
     assert first is not None
     assert first.name == "a"
     assert await repository.first(F("name") == "z") is None
@@ -88,7 +88,7 @@ async def test_queries_select_order_and_track() -> None:
     assert await repository.count(F("stock") > 0) == 2
     assert await repository.exists(F("name") == "b")
     assert not await repository.exists(F("name") == "z")
-    limited = await repository.filter(Query(ordering=["name"], limit=1, offset=1))
+    limited = await repository.filter(Selection(ordering=["name"], limit=1, offset=1))
     assert [each.name for each in limited] == ["b"]
 
 
@@ -102,7 +102,7 @@ async def test_results_without_an_ordering_come_by_id() -> None:
 async def test_pages_continue_after_the_last_position() -> None:
     """Keyset pages cover everything once; offsets and totals as asked."""
     repository = stocked(*"abcde")
-    query = Query(F("stock") > 0, ordering=["-name"])
+    query = Selection(F("stock") > 0, ordering=["-name"])
 
     first = await repository.paginate(query, limit=2, count=True)
     assert [each.name for each in first.items] == ["e", "d"]
@@ -164,10 +164,10 @@ async def test_soft_deleted_aggregates_are_left_out_unless_asked() -> None:
     assert not await repository.exists(F("name") == "gone")
     assert await repository.exists(F("name") == "gone", include_deleted=True)
     assert [each.name for each in await repository.filter()] == ["kept"]
-    every = await repository.filter(Query(ordering=["name"], include_deleted=True))
+    every = await repository.filter(Selection(ordering=["name"], include_deleted=True))
     assert [each.name for each in every] == ["gone", "kept"]
     trash = await repository.filter(
-        Query(F("deleted_at").isnull(False), include_deleted=True)
+        Selection(F("deleted_at").isnull(False), include_deleted=True)
     )
     assert trash == [gone]
     assert await repository.restore(gone.id) is gone
@@ -238,7 +238,7 @@ async def test_locks_time_out_and_skipped_rows_do_not_count() -> None:
     holder.locks = locks
     other = InMemoryGadgets(locks=locks)
     other.items = holder.items
-    query = Query(ordering=["name"], limit=1)
+    query = Selection(ordering=["name"], limit=1)
 
     (locked,) = await holder.filter(query.replace(lock=RowLock()))
     assert locked.name == "a"
@@ -250,9 +250,9 @@ async def test_locks_time_out_and_skipped_rows_do_not_count() -> None:
     )
     assert [each.name for each in skipping] == ["b", "c"]
     with pytest.raises(LockNotAvailable):
-        await other.filter(Query(lock=RowLock(nowait=True)))
+        await other.filter(Selection(lock=RowLock(nowait=True)))
     everything = await holder.filter(
-        Query(ordering=["name"], lock=RowLock(skip_locked=True))
+        Selection(ordering=["name"], lock=RowLock(skip_locked=True))
     )
     assert [each.name for each in everything] == ["a"]  # b and c are the other's.
     locks.release(other)
@@ -294,7 +294,7 @@ async def test_read_only_work_refuses_to_commit() -> None:
 async def test_a_failed_savepoint_undoes_its_part_only() -> None:
     """Changes, additions, removals, events, and tasks after the savepoint go."""
     uow = FakeGadgetsUnitOfWork(stocked("a", "b"))
-    a, b = await uow.gadgets.filter(Query(ordering=["name"]))
+    a, b = await uow.gadgets.filter(Selection(ordering=["name"]))
     a.rename("first")
     added = make_gadget("added")
 
@@ -434,7 +434,7 @@ async def test_first_reads_and_locks_one_aggregate_only() -> None:
     """The others it might have matched are neither tracked nor locked."""
     repository = stocked("a", "b", "c")
 
-    first = await repository.first(Query(ordering=["name"], lock=RowLock()))
+    first = await repository.first(Selection(ordering=["name"], lock=RowLock()))
     assert first is not None
     assert first.name == "a"
     assert repository.seen == (first,)
@@ -446,7 +446,7 @@ async def test_a_page_reads_one_aggregate_past_its_end_and_no_further() -> None:
     """The one past the end says whether more follow; the rest stay unread."""
     repository = stocked(*"abcde")
 
-    page = await repository.paginate(Query(ordering=["name"]), limit=2)
+    page = await repository.paginate(Selection(ordering=["name"]), limit=2)
     assert [each.name for each in page.items] == ["a", "b"]
     assert page.has_more is True
     assert [each.name for each in repository.seen] == ["a", "b", "c"]
@@ -457,9 +457,11 @@ async def test_page_totals_count_deleted_aggregates_when_the_query_does() -> Non
     repository = stocked("a", "b", "c")
     await repository.remove(next(iter(repository.items.values())))
 
-    every = await repository.paginate(Query(include_deleted=True), limit=1, count=True)
+    every = await repository.paginate(
+        Selection(include_deleted=True), limit=1, count=True
+    )
     assert every.total == 3
-    live = await repository.paginate(Query(), limit=1, count=True)
+    live = await repository.paginate(Selection(), limit=1, count=True)
     assert live.total == 2
 
 
@@ -471,14 +473,14 @@ async def test_adapters_are_told_whether_deleted_aggregates_are_wanted() -> None
 
         def __init__(self) -> None:
             super().__init__()
-            self.queries: list[Query] = []
+            self.queries: list[Selection] = []
 
-        async def _filter(self, query: Query) -> list[Gadget]:
+        async def _filter(self, query: Selection) -> list[Gadget]:
             self.queries.append(query)
             return await super()._filter(query)
 
     repository = Recording()
-    await repository.filter(Query(include_deleted=True))
+    await repository.filter(Selection(include_deleted=True))
     await repository.filter()
     assert [each.include_deleted for each in repository.queries] == [True, False]
 

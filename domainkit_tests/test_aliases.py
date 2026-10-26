@@ -7,16 +7,31 @@ removes them.
 
 import importlib
 
+import pytest
+
 import domainkit.ddd
 import domainkit.ddd.query
 from domainkit.contrib.evidence import Evidence
 from domainkit.ddd import F, Selection
 from domainkit.ddd.messages import Query as QueryMessage
+from domainkit.deprecation import DomainkitDeprecationWarning
+
+OLD_QUERY = (
+    r"domainkit\.ddd\.query\.Query is deprecated: use domainkit\.ddd\.Selection\. "
+    r"The old name is removed in 0\.11\."
+)
 
 
 def test_selection_is_the_aggregate_query_under_its_new_name() -> None:
-    """``ddd.query.Query`` is ``Selection``; ``ddd.Query`` stays the message."""
-    assert domainkit.ddd.query.Query is Selection
+    """``ddd.query.Query`` is ``Selection``, and warns; ``ddd.Query`` is the message."""
+    with pytest.warns(DomainkitDeprecationWarning, match=OLD_QUERY):
+        assert domainkit.ddd.query.Query is Selection
+    with pytest.warns(DomainkitDeprecationWarning, match=OLD_QUERY):
+        from domainkit.ddd.query import Query
+    assert Query is Selection
+    assert "Query" not in domainkit.ddd.query.__all__
+    with pytest.raises(AttributeError, match="has no attribute 'Querry'"):
+        _ = domainkit.ddd.query.Querry
     assert domainkit.ddd.query.Selection is Selection
     assert domainkit.ddd.Query is QueryMessage
     assert "Selection" in domainkit.ddd.__all__
@@ -25,7 +40,8 @@ def test_selection_is_the_aggregate_query_under_its_new_name() -> None:
 
 def test_a_selection_built_by_the_old_name_is_a_selection() -> None:
     """Both names build, compare, and copy as one class."""
-    old = domainkit.ddd.query.Query(F("status") == "open", limit=5)
+    with pytest.warns(DomainkitDeprecationWarning, match=OLD_QUERY):
+        old = domainkit.ddd.query.Query(F("status") == "open", limit=5)
     new = Selection(F("status") == "open", limit=5)
 
     assert old == new
