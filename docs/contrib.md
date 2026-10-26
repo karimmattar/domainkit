@@ -586,7 +586,11 @@ expose(
 ```
 
 Without `payload`, every field of the event is sent: leave personal data
-out. Subclasses of an exposed event are sent too. A receiver gets a `POST`
+out. Subclasses of an exposed event are sent too. Each delivery is tagged
+with the people its event is about, the subjects of its `Personal`
+fields, so `privacy erase` blanks its body (and cancels it if still
+pending), and `privacy export` lists it
+([privacy.md](privacy.md#what-erasure-reaches-and-when)). A receiver gets a `POST`
 with a JSON body:
 
 ```json
@@ -675,8 +679,8 @@ router.include_router(webhooks_admin, prefix="/admin/webhooks")
 | `POST /subscriptions/{id}/rotate-secret` | `change` | A new secret, shown once (`no-store`). |
 | `DELETE /subscriptions/{id}` | `delete` | Delete it; its pending deliveries are cancelled. |
 | `GET /subscriptions/{id}/deliveries` | `view` | Its deliveries, newest first (`status`, `limit`, `offset`). |
-| `GET /deliveries/{id}` | `view` | A delivery, its body, and every attempt (status code, latency, error). |
-| `POST /deliveries/{id}/replay` | `change` | Send a finished delivery again. |
+| `GET /deliveries/{id}` | `view` | A delivery, its body (`payload`, null once its subjects were erased), and every attempt (status code, latency, error). |
+| `POST /deliveries/{id}/replay` | `change` | Send a finished delivery again (not an erased one). |
 
 Each endpoint also needs a staff user or a superuser. Secrets never appear
 in listings, logs, events, or reprs; changes are recorded as events
@@ -710,8 +714,8 @@ overlap) and give receivers the new one; then `webhooks replay --failed`.
 `python manage.py webhooks subscriptions` lists subscriptions (host only),
 `webhooks deliveries [--status S] [--subscription ID]` the latest
 deliveries, and `webhooks replay ID ...` (or `--failed`) sends finished
-deliveries again under the same `webhook-id`. Finished deliveries and their
-attempts are deleted after `RETENTION_SECONDS`.
+deliveries again under the same `webhook-id`, except erased ones. Finished
+deliveries and their attempts are deleted after `RETENTION_SECONDS`.
 
 | `WEBHOOKS` key | Default | Meaning |
 | --- | --- | --- |

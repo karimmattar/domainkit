@@ -1,6 +1,13 @@
 """Install ``domainkit.contrib.idempotency`` and add its middleware."""
 
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from contextlib import asynccontextmanager
 from importlib import import_module
 from typing import cast
@@ -18,10 +25,17 @@ from domainkit.conf.global_settings import DEADLINE_MIDDLEWARE, DEPLOYED_ENVIRON
 from domainkit.db import SqlAlchemyUnitOfWork, connections
 from domainkit.db.routing import DatabaseRouter, router
 from domainkit.ddd import DeferredTask, DomainEvent, UnitOfWork
+from domainkit.ddd.personal import event_subjects
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.deadlines import RequestTimeout
 
-from .operations import KeyTakenOver, committed_values, running_operation
+from . import operations
+from .operations import (
+    KeyTakenOver,
+    Operation,
+    committed_values,
+    running_operation,
+)
 from .settings import IdempotencySettings
 from .statements import MARK_COMMITTED, PIN_LEASE, holder
 
@@ -70,10 +84,16 @@ class IdempotencyConfig(DomainConfig):
         the key is pinned first, by a statement that commits on its own, and
         the operation notes it: whether or not the commit lands, or reports
         back, no retry can take the key over and the request never releases
-        it. The pin keeps to the deadline (``_within_deadline``).
+        it. The pin keeps to the deadline (``_within_deadline``). The
+        people the events are about are noted, to be kept with the response.
         """
+        operation = running_operation()
+        if operation is None:
+            return
+        for event in events:
+            operation.subjects |= event_subjects(event)
         sql_uow = cast(SqlAlchemyUnitOfWork, uow)
-        await self._hold(sql_uow.alias, sql_uow.session.connection)
+        await self._hold(operation, sql_uow.alias, sql_uow.session.connection)
 
     async def stage_transaction(
         self, connection: AsyncConnection, database: str
@@ -83,19 +103,22 @@ class IdempotencyConfig(DomainConfig):
         ``enqueue`` commits its task on its own: queued work is a change the
         keyed request made, and its retry must not queue it again.
         """
+        operation = running_operation()
+        if operation is None:
+            return
 
         async def joined() -> AsyncConnection:
             return connection
 
-        await self._hold(database, joined)
+        await self._hold(operation, database, joined)
 
     async def _hold(
-        self, alias: str, connect: Callable[[], Awaitable[AsyncConnection]]
+        self,
+        operation: Operation,
+        alias: str,
+        connect: Callable[[], Awaitable[AsyncConnection]],
     ) -> None:
         """Mark the key in the commit on ``alias``, or pin it first elsewhere."""
-        operation = running_operation()
-        if operation is None:
-            return
         database = self.get_settings().DATABASE
         if alias == database:
             connection = await connect()
@@ -190,6 +213,16 @@ class IdempotencyConfig(DomainConfig):
             "MIDDLEWARE; 0.10 refuses to start without a deadline."
         )
         return [warning]
+
+    async def erase_subject(self, subject: str, reason: str) -> Mapping[str, int]:
+        """Drop the kept responses about ``subject``; their keys stay, answered 409."""
+        dropped = await operations.erase_subject(self.get_settings().DATABASE, subject)
+        return {"responses": dropped}
+
+    async def export_subject(self, subject: str) -> Mapping[str, object]:
+        """The kept responses about ``subject``."""
+        found = await operations.export_subject(self.get_settings().DATABASE, subject)
+        return {"responses": found} if found else {}
 
     def databases(self, router: DatabaseRouter) -> frozenset[str]:
         """Only ``IDEMPOTENCY.DATABASE``: keys are stored apart from business data."""

@@ -59,6 +59,7 @@ from domainkit import clock
 from domainkit.apps import registry
 from domainkit.context import current_request
 from domainkit.db import connections
+from domainkit.ddd.personal import subject_tag
 from domainkit.http.errors import error_response
 from domainkit.tasks import spawn
 
@@ -179,6 +180,9 @@ class IdempotencyMiddleware:
             scope["method"], scope["path"], scope.get("query_string", b""), body
         )
         operation = Operation(key_hash, secrets.token_hex(16))
+        request = current_request()
+        if request is not None and request.actor:
+            operation.subjects.add(request.actor)
         existing = await self._claim(config, operation, fingerprint)
         if existing is not None and not (
             _abandoned(existing, fingerprint)
@@ -472,6 +476,7 @@ async def _finish(
                 ),
                 "headers": headers,
                 "body": body,
+                "subjects": subject_tag(operation.subjects) if body else None,
                 **held,
             },
         )

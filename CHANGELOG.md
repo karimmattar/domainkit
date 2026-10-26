@@ -19,6 +19,27 @@ and a status.
   different body learns the key is taken. `"refuse"` answers it 400
   `idempotency_key_needs_caller` and runs nothing; the default keeps the
   behaviour of 0.9 (DATA-09).
+- `privacy erase` and `privacy export` reach the copies that apps keep
+  outside aggregates, through two new hooks every installed domain may
+  implement: `DomainConfig.erase_subject(subject, reason)`, which returns
+  what it erased as counts by kind (audited as `privacy.copies_erased`,
+  never the data), and `DomainConfig.export_subject(subject)`, whose
+  answer goes under `copies` in the export. Webhooks blank the body of
+  every delivery about the subject, cancel the pending ones, and
+  `replay` skips them; idempotency drops the responses kept for the
+  subject's own requests and for requests that committed an event about
+  them, keeping the key, so a retry gets 409
+  `idempotency_response_unavailable` and never runs again; messaging
+  blanks dead messages about the subject (by the `Personal` markers of
+  their event, or of their task's parameters), so `messages --retry`
+  refuses them, and counts the pending ones, which the erasure logs so
+  the operator runs it again once they have run. Until now each of these
+  kept the person's data after an erasure: up to 30 days in delivery
+  bodies, readable by staff and resent by `replay`; 24 hours in kept
+  responses; for good in dead messages. `docs/privacy.md` lists what
+  erasure reaches at once and what only expires. The webhook deliveries
+  and idempotency keys tables have a new `subjects` column: run
+  `makemigrations` and `migrate` (DATA-02).
 
 ### Deprecated
 

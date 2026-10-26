@@ -55,6 +55,7 @@ keys = idempotency_keys.c
 OPERATION = Operation("h" * 64, "t" * 32)
 HELD_BY = "o" * 32
 FINGERPRINT = "f" * 64
+SUBJECTS = "\x1falice\x1f"
 TTL, LEASE = 86_400.0, 30.0
 FROZEN = datetime(2026, 10, 25, 9, 30, 15, 123456, tzinfo=UTC)
 DIALECTS: dict[str, Dialect] = {
@@ -99,6 +100,7 @@ def old_claim(dialect: str) -> Executable:
             "token": fresh.token,
             "locked_until": fresh.locked_until,
             "pinned": False,
+            "subjects": null(),  # 0.10's column, cleared as the others.
         },
         where=keys.expires_at < now,
     ).returning(keys.token)
@@ -147,11 +149,16 @@ def old_release() -> Delete:
 
 
 def old_store() -> Update:
-    """0.9.1's store in ``_finish``."""
+    """0.9.1's store in ``_finish``, with whom it is about (0.10's ``subjects``)."""
     return (
         update(idempotency_keys)
         .where(OPERATION.holds_key())
-        .values(status_code=201, headers={"location": "/items/1"}, body=b"paid")
+        .values(
+            status_code=201,
+            headers={"location": "/items/1"},
+            body=b"paid",
+            subjects=SUBJECTS,
+        )
     )
 
 
@@ -199,6 +206,7 @@ def pairs(dialect: str) -> list[Pair]:
                     "status_code": 201,
                     "headers": {"location": "/items/1"},
                     "body": b"paid",
+                    "subjects": SUBJECTS,
                     **holder(OPERATION.key_hash, OPERATION.token),
                 },
             ),

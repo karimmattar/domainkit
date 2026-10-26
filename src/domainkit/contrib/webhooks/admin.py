@@ -36,7 +36,7 @@ from .delivery import replay, webhooks_alias
 from .guard import MAX_URL_LENGTH, checked_url
 from .models import MAX_DESCRIPTION, MAX_EVENT_TYPES, Subscription, SubscriptionId
 from .settings import WebhookSettings
-from .tables import attempts, deliveries
+from .tables import ERASED, attempts, deliveries
 from .uow import WebhooksUnitOfWork
 
 __all__ = [
@@ -184,6 +184,7 @@ class DeliveryDetailOut(DeliveryOut):
     """A delivery, what it sends, and every attempt."""
 
     payload: JsonValue
+    """What it sends; null once the people it was about were erased."""
     log: list[AttemptOut]
 
 
@@ -378,7 +379,7 @@ async def read_delivery(
         ).all()
     return DeliveryDetailOut(
         **DeliveryOut.of(row).model_dump(),
-        payload=json.loads(row.body),
+        payload=json.loads(row.body) if row.body != ERASED else None,
         log=[
             AttemptOut(
                 number=entry.number,
@@ -400,7 +401,10 @@ async def read_delivery(
 async def replay_delivery(
     delivery_id: UUID, actor: Annotated[AnyUser, _staff("change")]
 ) -> ReplayOut:
-    """Send a finished delivery again (same ``webhook-id``); a pending one stays."""
+    """Send a finished delivery again (same ``webhook-id``).
+
+    A pending one stays, and so does an erased one: it has nothing to send.
+    """
     async with connections.engine(webhooks_alias()).connect() as connection:
         found = await connection.scalar(
             select(deliveries.c.id).where(deliveries.c.id == delivery_id)

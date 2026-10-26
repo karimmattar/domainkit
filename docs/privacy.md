@@ -78,9 +78,19 @@ database a domain uses (each shard too), as JSON:
       "customer": [{"id": "3f2a...", "fields": {"name": "Ann", "email": "ann@example.com"}}],
       "order": [{"id": "91c0...", "fields": {"delivery_address": "1 Nile St"}}]
     }
+  },
+  "copies": {
+    "webhooks": {"deliveries": [{"id": "...", "event_type": "customer.registered", "status": "succeeded", "created_at": "...", "body": {"type": "...", "data": {"email": "ann@example.com"}}}]},
+    "idempotency": {"responses": [{"created_at": "...", "status_code": 201, "body": "{\"email\": \"ann@example.com\"}"}]},
+    "messaging": {"messages": [{"id": "...", "kind": "task", "target": "shop.send_receipt", "status": "dead", "arguments": {"email": "ann@example.com"}}]}
   }
 }
 ```
+
+`copies` holds what installed domains keep about the subject outside
+their aggregates, by label: the webhook deliveries about them, the
+responses kept for their `Idempotency-Key` retries, and the outbox
+messages still holding their data (see below).
 
 `--output` writes a new file only its owner can read (mode `0600`), and
 refuses an existing one; without it the export goes to standard output.
@@ -115,6 +125,11 @@ For every aggregate holding data about the subject:
   version is bumped (a concurrent change fails instead of being lost), the
   audit trail records it, and your handlers can react, say, to purge a
   search index;
+- then every installed domain erases the copies it keeps about the
+  subject outside its aggregates (`DomainConfig.erase_subject`): webhook
+  deliveries, kept responses, and dead outbox messages (see the table
+  below). Each domain that erased something is recorded, with counts
+  only (`privacy.copies_erased`);
 - then the subject's keys in the audit trail are forgotten, so their
   pseudonyms there can no longer be linked to them (`auditforget`), and
   the erasure itself is recorded, with the reason.
@@ -123,6 +138,44 @@ Rows stay: an order is still an order, without the person in it. Deleting
 an account altogether is your domain's own use case. Erasing again is
 harmless: fields already erased are left alone (a method of the aggregate
 should do the same). In code: `await erase_subject(subject, reason=...)`.
+
+### What erasure reaches, and when
+
+Personal data is copied out of aggregates as the application works: into
+events, the messages that carry them, the bodies webhooks send, the
+responses `Idempotency-Key` retries replay. Erasure finds a copy by the
+people it is about, the subjects of the `Personal` fields of the event
+or task arguments it came from, so mark those too. Some copies are erased
+at once; others only expire.
+
+| Where | Erased at once | Only expires, or stays |
+| --- | --- | --- |
+| Aggregates with `Personal` fields | Every marked field, through a unit of work | Unmarked fields stay: mark them |
+| The audit trail (`domainkit.contrib.audit`) | The subject's keys, so every pseudonym of them is unlinkable | Unmarked event fields stay in `details` for good, since the trail is append-only: mark every personal field of an audited event |
+| Webhook deliveries (`domainkit.contrib.webhooks`) | The body of each delivery about the subject; a pending one is cancelled, and `replay` sends none of them again. Its row and attempt log stay, without the body | What receivers were already sent: tell them yourself |
+| Kept responses (`domainkit.contrib.idempotency`) | Each response the subject asked for, or whose request committed an event about them. The key stays, so a retry gets 409 `idempotency_response_unavailable` and never runs again | A response about the subject that another caller got, with no event naming them, until `IDEMPOTENCY.TTL_SECONDS` (24 hours by default) |
+| Outbox messages (`domainkit.contrib.messaging`) | Dead messages about the subject: their arguments are blanked, and `messages --retry` refuses them | Pending ones run as planned, and are blanked when done; the erasure logs how many, so run it again once they have run (what they wrote, such as a new delivery, is erased then). Done and cancelled messages hold no arguments. Error texts (`last_error`) keep what an exception said, for `MESSAGING.RETENTION_SECONDS` (7 days) once finished, and for good while dead: keep personal data out of exception messages |
+| Caches | Nothing | Each cache's timeout (the principal cache: `AUTH.PRINCIPAL_CACHE.TTL`, 5 seconds) |
+| Logs, error reports, backups, replicas, exports written to files | Nothing | Your retention of each: name it in your records of processing |
+
+A domain of your own that keeps copies (a search index, a read model, a
+CSV it sends) erases and exports them the same way, on its
+`DomainConfig`:
+
+```python
+class SearchConfig(DomainConfig):
+    async def erase_subject(self, subject: str, reason: str) -> dict[str, int]:
+        removed = await index.delete_by_customer(subject)
+        return {"documents": removed}  # counts only: they are audited
+
+    async def export_subject(self, subject: str) -> dict[str, object]:
+        found = await index.find_by_customer(subject)
+        return {"documents": found} if found else {}
+```
+
+Return counts by kind, lower case, whole numbers: anything else is
+refused, since it would go into the audit trail. Count copies left to
+finish under `pending`; the erasure then warns to run it again.
 
 ## Retention: `privacy purge`
 
@@ -177,8 +230,9 @@ python manage.py privacy purge             # in a nightly job
 
 | Action | Target | Details |
 | --- | --- | --- |
-| `privacy.export` | the subject | `records` |
+| `privacy.export` | the subject | `records`, `copies` (the domains that gave copies) |
 | `privacy.erase` | the subject | `aggregates`, `reason` |
+| `privacy.copies_erased` | the subject | `domain`, `copies` (counts by kind), `reason` |
 | `privacy.personal_data_erased` | | `model`, `aggregate_id`, `fields`, `reason` |
 | `privacy.purge` | `<domain>.<table>` | `database`, `before`, `operation` (`deleted` or `erased`), `rows`; `reason` when refused |
 

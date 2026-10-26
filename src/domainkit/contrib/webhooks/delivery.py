@@ -12,6 +12,11 @@ Each attempt decrypts the secrets it signs with, and stores again those a
 key in ``SECRET_KEY_FALLBACKS`` encrypted, under ``SECRET_KEY``. A secret
 no key decrypts fails the delivery: nothing is sent unsigned.
 
+A delivery is tagged with the people its event is about (the subjects of
+its ``Personal`` fields), so ``privacy erase`` blanks its body and cancels
+it if pending (``erase_subject``), and ``privacy export`` lists it
+(``export_subject``).
+
 Each attempt's host name lookups are its subscription's
 (``guard.lookups_for("webhook:<id>")``), not those of whoever caused the
 event: a subscription whose host's DNS never answers takes at most a
@@ -22,7 +27,7 @@ of the same events still find threads free.
 import json
 import logging
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
@@ -44,8 +49,10 @@ from domainkit.contrib.messaging.outbox import (
 from domainkit.contrib.messaging.registry import dump_event, spec_for
 from domainkit.contrib.messaging.settings import MessagingSettings
 from domainkit.db import connections
+from domainkit.db.query import contains_text
 from domainkit.db.routing import router
 from domainkit.ddd import DomainEvent, EventBus, event_bus
+from domainkit.ddd.personal import event_subjects, subject_tag, tagged_with
 from domainkit.encryption import DecryptionFailed
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.guard import lookups_for
@@ -58,6 +65,7 @@ from .settings import WebhookSettings
 from .signing import signed_headers
 from .tables import (
     CANCELLED,
+    ERASED,
     FAILED,
     PENDING,
     SUCCEEDED,
@@ -77,6 +85,7 @@ DATABASE_MARGIN: Final = 30.0
 NAMESPACE: Final = uuid.UUID("5d0a6c2e-6a43-4e58-9a59-5f1e3c3bd2a1")
 """Delivery ids are derived from the event and subscription in this namespace."""
 PURGE_BATCH: Final = 1000
+ERASED_ERROR: Final = "The people this delivery was about were erased."
 KEY_LOST: Final = (
     "No key decrypts the subscription's secret: SECRET_KEY changed without the "
     "old key in SECRET_KEY_FALLBACKS. Put it back, or rotate the secret, then "
@@ -164,7 +173,11 @@ async def fan_out(event: DomainEvent) -> None:
     data = exposure.payload(event) if exposure.payload else dump_event(event)
     try:
         await queue_deliveries(
-            exposure.name, data, key=str(event.event_id), occurred_at=event.occurred_at
+            exposure.name,
+            data,
+            key=str(event.event_id),
+            occurred_at=event.occurred_at,
+            subjects=event_subjects(event),
         )
     except PayloadTooLarge as exc:  # Trying again cannot help: report it once.
         logger.error("Dropped a webhook event: %s", exc)
@@ -204,12 +217,18 @@ def _deliver_message(delivery_id: uuid.UUID, *, dedupe: bool) -> dict[str, Any]:
 
 
 async def queue_deliveries(
-    event_type: str, data: Mapping[str, Any], *, key: str, occurred_at: datetime
+    event_type: str,
+    data: Mapping[str, Any],
+    *,
+    key: str,
+    occurred_at: datetime,
+    subjects: Iterable[str] = (),
 ) -> int:
     """Queue a delivery of one event to each subscriber; return how many.
 
     ``key`` identifies the event: queueing it again (a retried fan-out)
-    adds nothing.
+    adds nothing. ``subjects`` are the people ``data`` is about: erasing
+    one of them blanks these deliveries (``erase_subject``).
 
     Raises:
         PayloadTooLarge: the body is over ``MAX_PAYLOAD_BYTES``.
@@ -236,6 +255,7 @@ async def queue_deliveries(
         ]
         if not wanted:
             return 0
+        tag = subject_tag(subjects)
         rows = [
             {
                 "id": uuid.uuid5(NAMESPACE, f"{key}:{subscription_id}"),
@@ -245,6 +265,7 @@ async def queue_deliveries(
                 "status": PENDING,
                 "attempts": 0,
                 "created_at": now,
+                "subjects": tag,
             }
             for subscription_id in wanted
         ]
@@ -283,8 +304,8 @@ async def deliver(delivery_id: uuid.UUID) -> None:
                 ).where(deliveries.c.id == delivery_id)
             )
         ).first()
-        if delivery is None or delivery.status != PENDING:
-            return  # Gone, or finished (a duplicate run).
+        if delivery is None or delivery.status != PENDING or delivery.body == ERASED:
+            return  # Gone, finished (a duplicate run), or erased meanwhile.
         subscription = (
             await connection.execute(
                 select(subscriptions).where(
@@ -443,7 +464,8 @@ async def _finish(
 async def replay(delivery_ids: Sequence[uuid.UUID]) -> list[uuid.UUID]:
     """Send finished deliveries again, under the same ``webhook-id``; return them.
 
-    Deliveries still being tried are left alone.
+    Deliveries still being tried are left alone, and so are erased ones:
+    they have nothing left to send.
     """
     if not delivery_ids:
         return []
@@ -456,6 +478,7 @@ async def replay(delivery_ids: Sequence[uuid.UUID]) -> list[uuid.UUID]:
                     .where(
                         deliveries.c.id.in_(delivery_ids),
                         deliveries.c.status != PENDING,
+                        deliveries.c.body != ERASED,
                     )
                     .values(status=PENDING, finished_at=None)
                     .returning(deliveries.c.id)
@@ -467,6 +490,56 @@ async def replay(delivery_ids: Sequence[uuid.UUID]) -> list[uuid.UUID]:
             await write(connection, connection.dialect.name, messages)
     await _committed(alias, messages)
     return replayed
+
+
+async def erase_subject(subject: str) -> dict[str, int]:
+    """Blank the bodies of deliveries about ``subject``; cancel the pending ones.
+
+    Returns how many were blanked, and how many of those were cancelled.
+    Their rows and attempt logs stay, without what they would have sent;
+    ``replay`` skips them.
+    """
+    alias = webhooks_alias()
+    async with connections.engine(alias).begin() as connection:
+        named = contains_text(
+            deliveries.c.subjects, tagged_with(subject), connection.dialect.name
+        )
+        cancelled = await connection.execute(
+            update(deliveries)
+            .where(named, deliveries.c.status == PENDING)
+            .values(status=CANCELLED, finished_at=_now(), last_error=ERASED_ERROR)
+        )
+        blanked = await connection.execute(
+            update(deliveries).where(named).values(body=ERASED, subjects=None)
+        )
+    return {"deliveries": blanked.rowcount, "cancelled": cancelled.rowcount}
+
+
+async def export_subject(subject: str) -> list[dict[str, Any]]:
+    """The deliveries about ``subject``, oldest first, with what each sends."""
+    alias = webhooks_alias()
+    async with connections.engine(alias).connect() as connection:
+        named = contains_text(
+            deliveries.c.subjects, tagged_with(subject), connection.dialect.name
+        )
+        rows = (
+            await connection.execute(
+                select(deliveries)
+                .where(named)
+                .order_by(deliveries.c.created_at, deliveries.c.id)
+            )
+        ).all()
+    return [
+        {
+            "id": str(row.id),
+            "subscription_id": str(row.subscription_id),
+            "event_type": row.event_type,
+            "status": row.status,
+            "created_at": row.created_at.isoformat(),
+            "body": json.loads(row.body),
+        }
+        for row in rows
+    ]
 
 
 async def failed_deliveries(

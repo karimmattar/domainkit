@@ -1,6 +1,6 @@
 """Install ``domainkit.contrib.messaging`` to get the outbox and the worker."""
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from importlib import import_module
 from importlib.util import find_spec
 from typing import Any, cast
@@ -66,6 +66,19 @@ class MessagingConfig(DomainConfig):
         rows = _committing.pop(uow, [])
         sql_uow = cast(SqlAlchemyUnitOfWork, uow)
         await notify_committed(self.get_settings(), sql_uow.alias, rows)
+
+    async def erase_subject(self, subject: str, reason: str) -> Mapping[str, int]:
+        """Blank dead messages about ``subject``; count pending ones (``erasure``)."""
+        from .erasure import erase_subject
+
+        return await erase_subject(subject)
+
+    async def export_subject(self, subject: str) -> Mapping[str, object]:
+        """The queued and dead messages about ``subject``, with their arguments."""
+        from .erasure import export_subject
+
+        found = await export_subject(subject)
+        return {"messages": found} if found else {}
 
     def databases(self, router: DatabaseRouter) -> frozenset[str]:
         """Every hosting target: the outbox commits with each domain's data."""
