@@ -330,6 +330,19 @@ orders = ResourceRouter("/orders", ..., scope=own_orders)
 What is out of scope is left out of pages, so counts and cursors never
 reveal it, and is `404` for reads and commands, as if it did not exist.
 
+A command or a query on one aggregate is checked before its service runs.
+When only the scope or the parent decide, the check and the service share
+one unit of work: the aggregate is read within reach, and the service runs
+in the same transaction, its own `async with uow:` and exit doing nothing
+and its `commit()` the unit of work's; the route closes it afterwards, so
+what the service did not commit is rolled back as before. When a rule
+looks at the aggregate, the check has a unit of work of its own, closed
+before the rule runs, and the service another.
+
+The rules are the core's (`domainkit.http.access`): a resource needs no
+`domainkit.contrib.auth`, only a middleware that puts who sent the request
+in `scope["user"]` ([Another authentication](auth.md#another-authentication)).
+
 ## Field policies
 
 A `FieldPolicy` says who sees and who changes each field, as the user

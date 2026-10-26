@@ -9,6 +9,90 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `domainkit.http.access`: the access rules, for any authentication. The
+  algebra (`BasePermission`, `Require`, `Public`, `AllOf`, `AnyOf`, `Not`,
+  `check_object_permissions`, `mark_public`, `open_routes`), the rules that
+  read only what any principal has (`IsAuthenticated`, `HasPermissions`,
+  `ModelPermissions`, `HasObjectPermissions`, `HasScope`, `IsUnscoped`, ...),
+  `current_user` and `CurrentUser`, and `Principal`: the protocol the rules
+  read (`id`, `is_authenticated`, `is_active`, `ahas_perms`), with
+  `AnonymousPrincipal` and `reads_principal` for a provider's own
+  dependencies. A project whose middleware puts its own principal in
+  `scope["user"]` (an OpenID Connect middleware, a gateway's header) serves
+  `ResourceRouter`s, field policies, and deny by default without
+  `domainkit.contrib.auth`, its tables, or content types; a principal's
+  `challenge()` names the `WWW-Authenticate` of its 401. Auth's users answer
+  `ahas_perms` through `AUTH.BACKENDS`, as `has_perms` did (DSGN-02; ADR 0080).
+- `REQUIRE_ROUTE_RULES` (default `True`): deny by default is the core's,
+  checked when the application is built and when it starts, with or
+  without `domainkit.contrib.auth` (DSGN-02; ADR 0080).
+- `domainkit.db.models`: which classes are installed models, their keys
+  (`model_key`, `billing.invoice`), and their `Meta` options; permissions
+  and generic writes name models without content types.
+  `domainkit.contrib.contenttypes` keeps its names, the same objects
+  (`content_type_key` is `model_key`) (DSGN-02).
+- `domainkit.ddd.Sensitive`: a type whose values no derived schema shows or
+  takes; `schema_for` refuses a field of such a type, as it refused auth's
+  `PasswordHash`, which is one (DSGN-02).
+- `domainkit.deprecation.moved`: a module `__getattr__` that keeps names
+  that moved importable from their old module, warning (DSGN-02).
+- `domainkit.http.responses.BuiltJSONResponse`, public: JSON bodies built of
+  JSON's own values (`model_dump(mode="json")`), rendered without the check
+  `JSONResponse` makes (DSGN-01).
+- The core asks installed apps through protocols, never imports them:
+  `OperatorRecorder` (`domainkit.contrib.audit` records operators' actions),
+  `QueueDeclarer` (messaging names the queues `broker declare` creates),
+  and `TokenIssuer` (auth issues `user_token`'s and the clients' tokens).
+  `test_framework_layers.py` fails on any core module that imports a
+  contrib app, at import, in a function, or by name: 12 did in 0.9.2
+  (DSGN-02; ADR 0080).
+- The `resource-read` and `resource-command` rungs of the benchmark ladder:
+  a `ResourceRouter` read and a scoped command, through the template stack
+  (DSGN-01).
+
+### Changed
+
+- **Breaking:** projects without `domainkit.contrib.auth` now have deny by
+  default: a route that declares no rule (`Require`, `CurrentUser`, a
+  `reads_principal` dependency, or `Public`) is listed by `check`, and
+  staging and production refuse to start, as they did with auth. To keep
+  the old behaviour, set `REQUIRE_ROUTE_RULES = False` (DSGN-02).
+- `domainkit.resources.routing` is a package: the `ResourceRouter` facade,
+  its constructor and every `*_route` signature unchanged, over one class
+  per kind of route (`listing`, `reading`, `commands`, `batching`,
+  `queries`, `crud`) that answers from a frozen, typed `RouteContext`
+  instead of a dict of values; `reach` and `presenting` hold what they
+  share. Answers, headers, error bodies, and OpenAPI documents are the same
+  (DSGN-01; ADR 0025).
+- A command or a query on one aggregate whose resource has a scope or a
+  parent checks the aggregate and runs the service in one unit of work, the
+  service's own enter and exit doing nothing: one transaction and one
+  connection instead of two, and the service finds the aggregate the check
+  read (`resource-command`: 4,546 calls and 2/2/2/2 round trips, now 3,766
+  and 1/1/1/1). With a rule that looks at the aggregate, the check keeps a
+  transaction of its own, closed before the rule runs (DSGN-01).
+- A rule's `has_permission` and `has_object_permission` take the principal
+  typed `Any`, so rules written for auth's `AnyUser` keep their annotation;
+  the core's own rules read a `Principal` (DSGN-02).
+
+### Deprecated
+
+- The rule names of `domainkit.contrib.auth` and
+  `domainkit.contrib.auth.access` that moved to `domainkit.http.access`:
+  `AllowAny`, `BasePermission`, `HasObjectPermissions`, `HasPermissions`,
+  `HasScope`, `IsAuthenticated`, `IsAuthenticatedOrReadOnly`, `IsUnscoped`,
+  `ModelPermissions`, `NotAuthenticated`, `Public`, `Require`,
+  `check_object_permissions`, `mark_public`, and `open_routes` (and, from
+  `.access` only, `AllOf`, `AnyOf`, `Not`, `Rule`, `SAFE_METHODS`,
+  `MODEL_ACTIONS`, `scopes_of`, ...). They still import, the same objects,
+  with a `DomainkitDeprecationWarning` naming the new place, and are removed
+  in 0.11. `IsAdminUser`, `IsSuperuser`, `AuthenticatedUser`, `CurrentUser`,
+  and `current_user` stay in auth (DSGN-02).
+- `AUTH.REQUIRE_ROUTE_RULES`: set `REQUIRE_ROUTE_RULES`. `False` still
+  turns the check off, with a warning, until 0.11 (DSGN-02).
+
 ## [0.9.2] - 2026-10-26
 
 ### Added
