@@ -41,8 +41,8 @@ Keys are scoped to the authenticated actor (set by
 they are scoped to the client address and the request's credentials (the
 ``CREDENTIAL_HEADERS``, hashed), so callers behind one address never share
 keys where the project authenticates on its own with one of those headers.
-A key sent with neither is shared by every caller behind the address;
-``ANONYMOUS = "refuse"`` answers it 400 instead.
+A key sent with neither is answered 400 (``ANONYMOUS = "refuse"``, the
+default); ``"per-address"`` shares it with every caller behind the address.
 List the middleware after ``RequestContextMiddleware`` and
 ``RequestBodyLimitMiddleware`` (it reads the whole body).
 """

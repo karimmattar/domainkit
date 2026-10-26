@@ -1,8 +1,7 @@
 """Access rules: each rule, their combinations, and how refusals answer."""
 
 import asyncio
-from pathlib import Path
-from typing import Any, Final, get_args
+from typing import Any, get_args
 
 import pytest
 from starlette.requests import HTTPConnection, Request
@@ -17,11 +16,9 @@ from domainkit.contrib.auth import (
     PasswordHash,
     User,
 )
-from domainkit.contrib.auth import access as auth_access
 from domainkit.contrib.auth.models import Permission
 from domainkit.contrib.contenttypes import ContentType
 from domainkit.ddd import PermissionDenied
-from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import access
 from domainkit.http.access import (
@@ -325,61 +322,7 @@ def test_websocket_handshakes_count_as_reads() -> None:
     )
 
 
-# The names that moved to the core in 0.10 ---------------------------------------------
-
-PACKAGE_MOVED: Final = sorted(auth_package.MOVED)
-MODULE_MOVED: Final = sorted(auth_access.MOVED)
-
-
-@pytest.mark.parametrize("name", PACKAGE_MOVED)
-def test_moved_names_still_import_from_auth_with_a_warning(name: str) -> None:
-    """Until 0.11, the same object, with the new place and the removal named."""
-    with pytest.warns(DomainkitDeprecationWarning) as warned:
-        old = getattr(auth_package, name)
-
-    assert old is getattr(access, name)
-    assert str(warned[0].message) == (
-        f"domainkit.contrib.auth.{name} moved to domainkit.http.access.{name}; "
-        "import it from there. The old name is removed in 0.11."
-    )
-    assert Path(warned[0].filename).name == Path(__file__).name  # The caller.
-    assert name not in auth_package.__all__
-
-
-@pytest.mark.parametrize("name", MODULE_MOVED)
-def test_moved_names_still_import_from_auth_access_with_a_warning(name: str) -> None:
-    """``from domainkit.contrib.auth.access import Require`` works too, and warns."""
-    with pytest.warns(DomainkitDeprecationWarning, match=r"removed in 0\.11\.$"):
-        old = getattr(auth_access, name)
-
-    assert old is getattr(access, name)
-
-
-def test_the_old_import_statement_warns() -> None:
-    """The way projects wrote it, which a module ``__getattr__`` answers."""
-    with pytest.warns(DomainkitDeprecationWarning, match="moved to domainkit"):
-        from domainkit.contrib.auth import Require as OldRequire
-
-    assert OldRequire is Require
-
-
-def test_other_names_are_still_missing() -> None:
-    """Only the moved names are answered; a typo is an AttributeError."""
-    with pytest.raises(AttributeError, match="has no attribute 'Requires'"):
-        auth_package.Requires  # noqa: B018 - looked up.
-    with pytest.raises(AttributeError, match="has no attribute 'IsStaff'"):
-        auth_access.IsStaff  # noqa: B018 - looked up.
-
-
-def test_the_moved_names_are_what_the_old_modules_exported() -> None:
-    """Every public rule name auth had is answered, and none it keeps is."""
-    kept = {"AuthenticatedUser", "CurrentUser", "IsAdminUser", "IsSuperuser"}
-    kept |= {"acurrent_user", "current_user"}
-
-    assert set(PACKAGE_MOVED) <= set(access.__all__)
-    assert not kept & set(PACKAGE_MOVED)
-    assert kept <= set(auth_package.__all__)
-    assert set(PACKAGE_MOVED) <= set(MODULE_MOVED)
+# Auth's names for the core's ------------------------------------------------------
 
 
 def test_auth_s_typed_views_are_the_core_s_objects() -> None:

@@ -94,12 +94,12 @@ statuses, and the amendments they name.
 | [0077](0077-declare-what-apps-require.md) | Declare what apps require, and reach other apps only through their public names | Accepted |
 | [0078](0078-deliver-events-in-process-after-commit-or-durably-through-the-outbox.md) | Deliver events in process after commit, or durably through the outbox | Accepted |
 | [0079](0079-validate-every-setting-in-one-model-and-each-app-in-its-own.md) | Validate every setting at startup: one model, and each app's own | Accepted; amended 2026-10-26 (at the end) |
-| [0080](0080-access-rules-are-core-auth-is-one-provider.md) | Access rules are core; auth is one provider | Accepted |
+| [0080](0080-access-rules-are-core-auth-is-one-provider.md) | Access rules are core; auth is one provider | Accepted; amended 2026-10-26 (at the end) |
 | [0082](0082-signed-audit-checkpoints.md) | Prune the audit chain below signed checkpoints, in a fixed format | Accepted |
 | [0084](0084-one-exception-root-mapped-to-http-at-the-boundary.md) | Root every exception at `DomainkitError`, and map errors to HTTP at the boundary | Accepted |
 | [0085](0085-register-hooks-by-type-for-the-domains-that-have-them.md) | Register commit and migration hooks by type, for the domains that have them | Accepted |
-| [0086](0086-secure-defaults-at-the-http-edge.md) | Make the HTTP edge's defaults the safe ones | Accepted |
-| [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md) | Count proven devices apart, and bound scoped credentials by route | Accepted |
+| [0086](0086-secure-defaults-at-the-http-edge.md) | Make the HTTP edge's defaults the safe ones | Accepted; amended 2026-10-26 (at the end) |
+| [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md) | Count proven devices apart, and bound scoped credentials by route | Accepted; amended 2026-10-26 (at the end) |
 | [0089](0089-build-the-docs-site-with-mkdocs-and-generate-the-api-reference-from-api-md.md) | Build the docs site with MkDocs, and generate the API reference from api.md | Accepted |
 | [0090](0090-module-singletons-overridden-per-test.md) | Keep framework state in module-level singletons, overridden per test | Accepted |
 | [0096](0096-keep-committed-idempotency-keys-as-tombstones.md) | Keep committed idempotency keys as tombstones past their TTL | Accepted |

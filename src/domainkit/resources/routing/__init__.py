@@ -174,11 +174,11 @@ class ResourceRouter(APIRouter):
 
         ``crud=True`` writes the fields ``writable`` names (or every plain
         one, with ``ALL_FIELDS``), or takes the ``create`` and ``update``
-        schemas given; without either it writes every plain field, which is
-        deprecated. ``body_limits`` gives each kind of route that takes a
-        body (``create``, ``update``, ``command``, ``batch``) a body limit
-        in bytes of its own (``domainkit.http.middleware.body_limit``);
-        ``command_route`` and ``batch_route`` take ``body_limit=`` per route.
+        schemas given; without either it is refused. ``body_limits`` gives
+        each kind of route that takes a body (``create``, ``update``,
+        ``command``, ``batch``) a body limit in bytes of its own
+        (``domainkit.http.middleware.body_limit``); ``command_route`` and
+        ``batch_route`` take ``body_limit=`` per route.
 
         Raises:
             TypeError: A declaration does not fit the model.

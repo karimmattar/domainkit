@@ -84,6 +84,54 @@ and a status.
   that is due makes one more, once a minute. ADR 0096 records the choice.
   **To keep the old behaviour:** `IDEMPOTENCY = {"TOMBSTONE_SECONDS": 0}`
   (FIN-84).
+- **Breaking:** `SCOPED_CREDENTIALS` defaults to `"refuse"`: credentials
+  limited to scopes, on a route that declares no rule that checks scopes,
+  get `403 permission_denied` ("Credentials limited to scopes cannot call
+  this route"), where 0.10 served them with a warning. Add
+  `HasScope(...)`, a permission rule, or `AllowScoped()` to the route. To
+  keep 0.10's behaviour, set `SCOPED_CREDENTIALS = "warn"`: such requests
+  are served, with the line on the `domainkit.security` logger, and no
+  longer with a `DomainkitDeprecationWarning`, as nothing is to be removed
+  (AUTH-01).
+- **Breaking:** `IDEMPOTENCY.ANONYMOUS` defaults to `"refuse"`: an
+  `Idempotency-Key` sent with no actor and none of `CREDENTIAL_HEADERS` is
+  answered 400 `idempotency_key_needs_caller`, and the request does not
+  run. 0.10 scoped it to the caller's address, which every caller behind
+  one NAT or proxy shares. To keep 0.10's behaviour, set `IDEMPOTENCY =
+  {"ANONYMOUS": "per-address"}`. `check` no longer warns
+  `idempotency.W002`, which asked deployments to choose while the default
+  was the unsafe one; an `idempotency.W002` in `SILENCED_CHECKS` silences
+  nothing now, and may go (DATA-09).
+- **Breaking:** `ResourceRouter(crud=True)` without `writable=`, or without
+  both `create=` and `update=`, is refused when the router is built, with a
+  `TypeError` that says what to pass: `writable=[...]` naming the fields
+  the writes take, `writable=ALL_FIELDS`, or both schemas. 0.10 made every
+  plain field writable, with a warning, so a field added to the aggregate
+  later was settable by any caller allowed to write. To keep 0.10's
+  behaviour, pass `writable=ALL_FIELDS` (WEB-09).
+
+### Removed
+
+- The access rules' old names in `domainkit.contrib.auth` and
+  `domainkit.contrib.auth.access`, deprecated in 0.10: `AllowAny`,
+  `BasePermission`, `HasObjectPermissions`, `HasPermissions`, `HasScope`,
+  `IsAuthenticated`, `IsAuthenticatedOrReadOnly`, `IsUnscoped`,
+  `ModelPermissions`, `NotAuthenticated`, `Public`, `Require`,
+  `check_object_permissions`, `mark_public`, and `open_routes`, and, from
+  `.access`, `AllOf`, `AnyOf`, `Not`, `Rule`, `SAFE_METHODS`,
+  `MODEL_ACTIONS`, `bearer`, `public`, `scopes_of`, `routes_need_users`,
+  and `unguarded_routes`. Import them from `domainkit.http.access`: an old
+  import raises `ImportError`, and type checkers report it. `IsAdminUser`,
+  `IsSuperuser`, `AuthenticatedUser`, `CurrentUser`, and `current_user`
+  stay in `domainkit.contrib.auth` (DSGN-02).
+- `AUTH.REQUIRE_ROUTE_RULES`, deprecated in 0.10: settings that still set
+  it are refused when they load, naming `REQUIRE_ROUTE_RULES`, the setting
+  to use instead (DSGN-02).
+- `Query` from `domainkit.ddd.query`, `Selection`'s name before 0.9.2,
+  deprecated in 0.10: use `domainkit.ddd.Selection`. `domainkit.ddd.Query`,
+  the base of CQRS query messages, stays (DSGN-09).
+- `domainkit.contrib.evidence.model`, deprecated in 0.10: import from
+  `domainkit.contrib.evidence`, or its `models` (DSGN-09).
 
 ### Security
 

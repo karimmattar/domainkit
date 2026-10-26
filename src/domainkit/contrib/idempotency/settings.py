@@ -51,12 +51,14 @@ class IdempotencySettings(BaseModel):
         "x-api-key",
     )
     """Headers that name a caller without an actor: their keys are apart."""
-    ANONYMOUS: Literal["per-address", "refuse"] = PER_ADDRESS
+    ANONYMOUS: Literal["per-address", "refuse"] = REFUSE
     """Keys sent with no actor and none of ``CREDENTIAL_HEADERS``.
 
-    ``per-address`` scopes them to the client's address, so callers behind
-    one address (a NAT, a proxy) share them: one can be replayed another's
-    response. ``refuse`` answers them 400 ``idempotency_key_needs_caller``.
+    ``refuse`` (the default since 0.11) answers them 400
+    ``idempotency_key_needs_caller``, and the request does not run.
+    ``per-address`` (0.10's default) scopes them to the client's address, so
+    callers behind one address (a NAT, a proxy) share them: one can be
+    replayed another's response (DATA-09).
     For ``refuse``, a ``Cookie`` names a caller only if it carries one of
     ``SESSION_COOKIES``: a consent or locale cookie, which many callers
     send alike, does not (SEC-10b-7).

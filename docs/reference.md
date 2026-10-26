@@ -53,8 +53,8 @@ URLs; an unreadable port is refused without quoting the URL.
 | `MIDDLEWARE` | see [Middleware](#middleware) | ASGI middleware by dotted path, outermost first. |
 | `ROOT_ROUTER` | `None` | Dotted path to the `APIRouter` that mounts every route (Django's `ROOT_URLCONF`). |
 | `FLATTEN_ROUTERS` | `True` | Serve the routes of the routers `ROOT_ROUTER` includes from the top of the application, each matched once ([Included routers](#included-routers)); `False` keeps FastAPI's nesting, which matches a request again at each level. |
-| `REQUIRE_ROUTE_RULES` | `True` | Every route must say who may call it (`Require`, a dependency that reads the principal, or `Public`), whatever authenticates requests; `check` lists those that do not, and staging and production refuse to start ([Deny by default](auth/routes.md#deny-by-default)). `AUTH.REQUIRE_ROUTE_RULES = False` still turns it off until 0.11, with a warning. |
-| `SCOPED_CREDENTIALS` | `"warn"` | Credentials limited to scopes on a route that declares no rule that checks scopes (`HasScope`, a permission rule, `IsUnscoped`, or `AllowScoped`): `"warn"` lets them through, as before 0.10, with a `DomainkitDeprecationWarning` and a security log line once per route a while; `"refuse"` answers 403, as 0.11 will by default ([Scopes on every route](auth/authentication.md#scopes-on-every-route)). |
+| `REQUIRE_ROUTE_RULES` | `True` | Every route must say who may call it (`Require`, a dependency that reads the principal, or `Public`), whatever authenticates requests; `check` lists those that do not, and staging and production refuse to start ([Deny by default](auth/routes.md#deny-by-default)). `AUTH.REQUIRE_ROUTE_RULES`, its name until 0.10, is refused since 0.11. |
+| `SCOPED_CREDENTIALS` | `"refuse"` | Credentials limited to scopes on a route that declares no rule that checks scopes (`HasScope`, a permission rule, `IsUnscoped`, or `AllowScoped`): `"refuse"` answers 403; `"warn"` lets them through, as 0.10 did by default, with a security log line once per route a while ([Scopes on every route](auth/authentication.md#scopes-on-every-route)). |
 | `ASGI_APPLICATION` | `None` | `module:attribute` that `runserver` serves. |
 | `EVENT_LOOP` | `"auto"` | The event loop of `runserver` and of commands with an `async` handle (`runworker` among them): uvloop when the `uvloop` extra is installed (`auto`), always asyncio's own (`asyncio`), or uvloop or a configuration error (`uvloop`). |
 | `LOGGING` | minimal | A `logging.config.dictConfig` mapping, applied by `setup()`. `domainkit.log.build_logging_config(log_format="json", level="INFO")` makes one that writes from a thread, through a bounded queue ([runtime.md](runtime.md#logging-and-error-reports)); the settings `init` writes use it. |
@@ -575,7 +575,10 @@ an unsafe or broken configuration, refused until it changes.
 | `auth.W005` | a session or CSRF cookie name without the `__Host-` prefix where the prefix could hold ([auth.md](auth/authentication.md#browser-sessions-in-cookies)) |
 | `audit.W001` to `audit.W005` | with `AUDIT.REQUIRE_BASELINE = False` only: what `audit.E001` to `audit.E005` refuse |
 | `idempotency.W001` | with `IDEMPOTENCY.REQUIRE_DEADLINE = False` only: what `idempotency.E002` refuses |
-| `idempotency.W002` | `IDEMPOTENCY.ANONYMOUS` not set: anonymous callers behind one address share keys; 0.11 defaults to `"refuse"`, so set `"per-address"` to keep today's behaviour, or `"refuse"` now (DATA-09) |
+
+`idempotency.W002` (0.10: `IDEMPOTENCY.ANONYMOUS` left unset, so
+`"per-address"`) is gone since 0.11, whose default is `"refuse"`; listed
+in `SILENCED_CHECKS`, it silences nothing.
 
 The production settings that `init` create avoid the first three, and ask
 for `TRUSTED_PROXIES`: leave it empty only when callers connect directly.

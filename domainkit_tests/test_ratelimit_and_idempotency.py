@@ -9,6 +9,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Final
 
 import anyio
 import pytest
@@ -60,6 +61,11 @@ BASE_MIDDLEWARE = [
     "domainkit.http.middleware.RequestContextMiddleware",
     "domainkit.http.middleware.RequestBodyLimitMiddleware",
 ]
+CALLER: Final = (b"x-api-key", b"caller")
+"""Names the caller of the keyed requests below, as a project's own
+authentication would. Since 0.11 a key that names none is refused
+(``IDEMPOTENCY.ANONYMOUS = "refuse"``, DATA-09); these tests are about
+what keys do, so their requests name one."""
 
 
 def test_rates_parse_and_validate() -> None:
@@ -499,7 +505,9 @@ def idempotent_app(databases: dict[str, str]) -> Iterator[TestClient]:
 
         asyncio.run(create())
         with TestClient(
-            get_asgi_application(), raise_server_exceptions=False
+            get_asgi_application(),
+            raise_server_exceptions=False,
+            headers={CALLER[0].decode(): CALLER[1].decode()},
         ) as client:
             yield client
     registry.clear()
@@ -539,8 +547,8 @@ def stored_keys() -> list[dict[str, object]]:
 
 
 def keyed(key: str) -> str:
-    """The hash of ``key`` sent by the test client without credentials."""
-    scope = {"type": "http", "headers": [], "client": ("testclient", 50000)}
+    """The hash of ``key`` sent by the test client, as ``CALLER``."""
+    scope = {"type": "http", "headers": [CALLER], "client": ("testclient", 50000)}
     caller = idempotency._caller(scope, IdempotencySettings().CREDENTIAL_HEADERS)
     return idempotency._hash(caller, key)
 
@@ -611,7 +619,7 @@ def test_headers_are_replayed_byte_for_byte() -> None:
             "type": "http",
             "method": "POST",
             "path": "/created",
-            "headers": [(b"idempotency-key", b"latin")],
+            "headers": [(b"idempotency-key", b"latin"), CALLER],
             "client": ("203.0.113.1", 1),
         }
         await app(scope, receive, send)
@@ -1454,10 +1462,7 @@ def test_keyed_requests_without_any_deadline_are_refused_where_deployed(
     def found(
         options: dict[str, object] | None = None, *, relaxed: bool = False
     ) -> tuple[list[str], list[str]]:
-        # ANONYMOUS chosen, so its own warning (idempotency.W002) stays out.
-        chosen: dict[str, object] = {"ANONYMOUS": "per-address"}
-        if relaxed:
-            chosen["REQUIRE_DEADLINE"] = False
+        chosen: dict[str, object] = {"REQUIRE_DEADLINE": False} if relaxed else {}
         registry.clear()
         try:
             with override_settings(
@@ -1492,14 +1497,14 @@ def test_keyed_requests_without_any_deadline_are_refused_where_deployed(
 
 
 @pytest.mark.parametrize("anonymous", [None, "per-address", "refuse"])
-def test_the_anonymous_default_is_a_warning_where_deployed(
+def test_the_anonymous_policy_is_no_warning_where_deployed(
     anonymous: str | None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``ANONYMOUS`` left unset warns in staging and production (DATA-09).
+    """``ANONYMOUS``, set or not, warns nowhere (DATA-09).
 
-    0.11 defaults to ``"refuse"``; setting either value, even today's
-    default, is a choice, and silences it. Outside staging and
-    production, nothing.
+    0.10 warned ``idempotency.W002`` in staging and production while it was
+    left unset, as its default shared keys behind one address. Since 0.11
+    the default refuses them, and ``"per-address"`` is a project's choice.
     """
     chosen = {} if anonymous is None else {"ANONYMOUS": anonymous}
 
@@ -1517,19 +1522,8 @@ def test_the_anonymous_default_is_a_warning_where_deployed(
 
     elsewhere = warnings()
     monkeypatch.setattr(idempotency_apps, "DEPLOYED_ENVIRONMENTS", {"test"})
-    deployed = warnings()
 
-    assert elsewhere == []
-    if anonymous is not None:
-        assert deployed == []
-        return
-    (warning,) = deployed
-    assert warning.id == "idempotency.W002"  # type: ignore[attr-defined]
-    assert "anonymous callers behind one address" in warning
-    assert '0.11 defaults to "refuse"' in warning
-    assert 'ANONYMOUS = "per-address" to keep this behaviour, or "refuse" now' in (
-        warning.hint  # type: ignore[attr-defined]
-    )
+    assert (elsewhere, warnings()) == ([], [])
 
 
 def test_a_key_released_while_claimed_is_in_progress(
@@ -1570,7 +1564,7 @@ def run_raw(app: ASGIApp, *incoming: Message) -> list[Message]:
             "type": "http",
             "method": "POST",
             "path": "/raw",
-            "headers": [(b"idempotency-key", b"raw")],
+            "headers": [(b"idempotency-key", b"raw"), CALLER],
         }
         await idempotency.IdempotencyMiddleware(app)(scope, receive, send)
         await connections.close_all()
@@ -1583,7 +1577,7 @@ KEYED_POST: Scope = {
     "type": "http",
     "method": "POST",
     "path": "/raw",
-    "headers": [(b"idempotency-key", b"raw")],
+    "headers": [(b"idempotency-key", b"raw"), CALLER],
 }
 
 
@@ -1867,7 +1861,7 @@ PAY_SCOPE: Scope = {
     "raw_path": b"/pay",
     "root_path": "",
     "query_string": b"",
-    "headers": [(b"idempotency-key", b"order-42")],
+    "headers": [(b"idempotency-key", b"order-42"), CALLER],
     "client": ("testclient", 50000),
     "server": ("testserver", 80),
 }
