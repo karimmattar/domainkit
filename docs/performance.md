@@ -843,8 +843,9 @@ to 1,497 µs, `throttled` 418 to 305 µs, each the best of its timed runs.
   on a thread, and the first call on a loop holds it 6 to 8 ms instead of
   20 to 39 (1 to 2 ms with the context already built).
 - **Deadlines and connections** (CONC-08, ADR 0048's amendment): ten
-  requests cut off at their deadline mid-statement opened and discarded
-  ten connections; now one is opened, and kept.
+  requests cut off at their deadline mid-statement open and discard ten
+  connections. Keeping them saved all ten, but could keep a connection
+  inside a transaction nobody tracked, and was reverted; it waits for 0.11.
 - **Pools** (PERF-14): `check` warns when a pool cannot serve the
   requests a loop admits ([reference.md](reference.md#sizing-pools)).
   The defaults stay: requests that each hold a connection for 20 ms

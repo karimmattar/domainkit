@@ -170,8 +170,12 @@ process's busy credentials do so at once (PERF-04 of the 0.9.0 audit).
   instead of each reading. A request joins a read only if nothing was
   invalidated since it began, and uses what it read only if nothing the
   entry rests on was invalidated by the time it ended; otherwise it reads
-  for itself, from a new mark. So a revocation committed before a request
-  arrived is never hidden from it by an older read. A read that fails, or
+  for itself, from a new mark. With `STAMPS`, a joining request also
+  checks the entry's shared stamps (one round trip) and reads for itself
+  if they changed or cannot be read (SEC-10a-1 of the 0.10 review: a
+  revocation stamped by another process during the read was otherwise
+  hidden). So a revocation committed before a request arrived is never
+  hidden from it by an older read. A read that fails, or
   whose request is cancelled, leaves each waiting request to read for
   itself; a waiting request that is cancelled leaves the read to the
   others. The 400 `SELECT`s above are 20. Reads are shared per loop, since

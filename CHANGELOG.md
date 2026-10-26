@@ -108,7 +108,8 @@ and a status.
 - `domainkit.http.routing.RouteIndex` and `index_routes`: the
   application's router tries only the routes a request's first path segment
   can reach, and those that may match any path, in order, and serves what
-  trying every route serves. `get_asgi_application` installs it with
+  trying every route serves, however the routes change after the build
+  (SEC-10a-6). `get_asgi_application` installs it with
   `FLATTEN_ROUTERS`. One GET behind 10, 100, and 1,000 routes now costs 329
   calls each, where it cost 409, 1,129, and 8,329 (PERF-05; ADR 0060).
 - `domainkit.utils.loops.PerLoop`: one value per event loop, kept under a
@@ -344,11 +345,9 @@ and a status.
   and in the last fifth of the `TTL` one request reads a kept principal
   again while the others are served it, never past the `TTL`; a
   revocation committed before a request arrived is never hidden from it by
-  an older read (PERF-04; ADR 0058).
-- A statement a deadline cuts off keeps its asyncpg connection: asyncpg
-  cancels it on the server, and the rollback waits for that. Ten requests
-  cut off mid-statement opened and discarded ten connections, now none
-  (CONC-08; ADR 0048).
+  an older read; with `STAMPS`, a request joining another's read first
+  checks the shared stamps, so one stamped by another process is not
+  either (PERF-04, SEC-10a-1; ADR 0058).
 - `HttpClient` builds its TLS context on a thread the first time a loop
   calls, instead of on the loop: the first call held it 20 to 39 ms, now 6
   to 8 (CONC-06).

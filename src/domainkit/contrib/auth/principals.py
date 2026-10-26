@@ -1121,19 +1121,19 @@ async def kept_or_read(
     now = clock.monotonic()
     entry = await recall(key, config, now)
     if entry is None:
-        return await read_once(key, read)
+        return await read_once(key, read, config.STAMPS)
     if not holds(entry):
         forget(entry)
-        return await read_once(key, read)
+        return await read_once(key, read, config.STAMPS)
     if now < entry.refresh_at or not principal_cache.claim_refresh(entry):
         return entry
-    return await _refresh(entry, read)
+    return await _refresh(entry, read, config.STAMPS)
 
 
-async def _refresh(entry: Entry, read: Read) -> Entry | None:
+async def _refresh(entry: Entry, read: Read, stamps: str | None) -> Entry | None:
     """Read the kept ``entry`` again, for the request that claimed it."""
     try:
-        fresh = await read_once(entry.key, read)
+        fresh = await read_once(entry.key, read, stamps)
     except Exception:
         # The database failed: what is kept still holds, until its deadline.
         observe_principals(entry.scheme, "refresh_failed")
@@ -1163,13 +1163,16 @@ _flights: Final[PerLoop[dict[Key, _Flight]]] = PerLoop()
 """Each event loop's reads under way, by key: futures belong to one loop."""
 
 
-async def read_once(key: Key, read: Read) -> Entry | None:
+async def read_once(key: Key, read: Read, stamps: str | None = None) -> Entry | None:
     """``read(started)``, or what a read of ``key`` already under way finds.
 
     A request joins a read only if nothing was invalidated since it began,
     and uses what it read only if nothing it rests on was invalidated by
-    the time it ended (``changed_since``): a revocation committed before a
-    request arrived is never hidden from it by an older read. A read that
+    the time it ended (``changed_since``), in this process or, with
+    ``stamps`` (``STAMPS``' alias), in any other: the entry's shared
+    stamps must still be the ones it was read with (``_still_stamped``).
+    So a revocation committed before a request arrived is never hidden from
+    it by an older read. A read that
     fails, or whose request is cancelled, leaves each waiting request to
     read for itself. A waiting request that is cancelled leaves the read
     running for the others.
@@ -1180,7 +1183,11 @@ async def read_once(key: Key, read: Read) -> Entry | None:
     if flight is not None and flight.started == started:
         succeeded, entry = await asyncio.shield(flight.done)
         if succeeded and (
-            entry is None or not principal_cache.changed_since(started, entry.targets)
+            entry is None
+            or (
+                await _still_stamped(entry, stamps)
+                and not principal_cache.changed_since(started, entry.targets)
+            )
         ):
             observe_principals(key[0], "coalesced")
             return entry
@@ -1196,6 +1203,26 @@ async def read_once(key: Key, read: Read) -> Entry | None:
             del flights[key]
     flight.done.set_result((True, entry))
     return entry
+
+
+async def _still_stamped(entry: Entry, stamps: str | None) -> bool:
+    """Whether another request's read may serve this one, by the shared stamps.
+
+    Without ``STAMPS``, yes. With it, only if the stamps of ``ALL`` and the
+    entry's targets are still those it was read with (SEC-10a-1): another
+    process may have revoked it, and stamped that, while it was read. A read
+    with no stamps (the cache failed then), or a cache that fails now,
+    confirms nothing: the request reads for itself. One round trip, where
+    reading for itself takes the same and two queries.
+    """
+    if stamps is None:
+        return True
+    if entry.stamps is None:
+        return False
+    try:
+        return await read_stamps(stamps, entry.targets) == entry.stamps
+    except CacheError:
+        return False
 
 
 def remember(entry: Entry, config: PrincipalCacheSettings) -> None:

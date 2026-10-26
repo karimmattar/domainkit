@@ -8,7 +8,6 @@ the next caller a session as it was made. Pre-ping costs one round trip.
 """
 
 import asyncio
-import contextlib
 import os
 import re
 import sys
@@ -18,6 +17,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import anyio
 import pytest
 from sqlalchemy import delete, func, insert, make_url, select, text, update
 from sqlalchemy.engine import Engine
@@ -44,7 +44,6 @@ from domainkit.db.connections import (
     SNAPSHOT_BEGIN,
     ReadOnlySession,
     _closed,
-    _keep_cancelled,
     _plain_select,
     _reset_session,
     _sent,
@@ -558,96 +557,127 @@ async def test_a_failing_read_under_a_deadline_raises_its_own_error(
     assert connects.count == 0  # The same connection, kept: no retry.
 
 
-class Invalidations:
-    """Count the connections every pool discards while entered."""
+async def slow_proxy(port: int, delay: dict[str, float]) -> asyncio.Server:
+    """A TCP proxy to PostgreSQL that holds the server's answers ``delay["s"]``."""
 
-    def __init__(self) -> None:
-        """Start at none."""
-        self.count = 0
-        self._watch = contextlib.ExitStack()
+    async def pipe(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter, slow: bool
+    ) -> None:
+        try:
+            while data := await reader.read(65536):
+                if slow and delay["s"]:
+                    await asyncio.sleep(delay["s"])
+                writer.write(data)
+                await writer.drain()
+        except ConnectionError:
+            pass
+        finally:
+            writer.close()
 
-    def _invalidated(self, *args: object) -> None:
-        self.count += 1
+    tasks: set[asyncio.Task[None]] = set()
 
-    def __enter__(self) -> "Invalidations":
-        """Start counting."""
-        from sqlalchemy.pool import Pool
+    async def handle(
+        client_r: asyncio.StreamReader, client_w: asyncio.StreamWriter
+    ) -> None:
+        server_r, server_w = await asyncio.open_connection("127.0.0.1", port)
+        for task in (
+            asyncio.create_task(pipe(client_r, server_w, False)),
+            asyncio.create_task(pipe(server_r, client_w, True)),
+        ):
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
 
-        self._watch.enter_context(watching(Pool, "invalidate", self._invalidated))
-        return self
+    return await asyncio.start_server(handle, "127.0.0.1", 0)
 
-    def __exit__(self, *exc: object) -> None:
-        """Stop counting."""
-        self._watch.close()
+
+async def idle_in_transaction(database_url: str) -> int:
+    """Other connections to the test's database left inside a transaction."""
+    admin = create_async_engine(database_url, isolation_level="AUTOCOMMIT")
+    try:
+        async with admin.connect() as connection:
+            return int(
+                await connection.scalar(
+                    text(
+                        "SELECT count(*) FROM pg_stat_activity WHERE datname = "
+                        "current_database() AND pid <> pg_backend_pid() "
+                        "AND state LIKE 'idle in transaction%'"
+                    )
+                )
+                or 0
+            )
+    finally:
+        await admin.dispose()
 
 
 @asyncpg_only
-@pytest.mark.parametrize("reads", [Reads.STATEMENTS, Reads.TRANSACTION, None])
-async def test_a_statement_the_deadline_cuts_off_keeps_its_connection(
-    tables: None, database: str, reads: Reads | None
+async def test_a_deadline_during_begin_leaves_no_transaction_behind(
+    tables: None, database: str
 ) -> None:
-    """Cancelled mid-statement: stopped on the server, the connection kept (CONC-08).
+    """The deadline fires while BEGIN's answer travels: nothing stale is reused.
 
-    Each of five reads is cut off at its deadline; the pool keeps its one
-    connection, the server runs nothing after, and the next read works.
+    SEC-10b-1 of the 0.10 review: a connection kept after such a cut stayed
+    inside a server transaction nobody tracked, and the next request's
+    COMMIT only released a savepoint in it: its write was lost.
     """
-    async with GadgetsUnitOfWork(reads=reads) as uow:
-        await uow.gadgets.filter()  # The pool's connection is made.
-
-    async def cut_off() -> None:
-        async with deadlines.timeout(0.2), GadgetsUnitOfWork(reads=reads) as uow:
-            await uow.gadgets.filter()
-            await uow.session.execute(text("SELECT pg_sleep(30)"))
-
-    with Connects() as connects, Invalidations() as invalidations:
-        for _ in range(5):
-            with pytest.raises(TimeoutError):
-                await cut_off()
-        async with GadgetsUnitOfWork(reads=reads) as uow:
-            assert [gadget.name for gadget in await uow.gadgets.filter()] == ["first"]
-    assert (connects.count, invalidations.count) == (0, 0)
-    assert await busy_backends(database) == 0
-
-
-def test_only_cancelled_statements_on_open_connections_are_kept() -> None:
-    """Any other error, or a connection gone or closing, is judged as before."""
-
-    def judged(
-        error: BaseException,
-        connection: Any,  # noqa: ANN401 - a stand-in.
-        driver: str = "asyncpg",
-    ) -> bool:
-        context = SimpleNamespace(
-            original_exception=error,
-            connection=connection,
-            is_disconnect=True,
-            dialect=SimpleNamespace(driver=driver),
+    url = make_url(database)
+    delay = {"s": 0.0}
+    proxy = await slow_proxy(url.port or 5432, delay)
+    port = proxy.sockets[0].getsockname()[1]
+    engine = create_engine(
+        DatabaseConfig.model_validate(
+            {
+                "URL": url.set(host="127.0.0.1", port=port).render_as_string(
+                    hide_password=False
+                ),
+                "POOL_SIZE": 1,
+                "MAX_OVERFLOW": 0,
+                "POOL_PRE_PING": False,  # The deadline lands on BEGIN, not a ping.
+            }
         )
-        _keep_cancelled(context)  # type: ignore[arg-type]
-        return bool(context.is_disconnect)
+    )
+    try:
+        async with engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+        delay["s"] = 0.5
+        with pytest.raises(TimeoutError):
+            async with deadlines.timeout(0.2), engine.begin() as connection:
+                await connection.execute(text("SELECT 1"))
+        await asyncio.sleep(1.0)  # The delayed answers arrive meanwhile.
+        delay["s"] = 0.0
+        async with AsyncSession(engine) as session:
+            session.add(make_gadget("kept"))
+            await session.commit()  # Acknowledged: it must have committed.
+        assert await idle_in_transaction(database) == 0
+        await engine.dispose()
+        assert sorted(await names()) == ["first", "kept"]
+    finally:
+        await engine.dispose()
+        proxy.close()
 
-    def connection(*, invalidated: bool = False, closed: bool = False) -> Any:  # noqa: ANN401
-        driver = SimpleNamespace(is_closed=lambda: closed)
-        return SimpleNamespace(
-            invalidated=invalidated,
-            closed=False,
-            connection=SimpleNamespace(driver_connection=driver),
+
+@asyncpg_only
+async def test_a_statement_an_anyio_scope_cuts_off_leaves_the_next_request_working(
+    tables: None, database: str
+) -> None:
+    """Cancelled again during its rollback: the connection is not reused as it is.
+
+    SEC-10b-1, under an anyio cancel scope (Starlette's task groups).
+    """
+    engine = create_engine(
+        DatabaseConfig.model_validate(
+            {"URL": database, "POOL_SIZE": 1, "MAX_OVERFLOW": 0}
         )
-
-    cancelled = asyncio.CancelledError()
-    assert not judged(cancelled, connection())
-    assert judged(cancelled, connection(), driver="psycopg")
-    assert judged(KeyboardInterrupt(), connection())
-    assert judged(RuntimeError("lost"), connection())
-    assert judged(cancelled, None)
-    assert judged(cancelled, connection(invalidated=True))
-    assert judged(cancelled, connection(closed=True))
-    gone = connection()
-    gone.closed = True
-    assert judged(cancelled, gone)
-    unattached = connection()
-    unattached.connection.driver_connection = None
-    assert judged(cancelled, unattached)
+    )
+    try:
+        with anyio.move_on_after(0.3):
+            async with engine.begin() as connection:
+                await connection.execute(text("SELECT pg_sleep(5)"))
+        for _ in range(2):
+            async with engine.begin() as connection:
+                assert await connection.scalar(text("SELECT 1")) == 1
+        assert await idle_in_transaction(database) == 0
+    finally:
+        await engine.dispose()
 
 
 # Connections the server closed --------------------------------------------------------

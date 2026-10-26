@@ -27,6 +27,7 @@ from domainkit.conf import override_settings
 from domainkit.http import get_asgi_application
 from domainkit.http.routing import (
     RouteIndex,
+    Routes,
     first_segment,
     flatten_routes,
     index_routes,
@@ -384,3 +385,147 @@ def test_an_index_made_by_hand_serves_without_fastapis_hook(
     app.router.middleware_stack = RouteIndex(app.router)
 
     assert served(app, "/items/3", "GET")[:2] == (200, "/items/{id} {'id': '3'}")
+
+
+def test_a_route_replaced_in_place_is_served_as_replaced(use_auth: UseAuth) -> None:
+    """Hardened after the build, same length: the new route answers (SEC-10a-6)."""
+    use_auth()
+    from fastapi import Depends
+
+    from domainkit.http.access import Public, Require
+    from domainkit_tests.test_scoped_credentials import HeaderAuthentication
+
+    def build(indexed: bool) -> FastAPI:
+        app = FastAPI()
+
+        @app.get("/reports", dependencies=[Public])
+        async def reports() -> dict[str, str]:
+            return {"secret": "report"}
+
+        if indexed:
+            assert index_routes(app.router)
+        place = next(
+            n
+            for n, r in enumerate(app.router.routes)
+            if getattr(r, "path", "") == "/reports"
+        )
+        app.router.routes[place] = APIRoute(
+            "/reports", reports, methods=["GET"], dependencies=[Depends(Require())]
+        )
+        app.add_middleware(HeaderAuthentication)
+        return app
+
+    assert served(build(indexed=True), "/reports", "GET")[0] == 401
+    assert served(build(indexed=False), "/reports", "GET")[0] == 401
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda routes, route: routes.__setitem__(0, route),
+        lambda routes, route: routes.__setitem__(slice(0, 1), [route]),
+        lambda routes, route: routes.__delitem__(0),
+        lambda routes, route: routes.__iadd__([route]),
+        lambda routes, route: routes.__imul__(2),
+        lambda routes, route: routes.append(route),
+        lambda routes, route: routes.extend([route]),
+        lambda routes, route: routes.insert(0, route),
+        lambda routes, route: routes.pop(),
+        lambda routes, route: routes.remove(routes[0]),
+        lambda routes, route: routes.clear(),
+        lambda routes, route: routes.sort(key=lambda each: each.path),
+        lambda routes, route: routes.reverse(),
+    ],
+)
+def test_every_change_to_the_routes_is_counted(change: Any) -> None:  # noqa: ANN401
+    """Any list method that changes the routes moves their version."""
+    router = APIRouter()
+    router.routes.extend([APIRoute("/b", answer), APIRoute("/a", answer)])
+    index = RouteIndex(router)
+    routes = router.routes
+    assert isinstance(routes, Routes)
+    before = routes.version
+
+    change(routes, APIRoute("/c", answer))
+
+    assert routes.version == before + 1
+    index.candidates(scope_of("/a"))
+    assert index._index.version == routes.version
+
+
+def test_a_new_list_given_to_the_router_is_indexed() -> None:
+    """``router.routes = [...]``: indexed, and counted from then on."""
+    router = APIRouter()
+    index = RouteIndex(router)
+    router.routes = [APIRoute("/late", answer)]
+
+    assert list(index.candidates(scope_of("/late"))) == router.routes
+    assert isinstance(router.routes, Routes)
+
+
+async def asgi(app: Any, path: str, method: str) -> tuple[int, bytes]:  # noqa: ANN401
+    """Send ``method path`` straight to ``app``, in this task; status and body."""
+    sent: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict[str, Any]) -> None:
+        sent.append(message)
+
+    await app(
+        {**scope_of(path, method), "query_string": b"", "headers": []}, receive, send
+    )
+    body = b"".join(
+        m.get("body", b"") for m in sent if m["type"] == "http.response.body"
+    )
+    return sent[0]["status"], body
+
+
+@pytest.mark.anyio
+async def test_another_method_on_a_starlette_route_is_a_partial_match() -> None:
+    """A Starlette route answers 405 through the index as without it."""
+    app = FastAPI()
+    app.router.routes.append(Route("/items/{id}", answer, methods=["GET"]))
+    plain = FastAPI()
+    plain.router.routes.extend(app.router.routes)
+    assert index_routes(app.router)
+
+    assert await asgi(app, "/items/3", "POST") == await asgi(plain, "/items/3", "POST")
+    assert (await asgi(app, "/items/3", "POST"))[0] == 405
+
+
+@pytest.mark.anyio
+async def test_an_indexed_application_mounted_in_another_keeps_the_outer_router() -> (
+    None
+):
+    """``scope["router"]`` set above is left as it is, as FastAPI leaves it."""
+    inner = FastAPI()
+    seen: list[object] = []
+
+    async def router_of(request: Request) -> PlainTextResponse:
+        seen.append(request.scope["router"])
+        return PlainTextResponse("ok")
+
+    inner.router.routes.append(APIRoute("/here", router_of))
+    assert index_routes(inner.router)
+    outer = FastAPI()
+    outer.mount("/inner", inner)
+
+    assert (await asgi(outer, "/inner/here", "GET"))[0] == 200
+    assert seen == [outer.router]
+
+
+@pytest.mark.anyio
+async def test_paths_no_route_matches_are_left_to_the_router() -> None:
+    """A redirect to the slashed path, and a 404, as FastAPI answers them."""
+    app = FastAPI()
+    app.router.routes.append(APIRoute("/items/", answer))
+    plain = FastAPI()
+    plain.router.routes.extend(app.router.routes)
+    assert index_routes(app.router)
+
+    for path in ("/items", "/nothing"):
+        assert await asgi(app, path, "GET") == await asgi(plain, path, "GET")
+    assert (await asgi(app, "/items", "GET"))[0] == 307
+    assert (await asgi(app, "/nothing", "GET"))[0] == 404
