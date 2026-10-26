@@ -142,8 +142,13 @@ this unlikely with random keys, but not impossible with predictable ones
 (counters, order numbers). Where keyed routes serve anonymous callers
 (sign-up, a contact form, a payment link before login), set `ANONYMOUS =
 "refuse"`: such a key is answered 400 `idempotency_key_needs_caller`, and
-the client authenticates or sends the request without it. The default,
-`"per-address"`, keeps the behaviour of 0.9. Add `IdempotencyMiddleware` last in `MIDDLEWARE`: it reads whole
+the client authenticates or sends the request without it. A `Cookie`
+names a caller only if it carries one of `SESSION_COOKIES` (none by
+default: auth's sessions set the actor): a consent or locale cookie, which
+many callers send alike, does not (SEC-10b-7). The default,
+`"per-address"`, keeps the behaviour of 0.9; it is deprecated: 0.11
+defaults to `"refuse"`, and staging and production warn
+(`idempotency.W002`) until `ANONYMOUS` is set, to either value (DATA-09). Add `IdempotencyMiddleware` last in `MIDDLEWARE`: it reads whole
 bodies, which `RequestBodyLimitMiddleware` has already bounded. With
 messaging installed, expired keys are purged hourly; without it, a new
 key deletes up to 100 expired ones once it has claimed its own, skipping
@@ -177,5 +182,6 @@ each request sent, for about 1,850 fewer Python calls a keyed write.
 | `METHODS` | `POST`, `PATCH` | Methods that honour the header; others ignore it. |
 | `MAX_RESPONSE_BYTES` | `1048576` | Larger responses are passed through but not stored. |
 | `CREDENTIAL_HEADERS` | `authorization`, `proxy-authorization`, `cookie`, `x-api-key` | Headers that tell callers without an actor apart. |
-| `ANONYMOUS` | `"per-address"` | Keys from callers with no actor and no credential header: `"per-address"` scopes them to the client address, which callers behind one NAT share; `"refuse"` answers 400 `idempotency_key_needs_caller`. |
+| `ANONYMOUS` | `"per-address"` | Keys from callers with no actor and no credential header: `"per-address"` scopes them to the client address, which callers behind one NAT share; `"refuse"` answers 400 `idempotency_key_needs_caller`. Deprecated default: 0.11 defaults to `"refuse"`, and staging and production warn while it is unset (`idempotency.W002`): set `"per-address"` to keep today's behaviour, or `"refuse"` now (DATA-09). |
+| `SESSION_COOKIES` | `()` | For `ANONYMOUS = "refuse"`: the cookies that name a caller the actor does not (a session another layer reads), at most 16 names. Any other cookie names nobody (SEC-10b-7). |
 

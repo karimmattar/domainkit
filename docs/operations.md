@@ -194,7 +194,8 @@ forked with `LedgerTampered`: every call fails and `/ready` answers 503
 until someone looks ([runbook.md](runbook.md#the-ledgers-state-goes-back)).
 
 `auditverify --export FILE` writes signed checkpoints of every trail
-(Ed25519, `AUDIT.CHECKPOINT_KEY`) for an auditor, and `auditverify
+(Ed25519, `AUDIT.CHECKPOINT_KEY`, set only where it and `auditprune` run;
+the application verifies with `AUDIT.CHECKPOINT_PUBLIC_KEY`) for an auditor, and `auditverify
 --check-export FILE --public-key PEM` checks such a file offline, without
 the databases. `auditprune --keep-days DAYS` removes rows sealed before
 then: it verifies the chain up to the newest anchored seal before the cut,

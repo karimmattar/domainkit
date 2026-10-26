@@ -207,6 +207,12 @@ and a status.
   answers counts by kind, recorded as `privacy.copies_erased` (anything
   but lower-case kinds and whole numbers is refused, since it would go
   into the trail); the export's answer goes under `copies` (DATA-02).
+  A copy may hold others' personal data, so the export gives what it holds
+  about the subject alone: a webhook body's and an outbox message's fields
+  whose `Personal(of=...)` names them (a body `expose(payload=...)`
+  picked is withheld), and a kept response's body only if they were its
+  caller (else withheld); `domainkit.ddd.fields_about` picks
+  them (SEC-10b-4).
 - Webhook subscriptions can have an owner, and a self-service API lets a
   user manage its own: `domainkit.contrib.webhooks.owned.router` (mount
   it next to your users' routes) lists, creates, reads, changes, rotates,
@@ -216,7 +222,9 @@ and a status.
   subscription receives only the events `expose(..., owner=...)` gives
   its owner, never one exposed without an owner; staff's subscriptions,
   which have none, still receive every event they want. An owner may have
-  `WEBHOOKS.MAX_SUBSCRIPTIONS_PER_OWNER` (10; 1 to 1000), erasing an
+  `WEBHOOKS.MAX_SUBSCRIPTIONS_PER_OWNER` (10; 1 to 1000; counted after
+  the insert under a lock of the owner, so concurrent creates cannot
+  pass it together: SEC-10b-6), erasing an
   owner deletes theirs, and the admin API shows each one's `owner`. The
   subscriptions table has a new `owner` column: run `makemigrations` and
   `migrate` (DATA-11).
@@ -227,15 +235,25 @@ and a status.
   send the same key and body is replayed the first's response, and a
   different body learns the key is taken. `"refuse"` answers it 400
   `idempotency_key_needs_caller` and runs nothing; the default keeps the
-  behaviour of 0.9 (DATA-09).
+  behaviour of 0.9 (DATA-09). For `"refuse"`, a `Cookie` names a caller
+  only if it carries one of the new `IDEMPOTENCY.SESSION_COOKIES` (none by
+  default: auth's sessions set the actor), so a consent or locale cookie
+  many callers send alike is refused too (SEC-10b-7).
 - Retention that keeps the audit chain: `auditprune --keep-days DAYS`
   deletes the rows sealed before then (with `AUDIT.LEDGER`, below the
-  newest anchored seal) below a checkpoint signed with the new
-  `AUDIT.CHECKPOINT_KEY` (an Ed25519 key in PEM; the new `audit` extra
-  installs cryptography), once the chain up to it verifies, and
-  `auditverify` starts the chain from the checkpoint: a pruned trail
-  still verifies, and one tampered with, or a checkpoint forged to cover
-  a deletion, still fails. On PostgreSQL it runs as the tables' owner
+  newest anchored seal), never within the new `AUDIT.MIN_RETENTION`
+  (default 30 days), below a checkpoint signed with the new
+  `AUDIT.CHECKPOINT_KEY` (an Ed25519 key in PEM, read by `auditprune` and
+  `auditverify --export` alone; the new `audit` extra installs
+  cryptography) and recorded on the ledger, once the chain up to it
+  verifies, and `auditverify` starts the chain from the checkpoint,
+  checked with the new `AUDIT.CHECKPOINT_PUBLIC_KEY`: a pruned trail
+  still verifies, and one tampered with, or a checkpoint stored to cover
+  a deletion, still fails. Only a checkpoint signed for pruning covers a
+  gap (an export's head checkpoint says `"kind": "export"`), one that
+  follows the checkpoint before it, made `MIN_RETENTION` after its seal
+  and, with a ledger, recorded there and its seal anchored that long
+  before (SEC-10b-2, SEC-10b-3). On PostgreSQL it runs as the tables' owner
   (`MIGRATION_URL`), the `protect()` triggers off for one batch of 1,000
   at a time. `auditverify --export FILE` writes signed checkpoints of
   every trail that verifies, and `--check-export FILE --public-key PEM`
@@ -249,7 +267,12 @@ and a status.
   `domainkit.ledger`. With `domainkit.contrib.audit` installed, ledgers
   keep it in `AUDIT.DATABASE` (`domainkit_ledger_states`: run
   `makemigrations` and `migrate`); staging and production warn when
-  evidence is installed without audit (DATA-05).
+  evidence is installed without audit (DATA-05). Replicas share it: the
+  readiness probe reads it again, and a save is a compare-and-set
+  (`StateStore.save(..., expected=...)`) over the state the ledger last
+  read or saved there; a later one another replica saved is proven to lie
+  on one chain with its own first, so a replica writing on a rolled-back
+  or forked server is refused instead of saving the fork (SEC-10b-5).
 
 ### Changed
 
@@ -506,6 +529,13 @@ and a status.
   naming the route, refused in 0.11. Add `HasScope(...)`, a permission
   rule, or `AllowScoped()` to the route, or set
   `SCOPED_CREDENTIALS = "refuse"` now (AUTH-01).
+- `IDEMPOTENCY.ANONYMOUS` left unset, so `"per-address"`: 0.11 defaults
+  to `"refuse"`. Staging and production warn (`idempotency.W002`, which
+  names the leak: anonymous callers behind one address share keys) until
+  it is set: `"per-address"` keeps today's behaviour, `"refuse"` takes
+  0.11's now. Flipping the default in 0.10 made every anonymous keyed
+  flow a 400 (63 failures and 8 errors in the 1,306 idempotency tests),
+  service-to-service calls behind a gateway or mTLS among them (DATA-09).
 - `domainkit.contrib.evidence.model`, the old name of the evidence models
   module, warns with `DomainkitDeprecationWarning` for each name taken from
   it; import them from `domainkit.contrib.evidence` (or its `models`).

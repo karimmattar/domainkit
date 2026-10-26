@@ -12,8 +12,11 @@ longer matches it.
 ``verify`` reports changed and missing rows, links that do not follow,
 anchors the chain no longer matches, seals left unanchored, and rows left
 unsealed. A chain pruned below a signed checkpoint (``checkpoints``,
-``pruning``) starts from it instead of the genesis; a checkpoint whose
-signature does not verify is reported, and starts nothing.
+``pruning``) starts from it instead of the genesis. Only a checkpoint
+signed for pruning starts anything, and only one that follows the
+checkpoint before it, was made ``AUDIT.MIN_RETENTION`` after its seal and,
+with a ledger, is recorded there, its seal anchored that long before; any
+other is reported, and starts nothing (SEC-10b-2, SEC-10b-3).
 
 Rows are sealed after they commit, by the worker every ``AUDIT.SEAL_EVERY``
 or by ``auditseal``, so a row can be rewritten unnoticed until it is sealed
@@ -52,7 +55,7 @@ from domainkit.apps import registry
 from domainkit.db import UTCDateTime, connections
 from domainkit.ledger import Ledger, LedgerChanged, LedgerKeyNotFound, ledgers
 
-from .checkpoints import Checkpoint, configured_public_key, stored
+from .checkpoints import Checkpoint, Stored, configured_public_key, stored
 from .personal import audited_databases, prepare_anonymous_keys
 from .settings import AuditSettings
 from .tables import audit_log, audit_seals
@@ -178,8 +181,11 @@ class Report:
     pruned: int = 0
     """Seals pruned below checkpoints that verified (``auditprune``)."""
     forged: list[int] = field(default_factory=list)
-    """Checkpoints, by seal, whose signature does not verify under
-    ``AUDIT.CHECKPOINT_KEY`` (or no key is set): they start nothing."""
+    """Checkpoints, by seal, that start nothing: the signature does not
+    verify under ``AUDIT.CHECKPOINT_PUBLIC_KEY`` (or no key is set), it was
+    not signed for pruning, it does not follow the checkpoint before it,
+    it came sooner than ``AUDIT.MIN_RETENTION`` after its seal, or (with a
+    ledger) the ledger does not record it."""
 
     @property
     def intact(self) -> bool:
@@ -216,6 +222,22 @@ def anchor_key(database: str, namespace: str | None = None) -> bytes:
     if namespace is None:
         return f"domainkit/audit/{database}".encode()
     return f"domainkit/audit/{namespace}/{database}".encode()
+
+
+def pruned_key(database: str, namespace: str | None = None) -> bytes:
+    """The ledger key recording ``database``'s prunes, one revision each.
+
+    ``domainkit/audit-pruned/<namespace>/<database>`` (without a namespace,
+    ``domainkit/audit-pruned/<database>``): apart from every anchor key.
+    """
+    if namespace is None:
+        return f"domainkit/audit-pruned/{database}".encode()
+    return f"domainkit/audit-pruned/{namespace}/{database}".encode()
+
+
+def pruned_record(document: str) -> bytes:
+    """The ledger value recording a prune: the SHA-256 of its checkpoint's document."""
+    return _canonical({"checkpoint": hashlib.sha256(document.encode()).hexdigest()})
 
 
 def anchor_keys(database: str) -> tuple[bytes, ...]:
@@ -369,14 +391,16 @@ async def verify(
     ``AUDIT.ANCHOR_EVERY``) and ``LOOKBACK`` ago must be anchored.
 
     A gap in the chain is accepted only where a checkpoint that verifies
-    ends it: the seal after the gap must follow the checkpoint's link.
+    (``starting_points``) ends it: the seal after the gap must follow the
+    checkpoint's link.
     Anchors of pruned seals are not checked, except one at a checkpoint,
     which must be its link. ``upto`` stops at that seal (for ``auditprune``:
     nothing after it is read, nor counted unsealed or unanchored).
     """
     now = now or clock.now()
     report = Report(database)
-    anchored = await _anchors(database, ledger) if ledger is not None else {}
+    history = await _history(database, ledger) if ledger is not None else []
+    anchored = _by_seq(history)
     report.anchors = len(anchored)
     newest_anchored = max(anchored, default=0)
     overdue = None  # Sealed before this, a seal must be anchored.
@@ -395,10 +419,9 @@ async def verify(
         query = query.where(audit_seals.c.seq <= upto)
     async with connections.engine(database).connect() as connection:
         points = await stored(connection, database, public_key)
-        report.forged = [point.seq for point in points if point.checkpoint is None]
-        checkpoints = {
-            point.seq: point.checkpoint for point in points if point.checkpoint
-        }
+        checkpoints, report.forged = await starting_points(
+            database, points, ledger, history, now=now
+        )
         async for row in await connection.stream(query):
             seal_row = row._mapping
             report.sealed += 1
@@ -667,23 +690,126 @@ async def _unsealed(connection: AsyncConnection, now: datetime) -> int:
     return int(count or 0)
 
 
-async def _anchors(database: str, ledger: Ledger) -> dict[int, set[str]]:
-    """Every anchored head of ``database``: the links anchored for each number.
+async def starting_points(
+    database: str,
+    points: list[Stored],
+    ledger: Ledger | None,
+    history: list[Anchor],
+    *,
+    now: datetime,
+) -> tuple[dict[int, Checkpoint], list[int]]:
+    """Which stored checkpoints may start the chain after a gap; the seals of the rest.
 
-    Read from every key in ``anchor_keys``. A number anchored with two
-    links (under two keys) cannot match the chain at both.
+    One starts it if its signature verifies (``stored``), it was signed for
+    pruning, and it follows the one before that starts it (``previous``;
+    none for the first), so a head checkpoint handed out in an export, or
+    one slipped in out of order, vouches for no deletion (SEC-10b-2). Its
+    seal must be ``AUDIT.MIN_RETENTION`` older than it, and than ``now``:
+    its signed ``sealed_at`` says so and, with ``ledger``, so does the
+    anchor that first covered the seal (``history``, in ledger order), and
+    the ledger records it (``pruned_key``), so a checkpoint signed outside
+    ``auditprune`` starts nothing either (SEC-10b-3).
     """
-    anchors: dict[int, set[str]] = {}
+    floor = registry.settings(AuditSettings).MIN_RETENTION
+    recorded = None if ledger is None else await _recorded(database, ledger)
+    accepted: dict[int, Checkpoint] = {}
+    refused: list[int] = []
+    expected: tuple[int, str] | None = None
+    for point in points:
+        checkpoint = point.checkpoint
+        if (
+            checkpoint is None
+            or checkpoint.kind != "prune"
+            or checkpoint.previous != expected
+            or not _old_enough(
+                checkpoint,
+                point.document,
+                recorded,
+                history,
+                min(now, checkpoint.made_at) - floor,
+            )
+        ):
+            refused.append(point.seq)
+            continue
+        accepted[point.seq] = checkpoint
+        expected = (checkpoint.seq, checkpoint.link)
+    return accepted, refused
+
+
+def _old_enough(
+    checkpoint: Checkpoint,
+    document: str,
+    recorded: set[bytes] | None,
+    history: list[Anchor],
+    oldest: datetime,
+) -> bool:
+    """Whether ``checkpoint``'s seal was old enough to prune, as far as is known.
+
+    Sealed by ``oldest`` (the floor before ``now`` and before the
+    checkpoint's ``made_at``); with a ledger (``recorded`` is not None) the
+    ledger records the checkpoint's ``document``, and first anchored its
+    seal by then.
+    """
+    if checkpoint.sealed_at > oldest:
+        return False
+    if recorded is None:
+        return True
+    first = first_anchored(history, checkpoint.seq)
+    return pruned_record(document) in recorded and first is not None and first <= oldest
+
+
+def first_anchored(history: list[Anchor], seq: int) -> datetime | None:
+    """When seal ``seq`` was first anchored, on the ledger's word; None if never.
+
+    The first anchor, in ledger order, of a head at or after it. Its time
+    is the latest any anchor before it names: whoever can write the ledger
+    can append an anchor dated back, but not before what is already there.
+    """
+    latest: datetime | None = None
+    for written in history:
+        if latest is None or written.anchored_at > latest:
+            latest = written.anchored_at
+        if written.seq >= seq:
+            return latest
+    return None
+
+
+async def _recorded(database: str, ledger: Ledger) -> set[bytes]:
+    """Every prune the ledger records for ``database`` (``pruned_record`` values)."""
+    key = pruned_key(database, registry.settings(AuditSettings).NAMESPACE)
+    try:
+        latest = await ledger.read(key)
+    except LedgerKeyNotFound:
+        return set()
+    found = {latest.value}
+    for revision in range(1, latest.revision):
+        found.add((await ledger.read(key, revision)).value)
+    return found
+
+
+async def _history(database: str, ledger: Ledger) -> list[Anchor]:
+    """Every anchored head of ``database``, in ledger order.
+
+    Read from every key in ``anchor_keys``, merged by transaction.
+    """
+    written: list[tuple[int, Anchor]] = []
     for key in anchor_keys(database):
         try:
             latest = await ledger.read(key)
         except LedgerKeyNotFound:
             continue
         for revision in range(1, latest.revision):
-            written = Anchor.decode((await ledger.read(key, revision)).value)
-            anchors.setdefault(written.seq, set()).add(written.link)
-        newest = Anchor.decode(latest.value)
-        anchors.setdefault(newest.seq, set()).add(newest.link)
+            entry = await ledger.read(key, revision)
+            written.append((entry.transaction, Anchor.decode(entry.value)))
+        written.append((latest.transaction, Anchor.decode(latest.value)))
+    return [anchor for _, anchor in sorted(written, key=lambda pair: pair[0])]
+
+
+def _by_seq(history: list[Anchor]) -> dict[int, set[str]]:
+    """The links anchored for each number. One anchored with two cannot match both."""
+    anchors: dict[int, set[str]] = {}
+    for written in history:
+        anchors.setdefault(written.seq, set()).add(written.link)
     return anchors
 
 

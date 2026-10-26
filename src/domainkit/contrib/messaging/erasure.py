@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from domainkit.apps import registry
 from domainkit.db import connections
 from domainkit.db.routing import router
-from domainkit.ddd.personal import subjects_in
+from domainkit.ddd.personal import fields_about, subjects_in
 
 from .admin import blanked
 from .registry import get_task
@@ -41,15 +41,16 @@ def outboxes() -> tuple[str, ...]:
 
 def subjects_of(row: Row[Any], events: Mapping[str, type[Any]]) -> frozenset[str]:
     """Whom a message's arguments are about, by the markers of what it runs."""
+    holder = _holder(row, events)
+    return frozenset() if holder is None else subjects_in(holder, row.payload)
+
+
+def _holder(row: Row[Any], events: Mapping[str, type[Any]]) -> Any:  # noqa: ANN401
+    """What declares a message's arguments: its event's class, or its task."""
     if row.kind == "event":
-        event_type = events.get(row.headers.get("event_type", ""))
-        if event_type is None:
-            return frozenset()
-        return subjects_in(event_type, row.payload)
+        return events.get(row.headers.get("event_type", ""))
     spec = get_task(row.target)
-    if spec is None:
-        return frozenset()
-    return subjects_in(spec.function, row.payload)
+    return None if spec is None else spec.function
 
 
 async def _about(connection: AsyncConnection, subject: str) -> list[Row[Any]]:
@@ -82,8 +83,13 @@ async def erase_subject(subject: str) -> dict[str, int]:
 
 
 async def export_subject(subject: str) -> list[dict[str, Any]]:
-    """The messages holding arguments about ``subject``, with those arguments."""
+    """The messages holding arguments about ``subject``, with those arguments.
+
+    Only the arguments about ``subject`` (``fields_about``): the rest may
+    be about others (SEC-10b-4).
+    """
     found = []
+    events = _event_classes()
     for alias in outboxes():
         async with connections.engine(alias).connect() as connection:
             rows = await _about(connection, subject)
@@ -95,7 +101,7 @@ async def export_subject(subject: str) -> list[dict[str, Any]]:
                 "target": row.target,
                 "status": row.status,
                 "created_at": row.created_at.isoformat(),
-                "arguments": row.payload,
+                "arguments": fields_about(_holder(row, events), row.payload, subject),
             }
             for row in rows
         ]

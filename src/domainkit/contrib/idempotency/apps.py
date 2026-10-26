@@ -204,11 +204,33 @@ class IdempotencyConfig(DomainConfig):
         ]
 
     def deployment_warnings(self) -> list[str]:
-        """Keyed requests without a deadline, with ``REQUIRE_DEADLINE = False``.
+        """Keyed requests without a deadline, if allowed; anonymous ones by default.
 
-        By default ``check_application`` refuses them instead.
+        Without a deadline: only with ``REQUIRE_DEADLINE = False``, as by
+        default ``check_application`` refuses them instead.
+
+        ``ANONYMOUS`` left to its default, ``"per-address"``, which 0.11
+        changes to ``"refuse"``: anonymous callers behind one address share
+        keys. Set either value to choose (DATA-09).
         """
-        return [] if self.get_settings().REQUIRE_DEADLINE else self._missing_deadline()
+        if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
+            return []
+        config = self.get_settings()
+        warnings = [] if config.REQUIRE_DEADLINE else self._missing_deadline()
+        if "ANONYMOUS" not in config.model_fields_set:
+            warnings.append(
+                CheckMessage(
+                    "idempotency.W002",
+                    "IDEMPOTENCY.ANONYMOUS is not set: an Idempotency-Key sent with "
+                    "no actor and no credential is scoped to the caller's address, "
+                    "so anonymous callers behind one address (a NAT, a proxy) share "
+                    "keys, and one can be replayed another's response. 0.11 "
+                    'defaults to "refuse" (DATA-09).',
+                    'Set IDEMPOTENCY.ANONYMOUS = "per-address" to keep this '
+                    'behaviour, or "refuse" now.',
+                )
+            )
+        return warnings
 
     def _missing_deadline(self) -> list[str]:
         """Keyed requests without a deadline, in staging and production.

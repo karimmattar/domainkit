@@ -29,7 +29,7 @@ from domainkit import clock
 from domainkit.db import connections
 from domainkit.db.query import contains_text
 from domainkit.ddd import ConcurrentUpdate
-from domainkit.ddd.personal import tagged_with
+from domainkit.ddd.personal import SEPARATOR, tagged_with
 
 from .statements import holder
 from .tables import idempotency_keys
@@ -136,7 +136,14 @@ async def erase_subject(database: str, subject: str) -> int:
 
 
 async def export_subject(database: str, subject: str) -> list[dict[str, Any]]:
-    """The kept responses about ``subject``, oldest first."""
+    """The kept responses about ``subject``, oldest first.
+
+    A response is what its caller saw, which may hold others' personal
+    data: its body is given only when ``subject`` was the caller (the
+    actor, first in the tag), and withheld otherwise (``"body": None``,
+    ``"withheld": True``; SEC-10b-4).
+    """
+    actor = tagged_with(subject) + SEPARATOR
     async with connections.engine(database).connect() as connection:
         named = contains_text(
             idempotency_keys.c.subjects, tagged_with(subject), connection.dialect.name
@@ -147,6 +154,7 @@ async def export_subject(database: str, subject: str) -> list[dict[str, Any]]:
                     idempotency_keys.c.created_at,
                     idempotency_keys.c.status_code,
                     idempotency_keys.c.body,
+                    idempotency_keys.c.subjects,
                 )
                 .where(named, idempotency_keys.c.body.is_not(None))
                 .order_by(idempotency_keys.c.created_at)
@@ -156,7 +164,11 @@ async def export_subject(database: str, subject: str) -> list[dict[str, Any]]:
         {
             "created_at": row.created_at.isoformat(),
             "status_code": row.status_code,
-            "body": bytes(row.body).decode("utf-8", "replace"),
+            **(
+                {"body": bytes(row.body).decode("utf-8", "replace"), "withheld": False}
+                if row.subjects.startswith(actor)
+                else {"body": None, "withheld": True}
+            ),
         }
         for row in rows
     ]

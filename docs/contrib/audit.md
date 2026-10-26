@@ -208,27 +208,46 @@ openssl pkey -in audit-checkpoint.pem -pubout -out audit-checkpoint.pub
 ```
 
 ```python
-AUDIT = {..., "CHECKPOINT_KEY": env.str("AUDIT_CHECKPOINT_KEY")}  # the PEM
+# Every process: the public key, to verify.
+AUDIT = {..., "CHECKPOINT_PUBLIC_KEY": env.str("AUDIT_CHECKPOINT_PUBLIC_KEY")}
 ```
 
 ```bash
-python manage.py auditprune --keep-days 2555   # keep seven years
+# Only where auditprune (and auditverify --export) run: the private key too.
+AUDIT_CHECKPOINT_KEY="$(cat audit-checkpoint.pem)" \
+  python manage.py auditprune --keep-days 2555   # keep seven years
 ```
 
-For each audited database, `auditprune` finds the newest seal sealed
-more than `--keep-days` ago (with `AUDIT.LEDGER`, the newest anchored one,
-so the ledger vouches for it too; never the chain's head), checks the
-chain up to it as `auditverify` does, and refuses if anything there is
-wrong: pruning would hide it. It then stores a checkpoint of that seal,
-its number and link, signed with `AUDIT.CHECKPOINT_KEY` (Ed25519), in
+where those commands' settings read `"CHECKPOINT_KEY":
+env.str("AUDIT_CHECKPOINT_KEY", None)`. The application never reads the
+private key: whoever holds its settings cannot sign a checkpoint.
+
+`--keep-days` is at least `AUDIT.MIN_RETENTION` (30 days by default):
+a shorter one is refused. For each audited database, `auditprune` finds
+the newest seal sealed more than `--keep-days` ago (with `AUDIT.LEDGER`,
+the newest one anchored `MIN_RETENTION` ago, so the ledger vouches for it
+too; never the chain's head), checks the chain up to it as `auditverify`
+does, and refuses if anything there is wrong: pruning would hide it. It
+then signs a checkpoint of that seal, its number and link, with
+`AUDIT.CHECKPOINT_KEY` (Ed25519), records it on the ledger
+(`domainkit/audit-pruned/<NAMESPACE>/<alias>`), stores it in
 `domainkit_audit_checkpoints`, and deletes the rows and seals at and
 below it, the newest first, 1,000 a transaction. `auditverify` starts the
 chain from the checkpoint, so a pruned trail still verifies (it prints
 how many seals were pruned), and one tampered with still fails: a row
 changed, a seal removed, the checkpoint removed or changed, or a
-checkpoint forged to cover a deletion (signed with another key, or not
-at all) shows as a changed row, a broken link, or a checkpoint that does
-not verify. A run cut short leaves a gap the checkpoint ends, which
+checkpoint stored to cover a deletion shows as a changed row, a broken
+link, or a checkpoint that does not verify. A checkpoint covers a gap
+only if it verifies under `AUDIT.CHECKPOINT_PUBLIC_KEY`, was signed for
+pruning (the head checkpoint of an export says `"kind": "export"`, and
+covers nothing), follows the checkpoint before it, was made
+`MIN_RETENTION` after its seal and, with a ledger, is recorded there,
+its seal first anchored `MIN_RETENTION` before. So whoever writes the
+tables cannot delete the trail with a checkpoint handed out in an
+export, and whoever also stole the key and the ledger's credentials
+still cannot delete rows younger than `MIN_RETENTION` unseen
+(SEC-10b-2, SEC-10b-3). Raising `MIN_RETENTION` reports the prunes made
+below it before. A run cut short leaves a gap the checkpoint ends, which
 verifies; the next run finishes it. Each prune is recorded, with the seal
 and the rows deleted (`audit.pruned`), and so is the command
 (`operator.auditprune`).
@@ -332,7 +351,9 @@ def downgrade() -> None:
 | `SEAL_LATE_WINDOW` | 15 minutes | How far before the newest sealed row a run looks for rows that committed late, up to a day. A row later than this stays unsealed until `auditseal --late`, and `auditverify` reports it once it is a day old: keep it above your longest transaction plus the clock skew between hosts. |
 | `SEAL_BATCHES` | `100` | Batches of 1,000 rows one run seals at most (1 to 10,000); the rest wait for the next run. |
 | `SEAL_BACKLOG_WARNING` | `100000` | Rows a run leaves unsealed past which it logs a warning. |
-| `CHECKPOINT_KEY` | `None` | The Ed25519 private key, in PEM (at most 1,024 characters), that signs checkpoints: those `auditprune` prunes below, and those `auditverify --export` writes. Checked when the application starts. `None`: neither runs. |
+| `CHECKPOINT_KEY` | `None` | The Ed25519 private key, in PEM (at most 1,024 characters), that signs checkpoints: those `auditprune` prunes below, and those `auditverify --export` writes. Read by those two commands alone, so set it only where they run, not in the application's settings. `None`: neither runs. |
+| `CHECKPOINT_PUBLIC_KEY` | `None` | The public half of `CHECKPOINT_KEY`, in PEM (at most 1,024 characters): what `auditverify` checks stored checkpoints with. Checked when the application starts; signing refuses a private key it is not the half of. `None`: no stored checkpoint verifies, so a pruned trail does not. |
+| `MIN_RETENTION` | `30 days` | How old a seal must be before `auditprune` may cut there (1 day to 3,650 days): a shorter `--keep-days` is refused, and a checkpoint of a younger seal starts nothing in `auditverify`. |
 
 ## History
 

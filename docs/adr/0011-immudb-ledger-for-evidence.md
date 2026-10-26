@@ -98,8 +98,14 @@ server signs its old states too.
   which would make an unproven state the trusted one.
 - Each advance is saved to a `domainkit.ledger.trust.StateStore`, and a
   new ledger starts from it. With `domainkit.contrib.audit` installed the
-  store is a row per ledger (server and database) in `AUDIT.DATABASE`,
-  which only moves forward. A PoC compared it with a file on the host and
+  store is a row per ledger (server and database) in `AUDIT.DATABASE`.
+  A save is a compare-and-set over the state the ledger last read or
+  saved there; when another replica saved one since, a dual proof
+  (`verifiedTxById`, trusting the older of the two for that call) shows
+  both lie on one chain before the later is kept, and the probe reads the
+  row again each time. Without this a replica that loaded the row once
+  trusted a rolled-back server on its own word and saved the fork over
+  the row (SEC-10b-5, found in review before 0.10). A PoC compared it with a file on the host and
   with process memory, for a ledger at transaction 10 rolled back to 5:
   memory caught only a reconnect, a file also a restart on the same disk,
   and the database every case, a replaced container and another replica

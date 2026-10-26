@@ -1447,10 +1447,14 @@ def test_keyed_requests_without_any_deadline_are_refused_where_deployed(
     """
 
     def found(**options: object) -> tuple[list[str], list[str]]:
+        # ANONYMOUS chosen, so its own warning (idempotency.W002) stays out.
+        chosen = {"ANONYMOUS": "per-address", **options.pop("IDEMPOTENCY", {})}
         registry.clear()
         try:
             with override_settings(
-                INSTALLED_DOMAINS=["domainkit.contrib.idempotency", ALPHA], **options
+                INSTALLED_DOMAINS=["domainkit.contrib.idempotency", ALPHA],
+                IDEMPOTENCY=chosen,
+                **options,
             ):
                 setup()  # Workers and commands start: only the application refuses.
                 config = registry.get_domain_config("idempotency")
@@ -1478,6 +1482,47 @@ def test_keyed_requests_without_any_deadline_are_refused_where_deployed(
     assert getattr(only_warned, "id", None) == "idempotency.W001"
     assert found() == ([], [])
     assert elsewhere == ([], [])
+
+
+@pytest.mark.parametrize("anonymous", [None, "per-address", "refuse"])
+def test_the_anonymous_default_is_a_warning_where_deployed(
+    anonymous: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``ANONYMOUS`` left unset warns in staging and production (DATA-09).
+
+    0.11 defaults to ``"refuse"``; setting either value, even today's
+    default, is a choice, and silences it. Outside staging and
+    production, nothing.
+    """
+    chosen = {} if anonymous is None else {"ANONYMOUS": anonymous}
+
+    def warnings() -> list[str]:
+        registry.clear()
+        try:
+            with override_settings(
+                INSTALLED_DOMAINS=["domainkit.contrib.idempotency", ALPHA],
+                IDEMPOTENCY=chosen,
+            ):
+                setup()
+                return registry.get_domain_config("idempotency").deployment_warnings()
+        finally:
+            registry.clear()
+
+    elsewhere = warnings()
+    monkeypatch.setattr(idempotency_apps, "DEPLOYED_ENVIRONMENTS", {"test"})
+    deployed = warnings()
+
+    assert elsewhere == []
+    if anonymous is not None:
+        assert deployed == []
+        return
+    (warning,) = deployed
+    assert warning.id == "idempotency.W002"  # type: ignore[attr-defined]
+    assert "anonymous callers behind one address" in warning
+    assert '0.11 defaults to "refuse"' in warning
+    assert 'ANONYMOUS = "per-address" to keep this behaviour, or "refuse" now' in (
+        warning.hint  # type: ignore[attr-defined]
+    )
 
 
 def test_a_key_released_while_claimed_is_in_progress(

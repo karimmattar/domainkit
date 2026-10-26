@@ -10,6 +10,13 @@ and saves it to a ``StateStore`` each time it advances; on connecting it
 loads it, and refuses a server whose state is older (``LedgerRolledBack``)
 or differs at the same transaction.
 
+Replicas share the store. A save replaces only the state the saver last
+read or saved there (compare-and-set): when another replica moved it on
+meanwhile, the saver proves the two states lie on one chain first, so a
+replica that kept writing on a rolled-back or forked server is refused,
+and never overwrites what the others proved (SEC-10b-5). The readiness
+probe reads the store too, and starts from a later state found there.
+
 Without a store registered, each ledger keeps its state in memory: a
 reconnect keeps it, a restart does not. ``domainkit.contrib.audit``
 registers one that keeps it in ``AUDIT.DATABASE``, shared by every process
@@ -52,6 +59,13 @@ class TrustedState:
     public_key: bytes = field(default=b"", repr=False)
 
 
+def same(first: TrustedState | None, second: TrustedState | None) -> bool:
+    """Whether two kept states are one: the same transaction and digest (or none)."""
+    if first is None or second is None:
+        return first is second
+    return (first.transaction, first.digest) == (second.transaction, second.digest)
+
+
 class StateStore(ABC):
     """Where ledgers keep the newest state they verified, by ledger."""
 
@@ -60,11 +74,16 @@ class StateStore(ABC):
         """The state kept for ``ledger``, if any."""
 
     @abstractmethod
-    async def save(self, ledger: str, state: TrustedState) -> None:
-        """Keep ``state`` for ``ledger``, unless a later one is kept already.
+    async def save(
+        self, ledger: str, state: TrustedState, *, expected: TrustedState | None
+    ) -> bool:
+        """Keep ``state`` for ``ledger`` if ``expected`` is kept; whether it was.
 
-        Never moves back: one client saving an older state than another
-        saved keeps the later one.
+        Compare-and-set, in one step: ``expected`` is the state the saver
+        last read or saved (None: nothing kept), the one it proved
+        ``state`` from (``same``). When another saver changed it, nothing
+        is written: the saver loads what is kept, and proves its state and
+        that one lie on one chain before it tries again.
         """
 
 
@@ -81,12 +100,15 @@ class MemoryStateStore(StateStore):
         with self._lock:
             return self._states.get(ledger)
 
-    async def save(self, ledger: str, state: TrustedState) -> None:
-        """Keep ``state`` unless a later one is kept."""
+    async def save(
+        self, ledger: str, state: TrustedState, *, expected: TrustedState | None
+    ) -> bool:
+        """Keep ``state`` if ``expected`` is kept (``StateStore.save``)."""
         with self._lock:
-            kept = self._states.get(ledger)
-            if kept is None or state.transaction > kept.transaction:
-                self._states[ledger] = state
+            if not same(self._states.get(ledger), expected):
+                return False
+            self._states[ledger] = state
+            return True
 
 
 _registered: tuple[int, StateStore | None] = (-1, None)

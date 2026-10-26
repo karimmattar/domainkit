@@ -73,6 +73,7 @@ it.
 | `Query` from `domainkit.ddd.query` (named `Selection` since 0.9.2) | `domainkit.ddd.Selection` | 0.10 |
 | `domainkit.contrib.evidence.model` | `domainkit.contrib.evidence` (or its `models`) | 0.10 |
 | Credentials limited to scopes passing a route that declares no rule that checks scopes (`SCOPED_CREDENTIALS = "warn"`, the default) | `HasScope(...)`, a permission rule, or `AllowScoped()` on the route; 0.11 refuses them (`"refuse"`) | 0.10 |
+| `IDEMPOTENCY.ANONYMOUS` left unset (`"per-address"`; `idempotency.W002` in staging and production) | `"per-address"` set explicitly to keep it, or `"refuse"`, 0.11's default | 0.10 |
 
 To find deprecated uses before upgrading, make the warning an error in the
 project's pytest settings:

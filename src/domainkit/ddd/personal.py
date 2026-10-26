@@ -152,6 +152,25 @@ def subjects_in(
     return _subjects(personal_fields(cast(type, holder)), values.get)
 
 
+def fields_about(
+    holder: type | Callable[..., object], values: Mapping[str, object], subject: str
+) -> dict[str, object]:
+    """What ``values`` hold about ``subject``, and about nobody else.
+
+    Each ``Personal`` field of ``holder`` (as for ``subjects_in``) whose
+    ``of`` value names ``subject``, with that ``of`` field. A copy exported
+    to a person (``privacy export``) gives this, not the whole copy, which
+    may hold others' personal data, or anything else (SEC-10b-4).
+    """
+    about: dict[str, object] = {}
+    for name, marker in personal_fields(cast(type, holder)).items():
+        of = values.get(marker.of)
+        if name in values and of is not None and str(of) == subject:
+            about[marker.of] = of
+            about[name] = values[name]
+    return about
+
+
 def _subjects(
     fields: Mapping[str, Personal], value: Callable[[str], object]
 ) -> frozenset[str]:

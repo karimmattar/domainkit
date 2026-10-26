@@ -8,21 +8,28 @@ the database, the ledger, or the operator's credentials. ADR 0082 fixes
 the format::
 
     {"database": "default", "format": "domainkit.audit.checkpoint/1",
-     "key_id": "3f2a9c...", "link": "<64 hex>", "made_at": "2026-...",
-     "namespace": "acme-prod", "previous": {"link": "...", "seq": 1000},
-     "sealed_at": "2026-...", "seq": 1234}
+     "key_id": "3f2a9c...", "kind": "prune", "link": "<64 hex>",
+     "made_at": "2026-...", "namespace": "acme-prod",
+     "previous": {"link": "...", "seq": 1000}, "sealed_at": "2026-...",
+     "seq": 1234}
 
 ``previous`` is the checkpoint before it in the same chain (null for the
-first), so a run of checkpoints is a chain too.
+first), so a run of checkpoints is a chain too. ``kind`` is what it was
+signed for, one of two uses:
 
-Two uses:
+- ``"prune"``: ``auditprune`` stores one (``domainkit_audit_checkpoints``),
+  records it on the ledger, and deletes the rows and seals below it;
+  ``verify`` then starts the chain from the checkpoint instead of the
+  genesis (``pruning``).
+- ``"export"``: ``auditverify --export`` writes the stored checkpoints and
+  one of the current head to a file (``export``), which ``check_export``
+  (and ``auditverify --check-export``) checks offline. A head checkpoint
+  leaves the system, so it vouches for no deletion: stored, it starts
+  nothing (SEC-10b-2).
 
-- ``auditprune`` stores one (``domainkit_audit_checkpoints``) and deletes
-  the rows and seals below it; ``verify`` then starts the chain from the
-  checkpoint instead of the genesis (``pruning``).
-- ``auditverify --export`` writes the stored checkpoints and one of the
-  current head to a file (``export``), which ``check_export`` (and
-  ``auditverify --check-export``) checks offline.
+Verifying needs only the public key (``AUDIT.CHECKPOINT_PUBLIC_KEY``); the
+private key (``AUDIT.CHECKPOINT_KEY``) is read by ``auditprune`` and
+``auditverify --export`` alone, so the application need not hold it.
 """
 
 from __future__ import annotations
@@ -70,6 +77,7 @@ _FIELDS: Final = frozenset(
         "database",
         "format",
         "key_id",
+        "kind",
         "link",
         "made_at",
         "namespace",
@@ -78,6 +86,8 @@ _FIELDS: Final = frozenset(
         "seq",
     }
 )
+KINDS: Final = frozenset({"prune", "export"})
+"""What a checkpoint may be signed for (see the module's docstring)."""
 _HEX: Final = frozenset("0123456789abcdef")
 SIGNATURE_BYTES: Final = 64
 
@@ -101,6 +111,8 @@ class Checkpoint:
     """The checkpoint before this one in the chain: its seal and link."""
     key_id: str
     """Which key signed it (``key_id``)."""
+    kind: str = "prune"
+    """What it was signed for: ``"prune"`` or ``"export"`` (``KINDS``)."""
 
     def document(self) -> str:
         """The canonical JSON the signature covers: sorted keys, no spaces."""
@@ -120,6 +132,7 @@ class Checkpoint:
                 "made_at": self.made_at.isoformat(),
                 "previous": previous,
                 "key_id": self.key_id,
+                "kind": self.kind,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -154,11 +167,14 @@ class Checkpoint:
                 if previous is None
                 else (_count(previous["seq"]), _digest(previous["link"])),
                 key_id=_text(found["key_id"]),
+                kind=_text(found["kind"]),
             )
         except CheckpointInvalid:
             raise
         except (ValueError, TypeError, KeyError) as exc:
             raise CheckpointInvalid("Not a checkpoint document.") from exc
+        if checkpoint.kind not in KINDS:
+            raise CheckpointInvalid(f"A checkpoint's kind is one of {sorted(KINDS)}.")
         if checkpoint.document() != document:
             raise CheckpointInvalid("A checkpoint document is written canonically.")
         if checkpoint.previous is not None and checkpoint.previous[0] >= checkpoint.seq:
@@ -189,11 +205,12 @@ def _digest(value: object) -> str:
 
 
 def signing_key() -> Ed25519PrivateKey:
-    """The key ``AUDIT.CHECKPOINT_KEY`` holds.
+    """The key ``AUDIT.CHECKPOINT_KEY`` holds; only the commands that sign read it.
 
     Raises:
-        ImproperlyConfigured: It is not set, cryptography is missing, or it
-            is not an Ed25519 private key in PEM.
+        ImproperlyConfigured: It is not set, cryptography is missing, it is
+            not an Ed25519 private key in PEM, or ``CHECKPOINT_PUBLIC_KEY``
+            is not set to its public half (what verifies what it signs).
     """
     config = registry.settings(AuditSettings)
     if config.CHECKPOINT_KEY is None:
@@ -202,15 +219,9 @@ def signing_key() -> Ed25519PrivateKey:
             "set it to an Ed25519 private key in PEM "
             "(openssl genpkey -algorithm ed25519)."
         )
-    try:
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
-            Ed25519PrivateKey,
-        )
-        from cryptography.hazmat.primitives.serialization import load_pem_private_key
-    except ImportError as exc:
-        raise ImproperlyConfigured(
-            'Signed checkpoints need cryptography: pip install "domainkit[audit]".'
-        ) from exc
+    private_key_class, _ = _cryptography()
+    from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
     try:
         key = load_pem_private_key(
             config.CHECKPOINT_KEY.get_secret_value().encode(), password=None
@@ -219,9 +230,35 @@ def signing_key() -> Ed25519PrivateKey:
         raise ImproperlyConfigured(
             "AUDIT.CHECKPOINT_KEY is not a private key in PEM without a password."
         ) from exc
-    if not isinstance(key, Ed25519PrivateKey):
+    if not isinstance(key, private_key_class):
         raise ImproperlyConfigured("AUDIT.CHECKPOINT_KEY must be an Ed25519 key.")
+    public = configured_public_key()
+    if public is None or key_id(public) != key_id(key.public_key()):
+        raise ImproperlyConfigured(
+            "AUDIT.CHECKPOINT_PUBLIC_KEY must be the public half of "
+            "AUDIT.CHECKPOINT_KEY (openssl pkey -pubout): it verifies what "
+            "the key signs."
+        )
     return key
+
+
+def _cryptography() -> tuple[type[Ed25519PrivateKey], type[Ed25519PublicKey]]:
+    """The Ed25519 key classes.
+
+    Raises:
+        ImproperlyConfigured: cryptography is not installed.
+    """
+    try:
+        import cryptography.hazmat.primitives.serialization  # noqa: F401
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+            Ed25519PrivateKey,
+            Ed25519PublicKey,
+        )
+    except ImportError as exc:
+        raise ImproperlyConfigured(
+            'Signed checkpoints need cryptography: pip install "domainkit[audit]".'
+        ) from exc
+    return Ed25519PrivateKey, Ed25519PublicKey
 
 
 def load_public_key(pem: bytes) -> Ed25519PublicKey:
@@ -331,10 +368,22 @@ async def stored(
 
 
 def configured_public_key() -> Ed25519PublicKey | None:
-    """The public half of ``AUDIT.CHECKPOINT_KEY``; None when it is not set."""
-    if registry.settings(AuditSettings).CHECKPOINT_KEY is None:
+    """The key ``AUDIT.CHECKPOINT_PUBLIC_KEY`` holds; None when it is not set.
+
+    Raises:
+        ImproperlyConfigured: It is not an Ed25519 public key in PEM, or
+            cryptography is missing.
+    """
+    pem = registry.settings(AuditSettings).CHECKPOINT_PUBLIC_KEY
+    if pem is None:
         return None
-    return signing_key().public_key()
+    _cryptography()
+    try:
+        return load_public_key(pem.encode())
+    except CheckpointInvalid as exc:
+        raise ImproperlyConfigured(
+            "AUDIT.CHECKPOINT_PUBLIC_KEY is not an Ed25519 public key in PEM."
+        ) from exc
 
 
 def signed(checkpoint: Checkpoint, signature: bytes) -> dict[str, str]:
@@ -387,6 +436,11 @@ def check_export(data: bytes, public_key_pem: bytes) -> dict[str, list[Checkpoin
                     f"A checkpoint filed under {database!r} is another chain's."
                 )
             expected = None if not chain else (chain[-1].seq, chain[-1].link)
+            if chain and chain[-1].kind != "prune":
+                raise CheckpointInvalid(
+                    f"Checkpoint {checkpoint.seq} of {database!r} follows a head "
+                    "checkpoint: only pruning checkpoints are followed."
+                )
             if checkpoint.previous != expected:
                 raise CheckpointInvalid(
                     f"Checkpoint {checkpoint.seq} of {database!r} does not follow "

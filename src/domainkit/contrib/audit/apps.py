@@ -14,7 +14,7 @@ from domainkit.ddd import DeferredTask, DomainEvent
 from domainkit.ledger.trust import use_states
 
 from .baseline import check_at_startup, required, settings_problems
-from .checkpoints import signing_key
+from .checkpoints import configured_public_key
 from .ledgerstates import DatabaseStateStore
 from .models import AuditEntry
 from .recorder import Outcome, event_rows, record, write
@@ -42,16 +42,17 @@ class AuditConfig(DomainConfig):
         ``AUDIT.DATABASE`` (``ledgerstates``), so every process starts from it.
 
         Raises:
-            ImproperlyConfigured: ``AUDIT.CHECKPOINT_KEY`` is set but is not
-                an Ed25519 private key in PEM, or cryptography is missing.
+            ImproperlyConfigured: ``AUDIT.CHECKPOINT_PUBLIC_KEY`` is set but
+                is not an Ed25519 public key in PEM, or cryptography is
+                missing. The private ``AUDIT.CHECKPOINT_KEY`` is not read
+                here: only ``auditprune`` and ``auditverify --export`` sign.
         """
         config = registry.settings(AuditSettings)
         router.require_standalone(config.DATABASE, "AUDIT.DATABASE")
         map_imperatively(AuditEntry, audit_log)
         on_stage(self.stage_events)
         use_states(DatabaseStateStore(config.DATABASE))
-        if config.CHECKPOINT_KEY is not None:
-            signing_key()  # Refuse a key that cannot sign, now.
+        configured_public_key()  # Refuse a key that cannot verify, now.
         if registry.is_installed(MESSAGING):
             import_module(f"{self.name}.tasks")
 

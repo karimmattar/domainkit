@@ -7,6 +7,7 @@ the public key alone (DATA-05).
 """
 
 import asyncio
+import base64
 import io
 import json
 import os
@@ -44,7 +45,16 @@ from domainkit.contrib.audit.checkpoints import (
 )
 from domainkit.contrib.audit.protection import protect
 from domainkit.contrib.audit.pruning import ExportRefused, PruneRefused, export, prune
-from domainkit.contrib.audit.seals import anchor, seal, verify
+from domainkit.contrib.audit.seals import (
+    Anchor,
+    anchor,
+    anchor_key,
+    first_anchored,
+    pruned_key,
+    pruned_record,
+    seal,
+    verify,
+)
 from domainkit.contrib.audit.tables import (
     audit_checkpoints,
     audit_keys,
@@ -84,9 +94,17 @@ PUBLIC_PEM: Final = KEY.public_key().public_bytes(
 )
 
 
+def keys() -> dict[str, str]:
+    """``AUDIT`` signing with ``KEY``, verifying with its public half."""
+    return {
+        "CHECKPOINT_KEY": private_pem(KEY),
+        "CHECKPOINT_PUBLIC_KEY": PUBLIC_PEM.decode(),
+    }
+
+
 def settings_with(**audit: object) -> dict[str, Any]:
     """``AUDIT`` anchoring on the memory ledger, signing with ``KEY``."""
-    return {"LEDGER": "audit", "CHECKPOINT_KEY": private_pem(KEY), **audit}
+    return {"LEDGER": "audit", **keys(), **audit}
 
 
 @pytest.fixture
@@ -135,7 +153,7 @@ async def unanchored(database_url: str) -> AsyncIterator[None]:
     with override_settings(
         INSTALLED_DOMAINS=[AUDIT, ALPHA],
         DATABASES={"default": {"URL": database_url}},
-        AUDIT={"CHECKPOINT_KEY": private_pem(KEY)},
+        AUDIT=keys(),
     ):
         setup()
         await fill(None)
@@ -196,7 +214,7 @@ async def test_a_second_prune_follows_the_first(trail: Ledger) -> None:
         await anchor("default", trail, every=timedelta(0))
     with freeze_time(T1 + timedelta(days=50)):
         second = await prune("default", before=T1 + timedelta(days=1), ledger=trail)
-    report = await verify("default", trail, now=T1)
+    report = await verify("default", trail, now=T1 + timedelta(days=50))
 
     assert first.checkpoint is not None
     assert second.checkpoint is not None
@@ -224,7 +242,9 @@ async def test_the_newest_seal_is_never_pruned(trail: Ledger) -> None:
     assert pruned.checkpoint is not None
     assert pruned.checkpoint.seq == 7
     assert [each["seq"] for each in await seals()] == [8]
-    assert (await verify("default", trail, now=T1)).intact
+    assert (await verify("default")).intact
+    unrecorded = await verify("default", trail)  # Pruned without it.
+    assert unrecorded.forged == [7]
 
 
 async def test_with_a_ledger_the_cut_is_an_anchored_seal(trail: Ledger) -> None:
@@ -339,7 +359,10 @@ async def test_a_checkpoint_of_another_chain_starts_nothing(audited: str) -> Non
 
 
 async def test_a_checkpoint_left_inside_the_chain_must_match_it(trail: Ledger) -> None:
-    """A checkpoint above seals still there (a run cut short): they must agree."""
+    """A checkpoint above seals still there (a run cut short): they must agree.
+
+    Checked without the ledger, which does not record this one at all.
+    """
     pruned = await prune("default", before=CUT, ledger=trail)
     assert pruned.checkpoint is not None
     wrong = Checkpoint(
@@ -347,7 +370,7 @@ async def test_a_checkpoint_left_inside_the_chain_must_match_it(trail: Ledger) -
         None,
         7,
         "b" * 64,
-        T1,
+        T0,
         T1,
         (5, pruned.checkpoint.link),
         key_id(KEY.public_key()),
@@ -362,7 +385,7 @@ async def test_a_checkpoint_left_inside_the_chain_must_match_it(trail: Ledger) -
             )
         )
 
-    report = await verify("default", trail, now=T1)
+    report = await verify("default", now=T1)
 
     assert report.broken == [7]
 
@@ -720,26 +743,81 @@ def test_checkpoint_documents_are_strict() -> None:
 @pytest.mark.parametrize(
     ("kind", "message"),
     [
-        ("text", "not a private key in PEM without a password"),
-        ("ecdsa", "must be an Ed25519 key"),
+        ("text", "not an Ed25519 public key in PEM"),
+        ("ecdsa", "not an Ed25519 public key in PEM"),
     ],
 )
-def test_a_key_that_cannot_sign_refuses_to_start(kind: str, message: str) -> None:
-    """``AUDIT.CHECKPOINT_KEY`` is checked when the application starts."""
+def test_a_key_that_cannot_verify_refuses_to_start(kind: str, message: str) -> None:
+    """``AUDIT.CHECKPOINT_PUBLIC_KEY`` is checked when the application starts."""
     value = (
         "not a key"
         if kind == "text"
-        else private_pem(generate_private_key(SECP256R1()))
+        else generate_private_key(SECP256R1())
+        .public_key()
+        .public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
+        .decode()
     )
     registry.clear()
     try:
         with (
             override_settings(
-                INSTALLED_DOMAINS=[AUDIT, ALPHA], AUDIT={"CHECKPOINT_KEY": value}
+                INSTALLED_DOMAINS=[AUDIT, ALPHA],
+                AUDIT={"CHECKPOINT_PUBLIC_KEY": value},
             ),
             pytest.raises(ImproperlyConfigured, match=message),
         ):
             setup()
+    finally:
+        registry.clear()
+
+
+@pytest.mark.parametrize(
+    ("kind", "message"),
+    [
+        ("text", "not a private key in PEM without a password"),
+        ("ecdsa", "must be an Ed25519 key"),
+        ("unpaired", "must be the public half of AUDIT.CHECKPOINT_KEY"),
+    ],
+)
+def test_a_key_that_cannot_sign_is_refused_when_signing(
+    kind: str, message: str
+) -> None:
+    """The private key is read by the commands that sign, not at startup (SEC-10b-3).
+
+    So a project that keeps it out of the application's settings runs,
+    and one that sets it wrong starts too, but cannot sign.
+    """
+    value = {
+        "text": "not a key",
+        "ecdsa": private_pem(generate_private_key(SECP256R1())),
+        "unpaired": private_pem(OTHER),
+    }[kind]
+    registry.clear()
+    try:
+        with override_settings(
+            INSTALLED_DOMAINS=[AUDIT, ALPHA],
+            AUDIT={
+                "CHECKPOINT_KEY": value,
+                "CHECKPOINT_PUBLIC_KEY": PUBLIC_PEM.decode(),
+            },
+        ):
+            setup()
+            with pytest.raises(ImproperlyConfigured, match=message):
+                signing_key()
+    finally:
+        registry.clear()
+
+
+def test_signing_without_the_public_key_is_refused() -> None:
+    """What the key signs is verified with ``CHECKPOINT_PUBLIC_KEY``: it must be set."""
+    registry.clear()
+    try:
+        with override_settings(
+            INSTALLED_DOMAINS=[AUDIT, ALPHA], AUDIT={"CHECKPOINT_KEY": private_pem(KEY)}
+        ):
+            setup()
+            with pytest.raises(ImproperlyConfigured, match="public half"):
+                signing_key()
     finally:
         registry.clear()
 
@@ -758,17 +836,25 @@ def test_without_a_key_nothing_is_signed() -> None:
         registry.clear()
 
 
-def test_signing_needs_cryptography(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("module", ["ed25519", "serialization"])
+def test_signing_needs_cryptography(
+    monkeypatch: pytest.MonkeyPatch, module: str
+) -> None:
     """Without cryptography, a key set is refused with the extra to install."""
     monkeypatch.setitem(
-        sys.modules, "cryptography.hazmat.primitives.serialization", None
+        sys.modules,
+        {
+            "ed25519": "cryptography.hazmat.primitives.asymmetric.ed25519",
+            "serialization": "cryptography.hazmat.primitives.serialization",
+        }[module],
+        None,
     )
     registry.clear()
     try:
         with (
             override_settings(
                 INSTALLED_DOMAINS=[AUDIT, ALPHA],
-                AUDIT={"CHECKPOINT_KEY": private_pem(KEY)},
+                AUDIT={"CHECKPOINT_PUBLIC_KEY": PUBLIC_PEM.decode()},
             ),
             pytest.raises(
                 ImproperlyConfigured, match=r'pip install "domainkit\[audit\]"'
@@ -858,7 +944,7 @@ async def test_a_cut_just_after_the_first_seals_still_verifies(trail: Ledger) ->
     first = (await seals())[0]
 
     pruned = await prune("default", before=first["sealed_at"] + timedelta(0, 1))
-    report = await verify("default", trail, now=T1)
+    report = await verify("default", now=T1)
 
     assert pruned.checkpoint is not None
     assert pruned.checkpoint.seq == 5  # Every seal at T0 was sealed at once.
@@ -883,3 +969,212 @@ async def test_pruned_checkpoints_name_the_namespace(audited: str) -> None:
     assert pruned.checkpoint is not None
     assert pruned.checkpoint.namespace == "acme"
     assert report.intact, report
+
+
+async def delete_up_to(seq: int) -> None:
+    """What a writer of the tables does: delete the rows and seals up to ``seq``."""
+    async with connections.engine().begin() as connection:
+        ids = select(audit_seals.c.entry_id).where(audit_seals.c.seq <= seq)
+        await connection.execute(delete(audit_log).where(audit_log.c.id.in_(ids)))
+        await connection.execute(delete(audit_seals).where(audit_seals.c.seq <= seq))
+
+
+async def store(checkpoint: Checkpoint, key: Ed25519PrivateKey) -> None:
+    """Store ``checkpoint`` signed with ``key``, as a writer of the tables could."""
+    async with connections.engine().begin() as connection:
+        await connection.execute(
+            insert(audit_checkpoints).values(
+                seq=checkpoint.seq,
+                document=checkpoint.document(),
+                signature=key.sign(checkpoint.document().encode()),
+                made_at=checkpoint.made_at,
+            )
+        )
+
+
+async def test_an_exported_head_checkpoint_covers_no_deletion(trail: Ledger) -> None:
+    """SEC-10b-2: a head checkpoint handed out in an export starts nothing.
+
+    It is signed with the project's key and leaves the system; whoever can
+    write the tables stores it and deletes the trail up to it. It was
+    signed for an export, not a prune, so the gap is a broken link.
+    """
+    with freeze_time(T1 + timedelta(days=40)):  # Old enough to prune at.
+        document = await export(trail)
+    (head,) = document["databases"]["default"]["checkpoints"]
+    assert Checkpoint.parse(head["document"]).kind == "export"
+    with freeze_time(T1 + timedelta(days=41)):
+        for n in range(2):
+            await add(T1 + timedelta(days=41, minutes=n))
+        await seal("default")
+        await anchor("default", trail, every=timedelta(0))
+    async with connections.engine().begin() as connection:
+        await connection.execute(
+            insert(audit_checkpoints).values(
+                seq=8,
+                document=head["document"],
+                signature=base64.b64decode(head["signature"]),
+                made_at=T1,
+            )
+        )
+    await delete_up_to(8)
+
+    for ledger in (trail, None):
+        report = await verify("default", ledger, now=T1 + timedelta(days=200))
+        assert report.forged == [8]
+        assert report.broken == [9]
+        assert not report.intact
+
+
+async def test_a_checkpoint_out_of_the_chain_starts_nothing(trail: Ledger) -> None:
+    """A prune checkpoint must follow the one before it (SEC-10b-2)."""
+    pruned = await prune("default", before=CUT, ledger=trail)
+    assert pruned.checkpoint is not None
+    seven = (await seals())[1]
+    unlinked = Checkpoint("default", None, 7, seven["link"], T0, T1, None, KEY_ID)
+    await store(unlinked, KEY)
+    await delete_up_to(7)
+
+    report = await verify("default")
+
+    assert report.forged == [7]
+    assert report.broken == [8]
+
+
+KEY_ID: Final = key_id(KEY.public_key())
+
+
+async def test_the_application_cannot_sign_away_its_trail(trail: Ledger) -> None:
+    """SEC-10b-3: the application verifies with the public key; signing is not enough.
+
+    It need not hold the private key at all. Whoever has the key as well
+    as the tables must record the checkpoint on the ledger too, and
+    even then cannot cut where the ledger saw the seal less than
+    ``AUDIT.MIN_RETENTION`` ago, however the checkpoint is dated.
+    """
+    with (
+        override_settings(AUDIT=settings_with(CHECKPOINT_KEY=None)),
+        pytest.raises(ImproperlyConfigured),
+    ):
+        signing_key()
+    now = T1 + timedelta(days=1)
+    seven = (await seals())[6]
+    stolen = Checkpoint("default", None, 7, seven["link"], T0, now, None, KEY_ID)
+    await store(stolen, KEY)
+    await delete_up_to(7)
+
+    unrecorded = await verify("default", trail, now=now)
+    await trail.append(pruned_key("default"), pruned_record(stolen.document()))
+    backdated = Anchor(7, seven["link"], T0)
+    await trail.append(anchor_key("default"), backdated.encode())
+    too_young = await verify("default", trail, now=now)
+
+    assert unrecorded.forged == too_young.forged == [7]
+    assert not unrecorded.intact
+    assert not too_young.intact
+
+
+async def test_without_a_ledger_a_checkpoint_dates_its_own_seal(
+    trail: Ledger,
+) -> None:
+    """Signed as sealed within ``MIN_RETENTION`` of its making: it starts nothing."""
+    five = (await seals())[4]
+    young = Checkpoint(
+        "default", None, 5, five["link"], T1 - timedelta(days=29), T1, None, KEY_ID
+    )
+    await store(young, KEY)
+    await delete_up_to(5)
+
+    report = await verify("default", now=T1 + timedelta(days=400))
+
+    assert report.forged == [5]
+    assert report.broken == [6]
+
+
+def test_a_seal_is_first_anchored_when_the_ledger_first_saw_it() -> None:
+    """An anchor appended later and dated back moves nothing before it."""
+    link = "a" * 64
+    history = [
+        Anchor(5, link, T0),
+        Anchor(8, link, T1),
+        Anchor(7, link, T0),  # Appended after, dated back.
+    ]
+
+    assert first_anchored(history, 3) == T0
+    assert first_anchored(history, 7) == T1
+    assert first_anchored(history, 9) is None
+    assert first_anchored([Anchor(5, link, T1), Anchor(9, link, T0)], 9) == T1
+
+
+async def test_prune_keeps_the_minimum_retention(trail: Ledger) -> None:
+    """``auditprune`` refuses a cut within ``AUDIT.MIN_RETENTION``; nothing goes."""
+    with (
+        freeze_time(T1),
+        pytest.raises(PruneRefused, match="MIN_RETENTION keeps every row for 30 days"),
+    ):
+        await prune("default", before=CUT + timedelta(days=1), ledger=trail)
+    with freeze_time(T1 + timedelta(days=10)):
+        early = await prune("default", before=T1 - timedelta(days=20), ledger=trail)
+
+    assert early.checkpoint is not None
+    assert early.checkpoint.seq == 5
+    assert len(await seals()) == 3
+
+
+async def test_with_a_ledger_the_cut_was_anchored_long_enough_ago(
+    trail: Ledger,
+) -> None:
+    """Sealed long ago but first anchored lately: the cut stays below it."""
+    with freeze_time(T1 + timedelta(days=31)):
+        for n in range(2):
+            await add(T1 + timedelta(days=31, minutes=n))
+        await seal("default")
+        await anchor("default", trail, every=timedelta(0))  # Seal 10.
+        await add(T1 + timedelta(days=31, minutes=5))
+        await seal("default")
+    async with connections.engine().begin() as connection:
+        await connection.execute(
+            update(audit_seals)
+            .where(audit_seals.c.seq.in_([9, 10]))
+            .values(sealed_at=T0 + timedelta(days=1))
+        )
+    with freeze_time(T1 + timedelta(days=50)):
+        pruned = await prune("default", before=T1 + timedelta(days=20), ledger=trail)
+
+    assert pruned.checkpoint is not None
+    assert pruned.checkpoint.seq == 8
+
+
+def test_checkpoints_say_what_they_were_signed_for() -> None:
+    """``kind`` is ``prune`` or ``export``, signed with the rest."""
+    good = Checkpoint("default", None, 5, "a" * 64, T0, T1, None, "k", "export")
+    assert Checkpoint.parse(good.document()).kind == "export"
+    odd = good.document().replace('"export"', '"anything"')
+    with pytest.raises(CheckpointInvalid, match="kind is one of"):
+        Checkpoint.parse(odd)
+
+
+async def test_an_export_checkpoint_ends_its_chain(trail: Ledger) -> None:
+    """In an export, only pruning checkpoints are followed."""
+    with freeze_time(T1 + timedelta(days=1)):
+        document = await export(trail)
+    (head,) = document["databases"]["default"]["checkpoints"]
+    after = Checkpoint(
+        "default",
+        None,
+        9,
+        "c" * 64,
+        T1,
+        T1,
+        (8, Checkpoint.parse(head["document"]).link),
+        KEY_ID,
+        "export",
+    )
+    document["databases"]["default"]["checkpoints"].append(
+        {
+            "document": after.document(),
+            "signature": base64.b64encode(KEY.sign(after.document().encode())).decode(),
+        }
+    )
+    with pytest.raises(CheckpointInvalid, match="follows a head checkpoint"):
+        check_export(json.dumps(document).encode(), PUBLIC_PEM)

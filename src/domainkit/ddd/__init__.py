@@ -33,7 +33,7 @@ from domainkit.ddd.fields import (
 from domainkit.ddd.messages import UNSET, Command, Query, Unset
 from domainkit.ddd.model import AggregateRoot, Entity, ValueObject
 from domainkit.ddd.pagination import Page
-from domainkit.ddd.personal import Counted, Personal
+from domainkit.ddd.personal import Counted, Personal, fields_about
 from domainkit.ddd.query import (
     Criteria,
     F,
@@ -95,4 +95,5 @@ __all__ = [
     "Unset",
     "ValueObject",
     "event_bus",
+    "fields_about",
 ]

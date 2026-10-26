@@ -336,7 +336,12 @@ def test_pending_messages_are_left_to_run_and_counted(
 
 
 def test_an_export_lists_every_copy_until_erased(scenario: Scenario) -> None:
-    """Each store's copies are in the export, under its label; none after erasure."""
+    """Each store's copies are in the export, under its label; none after erasure.
+
+    Only what each copy holds about her (SEC-10b-4): the fields her markers
+    name, and a kept response only if she was its caller. She registered
+    anonymously, so that one is withheld.
+    """
     before = run_async(export_subject(scenario.subject))["copies"]
     (stored,) = run_async(rows(deliveries))
     found = {str(row.id): row for row in run_async(rows(messages))}
@@ -351,12 +356,16 @@ def test_an_export_lists_every_copy_until_erased(scenario: Scenario) -> None:
         "event_type": "patient.registered",
         "status": FAILED,
         "created_at": stored.created_at.isoformat(),
-        "body": json.loads(stored.body),
+        "body": {
+            **json.loads(stored.body),
+            "data": {"patient_id": scenario.subject, "email": EMAIL},
+        },
+        "withheld": False,
     }
     (response,) = before["idempotency"]["responses"]
-    assert sorted(response) == ["body", "created_at", "status_code"]
+    assert sorted(response) == ["body", "created_at", "status_code", "withheld"]
     assert response["status_code"] == 201
-    assert json.loads(response["body"]) == scenario.response
+    assert (response["body"], response["withheld"]) == (None, True)
     dead = sorted(before["messaging"]["messages"], key=lambda m: m["kind"])
     assert [(m["kind"], m["target"], m["status"], m["database"]) for m in dead] == [
         ("event", f"{__name__}.remember", "dead", "default"),
@@ -365,8 +374,11 @@ def test_an_export_lists_every_copy_until_erased(scenario: Scenario) -> None:
     for exported in dead:
         row = found[exported["id"]]
         assert exported["created_at"] == row.created_at.isoformat()
-        assert exported["arguments"] == row.payload
-        assert exported["arguments"]["email"] == EMAIL
+        assert exported["arguments"] == {
+            "patient_id": scenario.subject,
+            "email": EMAIL,
+        }
+        assert row.payload["email"] == EMAIL
     assert after == {}
 
 
@@ -469,3 +481,83 @@ def test_messages_whose_markers_are_unknown_are_left(scenario: Scenario) -> None
         rows(messages, messages.c.target.in_(["gone.task", "nowhere.handler"]))
     )
     assert [row.payload["email"] for row in unknown] == [EMAIL, EMAIL]
+
+
+DOCTOR_PHONE: Final = "+44 7700 900123"
+
+
+class AppointmentBooked(DomainEvent):
+    """An appointment: the patient's name is hers, the doctor's phone is theirs."""
+
+    patient_id: UUID
+    patient_name: Annotated[str, Personal(of="patient_id")]
+    doctor_id: str
+    doctor_phone: Annotated[str, Personal(of="doctor_id")]
+
+
+@router.post("/appointments", status_code=201)
+async def book() -> dict[str, str]:
+    """Book Ann with a doctor; the response shows the doctor's phone."""
+    ann = Patient(id=uuid.uuid4(), name="Ann", registered_at=clock.now())
+    ann.record(
+        AppointmentBooked(
+            patient_id=ann.id,
+            patient_name="Ann",
+            doctor_id="dr-who",
+            doctor_phone=DOCTOR_PHONE,
+        )
+    )
+    async with PatientsUnitOfWork() as uow:
+        await uow.patients.add(ann)
+        await uow.commit()
+    return {"patient": str(ann.id), "your_phone_on_file": DOCTOR_PHONE}
+
+
+def test_an_export_gives_nobody_elses_personal_data(scenario: Scenario) -> None:
+    """SEC-10b-4: Ann's export holds her fields of each copy, not the doctor's.
+
+    The webhook body and the kept response both hold the doctor's phone
+    (``Personal(of="doctor_id")``): the body's data is cut to Ann's
+    fields, and the response, whose caller she was not, is withheld.
+    """
+    expose(AppointmentBooked, "appointment.booked")
+    booked = scenario.client.post(
+        "/appointments", headers={"Idempotency-Key": "book-1"}
+    ).json()
+    run_async(drain(delayed=True))
+
+    exported = run_async(export_subject(booked["patient"]))
+    doctor = run_async(export_subject("dr-who"))
+
+    assert DOCTOR_PHONE not in json.dumps(exported)
+    (delivery,) = exported["copies"]["webhooks"]["deliveries"]
+    assert delivery["body"]["data"] == {
+        "patient_id": booked["patient"],
+        "patient_name": "Ann",
+    }
+    (response,) = exported["copies"]["idempotency"]["responses"]
+    assert response["withheld"]
+    (theirs,) = doctor["copies"]["webhooks"]["deliveries"]
+    assert theirs["body"]["data"] == {
+        "doctor_id": "dr-who",
+        "doctor_phone": DOCTOR_PHONE,
+    }
+
+
+def test_a_body_picked_by_the_project_is_withheld(scenario: Scenario) -> None:
+    """With ``expose(payload=...)``, whose fields are whose is unknown: withheld."""
+    expose(
+        AppointmentBooked,
+        "appointment.booked",
+        payload=lambda event: {"who": event.patient_name, "call": event.doctor_phone},
+    )
+    booked = scenario.client.post(
+        "/appointments", headers={"Idempotency-Key": "book-2"}
+    ).json()
+    run_async(drain(delayed=True))
+
+    exported = run_async(export_subject(booked["patient"]))
+
+    (delivery,) = exported["copies"]["webhooks"]["deliveries"]
+    assert (delivery["body"]["data"], delivery["withheld"]) == (None, True)
+    assert DOCTOR_PHONE not in json.dumps(exported)

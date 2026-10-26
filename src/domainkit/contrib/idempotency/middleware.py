@@ -163,7 +163,7 @@ class IdempotencyMiddleware:
                 code="invalid_idempotency_key",
             )(scope, receive, send)
             return
-        if config.ANONYMOUS == REFUSE and _unnamed(scope, config.CREDENTIAL_HEADERS):
+        if config.ANONYMOUS == REFUSE and _unnamed(scope, config):
             await error_response(
                 status.HTTP_400_BAD_REQUEST,
                 "An Idempotency-Key needs a caller this service knows: "
@@ -457,17 +457,19 @@ async def _finish(
     taken the key over.
     """
     held = holder(operation.key_hash, operation.token)
-    # Whom a kept response may be about (``subjects``): the actor, and the
-    # subjects of the events it committed. The actor alone, the common
-    # case, is tagged as it is, with no call on the request's path: an
-    # actor holding the separator could only make an erasure drop more.
+    # Whom a kept response may be about (``subjects``): the actor, first,
+    # then the subjects of the events it committed (``subject_tag``):
+    # ``<US>actor<US><US>ann<US>``, the actor empty when there is none (or
+    # it holds the separator). ``tagged_with`` finds either; an export
+    # gives the body only to the actor (``export_subject``). The actor
+    # alone, the common case, takes no call on the request's path.
     actor = operation.actor
-    if body is None:
+    if body is None or (actor is None and not operation.subjects):
         tag = None
-    elif operation.subjects:
-        tag = subject_tag(operation.subjects | {actor} if actor else operation.subjects)
     else:
-        tag = None if actor is None else f"{SEPARATOR}{actor}{SEPARATOR}"
+        caller = actor if actor is not None and SEPARATOR not in actor else ""
+        others = subject_tag(operation.subjects) if operation.subjects else None
+        tag = f"{SEPARATOR}{caller}{SEPARATOR}{others or SEPARATOR}"
     async with connections.autocommit(config.DATABASE) as connection:
         if body is None and not (operation.committed or operation.pinned):
             released = await connection.execute(RELEASE, held)
@@ -533,17 +535,33 @@ def _caller_of(
     return f"anonymous:{client[0] if client else 'unknown'}:{credentials}"
 
 
-def _unnamed(scope: Scope, credential_headers: tuple[str, ...]) -> bool:
-    """Whether the request has no actor and none of ``credential_headers``.
+def _unnamed(scope: Scope, config: IdempotencySettings) -> bool:
+    """Whether nothing in the request names its caller: its key would be shared.
 
-    Its key could only be scoped to its address, which callers behind one
-    NAT or proxy share.
+    Named: an actor, one of ``CREDENTIAL_HEADERS``, or, for ``cookie``, a
+    cookie of ``SESSION_COOKIES``. Any other cookie (consent, locale) many
+    callers send alike, so it scopes a key to them all (SEC-10b-7).
     """
     request = current_request()
     if request is not None and request.actor:
         return False
     headers = Headers(scope=scope)
-    return not any(name in headers for name in credential_headers)
+    for name in config.CREDENTIAL_HEADERS:
+        if name.lower() != "cookie":
+            if name in headers:
+                return False
+        elif _session_cookie(headers.getlist("cookie"), config.SESSION_COOKIES):
+            return False
+    return True
+
+
+def _session_cookie(values: list[str], names: tuple[str, ...]) -> bool:
+    """Whether the ``Cookie`` headers carry a cookie named in ``names``."""
+    return any(
+        part.split("=", 1)[0].strip() in names
+        for value in values
+        for part in value.split(";")
+    )
 
 
 def _no_store(started: dict[str, Any]) -> bool:

@@ -104,6 +104,44 @@ def post(client: TestClient, body: object, **headers: str) -> Any:  # noqa: ANN4
     )
 
 
+def test_an_export_gives_a_kept_response_to_its_caller_alone(
+    database_url: str,
+) -> None:
+    """SEC-10b-4: a response is what its caller saw, so only they get its body.
+
+    It is also about the subjects of the events it committed, so their
+    exports list it, withheld: it may hold the caller's data, or a third's.
+    """
+    from domainkit.contrib.idempotency.operations import export_subject
+
+    async def export(subject: str) -> list[dict[str, Any]]:
+        try:
+            return await export_subject("default", subject)
+        finally:
+            await connections.close_all()
+
+    with keyed_app(database_url) as client:
+        sent = post(client, {"n": 1}, **{ACTOR_HEADER: "alice"})
+        (row,) = stored()
+
+        async def tag() -> None:
+            async with connections.engine().begin() as connection:
+                await connection.execute(
+                    idempotency_keys.update().values(
+                        subjects="\x1falice\x1f\x1fann\x1f"
+                    )
+                )
+            await connections.close_all()
+
+        asyncio.run(tag())
+        alice, ann, bob = (asyncio.run(export(who)) for who in ("alice", "ann", "bob"))
+
+    assert [(each["body"], each["withheld"]) for each in alice] == [(sent.text, False)]
+    assert [(each["body"], each["withheld"]) for each in ann] == [(None, True)]
+    assert bob == []
+    assert row["subjects"] == "\x1falice\x1f\x1f"
+
+
 def test_anonymous_callers_behind_one_address_share_keys(database_url: str) -> None:
     """The PoC of DATA-09: by default, one caller gets another's response.
 
@@ -144,13 +182,15 @@ def test_refuse_keeps_keys_of_known_callers(database_url: str) -> None:
     Two callers with different credentials never share a key: the second
     runs its own request.
     """
-    with keyed_app(database_url, ANONYMOUS="refuse") as client:
+    with keyed_app(
+        database_url, ANONYMOUS="refuse", SESSION_COOKIES=("session",)
+    ) as client:
         alice = post(client, {"n": 1}, **{ACTOR_HEADER: "alice"})
         again = post(client, {"n": 1}, **{ACTOR_HEADER: "alice"})
         bob = post(client, {"n": 1}, **{ACTOR_HEADER: "bob"})
         token = post(client, {"n": 1}, Authorization="Bearer one")
         other = post(client, {"n": 1}, Authorization="Bearer two")
-        cookie = post(client, {"n": 1}, Cookie="session=s")
+        cookie = post(client, {"n": 1}, Cookie="consent=yes; session=s")
         keys = stored()
 
     assert [r.json()["count"] for r in (alice, again, bob, token, other, cookie)] == [
@@ -163,6 +203,38 @@ def test_refuse_keeps_keys_of_known_callers(database_url: str) -> None:
     ]
     assert again.headers["Idempotent-Replayed"] == "true"
     assert len(keys) == 5
+
+
+@pytest.mark.parametrize(
+    "cookie", ["consent=yes", "consent=yes; locale=en", "sessions=s", "x=session"]
+)
+def test_refuse_counts_only_session_cookies(database_url: str, cookie: str) -> None:
+    """SEC-10b-7: a cookie many callers send alike names nobody, so it is refused.
+
+    Ann and Bob behind one address both send ``consent=yes``: in the PoC,
+    Bob was replayed Ann's response. Only a cookie of ``SESSION_COOKIES``
+    (none by default; auth's sessions set the actor) names a caller.
+    """
+    with keyed_app(
+        database_url, ANONYMOUS="refuse", SESSION_COOKIES=("session",)
+    ) as client:
+        ann = post(client, {"item": "ann's order"}, Cookie=cookie)
+        bob = post(client, {"item": "ann's order"}, Cookie=cookie)
+        keys = stored()
+
+    assert ann.status_code == 400
+    assert ann.json().items() >= NEEDS_CALLER.items()
+    assert bob.headers.get("Idempotent-Replayed") is None
+    assert keys == []
+
+
+def test_session_cookie_names_are_bounded() -> None:
+    """Cookie names, at most 16 of them."""
+    with pytest.raises(ValidationError):
+        IdempotencySettings(SESSION_COOKIES=("a b",))
+    with pytest.raises(ValidationError):
+        IdempotencySettings(SESSION_COOKIES=tuple(f"c{n}" for n in range(17)))
+    assert IdempotencySettings().SESSION_COOKIES == ()
 
 
 def test_anonymous_is_one_of_two_policies() -> None:
@@ -218,7 +290,11 @@ def test_kept_responses_name_whom_they_are_about(database_url: str) -> None:
             finish(Operation("a" * 64, "t" * 32, actor="alice", subjects={"ann"}))
         )
         events = asyncio.run(finish(Operation("b" * 64, "t" * 32, subjects={"bob"})))
+        odd = asyncio.run(
+            finish(Operation("c" * 64, "t" * 32, actor="x\x1fann", subjects={"bob"}))
+        )
 
-    assert tags == ["\x1falice\x1f", "None"]
-    assert both == "\x1falice\x1fann\x1f"
-    assert events == "\x1fbob\x1f"
+    assert tags == ["\x1falice\x1f\x1f", "None"]  # The actor first, then the rest.
+    assert both == "\x1falice\x1f\x1fann\x1f"
+    assert events == "\x1f\x1f\x1fbob\x1f"
+    assert odd == "\x1f\x1f\x1fbob\x1f"  # An actor holding the separator: none.

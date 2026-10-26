@@ -21,7 +21,12 @@ whose state is older than it (rolled back) or differs at the same
 transaction (forked) is refused, by every call and by the readiness
 probe (``trust.LedgerRolledBack``, ``LedgerTampered``). The probe reads
 the server's state without trusting it: only verified answers move the
-trusted state on. See ADR 0011.
+trusted state on. Replicas share the store: the probe starts from a later
+state found there, and a save replaces only the state this ledger last
+read or saved there; when another replica moved it on, the two states
+are proven to lie on one chain first (``verifiedTxById``), so a replica
+writing on a rolled-back or forked server is refused instead of saving
+the fork over what the others proved (SEC-10b-5). See ADR 0011.
 """
 
 import asyncio
@@ -63,6 +68,12 @@ SCAN_LIMIT: Final = 1000
 """immudb returns at most this many keys per scan."""
 _MISSING: Final = ("not found", "invalid key revision")
 """How immudb 1.11 words a missing key, and a revision past the last one."""
+_FORKED: Final = (
+    "The ledger's transaction {transaction} is not the one it proved to a "
+    "client: it was forked, so do not trust it."
+)
+_SAVE_TRIES: Final = 3
+"""Saves of a state another replica keeps overtaking; then the next call saves."""
 _EXISTS: Final = "precondition failed"
 """How immudb 1.11 words a ``create`` of a key that is already written."""
 
@@ -98,6 +109,10 @@ class Client(Protocol):
 
     def serverState(self) -> Any:  # noqa: ANN401 - SDK types.
         """The server's state, its signature checked, not trusted (``connect``)."""
+        ...
+
+    def verifiedTxById(self, tx: int) -> Any:  # noqa: ANN401 - SDK API.
+        """Prove transaction ``tx`` against the trusted state; None if it has none."""
         ...
 
     def shutdown(self) -> None:
@@ -326,6 +341,35 @@ class TrustedRoot:
             self._unsaved = True
 
 
+def _prove(older: TrustedState, newer: TrustedState, client: Client) -> None:
+    """Prove on ``client``'s server that ``newer`` follows ``older`` (its thread only).
+
+    A dual proof from ``older``, with the client trusting it alone for
+    the call (``verifiedTxById``), to the server's transaction at
+    ``newer``, whose digest must be ``newer``'s.
+
+    Raises:
+        LedgerRolledBack: The server has no transaction that late.
+        LedgerTampered: Its digest there is another (forked); a proof that
+            fails is translated to it too.
+    """
+    root = TrustedRoot()
+    root.adopt(older)
+    trusted = client._rs  # type: ignore[attr-defined]
+    client._rs = root  # type: ignore[attr-defined]
+    try:
+        proven = client.verifiedTxById(newer.transaction)
+    finally:
+        client._rs = trusted  # type: ignore[attr-defined]
+    if proven is None:
+        raise LedgerRolledBack(
+            f"The ledger has no transaction {newer.transaction}, which it proved "
+            "to another client: it was rolled back or replaced, so do not trust it."
+        )
+    if bytes(root.get().txHash) != newer.digest:
+        raise LedgerTampered(_FORKED.format(transaction=newer.transaction))
+
+
 def check_state(state: Any, trusted: Any) -> None:  # noqa: ANN401 - SDK types.
     """Refuse a server ``state`` behind the ``trusted`` one, or beside it.
 
@@ -341,10 +385,7 @@ def check_state(state: Any, trusted: Any) -> None:  # noqa: ANN401 - SDK types.
             "purpose, forget the state kept for it (docs/databases.md#ledgers-immudb)."
         )
     if state.txId == trusted.txId and bytes(state.txHash) != bytes(trusted.txHash):
-        raise LedgerTampered(
-            f"The ledger's transaction {state.txId} is not the one it proved to a "
-            "client: it was forked, so do not trust it."
-        )
+        raise LedgerTampered(_FORKED.format(transaction=state.txId))
 
 
 class _Lane:
@@ -458,6 +499,8 @@ class ImmudbLedger(Ledger):
         self._states = states
         self._memory = MemoryStateStore()
         self._loaded = False
+        self._kept: TrustedState | None = None
+        """What this ledger last read from or saved to the store."""
         self._work = _Lane(config, factory, "domainkit-ledger", self.root)
         self._probe = _Lane(config, factory, "domainkit-ledger-check", self.root)
 
@@ -472,37 +515,91 @@ class ImmudbLedger(Ledger):
             LedgerUnavailable: The kept state could not be read.
         """
         if not self._loaded:
-            try:
-                stored = await self.states().load(self.name)
-            except Exception as exc:
-                raise LedgerUnavailable(
-                    "The state the ledger was last trusted at could not be read; "
-                    "nothing was sent to it."
-                ) from exc
-            if stored is not None:
-                self.root.adopt(stored)
+            self._kept = await self._load()
             self._loaded = True
         try:
             return await lane.call(operation)
         finally:
-            await self._save()
+            await self._save(lane)
 
-    async def _save(self) -> None:
-        """Save the trusted state if it moved; a failure waits for the next call."""
+    async def _load(self) -> TrustedState | None:
+        """The state kept in the store; trusted from now on if it is later.
+
+        Raises:
+            LedgerUnavailable: The store could not be read.
+        """
+        try:
+            stored = await self.states().load(self.name)
+        except Exception as exc:
+            raise LedgerUnavailable(
+                "The state the ledger was last trusted at could not be read; "
+                "nothing was sent to it."
+            ) from exc
+        if stored is not None:
+            self.root.adopt(stored)
+        return stored
+
+    async def _save(self, lane: _Lane) -> None:
+        """Save the trusted state if it moved; a failure waits for the next call.
+
+        Only over the state this ledger last read or saved: if another
+        replica saved one since, both are proven to lie on one chain, the
+        later one is trusted, and the save tries again over it.
+
+        Raises:
+            LedgerRolledBack: The server no longer has the state another
+                replica saved, or this one's.
+            LedgerTampered: The two states are not on one chain (forked).
+        """
         state = self.root.unsaved()
         if state is None:
             return
+        store = self.states()
         try:
-            await self.states().save(self.name, state)
-        except Exception:
-            self.root.save_failed()
-            logger.warning(
-                "Could not save the state ledger %s is trusted at (transaction "
-                "%d); a restart until it is saved trusts an older one",
-                self.name,
-                state.transaction,
-                exc_info=True,
-            )
+            for _ in range(_SAVE_TRIES):
+                if await store.save(self.name, state, expected=self._kept):
+                    self._kept = state
+                    return
+                found = await store.load(self.name)
+                if found is not None:
+                    await self._one_chain(lane, found, state)
+                self._kept = found
+                if found is not None and found.transaction >= state.transaction:
+                    return
+            failure = None  # Overtaken each time: the next call saves.
+        except LedgerTampered:
+            raise
+        except Exception as exc:  # noqa: BLE001 - logged below; the call stands.
+            failure = exc
+        self.root.save_failed()
+        logger.warning(
+            "Could not save the state ledger %s is trusted at (transaction "
+            "%d); a restart until it is saved trusts an older one",
+            self.name,
+            state.transaction,
+            exc_info=failure,
+        )
+
+    async def _one_chain(
+        self, lane: _Lane, found: TrustedState, state: TrustedState
+    ) -> None:
+        """Prove ``found`` (another replica's) and ``state`` lie on one chain.
+
+        Raises:
+            LedgerRolledBack: The server no longer has the later of them.
+            LedgerTampered: They differ where they meet (forked).
+        """
+        if found.transaction == state.transaction:
+            if found.digest != state.digest:
+                raise LedgerTampered(_FORKED.format(transaction=found.transaction))
+            return
+        older, newer = sorted((found, state), key=lambda each: each.transaction)
+        try:
+            await lane.call(partial(_prove, older, newer))
+        except LedgerTampered:
+            self.root.adopt(found)  # The later one is not this server's.
+            raise
+        self.root.adopt(found)
 
     async def append(
         self, key: bytes, value: bytes, *, unchanged_since: int | None = None
@@ -513,13 +610,10 @@ class ImmudbLedger(Ledger):
             LedgerChanged: A revision came after ``unchanged_since``.
         """
         if unchanged_since is None:
-            response = await self._call(
-                self._work, lambda client: client.verifiedSet(key, value)
-            )
+            response = await self._write(lambda client: client.verifiedSet(key, value))
         else:
             try:
-                response = await self._call(
-                    self._work,
+                response = await self._write(
                     lambda client: client.verifiedAppendAfter(
                         key, value, unchanged_since
                     ),
@@ -532,10 +626,25 @@ class ImmudbLedger(Ledger):
 
     async def create(self, key: bytes, value: bytes) -> LedgerWrite:
         """Write the first revision, refused by immudb if the key exists."""
-        response = await self._call(
-            self._work, lambda client: client.verifiedCreate(key, value)
-        )
+        response = await self._write(lambda client: client.verifiedCreate(key, value))
         return LedgerWrite(key, int(response.id))
+
+    async def _write[T](self, operation: Callable[[Client], T]) -> T:
+        """Run a write; one the server says it has no transaction for is refused.
+
+        A write misses no key, so "not found" means the server lacks the
+        transaction the proof starts from: rolled back below it.
+
+        Raises:
+            LedgerRolledBack: The server is behind the trusted state.
+            LedgerTampered: It differs from it at the same transaction.
+        """
+        try:
+            return await self._call(self._work, operation)
+        except LedgerKeyNotFound:
+            state = await self._work.call(lambda client: client.serverState())
+            check_state(state, self.root.get())
+            raise
 
     async def read(self, key: bytes, revision: int | None = None) -> LedgerEntry:
         """Read and verify the latest, or the given, revision."""
@@ -574,6 +683,7 @@ class ImmudbLedger(Ledger):
         probe has its own client and thread, so it never waits behind the
         ledger's work.
         """
+        await self._load()  # Another replica may have proven a later one.
         trusted = self.root.get()  # Before the server's: it can only be later.
         state = await self._call(self._probe, lambda client: client.serverState())
         if trusted is not None:

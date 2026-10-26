@@ -287,6 +287,13 @@ openssl ec -in signing.key -pubout -out immudb-signing.pub
   `makemigrations` and `migrate`), which every process and host shares;
   without it, in memory, until the process ends. Only the very first
   contact trusts the server's state as it is.
+- Replicas share that row. `/ready` reads it again, so a replica starts
+  from a later state another proved; and a save replaces only the state
+  the replica last read or saved there. When another replica saved one
+  since, the two are proven to lie on one chain first (an immudb dual
+  proof), so a replica that kept writing on a rolled-back or forked
+  server is refused there, and never saves the fork over what the others
+  proved (SEC-10b-5).
 - A server whose state is behind the saved one (rolled back to an older
   copy) is refused with `LedgerRolledBack`, and one with another digest at
   the same transaction (forked) with `LedgerTampered`, by every call and
