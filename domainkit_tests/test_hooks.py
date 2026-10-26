@@ -267,3 +267,25 @@ def test_contrib_apps_register_only_the_hooks_they_have() -> None:
     assert committed == ["auth", "messaging", "idempotency"]
     assert staged == followed == ["idempotency"]
     assert migrated == ["contenttypes", "auth"]
+
+
+def test_hooks_worked_out_while_the_domains_change_are_not_kept(
+    calls: list[tuple[str, ...]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A list made while ``populate`` or ``clear`` ran is returned, not kept."""
+    with override_settings(INSTALLED_DOMAINS=[ALPHA, "typed"]):
+        setup()
+        collect = on_stage._collect
+
+        def changing(registry: Any) -> Any:  # noqa: ANN401 - the point's own.
+            found = list(collect(registry))
+            registry.generation += 1  # The domains changed meanwhile.
+            return iter(found)
+
+        monkeypatch.setattr(on_stage, "_collect", changing)
+        first = on_stage.hooks()
+        monkeypatch.setattr(on_stage, "_collect", collect)
+
+        assert [hook.domain for hook in first] == ["typed", "typed"]
+        assert on_stage._hooks is None  # Not kept: worked out again next time.
+        assert on_stage.hooks() == ()  # The stale registrations are forgotten.
