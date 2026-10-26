@@ -125,23 +125,29 @@ deadline fails the others; one that borrows its caller's resources works
 under that caller's deadline, whose failures reach only that caller
 (ADR 0071).
 
-## Amendment (2026-10-26, 0.10): a statement the deadline cuts off keeps its connection
+## Amendment (2026-10-26, 0.10): a statement the deadline cuts off still costs its connection
 
 The consequence above, measured: ten requests with a 1 s deadline whose
 second statement would take 2 s opened ten connections and discarded ten,
 in a transaction and with `Reads.STATEMENTS` alike (CONC-08 of the 0.9.0
-audit). SQLAlchemy discards a connection when an exception that ends a
-program reaches it, as a cancellation does. asyncpg cancels the statement
-on the server when its caller is cancelled, and makes the connection's
-next use (the rollback that follows) wait until the server confirms; a
-server that does not confirm in time fails that use, and the connection
-is discarded then. A `handle_error` listener on asyncpg engines now keeps
-a connection asyncpg still holds open: the same ten requests open one
-connection and discard none, and the server runs nothing after them.
+audit). A `handle_error` listener that kept a cancelled asyncpg connection
+open brought that to one connection and none discarded, and was reverted
+before release: the 0.10 security review (SEC-10b-1) showed a deadline
+that fires while `BEGIN`'s answer is in flight leaves the kept connection
+inside a server transaction SQLAlchemy never recorded. The next request's
+`COMMIT` then only released a savepoint in it, so an acknowledged write
+was lost and its locks held; under an anyio cancel scope, which cancels the
+rollback again, the next request failed instead. Keeping a connection
+safely needs proof that driver and SQLAlchemy agree on its transaction
+state, which asyncpg does not expose publicly: a reconnect per request cut
+off under a slow database costs less than a lost write. The decision of
+this record stands; keeping such connections waits for 0.11.
 
 - Rejected: lowering `statement_timeout` before each statement to the time
   left, so the server ends it first. The server's timeout counts from
   each statement's start; bounding the second statement of a transaction
   by the deadline takes a `SET LOCAL` round trip before it, and before
   nearly every statement of a request.
-- psycopg's connections are judged as before.
+- `test_db_reads.py` keeps the reviewers' two cases: a write after a
+  deadline cut during `BEGIN` must commit, and the request after an anyio
+  scope cut must work.

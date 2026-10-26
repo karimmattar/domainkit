@@ -327,10 +327,6 @@ and a status.
   again while the others are served it, never past the `TTL`; a
   revocation committed before a request arrived is never hidden from it by
   an older read (PERF-04; ADR 0058).
-- A statement a deadline cuts off keeps its asyncpg connection: asyncpg
-  cancels it on the server, and the rollback waits for that. Ten requests
-  cut off mid-statement opened and discarded ten connections, now none
-  (CONC-08; ADR 0048).
 - `HttpClient` builds its TLS context on a thread the first time a loop
   calls, instead of on the loop: the first call held it 20 to 39 ms, now 6
   to 8 (CONC-06).

@@ -791,9 +791,8 @@ timers that cancel work run on the event loop's own clock.
   has no `SET LOCAL`: each of its statements is cut off at the deadline by
   the request's timer, or by a timer of its own in work that shares a
   deadline without enforcing it, and the driver then cancels it on the
-  server. On asyncpg, a statement cut off keeps its connection: the
-  rollback after it waits for the server to confirm, and the pool keeps
-  the connection (0.10; psycopg's connections are still replaced). The framework's own short writes, such as an idempotency key's
+  server. A statement cut off costs its connection: the pool replaces it.
+  The framework's own short writes, such as an idempotency key's
   claim, run that way too, within `STATEMENT_TIMEOUT`.
 - **Outgoing HTTP calls** through `domainkit.http.client` are bounded by it
   (below).
