@@ -1,6 +1,6 @@
 # 0025. Serve aggregates as resources; change them by commands, on the version the client read
 
-- Status: Accepted; amended 2026-10-26 (at the end)
+- Status: Accepted; amended 2026-10-26, twice (at the end)
 - Date: 2026-10-20
 
 ## Context
@@ -134,3 +134,19 @@ OpenAPI document are unchanged.
   rule runs: a rule may query (object permission grants), and a request
   must not wait for a second connection while it holds one.
 
+## Amendment (2026-10-26, 0.10): admin APIs that are not resources
+
+"The generic admin is a registry of resources, not a second kit" holds for
+aggregates served as resources. The flags and webhooks admin APIs are
+routers of their own, guarded by `contrib.auth.admin.staff`, the same
+staff rules (`IsUnscoped`, staff or superuser, the model permission of
+each action) that the auth admin and the generic admin's model actions
+check. They stay so, and this record says so, rather than the code
+changing: of their 16 routes, 7 serve what the generic admin cannot
+(dynamic settings declared in code rather than stored as aggregates, 3;
+delivery records and attempts read as rows, 2; a secret shown once when it
+is rotated; a replay that queues work), and porting the other 9 (flags and
+subscriptions) would split each app's API between two kits for no rule
+gained. The rule stands for
+new apps: what is an aggregate with commands is registered with the
+generic admin; a router of its own needs a reason of that kind.

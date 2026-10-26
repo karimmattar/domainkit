@@ -665,6 +665,7 @@ See ADR 0032.
 | `PermissionDenied` | 403 | from the class |
 | other `DomainError` | 400 | from the class |
 | `domainkit.http.APIError(status, detail, code=…)` | as given | as given |
+| `domainkit.exceptions.ServiceBusy(message, retry_after=…)`: something the operation needs is busy, raised below the HTTP layer (a full hashing queue is `PasswordChecksBusy`) | 503 | from the class (`password_checks_busy`), with `Retry-After` |
 | request validation | 422 | `validation_error` |
 | a cursor this API did not issue for the request's ordering, or one that was altered | 422 | `invalid_cursor` ([queries.md](queries.md#pages)) |
 | a filter a `FilterSet` does not offer, given twice, or over its bounds | 422 | `invalid_filter` ([queries.md](queries.md#filters-over-http)) |
@@ -685,6 +686,13 @@ See ADR 0032.
 
 WebSockets the database refuses are closed with 1013 (busy) or 1007 (a
 value it refuses).
+
+Every exception domainkit defines is a `domainkit.exceptions.DomainkitError`,
+beside the base it had (`ValueError`, `TimeoutError`, starlette's
+`HTTPException`, ...), so `except DomainkitError` catches the framework
+once and the narrower handlers still catch what they did. Code below the
+HTTP layer never raises an HTTP exception: it raises its own error, and this
+table maps it ([ADR 0084](adr/0084-one-exception-root-mapped-to-http-at-the-boundary.md)).
 
 Fields are named as the API knows them: a column's `info={"field": ...}`,
 else the attribute of the class mapped onto its table, else the column's
@@ -1112,12 +1120,15 @@ revision: the test database migrates up, down, and up again.
 | Startup wiring | `DomainConfig.ready()` | (called by `setup()`) |
 | Process resources (clients, pools) | `async DomainConfig.startup()` / `shutdown()` | (called by the app lifespan; after the domains stop, the framework closes its caches, databases, ledgers, and brokers, in that order, each within 5 seconds, and a failure is logged without keeping the rest open; management commands close them too) |
 | A readiness check | `async DomainConfig.check()` | (called by `/ready`) |
-| A check of the built application (routes, middleware) | `DomainConfig.check_application(app)`, returning problems | (called when the app is built and by `check`; staging and production refuse to start with any) |
-| Warnings about a domain's weak settings where deployed | `DomainConfig.deployment_warnings()`, returning warnings (none outside staging and production) | (listed by `check` after the framework's own) |
-| Work staged with each commit | `async DomainConfig.stage(uow, events, tasks)` | (called by the unit of work) |
-| Work after each commit | `async DomainConfig.committed(uow)` | (called by the unit of work; failures are reported, never raised) |
-| The same, for a commit outside a unit of work | `async DomainConfig.stage_transaction(connection, database)` / `transaction_committed(database)` | (called by `messaging.enqueue` around its own transaction; idempotency uses them to hold the key) |
-| Rows after each `migrate` (`post_migrate`) | `async DomainConfig.migrated(connection, database)` | (called by `migrate` for each database it upgraded, in one transaction as the schema owner, and by `flush`) |
+| A check of the built application (routes, middleware) | `DomainConfig.check_application(app)`, returning problems, best as `domainkit.checks.CheckMessage("<label>.E001", ...)` | (called when the app is built and by `check`; staging and production refuse to start with any) |
+| Warnings about a domain's weak settings where deployed | `DomainConfig.deployment_warnings()`, returning warnings (none outside staging and production), best as `CheckMessage("<label>.W001", ...)`, which `SILENCED_CHECKS` can name | (listed by `check` after the framework's own) |
+| Work staged with each commit | `async def hook(uow, events, tasks)`, typed on `SqlAlchemyUnitOfWork` | `domainkit.db.hooks.on_stage(hook)` in `ready()` (called by the unit of work; only domains that registered are called) |
+| Work after each commit | `async def hook(uow)` | `on_committed(hook)` in `ready()` (called by the unit of work; failures are reported, never raised) |
+| The same, for a commit outside a unit of work | `async def hook(connection, database)` / `async def hook(database)` | `on_stage_transaction(hook)` / `on_transaction_committed(hook)` in `ready()` (called by `messaging.enqueue` around its own transaction; idempotency uses them to hold the key) |
+| Rows after each `migrate` (`post_migrate`) | `async def hook(connection, database)` | `on_migrated(hook)` in `ready()` (called by `migrate` for each database it upgraded, in one transaction as the schema owner, and by `flush`) |
+| The same hooks, as methods (0.9) | `DomainConfig.stage`, `committed`, `stage_transaction`, `transaction_committed`, `migrated` | (an overriding method is still called, after the domain's registered hooks; [ADR 0085](adr/0085-register-hooks-by-type-for-the-domains-that-have-them.md)) |
+| Another hook point an app offers others | `domainkit.apps.hooks.HookPoint(name, method=...)` | (domains call it with a function in `ready()`; the app iterates it) |
+| A scaffolding command | `management.generators.Generator` (`plan`, then `apply`), or `AggregateGenerator` for one that adds to an aggregate | a domain's `management/commands/` |
 | Sample or default data | `async DomainConfig.seed()` | (called by `seed`, in `INSTALLED_DOMAINS` order) |
 | How long a domain keeps rows | `DomainConfig.RETENTION`, a sequence of `privacy.Retention` | (checked when the app is built; applied by `privacy purge`; see [privacy.md](privacy.md)) |
 | Erasing a personal field no default fits | `erase_personal_data(fields)` on the aggregate | (called by `privacy erase` and retention erasure) |

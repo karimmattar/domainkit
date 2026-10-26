@@ -1,6 +1,6 @@
 # 0046. Shut down in phases within one budget
 
-- Status: Accepted; amended 2026-10-25 (at the end)
+- Status: Accepted; amended 2026-10-25 and 2026-10-26 (at the end)
 - Date: 2026-10-20
 
 ## Context
@@ -81,3 +81,20 @@ shuts down, so the HTTP client needs no import, and its names stay reserved.
 Letting each subsystem register its own kind when first used, so that
 `lifecycle` no longer imports the cache, broker, and ledger packages, is
 left for 0.10.
+
+## Amendment (2026-10-26, 0.10): how closers are registered
+
+This records how closers reach the table (DSGN-13), which 0.9.2 left for
+0.10. The framework's own kinds (caches, HTTP clients, databases, ledgers,
+brokers, and the three flushes) stay declared in `domainkit.lifecycle`'s
+table, each with its phase and step; everything else registers with
+`lifecycle.register(name, close, phase=...)`, which refuses the framework's
+names. Each subsystem registering itself on first use, as the audit
+proposed, was weighed and not taken: it removes three imports from
+`lifecycle`, but those import nothing new in a serving process
+(`import domainkit.http` loads the same 94 domainkit modules with or
+without `lifecycle`, which it imports itself), and the order of shutdown
+would then depend on registration instead of standing in one table that
+`closers(phase)` lists and the tests check. The HTTP client is still found
+in `sys.modules` when the process shuts down, so the lifespan needs no
+`httpclient` extra.
