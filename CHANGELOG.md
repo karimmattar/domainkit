@@ -166,23 +166,34 @@ and a status.
   (`domainkit.http.access`): a route reached with credentials limited to
   scopes must declare a rule that checks scopes (`HasScope`, a permission
   rule, `IsUnscoped`, `AllowScoped`, or a rule with `bounds_scopes`), on
-  itself or a router. In 0.10 one that declares none still serves them,
+  itself or a router. It is decided once a request wherever the
+  principal is first read: `Require`, `CurrentUser`, `AuthenticatedUser`,
+  and `current_user`, so `Public` routes and readers of a project's own
+  are held too. In 0.10 a route that declares none still serves them,
   with a `DomainkitDeprecationWarning` and a security log line;
   `SCOPED_CREDENTIALS = "refuse"` answers 403, as 0.11 will by default.
-  Auth's `/logout` and `/me` say `AllowScoped` (AUTH-01; ADR 0087).
+  `HasObjectPermissions` checks the scopes on the request, not only on
+  each object, and `ModelPermissions` asks scoped credentials for `view`
+  on `OPTIONS`. Auth's `/logout` and `/me` say `AllowScoped` (AUTH-01;
+  ADR 0087).
 - Refusals of known principals are audited: `auth.access`, outcome
   `denied`, with the actor, the route's method and template, and the
   rule's class, once per actor and route a minute, through
   `DenialRecorder`, which `domainkit.contrib.audit` implements. A recorder
   that fails is logged; the 403 stands (AUTH-11).
-- Device proofs (`domainkit.contrib.auth.devices`): a login that works
-  hands its client an HttpOnly cookie, `__Host-dk_device`, signed for its
-  account for `AUTH.DEVICE_TTL` (30 days, an hour to 400). Logins that send
-  it count against `LOGIN_RATE` per device, not per account or address, so
-  wrong passwords from strangers, or from others behind the same address,
-  no longer keep the user out on a client they logged in from before. A
-  client without one is counted as before, and guessing stays bounded by
-  the account's count (SEC-r1-2; ADR 0087).
+- Device proofs (`domainkit.contrib.auth.devices`): a login that works,
+  second factor included, hands its client an HttpOnly cookie,
+  `__Host-dk_device`, naming a device stored with the user's tokens for
+  `AUTH.DEVICE_TTL` (30 days, an hour to 400), 20 at most per user.
+  Logins that send it count against `LOGIN_RATE` per device and against
+  the account's ceiling of proven attempts (twice `LOGIN_RATE`), not the
+  account's own count or the address's, so wrong passwords from
+  strangers, or from others behind the same address, no longer keep the
+  user out on a client they logged in from before. Guessing an account
+  stays bounded: `LOGIN_RATE` without proofs plus twice that with them,
+  however many proofs one holds; a password change or reset, or logging
+  out everywhere, ends every device. A client without one is counted as
+  before (SEC-r1-2; ADR 0087).
 - `AUTH.IDLE_TIMEOUT` (off by default; 5 minutes to 30 days): a login token
   or a browser session unused that long is refused, and a JSON Web Token
   login not refreshed that long cannot refresh; never before the timeout,

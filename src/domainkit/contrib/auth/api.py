@@ -33,12 +33,20 @@ from domainkit.http.errors import APIError, error_responses
 from .access import AuthenticatedUser
 from .authentication import Credentials, IssuedTokens, get_authenticators
 from .backends import authenticate, get_all_permissions
-from .devices import device_key, hand_out, proven_device
+from .devices import hand_out, proven_device, proven_limits
 from .events import UserLoggedOut
 from .hashers import acheck_password
 from .models import AbstractBaseUser, UserId
 from .settings import auth_settings
-from .throttling import Attempt, account_key, address_key, audit_refusal, throttle
+from .throttling import (
+    Attempt,
+    Limit,
+    account_key,
+    address_key,
+    attempt,
+    audit_refusal,
+    throttle,
+)
 from .uow import AuthUnitOfWork
 from .validators import validate_password
 
@@ -47,6 +55,8 @@ __all__ = [
     "router",
 ]
 
+LOGIN_THROTTLED = "Too many login attempts; try again later."
+"""The detail of a throttled login."""
 PASSWORD_MAX_LENGTH = 4096
 """Longer passwords are refused before hashing, which they would slow down."""
 
@@ -142,13 +152,14 @@ async def login(
     """Check a username and password; return tokens, or a second-factor challenge."""
     _no_store(response)
     user = await check_password(request, body)
-    hand_out(response, body.username, proven_device(request, body.username))
     from .mfa import challenge  # Imports this module.
 
     if (pending := await challenge(user)) is not None:
         response.status_code = status.HTTP_202_ACCEPTED
-        return pending
-    return _token_out(await issue_login(user))
+        return pending  # The device proof waits for the second factor.
+    issued = await issue_login(user)
+    await hand_out(request, response, user)
+    return _token_out(issued)
 
 
 async def check_password(request: Request, body: LoginIn) -> AbstractBaseUser:
@@ -156,13 +167,20 @@ async def check_password(request: Request, body: LoginIn) -> AbstractBaseUser:
 
     Only wrong credentials count against ``AUTH.LOGIN_RATE``: per address
     and per account, or, for a client with a device proof for the account,
-    per device (``devices``).
+    per device and against the account's ceiling of proven attempts
+    (``devices``).
 
     Raises:
         APIError: 401 for wrong credentials; 429 past ``AUTH.LOGIN_RATE``.
     """
-    device = proven_device(request, body.username)
-    counted = await _throttle(request, *_login_keys(request, body.username, device))
+    device = await proven_device(request, body.username)
+    counted = await attempt(
+        request,
+        _login_limits(request, body.username, device),
+        action="auth.login",
+        detail=LOGIN_THROTTLED,
+        code="login_throttled",
+    )
     user = await authenticate(username=body.username, password=body.password)
     if user is None:
         await _audit_refusal("invalid_credentials")
@@ -328,7 +346,7 @@ async def _throttle(request: Request, *keys: str) -> Attempt:
         auth_settings().LOGIN_RATE,
         keys,
         action="auth.login",
-        detail="Too many login attempts; try again later.",
+        detail=LOGIN_THROTTLED,
         code="login_throttled",
     )
 
@@ -342,14 +360,19 @@ def _no_store(response: Response) -> None:
     response.headers["Pragma"] = "no-cache"
 
 
-def _login_keys(request: Request, username: str, device: str | None) -> tuple[str, ...]:
+def _login_limits(request: Request, username: str, device: str | None) -> list[Limit]:
     """The counts a login is checked against: its address's and its account's.
 
-    A client with a device proof for the account: its device's alone.
+    A client with a device proof for the account: its device's, and the
+    account's ceiling of proven attempts (``devices.proven_limits``).
     """
+    rate = auth_settings().LOGIN_RATE
     if device is not None:
-        return (device_key(device),)
-    return address_key(request, "login"), account_key("login", username)
+        return proven_limits(device, username, rate)
+    return [
+        (address_key(request, "login"), rate),
+        (account_key("login", username), rate),
+    ]
 
 
 async def _audit_refusal(reason: str) -> None:

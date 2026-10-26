@@ -118,10 +118,10 @@ async def authenticated_user(
         PermissionDenied: With ``SCOPED_CREDENTIALS = "refuse"``, scoped
             credentials on a route that declares no rule that checks scopes.
     """
+    await access.check_scopes_bounded(request)
     user = current_user(request)
     if not isinstance(user, AbstractBaseUser):
         raise access.NotAuthenticated(get_authenticators()[0].challenge())
-    await access.check_scopes_bounded(request)
     return user
 
 

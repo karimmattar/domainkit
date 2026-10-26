@@ -94,21 +94,31 @@ holds, and what does not:
 
 ### Wrong passwords and device proofs
 
-A login that works hands its client a device proof (`auth.devices`): a
-cookie, `__Host-dk_device` (`dk_device` over plain HTTP), HttpOnly,
-`SameSite=Lax`, signed with `SECRET_KEY` for that account, for
-`AUTH.DEVICE_TTL` (30 days). Browsers keep it, and so does any HTTP
-client with a cookie jar. A login to the same account that sends it is
-counted against `LOGIN_RATE` per device, and against neither the
-account's count nor the address's:
+A login that works, its second factor included, hands its client a
+device proof (`auth.devices`): a cookie, `__Host-dk_device` (`dk_device`
+over plain HTTP), HttpOnly, `SameSite=Lax`, naming a random device signed
+with `SECRET_KEY` for that account. The device is stored with the user's
+tokens for `AUTH.DEVICE_TTL` (30 days; not listed by `GET /auth/tokens`),
+so whatever ends every token of the user ends it too: a password change
+or reset, `/logout` with `everywhere`, an admin's change, deletion. A user
+keeps at most 20 (`devices.MAX_DEVICES`); a new one past it ends the
+oldest. Browsers keep the cookie, and so does any HTTP client with a
+cookie jar. A login to the same account that sends a live proof is
+counted against `LOGIN_RATE` per device, and against the account's
+ceiling of proven attempts, twice `LOGIN_RATE`
+(`devices.PROVEN_CEILING`), not the account's own count nor the
+address's:
 
-- Strangers' wrong passwords, from anywhere, never fill that count: the
+- Strangers' wrong passwords, from anywhere, never fill those counts: the
   user gets in from a browser they logged in from before, and so does
   everyone behind an office's address whom one person there is flooding.
-- It buys no guesses: only a client that knew the password holds one, and
-  its own wrong passwords are counted as strictly, per device. A proof
-  made for another account, forged, or older than `DEVICE_TTL` counts as
-  none. Each login that works renews it, for the same device.
+  One copied proof fills only its own device's count, half the ceiling.
+- Guessing stays bounded per account: at most `LOGIN_RATE` wrong
+  passwords a period without proofs, and twice as many with proofs,
+  however many proofs one holds. Proofs come only from logins that held,
+  second factor included, and end with the password. A proof made for
+  another account, forged, or of a device that ended counts as none.
+  Each login that works renews its device.
 - A client without one (a new browser, a script without a cookie jar) is
   counted per address and per account, as before, and may still be held
   back while someone floods the account; a password reset, which needs
@@ -120,7 +130,8 @@ account's count nor the address's:
 has the measurements behind this choice: under an hour's attack from 200
 addresses, a stored lockout checked 40 guesses and let none of the user's
 logins in; device proofs checked 609, as before, and let every login from
-a known device in.
+a known device in. With six valid proofs and no ceiling they checked
+4,263; the ceiling holds them to 1,828.
 
 ### Sessions
 

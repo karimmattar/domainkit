@@ -25,6 +25,7 @@ from starlette.testclient import WebSocketDenialResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from domainkit.conf import override_settings
+from domainkit.ddd import PermissionDenied
 from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import access
@@ -33,12 +34,16 @@ from domainkit.http.access import (
     AllowScoped,
     AnonymousPrincipal,
     BasePermission,
+    CurrentUser,
+    HasObjectPermissions,
     HasPermissions,
     HasScope,
     IsAuthenticated,
     IsAuthenticatedOrReadOnly,
     IsUnscoped,
+    ModelPermissions,
     Not,
+    Public,
     Require,
     check_scopes_bounded,
     reads_principal,
@@ -111,6 +116,14 @@ async def provider_user(request: HTTPConnection) -> Member:
     return user
 
 
+@reads_principal
+async def plain_reader(request: HTTPConnection) -> Member:
+    """A project's dependency that reads the principal with ``current_user`` only."""
+    user = access.current_user(request)
+    assert isinstance(user, Member)
+    return user
+
+
 def build(*, flatten: bool) -> FastAPI:
     """Routes guarded every way; included through a router, nested or flattened."""
     router = APIRouter()
@@ -156,6 +169,30 @@ def build(*, flatten: bool) -> FastAPI:
     )
     async def provider_scoped(user: Annotated[Member, Depends(provider_user)]) -> str:
         return user.id
+
+    @router.post("/current")
+    async def current(user: CurrentUser) -> dict[str, bool]:
+        # Reads the principal and decides for itself (SEC-10a-4).
+        return {"ok": user.is_authenticated}
+
+    @router.post("/public-current", dependencies=[Public])
+    async def public_current(user: CurrentUser) -> dict[str, bool]:
+        return {"ok": user.is_authenticated}
+
+    @router.post("/reader")
+    async def reader(user: Annotated[Member, Depends(plain_reader)]) -> str:
+        return user.id
+
+    @router.get("/objects", dependencies=[Depends(Require(HasObjectPermissions(NOTE)))])
+    async def objects() -> list[str]:
+        # A list: no object, so check_object_permissions never runs (SEC-10a-5).
+        return ["one", "two"]
+
+    @router.options(
+        "/model", dependencies=[Depends(Require(ModelPermissions("notes.note")))]
+    )
+    async def model() -> dict[str, bool]:
+        return {"ok": True}
 
     guarded = APIRouter(dependencies=[Depends(Require())])
 
@@ -203,6 +240,9 @@ UNCHECKED: Final = (
     "/not",
     "/provider",
     "/guarded/inner-open",
+    "/current",
+    "/public-current",
+    "/reader",
 )
 
 
@@ -275,6 +315,47 @@ def test_routes_that_check_scopes_hold_scoped_keys_silently(
         unscoped = client.post("/api/unscoped", headers=KEY)
         assert unscoped.json()["detail"] == IsUnscoped.message
         assert client.post("/api/unscoped", headers=LOGIN).status_code == 200
+
+
+@pytest.mark.parametrize("mode", ["warn", "refuse"])
+def test_object_and_model_rules_check_scopes_on_every_request(
+    client: TestClient, mode: str
+) -> None:
+    """SEC-10a-5: ``HasObjectPermissions`` and ``OPTIONS`` used to skip the scopes.
+
+    A key without the permission listed objects no single-object check
+    looked at, and ``OPTIONS`` under ``ModelPermissions`` answered any key.
+    """
+    with override_settings(SCOPED_CREDENTIALS=mode):
+        assert client.get("/api/objects", headers=NARROW).status_code == 403
+        assert client.get("/api/objects", headers=KEY).status_code == 200
+        assert client.get("/api/objects", headers=LOGIN).status_code == 200
+        assert client.options("/api/model", headers=KEY).status_code == 403
+        assert client.options("/api/model", headers=NARROW).status_code == 200
+        assert client.options("/api/model", headers=LOGIN).status_code == 200
+
+
+def test_routes_that_read_the_principal_are_held_once_a_request(
+    client: TestClient,
+) -> None:
+    """SEC-10a-4: ``CurrentUser`` and readers used to skip ``SCOPED_CREDENTIALS``.
+
+    Under ``"refuse"``, a scoped key that reaches the principal on a route
+    that checks no scope gets 403, ``Public`` or not, and the decision is
+    kept for the rest of the request; anonymous callers and logins pass.
+    """
+    with override_settings(SCOPED_CREDENTIALS="refuse"):
+        for path in ("/current", "/public-current", "/reader"):
+            refused = client.post(f"/api{path}", headers=KEY)
+            assert refused.status_code == 403, path
+            assert refused.json()["detail"] == SCOPES_UNBOUNDED
+        assert client.post("/api/current").json() == {"ok": False}
+        assert client.post("/api/public-current", headers=LOGIN).json() == {"ok": True}
+    scope: dict[str, Any] = {"type": "http", "user": Member("a")}
+    scope["auth"] = Key(frozenset({NOTE}))
+    scope[access.SCOPES_CHECKED] = True  # Refused earlier in the request.
+    with pytest.raises(PermissionDenied):
+        access.current_user(HTTPConnection(scope))
 
 
 def test_which_rules_check_scopes() -> None:

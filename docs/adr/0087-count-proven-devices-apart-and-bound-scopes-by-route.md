@@ -51,26 +51,53 @@ runs first and would refuse a token the permission rule allows.
 
 ## Decision
 
-- **Device proofs.** A login that works (`/login`, `/session`) sets a
-  cookie, `__Host-dk_device`, HttpOnly, `SameSite=Lax`, holding a random
-  device id signed with `SECRET_KEY` under a salt that names the account
-  (the digest of its normalized username), for `AUTH.DEVICE_TTL` (30 days;
-  an hour to 400; `None` turns proofs off). A login to that account that
-  sends a valid proof counts against `LOGIN_RATE` under the device's key
-  alone, not the account's nor the address's. Each login that works
-  renews it. Nothing is stored: the counts stay in `RATE_LIMIT_BACKEND`,
-  and no table or migration is added. No stored lockout is added: the
-  account's count already bounds guessing, and a lock would hand
-  attackers the user's account.
+- **Device proofs.** A login that works, its second factor included
+  (`/login`, `/session`, `/mfa/login`, `/session/mfa`), sets a cookie,
+  `__Host-dk_device`, HttpOnly, `SameSite=Lax`, holding a random device id
+  signed with `SECRET_KEY` under a salt that names the account (the
+  digest of its normalized username). The device is stored as one of the
+  user's tokens (kind `device`, by the id's SHA-256), for
+  `AUTH.DEVICE_TTL` (30 days; an hour to 400; `None` turns proofs off), 20
+  at most per user, the oldest ending first: whatever ends every token of
+  the user (a password change or reset, logging out everywhere, an admin's
+  change, deletion) ends its devices, and a proof of a device that ended
+  counts as none. No migration: the tokens table holds them.
+- **Counts of proven attempts.** A login that sends a live proof counts
+  against `LOGIN_RATE` under the device's key, and against a ceiling of
+  the account's proven attempts, twice `LOGIN_RATE`; not the account's
+  own count nor the address's. Strangers cannot reach either. A first
+  design counted the device alone: a security review of the merged 0.10
+  showed that proofs minted while a password was known (six of them)
+  checked 12 guesses after the password changed, at a `LOGIN_RATE` of 2.
+  The ceiling was chosen by the same simulation, with an attacker holding
+  D valid proofs (copied cookies) beside the 200 addresses:
+
+  | Ceiling | D = 0: guesses an hour, victim's logins | D = 1 | D = 6 |
+  | --- | --- | --- | --- |
+  | none | 609, 60 of 60 | 1,218, 60 of 60 | 4,263, 60 of 60 |
+  | 1x | 609, 60 of 60 | 1,218, 0 of 60 | 1,218, 0 of 60 |
+  | 2x | 609, 60 of 60 | 1,218, 60 of 60 | 1,828, 0 of 60 |
+  | 5x | 609, 60 of 60 | 1,218, 60 of 60 | 3,658, 0 of 60 |
+
+  Twice `LOGIN_RATE` is the least that one copied proof cannot fill alone
+  to keep the user's devices out. Holding two or more live proofs needs
+  the password and the second factor, or the user's cookies, and a
+  password change ends them all.
+- **No stored lockout.** The account's count already bounds guessing, and
+  a lock would hand attackers the user's account.
 - **Scopes by route.** A route reached with credentials that carry scopes
   must declare a rule that checks scopes, at any depth of its dependencies
   or its routers' (`BasePermission.bounds_scopes`: `HasScope`, the
   permission rules, `IsUnscoped`, `IsAdminUser`, `IsSuperuser`, and the
   new `AllowScoped`; `&` checks if either side does, `|` if both do, `~`
-  never). `Require` checks it once its rules allow, and so does
-  `AuthenticatedUser` (`check_scopes_bounded`). The route is the one
-  FastAPI serves, from its effective route context, so routers' rules
-  count, nested or flattened.
+  never). It is decided once a request, wherever the principal is
+  first read: `Require`, `CurrentUser`, `AuthenticatedUser`, and
+  `current_user`, which every provider's dependency calls, `Public` routes
+  included (`check_scopes_bounded`; the review of the merged 0.10 found
+  `CurrentUser` routes skipped). The route is the one FastAPI serves,
+  from its effective route context, so routers' rules count, nested or
+  flattened. `HasObjectPermissions` checks the scopes on the request too,
+  and `ModelPermissions` asks scoped credentials for `view` on `OPTIONS`.
 - **One minor of notice.** `SCOPED_CREDENTIALS = "warn"` (0.10's default)
   serves such requests as before, with a `DomainkitDeprecationWarning`
   for tests and a throttled security log line for deployments; `"refuse"`
@@ -80,13 +107,18 @@ runs first and would refuse a token the permission rule allows.
 
 - A user is kept out by strangers only on a client that never logged in
   (a new browser, a script without a cookie jar): as in 0.9, and a password
-  reset, which needs their mail, ends it. Guessing stays bounded by the
-  account's count; a stolen proof adds one device's count for one account.
+  reset, which needs their mail, ends it. Guessing an account stays
+  bounded: `LOGIN_RATE` without proofs, plus twice that with them, however
+  many proofs one holds.
+- A successful login writes or renews one device row; the user's tokens
+  table holds up to 20 more rows per user, which `GET /auth/tokens` does
+  not list.
 - Every login response sets one more cookie. HTTP clients without a cookie
   jar get 0.9's behaviour.
 - Projects with routes that serve scoped tokens on authentication alone
   see the warning in their tests, and must name a scope, a permission, or
-  `AllowScoped()` before 0.11. A route that reads `CurrentUser` and decides
-  for itself is not checked.
-- A request with scoped credentials walks its route's dependencies once
-  per `Require`; requests without scopes pay nothing.
+  `AllowScoped()` before 0.11; a route that reads `CurrentUser` and
+  decides for itself is held too. A principal read straight from
+  `scope["user"]` is not.
+- A request with scoped credentials walks its route's dependencies once;
+  requests without scopes pay nothing.

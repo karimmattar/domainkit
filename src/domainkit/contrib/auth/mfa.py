@@ -58,6 +58,7 @@ from .api import (
     issue_login,
     password_holds,
 )
+from .devices import hand_out
 from .events import MfaDisabled, MfaEnabled, RecoveryCodesRegenerated, RecoveryCodeUsed
 from .models import AbstractBaseUser, UserId
 from .onetime import TOKEN_MAX_LENGTH, UserTokenGenerator
@@ -446,7 +447,9 @@ async def mfa_login(body: MfaLoginIn, request: Request, response: Response) -> T
     """Finish a login with the challenge and a code; return tokens."""
     _no_store(response)
     user = await verify_challenge(request, body.mfa_token, body.code)
-    return _token_out(await issue_login(user))
+    issued = await issue_login(user)
+    await hand_out(request, response, user)
+    return _token_out(issued)
 
 
 async def _reauthenticate(

@@ -43,6 +43,9 @@ class TokenKind(StrEnum):
     """A browser's session cookie (``CookieAuthentication``), never a header."""
     CERTIFICATE = "certificate"
     """A client certificate, by its SHA-256 (``ClientCertificateAuthentication``)."""
+    DEVICE = "device"
+    """A client that logged in, by the SHA-256 of its device proof's id
+    (``auth.devices``): it never authenticates a request."""
 
 
 class AuthToken(Entity[str]):

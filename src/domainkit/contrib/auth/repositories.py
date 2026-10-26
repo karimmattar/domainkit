@@ -617,13 +617,30 @@ class TokenStore:
             *(family_target(family) for family in families),
         )
 
+    async def end_oldest(self, user_id: UUID, kind: TokenKind, *, keep: int) -> int:
+        """End the user's tokens of ``kind`` but the ``keep`` newest; how many."""
+        newest = (
+            select(tokens.c.id)
+            .where(tokens.c.user_id == user_id, tokens.c.kind == kind)
+            .order_by(tokens.c.created_at.desc(), tokens.c.id.desc())
+            .offset(keep)
+        )
+        oldest = list(await self.session.scalars(newest))
+        if not oldest:
+            return 0
+        return await self._revoke(tokens.c.id.in_(oldest))
+
     async def of_user(
         self, user_id: UUID, *, limit: int, before: tuple[datetime, str] | None = None
     ) -> Page[AuthToken]:
-        """The user's tokens, newest first, after the position ``before``."""
+        """The user's tokens, newest first, after the position ``before``.
+
+        Not the devices that logged in (``auth.devices``): they authenticate
+        nothing, and end with every token of the user.
+        """
         statement = (
             select(AuthToken)
-            .where(tokens.c.user_id == user_id)
+            .where(tokens.c.user_id == user_id, tokens.c.kind != TokenKind.DEVICE)
             .order_by(tokens.c.created_at.desc(), tokens.c.id.desc())
             .limit(limit + 1)
         )

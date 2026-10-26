@@ -339,9 +339,12 @@ Browser sessions: an opaque token in an HttpOnly cookie, guarded against CSRF.
 Device proofs: a client that logged in keeps a count of its own (SEC-r1-2).
 
 - `DEVICE_COOKIE`: The proof's cookie, `__Host-` prefixed where the prefix holds.
+- `MAX_DEVICES`: Devices a user holds at once; a new one past it ends the oldest.
+- `PROVEN_CEILING`: Proven attempts an account takes from all its devices, in `LOGIN_RATE` units.
 - `device_key`: The count of wrong passwords sent with `device`'s proof.
-- `hand_out`: Set a new proof for `username`'s account: for `device`, or a new one.
+- `hand_out`: Set a proof for `user`'s account, once the whole login held.
 - `proven_device`: The device the request proves for `username`'s account, if any.
+- `proven_limits`: The counts a proven attempt takes: its device's, and the account's ceiling.
 
 ## `domainkit.contrib.auth.hashers`
 
