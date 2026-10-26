@@ -31,6 +31,7 @@ from domainkit import clock
 from domainkit.apps import registry
 from domainkit.db import connections
 from domainkit.db.connections import create_owner_engine
+from domainkit.exceptions import DomainkitError
 from domainkit.http.errors import sqlstate
 from domainkit.ledger import Ledger
 
@@ -67,7 +68,7 @@ _ENABLED: Final = text(
 )
 
 
-class PruneRefused(Exception):
+class PruneRefused(DomainkitError):
     """The trail cannot be pruned as asked; nothing was deleted."""
 
 
@@ -268,7 +269,7 @@ async def _disable_triggers(connection: AsyncConnection) -> list[str]:
     return enable
 
 
-class ExportRefused(Exception):
+class ExportRefused(DomainkitError):
     """A trail does not verify: no checkpoint of it is signed."""
 
 

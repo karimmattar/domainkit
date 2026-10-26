@@ -641,3 +641,11 @@ msgstr "الخادم مشغول؛ أعد المحاولة بعد قليل."
 #. domainkit.http: request bodies
 msgid "The request body took too long to arrive."
 msgstr "استغرق وصول جسم الطلب وقتًا أطول من اللازم."
+
+#. domainkit.contrib.idempotency
+msgid "An Idempotency-Key needs a caller this service knows: authenticate, or send the request without the key."
+msgstr "يحتاج مفتاح Idempotency-Key إلى متّصل تعرفه هذه الخدمة: سجّل الدخول، أو أرسل الطلب دون المفتاح."
+
+#. domainkit.contrib.auth: startup checks
+msgid "AUTH settings cannot be used"
+msgstr "لا يمكن استخدام إعدادات AUTH"

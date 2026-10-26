@@ -635,3 +635,11 @@ msgstr ""
 #. domainkit.http: request bodies
 msgid "The request body took too long to arrive."
 msgstr ""
+
+#. domainkit.contrib.idempotency
+msgid "An Idempotency-Key needs a caller this service knows: authenticate, or send the request without the key."
+msgstr ""
+
+#. domainkit.contrib.auth: startup checks
+msgid "AUTH settings cannot be used"
+msgstr ""

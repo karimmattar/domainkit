@@ -39,7 +39,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from domainkit.apps import registry
-from domainkit.exceptions import ImproperlyConfigured
+from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 
 from .settings import AuditSettings
 from .tables import audit_checkpoints
@@ -82,7 +82,7 @@ _HEX: Final = frozenset("0123456789abcdef")
 SIGNATURE_BYTES: Final = 64
 
 
-class CheckpointInvalid(ValueError):
+class CheckpointInvalid(ValueError, DomainkitError):
     """A checkpoint, or an export, that does not verify: never trust it."""
 
 
