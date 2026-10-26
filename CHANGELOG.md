@@ -51,6 +51,35 @@ and a status.
 - The `resource-read` and `resource-command` rungs of the benchmark ladder:
   a `ResourceRouter` read and a scoped command, through the template stack
   (DSGN-01).
+- A getting-started path in five parts (`docs/tutorial.md`): a first
+  resource; an aggregate with rules written by hand and the migration they
+  need; users and permissions; a durable event run by the worker; and tests
+  and the checks production runs. Every command and code change on the
+  pages is run as written by `test_walkthroughs.py`, which now applies the
+  pages' edits as a reader would (DOCS-05).
+- `docs/operations.md` (processes, configuration, sizing, migrations in a
+  rollout, the worker, sealing, backups and restores, what to alert on),
+  `docs/runbook.md` (symptom, check, and action for each alarm the
+  framework raises), `docs/security.md` (the hardening checklist, each item
+  marked refused or warned by the deployment checks), and
+  `docs/upgrading.md` (every breaking change and deprecation of a minor,
+  with its fix; a test keeps it complete) (DOCS-04).
+- A documentation site (`mkdocs.yml`, Material for MkDocs) with search, and
+  an API reference generated at build time from the docstrings of exactly
+  the names `docs/api.md` lists. CI's `docs-site` job builds it with every
+  link and anchor checked, from a new `docs` dependency group, beside the
+  tests (DOCS-03; ADR 0089).
+- `compose.yaml` runs the servers of CI's integration job on a laptop, at
+  the same images and ports, with throwaway certificates; a `Makefile`
+  holds the commands contributors run (`make lint` is CI's lint job,
+  `make integration` its integration job); `CONTRIBUTING.md`, issue forms,
+  and a pull request template. `test_ci.py` keeps them equal to CI
+  (INFRA-10).
+- CI audits the workflows with zizmor, and scans the package with CodeQL's
+  security queries (`codeql.yml`); a release makes its GitHub Release, with
+  the CHANGELOG's section as notes and the files, the bill of materials,
+  and their SHA-256 sums as assets; and the `newest` job runs pip-audit
+  over what `pip install domainkit[...]` resolves (INFRA-11).
 
 ### Changed
 
@@ -76,6 +105,13 @@ and a status.
 - A rule's `has_permission` and `has_object_permission` take the principal
   typed `Any`, so rules written for auth's `AnyUser` keep their annotation;
   the core's own rules read a `Principal` (DSGN-02).
+- The pre-commit hooks run CI's lint commands as CI does: `ruff check`
+  without `--fix`, `ruff format --check`, and `poetry check --lock`; they
+  report, and `make fix` fixes. The remote hooks are pinned to commits
+  (INFRA-10).
+- Tests that passed as long as nothing raised now assert what they
+  promise, and property tests in CI print the blob that replays a failing
+  example (TEST-06).
 
 ### Deprecated
 
