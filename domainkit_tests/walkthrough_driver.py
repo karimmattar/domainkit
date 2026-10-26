@@ -1,9 +1,12 @@
 """Send a walkthrough's ``curl`` lines to a generated project's application.
 
 Run as ``python walkthrough_driver.py <results>`` in the project's
-directory, with ``{"lines": [...], "typed": {...}}`` as JSON on stdin; it
-writes one JSON result per line to ``<results>`` (stdout carries the
-application's logs). ``typed`` is what the user types at each ``read``. The
+directory, with ``{"lines": [...], "typed": {...}, "variables": {...},
+"exported": [...]}`` as JSON on stdin; it writes one JSON result per line
+to ``<results>``, then the shell's variables and exported names as they
+are after the last line (stdout carries the application's logs). ``typed``
+is what the user types at each ``read``; ``variables`` and ``exported``
+are what the shell held before, so a page goes on from the one before it. The
 application is served in this process through Starlette's test client, at
 the address ``runserver`` listens on, so no server or port is needed and
 ``curl`` need not be installed. Only the shapes the docs use are understood,
@@ -137,18 +140,26 @@ def run_line(
     line: str,
     variables: dict[str, str],
     typed: dict[str, str] | None = None,
+    exported: set[str] | None = None,
 ) -> dict[str, Any]:
-    """Run one line; keep what it assigns; return its status and output."""
+    """Run one line; keep what it assigns; return its status and output.
+
+    ``exported`` gains the names a ``read`` exports and loses those
+    ``unset`` forgets.
+    """
+    exported = set() if exported is None else exported
     command, expected = expected_status(line)
     if prompt := _READ.fullmatch(command.strip()):
         name = prompt["name"]
         if typed is None or name not in typed:
             raise Refused(f"nothing was typed for ${name}: {line}")
         variables[name] = os.environ[name] = typed[name]
+        exported.add(name)
         return {"line": line, "status": None, "expected": None, "output": ""}
     if forgotten := _UNSET.fullmatch(command.strip()):
         variables.pop(forgotten["name"], None)
         os.environ.pop(forgotten["name"], None)
+        exported.discard(forgotten["name"])
         return {"line": line, "status": None, "expected": None, "output": ""}
     assignment = _ASSIGNMENT.fullmatch(command.strip())
     if assignment is None:
@@ -172,15 +183,18 @@ def main() -> None:
     from config.asgi import application  # type: ignore[import-not-found]
     from starlette.testclient import TestClient
 
-    variables: dict[str, str] = {}
     given = json.loads(sys.stdin.read())
+    variables: dict[str, str] = given["variables"]
+    exported = set(given["exported"])
     with (
         TestClient(application, base_url=SERVER) as client,
         Path(sys.argv[1]).open("w", encoding="utf-8") as results,
     ):
         for line in given["lines"]:
-            result = run_line(client, line, variables, given["typed"])
+            result = run_line(client, line, variables, given["typed"], exported)
             results.write(json.dumps(result) + "\n")
+        state = {"variables": variables, "exported": sorted(exported)}
+        results.write(json.dumps(state) + "\n")
 
 
 if __name__ == "__main__":

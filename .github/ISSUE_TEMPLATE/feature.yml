@@ -1,0 +1,18 @@
+name: Feature
+description: Something domainkit could do, or do better.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do, and what stands in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+      description: How it could work, and how Django, DRF, or another framework does it, if one does.
+    validations:
+      required: false

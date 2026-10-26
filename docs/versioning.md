@@ -154,6 +154,9 @@ with deptry (`[tool.deptry]` in `pyproject.toml`).
      karimmattar/domainkit`);
    - waits for a reviewer to approve the `pypi` environment;
    - publishes the wheel and sdist that CI built to PyPI, with attestations.
+   - creates the GitHub Release for the tag: the CHANGELOG's section for
+     the version as its notes, and the wheel, the sdist, the bill of
+     materials, and their SHA-256 sums (`SHA256SUMS`) as its assets.
 
 One-time setup, before the first release:
 
@@ -171,7 +174,8 @@ One-time setup, before the first release:
   - `main.json`: changes reach `main` only as squash-merged pull requests,
     up to date with it, with these checks from GitHub Actions passing:
     `lint`, `test (3.13)`, `test (3.14)`, `test (3.14t)`, `integration`,
-    `bench`, `coverage`, `build`, `sbom`, `semgrep`, and `audit`. Nobody
+    `bench`, `coverage`, `build`, `sbom`, `semgrep`, `docs-site`, and
+    `audit`. Nobody
     pushes to `main` or rewrites it; an admin may bypass the rules only
     when merging a pull request, a choice GitHub records. The `newest` and
     `oldest` jobs run on pull requests too but are not required: what

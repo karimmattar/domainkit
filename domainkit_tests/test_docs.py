@@ -129,6 +129,8 @@ def pages() -> list[Path]:
         ROOT / "README.md",
         ROOT / "SECURITY.md",
         ROOT / "CHANGELOG.md",
+        ROOT / "CONTRIBUTING.md",
+        ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
         # The ADR template's links are placeholders.
         *sorted(set(DOCS.rglob("*.md")) - {DOCS / "adr" / "template.md"}),
     ]
@@ -485,3 +487,41 @@ def test_open_security_findings_are_listed_without_their_detail() -> None:
     assert rows
     shown = [row[0] for row in rows if not row[1].startswith("Withheld while open")]
     assert shown == []
+
+
+def upgrade_entries(changelog: str) -> list[str]:
+    """The ``[Unreleased]`` entries a project must act on: Breaking and Deprecated."""
+    unreleased = changelog.split("\n## [Unreleased]\n", 1)[1].split("\n## [", 1)[0]
+    sections = re.split(r"^### ", unreleased, flags=re.MULTILINE)[1:]
+    entries = []
+    for section in sections:
+        title, _, body = section.partition("\n")
+        items = re.split(r"^- ", body, flags=re.MULTILINE)[1:]
+        if title == "Deprecated":
+            entries += items
+        elif title == "Changed":
+            entries += [item for item in items if item.startswith("**Breaking:**")]
+    return entries
+
+
+def test_the_upgrade_guide_covers_every_breaking_change_and_deprecation() -> None:
+    """Each audit id of a Breaking or Deprecated entry is on upgrading.md."""
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    guide = (DOCS / "upgrading.md").read_text(encoding="utf-8")
+    entries = upgrade_entries(changelog)
+
+    assert entries, "no Breaking or Deprecated entry under [Unreleased]"
+    cited = {ident for entry in entries for ident in _AUDIT_ID.findall(entry)}
+    assert sorted(i for i in cited if not re.search(rf"\b{i}\b", guide)) == []
+
+
+def test_the_upgrade_entries_are_read_from_their_sections() -> None:
+    """Breaking entries of Changed and every Deprecated one; nothing else."""
+    changelog = (
+        "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- New (A-1).\n\n"
+        "### Changed\n\n- **Breaking:** b (B-1).\n- Quiet (C-1).\n\n"
+        "### Deprecated\n\n- Old (D-1).\n\n## [0.9.2] - 2026-10-26\n\n"
+        "### Changed\n\n- **Breaking:** before (E-1).\n"
+    )
+
+    assert upgrade_entries(changelog) == ["**Breaking:** b (B-1).\n", "Old (D-1).\n"]

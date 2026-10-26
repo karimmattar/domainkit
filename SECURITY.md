@@ -57,6 +57,8 @@ boundary by boundary, and what is left to a project.
 | Lint with bandit rules (ruff `S`), strict typing (mypy) | `pyproject.toml`, CI |
 | Dependency audit (pip-audit) and secret scan (gitleaks) on every push, and weekly | `.github/workflows/ci.yml` |
 | Static analysis with Semgrep's Python and OWASP Top 10 rules on every push, and weekly | `.github/workflows/ci.yml` |
+| CodeQL's security queries, which follow values across functions and modules, on pushes to `main`, pull requests, and weekly | `.github/workflows/codeql.yml` |
+| The workflows themselves audited by zizmor (injection, persisted credentials, unpinned actions, excessive permissions) on every push, and weekly | `.github/workflows/ci.yml` |
 | A CycloneDX bill of materials for every wheel CI builds: the packages the lock resolves for it | `.github/workflows/ci.yml` |
 | Actions pinned to commit SHAs and CI's images to digests; dependencies updated by Renovate after 14 days, security fixes at once | `.github/workflows/`, `renovate.json` |
 | `main` changes only through pull requests that pass CI; release tags are never moved or deleted (once the rulesets are imported, see `docs/versioning.md`) | `.github/rulesets/` |

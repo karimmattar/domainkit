@@ -1,0 +1,40 @@
+name: Bug
+description: domainkit does something other than its documentation says.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Thank you. A vulnerability goes to SECURITY.md's private channel,
+        not here. Leave secrets, tokens, and personal data out of what you
+        paste.
+  - type: input
+    id: version
+    attributes:
+      label: Versions
+      description: domainkit, Python, and the database, if it matters.
+      placeholder: domainkit 0.10.0, Python 3.13.9, PostgreSQL 18
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What you did
+      description: The smallest steps, code, or commands that show it.
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and the page that says so
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+      description: The answer, the error and its traceback, or the log lines.
+      render: text
+    validations:
+      required: true

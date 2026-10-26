@@ -1,163 +1,34 @@
-# Tutorial: a first service
+# Getting started
 
-This page goes from `pip install` to an authenticated endpoint that serves
-one aggregate, in eight steps. It explains as little as it can and links to
-the rest. Every command on it is run as written by the tests
-(`domainkit_tests/test_walkthroughs.py`), so if one fails for you, that is a
-bug: please report it.
+Five short parts take you from `pip install` to a small bank API: accounts
+with a balance and the rules that guard it, users who may do only what
+they were granted, a reaction that runs in a worker, and the tests that
+hold it all. Each part ends with a project that works, and each takes
+about a quarter of an hour. None of them needs a reference page.
 
-You need Python 3.13 or 3.14, and `curl`.
+1. [Install, and a first resource](tutorial/1-first-resource.md): a
+   project, a domain, a user, and the first requests with `curl`.
+2. [An aggregate with rules](tutorial/2-rules.md): a balance, a deposit,
+   and rules written by hand; a migration for the new column.
+3. [Users and permissions](tutorial/3-permissions.md): a clerk who may read
+   accounts and nothing more.
+4. [Events and the outbox](tutorial/4-events.md): a reaction to each
+   deposit, stored with it and run by the worker.
+5. [Tests, and getting ready for production](tutorial/5-testing-and-deploying.md):
+   tests of the rules, and the checks production runs at startup.
 
-## 1. Install
+You need Python 3.13 or 3.14, and `curl`. Work through the parts in order,
+in one directory: each starts where the one before ended.
 
-```bash
-python3.13 -m venv .venv && . .venv/bin/activate
-pip install "domainkit[postgres,sqlite,testing]"
-```
+Every command and every code change on these pages is run as written, in
+that order, by the tests (`domainkit_tests/test_walkthroughs.py`). If one
+fails for you, that is a bug: please report it.
 
-`sqlite` lets the project run without a database server; `postgres` is for
-later, and `testing` brings the pytest plugin.
+After the tutorial:
 
-## 2. Create a project
-
-```bash
-domainkit init bankAPI bank
-cd bank
-python manage.py check
-```
-
-`bankAPI` is the project's name, and `bank` its directory. The name also
-sets the prefix of its environment variables: `BANK_API_*`. The project
-reads `config.settings.local` here (`.env` says so), which keeps its data in
-`db.sqlite3`. Users, groups, and permissions are installed already.
-
-## 3. Add a domain with one aggregate
-
-```bash
-python manage.py startdomain accounts --aggregate Account
-```
-
-`src/domains/accounts/` is a bounded context in four layers; `check` keeps
-each layer to its own imports ([ADR 0003](adr/0003-enforced-layer-rules.md)):
-
-| Layer | Holds |
-| --- | --- |
-| `domain/` | The `Account` aggregate: a name that must not be blank, notes as child entities, its owner by id, and the rule that an archived account cannot change. Plain Python, no I/O. |
-| `application/` | The commands (`CreateAccount`, `ArchiveAccount`, ...) and the use cases that run them in a unit of work. |
-| `infrastructure/` | The table and the SQLAlchemy unit of work. |
-| `api/` | `routes.py`: the resource, its filters, and who may call it (`ModelActions`: the model permissions). |
-
-`startdomain` added the domain to `INSTALLED_DOMAINS` and mounted its router
-at `/api/v1/accounts` in `src/config/urls.py`. The resource is `/accounts`
-within it, so its URL is `/api/v1/accounts/accounts`.
-
-## 4. Create its table
-
-```bash
-python manage.py makemigrations -m "create accounts"
-python manage.py migrate
-pytest
-```
-
-`makemigrations` writes a migration from the table the aggregate maps to,
-and `migrate` applies it. The domain came with tests of every layer, and
-they pass.
-
-## 5. Create a user
-
-```bash
-read -rsp "Password: " PASSWORD && export PASSWORD    # typed, not echoed
-BANK_API_SUPERUSER_PASSWORD="$PASSWORD" \
-  python manage.py createsuperuser --noinput --username admin --email admin@example.com
-unset PASSWORD    # so that runserver, started next, does not inherit it
-```
-
-A superuser holds every permission. Another user needs
-`accounts.view_account` to read, and `add_account`, `change_account`, or
-`delete_account` to change ([auth.md](auth.md#protecting-routes)).
-`createsuperuser` without options asks for each value instead.
-
-## 6. Serve it
-
-```bash
-python manage.py runserver
-```
-
-Leave it running. Open a second shell, `cd` to `bank`, and activate the
-same environment. `http://127.0.0.1:8000/docs` lists every route.
-
-## 7. Call it
-
-Every route needs credentials unless it says otherwise. Without them the
-answer is `401`:
-
-```bash
-curl http://127.0.0.1:8000/api/v1/accounts/accounts   # 401
-```
-
-Log in, typing the password again, and keep the token in `$TOKEN`. The
-password goes to `curl` on its standard input (`-d @-`), so it is in no
-command line, and no shell history:
-
-```bash
-read -rsp "Password: " PASSWORD && export PASSWORD
-TOKEN=$(python -c "import json, os; print(json.dumps({'username': 'admin', 'password': os.environ['PASSWORD']}))" \
-  | curl -s http://127.0.0.1:8000/auth/login -H "Content-Type: application/json" -d @- \
-  | python -c "import json, sys; print(json.load(sys.stdin)['access_token'])")
-unset PASSWORD
-```
-
-Open an account. The answer is `201 Created`, with the new account's
-`Location` and its `ETag`; the account belongs to the caller (`owner_id`):
-
-```bash
-curl -i http://127.0.0.1:8000/api/v1/accounts/accounts -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" -d '{"name": "Savings"}'
-```
-
-List the accounts, and keep the first one's id in `$ID`:
-
-```bash
-ID=$(curl -s http://127.0.0.1:8000/api/v1/accounts/accounts -H "Authorization: Bearer $TOKEN" \
-  | python -c "import json, sys; print(json.load(sys.stdin)['items'][0]['id'])")
-```
-
-Add a note to it, then archive it:
-
-```bash
-curl http://127.0.0.1:8000/api/v1/accounts/accounts/$ID/notes -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" -d '{"text": "Opened at the branch"}'
-curl -X POST http://127.0.0.1:8000/api/v1/accounts/accounts/$ID/archive -H "Authorization: Bearer $TOKEN"
-```
-
-## 8. Watch the rules hold
-
-The aggregate refuses changes once archived. The refusal is raised in
-`domain/model.py` (`AccountIsArchived`, a `BusinessRuleViolation`), and the
-HTTP layer answers it `422` with the code `account_is_archived`:
-
-```bash
-curl http://127.0.0.1:8000/api/v1/accounts/accounts/$ID/notes -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" -d '{"text": "Too late"}'   # 422
-```
-
-A blank name is refused the same way, by the `AccountName` value object
-(`invalid_account_name`):
-
-```bash
-curl http://127.0.0.1:8000/api/v1/accounts/accounts -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" -d '{"name": "   "}'   # 422
-```
-
-## Where next
-
-- [resources.md](resources.md): the resource router, and the generators
-  that add aggregates, commands, queries, and events to the domain.
-- [queries.md](queries.md): filters, pages, row locks, and savepoints.
-- [auth.md](auth.md): users, permissions, tokens, and route rules.
-- [testing.md](testing.md): the fixtures the generated tests use.
-- [contrib.md](contrib.md): the outbox, workers, the audit trail, and
-  idempotent requests.
-- Before production: [reference.md](reference.md#deployment-checks) (what
-  startup refuses), and [threat-model.md](threat-model.md) (what domainkit
-  protects, and what is left to the project).
+- [operations.md](operations.md): running it in production, and
+  [runbook.md](runbook.md) for when an alarm fires.
+- [security.md](security.md): the hardening checklist.
+- [upgrading.md](upgrading.md): moving a project to a new minor version.
+- [api.md](api.md): every public name; the documentation site renders
+  each one's docstring under "API reference".

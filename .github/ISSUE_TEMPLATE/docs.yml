@@ -1,0 +1,18 @@
+name: Documentation
+description: A page is wrong, unclear, or missing; or a tutorial step fails.
+labels: [docs]
+body:
+  - type: input
+    id: page
+    attributes:
+      label: The page and section
+      placeholder: docs/tutorial/2-rules.md, "Migrate"
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is wrong or missing
+      description: For a tutorial step that fails, the command and what it printed.
+    validations:
+      required: true

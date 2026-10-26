@@ -240,3 +240,11 @@ def test_the_longest_names_fit_in_a_cursor() -> None:
     assert decode_cursor(encode_cursor(values), 2) == values
     with pytest.raises(ValueError, match="too long"):
         encode_cursor(["x" * MAX_CURSOR_LENGTH])
+
+
+def test_ci_prints_how_to_replay_a_failing_example() -> None:
+    """The ``ci`` profile (loaded when ``CI`` is set) prints the replay blob."""
+    profile = settings.get_profile("ci")
+
+    assert profile.print_blob is True
+    assert profile.max_examples == settings.get_profile("default").max_examples

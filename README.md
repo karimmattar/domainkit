@@ -43,8 +43,15 @@ and a server).
 
 ## Documentation
 
-- [docs/tutorial.md](https://github.com/karimmattar/domainkit/blob/main/docs/tutorial.md): from `pip install` to an
-  authenticated endpoint with one aggregate, every command run in CI
+- [docs/tutorial.md](https://github.com/karimmattar/domainkit/blob/main/docs/tutorial.md): getting started, in five
+  parts: a first resource, rules, permissions, events and the worker, and
+  tests and production; every command and code change run in CI
+- [docs/operations.md](https://github.com/karimmattar/domainkit/blob/main/docs/operations.md): running in production:
+  processes, configuration, sizing, migrations in a rollout, the worker,
+  sealing, backups, and what to alert on; [docs/runbook.md](https://github.com/karimmattar/domainkit/blob/main/docs/runbook.md)
+  for each alarm, [docs/security.md](https://github.com/karimmattar/domainkit/blob/main/docs/security.md) the hardening
+  checklist, and [docs/upgrading.md](https://github.com/karimmattar/domainkit/blob/main/docs/upgrading.md) from one minor to
+  the next
 
 - [docs/reference.md](https://github.com/karimmattar/domainkit/blob/main/docs/reference.md): settings, middleware, errors,
   the API surface (OpenAPI, versions, deprecations), observability,
@@ -91,7 +98,8 @@ and a server).
   a project
 - [docs/audit/0.9.0.md](https://github.com/karimmattar/domainkit/blob/main/docs/audit/0.9.0.md): the 0.9.0 audit's findings
   that the CHANGELOG names, with their status
-- [docs/api.md](https://github.com/karimmattar/domainkit/blob/main/docs/api.md): the public API, module by module, one line a name
+- [docs/api.md](https://github.com/karimmattar/domainkit/blob/main/docs/api.md): the public API, module by module, one line a name;
+  `mkdocs.yml` builds these pages into a site, with every name's docstring
 - [docs/adr/](https://github.com/karimmattar/domainkit/tree/main/docs/adr): the decisions behind the design
 - [CHANGELOG.md](https://github.com/karimmattar/domainkit/blob/main/CHANGELOG.md) and [SECURITY.md](https://github.com/karimmattar/domainkit/blob/main/SECURITY.md)
 
@@ -133,7 +141,8 @@ domain's router is mounted at `/api/v1/invoices`, and its resource is
 made. A route the caller may not reach answers 404, as an unknown path does,
 so check the path first (`/docs` lists every route). `createsuperuser`
 without options asks for each value instead. [docs/tutorial.md](https://github.com/karimmattar/domainkit/blob/main/docs/tutorial.md)
-goes on from here: a resource created, changed, and refused by its rules.
+goes on from here, in five parts: rules written by hand, permissions,
+events run by the worker, and tests.
 
 `domainkit init` creates a project that passes `check` and its tests as it is.
 Users, groups, and permissions are installed, requests are authenticated,
@@ -171,37 +180,26 @@ how many cores a load needs.
 
 ## Developing domainkit
 
-```bash
-poetry install --all-extras            # Python 3.13
-pre-commit install                     # after: pipx install pre-commit
+[CONTRIBUTING.md](https://github.com/karimmattar/domainkit/blob/main/CONTRIBUTING.md)
+says how to set up, which checks a change must pass, and how to write it
+up. In short:
 
-poetry run ruff check . && poetry run ruff format --check . && poetry run mypy
-poetry run deptry .                    # every imported package is declared
-poetry run pytest --cov                # random order, 2 minutes a test; coverage gate in pyproject.toml
-poetry run mutmut run "domainkit.http*" && poetry run mutmut results
+```text
+make install        # Python 3.13, Poetry 2.2: every extra, dev and docs groups, hooks
+make check          # lint, strict types, deptry, the tests, the docs site
+make integration    # the tests against the servers of compose.yaml, as CI runs them
+make                # every command
 ```
 
 Without servers, the database tests use SQLite, the Redis and RabbitMQ
 tests use in-memory fakes, and the tests that need PostgreSQL, immudb, or a
-real Redis, Valkey, or RabbitMQ are skipped. Point them at throwaway servers to run
-them; each test cleans up after itself:
-
-```bash
-docker run -d --rm --name domainkit-postgres -e POSTGRES_PASSWORD=postgres \
-  -p 127.0.0.1:55432:5432 postgres:18-alpine
-docker run -d --rm --name domainkit-redis -p 127.0.0.1:56379:6379 redis:8-alpine
-DOMAINKIT_TEST_POSTGRES_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:55432/postgres \
-DOMAINKIT_TEST_REDIS_URL=redis://127.0.0.1:56379/0 \
-  poetry run pytest
-```
-
-The other variables (immudb, Redis over TLS, Valkey, RabbitMQ) are listed
-at the top of `domainkit_tests/test_immudb.py`, `test_redis.py`, and
-`test_rabbitmq.py`. Each run must cover
-98%; CI also combines the runs with and without servers, which must cover
-100%. To check that locally, run `pytest --cov` once without and once with
-the servers, each with its own `COVERAGE_FILE`, then `coverage combine` and
-`coverage report --fail-under=100`.
+real Redis, Valkey, or RabbitMQ are skipped. `compose.yaml` starts the
+servers CI's integration job uses, at the same images and ports, with
+throwaway certificates in `.ci/`; `make integration` sets the variables
+that point the tests at them (the `DOMAINKIT_TEST_*` names at the top of
+`domainkit_tests/test_immudb.py`, `test_redis.py`, and `test_rabbitmq.py`).
+Each run must cover 98%; CI also combines the runs with and without
+servers, which must cover 100% (`make cov`).
 
 CI (`.github/workflows/ci.yml`) runs on every push and pull request:
 
@@ -215,8 +213,10 @@ CI (`.github/workflows/ci.yml`) runs on every push and pull request:
   against budgets (`python -m benchmarks`; docs/performance.md)
 - a wheel build, installed and imported in a clean environment, and its
   CycloneDX bill of materials
-- Semgrep's Python and OWASP Top 10 rules, pip-audit, and a gitleaks scan
-  of the whole history
+- Semgrep's Python and OWASP Top 10 rules, zizmor over the workflows,
+  pip-audit, and a gitleaks scan of the whole history; CodeQL's security
+  queries in a workflow of their own (`codeql.yml`)
+- the documentation site, built with every link and public name checked
 - on pull requests and weekly, the tests again with the newest releases
   the dependency ranges allow, not the lock's, and with the oldest
 

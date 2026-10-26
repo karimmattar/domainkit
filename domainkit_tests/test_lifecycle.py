@@ -3,7 +3,7 @@
 import asyncio
 import importlib
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterator, Sized
 from functools import partial
 from typing import Any, cast
 
@@ -566,13 +566,24 @@ async def test_a_domain_that_fails_to_start_still_shuts_everything_down(
 
 def test_closing_what_a_loop_never_opened_does_nothing() -> None:
     """Handlers close only the running loop's resources, if it has any."""
+    caches, connections, brokers = CacheHandler(), ConnectionHandler(), BrokerHandler()
 
     async def close_fresh() -> None:
-        await CacheHandler().close_all()
-        await ConnectionHandler().close_all()
-        await BrokerHandler().close_all()
+        await caches.close_all()
+        await connections.close_all()
+        await brokers.close_all()
 
     asyncio.run(close_fresh())
+
+    # Closing opened nothing for the loop on the way: no map holds it.
+    held: list[Sized] = [
+        caches._caches,
+        caches._replaced,
+        connections._engines,
+        brokers._brokers,
+        brokers._replaced,
+    ]
+    assert [len(each) for each in held] == [0, 0, 0, 0, 0]
 
 
 async def test_close_each_closes_every_item_then_raises_the_first_failure(

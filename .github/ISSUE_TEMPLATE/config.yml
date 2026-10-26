@@ -1,0 +1,6 @@
+# Vulnerabilities are reported privately, never in an issue (SECURITY.md).
+blank_issues_enabled: false
+contact_links:
+  - name: Report a vulnerability
+    url: https://github.com/karimmattar/domainkit/security/advisories/new
+    about: Privately, as SECURITY.md says. Please do not open a public issue.

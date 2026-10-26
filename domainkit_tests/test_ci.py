@@ -27,6 +27,7 @@ RULESETS = ROOT / ".github" / "rulesets"
 SOURCE = ROOT / "src"
 SUMMARY = ROOT / ".github" / "scripts" / "mutation_summary.py"
 FLOORS = ROOT / ".github" / "scripts" / "floors.py"
+NOTES = ROOT / ".github" / "scripts" / "release_notes.py"
 EVENTS = ("push", "pull_request", "schedule", "workflow_dispatch")
 # GitHub Actions, the app whose checks the ruleset accepts.
 ACTIONS_APP = 15368
@@ -336,7 +337,7 @@ def test_the_rulesets_hold_without_an_everyday_bypass() -> None:
     assert [rule["type"] for rule in creation["rules"]] == ["creation"]
 
 
-@pytest.mark.parametrize("name", ["ci.yml", "release.yml"])
+@pytest.mark.parametrize("name", ["ci.yml", "release.yml", "codeql.yml"])
 def test_actions_are_pinned_to_commits_and_tokens_only_read(name: str) -> None:
     """Every action by a full commit SHA; write access only where it is used."""
     assert workflow(name)["permissions"] == {"contents": "read"}
@@ -344,7 +345,10 @@ def test_actions_are_pinned_to_commits_and_tokens_only_read(name: str) -> None:
         for step in job.get("steps", []):
             uses = step.get("uses")
             if uses is not None:
-                assert re.fullmatch(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}", uses), uses
+                # owner/repo, or an action in a folder of it, at a commit.
+                assert re.fullmatch(r"[\w.-]+/[\w.-]+(/[\w.-]+)*@[0-9a-f]{40}", uses), (
+                    uses
+                )
         if name == "ci.yml":
             assert "permissions" not in job, job_name
     granted = {
@@ -360,7 +364,10 @@ def test_actions_are_pinned_to_commits_and_tokens_only_read(name: str) -> None:
                 "attestations": "write",
             },
             "publish": {"id-token": "write"},
+            "github-release": {"contents": "write"},
         }
+    if name == "codeql.yml":
+        assert granted == {"analyze": {"contents": "read", "security-events": "write"}}
 
 
 def test_releases_publish_only_attested_files() -> None:
@@ -572,3 +579,152 @@ def test_the_floors_script_reads_each_form_and_refuses_none(tmp_path: Path) -> N
     )
     assert done.returncode == 1
     assert "a has two floors: 1 and 2" in done.stderr
+
+
+def test_the_docs_site_builds_strictly_beside_the_tests() -> None:
+    """Links and public names checked; the docs group only; nothing waits for it."""
+    job = jobs()["docs-site"]
+    runs = [step.get("run", "") for step in job["steps"]]
+    assert "needs" not in job
+    assert "poetry sync --only docs --no-root" in runs
+    assert "poetry run mkdocs build --strict --site-dir site" in runs
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    docs = config["dependency-groups"]["docs"]
+    assert sorted(re.split(r"[\s(]", each, maxsplit=1)[0] for each in docs) == [
+        "mkdocs-material",
+        "mkdocstrings-python",
+    ]
+    site = yaml.safe_load((ROOT / "mkdocs.yml").read_text())
+    assert site["strict"] is True
+    assert site["hooks"] == ["docs/hooks/site.py"]
+    assert set(site["validation"].values()) == {"warn"}  # Failures, under --strict.
+
+
+def test_the_workflows_are_audited_and_scanned() -> None:
+    """Every workflow is audited by zizmor; CodeQL scans pull requests, weekly."""
+    steps = [step.get("run", "") for step in jobs()["semgrep"]["steps"]]
+    assert "zizmor --offline --format github .github/workflows" in steps
+    # YAML 1.1 reads the key "on" as True.
+    codeql: dict[object, Any] = yaml.safe_load((WORKFLOWS / "codeql.yml").read_text())
+    assert set(codeql[True]) == {
+        "push",
+        "pull_request",
+        "schedule",
+        "workflow_dispatch",
+    }
+    uses = [step.get("uses", "") for step in codeql["jobs"]["analyze"]["steps"]]
+    assert [each.split("@")[0] for each in uses] == [
+        "actions/checkout",
+        "github/codeql-action/init",
+        "github/codeql-action/analyze",
+    ]
+
+
+def test_a_release_on_github_carries_notes_files_and_checksums() -> None:
+    """After PyPI: the CHANGELOG's section, the files, the bill, their sums."""
+    job = jobs("release.yml")["github-release"]
+    run = "\n".join(step.get("run", "") for step in job["steps"])
+    assert job["needs"] == "publish"
+    assert '.github/scripts/release_notes.py "${TAG#v}" CHANGELOG.md' in run
+    assert "sha256sum" in run
+    assert "gh release create" in run
+    assert "--verify-tag" in run
+    newest = [step.get("run", "") for step in jobs()["newest"]["steps"]]
+    assert any(".newest/bin/python -m pip_audit" in each for each in newest)
+
+
+def test_the_release_notes_are_the_versions_section(tmp_path: Path) -> None:
+    """Its entries without the heading; a version without entries is an error."""
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_text(
+        "# Changelog\n\n## [Unreleased]\n\n## [1.2.0] - 2026-01-02\n\n"
+        "### Added\n\n- A thing (X-1).\n\n## [1.1.0] - 2025-12-01\n\n- Old.\n"
+        "\n## [1.0.0] - 2025-11-01\n\n",
+        encoding="utf-8",
+    )
+
+    def notes(version: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(  # noqa: S603 - the test interpreter and the repository's script.
+            [sys.executable, str(NOTES), version, str(changelog)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    assert notes("1.2.0").stdout == "### Added\n\n- A thing (X-1).\n"
+    assert notes("1.1.0").stdout == "- Old.\n"
+    for version, problem in [("1.0.0", "is empty"), ("1.3.0", "no section")]:
+        done = notes(version)
+        assert done.returncode == 1
+        assert problem in done.stderr
+    done = notes("1.2")  # A prefix of 1.2.0 is not 1.2.0.
+    assert done.returncode == 1
+
+
+def ci_images() -> set[str]:
+    """Every image CI starts: services, and ``docker run`` lines."""
+    text = (WORKFLOWS / "ci.yml").read_text()
+    return set(re.findall(r"[\w./-]+:[\w.-]+@sha256:[0-9a-f]{64}", text))
+
+
+def make_target(name: str) -> list[str]:
+    """The recipe lines of the Makefile's target ``name``, variables named."""
+    makefile = (ROOT / "Makefile").read_text()
+    match = re.search(rf"^{name}:[^\n]*\n((?:\t[^\n]*\n)*)", makefile, re.MULTILINE)
+    assert match, name
+    return [line.strip() for line in match[1].splitlines()]
+
+
+def test_compose_runs_the_servers_ci_runs() -> None:
+    """A laptop's servers are CI's, image for image, digest for digest."""
+    compose = yaml.safe_load((ROOT / "compose.yaml").read_text())
+    images = {service["image"] for service in compose["services"].values()}
+    gitleaks = {image for image in ci_images() if "gitleaks" in image}
+
+    assert images == ci_images() - gitleaks
+    rabbitmq = compose["services"]["rabbitmq"]
+    assert (
+        "./.ci/rabbitmq/20-tls.conf:/etc/rabbitmq/conf.d/20-tls.conf:ro"
+        in (rabbitmq["volumes"])
+    )
+    for service in ("immudb", "redis", "rabbitmq"):
+        assert compose["services"][service]["depends_on"] == {
+            "certs": {"condition": "service_completed_successfully"}
+        }
+    ports = [
+        port for each in compose["services"].values() for port in each.get("ports", [])
+    ]
+    assert all(port.startswith("127.0.0.1:") for port in ports), ports
+
+
+def test_the_contributor_commands_are_cis() -> None:
+    """``make lint`` is the lint job; ``make integration`` sets its variables."""
+    lint = [step["run"] for step in jobs()["lint"]["steps"] if "run" in step]
+    commands = [
+        line.replace("$(POETRY)", "poetry").replace("$(RUN)", "poetry run")
+        for line in make_target("lint")
+    ]
+    assert commands == [
+        each for each in lint if each.startswith("poetry ") and "sync" not in each
+    ]
+    makefile = (ROOT / "Makefile").read_text()
+    block = makefile.split("INTEGRATION_ENV := \\\n", 1)[1].split("\n\n", 1)[0]
+    variables = dict(
+        line.strip().rstrip("\\").strip().split("=", 1) for line in block.splitlines()
+    )
+    assert variables == {
+        name: str(value) for name, value in jobs()["integration"]["env"].items()
+    }
+    hooks = yaml.safe_load((ROOT / ".pre-commit-config.yaml").read_text())["repos"]
+    local = [
+        hook["entry"]
+        for repo in hooks
+        if repo["repo"] == "local"
+        for hook in repo["hooks"]
+    ]
+    # Each hook runs a lint command, given the changed files instead of ".".
+    assert [f"{entry} ." if f"{entry} ." in commands else entry for entry in local] == (
+        commands
+    )
+    remote = [repo["rev"] for repo in hooks if repo["repo"] != "local"]
+    assert all(re.fullmatch(r"[0-9a-f]{40}", rev) for rev in remote), remote

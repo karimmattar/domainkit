@@ -372,14 +372,33 @@ async def test_units_of_work_without_repositories_have_savepoints() -> None:
     """The base unit of work needs nothing of its subclasses for savepoints."""
 
     class Empty(UnitOfWork):
-        async def _commit(self) -> None: ...
+        commits = 0
+
+        async def _commit(self) -> None:
+            self.commits += 1
 
         async def _rollback(self) -> None: ...
 
+    async def kept() -> None: ...
+
+    async def undone() -> None: ...
+
+    async def defer_and_fail(uow: UnitOfWork) -> None:
+        async with uow.savepoint():
+            uow.defer(undone)
+            raise LookupError
+
     async with Empty(events=EventBus()) as uow:
         async with uow.savepoint():
-            pass
+            uow.defer(kept)
+        with pytest.raises(LookupError):
+            await defer_and_fail(uow)
         await uow.commit()
+
+    # The failed savepoint took back only its own task; the commit ran once,
+    # outside every savepoint.
+    assert [task.function for task in uow.queued_tasks] == [kept]
+    assert uow.commits == 1
 
 
 async def test_errors_name_the_missing_aggregate_and_the_refused_lock() -> None:
