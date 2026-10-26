@@ -100,11 +100,20 @@ In 0.10 it is `"warn"`: the request is served as before, with a
 deprecations errors) and a line on the `domainkit.security` logger, once
 per route a while (what deployments find). `"refuse"` answers
 `403 permission_denied` ("Credentials limited to scopes cannot call this
-route"), which 0.11 makes the default. `Require` checks it once its rules
-allow, and so does `AuthenticatedUser`; a dependency of your own that
-reads the principal calls `await check_scopes_bounded(request)`.
-`CurrentUser` refuses no one and checks nothing: a route that reads it to
-decide for itself must check the scopes itself.
+route"), which 0.11 makes the default. It is decided once a request,
+wherever the principal is first read: `Require`, `CurrentUser`,
+`AuthenticatedUser`, and `current_user` itself, so a dependency of your
+own that reads the principal through it, and a `Public` route that reads
+it, are held too. `CurrentUser` and `Require` record the refusal in the
+audit trail; a synchronous `current_user` refuses without the record, so
+a dependency of your own may `await check_scopes_bounded(request)` first.
+A middleware's principal read straight from `scope["user"]` is not
+checked.
+
+`HasObjectPermissions` checks the scopes on the request as well as on
+each object, so a key without the permission cannot list what no single
+object check looks at; `ModelPermissions` lets scoped credentials make an
+`OPTIONS` request only with the model's `view` permission in a scope.
 
 Every token records when it last authenticated a request
 (`last_used_at`), written at most once every five minutes (a tenth of

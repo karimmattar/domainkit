@@ -454,8 +454,13 @@ class HasObjectPermissions(HasPermissions):
     """
 
     async def has_permission(self, request: HTTPConnection, user: Principal) -> bool:
-        """An active principal who proved who they are; the object decides the rest."""
-        return user.is_authenticated and user.is_active
+        """An active principal who proved who they are, within the scopes.
+
+        The object decides the rest; credentials limited to scopes that leave
+        a permission out are refused before any object is read (a list
+        checks none).
+        """
+        return user.is_authenticated and user.is_active and _within(request, self.perms)
 
     async def has_object_permission(
         self, request: HTTPConnection, user: Principal, obj: object
@@ -469,7 +474,8 @@ class ModelPermissions(BasePermission):
 
     ``GET`` and ``HEAD`` need ``view``, ``POST`` ``add``, ``PUT`` and
     ``PATCH`` ``change``, and ``DELETE`` ``delete``; ``OPTIONS`` needs only
-    a principal who proved who they are. Other methods are refused.
+    a principal who proved who they are, and with credentials limited to
+    scopes ``view`` in a scope. Other methods are refused.
     ``model`` is a mapped class or its key (``"billing.invoice"``).
     """
 
@@ -485,12 +491,12 @@ class ModelPermissions(BasePermission):
         if not user.is_authenticated:
             return False
         method = _method(request)
-        if method == "OPTIONS":
-            return True
+        domain, model = self._model_key()
+        if method == "OPTIONS":  # Scoped credentials need the model in a scope.
+            return _within(request, [f"{domain}.view_{model}"])
         action = self.actions.get(method)
         if action is None:
             return False
-        domain, model = self._model_key()
         perm = f"{domain}.{action}_{model}"
         return _within(request, [perm]) and await user.ahas_perms([perm])
 
@@ -525,12 +531,12 @@ class Require:
             NotAuthenticated: An anonymous caller was refused.
             PermissionDenied: A principal who proved who they are was refused.
         """
+        if _scoped(request.scope):
+            await check_scopes_bounded(request)
         user = current_user(request)
         refusal = await _first_refusal(self.rules, request, user)
         if refusal is not None:
             raise await _denied(request, user, refusal)
-        if _scoped(request.scope):
-            await check_scopes_bounded(request)
         record_check(request, self.allows)
         return user
 
@@ -562,24 +568,51 @@ async def check_object_permissions(
 async def check_scopes_bounded(connection: HTTPConnection) -> None:
     """Hold credentials limited to scopes to routes with a rule that checks them.
 
-    ``Require`` calls it once its rules allow; so does a provider's
-    dependency that reads the principal (``reads_principal``), such as
-    ``AuthenticatedUser``. Credentials without scopes, and routes that
+    Decided once per request, wherever the principal is first read:
+    ``Require``, ``CurrentUser`` (``acurrent_user``), ``AuthenticatedUser``,
+    and ``current_user`` itself, which every provider's dependency marked
+    ``reads_principal`` calls. Credentials without scopes, and routes that
     declare a rule that checks scopes (``bounds_scopes``: ``HasScope``, the
     permission rules, ``IsUnscoped``, ``AllowScoped``, on the route or its
     routers), pass. Others, with ``SCOPED_CREDENTIALS = "warn"`` (the
     default until 0.11), pass with a ``DomainkitDeprecationWarning`` and a
-    security log line, once per route a while.
+    security log line, once per route a while. The refusal is audited
+    here; ``current_user``, which cannot wait, refuses without the record.
 
     Raises:
         PermissionDenied: With ``SCOPED_CREDENTIALS = "refuse"``, the route
             declares no rule that checks scopes.
     """
-    if scopes_of(connection) is None or _route_checks_scopes(connection):
-        return
+    if _unbounded(connection):  # Audited, sampled, as 403s are.
+        raise await _denied(connection, connection.scope["user"], None)
+
+
+SCOPES_CHECKED: Final = "domainkit.scopes_refused"
+"""Where a request keeps whether its scopes were refused, once decided."""
+
+
+def _unbounded(connection: HTTPConnection) -> bool:
+    """Whether to refuse the request's scoped credentials; decided once a request.
+
+    In ``"warn"`` it warns and logs instead, the first time, and answers
+    False.
+    """
+    scope = connection.scope
+    if not _scoped(scope):
+        return False
+    if SCOPES_CHECKED in scope:
+        refused: bool = scope[SCOPES_CHECKED]
+        return refused
+    refused = not _route_checks_scopes(connection) and _unchecked(connection)
+    scope[SCOPES_CHECKED] = refused
+    return refused
+
+
+def _unchecked(connection: HTTPConnection) -> bool:
+    """A route that checks no scope, reached with scopes: refuse, or warn (False)."""
     route = _route_name(connection)
-    if settings.SCOPED_CREDENTIALS == "refuse":  # Audited, sampled, as 403s are.
-        raise await _denied(connection, current_user(connection), None)
+    if settings.SCOPED_CREDENTIALS == "refuse":
+        return True
     scoped_log.warning(
         "scoped_credentials",
         route,
@@ -594,8 +627,9 @@ async def check_scopes_bounded(connection: HTTPConnection) -> None:
         "0.11. Add HasScope(...), a permission rule, or AllowScoped() to the "
         'route, or set SCOPED_CREDENTIALS = "refuse" to refuse them now.',
         DomainkitDeprecationWarning,
-        stacklevel=2,
+        stacklevel=4,
     )
+    return False
 
 
 scoped_log: Final = ThrottledLog(security_logger)
@@ -767,8 +801,14 @@ def current_user(connection: HTTPConnection) -> Principal:
     ``CurrentUser`` (``acurrent_user``): FastAPI awaits that on the event
     loop, and would call this one on its thread pool.
 
+    Credentials limited to scopes are held to the route's rules here too
+    (``check_scopes_bounded``), so every dependency that reads the
+    principal through it is.
+
     Raises:
         ImproperlyConfigured: No middleware put a principal in ``scope["user"]``.
+        PermissionDenied: With ``SCOPED_CREDENTIALS = "refuse"``, scoped
+            credentials on a route that declares no rule that checks scopes.
     """
     if "user" not in connection.scope:
         raise ImproperlyConfigured(
@@ -776,13 +816,20 @@ def current_user(connection: HTTPConnection) -> Principal:
             "requests: domainkit.contrib.auth.middleware.AuthenticationMiddleware, "
             'or one of your own that sets scope["user"].'
         )
+    if _scoped(connection.scope) and _unbounded(connection):
+        raise PermissionDenied(SCOPES_UNBOUNDED)
     user: Principal = connection.scope["user"]
     return user
 
 
 @reads_principal
 async def acurrent_user(connection: HTTPConnection) -> Principal:
-    """``current_user`` as a dependency FastAPI awaits, with no thread to hop to."""
+    """``current_user`` as a dependency FastAPI awaits, with no thread to hop to.
+
+    Scoped credentials are held to the route's rules first, audited.
+    """
+    if _scoped(connection.scope):
+        await check_scopes_bounded(connection)
     return current_user(connection)
 
 
