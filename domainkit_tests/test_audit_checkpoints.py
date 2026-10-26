@@ -781,3 +781,15 @@ async def test_a_checkpoint_naming_another_key_is_refused() -> None:
         verified(
             named.document(), KEY.sign(named.document().encode()), KEY.public_key()
         )
+
+
+async def test_without_the_key_no_checkpoint_verifies(trail: Ledger) -> None:
+    """A pruned trail checked where ``CHECKPOINT_KEY`` is unset does not verify."""
+    await prune("default", before=CUT, ledger=trail)
+
+    with override_settings(AUDIT={"LEDGER": "audit"}):
+        report = await verify("default", trail, now=T1)
+
+    assert report.forged == [5]
+    assert report.broken == [6]
+    assert not report.intact

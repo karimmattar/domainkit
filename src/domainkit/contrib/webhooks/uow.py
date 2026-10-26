@@ -39,6 +39,18 @@ class SubscriptionRepository(SqlAlchemyRepository[Subscription, SubscriptionId])
             self._track(subscription)
         return found
 
+    async def owned_by(self, owner: str) -> list[Subscription]:
+        """Every subscription ``owner`` has, oldest first."""
+        statement = (
+            select(Subscription)
+            .where(subscriptions.c.owner == owner)
+            .order_by(subscriptions.c.created_at, subscriptions.c.id)
+        )
+        found = list(await self.session.scalars(statement))
+        for subscription in found:
+            self._track(subscription)
+        return found
+
     async def count_owned(self, owner: str) -> int:
         """How many subscriptions ``owner`` has."""
         statement = (

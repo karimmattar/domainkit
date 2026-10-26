@@ -171,3 +171,54 @@ def test_anonymous_is_one_of_two_policies() -> None:
     assert IdempotencySettings(ANONYMOUS="refuse").ANONYMOUS == "refuse"
     with pytest.raises(ValidationError, match="'per-address' or 'refuse'"):
         IdempotencySettings(ANONYMOUS="per-client")
+
+
+def test_kept_responses_name_whom_they_are_about(database_url: str) -> None:
+    """The actor, and the subjects of committed events; nobody for an anonymous one.
+
+    ``privacy erase`` finds a kept response by these (``subjects``).
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import insert
+
+    from domainkit.contrib.idempotency import middleware
+    from domainkit.contrib.idempotency.operations import Operation
+
+    async def finish(operation: Operation) -> object:
+        now = datetime.now(UTC)
+        async with connections.engine().begin() as connection:
+            await connection.execute(
+                insert(idempotency_keys).values(
+                    key_hash=operation.key_hash,
+                    fingerprint="f" * 64,
+                    created_at=now,
+                    expires_at=now + timedelta(hours=1),
+                    token=operation.token,
+                    locked_until=now + timedelta(minutes=1),
+                )
+            )
+        await middleware._finish(
+            IdempotencySettings(), operation, {"status": 201, "headers": []}, b"{}"
+        )
+        async with connections.engine().connect() as connection:
+            found = await connection.scalar(
+                select(idempotency_keys.c.subjects).where(
+                    idempotency_keys.c.key_hash == operation.key_hash
+                )
+            )
+        await connections.close_all()
+        return found
+
+    with keyed_app(database_url) as client:
+        post(client, {"n": 1}, **{ACTOR_HEADER: "alice"})
+        post(client, {"n": 1})
+        tags = sorted(str(row["subjects"]) for row in stored())
+        both = asyncio.run(
+            finish(Operation("a" * 64, "t" * 32, actor="alice", subjects={"ann"}))
+        )
+        events = asyncio.run(finish(Operation("b" * 64, "t" * 32, subjects={"bob"})))
+
+    assert tags == ["\x1falice\x1f", "None"]
+    assert both == "\x1falice\x1fann\x1f"
+    assert events == "\x1fbob\x1f"

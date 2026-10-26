@@ -20,7 +20,7 @@ import pytest
 from fastapi import APIRouter
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domainkit import clock, setup
@@ -414,3 +414,36 @@ def test_subject_tags_name_each_subject_once() -> None:
     assert subject_tag(["", "a\nb", "x" * 256]) is None
     assert tagged_with("ann") in "\x1fann\x1fbob\x1f"
     assert tagged_with("an") not in "\x1fann\x1fbob\x1f"
+
+
+def test_messages_whose_markers_are_unknown_are_left(scenario: Scenario) -> None:
+    """A message of an event or task this process does not know names nobody.
+
+    It cannot be told whose it is, so it is left as it is, never guessed at.
+    """
+    from domainkit.contrib.messaging.erasure import erase_subject as erase_queued
+    from domainkit.contrib.messaging.outbox import message_row
+    from domainkit.contrib.messaging.tables import messages as outbox
+
+    async def plant_and_erase() -> dict[str, int]:
+        rows = [
+            message_row(
+                kind=kind,
+                target=target,
+                payload={"patient_id": scenario.subject, "email": EMAIL},
+                headers={"event_type": "nowhere.Gone"} if kind == "event" else {},
+                max_attempts=1,
+            )
+            for kind, target in (("event", "nowhere.handler"), ("task", "gone.task"))
+        ]
+        async with connections.engine().begin() as connection:
+            await connection.execute(
+                insert(outbox), [{**row, "status": DEAD} for row in rows]
+            )
+        return await erase_queued(scenario.subject)
+
+    assert run_async(plant_and_erase()) == {"messages": 2, "pending": 0}
+    unknown = run_async(
+        rows(messages, messages.c.target.in_(["gone.task", "nowhere.handler"]))
+    )
+    assert [row.payload["email"] for row in unknown] == [EMAIL, EMAIL]

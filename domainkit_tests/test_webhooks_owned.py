@@ -138,6 +138,7 @@ def test_users_manage_their_own_subscriptions(
     rotated = client.post(f"{one}/rotate-secret", headers=ann)
     listed = client.get(f"{MINE}/subscriptions", headers=ann)
     log = client.get(f"{one}/deliveries", headers=ann)
+    failed = client.get(f"{one}/deliveries?status=failed", headers=ann)
     staff_view = client.get(
         f"/admin/webhooks/subscriptions/{body['id']}",
         headers=staff("boss", *ALL),
@@ -154,6 +155,7 @@ def test_users_manage_their_own_subscriptions(
     assert rotated.headers["Cache-Control"] == "no-store"
     assert [each["id"] for each in listed.json()] == [body["id"]]
     assert (log.status_code, log.json()) == (200, [])
+    assert (failed.status_code, failed.json()) == (200, [])
     assert staff_view.json()["owner"] == owner
     assert deleted.status_code == 204
     assert client.get(one, headers=ann).status_code == 404
@@ -323,6 +325,7 @@ async def test_one_owners_hung_hosts_share_one_quarter_of_the_lookups(
 async def test_erasing_an_owner_deletes_its_subscriptions(hooks: Receiver) -> None:
     """Its subscriptions go, audited as deletions; their deliveries are blanked."""
     anns = await owned_subscription(hooks.url("/ann"), "ann")
+    another = await owned_subscription(hooks.url("/ann-2"), "ann")
     staffs = await owned_subscription(hooks.url("/staff"), None)
     await queue_deliveries(
         "invoice.paid",
@@ -337,7 +340,7 @@ async def test_erasing_an_owner_deletes_its_subscriptions(hooks: Receiver) -> No
     async with WebhooksUnitOfWork() as uow:
         left = [each.id for each in await uow.subscriptions.page(limit=10)]
     by_subscription = {row.subscription_id: row for row in await rows(deliveries)}
-    assert erased == {"deliveries": 1, "cancelled": 1, "subscriptions": 1}
+    assert erased == {"deliveries": 2, "cancelled": 2, "subscriptions": 2}
     assert left == [staffs]
-    assert by_subscription[anns].body == ""
+    assert by_subscription[anns].body == by_subscription[another].body == ""
     assert by_subscription[staffs].body != ""

@@ -59,7 +59,7 @@ from domainkit import clock
 from domainkit.apps import registry
 from domainkit.context import current_request
 from domainkit.db import connections
-from domainkit.ddd.personal import subject_tag
+from domainkit.ddd.personal import SEPARATOR, subject_tag
 from domainkit.http.errors import error_response
 from domainkit.tasks import spawn
 
@@ -175,14 +175,13 @@ class IdempotencyMiddleware:
         if read is None:
             return  # The client left before sending its whole body: run nothing.
         body, replay_receive = read
-        key_hash = _hash(_caller(scope, config.CREDENTIAL_HEADERS), key)
+        request = current_request()
+        actor = request.actor if request is not None else None
+        key_hash = _hash(_caller_of(actor, scope, config.CREDENTIAL_HEADERS), key)
         fingerprint = _hash(
             scope["method"], scope["path"], scope.get("query_string", b""), body
         )
-        operation = Operation(key_hash, secrets.token_hex(16))
-        request = current_request()
-        if request is not None and request.actor:
-            operation.subjects.add(request.actor)
+        operation = Operation(key_hash, secrets.token_hex(16), actor=actor or None)
         existing = await self._claim(config, operation, fingerprint)
         if existing is not None and not (
             _abandoned(existing, fingerprint)
@@ -458,6 +457,17 @@ async def _finish(
     taken the key over.
     """
     held = holder(operation.key_hash, operation.token)
+    # Whom a kept response may be about (``subjects``): the actor, and the
+    # subjects of the events it committed. The actor alone, the common
+    # case, is tagged as it is, with no call on the request's path: an
+    # actor holding the separator could only make an erasure drop more.
+    actor = operation.actor
+    if body is None:
+        tag = None
+    elif operation.subjects:
+        tag = subject_tag(operation.subjects | {actor} if actor else operation.subjects)
+    else:
+        tag = None if actor is None else f"{SEPARATOR}{actor}{SEPARATOR}"
     async with connections.autocommit(config.DATABASE) as connection:
         if body is None and not (operation.committed or operation.pinned):
             released = await connection.execute(RELEASE, held)
@@ -476,7 +486,7 @@ async def _finish(
                 ),
                 "headers": headers,
                 "body": body,
-                "subjects": subject_tag(operation.subjects) if body else None,
+                "subjects": tag,
                 **held,
             },
         )
@@ -500,8 +510,16 @@ def _died_after_commit(existing: dict[str, Any]) -> bool:
 def _caller(scope: Scope, credential_headers: tuple[str, ...]) -> str:
     """Scope keys to the actor, or else to the address and the credentials."""
     request = current_request()
-    if request is not None and request.actor:
-        return f"actor:{request.actor}"
+    actor = request.actor if request is not None else None
+    return _caller_of(actor, scope, credential_headers)
+
+
+def _caller_of(
+    actor: str | None, scope: Scope, credential_headers: tuple[str, ...]
+) -> str:
+    """``_caller``, for a request whose ``actor`` was read already."""
+    if actor:
+        return f"actor:{actor}"
     client = scope.get("client")
     headers = Headers(scope=scope)
     credentials = _hash(

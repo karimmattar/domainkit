@@ -543,16 +543,10 @@ async def erase_subject(subject: str) -> dict[str, int]:
 
     owned: list[uuid.UUID] = []
     async with WebhooksUnitOfWork() as uow:
-        while True:
-            found = await uow.subscriptions.page(
-                limit=PURGE_BATCH, offset=len(owned), owner=subject
-            )
-            for subscription in found:
-                subscription.delete()
-                await uow.subscriptions.remove(subscription)
-                owned.append(subscription.id)
-            if len(found) < PURGE_BATCH:
-                break
+        for subscription in await uow.subscriptions.owned_by(subject):
+            subscription.delete()
+            await uow.subscriptions.remove(subscription)
+            owned.append(subscription.id)
         await uow.commit()
     alias = webhooks_alias()
     async with connections.engine(alias).begin() as connection:
