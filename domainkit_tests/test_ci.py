@@ -32,7 +32,7 @@ EVENTS = ("push", "pull_request", "schedule", "workflow_dispatch")
 ACTIONS_APP = 15368
 # Jobs that run on pull requests but gate nothing: the newest and oldest
 # releases the ranges allow are not this change's doing.
-ADVISORY = {"newest", "oldest"}
+ADVISORY = {"newest", "oldest", "free-threaded-stress"}
 # GitHub stops a job after six hours.
 JOB_LIMIT_MINUTES = 360
 
