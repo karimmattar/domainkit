@@ -56,6 +56,12 @@
       "groupName": "tooling patches"
     },
     {
+      "description": "compose.yaml runs CI's images on laptops, and test_ci.py checks they match: their patches and digests go in the same pull request.",
+      "matchManagers": ["docker-compose"],
+      "matchUpdateTypes": ["patch", "digest", "pinDigest"],
+      "groupName": "tooling patches"
+    },
+    {
       "description": "Runners move by hand, with the whole of CI.",
       "matchManagers": ["github-actions"],
       "matchDepTypes": ["github-runner"],

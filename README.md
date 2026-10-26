@@ -180,37 +180,26 @@ how many cores a load needs.
 
 ## Developing domainkit
 
-```bash
-poetry install --all-extras            # Python 3.13
-pre-commit install                     # after: pipx install pre-commit
+[CONTRIBUTING.md](https://github.com/karimmattar/domainkit/blob/main/CONTRIBUTING.md)
+says how to set up, which checks a change must pass, and how to write it
+up. In short:
 
-poetry run ruff check . && poetry run ruff format --check . && poetry run mypy
-poetry run deptry .                    # every imported package is declared
-poetry run pytest --cov                # random order, 2 minutes a test; coverage gate in pyproject.toml
-poetry run mutmut run "domainkit.http*" && poetry run mutmut results
+```text
+make install        # Python 3.13, Poetry 2.2: every extra, dev and docs groups, hooks
+make check          # lint, strict types, deptry, the tests, the docs site
+make integration    # the tests against the servers of compose.yaml, as CI runs them
+make                # every command
 ```
 
 Without servers, the database tests use SQLite, the Redis and RabbitMQ
 tests use in-memory fakes, and the tests that need PostgreSQL, immudb, or a
-real Redis, Valkey, or RabbitMQ are skipped. Point them at throwaway servers to run
-them; each test cleans up after itself:
-
-```bash
-docker run -d --rm --name domainkit-postgres -e POSTGRES_PASSWORD=postgres \
-  -p 127.0.0.1:55432:5432 postgres:18-alpine
-docker run -d --rm --name domainkit-redis -p 127.0.0.1:56379:6379 redis:8-alpine
-DOMAINKIT_TEST_POSTGRES_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:55432/postgres \
-DOMAINKIT_TEST_REDIS_URL=redis://127.0.0.1:56379/0 \
-  poetry run pytest
-```
-
-The other variables (immudb, Redis over TLS, Valkey, RabbitMQ) are listed
-at the top of `domainkit_tests/test_immudb.py`, `test_redis.py`, and
-`test_rabbitmq.py`. Each run must cover
-98%; CI also combines the runs with and without servers, which must cover
-100%. To check that locally, run `pytest --cov` once without and once with
-the servers, each with its own `COVERAGE_FILE`, then `coverage combine` and
-`coverage report --fail-under=100`.
+real Redis, Valkey, or RabbitMQ are skipped. `compose.yaml` starts the
+servers CI's integration job uses, at the same images and ports, with
+throwaway certificates in `.ci/`; `make integration` sets the variables
+that point the tests at them (the `DOMAINKIT_TEST_*` names at the top of
+`domainkit_tests/test_immudb.py`, `test_redis.py`, and `test_rabbitmq.py`).
+Each run must cover 98%; CI also combines the runs with and without
+servers, which must cover 100% (`make cov`).
 
 CI (`.github/workflows/ci.yml`) runs on every push and pull request:
 

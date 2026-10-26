@@ -1,0 +1,137 @@
+# The servers CI's integration job runs the suite against, for a laptop:
+# PostgreSQL, immudb with TLS and a signing key, Redis (plain and TLS),
+# Valkey, and RabbitMQ (plain, TLS, and its management API), at the images
+# and ports .github/workflows/ci.yml uses. A one-shot "certs" service first
+# writes the throwaway certificates and keys to .ci/ (git ignores it),
+# where CI's steps write them too. domainkit_tests/test_ci.py checks that
+# the images here are the ones CI starts.
+#
+#   docker compose up -d --wait     # or: make services
+#   make integration                # the suite against them
+#   docker compose down -v
+#
+# Every port listens on 127.0.0.1 only.
+name: domainkit
+
+services:
+  certs:
+    # Any image with openssl; RabbitMQ's is pulled anyway.
+    image: rabbitmq:4.3.5-management-alpine@sha256:b3b8b7f95f5382a19f9ea33540e604f30aad081d37ad9aba72255135765373a1
+    user: "0"
+    entrypoint: ["sh", "-ec"]
+    command:
+      - |
+        cd /ci
+        for service in immudb redis rabbitmq; do
+          mkdir -p "$$service"
+          # A day's validity left at least, or a new certificate.
+          if ! openssl x509 -checkend 86400 -noout -in "$$service/server.crt" 2>/dev/null; then
+            openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj "/CN=localhost" \
+              -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" \
+              -keyout "$$service/server.key" -out "$$service/server.crt" 2>/dev/null
+          fi
+        done
+        if [ ! -f immudb/signing.key ]; then
+          openssl ecparam -name prime256v1 -genkey -noout -out immudb/signing.key
+          openssl ec -in immudb/signing.key -pubout -out immudb/signing.pub 2>/dev/null
+        fi
+        printf '%s\n' 'listeners.ssl.default = 5671' \
+          'ssl_options.cacertfile = /certs/server.crt' \
+          'ssl_options.certfile = /certs/server.crt' \
+          'ssl_options.keyfile = /certs/server.key' \
+          'ssl_options.verify = verify_none' > rabbitmq/20-tls.conf
+        chmod 644 */server.key immudb/signing.key rabbitmq/20-tls.conf
+    volumes:
+      - ./.ci:/ci
+
+  postgres:
+    image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+    environment:
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - 127.0.0.1:5432:5432
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  immudb:
+    image: codenotary/immudb:1.11.2@sha256:f2efcf6a3de73b31691e0afb8dfec972642aaf0699b93387d1ec6074aedb2953
+    command:
+      - --certificate=/certs/server.crt
+      - --pkey=/certs/server.key
+      - --signingKey=/certs/signing.key
+      - --pgsql-server=false
+      - --web-server=false
+    volumes:
+      - ./.ci/immudb:/certs:ro
+    ports:
+      - 127.0.0.1:3322:3322
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+
+  redis:
+    image: redis:8.8.3-alpine@sha256:0b2b77d3ea5078274795e3177cdbdada8b96316684a38911d528534ed679b5ec
+    command:
+      - redis-server
+      - --port
+      - "6379"
+      - --tls-port
+      - "6380"
+      - --tls-cert-file
+      - /certs/server.crt
+      - --tls-key-file
+      - /certs/server.key
+      - --tls-ca-cert-file
+      - /certs/server.crt
+      - --tls-auth-clients
+      - "no"
+    volumes:
+      - ./.ci/redis:/certs:ro
+    ports:
+      - 127.0.0.1:6379:6379
+      - 127.0.0.1:6380:6380
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 5s
+      retries: 30
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+
+  valkey:
+    image: valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
+    ports:
+      - 127.0.0.1:6381:6379
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 1s
+      timeout: 5s
+      retries: 30
+
+  rabbitmq:
+    image: rabbitmq:4.3.5-management-alpine@sha256:b3b8b7f95f5382a19f9ea33540e604f30aad081d37ad9aba72255135765373a1
+    environment:
+      RABBITMQ_DEFAULT_USER: domainkit
+      RABBITMQ_DEFAULT_PASS: domainkit
+    volumes:
+      - ./.ci/rabbitmq:/certs:ro
+      - ./.ci/rabbitmq/20-tls.conf:/etc/rabbitmq/conf.d/20-tls.conf:ro
+    ports:
+      - 127.0.0.1:5672:5672
+      - 127.0.0.1:5671:5671
+      - 127.0.0.1:15672:15672
+    # Its ports, not "rabbitmq-diagnostics": run early, as root, that
+    # writes the Erlang cookie the server must create, and RabbitMQ fails
+    # to start (see ci.yml).
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 5672 && nc -z 127.0.0.1 5671"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+    depends_on:
+      certs:
+        condition: service_completed_successfully

@@ -129,6 +129,8 @@ def pages() -> list[Path]:
         ROOT / "README.md",
         ROOT / "SECURITY.md",
         ROOT / "CHANGELOG.md",
+        ROOT / "CONTRIBUTING.md",
+        ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
         # The ADR template's links are placeholders.
         *sorted(set(DOCS.rglob("*.md")) - {DOCS / "adr" / "template.md"}),
     ]
