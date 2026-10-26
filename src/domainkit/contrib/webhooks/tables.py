@@ -43,8 +43,13 @@ subscriptions = Table(
     Column("description", String(255), nullable=False),
     Column("created_at", UTCDateTime, nullable=False),
     Column("version", Integer, nullable=False),
+    Column("owner", String(255), index=True),
     info=INFO,
 )
+"""Where events go. ``owner`` is NULL for a subscription staff made, which
+receives every event it wants; else the subject that made it through the
+self-service API (``webhooks.owned``), which receives only events
+``expose(..., owner=...)`` gives that owner."""
 
 deliveries = Table(
     "domainkit_webhook_deliveries",

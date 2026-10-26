@@ -638,24 +638,22 @@ saved:
   seconds in all, and at most `MAX_RESPONSE_BYTES` of the answer are read.
 - Host names are looked up on the guard's own threads
   (`GUARD_LOOKUP_THREADS`, 2 at once per host). Each delivery's lookups
-  are its subscription's (`webhook:<id>`), whoever caused the event, and
-  one subscription may hold a quarter of the threads: a receiver whose
-  DNS never answers leaves the rest to other subscriptions' deliveries of
-  the same events. It holds its lookups until the system's resolver gives
-  up; then its host fails at once for a minute, so retries of its
-  deliveries do not take the threads again. A receiver whose DNS answers
-  after 5 seconds or more has its answer kept for a minute, so its next
-  attempts take no thread either; one whose DNS fails in under 5 seconds
-  takes a thread on each attempt
+  are its subscription's owner's (`webhook-owner:<owner>`), or, for a
+  subscription staff made, its own (`webhook:<id>`), whoever caused the
+  event, and one owner may hold a quarter of the threads, however many
+  subscriptions it has: receivers whose DNS never answers leave the rest
+  to other subscribers' deliveries of the same events. A lookup holds its
+  thread until the system's resolver gives up; then its host fails at
+  once for a minute, so retries of its deliveries do not take the threads
+  again. A receiver whose DNS answers after 5 seconds or more has its
+  answer kept for a minute, so its next attempts take no thread either;
+  one whose DNS fails in under 5 seconds takes a thread on each attempt
   ([runtime.md](runtime.md#outgoing-http-calls)).
-- Subscriptions have no owner yet, so the share is per subscription, not
-  per tenant. One subscription holds at most 2 threads (its host's
-  bound), but whoever may create many subscriptions can point them at
-  hosts that never answer, or answer slowly, and hold many threads: all
-  16 of the default with eight, for the first round of lookups (later
-  rounds find their hosts backed off or their answers kept). The admin API lets only staff create subscriptions; a
-  project that lets its own users create them should bound how many each
-  may have, until 0.10 gives subscriptions an owner to share by.
+- Staff's subscriptions share by subscription: one holds at most 2
+  threads (its host's bound), and staff who create many can still hold
+  many, for a first round of slow lookups. Users' own subscriptions
+  (below) share by owner: eight of one owner's hold 4 of the 16 threads,
+  not all of them.
 
 `ALLOWED_PRIVATE_NETWORKS` lets receivers in named private networks
 through (`["10.20.0.0/16"]`); staging and production refuse loopback and
@@ -711,6 +709,36 @@ log, and are reported: never sent unsigned. Put the old key back, or
 rotate the secret (a rotation drops one no key decrypts, so there is no
 overlap) and give receivers the new one; then `webhooks replay --failed`.
 
+**Users' own subscriptions.** A platform whose customers register their
+own webhooks mounts the self-service API next to its users' routes:
+
+```python
+from domainkit.contrib.webhooks.owned import router as my_webhooks
+
+router.include_router(my_webhooks, prefix="/webhooks")
+
+# In a DomainConfig.ready(): whose each event is.
+expose(InvoicePaid, "invoice.paid", owner=lambda event: event.customer_id)
+```
+
+It has the admin API's subscription routes (`GET` and `POST
+/subscriptions`, `GET`, `PATCH`, and `DELETE /subscriptions/{id}`, `POST
+/subscriptions/{id}/rotate-secret`) and `GET /subscriptions/{id}/deliveries`
+(without bodies), for any authenticated user, on the subscriptions that
+user made. The subscription's `owner` is the user's id; another user's
+subscription, or staff's, is 404, as one that does not exist. An owned
+subscription receives only the events whose `owner` (`expose(...,
+owner=...)`) is its owner, never one exposed without an owner, while
+staff's subscriptions still receive every event they want. Where
+subscriptions belong to a tenant rather than a user, name the owner
+both ways: `owned_router(owner=lambda user: str(user.tenant_id))` and
+`expose(..., owner=lambda event: event.tenant_id)`. An owner may have
+`MAX_SUBSCRIPTIONS_PER_OWNER` subscriptions (a 422
+`webhook_subscription_limit` past that, checked as one is made), and
+erasing an owner (`privacy erase`) deletes theirs. The admin API shows
+each subscription's `owner` (null for staff's). The subscriptions table
+has a new `owner` column: run `makemigrations` and `migrate`.
+
 `python manage.py webhooks subscriptions` lists subscriptions (host only),
 `webhooks deliveries [--status S] [--subscription ID]` the latest
 deliveries, and `webhooks replay ID ...` (or `--failed`) sends finished
@@ -731,6 +759,7 @@ deliveries and their attempts are deleted after `RETENTION_SECONDS`.
 | `CA_BUNDLE` | `None` | Certificates to trust instead of the system's. |
 | `SECRET_OVERLAP_SECONDS` | `86400.0` | How long the old secret still signs after a rotation (at most 365 days). |
 | `RETENTION_SECONDS` | `2592000.0` | How long finished deliveries are kept (30 days). |
+| `MAX_SUBSCRIPTIONS_PER_OWNER` | `10` | Subscriptions one owner may make through the self-service API (1 to 1000). |
 | `USER_AGENT` | `"domainkit-webhooks"` | The `User-Agent` of deliveries: not empty, and at most 200 characters. |
 
 ## Audit: who did what, when, from where

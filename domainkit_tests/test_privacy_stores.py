@@ -297,6 +297,7 @@ def test_pending_deliveries_about_an_erased_subject_are_cancelled(
     assert run_async(delivery_module.erase_subject(scenario.subject)) == {
         "deliveries": 0,
         "cancelled": 0,
+        "subscriptions": 0,
     }
 
 
@@ -360,7 +361,11 @@ def test_erasures_of_copies_are_audited_without_the_data(scenario: Scenario) -> 
     ) == [
         (scenario.subject, "idempotency", '{"responses": 1}'),
         (scenario.subject, "messaging", '{"messages": 2, "pending": 0}'),
-        (scenario.subject, "webhooks", '{"deliveries": 1, "cancelled": 0}'),
+        (
+            scenario.subject,
+            "webhooks",
+            '{"deliveries": 1, "cancelled": 0, "subscriptions": 0}',
+        ),
     ]
     assert all(row.details["reason"] == "ticket 812" for row in audited)
     assert not any(EMAIL in json.dumps(row.details) for row in audited)

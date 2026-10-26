@@ -108,6 +108,8 @@ class SubscriptionOut(BaseModel):
     created_at: datetime
     rotating: bool
     """The previous secret still signs deliveries."""
+    owner: str | None = None
+    """Who made it through the self-service API (``owned``); null: staff."""
 
     @classmethod
     def of(cls, subscription: Subscription) -> Self:
@@ -120,6 +122,7 @@ class SubscriptionOut(BaseModel):
             description=subscription.description,
             created_at=subscription.created_at,
             rotating=subscription.rotating(clock.now()),
+            owner=subscription.owner,
         )
 
 

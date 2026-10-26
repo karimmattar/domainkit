@@ -1001,9 +1001,12 @@ Callers check its addresses every time, as they check a fresh answer's.
 At most 1,024 such answers are kept, the least recently used let go
 first; a kept answer can be up to a minute older than the host's DNS
 says. A host whose DNS fails in under 5 seconds takes a thread on each
-new lookup, at most 2 at once. The share is per owner, not per tenant:
-whoever controls many owners (many webhook subscriptions, many users) can
-still hold many threads, for the first round of slow lookups at least. (A lookup cannot be interrupted,
+new lookup, at most 2 at once. The share is per owner: a webhook
+subscription's owner, so one customer's many subscriptions share one
+quarter ([contrib.md](contrib.md#webhooks-signed-events-for-other-services)),
+or a user. Whoever controls many owners (many users, many staff
+subscriptions) can still hold many threads, for the first round of slow
+lookups at least. (A lookup cannot be interrupted,
 which an asynchronous resolver will change.) A guarded client takes no `transport=`, which would skip
 its address checks; tests use `stub`.
 

@@ -620,6 +620,15 @@ The webhooks admin API: subscriptions and their deliveries, for staff.
 
 - `router`: The routes: the webhooks admin API: subscriptions and their deliveries, for staff.
 
+## `domainkit.contrib.webhooks.owned`
+
+The self-service webhooks API: a subject manages its own subscriptions only.
+
+- `SubscriptionLimitReached`: The owner has `WEBHOOKS.MAX_SUBSCRIPTIONS_PER_OWNER` subscriptions.
+- `owned_router`: The self-service routes, with `owner` naming whose subscriptions are whose.
+- `router`: The self-service routes, for subscriptions owned by the user's id.
+- `user_owner`: The owner of a user's subscriptions: the user's id, as text.
+
 ## `domainkit.contrib.webhooks.guard`
 
 Which webhook URLs may be called: the guard against server-side request forgery.

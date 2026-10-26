@@ -9,6 +9,15 @@ and a status.
 
 ## [Unreleased]
 
+### Security
+
+- An owned webhook subscription's deliveries look host names up as its
+  owner's (`webhook-owner:<owner>`), so all of one owner's subscriptions
+  share one quarter of the guard's lookup threads. Until now the share was
+  per subscription, and whoever could make eight subscriptions to hosts
+  whose DNS never answers held all 16 threads for a first round of
+  lookups; now eight of one owner's hold 4 (WEB-04, DATA-11).
+
 ### Added
 
 - `IDEMPOTENCY.ANONYMOUS` (`"per-address"`, or `"refuse"`): what happens
@@ -40,6 +49,19 @@ and a status.
   erasure reaches at once and what only expires. The webhook deliveries
   and idempotency keys tables have a new `subjects` column: run
   `makemigrations` and `migrate` (DATA-02).
+- Webhook subscriptions can have an owner, and a self-service API lets
+  a user manage its own: `domainkit.contrib.webhooks.owned.router` (mount
+  it next to your users' routes) lists, creates, reads, changes, rotates,
+  and deletes the authenticated user's subscriptions, and lists their
+  deliveries; another owner's, or staff's, are 404. Their `owner` is the
+  user's id, or what `owned_router(owner=...)` names (a tenant). An owned
+  subscription receives only the events `expose(..., owner=...)` gives
+  its owner, never one exposed without an owner; staff's subscriptions,
+  which have none, still receive every event they want. An owner may have
+  `WEBHOOKS.MAX_SUBSCRIPTIONS_PER_OWNER` (10; 1 to 1000), erasing an owner
+  deletes theirs, and the admin API shows each one's `owner`. The
+  subscriptions table has a new `owner` column: run `makemigrations` and
+  `migrate` (DATA-11).
 
 ### Deprecated
 

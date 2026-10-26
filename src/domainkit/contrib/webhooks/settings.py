@@ -41,6 +41,8 @@ class WebhookSettings(BaseModel):
     RETENTION_SECONDS: float = Field(default=30 * 24 * 3600.0, gt=0)
     """How long finished deliveries and their attempts are kept."""
     USER_AGENT: str = Field(default="domainkit-webhooks", min_length=1, max_length=200)
+    MAX_SUBSCRIPTIONS_PER_OWNER: int = Field(default=10, ge=1, le=1000)
+    """Subscriptions one owner may make through the self-service API (``owned``)."""
 
     @model_validator(mode="after")
     def check_timeouts(self) -> Self:

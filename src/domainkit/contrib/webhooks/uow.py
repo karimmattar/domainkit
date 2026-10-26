@@ -1,6 +1,6 @@
 """The unit of work over webhook subscriptions."""
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domainkit.db import SqlAlchemyRepository, SqlAlchemyUnitOfWork
@@ -19,18 +19,34 @@ class SubscriptionRepository(SqlAlchemyRepository[Subscription, SubscriptionId])
         """The error for a missing subscription."""
         return SubscriptionNotFound(f"No webhook subscription has id {id_}.")
 
-    async def page(self, *, limit: int, offset: int = 0) -> list[Subscription]:
-        """Up to ``limit`` subscriptions, from the ``offset``-th, oldest first."""
+    async def page(
+        self, *, limit: int, offset: int = 0, owner: str | None = None
+    ) -> list[Subscription]:
+        """Up to ``limit`` subscriptions, from the ``offset``-th, oldest first.
+
+        With ``owner``, only that subject's.
+        """
         statement = (
             select(Subscription)
             .order_by(subscriptions.c.created_at, subscriptions.c.id)
             .limit(limit)
             .offset(offset)
         )
+        if owner is not None:
+            statement = statement.where(subscriptions.c.owner == owner)
         found = list(await self.session.scalars(statement))
         for subscription in found:
             self._track(subscription)
         return found
+
+    async def count_owned(self, owner: str) -> int:
+        """How many subscriptions ``owner`` has."""
+        statement = (
+            select(func.count())
+            .select_from(subscriptions)
+            .where(subscriptions.c.owner == owner)
+        )
+        return int(await self.session.scalar(statement) or 0)
 
 
 class WebhooksUnitOfWork(SqlAlchemyUnitOfWork):

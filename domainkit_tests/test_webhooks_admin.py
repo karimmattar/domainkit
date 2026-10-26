@@ -169,6 +169,7 @@ def test_staff_create_subscriptions_and_see_the_secret_once(
         "description": "billing",
         "created_at": created["created_at"],
         "rotating": False,
+        "owner": None,
     }
     assert listed.json() == [created]
     assert read.json() == created
