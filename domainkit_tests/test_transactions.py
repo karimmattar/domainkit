@@ -19,6 +19,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.requests import HTTPConnection
 
 from benchmarks.counting import SqlCounter
@@ -104,6 +105,7 @@ def test_retries_wait_up_to_a_doubling_capped_bound(most: None) -> None:
     assert Retry(attempts=3, backoff=0.02, max_backoff=1.0) == DEFAULT_RETRY
     assert Retry(backoff=1, max_backoff=60).delay(10_000) == 60
     assert Retry(retry_on=[Lost]).retry_on == (Lost,)  # type: ignore[arg-type]
+    assert Retry(backoff=1e-25).delay(100) == 1e-25 * 2.0**64  # No overflow.
     assert Retry(attempts=MAX_ATTEMPTS, backoff=60, max_backoff=60).attempts == 10
 
 
@@ -356,7 +358,9 @@ async def test_lock_names_are_text(name: Any) -> None:  # noqa: ANN401 - wrong o
 async def test_read_only_work_takes_no_locks() -> None:
     """Locks are for work that changes something."""
     uow = FakeGadgetsUnitOfWork(InMemoryGadgets(), readonly=True)
-    with pytest.raises(ReadOnlyError, match="is read-only; it takes no locks"):
+    with pytest.raises(
+        ReadOnlyError, match=r"^FakeGadgetsUnitOfWork is read-only; it takes no locks"
+    ):
         await uow.lock("x")
 
 
@@ -382,7 +386,7 @@ async def test_rows_are_locked_by_id_whatever_order_they_are_asked_in() -> None:
     ) == [second.id]
     with pytest.raises(LockNotAvailable):
         await other.get_many_for_update([first.id], nowait=True)
-    with pytest.raises(NotFound, match="No aggregate has id"):
+    with pytest.raises(NotFound, match=f"No aggregate has id {UUID(int=0)}"):
         await shared.get_many_for_update([first.id, GadgetId(UUID(int=0))])
 
 
@@ -536,6 +540,24 @@ async def test_sqlite_runs_serializable_work_one_at_a_time(sqlite_file: str) -> 
         assert await two.gadgets.count() == 1
         await two.lock("written")  # In its transaction already: nothing to do.
         await two.commit()
+
+
+async def test_units_of_work_at_one_level_share_one_bind(sqlite_file: str) -> None:
+    """The engine with a level's options is made once per engine, sharing its pool."""
+    async with (
+        GadgetsUnitOfWork(isolation=Isolation.SERIALIZABLE) as one,
+        GadgetsUnitOfWork(isolation=Isolation.SERIALIZABLE) as two,
+        GadgetsUnitOfWork(isolation=Isolation.READ_COMMITTED) as three,
+    ):
+        binds = [uow.session.bind for uow in (one, two, three)]
+
+    assert binds[0] is binds[1]
+    assert binds[2] is not binds[0]
+    assert all(
+        isinstance(bind, AsyncEngine)
+        and bind.sync_engine.pool is connections.engine().sync_engine.pool
+        for bind in binds
+    )
 
 
 async def test_sqlite_begins_without_a_statement_of_the_work(
@@ -806,7 +828,10 @@ async def test_named_locks_are_advisory_locks_of_the_transaction(
     """Held until commit or rollback; another waits, or is refused with nowait."""
     async with GadgetsUnitOfWork() as one, GadgetsUnitOfWork() as two:
         await one.lock("payout:acct-1")
-        with pytest.raises(LockNotAvailable, match="being changed by another"):
+        with pytest.raises(
+            LockNotAvailable,
+            match=r"^The data is being changed by another request; try again\.$",
+        ):
             await two.lock("payout:acct-1", nowait=True)
         await two.lock("payout:acct-2", nowait=True)
         held = await two.session.scalar(
