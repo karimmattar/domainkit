@@ -526,15 +526,18 @@ Where mail goes: an SMTP server, the console, or a list for tests.
 
 Transactional outbox, durable event handlers, and background tasks.
 
+- `AlreadyHandled`: The inbox holds this message: an earlier run committed its work.
 - `Attempt`: The run a worker is making of a message, as its task sees it.
 - `Backoff`: Seconds to wait before running a failed message again.
 - `Budget`: Slots for the messages a worker process runs at once.
 - `Chain`: Tasks that run one after another, each once the one before succeeds.
+- `LeaseLost`: Another worker took the message over; this run's commit is refused.
 - `MessagingSettings`: Delivery, retry, and worker options; every key is optional.
 - `Worker`: Run outbox messages of one database.
 - `chain`: Run `first`, then each task of `then` once the one before succeeds.
 - `current_attempt`: The run of the message being processed, or None outside the worker.
 - `enqueue`: Queue `function(**kwargs)` now, in its own transaction.
+- `inbox`: Commit a handler's or task's database work once per message.
 - `periodic`: Register an argument-free task that runs on a schedule, cluster-wide.
 - `task`: Register an async function as a background task (`uow.defer(task)`).
 
@@ -706,6 +709,7 @@ SQLAlchemy integration: connections, ORM metadata, repositories, migrations.
 - `ConnectionHandler`: Lazily created engines and session factories per alias and event loop.
 - `EnumValue`: An `Enum` stored by its members' values, so order follows them.
 - `ExactDecimal`: Fixed-point amounts that come back exactly as stored, also on SQLite.
+- `Isolation`: The isolation level of a unit of work's transaction (`isolation=`).
 - `Reads`: How a read-only session reads (`SqlAlchemyUnitOfWork(reads=...)`).
 - `SqlAlchemyRepository`: Store one imperatively mapped aggregate type; set `model` in subclasses.
 - `SqlAlchemyUnitOfWork`: Open a session on enter, commit on `commit()`, close on exit.
@@ -715,6 +719,7 @@ SQLAlchemy integration: connections, ORM metadata, repositories, migrations.
 - `children`: A relationship to the child entities an aggregate owns (`list[Line]`).
 - `connections`: Process-wide connection handler.
 - `create_engine`: Build a pooled engine; bound values stay out of logs and errors by default.
+- `lock_key`: The 64-bit key `lock(name)` takes on PostgreSQL, signed, as `bigint`.
 - `map_imperatively`: Map `class_` to `table` once; later calls are ignored.
 - `mapper_registry`: Generalized registry for mapping classes.
 - `metadata`: Every table of every domain; the target of `makemigrations`.
@@ -799,6 +804,7 @@ Domain-driven design building blocks ("seedwork").
 - `ReadOnlyError`: A read-only unit of work was asked to commit.
 - `Reference`: The id of another aggregate, which is referenced by id only (`Reference[XId]`).
 - `Repository`: Load and store aggregates of one type; subclasses implement `_` methods.
+- `Retry`: How `UnitOfWork.run` runs its work again when the transaction lost a race.
 - `RowLock`: Lock the rows a query returns until the transaction ends (`FOR UPDATE`).
 - `RowLocks`: Row locks for in-memory repositories, held until the unit of work ends.
 - `Selection`: Which aggregates to load, in which order, and how many.

@@ -21,12 +21,13 @@ from domainkit.db.orm import (
 )
 from domainkit.db.repository import SqlAlchemyRepository
 from domainkit.db.types import ExactDecimal, UTCDateTime
-from domainkit.db.uow import SqlAlchemyUnitOfWork
+from domainkit.db.uow import Isolation, SqlAlchemyUnitOfWork, lock_key
 
 __all__ = [
     "ConnectionHandler",
     "EnumValue",
     "ExactDecimal",
+    "Isolation",
     "Reads",
     "SqlAlchemyRepository",
     "SqlAlchemyUnitOfWork",
@@ -36,6 +37,7 @@ __all__ = [
     "children",
     "connections",
     "create_engine",
+    "lock_key",
     "map_imperatively",
     "mapper_registry",
     "metadata",

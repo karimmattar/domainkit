@@ -44,7 +44,7 @@ cannot pay, and one that is overloaded may fail half-way.
    trusted: body, headers, path, tokens, `Idempotency-Key`, `X-Request-ID`.
 2. **Edge to application.** The proxy is trusted only as far as
    `TRUSTED_PROXIES` says: its `X-Forwarded-For` and scheme header name
-   the client.
+   the client, and its `X-Request-ID` the request.
 3. **Application to the SQL database.** The database holds the aggregates,
    the outbox, the audit trail, users and tokens. The application's role
    should read and write rows; the schema owner migrates.
@@ -73,7 +73,7 @@ project" is the team that builds and runs the service.
 | **Spoofing** a user | Opaque tokens, JWTs, cookie sessions with CSRF, client certificates ([auth.md](auth/authentication.md#authenticating-requests)); password and code throttles that count only failures ([auth.md](auth/logging-in.md#logging-in-and-out)); second factors ([auth.md](auth/logging-in.md#two-factor-logins)). | Throttles are shared and fail closed where deployed: counted in each process, they are refused (`auth.E105`), and while Redis cannot count, password and code checks are refused, so an outage locks users out rather than letting guesses through. JWTs name their key: a key is replaced on a schedule through `AUTH.JWT.PREVIOUS_KEYS`, whose tokens are refused one token lifetime after it retires; a key that leaked is replaced without it, which refuses its tokens at once ([auth.md](auth/authentication.md#replacing-a-key)). A stored per-account lockout is planned for 0.10. |
 | **Spoofing** an address or scheme | Proxy headers believed from `TRUSTED_PROXIES` only, walked from the right ([ADR 0072](adr/0072-walk-proxy-headers-from-the-right-and-trust-unix-sockets.md)); `ALLOWED_HOSTS` checked first. | The project must list its proxies, and make the server read no proxy header itself ([reference.md](reference.md#http)). |
 | **Tampering** with requests | Bodies validated by pydantic; `If-Match` on changes ([resources.md](resources.md)); signed values ([reference.md](reference.md#signing)). | Route schemas are the project's: a write schema should name the fields a client may set. |
-| **Repudiation** | Request ids, the access log, and audit rows with the actor and address ([contrib.md](contrib/audit.md#audit-who-did-what-when-from-where)); refused logins audited. | The project keeps logs and the trail as long as its regulator asks. |
+| **Repudiation** | Request ids, from trusted proxies only ([ADR 0099](adr/0099-take-request-ids-from-trusted-proxies-only.md)), the access log, and audit rows with the actor and address ([contrib.md](contrib/audit.md#audit-who-did-what-when-from-where)); refused logins audited. | The proxy must set `X-Request-ID` over a client's, or `ACCEPT_REQUEST_ID = "never"` ([operations.md](operations.md#request-ids)). The project keeps logs and the trail as long as its regulator asks. |
 | **Information disclosure** | Deny by default: a route says who may call it, or the service does not start ([auth.md](auth/routes.md#deny-by-default)); errors never echo input ([reference.md](reference.md#errors)); security headers, a Content-Security-Policy, and HSTS; API docs off when deployed, and loaded from the API's own origin; route templates, not paths, in logs; `/metrics` behind a token. | Object-level rules for multi-tenant data are the project's ([auth.md](auth/users.md#grants-on-single-objects)). |
 | **Denial of service** | Request deadlines and load shedding ([runtime.md](runtime.md#request-deadlines), [runtime.md](runtime.md#load-shedding)); body size and time limits; rate limits ([cache.md](cache.md#shared-rate-limits)); bounded live connections ([live.md](live.md)); bounded hashing. | Volumetric attacks need the project's edge (CDN, WAF, provider limits). |
 | **Elevation of privilege** | Model and object permissions; staff grant only what they hold; protected user fields ([auth.md](auth/routes.md#the-admin-api)); routes added late are checked at startup. | Permission design is the project's. |
@@ -127,8 +127,8 @@ project" is the team that builds and runs the service.
 
 | Threat | What domainkit does | What remains |
 | --- | --- | --- |
-| **Repudiation** | Data-changing commands run as `operator:<name>` and are audited ([ADR 0070](adr/0070-name-the-operator-of-data-changing-commands.md)); staff changes through the admin API are audited. | A name comes from the login or `--operator`; 0.10 may require one where deployed. Direct database access is not audited by domainkit. |
-| **Tampering** | `migrate --downgrade` needs `--allow-data-loss` where deployed; the trail's seals show rewritten rows (`auditverify`). | Who holds production access. |
+| **Repudiation** | Data-changing commands run as `operator:<name>` and are audited ([ADR 0070](adr/0070-name-the-operator-of-data-changing-commands.md)); `loaddata` and `flush` record the tables they touched and the fixture's SHA-256, and need a name given on purpose where deployed; staff changes through the admin API are audited. | Other commands take the login name when none is given. Direct database access is not audited by domainkit. |
+| **Tampering** | `migrate --downgrade` needs `--allow-data-loss` where deployed; `loaddata` only adds rows unless `--replace`, and neither it nor `flush` touches users, grants, tokens, or second factors without `--include-guarded` ([ADR 0100](adr/0100-guard-credentials-and-grants-from-loaddata-and-flush.md)); the trail's seals show rewritten rows (`auditverify`). | Who holds production access. |
 | **Information disclosure** | Secrets hidden in `diffsettings`, reprs, and dumps. | Shell access sees the environment. |
 
 ### 9. The supply chain
@@ -166,13 +166,18 @@ left to the project on purpose.
   keyed requests without a deadline.
 - **Concurrency under contention.** The default write path keeps its
   invariants with optimistic versions, but refuses most concurrent writers
-  of one aggregate with 409, and there is no retry of a unit of work, no
-  isolation setting, and no lock API beyond one row. Use `get_for_update`
-  where writers contend ([queries.md](queries.md)).
+  of one aggregate with 409, and runs nothing again. A rule kept across
+  rows needs `Isolation.SERIALIZABLE` and `run` (or `retry=` on a command
+  route); writers that contend need `get_for_update`,
+  `get_many_for_update`, or `lock(name)`
+  ([databases.md](databases.md#transactions)).
 - **Handlers run at least once.** A crash between a handler's commit and
   its message's mark runs it again; there is no inbox.
-- **A committed idempotency key runs again once its TTL passes.** Keep
-  `IDEMPOTENCY.TTL_SECONDS` above the time clients retry.
+- **A committed idempotency key runs again once its tombstone expires.**
+  Since 0.11 it is kept, without its response, for
+  `IDEMPOTENCY.TOMBSTONE_SECONDS` (7 days) past its TTL (1 day); keep the
+  two above the time clients retry, and refuse what must never happen
+  twice with a unique column of the domain's own.
 - **Open findings of the 0.9.0 audit.** [audit/0.9.0.md](audit/0.9.0.md)
   lists every one with its status; open security findings are listed by id
   and severity until they are fixed.
@@ -195,7 +200,8 @@ left to the project on purpose.
 - Write a rule for every route, and object-level rules where users share
   tables; keep write schemas to the fields clients may set.
 - Make durable handlers and outgoing calls idempotent; use
-  `get_for_update` where writers contend.
+  `get_for_update` or `get_many_for_update` where writers contend, and a
+  serializable unit of work, run with retries, for rules across rows.
 - Mark personal data, and run retention (`privacy purge`) on a schedule.
 - Run sealing on a schedule, anchor in a ledger, and run `auditverify`.
 - Keep logs, the audit trail, and backups for as long as its regulator

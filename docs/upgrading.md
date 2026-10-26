@@ -27,6 +27,25 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
 
 ### Breaking changes
 
+- **`loaddata` only adds rows** (DATA-12). A fixture with a row whose
+  primary key is stored is refused, and nothing is loaded. **To keep the
+  old behaviour:** `loaddata --replace`.
+- **Guarded tables** (DATA-12). `loaddata` refuses a fixture that writes
+  users, groups, permissions or their links, content types, object
+  grants, or dynamic settings, and `flush` keeps those tables, with
+  tokens, TOTP authenticators, and recovery codes. **To keep the old
+  behaviour:** `--include-guarded` on either command.
+- **A named operator for `loaddata` and `flush` where deployed**
+  (DATA-12). In staging and production the login name no longer names the
+  operator of these two commands. **Fix:** `--operator NAME`, or
+  `DOMAINKIT_OPERATOR` set where they run.
+- **Request ids from trusted proxies only** (WEB-13). A caller's own
+  `X-Request-ID` is dropped, and its request gets a new id. **Fix:** have
+  the proxy listed in `TRUSTED_PROXIES` set the header, overwriting a
+  client's (nginx: `proxy_set_header X-Request-ID $request_id;`), or set
+  `ACCEPT_REQUEST_ID = "never"` if it passes headers through as they
+  came. **To keep the old behaviour:** `ACCEPT_REQUEST_ID = "anyone"`.
+
 - **Attempts counted in each process refuse to start** (AUTH-09). With
   `domainkit.contrib.auth` installed, staging and production refuse to
   start, and `check` fails (`auth.E105`, which `SILENCED_CHECKS` cannot
@@ -41,7 +60,63 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
   password changes, and requests that send mail answer `503
   throttle_unavailable` ([runbook.md](runbook.md#logins-are-refused-while-redis-is-down)).
   **To keep the old behaviour:** `AUTH = {"THROTTLE_FAIL_CLOSED": False}`.
-
+- **Committed idempotency keys outlive their TTL** (FIN-84). With
+  `domainkit.contrib.idempotency` installed, a key whose request committed
+  (or pinned it for a commit on another database) is kept as a tombstone
+  for `IDEMPOTENCY.TOMBSTONE_SECONDS` (7 days) once `TTL_SECONDS` passes,
+  without its response: a retry with the same key and request gets 409
+  `idempotency_response_unavailable` instead of running again, and another
+  request with the key gets 422 `idempotency_key_reused`. **Fix:** run
+  `makemigrations` and `migrate` for the keys table's new `tombstone`
+  column before the new version serves requests; clients that reuse a key
+  on purpose send a new one. **To keep the old behaviour:**
+  `IDEMPOTENCY = {"TOMBSTONE_SECONDS": 0}`.
+### Removed in 0.11
+Each changes what a project gets without changing its code. Each says how
+to keep the old behaviour, for as long as the project needs it.
+- **Scoped credentials need a rule that checks scopes** (AUTH-01).
+  `SCOPED_CREDENTIALS` defaults to `"refuse"`: credentials limited to
+  scopes, on a route that declares no rule that checks scopes, get `403
+  permission_denied`, where 0.10 served them with a warning naming the
+  route. **Fix:** add `HasScope(...)`, a permission rule, or
+  `AllowScoped()` to the route, or to a router it is included through.
+  **To keep the old behaviour:** `SCOPED_CREDENTIALS = "warn"`, which
+  serves them with the security log line, without the deprecation
+  warning.
+- **Anonymous idempotency keys are refused** (DATA-09).
+  `IDEMPOTENCY.ANONYMOUS` defaults to `"refuse"`: an `Idempotency-Key`
+  sent with no actor and none of `CREDENTIAL_HEADERS` gets 400
+  `idempotency_key_needs_caller`, and the request does not run. **Fix:**
+  the client authenticates, or sends the request without the key (a
+  login or a sign-up, which has no caller yet, sends none).
+  **To keep the old behaviour:** `IDEMPOTENCY = {"ANONYMOUS":
+  "per-address"}`, which scopes such keys to the caller's address, shared
+  by every caller behind one NAT or proxy. `check` no longer warns
+  `idempotency.W002`: take it out of `SILENCED_CHECKS` if it is there.
+- **`crud=True` needs the fields it writes** (WEB-09).
+  `ResourceRouter(crud=True)` without `writable=`, or without both
+  `create=` and `update=`, raises `TypeError` when the router is built,
+  where 0.10 warned. **Fix:** `writable=[...]` naming the fields the
+  writes take, or both schemas. **To keep the old behaviour:**
+  `writable=ALL_FIELDS`, which takes every plain field.
+Each was deprecated in 0.10, with a warning that named its replacement.
+| Removed | Use instead | Audit id |
+| --- | --- | --- |
+| `from domainkit.contrib.auth import IsAuthenticated` (and `AllowAny`, `BasePermission`, `HasObjectPermissions`, `HasPermissions`, `HasScope`, `IsAuthenticatedOrReadOnly`, `IsUnscoped`, `ModelPermissions`, `NotAuthenticated`, `Public`, `Require`, `check_object_permissions`, `mark_public`, `open_routes`) raises `ImportError` | `from domainkit.http.access import ...`, the same objects | DSGN-02 |
+| The same names from `domainkit.contrib.auth.access`, and `AllOf`, `AnyOf`, `Not`, `Rule`, `SAFE_METHODS`, `MODEL_ACTIONS`, `bearer`, `public`, `scopes_of`, `routes_need_users`, `unguarded_routes` | `domainkit.http.access`; `IsAdminUser`, `IsSuperuser`, `AuthenticatedUser`, `CurrentUser`, and `current_user` stay in `domainkit.contrib.auth` | DSGN-02 |
+| `AUTH.REQUIRE_ROUTE_RULES`: settings that set it are refused when they load | `REQUIRE_ROUTE_RULES` | DSGN-02 |
+| `Query` from `domainkit.ddd.query` | `domainkit.ddd.Selection` | DSGN-09 |
+| `domainkit.contrib.evidence.model` | `domainkit.contrib.evidence` (or its `models`) | DSGN-09 |
+- **Messaging's new table, and stale commits refused** (FIN-80).
+  Messaging has an inbox table, `domainkit_inbox`, in every database that
+  holds an outbox: projects that install messaging run `makemigrations`
+  and `migrate` before deploying, or each worker's cleanup logs a failure
+  every round. A unit of work that a durable handler or task commits on
+  its outbox's database, after another worker took its message over (the
+  run outlived its lease), now raises `LeaseLost` and rolls back; the
+  worker holding the message runs it. Before, both runs committed. **Fix:**
+  let `LeaseLost` propagate from handlers that catch errors around their
+  commit. Nothing keeps the old behaviour: it committed the work twice.
 ## 0.9 to 0.10
 
 ### Breaking changes

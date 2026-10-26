@@ -1,6 +1,6 @@
 # 0062. Claim idempotency keys in one statement, and commit the framework's short writes as they run
 
-- Status: Accepted; amended in place 2026-10-22, and 2026-10-25 and 2026-10-26 (at the end); amended by [0085](0085-register-hooks-by-type-for-the-domains-that-have-them.md)
+- Status: Accepted; amended in place 2026-10-22, and 2026-10-25 and 2026-10-26 (at the end); amended by [0085](0085-register-hooks-by-type-for-the-domains-that-have-them.md) and [0096](0096-keep-committed-idempotency-keys-as-tombstones.md)
 - Date: 2026-10-21; amended 2026-10-22 (the sweep comes last), 2026-10-25 (the database's clock decides leases; the sweep once a minute)
 
 ## Context
@@ -257,3 +257,23 @@ management commands, which serve no keyed request, still start.
 `IDEMPOTENCY.REQUIRE_DEADLINE = False` keeps 0.9's warning
 (`idempotency.W001`). A project made by `init` passes: its settings give
 every request a deadline (SEC-10b-8).
+
+## Amendment (2026-10-26, 0.11): the claim leaves committed keys to become tombstones
+
+The claim replaced any expired row, so a key whose request committed ran
+again once its TTL passed (FIN-84). With tombstones ([0096](0096-keep-committed-idempotency-keys-as-tombstones.md)):
+
+- The claim's upsert replaces an expired row only if nothing committed or
+  pinned it, or if it is a tombstone that expired in turn. It is still one
+  statement, and still the only arbiter of a key: PostgreSQL checks the
+  condition again on the newest version of a row it waited for.
+- The read of a held key's row also says whether it expired, on the
+  database's clock, in the same statement.
+- The purge, hourly or the claim's sweep, deletes what the claim may
+  replace, then makes tombstones of the expired keys that may have
+  committed. Without messaging, a sweep that is due is two statements, not
+  one, both last on the claim's connection and skipping locked rows; a
+  whole batch of either makes the next claim sweep again.
+- The keyed write of the ladder still makes 4 statements, 3 transactions
+  and 3 checkouts. With `TOMBSTONE_SECONDS = 0`, the claim and the purge
+  are this record's, unchanged.

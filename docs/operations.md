@@ -64,7 +64,8 @@ whole command, with each limit, is in
   ([runtime.md](runtime.md#shutting-down-within-a-budget)).
 - **Proxies.** Run uvicorn with `--no-proxy-headers` and list the proxies
   in `TRUSTED_PROXIES`, so domainkit, not uvicorn, decides each caller's
-  address: rate limits, audit records, and logs depend on it.
+  address: rate limits, audit records, and logs depend on it. Have the
+  proxy set `X-Request-ID` too ([request ids](#request-ids)).
 
 The probes:
 
@@ -231,6 +232,14 @@ and test restores.
   run again (handlers are idempotent), and messages written after it are
   lost with their changes.
 - **SQLite** is for development and tests: one file, on one host.
+- **Fixtures are not backups.** `loaddata` only adds rows (`--replace`
+  replaces stored ones), and writes no guarded table (users, permissions,
+  grants, tokens, second factors, dynamic settings) without
+  `--include-guarded`; `flush` keeps those tables. In staging and
+  production both need `--force` and an operator named with `--operator`
+  or `DOMAINKIT_OPERATOR`, and each run is audited with the tables it
+  touched and, for a load, the fixture's SHA-256
+  ([reference.md](reference.md#data-fixtures-flush-and-seeds)).
 
 ## Observability
 
@@ -243,6 +252,29 @@ and test restores.
 - **Traces**: run under `opentelemetry-instrument`; outbox messages carry
   the trace context of the commit that queued them
   ([reference.md](reference.md#observability)).
+
+### Request ids
+
+Each request has an id: in its log lines, error reports, and audit rows,
+in the work it queues, in its outgoing calls (`X-Request-ID`), and in its
+answer's `X-Request-ID` and error bodies. It is the `X-Request-ID` a
+trusted proxy sent (`TRUSTED_PROXIES`, a unix socket's peer with
+`"unix"`), when it is up to 128 letters, digits, `.`, `_`, `:`, or `-`;
+otherwise a new one, 32 hex digits. A caller's own header is dropped, so
+nobody outside can give its requests another's id, or one id to many.
+
+A proxy forwards a client's headers as they came unless it sets them, so
+set the id at the proxy, overwriting the client's:
+
+```nginx
+proxy_set_header X-Request-ID $request_id;
+```
+
+A proxy that does not set it would pass a client's on: then set
+`ACCEPT_REQUEST_ID = "never"`, and each request gets a new id.
+`ACCEPT_REQUEST_ID = "anyone"` takes any caller's, as up to 0.10, for
+callers who correlate their own calls (inside a private network); a
+caller's id then names its lines in the logs and the trail.
 
 **Metrics to alert on** (`domainkit[metrics]`; every metric and label is
 in [reference.md](reference.md#observability)). The thresholds are

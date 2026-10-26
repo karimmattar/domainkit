@@ -25,7 +25,7 @@ from .catalog.uow import CatalogUnitOfWork
 try:
     from domainkit.http.access import ModelPermissions, Public, Require
 except ImportError:  # A tree before 0.10 (``--baseline``): they were auth's.
-    from domainkit.contrib.auth import (  # type: ignore[no-redef]
+    from domainkit.contrib.auth import (  # type: ignore[attr-defined,no-redef]
         ModelPermissions,
         Public,
         Require,

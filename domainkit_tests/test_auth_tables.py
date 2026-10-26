@@ -98,7 +98,12 @@ def test_link_tables_follow_the_user_table() -> None:
         "people_permissions",
     )
     assert user_groups.metadata is user_permissions.metadata is people.metadata
-    assert user_groups.info == user_permissions.info == {"domain": "crm"}
+    # Guarded since 0.11, the user table too: loaddata and flush leave them
+    # alone unless told (DATA-12).
+    assert (
+        user_groups.info == user_permissions.info == {"domain": "crm", "guarded": True}
+    )
+    assert people.info == {"domain": "crm", "guarded": True}
     assert links(user_groups) == [
         ("user_id", "Uuid()", True, "people.id", "CASCADE"),
         ("group_id", "Uuid()", True, "domainkit_groups.id", "CASCADE"),

@@ -31,6 +31,7 @@ from sqlalchemy import (
     bindparam,
     delete,
     null,
+    or_,
     select,
     update,
 )
@@ -44,9 +45,11 @@ from .tables import idempotency_keys
 
 keys: Final = idempotency_keys.c
 SWEEPS: Final = 8
-"""Sweeps kept built: one per dialect, clock, and batch size in use."""
+"""Sweeps kept built: one per dialect, clock, tombstones or not, and batch size."""
 LAPSED: Final = "lapsed"
 """Read with a held key's row: whether its lease ran out, on the database's clock."""
+EXPIRED: Final = "expired"
+"""Read with a held key's row: whether it expired, on the database's clock."""
 
 
 def _bound(name: str, column: str) -> BindParameter[Any]:
@@ -102,9 +105,17 @@ class ClockStatements:
     database_clock: bool
     """Whether ``statement_timestamp()`` decides, or values from the host."""
     claim: ReturningInsert[Any]
-    """Insert the key's row, or replace an expired one; returns the token."""
+    """Insert the key's row, or replace an expired one; returns the token.
+
+    An expired row whose request committed or pinned the key is replaced
+    only once it is a tombstone that expired in turn (FIN-84).
+    """
+    claim_forgetting: ReturningInsert[Any]
+    """``claim`` for ``TOMBSTONE_SECONDS = 0``: it replaces any expired row,
+    as 0.10's did."""
     read_held: Select[Any]
-    """The row of a key held by another request, and whether it ``LAPSED``."""
+    """The row of a key held by another request, whether it ``LAPSED``, and
+    whether it ``EXPIRED``."""
     take_over: Update
     """Take the key from the holder ``token_1`` if it still holds it, unfinished."""
 
@@ -143,15 +154,37 @@ class ClockStatements:
         """The values of ``read_held``."""
         if now is None:
             return {"key_hash_1": key_hash}
-        return {"locked_until_1": now, "key_hash_1": key_hash}
+        return {"locked_until_1": now, "expires_at_1": now, "key_hash_1": key_hash}
 
-    def sweep(self, batch: int) -> Delete:
-        """Delete up to ``batch`` expired keys, skipping those being claimed."""
-        return _sweep(self.dialect, self.database_clock, batch)
+    def sweep(self, batch: int | None, tombstones: bool) -> Delete:
+        """Delete up to ``batch`` expired keys, skipping those being claimed.
+
+        With ``tombstones``, not those whose request committed or pinned the
+        key: ``bury`` keeps them. A ``batch`` of None deletes every one in a
+        statement that waits for the rows claims hold, as the hourly purge
+        always did.
+        """
+        return _sweep(self.dialect, self.database_clock, tombstones, batch)
 
     def sweep_values(self, now: datetime | None) -> dict[str, Any]:
         """The values of ``sweep``: none on the database's clock."""
         return {} if now is None else {"expires_at_1": now}
+
+    def bury(self, batch: int | None) -> Update:
+        """Make tombstones of up to ``batch`` expired keys that may have committed.
+
+        Their response, headers and ``subjects`` are dropped, and they are
+        kept until ``TOMBSTONE_SECONDS`` from now: ``expires_at`` moves on,
+        so each purge reads only the rows due, however many tombstones wait.
+        A ``batch`` of None buries every one, as ``sweep`` deletes them.
+        """
+        return _bury(self.dialect, self.database_clock, batch)
+
+    def bury_values(self, now: datetime | None, seconds: float) -> dict[str, Any]:
+        """The values of ``bury``: tombstones kept ``seconds`` from ``now``."""
+        if now is None:
+            return {"statement_timestamp_1": timedelta(seconds=seconds)}
+        return {"expires_at": _later(now, seconds), "expires_at_1": now}
 
     def take_over_values(
         self,
@@ -184,6 +217,19 @@ def clock_statements(dialect: str) -> ClockStatements:
     return built
 
 
+def _forgotten(before: dbclock.Moment, tombstones: bool) -> ColumnElement[bool]:
+    """The rows a claim may replace, and a purge delete: those expired ``before``.
+
+    With tombstones, of those whose request committed or pinned the key,
+    only tombstones, which expire ``TOMBSTONE_SECONDS`` after they are made.
+    """
+    expired = keys.expires_at < before
+    if not tombstones:
+        return expired
+    unmarked = and_(keys.committed_at.is_(None), keys.pinned.is_(False))
+    return and_(expired, or_(unmarked, keys.tombstone.is_(True)))
+
+
 def _build(dialect: str, database_clock: bool) -> ClockStatements:
     """Build the statements for ``dialect`` on the database's or the host's clock."""
     if database_clock:
@@ -192,12 +238,12 @@ def _build(dialect: str, database_clock: bool) -> ClockStatements:
         lease = now + bindparam("statement_timestamp_2", type_=Interval())
         new_lease = now + bindparam("statement_timestamp_1", type_=Interval())
         created, expires, locked = now, ttl, lease
-        lapsed_before = claim_before = now
+        lapsed_before = claim_before = expired_before = now
     else:
         created = _bound("created_at", "created_at")
         expires = _bound("expires_at", "expires_at")
         locked = new_lease = _bound("locked_until", "locked_until")
-        claim_before = _bound("expires_at_1", "expires_at")
+        claim_before = expired_before = _bound("expires_at_1", "expires_at")
         lapsed_before = _bound("locked_until_1", "locked_until")
     insert = postgresql.insert if dialect == "postgresql" else sqlite.insert
     claim = insert(idempotency_keys).values(
@@ -208,30 +254,40 @@ def _build(dialect: str, database_clock: bool) -> ClockStatements:
         token=_bound("token", "token"),
         locked_until=locked,
         pinned=False,
+        tombstone=False,
     )
     fresh = claim.excluded
+    replace = {
+        "fingerprint": fresh.fingerprint,
+        "status_code": null(),
+        "headers": null(),  # SQL NULL, not JSON's null.
+        "body": null(),
+        "created_at": fresh.created_at,
+        "expires_at": fresh.expires_at,
+        "committed_at": null(),
+        "token": fresh.token,
+        "locked_until": fresh.locked_until,
+        "pinned": False,
+        "subjects": null(),
+        "tombstone": False,
+    }
+
+    def replacing(tombstones: bool) -> ReturningInsert[Any]:
+        return claim.on_conflict_do_update(
+            index_elements=[keys.key_hash],
+            set_=replace,
+            where=_forgotten(claim_before, tombstones),
+        ).returning(keys.token)
+
     return ClockStatements(
         dialect=dialect,
         database_clock=database_clock,
-        claim=claim.on_conflict_do_update(
-            index_elements=[keys.key_hash],
-            set_={
-                "fingerprint": fresh.fingerprint,
-                "status_code": null(),
-                "headers": null(),  # SQL NULL, not JSON's null.
-                "body": null(),
-                "created_at": fresh.created_at,
-                "expires_at": fresh.expires_at,
-                "committed_at": null(),
-                "token": fresh.token,
-                "locked_until": fresh.locked_until,
-                "pinned": False,
-                "subjects": null(),
-            },
-            where=keys.expires_at < claim_before,
-        ).returning(keys.token),
+        claim=replacing(tombstones=True),
+        claim_forgetting=replacing(tombstones=False),
         read_held=select(
-            idempotency_keys, (keys.locked_until < lapsed_before).label(LAPSED)
+            idempotency_keys,
+            (keys.locked_until < lapsed_before).label(LAPSED),
+            (keys.expires_at < expired_before).label(EXPIRED),
         ).where(keys.key_hash == _bound("key_hash_1", "key_hash")),
         take_over=update(idempotency_keys)
         .where(
@@ -244,22 +300,60 @@ def _build(dialect: str, database_clock: bool) -> ClockStatements:
     )
 
 
+def _before(dialect: str, database_clock: bool) -> dbclock.Moment:
+    """Now, for the purge's comparisons: the database's clock, or a value."""
+    if database_clock:
+        return dbclock.now(dialect)
+    return _bound("expires_at_1", "expires_at")
+
+
+def _oldest(condition: ColumnElement[bool], batch: int) -> ColumnElement[bool]:
+    """Up to ``batch`` rows that meet ``condition``, skipping those being claimed."""
+    oldest = (
+        select(keys.key_hash)
+        .where(condition)
+        .limit(batch)
+        .with_for_update(skip_locked=True)
+    )
+    return keys.key_hash.in_(oldest.scalar_subquery())
+
+
 @lru_cache(maxsize=SWEEPS)
-def _sweep(dialect: str, database_clock: bool, batch: int) -> Delete:
+def _sweep(
+    dialect: str, database_clock: bool, tombstones: bool, batch: int | None
+) -> Delete:
     """Build ``ClockStatements.sweep``; the batch is part of the SQL, as a literal.
 
     ``lru_cache`` keeps its entries under a lock of its own.
     """
-    before: dbclock.Moment = (
-        dbclock.now(dialect) if database_clock else _bound("expires_at_1", "expires_at")
+    due = _forgotten(_before(dialect, database_clock), tombstones)
+    return delete(idempotency_keys).where(due if batch is None else _oldest(due, batch))
+
+
+@lru_cache(maxsize=SWEEPS)
+def _bury(dialect: str, database_clock: bool, batch: int | None) -> Update:
+    """Build ``ClockStatements.bury``, as ``_sweep`` builds the sweep."""
+    kept: ColumnElement[Any] = (
+        dbclock.now(dialect) + bindparam("statement_timestamp_1", type_=Interval())
+        if database_clock
+        else _bound("expires_at", "expires_at")
     )
-    oldest = (
-        select(keys.key_hash)
-        .where(keys.expires_at < before)
-        .limit(batch)
-        .with_for_update(skip_locked=True)
+    due = and_(
+        keys.expires_at < _before(dialect, database_clock),
+        keys.tombstone.is_(False),
+        or_(keys.committed_at.is_not(None), keys.pinned.is_(True)),
     )
-    return delete(idempotency_keys).where(keys.key_hash.in_(oldest.scalar_subquery()))
+    return (
+        update(idempotency_keys)
+        .where(due if batch is None else _oldest(due, batch))
+        .values(
+            headers=null(),  # SQL NULL, not JSON's null.
+            body=null(),
+            subjects=null(),
+            tombstone=True,
+            expires_at=kept,
+        )
+    )
 
 
 def _later(now: datetime, seconds: float) -> datetime:

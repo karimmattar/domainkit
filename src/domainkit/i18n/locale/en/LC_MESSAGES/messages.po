@@ -221,6 +221,11 @@ msgstr ""
 msgid "A request with this Idempotency-Key is still in progress."
 msgstr ""
 
+msgid ""
+"The request with this Idempotency-Key already ran, and its response is no "
+"longer kept; look up the result instead of retrying."
+msgstr ""
+
 #. domainkit.http.uploads and domainkit.storage
 msgid "The file is too large."
 msgstr ""

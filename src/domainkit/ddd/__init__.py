@@ -1,8 +1,8 @@
 """Domain-driven design building blocks ("seedwork").
 
-This package depends only on the standard library, ``domainkit.utils``, and
-``domainkit.clock``, so a domain layer that imports nothing but
-``domainkit.ddd`` stays free of frameworks and I/O.
+This package depends only on the standard library, ``domainkit.utils``,
+``domainkit.clock``, and ``domainkit.deadlines``, so a domain layer that
+imports nothing but ``domainkit.ddd`` stays free of frameworks and I/O.
 """
 
 from domainkit.ddd.events import (
@@ -49,7 +49,7 @@ from domainkit.ddd.repository import (
     RowLocks,
     SoftDeletable,
 )
-from domainkit.ddd.uow import DeferredTask, ReadOnlyError, UnitOfWork
+from domainkit.ddd.uow import DeferredTask, ReadOnlyError, Retry, UnitOfWork
 
 __all__ = [
     "UNSET",
@@ -84,6 +84,7 @@ __all__ = [
     "ReadOnlyError",
     "Reference",
     "Repository",
+    "Retry",
     "RowLock",
     "RowLocks",
     "Selection",

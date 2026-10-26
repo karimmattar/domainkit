@@ -63,6 +63,10 @@ STACK = [
     "domainkit.contrib.auth.middleware.AuthenticationMiddleware",
 ]
 FIXED_ID = {"X-Request-ID": "routing-test"}
+"""One request id for both builds' answers, so they compare byte for byte.
+
+Callers may set it only with ``ACCEPT_REQUEST_ID = "anyone"`` (WEB-13),
+which the fixtures below set."""
 ALICE = {"X-User": "alice", **FIXED_ID}
 
 type Build = Callable[[], FastAPI]
@@ -96,7 +100,11 @@ def gateway(use_auth: UseAuth) -> None:
     """Auth installed, users named by ``X-User``, the nested routes mounted."""
     use_auth(
         AUTHENTICATION_CLASSES=[GATEWAY],
-        settings={"ROOT_ROUTER": ROUTES, "MIDDLEWARE": STACK},
+        settings={
+            "ROOT_ROUTER": ROUTES,
+            "MIDDLEWARE": STACK,
+            "ACCEPT_REQUEST_ID": "anyone",
+        },
     )
 
 
@@ -640,7 +648,12 @@ def served(use_auth: UseAuth) -> None:
     """Auth installed, users named by ``X-User``, the routers above mounted."""
     use_auth(
         AUTHENTICATION_CLASSES=[GATEWAY],
-        settings={"ROOT_ROUTER": SERVING, "MIDDLEWARE": STACK, "API_DOCS": True},
+        settings={
+            "ROOT_ROUTER": SERVING,
+            "MIDDLEWARE": STACK,
+            "API_DOCS": True,
+            "ACCEPT_REQUEST_ID": "anyone",
+        },
     )
 
 

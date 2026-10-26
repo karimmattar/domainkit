@@ -31,10 +31,11 @@ from domainkit.broker.rabbitmq import RabbitMQBroker, ssl_context
 from domainkit.conf import BrokerConfig, override_settings
 from domainkit.contrib.messaging import MessagingSettings, Worker, enqueue
 from domainkit.contrib.messaging.dispatch import BrokerWorkers
-from domainkit.contrib.messaging.tables import DONE, messages
+from domainkit.contrib.messaging.tables import DONE, inbox, messages
 from domainkit.db import connections
 from domainkit_tests import test_messaging_runtime as runtime
 from domainkit_tests.fake_amqp import FakeAMQP
+from domainkit_tests.test_db import notes
 from domainkit_tests.test_messaging import (
     ALPHA,
     FAST,
@@ -44,6 +45,13 @@ from domainkit_tests.test_messaging import (
     ran,
     remember,
     send_email,
+)
+from domainkit_tests.test_messaging_inbox import (
+    credit_task,
+    credits,
+    expire_locks,
+    failing_once,
+    inbox_rows,
 )
 
 SERVERS: Final = {
@@ -423,3 +431,53 @@ async def test_work_in_flight_never_exceeds_the_budget(brokered: Server) -> None
     assert gate.peak == 1
     assert sorted(gate.finished) == ["d1", "d2", "e1", "e2"]
     assert [row["status"] for row in rows] == [DONE] * 4
+
+
+async def until(check: Callable[[], Awaitable[object]]) -> None:
+    """Return once ``check()`` is true; fail after ``runtime.WAIT`` seconds."""
+    async with asyncio.timeout(runtime.WAIT):
+        for _ in range(int(runtime.WAIT / 0.02)):
+            if await check():
+                return
+            await asyncio.sleep(0.02)
+    raise AssertionError(f"{check.__name__}() never came true")
+
+
+async def done() -> bool:
+    """Whether every outbox message is done."""
+    return all(row["status"] == DONE for row in await outbox())
+
+
+async def test_a_redelivered_message_commits_its_work_once(brokered: Server) -> None:
+    """The consumer lost the outcome of a committed run; the next delivery is skipped.
+
+    The relay publishes the message again once its lease ends, a consumer
+    takes it over, and the inbox shows the earlier run committed (FIN-80).
+    """
+    async with connections.engine().begin() as connection:
+        for table in (messages, inbox, notes):
+            await connection.run_sync(table.create)
+    with override_settings(MESSAGING={**FAST, **SLOW, "BROKER": "work"}):
+        config = registry.settings(MessagingSettings)
+        worker = Worker(config)
+        failing_once(worker)
+        await enqueue(credit_task)
+        stop = asyncio.Event()
+        running = asyncio.create_task(
+            BrokerWorkers([worker], ["default"], config).run(stop)
+        )
+        try:
+            await until(credits)  # Committed; its outcome is lost.
+            await expire_locks()  # Its lease ends: the relay sends it again.
+            await until(done)
+        finally:
+            stop.set()
+            async with asyncio.timeout(runtime.WAIT):
+                await running
+            await brokers.close_all()
+
+    (row,) = await outbox()
+    assert (row["status"], row["attempts"]) == (DONE, 2)
+    assert await credits() == 1
+    assert await inbox_rows() == [("tests.inbox.credit_task", row["id"])]
+    await connections.close_all()

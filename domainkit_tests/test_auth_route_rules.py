@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from fastapi import APIRouter, Depends, FastAPI, WebSocket
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
@@ -16,7 +17,7 @@ from starlette.routing import Host, Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 
 from domainkit.conf import override_settings
-from domainkit.deprecation import DomainkitDeprecationWarning
+from domainkit.contrib.auth import AuthSettings
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.http.access import (
@@ -379,26 +380,23 @@ def test_projects_can_allow_open_routes(use_auth: UseAuth) -> None:
     )
 
 
-def test_the_auth_setting_still_allows_open_routes_with_a_warning(
-    use_auth: UseAuth,
-) -> None:
-    """``AUTH.REQUIRE_ROUTE_RULES = False`` works until 0.11, and warns."""
-    with pytest.warns(
-        DomainkitDeprecationWarning,
-        match=r"^AUTH\.REQUIRE_ROUTE_RULES moved to REQUIRE_ROUTE_RULES, .* "
-        r"removed in 0\.11\.$",
-    ):
-        use_auth(
-            REQUIRE_ROUTE_RULES=False,
-            REQUIRE_SHARED_THROTTLES=False,
-            settings={"ROOT_ROUTER": f"{ROUTES}.router", "MIDDLEWARE": MIDDLEWARE[:3]},
+def test_the_auth_setting_is_refused_naming_its_successor(use_auth: UseAuth) -> None:
+    """``AUTH.REQUIRE_ROUTE_RULES``, removed in 0.11, stops startup, whatever its value.
+
+    The message names ``REQUIRE_ROUTE_RULES``, which turns the check off now.
+    """
+    project = {"ROOT_ROUTER": f"{ROUTES}.router", "MIDDLEWARE": MIDDLEWARE[:3]}
+    for value in (False, True):
+        with pytest.raises(ImproperlyConfigured) as refused:
+            use_auth(REQUIRE_ROUTE_RULES=value, settings=project)
+        assert str(refused.value) == (
+            "Invalid AUTH settings:\n  settings: Value error, "
+            "AUTH.REQUIRE_ROUTE_RULES was removed in 0.11: set REQUIRE_ROUTE_RULES, "
+            "a setting of its own, outside AUTH"
         )
-    with override_settings(ENVIRONMENT="production"):
-        assert application_problems(get_asgi_application()) == []
-    with override_settings(AUTH={"REQUIRE_ROUTE_RULES": True}):
-        assert application_problems(get_asgi_application()) != []
-    with override_settings(REQUIRE_ROUTE_RULES=False, AUTH={}):
-        assert application_problems(get_asgi_application()) == []
+    with pytest.raises(ValidationError, match="valid dictionary or instance"):
+        AuthSettings.model_validate(["REQUIRE_ROUTE_RULES"])
+    assert AuthSettings.model_validate(AuthSettings()) == AuthSettings()
 
 
 def test_rules_need_the_middleware(use_auth: UseAuth) -> None:

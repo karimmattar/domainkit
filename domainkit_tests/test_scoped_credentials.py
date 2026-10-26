@@ -3,16 +3,16 @@
 Before 0.10 a credential limited to scopes passed any route guarded only by
 authentication (``Require()``, ``IsAuthenticated``, ``AuthenticatedUser``):
 a "read-only" key wrote wherever no permission was checked. A route reached
-with one must now declare a rule that checks scopes. In 0.10 the others
-still let it through, with a ``DomainkitDeprecationWarning`` and a security
-log line (``SCOPED_CREDENTIALS = "warn"``); ``"refuse"`` answers 403, as
-0.11 will by default.
+with one must now declare a rule that checks scopes: the others answer 403
+(``SCOPED_CREDENTIALS = "refuse"``, the default since 0.11). ``"warn"``,
+0.10's default, still lets it through, with a security log line.
 
 Refusals of known principals go to the audit trail, sampled per actor and
 route (AUTH-11): ``test_auth_denials.py`` covers the recorder.
 """
 
 import logging
+import warnings
 from collections.abc import Collection, Iterator
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, Final
@@ -26,7 +26,6 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from domainkit.conf import override_settings
 from domainkit.ddd import PermissionDenied
-from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import access
 from domainkit.http.access import (
@@ -257,44 +256,50 @@ def client(request: pytest.FixtureRequest) -> Iterator[TestClient]:
         yield client
 
 
-def test_a_scoped_key_writes_where_no_scope_is_checked_with_a_warning(
+def test_a_scoped_key_writes_where_no_scope_is_checked_under_warn(
     client: TestClient, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """0.10's default keeps the old answer, and says so where projects look.
+    """``"warn"`` keeps 0.10's answer, and says so in the security log.
 
     The PoC of AUTH-01: a key limited to ``notes.add_note`` passes routes
-    guarded by authentication alone. Tests that make deprecations errors
-    fail on it; deployments find the security log line.
+    guarded by authentication alone. Deployments find the log line; since
+    0.11 no ``DomainkitDeprecationWarning`` goes with it, as nothing is to
+    be removed.
     """
     caplog.set_level(logging.WARNING, logger=SECURITY_LOGGER)
-    for path in UNCHECKED:
-        with pytest.warns(DomainkitDeprecationWarning) as warned:
+    with (
+        override_settings(SCOPED_CREDENTIALS="warn"),
+        warnings.catch_warnings(record=True) as warned,
+    ):
+        warnings.simplefilter("always")
+        for path in UNCHECKED:
             response = client.post(f"/api{path}", headers=KEY)
-        assert response.status_code == 200, path
-        (message,) = [str(each.message) for each in warned]
-        assert f"POST /api{path}" in message
-        assert "removed in 0.11" in message
-        assert "HasScope(...), a permission rule, or AllowScoped()" in message
+            assert response.status_code == 200, path
+    assert warned == []
     logged = [r.getMessage() for r in caplog.records if r.name == SECURITY_LOGGER]
     assert len(logged) == len(UNCHECKED)
-    assert all("SCOPED_CREDENTIALS" in line for line in logged)
+    for path, line in zip(UNCHECKED, logged, strict=True):
+        assert line == (
+            f"Credentials limited to scopes called POST /api{path}, which declares "
+            'no rule that checks scopes, served as SCOPED_CREDENTIALS is "warn": '
+            "add HasScope(...), a permission rule, or AllowScoped() to the route"
+        )
     assert NOTE not in str(logged)  # Routes, never the scopes.
 
 
 def test_scoped_keys_are_refused_where_no_scope_is_checked(client: TestClient) -> None:
-    """``SCOPED_CREDENTIALS = "refuse"``: 0.11's answer, 403, now.
+    """By default (``SCOPED_CREDENTIALS = "refuse"``, since 0.11): 403.
 
     The same requests with a login, or without the scope limit, still pass.
     """
-    with override_settings(SCOPED_CREDENTIALS="refuse"):
-        for path in UNCHECKED:
-            refused = client.post(f"/api{path}", headers=KEY)
-            assert refused.status_code == 403, path
-            assert refused.json()["detail"] == SCOPES_UNBOUNDED
-            assert refused.json()["code"] == "permission_denied"
-            login = client.post(f"/api{path}", headers=LOGIN).status_code
-            assert login == (403 if path == "/not" else 200)  # Its own rule.
-        assert client.post("/api/notes").status_code == 401
+    for path in UNCHECKED:
+        refused = client.post(f"/api{path}", headers=KEY)
+        assert refused.status_code == 403, path
+        assert refused.json()["detail"] == SCOPES_UNBOUNDED
+        assert refused.json()["code"] == "permission_denied"
+        login = client.post(f"/api{path}", headers=LOGIN).status_code
+        assert login == (403 if path == "/not" else 200)  # Its own rule.
+    assert client.post("/api/notes").status_code == 401
 
 
 @pytest.mark.parametrize("mode", ["warn", "refuse"])
@@ -389,15 +394,14 @@ def test_open_connections_with_scoped_keys_end_where_scopes_are_not_checked() ->
 
     with TestClient(app) as client:
         with (
-            pytest.warns(DomainkitDeprecationWarning),
+            override_settings(SCOPED_CREDENTIALS="warn"),
             client.websocket_connect("/live", headers=KEY),
         ):
             pass
-        with override_settings(SCOPED_CREDENTIALS="refuse"):
-            with pytest.raises(WebSocketDenialResponse) as refused:
-                client.websocket_connect("/live", headers=KEY).__enter__()
-            with client.websocket_connect("/live", headers=LOGIN):
-                pass
+        with pytest.raises(WebSocketDenialResponse) as refused:
+            client.websocket_connect("/live", headers=KEY).__enter__()
+        with client.websocket_connect("/live", headers=LOGIN):
+            pass
 
     assert refused.value.status_code == 403
     assert seen == [(True, True, False), (True, True, True)]

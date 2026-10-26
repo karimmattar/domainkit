@@ -2,7 +2,8 @@
 
 ``VisibleTo`` filters a query with ``EXISTS`` on this table, so it must
 live in the database of the objects it is about. Grants may be dumped in
-fixtures: they hold no secrets.
+fixtures: they hold no secrets. They are guarded, though: ``loaddata``
+writes them, and ``flush`` deletes them, only with ``--include-guarded``.
 """
 
 from sqlalchemy import CheckConstraint, Index, Table
@@ -43,6 +44,7 @@ object_permissions: Table = table_for(
     Index("ix_domainkit_object_permissions_group", "group_id"),
     domain="objectpermissions",
 )
+object_permissions.info["guarded"] = True
 
 
 def start_mappers() -> None:

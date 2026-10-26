@@ -482,14 +482,20 @@ def test_open_security_findings_are_listed_without_their_detail() -> None:
     page = AUDIT_PAGE.read_text(encoding="utf-8")
     security = re.findall(r"^### Security: .*?(?=^#)", page, re.MULTILINE | re.DOTALL)
 
+    # Every row, so that a page the pattern no longer reads fails here; a
+    # release that fixes the last withheld finding leaves no row open.
     rows = [
-        row.split(" | ")
+        row
         for table in security
         for row in table.splitlines()
-        if row.startswith("| ") and row.endswith(" | Open |")
+        if row.startswith("| ") and not row.startswith("| Id |")
     ]
     assert rows
-    shown = [row[0] for row in rows if not row[1].startswith("Withheld while open")]
+    shown = [
+        cells[0]
+        for cells in (row.split(" | ") for row in rows if row.endswith(" | Open |"))
+        if not cells[1].startswith("Withheld while open")
+    ]
     assert shown == []
 
 

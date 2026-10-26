@@ -66,6 +66,24 @@ PRIORITY_INDEX: Final = Index(
 )
 """Claims take due messages by priority, then by age."""
 
+inbox = Table(
+    "domainkit_inbox",
+    metadata,
+    Column("target", String(255), primary_key=True),
+    Column("message_id", Uuid, primary_key=True),
+    Column("handled_at", UTCDateTime, nullable=False),
+    Index("ix_domainkit_inbox_handled", "handled_at"),
+    info={"domain": "messaging", "fixtures": False},
+)
+"""The messages each ``inbox`` handler or task committed its work for.
+
+One row per ``(target, message_id)``, written in the transaction of the
+handler's own commit (``runs``), so the row and the work commit or roll back
+together; a run of a message whose row exists is skipped. Rows hold no
+arguments, only the target's name, the message's id, and when it was
+handled; workers delete them after ``INBOX_RETENTION_SECONDS``.
+"""
+
 FINISHED_INDEX: Final = Index(
     "ix_domainkit_messages_finished",
     messages.c.finished_at,

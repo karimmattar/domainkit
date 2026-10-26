@@ -48,6 +48,14 @@ class MessagingSettings(BaseModel):
     """Seconds a stopping worker lets running messages finish; the rest run again."""
     RETENTION_SECONDS: float = Field(default=7 * 24 * 3600.0, gt=0, le=MAX_DELAY)
     """How long finished messages are kept; dead ones are kept until retried."""
+    INBOX_RETENTION_SECONDS: float = Field(default=7 * 24 * 3600.0, gt=0, le=MAX_DELAY)
+    """How long the inbox remembers a handled message (``inbox``).
+
+    It must outlast every later run the message may still get: its retries
+    and their delays, and a crashed worker's lease. ``check`` refuses an
+    ``inbox`` handler or task whose retries could outlast it
+    (``messaging.E001``).
+    """
     CLEANUP_INTERVAL: float = Field(default=3600.0, gt=0, le=24 * 3600)
     CLEANUP_BATCH_SIZE: int = Field(default=1000, ge=1, le=100_000)
     """Most finished messages one cleanup statement deletes."""
@@ -81,4 +89,11 @@ class MessagingSettings(BaseModel):
         """Keep work hidden for longer than it may run."""
         if self.VISIBILITY_TIMEOUT <= self.TASK_TIMEOUT:
             raise ValueError("VISIBILITY_TIMEOUT must exceed TASK_TIMEOUT")
+        return self
+
+    @model_validator(mode="after")
+    def check_inbox_retention(self) -> Self:
+        """Remember a handled message at least as long as a crashed run's lease."""
+        if self.INBOX_RETENTION_SECONDS <= self.VISIBILITY_TIMEOUT:
+            raise ValueError("INBOX_RETENTION_SECONDS must exceed VISIBILITY_TIMEOUT")
         return self

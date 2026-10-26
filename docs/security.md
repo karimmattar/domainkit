@@ -42,6 +42,10 @@ surprises a rollout.
 - [ ] The server run with its own limits and `--no-proxy-headers`
       ([reference.md](reference.md#server-limits)), behind a proxy that
       bounds headers and slow clients.
+- [ ] The proxy sets `X-Request-ID` itself, over a client's, or
+      `ACCEPT_REQUEST_ID = "never"`: request ids come from trusted proxies
+      only, so a caller's own never names log lines or audit rows
+      ([operations.md](operations.md#request-ids)).
 - [ ] `RATE_LIMIT` set (warned when missing), counted in Redis
       (`RATE_LIMIT_BACKEND = "domainkit.http.ratelimit.RedisBackend"`):
       with the auth app, attempts counted in each process are refused
@@ -109,7 +113,12 @@ surprises a rollout.
       packages, on a schedule: new advisories appear with no change here.
 - [ ] Operators named in the audit trail: commands that change data
       (`messages --retry`, `auditforget`, `flush`, `privacy purge`) take
-      `--operator` or `$DOMAINKIT_OPERATOR`.
+      `--operator` or `$DOMAINKIT_OPERATOR`; `loaddata` and `flush`
+      refuse without one (refused).
+- [ ] `loaddata --include-guarded` and `flush --include-guarded` kept for
+      a restore you planned: without it, users, permissions, grants,
+      tokens, and second factors are left alone
+      ([reference.md](reference.md#data-fixtures-flush-and-seeds)).
 
 ## Verifying a release
 
