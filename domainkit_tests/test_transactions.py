@@ -102,6 +102,7 @@ def test_retries_wait_up_to_a_doubling_capped_bound(most: None) -> None:
     assert [policy.delay(runs) for runs in range(1, 6)] == [0.1, 0.2, 0.4, 0.5, 0.5]
     assert Retry(attempts=3, backoff=0.02, max_backoff=1.0) == DEFAULT_RETRY
     assert Retry(backoff=1, max_backoff=60).delay(10_000) == 60
+    assert Retry(retry_on=[Lost]).retry_on == (Lost,)  # type: ignore[arg-type]
 
 
 def test_jittered_waits_spread_below_the_bound() -> None:

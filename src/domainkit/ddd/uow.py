@@ -128,9 +128,11 @@ class Retry:
                 f"Retry waits need 0 <= backoff <= max_backoff <= {MAX_BACKOFF:g} "
                 f"seconds, not backoff={backoff!r}, max_backoff={most!r}."
             )
-        for error in self.retry_on:
+        errors = tuple(self.retry_on)
+        for error in errors:
             if not (isinstance(error, type) and issubclass(error, Exception)):
                 raise ValueError(f"retry_on takes exception classes, not {error!r}.")
+        object.__setattr__(self, "retry_on", errors)  # A list, say, as a tuple.
 
     def delay(self, runs: int) -> float:
         """A random wait, in seconds, before run ``runs + 1``."""
