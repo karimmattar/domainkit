@@ -9,6 +9,12 @@ and a status.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-26
+
+A minor release: some changes break, and some names are deprecated, to be
+removed in 0.11. `docs/upgrading.md` lists each with its fix; run `check
+--deploy` after upgrading.
+
 ### Added
 
 - `domainkit.http.access`: the access rules, for any authentication. The
@@ -3268,7 +3274,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.9.3...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/karimmattar/domainkit/compare/v0.9.3...v0.10.0
 [0.9.3]: https://github.com/karimmattar/domainkit/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/karimmattar/domainkit/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/karimmattar/domainkit/compare/v0.9.0...v0.9.1

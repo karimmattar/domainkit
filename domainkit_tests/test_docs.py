@@ -455,7 +455,7 @@ def test_every_setting_row_states_its_default_and_bounds(
 
 AUDIT_PAGE = DOCS / "audit" / "0.9.0.md"
 _AUDIT_ID = re.compile(
-    r"\b(?:DJ-\d+|N-?\d+|ASYNC-R?\d+|R\d{2}|FX-\d+|SEC-r\d-\d+|"
+    r"\b(?:DJ-\d+|N-?\d+|ASYNC-R?\d+|R\d{2}|FX-\d+|SEC-(?:r\d|a|10[abc])-\d+|"
     r"(?:PERF|FIN|AUTH|CONC|WEB|DATA|TEST|INFRA|DOCS|DSGN)-\d+)\b"
 )
 
@@ -490,12 +490,29 @@ def test_open_security_findings_are_listed_without_their_detail() -> None:
 
 
 def upgrade_entries(changelog: str) -> list[str]:
-    """The ``[Unreleased]`` entries a project must act on: Breaking and Deprecated."""
-    unreleased = changelog.split("\n## [Unreleased]\n", 1)[1].split("\n## [", 1)[0]
-    sections = re.split(r"^### ", unreleased, flags=re.MULTILINE)[1:]
+    """The entries a project must act on to reach the newest minor release.
+
+    Breaking and Deprecated ones: those of ``[Unreleased]`` when it has
+    some, as a patch release has none (``docs/versioning.md``); else those
+    of the releases down to the newest ``X.Y.0``.
+    """
+    unreleased = changelog.split("\n## [Unreleased]\n", 1)[1]
+    first, *released = re.split(r"\n## \[([^\]]+)\][^\n]*\n", unreleased)
+    entries = _upgrade_entries(first)
+    if entries:
+        return entries
+    for version, text in zip(released[::2], released[1::2], strict=True):
+        entries += _upgrade_entries(text)
+        if version.endswith(".0"):
+            break
+    return entries
+
+
+def _upgrade_entries(section: str) -> list[str]:
+    """The Breaking entries of Changed and every Deprecated one, of a release."""
     entries = []
-    for section in sections:
-        title, _, body = section.partition("\n")
+    for part in re.split(r"^### ", section, flags=re.MULTILINE)[1:]:
+        title, _, body = part.partition("\n")
         items = re.split(r"^- ", body, flags=re.MULTILINE)[1:]
         if title == "Deprecated":
             entries += items
@@ -510,13 +527,17 @@ def test_the_upgrade_guide_covers_every_breaking_change_and_deprecation() -> Non
     guide = (DOCS / "upgrading.md").read_text(encoding="utf-8")
     entries = upgrade_entries(changelog)
 
-    assert entries, "no Breaking or Deprecated entry under [Unreleased]"
+    assert entries, "no Breaking or Deprecated entry in the newest minor release"
     cited = {ident for entry in entries for ident in _AUDIT_ID.findall(entry)}
     assert sorted(i for i in cited if not re.search(rf"\b{i}\b", guide)) == []
 
 
 def test_the_upgrade_entries_are_read_from_their_sections() -> None:
-    """Breaking entries of Changed and every Deprecated one; nothing else."""
+    """Breaking entries of Changed and every Deprecated one; nothing else.
+
+    Those of ``[Unreleased]``, or, when it has none, of every release down
+    to the newest minor one.
+    """
     changelog = (
         "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- New (A-1).\n\n"
         "### Changed\n\n- **Breaking:** b (B-1).\n- Quiet (C-1).\n\n"
@@ -525,3 +546,9 @@ def test_the_upgrade_entries_are_read_from_their_sections() -> None:
     )
 
     assert upgrade_entries(changelog) == ["**Breaking:** b (B-1).\n", "Old (D-1).\n"]
+    assert upgrade_entries(
+        "# Changelog\n\n## [Unreleased]\n\n## [0.10.1] - 2026-11-02\n\n"
+        "### Changed\n\n- **Breaking:** a security fix (S-1).\n\n"
+        "## [0.10.0] - 2026-10-26\n\n### Deprecated\n\n- Old (D-2).\n\n"
+        "## [0.9.0] - 2026-10-01\n\n### Deprecated\n\n- Older (D-3).\n"
+    ) == ["**Breaking:** a security fix (S-1).\n", "Old (D-2).\n"]
