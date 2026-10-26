@@ -723,7 +723,14 @@ did not move on any rung. Measured with the ladder against 0.9.1
 | `throttled` | 1,039 | 1,013 | -2.5% |
 
 The rungs without authentication or a database count the same calls.
-CPU_TIMES_PLACEHOLDER
+In two interleaved runs (load average 2 to 5), the keyed write took
+3,548 and 3,788 µs of CPU against 5,001 and 5,073 (-25% to -29%), the
+read 1,541 and 1,511 against 1,710 and 1,531, and the write 1,658 and
+1,833 against 1,908 and 1,967: lower in both runs, by less than this
+machine's noise for the read. `me` and `throttled` moved within noise.
+The JSON-log rungs count 10 to 15 calls fewer in each run, but vary by more
+than that from run to run with the logging thread's waits (728 to 743
+for `default-json`), so their budgets stay as they were.
 
 - **Content types** (`ModelPermissions`, PERF-01). `content_type_key`
   sorted every mapper and read every class's `Meta` to find one class's
