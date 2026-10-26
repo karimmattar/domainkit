@@ -75,6 +75,23 @@ to keep the old behaviour, for as long as the project needs it.
   `domainkit_ledger_states` once the restore is checked. Projects with the
   audit app run `makemigrations` and `migrate` for the new tables.
 
+- **The audit trail's baseline refuses by default** (DATA-04,
+  SEC-10b-8). With `domainkit.contrib.audit` installed, staging and
+  production refuse to start without `AUDIT.LEDGER`, `AUDIT.NAMESPACE`, a
+  sealing schedule (messaging's worker, or `AUDIT.SEALED_EXTERNALLY`), and
+  the `protect()` triggers; `check` fails with `audit.E001` to `audit.E003`,
+  and `SILENCED_CHECKS` cannot name them. **Fix:** set the four
+  ([contrib/audit.md](contrib/audit.md#in-staging-and-production)). **To
+  keep the old behaviour:** `AUDIT = {"REQUIRE_BASELINE": False}`, which
+  warns as 0.9 did.
+- **Keyed requests need a deadline** (SEC-r2-4, SEC-10b-8). With
+  `domainkit.contrib.idempotency` installed, staging and production refuse
+  to start, and `check` fails (`idempotency.E002`), when `REQUEST_TIMEOUT`
+  is `None` or `DeadlineMiddleware` is not in `MIDDLEWARE`. **Fix:** set
+  `REQUEST_TIMEOUT` below `IDEMPOTENCY.LEASE_SECONDS` and list the
+  middleware, as `init`'s settings do. **To keep the old behaviour:**
+  `IDEMPOTENCY = {"REQUIRE_DEADLINE": False}`, which warns as 0.9 did.
+
 ### Deprecated, removed in 0.11
 
 Each still works in 0.10, with a `DomainkitDeprecationWarning` that names

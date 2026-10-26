@@ -7,8 +7,11 @@ that seals on a schedule (the worker, with ``domainkit.contrib.messaging``,
 or ``auditseal`` from cron, ``AUDIT.SEALED_EXTERNALLY``), and the
 ``protect()`` triggers on PostgreSQL. ``check`` lists the settings that
 are missing; the application, when it starts, also asks each audited
-PostgreSQL database for the triggers. Both warn, unless
-``AUDIT.REQUIRE_BASELINE``, which refuses to start; 0.10 refuses by default.
+PostgreSQL database for the triggers. With ``AUDIT.REQUIRE_BASELINE``, the
+default since 0.10, both refuse: each problem is an error (``audit.E001`` to
+``audit.E005``), which ``SILENCED_CHECKS`` cannot silence. A project that sets
+it to False gets the same problems as warnings (``audit.W001`` to
+``audit.W005``), as in 0.9.
 """
 
 import asyncio
@@ -74,6 +77,17 @@ PROTECTED: Final = _protected()
 logger = logging.getLogger(__name__)
 
 
+def required() -> bool:
+    """Whether the baseline refuses (``AUDIT.REQUIRE_BASELINE``), or only warns."""
+    return registry.settings(AuditSettings).REQUIRE_BASELINE
+
+
+def _problem(number: int, message: str) -> CheckMessage:
+    """Baseline problem ``number``: an error while required, else a warning."""
+    level = "E" if required() else "W"
+    return CheckMessage(f"audit.{level}{number:03}", message)
+
+
 def settings_problems() -> list[str]:
     """What the settings leave out in staging and production; none elsewhere."""
     if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
@@ -82,8 +96,8 @@ def settings_problems() -> list[str]:
     problems: list[str] = []
     if config.LEDGER is None:
         problems.append(
-            CheckMessage(
-                "audit.W001",
+            _problem(
+                1,
                 "AUDIT.LEDGER is None, so the audit trail's hash chain is "
                 "anchored nowhere and whoever can write its tables can rewrite "
                 "it unnoticed; set it to an immudb alias in LEDGERS.",
@@ -91,8 +105,8 @@ def settings_problems() -> list[str]:
         )
     elif config.NAMESPACE is None:
         problems.append(
-            CheckMessage(
-                "audit.W002",
+            _problem(
+                2,
                 "AUDIT.NAMESPACE is None, so audit anchors go under "
                 "domainkit/audit/<alias>, a key every project and environment on "
                 "the same ledger shares; set it, such as 'shop-production'.",
@@ -100,8 +114,8 @@ def settings_problems() -> list[str]:
         )
     if not (registry.is_installed(MESSAGING) or config.SEALED_EXTERNALLY):
         problems.append(
-            CheckMessage(
-                "audit.W003",
+            _problem(
+                3,
                 f"Nothing seals the audit trail on a schedule: install {MESSAGING} "
                 "and run a worker, or run 'manage.py auditseal' from cron and set "
                 "AUDIT.SEALED_EXTERNALLY = True.",
@@ -147,8 +161,8 @@ async def protection_problems() -> list[str]:
                 missing = await missing_triggers(database)
         except (SQLAlchemyError, OSError, TimeoutError) as exc:
             problems.append(
-                CheckMessage(
-                    "audit.W004",
+                _problem(
+                    4,
                     f"Could not check the audit trail's triggers in {database!r} "
                     f"({type(exc).__name__}); run 'manage.py auditverify' once it "
                     "answers.",
@@ -157,8 +171,8 @@ async def protection_problems() -> list[str]:
             continue
         if missing:
             problems.append(
-                CheckMessage(
-                    "audit.W005",
+                _problem(
+                    5,
                     f"The audit trail in {database!r} is not append-only: triggers "
                     f"{', '.join(missing)} are missing, disabled, or changed. Call "
                     "protect(op) and protect(op, audit_seals) from a revision "
@@ -180,7 +194,7 @@ async def check_at_startup() -> None:
     problems = settings_problems() + await protection_problems()
     if not problems:
         return
-    if registry.settings(AuditSettings).REQUIRE_BASELINE:
+    if required():
         raise CheckFailed(
             f"AUDIT.REQUIRE_BASELINE refuses to start in {settings.ENVIRONMENT} "
             "without a tamper-evident audit trail",

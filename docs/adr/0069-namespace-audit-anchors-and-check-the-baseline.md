@@ -1,6 +1,6 @@
 # 0069. Namespace audit anchors, and check the tamper-evident baseline where deployed
 
-- Status: Accepted; amended 2026-10-25 (at the end)
+- Status: Accepted; amended 2026-10-25 and 2026-10-26 (at the end)
 - Date: 2026-10-25
 
 ## Context
@@ -92,3 +92,13 @@ That body has not changed since 0.1.0, so a database protected by any
 release passes. A project that wrote its own equivalent SQL with another
 message is reported, and calls `protect()` instead. The probe runs in the
 query it ran before, so startup makes no more round trips.
+
+## Amendment (2026-10-26, 0.10): the baseline refuses by default
+
+As promised above, `AUDIT.REQUIRE_BASELINE` defaults to `True`. Each
+missing part is an error (`audit.E001` to `audit.E005`), which
+`SILENCED_CHECKS` cannot name: the settings ones refuse the application
+when it is built and fail `check`, and the triggers refuse it when it
+starts. `AUDIT.REQUIRE_BASELINE = False` keeps 0.9's warnings
+(`audit.W001` to `audit.W005`). A project made by `init` does not install
+the audit trail, so it is not affected (SEC-10b-8).

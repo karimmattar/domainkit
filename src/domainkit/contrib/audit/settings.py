@@ -40,10 +40,10 @@ class AuditSettings(BaseModel):
     SEALED_EXTERNALLY: bool = False
     """``auditseal`` runs on a schedule of the project's own (cron), not in
     the worker: staging and production then do not warn that nothing seals."""
-    REQUIRE_BASELINE: bool = False
+    REQUIRE_BASELINE: bool = True
     """Refuse to start in staging and production without a ledger, a
-    namespace, a sealing schedule, and the ``protect()`` triggers, instead
-    of warning (0.10 refuses by default)."""
+    namespace, a sealing schedule, and the ``protect()`` triggers (the
+    default since 0.10); False only warns, as 0.9 did."""
     SEAL_LATE_WINDOW: timedelta = Field(
         default=timedelta(minutes=15), gt=timedelta(0), le=timedelta(days=1)
     )

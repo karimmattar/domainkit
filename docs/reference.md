@@ -524,8 +524,14 @@ Installed contrib apps add their own:
 
 The application refuses to start there with a route no rule guards
 (`security.E101`), operation ids that clash (`openapi.E001`), and the
-problems installed domains find (`auth.E101` to `auth.E104`,
-`idempotency.E001`); `setup()` refuses a domain whose `requires` is not
+problems installed domains find (`auth.E101` to `auth.E104`;
+`idempotency.E001`; `idempotency.E002`, keyed requests without a deadline,
+unless `IDEMPOTENCY.REQUIRE_DEADLINE = False`; `audit.E001` to `audit.E003`,
+no `AUDIT.LEDGER`, no `AUDIT.NAMESPACE` on it, or nothing that seals on a
+schedule, and at startup `audit.E004` and `audit.E005`, an audited
+PostgreSQL database whose `protect()` triggers could not be checked or are
+missing, unless `AUDIT.REQUIRE_BASELINE = False`;
+[contrib.md](contrib/audit.md#in-staging-and-production)); `setup()` refuses a domain whose `requires` is not
 installed (`apps.E001`), anywhere. `check` adds layer rules
 (`architecture.E001`) and migration heads (`migrations.E001`).
 `migrate --downgrade` also needs `--allow-data-loss` there.
@@ -560,9 +566,8 @@ an unsafe or broken configuration, refused until it changes.
 | `auth.W002`, `auth.W003` | `AUTH.LOGIN_RATE` or `AUTH.MFA.RATE` set to `None`: guesses without limit |
 | `auth.W004` | attempt throttles counted in a `RATE_LIMIT_BACKEND` each process keeps alone (`MemoryBackend`): with several processes, each allows the rates on its own ([auth.md](auth/logging-in.md#logging-in-and-out)) |
 | `auth.W005` | a session or CSRF cookie name without the `__Host-` prefix where the prefix could hold ([auth.md](auth/authentication.md#browser-sessions-in-cookies)) |
-| `audit.W001` to `audit.W003` | no `AUDIT.LEDGER`, no `AUDIT.NAMESPACE` on it, or nothing that seals on a schedule (no messaging, and no `AUDIT.SEALED_EXTERNALLY`) |
-| `audit.W004`, `audit.W005` | at startup, an audited PostgreSQL database whose `protect()` triggers could not be checked, or are missing; the application logs them. `AUDIT.REQUIRE_BASELINE` refuses to start on any `audit.W` instead ([contrib.md](contrib/audit.md#in-staging-and-production)) |
-| `idempotency.W001` | keyed requests without a deadline: one that runs past `IDEMPOTENCY.LEASE_SECONDS` can lose its key to a retry |
+| `audit.W001` to `audit.W005` | with `AUDIT.REQUIRE_BASELINE = False` only: what `audit.E001` to `audit.E005` refuse |
+| `idempotency.W001` | with `IDEMPOTENCY.REQUIRE_DEADLINE = False` only: what `idempotency.E002` refuses |
 
 The production settings that `init` create avoid the first three, and ask
 for `TRUSTED_PROXIES`: leave it empty only when callers connect directly.

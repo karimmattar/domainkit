@@ -1,6 +1,6 @@
 # 0062. Claim idempotency keys in one statement, and commit the framework's short writes as they run
 
-- Status: Accepted; amended in place 2026-10-22, and 2026-10-25 (at the end); amended by [0085](0085-register-hooks-by-type-for-the-domains-that-have-them.md)
+- Status: Accepted; amended in place 2026-10-22, and 2026-10-25 and 2026-10-26 (at the end); amended by [0085](0085-register-hooks-by-type-for-the-domains-that-have-them.md)
 - Date: 2026-10-21; amended 2026-10-22 (the sweep comes last), 2026-10-25 (the database's clock decides leases; the sweep once a minute)
 
 ## Context
@@ -246,3 +246,14 @@ had expired (PERF-10).
 - With messaging installed nothing changes: the hourly task purges, and
   claims never sweep. The keyed write of the ladder makes 4 statements,
   3 transactions and 3 checkouts, as before.
+
+## Amendment (2026-10-26, 0.10): no deadline is refused
+
+As promised above, staging and production now refuse to start, and `check`
+fails, when idempotency is installed and requests have no deadline
+(`idempotency.E002`, an error that `SILENCED_CHECKS` cannot name). The
+refusal is the application's (`check_application`), so workers and
+management commands, which serve no keyed request, still start.
+`IDEMPOTENCY.REQUIRE_DEADLINE = False` keeps 0.9's warning
+(`idempotency.W001`). A project made by `init` passes: its settings give
+every request a deadline (SEC-10b-8).

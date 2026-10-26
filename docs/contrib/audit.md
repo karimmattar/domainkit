@@ -295,9 +295,11 @@ missing. The probe cannot see a session that sets
 stop a table owner from dropping the triggers between two starts:
 `auditverify` checks what they protect.
 
-These are warnings in 0.9.1. `AUDIT.REQUIRE_BASELINE = True` turns them
-into a refusal to start, listing what is missing; 0.10 makes that the
-default, so set the four now.
+Since 0.10 they refuse: `AUDIT.REQUIRE_BASELINE` is `True` by default, so
+staging and production do not start without the four, `check` fails, and
+each missing part is an error (`audit.E001` to `audit.E005`) that
+`SILENCED_CHECKS` cannot name. `AUDIT.REQUIRE_BASELINE = False` keeps
+0.9's warnings (`audit.W001` to `audit.W005`).
 
 Protect the seals like the trail, in the revision that creates them:
 
@@ -326,7 +328,7 @@ def downgrade() -> None:
 | `ANCHOR_EVERY` | 1 hour | Anchor a new head at most this often. |
 | `SEAL_EVERY` | 5 minutes | How often the worker seals new rows. |
 | `SEALED_EXTERNALLY` | `False` | `auditseal` runs from a schedule of your own (cron), not in the worker: staging and production then do not warn that nothing seals. |
-| `REQUIRE_BASELINE` | `False` | Refuse to start in staging and production without a ledger, a namespace, a sealing schedule, and the triggers, instead of warning. 0.10 makes it the default. |
+| `REQUIRE_BASELINE` | `True` | Refuse to start in staging and production without a ledger, a namespace, a sealing schedule, and the triggers (the default since 0.10). `False` only warns, as 0.9 did. |
 | `SEAL_LATE_WINDOW` | 15 minutes | How far before the newest sealed row a run looks for rows that committed late, up to a day. A row later than this stays unsealed until `auditseal --late`, and `auditverify` reports it once it is a day old: keep it above your longest transaction plus the clock skew between hosts. |
 | `SEAL_BATCHES` | `100` | Batches of 1,000 rows one run seals at most (1 to 10,000); the rest wait for the next run. |
 | `SEAL_BACKLOG_WARNING` | `100000` | Rows a run leaves unsealed past which it logs a warning. |

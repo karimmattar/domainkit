@@ -1435,40 +1435,49 @@ def test_keyed_routes_that_outlast_the_lease_are_problems() -> None:
     ],
     ids=["no-timeout", "no-deadline-middleware"],
 )
-def test_keyed_requests_without_any_deadline_are_a_warning_where_deployed(
+def test_keyed_requests_without_any_deadline_are_refused_where_deployed(
     unbounded: dict[str, object], missing: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Nothing bounds them by the lease: ``check`` says so (SEC-r2-4).
+    """Nothing bounds them by the lease: the application refuses (SEC-r2-4).
 
-    A warning, not a refusal: deployments that run this way keep
-    starting until 0.10. Outside staging and production, nothing.
+    A warning in 0.9.1, as 0.9 promised a refusal for 0.10: now an error,
+    which ``SILENCED_CHECKS`` cannot name (SEC-10b-8).
+    ``IDEMPOTENCY.REQUIRE_DEADLINE = False`` keeps 0.9's warning. Outside
+    staging and production, nothing.
     """
 
-    def warnings(**options: object) -> list[str]:
+    def found(**options: object) -> tuple[list[str], list[str]]:
         registry.clear()
         try:
             with override_settings(
                 INSTALLED_DOMAINS=["domainkit.contrib.idempotency", ALPHA], **options
             ):
-                setup()  # Starts: no refusal.
-                return registry.get_domain_config("idempotency").deployment_warnings()
+                setup()  # Workers and commands start: only the application refuses.
+                config = registry.get_domain_config("idempotency")
+                return config.check_application(FastAPI()), config.deployment_warnings()
         finally:
             registry.clear()
 
-    elsewhere = warnings(**unbounded)
+    elsewhere = found(**unbounded)
     monkeypatch.setattr(idempotency_apps, "DEPLOYED_ENVIRONMENTS", {"test"})
+    message = (
+        f"Requests with an Idempotency-Key run without a deadline ({missing}): one "
+        "that runs past IDEMPOTENCY.LEASE_SECONDS (60s) can lose its key to a "
+        "retry, which runs it again."
+    )
 
-    assert warnings(**unbounded) == [
-        (
-            f"Requests with an Idempotency-Key run without a deadline ({missing}): one "
-            "that runs past IDEMPOTENCY.LEASE_SECONDS (60s) can lose its key to a "
-            "retry, which runs it again. Set REQUEST_TIMEOUT below "
-            f"IDEMPOTENCY.LEASE_SECONDS and list {DEADLINE_MIDDLEWARE} in MIDDLEWARE; "
-            "0.10 refuses to start without a deadline."
-        )
-    ]
-    assert warnings() == []
-    assert elsewhere == []
+    (refused,), warned = found(**unbounded)
+    relaxed, (only_warned,) = found(
+        **unbounded, IDEMPOTENCY={"REQUIRE_DEADLINE": False}
+    )
+
+    assert (refused, warned) == (message, [])
+    assert getattr(refused, "id", None) == "idempotency.E002"
+    assert "IDEMPOTENCY.REQUIRE_DEADLINE = False" in getattr(refused, "hint", "")
+    assert (relaxed, only_warned) == ([], message)
+    assert getattr(only_warned, "id", None) == "idempotency.W001"
+    assert found() == ([], [])
+    assert elsewhere == ([], [])
 
 
 def test_a_key_released_while_claimed_is_in_progress(

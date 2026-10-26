@@ -729,8 +729,9 @@ deadline is at the lease or past it, or removed, as the export above is
 with the default lease of 60 seconds, and staging and production refuse
 to start with one. Raise the lease above the longest such deadline, or
 shorten the route's. With no deadline at all (`REQUEST_TIMEOUT = None`,
-or no `DeadlineMiddleware`), `check` warns where deployed that keyed
-requests can outlive the lease; 0.10 refuses to start. A keyed
+or no `DeadlineMiddleware`), keyed requests can outlive the lease, so
+staging and production refuse to start (`idempotency.E002`;
+`IDEMPOTENCY.REQUIRE_DEADLINE = False` only warns). A keyed
 response's background tasks run after its response is stored, so they
 run once however long they take
 ([contrib.md](contrib/idempotency.md#idempotency-safe-retries-of-unsafe-requests)).
