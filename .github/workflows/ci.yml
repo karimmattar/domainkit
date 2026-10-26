@@ -324,7 +324,7 @@ jobs:
             -keyout server.key -out server.crt 2>/dev/null
           chmod 644 server.key
           docker run -d --name redis -p 6379:6379 -p 6380:6380 -v "$PWD:/certs:ro" \
-            redis:8.8.3-alpine@sha256:0b2b77d3ea5078274795e3177cdbdada8b96316684a38911d528534ed679b5ec \
+            redis:8.10.1-alpine@sha256:ef216d85ec44f4fdf7c0e6df2d1757a4734ed32fbb278cabd3181b5a27353b79 \
             redis-server --port 6379 --tls-port 6380 \
             --tls-cert-file /certs/server.crt --tls-key-file /certs/server.key \
             --tls-ca-cert-file /certs/server.crt --tls-auth-clients no
