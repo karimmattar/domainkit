@@ -243,6 +243,7 @@ def test_idle_browser_sessions_and_jwt_logins_end(identity: Api) -> None:
         session = TestClient(client.app, base_url=SITE)
         start(session)
         tokens = login(client, "alice")
+        assert session.get("/whoami").json()["user"] == "alice"  # Not idle yet.
         clock.tick(timedelta(minutes=17))
         assert session.get("/whoami").json()["user"] == ""
         refused = client.post(

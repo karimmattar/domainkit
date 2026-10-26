@@ -349,3 +349,11 @@ def test_the_setting_is_validated() -> None:
         override_settings(SCOPED_CREDENTIALS="sometimes"),
     ):
         pass
+
+
+def test_credentials_without_a_scopes_attribute_carry_none() -> None:
+    """A provider's own credentials, with no ``scopes``, are never held to it."""
+    assert not access._scoped({"auth": object()})
+    assert not access._scoped({"auth": None})
+    assert not access._scoped({})
+    assert access._scoped({"auth": Key(frozenset())})
