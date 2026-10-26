@@ -179,9 +179,10 @@ transaction. What each knows, read from asyncpg 0.32 and SQLAlchemy 2.1:
 `asyncio` and an anyio scope), a write after a statement cut in a
 transaction (both), the transaction refusing to go on, a read on its own
 (`Reads.STATEMENTS`) whose session must be reset, a settle that takes too
-long, and the cost of ten cut requests. Each checks the write on another
-connection, and that no lock or open transaction is left. Ten requests
-with a 1 s deadline whose second statement takes 2 s, on PostgreSQL 18:
+long, and what three cut requests cost. Each checks the write on another
+connection, and that no lock or open transaction is left. The connections
+counted are those of ten requests with a 1 s deadline whose second
+statement takes 2 s, on PostgreSQL 18:
 
 | Option | Opened, discarded | The SEC-10b-1 cases |
 | --- | --- | --- |
