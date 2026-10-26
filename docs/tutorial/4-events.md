@@ -80,6 +80,6 @@ run more than once (the worker can crash after the handler, before it
 records the outcome), write handlers that do no harm the second time.
 
 Queues, schedules, retries, and RabbitMQ are in
-[contrib.md](../contrib.md#messaging-outbox-durable-handlers-background-tasks).
+[contrib.md](../contrib/messaging.md#messaging-outbox-durable-handlers-background-tasks).
 [Part 5](5-testing-and-deploying.md) tests the rules and gets the project
 ready for production.

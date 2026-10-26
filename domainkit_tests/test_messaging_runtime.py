@@ -1688,7 +1688,7 @@ CONCURRENT_UPGRADE: Final = '''
 
 
 '''
-"""The upgrade docs/contrib.md gives for outboxes too large to lock."""
+"""The upgrade docs/contrib/messaging.md gives for outboxes too large to lock."""
 
 
 def test_the_cleanup_index_can_be_built_concurrently(

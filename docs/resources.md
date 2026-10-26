@@ -359,7 +359,7 @@ before the rule runs, and the service another.
 
 The rules are the core's (`domainkit.http.access`): a resource needs no
 `domainkit.contrib.auth`, only a middleware that puts who sent the request
-in `scope["user"]` ([Another authentication](auth.md#another-authentication)).
+in `scope["user"]` ([Another authentication](auth/routes.md#another-authentication)).
 
 ## Field policies
 
@@ -513,7 +513,7 @@ router.include_router(admin.site.router, prefix="/admin")
 | `GET /admin/catalog/products` | A page; each item has `id`, the `list_display` fields, and `links`. `filters=` takes a `FilterSet`; `search=` and `ordering=` make one, so each field of `ordering=` needs a bound, as any `FilterSet` does (`MaxLength` on text, `Digits` on amounts). |
 | `GET /admin/catalog/products/{product_id}` | The product, with its `ETag`. |
 | `POST /admin/catalog/products/{product_id}/archive` | A command, run by its service; `If-Match` makes it conditional. |
-| `GET /admin/catalog/products/{product_id}/history` | The audit trail's entries about the product, newest first, with what each changed ([contrib.md](contrib.md#history)), when `domainkit.contrib.audit` is installed. |
+| `GET /admin/catalog/products/{product_id}/history` | The audit trail's entries about the product, newest first, with what each changed ([contrib.md](contrib/audit.md#history)), when `domainkit.contrib.audit` is installed. |
 | `GET /admin/meta` | Each model the caller may view: its paths, the JSON Schema of an item without the fields the caller may not see, the listed fields, filters, ordering, search, the commands and queries the caller may run (with their bodies' JSON Schemas), and its history's path if the caller may read it. |
 
 - Every route needs staff (`is_staff`) or a superuser, with credentials

@@ -60,13 +60,13 @@ surprises a rollout.
 **Who may do what**
 
 - [ ] A rule on every route, and object rules where users share a table
-      ([auth.md](auth.md#protecting-routes)). `REQUIRE_ROUTE_RULES` (on by
+      ([auth.md](auth/routes.md#protecting-routes)). `REQUIRE_ROUTE_RULES` (on by
       default) refuses a route without one.
 - [ ] Write schemas that hold only the fields clients may set
       (`schema_for(..., write=True, include=[...])`).
 - [ ] Staff hold only the permissions they use; the admin API mounted only
       where staff reach it.
-- [ ] Two-factor logins for staff ([auth.md](auth.md#two-factor-logins)),
+- [ ] Two-factor logins for staff ([auth.md](auth/logging-in.md#two-factor-logins)),
       and session cookies with the `__Host-` prefix (warned otherwise).
 - [ ] `LIVE_REAUTH_INTERVAL` set, so WebSockets and event streams drop a
       revoked token (warned when `None`).

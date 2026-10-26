@@ -53,8 +53,8 @@ URLs; an unreadable port is refused without quoting the URL.
 | `MIDDLEWARE` | see [Middleware](#middleware) | ASGI middleware by dotted path, outermost first. |
 | `ROOT_ROUTER` | `None` | Dotted path to the `APIRouter` that mounts every route (Django's `ROOT_URLCONF`). |
 | `FLATTEN_ROUTERS` | `True` | Serve the routes of the routers `ROOT_ROUTER` includes from the top of the application, each matched once ([Included routers](#included-routers)); `False` keeps FastAPI's nesting, which matches a request again at each level. |
-| `REQUIRE_ROUTE_RULES` | `True` | Every route must say who may call it (`Require`, a dependency that reads the principal, or `Public`), whatever authenticates requests; `check` lists those that do not, and staging and production refuse to start ([Deny by default](auth.md#deny-by-default)). `AUTH.REQUIRE_ROUTE_RULES = False` still turns it off until 0.11, with a warning. |
-| `SCOPED_CREDENTIALS` | `"warn"` | Credentials limited to scopes on a route that declares no rule that checks scopes (`HasScope`, a permission rule, `IsUnscoped`, or `AllowScoped`): `"warn"` lets them through, as before 0.10, with a `DomainkitDeprecationWarning` and a security log line once per route a while; `"refuse"` answers 403, as 0.11 will by default ([Scopes on every route](auth.md#scopes-on-every-route)). |
+| `REQUIRE_ROUTE_RULES` | `True` | Every route must say who may call it (`Require`, a dependency that reads the principal, or `Public`), whatever authenticates requests; `check` lists those that do not, and staging and production refuse to start ([Deny by default](auth/routes.md#deny-by-default)). `AUTH.REQUIRE_ROUTE_RULES = False` still turns it off until 0.11, with a warning. |
+| `SCOPED_CREDENTIALS` | `"warn"` | Credentials limited to scopes on a route that declares no rule that checks scopes (`HasScope`, a permission rule, `IsUnscoped`, or `AllowScoped`): `"warn"` lets them through, as before 0.10, with a `DomainkitDeprecationWarning` and a security log line once per route a while; `"refuse"` answers 403, as 0.11 will by default ([Scopes on every route](auth/authentication.md#scopes-on-every-route)). |
 | `ASGI_APPLICATION` | `None` | `module:attribute` that `runserver` serves. |
 | `EVENT_LOOP` | `"auto"` | The event loop of `runserver` and of commands with an `async` handle (`runworker` among them): uvloop when the `uvloop` extra is installed (`auto`), always asyncio's own (`asyncio`), or uvloop or a configuration error (`uvloop`). |
 | `LOGGING` | minimal | A `logging.config.dictConfig` mapping, applied by `setup()`. `domainkit.log.build_logging_config(log_format="json", level="INFO")` makes one that writes from a thread, through a bounded queue ([runtime.md](runtime.md#logging-and-error-reports)); the settings `init` writes use it. |
@@ -215,7 +215,7 @@ Each `STORAGES` entry:
 ### Brokers
 
 Message brokers carry the worker's work when `MESSAGING.BROKER` names one;
-see [contrib.md](contrib.md#workers-on-rabbitmq).
+see [contrib.md](contrib/messaging.md#workers-on-rabbitmq).
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
@@ -261,7 +261,7 @@ Each `BROKERS` entry:
 | `PROXY_SCHEME_HEADER` | `"X-Forwarded-Proto"` | The header in which the trusted proxies say the client's scheme (a header name). `None`: the scheme is never taken from a header. Set it to `None` when they do not set it (HAProxy's `option forwardfor` alone, an NLB), or a client's own `X-Forwarded-Proto` would be read, and choose whether cookies are `Secure`. `None` holds only where the server reads no proxy header itself: uvicorn, unless run with `--no-proxy-headers`, sets the scheme from `X-Forwarded-Proto` before domainkit sees the request, for every request from `FORWARDED_ALLOW_IPS` (`127.0.0.1` by default: a proxy on the same host). Granian reads none. |
 | `RATE_LIMIT` | `None` | Requests per caller, such as `"300/minute"` (`second`, `minute`, `hour`, `day`). `None` disables it. |
 | `RATE_LIMIT_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths never counted; compared without the root path (`--root-path`). |
-| `RATE_LIMIT_BACKEND` | `domainkit.http.ratelimit.MemoryBackend` | Where counts live. The default is per process, and keeps the 100,000 most recently seen callers; one seen longer ago starts afresh. Behind several replicas, use `domainkit.http.ratelimit.RedisBackend`: one count per caller in Redis, on the server's clock. If Redis fails, or refuses the count (out of memory, a read-only replica after a failover), requests are let through, and Redis is skipped for the cache's `FAILURE_COOLDOWN`; `AUTH.THROTTLE_FAIL_CLOSED` refuses password and code checks meanwhile instead ([auth.md](auth.md#logging-in-and-out)). |
+| `RATE_LIMIT_BACKEND` | `domainkit.http.ratelimit.MemoryBackend` | Where counts live. The default is per process, and keeps the 100,000 most recently seen callers; one seen longer ago starts afresh. Behind several replicas, use `domainkit.http.ratelimit.RedisBackend`: one count per caller in Redis, on the server's clock. If Redis fails, or refuses the count (out of memory, a read-only replica after a failover), requests are let through, and Redis is skipped for the cache's `FAILURE_COOLDOWN`; `AUTH.THROTTLE_FAIL_CLOSED` refuses password and code checks meanwhile instead ([auth.md](auth/logging-in.md#logging-in-and-out)). |
 | `RATE_LIMIT_CACHE` | `"default"` | The Redis cache `RedisBackend` counts in; keys are `<KEY_PREFIX>:ratelimit:<caller>`. |
 | `RATE_LIMIT_FALLBACK_REPLICAS` | `None` | 1 to 1024: while Redis is down, `RedisBackend` counts each caller in its own process at `RATE_LIMIT` divided by this many replicas (at most `FALLBACK_KEYS`, 10,000, callers); `None` lets requests through, as before. |
 | `RATE_LIMIT_IPV6_PREFIX` | `64` | IPv6 clients are counted per network of this prefix length (1 to 128), since one customer usually holds a whole /64; login throttling counts the same way. IPv4 clients are counted per address. |
@@ -514,13 +514,13 @@ Installed contrib apps add their own:
   `AUTH.CLIENT_CERT.PROXIES`, and `http://` in `AUTH.PASSWORD_RESET_URL`,
   `EMAIL_VERIFICATION_URL`, or `SIGNUP_URL` ([auth.md](auth.md))
 - evidence: no `EVIDENCE.SUBJECT_KEY`
-  ([contrib.md](contrib.md#evidence-records-that-provably-never-change))
+  ([contrib.md](contrib/evidence.md#evidence-records-that-provably-never-change))
 - mail: the console or memory backend; and in any environment without
   `DEBUG`, SMTP without TLS ([mail.md](mail.md))
 - notifications: the console or memory backends ([mail.md](mail.md))
 - webhooks: a loopback or link-local network in
   `WEBHOOKS.ALLOWED_PRIVATE_NETWORKS`
-  ([contrib.md](contrib.md#webhooks-signed-events-for-other-services))
+  ([contrib.md](contrib/webhooks.md#webhooks-signed-events-for-other-services))
 
 The application refuses to start there with a route no rule guards
 (`security.E101`), operation ids that clash (`openapi.E001`), and the
@@ -556,12 +556,12 @@ an unsafe or broken configuration, refused until it changes.
 | `servers.W002` | a server on a unix socket without `"unix"` in `TRUSTED_PROXIES`: no caller has an address ([Server limits](#server-limits); a deployed application also logs it at start) |
 | `live.W001` | WebSockets served without `WebSocketLimitsMiddleware` ([live.md](live.md#message-size)) |
 | `blocking.W001` | a route handler or dependency of the project's domains written as `def`, run on FastAPI's thread pool ([runtime.md](runtime.md#finding-blocking-code)); in every environment |
-| `auth.W001` | `AUTH.PRINCIPAL_CACHE.TTL` above 5 seconds without `STAMPS`: a revoked token works that long in the other processes ([auth.md](auth.md#the-principal-cache)) |
+| `auth.W001` | `AUTH.PRINCIPAL_CACHE.TTL` above 5 seconds without `STAMPS`: a revoked token works that long in the other processes ([auth.md](auth/authentication.md#the-principal-cache)) |
 | `auth.W002`, `auth.W003` | `AUTH.LOGIN_RATE` or `AUTH.MFA.RATE` set to `None`: guesses without limit |
-| `auth.W004` | attempt throttles counted in a `RATE_LIMIT_BACKEND` each process keeps alone (`MemoryBackend`): with several processes, each allows the rates on its own ([auth.md](auth.md#logging-in-and-out)) |
-| `auth.W005` | a session or CSRF cookie name without the `__Host-` prefix where the prefix could hold ([auth.md](auth.md#browser-sessions-in-cookies)) |
+| `auth.W004` | attempt throttles counted in a `RATE_LIMIT_BACKEND` each process keeps alone (`MemoryBackend`): with several processes, each allows the rates on its own ([auth.md](auth/logging-in.md#logging-in-and-out)) |
+| `auth.W005` | a session or CSRF cookie name without the `__Host-` prefix where the prefix could hold ([auth.md](auth/authentication.md#browser-sessions-in-cookies)) |
 | `audit.W001` to `audit.W003` | no `AUDIT.LEDGER`, no `AUDIT.NAMESPACE` on it, or nothing that seals on a schedule (no messaging, and no `AUDIT.SEALED_EXTERNALLY`) |
-| `audit.W004`, `audit.W005` | at startup, an audited PostgreSQL database whose `protect()` triggers could not be checked, or are missing; the application logs them. `AUDIT.REQUIRE_BASELINE` refuses to start on any `audit.W` instead ([contrib.md](contrib.md#in-staging-and-production)) |
+| `audit.W004`, `audit.W005` | at startup, an audited PostgreSQL database whose `protect()` triggers could not be checked, or are missing; the application logs them. `AUDIT.REQUIRE_BASELINE` refuses to start on any `audit.W` instead ([contrib.md](contrib/audit.md#in-staging-and-production)) |
 | `idempotency.W001` | keyed requests without a deadline: one that runs past `IDEMPOTENCY.LEASE_SECONDS` can lose its key to a retry |
 
 The production settings that `init` create avoid the first three, and ask
@@ -967,7 +967,7 @@ get spans. domainkit only uses the OpenTelemetry API; configure the SDK and
 exporter in the deployment, or run under `opentelemetry-instrument`. Outbox
 messages carry the W3C trace context of their commit, so a worker's span
 continues the trace of the request that queued its work
-([contrib.md](contrib.md#traces)). FastAPI (0.142 and later) has telemetry
+([contrib.md](contrib/messaging.md#traces)). FastAPI (0.142 and later) has telemetry
 of its own, which `get_asgi_application` turns off: its spans record query
 strings, and its log records exception messages, which domainkit keeps out
 of logs and error reports. To trace requests, run under
@@ -1008,7 +1008,7 @@ all.
 
 Fixtures for published events and queued work (`captured_events`,
 `outbox`, `execute_deferred`) come with messaging's own plugin
-([contrib.md](contrib.md#testing)).
+([contrib.md](contrib/messaging.md#testing)).
 
 ## Commands
 
@@ -1046,7 +1046,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `runworker` | `--once`, `--metrics-port`, `--metrics-address`, `--database`, `--queue`, `--no-relay` | Run outbox messages (messaging): one worker per outbox, every hosting database by default; `--queue` (repeatable) limits them to some queues. With `MESSAGING.BROKER`, relay to the broker and run what it delivers; `--no-relay` only consumes. `--once` always works from the outbox. Whatever it serves, the process runs at most `MESSAGING.CONCURRENCY` messages at once. |
 | `messages` | `--pending\|--locked\|--dead`, `--queue`, `--limit`, `--retry ID\|all`, `--cancel ID`, `--database`, `--operator` | Count an outbox's messages and show each queue's lag, list them, requeue dead letters (not those of `sensitive` tasks, whose arguments were blanked), or cancel a message no worker runs; retries and cancels are audited (messaging; [operators](#operators)). |
 | `webhooks` | `subscriptions\|deliveries\|replay`, `[ID ...]`, `--failed`, `--status`, `--subscription`, `--limit` | List webhook subscriptions or deliveries, or send finished deliveries again (webhooks). |
-| `auditlog` | `--actor`, `--action`, `--limit`, `--database`, `--target`, `--aggregate FIELD=ID` | Read the audit trail, or one record's history with what each entry changed (audit; see [contrib.md](contrib.md#history)). |
+| `auditlog` | `--actor`, `--action`, `--limit`, `--database`, `--target`, `--aggregate FIELD=ID` | Read the audit trail, or one record's history with what each entry changed (audit; see [contrib.md](contrib/audit.md#history)). |
 | `auditseal` | `--late` | Seal new audit rows into each database's hash chain and anchor its head on `AUDIT.LEDGER`; `--late` also seals rows that committed later than `AUDIT.SEAL_LATE_WINDOW`, flagged as sealed late (audit). |
 | `auditverify` | `--database`, `--export FILE`, `--check-export FILE --public-key PEM` | Check the audit trail against its seals, checkpoints, and anchors; fails if anything changed. `--export` then writes signed checkpoints of every trail for a third party (`AUDIT.CHECKPOINT_KEY`); `--check-export` checks such a file offline, with the public key alone (audit). |
 | `auditprune` | `--keep-days`, `--database`, `--operator` | Delete audit rows sealed more than `--keep-days` ago below a signed checkpoint, which `auditverify` then starts the chain from; refused if the chain up to it does not verify. Each run is audited (audit; [operators](#operators)). |
@@ -1059,7 +1059,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `cleartokens` | `--user` | Delete expired tokens, or every token of one user (auth). |
 | `resetmfa` | `username` | Turn a user's second factor off, and end their sessions (auth). |
 | `addcertificate` | `username`, `certificate`, `--name` | Let a client certificate log in as a user, by its SHA-256 (auth). |
-| `flags` | `list`, `set NAME [--everyone {on,off,rules}] [--percentage N] [--users USER_ID ...] [--groups GROUP ...] [--note TEXT]`, `delete NAME`, `settings`, `setting KEY [VALUE] [--reset]` | List and change feature flags and dynamic settings (flags; see [contrib.md](contrib.md#flags-feature-flags-and-dynamic-settings)). |
+| `flags` | `list`, `set NAME [--everyone {on,off,rules}] [--percentage N] [--users USER_ID ...] [--groups GROUP ...] [--note TEXT]`, `delete NAME`, `settings`, `setting KEY [VALUE] [--reset]` | List and change feature flags and dynamic settings (flags; see [contrib.md](contrib/flags.md#flags-feature-flags-and-dynamic-settings)). |
 
 ### Operators
 
@@ -1217,7 +1217,7 @@ revision: the test database migrates up, down, and up again.
 | An authentication or permission backend | `auth.backends.BaseBackend` | `AUTH.BACKENDS` |
 | A way requests prove who sent them | `auth.authentication.BaseAuthentication` | `AUTH.AUTHENTICATION_CLASSES` |
 | A rule for who may call a route | `domainkit.http.access.BasePermission` | `Depends(Require(rule))` on the route, or `Public` for anyone |
-| Another way to authenticate requests (OpenID Connect, a gateway's header) | an ASGI middleware that puts a `domainkit.http.access.Principal` in `scope["user"]` | `MIDDLEWARE` ([Another authentication](auth.md#another-authentication)) |
+| Another way to authenticate requests (OpenID Connect, a gateway's header) | an ASGI middleware that puts a `domainkit.http.access.Principal` in `scope["user"]` | `MIDDLEWARE` ([Another authentication](auth/routes.md#another-authentication)) |
 | A password hasher | `auth.hashers.PasswordHasher` | `AUTH.PASSWORD_HASHERS` |
 | A password rule | a class with `validate(password, user)` and `help_text()` | `AUTH.PASSWORD_VALIDATORS` |
 | An email backend (a provider's API) | `mail.BaseEmailBackend` | `MAIL.BACKEND` |

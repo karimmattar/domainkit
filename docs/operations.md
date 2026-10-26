@@ -161,7 +161,7 @@ another once its lease expires, so handlers must be idempotent.
 - **RabbitMQ.** With `MESSAGING = {"BROKER": ...}`, commits publish to the
   broker and workers consume from it; the outbox stays the source of
   truth, and relays publish what a commit could not
-  ([contrib.md](contrib.md#workers-on-rabbitmq)).
+  ([contrib.md](contrib/messaging.md#workers-on-rabbitmq)).
 
 `python manage.py messages` lists what waits (`--pending`), runs
 (`--locked`), or failed (`--dead`), and `--retry` or `--cancel` acts on
@@ -174,7 +174,7 @@ With `domainkit.contrib.audit`, the trail is tamper-evident only with four
 things in place: a ledger (`AUDIT.LEDGER`, immudb with TLS and the server's
 signing key), a namespace on it (`AUDIT.NAMESPACE`), something that seals
 on a schedule, and the `protect()` triggers on both audit tables
-([contrib.md](contrib.md#in-staging-and-production)).
+([contrib.md](contrib/audit.md#in-staging-and-production)).
 
 - The worker seals every `AUDIT.SEAL_EVERY` (5 minutes) and anchors the
   chain's head on the ledger at most every `AUDIT.ANCHOR_EVERY` (an hour).

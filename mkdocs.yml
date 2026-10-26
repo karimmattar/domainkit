@@ -78,8 +78,21 @@ nav:
       - resources.md
       - queries.md
       - databases.md
-      - auth.md
-      - contrib.md
+      - Users and permissions:
+          - auth.md
+          - auth/install.md
+          - auth/users.md
+          - auth/authentication.md
+          - auth/logging-in.md
+          - auth/routes.md
+      - Optional apps:
+          - contrib.md
+          - contrib/messaging.md
+          - contrib/webhooks.md
+          - contrib/audit.md
+          - contrib/idempotency.md
+          - contrib/evidence.md
+          - contrib/flags.md
       - cache.md
       - live.md
       - uploads.md

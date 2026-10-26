@@ -19,7 +19,7 @@ accounts = ResourceRouter(..., rule=ModelActions(Account))
 included. A caller who proved nothing gets `401`; one who logged in but
 lacks the permission gets `403`. A route with no rule at all is listed by
 `check` and refused in production, so none is public by accident
-([deny by default](../auth.md#deny-by-default)).
+([deny by default](../auth/routes.md#deny-by-default)).
 
 ## Make a clerk
 
@@ -77,11 +77,11 @@ curl http://127.0.0.1:8000/api/v1/accounts/accounts/$ID/deposit -H "Authorizatio
 
 A grant takes effect at once in this process. With several processes,
 each keeps what a token may do for a few seconds, unless a shared cache
-tells them all ([auth.md](../auth.md#the-principal-cache)).
+tells them all ([auth.md](../auth/authentication.md#the-principal-cache)).
 
 Stop the server. For a team, grant permissions to a group
 (`PUT /admin/auth/groups/{id}/permissions`) and put users in it. Rules
 other than model permissions (`IsAuthenticated`, scopes, object
 permissions, rules of your own) are in
-[auth.md](../auth.md#protecting-routes). [Part 4](4-events.md) reacts
+[auth.md](../auth/routes.md#protecting-routes). [Part 4](4-events.md) reacts
 to deposits, outside the request.

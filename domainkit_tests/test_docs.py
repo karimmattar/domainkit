@@ -74,12 +74,12 @@ def documented(page: str) -> set[str]:
         (DebugToolbarConfig, "reference.md"),
         (HttpClientConfig, "reference.md"),
         (ArchitectureConfig, "reference.md"),
-        (MessagingSettings, "contrib.md"),
-        (AuditSettings, "contrib.md"),
-        (IdempotencySettings, "contrib.md"),
-        (EvidenceSettings, "contrib.md"),
-        (FlagsSettings, "contrib.md"),
-        (WebhookSettings, "contrib.md"),
+        (MessagingSettings, "contrib/messaging.md"),
+        (AuditSettings, "contrib/audit.md"),
+        (IdempotencySettings, "contrib/idempotency.md"),
+        (EvidenceSettings, "contrib/evidence.md"),
+        (FlagsSettings, "contrib/flags.md"),
+        (WebhookSettings, "contrib/webhooks.md"),
         (AuthSettings, "auth.md"),
         (JWTSettings, "auth.md"),
         (CookieSettings, "auth.md"),
@@ -98,7 +98,7 @@ def test_every_setting_is_documented(model: type[BaseModel], page: str) -> None:
 
 def test_every_password_validator_key_is_documented() -> None:
     """``PASSWORD_VALIDATORS`` entries are shown as dicts, not as a table."""
-    page = (DOCS / "auth.md").read_text(encoding="utf-8")
+    page = (DOCS / "auth/users.md").read_text(encoding="utf-8")
 
     assert [
         name for name in PasswordValidatorConfig.model_fields if f'"{name}"' not in page
@@ -283,12 +283,12 @@ SETTINGS_TABLES: tuple[tuple[type[BaseModel], str, str], ...] = (
     (BrokerConfig, "reference.md", "BROKERS"),
     (HttpClientConfig, "reference.md", "HTTP_CLIENT"),
     (DebugToolbarConfig, "reference.md", "DEBUG_TOOLBAR"),
-    (MessagingSettings, "contrib.md", "MESSAGING"),
-    (WebhookSettings, "contrib.md", "WEBHOOKS"),
-    (AuditSettings, "contrib.md", "AUDIT"),
-    (IdempotencySettings, "contrib.md", "IDEMPOTENCY"),
-    (EvidenceSettings, "contrib.md", "EVIDENCE"),
-    (FlagsSettings, "contrib.md", "FLAGS"),
+    (MessagingSettings, "contrib/messaging.md", "MESSAGING"),
+    (WebhookSettings, "contrib/webhooks.md", "WEBHOOKS"),
+    (AuditSettings, "contrib/audit.md", "AUDIT"),
+    (IdempotencySettings, "contrib/idempotency.md", "IDEMPOTENCY"),
+    (EvidenceSettings, "contrib/evidence.md", "EVIDENCE"),
+    (FlagsSettings, "contrib/flags.md", "FLAGS"),
     (AuthSettings, "auth.md", "AUTH"),
     (CookieSettings, "auth.md", 'AUTH["COOKIE"]'),
     (MfaSettings, "auth.md", 'AUTH["MFA"]'),

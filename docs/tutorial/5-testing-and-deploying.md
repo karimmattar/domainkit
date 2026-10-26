@@ -87,10 +87,19 @@ BANK_API_SETTINGS_MODULE=config.settings.production BANK_API_ALLOWED_HOSTS=bank.
   python manage.py check
 ```
 
-It passes, with one warning worth reading: the rate limits, login attempts
-included, count in each process, so with several processes a password can
-be guessed that many times faster. Production wants Redis for them, as the
-warning says.
+It passes, with three warnings worth reading, each with its id:
+
+- `auth.W004`: the rate limits, login attempts included, count in each
+  process, so with several processes a password can be guessed that many
+  times faster. Production wants Redis for them, as the warning says.
+- `deploy.W004` and `deploy.W006`: the database pool is SQLAlchemy's
+  default, 15 connections, while each process admits up to 1,000 requests
+  at once. Size `POOL_SIZE` for the database server and the number of
+  processes, and `MAX_CONCURRENT_REQUESTS` for what one process can serve
+  ([operations.md](../operations.md#sizing)).
+
+A warning a project has weighed and accepted can go in `SILENCED_CHECKS`;
+an error cannot.
 
 What a deployment adds is in [operations.md](../operations.md): the server
 command and its limits, `migrate` before each rollout, `runworker` as a

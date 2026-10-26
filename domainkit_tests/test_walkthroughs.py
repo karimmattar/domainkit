@@ -387,7 +387,9 @@ def test_part_5_tests_the_rules_and_passes_the_production_checks(
         for line, output in tutorial.shell.printed.items()
         if line.startswith("BANK_API_SETTINGS_MODULE=config.settings.production ")
     ]
-    assert "no issues and 1 warning" in check
+    assert "no issues and 3 warnings" in check
+    for warned in ("auth.W004", "deploy.W004", "deploy.W006"):
+        assert f"Warning: {warned}: " in check
     assert "RATE_LIMIT_BACKEND" in check
 
 

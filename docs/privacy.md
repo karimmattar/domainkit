@@ -20,7 +20,7 @@ INSTALLED_DOMAINS = [
 
 Mark each field of an aggregate that holds personal data, with the field
 that names whose it is, as events are marked
-([contrib.md](contrib.md#audit-who-did-what-when-from-where)):
+([contrib.md](contrib/audit.md#audit-who-did-what-when-from-where)):
 
 ```python
 from typing import Annotated
@@ -58,7 +58,7 @@ class Order(AggregateRoot[OrderId]):
   production refuse to start with them.
 - Users of `domainkit.contrib.auth` are marked already: erasing one also
   ends the account and its credentials, and keeps the username taken
-  ([auth.md](auth.md#users-personal-data)).
+  ([auth.md](auth/users.md#users-personal-data)).
 
 ## Subject access: `privacy export`
 

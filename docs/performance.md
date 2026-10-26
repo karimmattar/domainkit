@@ -281,7 +281,7 @@ authentication runs before the rate limit.
 
 Now a principal is kept per process for `AUTH.PRINCIPAL_CACHE.TTL`
 (5 seconds), and read in two queries when it is not
-([auth.md](auth.md#the-principal-cache); ADRs
+([auth.md](auth/authentication.md#the-principal-cache); ADRs
 [0058](adr/0058-cache-principals-and-stamp-revocations.md) and
 [0059](adr/0059-read-principals-in-two-queries-without-the-hash.md)).
 
@@ -487,7 +487,7 @@ the paths every service takes:
 - **Keyed writes.** An `Idempotency-Key` is claimed with one upsert, which
   also replaces an expired key, and the response is stored with one
   statement. Both commit as they run
-  ([contrib.md](contrib.md#idempotency-safe-retries-of-unsafe-requests)).
+  ([contrib.md](contrib/idempotency.md#idempotency-safe-retries-of-unsafe-requests)).
 - **Audit keys.** A new subject's key comes back from its insert, and a
   transaction reads each key once.
 

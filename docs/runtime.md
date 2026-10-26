@@ -212,14 +212,14 @@ Background work in the stores is bounded too:
   `AUDIT.SEAL_BATCHES` batches and counts what it leaves in
   `audit_unsealed_rows` ([ADR 0047](adr/0047-seal-from-a-high-water-mark.md)).
   A second sealer never queues behind the first: finding the lock taken,
-  it leaves the work to it ([contrib.md](contrib.md#tamper-evidence)).
+  it leaves the work to it ([contrib.md](contrib/audit.md#tamper-evidence)).
 - **Outbox cleanup** reads the oldest done and cancelled messages from an
   index of their own, so a run costs what it deletes, not the size of the
   outbox ([contrib.md](contrib.md), "Upgrading to 0.9.2").
 - **Password hashing.** A call keeps its place in the pool until its hash is
   done, refusals ask clients to come back when the queue will have drained,
   and `AUTH.HASHING_RESERVED` places are kept for password changes
-  ([auth.md](auth.md#passwords)).
+  ([auth.md](auth/users.md#passwords)).
 - **The in-memory rate limiter** forgets idle callers at most 64 per
   request, so no one request pays for a crowd that left.
 
@@ -733,7 +733,7 @@ or no `DeadlineMiddleware`), `check` warns where deployed that keyed
 requests can outlive the lease; 0.10 refuses to start. A keyed
 response's background tasks run after its response is stored, so they
 run once however long they take
-([contrib.md](contrib.md#idempotency-safe-retries-of-unsafe-requests)).
+([contrib.md](contrib/idempotency.md#idempotency-safe-retries-of-unsafe-requests)).
 
 **What has no deadline.** The deadline is lifted as soon as the response
 starts: a streamed response (an export, Server-Sent Events) runs as long
@@ -1039,7 +1039,7 @@ first; a kept answer can be up to a minute older than the host's DNS
 says. A host whose DNS fails in under 5 seconds takes a thread on each
 new lookup, at most 2 at once. The share is per owner: a webhook
 subscription's owner, so one customer's many subscriptions share one
-quarter ([contrib.md](contrib.md#webhooks-signed-events-for-other-services)),
+quarter ([contrib.md](contrib/webhooks.md#webhooks-signed-events-for-other-services)),
 or a user. Whoever controls many owners (many users, many staff
 subscriptions) can still hold many threads, for the first round of slow
 lookups at least. (A lookup cannot be interrupted,

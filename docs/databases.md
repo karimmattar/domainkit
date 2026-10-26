@@ -276,7 +276,7 @@ openssl ec -in signing.key -pubout -out immudb-signing.pub
 - In staging and production, ledgers need `TLS_CA` and
   `SERVER_SIGNING_KEY`, and `memory://` is refused. Evidence also needs
   `EVIDENCE.SUBJECT_KEY`
-  ([contrib.md](contrib.md#evidence-records-that-provably-never-change)).
+  ([contrib.md](contrib/evidence.md#evidence-records-that-provably-never-change)).
 - `/ready` checks every ledger (`ledger:<alias>`), on a thread and a
   client of its own, so a probe never waits behind a slow write.
 - A ledger's clients verify every step from one state, the ledger's: the
@@ -306,7 +306,7 @@ openssl ec -in signing.key -pubout -out immudb-signing.pub
   elsewhere and record their SHA-256 digests.
 
 Use ledgers through `domainkit.contrib.evidence`
-([contrib.md](contrib.md#evidence-records-that-provably-never-change)), or
+([contrib.md](contrib/evidence.md#evidence-records-that-provably-never-change)), or
 directly through the `Ledger` port:
 
 ```python
