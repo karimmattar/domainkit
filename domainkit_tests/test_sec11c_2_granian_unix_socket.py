@@ -276,23 +276,34 @@ def test_an_empty_host_is_the_socket_trusted_only_by_unix() -> None:
     )
 
 
-@pytest.mark.parametrize("client", [UVICORN_UNIX_PEER, GRANIAN_UNIX_PEER])
-def test_a_client_without_an_address_is_counted_as_unknown(client: object) -> None:
+@pytest.mark.parametrize(
+    ("client", "counted"),
+    [
+        (UVICORN_UNIX_PEER, "unknown"),
+        (GRANIAN_UNIX_PEER, "unknown"),
+        ((ALICE, 50000), ALICE),
+    ],
+    ids=["uvicorn-socket", "granian-socket", "address"],
+)
+def test_a_client_without_an_address_is_counted_as_unknown(
+    client: tuple[str, int] | None, counted: str
+) -> None:
     """Rate limits, auth's throttles, the guard, idempotency and the audit agree.
 
     Without a trusted proxy in front, a unix socket's callers have no
     address: each place that counts or records one counts them as one
     unknown address, as for uvicorn's None, rather than as the address
-    ``""``.
+    ``""``; a caller with an address is counted, and recorded, by it.
     """
     scope: Scope = {"type": "http", "client": client, "headers": []}
-    host = client[0] if isinstance(client, tuple) else None
+    host = client[0] if client else None
     with bind_request(RequestContext("req-1", host, "GET", "/")):
         owner = lookup_owner()
         draft = audit_row("signed_in", Outcome.SUCCESS)
 
-    assert address_key(dict(scope)) == "ip:unknown"
-    assert throttling.address_key(Request(scope), "login") == "login:ip:unknown"
-    assert owner == "ip:unknown"
-    assert _caller_of(None, scope, ()).startswith("anonymous:unknown:")
-    assert [value.name for value in draft.personal] == []
+    assert address_key(dict(scope)) == f"ip:{counted}"
+    assert throttling.address_key(Request(scope), "login") == f"login:ip:{counted}"
+    assert owner == f"ip:{counted}"
+    assert _caller_of(None, scope, ()).startswith(f"anonymous:{counted}:")
+    recorded = [value.name for value in draft.personal]
+    assert recorded == ([] if counted == "unknown" else ["client_ip"])
