@@ -499,7 +499,10 @@ class RequestContextMiddleware:
     The request id is the ``X-Request-ID`` a trusted proxy sent, the one
     ``ProxyHeadersMiddleware`` (before this one) believed, if it is up to
     128 letters, digits, ``.``, ``_``, ``:``, or ``-``; else a new one
-    (``new_request_id``). A caller's own header is dropped: it would name
+    (``new_request_id``). Of several lines, the last is read: the nearest
+    proxy's, as for the scheme, since a proxy that adds its line (HAProxy's
+    ``unique-id-header``, Apache's ``RequestHeader add``) leaves a
+    client's in front of it. A caller's own header is dropped: it would name
     the lines, reports, audit rows, and outgoing calls of its request.
     ``ACCEPT_REQUEST_ID`` takes any caller's (``"anyone"``) or nobody's
     (``"never"``) instead.
@@ -528,7 +531,7 @@ class RequestContextMiddleware:
             return
         websocket = scope["type"] == "websocket"
         supplied = (
-            _header(scope, _REQUEST_ID_NAME)
+            _last_header(scope, _REQUEST_ID_NAME)
             if self.ids_from_anyone or (self.ids_from_proxies and PEER in scope)
             else None
         )
@@ -681,6 +684,18 @@ def new_request_id() -> str:
     built, and no bits are spent on a version.
     """
     return os.urandom(16).hex()
+
+
+def _last_header(scope: Scope, name: bytes) -> str | None:
+    """The last ``name`` line of ``scope`` (lowercase): the nearest proxy's."""
+    headers = scope["headers"]
+    if type(headers) is not list:  # request_headers(), inline, as in _header.
+        headers = scope["headers"] = list(headers)
+    found: str | None = None
+    for key, value in headers:
+        if key == name:
+            found = value.decode("latin-1")
+    return found
 
 
 def _hostname(host_header: str) -> str:

@@ -260,14 +260,22 @@ in the work it queues, in its outgoing calls (`X-Request-ID`), and in its
 answer's `X-Request-ID` and error bodies. It is the `X-Request-ID` a
 trusted proxy sent (`TRUSTED_PROXIES`, a unix socket's peer with
 `"unix"`), when it is up to 128 letters, digits, `.`, `_`, `:`, or `-`;
-otherwise a new one, 32 hex digits. A caller's own header is dropped, so
-nobody outside can give its requests another's id, or one id to many.
+otherwise a new one, 32 hex digits. Of several lines, the last is read:
+the nearest proxy's. A caller's own header is dropped, so nobody outside
+can give its requests another's id, or one id to many.
 
 A proxy forwards a client's headers as they came unless it sets them, so
-set the id at the proxy, overwriting the client's:
+set the id at the proxy. Overwriting the client's line (nginx), or adding
+the proxy's own after it (HAProxy, Apache's `RequestHeader add`, Caddy's
+`header_up +X-Request-ID`), both work:
 
 ```nginx
 proxy_set_header X-Request-ID $request_id;
+```
+
+```text
+unique-id-format %{+X}o\ %ci:%cp_%fi:%fp_%Ts_%rt:%pid
+unique-id-header X-Request-ID
 ```
 
 A proxy that does not set it would pass a client's on: then set

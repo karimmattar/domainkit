@@ -78,21 +78,27 @@ and a status.
   content types, object grants, dynamic settings), and `flush` keeps the
   guarded tables, tokens, TOTP authenticators, and recovery codes
   included, with the tables they reference, listed as `kept (guarded)`.
-  **To keep the old behaviour:** `--include-guarded` on either command
-  (DATA-12).
+  The object grants on the rows it deletes still go with them, so an
+  object given a flushed one's id starts without them. **To keep the old
+  behaviour:** `--include-guarded` on either command (DATA-12,
+  SEC-11a-4).
 - **Breaking:** in staging and production, `loaddata` and `flush` need
   an operator named by `--operator` or `DOMAINKIT_OPERATOR`, beside
   `--force`; the login name is refused. **Fix:** set
   `DOMAINKIT_OPERATOR` where they run (DATA-12; ADR 0070).
 - **Breaking:** a request's id is the `X-Request-ID` of a trusted proxy
-  (`TRUSTED_PROXIES`, `"unix"` for a unix socket's peer), else a new one;
-  a caller's own header is dropped. **Fix:** have the proxy set the
-  header (nginx: `proxy_set_header X-Request-ID $request_id;`). **To keep
-  the old behaviour:** `ACCEPT_REQUEST_ID = "anyone"` (WEB-13).
+  (`TRUSTED_PROXIES`, `"unix"` for a unix socket's peer), the last line
+  when there are several, else a new one; a caller's own header is
+  dropped. **Fix:** have the proxy set the header (nginx:
+  `proxy_set_header X-Request-ID $request_id;`; HAProxy:
+  `unique-id-header X-Request-ID`). **To keep the old behaviour:**
+  `ACCEPT_REQUEST_ID = "anyone"` (WEB-13, SEC-11c-1).
 - `operator.loaddata` names each table with its rows and replaced rows,
   the SHA-256 of the fixture as read, and whether `--replace` and
   `--include-guarded` were given; `operator.flush` each table it emptied,
-  with its rows, and the tables it kept (DATA-12).
+  with its rows, the tables it kept, and the rows of kept tables it
+  deleted with their objects (`about`: object grants) (DATA-12,
+  SEC-11a-4).
 - **Breaking:** with `domainkit.contrib.auth` and an attempt rate set
   (`LOGIN_RATE`, `EMAIL_RATE`, `MFA.RATE`, `MFA.ADDRESS_RATE`), staging and
   production refuse to start, and `check` fails, while
@@ -224,16 +230,20 @@ and a status.
   the data, turning every second factor off. Loads now only add rows
   unless `--replace`; guarded tables (credentials, grants, second
   factors, content types, dynamic settings) are written or emptied only
-  with `--include-guarded`; staging and production need a named
-  operator; and the audit row names the tables, their counts, and the
-  fixture's SHA-256 (DATA-12).
+  with `--include-guarded`, though a flush deletes the object grants on
+  the rows it deletes, which a later object with the same id would
+  otherwise inherit; staging and production need a named operator; and
+  the audit row names the tables, their counts, and the fixture's
+  SHA-256 (DATA-12, SEC-11a-4).
 - Any caller chose its request's id with `X-Request-ID`: the id its log
   lines, error reports, audit rows, queued work, and outgoing calls
   carry. A client could take another request's id, or give one id to
   many requests. The header is now read only from trusted proxies, in
   the same bounded format (up to 128 letters, digits, `.`, `_`, `:`,
-  `-`); a caller's own is dropped and the request gets a new id, which
-  its answer returns (WEB-13).
+  `-`), and of several lines the last, the nearest proxy's: a proxy that
+  adds its own line (HAProxy, Apache, Caddy) leaves a client's in front
+  of it. A caller's own is dropped and the request gets a new id, which
+  its answer returns (WEB-13, SEC-11c-1).
 - JSON Web Tokens named no key, so `AUTH.JWT.SIGNING_KEY` could not be
   replaced without refusing every outstanding access token at once, and
   nothing could keep the old key to verify what it signed, for a while or

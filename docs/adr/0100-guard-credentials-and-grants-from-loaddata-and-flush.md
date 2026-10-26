@@ -80,6 +80,20 @@ The options:
   `--include-guarded`. It lists them as `kept (guarded)`. Keeping, not
   refusing: a development reset keeps working, and the default leaves
   every login and second factor in place.
+- **What goes with a flushed object goes.** A grant goes with its object
+  when the ORM deletes it (ADR 0026), so an object stored later with the
+  same id starts bare; `flush` deletes with Core statements, behind that
+  hook, and ids are handed out again (sequences restart, SQLite reuses
+  row ids, fixtures and seeds bring their own). A kept table whose rows
+  are about other tables' objects says which column names their model
+  (`info={"about_model": "content_type"}`, on object grants); `flush`
+  deletes its rows about the models whose tables it empties, in the same
+  transaction, and says how many in the plan (`kept (guarded); delete N
+  rows about emptied tables`) and in its record. Keeping the objects'
+  tables instead, whenever grants on them are kept, would have made
+  `flush` keep the data it exists to delete. The security review of 0.11
+  found the gap (SEC-11a-4): before this, a flush kept Ada's grant on
+  her ticket 1 for Bob's next ticket 1.
 - **Named operators where deployed.** In staging and production both
   commands need `--operator` or `DOMAINKIT_OPERATOR`, beside `--force`;
   the login name (`operator_source` `system`) is refused. Other operator
@@ -88,7 +102,8 @@ The options:
   SHA-256 of the bytes the command read (the file is read once), the
   database, the totals, each table with its rows and replaced rows, and
   whether `--replace` and `--include-guarded` were given;
-  `operator.flush` the rows emptied per table, the tables kept, and
+  `operator.flush` the rows emptied per table, the tables kept, the rows
+  of kept tables deleted with their objects (`about`), and
   `--include-guarded`. Table names and counts only: no key, value, or
   subject. The core writes them through `OperatorRecorder`, as before
   (ADR 0080): wherever `domainkit.contrib.audit` is installed, in every

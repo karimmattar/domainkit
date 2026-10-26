@@ -15,7 +15,9 @@ class Command(BaseCommand):
     Append-only tables (the audit trail) and tables marked ``info={"flush":
     False}`` are kept. So are guarded tables (users, permissions, grants,
     tokens, second factors, ...) and the tables they reference, unless
-    ``--include-guarded``. The hooks put back what ``migrate`` writes, such
+    ``--include-guarded``; but rows of a kept table about the objects of an
+    emptied one (object grants) go with them. The hooks put back what
+    ``migrate`` writes, such
     as content types and permissions. Staging and production refuse without
     ``--force``, and without an operator named by ``--operator`` or
     ``DOMAINKIT_OPERATOR``.
@@ -60,7 +62,9 @@ class Command(BaseCommand):
         for table in plan.kept:
             self.write(f"{database}: {table}: kept")
         for table in plan.guarded:
-            self.write(f"{database}: {table}: kept (guarded)")
+            about = plan.about.get(table)
+            going = f"; delete {_rows(about)} about emptied tables" if about else ""
+            self.write(f"{database}: {table}: kept (guarded){going}")
         if dry_run:
             return
         if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS and not force:
@@ -76,6 +80,7 @@ class Command(BaseCommand):
             rows=rows,
             tables=plan.counts,
             kept=[*plan.kept, *plan.guarded],
+            about=plan.about,
             include_guarded=include_guarded,
         ):
             await fixtures.flush(database, include_guarded=include_guarded)

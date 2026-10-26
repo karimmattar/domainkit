@@ -312,7 +312,9 @@ products = ResourceRouter(
   integer the database hands out again) starts without them. A soft
   delete keeps them, for a restore. Bulk deletes (`delete_rows`) bypass
   the ORM and leave grants behind: remove such objects one by one, or
-  delete their grants in the same transaction.
+  delete their grants in the same transaction. `flush` keeps the grants
+  table (it is guarded), but deletes the grants on the objects of every
+  table it empties.
 
 ## Passwords
 

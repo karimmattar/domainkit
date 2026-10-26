@@ -59,15 +59,27 @@ read, one call fewer than 0.10. Keeping a caller's value apart costs what
   included), when it has the format above; else a new id
   (`new_request_id`, 32 hex digits). The check is one lookup in the
   scope.
+- Of several `X-Request-ID` lines, the last is read: the nearest
+  proxy's, as the scheme is (ADR 0072). A proxy that sets the header by
+  adding a line (HAProxy's `unique-id-header`, Apache's `RequestHeader
+  add`, Caddy's `header_up +X-Request-ID`, Envoy's append mode) leaves a
+  client's line in front of its own, and ASGI servers pass both on in
+  order; up to the security review of 0.11 the first line was read, so
+  behind such a proxy a caller still chose its id (SEC-11c-1). Minting a
+  new id whenever there are several lines was the other option: it is as
+  safe, but lets any caller cut its requests off from the proxy's logs by
+  sending a line of its own, where the last line keeps the proxy's id.
+  Reading the last line costs no call more than reading the first.
 - A caller's own value is dropped: not used, not logged, not kept.
 - `ACCEPT_REQUEST_ID` (`"proxies"` by default) can take any caller's
   (`"anyone"`, 0.10's rule, for a service whose callers are its own) or
   nobody's (`"never"`, for a proxy that does not set the header). Both
   keep the format check.
-- The proxy must set or overwrite the header: most forward a client's
-  headers unless told otherwise, as with the scheme (ADR 0072). The
-  operations page shows nginx's `proxy_set_header X-Request-ID
-  $request_id;`.
+- The proxy must set the header, by overwriting it or adding its line
+  last: most forward a client's headers unless told otherwise, as with
+  the scheme (ADR 0072). The operations page shows nginx's
+  `proxy_set_header X-Request-ID $request_id;` and HAProxy's
+  `unique-id-header X-Request-ID`.
 
 ## Consequences
 
@@ -78,7 +90,9 @@ read, one call fewer than 0.10. Keeping a caller's value apart costs what
   on theirs set `ACCEPT_REQUEST_ID = "anyone"`.
 - A deployment whose proxy passes headers through and is trusted still
   takes the client's id until the proxy sets it or `"never"` is set:
-  the reference and the hardening checklist say so.
+  the reference and the hardening checklist say so. A proxy that adds a
+  line before a client's, rather than after, is not one we know of; it
+  would need `"never"` too.
 - `RequestContextMiddleware` must come after `ProxyHeadersMiddleware`, as
   in the default order and the template; placed before it, no id is
   taken, which fails safe.
