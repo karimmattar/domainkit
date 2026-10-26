@@ -284,8 +284,10 @@ def create_engine(config: DatabaseConfig) -> AsyncEngine:
         event.listen(engine.sync_engine, "begin", partial(_set_local, config))
     else:
         _listen(engine.sync_engine, "begin", _begin_snapshot)
-    if backend.get_driver_name() == "asyncpg" and not config.PGBOUNCER:
-        engine.sync_engine.dialect.do_ping = _ping  # type: ignore[method-assign]
+    if backend.get_driver_name() == "asyncpg":
+        if not config.PGBOUNCER:
+            engine.sync_engine.dialect.do_ping = _ping  # type: ignore[method-assign]
+        _listen(engine.sync_engine, "handle_error", _keep_cancelled)
     return _hiding_details(engine, config)
 
 
@@ -321,6 +323,7 @@ def create_read_engine(config: DatabaseConfig) -> AsyncEngine:
     _listen(sync.pool, "connect", _require_read_only)
     _listen(sync.pool, "checkout", _take_open)
     _listen(sync.pool, "reset", _reset_session)
+    _listen(sync, "handle_error", _keep_cancelled)
     return _hiding_details(engine, config)
 
 
@@ -674,6 +677,32 @@ def create_owner_engine(config: DatabaseConfig) -> AsyncEngine:
         ),
         config,
     )
+
+
+def _keep_cancelled(context: ExceptionContext) -> None:
+    """Keep an asyncpg connection whose statement a cancellation cut off (CONC-08).
+
+    A deadline cancels the request's task, mid-statement if it is running
+    one. SQLAlchemy discards the connection then, as for any exception
+    that ends a program, and the pool opens another: under a slow
+    database, each request past its deadline also cost a reconnect.
+    asyncpg cancels the statement on the server when its caller is
+    cancelled, and the connection's next use (the rollback that follows)
+    waits for the server to confirm; a server that does not confirm in
+    time fails that use, and the connection is discarded then. So a
+    connection asyncpg still holds open is kept. Other drivers' are judged
+    as before.
+    """
+    if context.dialect.driver != "asyncpg" or not isinstance(
+        context.original_exception, asyncio.CancelledError
+    ):
+        return
+    connection = context.connection
+    if connection is None or connection.invalidated or connection.closed:
+        return
+    driver = connection.connection.driver_connection
+    if driver is not None and not driver.is_closed():
+        context.is_disconnect = False
 
 
 def _hiding_details(engine: AsyncEngine, config: DatabaseConfig) -> AsyncEngine:

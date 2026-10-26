@@ -68,10 +68,12 @@ from domainkit.db import models as content_registry
 from domainkit.db.connections import (
     _begin_snapshot,
     _drop_detail,
+    _keep_cancelled,
     _read_alone,
     _read_alone_no_params,
     _require_read_only,
     _reset_session,
+    _set_local,
     _take_open,
     create_engine,
     create_read_engine,
@@ -1153,6 +1155,7 @@ def test_engines_never_share_a_listener() -> None:
     read = [
         _read_alone,
         _read_alone_no_params,
+        _keep_cancelled,
         _drop_detail,
         _require_read_only,
         _take_open,
@@ -1160,6 +1163,7 @@ def test_engines_never_share_a_listener() -> None:
     ]
     for build, config, functions in [
         (create_read_engine, network, read),
+        (create_engine, network, [_keep_cancelled, _drop_detail, _set_local]),
         (create_engine, local, [_drop_detail, _begin_snapshot]),
     ]:
         first, second = own_listeners(build(config)), own_listeners(build(config))

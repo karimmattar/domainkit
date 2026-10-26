@@ -43,6 +43,7 @@ from domainkit.db.connections import (
     SNAPSHOT_BEGIN,
     ReadOnlySession,
     _closed,
+    _keep_cancelled,
     _plain_select,
     _reset_session,
     _sent,
@@ -556,6 +557,99 @@ async def test_a_failing_read_under_a_deadline_raises_its_own_error(
             assert await read() == 1
             assert await asyncio.create_task(read()) == 1
     assert connects.count == 0  # The same connection, kept: no retry.
+
+
+class Invalidations:
+    """Count the connections every pool discards while entered."""
+
+    def __init__(self) -> None:
+        """Start at none."""
+        self.count = 0
+
+    def _invalidated(self, *args: object) -> None:
+        self.count += 1
+
+    def __enter__(self) -> "Invalidations":
+        """Start counting."""
+        from sqlalchemy.pool import Pool
+
+        event.listen(Pool, "invalidate", self._invalidated)
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        """Stop counting."""
+        from sqlalchemy.pool import Pool
+
+        event.remove(Pool, "invalidate", self._invalidated)
+
+
+@asyncpg_only
+@pytest.mark.parametrize("reads", [Reads.STATEMENTS, Reads.TRANSACTION, None])
+async def test_a_statement_the_deadline_cuts_off_keeps_its_connection(
+    tables: None, database: str, reads: Reads | None
+) -> None:
+    """Cancelled mid-statement: stopped on the server, the connection kept (CONC-08).
+
+    Each of five reads is cut off at its deadline; the pool keeps its one
+    connection, the server runs nothing after, and the next read works.
+    """
+    async with GadgetsUnitOfWork(reads=reads) as uow:
+        await uow.gadgets.filter()  # The pool's connection is made.
+
+    async def cut_off() -> None:
+        async with deadlines.timeout(0.2), GadgetsUnitOfWork(reads=reads) as uow:
+            await uow.gadgets.filter()
+            await uow.session.execute(text("SELECT pg_sleep(30)"))
+
+    with Connects() as connects, Invalidations() as invalidations:
+        for _ in range(5):
+            with pytest.raises(TimeoutError):
+                await cut_off()
+        async with GadgetsUnitOfWork(reads=reads) as uow:
+            assert [gadget.name for gadget in await uow.gadgets.filter()] == ["first"]
+    assert (connects.count, invalidations.count) == (0, 0)
+    assert await busy_backends(database) == 0
+
+
+def test_only_cancelled_statements_on_open_connections_are_kept() -> None:
+    """Any other error, or a connection gone or closing, is judged as before."""
+
+    def judged(
+        error: BaseException,
+        connection: Any,  # noqa: ANN401 - a stand-in.
+        driver: str = "asyncpg",
+    ) -> bool:
+        context = SimpleNamespace(
+            original_exception=error,
+            connection=connection,
+            is_disconnect=True,
+            dialect=SimpleNamespace(driver=driver),
+        )
+        _keep_cancelled(context)  # type: ignore[arg-type]
+        return bool(context.is_disconnect)
+
+    def connection(*, invalidated: bool = False, closed: bool = False) -> Any:  # noqa: ANN401
+        driver = SimpleNamespace(is_closed=lambda: closed)
+        return SimpleNamespace(
+            invalidated=invalidated,
+            closed=False,
+            connection=SimpleNamespace(driver_connection=driver),
+        )
+
+    cancelled = asyncio.CancelledError()
+    assert not judged(cancelled, connection())
+    assert judged(cancelled, connection(), driver="psycopg")
+    assert judged(KeyboardInterrupt(), connection())
+    assert judged(RuntimeError("lost"), connection())
+    assert judged(cancelled, None)
+    assert judged(cancelled, connection(invalidated=True))
+    assert judged(cancelled, connection(closed=True))
+    gone = connection()
+    gone.closed = True
+    assert judged(cancelled, gone)
+    unattached = connection()
+    unattached.connection.driver_connection = None
+    assert judged(cancelled, unattached)
 
 
 # Connections the server closed --------------------------------------------------------
