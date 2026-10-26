@@ -258,6 +258,16 @@ and a status.
   that cannot be counted are refused with `503 throttle_unavailable`; both
   are under **Changed**, with how to keep the old behaviour (AUTH-09; ADR
   0098).
+- Live events read the principal for their rule from `scope["user"]`, so
+  credentials limited to scopes were not held to the route's rules there.
+  On a route anyone may open (`Public`) whose rule sends each user the
+  events about them, a token limited to `shop.view_product`, which
+  `current_user` refuses on that route, was streamed its user's events,
+  over Server-Sent Events and WebSockets. `live_events` now reads the
+  principal as `current_user` does: on a route that declares no rule that
+  checks scopes, `stream` answers `403`, and `forward` and `subscribe`
+  refuse the WebSocket or the subscription, audited, before any event
+  (AUTH-01, SEC-11a-3).
 
 ## [0.10.1] - 2026-10-26
 
