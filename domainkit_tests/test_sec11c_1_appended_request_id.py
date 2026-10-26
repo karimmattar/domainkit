@@ -127,3 +127,7 @@ def test_the_last_line_is_read_from_any_iterable_of_headers() -> None:
         (b"x-request-id", b"last"),
     ]
     assert middleware._last_header({"headers": []}, b"x-request-id") is None
+    listed = [(b"x-request-id", b"only")]
+    in_place: Scope = {"headers": listed}
+    assert middleware._last_header(in_place, b"x-request-id") == "only"
+    assert in_place["headers"] is listed  # A list is read as it is, not copied.
