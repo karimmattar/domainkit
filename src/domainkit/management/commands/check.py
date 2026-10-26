@@ -6,6 +6,7 @@ from domainkit.cache.handler import deployment_warnings as cache_deployment_warn
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db import migrations
+from domainkit.db.connections import pool_sizing_warnings
 from domainkit.http import get_asgi_application, websockets
 from domainkit.http.application import application_problems
 from domainkit.http.blocking import sync_calls
@@ -45,6 +46,7 @@ class Command(BaseCommand):
         labels = ", ".join(config.label for config in registry) or "none"
         warnings = settings.deployment_warnings()
         warnings += cache_deployment_warnings()
+        warnings += pool_sizing_warnings()
         warnings += websockets.deployment_warnings(app)
         warnings += [
             found for config in registry for found in config.deployment_warnings()
