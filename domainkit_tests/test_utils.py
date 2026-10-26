@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from domainkit.deprecation import DomainkitDeprecationWarning
+from domainkit.deprecation import DomainkitDeprecationWarning, moved
+from domainkit.http.access import Require
 from domainkit.utils.module_loading import import_string
 from domainkit.utils.text import camel_case, pluralize, snake_case
 
@@ -142,3 +143,25 @@ def test_deprecated_apis_warn_and_keep_working() -> None:
     with pytest.warns(DomainkitDeprecationWarning, match="removed in 0.4"):
         assert old() == 1
     assert issubclass(DomainkitDeprecationWarning, DeprecationWarning)
+
+
+def test_moved_names_answer_from_their_old_module_with_a_warning() -> None:
+    """``moved``: the new module's object, a warning naming both places; no more.
+
+    The framework's own moved names went in 0.11; the hook stays public.
+    """
+    hook = moved("old.place", {"Require": "domainkit.http.access"}, "9.9")
+
+    with pytest.warns(DomainkitDeprecationWarning) as warned:
+        found = hook("Require")
+
+    assert found is Require
+    (message,) = [str(each.message) for each in warned]
+    assert message == (
+        "old.place.Require moved to domainkit.http.access.Require; import it "
+        "from there. The old name is removed in 9.9."
+    )
+    assert Path(warned[0].filename).name == Path(__file__).name  # The caller.
+    missing = r"^module 'old\.place' has no attribute 'Other'$"
+    with pytest.raises(AttributeError, match=missing):
+        hook("Other")
