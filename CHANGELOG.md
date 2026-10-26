@@ -258,6 +258,30 @@ and a status.
   that cannot be counted are refused with `503 throttle_unavailable`; both
   are under **Changed**, with how to keep the old behaviour (AUTH-09; ADR
   0098).
+- With `IDEMPOTENCY.ANONYMOUS = "refuse"`, any value in one of
+  `CREDENTIAL_HEADERS` named the caller of an `Idempotency-Key`, even one
+  that authenticated nobody: `Authorization: Bearer null`, which
+  logged-out browser applications send, or a gateway's fixed `X-API-Key`.
+  Two logged-out callers behind one address shared keys, and the second
+  was replayed the first's response. Once an authentication middleware
+  has found no one in the request (its principal in `scope["user"]` is not
+  authenticated), a credential header names no caller, and such a key is
+  answered 400 `idempotency_key_needs_caller`; the cookies of
+  `SESSION_COOKIES` still name one. A layer of a project's own that
+  authenticates by a header names the caller by binding the actor, or by
+  putting an authenticated principal in `scope["user"]` (DATA-09,
+  SEC-11a-1).
+- Idempotency keys were scoped to the actor whatever credentials the
+  request carried, and a retry is answered before the route's rules run.
+  A personal token limited to scopes that sent a key its user's login had
+  used was replayed that response, on a route that refuses the token
+  (`SCOPED_CREDENTIALS = "refuse"` answers it 403), or told that the key
+  was taken. Credentials limited to scopes are now a caller apart, one for
+  each set of scopes; a login and a refreshed token, which carry no limit,
+  share the user's keys as before. Kept responses still name the user, so
+  erasure and exports find them, and tombstones are scoped as their keys.
+  A retry, after the upgrade, of a keyed request that such a token sent
+  before it is a new request, and runs (AUTH-01, SEC-11a-2).
 
 ## [0.10.1] - 2026-10-26
 
