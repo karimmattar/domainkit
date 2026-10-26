@@ -224,8 +224,10 @@ CI (`.github/workflows/ci.yml`) runs on every push and pull request:
   against budgets (`python -m benchmarks`; docs/performance.md)
 - a wheel build, installed and imported in a clean environment, and its
   CycloneDX bill of materials
-- Semgrep's Python and OWASP Top 10 rules, pip-audit, and a gitleaks scan
-  of the whole history
+- Semgrep's Python and OWASP Top 10 rules, zizmor over the workflows,
+  pip-audit, and a gitleaks scan of the whole history; CodeQL's security
+  queries in a workflow of their own (`codeql.yml`)
+- the documentation site, built with every link and public name checked
 - on pull requests and weekly, the tests again with the newest releases
   the dependency ranges allow, not the lock's, and with the oldest
 

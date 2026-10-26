@@ -464,13 +464,19 @@ jobs:
   # "nosemgrep" comment and the reason. Also weekly: the rules change
   # without a change here. Semgrep's parser does not know generic functions
   # (PEP 695): it warns on the two modules that declare one, and scans them
-  # in part.
+  # in part. zizmor then audits the workflows themselves (template
+  # injection, credentials left in checkouts, unpinned actions, excessive
+  # permissions): any finding fails; one reviewed and kept carries a
+  # "zizmor: ignore[...]" comment and the reason. Offline: it reads only
+  # the files, needing no token.
   semgrep:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
       # renovate: datasource=pypi depName=semgrep
       SEMGREP_VERSION: "1.180.0"
+      # renovate: datasource=pypi depName=zizmor
+      ZIZMOR_VERSION: "1.31.1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -482,6 +488,8 @@ jobs:
       - run: >-
           semgrep scan --config p/python --config p/owasp-top-ten
           --metrics off --error --timeout 30 src .github
+      - run: pipx install "zizmor==${ZIZMOR_VERSION}"
+      - run: zizmor --offline --format github .github/workflows
 
   # The documentation site (mkdocs.yml): every page of docs/, and the API
   # reference generated from the docstrings of each name docs/api.md lists

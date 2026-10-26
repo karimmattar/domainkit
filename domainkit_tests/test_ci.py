@@ -301,7 +301,7 @@ def test_the_rulesets_hold_without_an_everyday_bypass() -> None:
     assert [rule["type"] for rule in creation["rules"]] == ["creation"]
 
 
-@pytest.mark.parametrize("name", ["ci.yml", "release.yml"])
+@pytest.mark.parametrize("name", ["ci.yml", "release.yml", "codeql.yml"])
 def test_actions_are_pinned_to_commits_and_tokens_only_read(name: str) -> None:
     """Every action by a full commit SHA; write access only where it is used."""
     assert workflow(name)["permissions"] == {"contents": "read"}
@@ -309,7 +309,10 @@ def test_actions_are_pinned_to_commits_and_tokens_only_read(name: str) -> None:
         for step in job.get("steps", []):
             uses = step.get("uses")
             if uses is not None:
-                assert re.fullmatch(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}", uses), uses
+                # owner/repo, or an action in a folder of it, at a commit.
+                assert re.fullmatch(r"[\w.-]+/[\w.-]+(/[\w.-]+)*@[0-9a-f]{40}", uses), (
+                    uses
+                )
         if name == "ci.yml":
             assert "permissions" not in job, job_name
     granted = {
@@ -326,6 +329,8 @@ def test_actions_are_pinned_to_commits_and_tokens_only_read(name: str) -> None:
             },
             "publish": {"id-token": "write"},
         }
+    if name == "codeql.yml":
+        assert granted == {"analyze": {"contents": "read", "security-events": "write"}}
 
 
 def test_releases_publish_only_attested_files() -> None:
@@ -548,3 +553,22 @@ def test_the_docs_site_builds_strictly_beside_the_tests() -> None:
     assert site["strict"] is True
     assert site["hooks"] == ["docs/hooks/site.py"]
     assert set(site["validation"].values()) == {"warn"}  # Failures, under --strict.
+
+
+def test_the_workflows_are_audited_and_scanned() -> None:
+    """Every workflow is audited by zizmor; CodeQL scans pull requests, weekly."""
+    steps = [step.get("run", "") for step in jobs()["semgrep"]["steps"]]
+    assert "zizmor --offline --format github .github/workflows" in steps
+    codeql = workflow("codeql.yml")
+    assert set(codeql[True]) == {  # YAML 1.1 reads "on" as True.
+        "push",
+        "pull_request",
+        "schedule",
+        "workflow_dispatch",
+    }
+    uses = [step.get("uses", "") for step in codeql["jobs"]["analyze"]["steps"]]
+    assert [each.split("@")[0] for each in uses] == [
+        "actions/checkout",
+        "github/codeql-action/init",
+        "github/codeql-action/analyze",
+    ]

@@ -60,9 +60,11 @@ jobs:
             exit 1
           fi
 
+  # zizmor prefers GitHub's "$/" form for a workflow of this repository,
+  # new in July 2026; this one stays until a release has run with it.
   ci:
     needs: tag
-    uses: ./.github/workflows/ci.yml
+    uses: ./.github/workflows/ci.yml # zizmor: ignore[self-repository]
 
   # Signed statements, kept by GitHub, that these files came from this
   # workflow at this commit, and what the wheel is made of. Its own job, so
