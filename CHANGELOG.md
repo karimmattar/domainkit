@@ -366,8 +366,11 @@ and a status.
   that a test's rows and ids are gone in the next (TEST-03).
 - A release no longer runs the CI workflow again on the tagged commit: it
   finds the CI run of that commit's push to `main`, waits for it, requires
-  it green, and attests and publishes the `dist` and `sbom` it built
-  (kept 90 days); only pip-audit and gitleaks run again. Pushes to `main`
+  it green, and publishes the `dist` and `sbom` it built (kept 90 days);
+  only pip-audit and gitleaks run again. That run attests the files it
+  built (its new `attest` job, on pushes only), so their provenance still
+  names the run that built them, and the release checks both
+  attestations of each file before publishing. Pushes to `main`
   are never cancelled, so each commit keeps its run (INFRA-06; ADR 0007,
   amended).
 - A pull request that changes only `docs/**` and the Markdown files at the

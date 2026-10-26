@@ -316,7 +316,7 @@ def test_each_event_starts_the_jobs_it_needs() -> None:
         "oldest",
         "mutation",
     }
-    assert running("pull_request") == every - {"mutation", "docs"}
+    assert running("pull_request") == every - {"mutation", "docs", "attest"}
     assert running("pull_request", code="false") == {
         "changes",
         "docs",
@@ -333,7 +333,7 @@ def test_each_event_starts_the_jobs_it_needs() -> None:
         "changes",
         "docs",
     }
-    assert running("workflow_dispatch") == every - {"changes", "docs"}
+    assert running("workflow_dispatch") == every - {"changes", "docs", "attest"}
 
 
 def test_a_docs_change_skips_the_test_matrix_steps_not_the_matrix() -> None:
@@ -608,7 +608,7 @@ def test_actions_are_pinned_to_commits_and_tokens_only_read(name: str) -> None:
                 assert re.fullmatch(r"[\w.-]+/[\w.-]+(/[\w.-]+)*@[0-9a-f]{40}", uses), (
                     uses
                 )
-        if name == "ci.yml":
+        if name == "ci.yml" and job_name != "attest":
             assert "permissions" not in job, job_name
     granted = {
         job_name: job["permissions"]
@@ -618,13 +618,11 @@ def test_actions_are_pinned_to_commits_and_tokens_only_read(name: str) -> None:
     if name == "release.yml":
         assert granted == {
             "ci": {"contents": "read", "actions": "read"},
-            "attest": {
-                "contents": "read",
+            "publish": {
                 "actions": "read",
+                "attestations": "read",
                 "id-token": "write",
-                "attestations": "write",
             },
-            "publish": {"actions": "read", "id-token": "write"},
             "github-release": {"actions": "read", "contents": "write"},
         }
     if name == "codeql.yml":
@@ -632,18 +630,60 @@ def test_actions_are_pinned_to_commits_and_tokens_only_read(name: str) -> None:
 
 
 def test_releases_publish_only_attested_files() -> None:
-    """Provenance for the wheel and sdist, the bill of materials for the wheel."""
-    release = jobs("release.yml")
-    assert set(release["publish"]["needs"]) == {"ci", "audit", "attest"}
-    attest = [
+    """Provenance for the wheel and sdist, the bill of materials for the wheel.
+
+    The run that built them attests them, so the provenance names it
+    (ci.yml, on a push to main), not the release that only downloads them.
+    Only that job, which checks out nothing, may mint an OIDC token or write
+    attestations, and never for a pull request. The release checks both
+    attestations of every file it publishes, signed by ci.yml on main at
+    the tagged commit, before publishing.
+    """
+    attest = jobs()["attest"]
+    assert attest["permissions"] == {
+        "contents": "read",
+        "id-token": "write",
+        "attestations": "write",
+    }
+    assert set(attest["needs"]) == {"build", "sbom"}
+    assert attest["if"] == "github.event_name == 'push'"
+    assert running("pull_request") & {"attest"} == set()
+    assert not any("checkout" in step.get("uses", "") for step in attest["steps"])
+    assert not any("run" in step for step in attest["steps"])
+    attested = [
         step["with"]
-        for step in release["attest"]["steps"]
+        for step in attest["steps"]
         if step.get("uses", "").startswith("actions/attest@")
     ]
-    assert attest == [
+    assert attested == [
         {"subject-path": "dist/*"},
         {"subject-path": "dist/*.whl", "sbom-path": "sbom/sbom.cdx.json"},
     ]
+    release = jobs("release.yml")
+    assert "attest" not in release
+    assert set(release["publish"]["needs"]) == {"ci", "audit"}
+    [check] = [
+        step
+        for step in release["publish"]["steps"]
+        if "gh attestation verify" in step.get("run", "")
+    ]
+    publishing = [step.get("uses", "") for step in release["publish"]["steps"]]
+    assert release["publish"]["steps"].index(check) < next(
+        index
+        for index, uses in enumerate(publishing)
+        if uses.startswith("pypa/gh-action-pypi-publish@")
+    )
+    script = check["run"]
+    assert script.count("gh attestation verify") == 2
+    for option in (
+        '--signer-workflow "$REPO/.github/workflows/ci.yml"',
+        "--source-ref refs/heads/main",
+        '--source-digest "$SHA"',
+        "--deny-self-hosted-runners",
+        "--predicate-type https://cyclonedx.org/bom",
+    ):
+        assert option in script, option
+    assert check["env"]["SHA"] == "${{ github.sha }}"
     sbom = jobs()["sbom"]
     assert "build" in needs(sbom)
     # actions/attest takes a CycloneDX document only with a bomFormat, a
@@ -662,9 +702,9 @@ def test_releases_publish_only_attested_files() -> None:
 def test_releases_reuse_mains_green_run_of_the_tagged_commit() -> None:
     """Nothing runs twice: the tag's push-to-main run must have succeeded.
 
-    Its dist and sbom artifacts are what is attested and published; only
-    the audit runs again, as CI's audit job does, since an advisory can
-    appear after main's run.
+    Its dist and sbom artifacts, attested by that run, are what is
+    published; only the audit runs again, as CI's audit job does, since an
+    advisory can appear after main's run.
     """
     release = jobs("release.yml")
     assert "workflow_call" not in (WORKFLOWS / "ci.yml").read_text()
@@ -683,7 +723,7 @@ def test_releases_reuse_mains_green_run_of_the_tagged_commit() -> None:
     assert release["ci"]["outputs"] == {"run-id": "${{ steps.run.outputs.id }}"}
     downloads = [
         step["with"]
-        for name in ("attest", "publish")
+        for name in ("publish", "github-release")
         for step in release[name]["steps"]
         if step.get("uses", "").startswith("actions/download-artifact@")
     ]
