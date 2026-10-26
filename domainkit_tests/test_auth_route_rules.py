@@ -225,8 +225,15 @@ def test_each_way_of_reading_the_user(kind: str) -> None:
 
 @pytest.fixture
 def open_project(use_auth: UseAuth) -> None:
-    """Auth installed, with routes some of which declare no rule."""
-    use_auth(settings={"ROOT_ROUTER": f"{ROUTES}.router", "MIDDLEWARE": MIDDLEWARE[:3]})
+    """Auth installed, with routes some of which declare no rule.
+
+    Attempts are counted in memory, as one process does (``auth.E105``
+    would refuse them in staging and production, besides the routes).
+    """
+    use_auth(
+        REQUIRE_SHARED_THROTTLES=False,
+        settings={"ROOT_ROUTER": f"{ROUTES}.router", "MIDDLEWARE": MIDDLEWARE[:3]},
+    )
 
 
 @pytest.mark.usefixtures("open_project")
@@ -310,7 +317,10 @@ def test_deployments_refuse_to_start_with_routes_added_late(
     use_auth: UseAuth, environment: str
 ) -> None:
     """Staging and production refuse to start, as they refuse to build."""
-    use_auth(settings={"ROOT_ROUTER": None, "MIDDLEWARE": MIDDLEWARE[:3]})
+    use_auth(
+        REQUIRE_SHARED_THROTTLES=False,
+        settings={"ROOT_ROUTER": None, "MIDDLEWARE": MIDDLEWARE[:3]},
+    )
     with override_settings(ENVIRONMENT=environment):
         app = get_asgi_application()
         app.include_router(late_router())
@@ -353,6 +363,7 @@ def test_check_reports_open_routes() -> None:
 def test_projects_can_allow_open_routes(use_auth: UseAuth) -> None:
     """``REQUIRE_ROUTE_RULES = False``: routes may stay open."""
     use_auth(
+        REQUIRE_SHARED_THROTTLES=False,
         settings={
             "ROOT_ROUTER": f"{ROUTES}.router",
             "MIDDLEWARE": MIDDLEWARE[:3],
@@ -379,6 +390,7 @@ def test_the_auth_setting_still_allows_open_routes_with_a_warning(
     ):
         use_auth(
             REQUIRE_ROUTE_RULES=False,
+            REQUIRE_SHARED_THROTTLES=False,
             settings={"ROOT_ROUTER": f"{ROUTES}.router", "MIDDLEWARE": MIDDLEWARE[:3]},
         )
     with override_settings(ENVIRONMENT="production"):

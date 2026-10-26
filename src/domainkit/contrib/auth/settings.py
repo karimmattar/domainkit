@@ -6,6 +6,7 @@ from datetime import timedelta
 from typing import Any, Final, Literal, Self
 
 from pydantic import (
+    AwareDatetime,
     BaseModel,
     ConfigDict,
     Field,
@@ -30,6 +31,10 @@ ORIGIN: Final = re.compile(r"https?://(\*\.)?[a-z0-9.-]+(:[0-9]{1,5})?")
 """An origin: a scheme and a host, and a port; ``*.`` matches subdomains."""
 HMAC_ALGORITHMS: Final = frozenset({"HS256", "HS384", "HS512"})
 """JWT algorithms that sign and verify with one shared secret."""
+MAX_PREVIOUS_KEYS: Final = 3
+"""The most retired keys ``AUTH.JWT.PREVIOUS_KEYS`` may keep."""
+MAX_RETIREMENT_AHEAD: Final = timedelta(days=1)
+"""How far ahead of startup a previous key's ``RETIRED_AT`` may be: a rollout."""
 PRINCIPAL_TTL: Final = timedelta(seconds=5)
 """How long a cached principal is used by default (``PRINCIPAL_CACHE.TTL``).
 
@@ -53,6 +58,43 @@ class PasswordValidatorConfig(BaseModel):
         return hash((self.NAME, json.dumps(self.OPTIONS, sort_keys=True, default=str)))
 
 
+type JWTAlgorithm = Literal[
+    "HS256",
+    "HS384",
+    "HS512",
+    "RS256",
+    "RS384",
+    "RS512",
+    "PS256",
+    "PS384",
+    "PS512",
+    "ES256",
+    "ES384",
+    "ES512",
+    "EdDSA",
+]
+"""The algorithms a JSON Web Token may be signed with."""
+
+
+class PreviousJWTKey(BaseModel):
+    """One ``AUTH["JWT"]["PREVIOUS_KEYS"]`` entry: a key that signed, kept to verify.
+
+    Tokens whose ``kid`` names it are verified with it, and its algorithm
+    alone, until ``RETIRED_AT`` plus ``ACCESS_TOKEN_TTL`` and ``LEEWAY``:
+    then they are refused, unexpired or not (ADR 0097).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    KEY: SecretStr
+    """The old HMAC secret, or the old public key in PEM (never a private key)."""
+    ALGORITHM: JWTAlgorithm | None = None
+    """The algorithm it signed with; None: ``AUTH.JWT.ALGORITHM``."""
+    RETIRED_AT: AwareDatetime
+    """When the last process stopped signing with it: the end of the rollout
+    of the new key, at most a day after startup."""
+
+
 class JWTSettings(BaseModel):
     """``AUTH["JWT"]``: signed access tokens (``JWTAuthentication``)."""
 
@@ -62,22 +104,14 @@ class JWTSettings(BaseModel):
     """The HMAC secret (32 bytes or more), or the private key in PEM."""
     VERIFYING_KEY: str | None = None
     """The public key in PEM, for RS*, PS*, ES*, and EdDSA."""
-    ALGORITHM: Literal[
-        "HS256",
-        "HS384",
-        "HS512",
-        "RS256",
-        "RS384",
-        "RS512",
-        "PS256",
-        "PS384",
-        "PS512",
-        "ES256",
-        "ES384",
-        "ES512",
-        "EdDSA",
-    ] = "HS256"
-    """The only algorithm accepted; the token's own header is never trusted."""
+    ALGORITHM: JWTAlgorithm = "HS256"
+    """The algorithm the signing key signs with; a token's own header never
+    chooses one."""
+    PREVIOUS_KEYS: tuple[PreviousJWTKey, ...] = Field(
+        default=(), max_length=MAX_PREVIOUS_KEYS
+    )
+    """Keys that signed before ``SIGNING_KEY``, kept to verify what they
+    signed for one token lifetime after they retired; at most 3."""
     ACCESS_TOKEN_TTL: timedelta = Field(default=timedelta(minutes=5), gt=timedelta(0))
     """How long an access token works; it cannot be revoked before."""
     REFRESH_TOKEN_TTL: timedelta = Field(default=timedelta(days=14), gt=timedelta(0))
@@ -305,15 +339,20 @@ class AuthSettings(BaseModel):
     EMAIL_RATE: str | None = "5/hour"
     """Requests that send mail (resets, verifications, signups) per client
     address and per email address."""
-    THROTTLE_FAIL_CLOSED: bool = False
+    THROTTLE_FAIL_CLOSED: bool | None = None
     """Refuse attempts with 503 while ``RATE_LIMIT_BACKEND`` cannot count them.
 
     ``RedisBackend`` lets requests through while Redis fails, so a brute
     force timed with an outage goes uncounted. True refuses password and
     code checks, and requests that send mail, instead, until it counts
     again; other requests are not affected (links are counted after their
-    check, so nothing is guessed through them).
+    check, so nothing is guessed through them). None, the default, is True
+    in staging and production (since 0.11) and False elsewhere.
     """
+    REQUIRE_SHARED_THROTTLES: bool = True
+    """Staging and production refuse to start while attempts are counted in
+    each process (a ``MemoryBackend``), since 0.11 (``auth.E105``); False
+    only warns (``auth.W004``), as 0.10 did."""
     JWT: JWTSettings = JWTSettings()
     """Signing and lifetimes of JSON Web Tokens (``JWTAuthentication``)."""
     PASSWORD_RESET_TIMEOUT: timedelta = Field(

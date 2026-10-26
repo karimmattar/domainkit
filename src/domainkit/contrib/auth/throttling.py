@@ -22,9 +22,10 @@ guessing one account from many addresses. A client that logged in to the
 account before sends a device proof (``devices``), and is counted per
 device instead: strangers' failures never reach its count. Checks of what cannot be
 guessed (signed tokens) are counted after they fail (``count_failure``),
-so a flood of forged tokens never holds a valid one back. With
-``AUTH.THROTTLE_FAIL_CLOSED``, an attempt the counter cannot count (Redis
-is down) is refused with 503 rather than let through.
+so a flood of forged tokens never holds a valid one back. An attempt the
+counter cannot count (Redis is down) is refused with 503 rather than let
+through, in staging and production, or wherever ``AUTH.THROTTLE_FAIL_CLOSED``
+says so (``fails_closed``).
 """
 
 import hashlib
@@ -40,6 +41,7 @@ from fastapi import Request, status
 from domainkit import clock
 from domainkit.apps import registry
 from domainkit.conf import settings
+from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.http.errors import APIError
 from domainkit.http.ratelimit import Backend, Decision, client_group
 from domainkit.utils.module_loading import import_string
@@ -90,7 +92,7 @@ async def throttle(
 
     Raises:
         APIError: 429, with ``detail`` and ``code``, past the rate for a key;
-            503 with ``AUTH.THROTTLE_FAIL_CLOSED`` if it cannot be counted.
+            503 if it cannot be counted, failing closed (``fails_closed``).
     """
     limits = [(key, rate) for key in keys]
     return await attempt(request, limits, action=action, detail=detail, code=code)
@@ -111,8 +113,8 @@ async def attempt(
 
     Raises:
         APIError: 429, with ``detail`` and ``code``, past the rate for a key;
-            503 ``throttle_unavailable`` with ``AUTH.THROTTLE_FAIL_CLOSED``
-            if the counter could not count it.
+            503 ``throttle_unavailable`` if the counter could not count it,
+            failing closed (``fails_closed``).
     """
     counted = [(key, rate) for key, rate in limits if rate is not None]
     taken = Attempt(limiter(request) if counted else None)
@@ -122,7 +124,7 @@ async def attempt(
         if decision.allowed and decision.counted:
             taken.counted.append((key, limit, period))
             continue
-        if decision.allowed and not auth_settings().THROTTLE_FAIL_CLOSED:
+        if decision.allowed and not fails_closed():
             continue  # Let through uncounted, as other requests are.
         await taken.succeeded()  # Refused, so not made: give back what it took.
         if decision.allowed:
@@ -131,6 +133,20 @@ async def attempt(
             await audit_refusal(action, "throttled")
         raise _throttled(decision, detail, code)
     return taken
+
+
+def fails_closed() -> bool:
+    """Whether an attempt the counter cannot count is refused (503), not let through.
+
+    ``AUTH.THROTTLE_FAIL_CLOSED``; unset (None), True in staging and
+    production and False elsewhere, since 0.11. A ``RedisBackend`` whose
+    local fallback counted the attempt still says it could not
+    (``Decision.counted``): the fallback counts in one process only.
+    """
+    explicit = auth_settings().THROTTLE_FAIL_CLOSED
+    if explicit is None:
+        return settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS
+    return explicit
 
 
 async def count_failure(

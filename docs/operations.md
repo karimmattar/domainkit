@@ -30,9 +30,13 @@ The deployment sets `<PREFIX>SETTINGS_MODULE` (for `init bankAPI`,
 machine and is never deployed. The production settings `init` writes read
 every address and secret from `<PREFIX>*` variables:
 
-- `ALLOWED_HOSTS`, `DATABASE_URL`, `SECRET_KEY`, and `TRUSTED_PROXIES`
-  (the networks of the load balancers, or empty when callers connect
-  directly) are required; startup fails, naming the variable, without them.
+- `ALLOWED_HOSTS`, `DATABASE_URL`, `REDIS_URL`, `SECRET_KEY`, and
+  `TRUSTED_PROXIES` (the networks of the load balancers, or empty when
+  callers connect directly) are required; startup fails, naming the
+  variable, without them. Redis (`rediss://`, with a password) counts
+  requests, and wrong passwords and codes, once for every process; while
+  it is down, logins are refused
+  ([runbook.md](runbook.md#logins-are-refused-while-redis-is-down)).
 - Any variable may instead be a file: `<NAME>_FILE=/run/secrets/<name>`
   reads the secret from the file a secret store mounts, so it is in no
   environment listing. Setting both is refused.
