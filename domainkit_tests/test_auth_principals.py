@@ -1909,12 +1909,22 @@ def test_tokens_the_orm_deletes_drop_their_principals(api: Api) -> None:
     assert client.get("/private", headers=access).status_code == 401
 
 
-def test_only_instances_in_a_session_wait_for_its_commit(use_auth: UseAuth) -> None:
+def test_only_instances_in_a_session_wait_for_its_commit(
+    use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A user no session holds has no commit to wait for."""
     use_auth()
     user = User.create(password=PasswordHash.unusable(), username="alice")
+    waits: list[object] = []
+    monkeypatch.setattr(
+        principals,
+        "invalidate_after_commit",
+        lambda session, targets: waits.append((session, targets)),
+    )
 
-    principals._after_commit_of(user, [user_target(user.id)])  # Nothing happens.
+    principals._after_commit_of(user, [user_target(user.id)])
+
+    assert waits == []
 
 
 def test_units_of_work_without_a_session_stamp_nothing(

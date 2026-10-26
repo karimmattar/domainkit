@@ -16,6 +16,7 @@ from typing import Any, Final
 
 import pytest
 from fastapi.testclient import TestClient
+from hypothesis import settings as hypothesis_settings
 from sqlalchemy import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -398,3 +399,11 @@ def identity(database_url: str, tmp_path: Path) -> Iterator[Api]:
             yield make
     registry.clear()
     mail.outbox.clear()
+
+
+# Property tests in CI (GitHub sets CI): a failing example prints the
+# @reproduce_failure blob that replays it, since a runner keeps no example
+# database between runs; the seed alone needs the same code to replay.
+hypothesis_settings.register_profile("ci", print_blob=True)
+if os.environ.get("CI"):
+    hypothesis_settings.load_profile("ci")
