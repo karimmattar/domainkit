@@ -23,6 +23,24 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
    for the deployment checks this version adds.
 6. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 0.10 to 0.11
+
+### Breaking changes
+
+- **Committed idempotency keys outlive their TTL** (FIN-84). With
+  `domainkit.contrib.idempotency` installed, a key whose request committed
+  (or pinned it for a commit on another database) is kept as a tombstone
+  for `IDEMPOTENCY.TOMBSTONE_SECONDS` (7 days) once `TTL_SECONDS` passes,
+  without its response: a retry with the same key and request gets 409
+  `idempotency_response_unavailable` instead of running again, and another
+  request with the key gets 422 `idempotency_key_reused`. **Fix:** run
+  `makemigrations` and `migrate` for the keys table's new `tombstone`
+  column before the new version serves requests; clients that reuse a key
+  on purpose send a new one. **To keep the old behaviour:**
+  `IDEMPOTENCY = {"TOMBSTONE_SECONDS": 0}`.
+
+### Removed in 0.11
+
 ## 0.9 to 0.10
 
 ### Breaking changes

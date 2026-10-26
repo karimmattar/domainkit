@@ -7,7 +7,7 @@ the same request gets the stored response, with `Idempotent-Replayed: true`.
 | Situation | Answer |
 | --- | --- |
 | Same key, same method, path, query and body | The stored response, replayed |
-| Same key, different request | 422 `idempotency_key_reused` |
+| Same key, different request | 422 `idempotency_key_reused`, past the TTL too while the key is a tombstone |
 | Same key while the first is still running, within its lease | 409 `idempotency_key_in_use`, `Retry-After: 1` |
 | Key not 1 to 255 printable ASCII characters | 400 `invalid_idempotency_key` |
 | Key from a caller with no actor and no credential header, with `ANONYMOUS = "refuse"` | 400 `idempotency_key_needs_caller`: nothing runs |
@@ -19,7 +19,9 @@ the same request gets the stored response, with `Idempotent-Replayed: true`.
 | First request's commit on another database raised (its reply lost, refused, or cancelled while it ran) | 409 `idempotency_response_unavailable`: it may have committed, so it never runs again |
 | First request ran past its lease and a retry took its key | The first gets 409 `idempotency_key_taken_over`; its changes are not saved |
 | Client disconnected before sending the whole body | Nothing runs and no key is claimed: retry with the same key |
-| Same key after `TTL_SECONDS`, even if the first request committed | A new request: it runs again (below) |
+| Same key after `TTL_SECONDS`, the first request committed (or pinned its key) | 409 `idempotency_response_unavailable`: the response is gone, but the key is kept as a tombstone for `TOMBSTONE_SECONDS` more, and the request never runs again (below) |
+| Same key after `TTL_SECONDS`, the first request committed nothing | A new request: it runs again |
+| Same key after `TTL_SECONDS` and then `TOMBSTONE_SECONDS` | A new request: it runs again, even if the first committed (below) |
 
 Within its TTL, a key's request runs twice only if nothing it did was
 saved. When a SQL unit of work commits during a keyed request, the key is
@@ -34,15 +36,31 @@ through `connections.autocommit()` or a raw `engine.begin()` inside a keyed
 request are outside the key: a request that made them and then failed is
 released, and its retry makes them again.
 
-**After the TTL, a key is forgotten.** A key is remembered for
-`TTL_SECONDS` (24 hours) from its first request. After that, a request
-with the same key is a new request: it runs again, even if the first one
-committed, and its response replaces the old one. A client that retries a
-payment with a key older than the TTL (after a long outage, from a queue
-it replays) is charged twice. Keys are replays of recent requests, not a
-record of what was ever done: keep the TTL above the longest your clients
-retry for (at most 30 days), and refuse duplicates your domain must never
-accept, such as a payment reference, with a unique column of their own.
+**After the TTL, a tombstone.** A response is replayed for
+`TTL_SECONDS` (24 hours) from its first request. After that, a key whose
+request committed, or pinned it for a commit on another database, is
+kept as a tombstone for `TOMBSTONE_SECONDS` (7 days) more: the purge drops
+its response, its headers, and whom it was about, and keeps the hash of
+the caller and key, the request's fingerprint, its status, and when it
+committed. A retry with the same key and request gets 409
+`idempotency_response_unavailable` ("already ran, and its response is no
+longer kept"), and never runs again; another request with that key gets
+the 422. Until the purge comes, the key's response is past its TTL: it is
+not replayed, and retries get the same 409. A key nothing committed or
+pinned is forgotten at the TTL, as before: a request with it is new.
+
+A week covers the windows clients plausibly retry in once a day has
+passed: a queue replayed after an outage over a long weekend, a broker's
+default retention (Kafka keeps 7 days, SQS 4), messaging's own 7 days of
+finished messages. Past `TTL_SECONDS` and `TOMBSTONE_SECONDS` (at most 30
+and 90 days), a key is forgotten even if it committed: a request with it
+runs again. Keys are replays of recent requests, not a record of what was
+ever done: refuse duplicates your domain must never accept, such as a
+payment reference, with a unique column of their own. A tombstone costs
+about 390 bytes of table and index a key (ADR
+[0096](../adr/0096-keep-committed-idempotency-keys-as-tombstones.md)).
+`TOMBSTONE_SECONDS = 0` forgets a committed key with its response, as
+0.10 did.
 
 A request holds its key for `LEASE_SECONDS`. If the process dies before the
 request commits anything, a retry after the lease takes the key over and
@@ -126,8 +144,9 @@ request that fails before its unit of work commits pinned nothing, and its
 key is released as usual. A crash after the pin leaves the key in progress
 until it expires.
 
-**Upgrading.** The keys table has a new `pinned` column: run
-`makemigrations` and `migrate` in each project that installs idempotency.
+**Upgrading.** The keys table has a new `pinned` column (0.9.1), and a
+new `tombstone` column (0.11): run `makemigrations` and `migrate` in each
+project that installs idempotency.
 
 Keys are scoped to the actor, which `AuthenticationMiddleware` sets (list
 it first), so one user cannot replay another's response. Without an
@@ -150,14 +169,16 @@ many callers send alike, does not (SEC-10b-7). The default,
 defaults to `"refuse"`, and staging and production warn
 (`idempotency.W002`) until `ANONYMOUS` is set, to either value (DATA-09). Add `IdempotencyMiddleware` last in `MIDDLEWARE`: it reads whole
 bodies, which `RequestBodyLimitMiddleware` has already bounded. With
-messaging installed, expired keys are purged hourly; without it, a new
-key deletes up to 100 expired ones once it has claimed its own, skipping
-those another request is deleting (`SKIP LOCKED` on PostgreSQL), so
-concurrent requests never queue behind one another's purge, nor deadlock
-through PgBouncer. A process does this once a minute, and again on the
-next key while each sweep deletes a full 100, so a backlog drains as
-fast as before; until 0.9.2 every keyed request did it, one more
-statement each.
+messaging installed, expired keys are purged hourly, and those that may
+have committed made tombstones; without it, a new key deletes up to 100
+expired ones once it has claimed its own, then makes tombstones of up to
+100 more, skipping those another request is purging (`SKIP LOCKED` on
+PostgreSQL), so concurrent requests never queue behind one another's
+purge, nor deadlock through PgBouncer. A process does this once a minute,
+and again on the next key while a sweep deletes or buries a full 100, so
+a backlog drains as fast as before; until 0.9.2 every keyed request did
+it, one more statement each. A tombstone's expiry moves on when it is
+made, so a purge reads only the keys due, however many tombstones wait.
 
 **What a key costs.** A request claims its key with one statement, an
 upsert that inserts the in-progress row or replaces an expired one, and
@@ -176,7 +197,8 @@ each request sent, for about 1,850 fewer Python calls a keyed write.
 | `IDEMPOTENCY` key | Default | Meaning |
 | --- | --- | --- |
 | `DATABASE` | `"default"` | Alias holding the keys. |
-| `TTL_SECONDS` | `86400.0` | How long a key is remembered (24 hours; at most 30 days, and at least `LEASE_SECONDS`, or startup fails). |
+| `TTL_SECONDS` | `86400.0` | How long a key's response is replayed (24 hours; at most 30 days, and at least `LEASE_SECONDS`, or startup fails). |
+| `TOMBSTONE_SECONDS` | `604800.0` | How long a key whose request committed, or pinned it, is kept past `TTL_SECONDS` without its response, so retries get 409 instead of running again (7 days; at most 90 days). `0` forgets it at the TTL, as 0.10 did (FIN-84). |
 | `LEASE_SECONDS` | `60.0` | How long a request holds its key before a retry may take it over (at most a day, and above `REQUEST_TIMEOUT`, or startup fails). |
 | `REQUIRE_DEADLINE` | `True` | Staging and production refuse to start while keyed requests have no deadline (no `REQUEST_TIMEOUT`, or no `DeadlineMiddleware`). `False` only warns, as 0.9 did. |
 | `METHODS` | `POST`, `PATCH` | Methods that honour the header; others ignore it. |
