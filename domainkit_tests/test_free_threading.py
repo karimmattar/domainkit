@@ -34,6 +34,8 @@ from typing import Any, ClassVar
 from weakref import WeakKeyDictionary
 
 import pytest
+from sqlalchemy import create_engine as create_sync_engine
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from starlette.datastructures import State
 from starlette.requests import HTTPConnection, Request
@@ -87,6 +89,7 @@ from domainkit.http.ratelimit import MemoryBackend, client_group
 from domainkit.http.shedding import QUEUE_FULL, ShedReport
 from domainkit.http.websockets import WebSocketLimitsMiddleware
 from domainkit.log import JsonFormatter, ThrottledLog, flush_throttled
+from domainkit.testing import CapturedQueries
 from domainkit_tests.conftest import UseAuth
 from domainkit_tests.sample_domains.alpha.apps import AlphaSettings
 
@@ -1164,6 +1167,48 @@ def test_engines_never_share_a_listener() -> None:
         assert not {id(listener) for listener in first} & {
             id(listener) for listener in second
         }
+
+
+def test_counting_statements_never_fails_another_threads_statement() -> None:
+    """Blocks of ``CapturedQueries`` come and go while threads run statements.
+
+    SQLAlchemy reads its listener lists without a lock as each statement
+    runs. A block that listened on ``Engine`` and stopped again changed them
+    under other threads, whose statements failed now and then ("deque
+    mutated during iteration"): 3 runs of 3 failed this way, at the same
+    switch interval. The listener now stays, and blocks only come and go
+    from the tuple it reads.
+    """
+    errors: list[BaseException] = []
+    stop = threading.Event()
+
+    def run_statements() -> None:
+        try:
+            while not stop.is_set():
+                engine = create_sync_engine("sqlite://")
+                with engine.connect() as connection:
+                    for _ in range(20):
+                        connection.execute(text("SELECT 1"))
+                engine.dispose()
+        except Exception as error:  # noqa: BLE001 - any failure is the finding.
+            errors.append(error)
+
+    interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)  # Switch threads as often as the GIL allows.
+    threads = [threading.Thread(target=run_statements) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    try:
+        for _ in range(3000):
+            with CapturedQueries():
+                pass
+    finally:
+        stop.set()
+        for thread in threads:
+            thread.join()
+        sys.setswitchinterval(interval)
+
+    assert errors == []
 
 
 def test_subject_keys_kept_by_transactions_on_every_thread(

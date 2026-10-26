@@ -317,6 +317,14 @@ and permissions), so prefer `assert_max_queries` for whole requests and
 `assert_num_queries` for code you call directly. Without the fixtures,
 import them from `domainkit.testing`.
 
+The first block in a process puts one listener on SQLAlchemy's `Engine`
+class, and it stays; blocks only come and go from the list it hands
+statements to. SQLAlchemy reads its listeners without a lock as each
+statement runs, so a listener added or removed while another thread runs
+a statement fails that statement ("deque mutated during iteration"). Until
+0.10 each block added and removed its own, which failed a request or a
+background task running at that moment now and then.
+
 ## Blocking the event loop
 
 `pytest --detect-blocking` fails a test that holds its event loop for 0.1

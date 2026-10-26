@@ -17,8 +17,16 @@ driver counts once, an ``executemany`` included; the driver's own work
 a PostgreSQL transaction sets for itself (``connections.INTERNAL``). A
 failure lists the statements, as SQL with placeholders: bound values are
 never kept.
+
+The first block counted in a process puts one listener on SQLAlchemy's
+``Engine`` class, which stays: it hands each statement to the blocks
+entered at the time. SQLAlchemy's listener lists are read without a lock
+by every thread that runs a statement, and adding or removing a listener
+while another thread runs one fails that statement ("deque mutated during
+iteration"), so entering and leaving a block never changes them.
 """
 
+import threading
 from types import TracebackType
 from typing import Any, Final, Self
 
@@ -29,6 +37,11 @@ from domainkit.db import connections
 from domainkit.db.connections import INTERNAL
 
 EVENT: Final = "before_cursor_execute"
+_lock: Final = threading.Lock()
+"""Guards installing the listener, and replacing ``_capturing``."""
+_capturing: "tuple[CapturedQueries, ...]" = ()
+"""The blocks entered, in any thread. Replaced whole, never changed in place,
+so the listener reads it without the lock."""
 
 
 class CapturedQueries:
@@ -59,9 +72,13 @@ class CapturedQueries:
 
     def __enter__(self) -> Self:
         """Start capturing."""
+        global _capturing
         if self.using is not None:
             self._url = make_url(connections.config(self.using).URL.get_secret_value())
-        event.listen(Engine, EVENT, self._record)
+        with _lock:
+            if not event.contains(Engine, EVENT, _dispatch):
+                event.listen(Engine, EVENT, _dispatch)
+            _capturing = (*_capturing, self)
         return self
 
     def __exit__(
@@ -71,7 +88,9 @@ class CapturedQueries:
         traceback: TracebackType | None,
     ) -> None:
         """Stop capturing; unless the block raised, check the count."""
-        event.remove(Engine, EVENT, self._record)
+        global _capturing
+        with _lock:
+            _capturing = tuple(each for each in _capturing if each is not self)
         if exc_type is None and not self.holds():
             raise AssertionError(self.report())
 
@@ -111,6 +130,19 @@ class CapturedQueries:
             return
         if self._url is None or connection.engine.url == self._url:
             self.statements.append(statement)
+
+
+def _dispatch(
+    connection: Connection,
+    cursor: object,
+    statement: str,
+    parameters: Any,  # noqa: ANN401 - never read.
+    context: ExecutionContext | None,
+    executemany: bool,
+) -> None:
+    """Hand ``statement`` to every block entered now."""
+    for capture in _capturing:
+        capture._record(connection, cursor, statement, parameters, context, executemany)
 
 
 def assert_num_queries(expected: int, *, using: str | None = None) -> CapturedQueries:
