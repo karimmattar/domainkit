@@ -26,12 +26,13 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 RULESETS = ROOT / ".github" / "rulesets"
 SOURCE = ROOT / "src"
 SUMMARY = ROOT / ".github" / "scripts" / "mutation_summary.py"
+FLOORS = ROOT / ".github" / "scripts" / "floors.py"
 EVENTS = ("push", "pull_request", "schedule", "workflow_dispatch")
 # GitHub Actions, the app whose checks the ruleset accepts.
 ACTIONS_APP = 15368
-# Jobs that run on pull requests but gate nothing: the newest releases
-# upstream are not this change's doing.
-ADVISORY = {"newest"}
+# Jobs that run on pull requests but gate nothing: the newest and oldest
+# releases the ranges allow are not this change's doing.
+ADVISORY = {"newest", "oldest"}
 # GitHub stops a job after six hours.
 JOB_LIMIT_MINUTES = 360
 
@@ -198,9 +199,15 @@ def test_the_weekly_run_has_a_concurrency_group_no_push_shares() -> None:
 def test_each_event_starts_the_jobs_it_needs() -> None:
     """The weekly run mutates and audits; the rest check changes."""
     every = set(jobs())
-    assert running("schedule") == {"audit", "semgrep", "newest", "mutation"}
+    assert running("schedule") == {
+        "audit",
+        "semgrep",
+        "newest",
+        "oldest",
+        "mutation",
+    }
     assert running("pull_request") == every - {"mutation"}
-    assert running("push") == every - {"mutation", "newest"}
+    assert running("push") == every - {"mutation", "newest", "oldest"}
     assert running("workflow_dispatch") == every
 
 
@@ -237,7 +244,7 @@ def test_a_hung_test_ends_the_suite_well_within_its_jobs_time() -> None:
     assert (options["timeout"], options["timeout_method"]) == (120, "thread")
     dev = config["dependency-groups"]["dev"]
     assert any(each.startswith("pytest-timeout ") for each in dev)
-    for name in ("test", "integration", "newest"):
+    for name in ("test", "integration", "newest", "oldest"):
         assert jobs()[name]["timeout-minutes"] == 30
     steps = jobs()["integration"]["steps"]
     assert any(
@@ -464,3 +471,61 @@ def test_a_shard_with_no_mutants_fails_its_summary(tmp_path: Path) -> None:
     assert done.returncode == 1
     assert "score n/a" in done.stdout
     assert summarise(tmp_path, "a").returncode == 2  # No pattern.
+
+
+def floors(cwd: Path, pyproject: str) -> subprocess.CompletedProcess[str]:
+    """Run the floors script on ``pyproject`` written in ``cwd``."""
+    (cwd / "pyproject.toml").write_text(pyproject)
+    return subprocess.run(  # noqa: S603 - the test interpreter and the repository's script.
+        [sys.executable, str(FLOORS)],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_every_range_has_a_floor_the_oldest_job_pins() -> None:
+    """Each dependency and extra, once, at the version its range starts at."""
+    done = subprocess.run(  # noqa: S603 - the test interpreter and the repository's script.
+        [sys.executable, str(FLOORS), str(ROOT / "pyproject.toml")],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    pinned = dict(line.split("==") for line in done.stdout.splitlines())
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+    declared = list(project["dependencies"])
+    for extra in project["optional-dependencies"].values():
+        declared += extra
+    names = {re.split(r"[\s(\[;>=<]", each, maxsplit=1)[0].lower() for each in declared}
+    assert set(pinned) == names
+    assert pinned["fastapi"] == "0.143.1"
+    assert pinned["grpcio"] == "1.66.2"  # The first with Python 3.13 wheels.
+    assert "python .github/scripts/floors.py > floors.txt" in str(
+        jobs()["oldest"]["steps"]
+    )
+
+
+def test_the_floors_script_reads_each_form_and_refuses_none(tmp_path: Path) -> None:
+    """Poetry's parentheses, extras and markers; no floor, or two, is an error."""
+    done = floors(
+        tmp_path,
+        "[project]\n"
+        'dependencies = ["a[x] (>=1.2,<2)", "b>=0.3; python_version<\'4\'"]\n'
+        '[project.optional-dependencies]\nc = ["c (>=5.0.0)", "b>=0.3"]\n',
+    )
+    assert (done.returncode, done.stdout) == (0, "a==1.2\nb==0.3\nc==5.0.0\n")
+    done = floors(
+        tmp_path,
+        '[project]\ndependencies = ["a (<2)"]\n[project.optional-dependencies]\n',
+    )
+    assert done.returncode == 1
+    assert "no >= floor in 'a (<2)'" in done.stderr
+    done = floors(
+        tmp_path,
+        '[project]\ndependencies = ["a>=1"]\n'
+        '[project.optional-dependencies]\nx = ["a>=2"]\n',
+    )
+    assert done.returncode == 1
+    assert "a has two floors: 1 and 2" in done.stderr

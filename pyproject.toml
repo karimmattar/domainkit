@@ -55,7 +55,8 @@ mfa = ["cryptography (>=50.0.2,<51.0.0)"]
 # immudb-py, are imported directly; ecdsa from 0.19.2, past PYSEC-2026-2467.
 immudb = [
     "immudb-py (>=1.5.0,<2.0.0)",
-    "grpcio (>=1.62.1,<2.0.0)",
+    # 1.66.2 is the first grpcio with wheels for Python 3.13.
+    "grpcio (>=1.66.2,<2.0.0)",
     "ecdsa (>=0.19.2,<1.0.0)",
 ]
 # A message broker for the worker: RabbitMQ, through aio-pika.
