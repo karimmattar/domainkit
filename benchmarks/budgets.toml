@@ -108,7 +108,7 @@ checkouts = 3
 pings = 3
 
 [rungs.throttled]
-calls = 803
+calls = 778
 statements = 0
 transactions = 0
 checkouts = 0
