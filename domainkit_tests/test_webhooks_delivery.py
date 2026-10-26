@@ -683,7 +683,9 @@ async def test_secrets_no_key_decrypts_fail_their_deliveries(
         for subscription_id, column, value in (
             (tampered.id, "secret", sealed[:-1] + bytes([sealed[-1] ^ 1])),
             (copied.id, "secret", donor_sealed),
-            (rotating.id, "previous_secret", previous[:-1] + b"\0"),
+            # Flipped, not set to 0: a last byte already 0 (1 in 256) left
+            # the secret whole, and its delivery went out.
+            (rotating.id, "previous_secret", previous[:-1] + bytes([previous[-1] ^ 1])),
         ):
             await connection.execute(
                 update(subscriptions)
