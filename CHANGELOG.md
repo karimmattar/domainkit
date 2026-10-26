@@ -17,8 +17,9 @@ and a status.
   closed and the next request opened another. Settling waits for asyncpg
   to finish the cancelled exchange, rolls the transaction back at once
   (its locks go with it), and clears asyncpg's and SQLAlchemy's record of
-  it, so a deadline that lands while `BEGIN` is answered leaves no
-  transaction nobody tracks. Code that goes on after the cut gets
+  it, so a deadline that lands while `BEGIN` is answered cannot leave the
+  kept connection in a transaction nothing tracks, which would lose the
+  next unit of work's write. Code that goes on after the cut gets
   `PendingRollbackError` until it rolls back, as before. Ten requests cut
   off at a 1 s deadline opened and discarded ten connections; they now
   open and discard none. A connection that does not settle in time, one
