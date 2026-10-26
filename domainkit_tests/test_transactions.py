@@ -9,14 +9,17 @@ transfers that lock their rows in opposite orders deadlock.
 
 import asyncio
 import os
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from pathlib import Path
 from typing import Any, Final
 from uuid import UUID
 
 import pytest
+from fastapi import FastAPI
+from pydantic import BaseModel
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError, OperationalError
+from starlette.requests import HTTPConnection
 
 from benchmarks.counting import SqlCounter
 from domainkit import deadlines
@@ -24,6 +27,7 @@ from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.db import Isolation, connections, lock_key
 from domainkit.ddd import (
+    Command,
     ConcurrentUpdate,
     EventBus,
     LockNotAvailable,
@@ -33,7 +37,13 @@ from domainkit.ddd import (
     RowLocks,
 )
 from domainkit.ddd import uow as uow_module
+from domainkit.ddd.query import F
 from domainkit.ddd.uow import DEFAULT_RETRY, MAX_ATTEMPTS, NAMED_LOCKS
+from domainkit.http.access import Public
+from domainkit.http.errors import install_exception_handlers
+from domainkit.http.middleware import RequestContextMiddleware
+from domainkit.resources import ResourceRouter
+from domainkit.testing import AsyncTestClient
 from domainkit_tests.conftest import POSTGRES_VARIABLE
 from domainkit_tests.gadgets import (
     FakeGadgetsUnitOfWork,
@@ -806,3 +816,144 @@ async def test_a_named_lock_on_sqlite_is_the_write_lock(sqlite_file: str) -> Non
         await one.commit()
     async with GadgetsUnitOfWork() as two:
         await two.lock("anything")
+
+
+# Command routes that declare retries --------------------------------------------------
+
+
+class Take(Command):
+    """Take one of a gadget's stock."""
+
+    gadget_id: UUID
+
+
+class Restock(Command):
+    """Add stock to every gadget."""
+
+    amount: int
+
+
+class Amount(BaseModel):
+    """How much stock to add."""
+
+    amount: int
+
+
+def gadget_app(
+    service: Any,  # noqa: ANN401 - each test's service.
+    *,
+    retry: Retry | None,
+    unit_of_work: type[GadgetsUnitOfWork] = GadgetsUnitOfWork,
+    scope: Callable[[HTTPConnection], Awaitable[Any]] | None = None,
+) -> FastAPI:
+    """The gadget resource with ``take`` and ``restock`` routes run by ``service``."""
+    resource = ResourceRouter(
+        "/gadgets",
+        model=Gadget,
+        unit_of_work=unit_of_work,
+        repository=lambda uow: uow.gadgets,
+        dependencies=[Public],
+        scope=scope,
+    )
+    resource.command_route(Take, service=service, path="/take", retry=retry)
+    resource.command_route(
+        Restock,
+        service=service,
+        body=Amount,
+        path="/restock",
+        returns=None,
+        retry=retry,
+    )
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.include_router(resource)
+    app.add_middleware(RequestContextMiddleware)
+    return app
+
+
+@postgres_only
+@pytest.mark.parametrize("retry", [None, NOW])
+async def test_a_serialization_failure_is_run_again_by_a_route_that_retries(
+    tables: None, waits: list[float], retry: Retry | None
+) -> None:
+    """The proof: without ``retry`` the loser answers 503; with it, both succeed."""
+    one, two = make_gadget("one", stock=5), make_gadget("two", stock=5)
+    await store(one, two)
+    both_read = asyncio.Barrier(2)
+    runs: list[UUID] = []
+
+    async def take(command: Take, uow: GadgetsUnitOfWork) -> Gadget:
+        runs.append(command.gadget_id)
+        async with uow:
+            await uow.session.scalar(select(func.sum(gadgets.c.stock)))
+            if len(runs) <= 2:
+                await both_read.wait()
+            found = await uow.gadgets.get(GadgetId(command.gadget_id))
+            found.stock = (found.stock or 0) - 1
+            await uow.commit()
+            return found
+
+    app = gadget_app(take, retry=retry, unit_of_work=SerializableGadgets)
+    async with AsyncTestClient(app) as client:
+        answers = await asyncio.gather(
+            client.post(f"/gadgets/{one.id}/take", json={}),
+            client.post(f"/gadgets/{two.id}/take", json={}),
+        )
+    statuses = sorted(answer.status_code for answer in answers)
+
+    if retry is None:
+        assert statuses == [200, 503]
+        assert {answer.json().get("code") for answer in answers} >= {"database_busy"}
+        assert (len(runs), await total_stock()) == (2, 9)
+    else:
+        assert statuses == [200, 200]
+        assert (len(runs), waits, await total_stock()) == (3, [0.0], 8)
+
+
+async def test_a_route_runs_its_check_and_service_again_in_a_new_transaction(
+    tables: None, waits: list[float]
+) -> None:
+    """The reach check and ``If-Match`` are made again with each run."""
+    gadget = make_gadget("one", stock=5)
+    await store(gadget)
+    checks: list[str] = []
+    lose = losing(1, conflict)
+
+    async def scope(request: HTTPConnection) -> Any:  # noqa: ANN401 - criteria.
+        checks.append("scope")
+        return F("active") == True  # noqa: E712 - a condition, not a test.
+
+    async def take(command: Take, uow: GadgetsUnitOfWork) -> Gadget:
+        async with uow:
+            found = await uow.gadgets.get(GadgetId(command.gadget_id))
+            found.stock = (found.stock or 0) - 1
+            lose()
+            await uow.commit()
+            return found
+
+    async def restock(command: Restock, uow: GadgetsUnitOfWork) -> None:
+        async with uow:
+            for found in await uow.gadgets.filter():
+                found.stock = (found.stock or 0) + command.amount
+            lose_again()
+            await uow.commit()
+
+    async with AsyncTestClient(gadget_app(take, retry=NOW, scope=scope)) as client:
+        etag = (await client.get(f"/gadgets/{gadget.id}")).headers["etag"]
+        checks.clear()
+        taken = await client.post(
+            f"/gadgets/{gadget.id}/take", json={}, headers={"If-Match": etag}
+        )
+        stale = await client.post(
+            f"/gadgets/{gadget.id}/take", json={}, headers={"If-Match": etag}
+        )
+    lose_again = losing(1, conflict)
+    async with AsyncTestClient(gadget_app(restock, retry=NOW)) as client:
+        restocked = await client.post("/gadgets/restock", json={"amount": 3})
+
+    assert (taken.status_code, taken.json()["stock"]) == (200, 4)
+    assert stale.status_code == 412
+    assert checks == ["scope", "scope", "scope"]
+    assert restocked.status_code == 204
+    assert waits == [0.0, 0.0]
+    assert await total_stock() == 7
