@@ -76,8 +76,8 @@ by setting an attribute of the driver's connection: no round trip either
 way. psycopg does the same.
 
 **Python calls** of a command request through `ResourceRouter`, 200
-requests on PostgreSQL, no conflict: 5,621 per request without `retry`,
-5,638 with `retry=Retry()` (+17, 0.3%); 4 statements and 1 transaction
+requests on PostgreSQL, no conflict: 5,609 per request without `retry`,
+5,633 with `retry=Retry()` (+24, 0.4%); 4 statements and 1 transaction
 either way.
 
 **SQLite** knows no levels. Its driver begins a transaction only before
