@@ -138,7 +138,7 @@ THUMBPRINT_MEMBERS: Final = {
     "EC": ("crv", "kty", "x", "y"),
     "OKP": ("crv", "kty", "x"),
 }
-"""The public members RFC 7638 hashes, per key type, in its order."""
+"""The public members RFC 7638 hashes, per key type, in its (sorted) order."""
 
 
 class AuthenticationFailed(APIError):
@@ -699,7 +699,7 @@ def _key_set(
     current = algorithms[config.ALGORITHM].prepare_key(verifying_key)
     key_id = _key_id(config.ALGORITHM, current, algorithms)
     keys = {key_id: _VerifyingKey(config.ALGORITHM, current)}
-    named = {key_id: "the signing key"}
+    named: dict[str, str] = {}  # Where each previous key is listed, by id.
     grace = config.ACCESS_TOKEN_TTL + config.LEEWAY
     latest = utc_now() + MAX_RETIREMENT_AHEAD
     problems = []
@@ -760,7 +760,7 @@ def _previous_key(
             f"{where}.KEY must have at least {needed} bytes for {algorithm}."
         )
     try:
-        key = algorithms[algorithm].prepare_key(raw.encode() if hashed else raw)
+        key = algorithms[algorithm].prepare_key(raw)
     except (PyJWTError, ValueError, TypeError) as exc:
         kind = "secret" if hashed else "public key"
         raise ImproperlyConfigured(
@@ -787,7 +787,7 @@ def _key_id(algorithm: str, key: Any, algorithms: dict[str, Any]) -> str:  # noq
         return _base64url(digest)
     jwk = algorithms[algorithm].to_jwk(key, as_dict=True)
     members = {name: jwk[name] for name in THUMBPRINT_MEMBERS[jwk["kty"]]}
-    canonical = json.dumps(members, separators=(",", ":"), sort_keys=True)
+    canonical = json.dumps(members, separators=(",", ":"))  # Sorted already.
     return _base64url(hashlib.sha256(canonical.encode()).digest())
 
 

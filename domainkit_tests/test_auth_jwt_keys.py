@@ -10,6 +10,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -512,7 +513,8 @@ def test_previous_keys_are_checked(
             PREVIOUS_KEYS=[{**previous, "RETIRED_AT": START}],
         )
 
-    assert str(refused.value).startswith(message)
+    named = r"\w+Error\)\." if message.endswith("(") else ""  # The exception's.
+    assert re.fullmatch(re.escape(message) + named, str(refused.value))
     assert previous["KEY"] not in str(refused.value)
 
 
