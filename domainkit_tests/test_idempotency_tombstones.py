@@ -404,6 +404,21 @@ def test_without_tombstones_the_purge_deletes_what_it_finds_expired(
         assert [row["key_hash"] for row in rows()] == [keyed("live")]
 
 
+def test_the_shortest_tombstone_still_keeps_the_key(database_url: str) -> None:
+    """Any ``TOMBSTONE_SECONDS`` above 0 buries; only 0 forgets."""
+    with application(database_url, TOMBSTONE_SECONDS=0.5) as client:
+        client.post("/pay", headers=KEY)
+        with freeze_time(expiry() + timedelta(seconds=1)) as frozen:
+            purge()
+            retry = client.post("/pay", headers=KEY)
+            frozen.tick(1)  # Past the tombstone's half second.
+            again = client.post("/pay", headers=KEY)
+
+        assert_buried(retry)
+        assert again.status_code == 201
+        assert payments() == 2
+
+
 def test_without_a_worker_claims_bury_expired_keys_a_batch_at_a_time(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
