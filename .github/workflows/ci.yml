@@ -445,12 +445,15 @@ jobs:
           python -m pip --python .venv/bin/python install --no-deps dist/*.whl
           python -m pip --python .venv/bin/python check
       # cyclonedx-py reads the project from [tool.poetry] when that table
-      # exists; the metadata is in [project], so it gets that alone.
+      # exists; the metadata is in [project], so it gets that alone. Not
+      # --output-reproducible: it leaves out the serialNumber that
+      # actions/attest requires of a CycloneDX document, and the release's
+      # attestation of it fails.
       - name: Write the bill of materials
         run: |
           sed '/^\[tool\./,$d' pyproject.toml > sbom-pyproject.toml
           cyclonedx-py environment --pyproject sbom-pyproject.toml \
-            --mc-type library --output-reproducible --of JSON \
+            --mc-type library --of JSON \
             -o sbom.cdx.json .venv
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

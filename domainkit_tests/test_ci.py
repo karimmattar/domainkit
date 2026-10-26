@@ -378,6 +378,14 @@ def test_releases_publish_only_attested_files() -> None:
     ]
     sbom = jobs()["sbom"]
     assert sbom["needs"] == "build"
+    # actions/attest takes a CycloneDX document only with a bomFormat, a
+    # specVersion and a serialNumber, which --output-reproducible leaves out:
+    # v0.9.2's release failed there.
+    written = next(
+        step["run"] for step in sbom["steps"] if "cyclonedx-py" in step.get("run", "")
+    )
+    assert "--of JSON" in written
+    assert "--output-reproducible" not in written
     upload = sbom["steps"][-1]
     assert upload["with"]["name"] == "sbom"
     assert upload["with"]["path"] == "sbom.cdx.json"

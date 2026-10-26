@@ -14,8 +14,14 @@ and a status.
 - The weekly mutation run failed in every shard before testing a mutant:
   mutmut runs the suite in a copy of the repository, and the docs and API
   tests 0.9.2 added read `README.md`, `CHANGELOG.md`, `SECURITY.md` and
-  `renovate.json`, which the copy left out. They are copied now, and
-  `test_ci.py` fails when a test reads a file the copy lacks (INFRA-01).
+  `renovate.json`, and follow the README's link to `LICENSE`, which the
+  copy left out. They are copied now, and `test_ci.py` fails when a test
+  reads a file, or a page links to one, that the copy lacks (INFRA-01).
+- A release could not publish: CI wrote its bill of materials with
+  `--output-reproducible`, which leaves out the `serialNumber` that
+  `actions/attest` requires of a CycloneDX document, so the release's
+  attestation of it failed and `v0.9.2` reached no package index. The
+  bill of materials now has its serial number (FIN-85).
 
 ## [0.9.2] - 2026-10-26
 
