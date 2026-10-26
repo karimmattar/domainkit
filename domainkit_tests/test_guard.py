@@ -19,7 +19,6 @@ from typing import Any
 
 import httpx2
 import pytest
-import truststore
 from pydantic import ValidationError
 
 from domainkit import lifecycle
@@ -605,6 +604,20 @@ def test_system_trust_loads_where_openssl_looks_or_the_system_bundle(
 
 
 @pytest.mark.parametrize("platform", ["darwin", "win32"])
-def test_the_operating_system_keeps_the_trust_store_elsewhere(platform: str) -> None:
-    """On macOS and Windows, truststore asks it, and reads no variable."""
-    assert isinstance(system_trust(platform), truststore.SSLContext)
+def test_the_operating_system_keeps_the_trust_store_elsewhere(
+    platform: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On macOS and Windows, httpx2 asks the system's store, and reads no variable.
+
+    httpx2 picks the store by the platform it runs on (truststore on macOS
+    and Windows; from 2.16, OpenSSL's paths elsewhere), so here the context
+    is the kind httpx2 makes without the environment.
+    """
+    monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "missing.pem"))
+    monkeypatch.setenv("SSL_CERT_DIR", str(tmp_path / "missing"))
+    with pytest.raises(FileNotFoundError):  # What reading them would do.
+        httpx2.create_ssl_context(trust_env=True)
+
+    context = system_trust(platform)
+
+    assert type(context) is type(httpx2.create_ssl_context(trust_env=False))

@@ -251,7 +251,8 @@ interleaved (`--baseline ../base/src --baseline-python ...`):
   the routes of each one a request passes: `/hello` behind the template's
   routers costs 1,668 calls (`bare`), and 488 when mounted before them.
   That is the largest single cost of a light request, and what flattening
-  routers (PERF-04) saves.
+  routers (PERF-04 of the [performance re-audit](audit/0.9.0.md#the-performance-re-audit))
+  saves.
 
 The ladder's budgets were first set from these figures, 0.8.0 on this
 release's dependencies; they now hold this release's own counts, the

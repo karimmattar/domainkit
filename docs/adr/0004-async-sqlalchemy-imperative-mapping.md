@@ -1,6 +1,6 @@
 # 0004. Async SQLAlchemy with imperative mapping
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-25 (at the end)
 - Date: 2026-10-14; amended 2026-10-25 (an aggregate table without `version` is refused)
 
 ## Context

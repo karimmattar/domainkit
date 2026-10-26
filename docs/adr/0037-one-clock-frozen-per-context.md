@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-19
+- Amends: [0003](0003-enforced-layer-rules.md)
 
 ## Context
 

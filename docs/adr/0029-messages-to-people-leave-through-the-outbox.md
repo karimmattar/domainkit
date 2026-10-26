@@ -1,6 +1,6 @@
 # 0029. Send mail, text messages, and push notifications through the outbox
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-25 (at the end)
 - Date: 2026-10-19
 
 ## Context

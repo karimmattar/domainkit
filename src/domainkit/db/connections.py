@@ -602,7 +602,8 @@ def _set_config(names: tuple[str, ...]) -> TextClause:
     prepares it once.
     """
     calls = ", ".join(f"set_config('{name}', :{name}, true)" for name in names)
-    return text(f"SELECT {calls}")
+    # Names of settings domainkit chose; the values are bound.
+    return text(f"SELECT {calls}")  # nosemgrep: avoid-sqlalchemy-text
 
 
 def create_owner_engine(config: DatabaseConfig) -> AsyncEngine:

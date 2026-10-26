@@ -141,25 +141,25 @@ inspects any outbox.
 | --- | --- | --- |
 | `DATABASE` | `"default"` | The home outbox: periodic tasks and `enqueue()` write here, and its worker schedules periodic tasks. One alias, not a shard group. |
 | `MAX_ATTEMPTS` | `10` | Runs before dead-lettering, unless the task sets its own. |
-| `RETRY_BASE_SECONDS` | `2.0` | First retry delay; it doubles per attempt. |
-| `RETRY_MAX_SECONDS` | `3600.0` | Cap on the retry delay. |
+| `RETRY_BASE_SECONDS` | `2.0` | First retry delay; it doubles per attempt (at most 365 days). |
+| `RETRY_MAX_SECONDS` | `3600.0` | Cap on the retry delay (at most 365 days). |
 | `TASK_TIMEOUT` | `240.0` | Seconds a message may run; longer counts as a failure (at most a day). |
-| `VISIBILITY_TIMEOUT` | `300.0` | Seconds a claim lasts; must exceed `TASK_TIMEOUT` (at most two days). |
+| `VISIBILITY_TIMEOUT` | `300.0` | Seconds a claim lasts; must exceed `TASK_TIMEOUT` (at most 2 days). |
 | `POLL_INTERVAL` | `1.0` | Seconds an idle worker waits before looking again (at most an hour). |
 | `POLL_INTERVAL_IDLE` | `None` | While commits wake the worker (`NOTIFY`, on PostgreSQL): the longest it waits between polls, from `POLL_INTERVAL` to an hour. Each poll that finds nothing doubles the wait up to this; work or a commit starts again from `POLL_INTERVAL`. A message no commit announces (a retry, a delay, an expired lock) can wait this long. `None`: every wait is `POLL_INTERVAL`. |
 | `BATCH_SIZE` | `50` | Most messages claimed at once (1 to 10,000). |
 | `CONCURRENCY` | `10` | Messages one worker process runs at the same time, from all its outboxes and queues together (1 to 65,535, RabbitMQ's largest prefetch). |
 | `SHUTDOWN_TIMEOUT` | `20.0` | Seconds a stopping worker lets running messages finish; the rest are stopped and run again (at most an hour). |
-| `RETENTION_SECONDS` | `604800.0` | Finished messages are deleted after this (7 days; at most a year); their arguments are blanked when they finish. Dead letters are kept until retried. |
+| `RETENTION_SECONDS` | `604800.0` | Finished messages are deleted after this (7 days; at most 365 days); their arguments are blanked when they finish. Dead letters are kept until retried. |
 | `CLEANUP_INTERVAL` | `3600.0` | Seconds between those deletions (at most a day). |
 | `CLEANUP_BATCH_SIZE` | `1000` | Most finished messages one cleanup statement deletes (1 to 100,000). |
 | `BROKER` | `None` | An alias in `BROKERS`: workers take their work from that broker instead of polling the outbox (below). |
 | `REPUBLISH_AFTER` | `3600.0` | With a broker: seconds a published message may wait for a worker before the relay publishes it again, as lost (at most a week). |
 | `PUBLISH_ON_COMMIT` | `True` | With a broker: the committing process publishes the commit's due messages in the background right away, instead of leaving them to the relays' next poll. |
-| `BREAKER_FAILURES` | `5` | With a broker: failed broker calls in a row after which commits stop publishing and leave their messages to the relays. |
-| `BREAKER_COOLDOWN` | `30.0` | Seconds commits leave their messages to the relays before the publisher tries the broker again. |
+| `BREAKER_FAILURES` | `5` | With a broker: failed broker calls in a row after which commits stop publishing and leave their messages to the relays (at most 10,000). |
+| `BREAKER_COOLDOWN` | `30.0` | Seconds commits leave their messages to the relays before the publisher tries the broker again (at most an hour). |
 | `NOTIFY` | `True` | On PostgreSQL: commits wake idle workers at once (`LISTEN`/`NOTIFY`), unless a broker publishes each commit. |
-| `METRICS_TTL` | `15.0` | Seconds the outbox gauges are reused between scrapes; 0 counts every scrape. |
+| `METRICS_TTL` | `15.0` | Seconds the outbox gauges are reused between scrapes (at most an hour); 0 counts every scrape. |
 
 Run `runworker --metrics-port 9100` to expose the worker's metrics. Scale by
 running more workers. However many outboxes and queues a `runworker`
@@ -713,18 +713,18 @@ attempts are deleted after `RETENTION_SECONDS`.
 | `WEBHOOKS` key | Default | Meaning |
 | --- | --- | --- |
 | `QUEUE` | `"webhooks"` | The messaging queue of deliveries. |
-| `MAX_ATTEMPTS` | `12` | Attempts before a delivery is marked failed. |
-| `RETRY_BASE_SECONDS` | `30.0` | First retry delay; it doubles per attempt, with jitter. |
-| `RETRY_MAX_SECONDS` | `21600.0` | Cap on the retry delay (six hours). |
+| `MAX_ATTEMPTS` | `12` | Attempts before a delivery is marked failed (at most 100). |
+| `RETRY_BASE_SECONDS` | `30.0` | First retry delay; it doubles per attempt, with jitter (at most 365 days). |
+| `RETRY_MAX_SECONDS` | `21600.0` | Cap on the retry delay (six hours; at most 365 days). |
 | `TIMEOUT` | `15.0` | Seconds an attempt may take in all (at most 120). Delivery tasks get 30 more for their database work, which must stay under `MESSAGING.VISIBILITY_TIMEOUT`. |
-| `CONNECT_TIMEOUT` | `5.0` | Seconds to connect; at most `TIMEOUT`. |
-| `MAX_RESPONSE_BYTES` | `65536` | Most bytes of an answer read. |
-| `MAX_PAYLOAD_BYTES` | `262144` | Largest body; a larger event is reported and not sent. |
+| `CONNECT_TIMEOUT` | `5.0` | Seconds to connect; at most `TIMEOUT`, and 60. |
+| `MAX_RESPONSE_BYTES` | `65536` | Most bytes of an answer read (at most 10 MiB). |
+| `MAX_PAYLOAD_BYTES` | `262144` | Largest body (1 KiB to 10 MiB); a larger event is reported and not sent. |
 | `ALLOWED_PRIVATE_NETWORKS` | `()` | Private networks receivers may be in. |
 | `CA_BUNDLE` | `None` | Certificates to trust instead of the system's. |
-| `SECRET_OVERLAP_SECONDS` | `86400.0` | How long the old secret still signs after a rotation. |
+| `SECRET_OVERLAP_SECONDS` | `86400.0` | How long the old secret still signs after a rotation (at most 365 days). |
 | `RETENTION_SECONDS` | `2592000.0` | How long finished deliveries are kept (30 days). |
-| `USER_AGENT` | `"domainkit-webhooks"` | The `User-Agent` of deliveries. |
+| `USER_AGENT` | `"domainkit-webhooks"` | The `User-Agent` of deliveries: not empty, and at most 200 characters. |
 
 ## Audit: who did what, when, from where
 
@@ -1314,7 +1314,7 @@ receipts always work.
 | `LEDGER` | `"evidence"` | Alias in `LEDGERS` (`immudb://`; `memory://` in tests). |
 | `NAMESPACE` | `"evidence"` | Key prefix, so projects or environments can share one ledger. |
 | `PREVIOUS_NAMESPACES` | `()` | Namespaces used before `NAMESPACE`, whose records `get` and `verify` still read; at most 8, each a namespace as `NAMESPACE` is. |
-| `MAX_BYTES` | `262144` | Largest record; keep documents elsewhere and record their digests. |
+| `MAX_BYTES` | `262144` | Largest record, in bytes (1,024 to 4,000,000); keep documents elsewhere and record their digests. |
 | `SUBJECT_KEY` | `None` | Secret for the subject digests in keys, 32 characters or more. Required in staging and production; elsewhere a public development key is used. Keep it for as long as the evidence: a new key hides earlier records from `for_subject`, though the keys in their receipts still work. |
 
 ## Flags: feature flags and dynamic settings
