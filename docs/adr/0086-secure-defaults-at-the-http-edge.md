@@ -1,6 +1,6 @@
 # 0086. Make the HTTP edge's defaults the safe ones
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-26 (at the end)
 - Date: 2026-10-26
 
 ## Context
@@ -84,3 +84,27 @@ from the scope when asked.
 - What would change this: a FastAPI release whose documentation pages
   start without inline script and load from the origin, or a browser
   feature that makes CDN integrity enough.
+
+## Amendment (2026-10-26, 0.11): writable fields refused, anonymous keys refused
+
+- `crud=True` without `writable=`, or without both `create=` and
+  `update=`, raises `TypeError` when the router is built, as planned
+  (WEB-09). It is a construction error, like a `writable=` that names a
+  field no write sets: the router never exists, so no route can take a
+  field nobody named. The message names the three ways out:
+  `writable=[...]`, `writable=ALL_FIELDS` (0.10's implicit behaviour, now
+  said), or both schemas.
+- `IDEMPOTENCY.ANONYMOUS` defaults to `"refuse"` (DATA-09): a keyed
+  request that names no caller (no actor, none of `CREDENTIAL_HEADERS`)
+  gets 400 `idempotency_key_needs_caller` before its body is read, and
+  does not run. `"per-address"` stays, as 0.10's default kept by choice.
+  `idempotency.W002`, which warned deployments that left the setting
+  unset, is removed rather than turned on `"per-address"`: 0.10 told
+  projects to set `"per-address"` to keep its behaviour, and a warning on
+  that value would fail their `check --deploy` for having done so. The
+  other opt-outs that keep an earlier default (`REQUIRE_ROUTE_RULES =
+  False`, `SCOPED_CREDENTIALS = "warn"`) do not warn either. The flip
+  failed 58 of the suite's tests, each a keyed request that named no
+  caller: those about per-address keys now set `"per-address"`, and the
+  others, about what keys do, name a caller with a credential header, as
+  a project's own authentication would.
