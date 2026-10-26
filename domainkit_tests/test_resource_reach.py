@@ -34,7 +34,7 @@ from domainkit.resources import (
     to_domain,
 )
 from domainkit.resources.access import content_type_of
-from domainkit.resources.routing import _first_line
+from domainkit.resources.routing.values import first_line
 from domainkit_tests.conftest import AUTH, CONTENTTYPES, SHOP, UseAuth
 from domainkit_tests.gadgets import (
     FakeGadgetsUnitOfWork,
@@ -433,7 +433,7 @@ def test_routes_take_rules_of_their_own_and_summaries_from_docstrings(
         paths["/gadgets/{gadget_id}/undocumented"]["post"]["summary"] == "Undocumented"
     )
     assert paths["/gadgets/{gadget_id}/blank"]["post"]["summary"] == "Blank"
-    assert (_first_line(None), _first_line("  "), _first_line(" A.\nB")) == (
+    assert (first_line(None), first_line("  "), first_line(" A.\nB")) == (
         None,
         None,
         "A.",

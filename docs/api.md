@@ -931,6 +931,7 @@ Request rate limiting (`RATE_LIMIT = "300/minute"`).
 
 JSON responses encoded in Rust, byte for byte as Starlette encodes them.
 
+- `BuiltJSONResponse`: JSON bodies built of JSON's own values (`model_dump(mode="json")`): no check.
 - `JSONResponse`: Starlette's `JSONResponse`, rendered by `encode_json`: the same bytes.
 - `json_native`: Whether `to_json` writes `content` as `json.dumps` does (see above).
 

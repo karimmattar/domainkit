@@ -8,7 +8,7 @@ from uuid import UUID
 import pytest
 
 from domainkit.ddd.query import F
-from domainkit.resources import FieldPolicy, routing
+from domainkit.resources import FieldPolicy
 from domainkit.resources.renderers import (
     CSV,
     JSON,
@@ -19,6 +19,7 @@ from domainkit.resources.renderers import (
     ndjson_lines,
     negotiate,
 )
+from domainkit.resources.routing import listing
 from domainkit_tests.conftest import UseAuth
 from domainkit_tests.gadgets import InMemoryGadgets, Part, PartId, make_gadget
 from domainkit_tests.test_resources import GadgetFilters, as_, client_of, gadgets
@@ -110,7 +111,7 @@ def test_exports_are_bounded_streamed_in_chunks_and_hide_fields(
 ) -> None:
     """Too many rows is 422; chunks follow each other; hidden fields stay out."""
     use_auth()
-    monkeypatch.setattr(routing, "EXPORT_CHUNK", 2)
+    monkeypatch.setattr(listing, "EXPORT_CHUNK", 2)
     policy = FieldPolicy(visible={"price": "shop.view_cost"})
     client = client_of(gadgets(store, exports=("csv",), policy=policy))
     small = client_of(gadgets(store, exports=("csv",), max_export=2))
@@ -306,7 +307,7 @@ def test_exports_stop_at_their_bound_across_chunks(
         return 3
 
     monkeypatch.setattr(store, "count", fewer)
-    monkeypatch.setattr(routing, "EXPORT_CHUNK", 2)
+    monkeypatch.setattr(listing, "EXPORT_CHUNK", 2)
     client = client_of(gadgets(store, exports=("ndjson",), max_export=3))
 
     lines = client.get("/gadgets", headers=as_("viewer", Accept=NDJSON)).text
@@ -319,7 +320,7 @@ def test_exports_keep_to_the_callers_scope_and_filters(
 ) -> None:
     """Every chunk is of the list's query: out of scope and filtered out stay out."""
     use_auth()
-    monkeypatch.setattr(routing, "EXPORT_CHUNK", 1)
+    monkeypatch.setattr(listing, "EXPORT_CHUNK", 1)
 
     async def not_plain(request: object) -> object:
         return F("name") != "plain"

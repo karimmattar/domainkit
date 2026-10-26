@@ -61,7 +61,7 @@ from domainkit.resources import (
     to_domain,
 )
 from domainkit.resources.access import HasModelPermission, content_type_of, rules_for
-from domainkit.resources.routing import _checks_objects
+from domainkit.resources.routing.reach import checks_objects
 from domainkit_tests.conftest import UseAuth
 from domainkit_tests.gadgets import (
     FakeGadgetsUnitOfWork,
@@ -777,12 +777,12 @@ def test_which_rules_look_at_objects() -> None:
     plain = IsAuthenticated()
     owner = HasObjectPermissions("shop.change_gadget")
 
-    assert not _checks_objects(plain)
-    assert not _checks_objects(IsAuthenticated)
-    assert _checks_objects(owner)
-    assert _checks_objects(AnyOf(plain, owner))
-    assert _checks_objects(Not(owner))
-    assert not _checks_objects(AllOf(plain, Not(plain)))
+    assert not checks_objects(plain)
+    assert not checks_objects(IsAuthenticated)
+    assert checks_objects(owner)
+    assert checks_objects(AnyOf(plain, owner))
+    assert checks_objects(Not(owner))
+    assert not checks_objects(AllOf(plain, Not(plain)))
     assert rules_for(None, "view") == ()
     assert rules_for(plain, "view") == (plain,)
     model_rules = rules_for(ModelActions(GADGETS, plain), "add")

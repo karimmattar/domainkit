@@ -52,7 +52,7 @@ from domainkit.ddd.exceptions import (
     PermissionDenied,
     PreconditionFailed,
 )
-from domainkit.http.responses import JSONResponse, _BuiltJSONResponse
+from domainkit.http.responses import BuiltJSONResponse, JSONResponse
 from domainkit.i18n import gettext, validation_message
 
 STATUS_CODES: Final[tuple[tuple[type[DomainError], int], ...]] = (
@@ -165,7 +165,7 @@ def error_response(
         problem = problem_details(
             status_code, detail, code=code, errors=errors, request=request
         )
-        return _BuiltJSONResponse(
+        return BuiltJSONResponse(
             problem.model_dump(exclude_none=True),
             status_code=status_code,
             media_type=PROBLEM_MEDIA_TYPE,
@@ -176,7 +176,7 @@ def error_response(
         request_id=request.request_id if request else None,
         errors=errors,
     )
-    return _BuiltJSONResponse(
+    return BuiltJSONResponse(
         body.model_dump(exclude_none=True), status_code=status_code
     )
 
