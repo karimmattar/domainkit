@@ -1,6 +1,6 @@
 # 0017. Routes deny by default; staff manage users through an admin API
 
-- Status: Accepted; amended by [0056](0056-reauthorize-open-connections.md); its consequence that mounts are not checked is superseded by [0021](0021-check-mounted-applications.md)
+- Status: Accepted; amended by [0056](0056-reauthorize-open-connections.md) and [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md); its consequence that mounts are not checked is superseded by [0021](0021-check-mounted-applications.md); amended 2026-10-26 (at the end)
 - Date: 2026-10-15
 
 ## Context
@@ -65,3 +65,19 @@ must mark their public routes `Public`, or set
 mounted outside FastAPI's routers (plain Starlette routes and mounts) are
 not checked. Projects that want a staff user to administer everything
 must make them a superuser, or grant them every permission they hand out.
+
+## Amendment (2026-10-26): a rule must bound scoped credentials too
+
+A route that says who may call it with `Require()`, `IsAuthenticated`, or
+`AuthenticatedUser` said nothing about credentials limited to scopes, which
+0.7.0 added after this record: such a token passed it with all its user's
+rights (AUTH-01 of the 0.9.0 audit). Deny by default now covers scopes as
+well: a route reached with scoped credentials must declare a rule that
+checks them (`HasScope`, a permission rule, `IsUnscoped`, `IsAdminUser`,
+`IsSuperuser`, or `AllowScoped` for routes whose work no scope names), on
+the route or a router it is included through. In 0.10 a route that
+declares none serves the request as before, with a
+`DomainkitDeprecationWarning` and a security log line;
+`SCOPED_CREDENTIALS = "refuse"` refuses it with 403, and 0.11 makes that
+the default. [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md)
+records why the check is the route's and not each rule's.

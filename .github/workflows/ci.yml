@@ -592,6 +592,7 @@ jobs:
               domainkit.contrib.auth.signup.* domainkit.contrib.auth.tokens.*
           - name: auth-2
             mutants: >-
+              domainkit.contrib.auth.devices.*
               domainkit.contrib.auth.events.* domainkit.contrib.auth.onetime.*
               domainkit.contrib.auth.personal_tokens.*
               domainkit.contrib.auth.principals.* domainkit.contrib.auth.tasks.*

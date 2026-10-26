@@ -286,6 +286,15 @@ Browser sessions: an opaque token in an HttpOnly cookie, guarded against CSRF.
 - `CookieAuthentication`: Browser sessions: the session cookie, checked against CSRF.
 - `router`: The routes: browser sessions: an opaque token in an HttpOnly cookie, guarded against CSRF.
 
+## `domainkit.contrib.auth.devices`
+
+Device proofs: a client that logged in keeps a count of its own (SEC-r1-2).
+
+- `DEVICE_COOKIE`: The proof's cookie, `__Host-` prefixed where the prefix holds.
+- `device_key`: The count of wrong passwords sent with `device`'s proof.
+- `hand_out`: Set a new proof for `username`'s account: for `device`, or a new one.
+- `proven_device`: The device the request proves for `username`'s account, if any.
+
 ## `domainkit.contrib.auth.hashers`
 
 Password hashing (Django's `hashers`, with the same stored formats).
@@ -818,10 +827,12 @@ Who may call an endpoint: access rules, for any authentication (ADR 0080).
 - `SAFE_METHODS`: Methods that only read: `IsAuthenticatedOrReadOnly` lets anyone use them.
 - `AllOf`: Every rule must allow.
 - `AllowAny`: Anyone, logged in or not.
+- `AllowScoped`: Principals who proved who they are, credentials limited to scopes too.
 - `AnonymousPrincipal`: A caller who proved nothing: no id, no permissions, for any middleware.
 - `AnyOf`: One rule must allow, for the request and for the object alike.
 - `BasePermission`: Allows everything; subclasses override one hook or both.
 - `CurrentUser`: The request's principal, or an anonymous one.
+- `DenialRecorder`: An installed domain that keeps the record of refused requests.
 - `HasObjectPermissions`: Principals granted every permission named on the object itself.
 - `HasPermissions`: Principals granted every permission named (`<domain>.<codename>`).
 - `HasScope`: Users whose credentials allow every scope named; unscoped ones allow all.
@@ -837,6 +848,7 @@ Who may call an endpoint: access rules, for any authentication (ADR 0080).
 - `Rule`: A rule, or a rule class that takes no arguments.
 - `acurrent_user`: `current_user` as a dependency FastAPI awaits, with no thread to hop to.
 - `check_object_permissions`: Refuse the request unless every rule allows it on `obj`.
+- `check_scopes_bounded`: Hold credentials limited to scopes to routes with a rule that checks them.
 - `current_user`: The principal the authentication middleware found (anonymous if none).
 - `mark_public`: Mark a mounted application or a Starlette endpoint public on purpose.
 - `open_routes`: `METHOD /path` of every route that declares no access rule.

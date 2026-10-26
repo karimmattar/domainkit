@@ -76,6 +76,7 @@ it.
 | `AllowAny`, `BasePermission`, `HasObjectPermissions`, `HasPermissions`, `HasScope`, `IsAuthenticated`, `IsAuthenticatedOrReadOnly`, `IsUnscoped`, `ModelPermissions`, `NotAuthenticated`, `Public`, `Require`, `check_object_permissions`, `mark_public`, `open_routes` from `domainkit.contrib.auth` | the same names from `domainkit.http.access` | 0.10 |
 | The same, and `AllOf`, `AnyOf`, `Not`, `Rule`, `SAFE_METHODS`, `MODEL_ACTIONS`, `bearer`, `public`, `scopes_of`, `routes_need_users`, `unguarded_routes`, from `domainkit.contrib.auth.access` | the same names from `domainkit.http.access` | 0.10 |
 | The setting `AUTH.REQUIRE_ROUTE_RULES` | `REQUIRE_ROUTE_RULES` | 0.10 |
+| Credentials limited to scopes passing a route that declares no rule that checks scopes (`SCOPED_CREDENTIALS = "warn"`, the default) | `HasScope(...)`, a permission rule, or `AllowScoped()` on the route; 0.11 refuses them (`"refuse"`) | 0.10 |
 
 To find deprecated uses before upgrading, make the warning an error in the
 project's pytest settings:

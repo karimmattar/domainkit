@@ -34,7 +34,7 @@ statuses, and the amendments they name.
 | [0014](0014-outbox-as-record-broker-for-dispatch.md) | Keep the outbox as the record; use the broker to dispatch | Accepted |
 | [0015](0015-auth-and-content-types.md) | Users, groups, and permissions modelled on Django's | Accepted |
 | [0016](0016-authenticating-requests.md) | Authenticate requests with tokens; rules decide who may call routes | Accepted; amended by [0056](0056-reauthorize-open-connections.md), [0058](0058-cache-principals-and-stamp-revocations.md), and [0059](0059-read-principals-in-two-queries-without-the-hash.md) |
-| [0017](0017-deny-by-default-and-admin-api.md) | Routes deny by default; staff manage users through an admin API | Accepted; amended by [0056](0056-reauthorize-open-connections.md); its consequence that mounts are not checked is superseded by [0021](0021-check-mounted-applications.md) |
+| [0017](0017-deny-by-default-and-admin-api.md) | Routes deny by default; staff manage users through an admin API | Accepted; amended by [0056](0056-reauthorize-open-connections.md) and [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md); its consequence that mounts are not checked is superseded by [0021](0021-check-mounted-applications.md); amended 2026-10-26 (at the end) |
 | [0018](0018-evidence-subjects-are-internal-ids.md) | Evidence subjects are internal ids, keyed by a secret digest | Accepted |
 | [0019](0019-idempotency-keys-commit-with-changes.md) | Mark idempotency keys committed in the transaction of the changes | Accepted; leases added by [0020](0020-lease-idempotency-keys.md) |
 | [0020](0020-lease-idempotency-keys.md) | Lease idempotency keys, and write them only under the holder's token | Accepted; amended 2026-10-21 (at the end) |
@@ -84,7 +84,7 @@ statuses, and the amendments they name.
 | [0064](0064-gate-performance-on-counts-not-time.md) | Gate performance in CI on counts, and report time | Accepted |
 | [0065](0065-upgrade-fastapi-sqlalchemy-asyncpg-behind-the-ladder.md) | Upgrade FastAPI, SQLAlchemy, and asyncpg behind the ladder, with FastAPI's telemetry off | Accepted; amended 2026-10-25 (at the end) |
 | [0066](0066-write-amounts-as-fixed-point-text.md) | Write amounts as fixed-point text | Accepted |
-| [0068](0068-count-failed-attempts-and-hold-back-only-guesses.md) | Count failed attempts, and hold back only what can be guessed | Accepted; amended 2026-10-25 (at the end) |
+| [0068](0068-count-failed-attempts-and-hold-back-only-guesses.md) | Count failed attempts, and hold back only what can be guessed | Accepted; amended 2026-10-25 (at the end); amended by [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md) |
 | [0069](0069-namespace-audit-anchors-and-check-the-baseline.md) | Namespace audit anchors, and check the tamper-evident baseline where deployed | Accepted; amended 2026-10-25 (at the end) |
 | [0070](0070-name-the-operator-of-data-changing-commands.md) | Name the operator of data-changing commands, and audit what they do | Accepted; amended 2026-10-25 (at the end) |
 | [0071](0071-bind-cache-computations-to-their-owner.md) | Detach shared cache computations; bind those that borrow to their owner | Accepted |
@@ -95,6 +95,7 @@ statuses, and the amendments they name.
 | [0078](0078-deliver-events-in-process-after-commit-or-durably-through-the-outbox.md) | Deliver events in process after commit, or durably through the outbox | Accepted |
 | [0079](0079-validate-every-setting-in-one-model-and-each-app-in-its-own.md) | Validate every setting at startup: one model, and each app's own | Accepted |
 | [0080](0080-access-rules-are-core-auth-is-one-provider.md) | Access rules are core; auth is one provider | Accepted |
+| [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md) | Count proven devices apart, and bound scoped credentials by route | Accepted |
 
 ### Decisions still without a record
 

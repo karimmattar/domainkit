@@ -51,6 +51,32 @@ and a status.
 - The `resource-read` and `resource-command` rungs of the benchmark ladder:
   a `ResourceRouter` read and a scoped command, through the template stack
   (DSGN-01).
+- `SCOPED_CREDENTIALS`, `AllowScoped`, and `check_scopes_bounded`
+  (`domainkit.http.access`): a route reached with credentials limited to
+  scopes must declare a rule that checks scopes (`HasScope`, a permission
+  rule, `IsUnscoped`, `AllowScoped`, or a rule with `bounds_scopes`), on
+  itself or a router. In 0.10 one that declares none still serves them,
+  with a `DomainkitDeprecationWarning` and a security log line;
+  `SCOPED_CREDENTIALS = "refuse"` answers 403, as 0.11 will by default.
+  Auth's `/logout` and `/me` say `AllowScoped` (AUTH-01; ADR 0087).
+- Refusals of known principals are audited: `auth.access`, outcome
+  `denied`, with the actor, the route's method and template, and the
+  rule's class, once per actor and route a minute, through
+  `DenialRecorder`, which `domainkit.contrib.audit` implements. A recorder
+  that fails is logged; the 403 stands (AUTH-11).
+- Device proofs (`domainkit.contrib.auth.devices`): a login that works
+  hands its client an HttpOnly cookie, `__Host-dk_device`, signed for its
+  account for `AUTH.DEVICE_TTL` (30 days, an hour to 400). Logins that send
+  it count against `LOGIN_RATE` per device, not per account or address, so
+  wrong passwords from strangers, or from others behind the same address,
+  no longer keep the user out on a client they logged in from before. A
+  client without one is counted as before, and guessing stays bounded by
+  the account's count (SEC-r1-2; ADR 0087).
+- `AUTH.IDLE_TIMEOUT` (off by default; 5 minutes to 30 days): a login token
+  or a browser session unused that long is refused, and a JSON Web Token
+  login not refreshed that long cannot refresh; never before the timeout,
+  and within a tenth of it after, since last uses are then written a tenth
+  as often; planned with AUTH-08 (AUTH-08).
 
 ### Changed
 
@@ -76,6 +102,33 @@ and a status.
 - A rule's `has_permission` and `has_object_permission` take the principal
   typed `Any`, so rules written for auth's `AnyUser` keep their annotation;
   the core's own rules read a `Principal` (DSGN-02).
+- **Breaking:** a login from a browser ends the session its cookie held,
+  whoever logs in: the browser replaces the cookie, so a copy of the old
+  one used to work on, unseen, for 14 days. To keep it, set
+  `AUTH.COOKIE.END_PREVIOUS_SESSION = False` (AUTH-05).
+- **Breaking:** a user holds at most `AUTH.MAX_LOGINS` (100) logins at once:
+  login tokens, browser sessions, and JSON Web Token logins. A new one past
+  it ends the oldest, where logins used to pile up, a row each for 14 days.
+  Personal tokens neither count nor end. To keep the old behaviour, set
+  `MAX_LOGINS` to 10,000 (AUTH-08).
+- **Breaking:** login responses (`/login`, `/session`) set the device-proof
+  cookie, and a client that sends it is no longer held back by its
+  address's count. To keep the old behaviour, set `AUTH.DEVICE_TTL = None`
+  (SEC-r1-2).
+- A wrong password against an outdated hash takes as long as a right one:
+  a hash of another hasher costs a hash with the preferred one, as a right
+  password is hashed again, and a preferred hasher without
+  `harden_runtime` (Argon2, scrypt) does the same for its own older hashes.
+  With PBKDF2 preferred, a wrong password used to answer in 0.006 s against
+  a migrated `pbkdf2_sha1` hash and in 0.56 s against a current one, so
+  login times told which accounts carry weak hashes (AUTH-07).
+- Argon2 hashes of another variant (`argon2i`, `argon2d`), version, or
+  length, or with a salt of fewer than 128 bits, are hashed again as
+  `argon2id` at the next login; costs alone used to decide (AUTH-07).
+- Last uses of tokens are written a tenth of `AUTH.IDLE_TIMEOUT` apart when
+  that is shorter than 5 minutes; principals carry a token's name and
+  creation time, two more columns of the read that finds a credential
+  (AUTH-08).
 
 ### Deprecated
 
@@ -92,6 +145,19 @@ and a status.
   and `current_user` stay in auth (DSGN-02).
 - `AUTH.REQUIRE_ROUTE_RULES`: set `REQUIRE_ROUTE_RULES`. `False` still
   turns the check off, with a warning, until 0.11 (DSGN-02).
+- Credentials limited to scopes on a route that declares no rule that
+  checks scopes: served in 0.10 with a `DomainkitDeprecationWarning`
+  naming the route, refused in 0.11. Add `HasScope(...)`, a permission
+  rule, or `AllowScoped()` to the route, or set
+  `SCOPED_CREDENTIALS = "refuse"` now (AUTH-01).
+
+### Removed
+
+- `request.user.password`, deprecated in 0.9.0 and due in 0.10: a request's
+  user holds no password hash, and the statement that reads it no longer
+  selects one, only whether it is usable (`has_usable_password()` works).
+  Reading it raises `AttributeError`, naming `password_holds` and
+  `uow.users.password_hash` (ADR 0059).
 
 ## [0.9.2] - 2026-10-26
 
