@@ -217,13 +217,18 @@ async def test_a_reconnected_client_still_refuses_a_rolled_back_ledger() -> None
     server.roll_back(1)
     await ledger.close()  # As after a timeout: the next call reconnects.
 
-    with pytest.raises(
-        LedgerRolledBack, match="at transaction 1, before transaction 3"
-    ):
+    with pytest.raises(LedgerRolledBack) as refused:
         await ledger.read(b"k")
     with pytest.raises(LedgerRolledBack):
         await ledger.check()
     await ledger.close()
+
+    assert str(refused.value) == (
+        "The ledger is at transaction 1, before transaction 3, which it proved to "
+        "a client: it was rolled back or replaced, so do not trust it. If it was "
+        "restored from a backup on purpose, forget the state kept for it "
+        "(docs/databases.md#ledgers-immudb)."
+    )
 
 
 async def test_a_new_process_starts_from_the_saved_state() -> None:
@@ -272,13 +277,17 @@ async def test_a_forked_ledger_is_tampering() -> None:
     await ledger.append(b"k", b"2")
     server.fork(at=2)
 
-    with pytest.raises(LedgerTampered, match="was forked") as probed:
+    with pytest.raises(LedgerTampered) as probed:
         await ledger.check()
     with pytest.raises(LedgerTampered, match="did not verify"):
         await ledger.read(b"k")
     await ledger.close()
 
     assert not isinstance(probed.value, LedgerRolledBack)
+    assert str(probed.value) == (
+        "The ledger's transaction 2 is not the one it proved to a client: it was "
+        "forked, so do not trust it."
+    )
 
 
 async def test_the_probe_never_moves_the_trusted_state_on() -> None:
@@ -376,9 +385,11 @@ def test_the_trusted_state_only_moves_forward() -> None:
     root.set(SdkState("db", 4, b"4" * 32))
     root.adopt(TrustedState("db", 3, b"3" * 32))
     root.init("url/db", object())
-
     assert root.get() is late
     assert root.unsaved() == TrustedState("db", 5, b"5" * 32)
+    root.set(SdkState("db", 5, b"5" * 32))  # The same state again: nothing new.
+    root.adopt(TrustedState("db", 5, b"5" * 32))
+
     assert root.unsaved() is None
     root.adopt(TrustedState("db", 9, b"9" * 32, b"sig", b"key"))
     assert root.get() == SdkState("db", 9, b"9" * 32, b"key", b"sig")
@@ -392,6 +403,7 @@ async def test_memory_stores_never_move_back() -> None:
     store = MemoryStateStore()
     await store.save("l", TrustedState("db", 5, b"5" * 32))
     await store.save("l", TrustedState("db", 3, b"3" * 32))
+    await store.save("l", TrustedState("db", 5, b"x" * 32))
 
     assert await store.load("l") == TrustedState("db", 5, b"5" * 32)
     assert await store.load("other") is None
@@ -429,10 +441,14 @@ async def test_the_audit_database_keeps_states_for_every_process() -> None:
     with pytest.raises(LedgerRolledBack):
         await ledger_of(server).check()
     kept = await registered.load(NAME)
+    signed = TrustedState("evidence", 9, b"9" * 32, b"signature", b"public key")
+    await registered.save("signed", signed)
+    await registered.save("signed", TrustedState("evidence", 9, b"x" * 32))
 
     assert kept is not None
     assert (kept.database, kept.transaction, len(kept.digest)) == ("evidence", 2, 32)
     assert await registered.load("another") is None
+    assert await registered.load("signed") == signed
 
 
 def test_a_registered_store_ends_with_its_domains() -> None:
@@ -465,6 +481,7 @@ def test_server_states_are_checked_against_the_signing_key() -> None:
 
     class Stub:
         def CurrentState(self, request: object) -> Any:  # noqa: ANN401 - gRPC API.
+            assert type(request).__name__ == "Empty"
             return state
 
     client = SimpleNamespace(_stub=Stub(), _vk=key.get_verifying_key())
@@ -481,6 +498,16 @@ def test_server_states_are_checked_against_the_signing_key() -> None:
 class Lying(MemoryLedger):
     """A ledger whose unverified count says one revision, whatever was written."""
 
+    def __init__(self) -> None:
+        """Count the reads."""
+        super().__init__()
+        self.reads: list[int | None] = []
+
+    async def read(self, key: bytes, revision: int | None = None) -> LedgerEntry:
+        """Read, counted."""
+        self.reads.append(revision)
+        return await super().read(key, revision)
+
     async def revision_count(self, key: bytes, *, limit: int) -> int:
         """Lie, as a server's unverified history could."""
         return 1
@@ -495,10 +522,16 @@ async def test_evidence_written_again_is_caught_by_a_verified_read() -> None:
     receipt = await store.record(
         Evidence(kind="kyc.checked", subject="customer:1", facts={"ok": True})
     )
+    intact = await store.verify(receipt)
+    once = list(ledger.reads)
     await ledger.append(receipt.key.encode(), b"rewritten")
+    ledger.reads.clear()
 
     with pytest.raises(EvidenceTampered, match="written again"):
         await store.verify(receipt)
+    assert intact.intact
+    assert once == [None]  # Written once: one read, of the latest.
+    assert ledger.reads == [None, 1]
     with pytest.raises(LedgerKeyNotFound):
         await ledger.read(b"missing")
 

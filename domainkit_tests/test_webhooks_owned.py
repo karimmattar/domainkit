@@ -17,7 +17,7 @@ from domainkit import lifecycle, setup
 from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.context import RequestContext, bind_request
-from domainkit.contrib.auth import AbstractBaseUser, AuthUnitOfWork, open_routes
+from domainkit.contrib.auth import AuthUnitOfWork, open_routes
 from domainkit.contrib.webhooks import delivery as delivery_module
 from domainkit.contrib.webhooks import expose, queue_deliveries
 from domainkit.contrib.webhooks.admin import router as admin_router
@@ -60,10 +60,34 @@ __all__ = ["hooks", "recorded", "webhooks"]  # Fixtures used here.
 MINE: Final = "/me/webhooks"
 NEW: Final = {"url": "https://hooks.example.com/in/T0K3N", "event_types": ["*"]}
 
-router = APIRouter()
-router.include_router(owned, prefix=MINE)
-router.include_router(owned_router(lambda user: "tenant-1"), prefix="/tenant/webhooks")
-router.include_router(admin_router, prefix="/admin/webhooks")
+
+def __getattr__(name: str) -> APIRouter:
+    """``router`` (``ROOT_ROUTER``), built when the application is: both APIs.
+
+    Built each time, not at import, so the routes are the code under test
+    now (mutation testing changes it between imports and runs).
+    """
+    if name != "router":
+        raise AttributeError(name)
+    built = APIRouter()
+    built.include_router(owned_router(), prefix=MINE)
+    built.include_router(
+        owned_router(lambda user: "tenant-1"), prefix="/tenant/webhooks"
+    )
+    built.include_router(admin_router, prefix="/admin/webhooks")
+    return built
+
+
+def test_the_module_router_is_the_default_one() -> None:
+    """``owned.router`` has the routes ``owned_router()`` builds, for the user's id."""
+    fresh = owned_router()
+
+    assert [(r.path, r.methods) for r in owned.routes] == [  # type: ignore[attr-defined]
+        (r.path, r.methods)  # type: ignore[attr-defined]
+        for r in fresh.routes
+    ]
+    assert owned.tags == fresh.tags == ["webhooks"]
+
 
 type Headers = dict[str, str]
 
@@ -220,19 +244,24 @@ def test_owners_are_checked() -> None:
     assert user_owner(Someone()) == str(uuid.UUID(int=7))  # type: ignore[arg-type]
 
 
-def test_an_owner_named_badly_is_refused(client: TestClient) -> None:
-    """A router whose owner function gives no usable owner answers 422."""
+@pytest.mark.parametrize(
+    ("length", "status"), [(0, 422), (1, 200), (MAX_OWNER, 200), (MAX_OWNER + 1, 422)]
+)
+def test_owners_named_by_a_router_are_bounded(
+    client: TestClient, length: int, status: int
+) -> None:
+    """An owner function giving no owner, or one too long, answers 422."""
+    named = APIRouter()
+    named.include_router(owned_router(lambda user: "o" * length), prefix="/named")
+    client.app.include_router(named)  # type: ignore[attr-defined]
 
-    def nobody(user: AbstractBaseUser) -> str:
-        return ""
+    answer = client.get("/named/subscriptions", headers=user("ann"))
 
-    bad = APIRouter()
-    bad.include_router(owned_router(nobody), prefix="/bad")
-    client.app.include_router(bad)  # type: ignore[attr-defined]
-
-    answer = client.get("/bad/subscriptions", headers=user("ann"))
-
-    assert answer.status_code == 422
+    assert answer.status_code == status
+    if status == 422:
+        assert answer.json()["detail"] == (
+            "A subscription's owner has 1 to 255 characters."
+        )
 
 
 class Paid(DomainEvent):

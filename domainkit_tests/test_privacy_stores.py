@@ -329,22 +329,44 @@ def test_pending_messages_are_left_to_run_and_counted(
         return await erase_queued(scenario.subject)
 
     assert run_async(queue_and_erase()) == {"messages": 0, "pending": 1}
-    assert "messaging keeps 1 copy of a subject's data still to finish" in caplog.text
+    assert (
+        "messaging keeps 1 copy of a subject's data still to finish (queued work); "
+        "they are erased once it ends: erase the subject again then"
+    ) in caplog.text
 
 
 def test_an_export_lists_every_copy_until_erased(scenario: Scenario) -> None:
     """Each store's copies are in the export, under its label; none after erasure."""
     before = run_async(export_subject(scenario.subject))["copies"]
+    (stored,) = run_async(rows(deliveries))
+    found = {str(row.id): row for row in run_async(rows(messages))}
     run_async(erase_subject(scenario.subject))
     after = run_async(export_subject(scenario.subject))["copies"]
 
     assert sorted(before) == ["idempotency", "messaging", "webhooks"]
-    assert [each["body"]["data"]["email"] for each in before["webhooks"]["deliveries"]]
-    assert EMAIL in before["idempotency"]["responses"][0]["body"]
-    assert [each["arguments"]["email"] for each in before["messaging"]["messages"]] == [
-        EMAIL,
-        EMAIL,
+    (delivery,) = before["webhooks"]["deliveries"]
+    assert delivery == {
+        "id": str(scenario.delivery),
+        "subscription_id": str(stored.subscription_id),
+        "event_type": "patient.registered",
+        "status": FAILED,
+        "created_at": stored.created_at.isoformat(),
+        "body": json.loads(stored.body),
+    }
+    (response,) = before["idempotency"]["responses"]
+    assert sorted(response) == ["body", "created_at", "status_code"]
+    assert response["status_code"] == 201
+    assert json.loads(response["body"]) == scenario.response
+    dead = sorted(before["messaging"]["messages"], key=lambda m: m["kind"])
+    assert [(m["kind"], m["target"], m["status"], m["database"]) for m in dead] == [
+        ("event", f"{__name__}.remember", "dead", "default"),
+        ("task", "tests.privacy.welcome", "dead", "default"),
     ]
+    for exported in dead:
+        row = found[exported["id"]]
+        assert exported["created_at"] == row.created_at.isoformat()
+        assert exported["arguments"] == row.payload
+        assert exported["arguments"]["email"] == EMAIL
     assert after == {}
 
 

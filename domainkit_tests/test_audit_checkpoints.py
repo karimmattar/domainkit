@@ -428,8 +428,12 @@ async def test_a_chain_that_does_not_verify_is_never_pruned(trail: Ledger) -> No
         update(audit_log).where(audit_log.c.id == first["entry_id"]).values(actor="x")
     )
 
-    with pytest.raises(PruneRefused, match="does not verify up to the cut"):
+    with pytest.raises(PruneRefused) as refused:
         await prune("default", before=CUT, ledger=trail)
+    assert str(refused.value) == (
+        "The trail of 'default' does not verify up to the cut ({'changed rows': 1}); "
+        "pruning it would hide that. Nothing was pruned: run auditverify."
+    )
     assert len(await seals()) == 8
     assert await checkpoints() == []
 
@@ -525,15 +529,29 @@ async def test_exports_verify_offline_with_the_public_key(
             check_export(json.dumps(tampered).encode(), PUBLIC_PEM)
     dropped = json.loads(data)
     del dropped["databases"]["default"]["checkpoints"][0]
-    with pytest.raises(CheckpointInvalid, match="does not follow"):
+    with pytest.raises(CheckpointInvalid) as unlinked:
         check_export(json.dumps(dropped).encode(), PUBLIC_PEM)
+    assert str(unlinked.value) == (
+        "Checkpoint 8 of 'default' does not follow the one before it."
+    )
     moved = json.loads(data)
     moved["databases"]["elsewhere"] = moved["databases"].pop("default")
     with pytest.raises(CheckpointInvalid, match="another chain's"):
         check_export(json.dumps(moved).encode(), PUBLIC_PEM)
-    for broken in (b"[]", b"{}", json.dumps({**document, "format": "x"}).encode()):
-        with pytest.raises(CheckpointInvalid):
+    garbled = json.loads(data)
+    garbled["databases"]["default"]["checkpoints"][0]["signature"] = "!" * 88
+    for broken, message in (
+        (b"[]", "Not an export."),
+        (b"{}", "Not an export."),
+        (json.dumps(garbled).encode(), "Not an export."),
+        (
+            json.dumps({**document, "format": "x"}).encode(),
+            "Not an export of format domainkit.audit.export/1.",
+        ),
+    ):
+        with pytest.raises(CheckpointInvalid) as refused:
             check_export(broken, PUBLIC_PEM)
+        assert str(refused.value) == message
 
 
 async def test_a_trail_that_does_not_verify_is_not_exported(trail: Ledger) -> None:
@@ -770,10 +788,12 @@ def test_public_keys_must_be_ed25519() -> None:
     )
 
     assert key_id(load_public_key(PUBLIC_PEM)) == key_id(KEY.public_key())
-    with pytest.raises(CheckpointInvalid, match="Not a public key"):
+    with pytest.raises(CheckpointInvalid) as unreadable:
         load_public_key(b"not a key")
-    with pytest.raises(CheckpointInvalid, match="Ed25519"):
+    with pytest.raises(CheckpointInvalid) as wrong:
         load_public_key(other)
+    assert str(unreadable.value) == "Not a public key in PEM."
+    assert str(wrong.value) == "Checkpoints are signed with Ed25519 keys."
 
 
 async def test_a_checkpoint_naming_another_key_is_refused() -> None:
@@ -798,3 +818,68 @@ async def test_without_the_key_no_checkpoint_verifies(trail: Ledger) -> None:
     assert report.forged == [5]
     assert report.broken == [6]
     assert not report.intact
+
+
+async def test_exports_name_their_namespace(audited: str) -> None:
+    """With ``AUDIT.NAMESPACE``, checkpoints and the export name it; it must agree."""
+    with override_settings(AUDIT=settings_with(NAMESPACE="acme")):
+        await fill(ledgers["audit"])
+        document = await export()
+    await connections.close_all()
+    await ledgers.close_all()
+    checked = check_export(json.dumps(document).encode(), PUBLIC_PEM)
+    moved = {**document, "namespace": "other"}
+
+    assert document["namespace"] == "acme"
+    assert [c.namespace for c in checked["default"]] == ["acme"]
+    with pytest.raises(CheckpointInvalid, match="another chain's"):
+        check_export(json.dumps(moved).encode(), PUBLIC_PEM)
+
+
+async def test_a_rewritten_anchor_below_the_cut_refuses_the_prune(
+    trail: Ledger,
+) -> None:
+    """The ledger is checked too: a head anchored with another link stops it."""
+    from domainkit.contrib.audit.seals import Anchor, anchor_key
+
+    entry = await trail.read(anchor_key("default"))
+    await trail.append(
+        anchor_key("default"),
+        Anchor(3, "f" * 64, T0).encode(),
+        unchanged_since=entry.transaction,
+    )
+
+    with pytest.raises(PruneRefused, match=r"\{'rewritten anchors': 1\}"):
+        await prune("default", before=CUT, ledger=trail)
+
+
+async def test_a_cut_just_after_the_first_seals_still_verifies(trail: Ledger) -> None:
+    """A second after the first batch was sealed: that batch goes, and verifies."""
+    first = (await seals())[0]
+
+    pruned = await prune("default", before=first["sealed_at"] + timedelta(0, 1))
+    report = await verify("default", trail, now=T1)
+
+    assert pruned.checkpoint is not None
+    assert pruned.checkpoint.seq == 5  # Every seal at T0 was sealed at once.
+    assert report.intact, report
+
+
+async def test_a_seal_sealed_at_the_cut_is_kept(trail: Ledger) -> None:
+    """``before`` is exclusive: seals sealed at that moment stay."""
+    assert (await prune("default", before=T0, ledger=None)).checkpoint is None
+
+
+async def test_pruned_checkpoints_name_the_namespace(audited: str) -> None:
+    """Under ``AUDIT.NAMESPACE`` a checkpoint names it, and verify needs it to."""
+    with override_settings(AUDIT=settings_with(NAMESPACE="acme")):
+        ledger = ledgers["audit"]
+        await fill(ledger)
+        pruned = await prune("default", before=CUT, ledger=ledger)
+        report = await verify("default", ledger, now=T1)
+    await connections.close_all()
+    await ledgers.close_all()
+
+    assert pruned.checkpoint is not None
+    assert pruned.checkpoint.namespace == "acme"
+    assert report.intact, report
