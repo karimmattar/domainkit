@@ -777,6 +777,9 @@ class Settings(BaseModel):
     """Share of access lines written; from status 400 up, and slow ones: all of them."""
     ACCESS_LOG_SLOW_DURATION: float = Field(default=1.0, gt=0, le=MAX_REQUEST_SECONDS)
     """Seconds after which a request's access line is written whatever the rate."""
+    ACCESS_LOG_PATH: Literal["template", "raw"] = "template"
+    """The path logs, error reports, and the request context show: the route's
+    template (``/accounts/{account_id}``, ``unmatched``), or the path as sent."""
     TRUSTED_PROXIES: tuple[IPvAnyNetwork | Literal["unix"], ...] = ()
     """Load balancers whose ``X-Forwarded-For``/``-Proto`` headers are believed.
 

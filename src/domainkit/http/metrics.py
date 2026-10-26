@@ -30,6 +30,7 @@ from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db.connections import connections
 from domainkit.http.errors import APIError
+from domainkit.http.middleware import route_template
 
 __all__ = [
     "MetricsMiddleware",
@@ -169,29 +170,6 @@ class MetricsMiddleware:
             if len(self._series) < MAX_SERIES:
                 self._series[key] = found
         return found
-
-
-def route_template(scope: Scope) -> str:
-    """Return the matched route's full path template, or ``unmatched``.
-
-    A flattened route (``domainkit.http.routing``) is ``scope["route"]``,
-    with its full path. For a route of a router FastAPI keeps nested, the
-    effective, prefixed route is in ``scope["fastapi"]``: ``scope["route"]``
-    alone would drop the prefixes.
-    """
-    fastapi_scope = scope.get("fastapi")
-    effective = (
-        fastapi_scope.get("effective_route_context")
-        if isinstance(fastapi_scope, dict)
-        else None
-    )
-    for path in (
-        getattr(effective, "path", None),
-        getattr(scope.get("route"), "path", None),
-    ):
-        if isinstance(path, str):
-            return path
-    return "unmatched"
 
 
 router = APIRouter()

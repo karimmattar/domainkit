@@ -36,7 +36,7 @@ from starlette.exceptions import HTTPException
 from starlette.routing import Match
 
 from domainkit.conf import settings
-from domainkit.context import RequestContext, current_request
+from domainkit.context import RequestContext, RoutedRequestContext, current_request
 from domainkit.db.errors import (
     IntegrityViolation,
     duplicate_value,
@@ -205,11 +205,18 @@ def problem_details(
         title=title,
         status=status_code,
         detail=detail,
-        instance=quote(request.path, safe=_PATH_SAFE) if request else None,
+        instance=quote(_answered_path(request), safe=_PATH_SAFE) if request else None,
         code=code,
         request_id=request.request_id if request else None,
         errors=errors,
     )
+
+
+def _answered_path(request: RequestContext) -> str:
+    """The path the caller sent, which answers to it name (not logs' template)."""
+    if isinstance(request, RoutedRequestContext):
+        return request.request_path
+    return request.path
 
 
 def status_phrase(status_code: int) -> str:

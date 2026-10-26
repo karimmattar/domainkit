@@ -34,7 +34,14 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from domainkit import clock
 from domainkit.conf import settings
-from domainkit.context import RequestContext, bind_request
+from domainkit.context import UNMATCHED_PATH as UNMATCHED_PATH
+from domainkit.context import (
+    RequestContext,
+    RoutedRequestContext,
+    enter_request,
+    leave_request,
+)
+from domainkit.context import route_template as route_template
 from domainkit.http.errors import (
     APIError,
     database_refusal,
@@ -461,6 +468,11 @@ class RequestContextMiddleware:
     accept, and the access log line, written when the connection ends, shows
     101 if it was accepted and 403 if it was closed first. An error before
     the accept closes it with 1011, the WebSocket equivalent of a 500.
+
+    The path the context, the access log, and error reports show is the
+    route's template (``/accounts/{account_id}``), or ``unmatched``
+    (``RoutedRequestContext``): ids, tokens, and emails in paths stay out
+    of logs. ``ACCESS_LOG_PATH = "raw"`` shows the path as sent instead.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -471,6 +483,8 @@ class RequestContextMiddleware:
         self.sampler = AccessSampler(
             settings.ACCESS_LOG_SAMPLE_RATE, settings.ACCESS_LOG_SLOW_DURATION
         )
+        self.raw_path = settings.ACCESS_LOG_PATH == "raw"
+        """Whether logs show the path as sent, not the route's template."""
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Serve one request, or one WebSocket connection, inside its context."""
@@ -486,11 +500,14 @@ class RequestContextMiddleware:
         )
         echoed = ((_REQUEST_ID_NAME, request_id.encode("latin-1")),)
         client = scope.get("client")
-        context = RequestContext(
-            request_id=request_id,
-            client_ip=client[0] if client else None,
-            method=WEBSOCKET_METHOD if websocket else scope["method"],
-            path=scope["path"],
+        client_ip = client[0] if client else None
+        method = WEBSOCKET_METHOD if websocket else scope["method"]
+        context = (
+            RequestContext(request_id, client_ip, method, scope["path"])
+            if self.raw_path
+            else RoutedRequestContext(
+                request_id, client_ip, method, UNMATCHED_PATH, scope=scope
+            )
         )
         response_status: int | None = None
         started = time.perf_counter()
@@ -509,29 +526,29 @@ class RequestContextMiddleware:
                 response_status = status.HTTP_403_FORBIDDEN  # Closed before accept.
             await send(message)
 
-        with bind_request(context):
+        token = enter_request(context)  # bind_request(), in two calls, not nine.
+        try:
             try:
                 await self.app(scope, receive, send_with_id)
             except Exception as exc:
                 refusal = database_refusal(exc)
+                path = context.path
                 if refusal is not None and response_status is None:
                     logger.warning(
                         "Database refused %s %s: %s (%s)",
                         context.method,
-                        context.path,
+                        path,
                         refusal.code,
                         refusal_reason(exc),
                     )
                     await self._refuse(refusal, scope, receive, send_with_id)
                     return
-                logger.exception(
-                    "Unhandled error in %s %s", context.method, context.path
-                )
+                logger.exception("Unhandled error in %s %s", context.method, path)
                 report_error(
                     exc,
                     request_id=context.request_id,
                     method=context.method,
-                    path=context.path,
+                    path=path,
                 )
                 if self.debug or response_status is not None:
                     raise
@@ -550,6 +567,8 @@ class RequestContextMiddleware:
                     quiet=response_status == status.HTTP_200_OK
                     and request_path(scope) in self.quiet_paths,
                 )
+        finally:
+            leave_request(token)
 
     async def _refuse(
         self, refusal: APIError, scope: Scope, receive: Receive, send: Send
@@ -596,18 +615,19 @@ class RequestContextMiddleware:
         if not self.sampler.keep(response_status, seconds):
             return
         duration_ms = round(seconds * 1000, 1)
+        path = context.path
         log_enabled(
             access_logger,
             level,
             "%s %s %s %.1fms",
             context.method,
-            context.path,
+            path,
             response_status if response_status is not None else "-",
             duration_ms,
             extra={
                 "access": {
                     "method": context.method,
-                    "path": context.path,
+                    "path": path,
                     "status": response_status,
                     "duration_ms": duration_ms,
                 }
