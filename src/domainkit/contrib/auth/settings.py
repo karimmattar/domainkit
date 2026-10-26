@@ -339,15 +339,20 @@ class AuthSettings(BaseModel):
     EMAIL_RATE: str | None = "5/hour"
     """Requests that send mail (resets, verifications, signups) per client
     address and per email address."""
-    THROTTLE_FAIL_CLOSED: bool = False
+    THROTTLE_FAIL_CLOSED: bool | None = None
     """Refuse attempts with 503 while ``RATE_LIMIT_BACKEND`` cannot count them.
 
     ``RedisBackend`` lets requests through while Redis fails, so a brute
     force timed with an outage goes uncounted. True refuses password and
     code checks, and requests that send mail, instead, until it counts
     again; other requests are not affected (links are counted after their
-    check, so nothing is guessed through them).
+    check, so nothing is guessed through them). None, the default, is True
+    in staging and production (since 0.11) and False elsewhere.
     """
+    REQUIRE_SHARED_THROTTLES: bool = True
+    """Staging and production refuse to start while attempts are counted in
+    each process (a ``MemoryBackend``), since 0.11 (``auth.E105``); False
+    only warns (``auth.W004``), as 0.10 did."""
     JWT: JWTSettings = JWTSettings()
     """Signing and lifetimes of JSON Web Tokens (``JWTAuthentication``)."""
     PASSWORD_RESET_TIMEOUT: timedelta = Field(

@@ -261,7 +261,7 @@ Each `BROKERS` entry:
 | `PROXY_SCHEME_HEADER` | `"X-Forwarded-Proto"` | The header in which the trusted proxies say the client's scheme (a header name). `None`: the scheme is never taken from a header. Set it to `None` when they do not set it (HAProxy's `option forwardfor` alone, an NLB), or a client's own `X-Forwarded-Proto` would be read, and choose whether cookies are `Secure`. `None` holds only where the server reads no proxy header itself: uvicorn, unless run with `--no-proxy-headers`, sets the scheme from `X-Forwarded-Proto` before domainkit sees the request, for every request from `FORWARDED_ALLOW_IPS` (`127.0.0.1` by default: a proxy on the same host). Granian reads none. |
 | `RATE_LIMIT` | `None` | Requests per caller, such as `"300/minute"` (`second`, `minute`, `hour`, `day`). `None` disables it. |
 | `RATE_LIMIT_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths never counted; compared without the root path (`--root-path`). |
-| `RATE_LIMIT_BACKEND` | `domainkit.http.ratelimit.MemoryBackend` | Where counts live. The default is per process, and keeps the 100,000 most recently seen callers; one seen longer ago starts afresh. Behind several replicas, use `domainkit.http.ratelimit.RedisBackend`: one count per caller in Redis, on the server's clock. If Redis fails, or refuses the count (out of memory, a read-only replica after a failover), requests are let through, and Redis is skipped for the cache's `FAILURE_COOLDOWN`; `AUTH.THROTTLE_FAIL_CLOSED` refuses password and code checks meanwhile instead ([auth.md](auth/logging-in.md#logging-in-and-out)). |
+| `RATE_LIMIT_BACKEND` | `domainkit.http.ratelimit.MemoryBackend` | Where counts live. The default is per process, and keeps the 100,000 most recently seen callers; one seen longer ago starts afresh. Behind several replicas, use `domainkit.http.ratelimit.RedisBackend`: one count per caller in Redis, on the server's clock. If Redis fails, or refuses the count (out of memory, a read-only replica after a failover), requests are let through, and Redis is skipped for the cache's `FAILURE_COOLDOWN`; password and code checks are refused meanwhile instead, in staging and production (`AUTH.THROTTLE_FAIL_CLOSED`), which also refuse to start with attempts counted in each process (`auth.E105`) ([auth.md](auth/logging-in.md#logging-in-and-out)). |
 | `RATE_LIMIT_CACHE` | `"default"` | The Redis cache `RedisBackend` counts in; keys are `<KEY_PREFIX>:ratelimit:<caller>`. |
 | `RATE_LIMIT_FALLBACK_REPLICAS` | `None` | 1 to 1024: while Redis is down, `RedisBackend` counts each caller in its own process at `RATE_LIMIT` divided by this many replicas (at most `FALLBACK_KEYS`, 10,000, callers; a caller who still owes requests is never forgotten, and while all of them do, new callers are refused); `None` lets requests through, as before. |
 | `RATE_LIMIT_IPV6_PREFIX` | `64` | IPv6 clients are counted per network of this prefix length (1 to 128), since one customer usually holds a whole /64; login throttling counts the same way. IPv4 clients are counted per address. |
@@ -528,7 +528,9 @@ Installed contrib apps add their own:
 
 The application refuses to start there with a route no rule guards
 (`security.E101`), operation ids that clash (`openapi.E001`), and the
-problems installed domains find (`auth.E101` to `auth.E104`;
+problems installed domains find (`auth.E101` to `auth.E104`; `auth.E105`,
+password and code attempts counted in each process (a `MemoryBackend` as
+`RATE_LIMIT_BACKEND`), unless `AUTH.REQUIRE_SHARED_THROTTLES = False`;
 `idempotency.E001`; `idempotency.E002`, keyed requests without a deadline,
 unless `IDEMPOTENCY.REQUIRE_DEADLINE = False`; `audit.E001` to `audit.E003`,
 no `AUDIT.LEDGER`, no `AUDIT.NAMESPACE` on it, or nothing that seals on a
@@ -568,7 +570,7 @@ an unsafe or broken configuration, refused until it changes.
 | `blocking.W001` | a route handler or dependency of the project's domains written as `def`, run on FastAPI's thread pool ([runtime.md](runtime.md#finding-blocking-code)); in every environment |
 | `auth.W001` | `AUTH.PRINCIPAL_CACHE.TTL` above 5 seconds without `STAMPS`: a revoked token works that long in the other processes ([auth.md](auth/authentication.md#the-principal-cache)) |
 | `auth.W002`, `auth.W003` | `AUTH.LOGIN_RATE` or `AUTH.MFA.RATE` set to `None`: guesses without limit |
-| `auth.W004` | attempt throttles counted in a `RATE_LIMIT_BACKEND` each process keeps alone (`MemoryBackend`): with several processes, each allows the rates on its own ([auth.md](auth/logging-in.md#logging-in-and-out)) |
+| `auth.W004` | with `AUTH.REQUIRE_SHARED_THROTTLES = False` only: attempt throttles counted in a `RATE_LIMIT_BACKEND` each process keeps alone (`MemoryBackend`): with several processes, each allows the rates on its own; what `auth.E105` refuses ([auth.md](auth/logging-in.md#logging-in-and-out)) |
 | `auth.W005` | a session or CSRF cookie name without the `__Host-` prefix where the prefix could hold ([auth.md](auth/authentication.md#browser-sessions-in-cookies)) |
 | `audit.W001` to `audit.W005` | with `AUDIT.REQUIRE_BASELINE = False` only: what `audit.E001` to `audit.E005` refuse |
 | `idempotency.W001` | with `IDEMPOTENCY.REQUIRE_DEADLINE = False` only: what `idempotency.E002` refuses |
@@ -576,6 +578,7 @@ an unsafe or broken configuration, refused until it changes.
 
 The production settings that `init` create avoid the first three, and ask
 for `TRUSTED_PROXIES`: leave it empty only when callers connect directly.
+They count requests, passwords, and codes in Redis, from `REDIS_URL`.
 
 ## Middleware
 
