@@ -9,6 +9,8 @@ and a status.
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-10-26
+
 ### Added
 
 - CI writes a CycloneDX bill of materials for the wheel it builds (the
@@ -243,7 +245,6 @@ and a status.
   `SecurityHeadersMiddleware` where the table had it after; the
   `flags` row left out `set`'s options; `docs/privacy.md` linked a heading
   that does not exist; `DEBUG_TOOLBAR` had no row (DOCS-07, DOCS-09).
-
 
 - A second audit sealer on PostgreSQL (`auditseal` while the worker
   seals, or two outboxes' workers sealing one database) no longer waits
@@ -2640,7 +2641,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/karimmattar/domainkit/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/karimmattar/domainkit/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/karimmattar/domainkit/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/karimmattar/domainkit/compare/v0.7.0...v0.8.0
