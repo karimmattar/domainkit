@@ -578,12 +578,8 @@ async def check_scopes_bounded(connection: HTTPConnection) -> None:
     if scopes_of(connection) is None or _route_checks_scopes(connection):
         return
     route = _route_name(connection)
-    if settings.SCOPED_CREDENTIALS == "refuse":
-        security_logger.info(
-            "Refused credentials limited to scopes on %s, which checks none", route
-        )
-        user = current_user(connection)
-        raise await _denied(connection, user, None)
+    if settings.SCOPED_CREDENTIALS == "refuse":  # Audited, sampled, as 403s are.
+        raise await _denied(connection, current_user(connection), None)
     scoped_log.warning(
         "scoped_credentials",
         route,
@@ -594,9 +590,9 @@ async def check_scopes_bounded(connection: HTTPConnection) -> None:
     )
     warnings.warn(
         f"Credentials limited to scopes called {route}, which declares no rule "
-        "that checks scopes: they are refused there from domainkit 0.11 (removed "
-        "in 0.11). Add HasScope(...), a permission rule, or AllowScoped() to "
-        'the route, or set SCOPED_CREDENTIALS = "refuse" to refuse them now.',
+        "that checks scopes: serving them there is deprecated, and removed in "
+        "0.11. Add HasScope(...), a permission rule, or AllowScoped() to the "
+        'route, or set SCOPED_CREDENTIALS = "refuse" to refuse them now.',
         DomainkitDeprecationWarning,
         stacklevel=2,
     )
