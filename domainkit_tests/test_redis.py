@@ -13,7 +13,7 @@ import logging
 import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 import pytest
 from fakeredis import FakeAsyncRedis, FakeServer
@@ -600,11 +600,8 @@ async def test_the_fallback_is_a_setting_and_its_memory_is_bounded(
 
     fallback = configured.fallback
     assert isinstance(fallback, MemoryBackend)
-    assert (fallback.max_keys, configured.replicas, given.replicas) == (
-        FALLBACK_KEYS,
-        3,
-        3,
-    )
+    assert (fallback.max_keys, fallback.full) == (FALLBACK_KEYS, "refuse")
+    assert (configured.replicas, given.replicas) == (3, 3)
     for caller in range(FALLBACK_KEYS + 10):
         await fallback.hit(f"ip:{caller}", 1, 3600)
     assert len(fallback._callers) == FALLBACK_KEYS
@@ -632,3 +629,57 @@ def test_fallback_replicas_are_bounded(server: dict[str, object]) -> None:
             override_settings(RATE_LIMIT_FALLBACK_REPLICAS=replicas),
         ):
             pass
+
+
+async def test_a_flood_of_keys_buys_a_throttled_one_no_fresh_quota(
+    server: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-10c-2: Redis down, 10,000 other keys later the victim is still refused."""
+
+    async def refuse(self: RedisStore, key: str, *args: float) -> tuple[int, float]:
+        raise CacheError("OOM command not allowed when used memory > 'maxmemory'.")
+
+    monkeypatch.setattr(RedisStore, "gcra", refuse)
+    with override_settings(
+        CACHES={"default": {}, "shared": server},
+        RATE_LIMIT_CACHE="shared",
+        RATE_LIMIT_FALLBACK_REPLICAS=1,
+    ):
+        backend = RedisBackend()
+        try:
+            victim = "login:account:victim"
+            first = [await backend.hit(victim, 5, 900) for _ in range(6)]
+            for n in range(FALLBACK_KEYS):
+                await backend.hit(f"login:account:junk{n}", 5, 900)
+            after = await backend.hit(victim, 5, 900)
+        finally:
+            await caches.close_all()
+
+    assert [d.allowed for d in first] == [True] * 5 + [False]
+    assert not after.allowed
+
+
+@pytest.mark.parametrize(
+    ("full", "victim", "newcomer"), [("forget", True, True), ("refuse", False, False)]
+)
+async def test_a_full_memory_backend_forgets_or_refuses(
+    full: Literal["forget", "refuse"], victim: bool, newcomer: bool
+) -> None:
+    """``forget`` lets the oldest go; ``refuse`` keeps callers who still owe."""
+    now = [1000.0]
+    backend = MemoryBackend(max_keys=3, clock=lambda: now[0], full=full)
+    for _ in range(2):
+        await backend.hit("victim", 1, 60)
+    await backend.hit("a", 1, 60)
+    await backend.hit("b", 1, 60)
+
+    first = await backend.hit("c", 1, 60)  # A fourth caller: the store is full.
+    again = await backend.hit("victim", 1, 60)
+    now[0] += 60.0  # Every quota is full again: places free up.
+    later = await backend.hit("d", 1, 60)
+
+    assert (first.allowed, again.allowed is victim) == (newcomer, True)
+    if not newcomer:
+        assert first.retry_after == first.reset_after == 60.0
+    assert later.allowed
+    assert len(backend._callers) <= 3

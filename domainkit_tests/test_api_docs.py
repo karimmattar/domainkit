@@ -253,3 +253,42 @@ def test_the_project_template_documents_the_switch() -> None:
     assert "/docs, /redoc, and /openapi.json follow DEBUG" in base
     assert "API_DOCS = True serves them anywhere" in base
     assert 'API_DOCS = env.bool("API_DOCS", False)' in production
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("SECURE_REFERRER_POLICY", "no-referrer\r\nSet-Cookie: session=attacker"),
+        ("SECURE_REFERRER_POLICY", "no-referer"),
+        ("SECURE_REFERRER_POLICY", "origin,"),
+        ("CORS_ALLOWED_ORIGINS", ["https://app.example\r\nX-Evil: 1"]),
+        ("CORS_ALLOWED_ORIGINS", ["https://app.example/path"]),
+        ("CORS_ALLOWED_METHODS", ["GET\r\nX-Evil: 1"]),
+        ("CORS_ALLOWED_HEADERS", ["X-Trace, X-Evil"]),
+    ],
+)
+def test_header_values_from_settings_refuse_line_breaks(
+    name: str, value: object
+) -> None:
+    """SEC-10c-5: the referrer policy and CORS values are checked like the CSP."""
+    with (
+        pytest.raises(ImproperlyConfigured, match=name),
+        override_settings(**{name: value}),
+    ):
+        pass
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("SECURE_REFERRER_POLICY", "strict-origin-when-cross-origin"),
+        ("SECURE_REFERRER_POLICY", "no-referrer, strict-origin-when-cross-origin"),
+        ("CORS_ALLOWED_ORIGINS", ["https://app.example:8443", "*"]),
+        ("CORS_ALLOWED_METHODS", ["*"]),
+        ("CORS_ALLOWED_HEADERS", ["X-Request-ID", "*"]),
+    ],
+)
+def test_valid_header_settings_still_load(name: str, value: object) -> None:
+    """Every policy, a list of them, a port, and ``*`` stay valid."""
+    with override_settings(**{name: value}):
+        pass

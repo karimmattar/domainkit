@@ -189,7 +189,8 @@ async def test_a_request_arriving_with_no_time_left_is_answered_503(
     assert ran == []
     assert sent[0]["status"] == 503
     assert b'"code":"deadline_exceeded"' in sent[1]["body"]
-    assert warnings_from(caplog) == ["GET /late ran past its deadline"]
+    # Never routed, so no template: logs never show the path as sent.
+    assert warnings_from(caplog) == ["GET unmatched ran past its deadline"]
 
 
 async def test_a_deadline_found_passed_inside_is_answered_503(

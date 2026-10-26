@@ -263,20 +263,20 @@ Each `BROKERS` entry:
 | `RATE_LIMIT_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths never counted; compared without the root path (`--root-path`). |
 | `RATE_LIMIT_BACKEND` | `domainkit.http.ratelimit.MemoryBackend` | Where counts live. The default is per process, and keeps the 100,000 most recently seen callers; one seen longer ago starts afresh. Behind several replicas, use `domainkit.http.ratelimit.RedisBackend`: one count per caller in Redis, on the server's clock. If Redis fails, or refuses the count (out of memory, a read-only replica after a failover), requests are let through, and Redis is skipped for the cache's `FAILURE_COOLDOWN`; `AUTH.THROTTLE_FAIL_CLOSED` refuses password and code checks meanwhile instead ([auth.md](auth/logging-in.md#logging-in-and-out)). |
 | `RATE_LIMIT_CACHE` | `"default"` | The Redis cache `RedisBackend` counts in; keys are `<KEY_PREFIX>:ratelimit:<caller>`. |
-| `RATE_LIMIT_FALLBACK_REPLICAS` | `None` | 1 to 1024: while Redis is down, `RedisBackend` counts each caller in its own process at `RATE_LIMIT` divided by this many replicas (at most `FALLBACK_KEYS`, 10,000, callers); `None` lets requests through, as before. |
+| `RATE_LIMIT_FALLBACK_REPLICAS` | `None` | 1 to 1024: while Redis is down, `RedisBackend` counts each caller in its own process at `RATE_LIMIT` divided by this many replicas (at most `FALLBACK_KEYS`, 10,000, callers; a caller who still owes requests is never forgotten, and while all of them do, new callers are refused); `None` lets requests through, as before. |
 | `RATE_LIMIT_IPV6_PREFIX` | `64` | IPv6 clients are counted per network of this prefix length (1 to 128), since one customer usually holds a whole /64; login throttling counts the same way. IPv4 clients are counted per address. |
 | `METRICS_TOKEN` | `None` | Bearer token for `/metrics`. Without it, `/metrics` answers 403 in staging and production. |
 | `SECURE_HSTS_SECONDS` | `0` | `Strict-Transport-Security` max-age; 0 omits the header. |
 | `SECURE_HSTS_INCLUDE_SUBDOMAINS` | `False` | Adds `includeSubDomains`. |
 | `SECURE_CONTENT_TYPE_NOSNIFF` | `True` | `X-Content-Type-Options: nosniff`. |
-| `SECURE_REFERRER_POLICY` | `"no-referrer"` | `Referrer-Policy`; `None` omits it. |
+| `SECURE_REFERRER_POLICY` | `"no-referrer"` | `Referrer-Policy`: one of its eight policies (`no-referrer`, `same-origin`, `strict-origin-when-cross-origin`, ...), or several, comma-separated; anything else, a line break included, is refused at startup. `None` omits it. |
 | `X_FRAME_OPTIONS` | `"DENY"` | Or `"SAMEORIGIN"`. |
 | `SECURE_CONTENT_SECURITY_POLICY` | `"default-src 'none'; frame-ancestors 'none'"` | `Content-Security-Policy` of every response that sets none: nothing an answer holds may load, run, or be framed. Printable ASCII on one line, at most 4096 characters; `None` omits it. |
 | `SECURE_PERMISSIONS_POLICY` | `"accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"` | `Permissions-Policy` of every response that sets none: those powerful browser features off. Bounded as above; `None` omits it. |
 | `SECURE_CROSS_ORIGIN_OPENER_POLICY` | `"same-origin"` | `Cross-Origin-Opener-Policy`; or `"same-origin-allow-popups"`, `"unsafe-none"`; `None` omits it. |
-| `CORS_ALLOWED_ORIGINS` | `()` | Origins allowed to call the API from a browser. |
-| `CORS_ALLOWED_METHODS` | `GET POST PUT PATCH DELETE` | |
-| `CORS_ALLOWED_HEADERS` | `Authorization Content-Type X-Request-ID` | |
+| `CORS_ALLOWED_ORIGINS` | `()` | Origins allowed to call the API from a browser: `*`, or a scheme and host (and port), without a path, a space, or a comma. |
+| `CORS_ALLOWED_METHODS` | `GET POST PUT PATCH DELETE` | Methods, or `*`: HTTP tokens of at most 64 characters, no space or line break. |
+| `CORS_ALLOWED_HEADERS` | `Authorization Content-Type X-Request-ID` | Header names, or `*`: HTTP tokens of at most 64 characters, no space or line break. |
 | `CORS_ALLOW_CREDENTIALS` | `False` | Cannot be combined with origin `*`. |
 
 ### Outgoing HTTP calls

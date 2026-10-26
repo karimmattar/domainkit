@@ -135,16 +135,34 @@ class MemoryBackend:
     up to ``EVICTIONS_PER_HIT`` of the longest-unseen callers whose quota is
     full again, which changes no decision; after a lull, the idle ones go a
     few at a time, over the next requests. Past ``max_keys``, the
-    longest-unseen caller is forgotten anyway and starts afresh. Memory and
-    the cost of a request stay bounded however many callers there are.
+    longest-unseen caller is forgotten anyway and starts afresh
+    (``full="forget"``). Memory and the cost of a request stay bounded
+    however many callers there are.
+
+    With ``full="refuse"``, a caller who still owes requests is never
+    forgotten: while every place holds one, a caller not counted yet is
+    refused until the longest-unseen one's quota is full again. It fails
+    closed: a flood of new keys cannot buy a throttled one a fresh quota,
+    but it can keep new callers out for as long as it keeps the places
+    owing. ``RedisBackend``'s fallback counts so, for the minutes Redis is
+    down.
     """
 
     def __init__(
-        self, max_keys: int = 100_000, clock: Callable[[], float] = monotonic
+        self,
+        max_keys: int = 100_000,
+        clock: Callable[[], float] = monotonic,
+        *,
+        full: Literal["forget", "refuse"] = "forget",
     ) -> None:
-        """Keep at most ``max_keys`` callers; ``clock`` reads seconds."""
+        """Keep at most ``max_keys`` callers; ``clock`` reads seconds.
+
+        ``full`` says what a new caller does to a full backend: forget the
+        longest-unseen caller, or be refused while that one still owes.
+        """
         self.max_keys = max_keys
         self.clock = clock
+        self.full = full
         self._callers: OrderedDict[str, _Caller] = OrderedDict()
         self._lock = threading.Lock()
 
@@ -183,6 +201,18 @@ class MemoryBackend:
                 reset_after=owed * interval,
                 retry_after=(owed - burst) * interval,
             )
+        if (
+            caller is None
+            and self.full == "refuse"
+            and len(self._callers) >= self.max_keys
+        ):
+            oldest = next(iter(self._callers.values()))
+            # _forget_idle has let go of the oldest if it owed nothing.
+            wait = oldest.seen + oldest.owed * oldest.interval - now
+            if wait > 0:
+                return Decision(
+                    allowed=False, remaining=0, reset_after=wait, retry_after=wait
+                )
         self._callers[key] = _Caller(now, owed + 1, interval)
         self._callers.move_to_end(key)
         if len(self._callers) > self.max_keys:
@@ -262,7 +292,8 @@ class RedisBackend:
 
         ``fallback`` counts while Redis is down, at the limit divided by
         ``replicas``. Without one, ``RATE_LIMIT_FALLBACK_REPLICAS`` (unless
-        None) makes it a ``MemoryBackend`` of ``FALLBACK_KEYS`` callers.
+        None) makes it a ``MemoryBackend`` of ``FALLBACK_KEYS`` callers that
+        refuses new ones while every place owes (``full="refuse"``).
 
         Raises:
             ImproperlyConfigured: The cache is not Redis.
@@ -277,7 +308,8 @@ class RedisBackend:
             )
         configured = settings.RATE_LIMIT_FALLBACK_REPLICAS
         if fallback is None and replicas is None and configured is not None:
-            fallback, replicas = MemoryBackend(max_keys=FALLBACK_KEYS), configured
+            fallback = MemoryBackend(max_keys=FALLBACK_KEYS, full="refuse")
+            replicas = configured
         if replicas is not None and replicas < 1:
             raise ValueError(f"replicas is 1 or more, not {replicas}.")
         self.fallback = fallback

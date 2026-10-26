@@ -26,7 +26,7 @@ import re
 import threading
 import time
 from collections.abc import Callable, Iterable, Sequence
-from typing import Final
+from typing import Any, Final
 
 from fastapi import status
 from starlette.middleware import cors
@@ -818,6 +818,12 @@ def route_body_limit(route: object) -> int | None:
     return size
 
 
+def _inner_routes(route: object) -> list[Any] | None:
+    """The routes below ``route`` (a mount, a router, an included router), if any."""
+    inner = getattr(getattr(route, "original_router", route), "routes", None)
+    return inner if isinstance(inner, list) else None
+
+
 def largest_body_limit(routes: Iterable[object]) -> int:
     """The largest body limit of ``routes`` and the routes below them; 0 if none.
 
@@ -829,24 +835,63 @@ def largest_body_limit(routes: Iterable[object]) -> int:
     while pending:
         route = pending.pop()
         largest = max(largest, route_body_limit(route) or 0)
-        inner = getattr(getattr(route, "original_router", route), "routes", None)
-        if isinstance(inner, list):
-            pending.extend(inner)
+        pending.extend(_inner_routes(route) or ())
     return largest
 
 
+def smallest_body_limit(routes: Iterable[object], default: int) -> int:
+    """The smallest limit a route at or below ``routes`` is held to.
+
+    A route without a limit of its own is held to ``default``. Asked for a
+    mount or a router whose route cannot be told before it routes: the body
+    is then held to the strictest limit it could meet.
+    """
+    smallest: int | None = None
+    pending = list(routes)
+    while pending:
+        route = pending.pop()
+        inner = _inner_routes(route)
+        if inner is None:
+            own = route_body_limit(route)
+            limit = default if own is None else own
+            smallest = limit if smallest is None else min(smallest, limit)
+        else:
+            pending.extend(inner)
+    return default if smallest is None else smallest
+
+
 def _matched_route(scope: Scope) -> object:
-    """The route of the application's router that will serve ``scope``, if any.
+    """The route that will serve ``scope``, as deep as it can be told; or None.
 
     Only asked when something reads the body before the router has matched
-    (``IdempotencyMiddleware``): the router then matches again, as it would.
-    A route nested in a router that is not flattened (ADR 0060) is not
-    found: its requests are held to ``MAX_REQUEST_BODY_SIZE``.
+    (``IdempotencyMiddleware``), or while ``scope["route"]`` is still a
+    mount above the application. Mounts and routers are matched into, as
+    the router will; a router FastAPI keeps included (ADR 0060) names its
+    route itself. What cannot be told below a mount or router leaves that
+    mount or router, whose strictest limit then holds (``smallest_body_limit``).
     """
-    router = getattr(scope.get("app"), "router", None)
-    for route in getattr(router, "routes", ()):
-        if route.matches(scope)[0] is Match.FULL:
-            return route
+    routes = getattr(getattr(scope.get("app"), "router", None), "routes", ())
+    return _match_in(routes, scope)
+
+
+def _match_in(routes: Iterable[Any], scope: Scope) -> object:
+    """``_matched_route`` among ``routes``, and below the one that matches."""
+    for route in routes:
+        chosen = getattr(route, "_match", None)
+        if callable(chosen):  # FastAPI's included router: it names the route.
+            found, child, inner, _ = chosen(dict(scope))
+        else:
+            found, child = route.matches(scope)
+            inner = route
+        if found is not Match.FULL:
+            continue
+        below: list[Any] | None = _inner_routes(route)
+        if inner is not route:  # An included router chose it.
+            below = None if _inner_routes(inner) is None else [inner]
+        if below is None:
+            return inner
+        nested = _match_in(below, {**scope, **child})
+        return inner if nested is None else nested
     return None
 
 
@@ -1011,10 +1056,17 @@ class RequestBodyLimitMiddleware:
         """The body limit of the route serving ``scope``: its own, or the global.
 
         The route is the one the router matched, or, while nothing has
-        matched yet, the one it will match (``_matched_route``).
+        matched yet (or only a mount above the application), the one it will
+        match (``_matched_route``); below a mount or router whose route it
+        cannot tell, the strictest limit there (``smallest_body_limit``).
         """
         route = scope.get("route")
-        own = route_body_limit(_matched_route(scope) if route is None else route)
+        if route is None or _inner_routes(route) is not None:
+            route = _matched_route(scope)
+        inner = _inner_routes(route)
+        if inner is not None:  # Its route below cannot be told yet.
+            return smallest_body_limit(inner, self.max_body_size)
+        own = route_body_limit(route)
         return self.max_body_size if own is None else own
 
     def _reject(self, scope: Scope, size: int, limit: int) -> None:
