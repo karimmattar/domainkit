@@ -9,6 +9,58 @@ and a status.
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** with `domainkit.contrib.auth` and an attempt rate set
+  (`LOGIN_RATE`, `EMAIL_RATE`, `MFA.RATE`, `MFA.ADDRESS_RATE`), staging and
+  production refuse to start, and `check` fails, while
+  `RATE_LIMIT_BACKEND` counts in each process (`MemoryBackend`, the
+  default): it is the error `auth.E105`, which `SILENCED_CHECKS` cannot
+  name, where 0.10 warned (`auth.W004`). Workers and commands still start.
+  **Fix:** `RATE_LIMIT_BACKEND = "domainkit.http.ratelimit.RedisBackend"`,
+  shared by every process. To keep the old behaviour, for a deployment of
+  one process, set `AUTH = {"REQUIRE_SHARED_THROTTLES": False}`, which
+  warns (`auth.W004`) (AUTH-09; ADR 0098).
+- **Breaking:** in staging and production, while `RATE_LIMIT_BACKEND`
+  cannot count (Redis down), password and code checks, and requests that
+  send mail, are refused with `503 throttle_unavailable` and
+  `Retry-After`, and so are the attempts the local fallback
+  (`RATE_LIMIT_FALLBACK_REPLICAS`) counted in one process:
+  `AUTH.THROTTLE_FAIL_CLOSED` defaults to `None`, which is `True` there and
+  `False` elsewhere. Other requests are served. To keep the old behaviour,
+  set `AUTH = {"THROTTLE_FAIL_CLOSED": False}` (AUTH-09; ADR 0098).
+- The production settings `init` writes count requests, wrong passwords,
+  and codes in Redis (`RedisBackend` on a `shared` cache), from
+  `<PREFIX>REDIS_URL`, which they require; new projects depend on the
+  `redis` extra (AUTH-09).
+
+### Security
+
+- JSON Web Tokens named no key, so `AUTH.JWT.SIGNING_KEY` could not be
+  replaced without refusing every outstanding access token at once, and
+  nothing could keep the old key to verify what it signed, for a while or
+  for good. Every token now names its key in its header (`kid`: a keyed
+  hash of an HMAC secret, the RFC 7638 thumbprint of a public key; neither
+  shows the key), and `AUTH.JWT.PREVIOUS_KEYS` keeps up to three keys that
+  signed before, each with the time it retired (`RETIRED_AT`) and its
+  `ALGORITHM`: their tokens verify until `RETIRED_AT` plus
+  `ACCESS_TOKEN_TTL` and `LEEWAY`, then are refused. The `kid` picks the
+  key and the one algorithm checked; one that names no key held is
+  refused without trying another, a token minted elsewhere with the same
+  key included. Tokens without `kid`, as 0.10 issued, are checked with the
+  signing key alone, so upgrading logs nobody out. Startup refuses a
+  previous key that is the signing key or is listed twice (`auth.E008`),
+  and one that retires more than a day ahead (`auth.E009`). Keys are
+  loaded once, not from PEM for every token (AUTH-10; ADR 0097).
+- Wrong passwords and codes were counted in each process by default, with
+  a warning, so a deployment of N processes checked N times `LOGIN_RATE`;
+  and while Redis could not count them they were let through, unless
+  `AUTH.THROTTLE_FAIL_CLOSED` was set. In staging and production, attempts
+  counted in each process now refuse to start (`auth.E105`), and attempts
+  that cannot be counted are refused with `503 throttle_unavailable`; both
+  are under **Changed**, with how to keep the old behaviour (AUTH-09; ADR
+  0098).
+
 ## [0.10.0] - 2026-10-26
 
 A minor release: some changes break, and some names are deprecated, to be

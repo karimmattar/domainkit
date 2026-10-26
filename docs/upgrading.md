@@ -23,6 +23,25 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
    for the deployment checks this version adds.
 6. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 0.10 to 0.11
+
+### Breaking changes
+
+- **Attempts counted in each process refuse to start** (AUTH-09). With
+  `domainkit.contrib.auth` installed, staging and production refuse to
+  start, and `check` fails (`auth.E105`, which `SILENCED_CHECKS` cannot
+  name), while `RATE_LIMIT_BACKEND` is a `MemoryBackend`, the default:
+  each process would allow `LOGIN_RATE` on its own. **Fix:**
+  `RATE_LIMIT_BACKEND = "domainkit.http.ratelimit.RedisBackend"`, with
+  `RATE_LIMIT_CACHE` naming a Redis cache every process shares. **To keep
+  the old behaviour** (one process): `AUTH = {"REQUIRE_SHARED_THROTTLES":
+  False}`, which warns (`auth.W004`).
+- **Attempts that cannot be counted are refused** (AUTH-09). In staging
+  and production, while Redis is down, logins, second-factor codes,
+  password changes, and requests that send mail answer `503
+  throttle_unavailable` ([runbook.md](runbook.md#logins-are-refused-while-redis-is-down)).
+  **To keep the old behaviour:** `AUTH = {"THROTTLE_FAIL_CLOSED": False}`.
+
 ## 0.9 to 0.10
 
 ### Breaking changes
