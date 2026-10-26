@@ -36,7 +36,7 @@ from domainkit.contrib.audit.tables import (
 )
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.management import call_command
+from domainkit.management import CommandError, call_command
 from domainkit_tests.conftest import POSTGRES_VARIABLE
 from domainkit_tests.test_postgres import Migration
 
@@ -128,11 +128,30 @@ def test_nothing_is_asked_outside_staging_and_production(configured: None) -> No
 def test_deployments_warn_without_a_ledger_or_a_schedule(
     configured: None, environment: str
 ) -> None:
-    """At 0.9.0 ``check`` said nothing of an anchorless, unsealed trail."""
-    with override_settings(ENVIRONMENT=environment):
-        found = registry.get_domain_config("audit").deployment_warnings()
+    """At 0.9.0 ``check`` said nothing of an anchorless, unsealed trail.
 
-    assert found == [NO_LEDGER, NO_SCHEDULE]
+    Since 0.10 the missing parts refuse the application, as errors that
+    ``SILENCED_CHECKS`` cannot name; ``REQUIRE_BASELINE = False`` keeps
+    0.9's warnings (SEC-10b-8).
+    """
+    config = registry.get_domain_config("audit")
+    with override_settings(ENVIRONMENT=environment):
+        refused = config.check_application(None)  # type: ignore[arg-type]
+        warned = config.deployment_warnings()
+    with override_settings(ENVIRONMENT=environment, AUDIT={"REQUIRE_BASELINE": False}):
+        relaxed = config.check_application(None)  # type: ignore[arg-type]
+        only_warned = config.deployment_warnings()
+
+    assert refused == [NO_LEDGER, NO_SCHEDULE]
+    assert [getattr(problem, "id", None) for problem in refused] == [
+        "audit.E001",
+        "audit.E003",
+    ]
+    assert warned == relaxed == []
+    assert [getattr(problem, "id", None) for problem in only_warned] == [
+        "audit.W001",
+        "audit.W003",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -167,11 +186,15 @@ def test_the_worker_counts_as_a_sealing_schedule() -> None:
 
 
 def test_check_lists_the_missing_baseline(configured: None) -> None:
-    """``manage.py check`` names each part that is missing."""
+    """``manage.py check`` fails, naming each part that is missing."""
     output = io.StringIO()
-    with override_settings(**PRODUCTION):
+    with override_settings(**PRODUCTION), pytest.raises(CommandError) as refused:
+        call_command("check", stdout=io.StringIO())
+    with override_settings(**PRODUCTION, AUDIT={"REQUIRE_BASELINE": False}):
         call_command("check", stdout=output)
 
+    assert f"  audit.E001: {NO_LEDGER}\n" in str(refused.value)
+    assert f"  audit.E003: {NO_SCHEDULE}" in str(refused.value)
     assert f"  Warning: audit.W001: {NO_LEDGER}\n" in output.getvalue()
     assert f"  Warning: audit.W003: {NO_SCHEDULE}\n" in output.getvalue()
 
@@ -189,8 +212,11 @@ async def test_startup_says_nothing_outside_deployments(
 async def test_startup_warns_of_what_is_missing(
     tables: None, deployed: None, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Deployed, each missing part is a warning in the log; it still starts."""
-    with caplog.at_level(logging.WARNING, logger=baseline.__name__):
+    """With ``REQUIRE_BASELINE = False``, each missing part is logged; it starts."""
+    with (
+        override_settings(AUDIT={"REQUIRE_BASELINE": False}),
+        caplog.at_level(logging.WARNING, logger=baseline.__name__),
+    ):
         await registry.get_domain_config("audit").startup()
 
     messages = [record.getMessage() for record in caplog.records]
@@ -200,17 +226,14 @@ async def test_startup_warns_of_what_is_missing(
 async def test_startup_refuses_with_require_baseline(
     tables: None, deployed: None
 ) -> None:
-    """``REQUIRE_BASELINE`` refuses to start, naming every missing part."""
-    with (
-        override_settings(AUDIT={"REQUIRE_BASELINE": True}),
-        pytest.raises(ImproperlyConfigured) as refused,
-    ):
+    """By default (0.10) startup refuses, naming every missing part."""
+    with pytest.raises(ImproperlyConfigured) as refused:
         await check_at_startup()
 
     assert str(refused.value).startswith(
         "AUDIT.REQUIRE_BASELINE refuses to start in test without a "
-        f"tamper-evident audit trail:\n  audit.W001: {NO_LEDGER}\n"
-        f"  audit.W003: {NO_SCHEDULE}"
+        f"tamper-evident audit trail:\n  audit.E001: {NO_LEDGER}\n"
+        f"  audit.E003: {NO_SCHEDULE}"
     )
 
 

@@ -58,11 +58,10 @@ longest a request may run:
   is reported by `check`, and staging and production do not start with it;
 - with no deadline for any request (`REQUEST_TIMEOUT = None`, or no
   `DeadlineMiddleware` in `MIDDLEWARE`) nothing bounds a keyed request by
-  the lease: `check` warns in staging and production, and the
-  application still starts; 0.10 refuses to start. A route without a
-  deadline is a refusal already because it is one route's exception,
-  made in code; the whole application without one is a deployment
-  choice that 0.9.1 leaves running;
+  the lease: staging and production refuse to start, and `check` fails
+  (`idempotency.E002`, which `SILENCED_CHECKS` cannot name). 0.9 only
+  warned; `IDEMPOTENCY.REQUIRE_DEADLINE = False` keeps that warning
+  (`idempotency.W001`);
 - your server's or proxy's timeout, if it is longer, counts too.
 
 **What the key covers.** The key holds the request until its response is
@@ -174,6 +173,7 @@ each request sent, for about 1,850 fewer Python calls a keyed write.
 | `DATABASE` | `"default"` | Alias holding the keys. |
 | `TTL_SECONDS` | `86400.0` | How long a key is remembered (24 hours; at most 30 days, and at least `LEASE_SECONDS`, or startup fails). |
 | `LEASE_SECONDS` | `60.0` | How long a request holds its key before a retry may take it over (at most a day, and above `REQUEST_TIMEOUT`, or startup fails). |
+| `REQUIRE_DEADLINE` | `True` | Staging and production refuse to start while keyed requests have no deadline (no `REQUEST_TIMEOUT`, or no `DeadlineMiddleware`). `False` only warns, as 0.9 did. |
 | `METHODS` | `POST`, `PATCH` | Methods that honour the header; others ignore it. |
 | `MAX_RESPONSE_BYTES` | `1048576` | Larger responses are passed through but not stored. |
 | `CREDENTIAL_HEADERS` | `authorization`, `proxy-authorization`, `cookie`, `x-api-key` | Headers that tell callers without an actor apart. |

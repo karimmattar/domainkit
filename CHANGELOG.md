@@ -241,6 +241,22 @@ and a status.
 
 ### Changed
 
+- **Breaking:** the audit trail's baseline refuses by default, as 0.9
+  announced: `AUDIT.REQUIRE_BASELINE` is `True`, so with
+  `domainkit.contrib.audit` installed staging and production refuse to
+  start without a ledger, a namespace, a sealing schedule, and the
+  `protect()` triggers, and `check` fails. Each missing part is an error
+  (`audit.E001` to `audit.E005`) that `SILENCED_CHECKS` cannot name; in
+  0.10's first merge they were warnings it could silence. To keep the old
+  behaviour, set `AUDIT = {"REQUIRE_BASELINE": False}` (DATA-04,
+  SEC-10b-8).
+- **Breaking:** with `domainkit.contrib.idempotency` installed, staging and
+  production refuse to start when requests have no deadline (no
+  `REQUEST_TIMEOUT`, or no `DeadlineMiddleware`), as 0.9.1 announced;
+  `check` fails with `idempotency.E002`, which `SILENCED_CHECKS` cannot
+  name. Workers and commands still start. To keep the old behaviour, set
+  `IDEMPOTENCY = {"REQUIRE_DEADLINE": False}`, which warns
+  (`idempotency.W001`) (SEC-r2-4, SEC-10b-8).
 - **Breaking:** projects without `domainkit.contrib.auth` now have deny by
   default: a route that declares no rule (`Require`, `CurrentUser`, a
   `reads_principal` dependency, or `Public`) is listed by `check`, and

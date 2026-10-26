@@ -25,6 +25,10 @@ class IdempotencySettings(BaseModel):
     It must be above ``REQUEST_TIMEOUT`` (checked at startup), and above the
     ``RequestTimeout`` of keyed routes that set their own (``check``).
     """
+    REQUIRE_DEADLINE: bool = True
+    """Staging and production refuse to start while keyed requests have no
+    deadline (no ``REQUEST_TIMEOUT``, or no ``DeadlineMiddleware``), since
+    0.10; False only warns, as 0.9 did."""
     METHODS: tuple[str, ...] = ("POST", "PATCH")
     MAX_RESPONSE_BYTES: int = Field(default=1_048_576, ge=1)
     """Larger responses are not stored: a retry runs again if nothing committed."""

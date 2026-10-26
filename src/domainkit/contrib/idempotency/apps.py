@@ -188,7 +188,8 @@ class IdempotencyConfig(DomainConfig):
         """
         config = self.get_settings()
         lease = config.LEASE_SECONDS
-        return [
+        missing = self._missing_deadline() if config.REQUIRE_DEADLINE else []
+        return missing + [
             CheckMessage(
                 "idempotency.E001",
                 f"{route} may run "
@@ -203,14 +204,22 @@ class IdempotencyConfig(DomainConfig):
         ]
 
     def deployment_warnings(self) -> list[str]:
+        """Keyed requests without a deadline, with ``REQUIRE_DEADLINE = False``.
+
+        By default ``check_application`` refuses them instead.
+        """
+        return [] if self.get_settings().REQUIRE_DEADLINE else self._missing_deadline()
+
+    def _missing_deadline(self) -> list[str]:
         """Keyed requests without a deadline, in staging and production.
 
         ``ready`` and ``check_application`` hold each keyed request's
         deadline below the lease; with no deadline at all (no
         ``REQUEST_TIMEOUT``, or no ``DeadlineMiddleware``) nothing does,
         and a request that runs past the lease can lose its key to a
-        retry. A warning in 0.9.1, so deployments that run this way keep
-        starting; 0.10 refuses to start.
+        retry, which runs it again. A warning in 0.9.1 (``idempotency.W001``);
+        since 0.10 an error (``idempotency.E002``) unless
+        ``IDEMPOTENCY.REQUIRE_DEADLINE`` is False.
         """
         if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
             return []
@@ -220,16 +229,20 @@ class IdempotencyConfig(DomainConfig):
             missing = f"{DEADLINE_MIDDLEWARE} is not in MIDDLEWARE"
         else:
             return []
-        lease = self.get_settings().LEASE_SECONDS
-        warning = CheckMessage(
-            "idempotency.W001",
-            f"Requests with an Idempotency-Key run without a deadline ({missing}): "
-            f"one that runs past IDEMPOTENCY.LEASE_SECONDS ({lease:g}s) can lose "
-            "its key to a retry, which runs it again. Set REQUEST_TIMEOUT below "
-            f"IDEMPOTENCY.LEASE_SECONDS and list {DEADLINE_MIDDLEWARE} in "
-            "MIDDLEWARE; 0.10 refuses to start without a deadline.",
-        )
-        return [warning]
+        config = self.get_settings()
+        level = "E002" if config.REQUIRE_DEADLINE else "W001"
+        return [
+            CheckMessage(
+                f"idempotency.{level}",
+                f"Requests with an Idempotency-Key run without a deadline "
+                f"({missing}): one that runs past IDEMPOTENCY.LEASE_SECONDS "
+                f"({config.LEASE_SECONDS:g}s) can lose its key to a retry, which "
+                "runs it again.",
+                f"Set REQUEST_TIMEOUT below IDEMPOTENCY.LEASE_SECONDS and list "
+                f"{DEADLINE_MIDDLEWARE} in MIDDLEWARE; or set "
+                "IDEMPOTENCY.REQUIRE_DEADLINE = False to only warn, as 0.9 did.",
+            )
+        ]
 
     async def erase_subject(self, subject: str, reason: str) -> Mapping[str, int]:
         """Drop the kept responses about ``subject``; their keys stay, answered 409."""

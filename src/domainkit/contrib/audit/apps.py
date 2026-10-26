@@ -4,6 +4,8 @@ from collections.abc import Mapping, Sequence
 from importlib import import_module
 from typing import Any, Final, cast
 
+from fastapi import FastAPI
+
 from domainkit.apps import DomainConfig, registry
 from domainkit.db import SqlAlchemyUnitOfWork, map_imperatively
 from domainkit.db.hooks import on_stage
@@ -11,7 +13,7 @@ from domainkit.db.routing import DatabaseRouter, router
 from domainkit.ddd import DeferredTask, DomainEvent
 from domainkit.ledger.trust import use_states
 
-from .baseline import check_at_startup, settings_problems
+from .baseline import check_at_startup, required, settings_problems
 from .checkpoints import signing_key
 from .ledgerstates import DatabaseStateStore
 from .models import AuditEntry
@@ -75,18 +77,26 @@ class AuditConfig(DomainConfig):
             **cast(dict[str, Any], details),  # Never target, personal, subject.
         )
 
-    def deployment_warnings(self) -> list[str]:
-        """The settings a tamper-evident trail needs, missing in staging and production.
+    def check_application(self, app: FastAPI) -> list[str]:
+        """The settings a tamper-evident trail needs, refused where deployed.
 
-        A ledger, a namespace on it, and a sealing schedule (``baseline``);
-        the application checks the ``protect()`` triggers when it starts.
+        A ledger, a namespace on it, and a sealing schedule (``baseline``),
+        while ``AUDIT.REQUIRE_BASELINE`` holds (the default): staging and
+        production refuse to start without them, and ``check`` fails.
         """
-        return settings_problems()
+        return settings_problems() if required() else []
+
+    def deployment_warnings(self) -> list[str]:
+        """The same settings, as warnings, with ``AUDIT.REQUIRE_BASELINE = False``.
+
+        The application checks the ``protect()`` triggers when it starts.
+        """
+        return [] if required() else settings_problems()
 
     async def startup(self) -> None:
-        """Warn, where deployed, about a trail that is not tamper-evident.
+        """Refuse to start, where deployed, with a trail that is not tamper-evident.
 
-        With ``AUDIT.REQUIRE_BASELINE``, refuse to start instead.
+        With ``AUDIT.REQUIRE_BASELINE = False``, warn instead.
         """
         await check_at_startup()
 

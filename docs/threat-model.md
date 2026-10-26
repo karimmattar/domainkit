@@ -156,15 +156,14 @@ left to the project on purpose.
 - **Lookup threads per webhook subscription, not per tenant.** Whoever may
   create several subscriptions can hold the guard's lookup threads for one
   round of slow DNS answers, until 0.10 gives subscriptions an owner.
-- **A missing request deadline with idempotency installed is a warning,
-  not a refusal.** A keyed request without a deadline can outlive its
-  lease; 0.10 refuses to start.
 - **Cache computations are unbounded by default** (`COMPUTE_TIMEOUT =
   None`, as in 0.9.0); `check` warns where deployed, and 0.10 plans a
   bounded default.
-- **Tamper evidence is opt-in.** `check` warns without a ledger, a
-  namespace, sealing, or the `protect()` triggers; `AUDIT.REQUIRE_BASELINE`
-  refuses instead, and becomes the default in 0.10.
+- **Tamper evidence can be turned off.** Since 0.10 staging and production
+  refuse to start without a ledger, a namespace, sealing, or the
+  `protect()` triggers; `AUDIT.REQUIRE_BASELINE = False` turns that back
+  into warnings, and so does `IDEMPOTENCY.REQUIRE_DEADLINE = False` for
+  keyed requests without a deadline.
 - **Concurrency under contention.** The default write path keeps its
   invariants with optimistic versions, but refuses most concurrent writers
   of one aggregate with 409, and there is no retry of a unit of work, no
