@@ -1,6 +1,6 @@
 # 0020. Lease idempotency keys, and write them only under the holder's token
 
-- Status: Accepted; amended 2026-10-21 (at the end)
+- Status: Accepted; amended 2026-10-21 and 2026-10-26 (at the end); amended by [0096](0096-keep-committed-idempotency-keys-as-tombstones.md)
 - Date: 2026-10-18; amended 2026-10-21 (a pinned key is never released)
 - Amends: [0019](0019-idempotency-keys-commit-with-changes.md)
 
@@ -80,3 +80,13 @@ nothing was saved (refused, or cancelled before it landed): the key is
 kept, and the client looks up the result instead of retrying. A request
 that fails before its unit of work commits pinned nothing and is released
 as before. Projects run `makemigrations` and `migrate` for the column.
+
+## Amendment (2026-10-26, 0.11): a pinned key outlives its TTL
+
+A pin held the key "until it expires", and then a retry replaced it and
+ran again, though the commit it guarded may have landed. An expired
+pinned key is now kept as a tombstone for `TOMBSTONE_SECONDS`, as a
+committed one is, and its retries get 409
+`idempotency_response_unavailable` ([0096](0096-keep-committed-idempotency-keys-as-tombstones.md)). A crash after the pin
+leaves the key in progress until it expires, then a tombstone, never
+free to run again within that time.

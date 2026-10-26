@@ -1,7 +1,6 @@
 """Install ``domainkit.contrib.auth`` (after ``domainkit.contrib.contenttypes``)."""
 
 import dataclasses
-import warnings
 from collections.abc import Sequence
 from importlib import import_module
 from typing import Any
@@ -20,7 +19,6 @@ from domainkit.db import SqlAlchemyUnitOfWork, metadata
 from domainkit.db.hooks import on_committed, on_migrated, on_stage
 from domainkit.db.routing import router
 from domainkit.ddd import DomainEvent, event_bus
-from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import routes_need_users, served_routes
 from domainkit.http.ratelimit import MemoryBackend
@@ -54,8 +52,6 @@ INSIDE_AUTHENTICATION = (
 """Middleware that must run after it, to count users rather than addresses."""
 REDIS_BACKEND = "domainkit.http.ratelimit.RedisBackend"
 """The rate-limit backend every process shares."""
-ROUTE_RULES = "REQUIRE_ROUTE_RULES"
-"""``AUTH.REQUIRE_ROUTE_RULES``, deprecated for the core's setting of that name."""
 RELATIONSHIPS = frozenset({"groups", "user_permissions"})
 """User fields stored in link tables, not in the user's own table."""
 
@@ -88,14 +84,6 @@ class AuthConfig(DomainConfig):
     def ready(self) -> None:
         """Load the user model, check the configuration, and map the tables."""
         config = auth_settings()
-        if ROUTE_RULES in config.model_fields_set:
-            warnings.warn(
-                f"AUTH.{ROUTE_RULES} moved to {ROUTE_RULES}, which holds whatever "
-                "authenticates requests; set it there. The old setting is removed "
-                "in 0.11.",
-                DomainkitDeprecationWarning,
-                stacklevel=2,
-            )
         self.user_model = _user_model(config.USER_MODEL)
         self.user_table = _user_table(config, self.user_model)
         self._check_routing()
@@ -158,7 +146,10 @@ class AuthConfig(DomainConfig):
         """Rules no middleware can answer, and what auth's own routes lack.
 
         Routes that declare no rule are the core's to find
-        (``REQUIRE_ROUTE_RULES``), with or without this app.
+        (``REQUIRE_ROUTE_RULES``), with or without this app. In staging and
+        production, attempts counted in each process too (``auth.E105``),
+        unless ``AUTH.REQUIRE_SHARED_THROTTLES`` is False: the application
+        refuses to start, and ``check`` fails; workers and commands start.
         """
         problems: list[str] = []
         if AUTHENTICATION_MIDDLEWARE not in settings.MIDDLEWARE and routes_need_users(
@@ -172,6 +163,7 @@ class AuthConfig(DomainConfig):
                 )
             )
         problems.extend(self._mailing_problems(app))
+        problems.extend(self._unshared_throttles(required=True))
         if (
             self._mounted(app, "cookies")
             and COOKIE_AUTHENTICATION not in auth_settings().AUTHENTICATION_CLASSES
@@ -184,6 +176,45 @@ class AuthConfig(DomainConfig):
                 )
             )
         return problems
+
+    def _unshared_throttles(self, *, required: bool) -> list[CheckMessage]:
+        """Attempts counted in each process, in staging and production.
+
+        Refused (``auth.E105``) while ``AUTH.REQUIRE_SHARED_THROTTLES``
+        holds, the default since 0.11 (``required``); warned (``auth.W004``)
+        with it False, as 0.10 did (AUTH-09).
+        """
+        config = auth_settings()
+        if (
+            settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS
+            or config.REQUIRE_SHARED_THROTTLES is not required
+            or not _counted_per_process(config)
+        ):
+            return []
+        message = (
+            f"RATE_LIMIT_BACKEND {settings.RATE_LIMIT_BACKEND} counts in each "
+            "process, so with several processes or replicas each allows "
+            "AUTH.LOGIN_RATE, AUTH.MFA.RATE, and the other attempt rates on its "
+            "own: passwords and codes can be guessed that many times faster."
+        )
+        if required:
+            return [
+                CheckMessage(
+                    "auth.E105",
+                    message,
+                    f"Set RATE_LIMIT_BACKEND to {REDIS_BACKEND}, shared by every "
+                    "process; with one process only, set "
+                    "AUTH.REQUIRE_SHARED_THROTTLES = False to only warn "
+                    "(auth.W004), as 0.10 did.",
+                )
+            ]
+        return [
+            CheckMessage(
+                "auth.W004",
+                f"{message} Set RATE_LIMIT_BACKEND to {REDIS_BACKEND}, shared by "
+                "every process.",
+            )
+        ]
 
     def _mounted(self, app: FastAPI, name: str) -> bool:
         """Whether a route of the router in module ``name`` is served by ``app``."""
@@ -224,7 +255,8 @@ class AuthConfig(DomainConfig):
     def deployment_warnings(self) -> list[str]:
         """Weak choices in staging and production.
 
-        Login and code checks without a rate, or counted in each process,
+        Login and code checks without a rate, or counted in each process
+        (with ``AUTH.REQUIRE_SHARED_THROTTLES = False``; refused otherwise),
         cookies without ``__Host-`` where it could hold, and principals
         kept longer than ``PRINCIPAL_TTL`` where nothing tells other
         processes of changes.
@@ -268,18 +300,7 @@ class AuthConfig(DomainConfig):
                     'without limit; set it, such as "10/hour".',
                 )
             )
-        if _counted_per_process(config):
-            warnings.append(
-                CheckMessage(
-                    "auth.W004",
-                    f"RATE_LIMIT_BACKEND {settings.RATE_LIMIT_BACKEND} counts in "
-                    "each process, so with several processes or replicas each "
-                    "allows AUTH.LOGIN_RATE, AUTH.MFA.RATE, and the other attempt "
-                    "rates on its own: passwords and codes can be guessed that "
-                    f"many times faster. Set RATE_LIMIT_BACKEND to {REDIS_BACKEND}, "
-                    "shared by every process.",
-                )
-            )
+        warnings.extend(self._unshared_throttles(required=False))
         if (
             COOKIE_AUTHENTICATION in config.AUTHENTICATION_CLASSES
             and cookie.DOMAIN is None

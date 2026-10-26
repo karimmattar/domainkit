@@ -51,10 +51,9 @@ refuse to be true or false, so the mistake fails loudly). An ordering is
 `Selection(criteria, ordering=..., limit=..., offset=..., after=...,
 lock=..., include_deleted=...)` is a frozen value; `where(...)` adds
 criteria and `replace(...)` changes any part. Before 0.9.2 it was
-`Query` from `domainkit.ddd.query`, a name that still works until 0.11 and warns
-(`DomainkitDeprecationWarning`) since 0.10: `domainkit.ddd.Query` is a
-different thing, the base class of CQRS query messages, and the two met in
-the same files.
+`Query` from `domainkit.ddd.query`, a name 0.11 removed:
+`domainkit.ddd.Query` is a different thing, the base class of CQRS query
+messages, and the two met in the same files.
 
 ### What a query means everywhere
 
@@ -342,6 +341,26 @@ query locks every row it returns with `Selection(..., lock=RowLock(...))`, in
 its order, which keeps two transactions from locking the same rows in
 opposite orders. A lock that cannot be had within `LOCK_TIMEOUT` is a 503
 `database_busy`.
+
+`get_many_for_update` locks several rows in one statement, always by
+ascending id, and returns them by id:
+
+```python
+async with uow:
+    accounts = await uow.accounts.get_many_for_update([source_id, target_id])
+    accounts[source_id].withdraw(amount)
+    accounts[target_id].deposit(amount)
+    await uow.commit()
+```
+
+Two transfers between the same accounts, in opposite directions, lock them
+in the same order, so one waits for the other. Locked one by one, source
+then target, each could hold the row the other waits for: PostgreSQL then
+ends one of them as a deadlock (503 `database_busy`). A missing id raises
+the repository's `not_found`; `nowait` and `skip_locked` work as for one
+row, and with `skip_locked` locked and missing rows are left out. For work
+with no row to lock, `uow.lock(name)` holds a lock by name until the
+transaction ends ([databases.md](databases.md#locks)).
 
 - **PostgreSQL** runs `SELECT ... FOR UPDATE OF <table>` (`NOWAIT`, `SKIP
   LOCKED`).

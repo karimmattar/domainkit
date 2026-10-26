@@ -53,8 +53,8 @@ URLs; an unreadable port is refused without quoting the URL.
 | `MIDDLEWARE` | see [Middleware](#middleware) | ASGI middleware by dotted path, outermost first. |
 | `ROOT_ROUTER` | `None` | Dotted path to the `APIRouter` that mounts every route (Django's `ROOT_URLCONF`). |
 | `FLATTEN_ROUTERS` | `True` | Serve the routes of the routers `ROOT_ROUTER` includes from the top of the application, each matched once ([Included routers](#included-routers)); `False` keeps FastAPI's nesting, which matches a request again at each level. |
-| `REQUIRE_ROUTE_RULES` | `True` | Every route must say who may call it (`Require`, a dependency that reads the principal, or `Public`), whatever authenticates requests; `check` lists those that do not, and staging and production refuse to start ([Deny by default](auth/routes.md#deny-by-default)). `AUTH.REQUIRE_ROUTE_RULES = False` still turns it off until 0.11, with a warning. |
-| `SCOPED_CREDENTIALS` | `"warn"` | Credentials limited to scopes on a route that declares no rule that checks scopes (`HasScope`, a permission rule, `IsUnscoped`, or `AllowScoped`): `"warn"` lets them through, as before 0.10, with a `DomainkitDeprecationWarning` and a security log line once per route a while; `"refuse"` answers 403, as 0.11 will by default ([Scopes on every route](auth/authentication.md#scopes-on-every-route)). |
+| `REQUIRE_ROUTE_RULES` | `True` | Every route must say who may call it (`Require`, a dependency that reads the principal, or `Public`), whatever authenticates requests; `check` lists those that do not, and staging and production refuse to start ([Deny by default](auth/routes.md#deny-by-default)). `AUTH.REQUIRE_ROUTE_RULES`, its name until 0.10, is refused since 0.11. |
+| `SCOPED_CREDENTIALS` | `"refuse"` | Credentials limited to scopes on a route that declares no rule that checks scopes (`HasScope`, a permission rule, `IsUnscoped`, or `AllowScoped`): `"refuse"` answers 403; `"warn"` lets them through, as 0.10 did by default, with a security log line once per route a while ([Scopes on every route](auth/authentication.md#scopes-on-every-route)). |
 | `ASGI_APPLICATION` | `None` | `module:attribute` that `runserver` serves. |
 | `EVENT_LOOP` | `"auto"` | The event loop of `runserver` and of commands with an `async` handle (`runworker` among them): uvloop when the `uvloop` extra is installed (`auto`), always asyncio's own (`asyncio`), or uvloop or a configuration error (`uvloop`). |
 | `LOGGING` | minimal | A `logging.config.dictConfig` mapping, applied by `setup()`. `domainkit.log.build_logging_config(log_format="json", level="INFO")` makes one that writes from a thread, through a bounded queue ([runtime.md](runtime.md#logging-and-error-reports)); the settings `init` writes use it. |
@@ -262,7 +262,7 @@ Each `BROKERS` entry:
 | `ACCEPT_REQUEST_ID` | `"proxies"` | Whose `X-Request-ID` names a request (in log lines, error reports, audit rows, and outgoing calls): `"proxies"`, only a trusted proxy's (`TRUSTED_PROXIES`, a unix socket's peer with `"unix"`), as `ProxyHeadersMiddleware` judged the connection; `"anyone"`, any caller's, as up to 0.10; `"never"`, nobody's. The proxy must set or overwrite the header (nginx: `proxy_set_header X-Request-ID $request_id;`), or a client's own passes through it: set `"never"` if it does not. Up to 128 letters, digits, `.`, `_`, `:`, or `-`, starting with a letter or digit; another value, or none, gets a new id (32 hex digits). A caller's value is dropped, not logged ([operations.md](operations.md#request-ids)). |
 | `RATE_LIMIT` | `None` | Requests per caller, such as `"300/minute"` (`second`, `minute`, `hour`, `day`). `None` disables it. |
 | `RATE_LIMIT_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths never counted; compared without the root path (`--root-path`). |
-| `RATE_LIMIT_BACKEND` | `domainkit.http.ratelimit.MemoryBackend` | Where counts live. The default is per process, and keeps the 100,000 most recently seen callers; one seen longer ago starts afresh. Behind several replicas, use `domainkit.http.ratelimit.RedisBackend`: one count per caller in Redis, on the server's clock. If Redis fails, or refuses the count (out of memory, a read-only replica after a failover), requests are let through, and Redis is skipped for the cache's `FAILURE_COOLDOWN`; `AUTH.THROTTLE_FAIL_CLOSED` refuses password and code checks meanwhile instead ([auth.md](auth/logging-in.md#logging-in-and-out)). |
+| `RATE_LIMIT_BACKEND` | `domainkit.http.ratelimit.MemoryBackend` | Where counts live. The default is per process, and keeps the 100,000 most recently seen callers; one seen longer ago starts afresh. Behind several replicas, use `domainkit.http.ratelimit.RedisBackend`: one count per caller in Redis, on the server's clock. If Redis fails, or refuses the count (out of memory, a read-only replica after a failover), requests are let through, and Redis is skipped for the cache's `FAILURE_COOLDOWN`; password and code checks are refused meanwhile instead, in staging and production (`AUTH.THROTTLE_FAIL_CLOSED`), which also refuse to start with attempts counted in each process (`auth.E105`) ([auth.md](auth/logging-in.md#logging-in-and-out)). |
 | `RATE_LIMIT_CACHE` | `"default"` | The Redis cache `RedisBackend` counts in; keys are `<KEY_PREFIX>:ratelimit:<caller>`. |
 | `RATE_LIMIT_FALLBACK_REPLICAS` | `None` | 1 to 1024: while Redis is down, `RedisBackend` counts each caller in its own process at `RATE_LIMIT` divided by this many replicas (at most `FALLBACK_KEYS`, 10,000, callers; a caller who still owes requests is never forgotten, and while all of them do, new callers are refused); `None` lets requests through, as before. |
 | `RATE_LIMIT_IPV6_PREFIX` | `64` | IPv6 clients are counted per network of this prefix length (1 to 128), since one customer usually holds a whole /64; login throttling counts the same way. IPv4 clients are counted per address. |
@@ -513,7 +513,11 @@ Installed contrib apps add their own:
   password hasher made for tests in `AUTH.PASSWORD_HASHERS`, a cookie
   sent over plain HTTP, a network rather than one address in
   `AUTH.CLIENT_CERT.PROXIES`, and `http://` in `AUTH.PASSWORD_RESET_URL`,
-  `EMAIL_VERIFICATION_URL`, or `SIGNUP_URL` ([auth.md](auth.md))
+  `EMAIL_VERIFICATION_URL`, or `SIGNUP_URL` ([auth.md](auth.md)); and,
+  in any environment, with `JWTAuthentication`, a key of
+  `AUTH.JWT.PREVIOUS_KEYS` that is the signing key or is listed twice
+  (`auth.E008`), or that retires more than a day ahead (`auth.E009`)
+  ([auth.md](auth/authentication.md#replacing-a-key))
 - evidence: no `EVIDENCE.SUBJECT_KEY`
   ([contrib.md](contrib/evidence.md#evidence-records-that-provably-never-change))
 - mail: the console or memory backend; and in any environment without
@@ -525,14 +529,19 @@ Installed contrib apps add their own:
 
 The application refuses to start there with a route no rule guards
 (`security.E101`), operation ids that clash (`openapi.E001`), and the
-problems installed domains find (`auth.E101` to `auth.E104`;
+problems installed domains find (`auth.E101` to `auth.E104`; `auth.E105`,
+password and code attempts counted in each process (a `MemoryBackend` as
+`RATE_LIMIT_BACKEND`), unless `AUTH.REQUIRE_SHARED_THROTTLES = False`;
 `idempotency.E001`; `idempotency.E002`, keyed requests without a deadline,
 unless `IDEMPOTENCY.REQUIRE_DEADLINE = False`; `audit.E001` to `audit.E003`,
 no `AUDIT.LEDGER`, no `AUDIT.NAMESPACE` on it, or nothing that seals on a
 schedule, and at startup `audit.E004` and `audit.E005`, an audited
 PostgreSQL database whose `protect()` triggers could not be checked or are
 missing, unless `AUDIT.REQUIRE_BASELINE = False`;
-[contrib.md](contrib/audit.md#in-staging-and-production)); `setup()` refuses a domain whose `requires` is not
+[contrib.md](contrib/audit.md#in-staging-and-production); `messaging.E001`,
+an `@inbox` handler or task whose retries could outlast
+`MESSAGING.INBOX_RETENTION_SECONDS`,
+[messaging.md](contrib/messaging.md#once-in-the-database-the-inbox)); `setup()` refuses a domain whose `requires` is not
 installed (`apps.E001`), anywhere. `check` adds layer rules
 (`architecture.E001`) and migration heads (`migrations.E001`).
 `migrate --downgrade` also needs `--allow-data-loss` there.
@@ -565,14 +574,18 @@ an unsafe or broken configuration, refused until it changes.
 | `blocking.W001` | a route handler or dependency of the project's domains written as `def`, run on FastAPI's thread pool ([runtime.md](runtime.md#finding-blocking-code)); in every environment |
 | `auth.W001` | `AUTH.PRINCIPAL_CACHE.TTL` above 5 seconds without `STAMPS`: a revoked token works that long in the other processes ([auth.md](auth/authentication.md#the-principal-cache)) |
 | `auth.W002`, `auth.W003` | `AUTH.LOGIN_RATE` or `AUTH.MFA.RATE` set to `None`: guesses without limit |
-| `auth.W004` | attempt throttles counted in a `RATE_LIMIT_BACKEND` each process keeps alone (`MemoryBackend`): with several processes, each allows the rates on its own ([auth.md](auth/logging-in.md#logging-in-and-out)) |
+| `auth.W004` | with `AUTH.REQUIRE_SHARED_THROTTLES = False` only: attempt throttles counted in a `RATE_LIMIT_BACKEND` each process keeps alone (`MemoryBackend`): with several processes, each allows the rates on its own; what `auth.E105` refuses ([auth.md](auth/logging-in.md#logging-in-and-out)) |
 | `auth.W005` | a session or CSRF cookie name without the `__Host-` prefix where the prefix could hold ([auth.md](auth/authentication.md#browser-sessions-in-cookies)) |
 | `audit.W001` to `audit.W005` | with `AUDIT.REQUIRE_BASELINE = False` only: what `audit.E001` to `audit.E005` refuse |
 | `idempotency.W001` | with `IDEMPOTENCY.REQUIRE_DEADLINE = False` only: what `idempotency.E002` refuses |
-| `idempotency.W002` | `IDEMPOTENCY.ANONYMOUS` not set: anonymous callers behind one address share keys; 0.11 defaults to `"refuse"`, so set `"per-address"` to keep today's behaviour, or `"refuse"` now (DATA-09) |
+
+`idempotency.W002` (0.10: `IDEMPOTENCY.ANONYMOUS` left unset, so
+`"per-address"`) is gone since 0.11, whose default is `"refuse"`; listed
+in `SILENCED_CHECKS`, it silences nothing.
 
 The production settings that `init` create avoid the first three, and ask
 for `TRUSTED_PROXIES`: leave it empty only when callers connect directly.
+They count requests, passwords, and codes in Redis, from `REDIS_URL`.
 
 ## Middleware
 

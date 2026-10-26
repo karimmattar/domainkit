@@ -133,17 +133,20 @@ def test_a_keyed_write_claims_and_stores_with_one_statement_each(
 def test_a_claim_without_a_worker_sweeps_on_the_same_connection(
     idempotent: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The sweep of expired keys adds a statement, not a transaction.
+    """The sweep of expired keys adds statements, not a transaction.
 
     It comes after the claim: through PgBouncer they share a transaction,
-    whose sweep must hold no locks while its upsert waits.
+    whose sweep must hold no locks while its upsert waits. Since 0.11 it is
+    two statements, once a minute: the delete, and the tombstones of keys
+    that may have committed (FIN-84).
     """
     monkeypatch.setattr(idempotency, "MESSAGING", "not.installed")
 
     with Costs() as costs:
         idempotent.post("/counter", json={}, headers={"Idempotency-Key": "swept"})
 
-    assert costs.statements == ["INSERT", "DELETE", "UPDATE"]
+    # The claim, the sweep's delete and tombstones, the store.
+    assert costs.statements == ["INSERT", "DELETE", "UPDATE", "UPDATE"]
     assert (costs.transactions, costs.checkouts) == (0, 2)
 
 
@@ -331,8 +334,10 @@ def idempotent(database_url: str) -> Iterator[TestClient]:
 def test_an_expired_key_is_claimed_with_nothing_of_its_old_row() -> None:
     """Replaced in place, it is in progress, unpinned, and released if it fails.
 
-    The old row had finished, committed, been pinned, and held another
-    request's fingerprint: none of it may survive the claim.
+    The old row had finished, committed, been pinned, been kept as a
+    tombstone past its TTL (0.11: a committed key is replaced only once its
+    tombstone expires, FIN-84), and held another request's fingerprint:
+    none of it may survive the claim.
     """
     now = datetime.now(UTC)
     old = {
@@ -349,6 +354,7 @@ def test_an_expired_key_is_claimed_with_nothing_of_its_old_row() -> None:
         "token": "first",
         "locked_until": now - timedelta(seconds=1),
         "pinned": True,
+        "tombstone": True,
     }
     seen: list[dict[str, Any]] = []
 
@@ -380,6 +386,7 @@ def test_an_expired_key_is_claimed_with_nothing_of_its_old_row() -> None:
     assert claimed["fingerprint"] == idempotency._hash("POST", "/raw", b"", b"")
     assert (claimed["token"], claimed["pinned"]) != ("first", True)
     assert claimed["pinned"] is False
+    assert claimed["tombstone"] is False
     for gone in ("status_code", "headers", "body", "committed_at"):
         assert claimed[gone] is None, gone
     assert claimed["created_at"] > old["created_at"]

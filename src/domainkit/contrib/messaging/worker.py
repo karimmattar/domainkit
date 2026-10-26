@@ -2,7 +2,10 @@
 
 Delivery is at least once. A message whose worker crashes, or runs past
 ``VISIBILITY_TIMEOUT``, is claimed again, so durable handlers and tasks must
-be idempotent. Failures are retried with exponential backoff and jitter;
+be idempotent. A commit a handler makes on the outbox's database is refused
+once another worker took its message over (``LeaseLost``), and a handler
+marked ``inbox`` commits its database work once per message (``runs``).
+Failures are retried with exponential backoff and jitter;
 after ``max_attempts`` the message is dead-lettered and reported. Messages
 are claimed with ``FOR UPDATE SKIP LOCKED`` on PostgreSQL, so any number of
 workers can share one outbox. There is no ordering guarantee between messages.
@@ -34,7 +37,7 @@ import logging
 import secrets
 import time
 import uuid
-from collections.abc import Coroutine, Iterable, Iterator, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -87,6 +90,7 @@ from .registry import (
     qualified_name,
 )
 from .retry import Backoff, retryable
+from .runs import AlreadyHandled, Run, prune_statement, running, uses_inbox, was_handled
 from .settings import MessagingSettings
 from .tables import (
     BLANKED,
@@ -143,6 +147,10 @@ second half of it, and none competes with the first claims for locks.
 _random = secrets.SystemRandom()
 THROTTLED: Final = "throttled"
 """The outcome of a task held back by its rate; it runs later."""
+HANDLED: Final = "handled"
+"""The outcome of a message the inbox shows a run committed before; it is done."""
+SUPERSEDED: Final = "superseded"
+"""The outcome of a run that lost its lease: another worker holds the message."""
 
 
 class UnknownTarget(LookupError, DomainkitError):
@@ -439,6 +447,7 @@ class Worker:
         self._next_runs: dict[str, datetime] = {}
         self._last_cleanup = float("-inf")
         self._cleanup_batch = self.config.CLEANUP_BATCH_SIZE
+        self._prune_batch = self.config.CLEANUP_BATCH_SIZE
         self._declared: WeakKeyDictionary[Broker, set[str]] = WeakKeyDictionary()
         self._limiter: Backend | None = None
         self._rate_slots: dict[str, float] = {}
@@ -831,6 +840,13 @@ class Worker:
         timeout = self.config.TASK_TIMEOUT
         if spec is not None and spec.timeout is not None:
             timeout = spec.timeout
+        run = Run(
+            message.id,
+            message.target,
+            message.lock_id,
+            self.database,
+            self.config.VISIBILITY_TIMEOUT,
+        )
         try:
             if message.attempts > message.max_attempts:
                 raise AttemptsExhausted(
@@ -840,15 +856,27 @@ class Worker:
             # A deadline, not only a timer: the task's statements and outgoing
             # calls are bounded by the time it has left (statement_timeout).
             async with deadlines.timeout(timeout):
-                result = await self._execute(message)
+                result = await self._execute(message, run)
             follow_up = self._follow_up(message, result)
         except Exception as exc:  # noqa: BLE001 - logged and retried by _failed.
+            # The run's own record, whatever the handler made of the error.
+            if run.lost:
+                return self._superseded(message)
+            if run.handled:
+                await self._done(message, None)
+                logger.info(
+                    "Skipped %s %s: a run of it committed before (inbox)",
+                    message.kind,
+                    message.target,
+                )
+                return HANDLED
             permanent = isinstance(exc, UnknownTarget | AttemptsExhausted) or (
                 spec is not None
                 and not retryable(exc, spec.retry_on, spec.dont_retry_on)
             )
             return await self._failed(message, exc, permanent=permanent, spec=spec)
-        await self._done(message, follow_up)
+        if not await self._done(message, follow_up):
+            return self._superseded(message)
         logger.debug(
             "Ran %s %s in %.1fms",
             message.kind,
@@ -899,12 +927,23 @@ class Worker:
             dedupe_key=f"chain:{message.id}",
         )
 
-    async def _done(self, message: Claimed, follow_up: dict[str, Any] | None) -> None:
+    def _superseded(self, message: Claimed) -> str:
+        """Log a run that lost its lease; the worker holding the message runs it."""
+        logger.warning(
+            "%s %s lost its lease while it ran: another worker took it over and "
+            "runs it",
+            message.kind,
+            message.target,
+        )
+        return SUPERSEDED
+
+    async def _done(self, message: Claimed, follow_up: dict[str, Any] | None) -> bool:
         """Record ``message`` as done, and queue its chain's next step with it.
 
         Its arguments are blanked in the same statement: a finished message
         keeps what operators need (its target, times, attempts), not what it
-        carried, such as a reset link in a mail.
+        carried, such as a reset link in a mail. Return whether this run
+        still held it; if another worker took it over, nothing changes.
         """
         statement = (
             update(messages)
@@ -927,9 +966,32 @@ class Worker:
             await notify_committed(
                 self.config, self.database, [follow_up], publish=False
             )
+        return bool(released)
 
-    async def _execute(self, message: Claimed) -> object:
-        """Call the handler or task ``message`` names; return a task's result."""
+    async def _execute(self, message: Claimed, run: Run) -> object:
+        """Call the handler or task ``message`` names; return a task's result.
+
+        The handler's commits join ``run`` (``runs``). For an ``inbox``
+        target, a run that may repeat an earlier one (not the first attempt)
+        is skipped if the outbox's inbox holds the message already. A step
+        of a chain that hands its result on never uses the inbox.
+        """
+        function, call = self._target(message)
+        run.inbox = uses_inbox(function) and not message.headers.get(CHAIN)
+        with running(run):
+            if run.inbox and message.attempts > 1:
+                async with self.engine.connect() as connection:
+                    run.handled = await was_handled(connection, run)
+                if run.handled:
+                    raise AlreadyHandled(
+                        f"Message {message.id} ({message.target}) was handled already."
+                    )
+            return await call()
+
+    def _target(
+        self, message: Claimed
+    ) -> tuple[Callable[..., Any], Callable[[], Awaitable[object]]]:
+        """The function ``message`` names, and a call of it with its arguments."""
         if message.kind == "event":
             handler = durable_handlers(self.bus).get(message.target)
             event_type = _event_classes().get(message.headers.get("event_type", ""))
@@ -941,13 +1003,14 @@ class Worker:
                 raise UnknownTarget(
                     f"{message.target!r} does not handle {event_type.__qualname__}."
                 )
-            await function(load_event(event_type, message.payload))
-            return None
+            event = load_event(event_type, message.payload)
+            return function, lambda: function(event)
         if message.kind == "task":
             spec = get_task(message.target)
             if spec is None:
                 raise UnknownTarget(f"No task {message.target!r}.")
-            return await call_task(spec.function, message.payload)
+            task = spec.function
+            return task, lambda: call_task(task, message.payload)
         raise UnknownTarget(f"Unknown message kind {message.kind!r}.")
 
     async def _failed(
@@ -1120,21 +1183,50 @@ class Worker:
 
     async def _clean(self, stop: asyncio.Event | None) -> int:
         """Run ``cleanup``, stopping between batches once ``stop`` is set."""
+        return await self._in_batches(stop, self.cleanup_statement, "_cleanup_batch")
+
+    async def prune_inbox(self) -> int:
+        """Delete inbox rows older than ``INBOX_RETENTION_SECONDS``; return how many.
+
+        In batches, as ``cleanup`` deletes messages: up to
+        ``CLEANUP_BATCH_SIZE`` rows per short transaction, halved after a
+        failure and grown back after a success.
+        """
+        return await self._prune(None)
+
+    async def _prune(self, stop: asyncio.Event | None) -> int:
+        """Run ``prune_inbox``, stopping between batches once ``stop`` is set."""
+        return await self._in_batches(stop, self.inbox_statement, "_prune_batch")
+
+    def inbox_statement(self, dialect: str, size: int) -> Delete:
+        """The ``DELETE`` of up to ``size`` inbox rows past their retention."""
+        return prune_statement(dialect, self.config.INBOX_RETENTION_SECONDS, size)
+
+    async def _in_batches(
+        self,
+        stop: asyncio.Event | None,
+        statement: Callable[[str, int], Delete],
+        batch: str,
+    ) -> int:
+        """Run ``statement`` until it deletes less than a batch, or ``stop``.
+
+        ``batch`` names the attribute that holds the next batch's size.
+        """
         dialect = self.dialect
         deleted = 0
         while stop is None or not stop.is_set():
-            size = self._cleanup_batch
-            statement = self.cleanup_statement(dialect, size)
+            size: int = getattr(self, batch)
             try:
                 async with self.engine.begin() as connection:
-                    count = int((await connection.execute(statement)).rowcount)
+                    result = await connection.execute(statement(dialect, size))
+                    count = int(result.rowcount)
             except Exception:
-                self._cleanup_batch = max(size // 2, 1)
+                setattr(self, batch, max(size // 2, 1))
                 raise
             deleted += count
             if count < size:
                 break
-            self._cleanup_batch = min(size * 2, self.config.CLEANUP_BATCH_SIZE)
+            setattr(self, batch, min(size * 2, self.config.CLEANUP_BATCH_SIZE))
         return deleted
 
     def cleanup_statement(self, dialect: str, size: int) -> Delete:
@@ -1169,7 +1261,7 @@ class Worker:
         return delete(messages).where(messages.c.id.in_(old.scalar_subquery()))
 
     async def run_cleanup_when_due(self) -> None:
-        """Run ``cleanup`` every ``CLEANUP_INTERVAL`` seconds.
+        """Run ``cleanup`` and ``prune_inbox`` every ``CLEANUP_INTERVAL`` seconds.
 
         ``clean_until`` does this on a schedule of its own; this is for loops
         of your own.
@@ -1177,12 +1269,14 @@ class Worker:
         if clock.monotonic() - self._last_cleanup >= self.config.CLEANUP_INTERVAL:
             self._last_cleanup = clock.monotonic()
             await self.cleanup()
+            await self.prune_inbox()
 
     async def clean_until(self, stop: asyncio.Event) -> None:
-        """Run ``cleanup`` soon, then every ``CLEANUP_INTERVAL``, until ``stop``.
+        """Run ``cleanup`` and ``prune_inbox`` soon, then often, until ``stop``.
 
-        The first run comes after ``CLEANUP_START`` (or ``CLEANUP_INTERVAL``,
-        if shorter) times a random factor between one half and one.
+        Each run comes ``CLEANUP_INTERVAL`` after the last; the first comes
+        after ``CLEANUP_START`` (or ``CLEANUP_INTERVAL``, if shorter) times a
+        random factor between one half and one.
 
         Polling workers and relaying workers run it, each in a task of its
         own, so claiming never waits for it; consume-only workers never do.
@@ -1203,6 +1297,7 @@ class Worker:
         while not stop.is_set():
             try:
                 deleted = await self._clean(stop)
+                pruned = await self._prune(stop)
             except Exception as exc:  # noqa: BLE001 - logged; it runs again.
                 await failures.failed(exc, stop)
                 continue
@@ -1211,6 +1306,12 @@ class Worker:
                 logger.info(
                     "Deleted %d finished message(s) from the outbox of %r",
                     deleted,
+                    self.database,
+                )
+            if pruned:
+                logger.info(
+                    "Deleted %d handled message id(s) from the inbox of %r",
+                    pruned,
                     self.database,
                 )
             with suppress(TimeoutError):

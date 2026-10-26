@@ -731,7 +731,11 @@ def test_deployments_warn_of_guesses_without_limit(use_auth: UseAuth) -> None:
 
 
 def test_deployments_warn_of_attempts_counted_per_process(use_auth: UseAuth) -> None:
-    """In memory, each process allows the attempt rates on its own (AUTH-09)."""
+    """In memory, each process allows the attempt rates on its own (AUTH-09).
+
+    A warning only with ``REQUIRE_SHARED_THROTTLES = False``, as in 0.10;
+    by default, since 0.11, an error (``test_auth_shared_throttles``).
+    """
     deployed = {"ENVIRONMENT": "production", "ALLOWED_HOSTS": ["api.example.com"]}
     hashers = [f"{AUTH}.hashers.PBKDF2PasswordHasher"]
     no_rates = {"LOGIN_RATE": None, "EMAIL_RATE": None}
@@ -739,7 +743,12 @@ def test_deployments_warn_of_attempts_counted_per_process(use_auth: UseAuth) -> 
 
     def warnings(backend: str | None = None, **auth: Any) -> list[str]:  # noqa: ANN401
         chosen = {} if backend is None else {"RATE_LIMIT_BACKEND": backend}
-        use_auth(settings={**deployed, **chosen}, PASSWORD_HASHERS=hashers, **auth)
+        use_auth(
+            settings={**deployed, **chosen},
+            PASSWORD_HASHERS=hashers,
+            REQUIRE_SHARED_THROTTLES=False,
+            **auth,
+        )
         found: list[str] = registry.get_domain_config("auth").deployment_warnings()
         return [warning for warning in found if "RATE_LIMIT_BACKEND" in warning]
 

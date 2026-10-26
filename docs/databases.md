@@ -17,7 +17,10 @@ The decisions behind this page are ADRs
 Querying repositories, pages, filters, bulk changes, soft delete, row
 locks, and savepoints are in [queries.md](queries.md). Read replicas and
 tables derived from domain classes follow ADR
-[0024](adr/0024-replicas-and-derived-tables.md).
+[0024](adr/0024-replicas-and-derived-tables.md). Isolation levels, work
+run again after a lost race, and locks are under
+[Transactions](#transactions) (ADR
+[0092](adr/0092-retry-units-of-work-choose-isolation-and-lock-in-order.md)).
 
 ## Routing domains to databases
 
@@ -617,6 +620,112 @@ first, as `create_user` does for usernames, still gives a friendlier
 message; the constraint settles two requests that both pass the check.
 Auth's username and group name columns name `UsernameTaken` and
 `GroupNameTaken`.
+
+## Transactions
+
+A SQL unit of work is one transaction. By default it runs at the
+database's own isolation level, `READ COMMITTED` on PostgreSQL: each
+statement sees what was committed before it began, `version` columns
+refuse lost updates ([Versions](#versions)), and nothing is run again.
+Work that keeps a rule across rows needs more than that. Two transfers
+that each check "at least one account keeps a balance" and each change a
+different account both commit: no row was changed twice, so no version
+check fails, and the rule is broken (write skew).
+
+### Isolation levels
+
+A unit of work that writes chooses its level on the class, or when it is
+made:
+
+```python
+from domainkit.db import Isolation, SqlAlchemyUnitOfWork
+
+
+class LedgerUnitOfWork(SqlAlchemyUnitOfWork):
+    isolation = Isolation.SERIALIZABLE
+
+
+uow = OrdersUnitOfWork(isolation="repeatable read")
+```
+
+| Level | PostgreSQL | SQLite |
+| --- | --- | --- |
+| None (default) | the server's default, `READ COMMITTED` | as SQLite always does |
+| `READ_COMMITTED` | each statement sees what was committed before it | as the default |
+| `REPEATABLE_READ` | one snapshot; a row changed meanwhile cannot be changed (serialization failure) | as `SERIALIZABLE` |
+| `SERIALIZABLE` | as if run one after another; one that could not have been fails (serialization failure) | `BEGIN IMMEDIATE`: they do run one after another |
+
+On PostgreSQL the level goes into the transaction's `BEGIN`: no statement
+or round trip more. On SQLite, `REPEATABLE_READ` and `SERIALIZABLE` begin
+the transaction with `BEGIN IMMEDIATE` before its first statement, so such
+units of work take the database's write lock first and wait for each
+other (up to the driver's busy timeout, then "database is locked"); they
+never fail on each other's changes. A read-only unit of work takes no
+level: it says how it reads with `reads=` (`Reads.SNAPSHOT` reads one
+snapshot), and `isolation=` with `readonly=True` is a `ValueError`.
+
+### Running work again
+
+At `REPEATABLE_READ` and `SERIALIZABLE`, PostgreSQL ends the losing
+transaction with a serialization failure (SQLSTATE `40001`); at any level,
+two transactions that wait for each other's locks end one of them with a
+deadlock (`40P01`). Either is answered 503 `database_busy`. Running the
+whole work again usually succeeds: `run` does that.
+
+```python
+from domainkit.ddd import Retry
+
+await uow.run(lambda: transfer(command, uow), retry=Retry(attempts=5))
+```
+
+The work is a function of no arguments that does the whole job, entering
+the unit of work itself, as an application service does. `run` never
+re-runs part of an `async with` block: what a failed run wrote went with
+its transaction, outbox messages, audit entries, and the
+`Idempotency-Key`'s mark included, and the next run starts again from the
+database. Events are published, and deferred tasks queued, only by the
+commit that succeeds. In memory, the repositories are put back as they
+were before the failed run.
+
+- `Retry(attempts=3, backoff=0.02, max_backoff=1.0, retry_on=())`: at most
+  `attempts` runs, 1 to 10. Before each next run, a random wait up to
+  `backoff` seconds, doubled for each run so far, at most `max_backoff`
+  (at most 60). `retry_on` adds errors of your own, such as
+  `ConcurrentUpdate` to run again a lost optimistic race. `run(work)`
+  without `retry` uses `Retry()`.
+- Only serialization failures and deadlocks are run again (SQLite reports
+  neither), and the `retry_on` errors. Any other error is raised at once.
+- After the last run, the last failure is raised as it was, with a note
+  saying how many runs there were. It is also raised, without another
+  run, when this unit of work committed during the run (running it again
+  would commit twice), and when the wait would pass the request's
+  deadline.
+- Under a frozen clock (`freeze_time`) the wait takes no time.
+- Work that changes something outside its unit of work, such as a call to
+  a payment provider, or another unit of work, must not be run again:
+  leave it to a deferred task, which the outbox runs once.
+
+`ResourceRouter.command_route(..., retry=Retry())` runs a command's service
+that way ([resources.md](resources.md)): the check that the caller may
+reach the aggregate, and `If-Match`, are made again in each run's
+transaction, so a run after another committed sees its version. Command
+routes do not retry unless they say so.
+
+### Locks
+
+- `get_for_update(id)` locks one row, and `get_many_for_update(ids)`
+  several, in one statement, by ascending id whatever the order of `ids`
+  ([queries.md](queries.md#row-locks)). Two transfers that lock both their
+  accounts that way take the locks in the same order: one waits for the
+  other, and they cannot deadlock, where locking source then target can.
+- `await uow.lock("payout:" + str(account_id))` holds a lock by name until
+  the transaction ends, for work that has no row to lock. On PostgreSQL it
+  is `pg_advisory_xact_lock` on `lock_key(name)`, a stable 64-bit hash of
+  the name; `nowait=True` raises `LockNotAvailable` (409) instead of
+  waiting, and a wait past `LOCK_TIMEOUT` is a 503 `database_busy`. On
+  SQLite it is the database's write lock (`BEGIN IMMEDIATE`, unless the
+  transaction wrote already). In memory, names are locked for the whole
+  process. Take a lock before reading what it guards.
 
 ## Testing
 

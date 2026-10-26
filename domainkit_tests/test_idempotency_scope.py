@@ -143,14 +143,14 @@ def test_an_export_gives_a_kept_response_to_its_caller_alone(
 
 
 def test_anonymous_callers_behind_one_address_share_keys(database_url: str) -> None:
-    """The PoC of DATA-09: by default, one caller gets another's response.
+    """The PoC of DATA-09: under ``per-address``, one caller gets another's response.
 
     Two people behind one NAT (the test client's one address), neither
     authenticated, send the same key: the second is replayed the first's
     response, its ``Location`` and body, and a different body tells the
-    second the key exists. This is ``per-address``, the default.
+    second the key exists. ``per-address`` was the default until 0.11.
     """
-    with keyed_app(database_url) as client:
+    with keyed_app(database_url, ANONYMOUS="per-address") as client:
         first = post(client, {"item": "ann's order"})
         second = post(client, {"item": "ann's order"})
         probe = post(client, {"item": "bob's order"})
@@ -160,6 +160,30 @@ def test_anonymous_callers_behind_one_address_share_keys(database_url: str) -> N
     assert (second.json(), second.headers["Location"]) == ({"count": 1}, "/counter/1")
     assert probe.json()["code"] == "idempotency_key_reused"
     assert sample_routes.created == [{"item": "ann's order"}]
+
+
+def test_anonymous_keys_are_refused_by_default(database_url: str) -> None:
+    """DATA-09, since 0.11: a key that names no caller is a 400, and nothing runs.
+
+    The PoC's two callers behind one address: neither is served, so neither
+    can be replayed the other's response, nor learn that its key is taken.
+    The same request without the key, or from a known caller, runs.
+    """
+    with keyed_app(database_url) as client:
+        ann = post(client, {"item": "ann's order"})
+        bob = post(client, {"item": "bob's order"})
+        keys = stored()
+        unkeyed = client.post("/counter", json={"item": "plain"})
+        known = post(client, {"item": "ann's order"}, **{ACTOR_HEADER: "ann"})
+
+    for refused in (ann, bob):
+        assert refused.status_code == 400
+        assert refused.json().items() >= NEEDS_CALLER.items()
+        assert set(refused.json()) == {*NEEDS_CALLER, "request_id"}
+        assert "Idempotent-Replayed" not in refused.headers
+    assert keys == []
+    assert (unkeyed.status_code, known.status_code) == (201, 201)
+    assert sample_routes.created == [{"item": "plain"}, {"item": "ann's order"}]
 
 
 def test_refuse_answers_anonymous_keys_400(database_url: str) -> None:
@@ -238,8 +262,9 @@ def test_session_cookie_names_are_bounded() -> None:
 
 
 def test_anonymous_is_one_of_two_policies() -> None:
-    """Any other value is refused when settings load."""
-    assert IdempotencySettings().ANONYMOUS == "per-address"
+    """``refuse`` by default since 0.11; other values are refused when settings load."""
+    assert IdempotencySettings().ANONYMOUS == "refuse"
+    assert IdempotencySettings(ANONYMOUS="per-address").ANONYMOUS == "per-address"
     assert IdempotencySettings(ANONYMOUS="refuse").ANONYMOUS == "refuse"
     with pytest.raises(ValidationError, match="'per-address' or 'refuse'"):
         IdempotencySettings(ANONYMOUS="per-client")
@@ -282,9 +307,9 @@ def test_kept_responses_name_whom_they_are_about(database_url: str) -> None:
         await connections.close_all()
         return found
 
-    with keyed_app(database_url) as client:
+    with keyed_app(database_url, ANONYMOUS="per-address") as client:
         post(client, {"n": 1}, **{ACTOR_HEADER: "alice"})
-        post(client, {"n": 1})
+        post(client, {"n": 1})  # Anonymous: kept only under per-address.
         tags = sorted(str(row["subjects"]) for row in stored())
         both = asyncio.run(
             finish(Operation("a" * 64, "t" * 32, actor="alice", subjects={"ann"}))

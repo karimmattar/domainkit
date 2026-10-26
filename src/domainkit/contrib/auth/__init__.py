@@ -29,14 +29,8 @@ Requests: ``AuthenticationMiddleware`` finds the user from a token
 routes allow is the core's ``domainkit.http.access``, for any
 authentication (ADR 0080); ``access`` adds the rules about this app's users
 (``IsAdminUser``, ``IsSuperuser``, ``AuthenticatedUser``, and ``CurrentUser``
-typed as this app's users). The rule names
-that moved there still import from here until 0.11, with a
-``DomainkitDeprecationWarning``.
+typed as this app's users).
 """
-
-from typing import Final
-
-from domainkit.deprecation import moved
 
 from .access import (
     AuthenticatedUser,
@@ -158,26 +152,3 @@ __all__ = [
     "password_help_texts",
     "validate_password",
 ]
-
-MOVED: Final = frozenset(
-    {
-        "AllowAny",
-        "BasePermission",
-        "HasObjectPermissions",
-        "HasPermissions",
-        "HasScope",
-        "IsAuthenticated",
-        "IsAuthenticatedOrReadOnly",
-        "IsUnscoped",
-        "ModelPermissions",
-        "NotAuthenticated",
-        "Public",
-        "Require",
-        "check_object_permissions",
-        "mark_public",
-        "open_routes",
-    }
-)
-"""Names that moved to ``domainkit.http.access`` in 0.10; removed here in 0.11."""
-
-__getattr__ = moved(__name__, dict.fromkeys(MOVED, "domainkit.http.access"), "0.11")

@@ -64,16 +64,12 @@ it.
 
 ### Deprecations planned for 0.11
 
-| Old name | Use instead | Since |
-| --- | --- | --- |
-| `AllowAny`, `BasePermission`, `HasObjectPermissions`, `HasPermissions`, `HasScope`, `IsAuthenticated`, `IsAuthenticatedOrReadOnly`, `IsUnscoped`, `ModelPermissions`, `NotAuthenticated`, `Public`, `Require`, `check_object_permissions`, `mark_public`, `open_routes` from `domainkit.contrib.auth` | the same names from `domainkit.http.access` | 0.10 |
-| The same, and `AllOf`, `AnyOf`, `Not`, `Rule`, `SAFE_METHODS`, `MODEL_ACTIONS`, `bearer`, `public`, `scopes_of`, `routes_need_users`, `unguarded_routes`, from `domainkit.contrib.auth.access` | the same names from `domainkit.http.access` | 0.10 |
-| The setting `AUTH.REQUIRE_ROUTE_RULES` | `REQUIRE_ROUTE_RULES` | 0.10 |
-| `ResourceRouter(crud=True)` without `writable=`, or without both `create=` and `update=` (every plain field writable) | `writable=[...]` naming the fields, `writable=ALL_FIELDS`, or both schemas | 0.10 |
-| `Query` from `domainkit.ddd.query` (named `Selection` since 0.9.2) | `domainkit.ddd.Selection` | 0.10 |
-| `domainkit.contrib.evidence.model` | `domainkit.contrib.evidence` (or its `models`) | 0.10 |
-| Credentials limited to scopes passing a route that declares no rule that checks scopes (`SCOPED_CREDENTIALS = "warn"`, the default) | `HasScope(...)`, a permission rule, or `AllowScoped()` on the route; 0.11 refuses them (`"refuse"`) | 0.10 |
-| `IDEMPOTENCY.ANONYMOUS` left unset (`"per-address"`; `idempotency.W002` in staging and production) | `"per-address"` set explicitly to keep it, or `"refuse"`, 0.11's default | 0.10 |
+All done: 0.11 removed the names and the setting that 0.10 deprecated,
+refuses `crud=True` without the fields it writes, and makes `"refuse"` the
+default of `SCOPED_CREDENTIALS` and `IDEMPOTENCY.ANONYMOUS`.
+[upgrading.md](upgrading.md#010-to-011) lists each, with its replacement
+and the setting that keeps a default's old behaviour. Nothing is
+deprecated for 0.12 yet.
 
 To find deprecated uses before upgrading, make the warning an error in the
 project's pytest settings:
@@ -158,9 +154,10 @@ checks it with deptry (`[tool.deptry]` in `pyproject.toml`).
      `ci.yml` on `main` at the tagged commit, on GitHub's runners;
    - waits for a reviewer to approve the `pypi` environment;
    - publishes the wheel and sdist that CI built to PyPI, with attestations.
-   - creates the GitHub Release for the tag: the CHANGELOG's section for
-     the version as its notes, and the wheel, the sdist, the bill of
-     materials, and their SHA-256 sums (`SHA256SUMS`) as its assets.
+
+   Before approving, the maintainer creates the GitHub Release for the
+   tag by hand (Releases, Draft a new release), with the CHANGELOG's
+   section for the version as its notes; the workflow makes none.
 
    CI keeps a run's `dist` and `sbom` for 90 days. To release an older
    commit, re-run its CI run (`gh run rerun <id>`) first.
