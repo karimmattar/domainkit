@@ -8,8 +8,9 @@ write to the versions it names.
 
 A command or a query on one aggregate is checked before it runs. Where
 only the scope or the parent decide, the check and the work share one unit
-of work: the aggregate is read within reach, then the service runs in the
-same transaction (``Joined``), so nothing changes between the two. Where a
+of work: the aggregate is read within reach, then the service's first
+block runs in the same transaction (``Joined``), so nothing changes between
+the two; its later blocks get transactions of their own, as ever. Where a
 rule looks at the object, the check has a unit of work of its own, closed
 before the rule runs: a rule may read the database itself (object
 permission grants), and must not wait for a connection while this request
@@ -46,19 +47,29 @@ if TYPE_CHECKING:
 
 
 class Joined:
-    """An open unit of work, lent to a service in the transaction it is in.
+    """An open unit of work, lent to a service for its first block.
 
-    The service's own enter and exit do nothing: the route that opened the
-    unit of work closes it. Its commit, rollback, savepoints, and
-    repositories are the unit of work's own.
+    The route entered the unit of work to check the aggregate, so the
+    service's first ``async with uow:`` is that same transaction: entering
+    does nothing, and the check's reads are there. Every exit is the unit of
+    work's own: it closes the session, so what the block did not commit is
+    rolled back, as it always was. A later block enters the unit of work
+    again, in a transaction of its own, as without a scope: a change a
+    service abandoned in one block never commits with the next.
     """
 
     def __init__(self, uow: UnitOfWork) -> None:
-        """Lend ``uow``."""
+        """Lend ``uow``, entered already."""
         self._uow = uow
+        self._entered = True
+        """Whether the unit of work is open for the service's next block."""
 
     async def __aenter__(self) -> Self:
-        """The unit of work is open already."""
+        """The first block: the open unit of work; any later one: a new one."""
+        if self._entered:
+            self._entered = False
+        else:
+            await self._uow.__aenter__()
         return self
 
     async def __aexit__(
@@ -67,7 +78,9 @@ class Joined:
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        """Leave it open; the route closes it, rolling back what was not committed."""
+        """Leave the block as the unit of work does: what it did not commit goes."""
+        self._entered = False
+        await self._uow.__aexit__(exc_type, exc, traceback)
 
     def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - the unit of work's.
         """Commit, repositories, and the rest come from the unit of work."""

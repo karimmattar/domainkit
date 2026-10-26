@@ -254,8 +254,10 @@ and a status.
   share. Answers, headers, error bodies, and OpenAPI documents are the same
   (DSGN-01; ADR 0025).
 - A command or a query on one aggregate whose resource has a scope or a
-  parent checks the aggregate and runs the service in one unit of work, the
-  service's own enter and exit doing nothing: one transaction and one
+  parent checks the aggregate and runs the service's first `async with uow:`
+  block in the same transaction (a later block gets one of its own, and
+  every exit rolls back what its block did not commit, SEC-10a-2): one
+  transaction and one
   connection instead of two, and the service finds the aggregate the check
   read (`resource-command`: 4,546 calls and 2/2/2/2 round trips, now 3,766
   and 1/1/1/1). With a rule that looks at the aggregate, the check keeps a

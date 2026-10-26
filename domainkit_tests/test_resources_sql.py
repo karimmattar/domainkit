@@ -456,3 +456,71 @@ async def test_a_service_sharing_the_scopes_unit_of_work_still_rolls_back(
     assert kept.json()["name"] == "kept"
     assert failed.status_code == 409
     assert stored.name == "red"
+
+
+class TooExpensive(Exception):
+    """A rule of the service's own refuses the change."""
+
+
+async def rename_or_flag(command: Rename2, uow: GadgetsUnitOfWork) -> Gadget:
+    """Try the rename; if refused, give it up and flag the gadget in a new block."""
+    try:
+        async with uow:
+            gadget = await uow.gadgets.get(GadgetId(command.gadget_id))
+            gadget.name = command.name
+            if command.name.startswith("forbidden"):
+                raise TooExpensive  # Leaving the block discards the rename.
+            await uow.commit()
+    except TooExpensive:
+        async with uow:
+            gadget = await uow.gadgets.get(GadgetId(command.gadget_id))
+            gadget.active = False
+            await uow.commit()
+    return gadget
+
+
+@pytest.mark.parametrize(
+    ("scoped", "transactions"),
+    [
+        # Each block is a transaction of its own (0.9.2's count with a scope
+        # was 3: the check's, then one per block).
+        (False, 2),
+        # The check and the first block share one; the second has its own.
+        (True, 2),
+    ],
+)
+async def test_a_block_a_service_gave_up_never_commits_with_the_next(
+    database: str, scoped: bool, transactions: int
+) -> None:
+    """SEC-10a-2: with a scope, a later block still starts from a clean slate."""
+    async with connections.engine().begin() as connection:
+        await connection.run_sync(metadata.create_all)
+    red = make_gadget("red")
+    async with GadgetsUnitOfWork() as uow:
+        await uow.gadgets.add(red)
+        await uow.commit()
+    resource = ResourceRouter(
+        "/gadgets",
+        model=Gadget,
+        unit_of_work=GadgetsUnitOfWork,
+        repository=lambda uow: uow.gadgets,
+        dependencies=[Public],
+        scope=red_only if scoped else None,
+    )
+    resource.command_route(Rename2, service=rename_or_flag, body=NameIn, path="/rename")
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.include_router(resource)
+    async with AsyncTestClient(app) as client:
+        await client.post(f"/gadgets/{red.id}/rename", json={"name": "warm"})
+        with SqlCounter() as sql:
+            answer = await client.post(
+                f"/gadgets/{red.id}/rename", json={"name": "forbidden-name"}
+            )
+    async with GadgetsUnitOfWork() as uow:
+        stored = await uow.gadgets.get(red.id)
+    await connections.close_all()
+
+    assert answer.status_code == 200, answer.text
+    assert (stored.name, stored.active) == ("warm", False)
+    assert sql.counts.transactions == sql.counts.checkouts == transactions

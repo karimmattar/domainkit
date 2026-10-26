@@ -350,10 +350,12 @@ reveal it, and is `404` for reads and commands, as if it did not exist.
 
 A command or a query on one aggregate is checked before its service runs.
 When only the scope or the parent decide, the check and the service share
-one unit of work: the aggregate is read within reach, and the service runs
-in the same transaction, its own `async with uow:` and exit doing nothing
-and its `commit()` the unit of work's; the route closes it afterwards, so
-what the service did not commit is rolled back as before. When a rule
+one unit of work: the aggregate is read within reach, and the service's
+first `async with uow:` block runs in the same transaction. Every block's
+exit is the unit of work's own, so what a block did not commit is rolled
+back as before, and a later block runs in a transaction of its own: a
+change a service gave up in one block never commits with the next. When a
+rule
 looks at the aggregate, the check has a unit of work of its own, closed
 before the rule runs, and the service another.
 

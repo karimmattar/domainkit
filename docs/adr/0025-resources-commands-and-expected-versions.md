@@ -124,10 +124,13 @@ OpenAPI document are unchanged.
   framework needs it.
 - **One unit of work for a scoped command.** A command or a query on one
   aggregate whose resource has a scope or a parent, and no rule that looks
-  at objects, reads the aggregate within reach and runs the service in
-  the same unit of work, lent open (`reach.Joined`): the service's enter
-  and exit do nothing, its commit and rollback are the unit of work's, and
-  the route closes it. One transaction, one connection, and the service
+  at objects, reads the aggregate within reach and runs the service's
+  first block in the same unit of work, lent open (`reach.Joined`): that
+  block's enter does nothing, its exit is the unit of work's (what it did
+  not commit is rolled back), and a later block enters the unit of work
+  again, in a transaction of its own, as without a scope (SEC-10a-2: a
+  first version made every enter and exit a no-op, so a change one block
+  gave up committed with the next). One transaction, one connection, and the service
   finds the aggregate the check read: the `resource-command` rung went from
   2 transactions and 4,546 calls to 1 and 3,766. Where a rule looks at the
   aggregate, the check keeps a unit of work of its own, closed before the
