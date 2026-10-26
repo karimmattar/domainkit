@@ -35,6 +35,8 @@ from domainkit.contrib.auth.tables import (
 from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.db import connections
 from domainkit.management import CommandError, call_command
+from domainkit.management.commands.flush import Command as FlushCommand
+from domainkit.management.commands.loaddata import Command as LoadCommand
 from domainkit.management.operators import Operator, require_named
 from domainkit_tests.sample_domains.shop.tables import products
 from domainkit_tests.test_data_commands import (
@@ -181,9 +183,16 @@ def test_a_fixture_cannot_grant_permissions(stored_user: str, tmp_path: Path) ->
         (user_permissions, granted),
     )
 
-    with pytest.raises(CommandError, match="guarded tables"):
+    with pytest.raises(CommandError) as refused:
         run("loaddata", str(path))
 
+    assert str(refused.value) == (
+        f"{path} writes guarded tables (domainkit_groups, "  # Parents first.
+        "domainkit_users_groups, domainkit_group_permissions, "
+        "domainkit_users_permissions): their rows are logins, permissions, and "
+        "secrets. Nothing was loaded; repeat with --include-guarded if that is "
+        "what you mean."
+    )
     assert [count(table) for table in (groups, user_groups, user_permissions)] == [
         0,
         0,
@@ -356,3 +365,36 @@ def test_a_custom_user_table_and_its_links_are_guarded() -> None:
     links = user_link_tables(accounts)
 
     assert [table.info.get("guarded") for table in (accounts, *links)] == [True] * 3
+
+
+def test_the_commands_say_what_each_option_does() -> None:
+    """``--help`` names the files, the alias, and each switch, in plain words."""
+    loading = " ".join(
+        LoadCommand().create_parser("manage.py", "loaddata").format_help().split()
+    )
+    flushing = " ".join(
+        FlushCommand().create_parser("manage.py", "flush").format_help().split()
+    )
+
+    for said in (
+        "FIXTURE [FIXTURE ...]",
+        "--database DATABASE the alias to write",
+        "--dry-run only say what would be written",
+        "--force required in staging and production",
+        "--replace replace stored rows with the same primary key (refused without)",
+        (
+            "--include-guarded write guarded tables: users, permissions, grants, "
+            "tokens, ..."
+        ),
+    ):
+        assert said in loading
+    for said in (
+        "--database DATABASE the alias to empty",
+        "--dry-run only say what would be deleted",
+        "--force required in staging and production",
+        (
+            "--include-guarded empty guarded tables too: users, permissions, "
+            "grants, tokens, ..."
+        ),
+    ):
+        assert said in flushing
