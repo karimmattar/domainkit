@@ -23,6 +23,23 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
    for the deployment checks this version adds.
 6. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 0.10 to 0.11
+
+### Breaking changes
+
+- **Messaging's new table, and stale commits refused** (FIN-80).
+  Messaging has an inbox table, `domainkit_inbox`, in every database that
+  holds an outbox: projects that install messaging run `makemigrations`
+  and `migrate` before deploying, or each worker's cleanup logs a failure
+  every round. A unit of work that a durable handler or task commits on
+  its outbox's database, after another worker took its message over (the
+  run outlived its lease), now raises `LeaseLost` and rolls back; the
+  worker holding the message runs it. Before, both runs committed. **Fix:**
+  let `LeaseLost` propagate from handlers that catch errors around their
+  commit. Nothing keeps the old behaviour: it committed the work twice.
+
+### Removed in 0.11
+
 ## 0.9 to 0.10
 
 ### Breaking changes

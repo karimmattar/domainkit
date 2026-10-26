@@ -9,6 +9,36 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `domainkit.contrib.messaging.inbox`: mark a durable handler or a task
+  `@inbox`, and its database work commits once per message, however often
+  the message is delivered. The run's first commit writes `(target,
+  message id)` to the new `domainkit_inbox` table, in its own transaction,
+  on the database it commits to; a later run of the message (a retry, a
+  redelivery after a crash, RabbitMQ handing it out again) is skipped, or
+  its commit refused with `AlreadyHandled`, and the message is recorded as
+  done (outcome `handled`). Opt-in: handlers not marked stay at least once.
+  In a chain only the last step may use it. Workers delete rows older than
+  `MESSAGING.INBOX_RETENTION_SECONDS` (7 days; above `VISIBILITY_TIMEOUT`,
+  at most 365 days) with finished messages (`Worker.prune_inbox`), and
+  `check` refuses an `@inbox` handler or task whose retries could outlast it
+  (`messaging.E001`). The inbox holds no personal data. Projects with
+  messaging run `makemigrations` and `migrate` for the table (FIN-80;
+  ADR 0094).
+
+### Changed
+
+- **Breaking:** a unit of work that a durable handler or task commits on
+  its outbox's database renews the run's lease in the same transaction,
+  and fails with `LeaseLost`, rolled back, when another worker took the
+  message over because the run outlived its lease (a blocked event loop, a
+  paused process, an ignored cancellation). Before, both runs committed.
+  Such a run, and one that finishes after losing its lease, ends as
+  `superseded` (logged, and counted in `messaging_messages_total`); the
+  worker holding the message runs it. Each such commit runs one more
+  statement (FIN-80; ADR 0095).
+
 ## [0.10.0] - 2026-10-26
 
 A minor release: some changes break, and some names are deprecated, to be

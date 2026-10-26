@@ -526,15 +526,18 @@ Where mail goes: an SMTP server, the console, or a list for tests.
 
 Transactional outbox, durable event handlers, and background tasks.
 
+- `AlreadyHandled`: The inbox holds this message: an earlier run committed its work.
 - `Attempt`: The run a worker is making of a message, as its task sees it.
 - `Backoff`: Seconds to wait before running a failed message again.
 - `Budget`: Slots for the messages a worker process runs at once.
 - `Chain`: Tasks that run one after another, each once the one before succeeds.
+- `LeaseLost`: Another worker took the message over; this run's commit is refused.
 - `MessagingSettings`: Delivery, retry, and worker options; every key is optional.
 - `Worker`: Run outbox messages of one database.
 - `chain`: Run `first`, then each task of `then` once the one before succeeds.
 - `current_attempt`: The run of the message being processed, or None outside the worker.
 - `enqueue`: Queue `function(**kwargs)` now, in its own transaction.
+- `inbox`: Commit a handler's or task's database work once per message.
 - `periodic`: Register an argument-free task that runs on a schedule, cluster-wide.
 - `task`: Register an async function as a background task (`uow.defer(task)`).
 
