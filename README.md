@@ -177,7 +177,7 @@ pre-commit install                     # after: pipx install pre-commit
 
 poetry run ruff check . && poetry run ruff format --check . && poetry run mypy
 poetry run deptry .                    # every imported package is declared
-poetry run pytest --cov                # random order, 2 minutes a test; coverage gate in pyproject.toml
+poetry run pytest -n auto --cov        # every core, random order, 2 minutes a test; plain pytest works too
 poetry run mutmut run "domainkit.http*" && poetry run mutmut results
 ```
 
@@ -203,7 +203,8 @@ at the top of `domainkit_tests/test_immudb.py`, `test_redis.py`, and
 the servers, each with its own `COVERAGE_FILE`, then `coverage combine` and
 `coverage report --fail-under=100`.
 
-CI (`.github/workflows/ci.yml`) runs on every push and pull request:
+CI (`.github/workflows/ci.yml`) runs on every push and pull request, the
+suite on every core of the runner (`pytest -n auto`):
 
 - lint, strict typing, and deptry: every package the code imports is declared
 - the tests on Python 3.13 and 3.14
@@ -219,6 +220,11 @@ CI (`.github/workflows/ci.yml`) runs on every push and pull request:
   of the whole history
 - on pull requests and weekly, the tests again with the newest releases
   the dependency ranges allow, not the lock's, and with the oldest
+
+A pull request that changes only `docs/` and the Markdown files at the top
+of the repository runs lint, the audits, and the tests that read the docs,
+not the whole suite. A release reuses the run of its commit's push to
+`main` instead of running it again.
 
 A full mutation testing run happens weekly, in 17 shards that run side by
 side; each writes its score and the mutants no test caught to its job

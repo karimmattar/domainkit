@@ -130,21 +130,29 @@ with deptry (`[tool.deptry]` in `pyproject.toml`).
 
 1. Move the changelog's **Unreleased** entries under the new version and date.
 2. Update `version` in `pyproject.toml`.
-3. Merge to `main` once CI passes.
+3. Merge to `main` once CI passes. The push to `main` runs the whole CI
+   workflow on the merged commit: lint, types, tests on every Python,
+   integration against real servers, coverage, the benchmark ladder, the
+   wheel's smoke test and bill of materials, Semgrep, pip-audit, and
+   gitleaks.
 4. Tag that commit `vX.Y.Z` and push the tag. `.github/workflows/release.yml`
    then:
    - checks that the tag matches the version and is on a commit of `main`,
      so only changes that passed CI in a pull request are released;
-   - runs the whole CI workflow on that commit: lint, types, tests on every
-     Python, integration against real servers, coverage, the benchmark
-     ladder, the wheel's smoke test and bill of materials, Semgrep,
-     pip-audit, and gitleaks;
-   - attests the wheel and sdist with SLSA build provenance, and the wheel's
-     CycloneDX bill of materials, signed through GitHub (check one with
-     `gh attestation verify domainkit-X.Y.Z-py3-none-any.whl --repo
-     karimmattar/domainkit`);
+   - finds the CI run of that commit's push to `main`, waits for it if it
+     is still running, and stops unless it succeeded; nothing is run twice
+     (ADR [0007](adr/0007-own-repository-released-to-pypi.md#amendment-2026-10-26-010-a-release-reuses-mains-ci-run));
+   - runs pip-audit and gitleaks again, as an advisory can appear after
+     that run;
+   - attests the wheel and sdist that run built with SLSA build provenance,
+     and the wheel's CycloneDX bill of materials, signed through GitHub
+     (check one with `gh attestation verify domainkit-X.Y.Z-py3-none-any.whl
+     --repo karimmattar/domainkit`);
    - waits for a reviewer to approve the `pypi` environment;
    - publishes the wheel and sdist that CI built to PyPI, with attestations.
+
+   CI keeps a run's `dist` and `sbom` for 90 days. To release an older
+   commit, re-run its CI run (`gh run rerun <id>`) first.
 
 One-time setup, before the first release:
 
@@ -161,8 +169,13 @@ One-time setup, before the first release:
   one, and `--method PUT repos/OWNER/REPO/rulesets/ID` replaces one.
   - `main.json`: changes reach `main` only as squash-merged pull requests,
     up to date with it, with these checks from GitHub Actions passing:
-    `lint`, `test (3.13)`, `test (3.14)`, `test (3.14t)`, `integration`,
-    `bench`, `coverage`, `build`, `sbom`, `semgrep`, and `audit`. Nobody
+    `changes`, `docs`, `lint`, `test (3.13)`, `test (3.14)`, `test (3.14t)`,
+    `integration`, `bench`, `coverage`, `build`, `sbom`, `semgrep`, and
+    `audit`. A pull request that changes only `docs/**` and the Markdown at
+    the top of the repository runs `docs` (the tests that read the docs),
+    `lint`, `semgrep` and `audit`; the others are skipped, which reports
+    success, and the test matrix skips its steps. Any other pull request
+    runs them all and skips `docs`. Nobody
     pushes to `main` or rewrites it; an admin may bypass the rules only
     when merging a pull request, a choice GitHub records. The `newest` and
     `oldest` jobs run on pull requests too but are not required: what
