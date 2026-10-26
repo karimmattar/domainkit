@@ -18,7 +18,7 @@ from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db.drivers import connect_args
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import route_rule_problems
-from domainkit.http.apidocs import OPENAPI_PATH, docs_router
+from domainkit.http.apidocs import OPENAPI_PATH, docs_routes
 from domainkit.http.blocking import watch_event_loop
 from domainkit.http.errors import ErrorResponse, install_exception_handlers
 from domainkit.http.openapi import (
@@ -143,8 +143,8 @@ def get_asgi_application() -> FastAPI:
     )
     install_exception_handlers(app)
     install_openapi(app)
-    if docs:
-        app.include_router(docs_router(settings.PROJECT_NAME))
+    if docs:  # Where FastAPI puts its own: first, after /openapi.json.
+        app.router.routes.extend(docs_routes(settings.PROJECT_NAME))
     if settings.ROOT_ROUTER:
         app.include_router(_load(settings.ROOT_ROUTER, APIRouter, "ROOT_ROUTER"))
         if settings.FLATTEN_ROUTERS:

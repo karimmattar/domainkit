@@ -849,7 +849,7 @@ The API's documentation pages, from domainkit's own copies (`API_DOCS`).
 
 - `REDOC_POLICY`: `/redoc`'s Content-Security-Policy: `/docs`'s, with inline styles and a `blob:` worker.
 - `SWAGGER_POLICY`: `/docs`'s Content-Security-Policy: scripts and styles from the origin only.
-- `docs_router`: `/docs`, `/redoc`, and their assets, for an API called `title`.
+- `docs_routes`: `/docs`, `/redoc`, and their assets, for an API called `title`.
 
 ## `domainkit.http.application`
 

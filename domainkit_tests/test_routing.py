@@ -123,7 +123,13 @@ def kinds(app: FastAPI) -> list[tuple[str, str]]:
     ]
 
 
-OWN = {"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
+OWN = {
+    "/openapi.json",
+    "/docs",
+    "/docs/assets/{name}",
+    "/docs/oauth2-redirect",
+    "/redoc",
+}
 OPEN = (
     "GET /open declares no access rule: add Depends(Require(...)), or "
     "dependencies=[Public] if anyone may call it."
@@ -536,9 +542,12 @@ def test_routes_added_to_a_router_after_the_build_are_not_served() -> None:
     router.add_api_route("/hello", nested_routes.open_route)
 
     assert TestClient(app).get("/late/hello").status_code == 404
-    assert [getattr(route, "path", "") for route in app.routes if route] == sorted(
-        OWN, key=["/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"].index
-    )
+    assert [getattr(route, "path", "") for route in app.routes if route] == [
+        "/openapi.json",  # A plain FastAPI's own routes.
+        "/docs",
+        "/docs/oauth2-redirect",
+        "/redoc",
+    ]
 
 
 # Routers that serve requests their own way stay included.

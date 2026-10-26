@@ -22,14 +22,15 @@ import html
 from pathlib import Path
 from typing import Final
 
-from fastapi import APIRouter, Request
-from fastapi.responses import FileResponse, HTMLResponse
 from starlette.exceptions import HTTPException
+from starlette.requests import Request
+from starlette.responses import FileResponse, HTMLResponse, Response
+from starlette.routing import Route
 
 __all__ = [
     "REDOC_POLICY",
     "SWAGGER_POLICY",
-    "docs_router",
+    "docs_routes",
 ]
 
 STATIC: Final = Path(__file__).parent / "static"
@@ -94,13 +95,13 @@ REDOC_PAGE: Final = """<!doctype html>
 """
 
 
-def docs_router(title: str) -> APIRouter:
+def docs_routes(title: str) -> list[Route]:
     """``/docs``, ``/redoc``, and their assets, for an API called ``title``.
 
-    The pages name ``/openapi.json`` under the request's root path, as
-    FastAPI's own do. None of the routes is in the OpenAPI document.
+    Plain Starlette routes, out of the OpenAPI document, as FastAPI's own
+    documentation routes are. The pages name ``/openapi.json`` under the
+    request's root path, as FastAPI's do.
     """
-    router = APIRouter(include_in_schema=False)
     name = html.escape(title)
 
     def page(template: str, policy: str, request: Request) -> HTMLResponse:
@@ -110,26 +111,28 @@ def docs_router(title: str) -> APIRouter:
             headers={"Content-Security-Policy": policy},
         )
 
-    @router.get(DOCS_PATH)
-    async def swagger_ui(request: Request) -> HTMLResponse:
+    async def swagger_ui(request: Request) -> Response:
         """Swagger UI, from the API's own copy."""
         return page(SWAGGER_PAGE, SWAGGER_POLICY, request)
 
-    @router.get(REDOC_PATH)
-    async def redoc(request: Request) -> HTMLResponse:
+    async def redoc(request: Request) -> Response:
         """ReDoc, from the API's own copy."""
         return page(REDOC_PAGE, REDOC_POLICY, request)
 
-    @router.get(f"{DOCS_PATH}/assets/{{name}}")
-    async def asset(name: str) -> FileResponse:
+    async def asset(request: Request) -> Response:
         """One of the files ``ASSETS`` lists; any other name is 404."""
-        if name not in ASSETS:
+        file = ASSETS.get(request.path_params["name"])
+        if file is None:
             raise HTTPException(status_code=404)
-        path = STATIC / ASSETS[name]
+        path = STATIC / file
         return FileResponse(
             path,
             media_type=MEDIA_TYPES[path.suffix],
             headers={"Cache-Control": ASSET_CACHE},
         )
 
-    return router
+    return [
+        Route(DOCS_PATH, swagger_ui, include_in_schema=False),
+        Route(REDOC_PATH, redoc, include_in_schema=False),
+        Route(f"{DOCS_PATH}/assets/{{name}}", asset, include_in_schema=False),
+    ]
