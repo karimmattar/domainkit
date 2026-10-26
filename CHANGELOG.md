@@ -129,8 +129,9 @@ and a status.
   app; the old module re-exports the same names (DSGN-09).
 - `startdomain`'s next steps end with a login and a first `curl` of the
   new resource, at `/api/v1/<name>/<plural>`, and the README quick start
-  creates its superuser without prompts, logs in, and lists the invoices
-  (DOCS-02).
+  creates its superuser, logs in, and lists the invoices. The password is
+  typed at a `read -s` prompt and sent to `curl` on its standard input, so
+  it is in no command line and no shell history (DOCS-02).
 - Each ADR's status names what amended it (a later record, dated sections
   at its end, or earlier corrections in place), the index is in order and
   repeats each status, and the rule for amending is written down: append a

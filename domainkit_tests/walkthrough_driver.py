@@ -1,17 +1,21 @@
 """Send a walkthrough's ``curl`` lines to a generated project's application.
 
 Run as ``python walkthrough_driver.py <results>`` in the project's
-directory, with the lines as a JSON list on stdin; it writes one JSON result
-per line to ``<results>`` (stdout carries the application's logs). The
+directory, with ``{"lines": [...], "typed": {...}}`` as JSON on stdin; it
+writes one JSON result per line to ``<results>`` (stdout carries the
+application's logs). ``typed`` is what the user types at each ``read``. The
 application is served in this process through Starlette's test client, at
 the address ``runserver`` listens on, so no server or port is needed and
 ``curl`` need not be installed. Only the shapes the docs use are understood,
 and anything else is refused, so a page cannot drift into a command this
 harness would run differently from a shell:
 
-- ``curl [-s] [-i] [-X METHOD] [-H "Name: value"]... [-d BODY] URL``
-- ``NAME=$(curl ... | python -c "...")``: the body piped to the Python line,
-  whose output (stripped) is kept as ``$NAME`` for later lines.
+- ``curl [-s] [-i] [-X METHOD] [-H "Name: value"]... [-d BODY] URL``, where
+  ``-d @-`` sends what was piped in, as curl does (line breaks dropped);
+- ``NAME=$([python -c "..." |] curl ... | python -c "...")``: each part's
+  output piped to the next, the last one's (stripped) kept as ``$NAME``;
+- ``read -rsp "Prompt: " NAME && export NAME``: what the user typed for
+  ``NAME``, exported to the Python lines that follow, as a shell would.
 
 A trailing ``# 401`` (any three digits) states the status the line expects;
 without one, it must succeed (2xx).
@@ -30,6 +34,7 @@ SERVER = "http://127.0.0.1:8000"
 """Where ``runserver`` listens by default: the pages' URLs start with it."""
 _ASSIGNMENT = re.compile(r"(?P<name>[A-Z_]+)=\$\((?P<command>.*)\)")
 _VARIABLE = re.compile(r"\$(?P<name>[A-Z_]+)\b")
+_READ = re.compile(r'read -rsp "[^"]*" (?P<name>[A-Z_]+) && export (?P=name)')
 _EXPECTED = re.compile(r"\s+#\s*(?P<status>\d{3})(?:\s.*)?$")
 
 
@@ -56,7 +61,7 @@ def expand(line: str, variables: dict[str, str]) -> str:
     return _VARIABLE.sub(value, line)
 
 
-def curl(client: Any, words: list[str]) -> tuple[int, str]:  # noqa: ANN401 - TestClient.
+def curl(client: Any, words: list[str], piped: str = "") -> tuple[int, str]:  # noqa: ANN401 - TestClient.
     """Send what ``curl`` would; return the status and what it would print."""
     if not words or words[0] != "curl":
         raise Refused(f"not a curl command: {shlex.join(words)}")
@@ -74,6 +79,8 @@ def curl(client: Any, words: list[str]) -> tuple[int, str]:  # noqa: ANN401 - Te
             headers[name.strip()] = header.strip()
         elif word in {"-d", "--data"}:
             body = next(options)
+            if body == "@-":
+                body = piped.replace("\r", "").replace("\n", "")
         elif word.startswith("-") or url is not None:
             raise Refused(f"curl {word!r} is not understood here")
         else:
@@ -96,27 +103,58 @@ def curl(client: Any, words: list[str]) -> tuple[int, str]:  # noqa: ANN401 - Te
     return response.status_code, printed
 
 
-def run_line(client: Any, line: str, variables: dict[str, str]) -> dict[str, Any]:  # noqa: ANN401 - TestClient.
+def python(words: list[str], piped: str) -> str:
+    """Run ``python -c "..."`` on what was piped in; return what it printed."""
+    done = subprocess.run(  # noqa: S603 - this interpreter, the page's own line.
+        [sys.executable, "-c", words[2]],
+        input=piped,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return done.stdout + done.stderr
+
+
+def pipeline(command: str, variables: dict[str, str]) -> list[list[str]]:
+    """The parts of ``a | b | c``: one curl, and ``python -c "..."`` lines.
+
+    Raises:
+        Refused: Another program, no curl or two, or curl last.
+    """
+    parts = [shlex.split(expand(part, variables)) for part in command.split(" | ")]
+    for words in parts:
+        if words[0] != "curl" and (len(words) != 3 or words[:2] != ["python", "-c"]):
+            raise Refused(f'only curl and python -c "..." may be piped: {command}')
+    if [words[0] for words in parts].count("curl") != 1 or parts[-1][0] == "curl":
+        raise Refused(f'one curl, piped to python -c "...": {command}')
+    return parts
+
+
+def run_line(
+    client: Any,  # noqa: ANN401 - TestClient.
+    line: str,
+    variables: dict[str, str],
+    typed: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Run one line; keep what it assigns; return its status and output."""
     command, expected = expected_status(line)
+    if prompt := _READ.fullmatch(command.strip()):
+        name = prompt["name"]
+        if typed is None or name not in typed:
+            raise Refused(f"nothing was typed for ${name}: {line}")
+        variables[name] = os.environ[name] = typed[name]
+        return {"line": line, "status": None, "expected": None, "output": ""}
     assignment = _ASSIGNMENT.fullmatch(command.strip())
     if assignment is None:
         status, printed = curl(client, shlex.split(expand(command, variables)))
     else:
-        request, _, pipe = assignment["command"].partition(" | ")
-        python = shlex.split(pipe)
-        if len(python) != 3 or python[:2] != ["python", "-c"]:
-            raise Refused(f"only '| python -c \"...\"' may follow curl: {line}")
-        status, printed = curl(client, shlex.split(expand(request, variables)))
-        kept = subprocess.run(  # noqa: S603 - this interpreter, the page's own line.
-            [sys.executable, "-c", python[2]],
-            input=printed,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        printed = kept.stdout + kept.stderr
-        variables[assignment["name"]] = kept.stdout.strip()
+        printed, status = "", 0
+        for words in pipeline(assignment["command"], variables):
+            if words[0] == "curl":
+                status, printed = curl(client, words, printed)
+            else:
+                printed = python(words, printed)
+        variables[assignment["name"]] = printed.strip()
     return {"line": line, "status": status, "expected": expected, "output": printed}
 
 
@@ -129,13 +167,14 @@ def main() -> None:
     from starlette.testclient import TestClient
 
     variables: dict[str, str] = {}
-    lines = json.loads(sys.stdin.read())
+    given = json.loads(sys.stdin.read())
     with (
         TestClient(application, base_url=SERVER) as client,
         Path(sys.argv[1]).open("w", encoding="utf-8") as results,
     ):
-        for line in lines:
-            results.write(json.dumps(run_line(client, line, variables)) + "\n")
+        for line in given["lines"]:
+            result = run_line(client, line, variables, given["typed"])
+            results.write(json.dumps(result) + "\n")
 
 
 if __name__ == "__main__":

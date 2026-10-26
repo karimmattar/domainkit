@@ -28,6 +28,8 @@ ENVIRONMENT_LINES = (
     'pip install "domainkit[postgres,sqlite,testing]"',
 )
 """Lines that build the environment this interpreter already is."""
+TYPED = {"PASSWORD": "correct-horse-battery"}
+"""What the user types at each ``read -rsp`` prompt of the pages."""
 QUIET = ("-p", "no:cacheprovider")
 """The generated project's tests leave no cache behind."""
 _BLOCK = re.compile(r"^```bash\n(.*?)^```$", re.DOTALL | re.MULTILINE)
@@ -83,6 +85,7 @@ class Walk:
             else:
                 commands[-1].append(word)
         for command in commands:
+            command = [self.expand(word) for word in command]
             env = dict(self.env)
             while "=" in command[0]:
                 name, _, value = command.pop(0).partition("=")
@@ -90,6 +93,14 @@ class Walk:
             program, *args = command
             if program == "cd":
                 self.cwd = self.cwd / args[0]
+                continue
+            if program == "read":  # read -rsp "Prompt: " NAME: the user types it.
+                assert args[0] == "-rsp", line
+                assert len(args) == 3, line
+                self.env[args[2]] = TYPED[args[2]]
+                continue
+            if program == "export":  # Every name set here is exported already.
+                assert all(name in self.env for name in args), line
                 continue
             argv = {
                 "domainkit": [sys.executable, "-m", "domainkit"],
@@ -102,6 +113,10 @@ class Walk:
             assert done.returncode == 0, f"{line}\n{done.stdout}{done.stderr}"
             self.printed[line] = self.printed.get(line, "") + done.stdout
 
+    def expand(self, word: str) -> str:
+        """Replace ``$NAME`` in a word with what the shell holds for it."""
+        return re.sub(r"\$([A-Z_]+)\b", lambda name: self.env[name[1]], word)
+
     def requests(self, lines: list[str]) -> list[dict[str, Any]]:
         """Send the ``curl`` lines to the application, as a server would get them."""
         results = self.cwd.parent / "walkthrough-results.jsonl"
@@ -109,7 +124,7 @@ class Walk:
             [sys.executable, str(DRIVER), str(results)],
             cwd=self.cwd,
             env=self.env,
-            input=json.dumps(lines),
+            input=json.dumps({"lines": lines, "typed": TYPED}),
             capture_output=True,
             text=True,
             check=False,
@@ -132,6 +147,7 @@ def walk(lines: list[str], directory: Path) -> tuple[Walk, list[dict[str, Any]]]
         shell.run(line)
     results = shell.requests(lines[server + 1 :])
     assert [result["line"] for result in results] == lines[server + 1 :]
+    results = [result for result in results if result["status"] is not None]
     for result in results:
         expected = result["expected"]
         if expected is None:
@@ -152,16 +168,19 @@ def test_the_quick_start_works_as_written(tmp_path: Path) -> None:
     assert login["output"].startswith("dkt_")
     assert json.loads(listed["output"]) == {"items": [], "next_cursor": None}
     assert '`{"items":[],"next_cursor":null}`' in readme
-    # startdomain prints the same two lines, for the user it cannot know.
+    # startdomain prints the same three lines, for the user it cannot know.
     started = shell.printed[
         "python manage.py startdomain invoices --aggregate Invoice"
         "   # installs and mounts it"
     ]
-    printed = [line.strip() for line in started.splitlines()[-2:]]
-    credentials = {"<username>": "admin", "<password>": "correct-horse-battery"}
-    for placeholder, value in credentials.items():
-        printed = [line.replace(placeholder, value) for line in printed]
-    assert printed == [login["line"], listed["line"]]
+    printed = [line.strip() for line in started.splitlines()[-3:]]
+    printed = [line.replace("<username>", "admin") for line in printed]
+    server = lines.index(
+        "python manage.py runserver            # http://127.0.0.1:8000/docs"
+    )
+    assert printed == lines[server + 1 :]
+    # The password is typed at a prompt: no line holds it, for shell history.
+    assert not [line for line in lines if TYPED["PASSWORD"] in line]
 
 
 def test_the_tutorial_works_as_written(tmp_path: Path) -> None:
@@ -192,7 +211,9 @@ def test_the_tutorial_works_as_written(tmp_path: Path) -> None:
         ("curl http://127.0.0.1:8000/a http://127.0.0.1:8000/b", "is not understood"),
         ("wget http://127.0.0.1:8000/health", "not a curl command"),
         ("curl http://127.0.0.1:8000/$NOPE", "$NOPE was never set"),
-        ("X=$(curl -s http://127.0.0.1:8000/health | jq .)", "may follow curl"),
+        ("X=$(curl -s http://127.0.0.1:8000/health | jq .)", "may be piped"),
+        ("X=$(curl -s http://127.0.0.1:8000/health)", "one curl, piped"),
+        ('read -rsp "Password: " NOPE && export NOPE', "nothing was typed"),
     ],
 )
 def test_the_driver_refuses_what_it_would_not_run_as_a_shell(
