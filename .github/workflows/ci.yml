@@ -556,6 +556,11 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - run: .newest/bin/python -m pytest --junitxml=junit.xml
+      # What "pip install domainkit[...]" resolves today, audited: the lock
+      # the audit job reads is older. Like the job, it gates nothing.
+      - run: >-
+          .newest/bin/python -m pip_audit --progress-spinner off
+          --ignore-vuln PYSEC-2026-1325
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

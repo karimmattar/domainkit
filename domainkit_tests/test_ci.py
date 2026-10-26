@@ -27,6 +27,7 @@ RULESETS = ROOT / ".github" / "rulesets"
 SOURCE = ROOT / "src"
 SUMMARY = ROOT / ".github" / "scripts" / "mutation_summary.py"
 FLOORS = ROOT / ".github" / "scripts" / "floors.py"
+NOTES = ROOT / ".github" / "scripts" / "release_notes.py"
 EVENTS = ("push", "pull_request", "schedule", "workflow_dispatch")
 # GitHub Actions, the app whose checks the ruleset accepts.
 ACTIONS_APP = 15368
@@ -328,6 +329,7 @@ def test_actions_are_pinned_to_commits_and_tokens_only_read(name: str) -> None:
                 "attestations": "write",
             },
             "publish": {"id-token": "write"},
+            "github-release": {"contents": "write"},
         }
     if name == "codeql.yml":
         assert granted == {"analyze": {"contents": "read", "security-events": "write"}}
@@ -559,8 +561,9 @@ def test_the_workflows_are_audited_and_scanned() -> None:
     """Every workflow is audited by zizmor; CodeQL scans pull requests, weekly."""
     steps = [step.get("run", "") for step in jobs()["semgrep"]["steps"]]
     assert "zizmor --offline --format github .github/workflows" in steps
-    codeql = workflow("codeql.yml")
-    assert set(codeql[True]) == {  # YAML 1.1 reads "on" as True.
+    # YAML 1.1 reads the key "on" as True.
+    codeql: dict[object, Any] = yaml.safe_load((WORKFLOWS / "codeql.yml").read_text())
+    assert set(codeql[True]) == {
         "push",
         "pull_request",
         "schedule",
@@ -572,3 +575,44 @@ def test_the_workflows_are_audited_and_scanned() -> None:
         "github/codeql-action/init",
         "github/codeql-action/analyze",
     ]
+
+
+def test_a_release_on_github_carries_notes_files_and_checksums() -> None:
+    """After PyPI: the CHANGELOG's section, the files, the bill, their sums."""
+    job = jobs("release.yml")["github-release"]
+    run = "\n".join(step.get("run", "") for step in job["steps"])
+    assert job["needs"] == "publish"
+    assert '.github/scripts/release_notes.py "${TAG#v}" CHANGELOG.md' in run
+    assert "sha256sum" in run
+    assert "gh release create" in run
+    assert "--verify-tag" in run
+    newest = [step.get("run", "") for step in jobs()["newest"]["steps"]]
+    assert any(".newest/bin/python -m pip_audit" in each for each in newest)
+
+
+def test_the_release_notes_are_the_versions_section(tmp_path: Path) -> None:
+    """Its entries without the heading; a version without entries is an error."""
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_text(
+        "# Changelog\n\n## [Unreleased]\n\n## [1.2.0] - 2026-01-02\n\n"
+        "### Added\n\n- A thing (X-1).\n\n## [1.1.0] - 2025-12-01\n\n- Old.\n"
+        "\n## [1.0.0] - 2025-11-01\n\n",
+        encoding="utf-8",
+    )
+
+    def notes(version: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(  # noqa: S603 - the test interpreter and the repository's script.
+            [sys.executable, str(NOTES), version, str(changelog)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    assert notes("1.2.0").stdout == "### Added\n\n- A thing (X-1).\n"
+    assert notes("1.1.0").stdout == "- Old.\n"
+    for version, problem in [("1.0.0", "is empty"), ("1.3.0", "no section")]:
+        done = notes(version)
+        assert done.returncode == 1
+        assert problem in done.stderr
+    done = notes("1.2")  # A prefix of 1.2.0 is not 1.2.0.
+    assert done.returncode == 1

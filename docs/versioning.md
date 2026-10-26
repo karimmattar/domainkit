@@ -153,6 +153,9 @@ with deptry (`[tool.deptry]` in `pyproject.toml`).
      karimmattar/domainkit`);
    - waits for a reviewer to approve the `pypi` environment;
    - publishes the wheel and sdist that CI built to PyPI, with attestations.
+   - creates the GitHub Release for the tag: the CHANGELOG's section for
+     the version as its notes, and the wheel, the sdist, the bill of
+     materials, and their SHA-256 sums (`SHA256SUMS`) as its assets.
 
 One-time setup, before the first release:
 
