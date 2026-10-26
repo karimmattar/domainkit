@@ -37,6 +37,7 @@ from domainkit.http.access import (
 )
 from domainkit.http.application import application_problems
 from domainkit.resources import schema_for
+from domainkit.testing import user_token
 from domainkit_tests import gateway_project
 from domainkit_tests.gadgets import Gadget, make_gadget
 from domainkit_tests.gateway_project import (
@@ -305,3 +306,9 @@ def test_serving_the_project_imports_no_contrib_app() -> None:
         "statuses": [401, 403, 200],
         "contrib": [],
     }
+
+
+def test_test_tokens_need_a_domain_that_issues_them() -> None:
+    """Without auth, nothing issues tokens: ``user_token`` says so."""
+    with pytest.raises(ImproperlyConfigured, match="issues tokens, such as"):
+        asyncio.run(user_token("shop.view_gadget"))
