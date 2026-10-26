@@ -64,7 +64,7 @@ statuses, and the amendments they name.
 | [0044](0044-one-concurrency-budget-per-worker-process.md) | Run one concurrency budget per worker process | Accepted |
 | [0045](0045-own-background-tasks-per-loop.md) | Own background tasks per event loop, started in clean contexts | Accepted; amended 2026-10-25 (at the end) |
 | [0046](0046-one-shutdown-budget-in-phases.md) | Shut down in phases within one budget | Accepted; amended 2026-10-25 (at the end) |
-| [0047](0047-seal-from-a-high-water-mark.md) | Seal the audit trail from a high-water mark, with a short late window | Accepted; amended 2026-10-21 and 2026-10-25 (at the end) |
+| [0047](0047-seal-from-a-high-water-mark.md) | Seal the audit trail from a high-water mark, with a short late window | Accepted; amended 2026-10-21, 2026-10-25 and 2026-10-26 (at the end) |
 | [0048](0048-request-deadlines.md) | Give every request a deadline, answer 503 when it passes, and pass it on | Accepted; amended 2026-10-25 (at the end) |
 | [0049](0049-shed-load-past-a-concurrency-cap.md) | Shed load in the application: a cap per event loop, a short queue, and a fast 503 | Accepted; amended 2026-10-21 and 2026-10-25 (at the end) |
 | [0050](0050-outgoing-http-client.md) | Call other services through pooled clients that keep to the deadline | Accepted; amended 2026-10-21 (at the end) |

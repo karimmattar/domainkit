@@ -6,6 +6,7 @@ import importlib
 import io
 import logging
 import os
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
@@ -1288,6 +1289,91 @@ async def test_a_sealer_skips_while_another_seals(
     assert (await verify("default")).intact
 
 
+HELD_SESSION_LOCK = "SELECT pg_advisory_lock(hashtext('domainkit.audit.seal'))"
+"""A lock no transaction ends: a stuck sealer's, or anyone's with a connection."""
+
+
+@on_postgres
+async def test_a_held_seal_lock_still_reports_the_backlog(
+    tables: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Runs that give way count what waits, and warn past the threshold (SEC-a-1).
+
+    Before, a run that gave way reported nothing: with the lock held for
+    good, every run returned 0 at INFO, the gauge kept its last count (0),
+    and no warning ever came.
+    """
+    assert await seal("default") == 0
+    assert unsealed_gauge() == 0
+    for _ in range(5):
+        await add()
+    name = "domainkit.contrib.audit.seals"
+    with (
+        override_settings(AUDIT={"LEDGER": "audit", "SEAL_BACKLOG_WARNING": 1}),
+        caplog.at_level(logging.WARNING, name),
+    ):
+        async with connections.engine().connect() as holder:
+            await holder.execute(text(HELD_SESSION_LOCK))
+            await holder.commit()
+            outcomes = [await seal("default") for _ in range(3)]
+            gauge = unsealed_gauge()
+            await holder.execute(text("SELECT pg_advisory_unlock_all()"))
+            await holder.commit()
+
+    assert outcomes == [0, 0, 0]
+    assert gauge == 5
+    assert [r.getMessage() for r in caplog.records if r.name == name] == [
+        (
+            "Audit sealing of 'default' is behind: 5 rows wait to be sealed. "
+            "Another session holds the sealing lock (an advisory lock on "
+            "hashtext('domainkit.audit.seal'), in pg_locks); end it if no "
+            "sealer runs; until sealed, rows can be changed unnoticed"
+        )
+    ] * 3
+    assert await seal("default") == 5  # Released: the next run catches up.
+
+
+@on_postgres
+async def test_a_lock_held_across_runs_is_reported_as_a_stall(
+    tables: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A row in reach older than SEAL_EVERY and the late window, lock held: warn.
+
+    The backlog is far below SEAL_BACKLOG_WARNING; its age gives it away.
+    A new row is what a sealer at work leaves, and a row below the horizon
+    is out of every run's reach (``auditseal --late``): neither warns.
+    """
+    now = datetime.now(UTC)
+    await add(now - timedelta(hours=2))
+    assert await seal("default") == 1  # The mark: two hours ago.
+    name = "domainkit.contrib.audit.seals"
+    async with connections.engine().connect() as holder:
+        await holder.execute(text(HELD_SESSION_LOCK))
+        await holder.commit()
+        with caplog.at_level(logging.WARNING, name):
+            await add(now - timedelta(hours=3))  # Below the horizon.
+            await add(now - timedelta(minutes=1))  # New.
+            assert await seal("default") == 0
+            quiet = len(caplog.records)
+            await add(now - timedelta(hours=1))  # In reach, and old.
+            assert await seal("default") == 0
+        await holder.execute(text("SELECT pg_advisory_unlock_all()"))
+        await holder.commit()
+
+    assert quiet == 0
+    [stalled] = [r.getMessage() for r in caplog.records if r.name == name]
+    found = re.fullmatch(
+        r"Audit sealing of 'default' has not advanced for (\d+) seconds: its "
+        r"oldest unsealed row is that old\. Another session holds the sealing "
+        r"lock \(an advisory lock on hashtext\('domainkit\.audit\.seal'\), "
+        r"in pg_locks\); end it if no sealer runs; until sealed, rows can be "
+        r"changed unnoticed",
+        stalled,
+    )
+    assert found is not None
+    assert 3600 <= int(found[1]) < 3600 + 300
+
+
 @on_postgres
 async def test_a_sealer_that_meets_another_between_batches_leaves_it_the_rest(
     tables: None, monkeypatch: pytest.MonkeyPatch
@@ -1316,6 +1402,9 @@ async def test_a_sealer_that_meets_another_between_batches_leaves_it_the_rest(
 
         def __init__(self, engine: Any) -> None:  # noqa: ANN401 - an AsyncEngine.
             self.engine = engine
+
+        def connect(self) -> Any:  # noqa: ANN401 - the engine's context manager.
+            return self.engine.connect()  # A's backlog count, once it gave way.
 
         @asynccontextmanager
         async def begin(self) -> AsyncIterator[Any]:
