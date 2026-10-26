@@ -92,7 +92,7 @@ statuses, and the amendments they name.
 | [0075](0075-ranges-to-the-next-major-tested-at-the-top.md) | Declare ranges to the next major, and test the newest releases they allow | Accepted |
 | [0076](0076-public-api-is-docs-api-md.md) | The public API is what docs/api.md lists, which is every `__all__` | Accepted |
 | [0077](0077-declare-what-apps-require.md) | Declare what apps require, and reach other apps only through their public names | Accepted |
-| [0078](0078-deliver-events-in-process-after-commit-or-durably-through-the-outbox.md) | Deliver events in process after commit, or durably through the outbox | Accepted |
+| [0078](0078-deliver-events-in-process-after-commit-or-durably-through-the-outbox.md) | Deliver events in process after commit, or durably through the outbox | Accepted; amended 2026-10-26 (at the end) |
 | [0079](0079-validate-every-setting-in-one-model-and-each-app-in-its-own.md) | Validate every setting at startup: one model, and each app's own | Accepted; amended 2026-10-26 (at the end) |
 | [0080](0080-access-rules-are-core-auth-is-one-provider.md) | Access rules are core; auth is one provider | Accepted; amended 2026-10-26 (at the end) |
 | [0082](0082-signed-audit-checkpoints.md) | Prune the audit chain below signed checkpoints, in a fixed format | Accepted |
@@ -103,6 +103,8 @@ statuses, and the amendments they name.
 | [0089](0089-build-the-docs-site-with-mkdocs-and-generate-the-api-reference-from-api-md.md) | Build the docs site with MkDocs, and generate the API reference from api.md | Accepted |
 | [0090](0090-module-singletons-overridden-per-test.md) | Keep framework state in module-level singletons, overridden per test | Accepted |
 | [0092](0092-retry-units-of-work-choose-isolation-and-lock-in-order.md) | Run units of work again after a lost race, let them choose their isolation, and lock in order | Accepted |
+| [0094](0094-an-inbox-of-handled-messages-written-with-the-handlers-commit.md) | Keep an inbox of handled messages, written with the handler's commit | Accepted |
+| [0095](0095-fence-a-runs-commits-with-its-lease-instead-of-a-heartbeat.md) | Fence a run's commits with its lease, instead of a heartbeat | Accepted |
 | [0096](0096-keep-committed-idempotency-keys-as-tombstones.md) | Keep committed idempotency keys as tombstones past their TTL | Accepted |
 | [0097](0097-name-the-key-of-every-json-web-token-and-retire-keys-within-a-token-lifetime.md) | Name the key of every JSON Web Token, and retire keys within a token's lifetime | Accepted |
 | [0098](0098-share-login-throttles-and-fail-closed-where-deployed.md) | Share the attempt throttles, and fail closed, where deployed | Accepted |

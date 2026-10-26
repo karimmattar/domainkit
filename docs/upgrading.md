@@ -107,6 +107,16 @@ Each was deprecated in 0.10, with a warning that named its replacement.
 | `AUTH.REQUIRE_ROUTE_RULES`: settings that set it are refused when they load | `REQUIRE_ROUTE_RULES` | DSGN-02 |
 | `Query` from `domainkit.ddd.query` | `domainkit.ddd.Selection` | DSGN-09 |
 | `domainkit.contrib.evidence.model` | `domainkit.contrib.evidence` (or its `models`) | DSGN-09 |
+- **Messaging's new table, and stale commits refused** (FIN-80).
+  Messaging has an inbox table, `domainkit_inbox`, in every database that
+  holds an outbox: projects that install messaging run `makemigrations`
+  and `migrate` before deploying, or each worker's cleanup logs a failure
+  every round. A unit of work that a durable handler or task commits on
+  its outbox's database, after another worker took its message over (the
+  run outlived its lease), now raises `LeaseLost` and rolls back; the
+  worker holding the message runs it. Before, both runs committed. **Fix:**
+  let `LeaseLost` propagate from handlers that catch errors around their
+  commit. Nothing keeps the old behaviour: it committed the work twice.
 ## 0.9 to 0.10
 
 ### Breaking changes

@@ -538,7 +538,10 @@ no `AUDIT.LEDGER`, no `AUDIT.NAMESPACE` on it, or nothing that seals on a
 schedule, and at startup `audit.E004` and `audit.E005`, an audited
 PostgreSQL database whose `protect()` triggers could not be checked or are
 missing, unless `AUDIT.REQUIRE_BASELINE = False`;
-[contrib.md](contrib/audit.md#in-staging-and-production)); `setup()` refuses a domain whose `requires` is not
+[contrib.md](contrib/audit.md#in-staging-and-production); `messaging.E001`,
+an `@inbox` handler or task whose retries could outlast
+`MESSAGING.INBOX_RETENTION_SECONDS`,
+[messaging.md](contrib/messaging.md#once-in-the-database-the-inbox)); `setup()` refuses a domain whose `requires` is not
 installed (`apps.E001`), anywhere. `check` adds layer rules
 (`architecture.E001`) and migration heads (`migrations.E001`).
 `migrate --downgrade` also needs `--allow-data-loss` there.

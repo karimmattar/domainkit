@@ -703,6 +703,7 @@ def refused_above(
         ("SHUTDOWN_TIMEOUT", 3600),
         ("REPUBLISH_AFTER", 7 * 24 * 3600),
         ("RETENTION_SECONDS", 365 * 24 * 3600),
+        ("INBOX_RETENTION_SECONDS", 365 * 24 * 3600),
         ("CLEANUP_INTERVAL", 24 * 3600),
     ],
 )

@@ -16,6 +16,9 @@ Install it, then run ``python manage.py runworker`` next to the web process::
 
     event_bus.subscribe(UserCreated, handler, durable=True)   # in ready()
 
+    @inbox                                # its database work commits once
+    async def credit_account(event: PaymentReceived) -> None: ...
+
     @periodic(every=timedelta(hours=1))
     async def purge_expired() -> None: ...
 
@@ -27,19 +30,23 @@ from .budget import Budget
 from .outbox import enqueue
 from .registry import Chain, chain, periodic, task
 from .retry import Backoff
+from .runs import AlreadyHandled, LeaseLost, inbox
 from .settings import MessagingSettings
 from .worker import Attempt, Worker, current_attempt
 
 __all__ = [
+    "AlreadyHandled",
     "Attempt",
     "Backoff",
     "Budget",
     "Chain",
+    "LeaseLost",
     "MessagingSettings",
     "Worker",
     "chain",
     "current_attempt",
     "enqueue",
+    "inbox",
     "periodic",
     "task",
 ]

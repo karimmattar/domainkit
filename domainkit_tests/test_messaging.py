@@ -77,6 +77,7 @@ from domainkit.contrib.messaging.tables import (
     DONE,
     PENDING,
     SENSITIVE,
+    inbox,
     messages,
 )
 from domainkit.contrib.messaging.worker import Claimed, backoff
@@ -202,9 +203,10 @@ def messaging(database_url: str) -> Iterator[None]:
 
 @pytest.fixture
 async def tables(messaging: None) -> AsyncIterator[None]:
-    """Create the outbox and notes tables in this loop's engine."""
+    """Create the outbox, inbox, and notes tables in this loop's engine."""
     async with connections.engine().begin() as connection:
         await connection.run_sync(messages.create)
+        await connection.run_sync(inbox.create)
         await connection.run_sync(notes.create)
     yield
     await connections.close_all()
@@ -1204,9 +1206,10 @@ def brokered(database_url: str) -> Iterator[None]:
 
 @pytest.fixture
 async def broker_tables(brokered: None) -> AsyncIterator[MemoryBroker]:
-    """The outbox and notes tables, and this loop's in-memory broker."""
+    """The outbox, inbox, and notes tables, and this loop's in-memory broker."""
     async with connections.engine().begin() as connection:
         await connection.run_sync(messages.create)
+        await connection.run_sync(inbox.create)
         await connection.run_sync(notes.create)
     broker = brokers["work"]
     assert isinstance(broker, MemoryBroker)
