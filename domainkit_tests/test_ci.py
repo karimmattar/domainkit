@@ -168,8 +168,10 @@ def context(
 def runs(job: dict[str, Any], values: dict[str, str], needed_ran: bool) -> bool:
     """Whether ``job`` runs: its condition, and its ``needs`` unless it says.
 
-    A job whose needs did not all run is skipped, unless its condition
-    calls a status function (``!cancelled()``), as GitHub decides.
+    A job is skipped when a job it needs, or one those need in turn, did
+    not run, unless its condition calls a status function
+    (``!cancelled()``), as GitHub decides: a condition without one is read
+    as ``success() && ...``, and ``success()`` looks up the whole chain.
     """
     condition = job.get("if")
     if condition is None:
@@ -189,13 +191,15 @@ def running(event: str, *, code: str = "true") -> set[str]:
     """The jobs a run of ``event`` starts (for a pull request, by its changes)."""
     values = context(event, code=code)
     decided: dict[str, bool] = {}
+    chain: dict[str, bool] = {}  # The job, and every job above it, ran.
     pending = jobs()
     while len(decided) < len(pending):
         for name, job in pending.items():
             if name in decided or not needs(job) <= set(decided):
                 continue
-            ran = all(decided[need] for need in needs(job))
-            decided[name] = runs(job, values, ran)
+            above = all(chain[need] for need in needs(job))
+            decided[name] = runs(job, values, above)
+            chain[name] = decided[name] and above
     return {name for name, ran in decided.items() if ran}
 
 
@@ -646,7 +650,9 @@ def test_releases_publish_only_attested_files() -> None:
         "attestations": "write",
     }
     assert set(attest["needs"]) == {"build", "sbom"}
-    assert attest["if"] == "github.event_name == 'push'"
+    assert attest["if"] == (
+        "${{ !cancelled() && !failure() && github.event_name == 'push' }}"
+    )
     assert running("pull_request") & {"attest"} == set()
     assert not any("checkout" in step.get("uses", "") for step in attest["steps"])
     assert not any("run" in step for step in attest["steps"])

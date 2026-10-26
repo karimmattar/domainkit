@@ -9,6 +9,23 @@ and a status.
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-10-26
+
+The release of 0.10.0 failed before publishing (below), so 0.10.0 reached
+no package index: 0.10.1 is the first published release with 0.10.0's
+changes. Upgrade from 0.9.x to 0.10.1 as the 0.10.0 entries describe.
+
+### Fixed
+
+- A push to `main` now attests the wheel and sdist it builds. CI's
+  `attest` job ran only on pushes, by a condition with no status
+  function, which GitHub reads as `success() && ...`; `success()` fails
+  when any job above was skipped, and `changes` is skipped on a push, so
+  `attest` was skipped too, and the release of 0.10.0 refused to publish
+  files nothing had attested. The condition now starts with
+  `!cancelled() && !failure()`, as `build` and `sbom` do, and
+  `test_ci.py` reads a skipped job anywhere above as GitHub does.
+
 ## [0.10.0] - 2026-10-26
 
 A minor release: some changes break, and some names are deprecated, to be
@@ -3277,7 +3294,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/karimmattar/domainkit/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/karimmattar/domainkit/compare/v0.9.3...v0.10.0
 [0.9.3]: https://github.com/karimmattar/domainkit/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/karimmattar/domainkit/compare/v0.9.1...v0.9.2
