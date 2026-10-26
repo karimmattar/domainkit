@@ -322,6 +322,14 @@ def test_extending_keeps_every_default_and_adds_each_entry_once() -> None:
         ({"EXTRA_LAYERS": ["ports.inner"]}, "EXTRA_LAYERS.0\n  String should match"),
         ({"DOMAIN_ALLOWED": [f"k{n}" for n in range(65)]}, "at most 64 items"),
         ({"EXTRA_LAYERS": [f"l{n}" for n in range(9)]}, "at most 8 items"),
+        (
+            {"FORBIDDEN_LAYERS": {"api": ["domain"] * 13}},
+            "FORBIDDEN_LAYERS.api\n  Tuple should have at most 12 items",
+        ),
+        (
+            {"FORBIDDEN_LIBRARIES": {f"l{n}": ["x"] for n in range(13)}},
+            "FORBIDDEN_LIBRARIES\n  Dictionary should have at most 12 items",
+        ),
         ({"PUBLIC_SURFACE": ["domain"], "LAYERS": ["x"]}, "Extra inputs"),
     ],
 )

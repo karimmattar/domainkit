@@ -578,9 +578,12 @@ MAX_ARCHITECTURE_ENTRIES: Final = 64
 """The most names one ``ARCHITECTURE`` list may hold."""
 MAX_EXTRA_LAYERS: Final = 8
 """The most layers ``ARCHITECTURE.EXTRA_LAYERS`` may add."""
+MAX_LAYERS: Final = MAX_EXTRA_LAYERS + 4
+"""The most layers there can be: the four built in, and the extra ones."""
 
 type _ModuleName = Annotated[str, Field(pattern=MODULE_NAME, max_length=256)]
 type _LayerName = Annotated[str, Field(pattern=LAYER_NAME)]
+type _Layers = Annotated[tuple[_LayerName, ...], Field(max_length=MAX_LAYERS)]
 type _Modules = Annotated[
     tuple[_ModuleName, ...], Field(max_length=MAX_ARCHITECTURE_ENTRIES)
 ]
@@ -598,15 +601,15 @@ class ArchitectureConfig(BaseModel):
     DOMAIN_ALLOWED: _Modules = ()
     """More packages a domain layer may import, such as a shared kernel."""
     FORBIDDEN_LIBRARIES: dict[_LayerName, _Modules] = Field(
-        default_factory=dict, max_length=MAX_EXTRA_LAYERS + 4
+        default_factory=dict, max_length=MAX_LAYERS
     )
     """More libraries a layer must not import: ``{"application": ("httpx",)}``."""
     EXTRA_LAYERS: tuple[_LayerName, ...] = Field(
         default=(), max_length=MAX_EXTRA_LAYERS
     )
     """Layer packages of the project's own, such as ``ports``; rules name them below."""
-    FORBIDDEN_LAYERS: dict[_LayerName, tuple[_LayerName, ...]] = Field(
-        default_factory=dict, max_length=MAX_EXTRA_LAYERS + 4
+    FORBIDDEN_LAYERS: dict[_LayerName, _Layers] = Field(
+        default_factory=dict, max_length=MAX_LAYERS
     )
     """More layers of the same domain a layer must not import, by layer."""
     PUBLIC_SURFACE: _Modules = ()
