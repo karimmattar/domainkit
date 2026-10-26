@@ -5,7 +5,8 @@ it is about (the subject). Those keys live in their own table, which is not
 append-only: deleting a subject's key makes their pseudonyms unlinkable.
 
 None of the three is ever in a fixture (a copy of the keys would outlive
-``forget``), and ``flush`` keeps them all.
+``forget``), and ``flush`` keeps them all. Nor are the ledger states the
+anchors' ledger was last verified at (``ledger_states``).
 """
 
 from sqlalchemy import (
@@ -17,6 +18,7 @@ from sqlalchemy import (
     LargeBinary,
     String,
     Table,
+    Text,
     Uuid,
     false,
 )
@@ -71,4 +73,38 @@ audit_seals = Table(
 
 ``late`` marks a row sealed after it fell out of the late window
 (``auditseal --late``): it was open to change unnoticed for longer.
+"""
+
+audit_checkpoints = Table(
+    "domainkit_audit_checkpoints",
+    metadata,
+    Column("seq", BigInteger, primary_key=True, autoincrement=False),
+    Column("document", Text, nullable=False),
+    Column("signature", LargeBinary(64), nullable=False),
+    Column("made_at", UTCDateTime, nullable=False),
+    info={"domain": "audit", "append_only": True, "fixtures": False},
+)
+"""Signed checkpoints of the chain (see ``checkpoints``), where it was pruned.
+
+``document`` is the checkpoint's canonical JSON, exactly as signed:
+``verify`` takes the newest one below the chain's first seal as its
+start. Its signature, not the table, is what protects it.
+"""
+
+ledger_states = Table(
+    "domainkit_ledger_states",
+    metadata,
+    Column("ledger", String(255), primary_key=True),
+    Column("database", String(255), nullable=False),
+    Column("transaction_id", BigInteger, nullable=False),
+    Column("digest", LargeBinary(64), nullable=False),
+    Column("signature", LargeBinary(256), nullable=False),
+    Column("public_key", LargeBinary(256), nullable=False),
+    Column("saved_at", UTCDateTime, nullable=False),
+    info={"domain": "audit", "flush": False, "fixtures": False},
+)
+"""The newest state each ledger proved to a client (``domainkit.ledger.trust``).
+
+Every process and host starts from it, so a ledger rolled back to an older
+copy is refused by all of them, not only by the one that saw it first.
 """

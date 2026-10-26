@@ -960,6 +960,70 @@ person (`auditforget`) deletes a key, not a row, so the chain stays intact.
 **Upgrading.** The seals table has a new `late` column: run
 `makemigrations` and `migrate` in each project that installs audit.
 
+### Retention that keeps the chain
+
+The trail is append-only, so `privacy purge` never touches it. To keep
+it for a period and no longer, prune it below a signed checkpoint
+(`pip install "domainkit[audit]"`, for the signatures):
+
+```bash
+openssl genpkey -algorithm ed25519 -out audit-checkpoint.pem   # once, kept secret
+openssl pkey -in audit-checkpoint.pem -pubout -out audit-checkpoint.pub
+```
+
+```python
+AUDIT = {..., "CHECKPOINT_KEY": env.str("AUDIT_CHECKPOINT_KEY")}  # the PEM
+```
+
+```bash
+python manage.py auditprune --keep-days 2555   # keep seven years
+```
+
+For each audited database, `auditprune` finds the newest seal sealed
+more than `--keep-days` ago (with `AUDIT.LEDGER`, the newest anchored one,
+so the ledger vouches for it too; never the chain's head), checks the
+chain up to it as `auditverify` does, and refuses if anything there is
+wrong: pruning would hide it. It then stores a checkpoint of that seal,
+its number and link, signed with `AUDIT.CHECKPOINT_KEY` (Ed25519), in
+`domainkit_audit_checkpoints`, and deletes the rows and seals at and
+below it, the newest first, 1,000 a transaction. `auditverify` starts the
+chain from the checkpoint, so a pruned trail still verifies (it prints
+how many seals were pruned), and one tampered with still fails: a row
+changed, a seal removed, the checkpoint removed or changed, or a
+checkpoint forged to cover a deletion (signed with another key, or not
+at all) shows as a changed row, a broken link, or a checkpoint that does
+not verify. A run cut short leaves a gap the checkpoint ends, which
+verifies; the next run finishes it. Each prune is recorded, with the seal
+and the rows deleted (`audit.pruned`), and so is the command
+(`operator.auditprune`).
+
+On PostgreSQL the `protect()` triggers refuse every delete, so each batch
+disables them in its own transaction, as the tables' owner: set
+`MIGRATION_URL` to the owner's URL where the application's role is not
+it. Writers of the trail wait for that one batch (under 10 ms in our
+measurements). Run `auditprune` from cron, not more than daily.
+
+**Exports for a third party.** `python manage.py auditverify --export
+checkpoints.json` verifies every trail, then writes a new file (mode
+`0600`) with each database's stored checkpoints and one of its current
+head, each signed, and the public key's id. Whoever holds the public key
+(an auditor, a regulator) checks it without the database, the ledger, or
+your credentials:
+
+```bash
+python manage.py auditverify --check-export checkpoints.json --public-key audit-checkpoint.pub
+```
+
+or with any Ed25519 library: the format is in
+[ADR 0082](adr/0082-signed-audit-checkpoints.md). A later export of the
+same trail extends the earlier one, checkpoint by checkpoint, so an
+operator who rewrote the trail and the ledger together cannot make the
+exports agree.
+
+**Upgrading.** The checkpoints table, and the ledger states table
+([databases.md](databases.md#ledgers-immudb)), are new: run
+`makemigrations` and `migrate`.
+
 **Two sealers at once.** One sealer seals a database at a time: on
 PostgreSQL each batch takes a transaction-scoped advisory lock. A sealer
 that finds it taken (`auditseal` run by hand while the worker seals, or
@@ -1030,6 +1094,7 @@ def downgrade() -> None:
 | `SEAL_LATE_WINDOW` | 15 minutes | How far before the newest sealed row a run looks for rows that committed late, up to a day. A row later than this stays unsealed until `auditseal --late`, and `auditverify` reports it once it is a day old: keep it above your longest transaction plus the clock skew between hosts. |
 | `SEAL_BATCHES` | `100` | Batches of 1,000 rows one run seals at most (1 to 10,000); the rest wait for the next run. |
 | `SEAL_BACKLOG_WARNING` | `100000` | Rows a run leaves unsealed past which it logs a warning. |
+| `CHECKPOINT_KEY` | `None` | The Ed25519 private key, in PEM (at most 1,024 characters), that signs checkpoints: those `auditprune` prunes below, and those `auditverify --export` writes. Checked when the application starts. `None`: neither runs. |
 
 ### History
 

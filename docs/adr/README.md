@@ -28,7 +28,7 @@ statuses, and the amendments they name.
 | [0008](0008-multiple-databases-and-routing.md) | Several databases: two kinds, routed by domain | Accepted |
 | [0009](0009-sharding-with-hash-buckets.md) | Shard by key over fixed hash buckets | Accepted |
 | [0010](0010-postgresql-range-partitioning.md) | Range-partition large tables in PostgreSQL | Accepted |
-| [0011](0011-immudb-ledger-for-evidence.md) | Keep evidence in an immudb ledger, verified by the client | Accepted; keys and subjects amended by [0018](0018-evidence-subjects-are-internal-ids.md) |
+| [0011](0011-immudb-ledger-for-evidence.md) | Keep evidence in an immudb ledger, verified by the client | Accepted; keys and subjects amended by [0018](0018-evidence-subjects-are-internal-ids.md); amended 2026-10-26 (at the end) |
 | [0012](0012-caches-json-values-fail-open.md) | Caches with JSON values that fail open | Accepted |
 | [0013](0013-shared-rate-limits-in-redis.md) | Share rate limits through Redis, with GCRA on the server's clock | Accepted; amended 2026-10-25 (at the end) |
 | [0014](0014-outbox-as-record-broker-for-dispatch.md) | Keep the outbox as the record; use the broker to dispatch | Accepted |
@@ -94,6 +94,7 @@ statuses, and the amendments they name.
 | [0077](0077-declare-what-apps-require.md) | Declare what apps require, and reach other apps only through their public names | Accepted |
 | [0078](0078-deliver-events-in-process-after-commit-or-durably-through-the-outbox.md) | Deliver events in process after commit, or durably through the outbox | Accepted |
 | [0079](0079-validate-every-setting-in-one-model-and-each-app-in-its-own.md) | Validate every setting at startup: one model, and each app's own | Accepted |
+| [0082](0082-signed-audit-checkpoints.md) | Prune the audit chain below signed checkpoints, in a fixed format | Accepted |
 
 ### Decisions still without a record
 

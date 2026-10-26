@@ -9,17 +9,29 @@ and a status.
 
 ## [Unreleased]
 
-### Security
-
-- An owned webhook subscription's deliveries look host names up as its
-  owner's (`webhook-owner:<owner>`), so all of one owner's subscriptions
-  share one quarter of the guard's lookup threads. Until now the share was
-  per subscription, and whoever could make eight subscriptions to hosts
-  whose DNS never answers held all 16 threads for a first round of
-  lookups; now eight of one owner's hold 4 (WEB-04, DATA-11).
-
 ### Added
 
+- `DomainConfig.erase_subject(subject, reason)` and
+  `DomainConfig.export_subject(subject)`: what a domain keeps about a
+  person outside its aggregates (copies in deliveries, kept responses,
+  queues, a search index of your own), erased and exported by `privacy
+  erase` and `privacy export` on every installed domain. The erasure hook
+  answers counts by kind, recorded as `privacy.copies_erased` (anything
+  but lower-case kinds and whole numbers is refused, since it would go
+  into the trail); the export's answer goes under `copies` (DATA-02).
+- Webhook subscriptions can have an owner, and a self-service API lets a
+  user manage its own: `domainkit.contrib.webhooks.owned.router` (mount
+  it next to your users' routes) lists, creates, reads, changes, rotates,
+  and deletes the authenticated user's subscriptions, and lists their
+  deliveries; another owner's, or staff's, are 404. Their `owner` is the
+  user's id, or what `owned_router(owner=...)` names (a tenant). An owned
+  subscription receives only the events `expose(..., owner=...)` gives
+  its owner, never one exposed without an owner; staff's subscriptions,
+  which have none, still receive every event they want. An owner may have
+  `WEBHOOKS.MAX_SUBSCRIPTIONS_PER_OWNER` (10; 1 to 1000), erasing an
+  owner deletes theirs, and the admin API shows each one's `owner`. The
+  subscriptions table has a new `owner` column: run `makemigrations` and
+  `migrate` (DATA-11).
 - `IDEMPOTENCY.ANONYMOUS` (`"per-address"`, or `"refuse"`): what happens
   to an `Idempotency-Key` sent with no actor and none of the
   `CREDENTIAL_HEADERS`. Such a key can only be scoped to the client's
@@ -28,40 +40,51 @@ and a status.
   different body learns the key is taken. `"refuse"` answers it 400
   `idempotency_key_needs_caller` and runs nothing; the default keeps the
   behaviour of 0.9 (DATA-09).
-- `privacy erase` and `privacy export` reach the copies that apps keep
-  outside aggregates, through two new hooks every installed domain may
-  implement: `DomainConfig.erase_subject(subject, reason)`, which returns
-  what it erased as counts by kind (audited as `privacy.copies_erased`,
-  never the data), and `DomainConfig.export_subject(subject)`, whose
-  answer goes under `copies` in the export. Webhooks blank the body of
-  every delivery about the subject, cancel the pending ones, and
-  `replay` skips them; idempotency drops the responses kept for the
-  subject's own requests and for requests that committed an event about
-  them, keeping the key, so a retry gets 409
-  `idempotency_response_unavailable` and never runs again; messaging
-  blanks dead messages about the subject (by the `Personal` markers of
-  their event, or of their task's parameters), so `messages --retry`
-  refuses them, and counts the pending ones, which the erasure logs so
-  the operator runs it again once they have run. Until now each of these
-  kept the person's data after an erasure: up to 30 days in delivery
-  bodies, readable by staff and resent by `replay`; 24 hours in kept
-  responses; for good in dead messages. `docs/privacy.md` lists what
-  erasure reaches at once and what only expires. The webhook deliveries
-  and idempotency keys tables have a new `subjects` column: run
-  `makemigrations` and `migrate` (DATA-02).
-- Webhook subscriptions can have an owner, and a self-service API lets
-  a user manage its own: `domainkit.contrib.webhooks.owned.router` (mount
-  it next to your users' routes) lists, creates, reads, changes, rotates,
-  and deletes the authenticated user's subscriptions, and lists their
-  deliveries; another owner's, or staff's, are 404. Their `owner` is the
-  user's id, or what `owned_router(owner=...)` names (a tenant). An owned
-  subscription receives only the events `expose(..., owner=...)` gives
-  its owner, never one exposed without an owner; staff's subscriptions,
-  which have none, still receive every event they want. An owner may have
-  `WEBHOOKS.MAX_SUBSCRIPTIONS_PER_OWNER` (10; 1 to 1000), erasing an owner
-  deletes theirs, and the admin API shows each one's `owner`. The
-  subscriptions table has a new `owner` column: run `makemigrations` and
-  `migrate` (DATA-11).
+- Retention that keeps the audit chain: `auditprune --keep-days DAYS`
+  deletes the rows sealed before then (with `AUDIT.LEDGER`, below the
+  newest anchored seal) below a checkpoint signed with the new
+  `AUDIT.CHECKPOINT_KEY` (an Ed25519 key in PEM; the new `audit` extra
+  installs cryptography), once the chain up to it verifies, and
+  `auditverify` starts the chain from the checkpoint: a pruned trail
+  still verifies, and one tampered with, or a checkpoint forged to cover
+  a deletion, still fails. On PostgreSQL it runs as the tables' owner
+  (`MIGRATION_URL`), the `protect()` triggers off for one batch of 1,000
+  at a time. `auditverify --export FILE` writes signed checkpoints of
+  every trail that verifies, and `--check-export FILE --public-key PEM`
+  checks such a file offline, with the public key alone. The checkpoint
+  and export formats are fixed by ADR 0082. The new
+  `domainkit_audit_checkpoints` table needs `makemigrations` and
+  `migrate` (N6, N4, DATA-05; ADR 0082).
+- `domainkit.ledger.trust`: the state an immudb ledger last proved to a
+  client (`TrustedState`), kept in a `StateStore` (`use_states` registers
+  one; `MemoryStateStore`), and `LedgerRolledBack`, also exported by
+  `domainkit.ledger`. With `domainkit.contrib.audit` installed, ledgers
+  keep it in `AUDIT.DATABASE` (`domainkit_ledger_states`: run
+  `makemigrations` and `migrate`); staging and production warn when
+  evidence is installed without audit (DATA-05).
+
+### Changed
+
+- **Breaking:** an immudb ledger whose state is behind the one a client
+  last verified (rolled back to an older copy) is refused with
+  `LedgerRolledBack`, and one with another digest at the same transaction
+  (forked) with `LedgerTampered`, by every call and by `/ready`, after
+  reconnects and restarts too. Until now each client kept the trusted
+  state itself and lost it on every reconnect, restart, and in the
+  readiness probe, whose `currentState` call made the server's
+  unverified state the trusted one: each new client trusted whatever the
+  server showed it. Both clients of a ledger now verify against one state,
+  saved at each advance; the probe checks the server's signed state
+  without trusting it. To use a ledger restored from a backup on purpose,
+  delete its row from `domainkit_ledger_states` (DATA-05; ADR 0011
+  amended).
+- Evidence is `intact` by a verified read of its key's latest revision,
+  and `ImmudbLedger.revision_count` is that revision's number, instead of
+  the SDK's `history`, which nothing verifies: a server could answer one
+  revision for a key written twice. A key written once is read once
+  (DATA-05).
+- The audit rows of `privacy export` carry `copies`, the domains whose
+  copies the export holds (DATA-02).
 
 ### Deprecated
 
@@ -69,6 +92,32 @@ and a status.
   module, warns with `DomainkitDeprecationWarning` for each name taken from
   it; import them from `domainkit.contrib.evidence` (or its `models`).
   Removed in 0.11 (DSGN-09).
+
+### Security
+
+- `privacy erase` reaches the copies three apps keep. Until now each kept
+  the person's data after an erasure: up to 30 days in webhook delivery
+  bodies, readable by staff and resent by `replay`; 24 hours in responses
+  kept for `Idempotency-Key` retries; for good in dead outbox messages.
+  Webhooks now blank the body of every delivery about the subject (by
+  the `Personal` markers of its event), cancel the pending ones, and
+  `replay` skips them; idempotency drops the responses kept for the
+  subject's own requests and for requests that committed an event about
+  them, keeping the key, so a retry gets 409
+  `idempotency_response_unavailable` and never runs again; messaging
+  blanks dead messages about the subject (by the markers of their event,
+  or of their task's parameters), so `messages --retry` refuses them, and
+  counts the pending ones, which run as planned: the erasure logs them,
+  to be erased again once they have run. `docs/privacy.md` lists what
+  erasure reaches at once and what only expires. The webhook deliveries
+  and idempotency keys tables have a new `subjects` column: run
+  `makemigrations` and `migrate` (DATA-02).
+- An owned webhook subscription's deliveries look host names up as its
+  owner's (`webhook-owner:<owner>`), so all of one owner's subscriptions
+  share one quarter of the guard's lookup threads. Until now the share was
+  per subscription, and whoever could make eight subscriptions to hosts
+  whose DNS never answers held all 16 threads for a first round of
+  lookups; now eight of one owner's hold 4 (WEB-04, DATA-11).
 
 ## [0.9.2] - 2026-10-26
 

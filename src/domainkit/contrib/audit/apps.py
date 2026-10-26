@@ -8,8 +8,11 @@ from domainkit.apps import DomainConfig, registry
 from domainkit.db import SqlAlchemyUnitOfWork, map_imperatively
 from domainkit.db.routing import DatabaseRouter, router
 from domainkit.ddd import DeferredTask, DomainEvent, UnitOfWork
+from domainkit.ledger.trust import use_states
 
 from .baseline import check_at_startup, settings_problems
+from .checkpoints import signing_key
+from .ledgerstates import DatabaseStateStore
 from .models import AuditEntry
 from .recorder import event_rows, write
 from .settings import AuditSettings
@@ -30,10 +33,19 @@ class AuditConfig(DomainConfig):
         """Check where explicit records go; seal on a schedule with messaging.
 
         ``AuditEntry`` is mapped so content types give it its permission.
+        Ledgers keep the state they were last verified at in
+        ``AUDIT.DATABASE`` (``ledgerstates``), so every process starts from it.
+
+        Raises:
+            ImproperlyConfigured: ``AUDIT.CHECKPOINT_KEY`` is set but is not
+                an Ed25519 private key in PEM, or cryptography is missing.
         """
         config = registry.settings(AuditSettings)
         router.require_standalone(config.DATABASE, "AUDIT.DATABASE")
         map_imperatively(AuditEntry, audit_log)
+        use_states(DatabaseStateStore(config.DATABASE))
+        if config.CHECKPOINT_KEY is not None:
+            signing_key()  # Refuse a key that cannot sign, now.
         if registry.is_installed(MESSAGING):
             import_module(f"{self.name}.tasks")
 

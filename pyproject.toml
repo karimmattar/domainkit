@@ -52,6 +52,9 @@ jwt = ["pyjwt[crypto] (>=2.15.0,<3.0.0)"]
 # Second factors for domainkit.contrib.auth: AES-GCM for the TOTP secrets
 # it stores (auth.mfa).
 mfa = ["cryptography (>=50.0.2,<51.0.0)"]
+# Signed checkpoints of the audit trail (AUDIT.CHECKPOINT_KEY, Ed25519):
+# auditprune and auditverify --export.
+audit = ["cryptography (>=50.0.2,<51.0.0)"]
 # Ledgers for evidence (WORM): immudb's SDK, with its verified operations.
 # grpcio for TLS channels and ecdsa's signature error, both installed by
 # immudb-py, are imported directly; ecdsa from 0.19.2, past PYSEC-2026-2467.

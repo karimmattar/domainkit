@@ -12,6 +12,7 @@ from domainkit.ledger import ledgers
 from .settings import EvidenceSettings
 
 MESSAGING = "domainkit.contrib.messaging"
+AUDIT = "domainkit.contrib.audit"
 
 
 class EvidenceConfig(DomainConfig):
@@ -38,6 +39,24 @@ class EvidenceConfig(DomainConfig):
             )
         if registry.is_installed(MESSAGING):
             import_module(f"{self.name}.tasks")
+
+    def deployment_warnings(self) -> list[str]:
+        """Evidence on a ledger whose trusted state ends with the process.
+
+        Without ``domainkit.contrib.audit`` nothing keeps the state the
+        ledger last proved, so a process that starts after the ledger was
+        rolled back trusts it as it is.
+        """
+        if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS or registry.is_installed(
+            AUDIT
+        ):
+            return []
+        warning = (
+            "The evidence ledger's trusted state is kept in memory only, so a "
+            "process that starts after the ledger was rolled back trusts it: "
+            f"install {AUDIT}, which keeps it in AUDIT.DATABASE."
+        )
+        return [warning]
 
     def databases(self, router: DatabaseRouter) -> frozenset[str]:
         """None: evidence lives on a ledger, not in a SQL database."""

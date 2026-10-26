@@ -159,11 +159,30 @@ Records' history over HTTP, for staff (Django admin's "History").
 
 - `router`: The routes: records' history over HTTP, for staff (Django admin's "History").
 
+## `domainkit.contrib.audit.checkpoints`
+
+Signed checkpoints of the audit chain: where it may be pruned, what is exported.
+
+- `EXPORT_FORMAT`: What an export says it is.
+- `FORMAT`: What a checkpoint document says it is; another value is refused.
+- `Checkpoint`: The chain of `database` had `link` at seal `seq`, as signed.
+- `CheckpointInvalid`: A checkpoint, or an export, that does not verify: never trust it.
+- `check_export`: Check an export offline, with the public key alone; its checkpoints by database.
+- `key_id`: A short name of `public_key`: the first 16 hex digits of its SHA-256.
+- `load_public_key`: The Ed25519 public key in `pem`, as a verifier pins it.
+- `signing_key`: The key `AUDIT.CHECKPOINT_KEY` holds.
+
 ## `domainkit.contrib.audit.history`
 
 A record's history: the audit rows about one target or one aggregate.
 
 - `history`: The newest `limit` entries about `target`, or about `aggregate`.
+
+## `domainkit.contrib.audit.ledgerstates`
+
+Ledger states kept in `AUDIT.DATABASE`, for every process and host to start from.
+
+- `DatabaseStateStore`: Trusted ledger states, in `domainkit_ledger_states` on alias `database`.
 
 ## `domainkit.contrib.audit.protection`
 
@@ -171,6 +190,16 @@ Make the audit trail append-only in the database itself (PostgreSQL).
 
 - `protect`: Refuse UPDATE, DELETE, and TRUNCATE on `table` (the audit trail).
 - `unprotect`: Remove the protection (downgrades, retention jobs run as the owner).
+
+## `domainkit.contrib.audit.pruning`
+
+Retention that keeps the chain: prune below a signed checkpoint; export checkpoints.
+
+- `ExportRefused`: A trail does not verify: no checkpoint of it is signed.
+- `PruneRefused`: The trail cannot be pruned as asked; nothing was deleted.
+- `Pruned`: What `prune` did to one database's trail.
+- `export`: Every audited database's checkpoints, and one of its head, signed.
+- `prune`: Prune `database`'s trail below a checkpoint of its last seal before `before`.
 
 ## `domainkit.contrib.audit.tables`
 
@@ -1021,11 +1050,23 @@ Ledgers: write-once, read-many stores whose reads and writes are verified.
 - `LedgerHandler`: Create each configured ledger on first use and keep it for the process.
 - `LedgerKeyExists`: `create` found the key already written.
 - `LedgerKeyNotFound`: The key, or the requested revision of it, does not exist.
+- `LedgerRolledBack`: The ledger shows an older state than one a client verified: refused.
 - `LedgerTampered`: A proof or a server signature did not verify: do not trust the ledger.
 - `LedgerUnavailable`: The ledger could not be reached in time.
 - `LedgerWrite`: Where a verified write landed.
 - `MemoryLedger`: Revisions in a dictionary, numbered by a transaction counter.
 - `ledgers`: The process-wide ledgers: `ledgers["evidence"]`.
+
+## `domainkit.ledger.trust`
+
+The ledger state a client trusts, kept where a restart does not lose it.
+
+- `LedgerRolledBack`: The ledger shows an older state than one a client verified: refused.
+- `MemoryStateStore`: States in a dictionary: this process only (tests, and the default).
+- `StateStore`: Where ledgers keep the newest state they verified, by ledger.
+- `TrustedState`: A ledger state a client verified: where the ledger was, and its digest.
+- `registered_states`: The store an installed app registered (`use_states`); None if none.
+- `use_states`: Keep ledgers' trusted states in `store`, while these domains are installed.
 
 ## `domainkit.lifecycle`
 

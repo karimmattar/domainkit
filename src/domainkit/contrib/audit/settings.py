@@ -3,7 +3,7 @@
 from datetime import timedelta
 from typing import Final
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from domainkit.conf import DEFAULT_DB_ALIAS
 
@@ -54,3 +54,8 @@ class AuditSettings(BaseModel):
     """Batches of 1,000 rows one run seals at most; the rest wait for the next."""
     SEAL_BACKLOG_WARNING: int = Field(default=100_000, ge=1)
     """Rows left unsealed after a run past which it logs a warning."""
+    CHECKPOINT_KEY: SecretStr | None = Field(default=None, max_length=1024)
+    """The Ed25519 private key, in PEM, that signs checkpoints of the chain
+    (``checkpoints``): those ``auditprune`` prunes below, and those
+    ``auditverify --export`` writes for a verifier holding the public key.
+    None: neither runs."""

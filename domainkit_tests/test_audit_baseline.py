@@ -28,7 +28,12 @@ from domainkit.contrib.audit.protection import (
     trigger_names,
     unprotect,
 )
-from domainkit.contrib.audit.tables import audit_keys, audit_log, audit_seals
+from domainkit.contrib.audit.tables import (
+    audit_checkpoints,
+    audit_keys,
+    audit_log,
+    audit_seals,
+)
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import call_command
@@ -107,7 +112,7 @@ def deployed(monkeypatch: pytest.MonkeyPatch) -> None:
 async def tables(installed: str) -> AsyncIterator[None]:
     """Create the audit tables."""
     async with connections.engine().begin() as connection:
-        for table in (audit_log, audit_keys, audit_seals):
+        for table in (audit_log, audit_keys, audit_seals, audit_checkpoints):
             await connection.run_sync(table.create)
     yield
     await connections.close_all()
