@@ -38,11 +38,42 @@ to keep the old behaviour, for as long as the project needs it.
   rule, or `dependencies=[Public]` for a route anyone may call. **To keep
   the old behaviour:** `REQUIRE_ROUTE_RULES = False`.
 
-<!-- 0.10 placeholder for the coordinator: the **Breaking:** entries of the
-other work packages (D2, H1, A1, P1, K1) go here, one bullet each, in this
-form: what changed, the fix, and how to keep the old behaviour, ending in
-the audit id. domainkit_tests/test_docs.py fails until every audit id of a
-Breaking or Deprecated entry under [Unreleased] is on this page. -->
+- **API docs off in deployments** (WEB-08). `API_DOCS` defaults to
+  `None`, which follows `DEBUG`: with `DEBUG = False`, `/docs`, `/redoc`,
+  and `/openapi.json` are not served. **To keep them:** `API_DOCS = True`.
+- **Security headers on every response** (WEB-08). A response that sets
+  none gets `Content-Security-Policy: default-src 'none'; frame-ancestors
+  'none'`, a `Permissions-Policy` that turns powerful browser features off,
+  and `Cross-Origin-Opener-Policy: same-origin`. **Fix:** a route that
+  answers HTML for a browser sets its own policy. **To keep the old
+  headers:** `SECURE_CONTENT_SECURITY_POLICY = None` (and `None` for
+  `SECURE_PERMISSIONS_POLICY` and `SECURE_CROSS_ORIGIN_OPENER_POLICY`).
+- **Route templates in logs** (WEB-10). The access log, error lines,
+  error reports, and the request context show the matched route's template
+  (`/accounts/{account_id}`) or `unmatched`, not the path as sent. **To
+  keep the old lines:** `ACCESS_LOG_PATH = "raw"`.
+- **Queued log records carry no exception object** (CONC-04). A record
+  behind `BackgroundHandler` has its traceback formatted into `exc_text`
+  and no `exc_info`; every formatter writes the same text. **Fix:** a
+  handler that needs the exception object goes on the logger itself, not
+  behind the queue.
+- **A browser login ends the session its cookie held** (AUTH-05). **To
+  keep the old session working:** `AUTH.COOKIE.END_PREVIOUS_SESSION =
+  False`.
+- **At most 100 logins a user** (AUTH-08). A login past
+  `AUTH.MAX_LOGINS` ends the oldest; personal tokens neither count nor
+  end. **To keep the old behaviour:** `AUTH.MAX_LOGINS = 10000`.
+- **Device proofs** (SEC-r1-2). `/login` and `/session` set the
+  `__Host-dk_device` cookie, and a client that sends it is counted apart
+  from its address. **To keep the old behaviour:** `AUTH.DEVICE_TTL =
+  None`.
+- **A rolled-back or forked ledger is refused** (DATA-05). With
+  `AUDIT.LEDGER` set, an immudb ledger behind the state a client last
+  verified raises `LedgerRolledBack`, and a forked one `LedgerTampered`, on
+  every call and on `/ready`, after restarts too. **Fix:** after restoring
+  a ledger from a backup on purpose, delete its row from
+  `domainkit_ledger_states` once the restore is checked. Projects with the
+  audit app run `makemigrations` and `migrate` for the new tables.
 
 ### Deprecated, removed in 0.11
 
@@ -54,9 +85,10 @@ its replacement.
 | `from domainkit.contrib.auth import IsAuthenticated` (and `AllowAny`, `BasePermission`, `HasObjectPermissions`, `HasPermissions`, `HasScope`, `IsAuthenticatedOrReadOnly`, `IsUnscoped`, `ModelPermissions`, `NotAuthenticated`, `Public`, `Require`, `check_object_permissions`, `mark_public`, `open_routes`) | `from domainkit.http.access import ...`, the same objects | DSGN-02 |
 | `domainkit.contrib.auth.access` (all of it: the names above, and `AllOf`, `AnyOf`, `Not`, `Rule`, `SAFE_METHODS`, `MODEL_ACTIONS`, `scopes_of`) | `domainkit.http.access`; `IsAdminUser`, `IsSuperuser`, `AuthenticatedUser`, `CurrentUser`, and `current_user` stay in `domainkit.contrib.auth` | DSGN-02 |
 | `AUTH.REQUIRE_ROUTE_RULES` | `REQUIRE_ROUTE_RULES` | DSGN-02 |
-
-<!-- 0.10 placeholder for the coordinator: the other work packages'
-### Deprecated entries go in this table. -->
+| `ResourceRouter(crud=True)` without `writable=`, or without both `create=` and `update=` | `writable=[...]` naming the fields, or `writable=ALL_FIELDS` | WEB-09 |
+| `Query` from `domainkit.ddd.query` | `domainkit.ddd.Selection` | DSGN-09 |
+| `domainkit.contrib.evidence.model` | `domainkit.contrib.evidence` (or its `models`) | DSGN-09 |
+| Scoped credentials on a route that declares no rule that checks scopes (`SCOPED_CREDENTIALS = "warn"`) | `HasScope(...)`, a permission rule, or `AllowScoped()` on the route; `SCOPED_CREDENTIALS = "refuse"` refuses them now | AUTH-01 |
 
 The whole list, with the dates, is in
 [versioning.md](versioning.md#deprecations-planned-for-011), and every

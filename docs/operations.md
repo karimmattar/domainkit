@@ -93,8 +93,20 @@ seconds), then gets `503 database_busy`.
 - [performance.md](performance.md) gives what a request costs, and how many
   cores a load needs.
 
-<!-- 0.10 placeholder: the pool defaults and the sizing check from PERF-14
-(work package P1) land here, with the numbers the deployment check uses. -->
+Each process opens up to `POOL_SIZE` + `MAX_OVERFLOW` connections to
+each network database (5 + 10 by default), and admits up to
+`MAX_CONCURRENT_REQUESTS` requests at once (1000). Past about four
+requests per connection, requests wait for a connection where the
+shedding queue does not see them, up to `POOL_TIMEOUT`, then fail with
+503. `check` warns about both in staging and production: `deploy.W004`
+for a network database without `POOL_SIZE`, and `deploy.W006` for a pool
+that holds fewer than a quarter of `MAX_CONCURRENT_REQUESTS`. Size the pool
+so that processes × (`POOL_SIZE` + `MAX_OVERFLOW`) stays below the
+server's `max_connections`, with room for migrations and the worker; the
+formula is in [reference.md](reference.md#sizing-pools). The defaults stay
+as they are: with a pool of 15 and 20 ms per request, a burst of 1,000
+requests was served within 3.3 seconds at a cap of 1,000, where a cap
+sized to the pool (60) refused 840 of them.
 
 ## Migrations in a rollout
 
@@ -174,10 +186,22 @@ on a schedule, and the `protect()` triggers on both audit tables
 - `audit_unsealed_rows` is the backlog; the [runbook](runbook.md#the-seal-backlog-grows)
   says what to do when it grows.
 
-<!-- 0.10 placeholder: K1 (DATA-05, N6) adds the ledger state kept across
-restarts, the refusal or alarm when the ledger's state goes back, signed
-checkpoints from `auditverify --export`, and pruning below a checkpoint;
-describe their operation here. -->
+With `AUDIT.LEDGER`, each ledger's last verified state is kept in
+`AUDIT.DATABASE` (`domainkit_ledger_states`), shared by every process and
+replica, and survives restarts. A ledger whose state goes back (restored
+from an older copy) is refused with `LedgerRolledBack`, and one that
+forked with `LedgerTampered`: every call fails and `/ready` answers 503
+until someone looks ([runbook.md](runbook.md#the-ledgers-state-goes-back)).
+
+`auditverify --export FILE` writes signed checkpoints of every trail
+(Ed25519, `AUDIT.CHECKPOINT_KEY`) for an auditor, and `auditverify
+--check-export FILE --public-key PEM` checks such a file offline, without
+the databases. `auditprune --keep-days DAYS` removes rows sealed before
+then: it verifies the chain up to the newest anchored seal before the cut,
+stores a signed checkpoint, then deletes the oldest rows newest first, so a
+run cut short still verifies and the next one finishes it. `auditverify`
+starts from that checkpoint. Keep the checkpoint key out of the database,
+and its public key where auditors can find it.
 
 ## Backups and restores
 

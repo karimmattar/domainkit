@@ -155,9 +155,26 @@ unsealed rows.
   ledger answers (`/ready` checks it); the next sealing run anchors.
 - Old unsealed rows: see [the seal backlog](#the-seal-backlog-grows).
 
-<!-- 0.10 placeholder (K1, DATA-05): "The ledger's state goes back": the
-alarm or refusal when immudb answers with a state older than the one the
-service verified, and what to do about it. -->
+## The ledger's state goes back
+
+**You see** `LedgerRolledBack` (the ledger is behind the state this
+service verified) or `LedgerTampered` (it forked: another digest at the
+same transaction) in the logs, every audited write and evidence check
+failing, and `/ready` answering 503.
+
+The ledger no longer holds what the service anchored, so domainkit
+refuses to write to it or check against it rather than trust it.
+
+1. Treat it as an incident until shown otherwise: someone restored an
+   older copy, or changed the ledger's storage.
+2. Ask the ledger's operators whether a restore happened, and when.
+3. Run `auditverify` against the databases. If the chain verifies and the
+   restore was deliberate, delete the ledger's row from
+   `domainkit_ledger_states`; the next call trusts the restored state and
+   records it again.
+4. If no one restored it, keep the service refused, keep the ledger's
+   storage for investigation, and check the last export
+   (`auditverify --check-export`) against the databases.
 
 ## A cache fails
 
