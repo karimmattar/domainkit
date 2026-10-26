@@ -2,13 +2,12 @@
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, Final
 
 from fastapi import APIRouter, FastAPI
 from fastapi.telemetry import TelemetryConfig
-from pydantic import TypeAdapter
 from starlette.types import Receive, Scope, Send
 
 from domainkit import setup
@@ -64,9 +63,6 @@ REQUESTS: Final = frozenset({"http", "websocket"})
 """The scope types FastAPI measures."""
 BUILT_PROBLEMS: Final = "domainkit_problems"
 """``app.state`` key: the problems found when the application was built."""
-LEGACY_SETTINGS: Final = "AUTH"
-LEGACY_ROUTE_RULES: Final = "REQUIRE_ROUTE_RULES"
-"""``AUTH.REQUIRE_ROUTE_RULES``: deprecated for ``REQUIRE_ROUTE_RULES`` in 0.10."""
 
 
 class Application(FastAPI):
@@ -208,7 +204,7 @@ def application_problems(app: FastAPI) -> list[str]:
         CheckMessage("openapi.E001", problem)
         for problem in duplicate_operation_ids(app)
     ]
-    if route_rules_required():
+    if settings.REQUIRE_ROUTE_RULES:
         problems.extend(
             CheckMessage("security.E101", problem)
             for problem in route_rule_problems(app)
@@ -217,20 +213,6 @@ def application_problems(app: FastAPI) -> list[str]:
         problem for config in registry for problem in config.check_application(app)
     )
     return problems
-
-
-def route_rules_required() -> bool:
-    """``REQUIRE_ROUTE_RULES``, unless ``AUTH.REQUIRE_ROUTE_RULES`` turns it off.
-
-    The setting was ``domainkit.contrib.auth``'s until 0.10, which still
-    reads it there (and warns that it is deprecated, removed in 0.11).
-    """
-    if not settings.REQUIRE_ROUTE_RULES:
-        return False
-    legacy = getattr(settings, LEGACY_SETTINGS, None)
-    if isinstance(legacy, Mapping) and LEGACY_ROUTE_RULES in legacy:
-        return TypeAdapter(bool).validate_python(legacy[LEGACY_ROUTE_RULES])
-    return True
 
 
 def check_started(app: FastAPI) -> None:

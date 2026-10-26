@@ -21,9 +21,11 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Final
 
 from sqlalchemy import ColumnElement, Update, and_, select, update
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from domainkit import clock
 from domainkit.db import connections
@@ -31,7 +33,7 @@ from domainkit.db.query import contains_text
 from domainkit.ddd import ConcurrentUpdate
 from domainkit.ddd.personal import SEPARATOR, tagged_with
 
-from .statements import holder
+from .statements import ClockStatements, holder
 from .tables import idempotency_keys
 
 
@@ -117,11 +119,40 @@ def mark_committed(operation: Operation) -> Update:
     )
 
 
+async def purge(
+    connection: AsyncConnection,
+    built: ClockStatements,
+    now: datetime | None,
+    tombstone_seconds: float,
+    batch: int | None,
+) -> int:
+    """Delete expired keys; keep those that may have committed as tombstones.
+
+    Up to ``batch`` rows each (every one: None). A key whose request
+    committed or pinned it loses its response, headers, and ``subjects``,
+    and is kept ``tombstone_seconds`` more, so its retries still get 409;
+    the tombstone is deleted once that time has passed too (FIN-84). Returns
+    the most rows one statement touched: a whole batch means more may wait.
+    """
+    tombstones = tombstone_seconds > 0
+    swept = await connection.execute(
+        built.sweep(batch, tombstones), built.sweep_values(now)
+    )
+    if not tombstones:
+        return int(swept.rowcount)
+    buried = await connection.execute(
+        built.bury(batch), built.bury_values(now, tombstone_seconds)
+    )
+    return max(int(swept.rowcount), int(buried.rowcount))
+
+
 async def erase_subject(database: str, subject: str) -> int:
     """Drop the kept responses about ``subject``; return how many.
 
     The keys stay, with their status: a retry gets 409
     ``idempotency_response_unavailable`` rather than running again.
+    Tombstones hold no response and name no one (only the hash of caller
+    and key every key row has), so there is nothing of theirs to find.
     """
     async with connections.engine(database).begin() as connection:
         named = contains_text(

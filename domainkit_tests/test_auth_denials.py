@@ -2,9 +2,9 @@
 
 The PoCs of AUTH-01 with auth's own tokens: a personal token limited to
 ``shop.view_product`` used to write to ``POST /notes``, guarded by
-``Require()`` alone, and read ``AuthenticatedUser`` routes. 0.10 lets it
-through with a warning by default and refuses it with
-``SCOPED_CREDENTIALS = "refuse"``.
+``Require()`` alone, and read ``AuthenticatedUser`` routes. 0.11 refuses
+it by default (``SCOPED_CREDENTIALS = "refuse"``); ``"warn"`` lets it
+through with a log line, as 0.10 did by default.
 
 A refusal of a user (403) used to leave nothing in the audit trail; it now
 records ``auth.access``, denied, with the actor, the route's template, and
@@ -19,9 +19,9 @@ import pytest
 from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.audit import apps as audit_apps
-from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.http import access
 from domainkit.http.access import SCOPES_UNBOUNDED
+from domainkit.log import SECURITY_LOGGER
 from domainkit_tests.conftest import AUTH, Api
 from domainkit_tests.test_auth_http import (
     audited,
@@ -42,8 +42,10 @@ def fresh_samples() -> Iterator[None]:
     access.denials.clear()
 
 
-def test_a_read_only_token_writes_where_no_scope_is_checked(identity: Api) -> None:
-    """The PoC of AUTH-01, as 0.9 answered it, with 0.10's warning.
+def test_a_read_only_token_writes_where_no_scope_is_checked_under_warn(
+    identity: Api, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The PoC of AUTH-01, as 0.9 answered it, with ``"warn"``'s log line.
 
     A token limited to viewing products writes a note and reads a route
     guarded by ``AuthenticatedUser`` alone.
@@ -52,20 +54,25 @@ def test_a_read_only_token_writes_where_no_scope_is_checked(identity: Api) -> No
     grant("alice", VIEW)
     client = identity()
     scoped = bearer(make(client, user_session(client), scopes=[VIEW]).json()["token"])
+    caplog.set_level(logging.WARNING, logger=SECURITY_LOGGER)
 
-    with pytest.warns(DomainkitDeprecationWarning, match="POST /notes"):
+    with override_settings(SCOPED_CREDENTIALS="warn"):
         wrote = client.post("/notes", headers=scoped)
-    with pytest.warns(DomainkitDeprecationWarning, match="GET /mine"):
         read = client.get("/mine", headers=scoped)
 
     assert wrote.json() == {"user": "alice", "scheme": "token"}
     assert read.json() == {"user": "alice"}
+    logged = [r.getMessage() for r in caplog.records if r.name == SECURITY_LOGGER]
+    assert len(logged) == 2
+    assert "scopes called POST /notes, which declares no rule" in logged[0]
+    assert "scopes called GET /mine, which declares no rule" in logged[1]
+    assert audited("auth.access") == []
 
 
 def test_a_read_only_token_is_refused_where_no_scope_is_checked(
     identity: Api,
 ) -> None:
-    """``SCOPED_CREDENTIALS = "refuse"``: the token does only what its scopes say.
+    """By default (``"refuse"``): the token does only what its scopes say.
 
     Logging out and reading who one is say ``AllowScoped``, and still work.
     """
@@ -75,19 +82,18 @@ def test_a_read_only_token_is_refused_where_no_scope_is_checked(
     login_headers = user_session(client)
     scoped = bearer(make(client, login_headers, scopes=[VIEW]).json()["token"])
 
-    with override_settings(SCOPED_CREDENTIALS="refuse"):
-        for refused in (
-            client.post("/notes", headers=scoped),
-            client.get("/mine", headers=scoped),
-        ):
-            assert refused.status_code == 403
-            assert refused.json()["detail"] == SCOPES_UNBOUNDED
-        assert client.get("/scoped/mine", headers=scoped).json() == {"user": "alice"}
-        assert client.get("/auth/me", headers=scoped).json()["permissions"] == [VIEW]
-        assert client.post("/notes", headers=login_headers).status_code == 200
-        assert client.get("/mine", headers=login_headers).status_code == 200
-        assert client.post("/auth/logout", headers=scoped).status_code == 204
-        assert client.get("/scoped/mine", headers=scoped).status_code == 401
+    for refused in (
+        client.post("/notes", headers=scoped),
+        client.get("/mine", headers=scoped),
+    ):
+        assert refused.status_code == 403
+        assert refused.json()["detail"] == SCOPES_UNBOUNDED
+    assert client.get("/scoped/mine", headers=scoped).json() == {"user": "alice"}
+    assert client.get("/auth/me", headers=scoped).json()["permissions"] == [VIEW]
+    assert client.post("/notes", headers=login_headers).status_code == 200
+    assert client.get("/mine", headers=login_headers).status_code == 200
+    assert client.post("/auth/logout", headers=scoped).status_code == 204
+    assert client.get("/scoped/mine", headers=scoped).status_code == 401
 
     rows = audited("auth.access")
     assert [row["details"] for row in rows] == [

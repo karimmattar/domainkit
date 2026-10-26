@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from typing import Final, Literal, Protocol, runtime_checkable
 
 from domainkit.apps import registry
+from domainkit.conf import settings
+from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.context import RequestContext, bind_request
 
 from .base import CommandError
@@ -118,6 +120,26 @@ def _checked(name: str, source: Source, where: str) -> Operator:
             "--operator NAME."
         )
     return Operator(name, source)
+
+
+def require_named(who: Operator | None, command: str) -> None:
+    """Refuse an operator nobody named, in staging and production.
+
+    ``loaddata`` and ``flush`` there need ``--operator`` or
+    ``DOMAINKIT_OPERATOR``: the login name, or ``uid-<n>``, is what the
+    process happens to run as, not who chose to write or delete rows.
+
+    Raises:
+        CommandError: ``ENVIRONMENT`` is deployed and ``who`` is the
+            process's user (source ``system``), or nobody.
+    """
+    if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS and (
+        who is None or who.source == "system"
+    ):
+        raise CommandError(
+            f"Name the operator who runs {command} in {settings.ENVIRONMENT}: "
+            f"give --operator NAME, or set {OPERATOR_VARIABLE}."
+        )
 
 
 @contextmanager

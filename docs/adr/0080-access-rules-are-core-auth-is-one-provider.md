@@ -1,6 +1,6 @@
 # 0080. Access rules are core; auth is one provider
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-26 (at the end)
 - Date: 2026-10-26
 
 ## Context
@@ -87,3 +87,27 @@ checkers only.
   names keep their types.
 - A new kind of authentication is a middleware and a principal class; a
   new capability the core needs of an app is a protocol, never an import.
+
+## Amendment (2026-10-26, 0.11): the old names and setting are gone
+
+0.11 removes what 0.10 kept for one minor (DSGN-02):
+
+- The moved names no longer import from `contrib.auth` or
+  `contrib.auth.access`; the modules lose their `moved` hooks.
+  `contrib.auth.access` stays, with what reads auth's own users. An old
+  import fails as Python makes it fail, `ImportError: cannot import name
+  'Require' from 'domainkit.contrib.auth'`, without a message of
+  domainkit's that names the new place. A hook that kept one was tried and
+  not taken: a module `__getattr__` that raises `AttributeError` loses its
+  message on `from ... import`, the way every page wrote the import
+  (Python reports only "cannot import name"); one that raises
+  `ImportError` breaks `hasattr` on the module; and either makes mypy
+  accept any name from the module, so `from domainkit.contrib.auth import
+  Require, Requir` type-checks, where without one mypy reports `Module
+  "domainkit.contrib.auth" has no attribute "Require"` before anything
+  runs. The CHANGELOG and `docs/upgrading.md` name the new place.
+- `AUTH.REQUIRE_ROUTE_RULES` is refused when the `AUTH` settings are
+  validated, every process, with a message naming `REQUIRE_ROUTE_RULES`;
+  `AUTH`'s model forbids unknown keys anyway, but "Extra inputs are not
+  permitted" would not say where the setting went. The core reads only
+  `REQUIRE_ROUTE_RULES`.

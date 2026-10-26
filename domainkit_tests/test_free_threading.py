@@ -67,8 +67,9 @@ from domainkit.contrib.contenttypes import InstalledModel, content_type_key
 from domainkit.contrib.idempotency import statements as idempotency_statements
 from domainkit.contrib.idempotency.middleware import PURGE_BATCH, Sweeps
 from domainkit.contrib.messaging import MessagingSettings, dispatch
-from domainkit.db import Reads, connections
+from domainkit.db import Isolation, Reads, connections
 from domainkit.db import models as content_registry
+from domainkit.db import uow as sql_uow
 from domainkit.db.connections import (
     _begin_snapshot,
     _drop_detail,
@@ -1129,6 +1130,39 @@ def test_loops_on_threads_get_their_own_engines(
         asyncio.run(use(close=True))
     with connections._lock:
         assert len(list(engines)) <= THREADS * LOOPS // 2 + 1  # Unclosed loops'.
+
+
+def test_loops_on_threads_keep_their_own_isolated_engines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each loop's engine gets one engine per isolation level; closing drops them."""
+    isolated = CheckedRegistry[AsyncEngine, Any](sql_uow._ISOLATED_LOCK)
+    monkeypatch.setattr(sql_uow, "_ISOLATED", isolated)
+    network = "postgresql+asyncpg://app@db.invalid/app"  # Never connected to.
+    kept: list[AsyncEngine] = []  # Alive, so no two are told apart by a reused id.
+
+    async def use() -> bool:
+        engine = connections.engine()
+        binds = [
+            sql_uow._isolated(engine, level)
+            for level in (Isolation.SERIALIZABLE, Isolation.REPEATABLE_READ) * 2
+        ]
+        kept.extend(binds[:2])
+        await connections.close_all()
+        return (
+            binds[0] is binds[2]
+            and binds[1] is binds[3]
+            and binds[0] is not binds[1]
+            and all(bind.sync_engine.pool is engine.sync_engine.pool for bind in binds)
+        )
+
+    def loops(index: int) -> list[bool]:
+        return [asyncio.run(use()) for _ in range(LOOPS // 5)]
+
+    with override_settings(DATABASES={"default": {"URL": network}}):
+        assert on_threads(loops) == [[True] * (LOOPS // 5)] * THREADS
+    with sql_uow._ISOLATED_LOCK:
+        assert list(isolated) == []  # Gone with the engines closing dropped.
 
 
 def own_listeners(engine: AsyncEngine) -> list[Any]:

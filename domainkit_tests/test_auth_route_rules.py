@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from fastapi import APIRouter, Depends, FastAPI, WebSocket
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
@@ -16,7 +17,7 @@ from starlette.routing import Host, Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 
 from domainkit.conf import override_settings
-from domainkit.deprecation import DomainkitDeprecationWarning
+from domainkit.contrib.auth import AuthSettings
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.http.access import (
@@ -225,8 +226,15 @@ def test_each_way_of_reading_the_user(kind: str) -> None:
 
 @pytest.fixture
 def open_project(use_auth: UseAuth) -> None:
-    """Auth installed, with routes some of which declare no rule."""
-    use_auth(settings={"ROOT_ROUTER": f"{ROUTES}.router", "MIDDLEWARE": MIDDLEWARE[:3]})
+    """Auth installed, with routes some of which declare no rule.
+
+    Attempts are counted in memory, as one process does (``auth.E105``
+    would refuse them in staging and production, besides the routes).
+    """
+    use_auth(
+        REQUIRE_SHARED_THROTTLES=False,
+        settings={"ROOT_ROUTER": f"{ROUTES}.router", "MIDDLEWARE": MIDDLEWARE[:3]},
+    )
 
 
 @pytest.mark.usefixtures("open_project")
@@ -310,7 +318,10 @@ def test_deployments_refuse_to_start_with_routes_added_late(
     use_auth: UseAuth, environment: str
 ) -> None:
     """Staging and production refuse to start, as they refuse to build."""
-    use_auth(settings={"ROOT_ROUTER": None, "MIDDLEWARE": MIDDLEWARE[:3]})
+    use_auth(
+        REQUIRE_SHARED_THROTTLES=False,
+        settings={"ROOT_ROUTER": None, "MIDDLEWARE": MIDDLEWARE[:3]},
+    )
     with override_settings(ENVIRONMENT=environment):
         app = get_asgi_application()
         app.include_router(late_router())
@@ -353,6 +364,7 @@ def test_check_reports_open_routes() -> None:
 def test_projects_can_allow_open_routes(use_auth: UseAuth) -> None:
     """``REQUIRE_ROUTE_RULES = False``: routes may stay open."""
     use_auth(
+        REQUIRE_SHARED_THROTTLES=False,
         settings={
             "ROOT_ROUTER": f"{ROUTES}.router",
             "MIDDLEWARE": MIDDLEWARE[:3],
@@ -368,25 +380,23 @@ def test_projects_can_allow_open_routes(use_auth: UseAuth) -> None:
     )
 
 
-def test_the_auth_setting_still_allows_open_routes_with_a_warning(
-    use_auth: UseAuth,
-) -> None:
-    """``AUTH.REQUIRE_ROUTE_RULES = False`` works until 0.11, and warns."""
-    with pytest.warns(
-        DomainkitDeprecationWarning,
-        match=r"^AUTH\.REQUIRE_ROUTE_RULES moved to REQUIRE_ROUTE_RULES, .* "
-        r"removed in 0\.11\.$",
-    ):
-        use_auth(
-            REQUIRE_ROUTE_RULES=False,
-            settings={"ROOT_ROUTER": f"{ROUTES}.router", "MIDDLEWARE": MIDDLEWARE[:3]},
+def test_the_auth_setting_is_refused_naming_its_successor(use_auth: UseAuth) -> None:
+    """``AUTH.REQUIRE_ROUTE_RULES``, removed in 0.11, stops startup, whatever its value.
+
+    The message names ``REQUIRE_ROUTE_RULES``, which turns the check off now.
+    """
+    project = {"ROOT_ROUTER": f"{ROUTES}.router", "MIDDLEWARE": MIDDLEWARE[:3]}
+    for value in (False, True):
+        with pytest.raises(ImproperlyConfigured) as refused:
+            use_auth(REQUIRE_ROUTE_RULES=value, settings=project)
+        assert str(refused.value) == (
+            "Invalid AUTH settings:\n  settings: Value error, "
+            "AUTH.REQUIRE_ROUTE_RULES was removed in 0.11: set REQUIRE_ROUTE_RULES, "
+            "a setting of its own, outside AUTH"
         )
-    with override_settings(ENVIRONMENT="production"):
-        assert application_problems(get_asgi_application()) == []
-    with override_settings(AUTH={"REQUIRE_ROUTE_RULES": True}):
-        assert application_problems(get_asgi_application()) != []
-    with override_settings(REQUIRE_ROUTE_RULES=False, AUTH={}):
-        assert application_problems(get_asgi_application()) == []
+    with pytest.raises(ValidationError, match="valid dictionary or instance"):
+        AuthSettings.model_validate(["REQUIRE_ROUTE_RULES"])
+    assert AuthSettings.model_validate(AuthSettings()) == AuthSettings()
 
 
 def test_rules_need_the_middleware(use_auth: UseAuth) -> None:

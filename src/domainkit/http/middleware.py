@@ -71,7 +71,7 @@ __all__ = [
 
 REQUEST_ID_HEADER: Final = "X-Request-ID"
 _REQUEST_ID_NAME: Final = REQUEST_ID_HEADER.lower().encode("latin-1")
-# Accept caller-supplied ids only in a safe, bounded format; otherwise mint one.
+# Accept a proxy's ids only in a safe, bounded format; otherwise mint one.
 _REQUEST_ID: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _HOST: Final = re.compile(r"([a-z0-9.-]+|\[[a-f0-9]*:[a-f0-9.:]+\])(?::[0-9]+)?")
 """A valid Host header (lowercased): the host, then an optional port."""
@@ -495,6 +495,14 @@ class RequestContextMiddleware:
     route's template (``/accounts/{account_id}``), or ``unmatched``
     (``RoutedRequestContext``): ids, tokens, and emails in paths stay out
     of logs. ``ACCESS_LOG_PATH = "raw"`` shows the path as sent instead.
+
+    The request id is the ``X-Request-ID`` a trusted proxy sent, the one
+    ``ProxyHeadersMiddleware`` (before this one) believed, if it is up to
+    128 letters, digits, ``.``, ``_``, ``:``, or ``-``; else a new one
+    (``new_request_id``). A caller's own header is dropped: it would name
+    the lines, reports, audit rows, and outgoing calls of its request.
+    ``ACCEPT_REQUEST_ID`` takes any caller's (``"anyone"``) or nobody's
+    (``"never"``) instead.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -507,6 +515,11 @@ class RequestContextMiddleware:
         )
         self.raw_path = settings.ACCESS_LOG_PATH == "raw"
         """Whether logs show the path as sent, not the route's template."""
+        accept = settings.ACCEPT_REQUEST_ID
+        self.ids_from_anyone = accept == "anyone"
+        """Whether any caller's ``X-Request-ID`` is read."""
+        self.ids_from_proxies = accept == "proxies"
+        """Whether a trusted proxy's is (``PEER`` in the scope)."""
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Serve one request, or one WebSocket connection, inside its context."""
@@ -514,7 +527,11 @@ class RequestContextMiddleware:
             await self.app(scope, receive, send)
             return
         websocket = scope["type"] == "websocket"
-        supplied = _header(scope, _REQUEST_ID_NAME)
+        supplied = (
+            _header(scope, _REQUEST_ID_NAME)
+            if self.ids_from_anyone or (self.ids_from_proxies and PEER in scope)
+            else None
+        )
         request_id = (
             supplied
             if supplied and _REQUEST_ID.fullmatch(supplied)

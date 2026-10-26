@@ -352,6 +352,35 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
             raise self.not_found(id_)
         return found
 
+    async def get_many_for_update(
+        self, ids: Iterable[IdT], *, nowait: bool = False, skip_locked: bool = False
+    ) -> dict[IdT, AggregateT]:
+        """The aggregates ``ids``, their rows locked in the order of their ids.
+
+        The rows are locked in one statement, by ascending id, whatever the
+        order of ``ids``: two transactions that lock overlapping sets this
+        way take the locks in the same order, so one waits for the other
+        and they cannot deadlock. The answer maps each id to its aggregate,
+        by ascending id. ``nowait`` raises ``LockNotAvailable`` instead of
+        waiting; with ``skip_locked``, locked (and missing) aggregates are
+        left out. SQLite has no row locks: there they are read without one.
+
+        Raises:
+            NotFound: An id names no aggregate (``not_found(id_)``).
+            LockNotAvailable: Another transaction holds a lock, with ``nowait``.
+        """
+        wanted = list(dict.fromkeys(ids))
+        if not wanted:
+            return {}
+        lock = RowLock(nowait=nowait, skip_locked=skip_locked)
+        selection = Selection(F(ID).in_(wanted), lock=lock)
+        found = {aggregate.id: aggregate for aggregate in await self.filter(selection)}
+        if not skip_locked:
+            for id_ in wanted:
+                if id_ not in found:
+                    raise self.not_found(id_)
+        return found
+
     def not_found(self, id_: IdT) -> NotFound:
         """Build the error for a missing aggregate; override for a domain error."""
         return NotFound(f"No aggregate has id {id_}.")
@@ -534,22 +563,34 @@ class InMemoryRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
         ]
 
     def _snapshot(self) -> object:
-        """The stored aggregates, and the fields of each one and its entities."""
-        return dict(self.items), {
-            key: _fields(aggregate) for key, aggregate in self.items.items()
-        }
+        """The stored aggregates, their entities' fields, and their events' count."""
+        return (
+            dict(self.items),
+            {key: _fields(aggregate) for key, aggregate in self.items.items()},
+            {
+                key: len(aggregate.pending_events)
+                for key, aggregate in self.items.items()
+            },
+        )
 
     def _restore(self, snapshot: object) -> None:
-        """Put the stored aggregates, and their entities' fields, back."""
-        items, states = cast(
-            "tuple[dict[IdT, AggregateT], dict[IdT, Fields]]", snapshot
+        """Put the stored aggregates, their entities' fields, and their events back.
+
+        Events recorded since are dropped, also by an aggregate loaded only
+        after the snapshot (``_rewind`` drops those of aggregates seen before).
+        """
+        items, states, events = cast(
+            "tuple[dict[IdT, AggregateT], dict[IdT, Fields], dict[IdT, int]]",
+            snapshot,
         )
         self.items.clear()
         self.items.update(items)
-        for key in items:
+        for key, aggregate in items.items():
             for entity, fields in states[key]:
                 for name, value in fields.items():
                     setattr(entity, name, value)
+            for event in aggregate.pull_events()[: events[key]]:
+                aggregate.record(event)
 
     def _finished(self) -> None:
         """Release this repository's row locks."""

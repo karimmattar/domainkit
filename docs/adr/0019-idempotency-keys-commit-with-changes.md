@@ -1,6 +1,6 @@
 # 0019. Mark idempotency keys committed in the transaction of the changes
 
-- Status: Accepted; leases added by [0020](0020-lease-idempotency-keys.md); amended by [0085](0085-register-hooks-by-type-for-the-domains-that-have-them.md)
+- Status: Accepted; leases added by [0020](0020-lease-idempotency-keys.md); amended by [0085](0085-register-hooks-by-type-for-the-domains-that-have-them.md); amended 2026-10-26 (at the end) by [0096](0096-keep-committed-idempotency-keys-as-tombstones.md)
 - Date: 2026-10-18
 
 ## Context
@@ -60,3 +60,14 @@ Options considered:
   `makemigrations` and `migrate`.
 - A key still in progress after a crash keeps answering 409 until it
   expires. Leases for such keys are a separate change.
+
+## Amendment (2026-10-26, 0.11): at most once, past the TTL too
+
+"A keyed request's changes commit at most once" held only for
+`TTL_SECONDS`: once the key expired, the purge deleted it, or the next
+claim replaced it, and a retry ran the changes again (FIN-84). An expired
+key that committed, or was pinned, is now kept as a tombstone, without its
+response, for `TOMBSTONE_SECONDS` more (7 days by default), and its
+retries get the 409 `idempotency_response_unavailable` this record
+introduced, with a message that says the response is no longer kept
+([0096](0096-keep-committed-idempotency-keys-as-tombstones.md)).

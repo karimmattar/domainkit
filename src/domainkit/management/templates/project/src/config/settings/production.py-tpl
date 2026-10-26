@@ -2,13 +2,15 @@
 
 Set {{ prefix }}SETTINGS_MODULE=config.settings.production,
 {{ prefix }}ALLOWED_HOSTS (comma-separated), {{ prefix }}DATABASE_URL,
-{{ prefix }}SECRET_KEY (50 random characters or more: python -c "import
-secrets; print(secrets.token_urlsafe(50))"; better as {{ prefix }}SECRET_KEY_FILE),
+{{ prefix }}REDIS_URL (rediss://, with a password), {{ prefix }}SECRET_KEY (50
+random characters or more: python -c "import secrets;
+print(secrets.token_urlsafe(50))"; better as {{ prefix }}SECRET_KEY_FILE),
 and {{ prefix }}TRUSTED_PROXIES: the networks of the load balancers or proxies
 in front of the application (comma-separated, such as 10.0.0.0/8), or empty
 when callers connect directly. Startup fails when one is missing, and the
 deployment checks refuse DEBUG, wildcard hosts, weak keys, proxies trusted
-from every address, and network databases without verified TLS. To replace
+from every address, network databases without verified TLS, and password
+and code guesses counted in each process rather than in Redis. To replace
 the key, move the old one to {{ prefix }}SECRET_KEY_FALLBACKS until what it
 signed has expired. The API docs
 are off, browsers are told to use HTTPS only, and callers are rate limited;
@@ -35,17 +37,28 @@ DATABASES = {
 }
 API_DOCS = env.bool("API_DOCS", False)
 SECURE_HSTS_SECONDS = env.int("SECURE_HSTS_SECONDS", 31_536_000)  # A year.
-# Counted per process, and so are password and code guesses (check warns):
-# with several processes or replicas, count in Redis:
-# RATE_LIMIT_BACKEND = "domainkit.http.ratelimit.RedisBackend"
 RATE_LIMIT = env.str("RATE_LIMIT", "300/minute")
+# Requests, and password and code guesses, are counted in Redis, once for
+# every process and replica; counted in each process, a guesser would get
+# the rates once per process, so startup refuses that here (auth.E105).
+# While Redis is down, password and code checks are refused with 503.
+RATE_LIMIT_BACKEND = "domainkit.http.ratelimit.RedisBackend"
+RATE_LIMIT_CACHE = "shared"
 # Who a token names is kept for 5 seconds per process, so a revoked token
-# works up to 5 seconds longer in the other replicas; with a Redis cache in
-# CACHES, every replica sees a revocation at once:
+# works up to 5 seconds longer in the other replicas; with the shared cache,
+# every replica sees a revocation at once:
 # AUTH = {"PRINCIPAL_CACHE": {"STAMPS": "shared"}}
 # A cache computation goes on after the request that started it ends; bound
-# it, so one that hangs frees its key instead of holding it until a restart:
-CACHES = {"default": {"COMPUTE_TIMEOUT": 30.0}}  # REQUEST_TIMEOUT's default.
+# it, so one that hangs frees its key instead of holding it until a restart.
+# 30 seconds is REQUEST_TIMEOUT's default.
+CACHES = {
+    "default": {"COMPUTE_TIMEOUT": 30.0},
+    "shared": {
+        "URL": env.str("REDIS_URL"),
+        "KEY_PREFIX": "{{ project }}",
+        "COMPUTE_TIMEOUT": 30.0,
+    },
+}
 LOGGING = build_logging_config(log_format="json", level=env.str("LOG_LEVEL", "INFO"))
 # 0.1 writes about one successful request in ten (docs/runtime.md, "Sampling
 # the access log"); every answer from 400 up, and slow ones, are always written.

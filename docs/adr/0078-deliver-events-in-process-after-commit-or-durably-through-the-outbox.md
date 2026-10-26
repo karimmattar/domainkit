@@ -1,7 +1,7 @@
 # 0078. Deliver events in process after commit, or durably through the outbox
 
-- Status: Accepted
-- Date: 2026-10-25
+- Status: Accepted; amended 2026-10-26 (at the end)
+- Date: 2026-10-25; amended 2026-10-26 (the inbox)
 
 This records a decision taken in 0.1.0 and kept since, which no record
 described (DSGN-15). It changes nothing in the code.
@@ -70,3 +70,16 @@ commit through its `DomainConfig` hooks (DSGN-03).
 - The bus is a module-level object, as the registry and the settings are;
   DSGN-07 plans a container for 1.0 that would own it per application. Its
   delivery rules would stay as written here.
+
+## Amendment (2026-10-26, 0.11): the inbox
+
+FIN-80's inbox exists ([0094](0094-an-inbox-of-handled-messages-written-with-the-handlers-commit.md)).
+A durable handler marked `@inbox` (`domainkit.contrib.messaging`) writes
+its message's id to `domainkit_inbox` in the transaction of its first
+commit, and a later run of the message is skipped, so its database work
+commits once. It is opt-in: unmarked handlers stay at least once and must
+stay idempotent. A commit a durable handler makes on its outbox's database
+after another worker took its message over is refused (`LeaseLost`,
+[0095](0095-fence-a-runs-commits-with-its-lease-instead-of-a-heartbeat.md)).
+In-process handlers have no message and no inbox, and run at most once, as
+written above.
