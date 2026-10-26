@@ -22,6 +22,7 @@ from domainkit.ddd import (
     DomainError,
     NotFound,
     PermissionDenied,
+    Retry,
 )
 from domainkit.http import APIError
 from domainkit.http.access import Public
@@ -230,7 +231,23 @@ class RejectedCommit(PaymentsUnitOfWork):
         raise ConnectionError("The database refused the commit.")
 
 
-UNITS_OF_WORK: Final = {"unreported": UnreportedCommit, "rejected": RejectedCommit}
+class LosesItsFirstCommit(PaymentsUnitOfWork):
+    """Loses its first commit to another transaction, after every domain staged."""
+
+    lost = False
+
+    async def _commit(self) -> None:
+        if not self.lost:
+            self.lost = True
+            raise DBAPIError("COMMIT", None, DriverError("40001"))
+        await super()._commit()
+
+
+UNITS_OF_WORK: Final = {
+    "unreported": UnreportedCommit,
+    "rejected": RejectedCommit,
+    "conflict": LosesItsFirstCommit,
+}
 
 
 async def lose_key() -> None:
@@ -252,11 +269,16 @@ async def pay(outcome: str = "ok", database: str = "default") -> Response:
         await lose_key()
     if outcome == "overtaken-crash":
         raise RuntimeError("crashed before the commit")
-    async with UNITS_OF_WORK.get(outcome, PaymentsUnitOfWork)(database=database) as uow:
-        await uow.session.execute(insert(payments))
-        if outcome == "abandoned":
-            raise RuntimeError("crashed before the commit")
-        await uow.commit()
+    uow = UNITS_OF_WORK.get(outcome, PaymentsUnitOfWork)(database=database)
+
+    async def record() -> None:
+        async with uow:
+            await uow.session.execute(insert(payments))
+            if outcome == "abandoned":
+                raise RuntimeError("crashed before the commit")
+            await uow.commit()
+
+    await uow.run(record, retry=Retry(backoff=0))
     if outcome == "crash":
         raise RuntimeError("crashed after the commit")
     if outcome == "unavailable":

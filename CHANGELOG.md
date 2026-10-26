@@ -16,6 +16,36 @@ and a status.
 - `loaddata --replace` and `--include-guarded`, and `flush
   --include-guarded`; `info={"guarded": True}` marks a project's own table
   of credentials or grants as guarded (DATA-12; ADR 0100).
+- `UnitOfWork.run(work, retry=Retry(...))` runs work that lost a race with
+  another transaction again, whole: PostgreSQL's serialization failures
+  (`40001`) and deadlocks (`40P01`), and the errors in `retry_on`. The work
+  is a function that enters the unit of work itself, never part of an
+  `async with` block; what a failed run wrote (outbox messages, audit
+  entries, the `Idempotency-Key`'s mark) went with its transaction, and
+  events are published once, after the commit that succeeds. Waits are
+  bounded and jittered (`Retry(attempts=3, backoff=0.02, max_backoff=1.0)`),
+  never past the request's deadline; work that committed is never run
+  again, and the last failure is raised as it was, with a note
+  (`docs/databases.md`, ADR 0092) (FIN-78).
+- `ResourceRouter.command_route(..., retry=Retry())` runs a command's
+  service that way, with the reach check and `If-Match` made again in each
+  run. Routes retry only when they say so; without it a lost race answers
+  503 `database_busy`, as before (FIN-78).
+- `SqlAlchemyUnitOfWork(isolation=...)`, or `isolation = Isolation.SERIALIZABLE`
+  on the class: `READ_COMMITTED`, `REPEATABLE_READ`, or `SERIALIZABLE`,
+  set in the transaction's `BEGIN` on PostgreSQL, with no round trip more.
+  On SQLite the two stricter levels begin with `BEGIN IMMEDIATE`, so such
+  units of work run one at a time. The default stays the database's own
+  (FIN-78).
+- `Repository.get_many_for_update(ids)` locks several rows in one
+  statement, by ascending id whatever the order asked, so transfers that
+  lock the same rows cannot deadlock; `nowait` and `skip_locked` as for
+  one row (FIN-78).
+- `UnitOfWork.lock(name, nowait=False)` holds a lock by name until the
+  transaction ends, for work with no row to lock:
+  `pg_advisory_xact_lock` on a stable 64-bit hash of the name
+  (`domainkit.db.lock_key`) on PostgreSQL, the database's write lock on
+  SQLite, and a process-wide lock in memory (FIN-78).
 
 ### Changed
 
@@ -151,6 +181,14 @@ and a status.
   closed, as before; with `POOL_PRE_PING = False`, the request after an
   anyio scope's cut no longer gets the connection it closed ("connection
   is closed") (CONC-08, SEC-10b-1).
+- The outbox messages of a commit that failed were handed to the
+  publisher, and to watchers such as the `outbox` fixture, with the next
+  commit of the same unit of work, though they were never stored. A unit
+  of work run again by `run` now hands on only what its last run
+  committed (FIN-78).
+- In memory, a failed savepoint keeps the events an aggregate it first
+  loaded recorded inside it no more: they are dropped, as for aggregates
+  loaded before it (FIN-78).
 
 ### Security
 

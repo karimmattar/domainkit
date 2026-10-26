@@ -91,6 +91,13 @@ async def rename_product(command: RenameProduct, uow: CatalogUnitOfWork) -> Prod
   below `MAX_REQUEST_BODY_SIZE`, as they arrive; `ResourceRouter(body_limits=
   {"command": 16_384, "batch": 2_000_000})` sets one per kind of route
   (`create`, `update`, `command`, `batch`) ([uploads.md](uploads.md#body-limits-per-route)).
+- `retry=Retry()` runs the service again, whole, when its transaction
+  loses a race: a serialization failure of a `SERIALIZABLE` unit of work,
+  or a deadlock ([databases.md](databases.md#running-work-again)). The
+  reach check and `If-Match` are made again in each run's transaction.
+  Without it a lost race answers 503 `database_busy`, as before. Declare
+  it for services that change nothing outside their unit of work; it
+  costs no statement until a race is lost.
 
 For reference data, where generic edits are fine, `crud=True` adds
 `POST /products` (a `schema_for(..., write=True)` body), `PATCH

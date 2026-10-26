@@ -706,6 +706,7 @@ SQLAlchemy integration: connections, ORM metadata, repositories, migrations.
 - `ConnectionHandler`: Lazily created engines and session factories per alias and event loop.
 - `EnumValue`: An `Enum` stored by its members' values, so order follows them.
 - `ExactDecimal`: Fixed-point amounts that come back exactly as stored, also on SQLite.
+- `Isolation`: The isolation level of a unit of work's transaction (`isolation=`).
 - `Reads`: How a read-only session reads (`SqlAlchemyUnitOfWork(reads=...)`).
 - `SqlAlchemyRepository`: Store one imperatively mapped aggregate type; set `model` in subclasses.
 - `SqlAlchemyUnitOfWork`: Open a session on enter, commit on `commit()`, close on exit.
@@ -715,6 +716,7 @@ SQLAlchemy integration: connections, ORM metadata, repositories, migrations.
 - `children`: A relationship to the child entities an aggregate owns (`list[Line]`).
 - `connections`: Process-wide connection handler.
 - `create_engine`: Build a pooled engine; bound values stay out of logs and errors by default.
+- `lock_key`: The 64-bit key `lock(name)` takes on PostgreSQL, signed, as `bigint`.
 - `map_imperatively`: Map `class_` to `table` once; later calls are ignored.
 - `mapper_registry`: Generalized registry for mapping classes.
 - `metadata`: Every table of every domain; the target of `makemigrations`.
@@ -799,6 +801,7 @@ Domain-driven design building blocks ("seedwork").
 - `ReadOnlyError`: A read-only unit of work was asked to commit.
 - `Reference`: The id of another aggregate, which is referenced by id only (`Reference[XId]`).
 - `Repository`: Load and store aggregates of one type; subclasses implement `_` methods.
+- `Retry`: How `UnitOfWork.run` runs its work again when the transaction lost a race.
 - `RowLock`: Lock the rows a query returns until the transaction ends (`FOR UPDATE`).
 - `RowLocks`: Row locks for in-memory repositories, held until the unit of work ends.
 - `Selection`: Which aggregates to load, in which order, and how many.
