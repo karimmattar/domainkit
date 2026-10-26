@@ -2,32 +2,32 @@
 
 [[package]]
 name = "aio-pika"
-version = "10.1.0"
+version = "10.2.1"
 description = "Wrapper around the aiormq for asyncio and humans"
 optional = true
 python-versions = "<4,>=3.11"
 groups = ["main"]
 markers = "extra == \"rabbitmq\""
 files = [
-    {file = "aio_pika-10.1.0-py3-none-any.whl", hash = "sha256:8dd8aa4514328876e9208970b7dae3a7650afb3373906a2a530286742ebe0f74"},
-    {file = "aio_pika-10.1.0.tar.gz", hash = "sha256:ec340bff09d169a367717a4dd822969dac9cc5e835e22a67020e3613784f3139"},
+    {file = "aio_pika-10.2.1-py3-none-any.whl", hash = "sha256:66c85d311e30f1dd3e28109d686c9bf1d9dd1a74582004c7cb7bed284d8fe3b1"},
+    {file = "aio_pika-10.2.1.tar.gz", hash = "sha256:e4f77afd9179a3cca5a904c3b0a1190256a36d9f90650db908b1b2245eb27487"},
 ]
 
 [package.dependencies]
-aiormq = ">=7.1.3,<8"
+aiormq = ">=7.2.4,<8"
 yarl = "*"
 
 [[package]]
 name = "aiormq"
-version = "7.2.1"
+version = "7.2.4"
 description = "Pure python AMQP asynchronous client library"
 optional = true
 python-versions = "<4,>=3.11"
 groups = ["main"]
 markers = "extra == \"rabbitmq\""
 files = [
-    {file = "aiormq-7.2.1-py3-none-any.whl", hash = "sha256:4a96b0dce49880f3677976863b680414417eb00d0a9e3d381664bd86c64cea11"},
-    {file = "aiormq-7.2.1.tar.gz", hash = "sha256:05d55dfbdba0c3854ceb5f118855b0d47fa15fbd08dae1b9c4c0415237c769aa"},
+    {file = "aiormq-7.2.4-py3-none-any.whl", hash = "sha256:2b9d6dade171318185ab8f507717b630f20b8b2303a075f9293d3f6b0d166f1d"},
+    {file = "aiormq-7.2.4.tar.gz", hash = "sha256:5fd20bb9583d73de85572198496b65cf028f27527c1733c9840d458e0b40e8fa"},
 ]
 
 [package.dependencies]
