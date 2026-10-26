@@ -166,9 +166,11 @@ left to the project on purpose.
   keyed requests without a deadline.
 - **Concurrency under contention.** The default write path keeps its
   invariants with optimistic versions, but refuses most concurrent writers
-  of one aggregate with 409, and there is no retry of a unit of work, no
-  isolation setting, and no lock API beyond one row. Use `get_for_update`
-  where writers contend ([queries.md](queries.md)).
+  of one aggregate with 409, and runs nothing again. A rule kept across
+  rows needs `Isolation.SERIALIZABLE` and `run` (or `retry=` on a command
+  route); writers that contend need `get_for_update`,
+  `get_many_for_update`, or `lock(name)`
+  ([databases.md](databases.md#transactions)).
 - **Handlers run at least once.** A crash between a handler's commit and
   its message's mark runs it again; there is no inbox.
 - **A committed idempotency key runs again once its TTL passes.** Keep
@@ -191,7 +193,8 @@ left to the project on purpose.
 - Write a rule for every route, and object-level rules where users share
   tables; keep write schemas to the fields clients may set.
 - Make durable handlers and outgoing calls idempotent; use
-  `get_for_update` where writers contend.
+  `get_for_update` or `get_many_for_update` where writers contend, and a
+  serializable unit of work, run with retries, for rules across rows.
 - Mark personal data, and run retention (`privacy purge`) on a schedule.
 - Run sealing on a schedule, anchor in a ledger, and run `auditverify`.
 - Keep logs, the audit trail, and backups for as long as its regulator
