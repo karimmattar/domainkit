@@ -14,7 +14,7 @@ import sqlalchemy
 from fakeredis import FakeServer
 from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
-from sqlalchemy import delete, event, select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import class_mapper
 from sqlalchemy.orm.attributes import instance_state
@@ -79,6 +79,7 @@ from domainkit_tests.conftest import (
     Api,
     UseAuth,
 )
+from domainkit_tests.engine_events import watching
 from domainkit_tests.fake_smtp import certificate
 from domainkit_tests.test_auth import accounts as accounts
 from domainkit_tests.test_auth_http import (
@@ -110,9 +111,8 @@ def statements() -> Iterator[list[str]]:
     def count(*args: Any) -> None:  # noqa: ANN401 - SQLAlchemy's arguments.
         seen.append(args[2].lstrip().split(None, 1)[0].upper())
 
-    event.listen(Engine, "before_cursor_execute", count)
-    yield seen
-    event.remove(Engine, "before_cursor_execute", count)
+    with watching(Engine, "before_cursor_execute", count):
+        yield seen
 
 
 def scope(

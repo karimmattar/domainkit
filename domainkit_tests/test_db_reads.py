@@ -18,7 +18,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from sqlalchemy import delete, event, func, insert, make_url, select, text, update
+from sqlalchemy import delete, func, insert, make_url, select, text, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import (
@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import (
     AsyncSession,
     create_async_engine,
 )
-from sqlalchemy.pool import PoolResetState
+from sqlalchemy.pool import Pool, PoolResetState
 from sqlalchemy.schema import CreateTable
 from sqlalchemy.sql import Executable
 from sqlalchemy.util import greenlet_spawn
@@ -60,6 +60,7 @@ from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.testing import AsyncTestClient, assert_num_queries
 from domainkit_tests.conftest import POSTGRES_VARIABLE
+from domainkit_tests.engine_events import watching
 from domainkit_tests.gadgets import (
     GadgetsUnitOfWork,
     gadgets,
@@ -203,16 +204,13 @@ class Connects:
 
     def __enter__(self) -> "Connects":
         """Start counting."""
-        from sqlalchemy.pool import Pool
-
-        event.listen(Pool, "connect", self._connected)
+        self._watching = watching(Pool, "connect", self._connected)
+        self._watching.__enter__()
         return self
 
     def __exit__(self, *exc: object) -> None:
         """Stop counting."""
-        from sqlalchemy.pool import Pool
-
-        event.remove(Pool, "connect", self._connected)
+        self._watching.__exit__(None, None, None)
 
 
 # Choosing how to read -------------------------------------------------------------
@@ -1341,17 +1339,13 @@ async def test_statements_on_their_own_set_no_local_timeouts(tables: None) -> No
     def record(*args: Any) -> None:  # noqa: ANN401 - before_cursor_execute's.
         sent.append(args[2])
 
-    event.listen(Engine, "before_cursor_execute", record)
-    try:
-        with freeze_time("2026-01-01"):
-            async with deadlines.timeout(5.0):
-                async with connections.autocommit() as connection:
-                    shown = await connection.scalar(text("SHOW statement_timeout"))
-                alone = list(sent)
-                async with connections.engine().begin() as connection:
-                    lowered = await connection.scalar(text("SHOW statement_timeout"))
-    finally:
-        event.remove(Engine, "before_cursor_execute", record)
+    with watching(Engine, "before_cursor_execute", record), freeze_time("2026-01-01"):
+        async with deadlines.timeout(5.0):
+            async with connections.autocommit() as connection:
+                shown = await connection.scalar(text("SHOW statement_timeout"))
+            alone = list(sent)
+            async with connections.engine().begin() as connection:
+                lowered = await connection.scalar(text("SHOW statement_timeout"))
     assert (shown, lowered) == ("30s", "5s")
     assert alone == ["SHOW statement_timeout"]
     assert "set_config('statement_timeout'" in sent[1]  # The transaction's own.

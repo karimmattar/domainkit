@@ -49,6 +49,14 @@
         "do_not_enforce_on_create": false,
         "required_status_checks": [
           {
+            "context": "changes",
+            "integration_id": 15368
+          },
+          {
+            "context": "docs",
+            "integration_id": 15368
+          },
+          {
             "context": "lint",
             "integration_id": 15368
           },

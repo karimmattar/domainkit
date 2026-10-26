@@ -5,12 +5,15 @@ import importlib
 import io
 import logging
 import os
+import shutil
 import sys
 import textwrap
+import time
 import uuid
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack
+from contextlib import AbstractContextManager, ExitStack, contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
@@ -36,6 +39,7 @@ from domainkit.ddd import event_bus
 from domainkit.http import get_asgi_application, metrics
 from domainkit.management import call_command
 from domainkit.reporting import flush_reports
+from domainkit_tests import engine_events  # noqa: F401 - its listeners first.
 from domainkit_tests.sample_domains.alpha.apps import AlphaConfig
 
 type MakePackage = Callable[[str, dict[str, str]], Path]
@@ -65,15 +69,26 @@ def isolated_registries() -> Iterator[None]:
     """
     caches.reset()
     invalidate_all()
+    with registries_kept():
+        yield
+
+
+@contextmanager
+def registries_kept() -> Iterator[None]:
+    """Put the tasks, subscriptions, and metric refreshers back as they were."""
     tasks = dict(task_registry._tasks)
     subscriptions = {key: list(value) for key, value in event_bus._handlers.items()}
     refreshers = list(metrics._refreshers)
-    yield
-    task_registry._tasks.clear()
-    task_registry._tasks.update(tasks)
-    event_bus._handlers.clear()
-    event_bus._handlers.update(subscriptions)
-    metrics._refreshers[:] = refreshers
+    calls = list(AlphaConfig.calls)
+    try:
+        yield
+    finally:
+        task_registry._tasks.clear()
+        task_registry._tasks.update(tasks)
+        event_bus._handlers.clear()
+        event_bus._handlers.update(subscriptions)
+        metrics._refreshers[:] = refreshers
+        AlphaConfig.calls[:] = calls
 
 
 @pytest.fixture
@@ -130,7 +145,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     project_prefix.cache_clear()
 
 
-type MakeDatabase = Callable[[str], str]
+type MakeDatabase = Callable[..., str]
 
 
 @pytest.fixture
@@ -144,11 +159,12 @@ def make_database(tmp_path: Path) -> Iterator[MakeDatabase]:
     server = os.environ.get(POSTGRES_VARIABLE)
     created: list[str] = []
 
-    def make(name: str) -> str:
+    def make(name: str, template: str | None = None) -> str:
         if not server:
             return f"sqlite+aiosqlite:///{tmp_path / name}.sqlite3"
         database = f"domainkit_test_{uuid.uuid4().hex}"
-        on_server(server, f'CREATE DATABASE "{database}"')
+        copying = "" if template is None else f' TEMPLATE "{template}"'
+        on_server(server, f'CREATE DATABASE "{database}"{copying}')
         created.append(database)
         url = make_url(server).set(database=database)
         return url.render_as_string(hide_password=False)
@@ -196,6 +212,30 @@ def restore_logging() -> Iterator[None]:
     root.setLevel(level)
 
 
+@pytest.fixture
+def local_zone() -> Iterator[Callable[[str], None]]:
+    """``local_zone("Asia/Tokyo")`` sets the local time zone until the test ends.
+
+    ``TZ`` is the process's: the one place that changes it, so the original
+    always comes back, failure or not. Under pytest-xdist each worker is a
+    process of its own, so no other worker's test sees the change.
+    """
+    previous = os.environ.get("TZ")
+
+    def use(name: str) -> None:
+        os.environ["TZ"] = name
+        time.tzset()
+
+    try:
+        yield use
+    finally:
+        if previous is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
+
+
 @pytest.fixture(autouse=True)
 def reports_sent() -> Iterator[None]:
     """Send a test's error reports before the next test starts."""
@@ -208,28 +248,169 @@ AUTH: Final = "domainkit.contrib.auth"
 SHOP: Final = "domainkit_tests.sample_domains.shop"
 ALPHA: Final = "domainkit_tests.sample_domains.alpha"
 FAST_HASHER: Final = "domainkit.contrib.auth.hashers.FastPBKDF2PasswordHasher"
+TEMPLATE_PREFIX: Final = "domainkit_template_"
+"""PostgreSQL databases migrated once per run, which tests get copies of."""
+
+
+@dataclass(frozen=True, slots=True)
+class Shape:
+    """The settings a fixture's project runs with, and its revisions' message.
+
+    Every test of a shape starts from the same migrated database, so the
+    shape is migrated once per run (``Templates``), not once per test.
+    """
+
+    name: str
+    message: str
+    settings: dict[str, Any]
+
+
+@dataclass(slots=True)
+class _Template:
+    """A shape's revisions, and the database ``migrate`` left with them."""
+
+    migrations: Path
+    url: str
+    database: str | None = None
+    """The PostgreSQL database's name; None for a SQLite file."""
+    path: Path | None = None
+    """The SQLite file; None on PostgreSQL."""
+
+
+class Templates:
+    """Each shape migrated once per run (per pytest-xdist worker), then copied.
+
+    The first test of a shape generates its revisions with ``makemigrations``
+    and applies them with ``migrate`` to a template database; every test of
+    that shape then gets a copy of the template: ``CREATE DATABASE ...
+    TEMPLATE`` on PostgreSQL, a copy of the file on SQLite. Each test still
+    starts from the database ``migrate`` left, in a database of its own,
+    without paying for the migration.
+    """
+
+    def __init__(self, scratch: Path, server: str | None) -> None:
+        """Keep templates under ``scratch``, or on the PostgreSQL ``server``."""
+        self._scratch = scratch
+        self._server = server
+        self._made: dict[str, _Template] = {}
+
+    def get(self, shape: Shape) -> _Template:
+        """The shape's template, migrated on first use."""
+        if (made := self._made.get(shape.name)) is None:
+            made = self._made[shape.name] = self._migrate(shape)
+        return made
+
+    def copy(self, shape: Shape, make_database: "MakeDatabase", target: Path) -> str:
+        """A new database holding what the shape's template holds; its URL."""
+        template = self.get(shape)
+        if template.path is not None:
+            shutil.copyfile(template.path, target)
+            return f"sqlite+aiosqlite:///{target}"
+        assert template.database is not None
+        return make_database("test", template.database)
+
+    def close(self) -> None:
+        """Drop the PostgreSQL templates."""
+        for template in self._made.values():
+            if template.database is not None:
+                assert self._server is not None
+                on_server(
+                    self._server,
+                    f'DROP DATABASE IF EXISTS "{template.database}" WITH (FORCE)',
+                )
+        self._made.clear()
+
+    def _migrate(self, shape: Shape) -> _Template:
+        """Generate the shape's revisions and migrate a template database."""
+        directory = self._scratch / shape.name
+        directory.mkdir()
+        if self._server:
+            database = f"{TEMPLATE_PREFIX}{uuid.uuid4().hex}"
+            on_server(self._server, f'CREATE DATABASE "{database}"')
+            url = make_url(self._server).set(database=database)
+            template = _Template(
+                directory / "migrations",
+                url.render_as_string(hide_password=False),
+                database=database,
+            )
+        else:
+            path = directory / "template.sqlite3"
+            template = _Template(
+                directory / "migrations", f"sqlite+aiosqlite:///{path}", path=path
+            )
+        registry.clear()
+        try:
+            with (
+                registries_kept(),
+                override_settings(
+                    **shape.settings,
+                    DATABASES={"default": {"URL": template.url}},
+                    MIGRATIONS_DIR=template.migrations,
+                ),
+            ):
+                setup()
+                call_command(
+                    "makemigrations", "-m", shape.message, stdout=io.StringIO()
+                )
+                call_command("migrate", stdout=io.StringIO())
+        finally:
+            registry.clear()
+        return template
+
+
+@pytest.fixture(scope="session")
+def templates(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Templates]:
+    """The run's migrated templates; PostgreSQL's are dropped when it ends."""
+    made = Templates(
+        tmp_path_factory.mktemp("templates"), os.environ.get(POSTGRES_VARIABLE)
+    )
+    try:
+        yield made
+    finally:
+        made.close()
+
+
+type Migrated = Callable[[Shape], AbstractContextManager[str]]
 
 
 @pytest.fixture
-def auth_project(database_url: str, tmp_path: Path) -> Iterator[str]:
-    """Content types, auth, and the shop domain, migrated into an empty database.
+def migrated(
+    templates: Templates, make_database: "MakeDatabase", tmp_path: Path
+) -> Migrated:
+    """Open a shape's project in a migrated database of the test's own.
+
+    ``with migrated(API) as url:`` sets the registry up for the shape's
+    settings inside the block, and clears it after.
+    """
+
+    @contextmanager
+    def use(shape: Shape) -> Iterator[str]:
+        url = templates.copy(shape, make_database, tmp_path / "test.sqlite3")
+        registry.clear()
+        try:
+            with override_settings(
+                **shape.settings,
+                DATABASES={"default": {"URL": url}},
+                MIGRATIONS_DIR=templates.get(shape).migrations,
+            ):
+                setup()
+                yield url
+        finally:
+            registry.clear()
+
+    return use
+
+
+@pytest.fixture
+def auth_project(migrated: Migrated) -> Iterator[str]:
+    """Content types, auth, and the shop domain, in a migrated database of its own.
 
     Revisions are generated and applied the way a project does it, so
-    ``migrate`` also creates the content types and permissions. Passwords
+    ``migrate`` also created the content types and permissions. Passwords
     use the fast test hasher.
     """
-    registry.clear()
-    with override_settings(
-        INSTALLED_DOMAINS=[CONTENTTYPES, AUTH, SHOP, ALPHA],
-        DATABASES={"default": {"URL": database_url}},
-        MIGRATIONS_DIR=tmp_path / "migrations",
-        AUTH={"PASSWORD_HASHERS": [FAST_HASHER]},
-    ):
-        setup()
-        call_command("makemigrations", "-m", "auth", stdout=io.StringIO())
-        call_command("migrate", stdout=io.StringIO())
+    with migrated(AUTH_PROJECT) as database_url:
         yield database_url
-    registry.clear()
 
 
 type UseAuth = Callable[..., None]
@@ -275,41 +456,21 @@ type Api = Callable[..., TestClient]
 
 
 @pytest.fixture
-def api(database_url: str, tmp_path: Path) -> Iterator[Api]:
+def api(migrated: Migrated) -> Iterator[Api]:
     """A migrated project with auth, audit, and idempotency; ``api(**AUTH)``."""
-    registry.clear()
-    auth: dict[str, Any] = {"PASSWORD_HASHERS": [FAST_HASHER]}
-    with override_settings(
-        INSTALLED_DOMAINS=[
-            CONTENTTYPES,
-            AUTH,
-            "domainkit.contrib.audit",
-            "domainkit.contrib.idempotency",
-            SHOP,
-            ALPHA,
-        ],
-        DATABASES={"default": {"URL": database_url}},
-        MIGRATIONS_DIR=tmp_path / "migrations",
-        ROOT_ROUTER="domainkit_tests.sample_auth_routes.router",
-        MIDDLEWARE=MIDDLEWARE,
-        AUTH=auth,
-    ):
-        setup()
-        call_command("makemigrations", "-m", "auth", stdout=io.StringIO())
-        call_command("migrate", stdout=io.StringIO())
-        with ExitStackClients() as clients:
+    auth = API.settings["AUTH"]
+    with migrated(API), ExitStackClients() as clients:
 
-            def make(
-                *,
-                client: tuple[str, int] = ("testclient", 50000),
-                **options: Any,  # noqa: ANN401 - AUTH keys.
-            ) -> TestClient:
-                if options:
-                    clients.enter(override_settings(AUTH={**auth, **options}))
-                return clients.client(client)
+        def make(
+            *,
+            client: tuple[str, int] = ("testclient", 50000),
+            **options: Any,  # noqa: ANN401 - AUTH keys.
+        ) -> TestClient:
+            if options:
+                clients.enter(override_settings(AUTH={**auth, **options}))
+            return clients.client(client)
 
-            yield make
-    registry.clear()
+        yield make
 
 
 class ExitStackClients:
@@ -359,7 +520,7 @@ IDENTITY_AUTHENTICATION: Final = [
 
 
 @pytest.fixture
-def identity(database_url: str, tmp_path: Path) -> Iterator[Api]:
+def identity(migrated: Migrated) -> Iterator[Api]:
     """``api`` with messaging, and mail kept in memory: resets, signup, MFA.
 
     ``identity(**AUTH)`` returns a client; ``ROOT_ROUTER`` mounts the
@@ -367,37 +528,20 @@ def identity(database_url: str, tmp_path: Path) -> Iterator[Api]:
     """
     from domainkit.contrib import mail
 
-    registry.clear()
     mail.outbox.clear()
-    auth: dict[str, Any] = {
-        "PASSWORD_HASHERS": [FAST_HASHER],
-        "AUTHENTICATION_CLASSES": IDENTITY_AUTHENTICATION,
-    }
-    with override_settings(
-        INSTALLED_DOMAINS=IDENTITY_DOMAINS,
-        DATABASES={"default": {"URL": database_url}},
-        MIGRATIONS_DIR=tmp_path / "migrations",
-        ROOT_ROUTER="domainkit_tests.sample_identity_routes.router",
-        MIDDLEWARE=MIDDLEWARE,
-        MAIL=MEMORY_MAIL,
-        AUTH=auth,
-    ):
-        setup()
-        call_command("makemigrations", "-m", "identity", stdout=io.StringIO())
-        call_command("migrate", stdout=io.StringIO())
-        with ExitStackClients() as clients:
+    auth = IDENTITY.settings["AUTH"]
+    with migrated(IDENTITY), ExitStackClients() as clients:
 
-            def make(
-                *,
-                client: tuple[str, int] = ("testclient", 50000),
-                **options: Any,  # noqa: ANN401 - AUTH keys.
-            ) -> TestClient:
-                if options:
-                    clients.enter(override_settings(AUTH={**auth, **options}))
-                return clients.client(client)
+        def make(
+            *,
+            client: tuple[str, int] = ("testclient", 50000),
+            **options: Any,  # noqa: ANN401 - AUTH keys.
+        ) -> TestClient:
+            if options:
+                clients.enter(override_settings(AUTH={**auth, **options}))
+            return clients.client(client)
 
-            yield make
-    registry.clear()
+        yield make
     mail.outbox.clear()
 
 
@@ -407,3 +551,44 @@ def identity(database_url: str, tmp_path: Path) -> Iterator[Api]:
 hypothesis_settings.register_profile("ci", print_blob=True)
 if os.environ.get("CI"):
     hypothesis_settings.load_profile("ci")
+
+
+AUTH_PROJECT: Final = Shape(
+    "auth_project",
+    "auth",
+    {
+        "INSTALLED_DOMAINS": [CONTENTTYPES, AUTH, SHOP, ALPHA],
+        "AUTH": {"PASSWORD_HASHERS": [FAST_HASHER]},
+    },
+)
+API: Final = Shape(
+    "api",
+    "auth",
+    {
+        "INSTALLED_DOMAINS": [
+            CONTENTTYPES,
+            AUTH,
+            "domainkit.contrib.audit",
+            "domainkit.contrib.idempotency",
+            SHOP,
+            ALPHA,
+        ],
+        "ROOT_ROUTER": "domainkit_tests.sample_auth_routes.router",
+        "MIDDLEWARE": MIDDLEWARE,
+        "AUTH": {"PASSWORD_HASHERS": [FAST_HASHER]},
+    },
+)
+IDENTITY: Final = Shape(
+    "identity",
+    "identity",
+    {
+        "INSTALLED_DOMAINS": IDENTITY_DOMAINS,
+        "ROOT_ROUTER": "domainkit_tests.sample_identity_routes.router",
+        "MIDDLEWARE": MIDDLEWARE,
+        "MAIL": MEMORY_MAIL,
+        "AUTH": {
+            "PASSWORD_HASHERS": [FAST_HASHER],
+            "AUTHENTICATION_CLASSES": IDENTITY_AUTHENTICATION,
+        },
+    },
+)

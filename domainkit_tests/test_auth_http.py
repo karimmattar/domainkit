@@ -16,7 +16,7 @@ from starlette.testclient import WebSocketDenialResponse
 from starlette.websockets import WebSocketDisconnect
 
 from domainkit.clock import freeze_time
-from domainkit.conf import override_settings
+from domainkit.conf import override_settings, settings
 from domainkit.contrib.audit.tables import audit_log
 from domainkit.contrib.auth import (
     AnyUser,
@@ -463,9 +463,10 @@ def test_attempts_the_counter_cannot_count_may_fail_closed(
     assert checked == ["alice"] * 4  # The refused one was never checked.
 
 
-def test_a_nul_in_a_login_is_a_refused_value(api: Api, database_url: str) -> None:
+def test_a_nul_in_a_login_is_a_refused_value(api: Api) -> None:
     """PostgreSQL refuses a NUL in text: a 422, not a 500; SQLite takes it."""
     client = api()
+    database_url = settings.DATABASES["default"].URL.get_secret_value()
 
     response = client.post(
         "/auth/login", json={"username": "ad\u0000min", "password": "x"}

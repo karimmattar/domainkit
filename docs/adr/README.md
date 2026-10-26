@@ -24,7 +24,7 @@ statuses, and the amendments they name.
 | [0004](0004-async-sqlalchemy-imperative-mapping.md) | Async SQLAlchemy with imperative mapping | Accepted; amended 2026-10-25 (at the end) |
 | [0005](0005-transactional-outbox.md) | A transactional outbox instead of a broker | Accepted |
 | [0006](0006-environment-prefix-from-project-name.md) | Environment variable prefix from the project name | Accepted |
-| [0007](0007-own-repository-released-to-pypi.md) | Its own repository, released to PyPI | Accepted |
+| [0007](0007-own-repository-released-to-pypi.md) | Its own repository, released to PyPI | Accepted; amended 2026-10-26 (at the end) |
 | [0008](0008-multiple-databases-and-routing.md) | Several databases: two kinds, routed by domain | Accepted |
 | [0009](0009-sharding-with-hash-buckets.md) | Shard by key over fixed hash buckets | Accepted |
 | [0010](0010-postgresql-range-partitioning.md) | Range-partition large tables in PostgreSQL | Accepted |

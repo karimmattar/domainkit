@@ -1,8 +1,11 @@
 # Every push and pull request: lint, tests, build, a bill of materials, and
-# audits. release.yml runs it on each release tag and publishes what its
-# build job built. Pull requests, and weekly: the tests against the newest
-# releases the ranges in pyproject.toml allow, and against their floors.
-# Weekly (and on demand): a full mutation testing run. Actions are pinned to commit SHAs and images to
+# audits. A pull request that changes only docs runs the docs job instead of
+# the suite (see changes). A release tag reuses the run of its commit's push
+# to main: release.yml requires it green and publishes what its build job
+# built. Pull requests, and weekly: the tests against the newest releases
+# the ranges in pyproject.toml allow, and against their floors. Weekly (and
+# on demand): a full mutation testing run. The suite runs on every core
+# (pytest-xdist, -n auto). Actions are pinned to commit SHAs and images to
 # digests; Renovate updates both.
 name: CI
 
@@ -10,7 +13,6 @@ on:
   push:
     branches: [main]
   pull_request:
-  workflow_call:
   schedule:
     - cron: "0 3 * * 1"
   workflow_dispatch:
@@ -18,13 +20,17 @@ on:
 permissions:
   contents: read
 
-# One group per event: a push to main cancels the push before it, but
-# never the weekly mutation run on the same branch, which shared its group
-# and was cancelled by a merge before it could finish. Scheduled and
-# dispatched runs are never cancelled; the next one waits.
+# One group per event: never the weekly mutation run's with a push to main,
+# which once cancelled it before it could finish. A new push to a pull
+# request cancels the run before it (its ref, refs/pull/N/merge, is the
+# pull request's). Every other run gets a group of its own commit: a push
+# to main is never cancelled, since it is the run a release of that commit
+# reuses, and a group shared by commits would also cancel the pending run
+# of one merged between two others. Scheduled and dispatched runs are
+# never cancelled; the next one waits.
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   POETRY_VERSION: "2.2.1"
@@ -32,6 +38,56 @@ env:
   POETRY_NO_INTERACTION: "1"
 
 jobs:
+  # Whether a pull request changes anything but docs (docs/**, and Markdown
+  # at the top of the repository; .github/scripts/changed.py). If not, the
+  # expensive jobs are skipped and the docs job runs the tests that read the
+  # docs. The ruleset's checks still report: a job skipped by its condition
+  # reports success. The test matrix starts and skips its steps instead: a
+  # matrix job skipped whole reports one check, under its unexpanded name,
+  # and "test (3.13)" would wait forever. Every other event runs it all, a
+  # push to main included, since a release reuses that run. If this job
+  # fails, the jobs that need it are skipped and it fails the ruleset.
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.paths.outputs.code }}
+    steps:
+      # The merge commit and its parents: the base branch, and the head.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - id: paths
+        name: Find whether anything but docs changed
+        run: >-
+          git diff --name-only HEAD^1 HEAD | python3 .github/scripts/changed.py
+          >> "$GITHUB_OUTPUT"
+
+  # Only for a pull request that changes docs alone: the tests that read
+  # them (the API reference against every __all__, links, anchors and the
+  # settings tables, the README and tutorial as written, the workflows'
+  # names in versioning.md). Any other change runs them in the test jobs.
+  docs:
+    needs: changes
+    if: needs.changes.outputs.code == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: pipx install "poetry==${POETRY_VERSION}"
+      - run: poetry sync --all-extras --with dev
+      - run: >-
+          poetry run pytest -n auto --junitxml=junit.xml
+          domainkit_tests/test_api.py domainkit_tests/test_ci.py
+          domainkit_tests/test_docs.py domainkit_tests/test_walkthroughs.py
+
   lint:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
@@ -57,9 +113,11 @@ jobs:
   # change. Those jobs skip the weekly run: nothing changed since the push.
   test:
     name: test (${{ matrix.python }})
-    if: github.event_name != 'schedule'
+    needs: changes
+    if: ${{ !cancelled() && !failure() && github.event_name != 'schedule' }}
     runs-on: ubuntu-24.04
-    # The suite takes about 11 minutes; a slower runner must not fail it.
+    # The suite takes about 4 minutes on the runner's 4 cores; a
+    # slower runner must not fail it.
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -67,19 +125,25 @@ jobs:
         python: ["3.13", "3.14"]
     env:
       COVERAGE_FILE: .coverage.test-${{ matrix.python }}
+    # Every step is skipped for a pull request that changes only docs.
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - if: needs.changes.outputs.code != 'false'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - if: needs.changes.outputs.code != 'false'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python }}
-      - run: pipx install "poetry==${POETRY_VERSION}"
-      - run: poetry sync --all-extras --with dev
-      - run: >-
-          poetry run pytest --cov --cov-report=term --cov-report=xml
-          --junitxml=junit.xml
-      - if: always()
+      - if: needs.changes.outputs.code != 'false'
+        run: pipx install "poetry==${POETRY_VERSION}"
+      - if: needs.changes.outputs.code != 'false'
+        run: poetry sync --all-extras --with dev
+      - if: needs.changes.outputs.code != 'false'
+        run: >-
+          poetry run pytest -n auto --dist worksteal --cov --cov-report=term
+          --cov-report=xml --junitxml=junit.xml
+      - if: ${{ always() && needs.changes.outputs.code != 'false' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-results-${{ matrix.python }}
@@ -87,7 +151,8 @@ jobs:
             coverage.xml
             junit.xml
           retention-days: 14
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - if: needs.changes.outputs.code != 'false'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-test-${{ matrix.python }}
           path: .coverage.test-${{ matrix.python }}
@@ -107,7 +172,8 @@ jobs:
   # Coverage comes from the other jobs.
   free-threaded:
     name: test (3.14t)
-    if: github.event_name != 'schedule'
+    needs: changes
+    if: ${{ !cancelled() && !failure() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     # Poetry 2.2.1 installs the default build's wheels (cp314) on
@@ -148,7 +214,8 @@ jobs:
   # 0.9.2 too, which waits for a fix upstream (docs/runtime.md).
   free-threaded-stress:
     name: stress (3.14t)
-    if: github.event_name != 'schedule'
+    needs: changes
+    if: ${{ !cancelled() && !failure() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     # As free-threaded: Poetry 2.4.3 installs the cp314t wheels.
@@ -183,9 +250,11 @@ jobs:
   # need a server are skipped elsewhere, so a skip here means a server went
   # unused: fail.
   integration:
-    if: github.event_name != 'schedule'
+    needs: changes
+    if: ${{ !cancelled() && !failure() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-24.04
-    # The suite takes about 16 minutes; a slower runner must not fail it.
+    # The suite takes about 6 minutes on the runner's 4
+    # cores; a slower runner must not fail it.
     timeout-minutes: 30
     services:
       postgres:
@@ -303,7 +372,7 @@ jobs:
       - run: poetry sync --all-extras --with dev
       - shell: bash
         run: |
-          poetry run pytest --cov -rs --junitxml=junit.xml | tee pytest.log
+          poetry run pytest -n auto --dist worksteal --cov -rs --junitxml=junit.xml | tee pytest.log
           ! grep -q "SKIPPED" pytest.log
       # Kept when the suite fails too: which tests failed, and the log (with
       # the stacks pytest-timeout prints for a hung test).
@@ -328,7 +397,8 @@ jobs:
   # summary, beside the base branch's on pull requests, and is never gated:
   # a shared runner's timings are too noisy for that.
   bench:
-    if: github.event_name != 'schedule'
+    needs: changes
+    if: ${{ !cancelled() && !failure() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     services:
@@ -374,10 +444,10 @@ jobs:
   # Every line must run in some job: a few only run on SQLite, others only
   # against the servers. The combined report is the coverage gate.
   coverage:
-    if: github.event_name != 'schedule'
+    needs: [changes, test, integration]
+    if: ${{ !cancelled() && !failure() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    needs: [test, integration]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -397,10 +467,10 @@ jobs:
   # The wheel must carry its templates and Alembic environment, and import
   # in a clean environment with only its declared dependencies.
   build:
-    if: github.event_name != 'schedule'
+    needs: [changes, lint, test]
+    if: ${{ !cancelled() && !failure() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    needs: [lint, test]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -424,7 +494,8 @@ jobs:
         with:
           name: dist
           path: dist/
-          retention-days: 14
+          # A release of this commit downloads it from this run.
+          retention-days: 90
 
   # Also in the weekly run: an advisory can appear with no change here.
   audit:
@@ -455,10 +526,10 @@ jobs:
   # group left out), read from an environment holding just those.
   # release.yml attests it, bound to the wheel.
   sbom:
-    if: github.event_name != 'schedule'
+    needs: [changes, build]
+    if: ${{ !cancelled() && !failure() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    needs: build
     env:
       # renovate: datasource=pypi depName=cyclonedx-bom
       CYCLONEDX_BOM_VERSION: "7.5.0"
@@ -495,7 +566,7 @@ jobs:
         with:
           name: sbom
           path: sbom.cdx.json
-          retention-days: 14
+          retention-days: 90
 
   # Static analysis of the package and the workflows with Semgrep's Python
   # and OWASP Top 10 rules, from its registry: no account, no token, no
@@ -565,9 +636,10 @@ jobs:
   # and weekly, as releases land upstream. It gates no release: a release
   # upstream must not hold back a fix here.
   newest:
+    needs: changes
     if: >-
-      github.event_name == 'pull_request' || github.event_name == 'schedule'
-      || github.event_name == 'workflow_dispatch'
+      ${{ !cancelled() && !failure() && github.event_name != 'push'
+      && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -594,7 +666,7 @@ jobs:
             .newest/bin/python -m pip freeze --exclude domainkit
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-      - run: .newest/bin/python -m pytest --junitxml=junit.xml
+      - run: .newest/bin/python -m pytest -n auto --junitxml=junit.xml
       # What "pip install domainkit[...]" resolves today, audited: the lock
       # the audit job reads is older. Like the job, it gates nothing.
       - run: >-
@@ -612,9 +684,10 @@ jobs:
   # what they need at the newest their own ranges allow. A floor is a
   # version CI tests (ADR 0075). Like newest, it gates nothing.
   oldest:
+    needs: changes
     if: >-
-      github.event_name == 'pull_request' || github.event_name == 'schedule'
-      || github.event_name == 'workflow_dispatch'
+      ${{ !cancelled() && !failure() && github.event_name != 'push'
+      && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -640,7 +713,7 @@ jobs:
             .oldest/bin/python -m pip freeze --exclude domainkit
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-      - run: .oldest/bin/python -m pytest --junitxml=junit.xml
+      - run: .oldest/bin/python -m pytest -n auto --junitxml=junit.xml
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

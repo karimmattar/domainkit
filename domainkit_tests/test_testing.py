@@ -53,10 +53,16 @@ from domainkit_tests.conftest import MIDDLEWARE, POSTGRES_VARIABLE, on_server
 
 @pytest.fixture
 def prefix(monkeypatch: pytest.MonkeyPatch) -> str:
-    """Restore the variables the plugin sets once the test ends."""
+    """Restore the variables the plugin sets once the test ends.
+
+    The nested session is not a pytest-xdist worker, even when this one is:
+    it would name its databases after this worker (``test_x_gw1``). A test
+    that wants a worker sets ``PYTEST_XDIST_WORKER`` itself.
+    """
     prefix = project_prefix()
     for name in ("SETTINGS_MODULE", "ENV_FILE"):
         monkeypatch.delenv(f"{prefix}{name}", raising=False)
+    monkeypatch.delenv(WORKER_VARIABLE, raising=False)
     return prefix
 
 

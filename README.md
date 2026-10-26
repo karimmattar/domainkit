@@ -201,7 +201,8 @@ that point the tests at them (the `DOMAINKIT_TEST_*` names at the top of
 Each run must cover 98%; CI also combines the runs with and without
 servers, which must cover 100% (`make cov`).
 
-CI (`.github/workflows/ci.yml`) runs on every push and pull request:
+CI (`.github/workflows/ci.yml`) runs on every push and pull request, the
+suite on every core of the runner (`pytest -n auto`):
 
 - lint, strict typing, and deptry: every package the code imports is declared
 - the tests on Python 3.13 and 3.14
@@ -219,6 +220,11 @@ CI (`.github/workflows/ci.yml`) runs on every push and pull request:
 - the documentation site, built with every link and public name checked
 - on pull requests and weekly, the tests again with the newest releases
   the dependency ranges allow, not the lock's, and with the oldest
+
+A pull request that changes only `docs/` and the Markdown files at the top
+of the repository runs lint, the audits, and the tests that read the docs,
+not the whole suite. A release reuses the run of its commit's push to
+`main` instead of running it again.
 
 A full mutation testing run happens weekly, in 17 shards that run side by
 side; each writes its score and the mutants no test caught to its job

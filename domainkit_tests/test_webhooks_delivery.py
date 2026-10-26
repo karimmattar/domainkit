@@ -71,13 +71,21 @@ class NoteArchived(NoteWritten):
 
 @pytest.fixture
 def webhooks(database_url: str) -> Iterator[None]:
-    """Messaging and webhooks on an empty database, with http allowed (DEBUG)."""
+    """Messaging and webhooks on an empty database, with http allowed (DEBUG).
+
+    No test here is about a task's time limit or SQLite's lock wait, so
+    both are far beyond what the work takes on a loaded machine: a fan-out
+    once outlived FAST's 0.2 seconds, and sixteen deliveries recording at
+    once outwaited SQLite's 5, with four pytest-xdist workers on four cores.
+    """
     reported.clear()
     registry.clear()
+    if database_url.startswith("sqlite"):
+        database_url += "?timeout=60"
     with override_settings(
         INSTALLED_DOMAINS=[MESSAGING, WEBHOOKS, ALPHA],
         DATABASES={"default": {"URL": database_url}},
-        MESSAGING={**FAST, "VISIBILITY_TIMEOUT": 60},
+        MESSAGING={**FAST, "TASK_TIMEOUT": 30, "VISIBILITY_TIMEOUT": 60},
         WEBHOOKS=SETTINGS,
         DEBUG=True,
         ERROR_REPORTERS=["domainkit_tests.test_messaging.reporter"],
@@ -675,7 +683,9 @@ async def test_secrets_no_key_decrypts_fail_their_deliveries(
         for subscription_id, column, value in (
             (tampered.id, "secret", sealed[:-1] + bytes([sealed[-1] ^ 1])),
             (copied.id, "secret", donor_sealed),
-            (rotating.id, "previous_secret", previous[:-1] + b"\0"),
+            # Flipped, not set to 0: a last byte already 0 (1 in 256) left
+            # the secret whole, and its delivery went out.
+            (rotating.id, "previous_secret", previous[:-1] + bytes([previous[-1] ^ 1])),
         ):
             await connection.execute(
                 update(subscriptions)
