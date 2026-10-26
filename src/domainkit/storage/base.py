@@ -15,6 +15,7 @@ from types import TracebackType
 from typing import Final, Self
 
 from domainkit.ddd import NotFound
+from domainkit.exceptions import DomainkitError
 
 CHUNK_SIZE: Final = 64 * 1024
 """Bytes read or written at a time."""
@@ -28,7 +29,7 @@ NAME: Final = re.compile(rf"(?:{_SEGMENT}/){{0,8}}{_SEGMENT}(?:\.[a-z0-9]{{1,10}
 """A name a storage accepts."""
 
 
-class StorageError(Exception):
+class StorageError(DomainkitError):
     """A storage refused an operation."""
 
 

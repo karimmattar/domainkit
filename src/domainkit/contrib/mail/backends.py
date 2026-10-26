@@ -17,7 +17,7 @@ from typing import ClassVar, Final
 
 from domainkit.apps import registry
 from domainkit.conf import settings
-from domainkit.exceptions import ImproperlyConfigured
+from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 
 from .message import EmailMessage
 from .settings import MailSettings, SmtpSettings
@@ -37,7 +37,7 @@ outbox: Final[list[EmailMessage]] = []
 """Messages ``MemoryBackend`` sent, oldest first (Django's ``mail.outbox``)."""
 
 
-class MailDeliveryFailed(Exception):
+class MailDeliveryFailed(DomainkitError):
     """The server did not take a message; the worker tries again later.
 
     The message names the error and the server's code, never an address.

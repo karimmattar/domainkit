@@ -264,6 +264,50 @@ def test_logins_answer_503_when_hashing_is_saturated(
         assert refused.headers["Retry-After"] == "1"
 
 
+@pytest.mark.parametrize("error_format", ["domainkit", "problem+json"])
+def test_a_saturated_login_answers_the_same_503_in_both_error_formats(
+    api: Api, monkeypatch: pytest.MonkeyPatch, error_format: str
+) -> None:
+    """The hashers raise no HTTP error; the HTTP layer maps theirs to this answer.
+
+    The status, headers, and body are what they were while the hashers
+    raised a 503 ``APIError`` themselves (0.9; DSGN-06).
+    """
+    create_user("alice")
+    full = HashingPool(threads=1, queue=0)
+    full.pending = full.capacity
+    monkeypatch.setattr(hashers, "_pool", lambda: full)
+    detail = "Too many password checks at once; try again in a moment."
+
+    with override_settings(ERROR_FORMAT=error_format):
+        refused = api().post(
+            "/auth/login",
+            json={"username": "alice", "password": PASSWORD},
+            headers={"X-Request-ID": "busy-1"},
+        )
+
+    assert refused.status_code == 503
+    assert refused.headers["Retry-After"] == "1"
+    if error_format == "domainkit":
+        assert refused.headers["Content-Type"] == "application/json"
+        assert refused.json() == {
+            "detail": detail,
+            "code": "password_checks_busy",
+            "request_id": "busy-1",
+        }
+    else:
+        assert refused.headers["Content-Type"] == "application/problem+json"
+        assert refused.json() == {
+            "type": "about:blank",
+            "title": "Service Unavailable",
+            "status": 503,
+            "detail": detail,
+            "instance": "/auth/login",
+            "code": "password_checks_busy",
+            "request_id": "busy-1",
+        }
+
+
 def test_signed_in_users_change_passwords_while_logins_fill_the_pool(
     api: Api, monkeypatch: pytest.MonkeyPatch
 ) -> None:

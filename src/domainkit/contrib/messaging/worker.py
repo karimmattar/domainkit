@@ -64,7 +64,7 @@ from domainkit.conf import settings
 from domainkit.context import SYSTEM_ACTOR, RequestContext, bind_request
 from domainkit.db import connections
 from domainkit.ddd import DomainEvent, EventBus, event_bus
-from domainkit.exceptions import ImproperlyConfigured
+from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 from domainkit.reporting import report_error
 from domainkit.tasks import spawn
 from domainkit.tracing import remote_parent, span, trace_headers
@@ -145,15 +145,15 @@ THROTTLED: Final = "throttled"
 """The outcome of a task held back by its rate; it runs later."""
 
 
-class UnknownTarget(LookupError):
+class UnknownTarget(LookupError, DomainkitError):
     """The message names a handler or task this process does not have."""
 
 
-class AttemptsExhausted(RuntimeError):
+class AttemptsExhausted(RuntimeError, DomainkitError):
     """The worker stopped (crashed, killed) during the message's last attempt."""
 
 
-class InvalidData(ValueError):
+class InvalidData(ValueError, DomainkitError):
     """Data failed validation; the message names fields and rules, not values."""
 
 

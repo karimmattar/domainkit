@@ -786,6 +786,14 @@ Secrets the database keeps, encrypted: AES-256-GCM under a key from `SECRET_KEY`
 - `DecryptionFailed`: No key decrypts the value: wrong key, other associated data, or tampering.
 - `SecretBox`: Encrypts and decrypts values for one purpose.
 
+## `domainkit.exceptions`
+
+Errors raised by the framework itself (`django.core.exceptions`).
+
+- `DomainkitError`: The root of every exception domainkit raises.
+- `ImproperlyConfigured`: Settings, the environment, or the installed domains are invalid.
+- `ServiceBusy`: Something the operation needs is busy now; trying again later may work.
+
 ## `domainkit.http`
 
 FastAPI integration: application factory, middleware, and error mapping.

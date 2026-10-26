@@ -20,6 +20,7 @@ from typing import Any, Final
 from domainkit import clock
 from domainkit.context import current_request
 from domainkit.ddd import Conflict, NotFound
+from domainkit.exceptions import DomainkitError
 from domainkit.utils.decimals import decimal_text
 
 KIND: Final = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*")
@@ -46,7 +47,7 @@ class EvidenceConflict(Conflict):
     """A different record already uses that evidence id."""
 
 
-class EvidenceTampered(Exception):
+class EvidenceTampered(DomainkitError):
     """The ledger copy does not match its receipt, or was written again."""
 
 

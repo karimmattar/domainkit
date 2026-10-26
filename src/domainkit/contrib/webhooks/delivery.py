@@ -47,7 +47,7 @@ from domainkit.db import connections
 from domainkit.db.routing import router
 from domainkit.ddd import DomainEvent, EventBus, event_bus
 from domainkit.encryption import DecryptionFailed
-from domainkit.exceptions import ImproperlyConfigured
+from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 from domainkit.http.guard import lookups_for
 from domainkit.reporting import report_error
 from domainkit.utils.decimals import jsonable
@@ -86,11 +86,11 @@ KEY_LOST: Final = (
 type Payload = Callable[[Any], Mapping[str, Any]]
 
 
-class PayloadTooLarge(ValueError):
+class PayloadTooLarge(ValueError, DomainkitError):
     """An event's webhook body is over ``WEBHOOKS.MAX_PAYLOAD_BYTES``."""
 
 
-class DeliveryFailed(RuntimeError):
+class DeliveryFailed(RuntimeError, DomainkitError):
     """An attempt failed; the worker retries the delivery after its backoff."""
 
 

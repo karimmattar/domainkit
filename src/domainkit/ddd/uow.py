@@ -39,9 +39,10 @@ from typing import Any, Self
 from domainkit.ddd.events import DomainEvent, EventBus, event_bus
 from domainkit.ddd.preconditions import check_loaded
 from domainkit.ddd.repository import Repository
+from domainkit.exceptions import DomainkitError
 
 
-class ReadOnlyError(RuntimeError):
+class ReadOnlyError(RuntimeError, DomainkitError):
     """A read-only unit of work was asked to commit."""
 
 

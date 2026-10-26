@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from email.parser import HeaderParser
 from typing import Final
 
+from domainkit.exceptions import DomainkitError
+
 MAGIC: Final = 0x950412DE
 """The first four bytes of a ``.mo`` file."""
 HEADER_SIZE: Final = 28
@@ -30,7 +32,7 @@ _ESCAPES: Final = {"\\": "\\", '"': '"', "n": "\n", "t": "\t", "r": "\r"}
 _NPLURALS: Final = re.compile(r"nplurals\s*=\s*([0-9]+)")
 
 
-class CatalogError(ValueError):
+class CatalogError(ValueError, DomainkitError):
     """A ``.po`` catalog cannot be compiled; the message names the line."""
 
 

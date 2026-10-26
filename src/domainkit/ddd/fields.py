@@ -51,6 +51,7 @@ from typing import (
 from uuid import UUID
 
 from domainkit.ddd.model import Entity, ValueObject
+from domainkit.exceptions import DomainkitError
 
 COLLECTIONS: Final = frozenset({list, set, frozenset, tuple})
 """Containers that hold child entities: the "many" side of a relation."""
@@ -58,7 +59,7 @@ ORDERED: Final = (int, float, Decimal, str, datetime, date, time, UUID, Enum)
 """Types whose values sort (``bool`` with ``int``; enums by their values)."""
 
 
-class InvalidQuery(ValueError):
+class InvalidQuery(ValueError, DomainkitError):
     """A query names a field, lookup, or value its aggregate cannot take."""
 
 

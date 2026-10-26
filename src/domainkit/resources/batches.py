@@ -22,7 +22,13 @@ from starlette.exceptions import HTTPException
 
 from domainkit.ddd.exceptions import DomainError
 from domainkit.ddd.uow import UnitOfWork
-from domainkit.http.errors import APIError, database_refusal, status_code_for
+from domainkit.exceptions import DomainkitError, ServiceBusy
+from domainkit.http.errors import (
+    APIError,
+    busy_refusal,
+    database_refusal,
+    status_code_for,
+)
 from domainkit.i18n import gettext
 
 MAX_ITEMS: Final = 100
@@ -90,7 +96,7 @@ class Enlisted:
         return getattr(self._uow, name)
 
 
-class Undo(Exception):
+class Undo(DomainkitError):
     """Raised to leave an atomic batch's savepoint once an item failed."""
 
 
@@ -98,6 +104,8 @@ def failure(exc: Exception) -> BatchResult | None:
     """The result of an item that raised ``exc``; None if it is a bug, not a refusal."""
     if isinstance(exc, DomainError):
         return _failed(status_code_for(exc), exc.code, exc.message)
+    if isinstance(exc, ServiceBusy):
+        exc = busy_refusal(exc)
     refused = exc if isinstance(exc, HTTPException) else database_refusal(exc)
     if refused is None:
         return None
