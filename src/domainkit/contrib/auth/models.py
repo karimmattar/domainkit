@@ -71,6 +71,12 @@ UNUSABLE_PASSWORD_PREFIX: Final = "!"  # noqa: S105 - a marker, not a password.
 USABLE_PASSWORD: Final = "_usable_password"  # noqa: S105 - a key, not a secret.
 """Where a user built for a request (``request.user``) keeps whether its
 password is usable, so ``has_usable_password`` needs no hash."""
+GRANTED: Final = "_domainkit_granted"
+"""Where a user (or group) built for a request keeps the permission keys it
+was built with, by relationship (``EVERY``: all of them), so ``has_perm``
+answers without building the relationships (``principals``)."""
+EVERY: Final = "*"
+"""``GRANTED``'s key for every permission a user holds, directly or by group."""
 USERNAME_MAX_LENGTH: Final = 150
 GROUP_NAME_MAX_LENGTH: Final = 150
 EMAIL_MAX_LENGTH: Final = 254
@@ -84,6 +90,21 @@ ERASED_USERNAME_PURPOSE: Final = "domainkit.auth.erased_username"
 """What the key of ``erased_username`` is derived from ``SECRET_KEY`` for."""
 _HASH: Final = re.compile(r"[a-z][a-z0-9_]*\$.+")
 _ASCII_LOWER: Final = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
+
+
+def _granted(instance: object, key: str, *relationships: str) -> frozenset[str] | None:
+    """The keys ``instance`` was built with, under ``key``; None: read them.
+
+    Only while none of ``relationships`` is loaded. A request's user builds
+    its groups and permissions on first access (``principals``); until
+    then, the keys of what they hold are known. Once one is loaded, it may
+    have changed, so it is read instead.
+    """
+    attributes = instance.__dict__
+    granted: dict[str, frozenset[str]] | None = attributes.get(GRANTED)
+    if granted is None or any(name in attributes for name in relationships):
+        return None
+    return granted[key]
 
 
 def _now() -> datetime:
@@ -188,6 +209,9 @@ class Group(AggregateRoot[GroupId]):
 
     def permission_keys(self) -> frozenset[str]:
         """The keys of the group's permissions."""
+        granted = _granted(self, "permissions", "permissions")
+        if granted is not None:
+            return granted
         return frozenset(permission.key for permission in self.permissions)
 
     def delete(self) -> None:
@@ -363,12 +387,18 @@ class AbstractBaseUser(AggregateRoot[UserId]):
         """Keys of permissions given directly; none while inactive."""
         if not self.is_active:
             return frozenset()
+        granted = _granted(self, "user_permissions", "user_permissions")
+        if granted is not None:
+            return granted
         return frozenset(permission.key for permission in self.user_permissions)
 
     def get_group_permissions(self) -> frozenset[str]:
         """Keys of permissions the user's groups give; none while inactive."""
         if not self.is_active:
             return frozenset()
+        granted = _granted(self, "groups", "groups")
+        if granted is not None:
+            return granted
         return frozenset().union(*(group.permission_keys() for group in self.groups))
 
     def get_all_permissions(self) -> frozenset[str]:
@@ -377,6 +407,11 @@ class AbstractBaseUser(AggregateRoot[UserId]):
         A superuser has every permission without grants; ``has_perm`` knows,
         and ``backends.get_all_permissions`` lists them from the database.
         """
+        if not self.is_active:
+            return frozenset()
+        granted = _granted(self, EVERY, "groups", "user_permissions")
+        if granted is not None:
+            return granted
         return self.get_user_permissions() | self.get_group_permissions()
 
     def has_perm(self, perm: str) -> bool:

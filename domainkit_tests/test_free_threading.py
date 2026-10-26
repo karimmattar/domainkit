@@ -5,7 +5,8 @@ one rate limiter, one middleware, one hashing pool, one application's live
 connection slots, the event bus, an HTTP client's circuit breaker, the
 guard's lookup threads and its owners' shares, a throttled log's counts,
 the remembered client addresses, the handles of the request metrics, the
-principal cache, and the grants principals share between threads, an
+principal cache, the shedding middleware's slots and an HTTP client's
+pools per loop (``PerLoop``), and the grants principals share between threads, an
 application's throttle backend and attempt counter, the idempotency
 middleware's sweep schedule, and the registries that keep each loop's
 tasks, publishers, brokers, and caches. Each test
@@ -33,6 +34,7 @@ from types import SimpleNamespace
 from typing import Any, ClassVar
 from weakref import WeakKeyDictionary
 
+import httpx2
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from starlette.datastructures import State
@@ -75,19 +77,21 @@ from domainkit.db.connections import (
     create_read_engine,
 )
 from domainkit.ddd import DomainEvent, EventBus
+from domainkit.http import client as http_client
 from domainkit.http import guard as guard_module
 from domainkit.http import live, metrics, ratelimit
 from domainkit.http.access import AllowAny
-from domainkit.http.client import BREAKER_HOSTS, CircuitBreaker
+from domainkit.http.client import BREAKER_HOSTS, CircuitBreaker, HttpClient
 from domainkit.http.guard import GuardResolver, lookups_for
 from domainkit.http.live import Slots
 from domainkit.http.live_events import LiveEvents
 from domainkit.http.metrics import REQUESTS, MetricsMiddleware
 from domainkit.http.middleware import ProxyHeadersMiddleware, _address
 from domainkit.http.ratelimit import MemoryBackend, client_group
-from domainkit.http.shedding import QUEUE_FULL, ShedReport
+from domainkit.http.shedding import QUEUE_FULL, ConcurrencyLimitMiddleware, ShedReport
 from domainkit.http.websockets import WebSocketLimitsMiddleware
 from domainkit.log import JsonFormatter, ThrottledLog, flush_throttled
+from domainkit.utils.loops import PerLoop
 from domainkit_tests.conftest import UseAuth
 from domainkit_tests.sample_domains.alpha.apps import AlphaSettings
 
@@ -1505,3 +1509,101 @@ def test_idempotency_sweeps_are_due_once_per_interval_from_every_thread(
     full = on_threads(claims)
 
     assert (sum(first), sum(short), sum(full)) == (1, 0, 1)
+
+
+def checked_per_loop[V](per_loop: PerLoop[V]) -> PerLoop[V]:
+    """``per_loop``, whose registry is walked and changed only under its lock."""
+    per_loop._values = CheckedRegistry(per_loop._lock)
+    return per_loop
+
+
+def test_loops_on_threads_keep_their_own_values_and_let_closed_ones_go() -> None:
+    """``PerLoop``: one value per loop, made once; closed loops are dropped."""
+    registry = checked_per_loop(PerLoop[object]())
+    made: list[object] = []
+
+    def make() -> object:
+        made.append(value := object())
+        return value
+
+    async def use() -> bool:
+        mine = registry.get(make)
+        same = registry.get(make) is mine and registry.find() is mine
+        return same and registry.pop() is mine and registry.pop() is None
+
+    async def keep() -> bool:
+        return registry.get(make) is registry.get(make)
+
+    results = on_threads(
+        lambda index: [asyncio.run(use() if n % 2 else keep()) for n in range(LOOPS)]
+    )
+
+    assert results == [[True] * LOOPS] * THREADS
+    assert len(made) == THREADS * LOOPS
+    assert len(set(map(id, made))) == len(made)
+    asyncio.run(keep())  # Drops every loop closed so far but its own.
+    assert len(registry) <= 1
+
+
+def test_shedding_slots_are_each_loops_own_from_every_thread() -> None:
+    """One middleware, loops on threads: each its own slots, made under the lock."""
+    with override_settings(MAX_CONCURRENT_REQUESTS=4):
+        middleware = ConcurrencyLimitMiddleware(lambda *args: None)  # type: ignore[arg-type]
+    checked_per_loop(middleware._slots)
+
+    async def slots() -> bool:
+        mine = middleware.slots(4)
+        return mine is middleware.slots(4) and mine.limit == 4
+
+    results = on_threads(lambda _: [asyncio.run(slots()) for _ in range(LOOPS)])
+
+    assert results == [[True] * LOOPS] * THREADS
+    assert len(middleware._slots) <= THREADS
+
+
+def test_http_client_pools_are_each_loops_own_from_every_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each loop opens its own pool, off the loop's thread for TLS; closed go."""
+    transport = httpx2.MockTransport(lambda request: httpx2.Response(204))
+    api = HttpClient(transport=transport)
+    checked_per_loop(api._pools)
+    built_on: list[threading.Thread] = []
+    built = http_client.tls_context
+
+    def context(bundle: Any) -> Any:  # noqa: ANN401 - a path, an SSL context.
+        built_on.append(threading.current_thread())
+        return built(bundle)
+
+    monkeypatch.setattr(http_client, "tls_context", context)
+
+    async def calls() -> tuple[bool, threading.Thread]:
+        loop_thread = threading.current_thread()
+        first = await api.get("https://api.example.test/a")
+        pool = api._pools.find()
+        await api.get("https://api.example.test/b")
+        return first.status_code == 204 and api._pools.find() is pool, loop_thread
+
+    results = on_threads(lambda _: [asyncio.run(calls()) for _ in range(5)])
+
+    assert all(ok for each in results for ok, _ in each)
+    loop_threads = {thread for each in results for _, thread in each}
+    assert len(built_on) == THREADS * 5  # Once per loop, each on a worker thread.
+    assert loop_threads.isdisjoint(built_on)
+    assert len(api._pools) <= THREADS
+
+
+def test_one_request_reads_a_kept_principal_again_from_every_thread() -> None:
+    """Loops on threads ask at once: one claim; released, one more."""
+    cache = PrincipalCache()
+    kept = Entry(("token", "a"), None, targets=("user:1",), keep=True, deadline=10)
+    cache.put(kept, limit=10)
+
+    def claims(index: int) -> int:
+        return sum(cache.claim_refresh(kept) for _ in range(200))
+
+    first = on_threads(claims)
+    cache.release_refresh(kept)
+    again = on_threads(claims)
+
+    assert (sum(first), sum(again)) == (1, 1)
