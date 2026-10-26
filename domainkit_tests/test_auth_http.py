@@ -527,10 +527,14 @@ def test_a_nul_in_a_login_is_a_refused_value(api: Api) -> None:
 
 
 def test_tokens_are_never_cached_or_kept_for_replay(api: Api) -> None:
-    """Login answers ``no-store``, so idempotency keeps no working token."""
+    """Login answers ``no-store``, so idempotency keeps no working token.
+
+    The client names itself with an API key: a key from a caller nothing
+    names is refused since 0.11, before the login runs.
+    """
     create_user("alice")
     client = api()
-    keyed = {"Idempotency-Key": "login-1"}
+    keyed = {"Idempotency-Key": "login-1", "X-API-Key": "mobile-app"}
     body = {"username": "alice", "password": PASSWORD}
 
     first = client.post("/auth/login", json=body, headers=keyed)
