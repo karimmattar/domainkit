@@ -563,6 +563,7 @@ an unsafe or broken configuration, refused until it changes.
 | `audit.W001` to `audit.W003` | no `AUDIT.LEDGER`, no `AUDIT.NAMESPACE` on it, or nothing that seals on a schedule (no messaging, and no `AUDIT.SEALED_EXTERNALLY`) |
 | `audit.W004`, `audit.W005` | at startup, an audited PostgreSQL database whose `protect()` triggers could not be checked, or are missing; the application logs them. `AUDIT.REQUIRE_BASELINE` refuses to start on any `audit.W` instead ([contrib.md](contrib/audit.md#in-staging-and-production)) |
 | `idempotency.W001` | keyed requests without a deadline: one that runs past `IDEMPOTENCY.LEASE_SECONDS` can lose its key to a retry |
+| `idempotency.W002` | `IDEMPOTENCY.ANONYMOUS` not set: anonymous callers behind one address share keys; 0.11 defaults to `"refuse"`, so set `"per-address"` to keep today's behaviour, or `"refuse"` now (DATA-09) |
 
 The production settings that `init` create avoid the first three, and ask
 for `TRUSTED_PROXIES`: leave it empty only when callers connect directly.

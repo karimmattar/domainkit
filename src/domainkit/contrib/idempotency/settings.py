@@ -1,13 +1,14 @@
 """Settings of ``domainkit.contrib.idempotency``: ``IDEMPOTENCY = {...}``."""
 
-from typing import Final, Literal, Self
+from typing import Annotated, Final, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from domainkit.conf import DEFAULT_DB_ALIAS
 
 PER_ADDRESS: Final = "per-address"
 REFUSE: Final = "refuse"
+type CookieName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_.-]{1,64}$")]
 
 
 class IdempotencySettings(BaseModel):
@@ -41,7 +42,14 @@ class IdempotencySettings(BaseModel):
     ``per-address`` scopes them to the client's address, so callers behind
     one address (a NAT, a proxy) share them: one can be replayed another's
     response. ``refuse`` answers them 400 ``idempotency_key_needs_caller``.
+    For ``refuse``, a ``Cookie`` names a caller only if it carries one of
+    ``SESSION_COOKIES``: a consent or locale cookie, which many callers
+    send alike, does not (SEC-10b-7).
     """
+    SESSION_COOKIES: tuple[CookieName, ...] = Field(default=(), max_length=16)
+    """Cookies that name a caller the actor does not (a session another
+    layer reads), for ``ANONYMOUS = "refuse"``. Empty: no cookie does;
+    auth's own sessions set the actor."""
 
     @model_validator(mode="after")
     def check_lease(self) -> Self:

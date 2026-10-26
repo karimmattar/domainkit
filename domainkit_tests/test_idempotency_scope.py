@@ -182,13 +182,15 @@ def test_refuse_keeps_keys_of_known_callers(database_url: str) -> None:
     Two callers with different credentials never share a key: the second
     runs its own request.
     """
-    with keyed_app(database_url, ANONYMOUS="refuse") as client:
+    with keyed_app(
+        database_url, ANONYMOUS="refuse", SESSION_COOKIES=("session",)
+    ) as client:
         alice = post(client, {"n": 1}, **{ACTOR_HEADER: "alice"})
         again = post(client, {"n": 1}, **{ACTOR_HEADER: "alice"})
         bob = post(client, {"n": 1}, **{ACTOR_HEADER: "bob"})
         token = post(client, {"n": 1}, Authorization="Bearer one")
         other = post(client, {"n": 1}, Authorization="Bearer two")
-        cookie = post(client, {"n": 1}, Cookie="session=s")
+        cookie = post(client, {"n": 1}, Cookie="consent=yes; session=s")
         keys = stored()
 
     assert [r.json()["count"] for r in (alice, again, bob, token, other, cookie)] == [
@@ -201,6 +203,38 @@ def test_refuse_keeps_keys_of_known_callers(database_url: str) -> None:
     ]
     assert again.headers["Idempotent-Replayed"] == "true"
     assert len(keys) == 5
+
+
+@pytest.mark.parametrize(
+    "cookie", ["consent=yes", "consent=yes; locale=en", "sessions=s", "x=session"]
+)
+def test_refuse_counts_only_session_cookies(database_url: str, cookie: str) -> None:
+    """SEC-10b-7: a cookie many callers send alike names nobody, so it is refused.
+
+    Ann and Bob behind one address both send ``consent=yes``: in the PoC,
+    Bob was replayed Ann's response. Only a cookie of ``SESSION_COOKIES``
+    (none by default; auth's sessions set the actor) names a caller.
+    """
+    with keyed_app(
+        database_url, ANONYMOUS="refuse", SESSION_COOKIES=("session",)
+    ) as client:
+        ann = post(client, {"item": "ann's order"}, Cookie=cookie)
+        bob = post(client, {"item": "ann's order"}, Cookie=cookie)
+        keys = stored()
+
+    assert ann.status_code == 400
+    assert ann.json().items() >= NEEDS_CALLER.items()
+    assert bob.headers.get("Idempotent-Replayed") is None
+    assert keys == []
+
+
+def test_session_cookie_names_are_bounded() -> None:
+    """Cookie names, at most 16 of them."""
+    with pytest.raises(ValidationError):
+        IdempotencySettings(SESSION_COOKIES=("a b",))
+    with pytest.raises(ValidationError):
+        IdempotencySettings(SESSION_COOKIES=tuple(f"c{n}" for n in range(17)))
+    assert IdempotencySettings().SESSION_COOKIES == ()
 
 
 def test_anonymous_is_one_of_two_policies() -> None:

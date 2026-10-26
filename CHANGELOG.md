@@ -223,7 +223,10 @@ and a status.
   send the same key and body is replayed the first's response, and a
   different body learns the key is taken. `"refuse"` answers it 400
   `idempotency_key_needs_caller` and runs nothing; the default keeps the
-  behaviour of 0.9 (DATA-09).
+  behaviour of 0.9 (DATA-09). For `"refuse"`, a `Cookie` names a caller
+  only if it carries one of the new `IDEMPOTENCY.SESSION_COOKIES` (none by
+  default: auth's sessions set the actor), so a consent or locale cookie
+  many callers send alike is refused too (SEC-10b-7).
 - Retention that keeps the audit chain: `auditprune --keep-days DAYS`
   deletes the rows sealed before then (with `AUDIT.LEDGER`, below the
   newest anchored seal), never within the new `AUDIT.MIN_RETENTION`
@@ -493,6 +496,13 @@ and a status.
   naming the route, refused in 0.11. Add `HasScope(...)`, a permission
   rule, or `AllowScoped()` to the route, or set
   `SCOPED_CREDENTIALS = "refuse"` now (AUTH-01).
+- `IDEMPOTENCY.ANONYMOUS` left unset, so `"per-address"`: 0.11 defaults
+  to `"refuse"`. Staging and production warn (`idempotency.W002`, which
+  names the leak: anonymous callers behind one address share keys) until
+  it is set: `"per-address"` keeps today's behaviour, `"refuse"` takes
+  0.11's now. Flipping the default in 0.10 made every anonymous keyed
+  flow a 400 (63 failures and 8 errors in the 1,306 idempotency tests),
+  service-to-service calls behind a gateway or mTLS among them (DATA-09).
 - `domainkit.contrib.evidence.model`, the old name of the evidence models
   module, warns with `DomainkitDeprecationWarning` for each name taken from
   it; import them from `domainkit.contrib.evidence` (or its `models`).

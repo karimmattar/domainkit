@@ -203,7 +203,7 @@ class IdempotencyConfig(DomainConfig):
         ]
 
     def deployment_warnings(self) -> list[str]:
-        """Keyed requests without a deadline, in staging and production.
+        """Keyed requests without a deadline, or anonymous ones by default, deployed.
 
         ``ready`` and ``check_application`` hold each keyed request's
         deadline below the lease; with no deadline at all (no
@@ -211,25 +211,46 @@ class IdempotencyConfig(DomainConfig):
         and a request that runs past the lease can lose its key to a
         retry. A warning in 0.9.1, so deployments that run this way keep
         starting; 0.10 refuses to start.
+
+        ``ANONYMOUS`` left to its default, ``"per-address"``, which 0.11
+        changes to ``"refuse"``: anonymous callers behind one address share
+        keys. Set either value to choose (DATA-09).
         """
         if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
             return []
+        config = self.get_settings()
+        warnings: list[str] = []
         if settings.REQUEST_TIMEOUT is None:
             missing = "REQUEST_TIMEOUT is None"
         elif DEADLINE_MIDDLEWARE not in settings.MIDDLEWARE:
             missing = f"{DEADLINE_MIDDLEWARE} is not in MIDDLEWARE"
         else:
-            return []
-        lease = self.get_settings().LEASE_SECONDS
-        warning = CheckMessage(
-            "idempotency.W001",
-            f"Requests with an Idempotency-Key run without a deadline ({missing}): "
-            f"one that runs past IDEMPOTENCY.LEASE_SECONDS ({lease:g}s) can lose "
-            "its key to a retry, which runs it again. Set REQUEST_TIMEOUT below "
-            f"IDEMPOTENCY.LEASE_SECONDS and list {DEADLINE_MIDDLEWARE} in "
-            "MIDDLEWARE; 0.10 refuses to start without a deadline.",
-        )
-        return [warning]
+            missing = None
+        if missing is not None:
+            warnings.append(
+                CheckMessage(
+                    "idempotency.W001",
+                    "Requests with an Idempotency-Key run without a deadline "
+                    f"({missing}): one that runs past IDEMPOTENCY.LEASE_SECONDS "
+                    f"({config.LEASE_SECONDS:g}s) can lose its key to a retry, "
+                    "which runs it again. Set REQUEST_TIMEOUT below "
+                    f"IDEMPOTENCY.LEASE_SECONDS and list {DEADLINE_MIDDLEWARE} in "
+                    "MIDDLEWARE; 0.10 refuses to start without a deadline.",
+                )
+            )
+        if "ANONYMOUS" not in config.model_fields_set:
+            warnings.append(
+                CheckMessage(
+                    "idempotency.W002",
+                    "IDEMPOTENCY.ANONYMOUS is not set: an Idempotency-Key sent with "
+                    "no actor and no credential is scoped to the caller's address, "
+                    "so anonymous callers behind one address (a NAT, a proxy) share "
+                    "keys, and one can be replayed another's response. 0.11 "
+                    'defaults to "refuse". Set "per-address" to keep this '
+                    'behaviour, or "refuse" now (DATA-09).',
+                )
+            )
+        return warnings
 
     async def erase_subject(self, subject: str, reason: str) -> Mapping[str, int]:
         """Drop the kept responses about ``subject``; their keys stay, answered 409."""
