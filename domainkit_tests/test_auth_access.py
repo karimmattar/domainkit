@@ -1,6 +1,7 @@
 """Access rules: each rule, their combinations, and how refusals answer."""
 
 import asyncio
+from pathlib import Path
 from typing import Any, Final, get_args
 
 import pytest
@@ -341,7 +342,7 @@ def test_moved_names_still_import_from_auth_with_a_warning(name: str) -> None:
         f"domainkit.contrib.auth.{name} moved to domainkit.http.access.{name}; "
         "import it from there. The old name is removed in 0.11."
     )
-    assert warned[0].filename == __file__
+    assert Path(warned[0].filename).name == Path(__file__).name  # The caller.
     assert name not in auth_package.__all__
 
 
