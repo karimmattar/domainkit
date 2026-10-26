@@ -704,14 +704,21 @@ def _mask_causes(error: BaseException) -> None:
 
 
 class _Engines:
-    """One event loop's engines: each alias's, and its ``STATEMENTS`` engine."""
+    """One event loop's engines: each alias's, and its ``STATEMENTS`` engine.
 
-    __slots__ = ("pools", "reads")
+    ``bound`` keeps, per alias and set of options (snapshot or not), the
+    engine with those execution options that read-only sessions bind to,
+    made from the alias's engine here: it shares that engine's pool, and
+    goes with it.
+    """
+
+    __slots__ = ("bound", "pools", "reads")
 
     def __init__(self) -> None:
         """Start without engines."""
         self.pools: dict[str, _Pool] = {}
         self.reads: dict[str, AsyncEngine] = {}
+        self.bound: dict[tuple[str, bool], AsyncEngine] = {}
 
 
 class ConnectionHandler:
@@ -769,15 +776,12 @@ class ConnectionHandler:
             return sessions()
         if reads is Reads.TRANSACTION:
             return AsyncSession(
-                engine.execution_options(**_read_only_options(engine)),
-                expire_on_commit=False,
+                self._bound(alias, engine, snapshot=False), expire_on_commit=False
             )
         if reads is Reads.STATEMENTS and reads_alone(self.config(alias)):
             bind = self._read_engine(alias)
-        elif reads is Reads.SNAPSHOT:
-            bind = engine.execution_options(**_snapshot_options(engine))
         else:
-            bind = engine.execution_options(**_read_only_options(engine))
+            bind = self._bound(alias, engine, snapshot=reads is Reads.SNAPSHOT)
         return AsyncSession(
             bind, expire_on_commit=False, sync_session_class=ReadOnlySession
         )
@@ -873,6 +877,21 @@ class ConnectionHandler:
             engine = create_engine(self.config(alias))
             pools[alias] = (engine, async_sessionmaker(engine, expire_on_commit=False))
         return pools[alias]
+
+    def _bound(self, alias: str, engine: AsyncEngine, *, snapshot: bool) -> AsyncEngine:
+        """``engine``, this loop's for ``alias``, with read-only (or snapshot) options.
+
+        Made once per engine (an ``OptionEngine`` shares its pool), rather
+        than for every read-only session: ``close_all`` drops it with the
+        engine, and an engine made since gets one of its own.
+        """
+        bound = self._loop_engines().bound
+        if (alias, snapshot) not in bound:
+            options = (
+                _snapshot_options(engine) if snapshot else _read_only_options(engine)
+            )
+            bound[(alias, snapshot)] = engine.execution_options(**options)
+        return bound[(alias, snapshot)]
 
     def _read_engine(self, alias: str) -> AsyncEngine:
         """Return the ``STATEMENTS`` engine of ``alias`` for the running loop."""

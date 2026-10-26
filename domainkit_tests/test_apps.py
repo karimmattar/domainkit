@@ -1,12 +1,14 @@
 """Installed domains: configuration classes, the registry, and domain settings."""
 
 import asyncio
+from collections.abc import Callable
 
 import pytest
+from pydantic import BaseModel
 
 from domainkit import setup
 from domainkit.apps import DomainConfig, DomainRegistry, Requirement, registry
-from domainkit.conf import override_settings
+from domainkit.conf import configure, override_settings, use_settings
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit_tests.conftest import MakePackage
 from domainkit_tests.sample_domains.alpha.apps import AlphaConfig, AlphaSettings
@@ -125,6 +127,97 @@ def test_domain_settings_are_validated_and_cached() -> None:
         assert registry.settings(AlphaSettings).GREETING == "hey"
     with override_settings(ALPHA=None):
         assert registry.settings(AlphaSettings).GREETING == "hello"
+
+
+class Validations:
+    """Count ``AlphaSettings`` validations, and run ``during`` inside the next one."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Wrap ``AlphaSettings.model_validate``."""
+        self.count = 0
+        self.during: Callable[[], None] | None = None
+        validate = AlphaSettings.model_validate
+
+        def counted(value: object) -> AlphaSettings:
+            self.count += 1
+            if self.during is not None:
+                during, self.during = self.during, None
+                during()
+            return validate(value)
+
+        monkeypatch.setattr(AlphaSettings, "model_validate", counted)
+
+
+def test_domain_settings_are_found_without_validating_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each settings object is validated from once; replacing it is noticed."""
+    setup()
+    validations = Validations(monkeypatch)
+
+    slow: list[type] = []
+    validate = registry._validate_settings
+
+    def looked_up(settings_class: type[BaseModel]) -> BaseModel:
+        slow.append(settings_class)
+        return validate(settings_class)
+
+    monkeypatch.setattr(registry, "_validate_settings", looked_up)
+
+    first = registry.settings(AlphaSettings)  # Validated as ``setup`` began.
+    assert [registry.settings(AlphaSettings) for _ in range(3)] == [first] * 3
+    assert (validations.count, slow) == (0, [])
+    with override_settings(ALPHA={"GREETING": "hey"}):
+        assert registry.settings(AlphaSettings).GREETING == "hey"
+        assert registry.settings(AlphaSettings).GREETING == "hey"
+    assert validations.count == 1
+    back = registry.settings(AlphaSettings)
+    assert (back, validations.count) == (first, 2)
+    with override_settings(DEBUG=True):  # ALPHA's mapping is the same object.
+        assert registry.settings(AlphaSettings) is back
+    assert validations.count == 2
+    with use_settings("domainkit_tests.other_settings"):
+        assert registry.settings(AlphaSettings).GREETING == "hello"
+    configure("domainkit_tests.settings")
+    assert registry.settings(AlphaSettings).GREETING == "hi"
+    assert validations.count == 4
+
+
+def test_domain_settings_are_validated_again_after_the_domains_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``clear`` and ``populate`` forget what was validated, and count a change."""
+    setup()
+    validations = Validations(monkeypatch)
+    before = registry.generation
+
+    first = registry.settings(AlphaSettings)
+    registry.clear()
+    assert registry.generation > before
+    with pytest.raises(ImproperlyConfigured, match="No installed domain declares"):
+        registry.settings(AlphaSettings)
+    setup()  # Validates the settings again.
+    again = registry.settings(AlphaSettings)
+
+    assert (again, validations.count) == (first, 1)
+    assert registry.settings(AlphaSettings) is again
+    assert validations.count == 1
+
+
+def test_settings_validated_while_the_domains_change_are_not_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A value worked out across a ``clear`` is returned, not remembered."""
+    setup()
+    validations = Validations(monkeypatch)
+    registry.settings(AlphaSettings)
+    with override_settings(ALPHA={"GREETING": "hey"}):
+        validations.during = lambda: registry._changed(dict(registry._configs))
+
+        assert registry.settings(AlphaSettings).GREETING == "hey"
+        assert registry.settings(AlphaSettings).GREETING == "hey"
+        assert registry.settings(AlphaSettings).GREETING == "hey"
+    assert validations.count == 2
 
 
 def test_domain_settings_errors() -> None:

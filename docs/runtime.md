@@ -325,6 +325,13 @@ escaping `json.dumps` uses, and the date and time of the timestamp are
 worked out once a second.
 A line the level drops (`domainkit.access` below `INFO`, say) costs the
 request nothing: the access log checks the level before building it.
+A line it keeps is made with `domainkit.log.log_enabled(logger, level,
+msg, *args, extra=...)`, which a project's own hot paths can use too once
+they have asked `logger.isEnabledFor(level)`: it makes the record
+`logger.log` makes, field for field (the caller's file, line and
+function included), without asking the level again or walking the stack
+to find the caller, 15 Python calls fewer a line. A logger of a class of
+its own (`logging.setLoggerClass`) logs through its own `log`.
 
 ### Sampling the access log
 

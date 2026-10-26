@@ -21,8 +21,9 @@ from domainkit.ddd import DeferredTask, DomainEvent, UnitOfWork
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.deadlines import RequestTimeout
 
-from .operations import KeyTakenOver, mark_committed, pin_lease, running_operation
+from .operations import KeyTakenOver, committed_values, running_operation
 from .settings import IdempotencySettings
+from .statements import MARK_COMMITTED, PIN_LEASE, holder
 
 MESSAGING = "domainkit.contrib.messaging"
 
@@ -98,13 +99,15 @@ class IdempotencyConfig(DomainConfig):
         database = self.get_settings().DATABASE
         if alias == database:
             connection = await connect()
-            held = await connection.execute(mark_committed(operation))
+            held = await connection.execute(MARK_COMMITTED, committed_values(operation))
         else:
             async with (
                 _within_deadline(),
                 connections.autocommit(database) as connection,
             ):
-                held = await connection.execute(pin_lease(operation))
+                held = await connection.execute(
+                    PIN_LEASE, holder(operation.key_hash, operation.token)
+                )
             if held.rowcount:
                 operation.pinned = True  # Before the commit, whatever it reports.
         if not held.rowcount:
@@ -137,7 +140,7 @@ class IdempotencyConfig(DomainConfig):
                 _within_deadline(),
                 connections.autocommit(database) as connection,
             ):
-                await connection.execute(mark_committed(operation))
+                await connection.execute(MARK_COMMITTED, committed_values(operation))
 
     def check_application(self, app: FastAPI) -> list[str]:
         """Keyed routes whose own ``RequestTimeout`` outlasts the keys' lease.

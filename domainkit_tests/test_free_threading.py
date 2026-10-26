@@ -40,16 +40,26 @@ from starlette.requests import HTTPConnection, Request
 from starlette.types import Message, Receive, Scope, Send
 
 from domainkit import clock as clock_module
-from domainkit import tasks
+from domainkit import setup, tasks
+from domainkit.apps import registry
 from domainkit.broker import Broker, BrokerHandler, MemoryBroker
 from domainkit.cache import CacheHandler, Store
-from domainkit.conf import CacheConfig, DatabaseConfig, override_settings
+from domainkit.conf import (
+    CacheConfig,
+    DatabaseConfig,
+    override_settings,
+    unwrap_settings,
+)
 from domainkit.contrib.audit import personal
 from domainkit.contrib.auth import AllowAny, principals, throttling
 from domainkit.contrib.auth import middleware as middleware_module
 from domainkit.contrib.auth.hashers import HashingPool
 from domainkit.contrib.auth.middleware import AuthenticationMiddleware
+from domainkit.contrib.auth.models import Group, User
 from domainkit.contrib.auth.principals import ALL, Entry, PrincipalCache
+from domainkit.contrib.contenttypes import InstalledModel, content_type_key
+from domainkit.contrib.contenttypes import registry as content_registry
+from domainkit.contrib.idempotency import statements as idempotency_statements
 from domainkit.contrib.idempotency.middleware import PURGE_BATCH, Sweeps
 from domainkit.contrib.messaging import MessagingSettings, dispatch
 from domainkit.db import Reads, connections
@@ -78,6 +88,7 @@ from domainkit.http.shedding import QUEUE_FULL, ShedReport
 from domainkit.http.websockets import WebSocketLimitsMiddleware
 from domainkit.log import JsonFormatter, ThrottledLog, flush_throttled
 from domainkit_tests.conftest import UseAuth
+from domainkit_tests.sample_domains.alpha.apps import AlphaSettings
 
 THREADS = 8
 LOOPS = 25
@@ -1318,6 +1329,157 @@ def test_metric_handles_are_kept_once_from_every_thread(
 
     assert all(on_threads(count_all))
     assert len(counter._series) == 10
+
+
+class LockedDict[K, V](dict[K, V]):
+    """A cache that may only be written with ``lock`` held; reads need none."""
+
+    def __init__(self, lock: Any) -> None:  # noqa: ANN401 - a lock.
+        """Check ``lock`` on every write."""
+        super().__init__()
+        self.lock = lock
+
+    def __setitem__(self, key: K, value: V) -> None:
+        """Keep an entry, under the lock."""
+        assert self.lock.locked()
+        super().__setitem__(key, value)
+
+    def clear(self) -> None:
+        """Forget every entry, under the lock."""
+        assert self.lock.locked()
+        super().clear()
+
+
+def test_content_type_keys_are_worked_out_once_from_every_thread(
+    use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Threads asking at once wait for one of them to work the keys out."""
+    use_auth()
+    monkeypatch.setattr(content_registry, "_known", (None, {}))
+    installed = content_registry.installed_models
+    worked_out: list[int] = []
+
+    def counted() -> list[InstalledModel]:
+        assert content_registry._lock.locked()
+        worked_out.append(threading.get_ident())
+        return installed()
+
+    monkeypatch.setattr(content_registry, "installed_models", counted)
+    expected = {User: ("auth", "user"), Group: ("auth", "group")}
+
+    def look_up(index: int) -> bool:
+        return all(
+            content_type_key(cls) == key
+            for _ in range(200)
+            for cls, key in expected.items()
+        )
+
+    assert all(on_threads(look_up))
+    assert len(worked_out) == 1
+
+
+def test_content_type_keys_follow_mappings_made_on_other_threads(
+    use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Changes counted on one thread make every thread work the keys out again."""
+    use_auth()
+
+    def look_up_or_change(index: int) -> bool:
+        if index == 0:
+            for _ in range(200):
+                content_registry._mapped()
+            return True
+        return all(content_type_key(User) == ("auth", "user") for _ in range(500))
+
+    before = content_registry._mappings
+    assert all(on_threads(look_up_or_change))
+    assert content_registry._mappings == before + 200
+    content_type_key(User)
+    assert content_registry._known[0] == content_registry._state()
+
+
+def test_domain_settings_are_kept_under_the_lock_from_every_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Threads reading domain settings at once all get them; the cache stays whole."""
+    setup()
+    cache: LockedDict[Any, Any] = LockedDict(registry._lock)
+    monkeypatch.setattr(registry, "_settings_cache", cache)
+
+    def read(index: int) -> set[str]:
+        return {registry.settings(AlphaSettings).GREETING for _ in range(500)}
+
+    assert on_threads(read) == [{"hi"}] * THREADS
+    [kept] = cache.values()
+    assert kept.source is unwrap_settings()
+    with override_settings(ALPHA={"GREETING": "hey"}):
+        assert on_threads(read) == [{"hey"}] * THREADS
+    assert on_threads(read) == [{"hi"}] * THREADS
+
+
+def read_only_bind(reads: Reads = Reads.TRANSACTION) -> AsyncEngine:
+    """The engine a new read-only session of the running loop binds to."""
+    bind = connections.session(readonly=True, reads=reads).bind
+    assert isinstance(bind, AsyncEngine)
+    return bind
+
+
+def test_loops_on_threads_keep_their_own_read_only_binds() -> None:
+    """Each loop's read-only sessions share one bind per engine; closing drops it."""
+    network = "postgresql+asyncpg://app@db.invalid/app"  # Never connected to.
+    kept: list[AsyncEngine] = []  # Alive, so no two are told apart by a reused id.
+
+    async def use() -> bool:
+        engine = connections.engine()
+        binds = [
+            read_only_bind(reads) for reads in (Reads.TRANSACTION, Reads.SNAPSHOT) * 2
+        ]
+        kept.extend(binds[:2])
+        await connections.close_all()
+        fresh = read_only_bind()
+        kept.append(fresh)
+        await connections.close_all()
+        return (
+            binds[0] is binds[2]
+            and binds[1] is binds[3]
+            and binds[0] is not binds[1]
+            and all(bind.sync_engine.pool is engine.sync_engine.pool for bind in binds)
+            and fresh is not binds[0]
+        )
+
+    def loops(index: int) -> list[bool]:
+        return [asyncio.run(use()) for _ in range(LOOPS // 5)]
+
+    with override_settings(DATABASES={"default": {"URL": network}}):
+        assert on_threads(loops) == [[True] * (LOOPS // 5)] * THREADS
+    assert len({id(bind) for bind in kept}) == len(kept)
+
+
+def test_idempotency_statements_are_built_once_from_every_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Threads asking for the same statements at once get the same ones."""
+    built: LockedDict[Any, Any] = LockedDict(idempotency_statements._lock)
+    monkeypatch.setattr(idempotency_statements, "_built", built)
+    build = idempotency_statements._build
+    builds: list[tuple[str, bool]] = []
+
+    def counted(dialect: str, database_clock: bool) -> Any:  # noqa: ANN401
+        builds.append((dialect, database_clock))
+        return build(dialect, database_clock)
+
+    monkeypatch.setattr(idempotency_statements, "_build", counted)
+
+    def statements(index: int) -> list[Any]:
+        return [
+            idempotency_statements.clock_statements(dialect)
+            for dialect in ("postgresql", "sqlite") * 50
+        ]
+
+    results = on_threads(statements)
+    assert sorted(builds) == [("postgresql", True), ("sqlite", False)]
+    assert all(result == results[0] for result in results)
+    assert results[0][0] is built[("postgresql", True)]
 
 
 def test_idempotency_sweeps_are_due_once_per_interval_from_every_thread(

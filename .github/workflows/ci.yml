@@ -658,6 +658,7 @@ jobs:
               domainkit.contrib.contenttypes.* domainkit.contrib.evidence.*
               domainkit.contrib.flags.* domainkit.contrib.idempotency.operations.*
               domainkit.contrib.idempotency.settings.*
+              domainkit.contrib.idempotency.statements.*
               domainkit.contrib.idempotency.tasks.*
               domainkit.contrib.objectpermissions.* domainkit.contrib.privacy.*
           - name: core

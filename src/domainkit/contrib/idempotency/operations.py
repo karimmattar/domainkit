@@ -21,13 +21,14 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Final
+from typing import Any, Final
 
 from sqlalchemy import ColumnElement, Update, and_, update
 
 from domainkit import clock
 from domainkit.ddd import ConcurrentUpdate
 
+from .statements import holder
 from .tables import idempotency_keys
 
 
@@ -87,6 +88,15 @@ def pin_lease(operation: Operation) -> Update:
         .where(operation.holds_key())
         .values(locked_until=idempotency_keys.c.expires_at, pinned=True)
     )
+
+
+def committed_values(operation: Operation) -> dict[str, Any]:
+    """The values of ``statements.MARK_COMMITTED`` for ``operation``, as of now.
+
+    ``mark_committed`` builds the same statement with them; the framework
+    runs the one built once.
+    """
+    return {"committed_at": clock.now(), **holder(operation.key_hash, operation.token)}
 
 
 def mark_committed(operation: Operation) -> Update:

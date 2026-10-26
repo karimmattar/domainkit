@@ -6,6 +6,7 @@ import os
 import secrets
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -14,8 +15,7 @@ import pytest
 from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, Response
 from fastapi.responses import FileResponse
 from fastapi.testclient import TestClient
-from sqlalchemy import ColumnElement, Table, false, func, insert, select
-from sqlalchemy.sql import Select
+from sqlalchemy import false, func, insert, select
 from starlette.testclient import WebSocketDenialResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -30,6 +30,7 @@ from domainkit.contrib.idempotency import middleware as idempotency
 from domainkit.contrib.idempotency import operations as idempotency_operations
 from domainkit.contrib.idempotency.operations import Operation, running_operation
 from domainkit.contrib.idempotency.settings import IdempotencySettings
+from domainkit.contrib.idempotency.statements import ClockStatements, clock_statements
 from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.contrib.messaging import enqueue, task
 from domainkit.contrib.messaging import outbox as messaging_outbox
@@ -815,7 +816,7 @@ def test_a_failed_mark_still_keeps_the_key(
     def unreachable(operation: Operation) -> None:
         raise ConnectionError("The keys' database is away.")
 
-    monkeypatch.setattr(idempotency_apps, "mark_committed", unreachable)
+    monkeypatch.setattr(idempotency_apps, "committed_values", unreachable)
     databases = {"default": make_database("keys"), "other": make_database("other")}
     with idempotent_app(databases) as client:
         headers = {"Idempotency-Key": "crash"}
@@ -1476,10 +1477,13 @@ def test_a_key_released_while_claimed_is_in_progress(
     """A row gone between the failed insert and the read means: try again."""
     idempotent.post("/counter", json={}, headers={"Idempotency-Key": "gone"})
 
-    def nothing(*columns: Table | ColumnElement[bool]) -> Select[tuple[object, ...]]:
-        return select(*columns).where(false())
+    built = clock_statements
 
-    monkeypatch.setattr(idempotency, "select", nothing)
+    def reading_nothing(dialect: str) -> ClockStatements:
+        statements = built(dialect)
+        return replace(statements, read_held=statements.read_held.where(false()))
+
+    monkeypatch.setattr(idempotency, "clock_statements", reading_nothing)
     retry = idempotent.post("/counter", json={}, headers={"Idempotency-Key": "gone"})
 
     assert (retry.status_code, retry.json()["code"]) == (409, "idempotency_key_in_use")

@@ -1822,3 +1822,153 @@ async def test_shutting_down_writes_the_counts_held_back(
         "Refused from a",
         "3 more token line(s) for a were held back",
     ]
+
+
+class Kept(logging.Handler):
+    """Keep every record it is given."""
+
+    def __init__(self) -> None:
+        """Keep nothing yet."""
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Keep ``record``."""
+        self.records.append(record)
+
+
+@pytest.fixture
+def kept() -> Iterator[tuple[logging.Logger, Kept]]:
+    """A logger of its own at DEBUG, and the records it gets."""
+    logger = logging.getLogger(f"domainkit.tests.{random.getrandbits(32):x}")
+    handler = Kept()
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+    yield logger, handler
+    logger.removeHandler(handler)
+
+
+TIMES = ("created", "msecs", "relativeCreated")
+
+
+def twins(records: list[logging.LogRecord]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Two records' fields, the second at the first's time and line."""
+    first, second = (dict(record.__dict__) for record in records)
+    second |= {name: first[name] for name in (*TIMES, "lineno")}
+    return first, second
+
+
+def test_log_enabled_makes_the_record_logger_log_makes(
+    kept: tuple[logging.Logger, Kept],
+) -> None:
+    """Field for field, at the caller's file, function and line."""
+    logger, handler = kept
+    extra = {"access": {"method": "GET", "path": "/", "status": 200}}
+    line, values = "%s %s %.1fms", ("GET", "/", 0.4)
+    here = sys._getframe().f_lineno
+    logger.log(logging.WARNING, line, *values, extra=extra)
+    log.log_enabled(logger, logging.WARNING, line, *values, extra=extra)
+
+    first, second = twins(handler.records)
+    assert first == second
+    assert [record.lineno for record in handler.records] == [here + 1, here + 2]
+    assert first["funcName"] == "test_log_enabled_makes_the_record_logger_log_makes"
+    assert first["pathname"] == __file__
+    text = log.TextFormatter("%(asctime)s %(name)s %(message)s %(module)s %(thread)d")
+    for formatter in (log.JsonFormatter(), text):
+        assert formatter.format(logging.makeLogRecord(first)) == formatter.format(
+            logging.makeLogRecord(second)
+        )
+
+
+def test_log_enabled_without_caller_lookup_says_so_as_logging_does(
+    kept: tuple[logging.Logger, Kept], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With ``logging._srcfile`` None, neither looks for the caller."""
+    logger, handler = kept
+    monkeypatch.setattr(logging, "_srcfile", None)
+    logger.log(logging.INFO, "plain")
+    log.log_enabled(logger, logging.INFO, "plain")
+
+    first, second = (dict(record.__dict__) for record in handler.records)
+    for name in TIMES:
+        second[name] = first[name]
+    assert first == second
+    assert (first["pathname"], first["lineno"], first["funcName"]) == (
+        "(unknown file)",
+        0,
+        "(unknown function)",
+    )
+
+
+class OwnLogger(logging.Logger):
+    """A logger class of a project's own, which marks its records."""
+
+    def makeRecord(self, *args: Any, **kwargs: Any) -> logging.LogRecord:  # noqa: ANN401 - logging's.
+        """Mark the record."""
+        record = super().makeRecord(*args, **kwargs)
+        record.__dict__["own"] = True
+        return record
+
+
+def test_log_enabled_logs_through_a_logger_class_of_its_own() -> None:
+    """Such a logger's own ``log`` makes its record, naming the same caller."""
+    logger = OwnLogger("domainkit.tests.own")
+    handler = Kept()
+    logger.addHandler(handler)
+
+    log.log_enabled(logger, logging.ERROR, "failed %s", "here", extra={"access": {}})
+
+    [record] = handler.records
+    assert (record.pathname, record.funcName) == (
+        __file__,
+        "test_log_enabled_logs_through_a_logger_class_of_its_own",
+    )
+    assert (record.__dict__["own"], record.getMessage()) == (True, "failed here")
+
+
+def test_access_lines_name_the_middleware_as_their_caller(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """As ``Logger.log`` named it: the access log's function and file."""
+    caplog.set_level(logging.INFO, logger="domainkit.access")
+    middleware = RequestContextMiddleware(answered)
+
+    middleware._log_access(RequestContext("req-1", None, "GET", "/"), 200, 0.0)
+
+    [line] = [r for r in caplog.records if r.name == "domainkit.access"]
+    assert (line.funcName, line.module) == ("_log_access", "middleware")
+    assert line.pathname == sys.modules[RequestContextMiddleware.__module__].__file__
+
+
+def test_a_request_without_a_response_is_logged_with_a_dash(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No status: ``-`` in the line, ``None`` in its fields, at ``ERROR``."""
+    caplog.set_level(logging.INFO, logger="domainkit.access")
+    middleware = RequestContextMiddleware(answered)
+
+    middleware._log_access(RequestContext("req-1", None, "GET", "/gone"), None, 0.0)
+
+    [line] = [r for r in caplog.records if r.name == "domainkit.access"]
+    assert line.getMessage().startswith("GET /gone - ")
+    assert (line.levelno, line.__dict__["access"]["status"]) == (logging.ERROR, None)
+
+
+def test_a_record_with_no_drops_to_report_queues_without_looking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drops are looked for only when some wait to be reported."""
+    handler = BackgroundHandler.writing_to(logging.NullHandler())
+
+    def unexpected() -> None:
+        raise AssertionError("looked for drops when there were none")
+
+    monkeypatch.setattr(handler, "_take_unreported", unexpected)
+    try:
+        handler.enqueue(make_record())
+        assert handler.dropped == 0
+    finally:
+        monkeypatch.undo()
+        handler.close()

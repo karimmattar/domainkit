@@ -93,6 +93,12 @@ and a status.
   announces (a retry, a delay, an expired lock, a lost notification)
   waits up to this long; without a listener every wait is
   `POLL_INTERVAL`, as it is by default (PERF-08; ADR 0043).
+- `domainkit.log.log_enabled(logger, level, msg, *args, extra=...)`:
+  `logger.log` for a caller that has already asked `isEnabledFor`, making
+  the same record with less work. `DomainRegistry.generation` counts the
+  changes `populate` and `clear` make, for caches of what the installed
+  domains decide. `domainkit.contrib.idempotency.statements` holds the
+  keys' statements, built once (PERF-01, PERF-12, PERF-18).
 
 ### Changed
 
@@ -159,6 +165,37 @@ and a status.
   batch, instead of on every keyed request: one statement less on almost
   all of them, and a backlog still drains 100 keys a request (PERF-10;
   ADR 0062).
+- A `ModelPermissions` rule finds its model's content type in one lookup:
+  `content_type_key` works every class's key out once, and again only
+  after `registry.populate` or `clear`, a class mapped, or a table added
+  to or removed from the project's metadata. It worked them all out on
+  every request, which cost a permission-guarded read about 170 Python
+  calls with the benchmark's six mapped classes, and ten times that with
+  sixty (PERF-01).
+- `registry.settings()`, and with it `auth_settings()` and each contrib
+  app's `get_settings()`, finds a domain's validated settings in one
+  lookup while the settings object is the one they were validated from.
+  `override_settings`, `use_settings`, `configure` and `reset_settings`
+  each put another in its place, and `registry.populate` and `clear`
+  forget them, so the values are as before (PERF-06). With content types,
+  a permission-guarded read makes 2,261 Python calls instead of 2,439, and
+  a write 2,595 instead of 2,815.
+- A read-only session binds to an engine with its options made once per
+  event loop's engine, one for `Reads.TRANSACTION` and one for
+  `Reads.SNAPSHOT`, instead of a new `OptionEngine` for each session: 212
+  fewer Python calls for a read-only unit of work on PostgreSQL, 100 on
+  SQLite. `close_all()` drops them with their engine.
+  `connections.autocommit()` still sets `AUTOCOMMIT` on its connection:
+  an engine made once with it measured 26 more calls a use (PERF-07).
+- `IdempotencyMiddleware` runs statements built once per dialect and
+  clock, with each request's values bound, instead of building them for
+  each request. They send the same SQL text with the same parameters, and
+  a keyed write still makes 4 statements, 3 transactions and 3 checkouts;
+  it makes 4,044 Python calls instead of 5,890 (PERF-12).
+- The access line's record is made without walking the stack for its
+  caller, and its level is asked once: 15 fewer Python calls a line, and
+  the same record, field for field, so every formatter writes the same
+  bytes (PERF-18).
 
 ### Fixed
 

@@ -16,6 +16,10 @@ A settings module is a Python module of UPPERCASE names, selected with
 `[tool.domainkit] env-prefix`. `domainkit.conf.Settings` validates every name
 at startup. A name the framework does not declare must belong to an installed
 domain's `settings_class`, or to a project schema named by `SETTINGS_CLASS`.
+`registry.settings(SettingsClass)` returns a domain's validated settings;
+it validates them once per settings object, and again after
+`override_settings`, `use_settings`, `configure` or `reset_settings`
+replaces it, or `registry.populate` or `clear` changes the domains.
 
 Read values with `domainkit.conf.settings`. Read environment variables in a
 settings module with `domainkit.conf.Env`: it adds the prefix, reads `.env`
