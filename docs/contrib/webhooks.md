@@ -166,7 +166,9 @@ subscriptions belong to a tenant rather than a user, name the owner
 both ways: `owned_router(owner=lambda user: str(user.tenant_id))` and
 `expose(..., owner=lambda event: event.tenant_id)`. An owner may have
 `MAX_SUBSCRIPTIONS_PER_OWNER` subscriptions (a 422
-`webhook_subscription_limit` past that, checked as one is made), and
+`webhook_subscription_limit` past that, counted after the insert, in its
+transaction, one create of an owner at a time, so creates sent at once
+cannot pass it together), and
 erasing an owner (`privacy erase`) deletes theirs. The admin API shows
 each subscription's `owner` (null for staff's). The subscriptions table
 has a new `owner` column: run `makemigrations` and `migrate`.

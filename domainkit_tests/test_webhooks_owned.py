@@ -5,6 +5,7 @@ import io
 import socket
 import uuid
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
@@ -219,6 +220,33 @@ def test_an_owner_has_at_most_its_share_of_subscriptions(client: TestClient) -> 
     assert made == [201, 201, 422]
     assert refused.json()["code"] == "webhook_subscription_limit"
     assert create(client, bob).status_code == 201
+
+
+def test_concurrent_creates_keep_an_owner_to_its_share(client: TestClient) -> None:
+    """SEC-10b-6: twenty creates at once by one owner leave two subscriptions.
+
+    The count and the insert are one owner's at a time (an advisory lock
+    on PostgreSQL, the write lock on SQLite); before, most of them passed.
+    """
+    ann = user("ann")
+
+    with ThreadPoolExecutor(20) as pool:
+        codes = list(
+            pool.map(
+                lambda _: (
+                    client.post(
+                        f"{MINE}/subscriptions", json=NEW, headers=ann
+                    ).status_code
+                ),
+                range(20),
+            )
+        )
+    listed = client.get(
+        f"{MINE}/subscriptions", headers=ann, params={"limit": 100}
+    ).json()
+
+    assert sorted(codes) == [201] * 2 + [422] * 18
+    assert len(listed) == 2
 
 
 def test_owners_can_be_named_otherwise(client: TestClient) -> None:

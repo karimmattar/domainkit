@@ -210,7 +210,9 @@ and a status.
   subscription receives only the events `expose(..., owner=...)` gives
   its owner, never one exposed without an owner; staff's subscriptions,
   which have none, still receive every event they want. An owner may have
-  `WEBHOOKS.MAX_SUBSCRIPTIONS_PER_OWNER` (10; 1 to 1000), erasing an
+  `WEBHOOKS.MAX_SUBSCRIPTIONS_PER_OWNER` (10; 1 to 1000; counted after
+  the insert under a lock of the owner, so concurrent creates cannot
+  pass it together: SEC-10b-6), erasing an
   owner deletes theirs, and the admin API shows each one's `owner`. The
   subscriptions table has a new `owner` column: run `makemigrations` and
   `migrate` (DATA-11).

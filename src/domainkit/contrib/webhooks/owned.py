@@ -142,12 +142,11 @@ def owned_router(owner: OwnerOf = user_owner) -> APIRouter:
             owner=me,
         )
         async with WebhooksUnitOfWork() as uow:
-            if await uow.subscriptions.count_owned(me) >= limit:
+            if not await uow.subscriptions.add_owned(subscription, limit=limit):
                 raise SubscriptionLimitReached(
                     f"You have {limit} webhook subscriptions, the most allowed; "
                     "delete one first."
                 )
-            await uow.subscriptions.add(subscription)
             await uow.commit()
         return NewSubscriptionOut(
             **SubscriptionOut.of(subscription).model_dump(), secret=secret
