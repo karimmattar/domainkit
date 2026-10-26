@@ -128,6 +128,39 @@ and a status.
   not required yet: on 3.14.6t some runs crash inside SQLAlchemy's compiled
   extensions when loops on threads make engines at once, at 0.9.2 too
   (CONC-12, ASYNC-R11).
+- `domainkit.exceptions.DomainkitError`, the root of every exception the
+  framework defines, beside the base each had: `except DomainkitError`
+  catches domainkit once, and `except ValueError`, `TimeoutError`, or
+  `HTTPException` still catch what they did. `domainkit.exceptions` is
+  public, with `ServiceBusy`, an error below the HTTP layer that it answers
+  with 503 and `Retry-After` (DSGN-06; ADR 0084).
+- Typed hooks: a domain registers `on_stage`, `on_committed`,
+  `on_stage_transaction`, `on_transaction_committed`, or `on_migrated`
+  (`domainkit.db.hooks`) in `ready()`, typed on `SqlAlchemyUnitOfWork`, and
+  only the domains that registered are called. `domainkit.apps.hooks.HookPoint`
+  lets an app offer points of its own. An empty commit with every contrib
+  app installed takes 226 Python calls instead of 248, and a project domain
+  without hooks costs a commit nothing (268 with ten of them on 0.9.2)
+  (DSGN-03; ADR 0085).
+- `domainkit.checks`: every finding of `check` and startup has an id, such
+  as `security.E001` (the letter is the level), and a hint where its
+  message does not say how to fix it. `check --deploy`, in staging and
+  production, fails on warnings too, for a deployment pipeline to gate on.
+  `SILENCED_CHECKS` (at most 64 ids) silences warnings a project has
+  judged; it refuses an error's id (DSGN-08, INFRA-08; ADR 0079).
+- Warnings where deployed: `*` in `CORS_ALLOWED_ORIGINS`
+  (`security.W006`), a network database without `POOL_SIZE`, so each
+  process may open 15 connections whatever the server allows
+  (`deploy.W004`), and SQLite (`deploy.W005`) (INFRA-08).
+- `management.generators.Generator` and `AggregateGenerator`: the base of
+  `startdomain`, `startaggregate`, `addcommand`, `addquery`, and `addevent`,
+  which plan every change, then write it; a project's own generators can
+  use them. What the commands write is unchanged, byte for byte (DSGN-10).
+- ADRs 0084 (the exception root), 0085 (typed hooks), and 0090 (module-level
+  singletons, overridden per test); 0046 records how closers are
+  registered, 0079 the checks, and 0025 why the flags and webhooks admin
+  APIs keep routers of their own. No decision is left without a record
+  (DSGN-07, DSGN-13, DSGN-15).
 
 ### Changed
 
@@ -267,6 +300,24 @@ and a status.
   required checks; the skipped jobs still report, and the test matrix
   skips its steps, since a matrix skipped whole would report under its
   unexpanded name and leave `test (3.13)` pending (INFRA-06).
+- Staging and production report every breach of the deployment baseline
+  at once, each with its id, instead of the first: settings with five
+  breaches are refused once, naming all five. AUTH's refusals are reported
+  together the same way, and `check` lists the application's problems,
+  the layer rules, and the migration heads in one report, where the
+  build's refusal used to end it. What is refused is unchanged; messages
+  start with the check's id (DSGN-08, INFRA-08).
+- `check` prints each warning with its id (`Warning: security.W001: ...`)
+  and counts the silenced ones; `setup()` names each missing requirement
+  as `apps.E001` under one heading (DSGN-08).
+- `PasswordChecksBusy` is a `ServiceBusy`, no longer an `HTTPException`:
+  the hashers no longer raise HTTP errors, and the HTTP layer answers it
+  with the same 503, body, and `Retry-After`. Code that caught it as an
+  `HTTPException` catches it by name (DSGN-06).
+- The contrib apps join commits and migrations through the typed hooks
+  instead of overriding `DomainConfig.stage`, `committed`,
+  `stage_transaction`, `transaction_committed`, and `migrated`; those
+  methods still work in a project's own configurations (DSGN-03).
 
 ### Deprecated
 
@@ -289,6 +340,10 @@ and a status.
   still works, with a `DomainkitDeprecationWarning`, and is refused in
   0.11; name the fields with `writable=[...]`, or `writable=ALL_FIELDS` to
   keep every one (WEB-09).
+- `Query` from `domainkit.ddd.query`, `Selection`'s name before 0.9.2: use
+  `domainkit.ddd.Selection`. It still works, the same class, with a
+  `DomainkitDeprecationWarning`, and is removed in 0.11. The domain
+  template's tests use `Selection` (DSGN-09).
 
 ### Fixed
 

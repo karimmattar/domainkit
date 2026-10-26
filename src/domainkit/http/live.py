@@ -42,7 +42,7 @@ from domainkit.clock import frozen, monotonic
 from domainkit.conf import settings
 from domainkit.conf.global_settings import MAX_REAUTH_INTERVAL
 from domainkit.context import current_request
-from domainkit.exceptions import ImproperlyConfigured
+from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 from domainkit.http.errors import error_response
 from domainkit.http.ratelimit import address_key
 from domainkit.log import SECURITY_LOGGER, ThrottledLog
@@ -103,7 +103,7 @@ NORMAL_ENDS: Final = frozenset({IDLE, LIFETIME, GONE})
 """Closures that end a connection in the normal course, logged at INFO."""
 
 
-class Closed(Exception):
+class Closed(DomainkitError):
     """Raised by an event source to end its connection, saying why."""
 
     def __init__(self, closure: Closure) -> None:

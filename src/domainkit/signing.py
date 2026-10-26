@@ -30,7 +30,7 @@ from typing import Any, ClassVar, Final
 
 from domainkit import clock
 from domainkit.conf import settings
-from domainkit.exceptions import ImproperlyConfigured
+from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 
 __all__ = [
     "BadSignature",
@@ -56,7 +56,7 @@ type Key = str | bytes
 """A secret key: text (as settings hold it) or bytes."""
 
 
-class BadSignature(Exception):
+class BadSignature(DomainkitError):
     """The value was not signed with this key and salt, or it was changed."""
 
 

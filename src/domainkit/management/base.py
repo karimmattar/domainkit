@@ -8,6 +8,7 @@ from contextlib import AbstractAsyncContextManager, AbstractContextManager, null
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TextIO, cast
 
+from domainkit.exceptions import DomainkitError
 from domainkit.utils import loops
 
 if TYPE_CHECKING:
@@ -20,7 +21,7 @@ __all__ = [
 ]
 
 
-class CommandError(Exception):
+class CommandError(DomainkitError):
     """Stop the command and print the message; the process exits with ``returncode``."""
 
     def __init__(self, message: str, *, returncode: int = 1) -> None:

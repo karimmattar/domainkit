@@ -66,7 +66,6 @@ it.
 
 | Old name | Use instead | Since |
 | --- | --- | --- |
-| `domainkit.ddd.query.Query` | `domainkit.ddd.Selection` | 0.9.2 |
 | `domainkit.contrib.evidence.model` | `domainkit.contrib.evidence` (or its `models`) | 0.9.2 |
 
 ### Deprecations planned for 0.11
@@ -77,6 +76,7 @@ it.
 | The same, and `AllOf`, `AnyOf`, `Not`, `Rule`, `SAFE_METHODS`, `MODEL_ACTIONS`, `bearer`, `public`, `scopes_of`, `routes_need_users`, `unguarded_routes`, from `domainkit.contrib.auth.access` | the same names from `domainkit.http.access` | 0.10 |
 | The setting `AUTH.REQUIRE_ROUTE_RULES` | `REQUIRE_ROUTE_RULES` | 0.10 |
 | `ResourceRouter(crud=True)` without `writable=`, or without both `create=` and `update=` (every plain field writable) | `writable=[...]` naming the fields, `writable=ALL_FIELDS`, or both schemas | 0.10 |
+| `Query` from `domainkit.ddd.query` (named `Selection` since 0.9.2) | `domainkit.ddd.Selection` | 0.10 |
 
 To find deprecated uses before upgrading, make the warning an error in the
 project's pytest settings:

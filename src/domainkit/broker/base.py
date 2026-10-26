@@ -11,8 +11,10 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 
+from domainkit.exceptions import DomainkitError
 
-class BrokerError(Exception):
+
+class BrokerError(DomainkitError):
     """Base class of broker errors."""
 
 

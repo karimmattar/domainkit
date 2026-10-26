@@ -235,7 +235,8 @@ def test_check_warns_about_server_limits_where_deployed(
     call_command("check", stdout=(local := io.StringIO()))
 
     assert (
-        "  Warning: uvicorn reads WebSocket messages of up to 4194304 bytes "
+        "  Warning: servers.W001: uvicorn reads WebSocket messages of up to "
+        "4194304 bytes "
         "before MAX_REQUEST_BODY_SIZE (1048576) refuses them"
     ) in output.getvalue()
     assert "Warning" not in local.getvalue()
@@ -355,7 +356,7 @@ def test_check_and_deployed_applications_warn_about_unix_sockets(
         call_command("check", stdout=(trusted := io.StringIO()))
     call_command("check", stdout=(local := io.StringIO()))
 
-    assert f"  Warning: {UNIX_SOCKET_WARNING}" in deployed.getvalue()
+    assert f"  Warning: servers.W002: {UNIX_SOCKET_WARNING}" in deployed.getvalue()
     assert UNIX_SOCKET_WARNING in caplog.messages
     assert UNIX_SOCKET_WARNING not in trusted.getvalue()
     assert UNIX_SOCKET_WARNING not in local.getvalue()

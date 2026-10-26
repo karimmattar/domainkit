@@ -37,7 +37,7 @@ from pydantic import (
 
 from domainkit.ddd import PermissionDenied
 from domainkit.ddd.query import F
-from domainkit.ddd.query import Query as Listing
+from domainkit.ddd.query import Selection as Listing
 from domainkit.http import Pagination, error_responses
 from domainkit.http.access import IsUnscoped, Require
 from domainkit.resources import HasModelPermission as HasModelPermission

@@ -1,7 +1,7 @@
 """Filters, ordering, and search from the query string (django-filter's FilterSet).
 
 A ``FilterSet`` names, per field, the lookups clients may use, and turns
-the query string into a ``Query``::
+the query string into a ``Selection``::
 
     class OrderFilters(FilterSet):
         model = Order
@@ -59,7 +59,7 @@ from domainkit.ddd.query import (
     Lookup,
     Or,
     Ordering,
-    Query,
+    Selection,
     resolve,
     total_ordering,
 )
@@ -229,9 +229,9 @@ class FilterSet:
         )
         self.criteria = self._criteria()
 
-    def query(self, **options: Any) -> Query:  # noqa: ANN401 - Query's keywords.
+    def query(self, **options: Any) -> Selection:  # noqa: ANN401 - Selection's keywords.
         """The query: the criteria and the ordering, plus ``options`` (``limit=``)."""
-        return Query(self.criteria, ordering=self.ordering, **options)
+        return Selection(self.criteria, ordering=self.ordering, **options)
 
     def _criteria(self) -> Criteria | None:
         """The conditions the parameters and search words ask for.

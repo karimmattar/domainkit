@@ -11,6 +11,8 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import ClassVar, Final
 
+from domainkit.exceptions import DomainkitError
+
 from .messages import PushMessage, SmsMessage
 
 __all__ = [
@@ -31,7 +33,7 @@ push_outbox: Final[list[PushMessage]] = []
 """Notifications ``MemoryPushBackend`` sent, oldest first."""
 
 
-class NotificationFailed(Exception):
+class NotificationFailed(DomainkitError):
     """The provider did not take a message; the worker tries again later.
 
     Adapters raise it with the provider's error code, never a number or a

@@ -2200,13 +2200,14 @@ def test_work_queued_on_another_database_pins_the_key_then_marks_it() -> None:
     plant("order-42", token="first")
     operation = Operation(keyed("order-42"), "first")
     config = registry.get_domain_config("idempotency")
+    assert isinstance(config, idempotency_apps.IdempotencyConfig)
 
     async def scenario() -> list[dict[str, object]]:
         with idempotency_operations.run_operation(operation):
             async with connections.engine().connect() as connection:
-                await config.stage_transaction(connection, "other")
+                await config.hold_key_in_transaction(connection, "other")
             pinned = await asyncio.to_thread(stored_keys)
-            await config.transaction_committed("other")
+            await config.note_transaction_commit("other")
         await connections.close_all()
         return pinned
 
@@ -2224,10 +2225,11 @@ def test_a_commit_on_the_keys_database_is_marked_in_it_not_after() -> None:
     plant("order-42", token="first")
     operation = Operation(keyed("order-42"), "first")
     config = registry.get_domain_config("idempotency")
+    assert isinstance(config, idempotency_apps.IdempotencyConfig)
 
     async def scenario() -> None:
         with idempotency_operations.run_operation(operation):
-            await config.transaction_committed("default")
+            await config.note_transaction_commit("default")
         await connections.close_all()
 
     asyncio.run(scenario())
@@ -2252,9 +2254,7 @@ def test_a_failed_follow_up_after_enqueue_is_reported_not_raised(
     def report(exc: BaseException, **context: object) -> None:
         reports.append((exc, context))
 
-    monkeypatch.setattr(
-        idempotency_apps.IdempotencyConfig, "transaction_committed", unreachable
-    )
+    monkeypatch.setattr(idempotency_apps.IdempotencyConfig, "_note_commit", unreachable)
     monkeypatch.setattr(messaging_outbox, "report_error", report)
 
     async def scenario() -> int:

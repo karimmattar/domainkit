@@ -24,6 +24,7 @@ from uuid import UUID, uuid4
 
 from domainkit import clock
 from domainkit.ddd._dataclass import MessageMeta
+from domainkit.exceptions import DomainkitError
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ class DomainEvent(metaclass=MessageMeta):
 type EventHandler[E: DomainEvent] = Callable[[E], Awaitable[None]]
 
 
-class HandlerTimedOut(TimeoutError):
+class HandlerTimedOut(TimeoutError, DomainkitError):
     """An in-process handler ran past its timeout and was cut off."""
 
 

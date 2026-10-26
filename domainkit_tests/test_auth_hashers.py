@@ -324,12 +324,11 @@ def test_hashing_pools_refuse_calls_beyond_their_queue() -> None:
         with pytest.raises(PasswordChecksBusy) as busy:
             await pool.run(slow, "third")
         assert pool.pending == 2
-        assert busy.value.status_code == 503
         assert busy.value.code == "password_checks_busy"
-        assert busy.value.detail == (
+        assert busy.value.message == (
             "Too many password checks at once; try again in a moment."
         )
-        assert busy.value.headers == {"Retry-After": "1"}
+        assert busy.value.retry_after == 1
         release.set()
         return list(await asyncio.gather(running, waiting)), pool.pending
 
@@ -447,8 +446,8 @@ def test_each_hash_moves_the_average_a_fifth_of_the_way() -> None:
 
 def test_a_refusal_says_retry_after_a_second_by_default() -> None:
     """``PasswordChecksBusy()`` without a wait asks for one second."""
-    assert PasswordChecksBusy().headers == {"Retry-After": "1"}
-    assert PasswordChecksBusy(7).headers == {"Retry-After": "7"}
+    assert PasswordChecksBusy().retry_after == 1
+    assert PasswordChecksBusy(7).retry_after == 7
 
 
 def test_the_a_functions_hash_as_priority_only_when_asked(

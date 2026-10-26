@@ -40,6 +40,7 @@ URLs; an unreadable port is refused without quoting the URL.
 | `SETTINGS_MODULE` | set by the loader | The module these settings came from. |
 | `BASE_DIR` | the project root | The directory holding `pyproject.toml`. |
 | `ENVIRONMENT` | `"local"` | `local`, `test`, `staging`, or `production`. Staging and production get the [deployment checks](#deployment-checks). |
+| `SILENCED_CHECKS` | `()` | Ids of warnings `check` stops reporting, as `security.W001` ([deployment checks](#deployment-checks)); at most 64, each once. Errors cannot be silenced. |
 | `DEBUG` | `False` | Development conveniences; refused in staging and production. |
 | `DEBUG_TOOLBAR` | see [Debug toolbar](#debug-toolbar) | The options of `DebugToolbarMiddleware`, which development settings list in `MIDDLEWARE`. |
 | `SLOW_CALLBACK_DURATION` | `0.1` | With `DEBUG`, the application's loop runs in asyncio's debug mode and logs each step that holds it this many seconds or more ([runtime.md](runtime.md#finding-blocking-code)); `None` turns it off. |
@@ -477,35 +478,40 @@ toolbar, then keep them in check with `assert_max_queries` in a test.
 
 ### Deployment checks
 
-With `ENVIRONMENT` set to `staging` or `production`, startup fails on:
+Every problem `check` and startup report is a check with an id
+(`domainkit.checks`): a namespace, then `E` for an error, `W` for a
+warning, or `I` for a note, and a number, as `security.E001`. Each run
+reports every problem it finds, not the first: one error lists every
+breach of the baseline below, and `check` lists the application's
+problems, layer rules, and migration heads together. Where a message does
+not say how to fix it, a `Hint:` line does.
 
-- `DEBUG = True`
-- `domainkit.debug.DebugToolbarMiddleware` in `MIDDLEWARE`
-- `*` in `ALLOWED_HOSTS`
-- no `SECRET_KEY`, or a key (or fallback) with fewer than 50 characters,
-  fewer than 5 different ones, or a development prefix
-  (`domainkit-insecure-`, `django-insecure-`)
-- a `TRUSTED_PROXIES` network that holds every address (`0.0.0.0/0`, `::/0`)
-- `ECHO` or `LOG_PARAMETERS` on any database
-- a network database without `SSLMODE = "verify-full"`
-- a `memory://` ledger, or an immudb ledger without `TLS_CA` or
-  `SERVER_SIGNING_KEY`
-- a `memory://` broker, a broker on another host without `amqps://`, a
-  broker URL that turns certificate checks off (`no_verify_ssl`), and a
-  broker without a user of its own (none, or `guest`)
-- a `MemoryStorage` in `STORAGES`: its files live in one process, until
-  it ends
-- a Redis cache on another host without `rediss://` (`rediss+sentinel://`,
-  `rediss+cluster://`), or without a password or a client certificate, and
-  any cache URL that weakens certificate checks (`ssl_cert_reqs=none` or
-  `optional`, `ssl_check_hostname=false`)
+With `ENVIRONMENT` set to `staging` or `production`, settings that break
+the baseline do not load, so startup and every command fail on:
+
+| Id | Refused |
+| --- | --- |
+| `security.E001` | `DEBUG = True` |
+| `security.E002` | `domainkit.debug.DebugToolbarMiddleware` in `MIDDLEWARE` |
+| `security.E003` | `*` in `ALLOWED_HOSTS` |
+| `security.E004` | a `TRUSTED_PROXIES` network that holds every address (`0.0.0.0/0`, `::/0`) |
+| `security.E005`, `security.E006` | `ECHO` or `LOG_PARAMETERS` on any database |
+| `security.E007` | a network database without `SSLMODE = "verify-full"` |
+| `deploy.E001` | a `memory://` ledger |
+| `security.E008`, `security.E009` | an immudb ledger without `TLS_CA` or `SERVER_SIGNING_KEY` |
+| `security.E010`, `security.E011`, `security.E012` | a Redis cache on another host without `rediss://` (`rediss+sentinel://`, `rediss+cluster://`); any cache URL that weakens certificate checks (`ssl_cert_reqs=none` or `optional`, `ssl_check_hostname=false`); a network cache without a password or a client certificate |
+| `deploy.E002` | a `memory://` broker |
+| `security.E013`, `security.E014`, `security.E015` | a broker on another host without `amqps://`; a broker URL that turns certificate checks off (`no_verify_ssl`); a broker without a user of its own (none, or `guest`) |
+| `deploy.E003` | a `MemoryStorage` in `STORAGES`: its files live in one process, until it ends |
+| `security.E016`, `security.E017`, `security.E018` | no `SECRET_KEY`; a key (or fallback) with a development prefix (`domainkit-insecure-`, `django-insecure-`); one with fewer than 50 characters, or fewer than 5 different ones |
 
 Installed contrib apps add their own:
 
-- auth: a password hasher made for tests in `AUTH.PASSWORD_HASHERS`, a
-  network rather than one address in `AUTH.CLIENT_CERT.PROXIES`, and
-  `http://` in `AUTH.PASSWORD_RESET_URL`, `EMAIL_VERIFICATION_URL`, or
-  `SIGNUP_URL` ([auth.md](auth.md))
+- auth (`auth.E001` to `auth.E007`, every one reported at once): a
+  password hasher made for tests in `AUTH.PASSWORD_HASHERS`, a cookie
+  sent over plain HTTP, a network rather than one address in
+  `AUTH.CLIENT_CERT.PROXIES`, and `http://` in `AUTH.PASSWORD_RESET_URL`,
+  `EMAIL_VERIFICATION_URL`, or `SIGNUP_URL` ([auth.md](auth.md))
 - evidence: no `EVIDENCE.SUBJECT_KEY`
   ([contrib.md](contrib.md#evidence-records-that-provably-never-change))
 - mail: the console or memory backend; and in any environment without
@@ -515,56 +521,47 @@ Installed contrib apps add their own:
   `WEBHOOKS.ALLOWED_PRIVATE_NETWORKS`
   ([contrib.md](contrib.md#webhooks-signed-events-for-other-services))
 
+The application refuses to start there with a route no rule guards
+(`security.E101`), operation ids that clash (`openapi.E001`), and the
+problems installed domains find (`auth.E101` to `auth.E104`,
+`idempotency.E001`); `setup()` refuses a domain whose `requires` is not
+installed (`apps.E001`), anywhere. `check` adds layer rules
+(`architecture.E001`) and migration heads (`migrations.E001`).
 `migrate --downgrade` also needs `--allow-data-loss` there.
 
 `check` also warns about choices that are valid but weak there. It still
-passes, so an API that is public on purpose can keep them:
+passes, so an API that is public on purpose can keep them; `check
+--deploy` fails on them (exit status 1), for a deployment pipeline to gate
+on. A project that has judged one lists its id in `SILENCED_CHECKS`, and
+`check` counts it as silenced. Errors cannot be silenced: each stands for
+an unsafe or broken configuration, refused until it changes.
 
-- `API_DOCS = True`: anyone can read `/docs`, `/redoc`, and `/openapi.json`
-- `SECURE_HSTS_SECONDS = 0`: browsers are not told to keep to HTTPS
-- no `RATE_LIMIT`, or `RateLimitMiddleware` missing from `MIDDLEWARE`
-- a rate limit with no `TRUSTED_PROXIES`: behind a load balancer, every
-  caller would share its address and its count
-- a server on a unix socket without `"unix"` in `TRUSTED_PROXIES`: no
-  caller has an address ([Server limits](#server-limits); a deployed
-  application also logs it at start)
-- no `REQUEST_TIMEOUT`, or `DeadlineMiddleware` missing from `MIDDLEWARE`;
-  no `MAX_CONCURRENT_REQUESTS`, or `ConcurrencyLimitMiddleware` missing
-- a cache without `COMPUTE_TIMEOUT` (`CACHES[alias]["COMPUTE_TIMEOUT"]`):
-  one `get_or_set` computation that hangs holds its key until the process
-  restarts ([cache.md](cache.md#what-a-factory-may-use)); the `init`
-  template sets it
-- a database that seems to go through PgBouncer (port 6432, or a statement
-  cache turned off in `CONNECT_ARGS`) without `PGBOUNCER = True`
-- a network database whose pool holds fewer than a quarter of
-  `MAX_CONCURRENT_REQUESTS` connections (`POOL_SIZE` + `MAX_OVERFLOW`, 5 +
-  10 by default): past about four requests per connection, requests wait
-  for one, unseen by the shedding queue, up to `POOL_TIMEOUT` (10 seconds),
-  then fail with 503 ([sizing pools](#sizing-pools))
-- auth: `AUTH.LOGIN_RATE` or `AUTH.MFA.RATE` set to `None` (guesses
-  without limit), and a session or CSRF cookie name without the `__Host-`
-  prefix where the prefix could hold
-  ([auth.md](auth.md#browser-sessions-in-cookies))
-- auth: attempt throttles counted in a `RATE_LIMIT_BACKEND` each process
-  keeps alone (`MemoryBackend`): with several processes, each allows the
-  rates on its own ([auth.md](auth.md#logging-in-and-out))
-- auth: `AUTH.PRINCIPAL_CACHE.TTL` above 5 seconds without `STAMPS`: a
-  revoked token works that long in the other processes
-  ([auth.md](auth.md#the-principal-cache))
-- `LIVE_REAUTH_INTERVAL = None`: open WebSockets and event streams keep a
-  revoked token
-- an application that serves WebSockets under a server that reads larger
-  messages than `MAX_REQUEST_BODY_SIZE` (from `UVICORN_WS_MAX_SIZE` or
-  `GUNICORN_CMD_ARGS`; a deployed application also logs it at start), or
-  without
-  `WebSocketLimitsMiddleware`
-  ([live.md](live.md#message-size))
-- audit: no `AUDIT.LEDGER`, no `AUDIT.NAMESPACE` on it, or nothing that
-  seals on a schedule (no messaging, and no `AUDIT.SEALED_EXTERNALLY`); at
-  startup the application also logs audited PostgreSQL databases without
-  the `protect()` triggers. `AUDIT.REQUIRE_BASELINE` refuses to start
-  instead, and 0.10 makes that the default
-  ([contrib.md](contrib.md#in-staging-and-production))
+| Id | Warned |
+| --- | --- |
+| `security.W001` | `API_DOCS = True`: anyone can read `/docs`, `/redoc`, and `/openapi.json` |
+| `security.W002` | `SECURE_HSTS_SECONDS = 0`: browsers are not told to keep to HTTPS |
+| `security.W003` | no `RATE_LIMIT`, or `RateLimitMiddleware` missing from `MIDDLEWARE` |
+| `security.W004` | a rate limit with no `TRUSTED_PROXIES`: behind a load balancer, every caller would share its address and its count |
+| `security.W005` | `LIVE_REAUTH_INTERVAL = None`: open WebSockets and event streams keep a revoked token |
+| `security.W006` | `*` in `CORS_ALLOWED_ORIGINS`: any web site may call the API from its visitors' browsers |
+| `deploy.W001` | no `REQUEST_TIMEOUT`, or `DeadlineMiddleware` missing from `MIDDLEWARE` |
+| `deploy.W002` | no `MAX_CONCURRENT_REQUESTS`, or `ConcurrencyLimitMiddleware` missing |
+| `deploy.W003` | a database that seems to go through PgBouncer (port 6432, or a statement cache turned off in `CONNECT_ARGS`) without `PGBOUNCER = True` |
+| `deploy.W004` | a network database without `POOL_SIZE`: each process opens up to 15 connections (SQLAlchemy's 5 and 10 overflow), whatever the server's `max_connections`; size it so that processes x replicas x (`POOL_SIZE` + `MAX_OVERFLOW`) stays below it |
+| `deploy.W005` | a SQLite database: each process and host sees its own file |
+| `deploy.W006` | a network database whose pool holds fewer than a quarter of `MAX_CONCURRENT_REQUESTS` connections (`POOL_SIZE` + `MAX_OVERFLOW`, 5 + 10 by default): past about four requests per connection, requests wait for one, unseen by the shedding queue, up to `POOL_TIMEOUT` (10 seconds), then fail with 503 ([sizing pools](#sizing-pools)) |
+| `caches.W001` | a cache without `COMPUTE_TIMEOUT` (`CACHES[alias]["COMPUTE_TIMEOUT"]`): one `get_or_set` computation that hangs holds its key until the process restarts ([cache.md](cache.md#what-a-factory-may-use)); the `init` template sets it |
+| `servers.W001` | an application that serves WebSockets under a server that reads larger messages than `MAX_REQUEST_BODY_SIZE` (from `UVICORN_WS_MAX_SIZE` or `GUNICORN_CMD_ARGS`; a deployed application also logs it at start) ([live.md](live.md#message-size)) |
+| `servers.W002` | a server on a unix socket without `"unix"` in `TRUSTED_PROXIES`: no caller has an address ([Server limits](#server-limits); a deployed application also logs it at start) |
+| `live.W001` | WebSockets served without `WebSocketLimitsMiddleware` ([live.md](live.md#message-size)) |
+| `blocking.W001` | a route handler or dependency of the project's domains written as `def`, run on FastAPI's thread pool ([runtime.md](runtime.md#finding-blocking-code)); in every environment |
+| `auth.W001` | `AUTH.PRINCIPAL_CACHE.TTL` above 5 seconds without `STAMPS`: a revoked token works that long in the other processes ([auth.md](auth.md#the-principal-cache)) |
+| `auth.W002`, `auth.W003` | `AUTH.LOGIN_RATE` or `AUTH.MFA.RATE` set to `None`: guesses without limit |
+| `auth.W004` | attempt throttles counted in a `RATE_LIMIT_BACKEND` each process keeps alone (`MemoryBackend`): with several processes, each allows the rates on its own ([auth.md](auth.md#logging-in-and-out)) |
+| `auth.W005` | a session or CSRF cookie name without the `__Host-` prefix where the prefix could hold ([auth.md](auth.md#browser-sessions-in-cookies)) |
+| `audit.W001` to `audit.W003` | no `AUDIT.LEDGER`, no `AUDIT.NAMESPACE` on it, or nothing that seals on a schedule (no messaging, and no `AUDIT.SEALED_EXTERNALLY`) |
+| `audit.W004`, `audit.W005` | at startup, an audited PostgreSQL database whose `protect()` triggers could not be checked, or are missing; the application logs them. `AUDIT.REQUIRE_BASELINE` refuses to start on any `audit.W` instead ([contrib.md](contrib.md#in-staging-and-production)) |
+| `idempotency.W001` | keyed requests without a deadline: one that runs past `IDEMPOTENCY.LEASE_SECONDS` can lose its key to a retry |
 
 The production settings that `init` create avoid the first three, and ask
 for `TRUSTED_PROXIES`: leave it empty only when callers connect directly.
@@ -731,6 +728,7 @@ See ADR 0032.
 | `PermissionDenied` | 403 | from the class |
 | other `DomainError` | 400 | from the class |
 | `domainkit.http.APIError(status, detail, code=…)` | as given | as given |
+| `domainkit.exceptions.ServiceBusy(message, retry_after=…)`: something the operation needs is busy, raised below the HTTP layer (a full hashing queue is `PasswordChecksBusy`) | 503 | from the class (`password_checks_busy`), with `Retry-After` |
 | request validation | 422 | `validation_error` |
 | a cursor this API did not issue for the request's ordering, or one that was altered | 422 | `invalid_cursor` ([queries.md](queries.md#pages)) |
 | a filter a `FilterSet` does not offer, given twice, or over its bounds | 422 | `invalid_filter` ([queries.md](queries.md#filters-over-http)) |
@@ -751,6 +749,13 @@ See ADR 0032.
 
 WebSockets the database refuses are closed with 1013 (busy) or 1007 (a
 value it refuses).
+
+Every exception domainkit defines is a `domainkit.exceptions.DomainkitError`,
+beside the base it had (`ValueError`, `TimeoutError`, starlette's
+`HTTPException`, ...), so `except DomainkitError` catches the framework
+once and the narrower handlers still catch what they did. Code below the
+HTTP layer never raises an HTTP exception: it raises its own error, and this
+table maps it ([ADR 0084](adr/0084-one-exception-root-mapped-to-http-at-the-boundary.md)).
 
 Fields are named as the API knows them: a column's `info={"field": ...}`,
 else the attribute of the class mapped onto its table, else the column's
@@ -1014,7 +1019,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | Command | Options | Purpose |
 | --- | --- | --- |
 | `init` | `name`, `[directory]` | Create a project: base, local, test, and production settings, routes, `manage.py`, `.env`, and a first test. The name sets the environment prefix; the directory (default `./<name>`) must be empty or missing. What it writes passes the project's own `ruff check` and `ruff format --check`; its dev group installs ruff, which formats what the generators write. |
-| `check` | | Settings, domains, routes and their access rules, middleware, layer rules, and a single migration head. It warns about route handlers and dependencies of the installed domains written as `def`, which run on FastAPI's thread pool ([runtime.md](runtime.md#finding-blocking-code)); in staging and production it also lists [weak choices](#deployment-checks) as warnings. |
+| `check` | `--deploy` | Settings, domains, routes and their access rules, middleware, layer rules, and a single migration head. It warns about route handlers and dependencies of the installed domains written as `def`, which run on FastAPI's thread pool ([runtime.md](runtime.md#finding-blocking-code)); in staging and production it also lists [weak choices](#deployment-checks) as warnings. Every finding has an id; `--deploy` fails on warnings not in `SILENCED_CHECKS` too, and runs only in staging and production. |
 | `broker` | `check\|declare`, `[ALIAS ...]` | Connect to brokers (all by default), or declare the exchange and every queue the worker's tasks use on `MESSAGING.BROKER`. |
 | `compilemessages` | `[DIRECTORY ...]`, `-l/--locale`, `--check` | Compile translation catalogs (`.po`) to `.mo` files: in the directories named, or in `LOCALE_PATHS` and each installed domain's `locale` directory. `--check` writes nothing and fails if one is missing or out of date ([i18n.md](i18n.md)). |
 | `cache` | `check\|clear`, `[ALIAS ...]`, `--all` | Ping caches (all by default), or delete every key of the named caches, all versions, in their namespace only. Clearing needs aliases or `--all`. |
@@ -1188,12 +1193,15 @@ revision: the test database migrates up, down, and up again.
 | Startup wiring | `DomainConfig.ready()` | (called by `setup()`) |
 | Process resources (clients, pools) | `async DomainConfig.startup()` / `shutdown()` | (called by the app lifespan; after the domains stop, the framework closes its caches, databases, ledgers, and brokers, in that order, each within 5 seconds, and a failure is logged without keeping the rest open; management commands close them too) |
 | A readiness check | `async DomainConfig.check()` | (called by `/ready`) |
-| A check of the built application (routes, middleware) | `DomainConfig.check_application(app)`, returning problems | (called when the app is built and by `check`; staging and production refuse to start with any) |
-| Warnings about a domain's weak settings where deployed | `DomainConfig.deployment_warnings()`, returning warnings (none outside staging and production) | (listed by `check` after the framework's own) |
-| Work staged with each commit | `async DomainConfig.stage(uow, events, tasks)` | (called by the unit of work) |
-| Work after each commit | `async DomainConfig.committed(uow)` | (called by the unit of work; failures are reported, never raised) |
-| The same, for a commit outside a unit of work | `async DomainConfig.stage_transaction(connection, database)` / `transaction_committed(database)` | (called by `messaging.enqueue` around its own transaction; idempotency uses them to hold the key) |
-| Rows after each `migrate` (`post_migrate`) | `async DomainConfig.migrated(connection, database)` | (called by `migrate` for each database it upgraded, in one transaction as the schema owner, and by `flush`) |
+| A check of the built application (routes, middleware) | `DomainConfig.check_application(app)`, returning problems, best as `domainkit.checks.CheckMessage("<label>.E001", ...)` | (called when the app is built and by `check`; staging and production refuse to start with any) |
+| Warnings about a domain's weak settings where deployed | `DomainConfig.deployment_warnings()`, returning warnings (none outside staging and production), best as `CheckMessage("<label>.W001", ...)`, which `SILENCED_CHECKS` can name | (listed by `check` after the framework's own) |
+| Work staged with each commit | `async def hook(uow, events, tasks)`, typed on `SqlAlchemyUnitOfWork` | `domainkit.db.hooks.on_stage(hook)` in `ready()` (called by the unit of work; only domains that registered are called) |
+| Work after each commit | `async def hook(uow)` | `on_committed(hook)` in `ready()` (called by the unit of work; failures are reported, never raised) |
+| The same, for a commit outside a unit of work | `async def hook(connection, database)` / `async def hook(database)` | `on_stage_transaction(hook)` / `on_transaction_committed(hook)` in `ready()` (called by `messaging.enqueue` around its own transaction; idempotency uses them to hold the key) |
+| Rows after each `migrate` (`post_migrate`) | `async def hook(connection, database)` | `on_migrated(hook)` in `ready()` (called by `migrate` for each database it upgraded, in one transaction as the schema owner, and by `flush`) |
+| The same hooks, as methods (0.9) | `DomainConfig.stage`, `committed`, `stage_transaction`, `transaction_committed`, `migrated` | (an overriding method is still called, after the domain's registered hooks; [ADR 0085](adr/0085-register-hooks-by-type-for-the-domains-that-have-them.md)) |
+| Another hook point an app offers others | `domainkit.apps.hooks.HookPoint(name, method=...)` | (domains call it with a function in `ready()`; the app iterates it) |
+| A scaffolding command | `management.generators.Generator` (`plan`, then `apply`), or `AggregateGenerator` for one that adds to an aggregate | a domain's `management/commands/` |
 | Sample or default data | `async DomainConfig.seed()` | (called by `seed`, in `INSTALLED_DOMAINS` order) |
 | How long a domain keeps rows | `DomainConfig.RETENTION`, a sequence of `privacy.Retention` | (checked when the app is built; applied by `privacy purge`; see [privacy.md](privacy.md)) |
 | Erasing a personal field no default fits | `erase_personal_data(fields)` on the aggregate | (called by `privacy erase` and retention erasure) |

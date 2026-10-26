@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Final
 
 from domainkit.apps import registry
+from domainkit.exceptions import DomainkitError
 
 from .delivery import mail_settings
 from .message import EmailMessage
@@ -35,7 +36,7 @@ _VARIABLE: Final = re.compile(
 )
 
 
-class TemplateError(Exception):
+class TemplateError(DomainkitError):
     """A template cannot be rendered: bad syntax, or a value it lacks."""
 
 

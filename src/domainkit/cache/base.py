@@ -8,8 +8,10 @@ on top of it, so a new backend implements only these operations.
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 
+from domainkit.exceptions import DomainkitError
 
-class CacheError(Exception):
+
+class CacheError(DomainkitError):
     """Base class of cache errors."""
 
 

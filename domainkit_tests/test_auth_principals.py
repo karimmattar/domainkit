@@ -65,6 +65,7 @@ from domainkit.contrib.auth.tokens import (
 )
 from domainkit.contrib.auth.users import get_user_table
 from domainkit.db import connections
+from domainkit.db.hooks import on_committed, on_stage
 from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import call_command
@@ -81,6 +82,7 @@ from domainkit_tests.conftest import (
 )
 from domainkit_tests.engine_events import watching
 from domainkit_tests.fake_smtp import certificate
+from domainkit_tests.gadgets import FakeGadgetsUnitOfWork, InMemoryGadgets
 from domainkit_tests.test_auth import accounts as accounts
 from domainkit_tests.test_auth_http import (
     JWT,
@@ -1638,8 +1640,9 @@ def test_stamps_need_a_shared_redis_cache(use_auth: UseAuth) -> None:
         with pytest.raises(ImproperlyConfigured) as refused:
             use_auth(PRINCIPAL_CACHE={"STAMPS": stamps})
         assert str(refused.value) == (
-            "AUTH.PRINCIPAL_CACHE.STAMPS must name a Redis cache of CACHES that "
-            f"every process shares, not {problem}."
+            "AUTH settings cannot be used:\n"
+            "  auth.E003: AUTH.PRINCIPAL_CACHE.STAMPS must name a Redis cache of "
+            f"CACHES that every process shares, not {problem}."
         )
     use_auth(
         settings={"CACHES": {"default": {"URL": "memory://"}, "shared": redis}},
@@ -1930,15 +1933,25 @@ def test_only_instances_in_a_session_wait_for_its_commit(
 def test_units_of_work_without_a_session_stamp_nothing(
     use_auth: UseAuth, shared: FakeServer
 ) -> None:
-    """Only SQL units of work commit what principals rest on."""
+    """Only SQL units of work commit what principals rest on.
+
+    Auth's stamps are ``on_stage`` and ``on_committed`` hooks, which only a
+    ``SqlAlchemyUnitOfWork`` runs: a unit of work kept in memory commits
+    without them, and nothing reaches the shared cache.
+    """
     use_auth(PRINCIPAL_CACHE=STAMPED)
-    config = registry.get_domain_config("auth")
+    assert "auth" in {hook.domain for hook in on_stage}
+    assert "auth" in {hook.domain for hook in on_committed}
 
-    class Memory:
-        """A unit of work kept in memory."""
+    async def commit() -> tuple[int, list[bytes | str]]:
+        async with FakeGadgetsUnitOfWork(InMemoryGadgets()) as uow:
+            await uow.commit()
+        client = FakeRedis(server=shared)
+        stamped = await client.keys("*")
+        await client.aclose()
+        return uow.commits, stamped
 
-    run_async(config.stage(Memory(), [], []))  # type: ignore[arg-type]
-    run_async(config.committed(Memory()))  # type: ignore[arg-type]
+    assert run_async(commit()) == (1, [])
 
 
 def test_stamps_seen_changed_twice_drop_the_entry_once(

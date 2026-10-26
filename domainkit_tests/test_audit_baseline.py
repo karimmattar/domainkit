@@ -167,8 +167,8 @@ def test_check_lists_the_missing_baseline(configured: None) -> None:
     with override_settings(**PRODUCTION):
         call_command("check", stdout=output)
 
-    assert f"  Warning: {NO_LEDGER}\n" in output.getvalue()
-    assert f"  Warning: {NO_SCHEDULE}\n" in output.getvalue()
+    assert f"  Warning: audit.W001: {NO_LEDGER}\n" in output.getvalue()
+    assert f"  Warning: audit.W003: {NO_SCHEDULE}\n" in output.getvalue()
 
 
 async def test_startup_says_nothing_outside_deployments(
@@ -204,7 +204,8 @@ async def test_startup_refuses_with_require_baseline(
 
     assert str(refused.value).startswith(
         "AUDIT.REQUIRE_BASELINE refuses to start in test without a "
-        f"tamper-evident audit trail:\n  {NO_LEDGER}\n  {NO_SCHEDULE}"
+        f"tamper-evident audit trail:\n  audit.W001: {NO_LEDGER}\n"
+        f"  audit.W003: {NO_SCHEDULE}"
     )
 
 

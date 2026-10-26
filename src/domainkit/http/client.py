@@ -97,6 +97,7 @@ from domainkit import clock, deadlines
 from domainkit.conf import settings
 from domainkit.conf.global_settings import HttpClientConfig
 from domainkit.context import current_request
+from domainkit.exceptions import DomainkitError
 from domainkit.http import guard as guards
 from domainkit.http.guard import Network, UnsafeURL, checked_host, checked_url
 from domainkit.tracing import trace_headers
@@ -148,15 +149,15 @@ type Handler = (
 logger = logging.getLogger(__name__)
 
 
-class CircuitOpen(httpx2.TransportError):
+class CircuitOpen(httpx2.TransportError, DomainkitError):
     """Calls to a host fail at once while its circuit is open."""
 
 
-class CallTimeout(httpx2.TimeoutException):
+class CallTimeout(httpx2.TimeoutException, DomainkitError):
     """A call took longer than its ``timeout``, retries included."""
 
 
-class ResponseTooLarge(httpx2.RequestError):
+class ResponseTooLarge(httpx2.RequestError, DomainkitError):
     """An answer was longer than ``MAX_RESPONSE_BYTES``, as sent or decompressed."""
 
 

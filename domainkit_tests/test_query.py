@@ -34,8 +34,8 @@ from domainkit.ddd.query import (
     Not,
     Or,
     Ordering,
-    Query,
     RowLock,
+    Selection,
     Specification,
     as_criteria,
     as_ordering,
@@ -516,23 +516,23 @@ def test_helpers_accept_what_they_document() -> None:
         TypeError, match="Expected criteria or a specification, not str"
     ):
         as_criteria("name")  # type: ignore[arg-type]
-    query = Query(criteria)
+    query = Selection(criteria)
     assert as_query(query) is query
-    assert as_query(criteria) == Query(criteria)
-    assert as_query(None) == Query()
+    assert as_query(criteria) == Selection(criteria)
+    assert as_query(None) == Selection()
 
 
 def test_queries_check_their_bounds() -> None:
     """Limits and offsets are not negative; a query skips or continues, not both."""
     with pytest.raises(ValueError, match="limit cannot be negative"):
-        Query(limit=-1)
+        Selection(limit=-1)
     with pytest.raises(ValueError, match="offset cannot be negative"):
-        Query(offset=-1)
+        Selection(offset=-1)
     with pytest.raises(
         ValueError, match=r"^A query continues after a position or skips, not both\.$"
     ):
-        Query(offset=1, after=("a",))
-    query = Query(Cheap(), ordering=["-name", F("price"), Ordering("id")], limit=0)
+        Selection(offset=1, after=("a",))
+    query = Selection(Cheap(), ordering=["-name", F("price"), Ordering("id")], limit=0)
     assert query.ordering == (
         Ordering("name", descending=True),
         Ordering("price"),
@@ -541,21 +541,21 @@ def test_queries_check_their_bounds() -> None:
     assert query.criteria == Cheap().to_criteria()
     assert (query.limit, query.offset, query.after, query.lock) == (0, 0, None, None)
     assert query.include_deleted is False
-    assert Query(after=["a", 1]).after == ("a", 1)
-    assert Query(offset=0, after=()).after == ()
+    assert Selection(after=["a", 1]).after == ("a", 1)
+    assert Selection(offset=0, after=()).after == ()
 
 
 def test_queries_are_refined_by_copies() -> None:
     """``where`` adds criteria; ``replace`` changes any field."""
-    base = Query(F("name") == "a", ordering=["name"])
+    base = Selection(F("name") == "a", ordering=["name"])
     narrower = base.where(F("stock") > 1, Cheap())
 
     assert narrower.criteria == And(
         (F("name") == "a", F("stock") > 1, *Cheap().to_criteria().parts)  # type: ignore[attr-defined]
     )
     assert narrower.ordering == base.ordering
-    assert Query().where(F("a") == 1).criteria == (F("a") == 1)
-    assert Query().where() == Query()
+    assert Selection().where(F("a") == 1).criteria == (F("a") == 1)
+    assert Selection().where() == Selection()
     assert base.where() is base
     changed = base.replace(limit=5, include_deleted=True, lock=RowLock(nowait=True))
     assert (changed.limit, changed.include_deleted) == (5, True)

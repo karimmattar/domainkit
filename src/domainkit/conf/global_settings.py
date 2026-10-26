@@ -9,7 +9,7 @@ so a misspelled setting fails at startup instead of being silently ignored.
 import re
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
-from typing import Annotated, Any, Final, Literal, Self
+from typing import Annotated, Any, Final, Literal, NamedTuple, Self
 from urllib.parse import SplitResult, parse_qs, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -20,11 +20,18 @@ from pydantic import (
     IPvAnyNetwork,
     SecretStr,
     SerializerFunctionWrapHandler,
+    field_validator,
     model_serializer,
     model_validator,
 )
 
 from domainkit.architecture import LAYERS
+from domainkit.checks import (
+    MAX_SILENCED_CHECKS,
+    CheckFailed,
+    CheckMessage,
+    validate_silenced,
+)
 from domainkit.conf.env import project_root
 from domainkit.utils.rates import parse_rate
 from domainkit.utils.redis_urls import REDIS_SCHEMES as REDIS_SCHEMES
@@ -102,6 +109,9 @@ PGBOUNCER_CACHE_ARGUMENTS: Final = (
     "prepare_threshold",
 )
 """Driver arguments that turn prepared statements off, as PgBouncer needed."""
+DEFAULT_POOL_SIZE: Final = 5
+DEFAULT_MAX_OVERFLOW: Final = 10
+"""SQLAlchemy's pool, when ``POOL_SIZE`` and ``MAX_OVERFLOW`` are unset."""
 MAX_DATABASE_TIMEOUT: Final = 2_147_483.647
 """Seconds: PostgreSQL's longest timeout, 2147483647 milliseconds (24.8 days)."""
 MAX_REQUEST_SECONDS: Final = 3600.0
@@ -673,6 +683,16 @@ HEADER_NAME: Final = r"^[A-Za-z0-9-]{1,64}$"
 """A header name: letters, digits, and hyphens."""
 
 
+class _StoreRule(NamedTuple):
+    """One deployment rule over the entries of ``DATABASES`` or another store."""
+
+    id: str
+    message: str
+    setting: str
+    """``LEDGERS``, ``CACHES``, ``BROKERS``; empty for ``DATABASES``, unnamed."""
+    breaks: Callable[[Any], bool]
+
+
 class Settings(BaseModel):
     """Validated, read-only settings; extra names are checked at ``setup()``."""
 
@@ -683,6 +703,10 @@ class Settings(BaseModel):
     BASE_DIR: Path = Field(default_factory=project_root)
     ENVIRONMENT: Environment = "local"
     """Staging and production get the deployment checks below."""
+    SILENCED_CHECKS: tuple[str, ...] = Field(default=(), max_length=MAX_SILENCED_CHECKS)
+    """Ids of warnings ``check`` stops reporting, as ``security.W001``.
+
+    Errors cannot be silenced (``domainkit.checks``)."""
     DEBUG: bool = False
     SLOW_CALLBACK_DURATION: float | None = Field(default=0.1, gt=0)
     """With ``DEBUG``: log loop steps this slow (asyncio debug mode); None: off."""
@@ -876,6 +900,12 @@ class Settings(BaseModel):
     TIME_ZONE: str = "UTC"
     """The zone dates are shown in (``localtime``); they are stored in UTC."""
 
+    @field_validator("SILENCED_CHECKS")
+    @classmethod
+    def check_silenced(cls, ids: tuple[str, ...]) -> tuple[str, ...]:
+        """Warnings' ids, each once: an error cannot be silenced."""
+        return validate_silenced(ids)
+
     def __repr_args__(self) -> Iterator[tuple[str | None, Any]]:
         """Show declared settings; domain settings, which may hold keys, hidden."""
         domain = self.model_extra or {}
@@ -907,8 +937,10 @@ class Settings(BaseModel):
             parse_rate(self.RATE_LIMIT)
         self._check_live_connections()
         self._check_i18n()
-        if self.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
-            self._check_deployment()
+        if self.ENVIRONMENT in DEPLOYED_ENVIRONMENTS and (
+            errors := self.deployment_errors()
+        ):
+            raise ValueError(str(CheckFailed("The deployment checks failed", errors)))
         return self
 
     def _check_databases(self) -> None:
@@ -1002,181 +1034,326 @@ class Settings(BaseModel):
         """Weak but valid choices in staging and production; ``check`` lists them.
 
         Unlike the deployment checks, they do not stop the application: an
-        API may publish its documentation on purpose, for example.
+        API may publish its documentation on purpose, for example. Each is
+        a ``CheckMessage`` with an id that ``SILENCED_CHECKS`` may list.
         """
         if self.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
             return []
-        warnings = []
+        warnings: list[str] = []
         if self.API_DOCS:
             warnings.append(
-                "API_DOCS publishes /docs, /redoc, and /openapi.json to anyone; "
-                "set it to False unless the API is public."
+                CheckMessage(
+                    "security.W001",
+                    "API_DOCS publishes /docs, /redoc, and /openapi.json to "
+                    "anyone; set it to False unless the API is public.",
+                )
             )
         if not self.SECURE_HSTS_SECONDS:
             warnings.append(
-                "SECURE_HSTS_SECONDS is 0, so browsers may still use plain HTTP; "
-                "set it (31536000 is a year) once HTTPS works everywhere."
+                CheckMessage(
+                    "security.W002",
+                    "SECURE_HSTS_SECONDS is 0, so browsers may still use plain "
+                    "HTTP; set it (31536000 is a year) once HTTPS works everywhere.",
+                )
             )
         if self.RATE_LIMIT is None or RATE_LIMIT_MIDDLEWARE not in self.MIDDLEWARE:
             warnings.append(
-                f"Requests are not rate limited; set RATE_LIMIT and list "
-                f"{RATE_LIMIT_MIDDLEWARE} in MIDDLEWARE."
+                CheckMessage(
+                    "security.W003",
+                    f"Requests are not rate limited; set RATE_LIMIT and list "
+                    f"{RATE_LIMIT_MIDDLEWARE} in MIDDLEWARE.",
+                )
             )
         elif not self.TRUSTED_PROXIES:
             warnings.append(
-                "TRUSTED_PROXIES is empty, so callers are rate limited by the "
-                "address they connect from: behind a load balancer or proxy, "
-                "they all share its count. List its networks in TRUSTED_PROXIES."
+                CheckMessage(
+                    "security.W004",
+                    "TRUSTED_PROXIES is empty, so callers are rate limited by the "
+                    "address they connect from: behind a load balancer or proxy, "
+                    "they all share its count. List its networks in TRUSTED_PROXIES.",
+                )
             )
         if self.LIVE_REAUTH_INTERVAL is None:
             warnings.append(
-                "LIVE_REAUTH_INTERVAL is None, so an open WebSocket or event "
-                "stream keeps a revoked token or a removed permission until it "
-                "closes; set it (60 is a minute)."
+                CheckMessage(
+                    "security.W005",
+                    "LIVE_REAUTH_INTERVAL is None, so an open WebSocket or event "
+                    "stream keeps a revoked token or a removed permission until it "
+                    "closes; set it (60 is a minute).",
+                )
+            )
+        if "*" in self.CORS_ALLOWED_ORIGINS:
+            warnings.append(
+                CheckMessage(
+                    "security.W006",
+                    "CORS_ALLOWED_ORIGINS allows '*': any web site may call the "
+                    "API from its visitors' browsers and read the answers.",
+                    "List the origins of the sites that call the API, as "
+                    "'https://app.example.com'.",
+                )
             )
         warnings.extend(self._load_warnings())
+        warnings.extend(self._database_warnings())
         return warnings
 
     def _load_warnings(self) -> list[str]:
         """Requests without a deadline or a cap, and PgBouncer left unsaid."""
-        warnings = []
+        warnings: list[str] = []
         if self.REQUEST_TIMEOUT is None or DEADLINE_MIDDLEWARE not in self.MIDDLEWARE:
             warnings.append(
-                f"Requests have no deadline, so a slow one holds its resources "
-                f"for as long as it takes; set REQUEST_TIMEOUT and list "
-                f"{DEADLINE_MIDDLEWARE} in MIDDLEWARE."
+                CheckMessage(
+                    "deploy.W001",
+                    f"Requests have no deadline, so a slow one holds its resources "
+                    f"for as long as it takes; set REQUEST_TIMEOUT and list "
+                    f"{DEADLINE_MIDDLEWARE} in MIDDLEWARE.",
+                )
             )
         if (
             self.MAX_CONCURRENT_REQUESTS is None
             or CONCURRENCY_MIDDLEWARE not in self.MIDDLEWARE
         ):
             warnings.append(
-                f"Requests are not shed under load, so they queue without end; "
-                f"set MAX_CONCURRENT_REQUESTS and list {CONCURRENCY_MIDDLEWARE} "
-                f"in MIDDLEWARE."
+                CheckMessage(
+                    "deploy.W002",
+                    f"Requests are not shed under load, so they queue without end; "
+                    f"set MAX_CONCURRENT_REQUESTS and list {CONCURRENCY_MIDDLEWARE} "
+                    f"in MIDDLEWARE.",
+                )
             )
         if pooled := sorted(a for a, db in self.DATABASES.items() if db.looks_pooled()):
             warnings.append(
-                f"DATABASES {pooled} seem to go through PgBouncer (port "
-                f"{PGBOUNCER_PORT}, or a statement cache turned off in "
-                f"CONNECT_ARGS); set PGBOUNCER = True, so timeouts hold per "
-                f"transaction and prepared statements do not clash."
+                CheckMessage(
+                    "deploy.W003",
+                    f"DATABASES {pooled} seem to go through PgBouncer (port "
+                    f"{PGBOUNCER_PORT}, or a statement cache turned off in "
+                    f"CONNECT_ARGS); set PGBOUNCER = True, so timeouts hold per "
+                    f"transaction and prepared statements do not clash.",
+                )
             )
         return warnings
 
-    def _check_secret_keys(self, where: str) -> None:
-        """Refuse a missing, short, simple, or development ``SECRET_KEY``.
-
-        Fallbacks are held to the same rules: they still verify signatures.
-        The errors never quote a key.
-        """
-        if self.SECRET_KEY is None:
-            raise ValueError(
-                f"SECRET_KEY is required {where}: it signs reset links, cookies, "
-                "and other values the service hands out"
-            )
-        keys = [("SECRET_KEY", self.SECRET_KEY)]
-        keys += [("SECRET_KEY_FALLBACKS", key) for key in self.SECRET_KEY_FALLBACKS]
-        for name, key in keys:
-            value = key.get_secret_value()
-            if value.startswith(DEVELOPMENT_KEY_PREFIXES):
-                raise ValueError(f"{name} holds a development key {where}")
-            if (
-                len(value) < SECRET_KEY_MIN_LENGTH
-                or len(set(value)) < SECRET_KEY_MIN_CHARACTERS
-            ):
-                raise ValueError(
-                    f"{name} must be random, with at least {SECRET_KEY_MIN_LENGTH} "
-                    f"characters, {where}"
+    def _database_warnings(self) -> list[str]:
+        """Pools sized by default, and SQLite, where deployed (INFRA-08)."""
+        warnings: list[str] = []
+        network = {
+            alias: db
+            for alias, db in self.DATABASES.items()
+            if is_network_database(db.URL.get_secret_value())
+        }
+        if unsized := sorted(a for a, db in network.items() if db.POOL_SIZE is None):
+            warnings.append(
+                CheckMessage(
+                    "deploy.W004",
+                    f"DATABASES {unsized} have no POOL_SIZE, so each process "
+                    f"opens up to {DEFAULT_POOL_SIZE + DEFAULT_MAX_OVERFLOW} "
+                    f"connections (SQLAlchemy's {DEFAULT_POOL_SIZE} plus "
+                    f"{DEFAULT_MAX_OVERFLOW} overflow), whatever the server's "
+                    "max_connections allows.",
+                    "Set POOL_SIZE and MAX_OVERFLOW so that processes x replicas "
+                    "x (POOL_SIZE + MAX_OVERFLOW) stays below max_connections.",
                 )
+            )
+        if local := sorted(set(self.DATABASES) - set(network)):
+            warnings.append(
+                CheckMessage(
+                    "deploy.W005",
+                    f"DATABASES {local} are SQLite files: each process and host "
+                    "sees its own, and writes wait for one another.",
+                    "Use PostgreSQL in staging and production.",
+                )
+            )
+        return warnings
 
-    def _check_deployment(self) -> None:
-        """Enforce the security baseline for staging and production."""
+    def deployment_errors(self) -> list[CheckMessage]:
+        """Every breach of the security baseline for staging and production.
+
+        Staging and production refuse to load settings with any; all of
+        them are reported at once. Errors are never silenced. The messages
+        never quote a key.
+        """
         where = f"in {self.ENVIRONMENT}"
+        errors: list[CheckMessage] = []
         if self.DEBUG:
-            raise ValueError(f"DEBUG must be False {where}")
+            errors.append(
+                CheckMessage(
+                    "security.E001",
+                    f"DEBUG must be False {where}",
+                    "DEBUG shows tracebacks and settings to callers.",
+                )
+            )
         if DEBUG_TOOLBAR_MIDDLEWARE in self.MIDDLEWARE:
-            raise ValueError(
-                f"{DEBUG_TOOLBAR_MIDDLEWARE} is for development; remove it from "
-                f"MIDDLEWARE {where}"
+            errors.append(
+                CheckMessage(
+                    "security.E002",
+                    f"{DEBUG_TOOLBAR_MIDDLEWARE} is for development; remove it "
+                    f"from MIDDLEWARE {where}",
+                )
             )
         if "*" in self.ALLOWED_HOSTS:
-            raise ValueError(f"ALLOWED_HOSTS must list real host names {where}")
+            errors.append(
+                CheckMessage(
+                    "security.E003",
+                    f"ALLOWED_HOSTS must list real host names {where}",
+                    "List the names clients reach the service by, as "
+                    "'api.example.com'.",
+                )
+            )
         if any(
             not isinstance(network, str) and network.prefixlen == 0
             for network in self.TRUSTED_PROXIES
         ):
-            raise ValueError(
-                f"TRUSTED_PROXIES must list the proxies' networks, not every "
-                f"address {where}: any caller could choose its own address"
+            errors.append(
+                CheckMessage(
+                    "security.E004",
+                    f"TRUSTED_PROXIES must list the proxies' networks, not every "
+                    f"address {where}: any caller could choose its own address",
+                )
             )
-        rules: dict[str, Callable[[DatabaseConfig], bool]] = {
-            "ECHO logs every statement; disable it": lambda db: db.ECHO,
-            "LOG_PARAMETERS exposes bound values; disable it": lambda db: (
-                db.LOG_PARAMETERS
+        errors.extend(self._store_errors(where))
+        errors.extend(self._secret_key_errors(where))
+        return errors
+
+    def _store_errors(self, where: str) -> Iterator[CheckMessage]:
+        """Databases, ledgers, caches, brokers, and storages that cannot hold."""
+        rules: tuple[_StoreRule, ...] = (
+            _StoreRule(
+                "security.E005",
+                "ECHO logs every statement; disable it",
+                "",
+                lambda db: db.ECHO,
             ),
-            "SSLMODE must be 'verify-full'": lambda db: (
-                is_network_database(db.URL.get_secret_value())
-                and db.SSLMODE != "verify-full"
+            _StoreRule(
+                "security.E006",
+                "LOG_PARAMETERS exposes bound values; disable it",
+                "",
+                lambda db: db.LOG_PARAMETERS,
             ),
+            _StoreRule(
+                "security.E007",
+                "SSLMODE must be 'verify-full'",
+                "",
+                lambda db: (
+                    is_network_database(db.URL.get_secret_value())
+                    and db.SSLMODE != "verify-full"
+                ),
+            ),
+            _StoreRule(
+                "deploy.E001",
+                "memory:// ledgers are for tests; use immudb",
+                "LEDGERS",
+                lambda ledger: ledger.scheme == "memory",
+            ),
+            _StoreRule(
+                "security.E008",
+                "ledgers need TLS_CA (TLS)",
+                "LEDGERS",
+                lambda ledger: ledger.TLS_CA is None,
+            ),
+            _StoreRule(
+                "security.E009",
+                "ledgers need SERVER_SIGNING_KEY (signed states)",
+                "LEDGERS",
+                lambda ledger: ledger.SERVER_SIGNING_KEY is None,
+            ),
+            _StoreRule(
+                "security.E010",
+                "network caches need rediss:// (TLS)",
+                "CACHES",
+                lambda cache: cache.is_network() and not cache.uses_tls(),
+            ),
+            _StoreRule(
+                "security.E011",
+                "caches must verify the server certificate",
+                "CACHES",
+                lambda cache: not cache.verifies_tls(),
+            ),
+            _StoreRule(
+                "security.E012",
+                "network caches need a password or a client certificate",
+                "CACHES",
+                lambda cache: cache.is_network() and not cache.has_credentials(),
+            ),
+            _StoreRule(
+                "deploy.E002",
+                "memory:// brokers serve one process; use RabbitMQ",
+                "BROKERS",
+                lambda broker: broker.scheme == "memory",
+            ),
+            _StoreRule(
+                "security.E013",
+                "network brokers need amqps:// (TLS)",
+                "BROKERS",
+                lambda broker: broker.is_network() and broker.scheme != "amqps",
+            ),
+            _StoreRule(
+                "security.E014",
+                "brokers must verify the server certificate",
+                "BROKERS",
+                lambda broker: not broker.verifies_tls(),
+            ),
+            _StoreRule(
+                "security.E015",
+                "brokers need a user of their own, not guest",
+                "BROKERS",
+                lambda broker: (
+                    broker.scheme != "memory" and not broker.has_credentials()
+                ),
+            ),
+        )
+        stores: dict[str, Mapping[str, Any]] = {
+            "": self.DATABASES,
+            "LEDGERS": self.LEDGERS,
+            "CACHES": self.CACHES,
+            "BROKERS": self.BROKERS,
         }
-        for message, violates in rules.items():
-            if aliases := sorted(a for a, db in self.DATABASES.items() if violates(db)):
-                raise ValueError(f"{message} {where} for {aliases}")
-        ledger_rules: dict[str, Callable[[LedgerConfig], bool]] = {
-            "memory:// ledgers are for tests; use immudb": lambda ledger: (
-                ledger.scheme == "memory"
-            ),
-            "ledgers need TLS_CA (TLS)": lambda ledger: ledger.TLS_CA is None,
-            "ledgers need SERVER_SIGNING_KEY (signed states)": lambda ledger: (
-                ledger.SERVER_SIGNING_KEY is None
-            ),
-        }
-        for message, violates_ledger in ledger_rules.items():
-            ledgers = self.LEDGERS.items()
-            if aliases := sorted(a for a, db in ledgers if violates_ledger(db)):
-                raise ValueError(f"{message} {where} for LEDGERS {aliases}")
-        cache_rules: dict[str, Callable[[CacheConfig], bool]] = {
-            "network caches need rediss:// (TLS)": lambda cache: (
-                cache.is_network() and not cache.uses_tls()
-            ),
-            "caches must verify the server certificate": lambda cache: (
-                not cache.verifies_tls()
-            ),
-            "network caches need a password or a client certificate": lambda cache: (
-                cache.is_network() and not cache.has_credentials()
-            ),
-        }
-        for message, violates_cache in cache_rules.items():
-            caches = self.CACHES.items()
-            if aliases := sorted(a for a, cache in caches if violates_cache(cache)):
-                raise ValueError(f"{message} {where} for CACHES {aliases}")
-        broker_rules: dict[str, Callable[[BrokerConfig], bool]] = {
-            "memory:// brokers serve one process; use RabbitMQ": lambda broker: (
-                broker.scheme == "memory"
-            ),
-            "network brokers need amqps:// (TLS)": lambda broker: (
-                broker.is_network() and broker.scheme != "amqps"
-            ),
-            "brokers must verify the server certificate": lambda broker: (
-                not broker.verifies_tls()
-            ),
-            "brokers need a user of their own, not guest": lambda broker: (
-                broker.scheme != "memory" and not broker.has_credentials()
-            ),
-        }
-        for message, violates_broker in broker_rules.items():
-            brokers = self.BROKERS.items()
-            if aliases := sorted(a for a, b in brokers if violates_broker(b)):
-                raise ValueError(f"{message} {where} for BROKERS {aliases}")
+        for rule in rules:
+            configs = stores[rule.setting]
+            if aliases := sorted(
+                a for a, config in configs.items() if rule.breaks(config)
+            ):
+                named = f"{rule.setting} {aliases}" if rule.setting else str(aliases)
+                yield CheckMessage(rule.id, f"{rule.message} {where} for {named}")
         if aliases := sorted(
             alias
             for alias, storage in self.STORAGES.items()
             if storage.BACKEND == MEMORY_STORAGE
         ):
-            raise ValueError(
+            yield CheckMessage(
+                "deploy.E003",
                 f"memory storages keep files in one process, until it ends; use "
                 f"FileSystemStorage or a storage of your own {where} for "
-                f"STORAGES {aliases}"
+                f"STORAGES {aliases}",
             )
-        self._check_secret_keys(where)
+
+    def _secret_key_errors(self, where: str) -> Iterator[CheckMessage]:
+        """A missing, short, simple, or development ``SECRET_KEY``.
+
+        Fallbacks are held to the same rules: they still verify signatures.
+        The errors never quote a key.
+        """
+        if self.SECRET_KEY is None:
+            yield CheckMessage(
+                "security.E016",
+                f"SECRET_KEY is required {where}: it signs reset links, cookies, "
+                "and other values the service hands out",
+                "Make one with: python -c 'import secrets; "
+                "print(secrets.token_urlsafe(64))'.",
+            )
+            return
+        keys = [("SECRET_KEY", self.SECRET_KEY)]
+        keys += [("SECRET_KEY_FALLBACKS", key) for key in self.SECRET_KEY_FALLBACKS]
+        for name, key in keys:
+            value = key.get_secret_value()
+            if value.startswith(DEVELOPMENT_KEY_PREFIXES):
+                yield CheckMessage(
+                    "security.E017", f"{name} holds a development key {where}"
+                )
+            elif (
+                len(value) < SECRET_KEY_MIN_LENGTH
+                or len(set(value)) < SECRET_KEY_MIN_CHARACTERS
+            ):
+                yield CheckMessage(
+                    "security.E018",
+                    f"{name} must be random, with at least "
+                    f"{SECRET_KEY_MIN_LENGTH} characters, {where}",
+                )

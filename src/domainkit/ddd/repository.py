@@ -32,8 +32,8 @@ from domainkit.ddd.query import (
     Criteria,
     CriteriaLike,
     F,
-    Query,
     RowLock,
+    Selection,
     as_criteria,
     as_query,
     following,
@@ -243,7 +243,7 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
         return aggregate
 
     async def filter(
-        self, query: Query | CriteriaLike | None = None
+        self, query: Selection | CriteriaLike | None = None
     ) -> list[AggregateT]:
         """The aggregates ``query`` selects, in its ordering, then by id.
 
@@ -265,7 +265,7 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
         return found
 
     async def first(
-        self, query: Query | CriteriaLike | None = None
+        self, query: Selection | CriteriaLike | None = None
     ) -> AggregateT | None:
         """The first aggregate ``query`` selects, or None."""
         found = await self.filter(as_query(query).replace(limit=1))
@@ -287,7 +287,7 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
 
     async def paginate(
         self,
-        query: Query | CriteriaLike | None = None,
+        query: Selection | CriteriaLike | None = None,
         *,
         limit: int,
         after: Sequence[object] | None = None,
@@ -347,7 +347,7 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
             LockNotAvailable: Another transaction holds the lock, with ``nowait``.
         """
         lock = RowLock(nowait=nowait, skip_locked=skip_locked)
-        found = await self.first(Query(F(ID) == id_, lock=lock))
+        found = await self.first(Selection(F(ID) == id_, lock=lock))
         if found is None and not skip_locked:
             raise self.not_found(id_)
         return found
@@ -373,7 +373,7 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
         joined = parts[0] if len(parts) == 1 else parts[0] & parts[1]
         return joined.bind(model)
 
-    def _prepare(self, query: Query) -> Query:
+    def _prepare(self, query: Selection) -> Selection:
         """``query`` bound to the aggregate: total ordering, position as criteria."""
         model = self.aggregate_type
         ordering = tuple(item.bind(model) for item in total_ordering(query.ordering))
@@ -381,7 +381,7 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
         if query.after is not None:
             beyond = following(model, ordering, query.after)
             criteria = beyond if criteria is None else criteria & beyond
-        return Query(
+        return Selection(
             self._scope(criteria, include_deleted=query.include_deleted),
             ordering=ordering,
             limit=query.limit,
@@ -430,7 +430,7 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
     async def _remove(self, aggregate: AggregateT) -> None:
         """Delete ``aggregate``."""
 
-    async def _filter(self, query: Query) -> list[AggregateT]:
+    async def _filter(self, query: Selection) -> list[AggregateT]:
         """Load what the bound ``query`` selects, in its (total) ordering."""
         raise NotImplementedError(f"{type(self).__name__} cannot filter.")
 
@@ -508,7 +508,7 @@ class InMemoryRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
         """Forget ``aggregate``."""
         self.items.pop(aggregate.id, None)
 
-    async def _filter(self, query: Query) -> list[AggregateT]:
+    async def _filter(self, query: Selection) -> list[AggregateT]:
         """Match, sort, skip, lock, and limit, as the database would."""
         found = order(self._matching(query.criteria), query.ordering)[query.offset :]
         if query.lock is None:

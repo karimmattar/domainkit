@@ -1,6 +1,6 @@
 # 0079. Validate every setting at startup: one model, and each app's own
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-26 (at the end)
 - Date: 2026-10-25
 
 This records a decision taken in 0.1.0 and extended since, which no record
@@ -68,3 +68,32 @@ Options considered:
   container for 1.0.
 - Deployment checks stop at the first failure (DSGN-08); a check registry
   that reports them all is planned.
+
+## Amendment (2026-10-26, 0.10): checks with ids, every problem at once
+
+Every problem `check` and startup report is now a `domainkit.checks`
+`CheckMessage`: the message as a string, so hooks that return `list[str]`
+keep working, with an id (`security.E001`; the letter is the level) and a
+hint where the message does not say how to fix it (DSGN-08, INFRA-08).
+
+- The deployment checks collect every breach before refusing: settings
+  with five breaches are refused once, naming all five (0.9.2 named the
+  first, and an operator learned the next one per restart). They stay in
+  the settings model's validation, so every process refuses, management
+  commands and workers included, not only the application. AUTH's
+  refusals are collected the same way.
+- `check` builds the application without refusing it and lists the
+  application's problems, the layer rules, and the migration heads
+  together.
+- `check --deploy` runs where `ENVIRONMENT` is staging or production and
+  fails on warnings too, for a deployment pipeline. It refuses to run
+  elsewhere, where it would pass for the wrong reason.
+- `SILENCED_CHECKS` (at most 64 ids, each once) silences warnings. It
+  refuses an error's id: by deny-by-default, an error stands for an unsafe
+  or broken configuration and stays refused until the configuration
+  changes, so every refusal of 0.9.2 still refuses. A second step that
+  would let a project silence an error was considered and not taken: no
+  error has a case for running deployed with it.
+- New warnings where deployed: `*` in `CORS_ALLOWED_ORIGINS`, a network
+  database without `POOL_SIZE`, and SQLite. They are warnings, not
+  refusals, so no deployment that starts today stops starting.

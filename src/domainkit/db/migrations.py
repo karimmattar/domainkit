@@ -37,9 +37,9 @@ from sqlalchemy import Connection, Table, make_url
 from sqlalchemy.types import TypeDecorator
 
 from domainkit import setup
-from domainkit.apps import registry
 from domainkit.conf import DEFAULT_DB_ALIAS, DatabaseConfig, settings
 from domainkit.db.connections import connections, create_owner_engine
+from domainkit.db.hooks import on_migrated
 from domainkit.db.orm import metadata
 from domainkit.db.partitioning import existing_partitions, maintain
 from domainkit.db.routing import router
@@ -283,7 +283,7 @@ def create_partitions(database: str = DEFAULT_DB_ALIAS) -> list[str]:
 
 
 def run_migrated_hooks(database: str = DEFAULT_DB_ALIAS) -> None:
-    """Call every installed domain's ``migrated`` hook for alias ``database``."""
+    """Run the ``on_migrated`` hooks (``domainkit.db.hooks``) for alias ``database``."""
     alias = _single_alias(database)
     _run(_migrated(connections.config(alias), alias))
 
@@ -293,8 +293,8 @@ async def _migrated(database: DatabaseConfig, alias: str) -> None:
     engine = create_owner_engine(database)
     try:
         async with engine.begin() as connection:
-            for config in registry:
-                await config.migrated(connection, alias)
+            for hook in on_migrated:
+                await hook.call(connection, alias)
     finally:
         await engine.dispose()
 

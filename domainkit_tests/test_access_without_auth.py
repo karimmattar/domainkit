@@ -193,7 +193,8 @@ def test_routes_without_a_rule_are_refused_without_auth() -> None:
                 pass  # pragma: no cover - the start is refused.
 
     assert str(raised.value) == (
-        f"The application has problems since it was built:\n  {FORGOTTEN}"
+        f"The application has problems since it was built:\n"
+        f"  security.E101: {FORGOTTEN}"
     )
 
 

@@ -35,6 +35,13 @@ Installed domains (`django.apps`): configuration classes and the registry.
 - `Requirement`: A domain package another needs in `INSTALLED_DOMAINS`, and why.
 - `registry`: The process-wide registry populated by `domainkit.setup()`.
 
+## `domainkit.apps.hooks`
+
+Typed hooks a domain registers for what it takes part in.
+
+- `Hook`: One registered function, and the domain that registered it.
+- `HookPoint`: Functions installed domains registered for one purpose, in domain order.
+
 ## `domainkit.architecture`
 
 Enforce the dependency rules of a domain-driven package layout.
@@ -85,6 +92,18 @@ Caches: in process memory, or in Redis or Valkey shared by every replica.
 - `cached`: Cache an async function's results, keyed by its arguments.
 - `caches`: The process-wide caches: `caches["default"]`.
 - `invalidate_on`: Delete the entries `keys(event)` names after each `event_type` event.
+
+## `domainkit.checks`
+
+System checks: what `check` and startup find, each with an id and a level.
+
+- `MAX_SILENCED_CHECKS`: The most ids `SILENCED_CHECKS` may list.
+- `CheckFailed`: Checks found errors; the message lists every one, with its id.
+- `CheckMessage`: One finding of a check: the message, with an `id` and a `hint`.
+- `Level`: How serious a check's finding is, read from its id's letter.
+- `describe`: One finding as `check` prints it: the id, the message, the hint.
+- `silence`: `messages` without those whose id `SILENCED_CHECKS` lists.
+- `validate_silenced`: Check `SILENCED_CHECKS`: ids of warnings, each once, and not too many.
 
 ## `domainkit.clock`
 
@@ -652,6 +671,16 @@ SQLAlchemy integration: connections, ORM metadata, repositories, migrations.
 - `register_column_type`: Store fields of `cls` (and its subclasses) in `column_type`.
 - `table_for`: The table that stores `cls`: one column per field (see the module).
 
+## `domainkit.db.hooks`
+
+The SQL commit and migration hooks a domain registers (`domainkit.apps.hooks`).
+
+- `on_committed`: Follow up after a SQL unit of work committed: `(uow)`.
+- `on_migrated`: Fill a database `migrate` upgraded: `(owner_connection, alias)`.
+- `on_stage`: Add rows to a committing SQL unit of work: `(uow, events, tasks)`.
+- `on_stage_transaction`: Join a transaction committed outside a unit of work: `(connection, alias)`.
+- `on_transaction_committed`: Follow up after such a transaction committed: `(alias)`.
+
 ## `domainkit.db.models`
 
 Installed models: the mapped classes of installed domains, and their `Meta`.
@@ -745,7 +774,6 @@ Queries over aggregates: criteria, ordering, and specifications.
 - `Criteria`: A condition on aggregates; combine them with `&`, `|`, and `~`.
 - `F`: A field of an aggregate, by name, to build conditions and orderings.
 - `Ordering`: Sort by one field of the aggregate itself.
-- `Query`: Which aggregates to load, in which order, and how many.
 - `RowLock`: Lock the rows a query returns until the transaction ends (`FOR UPDATE`).
 - `Selection`: Which aggregates to load, in which order, and how many.
 - `Specification`: A named business rule about aggregates, for Python and for queries.
@@ -785,6 +813,14 @@ Secrets the database keeps, encrypted: AES-256-GCM under a key from `SECRET_KEY`
 
 - `DecryptionFailed`: No key decrypts the value: wrong key, other associated data, or tampering.
 - `SecretBox`: Encrypts and decrypts values for one purpose.
+
+## `domainkit.exceptions`
+
+Errors raised by the framework itself (`django.core.exceptions`).
+
+- `DomainkitError`: The root of every exception domainkit raises.
+- `ImproperlyConfigured`: Settings, the environment, or the installed domains are invalid.
+- `ServiceBusy`: Something the operation needs is busy now; trying again later may work.
 
 ## `domainkit.http`
 
@@ -1118,7 +1154,9 @@ Base class for management commands (`django.core.management.base`).
 
 What the code generators share: names, field types, and careful edits.
 
+- `AggregateGenerator`: A generator that adds to an aggregate of a domain `startdomain` made.
 - `FieldType`: How the generators write fields of one kind (`--field name:kind:options`).
+- `Generator`: A scaffolding command: plan every change, then write them all.
 - `register_field_type`: Let `--field x:<name>` generate fields of `kind`.
 
 ## `domainkit.reporting`

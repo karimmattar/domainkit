@@ -32,11 +32,8 @@ from dataclasses import dataclass, field
 from functools import cache, partial
 from typing import ClassVar, Final
 
-from fastapi import status
-
 from domainkit import clock
-from domainkit.exceptions import ImproperlyConfigured
-from domainkit.http.errors import APIError
+from domainkit.exceptions import ImproperlyConfigured, ServiceBusy
 from domainkit.utils.module_loading import import_string
 
 from .models import UNUSABLE_PASSWORD_PREFIX
@@ -349,16 +346,19 @@ def check_password(password: str, encoded: str | None) -> bool:
     return verify_password(password, encoded).correct
 
 
-class PasswordChecksBusy(APIError):
-    """Every hashing thread is busy and the queue is full."""
+class PasswordChecksBusy(ServiceBusy):
+    """Every hashing thread is busy and the queue is full.
+
+    The HTTP layer answers it with 503 and ``Retry-After: retry_after``.
+    """
+
+    code = "password_checks_busy"
 
     def __init__(self, retry_after: int = 1) -> None:
-        """A 503 that asks the client to try again in ``retry_after`` seconds."""
+        """Ask the caller to try again in ``retry_after`` seconds."""
         super().__init__(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
             "Too many password checks at once; try again in a moment.",
-            code="password_checks_busy",
-            headers={"Retry-After": str(retry_after)},
+            retry_after=retry_after,
         )
 
 

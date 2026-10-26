@@ -38,7 +38,7 @@ from domainkit.conf import settings
 from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.db import SqlAlchemyRepository
 from domainkit.ddd import F, Page, RowLock, SoftDeletable
-from domainkit.ddd.query import Query
+from domainkit.ddd.query import Selection
 from domainkit.signing import derive_keys
 
 from .events import UserLoggedIn
@@ -269,10 +269,10 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
             hashed = await amake_password(password, priority=priority)
             user.set_password(PasswordHash(hashed))
 
-    def listing(self, search: str | None = None) -> Query:
+    def listing(self, search: str | None = None) -> Selection:
         """Users by username; ``search`` keeps those whose name contains it."""
         name = F(self.model.USERNAME_FIELD)
-        return Query(name.icontains(search) if search else None, ordering=[name])
+        return Selection(name.icontains(search) if search else None, ordering=[name])
 
     async def page(
         self, *, limit: int, after: str | None = None, search: str | None = None
@@ -311,7 +311,7 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         for the first transaction and sees what it left.
         """
         active = (F("is_superuser") == True) & (F("is_active") == True)  # noqa: E712
-        return len(await self.filter(Query(active, lock=RowLock())))
+        return len(await self.filter(Selection(active, lock=RowLock())))
 
     async def record_login(self, user: AbstractBaseUser) -> None:
         """Store the login time and record ``UserLoggedIn``.
@@ -357,7 +357,7 @@ class GroupRepository(SqlAlchemyRepository[Group, GroupId]):
             self._track(group)
         return group
 
-    LISTING: Final = Query(ordering=["name"])
+    LISTING: Final = Selection(ordering=["name"])
     """Groups by name (unique)."""
 
     async def page(self, *, limit: int, after: str | None = None) -> Page[Group]:

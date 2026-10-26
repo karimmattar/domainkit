@@ -9,10 +9,11 @@ below to a status code. Subclass the closest one, for example
 from collections.abc import Sequence
 from typing import ClassVar
 
+from domainkit.exceptions import DomainkitError
 from domainkit.utils.text import snake_case
 
 
-class DomainError(Exception):
+class DomainError(DomainkitError):
     """A business rule refused the operation; the message is safe to show."""
 
     code: ClassVar[str] = "domain_error"

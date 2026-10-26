@@ -25,9 +25,11 @@ from domainkit.management.generators import (
     FIELD_TYPES,
     SETTINGS_FILE,
     URLS_FILE,
+    AggregateGenerator,
     Domain,
     FieldSpec,
     FieldType,
+    Generator,
     Names,
     Source,
     enumeration,
@@ -1189,3 +1191,34 @@ def test_queries_refuse_optional_annotations(shop: Shop) -> None:
 
     with pytest.raises(CommandError, match="fields of one value"):
         shop("addquery", "Product", "ProductsHinted", by=["hint"])
+
+
+def test_generators_plan_everything_before_they_write() -> None:
+    """``Generator`` runs ``plan``, then ``apply``, then prints (DSGN-10)."""
+    steps: list[str] = []
+
+    class Greeter(Generator[str]):
+        """A generator that writes nothing, for the order of its steps."""
+
+        def plan(self, *, name: str, **options: object) -> str:
+            steps.append("plan")
+            if name == "taken":
+                raise CommandError("taken")
+            return name
+
+        def apply(self, plan: str) -> str:
+            steps.append("apply")
+            return f"Hello, {plan}."
+
+    output = io.StringIO()
+    Greeter(stdout=output).handle(name="world")
+    with pytest.raises(CommandError, match="taken"):
+        Greeter(stdout=io.StringIO()).handle(name="taken")
+
+    assert output.getvalue() == "Hello, world.\n"
+    assert steps == ["plan", "apply", "plan"]
+    commands = ("startaggregate", "addcommand", "addquery", "addevent")
+    assert all(
+        isinstance(load_command(command), AggregateGenerator) for command in commands
+    )
+    assert isinstance(load_command("startdomain"), Generator)

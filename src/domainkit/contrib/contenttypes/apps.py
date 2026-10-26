@@ -3,6 +3,7 @@
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from domainkit.apps import DomainConfig
+from domainkit.db.hooks import on_migrated
 from domainkit.db.routing import router
 
 from .sync import has_tables, sync_content_types
@@ -24,11 +25,14 @@ class ContentTypesConfig(DomainConfig):
         )
 
     def ready(self) -> None:
-        """Check the routing and map the table."""
+        """Check the routing, map the table, and fill it after ``migrate``."""
         _ = self.database
         start_mappers()
+        on_migrated(self.create_content_types)
 
-    async def migrated(self, connection: AsyncConnection, database: str) -> None:
+    async def create_content_types(
+        self, connection: AsyncConnection, database: str
+    ) -> None:
         """Create rows for models added since the last ``migrate``."""
         if database == self.database and await has_tables(connection, content_types):
             await sync_content_types(connection)

@@ -53,6 +53,7 @@ from sqlalchemy.types import TypeEngine
 from domainkit.db.connections import connections, create_owner_engine
 from domainkit.db.orm import metadata
 from domainkit.db.routing import router
+from domainkit.exceptions import DomainkitError
 from domainkit.utils.decimals import jsonable
 
 FORMAT: Final = "domainkit.fixture"
@@ -80,7 +81,7 @@ _TRIGGERED: Final = text(
 )
 
 
-class FixtureError(Exception):
+class FixtureError(DomainkitError):
     """A fixture that cannot be loaded as it is; the message says why."""
 
 

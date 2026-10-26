@@ -6,8 +6,9 @@ from typing import Any, Final, cast
 
 from domainkit.apps import DomainConfig, registry
 from domainkit.db import SqlAlchemyUnitOfWork, map_imperatively
+from domainkit.db.hooks import on_stage
 from domainkit.db.routing import DatabaseRouter, router
-from domainkit.ddd import DeferredTask, DomainEvent, UnitOfWork
+from domainkit.ddd import DeferredTask, DomainEvent
 
 from .baseline import check_at_startup, settings_problems
 from .models import AuditEntry
@@ -30,10 +31,12 @@ class AuditConfig(DomainConfig):
         """Check where explicit records go; seal on a schedule with messaging.
 
         ``AuditEntry`` is mapped so content types give it its permission.
+        Each commit's events are written with it (``on_stage``).
         """
         config = registry.settings(AuditSettings)
         router.require_standalone(config.DATABASE, "AUDIT.DATABASE")
         map_imperatively(AuditEntry, audit_log)
+        on_stage(self.stage_events)
         if registry.is_installed(MESSAGING):
             import_module(f"{self.name}.tasks")
 
@@ -62,9 +65,9 @@ class AuditConfig(DomainConfig):
         """
         await check_at_startup()
 
-    async def stage(
+    async def stage_events(
         self,
-        uow: UnitOfWork,
+        uow: SqlAlchemyUnitOfWork,
         events: Sequence[DomainEvent],
         tasks: Sequence[DeferredTask],
     ) -> None:
@@ -72,8 +75,7 @@ class AuditConfig(DomainConfig):
         config = registry.settings(AuditSettings)
         if not config.EVENTS:
             return
-        sql_uow = cast(SqlAlchemyUnitOfWork, uow)
-        await write(sql_uow.session, event_rows(events, config))
+        await write(uow.session, event_rows(events, config))
 
     def databases(self, router: DatabaseRouter) -> frozenset[str]:
         """Every hosting target: events are audited where they commit."""

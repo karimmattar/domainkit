@@ -238,7 +238,7 @@ def test_open_routes_are_logged_where_people_develop(
         app = get_asgi_application()
 
     assert application_problems(app) == OPEN
-    listed = "\n".join(f"  {problem}" for problem in OPEN)
+    listed = "\n".join(f"  security.E101: {problem}" for problem in OPEN)
     assert caplog.messages == [f"The application has problems:\n{listed}"]
 
 
@@ -246,7 +246,7 @@ def test_open_routes_are_logged_where_people_develop(
 @pytest.mark.parametrize("environment", ["staging", "production"])
 def test_deployments_refuse_open_routes(environment: str) -> None:
     """Staging and production do not start with a problem."""
-    listed = "\n".join(f"  {problem}" for problem in OPEN)
+    listed = "\n".join(f"  security.E101: {problem}" for problem in OPEN)
     with (
         override_settings(ENVIRONMENT=environment),
         pytest.raises(ImproperlyConfigured) as raised,
@@ -288,7 +288,7 @@ def test_routes_added_after_the_build_are_checked_as_it_starts(
         pass
 
     assert caplog.messages == [
-        f"The application has problems since it was built:\n  {LATE}"
+        f"The application has problems since it was built:\n  security.E101: {LATE}"
     ]
 
 
@@ -301,7 +301,7 @@ def test_applications_built_elsewhere_are_checked_whole_as_they_start(
         check_started(app_of(late_router()))
 
     assert caplog.messages == [
-        f"The application has problems since it was built:\n  {LATE}"
+        f"The application has problems since it was built:\n  security.E101: {LATE}"
     ]
 
 
@@ -318,7 +318,7 @@ def test_deployments_refuse_to_start_with_routes_added_late(
             pass  # pragma: no cover - the start is refused.
 
     assert str(raised.value) == (
-        f"The application has problems since it was built:\n  {LATE}"
+        f"The application has problems since it was built:\n  security.E101: {LATE}"
     )
 
 
@@ -346,7 +346,7 @@ def test_check_reports_open_routes() -> None:
         call_command("check", stdout=io.StringIO())
 
     assert str(raised.value) == "System check found problems:\n" + "\n".join(
-        f"  Application: {problem}" for problem in OPEN
+        f"  security.E101: {problem}" for problem in OPEN
     )
 
 

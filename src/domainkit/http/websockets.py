@@ -40,6 +40,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from domainkit.clock import monotonic
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
+from domainkit.exceptions import DomainkitError
 from domainkit.http.live import (
     GONE,
     LIMITS,
@@ -68,7 +69,7 @@ CLOSE_TIMEOUT: Final = 5.0
 """Seconds the close of a WebSocket the framework ends may take to send."""
 
 
-class ConnectionClosed(OSError):
+class ConnectionClosed(OSError, DomainkitError):
     """The framework closed the WebSocket; nothing more can be sent on it.
 
     It is an ``OSError``, as ASGI asks of a send on a closed connection, so

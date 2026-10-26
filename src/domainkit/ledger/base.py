@@ -10,8 +10,10 @@ client trusts (see ADR 0011).
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from domainkit.exceptions import DomainkitError
 
-class LedgerError(Exception):
+
+class LedgerError(DomainkitError):
     """Base class of ledger errors."""
 
 

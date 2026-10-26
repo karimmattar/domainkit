@@ -11,8 +11,11 @@ details instead: ``type``, ``title``, ``status``, ``detail``, and
 ``errors`` as extension members, as ``application/problem+json``.
 
 The domain layer raises ``DomainError`` subclasses and never mentions HTTP;
-this module is the only place that maps them to status codes. Database
-refusals that are not bugs are mapped here too (``database_refusal``).
+this module is the only place that maps them to status codes. Modules below
+the HTTP layer raise errors of their own, never an HTTP exception, and are
+mapped here too: ``ServiceBusy`` is 503 with ``Retry-After``
+(``busy_refusal``), and database refusals that are not bugs are mapped by
+``database_refusal``.
 
 Details and validation messages are translated into the request's language
 here, as the body is built (``gettext`` and ``validation_message``, see
@@ -52,6 +55,7 @@ from domainkit.ddd.exceptions import (
     PermissionDenied,
     PreconditionFailed,
 )
+from domainkit.exceptions import DomainkitError, ServiceBusy
 from domainkit.http.responses import BuiltJSONResponse, JSONResponse
 from domainkit.i18n import gettext, validation_message
 
@@ -126,7 +130,7 @@ class ProblemDetails(BaseModel):
     errors: list[FieldError] | None = None
 
 
-class APIError(HTTPException):
+class APIError(HTTPException, DomainkitError):
     """An HTTP error outside the domain (a bad cursor, an oversized body)."""
 
     def __init__(
@@ -250,6 +254,21 @@ async def domain_error_handler(request: Request, exc: DomainError) -> JSONRespon
     return error_response(
         status_code_for(exc), exc.message, code=exc.code, errors=errors
     )
+
+
+def busy_refusal(error: ServiceBusy) -> APIError:
+    """503 for ``error``: its message and code, and ``Retry-After``."""
+    return APIError(
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+        error.message,
+        code=error.code,
+        headers={"Retry-After": str(error.retry_after)},
+    )
+
+
+async def service_busy_handler(request: Request, exc: ServiceBusy) -> Response:
+    """Answer ``ServiceBusy`` as the ``APIError`` ``busy_refusal`` makes of it."""
+    return await http_error_handler(request, busy_refusal(exc))
 
 
 def duplicate_errors(error: DuplicateValue) -> list[FieldError] | None:
@@ -455,8 +474,9 @@ def _busy() -> APIError:
 
 
 def install_exception_handlers(app: FastAPI) -> None:
-    """Register the domain, HTTP, and validation error handlers on ``app``."""
+    """Register the domain, HTTP, busy, and validation error handlers on ``app``."""
     app.add_exception_handler(DomainError, domain_error_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(ServiceBusy, service_busy_handler)  # type: ignore[arg-type]
     app.add_exception_handler(HTTPException, http_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(
         RequestValidationError,

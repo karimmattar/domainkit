@@ -16,13 +16,14 @@ another).
 """
 
 from argparse import ArgumentParser
-from pathlib import Path
 
-from domainkit.management.base import BaseCommand, CommandError
+from domainkit.management.base import CommandError
 from domainkit.management.generators import (
+    AggregateGenerator,
     Domain,
     FieldSpec,
     Names,
+    Planned,
     class_name,
     field_help,
     parse_fields,
@@ -31,15 +32,13 @@ from domainkit.management.generators import (
 from domainkit.utils.text import snake_case
 
 
-class Command(BaseCommand):
+class Command(AggregateGenerator):
     """Add a command, its use case, its route, and tests to an aggregate."""
 
     help = "Add a task command to an aggregate: the method, use case, route, tests."
-    requires_setup = False
 
-    def add_arguments(self, parser: ArgumentParser) -> None:
-        """Accept the domain, the aggregate, the command, and its fields."""
-        Domain.add_arguments(parser)
+    def add_options(self, parser: ArgumentParser) -> None:
+        """Accept the command, its fields, and its event."""
         parser.add_argument("command", help="the command's class, e.g. PublishProduct")
         parser.add_argument(
             "--field", action="append", default=[], dest="fields", help=field_help()
@@ -48,28 +47,21 @@ class Command(BaseCommand):
             "--event", help="the event's class (default: e.g. ProductPublished)"
         )
 
-    def handle(
+    def plan_for(
         self,
+        domain: Domain,
+        names: Names,
         *,
-        domain: str,
-        aggregate: str,
         command: str,
         fields: list[str],
         event: str | None,
-        plural: str | None,
-        parent: str,
-        tests_dir: Path | None,
         **options: object,
-    ) -> None:
-        """Plan every edit, then write them all."""
-        target = Domain.named(domain, parent, tests_dir)
-        names = Names.of(aggregate, plural)
+    ) -> Planned:
+        """Plan the command, its event, use case, route, and tests."""
         verb = verb_of(class_name(command, "command name"), names.cls)
         happened = class_name(event or f"{names.cls}{past_tense(verb)}", "event name")
-        add_command(target, names, command, happened, parse_fields(fields))
-        written = target.apply()
-        self.write(f"Added {command} to {target.package}:")
-        self.write("\n".join(f"  {path}" for path in written))
+        add_command(domain, names, command, happened, parse_fields(fields))
+        return Planned(domain, command)
 
 
 def verb_of(command: str, aggregate: str) -> str:

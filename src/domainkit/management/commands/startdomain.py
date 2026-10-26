@@ -10,12 +10,13 @@ resource, and tests, ready to rename and grow. In a project laid out as
 import keyword
 import re
 from argparse import ArgumentParser
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
 from domainkit.conf.env import project_root
-from domainkit.management.base import BaseCommand, CommandError
-from domainkit.management.generators import install, package_directory
+from domainkit.management.base import CommandError
+from domainkit.management.generators import Generator, install, package_directory
 from domainkit.utils.formatting import format_python
 from domainkit.utils.text import camel_case, pluralize, snake_case
 
@@ -98,11 +99,21 @@ def render(source: Path, target: Path, context: dict[str, str]) -> list[Path]:
     return created
 
 
-class Command(BaseCommand):
+@dataclass(frozen=True, slots=True)
+class NewDomain:
+    """What ``startdomain`` will write: the package, its tests, and where."""
+
+    context: dict[str, str]
+    package_dir: Path
+    tests_root: Path
+    root: Path
+    install: bool
+
+
+class Command(Generator[NewDomain]):
     """Generate ``<parent>/<name>/`` and ``tests/<parent>/<name>/``."""
 
     help = "Create a domain package (and its tests) from the domain template."
-    requires_setup = False
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         """Accept the domain name and naming overrides."""
@@ -128,7 +139,7 @@ class Command(BaseCommand):
             help="neither install the domain nor mount its router; print how",
         )
 
-    def handle(
+    def plan(
         self,
         *,
         name: str,
@@ -138,8 +149,8 @@ class Command(BaseCommand):
         tests_dir: Path | None,
         manual: bool = False,
         **options: object,
-    ) -> None:
-        """Render the package and its tests, install it if safe, print what is left."""
+    ) -> NewDomain:
+        """Check the names, and that neither directory exists yet."""
         context = template_context(name, parent, aggregate, plural)
         package_dir = package_directory(parent) / name
         root = project_root()
@@ -147,6 +158,17 @@ class Command(BaseCommand):
         for directory in (package_dir, tests_root / name):
             if directory.exists():
                 raise CommandError(f"{directory} already exists.")
+        return NewDomain(context, package_dir, tests_root, root, not manual)
+
+    def apply(self, plan: NewDomain) -> str:
+        """Render the package and its tests, install it if safe; what is left."""
+        context, package_dir, tests_root, root = (
+            plan.context,
+            plan.package_dir,
+            plan.tests_root,
+            plan.root,
+        )
+        name = context["domain"]
         render(TEMPLATE_DIR / "package", package_dir, context)
         render(TEMPLATE_DIR / "tests", tests_root / name, context)
         directory = tests_root
@@ -156,8 +178,8 @@ class Command(BaseCommand):
                 init.write_text(f'"""Tests of {directory.name}."""\n', encoding="utf-8")
             directory = directory.parent
         format_python([package_dir, tests_root / name])
-        done = [] if manual else install(context["package"], name, root)
-        self.write(_next_steps(context, package_dir, tests_root / name, done))
+        done = install(context["package"], name, root) if plan.install else []
+        return _next_steps(context, package_dir, tests_root / name, done)
 
 
 def _next_steps(

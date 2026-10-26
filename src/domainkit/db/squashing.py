@@ -35,6 +35,7 @@ from alembic.util.exc import CommandError as AlembicError
 from domainkit import clock
 from domainkit.db import migrations
 from domainkit.db.routing import router
+from domainkit.exceptions import DomainkitError
 from domainkit.utils.formatting import format_python
 
 HEADER_NAMES: Final = frozenset(
@@ -49,7 +50,7 @@ STANDARD_IMPORTS: Final = (
 """Imports every squashed file starts with, as the revision template's."""
 
 
-class SquashRefused(Exception):
+class SquashRefused(DomainkitError):
     """The revisions cannot be squashed without changing what they do."""
 
 

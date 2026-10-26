@@ -58,6 +58,13 @@ class DomainConfig:
     Each domain package may define exactly one subclass in its ``apps``
     module; a package without one gets this base class. Override only the
     hooks the domain needs.
+
+    A domain that takes part in SQL commits or migrations registers typed
+    hooks in ``ready()`` instead (``domainkit.db.hooks``: ``on_stage``,
+    ``on_committed``, ``on_migrated`` and the rest), and only domains that
+    registered are called. Overriding ``stage``, ``committed``,
+    ``stage_transaction``, ``transaction_committed``, or ``migrated`` still
+    works: the hook points call an overriding method too.
     """
 
     label: str = ""
@@ -173,13 +180,16 @@ class DomainConfig:
         events: Sequence["DomainEvent"],
         tasks: Sequence["DeferredTask"],
     ) -> None:
-        """Add rows to a committing SQL unit of work (outbox, audit trail)."""
+        """Add rows to a committing SQL unit of work (outbox, audit trail).
+
+        Prefer ``domainkit.db.hooks.on_stage``, typed on the SQL unit of work.
+        """
 
     async def committed(self, uow: "UnitOfWork") -> None:
         """Follow up after a SQL unit of work committed (publish its messages).
 
         The data is already committed: a failure here is logged and reported,
-        and the unit of work carries on.
+        and the unit of work carries on. Prefer ``domainkit.db.hooks.on_committed``.
         """
 
     async def stage_transaction(
@@ -190,14 +200,16 @@ class DomainConfig:
         ``domainkit.contrib.messaging.enqueue`` commits its rows in a
         transaction of its own on alias ``database``; it calls this with
         that transaction's ``connection`` before the commit, as a unit of
-        work calls ``stage``. Raising rolls the transaction back.
+        work calls ``stage``. Raising rolls the transaction back. Prefer
+        ``domainkit.db.hooks.on_stage_transaction``.
         """
 
     async def transaction_committed(self, database: str) -> None:
         """Follow up after such a transaction committed (see ``committed``).
 
         The data is already committed: a failure here is logged and
-        reported, and the caller carries on.
+        reported, and the caller carries on. Prefer
+        ``domainkit.db.hooks.on_transaction_committed``.
         """
 
     async def migrated(self, connection: "AsyncConnection", database: str) -> None:
@@ -205,7 +217,8 @@ class DomainConfig:
 
         Runs for every installed domain, in order, in one transaction on the
         schema owner's ``connection``; check ``database`` before writing.
-        Content types and permissions are created this way.
+        Content types and permissions are created this way, registered with
+        ``domainkit.db.hooks.on_migrated``, which is preferred.
         """
 
     async def seed(self) -> None:

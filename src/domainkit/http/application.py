@@ -13,6 +13,7 @@ from starlette.types import Receive, Scope, Send
 
 from domainkit import setup
 from domainkit.apps import registry
+from domainkit.checks import CheckFailed, CheckMessage
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db.drivers import connect_args
@@ -113,7 +114,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def get_asgi_application() -> FastAPI:
-    """Set up the framework and return the configured application."""
+    """Set up the framework and return the configured application.
+
+    Raises:
+        CheckFailed: The application has problems (``application_problems``),
+            in staging or production; every one is listed.
+    """
+    app = build_application()
+    problems = application_problems(app)
+    _report(problems, "The application has problems")
+    setattr(app.state, BUILT_PROBLEMS, tuple(problems))
+    if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
+        # The server's own command line, here.
+        for warning in server_warnings(app):
+            logger.warning(warning)
+        for warning in unix_socket_warnings(settings.TRUSTED_PROXIES):
+            logger.warning(warning)
+    return app
+
+
+def build_application() -> FastAPI:
+    """Set up the framework and build the application, without checking it.
+
+    ``get_asgi_application`` checks what this returns; ``check`` collects
+    the application's problems with every other one instead.
+    """
     setup()
     # Refuse bad driver arguments (CONNECT_ARGS, TLS files) now, not at first use.
     for database in settings.DATABASES.values():
@@ -159,15 +184,6 @@ def get_asgi_application() -> FastAPI:
     for path in reversed(settings.MIDDLEWARE):
         middleware: Any = _load(path, type, "MIDDLEWARE")
         app.add_middleware(middleware)
-    problems = application_problems(app)
-    _report(problems, "The application has problems")
-    setattr(app.state, BUILT_PROBLEMS, tuple(problems))
-    if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
-        # The server's own command line, here.
-        for warning in server_warnings(app):
-            logger.warning(warning)
-        for warning in unix_socket_warnings(settings.TRUSTED_PROXIES):
-            logger.warning(warning)
     return app
 
 
@@ -188,9 +204,15 @@ def application_problems(app: FastAPI) -> list[str]:
     whatever authenticates requests. Domains report through
     ``DomainConfig.check_application``.
     """
-    problems = duplicate_operation_ids(app)
+    problems: list[str] = [
+        CheckMessage("openapi.E001", problem)
+        for problem in duplicate_operation_ids(app)
+    ]
     if route_rules_required():
-        problems.extend(route_rule_problems(app))
+        problems.extend(
+            CheckMessage("security.E101", problem)
+            for problem in route_rule_problems(app)
+        )
     problems.extend(
         problem for config in registry for problem in config.check_application(app)
     )
@@ -221,7 +243,7 @@ def check_started(app: FastAPI) -> None:
     once per start, never per request.
 
     Raises:
-        ImproperlyConfigured: A problem, in staging or production.
+        CheckFailed: A problem, in staging or production.
     """
     built = getattr(app.state, BUILT_PROBLEMS, ())
     found = [problem for problem in application_problems(app) if problem not in built]
@@ -232,14 +254,14 @@ def _report(problems: list[str], heading: str) -> None:
     """Refuse ``problems`` in staging and production; log them elsewhere.
 
     Raises:
-        ImproperlyConfigured: A problem, in staging or production.
+        CheckFailed: A problem, in staging or production.
     """
     if not problems:
         return
-    listed = "\n".join(f"  {problem}" for problem in problems)
+    failed = CheckFailed(heading, problems)
     if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
-        raise ImproperlyConfigured(f"{heading}:\n{listed}")
-    logger.warning("%s:\n%s", heading, listed)
+        raise failed
+    logger.warning("%s", failed)
 
 
 def _load[T](path: str, expected: type[T], setting: str) -> T:

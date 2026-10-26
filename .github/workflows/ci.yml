@@ -800,6 +800,7 @@ jobs:
           - name: management-1
             mutants: >-
               domainkit.apps.registry.* domainkit.management.commands.addevent.*
+              domainkit.apps.hooks.*
               domainkit.management.commands.broker.*
               domainkit.management.commands.dumpdata.*
               domainkit.management.commands.makemigrations.*
@@ -818,7 +819,7 @@ jobs:
               domainkit.utils.rates.* domainkit.utils.readiness.*
           - name: management-3
             mutants: >-
-              domainkit.conf.env.* domainkit.conf.lazy.*
+              domainkit.conf.env.* domainkit.conf.lazy.* domainkit.checks.*
               domainkit.management.commands.check.*
               domainkit.management.commands.diffsettings.*
               domainkit.management.commands.flush.* domainkit.management.commands.init.*

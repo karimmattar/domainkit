@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Final
 from fastapi import Response
 from fastapi.responses import StreamingResponse
 
-from domainkit.ddd.query import Query, as_query
+from domainkit.ddd.query import Selection, as_query
 from domainkit.http.filters import FilterSet
 from domainkit.http.responses import BuiltJSONResponse
 
@@ -85,7 +85,7 @@ class ListRoute:
             body, headers={"Vary": "Accept"} if exporting else None
         )
 
-    async def query(self, context: RouteContext) -> Query:
+    async def query(self, context: RouteContext) -> Selection:
         """The listing's query: the filters, the parent, and the caller's scope."""
         given = context.filters
         query = given.query() if isinstance(given, FilterSet) else as_query(given)
@@ -93,7 +93,9 @@ class ListRoute:
             *await reach.criteria(self.router, context.request, context.ids)
         )
 
-    async def export(self, context: RouteContext, query: Query, media: str) -> Response:
+    async def export(
+        self, context: RouteContext, query: Selection, media: str
+    ) -> Response:
         """Every match of ``query``, streamed as CSV or NDJSON.
 
         Raises:

@@ -1,6 +1,6 @@
 # 0062. Claim idempotency keys in one statement, and commit the framework's short writes as they run
 
-- Status: Accepted; amended in place 2026-10-22, and 2026-10-25 (at the end)
+- Status: Accepted; amended in place 2026-10-22, and 2026-10-25 (at the end); amended by [0085](0085-register-hooks-by-type-for-the-domains-that-have-them.md)
 - Date: 2026-10-21; amended 2026-10-22 (the sweep comes last), 2026-10-25 (the database's clock decides leases; the sweep once a minute)
 
 ## Context
