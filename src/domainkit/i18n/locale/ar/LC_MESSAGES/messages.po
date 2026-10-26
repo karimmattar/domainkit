@@ -225,6 +225,13 @@ msgstr "استُخدمت قيمة Idempotency-Key هذه لطلب مختلف."
 msgid "A request with this Idempotency-Key is still in progress."
 msgstr "لا يزال طلب بقيمة Idempotency-Key هذه قيد التنفيذ."
 
+msgid ""
+"The request with this Idempotency-Key already ran, and its response is no "
+"longer kept; look up the result instead of retrying."
+msgstr ""
+"سبق تنفيذ الطلب بقيمة Idempotency-Key هذه، ولم تعد استجابته محفوظة؛ "
+"استعلم عن النتيجة بدلًا من إعادة المحاولة."
+
 #. domainkit.http.uploads and domainkit.storage
 msgid "The file is too large."
 msgstr "الملف أكبر من المسموح."

@@ -36,8 +36,8 @@ statuses, and the amendments they name.
 | [0016](0016-authenticating-requests.md) | Authenticate requests with tokens; rules decide who may call routes | Accepted; amended by [0056](0056-reauthorize-open-connections.md), [0058](0058-cache-principals-and-stamp-revocations.md), [0059](0059-read-principals-in-two-queries-without-the-hash.md), and [0097](0097-name-the-key-of-every-json-web-token-and-retire-keys-within-a-token-lifetime.md) |
 | [0017](0017-deny-by-default-and-admin-api.md) | Routes deny by default; staff manage users through an admin API | Accepted; amended by [0056](0056-reauthorize-open-connections.md) and [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md); its consequence that mounts are not checked is superseded by [0021](0021-check-mounted-applications.md); amended 2026-10-26 (at the end) |
 | [0018](0018-evidence-subjects-are-internal-ids.md) | Evidence subjects are internal ids, keyed by a secret digest | Accepted |
-| [0019](0019-idempotency-keys-commit-with-changes.md) | Mark idempotency keys committed in the transaction of the changes | Accepted; leases added by [0020](0020-lease-idempotency-keys.md); amended by [0085](0085-register-hooks-by-type-for-the-domains-that-have-them.md) |
-| [0020](0020-lease-idempotency-keys.md) | Lease idempotency keys, and write them only under the holder's token | Accepted; amended 2026-10-21 (at the end) |
+| [0019](0019-idempotency-keys-commit-with-changes.md) | Mark idempotency keys committed in the transaction of the changes | Accepted; leases added by [0020](0020-lease-idempotency-keys.md); amended by [0085](0085-register-hooks-by-type-for-the-domains-that-have-them.md); amended 2026-10-26 (at the end) by [0096](0096-keep-committed-idempotency-keys-as-tombstones.md) |
+| [0020](0020-lease-idempotency-keys.md) | Lease idempotency keys, and write them only under the holder's token | Accepted; amended 2026-10-21 and 2026-10-26 (at the end); amended by [0096](0096-keep-committed-idempotency-keys-as-tombstones.md) |
 | [0021](0021-check-mounted-applications.md) | Check mounted applications and Starlette routes too | Accepted |
 | [0022](0022-query-repositories-with-criteria.md) | Query repositories with criteria that fakes evaluate as SQL does | Accepted |
 | [0023](0023-keyset-pages-and-typed-cursors.md) | Keyset pages with versioned, typed cursors; filters declared per field | Accepted; amended in place 2026-10-20 |
@@ -79,7 +79,7 @@ statuses, and the amendments they name.
 | [0059](0059-read-principals-in-two-queries-without-the-hash.md) | Read a principal in two queries, build each request's user, and deprecate its password hash | Accepted; amended 2026-10-26 (at the end) |
 | [0060](0060-flatten-included-routers.md) | Flatten included routers when the application is built | Accepted; amended 2026-10-26 (at the end) |
 | [0061](0061-read-without-a-transaction-and-ping-once.md) | Read without a transaction where it is safe, and ping a connection once | Accepted; amended in place 2026-10-22 |
-| [0062](0062-claim-idempotency-keys-in-one-statement.md) | Claim idempotency keys in one statement, and commit the framework's short writes as they run | Accepted; amended in place 2026-10-22, and 2026-10-25 and 2026-10-26 (at the end); amended by [0085](0085-register-hooks-by-type-for-the-domains-that-have-them.md) |
+| [0062](0062-claim-idempotency-keys-in-one-statement.md) | Claim idempotency keys in one statement, and commit the framework's short writes as they run | Accepted; amended in place 2026-10-22, and 2026-10-25 and 2026-10-26 (at the end); amended by [0085](0085-register-hooks-by-type-for-the-domains-that-have-them.md) and [0096](0096-keep-committed-idempotency-keys-as-tombstones.md) |
 | [0063](0063-encode-json-with-pydantic-and-sample-the-access-log.md) | Encode JSON with pydantic where the bytes stay the same, and let projects sample the access log | Accepted |
 | [0064](0064-gate-performance-on-counts-not-time.md) | Gate performance in CI on counts, and report time | Accepted |
 | [0065](0065-upgrade-fastapi-sqlalchemy-asyncpg-behind-the-ladder.md) | Upgrade FastAPI, SQLAlchemy, and asyncpg behind the ladder, with FastAPI's telemetry off | Accepted; amended 2026-10-25 (at the end) |
@@ -102,6 +102,7 @@ statuses, and the amendments they name.
 | [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md) | Count proven devices apart, and bound scoped credentials by route | Accepted |
 | [0089](0089-build-the-docs-site-with-mkdocs-and-generate-the-api-reference-from-api-md.md) | Build the docs site with MkDocs, and generate the API reference from api.md | Accepted |
 | [0090](0090-module-singletons-overridden-per-test.md) | Keep framework state in module-level singletons, overridden per test | Accepted |
+| [0096](0096-keep-committed-idempotency-keys-as-tombstones.md) | Keep committed idempotency keys as tombstones past their TTL | Accepted |
 | [0097](0097-name-the-key-of-every-json-web-token-and-retire-keys-within-a-token-lifetime.md) | Name the key of every JSON Web Token, and retire keys within a token's lifetime | Accepted |
 | [0098](0098-share-login-throttles-and-fail-closed-where-deployed.md) | Share the attempt throttles, and fail closed, where deployed | Accepted |
 | [0099](0099-take-request-ids-from-trusted-proxies-only.md) | Take request ids from trusted proxies only, and drop a caller's own | Accepted |

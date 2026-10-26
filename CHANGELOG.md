@@ -70,6 +70,20 @@ and a status.
   and codes in Redis (`RedisBackend` on a `shared` cache), from
   `<PREFIX>REDIS_URL`, which they require; new projects depend on the
   `redis` extra (AUTH-09).
+- **Breaking:** an `Idempotency-Key` whose request committed, or pinned it
+  for a commit on another database, is no longer forgotten once
+  `IDEMPOTENCY.TTL_SECONDS` passes. Its response is dropped, but the key is
+  kept as a tombstone for `IDEMPOTENCY.TOMBSTONE_SECONDS` more (new: 7 days
+  by default, at most 90), and a retry with the same key and request gets
+  409 `idempotency_response_unavailable` instead of running again: it used
+  to make a second payment where the first had committed. Another request
+  with the key gets 422 `idempotency_key_reused`, as within the TTL. A key
+  nothing committed is forgotten at the TTL, as before. The keys table has
+  a new `tombstone` column: run `makemigrations` and `migrate`. The keyed
+  write makes the same statements as before; without messaging, a sweep
+  that is due makes one more, once a minute. ADR 0096 records the choice.
+  **To keep the old behaviour:** `IDEMPOTENCY = {"TOMBSTONE_SECONDS": 0}`
+  (FIN-84).
 
 ### Security
 

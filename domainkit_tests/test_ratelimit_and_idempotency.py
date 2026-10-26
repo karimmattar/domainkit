@@ -1337,7 +1337,8 @@ def test_a_host_running_ahead_never_runs_a_committed_key_again(
     """A committed key lives until it expires on the database's clock.
 
     Its retries are not run (here a 409: the planted key kept no response),
-    and the purge leaves it.
+    and the purge leaves it. Past its TTL on SQLite's clock, the host's, it
+    is not run either, and the purge keeps it as a tombstone (FIN-84).
     """
     from domainkit.contrib.idempotency.tasks import purge_expired
 
@@ -1349,15 +1350,19 @@ def test_a_host_running_ahead_never_runs_a_committed_key_again(
 
     retry = idempotent.post("/pay", headers={"Idempotency-Key": "paid"})
 
-    assert retry.status_code == (409 if on_postgres else 201)  # Ran, or runs again.
-    assert payments_on() == (0 if on_postgres else 1)
+    assert (retry.status_code, retry.json()["code"]) == (
+        409,
+        "idempotency_key_in_use" if on_postgres else "idempotency_response_unavailable",
+    )
+    assert payments_on() == 0
 
     async def purge() -> None:
         await purge_expired()
         await connections.close_all()
 
     asyncio.run(purge())
-    assert (keyed("kept") in {row["key_hash"] for row in stored_keys()}) is on_postgres
+    kept = {row["key_hash"]: row["tombstone"] for row in stored_keys()}
+    assert kept[keyed("kept")] is not on_postgres
 
 
 def test_keyed_routes_that_outlast_the_lease_are_problems() -> None:

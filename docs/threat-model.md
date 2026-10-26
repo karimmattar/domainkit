@@ -171,8 +171,11 @@ left to the project on purpose.
   where writers contend ([queries.md](queries.md)).
 - **Handlers run at least once.** A crash between a handler's commit and
   its message's mark runs it again; there is no inbox.
-- **A committed idempotency key runs again once its TTL passes.** Keep
-  `IDEMPOTENCY.TTL_SECONDS` above the time clients retry.
+- **A committed idempotency key runs again once its tombstone expires.**
+  Since 0.11 it is kept, without its response, for
+  `IDEMPOTENCY.TOMBSTONE_SECONDS` (7 days) past its TTL (1 day); keep the
+  two above the time clients retry, and refuse what must never happen
+  twice with a unique column of the domain's own.
 - **Open findings of the 0.9.0 audit.** [audit/0.9.0.md](audit/0.9.0.md)
   lists every one with its status; open security findings are listed by id
   and severity until they are fixed.
