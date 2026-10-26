@@ -268,8 +268,13 @@ async def test_a_rolled_back_or_forked_server_is_refused(prefix: bytes) -> None:
     await ahead.save(
         first.name,
         TrustedState(seen.database, seen.transaction + 10**6, seen.digest),
+        expected=None,
     )
-    await forked.save(first.name, TrustedState(seen.database, seen.transaction, other))
+    await forked.save(
+        first.name,
+        TrustedState(seen.database, seen.transaction, other),
+        expected=None,
+    )
 
     for kept, refused, message in (
         (ahead, LedgerRolledBack, "rolled back or replaced"),
@@ -283,3 +288,32 @@ async def test_a_rolled_back_or_forked_server_is_refused(prefix: bytes) -> None:
                 await ledger.read(prefix + b"k")
         finally:
             await ledger.close()
+
+
+async def test_replicas_sharing_a_store_prove_each_others_states(
+    prefix: bytes,
+) -> None:
+    """A save another replica overtook is proven with the SDK, then made (SEC-10b-5).
+
+    Each replica's state is proven against the other's (``verifiedTxById``,
+    a dual proof either way) before it replaces it; a digest the server
+    does not have there is a fork.
+    """
+    store = MemoryStateStore()
+    a = ImmudbLedger(config(), states=store)
+    b = ImmudbLedger(config(), states=store)
+    try:
+        for n in range(2):
+            await a.append(prefix + b"a", str(n).encode())
+            written = await b.append(prefix + b"b", str(n).encode())
+        last = await a.append(prefix + b"a", b"last")
+        kept = await store.load(a.name)
+        assert kept is not None
+        assert kept.transaction >= last.transaction > written.transaction
+        forged = TrustedState(kept.database, kept.transaction, b"\0" * 32)
+        assert await store.save(a.name, forged, expected=kept)
+        with pytest.raises(LedgerTampered):
+            await a.append(prefix + b"a", b"after")
+    finally:
+        await a.close()
+        await b.close()

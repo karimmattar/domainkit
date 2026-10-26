@@ -250,7 +250,12 @@ and a status.
   `domainkit.ledger`. With `domainkit.contrib.audit` installed, ledgers
   keep it in `AUDIT.DATABASE` (`domainkit_ledger_states`: run
   `makemigrations` and `migrate`); staging and production warn when
-  evidence is installed without audit (DATA-05).
+  evidence is installed without audit (DATA-05). Replicas share it: the
+  readiness probe reads it again, and a save is a compare-and-set
+  (`StateStore.save(..., expected=...)`) over the state the ledger last
+  read or saved there; a later one another replica saved is proven to lie
+  on one chain with its own first, so a replica writing on a rolled-back
+  or forked server is refused instead of saving the fork (SEC-10b-5).
 
 ### Changed
 

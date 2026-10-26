@@ -183,6 +183,28 @@ class FakeClient:
         """The server's state, unproven."""
         return self.server.state()
 
+    def verifiedTxById(self, tx: int) -> Any:  # noqa: ANN401 - SDK API.
+        """Prove transaction ``tx`` and the trusted state lie on one chain.
+
+        None when the server has no transaction ``tx``, as the SDK answers.
+        A later one is trusted then, with the server's digest there.
+        """
+        if tx > self.server.tx:
+            return None
+        trusted = self._rs.get()
+        self.server.prove(trusted)
+        if tx > trusted.txId:
+            self._rs.set(
+                SimpleNamespace(
+                    db="evidence",
+                    txId=tx,
+                    txHash=self.server.digests[tx],
+                    publicKey=b"",
+                    signature=b"",
+                )
+            )
+        return [self.server.entries[tx - 1][0]]
+
     def login(self, username: str, password: str, database: bytes) -> object:
         """Not called by the adapter (``connect`` logs in)."""
         raise AssertionError("unused")  # pragma: no cover
@@ -335,12 +357,14 @@ class Flaky(MemoryStateStore):
             raise OSError("the database is down")
         return await super().load(ledger)
 
-    async def save(self, ledger: str, state: TrustedState) -> None:
+    async def save(
+        self, ledger: str, state: TrustedState, *, expected: TrustedState | None
+    ) -> bool:
         """Fail while failures are left."""
         if self.failures:
             self.failures -= 1
             raise OSError("the database is down")
-        await super().save(ledger, state)
+        return await super().save(ledger, state, expected=expected)
 
 
 async def test_a_failed_save_is_logged_and_tried_again(
@@ -398,14 +422,18 @@ def test_the_trusted_state_only_moves_forward() -> None:
     assert root.unsaved() == TrustedState("db", 9, b"9" * 32, b"sig", b"key")
 
 
-async def test_memory_stores_never_move_back() -> None:
-    """A save of an older state keeps the later one."""
+async def test_memory_stores_compare_and_set() -> None:
+    """A save replaces only the state the saver expects (SEC-10b-5)."""
     store = MemoryStateStore()
-    await store.save("l", TrustedState("db", 5, b"5" * 32))
-    await store.save("l", TrustedState("db", 3, b"3" * 32))
-    await store.save("l", TrustedState("db", 5, b"x" * 32))
+    five = TrustedState("db", 5, b"5" * 32)
+    later = TrustedState("db", 7, b"7" * 32)
 
-    assert await store.load("l") == TrustedState("db", 5, b"5" * 32)
+    assert await store.save("l", five, expected=None)
+    assert not await store.save("l", TrustedState("db", 3, b"3" * 32), expected=None)
+    assert not await store.save("l", later, expected=TrustedState("db", 5, b"x" * 32))
+    assert await store.load("l") == five
+    assert await store.save("l", later, expected=five)
+    assert await store.load("l") == later
     assert await store.load("other") is None
 
 
@@ -435,20 +463,238 @@ async def test_the_audit_database_keeps_states_for_every_process() -> None:
     await first.append(b"k", b"1")
     await first.append(b"k", b"2")
     await first.close()
-    await registered.save(NAME, TrustedState("evidence", 1, b"1" * 32))
+    assert not await registered.save(
+        NAME, TrustedState("evidence", 1, b"1" * 32), expected=None
+    )
     server.roll_back(1)
 
     with pytest.raises(LedgerRolledBack):
         await ledger_of(server).check()
     kept = await registered.load(NAME)
     signed = TrustedState("evidence", 9, b"9" * 32, b"signature", b"public key")
-    await registered.save("signed", signed)
-    await registered.save("signed", TrustedState("evidence", 9, b"x" * 32))
+    assert await registered.save("signed", signed, expected=None)
+    forked = TrustedState("evidence", 9, b"x" * 32)
+    assert not await registered.save("signed", forked, expected=forked)
+    assert await registered.load("signed") == signed
+    later = TrustedState("evidence", 12, b"c" * 32)
+    assert await registered.save("later", later, expected=None)
+    assert await registered.save("later", signed, expected=later)
 
     assert kept is not None
     assert (kept.database, kept.transaction, len(kept.digest)) == ("evidence", 2, 32)
     assert await registered.load("another") is None
     assert await registered.load("signed") == signed
+    assert await registered.load("later") == signed
+
+
+async def test_a_rollback_of_another_replicas_writes_is_refused() -> None:
+    """SEC-10b-5: replicas share the store; a rollback below one's writes is refused.
+
+    B proves transactions 2 to 5 and saves them; the server is rolled back
+    to 1. A, which last read the store at 1, must not trust the server on
+    its own word: its probe reads the store again, its write is refused,
+    and the store keeps 5, so a replica that starts later refuses too. In
+    the PoC, A's probe and writes passed, and its saves put the fork over 5.
+    """
+    server = FakeServer()
+    store = MemoryStateStore()
+    a = ledger_of(server, store)
+    b = ledger_of(server, store)
+    await a.append(b"evidence/a", b"1")
+    for n in range(4):
+        await b.append(b"evidence/b", str(n).encode())
+    await b.close()
+    server.roll_back(1)
+
+    with pytest.raises(LedgerRolledBack):
+        await a.check()
+    with pytest.raises(LedgerRolledBack):
+        await a.append(b"evidence/a", b"after")
+    kept = await store.load(NAME)
+    c = ledger_of(server, store)
+    with pytest.raises(LedgerRolledBack):
+        await c.check()
+    await a.close()
+    await c.close()
+
+    assert kept is not None
+    assert kept.transaction == 5
+
+
+async def test_a_write_on_a_rolled_back_server_is_refused_when_saved() -> None:
+    """Without a probe first, the save finds 5, which the server no longer has."""
+    server = FakeServer()
+    store = MemoryStateStore()
+    a = ledger_of(server, store)
+    b = ledger_of(server, store)
+    await a.append(b"k", b"1")
+    for n in range(4):
+        await b.append(b"k", str(n).encode())
+    server.roll_back(1)
+
+    with pytest.raises(LedgerRolledBack, match="no transaction 5"):
+        await a.append(b"k", b"after")
+    kept = await store.load(NAME)
+    await a.close()
+    await b.close()
+
+    assert kept is not None
+    assert kept.transaction == 5
+    assert a.root.get().txId == 5  # Every later call proves from it.
+
+
+@pytest.mark.parametrize("where", ["after", "at"])
+async def test_a_write_on_a_forked_server_is_refused_when_saved(where: str) -> None:
+    """B saved 3; then the server forked: A's write there does not follow 3.
+
+    A writes transaction 4 after a forged 3, or a 3 of its own in place
+    of B's: both are refused as forks, and the store keeps B's 3.
+    """
+    server = FakeServer()
+    store = MemoryStateStore()
+    a = ledger_of(server, store)
+    b = ledger_of(server, store)
+    await a.append(b"k", b"1")
+    await b.append(b"k", b"2")
+    await b.append(b"k", b"3")
+    if where == "after":
+        server.fork(at=3)
+    else:
+        server.roll_back(2)
+
+    with pytest.raises(LedgerTampered) as refused:
+        await a.append(b"k", b"forked")
+    kept = await store.load(NAME)
+    await a.close()
+    await b.close()
+
+    assert not isinstance(refused.value, LedgerRolledBack)
+    assert kept is not None
+    assert kept.transaction == 3
+
+
+async def test_replicas_writing_in_turn_keep_the_latest_state() -> None:
+    """On a sound server, a save overtaken by another replica proves, then saves."""
+    server = FakeServer()
+    store = MemoryStateStore()
+    a = ledger_of(server, store)
+    b = ledger_of(server, store)
+    for n in range(3):
+        await a.append(b"k", str(n).encode())
+        await b.append(b"k", str(n).encode())
+    await a.read(b"k")  # Proves to 6, which B saved: the same state.
+    await b.close()
+    await a.append(b"k", b"last")
+    kept = await store.load(NAME)
+    await a.close()
+
+    assert kept is not None
+    assert kept.transaction == server.tx == 7
+
+
+class Overtaken(MemoryStateStore):
+    """A store another replica always saves to first."""
+
+    async def save(
+        self, ledger: str, state: TrustedState, *, expected: TrustedState | None
+    ) -> bool:
+        """Never: someone else was first."""
+        return False
+
+
+async def test_a_save_overtaken_every_time_waits_for_the_next_call(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """After a few tries the state stays unsaved, logged, for the next call."""
+    server = FakeServer()
+    ledger = ledger_of(server, Overtaken())
+
+    with caplog.at_level(logging.WARNING, "domainkit.ledger.immudb"):
+        await ledger.append(b"k", b"1")
+    await ledger.close()
+
+    assert "Could not save the state ledger" in caplog.text
+    assert ledger.root.unsaved() is not None
+
+
+class Unreachable(FakeClient):
+    """A client whose proofs between states fail on the network."""
+
+    def verifiedTxById(self, tx: int) -> Any:  # noqa: ANN401 - SDK API.
+        """Fail as a dropped connection does."""
+        raise RpcError("connection reset")
+
+
+async def test_a_proof_that_cannot_be_made_waits_for_the_next_call(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The write landed: a failed proof leaves the state unsaved, logged."""
+    server = FakeServer()
+    store = MemoryStateStore()
+    b = ledger_of(server, store)
+    a = ImmudbLedger(config(), factory=lambda _: Unreachable(server), states=store)
+    await a.append(b"k", b"1")
+    await b.append(b"k", b"2")
+
+    with caplog.at_level(logging.WARNING, "domainkit.ledger.immudb"):
+        written = await a.append(b"k", b"3")
+    await a.close()
+    await b.close()
+
+    assert written.transaction == 3
+    assert (await store.load(NAME)).transaction == 2  # type: ignore[union-attr]
+    assert "Could not save the state ledger" in caplog.text
+
+
+class Forking(FakeClient):
+    """A client of a server that forks right after answering a write, when armed."""
+
+    armed = False
+
+    def verifiedSet(self, key: bytes, value: bytes) -> Any:  # noqa: ANN401 - SDK API.
+        """Write, proven; then the server rewrites that transaction."""
+        response = super().verifiedSet(key, value)
+        if Forking.armed:
+            self.server.fork(at=self.server.tx)
+        return response
+
+
+async def test_a_write_the_server_rewrote_since_is_refused_when_saved() -> None:
+    """Proving B's state to A's lands on another digest than A's: forked."""
+    server = FakeServer()
+    store = MemoryStateStore()
+    a = ImmudbLedger(config(), factory=lambda _: Forking(server), states=store)
+    b = ledger_of(server, store)
+    await a.append(b"k", b"1")
+    await b.append(b"k", b"2")
+    Forking.armed = True
+    try:
+        with pytest.raises(LedgerTampered, match="transaction 3 is not the one"):
+            await a.append(b"k", b"3")
+    finally:
+        Forking.armed = False
+    await a.close()
+    await b.close()
+
+    assert (await store.load(NAME)).transaction == 2  # type: ignore[union-attr]
+
+
+class Missing(FakeClient):
+    """A client whose writes the server answers "not found" while it is sound."""
+
+    def verifiedSet(self, key: bytes, value: bytes) -> Any:  # noqa: ANN401 - SDK API.
+        """Answer as a missing key does."""
+        raise RpcError("key not found")
+
+
+async def test_a_write_refused_by_a_sound_server_keeps_its_error() -> None:
+    """Only a server behind the trusted state turns "not found" into a rollback."""
+    server = FakeServer()
+    ledger = ImmudbLedger(config(), factory=lambda _: Missing(server))
+
+    with pytest.raises(LedgerKeyNotFound):
+        await ledger.append(b"k", b"1")
+    await ledger.close()
 
 
 def test_a_registered_store_ends_with_its_domains() -> None:
