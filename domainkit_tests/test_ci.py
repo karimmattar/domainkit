@@ -237,6 +237,41 @@ def test_a_shard_reports_its_score_before_the_job_limit() -> None:
     }
 
 
+def test_mutmut_copies_every_file_the_tests_read() -> None:
+    """Every file a test reads, or a page links to, is in mutmut's copy.
+
+    mutmut runs the suite in that copy, which holds ``source_paths``,
+    ``pyproject.toml`` and ``also_copy``. A test reading anything else from
+    the repository's root fails mutmut's first run of the suite, and with it
+    every shard.
+    """
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["mutmut"]
+    copied = {"pyproject.toml"} | {
+        path.rstrip("/") for path in [*config["source_paths"], *config["also_copy"]]
+    }
+    read = {
+        match[1]
+        for path in (ROOT / "domainkit_tests").rglob("*.py")
+        for match in re.finditer(
+            r'(?:\bROOT|parents\[1\])\s*/\s*"([^"/]+)', path.read_text(encoding="utf-8")
+        )
+    }
+    assert read, "the pattern no longer finds what the tests read"
+    # test_docs.py follows the pages' links to the repository's files.
+    pages = [*(ROOT / "docs").rglob("*.md"), *ROOT.glob("*.md")]
+    linked = {
+        match[1]
+        for page in pages
+        for match in re.finditer(
+            r"karimmattar/domainkit/(?:blob|tree)/main/([^/#)\s]+)",
+            page.read_text(encoding="utf-8"),
+        )
+    }
+    assert "LICENSE" in linked, "the pattern no longer finds what the pages link to"
+    read |= linked
+    assert read <= copied, f"add to [tool.mutmut] also_copy: {sorted(read - copied)}"
+
+
 def test_a_hung_test_ends_the_suite_well_within_its_jobs_time() -> None:
     """Two minutes a test, thirty a job; integration keeps its results on failure."""
     config = tomllib.loads((ROOT / "pyproject.toml").read_text())

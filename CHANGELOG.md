@@ -9,6 +9,14 @@ and a status.
 
 ## [Unreleased]
 
+### Fixed
+
+- The weekly mutation run failed in every shard before testing a mutant:
+  mutmut runs the suite in a copy of the repository, and the docs and API
+  tests 0.9.2 added read `README.md`, `CHANGELOG.md`, `SECURITY.md` and
+  `renovate.json`, which the copy left out. They are copied now, and
+  `test_ci.py` fails when a test reads a file the copy lacks (INFRA-01).
+
 ## [0.9.2] - 2026-10-26
 
 ### Added
