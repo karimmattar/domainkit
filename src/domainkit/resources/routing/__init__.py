@@ -78,6 +78,7 @@ from domainkit.ddd.messages import Query as QueryMessage
 from domainkit.ddd.uow import UnitOfWork
 from domainkit.http.access import Rule, check_object_permissions
 from domainkit.http.filters import FilterSet
+from domainkit.http.middleware import body_limit
 from domainkit.http.pagination import Pagination
 from domainkit.utils.text import pluralize, snake_case
 
@@ -89,6 +90,8 @@ from ..schemas import PatchModel, schema_for
 from . import presenting, reach
 from .batching import BatchRoute
 from .commands import CommandRoute
+from .context import ALL_FIELDS as ALL_FIELDS
+from .context import BODY_KINDS
 from .context import DEFAULT as DEFAULT
 from .context import MERGE_PATCH as MERGE_PATCH
 from .context import PROVIDED as PROVIDED
@@ -140,12 +143,14 @@ class ResourceRouter(APIRouter):
         crud: bool = False,
         create: type[BaseModel] | None = None,
         update: type[PatchModel] | None = None,
+        writable: Sequence[str] | str | None = None,
         new_id: Callable[[], object] = uuid4,
         not_found: Callable[[Any], Exception] | None = None,
         list_fields: Sequence[str] | None = None,
         name_prefix: str = "",
         exports: Sequence[str] = (),
         max_export: int = 10_000,
+        body_limits: Mapping[str, int] | None = None,
         **options: Any,  # noqa: ANN401 - APIRouter's options (tags, dependencies).
     ) -> None:
         """Declare the resource and add its list and read routes.
@@ -167,8 +172,17 @@ class ResourceRouter(APIRouter):
         those media types, by ``Accept``: every match, up to ``max_export``
         of them, streamed.
 
+        ``crud=True`` writes the fields ``writable`` names (or every plain
+        one, with ``ALL_FIELDS``), or takes the ``create`` and ``update``
+        schemas given; without either it writes every plain field, which is
+        deprecated. ``body_limits`` gives each kind of route that takes a
+        body (``create``, ``update``, ``command``, ``batch``) a body limit
+        in bytes of its own (``domainkit.http.middleware.body_limit``);
+        ``command_route`` and ``batch_route`` take ``body_limit=`` per route.
+
         Raises:
             TypeError: A declaration does not fit the model.
+            ValueError: A body limit is out of bounds.
         """
         if not prefix.startswith("/") or prefix.endswith("/"):
             raise TypeError(
@@ -180,6 +194,17 @@ class ResourceRouter(APIRouter):
                 "A resource whose model is resolved later needs a schema and a "
                 "basename."
             )
+        if unknown := sorted(set(body_limits or {}) - set(BODY_KINDS)):
+            raise TypeError(
+                f"body_limits= names kinds of route ({', '.join(BODY_KINDS)}), "
+                f"not {', '.join(unknown)}."
+            )
+        for size in (body_limits or {}).values():
+            body_limit(size)  # Checks the bound now, not at the first route.
+        self.body_limits = dict(body_limits or {})
+        """Body limits by kind of route; a kind left out has the global one."""
+        if writable is not None and not crud:
+            raise TypeError("writable= names what crud=True writes; crud is off.")
         self._model = model
         self.basename = basename or snake_case(model.__name__)
         self.plural = plural or pluralize(self.basename)
@@ -228,7 +253,11 @@ class ResourceRouter(APIRouter):
         ListRoute(self).declare()
         ReadRoute(self).declare()
         if crud:
-            CrudRoutes(self, create, update, new_id).declare()
+            CrudRoutes(self, create, update, new_id, writable).declare()
+
+    def body_limit_of(self, kind: str, own: int | None = None) -> int | None:
+        """The body limit of a route of ``kind``: its ``own``, else the kind's."""
+        return own if own is not None else self.body_limits.get(kind)
 
     def _nested(self, prefix: str) -> str:
         """The router's prefix: under the parent's item, for a nested resource.
@@ -269,6 +298,7 @@ class ResourceRouter(APIRouter):
         name: str | None = None,
         summary: str | None = None,
         provide: Mapping[str, Callable[..., object]] | None = None,
+        body_limit: int | None = None,
     ) -> None:
         """Add a route that runs ``command`` through ``service(command, uow)``.
 
@@ -288,6 +318,8 @@ class ResourceRouter(APIRouter):
         as a ``DELETE`` does by default. ``action`` names the permission
         ``ModelActions`` asks for (default: ``add`` to create, ``delete``,
         or ``change``); ``rule`` adds a rule of the route's own.
+        ``body_limit`` holds its bodies to that many bytes (default: the
+        resource's for commands, else ``MAX_REQUEST_BODY_SIZE``).
 
         Raises:
             TypeError: The body has fields the command lacks, or the
@@ -307,6 +339,7 @@ class ResourceRouter(APIRouter):
             name=name,
             summary=summary,
             provide=provide,
+            body_limit=body_limit,
         ).declare()
 
     def batch_route(
@@ -323,6 +356,7 @@ class ResourceRouter(APIRouter):
         name: str | None = None,
         summary: str | None = None,
         provide: Mapping[str, Callable[..., object]] | None = None,
+        body_limit: int | None = None,
     ) -> None:
         """Add ``POST <path>``: ``command`` for each of many items, ``207``.
 
@@ -334,6 +368,8 @@ class ResourceRouter(APIRouter):
         defaults to ``change`` for commands on one aggregate and ``add``
         for the others; pass ``action="delete"`` for deletions, which
         answer ``204`` per item unless ``returns`` says otherwise.
+        ``body_limit`` holds its bodies to that many bytes (default: the
+        resource's for batches, else ``MAX_REQUEST_BODY_SIZE``).
 
         Raises:
             TypeError: The path, the bound, or the body does not fit the command.
@@ -351,6 +387,7 @@ class ResourceRouter(APIRouter):
             name=name,
             summary=summary,
             provide=provide,
+            body_limit=body_limit,
         ).declare()
 
     def query_route(

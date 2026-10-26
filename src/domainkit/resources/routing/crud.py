@@ -5,22 +5,39 @@ they record ``RecordCreated``, ``RecordChanged``, and ``RecordDeleted``.
 Only plain fields are set, never the id, the version, a relation, or the
 parent's field; a ``FieldPolicy`` keeps fields from callers without its
 permissions, and a write may not leave the caller's reach.
+
+Which fields the writes take is said explicitly: ``writable`` names them
+(or ``ALL_FIELDS``), or ``create`` and ``update`` are schemas of the
+project's. Without either, every plain field is writable, as before 0.10,
+with a ``DomainkitDeprecationWarning``: a ``balance`` or an ``owner_id``
+added to the aggregate later would be settable by any caller allowed to
+write (over-posting). 0.11 refuses it.
 """
 
 import dataclasses
-from collections.abc import Callable, Mapping
+import warnings
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from fastapi import Response, status
 from pydantic import BaseModel
 
 from domainkit.ddd.fields import FieldInfo, fields_of
+from domainkit.deprecation import DomainkitDeprecationWarning
 
 from ..access import ADD, CHANGE, DELETE
 from ..events import RecordChanged, RecordCreated, RecordDeleted
 from ..schemas import GENERATED, PatchModel, schema_for
 from . import presenting, reach
-from .context import DEFAULT, Aggregate, RouteContext, RouteSpec
+from .context import (
+    ALL_FIELDS,
+    CREATE,
+    DEFAULT,
+    UPDATE,
+    Aggregate,
+    RouteContext,
+    RouteSpec,
+)
 from .declaring import add_route
 from .values import changes, model_label, to_domain
 
@@ -37,12 +54,17 @@ class CrudRoutes:
         create: type[BaseModel] | None,
         update: type[PatchModel] | None,
         new_id: Callable[[], object],
+        writable: Sequence[str] | str | None = None,
     ) -> None:
         """Derive the schemas the writes take, and check given ones.
 
+        ``writable`` names the fields the derived schemas take, or is
+        ``ALL_FIELDS``; None (deprecated) takes every plain field.
+
         Raises:
-            TypeError: A schema sets what generic writes do not, or the
-                create schema lacks a field the model needs.
+            TypeError: A schema sets what generic writes do not, the create
+                schema lacks a field the model needs, or ``writable`` names
+                what no write may set, or is given with both schemas.
         """
         model = router.model
         self.router = router
@@ -62,8 +84,13 @@ class CrudRoutes:
             *self.pinned,
             *(name for name in read_only if name in self.fields),
         ]
-        self.create = create or schema_for(model, write=True, exclude=fixed)
-        self.update = update or schema_for(model, partial=True, exclude=fixed)
+        include = _writable(model, writable, create, update, fixed)
+        self.create = create or schema_for(
+            model, write=True, include=include, exclude=fixed
+        )
+        self.update = update or schema_for(
+            model, partial=True, include=include, exclude=fixed
+        )
         for schema in (self.create, self.update):
             _check_plain(model, schema, self.fields, self.pinned)
         needed = {
@@ -98,6 +125,7 @@ class CrudRoutes:
                 returns=router.schema,
                 status_code=status.HTTP_201_CREATED,
                 writes=True,
+                body_limit=router.body_limit_of(CREATE),
             ),
             self.created,
         )
@@ -117,6 +145,7 @@ class CrudRoutes:
                 ),
                 returns=router.schema,
                 writes=True,
+                body_limit=router.body_limit_of(UPDATE),
             ),
             self.changed,
         )
@@ -243,3 +272,48 @@ def _check_plain(
         raise TypeError(
             f"crud=True sets plain fields of {model.__name__}, not {', '.join(bad)}."
         )
+
+
+def _writable(
+    model: type,
+    writable: Sequence[str] | str | None,
+    create: type[BaseModel] | None,
+    update: type[PatchModel] | None,
+    fixed: list[str],
+) -> list[str] | None:
+    """The fields the derived schemas take: ``writable``'s, or None for all.
+
+    Without ``writable``, and without both schemas, every plain field is
+    writable, with a deprecation warning.
+
+    Raises:
+        TypeError: ``writable`` is a string other than ``ALL_FIELDS``, names
+            a field no write sets, or is given with both schemas.
+    """
+    if writable is None:
+        if create is None or update is None:
+            warnings.warn(
+                f"crud=True on {model.__name__} without writable= makes every "
+                "plain field writable; name the fields with writable=[...] "
+                "(or writable=ALL_FIELDS), or give create= and update=. "
+                "Implicit write schemas are removed in 0.11.",
+                DomainkitDeprecationWarning,
+                stacklevel=4,
+            )
+        return None
+    if create is not None and update is not None:
+        raise TypeError(
+            "writable= shapes derived schemas; create= and update= are given."
+        )
+    if isinstance(writable, str):
+        if writable != ALL_FIELDS:
+            raise TypeError(
+                f"writable= is a list of field names, or ALL_FIELDS, not {writable!r}."
+            )
+        return None
+    if refused := sorted(set(writable) & {*fixed, *GENERATED}):
+        raise TypeError(
+            f"crud=True never writes {model.__name__}'s {', '.join(refused)}; "
+            "leave them out of writable=."
+        )
+    return list(writable)

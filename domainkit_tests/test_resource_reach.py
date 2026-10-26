@@ -26,6 +26,7 @@ from domainkit.ddd.query import F
 from domainkit.http import Filter, FilterSet
 from domainkit.http.access import BasePermission, IsAuthenticated, Public
 from domainkit.resources import (
+    ALL_FIELDS,
     FieldPolicy,
     ModelActions,
     RecordChanged,
@@ -116,7 +117,11 @@ def test_every_route_asks_the_scope_and_the_rules_about_its_aggregate(
     """Out of scope is 404 and a refused object 403, however it is reached."""
     use_auth()
     resource = gadgets(
-        store, rule=ModelActions(GADGETS, NotC()), scope=hide_b, crud=True
+        store,
+        rule=ModelActions(GADGETS, NotC()),
+        scope=hide_b,
+        crud=True,
+        writable=ALL_FIELDS,
     )
     resource.query_route(GadgetAgain, handler=again_or_first, path="/again")
     resource.query_route(GadgetAgain, handler=first, path="/first", name="first")
@@ -183,7 +188,9 @@ def test_objects_are_asked_the_rules_of_the_routes_action(
     item = f"{LOCATION}{c}"
 
     def asked(*actions: str) -> dict[str, int]:
-        resource = gadgets(store, rule=ObjectsWhen(*actions), crud=True)
+        resource = gadgets(
+            store, rule=ObjectsWhen(*actions), crud=True, writable=ALL_FIELDS
+        )
         resource.command_route(
             RenameGadget, service=rename, body=RenameIn, path="/rename"
         )
@@ -235,7 +242,9 @@ def test_objects_are_asked_the_rules_of_the_routes_action(
     assert changing == {**dict.fromkeys(seen, 200), **changed}
     assert deleting == {**dict.fromkeys(seen, 200), **dict.fromkeys(changed, 200)}
     assert (
-        client_of(gadgets(store, rule=ObjectsWhen("delete"), crud=True))
+        client_of(
+            gadgets(store, rule=ObjectsWhen("delete"), crud=True, writable=ALL_FIELDS)
+        )
         .delete(item, headers=root)
         .status_code
         == 403
@@ -320,6 +329,7 @@ def test_nested_routes_keep_to_their_parent_and_link_to_it(
         rule=IsAuthenticated(),
         links=True,
         crud=True,
+        writable=ALL_FIELDS,
         exports=("ndjson",),
     )
     nested.command_route(PolishReview, service=polish, path="/polish")
@@ -559,7 +569,7 @@ def test_generic_writes_record_what_and_which(
     """``RecordChanged`` and ``RecordDeleted`` name the model and the record."""
     use_auth()
     published: list[DomainEvent] = []
-    client = client_of(gadgets(store, published, crud=True))
+    client = client_of(gadgets(store, published, crud=True, writable=ALL_FIELDS))
     gadget = ids(store)["a"]
 
     client.patch(f"{LOCATION}{gadget}", json={"stock": 4}, headers=as_("changer"))
@@ -664,6 +674,7 @@ def test_generic_writes_refuse_schemas_that_move_children(
                 parent_field="gadget",
                 rule=IsAuthenticated(),
                 crud=True,
+                writable=ALL_FIELDS,
                 **options,
             )
 

@@ -24,11 +24,12 @@ import logging
 import os
 import re
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import Final
 
 from fastapi import status
 from starlette.middleware import cors
+from starlette.routing import Match
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from domainkit import clock
@@ -56,6 +57,7 @@ __all__ = [
     "RequestBodyLimitMiddleware",
     "RequestContextMiddleware",
     "SecurityHeadersMiddleware",
+    "body_limit",
     "request_path",
 ]
 
@@ -731,6 +733,81 @@ def utf8_size(text: str) -> int:
     )
 
 
+MAX_ROUTE_BODY_SIZE: Final = 1 << 30
+"""The largest body limit a route may set: 1 GiB."""
+BODY_LIMIT: Final = "__domainkit_body_limit__"
+"""The endpoint attribute that holds its route's body limit (``body_limit``)."""
+
+
+def body_limit[F: Callable[..., object]](size: int) -> Callable[[F], F]:
+    """Give a route a body limit of its own: ``size`` bytes, above or below the global.
+
+    ``RequestBodyLimitMiddleware`` holds the route's requests to it instead
+    of ``MAX_REQUEST_BODY_SIZE``, as the body arrives: a larger body is
+    refused with 413 before it is read to the end, so an upload route can
+    take more than the JSON routes, and a login route less::
+
+        @router.post("/avatars", dependencies=[Depends(Require())])
+        @body_limit(2_000_000)
+        async def upload_avatar(file: UploadFile) -> AvatarOut: ...
+
+    It marks the endpoint, so the decorator may go above or below the
+    route's. ``ResourceRouter`` routes take ``body_limit=`` (and
+    ``body_limits=`` per kind) instead.
+
+    Raises:
+        ValueError: ``size`` is not between 1 and ``MAX_ROUTE_BODY_SIZE``.
+    """
+    if not 1 <= size <= MAX_ROUTE_BODY_SIZE:
+        raise ValueError(
+            f"A route's body limit is 1 to {MAX_ROUTE_BODY_SIZE} bytes, not {size}."
+        )
+
+    def mark(endpoint: F) -> F:
+        setattr(endpoint, BODY_LIMIT, size)
+        return endpoint
+
+    return mark
+
+
+def route_body_limit(route: object) -> int | None:
+    """The body limit ``route``'s endpoint was given (``body_limit``), if any."""
+    size: int | None = getattr(getattr(route, "endpoint", None), BODY_LIMIT, None)
+    return size
+
+
+def largest_body_limit(routes: Iterable[object]) -> int:
+    """The largest body limit of ``routes`` and the routes below them; 0 if none.
+
+    Mounts, routers, and routers FastAPI keeps included (ADR 0060) are
+    walked into.
+    """
+    largest = 0
+    pending = list(routes)
+    while pending:
+        route = pending.pop()
+        largest = max(largest, route_body_limit(route) or 0)
+        inner = getattr(getattr(route, "original_router", route), "routes", None)
+        if isinstance(inner, list):
+            pending.extend(inner)
+    return largest
+
+
+def _matched_route(scope: Scope) -> object:
+    """The route of the application's router that will serve ``scope``, if any.
+
+    Only asked when something reads the body before the router has matched
+    (``IdempotencyMiddleware``): the router then matches again, as it would.
+    A route nested in a router that is not flattened (ADR 0060) is not
+    found: its requests are held to ``MAX_REQUEST_BODY_SIZE``.
+    """
+    router = getattr(scope.get("app"), "router", None)
+    for route in getattr(router, "routes", ()):
+        if route.matches(scope)[0] is Match.FULL:
+            return route
+    return None
+
+
 class RequestBodyLimitMiddleware:
     """Refuse bodies over the limit, or too slow to arrive.
 
@@ -741,6 +818,12 @@ class RequestBodyLimitMiddleware:
     its body slowly or never, holds the request no longer. The time counts
     only while the application waits in ``receive()`` before the body is
     in and the response starts, never while it works.
+
+    A route with a limit of its own (``body_limit``) is held to it instead,
+    once the router has matched it: a declared length over it is refused
+    before a byte is read, and a streamed body as soon as it passes it.
+    Before routing, a declared length is checked against the largest
+    limit, the global one or a route's.
 
     A WebSocket message over the limit closes the connection with 1009
     (message too big); the application sees the client disconnect. The
@@ -754,6 +837,10 @@ class RequestBodyLimitMiddleware:
         self.max_body_size = settings.MAX_REQUEST_BODY_SIZE
         self.body_timeout = settings.REQUEST_BODY_TIMEOUT
         self.log = ThrottledLog(security_logger)
+        self._largest: int | None = None
+        """The largest body limit a route of the application sets; 0: none does.
+
+        Worked out at the first request, from ``scope["app"]``'s routes."""
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Check ``Content-Length`` first, then count streamed bytes."""
@@ -763,7 +850,15 @@ class RequestBodyLimitMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+        largest = self._largest
+        if largest is None:  # Once: the application's routes are complete.
+            largest = self._largest = largest_body_limit(
+                getattr(scope.get("app"), "routes", ())
+            )
+        # No route sets a limit of its own: the global one, as it always was.
+        limit = self.max_body_size if not largest else None
         declared = _header(scope, b"content-length")
+        size = None
         if declared is not None:
             # isdigit() alone accepts "²", which int() then rejects.
             if not (declared.isascii() and declared.isdigit()):
@@ -771,8 +866,9 @@ class RequestBodyLimitMiddleware:
                     400, "Invalid Content-Length header.", code="invalid_content_length"
                 )(scope, receive, send)
                 return
-            if int(declared) > self.max_body_size:
-                self._reject(scope, int(declared))
+            size = int(declared)
+            if size > self.max_body_size and size > largest:
+                self._reject(scope, size, self.max_body_size)
                 await error_response(
                     413, "Request body too large.", code="content_too_large"
                 )(scope, receive, send)
@@ -797,15 +893,20 @@ class RequestBodyLimitMiddleware:
                 waited += clock.monotonic() - began
 
         async def limited_receive() -> Message:
-            nonlocal received, body_read
+            nonlocal received, body_read, limit
+            if limit is None:  # The route's own, known once it is matched.
+                limit = self._route_limit(scope)
+                if size is not None and size > limit:
+                    self._reject(scope, size, limit)
+                    raise RequestBodyTooLarge
             message = await timed_receive()
             if message["type"] != "http.request":
                 body_read = True
                 return message
             body_read = not message.get("more_body", False)
             received += len(message.get("body", b""))
-            if received > self.max_body_size:
-                self._reject(scope, received)
+            if received > limit:
+                self._reject(scope, received, limit)
                 raise RequestBodyTooLarge
             return message
 
@@ -839,7 +940,7 @@ class RequestBodyLimitMiddleware:
                     message.get("text") or ""
                 )
                 if size > self.max_body_size:
-                    self._reject(scope, size)
+                    self._reject(scope, size, self.max_body_size)
                     closed = True
                     await send({"type": "websocket.close", "code": MESSAGE_TOO_BIG})
                     return {"type": "websocket.disconnect", "code": MESSAGE_TOO_BIG}
@@ -851,14 +952,24 @@ class RequestBodyLimitMiddleware:
 
         await self.app(scope, limited_receive, open_send)
 
-    def _reject(self, scope: Scope, size: int) -> None:
+    def _route_limit(self, scope: Scope) -> int:
+        """The body limit of the route serving ``scope``: its own, or the global.
+
+        The route is the one the router matched, or, while nothing has
+        matched yet, the one it will match (``_matched_route``).
+        """
+        route = scope.get("route")
+        own = route_body_limit(_matched_route(scope) if route is None else route)
+        return self.max_body_size if own is None else own
+
+    def _reject(self, scope: Scope, size: int, limit: int) -> None:
         """Log an oversized request as a security event, throttled."""
         self.log.warning(
             "body_too_large",
             refused_caller(scope),
             "Rejected request body of %d bytes (limit %d)",
             size,
-            self.max_body_size,
+            limit,
         )
 
     def _too_slow(self, scope: Scope) -> None:

@@ -20,7 +20,7 @@ from domainkit.utils.text import snake_case
 from ..access import ADD, CHANGE, DELETE
 from ..schemas import PatchModel
 from . import presenting, reach
-from .context import DEFAULT, Returns, RouteContext, RouteSpec, Service
+from .context import COMMAND, DEFAULT, Returns, RouteContext, RouteSpec, Service
 from .declaring import add_route
 from .values import changes, check_given, summary_of
 
@@ -51,6 +51,7 @@ class CommandRoute:
         name: str | None,
         summary: str | None,
         provide: Mapping[str, Callable[..., object]] | None,
+        body_limit: int | None = None,
     ) -> None:
         """Check the command against what gives its fields.
 
@@ -92,6 +93,7 @@ class CommandRoute:
             status_code=self.status_code,
             writes=True,
             provided=self.provided,
+            body_limit=router.body_limit_of(COMMAND, body_limit),
         )
 
     def declare(self) -> None:

@@ -19,7 +19,7 @@ from domainkit.ddd import Command, DuplicateValue
 from domainkit.ddd.query import F
 from domainkit.http.access import AnonymousPrincipal, BasePermission, Public
 from domainkit.http.errors import install_exception_handlers
-from domainkit.resources import ResourceRouter
+from domainkit.resources import ALL_FIELDS, ResourceRouter
 from domainkit.resources.routing import listing
 from domainkit.testing import AsyncTestClient
 from domainkit_tests.conftest import Api
@@ -84,6 +84,7 @@ async def client(database: str) -> AsyncIterator[AsyncTestClient]:
         repository=lambda uow: uow.gadgets,
         dependencies=[Public],
         crud=True,
+        writable=ALL_FIELDS,
     )
     resource.command_route(Rename, service=rename, body=NameIn, path="/rename")
     app = FastAPI()
@@ -287,6 +288,7 @@ async def test_generic_writes_out_of_scope_roll_back(database: str) -> None:
         dependencies=[Public],
         scope=red_only,
         crud=True,
+        writable=ALL_FIELDS,
     )
     app = FastAPI()
     install_exception_handlers(app)

@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from domainkit.ddd.uow import UnitOfWork
 from domainkit.http.access import Require, Rule
 from domainkit.http.errors import error_responses
+from domainkit.http.middleware import body_limit
 from domainkit.http.pagination import PageRequest
 
 from .context import (
@@ -53,9 +54,12 @@ def add_route(router: "ResourceRouter", spec: RouteSpec, handle: Handle) -> None
     """Add the route ``spec`` describes to ``router``, answered by ``handle``."""
     name = f"{router.name_prefix}{spec.name}"
     rules = rules_of(router, spec.action, spec.rule)
+    endpoint = _endpoint(router, spec, handle, name)
+    if spec.body_limit is not None:
+        body_limit(spec.body_limit)(endpoint)
     router.add_api_route(
         spec.path,
-        _endpoint(router, spec, handle, name),
+        endpoint,
         methods=[spec.method],
         name=name,
         summary=spec.summary,

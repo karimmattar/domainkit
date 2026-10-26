@@ -32,7 +32,7 @@ from ..batches import (
 )
 from ..schemas import PatchModel
 from . import presenting, reach
-from .context import DEFAULT, MODELS, Returns, RouteContext, RouteSpec, Service
+from .context import BATCH, DEFAULT, MODELS, Returns, RouteContext, RouteSpec, Service
 from .declaring import add_route
 from .values import changes, check_given, summary_of
 
@@ -71,6 +71,7 @@ class BatchRoute:
         name: str | None,
         summary: str | None,
         provide: Mapping[str, Callable[..., object]] | None,
+        body_limit: int | None = None,
     ) -> None:
         """Check the command against what gives its fields.
 
@@ -135,6 +136,7 @@ class BatchRoute:
             status_code=status.HTTP_207_MULTI_STATUS,
             writes=True,
             provided=self.provided,
+            body_limit=router.body_limit_of(BATCH, body_limit),
         )
 
     def declare(self) -> None:

@@ -46,6 +46,16 @@ MODELS: Final = "domainkit.resources.routing"
 """The module of the schemas routes derive, which OpenAPI names them after
 when two share a name: the same since the routes had one module."""
 
+CREATE: Final = "create"
+UPDATE: Final = "update"
+COMMAND: Final = "command"
+BATCH: Final = "batch"
+BODY_KINDS: Final = (CREATE, UPDATE, COMMAND, BATCH)
+"""The kinds of route that take a body, as ``ResourceRouter(body_limits=)`` names
+them: ``crud=True``'s create and change, ``command_route``, ``batch_route``."""
+ALL_FIELDS: Final = "__all__"
+"""``ResourceRouter(writable=ALL_FIELDS)``: ``crud=True`` writes every plain field."""
+
 type UnitOfWorkFactory = Callable[[], UnitOfWork | Awaitable[UnitOfWork]]
 type RepositoryOf = Callable[[Any], Repository[Any, Any]]
 type Scope = Callable[[HTTPConnection], Awaitable[CriteriaLike | None]]
@@ -115,6 +125,8 @@ class RouteSpec:
         default_factory=dict
     )
     """Command fields that FastAPI dependencies give, by field."""
+    body_limit: int | None = None
+    """Its body limit in bytes (``body_limit``); None: ``MAX_REQUEST_BODY_SIZE``."""
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
