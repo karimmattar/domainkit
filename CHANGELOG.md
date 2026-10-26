@@ -3,8 +3,278 @@
 All notable changes to domainkit. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/); see `docs/versioning.md`.
+Entries end with the ids of the review findings they answer, such as
+`(FIN-77)`: [docs/audit/0.9.0.md](docs/audit/0.9.0.md) gives each a title
+and a status.
 
 ## [Unreleased]
+
+## [0.9.2] - 2026-10-26
+
+### Added
+
+- CI writes a CycloneDX bill of materials for the wheel it builds (the
+  `sbom` job): the wheel, and every package the lock resolves for it with
+  all its extras, without the dev group. A release attests it with the
+  wheel, and attests SLSA build provenance for the wheel and the sdist,
+  through GitHub (`gh attestation verify`), before publishing (FIN-85).
+- CI runs Semgrep's Python and OWASP Top 10 rules over `src` and the
+  workflows on every push and pull request, and weekly (the `semgrep`
+  job); the five findings of today were reviewed and each carries a
+  `nosemgrep` comment and its reason (FIN-85).
+- A `newest` CI job installs the wheel with the newest releases the
+  dependency ranges allow, instead of the lock's, and runs the suite, on
+  pull requests and weekly; it is not required for a merge or a release.
+  It found that httpx2 2.16 broke a test of the macOS and Windows trust
+  stores, which now holds on both. An `oldest` job does the same with
+  every dependency and extra at the floor of its range, so the floors are
+  tested too; it found that the `immudb` extra's new grpcio floor,
+  1.62.1, cannot install on Python 3.13 (no wheel, and its source build
+  fails), and the floor is now 1.66.2 (INFRA-07; ADR 0075).
+- `.github/rulesets/` holds the branch and tag rulesets to import into
+  GitHub, and `docs/versioning.md` says how: `main` only through pull
+  requests that pass every check, with admins able to bypass only while
+  merging one; release tags created by admins and never moved or deleted.
+  `test (3.14t)`, `bench`, `sbom` and `semgrep` join the required checks,
+  and `test_ci.py` checks that the list is every job a pull request
+  runs but `newest` and `oldest` (INFRA-02).
+- `ARCHITECTURE` extends the layer rules `check` enforces, and only
+  extends them: `DOMAIN_ALLOWED` (packages a domain layer may import, such
+  as a shared kernel), `FORBIDDEN_LIBRARIES` and `FORBIDDEN_LAYERS` by
+  layer, `EXTRA_LAYERS` (layers of the project's own), and
+  `PUBLIC_SURFACE`. Every layer named must be known, the domain layer stays
+  an allowlist, and each list is bounded. Empty by default: the rules are
+  today's. `check_domain` and `check_domains` take `rules=`
+  (`domainkit.architecture.LayerRules`) and otherwise apply the settings'
+  (DSGN-12; ADR 0003).
+- `DomainConfig.requires` lists the domain packages a domain cannot work
+  without, as names or `domainkit.apps.Requirement(name, reason)`;
+  `setup()` refuses a missing one before any domain's `ready()` runs, with
+  one error naming every one missing. Every contrib app declares it
+  (DSGN-04; ADR 0077).
+- `docs/api.md`, the public API by module, one line a name: every name in
+  an `__all__`, and only those. `docs/versioning.md` now calls exactly these
+  public. Modules whose names the pages use got an `__all__`: the
+  middleware, `domainkit.http.application`, `.ratelimit`, `.sse`,
+  `.uploads`, `.versioning`, `domainkit.clock`, `.deadlines`, `.tasks`,
+  `.log`, `.lifecycle`, `.signing`, `.encryption`, the contrib apps'
+  routers, backends, and hashers: 66 modules in all; `domainkit.conf` adds
+  `Env`, and `domainkit` itself `setup`. A test keeps the page and the code
+  in step, and fails when a page tells users to import a name not listed
+  (DSGN-05; ADR 0076).
+- `domainkit.ddd.Selection`: the aggregate query of `filter` and `first`,
+  so far `domainkit.ddd.query.Query`, a name that still works and the same
+  class. It no longer shares its name with the CQRS message
+  `domainkit.ddd.Query`. `docs/queries.md` uses the new name (DSGN-09).
+- `docs/tutorial.md`: from `pip install` to an authenticated resource with
+  one aggregate, created, changed, and refused by its rules over HTTP. Its
+  commands, and the README quick start's, are run as written by the tests
+  (`test_walkthroughs.py`): every command up to `runserver` in a new
+  directory, then every `curl` line against the generated application
+  (DOCS-05).
+- `python -m domainkit` runs the `domainkit` program, for an interpreter
+  whose scripts are not on the `PATH`; it answered "No module named
+  domainkit.__main__" (DOCS-06).
+- `docs/audit/0.9.0.md` gives every review id the CHANGELOG cites, such as
+  `(FIN-77)` or `(R22)`, a title and a status; the preamble links it. Open
+  security findings are listed by id and severity only (DOCS-11).
+- `docs/threat-model.md`, a first draft: what a service protects, its
+  trust boundaries, the threats at each and what domainkit does about
+  them, the risks left for 0.10, and what a project must do itself
+  (FIN-85, DOCS-04).
+- `docs/versioning.md` drafts which releases get security fixes and for
+  how long, for the owner to confirm; until then `SECURITY.md`'s "latest
+  minor only" holds (FIN-85).
+- ADRs 0078 (events delivered in process after commit, or durably through
+  the outbox) and 0079 (every setting validated at startup by a model),
+  for decisions taken in 0.1.0; the ADR index lists those still without a
+  record (DSGN-15).
+
+- `MESSAGING.POLL_INTERVAL_IDLE` (`None`, or `POLL_INTERVAL` to an hour):
+  a worker or relay whose listener hears commits (PostgreSQL, `NOTIFY`)
+  doubles its wait after each poll that finds nothing, up to this, and
+  starts again from `POLL_INTERVAL` on work or a commit. With `30`, an
+  idle worker claims once every 30 seconds instead of every second (7
+  claims instead of 61 in its first idle minute). What no commit
+  announces (a retry, a delay, an expired lock, a lost notification)
+  waits up to this long; without a listener every wait is
+  `POLL_INTERVAL`, as it is by default (PERF-08; ADR 0043).
+- `domainkit.log.log_enabled(logger, level, msg, *args, extra=...)`:
+  `logger.log` for a caller that has already asked `isEnabledFor`, making
+  the same record with less work. `DomainRegistry.generation` counts the
+  changes `populate` and `clear` make, for caches of what the installed
+  domains decide. `domainkit.contrib.idempotency.statements` holds the
+  keys' statements, built once (PERF-01, PERF-12, PERF-18).
+
+### Changed
+
+- Dependency ranges reach the next major version: FastAPI, uvicorn,
+  asyncpg, aiosqlite, prometheus-client, python-multipart and uvloop
+  `<1.0.0`, immudb-py `<2.0.0`, and Granian `<3.0.0`, instead of one minor
+  or an exact version (`granian ==2.8.4`, `uvloop ==0.23.0`). Floors stay;
+  SQLAlchemy stays `<2.2`. The suite and the benchmark ladder pass with
+  FastAPI 0.162.0 and Granian 2.8.5; projects may now take upstream fixes
+  without waiting for domainkit (INFRA-07; ADR 0075, which supersedes ADR
+  0065's FastAPI cap).
+- Renovate widens the ranges in `[project]` instead of moving them (its
+  rule named dependency types the poetry manager never uses), updates the
+  images CI starts with `docker run` and the tools it installs, now
+  pinned and visible to it, and leaves the runners alone (INFRA-03).
+- `test_ci.py` reads the workflows as YAML (PyYAML, in the dev group)
+  instead of matching one layout with regular expressions, and checks
+  more: which jobs each event starts, the concurrency groups, the
+  rulesets, actions pinned to commits, write permissions, and attested
+  releases (INFRA-12).
+- Shutdown closers come from one table: the framework's own kinds are
+  declared in it with their phase and step, next to the closers
+  `lifecycle.register` adds, and the new `lifecycle.closers(phase)` lists
+  what a phase closes, in the steps it runs them. Order, shares, and
+  behaviour are unchanged; `register` stays the way to add one (DSGN-13).
+- The contrib apps' checks for the apps they need moved from each app's
+  `ready()` to their `requires`, so they run before any app is wired. The
+  messages keep their form, except privacy's, which now reads
+  "domainkit.contrib.privacy needs 'domainkit.contrib.audit' in
+  INSTALLED_DOMAINS: it records every operation in the audit trail."
+  A test fails on any new import of another app's internal modules, or of
+  the core into one; the 30 that exist are listed for 0.10 (DSGN-04).
+- `domainkit.contrib.evidence.model` is now `models`, as in every other
+  app; the old module re-exports the same names (DSGN-09).
+- `startdomain`'s next steps end with a login and a first `curl` of the
+  new resource, at `/api/v1/<name>/<plural>`, and the README quick start
+  creates its superuser, logs in, and lists the invoices. The password is
+  typed at a `read -s` prompt and sent to `curl` on its standard input, so
+  it is in no command line and no shell history (DOCS-02).
+- Each ADR's status names what amended it (a later record, dated sections
+  at its end, or earlier corrections in place), the index is in order and
+  repeats each status, and the rule for amending is written down: append a
+  dated section, or supersede with a new record (DOCS-08).
+- The settings tables state every limit their models enforce, and
+  `test_docs.py` checks each row's default and limits against the models,
+  not only that the name is on the page; mail.md's tables are headed
+  `MAIL` and `NOTIFICATIONS` (DOCS-09).
+- `test_docs.py` checks every relative link and anchor in `docs/`, the
+  README, `SECURITY.md`, and the CHANGELOG, and the middleware table's
+  order against the template's and `DEFAULT_MIDDLEWARE` (DOCS-07).
+
+- The outbox has a new index for its cleanup, on `finished_at` of done and
+  cancelled messages: run `makemigrations` and `migrate` in projects that
+  install messaging. The revision builds it in the migration's
+  transaction, which blocks writes to the outbox while it runs (about
+  half a second per million rows); `docs/contrib.md` shows the revision
+  that builds it `CONCURRENTLY` instead, for large outboxes. A cleanup
+  that has caught up no longer reads the whole outbox: 1.7 ms instead of
+  460 ms at 2 million rows. The cleanup's statement writes its statuses,
+  retention and batch size into the SQL, so a prepared statement's
+  generic plan uses the index too (PERF-02; ADR 0043).
+- Without messaging, keyed requests sweep expired idempotency keys once a
+  minute per process, and on each request while a sweep finds a whole
+  batch, instead of on every keyed request: one statement less on almost
+  all of them, and a backlog still drains 100 keys a request (PERF-10;
+  ADR 0062).
+- A `ModelPermissions` rule finds its model's content type in one lookup:
+  `content_type_key` works every class's key out once, and again only
+  after `registry.populate` or `clear`, a class mapped, or a table added
+  to or removed from the project's metadata. It worked them all out on
+  every request, which cost a permission-guarded read about 170 Python
+  calls with the benchmark's six mapped classes, and ten times that with
+  sixty (PERF-01).
+- `registry.settings()`, and with it `auth_settings()` and each contrib
+  app's `get_settings()`, finds a domain's validated settings in one
+  lookup while the settings object is the one they were validated from.
+  `override_settings`, `use_settings`, `configure` and `reset_settings`
+  each put another in its place, and `registry.populate` and `clear`
+  forget them, so the values are as before (PERF-06). With content types,
+  a permission-guarded read makes 2,261 Python calls instead of 2,439, and
+  a write 2,595 instead of 2,815.
+- A read-only session binds to an engine with its options made once per
+  event loop's engine, one for `Reads.TRANSACTION` and one for
+  `Reads.SNAPSHOT`, instead of a new `OptionEngine` for each session: 212
+  fewer Python calls for a read-only unit of work on PostgreSQL, 100 on
+  SQLite. `close_all()` drops them with their engine.
+  `connections.autocommit()` still sets `AUTOCOMMIT` on its connection:
+  an engine made once with it measured 26 more calls a use (PERF-07).
+- `IdempotencyMiddleware` runs statements built once per dialect and
+  clock, with each request's values bound, instead of building them for
+  each request. They send the same SQL text with the same parameters, and
+  a keyed write still makes 4 statements, 3 transactions and 3 checkouts;
+  it makes 4,044 Python calls instead of 5,890 (PERF-12).
+- The access line's record is made without walking the stack for its
+  caller, and its level is asked once: 15 fewer Python calls a line, and
+  the same record, field for field, so every formatter writes the same
+  bytes (PERF-18).
+
+### Fixed
+
+- The weekly mutation run can finish: it has a concurrency group of its
+  own, where a push to `main` cancelled it before (it never completed),
+  and the jobs that check a change no longer run with it. Its 17 shards,
+  where there were 8, are balanced by the time their mutants' tests take
+  (the largest old shards needed up to 830 minutes of a 240-minute job;
+  each new one at most about 210, in a job of 355). Each shard stops
+  mutmut before GitHub's six-hour limit, and writes its score and the
+  mutants no test caught to the job summary and to an artifact, even when
+  it ran out of time, in which case it fails (INFRA-01, TEST-07).
+- Every package domainkit imports is declared, so that pip knows what it
+  needs: `anyio` and `pydantic-core` in the dependencies, `aiormq` in the
+  `rabbitmq` extra, `httpcore2` in `httpclient`, and `grpcio` and `ecdsa`
+  in `immudb`. Starlette, pydantic, aio-pika, httpx2, and immudb-py
+  already installed each of them, and still do at the same versions:
+  nothing new is installed. The `testing` extra needs anyio 4.12 or
+  later, the first whose pytest plugin runs `@pytest.mark.anyio` tests
+  only on the event loops installed; with 4.10 or 4.11, a new project's
+  async test failed on trio. CI's lint job runs deptry so that an
+  undeclared import fails it (INFRA-04).
+- A project `init` creates passes its own `ruff check` and
+  `ruff format --check` as written: the templates sorted `domainkit` as a
+  first-party package, as the framework's repository does, so a project
+  without ruff where `init` ran failed on its own lint. The project's dev
+  group now installs ruff, in the range the templates are checked with,
+  so that the generators (`startdomain`, `startaggregate`, `addcommand`,
+  `addquery`, `addevent`) and `makemigrations` format what they write;
+  without ruff they log a warning saying how instead of nothing (INFRA-05).
+- `makemigrations` with no changes no longer reformats every Python file
+  in the working directory when ruff is installed: ruff, given no paths,
+  formatted all of them (INFRA-05).
+- The first request a newcomer made after the quick start, to the
+  `/api/v1/invoices` that `startdomain` said it mounted, answered 404: the
+  resource is `/invoices` within that router (DOCS-02).
+- The README listed `docs/runtime.md` three times and 14 of the 17 extras
+  (DOCS-06).
+- `docs/reference.md` called its middleware table the template's order,
+  which installs eleven of them, `LocaleMiddleware` before
+  `SecurityHeadersMiddleware` where the table had it after; the
+  `flags` row left out `set`'s options; `docs/privacy.md` linked a heading
+  that does not exist; `DEBUG_TOOLBAR` had no row (DOCS-07, DOCS-09).
+
+- A second audit sealer on PostgreSQL (`auditseal` while the worker
+  seals, or two outboxes' workers sealing one database) no longer waits
+  for the first and fails with SQLSTATE 55P03 after `LOCK_TIMEOUT`: each
+  batch tries the advisory lock, and a sealer that finds it taken stops,
+  logs it, and leaves the first the rest. Two sealers still never seal at
+  once. A run that gives way still counts what waits
+  (`audit_unsealed_rows`) and warns past `AUDIT.SEAL_BACKLOG_WARNING`,
+  and warns once the oldest row waiting is older than `SEAL_EVERY` and
+  `SEAL_LATE_WINDOW` together, so a lock held by something that does not
+  seal is reported, not just logged at INFO (PERF-09, SEC-a-1; ADR 0047).
+
+### Security
+
+- The ranges domainkit declares for anyio and ecdsa (new in this release)
+  start past their published advisories: anyio from 4.14.2
+  (PYSEC-2026-4024 and -4025, a TLS hostname check the guarded HTTP client
+  relies on) and ecdsa from 0.19.2 (PYSEC-2026-2467). The lock already
+  pinned fixed versions; this keeps a project's own resolver from choosing
+  older ones (SEC-a-2).
+- The `jwt` extra needs PyJWT 2.15.0 or later, where it accepted 2.10.1:
+  2.10.1 to 2.14 have published advisories (among them PYSEC-2026-120,
+  an unenforced `crit` header, and -4149, a DER key accepted as an HMAC
+  secret). domainkit's own decoding, with one allowed algorithm and a
+  configured key, was not exposed; a project calling PyJWT itself could
+  be. The lock already pinned 2.15.1 (SEC-a-3).
+- The README quick start, the tutorial, and `startdomain`'s next steps
+  `unset PASSWORD` once it is used, so that `runserver`, `pytest`, and
+  every other process started later from that shell do not inherit the
+  superuser's password in their environment (DOCS-02).
 
 ## [0.9.1] - 2026-10-25
 
@@ -2371,7 +2641,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/karimmattar/domainkit/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/karimmattar/domainkit/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/karimmattar/domainkit/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/karimmattar/domainkit/compare/v0.7.0...v0.8.0

@@ -5,6 +5,7 @@ Committing publishes the events the aggregate recorded. A request's
 """
 
 from domainkit.ddd import Unset
+
 from {{ package }}.application.commands import (
     Add{{ Aggregate }}Note,
     Archive{{ Aggregate }},

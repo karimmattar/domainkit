@@ -12,17 +12,16 @@ ADRs [0022](adr/0022-query-repositories-with-criteria.md) and
 Conditions are built from fields (`F`), as in Django:
 
 ```python
-from domainkit.ddd import F
-from domainkit.ddd.query import Query
+from domainkit.ddd import F, Selection
 
 open_ = F("status") == Status.OPEN
 large = F("total") >= Decimal("1000")
 
 async with uow:
     orders = await uow.orders.filter(
-        Query(open_ & large, ordering=["-placed_at"], limit=20)
+        Selection(open_ & large, ordering=["-placed_at"], limit=20)
     )
-    first = await uow.orders.first(Query(open_, ordering=["placed_at"]))
+    first = await uow.orders.first(Selection(open_, ordering=["placed_at"]))
     how_many = await uow.orders.count(open_)
     any_left = await uow.orders.exists(~open_)
 ```
@@ -49,10 +48,12 @@ Combine criteria with `&`, `|`, and `~` (never `and`, `or`, `not`: criteria
 refuse to be true or false, so the mistake fails loudly). An ordering is
 `F("x").asc()`, `F("x").desc()`, or Django's `"x"` and `"-x"`.
 
-`Query(criteria, ordering=..., limit=..., offset=..., after=...,
+`Selection(criteria, ordering=..., limit=..., offset=..., after=...,
 lock=..., include_deleted=...)` is a frozen value; `where(...)` adds
-criteria and `replace(...)` changes any part. (`domainkit.ddd.Query` is a
-different thing: the base class of CQRS query messages.)
+criteria and `replace(...)` changes any part. Before 0.9.2 it was
+`domainkit.ddd.query.Query`, a name that still works and that 0.10
+deprecates: `domainkit.ddd.Query` is a different thing, the base class of CQRS
+query messages, and the two met in the same files.
 
 ### What a query means everywhere
 
@@ -129,7 +130,7 @@ and the position of the last one (its values of the ordering's fields, the
 id last), which the next page continues after:
 
 ```python
-query = Query(F("status") == "open", ordering=["-placed_at"])
+query = Selection(F("status") == "open", ordering=["-placed_at"])
 first = await uow.orders.paginate(query, limit=20)
 second = await uow.orders.paginate(query, limit=20, after=first.next_position)
 skipped = await uow.orders.paginate(query, limit=20, offset=40)
@@ -156,7 +157,7 @@ pages = Pagination(default_limit=20, max_limit=100)  # offset=True, count=True
 async def list_orders(
     page: Annotated[PageRequest, Depends(pages)], uow: UnitOfWorkDep
 ) -> PageOut[OrderOut]:
-    query = Query(ordering=["-placed_at"])
+    query = Selection(ordering=["-placed_at"])
     async with uow:
         found = await page.fetch(uow.orders, query)
     return page.respond(found, [OrderOut.from_domain(o) for o in found.items], query)
@@ -296,7 +297,9 @@ await uow.invoices.remove(invoice)  # sets deleted_at
 await uow.invoices.remove(invoice, hard=True)  # deletes the row
 await uow.invoices.restore(invoice_id)  # clears deleted_at
 await uow.invoices.find(invoice_id, include_deleted=True)
-await uow.invoices.filter(Query(F("deleted_at").isnull(False), include_deleted=True))
+await uow.invoices.filter(
+    Selection(F("deleted_at").isnull(False), include_deleted=True)
+)
 ```
 
 Every read leaves deleted aggregates out unless asked: `get`, `find`,
@@ -334,7 +337,7 @@ async with uow:
 `nowait=True` raises `LockNotAvailable` (a `Conflict`, so 409
 `lock_not_available`) instead of waiting; the transaction can go on.
 `skip_locked=True` returns None for a locked row, as for a missing one. A
-query locks every row it returns with `Query(..., lock=RowLock(...))`, in
+query locks every row it returns with `Selection(..., lock=RowLock(...))`, in
 its order, which keeps two transactions from locking the same rows in
 opposite orders. A lock that cannot be had within `LOCK_TIMEOUT` is a 503
 `database_busy`.
@@ -433,6 +436,12 @@ class ReportsUnitOfWork(SqlAlchemyUnitOfWork):
   function call or a statement run many times always count as changes.
   Use `TRANSACTION` or `SNAPSHOT` when statements must share a setting
   scoped to a transaction.
+- **One engine for each way of reading.** `TRANSACTION` and `SNAPSHOT`
+  sessions (and `STATEMENTS` where it reads in a transaction) bind to the
+  alias's engine with their execution options, made once per event loop
+  and shared by every such session on it; it shares the alias's pool, and
+  `connections.close_all()` drops it with the engine. A new one for each
+  session cost 100 to 200 Python calls.
 - **Connections the server closed.** After a restart or failover, a
   `STATEMENTS` read gets a fresh connection. A statement whose connection
   closes while it runs fails, and is never run again: it may have had

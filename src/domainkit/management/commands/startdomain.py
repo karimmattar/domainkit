@@ -24,6 +24,22 @@ TEMPLATE_SUFFIX: Final = "-tpl"
 _PLACEHOLDER: Final = re.compile(r"\{\{ (\w+) \}\}")
 _SNAKE_NAME: Final = re.compile(r"[a-z][a-z0-9_]*")
 _CLASS_NAME: Final = re.compile(r"[A-Z][A-Za-z0-9]*")
+SERVER: Final = "http://127.0.0.1:8000"
+"""Where ``runserver`` listens unless told otherwise."""
+PROMPT_LINE: Final = 'read -rsp "Password: " PASSWORD && export PASSWORD'
+"""Ask for the password, so it is in no command line and no shell history."""
+LOGIN_CURL: Final = (
+    "TOKEN=$(python -c \"import json, os; print(json.dumps({'username': "
+    "'<username>', 'password': os.environ['PASSWORD']}))\" "
+    f"| curl -s {SERVER}/auth/login "
+    '-H "Content-Type: application/json" -d @- '
+    "| python -c \"import json, sys; print(json.load(sys.stdin)['access_token'])\")"
+)
+"""Log in at the project template's ``/auth/login`` with the password typed at
+``PROMPT_LINE`` (sent on stdin, never in an argument); keep the token in
+``$TOKEN``."""
+UNSET_LINE: Final = "unset PASSWORD"
+"""Forget the password once logged in, so that no later process inherits it."""
 
 
 def template_context(
@@ -168,6 +184,16 @@ def _next_steps(
         (
             f"Grant {domain}.view_{context['model']} (and add_, change_, delete_) to "
             "the users or groups that need them; superusers have them."
+        ),
+        (
+            "python manage.py runserver; then, from another shell, log in as a "
+            "superuser, typing its password at the prompt, and list the "
+            f"{context['aggregates_title']}:\n"
+            f"       {PROMPT_LINE}\n"
+            f"       {LOGIN_CURL}\n"
+            f"       {UNSET_LINE}\n"
+            f"       curl {SERVER}/api/v1/{domain}/{context['aggregates']} "
+            '-H "Authorization: Bearer $TOKEN"'
         ),
     ]
     return "\n".join(

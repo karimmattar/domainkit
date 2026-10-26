@@ -50,6 +50,11 @@ from typing import Any, Final
 from pydantic_core import PydanticSerializationError, to_json
 from starlette import responses
 
+__all__ = [
+    "JSONResponse",
+    "json_native",
+]
+
 MAX_DEPTH: Final = 64
 """Containers nested deeper than this are encoded by ``json.dumps``.
 

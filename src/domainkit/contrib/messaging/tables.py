@@ -13,6 +13,8 @@ DONE: Final = "done"
 DEAD: Final = "dead"
 CANCELLED: Final = "cancelled"
 STATUSES: Final = (PENDING, DONE, DEAD, CANCELLED)
+FINISHED: Final = (DONE, CANCELLED)
+"""The statuses cleanup deletes once ``RETENTION_SECONDS`` have passed."""
 BLANKED: Final = "payload_blanked"
 """The header set on a dead message whose arguments were blanked (``sensitive``)."""
 SENSITIVE: Final = "sensitive"
@@ -63,3 +65,16 @@ PRIORITY_INDEX: Final = Index(
     messages.c.available_at,
 )
 """Claims take due messages by priority, then by age."""
+
+FINISHED_INDEX: Final = Index(
+    "ix_domainkit_messages_finished",
+    messages.c.finished_at,
+    postgresql_where=messages.c.status.in_(FINISHED),
+    sqlite_where=messages.c.status.in_(FINISHED),
+)
+"""Cleanup finds the oldest done and cancelled messages, and only those.
+
+Partial: pending and dead messages are not in it, so it costs a write only
+when a message finishes. A cleanup statement must name both statuses as
+literals, or the database cannot tell that the index applies.
+"""

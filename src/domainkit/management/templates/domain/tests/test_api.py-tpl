@@ -12,7 +12,6 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
-
 from domainkit.management import call_command
 from domainkit.testing import ClientFor, TestClient
 
@@ -28,7 +27,9 @@ def create(client: TestClient, name: str) -> dict[str, Any]:
     return body
 
 
-def test_callers_need_the_permissions(client: TestClient, client_for: ClientFor) -> None:
+def test_callers_need_the_permissions(
+    client: TestClient, client_for: ClientFor
+) -> None:
     """Anonymous callers get 401; users without the permission get 403."""
     assert client.get(URL).status_code == 401
     viewer = client_for(VIEW)
@@ -44,15 +45,29 @@ def test_lifecycle(admin_client: TestClient) -> None:
     body = created.json()
     item = created.headers["location"]
     assert created.status_code == 201
-    assert (body["name"], body["archived"], body["version"], body["notes"]) == ("First", False, 1, [])
+    assert (body["name"], body["archived"], body["version"], body["notes"]) == (
+        "First",
+        False,
+        1,
+        [],
+    )
     assert item == f"{URL}/{body['id']}"
 
     read = admin_client.get(item)
     assert read.json() == body
-    assert admin_client.get(item, headers={"If-None-Match": read.headers["etag"]}).status_code == 304
-    renamed = admin_client.patch(item, json={"name": "Second"}, headers={"If-Match": read.headers["etag"]})
+    assert (
+        admin_client.get(
+            item, headers={"If-None-Match": read.headers["etag"]}
+        ).status_code
+        == 304
+    )
+    renamed = admin_client.patch(
+        item, json={"name": "Second"}, headers={"If-Match": read.headers["etag"]}
+    )
     assert (renamed.json()["name"], renamed.json()["version"]) == ("Second", 2)
-    stale = admin_client.patch(item, json={"name": "Third"}, headers={"If-Match": read.headers["etag"]})
+    stale = admin_client.patch(
+        item, json={"name": "Third"}, headers={"If-Match": read.headers["etag"]}
+    )
     assert (stale.status_code, stale.json()["code"]) == (412, "precondition_failed")
 
     noted = admin_client.post(f"{item}/notes", json={"text": "Hello"})

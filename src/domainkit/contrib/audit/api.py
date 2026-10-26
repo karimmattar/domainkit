@@ -40,6 +40,10 @@ from domainkit.http import (
 
 from .history import FIELD, MAX_LIMIT, HistoryEntry, Position, history_page
 
+__all__ = [
+    "router",
+]
+
 PAGE_SIZE: Final = 50
 VIEW_HISTORY: Final = "audit.view_history"
 

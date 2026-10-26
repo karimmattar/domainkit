@@ -1,6 +1,6 @@
 [project]
 name = "domainkit"
-version = "0.9.1"
+version = "0.9.2"
 description = "A Django-style framework for domain-driven FastAPI services."
 readme = "README.md"
 license = "MIT"
@@ -22,51 +22,73 @@ classifiers = [
 ]
 # Everything domainkit imports. Database drivers are extras: projects pick.
 dependencies = [
-    "fastapi (>=0.143.1,<0.144.0)",
+    "fastapi (>=0.143.1,<1.0.0)",
     # domainkit imports Starlette itself; FastAPI accepts any 0.46 or later.
     "starlette (>=1.8.0,<2.0.0)",
-    "uvicorn[standard] (>=0.54.0,<0.55.0)",
+    "uvicorn[standard] (>=0.54.0,<1.0.0)",
     "pydantic (>=2.14.1,<3.0.0)",
     "sqlalchemy[asyncio] (>=2.1.4,<2.2)",
     "alembic (>=1.20.0,<2.0.0)",
     "python-dotenv (>=1.2.4,<2.0.0)",
+    # Imported directly, though Starlette and pydantic already install them:
+    # declared so that a change in theirs cannot break domainkit's import.
+    # anyio's floor is the first release past PYSEC-2026-4024 and -4025.
+    "anyio (>=4.14.2,<5.0.0)",
+    "pydantic-core (>=2.50.1,<3.0.0)",
 ]
 
 [project.optional-dependencies]
-postgres = ["asyncpg (>=0.32.0,<0.33.0)"]
-sqlite = ["aiosqlite (>=0.22.1,<0.23.0)"]
-metrics = ["prometheus-client (>=0.26.0,<0.27.0)"]
+postgres = ["asyncpg (>=0.32.0,<1.0.0)"]
+sqlite = ["aiosqlite (>=0.22.1,<1.0.0)"]
+metrics = ["prometheus-client (>=0.26.0,<1.0.0)"]
 tracing = ["opentelemetry-api (>=1.45.1,<2.0.0)"]
 # Argon2id password hashing for domainkit.contrib.auth (PBKDF2 needs nothing).
 argon2 = ["argon2-cffi (>=25.1.0,<26.0.0)"]
 # JSON Web Tokens for domainkit.contrib.auth (JWTAuthentication), with the
 # RSA, ECDSA, and EdDSA algorithms.
-jwt = ["pyjwt[crypto] (>=2.10.1,<3.0.0)"]
+# pyjwt's floor is the first release past the advisories 2.10.1 to 2.14
+# have: PYSEC-2026-120, -4147, -4149 and others.
+jwt = ["pyjwt[crypto] (>=2.15.0,<3.0.0)"]
 # Second factors for domainkit.contrib.auth: AES-GCM for the TOTP secrets
 # it stores (auth.mfa).
 mfa = ["cryptography (>=50.0.2,<51.0.0)"]
 # Ledgers for evidence (WORM): immudb's SDK, with its verified operations.
-immudb = ["immudb-py (>=1.5.0,<1.6.0)"]
+# grpcio for TLS channels and ecdsa's signature error, both installed by
+# immudb-py, are imported directly; ecdsa from 0.19.2, past PYSEC-2026-2467.
+immudb = [
+    "immudb-py (>=1.5.0,<2.0.0)",
+    # 1.66.2 is the first grpcio with wheels for Python 3.13.
+    "grpcio (>=1.66.2,<2.0.0)",
+    "ecdsa (>=0.19.2,<1.0.0)",
+]
 # A message broker for the worker: RabbitMQ, through aio-pika.
-rabbitmq = ["aio-pika (>=10.1.0,<11.0.0)"]
+# aiormq, which aio-pika installs, for the one error it does not re-export.
+rabbitmq = ["aio-pika (>=10.1.0,<11.0.0)", "aiormq (>=7.1.3,<8.0.0)"]
 # Shared caches and rate limits: Redis or Valkey, through redis-py.
 redis = ["redis (>=8.1.0,<9.0.0)"]
 # File uploads (domainkit.http.uploads): FastAPI reads multipart forms with it.
-uploads = ["python-multipart (>=0.0.32,<0.1.0)"]
+uploads = ["python-multipart (>=0.0.32,<1.0.0)"]
 # The domainkit.testing pytest plugin; Starlette's TestClient needs httpx2.
-testing = ["pytest (>=9.1.1,<10.0.0)", "httpx2 (>=2.13.0,<3.0.0)"]
+# anyio 4.12 is the first whose plugin runs "@pytest.mark.anyio" tests only
+# on the event loops that are installed (asyncio, not trio).
+testing = [
+    "pytest (>=9.1.1,<10.0.0)",
+    "httpx2 (>=2.13.0,<3.0.0)",
+    "anyio (>=4.14.2,<5.0.0)",
+]
 # Outgoing webhooks (domainkit.contrib.webhooks) send with httpx2 and encrypt
 # subscription secrets with AES-GCM.
 webhooks = ["httpx2 (>=2.13.0,<3.0.0)", "cryptography (>=50.0.2,<51.0.0)"]
 # Outgoing HTTP calls (domainkit.http.client): pooled, bounded by the
 # request's deadline, retried, with a circuit breaker per host.
-httpclient = ["httpx2 (>=2.13.0,<3.0.0)"]
+# httpcore2 (httpx2's transport) for its pool and network backend.
+httpclient = ["httpx2 (>=2.13.0,<3.0.0)", "httpcore2 (>=2.13.0,<3.0.0)"]
 # The IANA time zones for cron schedules where the system has none (Windows).
 tzdata = ["tzdata (>=2025.2)"]
 # uvloop's event loop for management commands and runserver (EVENT_LOOP).
-uvloop = ["uvloop (==0.23.0) ; sys_platform != 'win32'"]
+uvloop = ["uvloop (>=0.23.0,<1.0.0); sys_platform != 'win32'"]
 # Granian, an ASGI server in Rust: "runserver --server granian", or production.
-granian = ["granian (==2.8.4)"]
+granian = ["granian (>=2.8.4,<3.0.0)"]
 
 # Runs commands before a project exists: "domainkit init billingAPI".
 [project.scripts]
@@ -108,6 +130,12 @@ dev = [
     "pytest-randomly (>=5.0.0,<6.0.0)",
     "hypothesis (>=6.169.0,<7.0.0)",
     "mutmut (>=3.8.0,<4.0.0)",
+    # The CI tests read the workflows as YAML.
+    "pyyaml (>=6.0.3,<7.0.0)",
+    # Every package the code imports is declared, and every one declared is
+    # used. Only the lint job (3.13) runs it, and it has no wheel for
+    # free-threaded 3.14t, which would have to build it with Rust.
+    "deptry (>=0.25.1,<0.26.0); python_version < \"3.14\"",
 ]
 
 [tool.ruff]
@@ -137,13 +165,43 @@ python_version = "3.13"
 strict = true
 plugins = ["pydantic.mypy"]
 mypy_path = "src:."
-files = ["src", "domainkit_tests", "benchmarks"]
+files = ["src", "domainkit_tests", "benchmarks", ".github/scripts"]
 exclude = ["/management/templates/", "/mutants/"]
 
 # immudb-py and grpcio ship no type information.
 [[tool.mypy.overrides]]
 module = ["immudb", "immudb.*", "grpc", "grpc.*", "ecdsa", "ecdsa.*"]
 ignore_missing_imports = true
+
+# Nor does PyYAML, which only the CI tests use.
+[[tool.mypy.overrides]]
+module = ["yaml"]
+ignore_missing_imports = true
+# "deptry .": each package src imports is declared, in dependencies or the
+# extra of the feature that imports it (deptry counts extras as declared).
+[tool.deptry]
+known_first_party = ["domainkit"]
+extend_exclude = ["domainkit_tests", "benchmarks", "mutants"]
+
+# Distributions whose modules have other names, so that deptry needs no
+# installed metadata to match them.
+[tool.deptry.package_module_name_map]
+aio-pika = "aio_pika"
+argon2-cffi = "argon2"
+grpcio = "grpc"
+immudb-py = "immudb"
+opentelemetry-api = "opentelemetry"
+prometheus-client = "prometheus_client"
+pydantic-core = "pydantic_core"
+pyjwt = "jwt"
+python-dotenv = "dotenv"
+python-multipart = "python_multipart"
+tzdata = "tzdata"
+
+[tool.deptry.per_rule_ignores]
+# Loaded by name, not imported: SQLAlchemy loads the database drivers named
+# in DATABASES, FastAPI reads multipart forms, zoneinfo reads tzdata.
+DEP002 = ["asyncpg", "aiosqlite", "python-multipart", "tzdata"]
 
 [tool.pytest.ini_options]
 testpaths = ["domainkit_tests"]

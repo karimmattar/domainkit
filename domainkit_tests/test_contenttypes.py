@@ -2,19 +2,25 @@
 
 import asyncio
 import io
+import secrets
+import threading
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from sqlalchemy import MetaData, Table, select
+from sqlalchemy import Column, Integer, MetaData, Table, select
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from domainkit import setup
 from domainkit.apps import registry
 from domainkit.conf import override_settings
+from domainkit.contrib.auth.models import Group, User
 from domainkit.contrib.contenttypes import (
     DEFAULT_PERMISSIONS,
+    ContentType,
+    InstalledModel,
     content_type_key,
     installed_models,
     model_options,
@@ -23,7 +29,7 @@ from domainkit.contrib.contenttypes import registry as content_registry
 from domainkit.contrib.contenttypes.registry import _owner
 from domainkit.contrib.contenttypes.sync import has_tables
 from domainkit.contrib.contenttypes.tables import content_types
-from domainkit.db import connections
+from domainkit.db import connections, mapper_registry, metadata
 from domainkit.db.migrations import include_object
 from domainkit.db.routing import router
 from domainkit.exceptions import ImproperlyConfigured
@@ -213,3 +219,146 @@ def test_migrations_ignore_unknown_reflected_tables(use_auth: UseAuth) -> None:
     assert not include_object(
         None, partition, "table", True, None, partitions=frozenset({partition})
     )
+
+
+class Counted:
+    """``installed_models``, counting its calls."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Wrap the registry module's ``installed_models``."""
+        self.calls = 0
+        monkeypatch.setattr(content_registry, "installed_models", self)
+
+    def __call__(self) -> list[InstalledModel]:
+        """Count, then list the installed models."""
+        self.calls += 1
+        return installed_models()
+
+
+type MakeTable = Callable[[], Table]
+
+
+@pytest.fixture
+def alpha_table() -> Iterator[MakeTable]:
+    """Make tables of the alpha domain in the project's metadata; removed after."""
+    made: list[Table] = []
+
+    def make() -> Table:
+        name = f"late_{secrets.token_hex(4)}"
+        made.append(
+            Table(
+                name,
+                metadata,
+                Column("id", Integer, primary_key=True),
+                info={"domain": "alpha"},
+            )
+        )
+        return made[-1]
+
+    yield make
+    for table in made:
+        if metadata.tables.get(table.key) is table:
+            metadata.remove(table)
+
+
+def late_class(table: Table) -> type:
+    """A new class, mapped onto ``table``."""
+    name = f"Late{table.name.removeprefix('late_')}"
+    cls = type(name, (), {"__module__": f"{ALPHA}.models"})
+    mapper_registry.map_imperatively(cls, table)
+    return cls
+
+
+def test_content_type_keys_are_worked_out_once(
+    use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every lookup after the first is one dictionary lookup."""
+    use_auth()
+    counted = Counted(monkeypatch)
+
+    keys = [content_type_key(cls) for cls in (User, Group, ContentType) * 3]
+
+    assert (
+        keys
+        == [("auth", "user"), ("auth", "group"), ("contenttypes", "contenttype")] * 3
+    )
+    assert counted.calls == 1
+    monkeypatch.setattr(content_registry, "_lock", None)  # A lookup never takes it.
+    with pytest.raises(LookupError, match="Note"):
+        content_type_key(Note)
+    assert content_type_key(User) == ("auth", "user")
+    assert counted.calls == 1
+
+
+def test_content_type_keys_follow_the_installed_domains(
+    use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``registry.clear`` and ``populate`` make them work the keys out again."""
+    use_auth()
+    assert content_type_key(User) == ("auth", "user")
+    counted = Counted(monkeypatch)
+
+    registry.clear()
+    with pytest.raises(LookupError, match="User"):
+        content_type_key(User)
+    use_auth()
+
+    assert content_type_key(User) == ("auth", "user")
+    assert counted.calls == 2
+
+
+def test_a_class_mapped_after_a_lookup_has_its_key(
+    use_auth: UseAuth, alpha_table: MakeTable
+) -> None:
+    """Mapping a class makes the keys be worked out again."""
+    use_auth()
+    table = alpha_table()
+    assert content_type_key(User) == ("auth", "user")
+
+    late = late_class(table)
+    assert content_type_key(late) == ("alpha", late.__name__.lower())
+
+
+def test_a_table_removed_or_replaced_takes_its_key_away(
+    use_auth: UseAuth, alpha_table: MakeTable
+) -> None:
+    """A table gone from the project's metadata has no content type any more."""
+    use_auth()
+    removed, replaced = (late_class(alpha_table()) for _ in range(2))
+    assert content_type_key(removed) == ("alpha", removed.__name__.lower())
+
+    metadata.remove(removed.__table__)  # type: ignore[attr-defined]
+    with pytest.raises(LookupError, match="Late"):
+        content_type_key(removed)
+    assert content_type_key(replaced) == ("alpha", replaced.__name__.lower())
+    metadata.remove(replaced.__table__)  # type: ignore[attr-defined]
+    alpha_table()  # As many tables as before.
+    with pytest.raises(LookupError, match="Late"):
+        content_type_key(replaced)
+
+
+def test_keys_another_thread_worked_out_meanwhile_are_used(
+    use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lookup that waited for the lock finds the keys done, and keeps them."""
+    use_auth()
+    done = (content_registry._state(), {User: ("auth", "user")})
+    lock = threading.Lock()
+
+    class Waited:
+        """The lock, held meanwhile by a thread that worked the keys out."""
+
+        def __enter__(self) -> None:
+            lock.acquire()
+            monkeypatch.setattr(content_registry, "_known", done)
+
+        def __exit__(self, *exc: object) -> None:
+            lock.release()
+
+    monkeypatch.setattr(content_registry, "_known", (None, {}))
+    monkeypatch.setattr(content_registry, "_lock", Waited())
+    counted = Counted(monkeypatch)
+
+    assert content_type_key(User) == ("auth", "user")
+    assert counted.calls == 0
+    assert content_registry._known is done

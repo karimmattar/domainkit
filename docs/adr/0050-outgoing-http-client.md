@@ -1,6 +1,6 @@
 # 0050. Call other services through pooled clients that keep to the deadline
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-21 (at the end)
 - Date: 2026-10-20
 
 ## Context

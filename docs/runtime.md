@@ -145,7 +145,12 @@ lifecycle.register("publishers", close_publishers, phase=Phase.DRAIN)
 ```
 
 A closer closes what the running loop opened; registering a name again
-replaces its closer.
+replaces its closer. The framework's own kinds (`caches`, `HTTP clients`,
+`databases`, `ledgers`, `brokers`, and the last flushes) sit in the same
+table, so their names are taken. `lifecycle.closers(phase)` lists what a
+phase will close, in the steps it runs them: a registered closer runs in the
+first step, at once with the framework's kinds of its phase; the flush phase
+then writes held-back counts, error reports, and logs, one step each.
 
 The budget covers what happens after the server stops taking requests. The
 server first waits for the requests in flight: tell it how long, and keep
@@ -198,13 +203,19 @@ Background work in the stores is bounded too:
 
 - **Idempotency keys.** A keyed request that raises or is cancelled
   releases its key in a task of its own, within 5 seconds, so a retry need
-  not wait out the lease. Without messaging, each claim's purge of expired
-  keys skips those another claim is deleting ([contrib.md](contrib.md)).
+  not wait out the lease. Without messaging, a claim purges expired keys
+  once a minute per process, and on each claim while a purge finds a full
+  batch; it skips those another claim is deleting ([contrib.md](contrib.md)).
 - **Audit sealing.** A run looks for unsealed rows from a high-water mark,
   the newest sealed row, less `AUDIT.SEAL_LATE_WINDOW`, so its cost follows
   what is new, not the length of the trail; it seals at most
   `AUDIT.SEAL_BATCHES` batches and counts what it leaves in
   `audit_unsealed_rows` ([ADR 0047](adr/0047-seal-from-a-high-water-mark.md)).
+  A second sealer never queues behind the first: finding the lock taken,
+  it leaves the work to it ([contrib.md](contrib.md#tamper-evidence)).
+- **Outbox cleanup** reads the oldest done and cancelled messages from an
+  index of their own, so a run costs what it deletes, not the size of the
+  outbox ([contrib.md](contrib.md), "Upgrading to 0.9.2").
 - **Password hashing.** A call keeps its place in the pool until its hash is
   done, refusals ask clients to come back when the queue will have drained,
   and `AUTH.HASHING_RESERVED` places are kept for password changes
@@ -314,6 +325,13 @@ escaping `json.dumps` uses, and the date and time of the timestamp are
 worked out once a second.
 A line the level drops (`domainkit.access` below `INFO`, say) costs the
 request nothing: the access log checks the level before building it.
+A line it keeps is made with `domainkit.log.log_enabled(logger, level,
+msg, *args, extra=...)`, which a project's own hot paths can use too once
+they have asked `logger.isEnabledFor(level)`: it makes the record
+`logger.log` makes, field for field (the caller's file, line and
+function included), without asking the level again or walking the stack
+to find the caller, 15 Python calls fewer a line. A logger of a class of
+its own (`logging.setLoggerClass`) logs through its own `log`.
 
 ### Sampling the access log
 
@@ -611,7 +629,9 @@ clock of the host that writes them.
 writes messages due at once also sends `NOTIFY domainkit_messages` with
 each queue's name, and polling and relaying workers `LISTEN` on one
 connection of their pool. An idle worker then starts a committed message
-right away instead of on its next poll, so `POLL_INTERVAL` can be longer.
+right away instead of on its next poll, so `POLL_INTERVAL` can be longer,
+or `POLL_INTERVAL_IDLE` can let a listening worker poll less often while
+it finds nothing ([contrib.md](contrib.md), "Idle workers").
 Polling stays: a notification is only a hint, sent when the transaction
 commits and lost harmlessly when nobody listens, and a worker whose
 listening connection drops polls until it listens again. Only rows the

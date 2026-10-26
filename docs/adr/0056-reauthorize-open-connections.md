@@ -1,6 +1,6 @@
 # 0056. Re-authorize open connections on a timer, and close them when that fails
 
-- Status: Accepted
+- Status: Accepted; amended in place 2026-10-21; amended by [0058](0058-cache-principals-and-stamp-revocations.md)
 - Date: 2026-10-20
 - Amends: [0016](0016-authenticating-requests.md), [0017](0017-deny-by-default-and-admin-api.md)
 

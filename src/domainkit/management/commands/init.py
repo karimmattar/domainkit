@@ -20,7 +20,6 @@ from domainkit import __version__
 from domainkit.conf.env import prefix_for
 from domainkit.management.base import BaseCommand, CommandError
 from domainkit.management.commands.startdomain import render
-from domainkit.utils.formatting import format_python
 
 TEMPLATE_DIR: Final = Path(__file__).resolve().parents[1] / "templates" / "project"
 DOTFILE: Final = "dot-"
@@ -89,7 +88,8 @@ class Command(BaseCommand):
         for path in render(TEMPLATE_DIR, target, context):
             if path.name.startswith(DOTFILE):
                 path.rename(path.with_name(f".{path.name.removeprefix(DOTFILE)}"))
-        format_python([target])
+        # Not formatted: init runs before the project's environment (and its
+        # ruff) exists, so the templates are written as its ruff would.
         self.write(_next_steps(name, target))
 
 

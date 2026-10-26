@@ -70,6 +70,10 @@ from .uow import AuthUnitOfWork
 from .users import get_user_model
 from .validators import validate_password
 
+__all__ = [
+    "router",
+]
+
 SIGNUP_TASK: Final = "domainkit.auth.send_signup_link"
 SALT: Final = "domainkit.auth.signup"
 """Keeps signup links to their purpose."""

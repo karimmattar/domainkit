@@ -29,10 +29,22 @@ A Django-style framework for domain-driven FastAPI services. It provides:
   requests (export, erasure, and retention)
 
 ```bash
-pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, mfa, immudb, redis, rabbitmq, metrics, tracing, uploads, testing, webhooks, tzdata
+pip install "domainkit[postgres]"     # the extras are listed below
 ```
 
+The extras: `postgres`, `sqlite` (database drivers); `argon2`, `jwt`, `mfa`
+(passwords, JSON Web Tokens, and second factors for `contrib.auth`);
+`immudb` (ledgers); `redis` (shared caches and rate limits); `rabbitmq`
+(the worker's broker); `metrics`, `tracing` (Prometheus and
+OpenTelemetry); `uploads` (multipart forms); `httpclient` (outgoing HTTP
+calls); `webhooks`; `testing` (the pytest plugin); `tzdata` (time zones
+where the system has none); `uvloop` and `granian` (a faster event loop,
+and a server).
+
 ## Documentation
+
+- [docs/tutorial.md](https://github.com/karimmattar/domainkit/blob/main/docs/tutorial.md): from `pip install` to an
+  authenticated endpoint with one aggregate, every command run in CI
 
 - [docs/reference.md](https://github.com/karimmattar/domainkit/blob/main/docs/reference.md): settings, middleware, errors,
   the API surface (OpenAPI, versions, deprecations), observability,
@@ -45,14 +57,14 @@ pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, m
   resource routes, commands and queries, derived schemas, partial changes,
   ETags and conditional writes, field policies, nesting, the generators,
   and the generic admin
-- [docs/runtime.md](https://github.com/karimmattar/domainkit/blob/main/docs/runtime.md): how async work runs:
-  background tasks, clean contexts, the shutdown budget, readiness,
-  event-handler timeouts, and workers and the outbox
+- [docs/runtime.md](https://github.com/karimmattar/domainkit/blob/main/docs/runtime.md): how async work runs
+  (event loops, background tasks, clean contexts, logging off the loop,
+  finding blocking code, free-threaded Python, the shutdown budget,
+  readiness, event-handler timeouts, workers and the outbox), running under
+  load (request deadlines, load shedding, database timeouts and PgBouncer,
+  outgoing HTTP calls), and servers
 - [docs/cache.md](https://github.com/karimmattar/domainkit/blob/main/docs/cache.md): caches in memory, Redis, and Valkey,
   and shared rate limits
-- [docs/runtime.md](https://github.com/karimmattar/domainkit/blob/main/docs/runtime.md): running under load: request
-  deadlines, load shedding, database timeouts and PgBouncer, and outgoing
-  HTTP calls
 - [docs/contrib.md](https://github.com/karimmattar/domainkit/blob/main/docs/contrib.md): messaging (and workers on RabbitMQ),
   webhooks, audit and records' history, idempotency, evidence, and
   feature flags
@@ -70,11 +82,16 @@ pip install "domainkit[postgres]"     # extras: postgres, sqlite, argon2, jwt, m
   data, and retention
 - [docs/testing.md](https://github.com/karimmattar/domainkit/blob/main/docs/testing.md): the pytest plugin: test databases,
   sync and async clients, factories, a clock to freeze, and query counts
-- [docs/runtime.md](https://github.com/karimmattar/domainkit/blob/main/docs/runtime.md): how async work runs: event loops,
-  logging off the loop, finding blocking code, free-threaded Python, and servers
 - [docs/performance.md](https://github.com/karimmattar/domainkit/blob/main/docs/performance.md): what a request costs, the
   benchmark ladder CI gates on, and how to make requests cheaper
-- [docs/versioning.md](https://github.com/karimmattar/domainkit/blob/main/docs/versioning.md): compatibility, deprecations, and releases
+- [docs/versioning.md](https://github.com/karimmattar/domainkit/blob/main/docs/versioning.md): compatibility, deprecations,
+  releases, and which releases get security fixes
+- [docs/threat-model.md](https://github.com/karimmattar/domainkit/blob/main/docs/threat-model.md): what domainkit protects,
+  where the trust boundaries are, what it does at each, and what is left to
+  a project
+- [docs/audit/0.9.0.md](https://github.com/karimmattar/domainkit/blob/main/docs/audit/0.9.0.md): the 0.9.0 audit's findings
+  that the CHANGELOG names, with their status
+- [docs/api.md](https://github.com/karimmattar/domainkit/blob/main/docs/api.md): the public API, module by module, one line a name
 - [docs/adr/](https://github.com/karimmattar/domainkit/tree/main/docs/adr): the decisions behind the design
 - [CHANGELOG.md](https://github.com/karimmattar/domainkit/blob/main/CHANGELOG.md) and [SECURITY.md](https://github.com/karimmattar/domainkit/blob/main/SECURITY.md)
 
@@ -88,10 +105,35 @@ cd billing
 python manage.py check
 python manage.py startdomain invoices --aggregate Invoice   # installs and mounts it
 python manage.py makemigrations -m "create invoices" && python manage.py migrate
-python manage.py createsuperuser
+read -rsp "Password: " PASSWORD && export PASSWORD    # admin's, typed, not echoed
+BILLING_API_SUPERUSER_PASSWORD="$PASSWORD" \
+  python manage.py createsuperuser --noinput --username admin --email admin@example.com
+unset PASSWORD                        # so that no later process inherits it
 pytest
 python manage.py runserver            # http://127.0.0.1:8000/docs
 ```
+
+Then, from a second shell in `billing` with the same environment active, log
+in, typing the same password, and list the invoices. The password is read
+at a prompt and sent on standard input, so it is in no command line and no
+shell history:
+
+```bash
+read -rsp "Password: " PASSWORD && export PASSWORD
+TOKEN=$(python -c "import json, os; print(json.dumps({'username': 'admin', 'password': os.environ['PASSWORD']}))" \
+  | curl -s http://127.0.0.1:8000/auth/login -H "Content-Type: application/json" -d @- \
+  | python -c "import json, sys; print(json.load(sys.stdin)['access_token'])")
+unset PASSWORD
+curl http://127.0.0.1:8000/api/v1/invoices/invoices -H "Authorization: Bearer $TOKEN"
+```
+
+The answer is the first page, empty: `{"items":[],"next_cursor":null}`. The
+domain's router is mounted at `/api/v1/invoices`, and its resource is
+`/invoices` within it; `startdomain` prints both commands for the domain it
+made. A route the caller may not reach answers 404, as an unknown path does,
+so check the path first (`/docs` lists every route). `createsuperuser`
+without options asks for each value instead. [docs/tutorial.md](https://github.com/karimmattar/domainkit/blob/main/docs/tutorial.md)
+goes on from here: a resource created, changed, and refused by its rules.
 
 `domainkit init` creates a project that passes `check` and its tests as it is.
 Users, groups, and permissions are installed, requests are authenticated,
@@ -134,6 +176,7 @@ poetry install --all-extras            # Python 3.13
 pre-commit install                     # after: pipx install pre-commit
 
 poetry run ruff check . && poetry run ruff format --check . && poetry run mypy
+poetry run deptry .                    # every imported package is declared
 poetry run pytest --cov                # random order, 2 minutes a test; coverage gate in pyproject.toml
 poetry run mutmut run "domainkit.http*" && poetry run mutmut results
 ```
@@ -162,7 +205,7 @@ the servers, each with its own `COVERAGE_FILE`, then `coverage combine` and
 
 CI (`.github/workflows/ci.yml`) runs on every push and pull request:
 
-- lint and strict typing
+- lint, strict typing, and deptry: every package the code imports is declared
 - the tests on Python 3.13 and 3.14
 - the tests again against PostgreSQL 18, immudb with TLS and a signing key,
   Redis 8 (plain and TLS), Valkey 9, and RabbitMQ 4 (plain and TLS); no test
@@ -170,11 +213,16 @@ CI (`.github/workflows/ci.yml`) runs on every push and pull request:
 - coverage of both runs combined, which must be 100%
 - the benchmark ladder: Python calls and database round trips per request,
   against budgets (`python -m benchmarks`; docs/performance.md)
-- a wheel build, installed and imported in a clean environment
-- pip-audit, and a gitleaks scan of the whole history
+- a wheel build, installed and imported in a clean environment, and its
+  CycloneDX bill of materials
+- Semgrep's Python and OWASP Top 10 rules, pip-audit, and a gitleaks scan
+  of the whole history
+- on pull requests and weekly, the tests again with the newest releases
+  the dependency ranges allow, not the lock's, and with the oldest
 
-A full mutation testing run happens weekly, in eight shards that run side by
-side. Releases are published to PyPI
+A full mutation testing run happens weekly, in 17 shards that run side by
+side; each writes its score and the mutants no test caught to its job
+summary. Releases are published to PyPI
 from a version tag; see [docs/versioning.md](https://github.com/karimmattar/domainkit/blob/main/docs/versioning.md).
 
 ## License

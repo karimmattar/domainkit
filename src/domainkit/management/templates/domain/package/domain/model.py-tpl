@@ -16,6 +16,7 @@ from domainkit.ddd import (
     Repository,
     ValueObject,
 )
+
 from {{ package }}.domain.events import (
     {{ Aggregate }}Archived,
     {{ Aggregate }}Created,

@@ -40,6 +40,7 @@ from domainkit.db import Reads, connections
 from domainkit.db.connections import (
     READS_SUFFIX,
     RESET_SESSION,
+    SNAPSHOT_BEGIN,
     ReadOnlySession,
     _closed,
     _plain_select,
@@ -1159,6 +1160,54 @@ async def test_the_read_pool_is_reported_and_closed(
         assert connections.pool_stats() == {}
         async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:  # A new one.
             assert len(await uow.gadgets.filter()) == 1
+
+
+def bind_of(reads: Reads) -> AsyncEngine:
+    """The engine a new read-only session reading as ``reads`` binds to."""
+    bind = connections.session(readonly=True, reads=reads).bind
+    assert isinstance(bind, AsyncEngine)
+    return bind
+
+
+@pytest.mark.parametrize(
+    ("url", "transaction", "snapshot"),
+    [
+        (
+            "postgresql+asyncpg://app@db.invalid/app",  # Never connected to.
+            {"postgresql_readonly": True},
+            {"postgresql_readonly": True, "isolation_level": "REPEATABLE READ"},
+        ),
+        (
+            "sqlite+aiosqlite://",
+            {"postgresql_readonly": True, SNAPSHOT_BEGIN: True},
+            {SNAPSHOT_BEGIN: True},
+        ),
+    ],
+)
+async def test_read_only_sessions_bind_to_one_engine_of_each_kind(
+    url: str, transaction: dict[str, object], snapshot: dict[str, object]
+) -> None:
+    """Made once per engine, with its options and its pool; a new engine, new ones."""
+    await connections.close_all()
+    with override_settings(DATABASES={"default": {"URL": url}}):
+        engine = connections.engine()
+        reading = bind_of(Reads.TRANSACTION)
+        snapshots = bind_of(Reads.SNAPSHOT)
+
+        assert (bind_of(Reads.TRANSACTION), bind_of(Reads.SNAPSHOT)) == (
+            reading,
+            snapshots,
+        )
+        assert reading.get_execution_options() == transaction
+        assert snapshots.get_execution_options() == snapshot
+        assert reading.sync_engine.pool is snapshots.sync_engine.pool is engine.pool
+        if not reads_alone(connections.config()):
+            assert bind_of(Reads.STATEMENTS) is reading
+        await connections.close_all()
+        assert connections.engine() is not engine
+        assert bind_of(Reads.TRANSACTION) is not reading
+        assert bind_of(Reads.SNAPSHOT) is not snapshots
+        await connections.close_all()
 
 
 # Statements that commit as they run ------------------------------------------------

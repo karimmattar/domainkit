@@ -39,6 +39,10 @@ from domainkit.ddd.query import (
     Ordering,
 )
 
+__all__ = [
+    "register_compiler",
+]
+
 ESCAPE: Final = "/"
 """The escape character of ``LIKE`` patterns."""
 _PATTERNS: Final = {

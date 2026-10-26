@@ -1190,7 +1190,7 @@ async def greeting(user: CurrentUser): ...               # anyone; AnonymousUser
 | `IsAdminUser` | Staff users (`is_staff`), with credentials that carry no scopes. |
 | `IsSuperuser` | Active superusers, with credentials that carry no scopes. |
 | `HasPermissions(*keys)` | Users granted every permission (by any backend). |
-| `ModelPermissions(model)` | Django's model permissions by method: `GET`/`HEAD` need `view`, `POST` `add`, `PUT`/`PATCH` `change`, `DELETE` `delete`; `OPTIONS` needs a user, and a WebSocket handshake `view`. `model` is a mapped class or `"<domain>.<model>"`. |
+| `ModelPermissions(model)` | Django's model permissions by method: `GET`/`HEAD` need `view`, `POST` `add`, `PUT`/`PATCH` `change`, `DELETE` `delete`; `OPTIONS` needs a user, and a WebSocket handshake `view`. `model` is a mapped class or `"<domain>.<model>"`. A class's content type is worked out once, and again after `registry.populate` or `clear`, a class mapped, or a table added to or removed from the project's metadata. |
 | `HasObjectPermissions(*keys)` | Users granted every permission on the object, by a backend with object permissions. The request itself needs an active user who logged in; check each object with `check_object_permissions`. |
 | `HasScope(*keys)` | Users whose credentials' scopes cover every key; credentials without scopes cover all. |
 | `IsUnscoped` | Users whose credentials carry no scopes (a login, not a scoped token). |
@@ -1342,13 +1342,13 @@ changed what.
 | --- | --- | --- |
 | `USER_MODEL` | `"domainkit.contrib.auth.models.User"` | The user class. |
 | `USER_TABLE` | `None` (the default user's table) | A custom user's `Table`; required with a custom `USER_MODEL`. |
-| `PASSWORD_HASHERS` | PBKDF2, PBKDF2-SHA1, Argon2, scrypt | Hasher classes; the first hashes new passwords. |
+| `PASSWORD_HASHERS` | PBKDF2, PBKDF2-SHA1, Argon2, scrypt | Hasher classes, at least one; the first hashes new passwords. |
 | `HASHING_THREADS` | `1` | Threads per process that hash passwords; each keeps a core busy. One, like a Django worker, so with a process per core hashing never takes the event loops' cores (at most 1,024). |
 | `HASHING_QUEUE` | `8` | Hashing calls that may wait for a thread (about 0.4 s each); more answer `503 password_checks_busy` (at most 10,000). |
 | `HASHING_RESERVED` | `1` | Places of `HASHING_QUEUE` kept for `POST /auth/password` and the admin's password change; other calls are refused once the rest are taken. More than `HASHING_QUEUE` counts as `HASHING_QUEUE`. |
 | `PASSWORD_VALIDATORS` | the four above | Rules for new passwords; `[]` checks nothing. |
-| `BACKENDS` | `["domainkit.contrib.auth.backends.ModelBackend"]` | Authentication and permission backends, in order. |
-| `AUTHENTICATION_CLASSES` | `["domainkit.contrib.auth.authentication.TokenAuthentication"]` | How requests prove who sent them, in order; the first issues login tokens. |
+| `BACKENDS` | `["domainkit.contrib.auth.backends.ModelBackend"]` | Authentication and permission backends, in order; at least one. |
+| `AUTHENTICATION_CLASSES` | `["domainkit.contrib.auth.authentication.TokenAuthentication"]` | How requests prove who sent them, in order (at least one); the first issues login tokens. |
 | `AUTHENTICATION_EXEMPT_PATHS` | `["/health", "/ready", "/metrics"]` | Paths served without looking at credentials. |
 | `TOKEN_TTL` | 14 days | How long a login's opaque token works; `None` until revoked. |
 | `TOKEN_PREFIX` | `"dkt_"` | Starts every opaque token; changing it invalidates existing tokens. |
@@ -1383,7 +1383,7 @@ changed what.
 
 | `AUTH["MFA"]` key | Default | Meaning |
 | --- | --- | --- |
-| `ISSUER` | `None` | The name authenticator apps show; `PROJECT_NAME` when `None`. |
+| `ISSUER` | `None` | The name authenticator apps show: not empty, and at most 100 characters; `PROJECT_NAME` when `None`. |
 | `CHALLENGE_TTL` | 5 minutes | How long the step between the password and the code may take (an hour at most). |
 | `RECOVERY_CODES` | `10` | Recovery codes each user gets (1 to 50). |
 | `WINDOW` | `1` | Steps of 30 seconds either side of now whose codes count (0 to 10). |
@@ -1402,7 +1402,7 @@ changed what.
 | `ENABLED` | `True` | Keep principals between requests; `False` reads them on every request. |
 | `TTL` | 5 seconds | How long a principal is used before it is read again, at most 5 minutes: the longest a change made in another process takes to be seen without `STAMPS`. |
 | `MAX_ENTRIES` | `10000` | Principals kept per process (1 to 100,000); the least recently used go first. |
-| `STAMPS` | `None` | A `CACHES` alias of a Redis or Valkey cache every process shares; changes then reach every process at once. |
+| `STAMPS` | `None` | A `CACHES` alias (not empty; at most 100 characters) of a Redis or Valkey cache every process shares; changes then reach every process at once. |
 
 | `AUTH["JWT"]` key | Default | Meaning |
 | --- | --- | --- |

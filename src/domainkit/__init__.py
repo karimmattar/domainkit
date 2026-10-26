@@ -13,6 +13,8 @@ Layers, lowest first; a module may import only from its own layer or below:
 
 from importlib.metadata import PackageNotFoundError, version
 
+__all__ = ["__version__", "setup"]
+
 try:
     __version__ = version("domainkit")
 except PackageNotFoundError:  # pragma: no cover - running from a source tree

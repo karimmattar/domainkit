@@ -96,7 +96,15 @@ COLUMNS: Final = (
     "details",
 )
 """The columns a row's digest covers."""
-_LOCK: Final = text("SELECT pg_advisory_xact_lock(hashtext('domainkit.audit.seal'))")
+_LOCK: Final = text(
+    "SELECT pg_try_advisory_xact_lock(hashtext('domainkit.audit.seal'))"
+)
+"""One sealer per database: each batch's transaction takes it or gives up.
+
+A sealer that finds it taken leaves the work to the one holding it instead
+of queueing behind it (PERF-09). Transaction-scoped, so it ends with its
+batch whatever happens to the connection, and works through PgBouncer.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,6 +234,13 @@ async def seal(
     With ``late``, rows from before that window are sealed afterwards
     too, flagged late, in at most ``batches`` more transactions: finding
     them reads the whole trail.
+
+    On PostgreSQL, while another sealer of the database seals a batch,
+    this one stops, logs it, and leaves that sealer the rest (counting
+    what it sealed before), instead of waiting for it. It still counts
+    and reports what is left, and warns once the oldest row left has
+    waited longer than ``SEAL_EVERY`` and the late window together: a
+    lock held that long is not a sealer at work (SEC-a-1).
     """
     config = registry.settings(AuditSettings)
     batches = config.SEAL_BATCHES if batches is None else batches
@@ -234,7 +249,12 @@ async def seal(
     if caught_up:
         _observe_backlog(database, 0)
     else:
-        await _report_backlog(database, late_window, config.SEAL_BACKLOG_WARNING)
+        gave_way = caught_up is None
+        await _report_backlog(
+            database, late_window, config.SEAL_BACKLOG_WARNING, gave_way=gave_way
+        )
+        if gave_way:
+            await _report_stalled(database, late_window, config.SEAL_EVERY)
     if late:
         more, _ = await _seal_pass(database, batch, batches, late_window, late=True)
         sealed += more
@@ -387,20 +407,29 @@ async def _seal_pass(
     late_window: timedelta,
     *,
     late: bool = False,
-) -> tuple[int, bool]:
+) -> tuple[int, bool | None]:
     """Seal up to ``batches`` batches; count them, and say whether it caught up.
 
     The horizon is taken in the first batch. A pass of rows sealed in time
     looks from it on; a ``late`` pass, below it (none without a horizon:
-    then every row is within reach).
+    then every row is within reach). None instead of whether it caught
+    up: another sealer holds the lock, and this pass left it the rest.
     """
     sealed = 0
     after: _Mark | None = None
     horizon: datetime | None = None
     for number in range(batches):
         async with connections.engine(database).begin() as connection:
-            if connection.dialect.name == "postgresql":
-                await connection.execute(_LOCK)  # One sealer per database.
+            if connection.dialect.name == "postgresql" and not await connection.scalar(
+                _LOCK
+            ):
+                logger.info(
+                    "Another sealer is sealing %r; this one leaves it the rest "
+                    "after sealing %d row(s)",
+                    database,
+                    sealed,
+                )
+                return sealed, None
             sealed_at = await _database_now(connection)
             if number == 0:
                 horizon = await _horizon(connection, sealed_at, late_window)
@@ -480,17 +509,52 @@ def _unsealed_rows() -> Select[Any]:
     )
 
 
-async def _report_backlog(database: str, late_window: timedelta, warn: int) -> None:
-    """Count what a run that hit its bound left; warn past ``warn`` rows."""
+async def _report_backlog(
+    database: str, late_window: timedelta, warn: int, *, gave_way: bool
+) -> None:
+    """Count what a run left (at its bound, or given way); warn past ``warn`` rows."""
     left = await unsealed_backlog(database, late_window)
     _observe_backlog(database, left)
     if left > warn:
         logger.warning(
-            "Audit sealing of %r is behind: %d rows wait to be sealed. Raise "
-            "AUDIT.SEAL_BATCHES or seal more often; until sealed, rows can "
-            "be changed unnoticed",
+            "Audit sealing of %r is behind: %d rows wait to be sealed. %s; "
+            "until sealed, rows can be changed unnoticed",
             database,
             left,
+            _HELD_ADVICE if gave_way else "Raise AUDIT.SEAL_BATCHES or seal more often",
+        )
+
+
+_HELD_ADVICE: Final = (
+    "Another session holds the sealing lock (an advisory lock on "
+    "hashtext('domainkit.audit.seal'), in pg_locks); end it if no sealer runs"
+)
+
+
+async def _report_stalled(
+    database: str, late_window: timedelta, seal_every: timedelta
+) -> None:
+    """Warn when a run gave way and the oldest row left waited too long.
+
+    A sealer at work seals a row within ``seal_every`` of its commit; one
+    left longer than that plus ``late_window`` means the lock has been
+    held across runs, by something that does not seal.
+    """
+    async with connections.engine(database).connect() as connection:
+        now = await _database_now(connection)
+        horizon = await _horizon(connection, now, late_window)
+        oldest = _unsealed_rows().with_only_columns(audit_log.c.occurred_at).limit(1)
+        if horizon is not None:
+            oldest = oldest.where(audit_log.c.occurred_at >= horizon)
+        found = await connection.scalar(oldest)
+    if found is not None and now - found > seal_every + late_window:
+        logger.warning(
+            "Audit sealing of %r has not advanced for %d seconds: its oldest "
+            "unsealed row is that old. %s; until sealed, rows can be changed "
+            "unnoticed",
+            database,
+            int((now - found).total_seconds()),
+            _HELD_ADVICE,
         )
 
 

@@ -32,6 +32,12 @@ if TYPE_CHECKING:
 
     from domainkit.apps import DomainConfig
 
+__all__ = [
+    "bucket_for",
+    "for_each_shard",
+    "router",
+]
+
 type ShardKey = str | int | uuid.UUID
 """A value that picks a shard: a tenant id, a customer id, an account number."""
 

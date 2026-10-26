@@ -1,6 +1,6 @@
 """Install ``domainkit.contrib.notifications``, with messaging."""
 
-from domainkit.apps import DomainConfig, registry
+from domainkit.apps import DomainConfig, Requirement, registry
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.contrib.messaging import task
@@ -25,19 +25,15 @@ class NotificationsConfig(DomainConfig):
     label = "notifications"
     verbose_name = "Notifications"
     settings_class = NotificationsSettings
+    requires = (Requirement(MESSAGING, "the worker sends the messages"),)
 
     def ready(self) -> None:
         """Register the sending tasks, and check both backends now.
 
         Raises:
-            ImproperlyConfigured: Messaging is missing, a backend is
-                unusable, or one is made for development where deployed.
+            ImproperlyConfigured: A backend is unusable, or one is made for
+                development where deployed.
         """
-        if not registry.is_installed(MESSAGING):
-            raise ImproperlyConfigured(
-                f"domainkit.contrib.notifications needs {MESSAGING!r} in "
-                "INSTALLED_DOMAINS: the worker sends the messages."
-            )
         config = registry.settings(NotificationsSettings)
         for name, function in (
             (SMS_TASK, send_queued_sms),

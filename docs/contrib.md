@@ -22,6 +22,46 @@ audit trail commit with business data, so their tables are created in every
 database that hosts a domain. The idempotency table stays in its own
 `DATABASE`.
 
+### What each app needs
+
+Some apps cannot work without another; each declares so in
+`DomainConfig.requires`, and `setup()` refuses to start, naming every app
+missing, before any app's `ready()` runs:
+
+| App | Requires | Because |
+| --- | --- | --- |
+| `domainkit.contrib.auth` | `domainkit.contrib.contenttypes` | Permissions hang off content types. |
+| `domainkit.contrib.mail` | `domainkit.contrib.messaging` | The worker sends the mail. |
+| `domainkit.contrib.notifications` | `domainkit.contrib.messaging` | The worker sends the messages. |
+| `domainkit.contrib.webhooks` | `domainkit.contrib.messaging` | Deliveries are outbox tasks. |
+| `domainkit.contrib.privacy` | `domainkit.contrib.audit` | It records every operation in the audit trail. |
+
+The order in `INSTALLED_DOMAINS` does not matter for these. Other apps use
+messaging when it is installed (scheduled purges and seals, durable
+recording) and work without it. A project's own domains declare theirs the
+same way:
+
+```python
+from domainkit.apps import DomainConfig, Requirement
+
+
+class BillingConfig(DomainConfig):
+    requires = (
+        "domainkit.contrib.auth",
+        Requirement("domainkit.contrib.messaging", "invoices are sent by the worker"),
+    )
+```
+
+```text
+billing needs 'domainkit.contrib.messaging' in INSTALLED_DOMAINS: invoices are sent by the worker.
+```
+
+An app uses another only through its public names: the app's package and
+the modules listed in [api.md](api.md). Imports of another app's internal
+modules that predate this rule are listed, with their reasons, in
+`domainkit_tests/test_contrib_boundaries.py`; the test fails on a new one,
+and 0.10 removes the rest ([ADR 0077](adr/0077-declare-what-apps-require.md)).
+
 ## Messaging: outbox, durable handlers, background tasks
 
 Work that must happen after a change commits, even if the process dies right
@@ -101,24 +141,25 @@ inspects any outbox.
 | --- | --- | --- |
 | `DATABASE` | `"default"` | The home outbox: periodic tasks and `enqueue()` write here, and its worker schedules periodic tasks. One alias, not a shard group. |
 | `MAX_ATTEMPTS` | `10` | Runs before dead-lettering, unless the task sets its own. |
-| `RETRY_BASE_SECONDS` | `2.0` | First retry delay; it doubles per attempt. |
-| `RETRY_MAX_SECONDS` | `3600.0` | Cap on the retry delay. |
+| `RETRY_BASE_SECONDS` | `2.0` | First retry delay; it doubles per attempt (at most 365 days). |
+| `RETRY_MAX_SECONDS` | `3600.0` | Cap on the retry delay (at most 365 days). |
 | `TASK_TIMEOUT` | `240.0` | Seconds a message may run; longer counts as a failure (at most a day). |
-| `VISIBILITY_TIMEOUT` | `300.0` | Seconds a claim lasts; must exceed `TASK_TIMEOUT` (at most two days). |
+| `VISIBILITY_TIMEOUT` | `300.0` | Seconds a claim lasts; must exceed `TASK_TIMEOUT` (at most 2 days). |
 | `POLL_INTERVAL` | `1.0` | Seconds an idle worker waits before looking again (at most an hour). |
+| `POLL_INTERVAL_IDLE` | `None` | While commits wake the worker (`NOTIFY`, on PostgreSQL): the longest it waits between polls, from `POLL_INTERVAL` to an hour. Each poll that finds nothing doubles the wait up to this; work or a commit starts again from `POLL_INTERVAL`. A message no commit announces (a retry, a delay, an expired lock) can wait this long. `None`: every wait is `POLL_INTERVAL`. |
 | `BATCH_SIZE` | `50` | Most messages claimed at once (1 to 10,000). |
 | `CONCURRENCY` | `10` | Messages one worker process runs at the same time, from all its outboxes and queues together (1 to 65,535, RabbitMQ's largest prefetch). |
 | `SHUTDOWN_TIMEOUT` | `20.0` | Seconds a stopping worker lets running messages finish; the rest are stopped and run again (at most an hour). |
-| `RETENTION_SECONDS` | `604800.0` | Finished messages are deleted after this (7 days; at most a year); their arguments are blanked when they finish. Dead letters are kept until retried. |
+| `RETENTION_SECONDS` | `604800.0` | Finished messages are deleted after this (7 days; at most 365 days); their arguments are blanked when they finish. Dead letters are kept until retried. |
 | `CLEANUP_INTERVAL` | `3600.0` | Seconds between those deletions (at most a day). |
 | `CLEANUP_BATCH_SIZE` | `1000` | Most finished messages one cleanup statement deletes (1 to 100,000). |
 | `BROKER` | `None` | An alias in `BROKERS`: workers take their work from that broker instead of polling the outbox (below). |
 | `REPUBLISH_AFTER` | `3600.0` | With a broker: seconds a published message may wait for a worker before the relay publishes it again, as lost (at most a week). |
 | `PUBLISH_ON_COMMIT` | `True` | With a broker: the committing process publishes the commit's due messages in the background right away, instead of leaving them to the relays' next poll. |
-| `BREAKER_FAILURES` | `5` | With a broker: failed broker calls in a row after which commits stop publishing and leave their messages to the relays. |
-| `BREAKER_COOLDOWN` | `30.0` | Seconds commits leave their messages to the relays before the publisher tries the broker again. |
+| `BREAKER_FAILURES` | `5` | With a broker: failed broker calls in a row after which commits stop publishing and leave their messages to the relays (at most 10,000). |
+| `BREAKER_COOLDOWN` | `30.0` | Seconds commits leave their messages to the relays before the publisher tries the broker again (at most an hour). |
 | `NOTIFY` | `True` | On PostgreSQL: commits wake idle workers at once (`LISTEN`/`NOTIFY`), unless a broker publishes each commit. |
-| `METRICS_TTL` | `15.0` | Seconds the outbox gauges are reused between scrapes; 0 counts every scrape. |
+| `METRICS_TTL` | `15.0` | Seconds the outbox gauges are reused between scrapes (at most an hour); 0 counts every scrape. |
 
 Run `runworker --metrics-port 9100` to expose the worker's metrics. Scale by
 running more workers. However many outboxes and queues a `runworker`
@@ -131,6 +172,23 @@ leave it waiting, and a commit wakes idle workers at once
 messages are deleted in small batches, by a task of each worker's own, so
 cleanup never holds up claiming. [runtime.md](runtime.md), "Workers and
 the outbox", has the details.
+
+**Idle workers.** An idle worker still polls every `POLL_INTERVAL`, even
+while commits wake it: each poll is a claim that finds nothing, a round
+trip a second per worker on the primary. `POLL_INTERVAL_IDLE` lets it
+back off while it listens: each empty poll doubles the wait, up to that
+value, and work or a commit starts again from `POLL_INTERVAL`. With `30`,
+an idle worker made 7 claims in its first idle minute instead of 61, and
+then one every 30 seconds. Commits still start their messages at once;
+what no commit announces (a retry coming due, a delayed task, the lock
+of a crashed worker running out, a notification that never arrived)
+waits up to `POLL_INTERVAL_IDLE` instead of `POLL_INTERVAL`, so set it
+no higher than the delay such messages can take. Periodic and cron
+tasks are among them: the worker queues a periodic slot when it next
+polls, and a cron run is queued ahead, due later, so either can start up
+to `POLL_INTERVAL_IDLE` after its time. Workers that cannot
+listen (SQLite, PgBouncer, `NOTIFY = False`, a listening connection that
+dropped) poll every `POLL_INTERVAL`, as before.
 
 **Watching PostgreSQL's notification queue.** PostgreSQL keeps sent
 notifications in one queue per server (8 GB by default) until every
@@ -284,6 +342,34 @@ project that installs messaging.
 **Upgrading to 0.7.** The outbox gained `priority` and `started_at`
 columns, an index, and a `cancelled` status. Run `makemigrations` and
 `migrate` before deploying the new code.
+
+**Upgrading to 0.9.2.** The outbox gained an index for its cleanup,
+`ix_domainkit_messages_finished`: `finished_at`, of done and cancelled
+messages only. Without it, each cleanup read the whole outbox (460 ms
+and 28,000 pages at 2 million rows, against 1.7 ms with it). Run
+`makemigrations` and `migrate` in each project that installs messaging.
+The revision builds the index in the migration's transaction, which
+blocks writes to the outbox while it runs: about half a second per
+million rows on a small server. For an outbox too large for that, edit
+the revision to build it without blocking writes (PostgreSQL only):
+
+```python
+def upgrade() -> None:
+    """Build the outbox's cleanup index without blocking writes."""
+    with op.get_context().autocommit_block():
+        op.create_index(
+            "ix_domainkit_messages_finished",
+            "domainkit_messages",
+            ["finished_at"],
+            unique=False,
+            postgresql_where=sa.text("status IN ('done', 'cancelled')"),
+            postgresql_concurrently=True,
+        )
+```
+
+If a concurrent build fails, it leaves an invalid index behind: drop it
+(`DROP INDEX CONCURRENTLY ix_domainkit_messages_finished`) and migrate
+again.
 
 ### Task options
 
@@ -630,18 +716,18 @@ attempts are deleted after `RETENTION_SECONDS`.
 | `WEBHOOKS` key | Default | Meaning |
 | --- | --- | --- |
 | `QUEUE` | `"webhooks"` | The messaging queue of deliveries. |
-| `MAX_ATTEMPTS` | `12` | Attempts before a delivery is marked failed. |
-| `RETRY_BASE_SECONDS` | `30.0` | First retry delay; it doubles per attempt, with jitter. |
-| `RETRY_MAX_SECONDS` | `21600.0` | Cap on the retry delay (six hours). |
+| `MAX_ATTEMPTS` | `12` | Attempts before a delivery is marked failed (at most 100). |
+| `RETRY_BASE_SECONDS` | `30.0` | First retry delay; it doubles per attempt, with jitter (at most 365 days). |
+| `RETRY_MAX_SECONDS` | `21600.0` | Cap on the retry delay (six hours; at most 365 days). |
 | `TIMEOUT` | `15.0` | Seconds an attempt may take in all (at most 120). Delivery tasks get 30 more for their database work, which must stay under `MESSAGING.VISIBILITY_TIMEOUT`. |
-| `CONNECT_TIMEOUT` | `5.0` | Seconds to connect; at most `TIMEOUT`. |
-| `MAX_RESPONSE_BYTES` | `65536` | Most bytes of an answer read. |
-| `MAX_PAYLOAD_BYTES` | `262144` | Largest body; a larger event is reported and not sent. |
+| `CONNECT_TIMEOUT` | `5.0` | Seconds to connect; at most `TIMEOUT`, and 60. |
+| `MAX_RESPONSE_BYTES` | `65536` | Most bytes of an answer read (at most 10 MiB). |
+| `MAX_PAYLOAD_BYTES` | `262144` | Largest body (1 KiB to 10 MiB); a larger event is reported and not sent. |
 | `ALLOWED_PRIVATE_NETWORKS` | `()` | Private networks receivers may be in. |
 | `CA_BUNDLE` | `None` | Certificates to trust instead of the system's. |
-| `SECRET_OVERLAP_SECONDS` | `86400.0` | How long the old secret still signs after a rotation. |
+| `SECRET_OVERLAP_SECONDS` | `86400.0` | How long the old secret still signs after a rotation (at most 365 days). |
 | `RETENTION_SECONDS` | `2592000.0` | How long finished deliveries are kept (30 days). |
-| `USER_AGENT` | `"domainkit-webhooks"` | The `User-Agent` of deliveries. |
+| `USER_AGENT` | `"domainkit-webhooks"` | The `User-Agent` of deliveries: not empty, and at most 200 characters. |
 
 ## Audit: who did what, when, from where
 
@@ -840,6 +926,20 @@ person (`auditforget`) deletes a key, not a row, so the chain stays intact.
 
 **Upgrading.** The seals table has a new `late` column: run
 `makemigrations` and `migrate` in each project that installs audit.
+
+**Two sealers at once.** One sealer seals a database at a time: on
+PostgreSQL each batch takes a transaction-scoped advisory lock. A sealer
+that finds it taken (`auditseal` run by hand while the worker seals, or
+two outboxes' workers sealing one database) stops at once, logs that
+another sealer is at work, and leaves it the rest; what it sealed before
+stays sealed. Until 0.9.2 it waited for the lock, and failed after
+`LOCK_TIMEOUT`. A run that gives way still counts what waits
+(`audit_unsealed_rows`) and warns past `AUDIT.SEAL_BACKLOG_WARNING`, and
+it warns, whatever the count, once the oldest row waiting is older than
+`AUDIT.SEAL_EVERY` and `AUDIT.SEAL_LATE_WINDOW` together: a sealer at
+work leaves no row that long, so the lock is held by something that does
+not seal (a stuck session, or anyone's `pg_advisory_lock`). Find it in
+`pg_locks` and end it.
 
 ### In staging and production
 
@@ -1097,11 +1197,14 @@ actor, keys are scoped to the client address and a hash of the request's
 `X-API-Key`): list the header your project authenticates with if it is
 another. Add `IdempotencyMiddleware` last in `MIDDLEWARE`: it reads whole
 bodies, which `RequestBodyLimitMiddleware` has already bounded. With
-messaging installed, expired keys are purged hourly; without it, each new
+messaging installed, expired keys are purged hourly; without it, a new
 key deletes up to 100 expired ones once it has claimed its own, skipping
 those another request is deleting (`SKIP LOCKED` on PostgreSQL), so
 concurrent requests never queue behind one another's purge, nor deadlock
-through PgBouncer.
+through PgBouncer. A process does this once a minute, and again on the
+next key while each sweep deletes a full 100, so a backlog drains as
+fast as before; until 0.9.2 every keyed request did it, one more
+statement each.
 
 **What a key costs.** A request claims its key with one statement, an
 upsert that inserts the in-progress row or replaces an expired one, and
@@ -1112,7 +1215,10 @@ own transaction. With authentication and one unit of work on PostgreSQL,
 a first request makes 2 transactions and 4 pool checkouts (16 round
 trips), and a replay 1 transaction and 2 checkouts (10 round trips). ADR
 [0062](adr/0062-claim-idempotency-keys-in-one-statement.md) explains the
-choices.
+choices. The statements are built once per dialect and clock
+(`domainkit.contrib.idempotency.statements`), and each request binds its
+values to them: they send the SQL and parameters that statements built for
+each request sent, for about 1,850 fewer Python calls a keyed write.
 
 | `IDEMPOTENCY` key | Default | Meaning |
 | --- | --- | --- |
@@ -1217,7 +1323,7 @@ receipts always work.
 | `LEDGER` | `"evidence"` | Alias in `LEDGERS` (`immudb://`; `memory://` in tests). |
 | `NAMESPACE` | `"evidence"` | Key prefix, so projects or environments can share one ledger. |
 | `PREVIOUS_NAMESPACES` | `()` | Namespaces used before `NAMESPACE`, whose records `get` and `verify` still read; at most 8, each a namespace as `NAMESPACE` is. |
-| `MAX_BYTES` | `262144` | Largest record; keep documents elsewhere and record their digests. |
+| `MAX_BYTES` | `262144` | Largest record, in bytes (1,024 to 4,000,000); keep documents elsewhere and record their digests. |
 | `SUBJECT_KEY` | `None` | Secret for the subject digests in keys, 32 characters or more. Required in staging and production; elsewhere a public development key is used. Keep it for as long as the evidence: a new key hides earlier records from `for_subject`, though the keys in their receipts still work. |
 
 ## Flags: feature flags and dynamic settings

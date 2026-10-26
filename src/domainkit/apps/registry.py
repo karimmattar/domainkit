@@ -1,26 +1,36 @@
 """The registry of installed domains (``django.apps.apps``)."""
 
 import difflib
+import threading
 from collections.abc import AsyncIterator, Iterable, Iterator
 from contextlib import asynccontextmanager
-from typing import Final, cast
+from typing import Final, NamedTuple, cast
 
 from pydantic import BaseModel, ValidationError
 
 from domainkit.apps.config import DomainConfig
-from domainkit.conf import describe_errors, settings, unwrap_settings
+from domainkit.conf import describe_errors, unwrap_settings
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.utils.closing import close_in_turn
 from domainkit.utils.readiness import failing_checks
 
 
 class DomainRegistry:
-    """Installed domains in ``INSTALLED_DOMAINS`` order."""
+    """Installed domains in ``INSTALLED_DOMAINS`` order.
+
+    Event loops on several threads share it. What it remembers of each
+    domain's settings is changed only with its lock held, and read without
+    it: each entry is one tuple, replaced whole.
+    """
 
     def __init__(self) -> None:
         """Start empty; ``populate`` loads the domains."""
         self._configs: dict[str, DomainConfig] = {}
-        self._settings_cache: dict[type[BaseModel], tuple[object, BaseModel]] = {}
+        self._settings_cache: dict[type[BaseModel], _ValidatedSettings] = {}
+        self._lock = threading.Lock()
+        self.generation = 0
+        """Changes whenever ``populate`` or ``clear`` changes the domains, for
+        caches of what the installed domains decide (``content_type_key``)."""
         self.ready = False
 
     def populate(self, installed: Iterable[str]) -> None:
@@ -39,17 +49,16 @@ class DomainRegistry:
                     f"({configs[config.label].name!r} and {name!r})."
                 )
             configs[config.label] = config
-        self._configs = configs
-        self._settings_cache.clear()
+        self._changed(configs)
         self._check_settings()
+        self._check_requirements()
         for config in configs.values():
             config.ready()
         self.ready = True
 
     def clear(self) -> None:
         """Forget every domain (tests); the next ``populate`` loads them again."""
-        self._configs = {}
-        self._settings_cache.clear()
+        self._changed({})
         self.ready = False
 
     def __iter__(self) -> Iterator[DomainConfig]:
@@ -75,24 +84,54 @@ class DomainRegistry:
         """Return the validated settings of the domain that declares ``settings_class``.
 
         Values are re-validated when ``override_settings`` replaces them.
+        While the settings object is the one they were validated from (it is
+        frozen, and ``override_settings``, ``use_settings``, ``configure``
+        and ``reset_settings`` each put another in its place), the answer is
+        remembered and found in one lookup.
         """
+        cached = self._settings_cache.get(settings_class)
+        if cached is not None and cached.source is unwrap_settings():
+            return cast(S, cached.value)
+        return cast(S, self._validate_settings(settings_class))
+
+    def _validate_settings(self, settings_class: type[BaseModel]) -> BaseModel:
+        """Validate the domain's part of the current settings, and remember it.
+
+        The value is kept while its raw mapping is the same object, as a
+        replacement of other settings leaves it. A value made while the
+        domains changed is returned but not remembered.
+        """
+        generation = self.generation
+        cached = self._settings_cache.get(settings_class)
         config = next((c for c in self if c.settings_class is settings_class), None)
         if config is None:
             raise ImproperlyConfigured(
                 f"No installed domain declares {settings_class.__qualname__}."
             )
-        raw = getattr(settings, config.settings_name, None)
-        cached = self._settings_cache.get(settings_class)
-        if cached is not None and cached[0] is raw:
-            return cast(S, cached[1])
-        try:
-            value = settings_class.model_validate({} if raw is None else raw)
-        except ValidationError as exc:
-            raise ImproperlyConfigured(
-                f"Invalid {config.settings_name} settings:\n{describe_errors(exc)}"
-            ) from None
-        self._settings_cache[settings_class] = (raw, value)
+        current = unwrap_settings()
+        raw = getattr(current, config.settings_name, None)
+        if cached is not None and cached.raw is raw:
+            value = cached.value
+        else:
+            try:
+                value = settings_class.model_validate({} if raw is None else raw)
+            except ValidationError as exc:
+                raise ImproperlyConfigured(
+                    f"Invalid {config.settings_name} settings:\n{describe_errors(exc)}"
+                ) from None
+        with self._lock:
+            if self.generation == generation:
+                self._settings_cache[settings_class] = _ValidatedSettings(
+                    current, raw, value
+                )
         return value
+
+    def _changed(self, configs: dict[str, DomainConfig]) -> None:
+        """Install ``configs``, forget validated settings, and count the change."""
+        with self._lock:
+            self._configs = configs
+            self._settings_cache.clear()
+            self.generation += 1
 
     @asynccontextmanager
     async def lifespan(
@@ -144,6 +183,30 @@ class DomainRegistry:
                 + ", ".join(_describe_unknown(label, labels) for label in unrouted)
                 + "."
             )
+
+    def _check_requirements(self) -> None:
+        """Refuse a domain whose ``requires`` names a package not installed.
+
+        Every missing package is named, in ``INSTALLED_DOMAINS`` order.
+        """
+        installed = {config.name for config in self}
+        if problems := [
+            requirement.problem(config.name)
+            for config in self
+            for requirement in config.requirements()
+            if requirement.name not in installed
+        ]:
+            raise ImproperlyConfigured(" ".join(problems))
+
+
+class _ValidatedSettings(NamedTuple):
+    """A domain's validated settings, and what they were validated from."""
+
+    source: object
+    """The whole settings object (``unwrap_settings()``) read."""
+    raw: object
+    """The domain's raw mapping in it, or None."""
+    value: BaseModel
 
 
 async def _stop(config: DomainConfig) -> None:

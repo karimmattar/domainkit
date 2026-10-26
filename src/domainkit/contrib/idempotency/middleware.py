@@ -46,34 +46,45 @@ import asyncio
 import hashlib
 import logging
 import secrets
-from collections.abc import Callable
-from datetime import timedelta
+import threading
 from typing import Any, Final
 
 from fastapi import status
-from sqlalchemy import Delete, Table, delete, null, select, update
-from sqlalchemy.dialects import postgresql, sqlite
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from domainkit import clock
 from domainkit.apps import registry
 from domainkit.context import current_request
-from domainkit.db import connections, dbclock
+from domainkit.db import connections
 from domainkit.http.errors import error_response
 from domainkit.tasks import spawn
 
+from . import statements
 from .operations import Operation, run_operation
 from .settings import IdempotencySettings
-from .tables import idempotency_keys
+from .statements import RELEASE, STORE, clock_statements, holder
+
+__all__ = [
+    "IdempotencyMiddleware",
+]
 
 logger = logging.getLogger(__name__)
 
 MESSAGING: Final = "domainkit.contrib.messaging"
 PURGE_BATCH: Final = 100
-"""Expired keys deleted with each claim when no worker purges them hourly.
+"""Expired keys one sweep deletes when no worker purges them hourly.
 
 Rows another claim is deleting are skipped (``SKIP LOCKED`` on PostgreSQL),
 so concurrent claims never queue behind one another's purge.
+"""
+SWEEP_EVERY: Final = 60.0
+"""Seconds between sweeps of expired keys by one middleware, once they are few.
+
+Without the hourly purge, a claim sweeps when this long has passed since
+the last sweep, or when the last one deleted a whole ``PURGE_BATCH`` (more
+may be waiting): a backlog drains as fast as when every claim swept, and
+then costs a statement a minute instead of one per keyed request (PERF-10).
 """
 SETTLE_TIMEOUT: Final = 5.0
 """Seconds to store a response or release a key, whatever befalls the request."""
@@ -85,7 +96,7 @@ UNSEEN_BODIES: Final = frozenset(
     {"http.response.pathsend", "http.response.zerocopysend"}
 )
 """ASGI messages that send a body the middleware never sees, so cannot keep."""
-LAPSED: Final = "lapsed"
+LAPSED: Final = statements.LAPSED
 """Read with a held key's row: whether its lease ran out, on the database's clock."""
 
 
@@ -99,12 +110,41 @@ def _hash(*parts: str | bytes) -> str:
     return digest.hexdigest()
 
 
+class Sweeps:
+    """When a claim sweeps expired keys, for one middleware (``SWEEP_EVERY``).
+
+    Shared by every loop and thread that serves the middleware's
+    application, so it takes a lock; time is ``domainkit.clock``'s.
+    """
+
+    def __init__(self) -> None:
+        """Let the first claim sweep."""
+        self._lock = threading.Lock()
+        self._next = float("-inf")
+
+    def due(self) -> bool:
+        """Whether this claim sweeps; if so, the next ones wait ``SWEEP_EVERY``."""
+        with self._lock:
+            now = clock.monotonic()
+            if now < self._next:
+                return False
+            self._next = now + SWEEP_EVERY
+            return True
+
+    def swept(self, deleted: int) -> None:
+        """Let the next claim sweep at once if this sweep found a whole batch."""
+        if deleted >= PURGE_BATCH:
+            with self._lock:
+                self._next = float("-inf")
+
+
 class IdempotencyMiddleware:
     """Store and replay responses of requests carrying ``Idempotency-Key``."""
 
     def __init__(self, app: ASGIApp) -> None:
         """Wrap ``app``."""
         self.app = app
+        self.sweeps = Sweeps()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Run the request once per key; replay or refuse repeats."""
@@ -148,56 +188,44 @@ class IdempotencyMiddleware:
         statement commits as it runs (``connections.autocommit``), so a
         claim is visible at once to every retry, and only one of them
         claims the key. Without the hourly purge, a few expired keys are
-        deleted last: through PgBouncer the statements share a transaction,
-        and a sweep run first would hold its locks while the upsert waited
-        for another claim's, which may wait for this one's.
+        deleted last, when a sweep is due (``Sweeps``): through PgBouncer
+        the statements share a transaction, and a sweep run first would
+        hold its locks while the upsert waited for another claim's, which
+        may wait for this one's.
 
         The times written and compared are the database's (``dbclock``),
         and so is whether a held key's lease ran out, read with its row.
+        The statements are built once (``statements``); only the values are
+        the request's.
         """
         async with connections.autocommit(config.DATABASE) as connection:
-            dialect = connection.dialect.name
-            now = dbclock.now(dialect)
-            claim = _upsert(dialect)(idempotency_keys).values(
-                key_hash=operation.key_hash,
-                fingerprint=fingerprint,
-                created_at=now,
-                expires_at=_later(now, config.TTL_SECONDS),
-                token=operation.token,
-                locked_until=_later(now, config.LEASE_SECONDS),
-                pinned=False,
-            )
-            fresh = claim.excluded
+            built = clock_statements(connection.dialect.name)
+            now = built.now()
             claimed = await connection.scalar(
-                claim.on_conflict_do_update(
-                    index_elements=[idempotency_keys.c.key_hash],
-                    set_={
-                        "fingerprint": fresh.fingerprint,
-                        "status_code": null(),
-                        "headers": null(),  # SQL NULL, not JSON's null.
-                        "body": null(),
-                        "created_at": fresh.created_at,
-                        "expires_at": fresh.expires_at,
-                        "committed_at": null(),
-                        "token": fresh.token,
-                        "locked_until": fresh.locked_until,
-                        "pinned": False,
-                    },
-                    where=idempotency_keys.c.expires_at < now,
-                ).returning(idempotency_keys.c.token)
+                built.claim,
+                built.claim_values(
+                    now,
+                    operation.key_hash,
+                    fingerprint,
+                    operation.token,
+                    config.TTL_SECONDS,
+                    config.LEASE_SECONDS,
+                ),
             )
             row = None
             if claimed is None:
-                lapsed = idempotency_keys.c.locked_until < now
                 row = (
                     await connection.execute(
-                        select(idempotency_keys, lapsed.label(LAPSED)).where(
-                            idempotency_keys.c.key_hash == operation.key_hash
-                        )
+                        built.read_held,
+                        built.read_held_values(now, operation.key_hash),
                     )
                 ).first()
-            if not registry.is_installed(MESSAGING):  # No hourly purge: sweep a few.
-                await connection.execute(_sweep(now))
+            if not registry.is_installed(MESSAGING) and self.sweeps.due():
+                # No hourly purge: sweep a few now and then.
+                swept = await connection.execute(
+                    built.sweep(PURGE_BATCH), built.sweep_values(now)
+                )
+                self.sweeps.swept(swept.rowcount)
         if claimed is not None:
             return None
         return dict(row._mapping) if row is not None else {}
@@ -213,20 +241,16 @@ class IdempotencyMiddleware:
         first.
         """
         async with connections.autocommit(config.DATABASE) as connection:
-            now = dbclock.now(connection.dialect.name)
+            built = clock_statements(connection.dialect.name)
             taken = await connection.execute(
-                update(idempotency_keys)
-                .where(
-                    idempotency_keys.c.key_hash == operation.key_hash,
-                    idempotency_keys.c.token == held_by,
-                    idempotency_keys.c.status_code.is_(None),
-                    idempotency_keys.c.committed_at.is_(None),
-                    idempotency_keys.c.pinned.is_(False),
-                )
-                .values(
-                    token=operation.token,
-                    locked_until=_later(now, config.LEASE_SECONDS),
-                )
+                built.take_over,
+                built.take_over_values(
+                    built.now(),
+                    operation.key_hash,
+                    held_by,
+                    operation.token,
+                    config.LEASE_SECONDS,
+                ),
             )
         return bool(taken.rowcount)
 
@@ -419,15 +443,10 @@ async def _finish(
     so retries learn the request ran. Nothing is written once a retry has
     taken the key over.
     """
+    held = holder(operation.key_hash, operation.token)
     async with connections.autocommit(config.DATABASE) as connection:
         if body is None and not (operation.committed or operation.pinned):
-            released = await connection.execute(
-                delete(idempotency_keys).where(
-                    operation.holds_key(),
-                    idempotency_keys.c.committed_at.is_(None),
-                    idempotency_keys.c.pinned.is_(False),
-                )
-            )
+            released = await connection.execute(RELEASE, held)
             if released.rowcount:
                 return
         headers = {  # ASGI header values are Latin-1 bytes, not always UTF-8.
@@ -436,39 +455,16 @@ async def _finish(
             if name.decode("latin-1").lower() in _STORED_HEADERS
         }
         await connection.execute(
-            update(idempotency_keys)
-            .where(operation.holds_key())
-            .values(
-                status_code=started.get(
+            STORE,
+            {
+                "status_code": started.get(
                     "status", status.HTTP_500_INTERNAL_SERVER_ERROR
                 ),
-                headers=headers,
-                body=body,
-            )
+                "headers": headers,
+                "body": body,
+                **held,
+            },
         )
-
-
-def _sweep(now: dbclock.Moment) -> Delete:
-    """Delete up to ``PURGE_BATCH`` expired keys, skipping those being claimed."""
-    oldest = (
-        select(idempotency_keys.c.key_hash)
-        .where(idempotency_keys.c.expires_at < now)
-        .limit(PURGE_BATCH)
-        .with_for_update(skip_locked=True)
-    )
-    return delete(idempotency_keys).where(
-        idempotency_keys.c.key_hash.in_(oldest.scalar_subquery())
-    )
-
-
-def _later(now: dbclock.Moment, seconds: float) -> dbclock.Moment:
-    """``seconds`` after ``now``, a value or the database's clock in SQL."""
-    return now + timedelta(seconds=seconds)
-
-
-def _upsert(dialect: str) -> Callable[[Table], postgresql.Insert | sqlite.Insert]:
-    """The dialect's ``INSERT`` with ``ON CONFLICT`` (PostgreSQL's or SQLite's)."""
-    return postgresql.insert if dialect == "postgresql" else sqlite.insert
 
 
 def _abandoned(existing: dict[str, Any], fingerprint: str) -> bool:

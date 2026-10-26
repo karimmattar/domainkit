@@ -18,14 +18,22 @@ upgrade one minor release at a time.
 
 These are covered by the policy:
 
-- names exported by a package's `__init__` (`domainkit.ddd`, `domainkit.http`, `domainkit.contrib.messaging`, ...)
+- the names listed in [api.md](api.md): every name a package or module
+  puts in its `__all__` (`domainkit.ddd.Selection`,
+  `domainkit.http.middleware.CORSMiddleware`, ...), and only those. A test
+  keeps the page and the code in step, and fails when another page tells
+  users to import a name that is not listed
 - documented settings and their defaults
 - management commands and their options
 - the generated domain layout (`startdomain`)
 - table schemas of the contrib apps, which change only with a migration in the release
 
-Names starting with `_`, modules not exported from a package, and the exact
-wording of log messages are internal and may change in any release.
+Names starting with `_`, modules without `__all__`, names a module does not
+list in its `__all__`, and the exact wording of log and error messages are
+internal and may change in any release. Until 0.9.2 the rule named only
+what a package's `__init__` exported, which left out most of what the pages
+told users to use, such as the middleware; those are listed now
+([ADR 0076](adr/0076-public-api-is-docs-api-md.md)).
 
 ## Deprecating
 
@@ -49,6 +57,18 @@ A public API is never removed without warning:
 A security fix may break compatibility in a patch release when there is no
 safe alternative. Its changelog entry says so.
 
+A patch release deprecates nothing: a new warning would fail the projects
+that make deprecations errors, as below. When a patch adds a better name,
+the old one stays without a warning, and the next minor release deprecates
+it.
+
+### Deprecations planned for 0.10
+
+| Old name | Use instead | Since |
+| --- | --- | --- |
+| `domainkit.ddd.query.Query` | `domainkit.ddd.Selection` | 0.9.2 |
+| `domainkit.contrib.evidence.model` | `domainkit.contrib.evidence` (or its `models`) | 0.9.2 |
+
 To find deprecated uses before upgrading, make the warning an error in the
 project's pytest settings:
 
@@ -57,12 +77,54 @@ project's pytest settings:
 filterwarnings = ["error::domainkit.deprecation.DomainkitDeprecationWarning"]
 ```
 
+## Security fixes and support
+
+**Draft, for the owner to confirm.** Until it is confirmed,
+[SECURITY.md](../SECURITY.md) holds: only the latest minor release gets
+fixes, and there are no backports before 1.0.
+
+| Release line | Gets | For how long |
+| --- | --- | --- |
+| The latest minor (`0.X`) | Every fix, as patch releases (`0.X.Y`) | Until the next minor is released |
+| The minor before it (`0.X-1`) | Fixes for critical and high severity vulnerabilities only, where the fix can be made without a breaking change | 90 days after the next minor is released |
+| Older minors | Nothing | |
+
+- The severity is the one `SECURITY.md`'s steps confirm; each fix is
+  published as a GitHub security advisory naming the patch releases that
+  carry it.
+- A fix that cannot be backported safely is not: the advisory says so,
+  and says what to upgrade to.
+- Only the newest patch release of a supported line is supported:
+  upgrade within a line as soon as a patch is out.
+- Python versions follow `requires-python`; a Python version that its
+  maintainers stop fixing is dropped in the next minor.
+- 1.0 will state a longer support period for its majors; nothing here
+  promises one before then.
+
 ## Supported Python and dependencies
 
 Each release supports the Python versions in `requires-python` (currently
 3.13 and later) and declares compatible ranges for FastAPI, Pydantic,
 SQLAlchemy, Alembic, and the database drivers. Raising a minimum version is
 a minor-release change and appears in the changelog.
+
+The ranges follow one rule (ADR 0075): from the oldest version CI tests up
+to the dependency's next major version, `<1.0.0` for one still at 0.x.
+SQLAlchemy stops before its next minor (`<2.2`), since its second number
+marks API changes; `tzdata`, being data, has no top. Nothing is pinned
+with `==`. The lock file pins the set CI's jobs test; the `newest` job
+installs the wheel with the newest releases the ranges allow and runs the
+suite, and the `oldest` job does the same at every range's floor, on every
+pull request and weekly. When an upstream release breaks the newest, the
+next patch release fixes domainkit or lowers that range's top.
+Renovate widens a range when a new major appears, once CI passes with it.
+
+Every package the code imports is declared, even one that another
+dependency already installs (anyio through Starlette, pydantic-core through
+pydantic): in the dependencies when the core imports it, otherwise in the
+extra of the feature that does (`aiormq` in `rabbitmq`, `httpcore2` in
+`httpclient`, `grpcio` and `ecdsa` in `immudb`). CI's lint job checks it
+with deptry (`[tool.deptry]` in `pyproject.toml`).
 
 ## Making a release
 
@@ -72,10 +134,15 @@ a minor-release change and appears in the changelog.
 4. Tag that commit `vX.Y.Z` and push the tag. `.github/workflows/release.yml`
    then:
    - checks that the tag matches the version and is on a commit of `main`,
-     so only reviewed changes are released;
+     so only changes that passed CI in a pull request are released;
    - runs the whole CI workflow on that commit: lint, types, tests on every
-     Python, integration against real servers, coverage, the wheel's smoke
-     test, pip-audit, and gitleaks;
+     Python, integration against real servers, coverage, the benchmark
+     ladder, the wheel's smoke test and bill of materials, Semgrep,
+     pip-audit, and gitleaks;
+   - attests the wheel and sdist with SLSA build provenance, and the wheel's
+     CycloneDX bill of materials, signed through GitHub (check one with
+     `gh attestation verify domainkit-X.Y.Z-py3-none-any.whl --repo
+     karimmattar/domainkit`);
    - waits for a reviewer to approve the `pypi` environment;
    - publishes the wheel and sdist that CI built to PyPI, with attestations.
 
@@ -87,13 +154,32 @@ One-time setup, before the first release:
   so a pushed tag cannot publish without approval. Limit its deployments to
   `v*` tags. The workflow cannot check these settings: without them, a tag
   that passes CI publishes at once.
-- Add a tag ruleset for `v*`, so only maintainers can create, move, or
-  delete release tags.
-- Protect `main` with a branch ruleset: changes through pull requests, with
-  the `lint`, `test (3.13)`, `test (3.14)`, `integration`, `coverage`,
-  `build`, and `audit` checks passing.
-  Require code owner review once there is a second maintainer: GitHub does
-  not let authors approve their own pull requests, so a sole maintainer
-  would bypass the ruleset on every merge, skipping the checks too.
+- Import the three rulesets in `.github/rulesets/` (Settings, Rules,
+  Rulesets, New ruleset, Import a ruleset), and delete the ones they
+  replace. With the GitHub CLI, `gh api --method POST
+  repos/OWNER/REPO/rulesets --input .github/rulesets/main.json` creates
+  one, and `--method PUT repos/OWNER/REPO/rulesets/ID` replaces one.
+  - `main.json`: changes reach `main` only as squash-merged pull requests,
+    up to date with it, with these checks from GitHub Actions passing:
+    `lint`, `test (3.13)`, `test (3.14)`, `test (3.14t)`, `integration`,
+    `bench`, `coverage`, `build`, `sbom`, `semgrep`, and `audit`. Nobody
+    pushes to `main` or rewrites it; an admin may bypass the rules only
+    when merging a pull request, a choice GitHub records. The `newest` and
+    `oldest` jobs run on pull requests too but are not required: what
+    upstream releases is not the change's doing. `domainkit_tests/test_ci.py` checks that the
+    list is every other job a pull request runs, and is this one.
+  - `release-tags.json`: nobody, admins included, moves or deletes a `v*`
+    tag.
+  - `release-tag-creation.json`: only admins create `v*` tags.
+- The `main` ruleset requires no approving review while there is one
+  maintainer: GitHub does not let authors approve their own pull requests,
+  so requiring one would make every merge a bypass, skipping the checks
+  too. With a second maintainer, set `required_approving_review_count` to
+  1 and `require_code_owner_review` and `require_last_push_approval` to
+  `true` in `main.json`, and import it again.
+- Renovate proposes dependency updates (`renovate.json`). Turn off
+  Dependabot's security update pull requests (Settings, Advanced
+  Security), keeping its alerts and the dependency graph, so that one bot
+  proposes changes.
 - Turn on private vulnerability reporting, which `SECURITY.md` asks
   reporters to use.

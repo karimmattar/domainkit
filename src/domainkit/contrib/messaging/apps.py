@@ -28,6 +28,7 @@ class MessagingConfig(DomainConfig):
     label = "messaging"
     verbose_name = "Messaging"
     settings_class = MessagingSettings
+    requires = ()
 
     def ready(self) -> None:
         """Check the home outbox and broker; expose gauges with Prometheus.

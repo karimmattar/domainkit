@@ -32,11 +32,15 @@ round trips are statements, transactions, checkouts and pings.
 | `default-json` | `DEFAULT_MIDDLEWARE`, JSON access log: `GET /hello` | 1,965 → 746 | 0/0/0/0 → 0/0/0/0 | 304 → 207 |
 | `template` | The `init` template's stack: `GET /hello` | 2,018 → 714 | 0/0/0/0 → 0/0/0/0 | 422 → 179 |
 | `template-json` | The template's stack, JSON access log: `GET /hello` | 2,158 → 859 | 0/0/0/0 → 0/0/0/0 | 389 → 224 |
-| `me` | Template stack, opaque token: `GET /me` | 5,892 → 1,194 | 5/1/1/1 → 0/0/0/0 | 5,007 → 341 |
-| `read` | Template stack, token, `ModelPermissions`, read through a unit of work: `GET /items/{id}` | 7,359 → 2,439 | 6/2/2/2 → 1/1/1/1 | 6,481 → 2,087 |
-| `write` | Template stack, token, `ModelPermissions`, write through a unit of work: `POST /items` | 7,648 → 2,812 | 6/2/2/2 → 1/1/1/1 | 7,567 → 2,167 |
-| `keyed-write` | The write with an `Idempotency-Key` (`IdempotencyMiddleware` last): `POST /items` | 10,977 → 5,810 | 10/5/5/5 → 4/3/3/3 | 11,839 → 5,829 |
-| `throttled` | Template stack, token, refused by `RATE_LIMIT` (429): `GET /me` | 4,401 → 1,036 | 5/1/1/1 → 0/0/0/0 | 4,842 → 391 |
+| `me` | Template stack, opaque token: `GET /me` | 5,892 → 1,181 | 5/1/1/1 → 0/0/0/0 | 5,007 → 341 |
+| `read` | Template stack, token, `ModelPermissions`, read through a unit of work: `GET /items/{id}` | 7,359 → 2,261 | 6/2/2/2 → 1/1/1/1 | 6,481 → 2,087 |
+| `write` | Template stack, token, `ModelPermissions`, write through a unit of work: `POST /items` | 7,648 → 2,595 | 6/2/2/2 → 1/1/1/1 | 7,567 → 2,167 |
+| `keyed-write` | The write with an `Idempotency-Key` (`IdempotencyMiddleware` last): `POST /items` | 10,977 → 4,044 | 10/5/5/5 → 4/3/3/3 | 11,839 → 5,829 |
+| `throttled` | Template stack, token, refused by `RATE_LIMIT` (429): `GET /me` | 4,401 → 1,013 | 5/1/1/1 → 0/0/0/0 | 4,842 → 391 |
+
+The calls of `me` to `throttled` are 0.9.2's
+([work done once](#092-work-done-once-instead-of-per-request)); the CPU
+times are 0.9.1's.
 
 - **Calls** are the Python function calls cProfile counts per request,
   built-in ones included, in every thread: the JSON access log is
@@ -247,7 +251,8 @@ interleaved (`--baseline ../base/src --baseline-python ...`):
   the routes of each one a request passes: `/hello` behind the template's
   routers costs 1,668 calls (`bare`), and 488 when mounted before them.
   That is the largest single cost of a light request, and what flattening
-  routers (PERF-04) saves.
+  routers (PERF-04 of the [performance re-audit](audit/0.9.0.md#the-performance-re-audit))
+  saves.
 
 The ladder's budgets were first set from these figures, 0.8.0 on this
 release's dependencies; they now hold this release's own counts, the
@@ -697,3 +702,71 @@ the same on both.
   `jsonable_encoder` makes a float of a bare `Decimal`, and pydantic a
   string. Where the bytes must stay as they are, give the route
   `response_class=JSONResponse` instead ([reference.md](reference.md#json-responses)).
+
+### 0.9.2: work done once instead of per request
+
+The audit of 0.9.0 found work on the request path that does not depend on
+the request: content types worked out again, domain settings looked up
+again, read-only engines and the idempotency statements built again, and
+the access line's caller found by walking the stack. 0.9.2 does each once,
+and works it out again only when what it depends on changes. Round trips
+did not move on any rung. Measured with the ladder against 0.9.1
+(`--baseline`), each rung's two sides interleaved:
+
+| Rung | Calls, 0.9.1 | Calls, 0.9.2 | Change |
+| --- | ---: | ---: | --- |
+| `default-json` | 751 | 741 | -10 (access line; the logging thread's waits vary) |
+| `template-json` | 871 | 856 | -15 (access line) |
+| `me` | 1,193 | 1,181 | -1% |
+| `read` | 2,439 | 2,261 | -7.3% |
+| `write` | 2,815 | 2,595 | -7.8% |
+| `keyed-write` | 5,880 | 4,044 | -31% |
+| `throttled` | 1,039 | 1,013 | -2.5% |
+
+The rungs without authentication or a database count the same calls.
+In two interleaved runs (load average 2 to 5), the keyed write took
+3,548 and 3,788 µs of CPU against 5,001 and 5,073 (-25% to -29%), the
+read 1,541 and 1,511 against 1,710 and 1,531, and the write 1,658 and
+1,833 against 1,908 and 1,967: lower in both runs, by less than this
+machine's noise for the read. `me` and `throttled` moved within noise.
+The JSON-log rungs count 10 to 15 calls fewer in each run, but vary by more
+than that from run to run with the logging thread's waits (728 to 743
+for `default-json`), so their budgets stay as they were.
+
+- **Content types** (`ModelPermissions`, PERF-01). `content_type_key`
+  sorted every mapper and read every class's `Meta` to find one class's
+  key: about 170 calls a request with the ladder's six mapped classes, and
+  ten times that with sixty. The keys are now worked out once, kept with
+  the state they were worked out in (`registry.generation`, which
+  `populate` and `clear` move; a count of classes mapped and tables
+  attached, from SQLAlchemy's events; the number of the project's tables,
+  which falls when one is removed), and worked out again when it changes,
+  by one thread at a time. Classes unmapped by `registry.dispose()` are
+  not seen until `registry.clear()`.
+- **Domain settings** (`registry.settings`, `auth_settings`, PERF-06).
+  Each of its 2 to 8 calls a request walked the domains and read the raw
+  settings through the lazy proxy; it now answers from the settings object
+  it validated from while that is the current one. Every way of changing
+  settings replaces that object, so overrides in tests are seen at once.
+- **Read-only engines** (PERF-07). A read-only session no longer builds an
+  `OptionEngine` of its own: each loop's engine keeps one for
+  `TRANSACTION` and one for `SNAPSHOT`. A read-only unit of work with one
+  `SELECT` makes 917 calls instead of 1,129 on PostgreSQL, and 1,601
+  instead of 1,701 on SQLite. `connections.autocommit()` keeps setting
+  `AUTOCOMMIT` on its connection: an engine made once with it cost 26
+  calls a use more (664 instead of 638), as its connections join two
+  event dispatchers.
+- **Idempotency statements** (PERF-12). The claim, the read of a held
+  key, the take-over, the sweep, the store or release, the pin and the
+  commit mark are built once per dialect and clock, with each request's
+  values bound; they send the SQL text and parameters the statements
+  built for each request sent, which the tests check on asyncpg, psycopg
+  and aiosqlite, on both clocks. No SQLAlchemy statement is built on the
+  keyed write's path any more.
+- **The access line** (PERF-18). `log_enabled` makes the record
+  `Logger.log` makes, field for field, without asking the level again or
+  walking the stack: 15 calls and about 2.5 µs of the caller's 16 µs a
+  line, measured alone, and the same bytes from every formatter. Turning
+  off `logging.logThreads`, `logProcesses` and `logMultiprocessing`, as the
+  audit proposed, would save 7 more calls, but it empties fields a
+  project's own formatter may print, so it is not done.

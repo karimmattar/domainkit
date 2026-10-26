@@ -28,6 +28,7 @@ import math
 import os
 import queue
 import random
+import sys
 import threading
 import time
 import weakref
@@ -42,6 +43,23 @@ from domainkit import clock
 from domainkit.context import current_request
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.tracing import current_ids
+
+__all__ = [
+    "WARNING_RESERVE",
+    "BackgroundHandler",
+    "BackgroundListener",
+    "ContextFilter",
+    "JsonFormatter",
+    "TextFormatter",
+    "ThrottledLog",
+    "aflush_logs",
+    "aflush_throttled",
+    "build_logging_config",
+    "configure_logging",
+    "flush_logs",
+    "flush_throttled",
+    "log_enabled",
+]
 
 SECURITY_LOGGER: Final = "domainkit.security"
 """Rejected requests and other security events (``django.security``)."""
@@ -143,6 +161,39 @@ class AccessSampler:
         if status is None or status >= ALWAYS_LOGGED_FROM or seconds >= self.slow:
             return True
         return self._draw() < self.rate
+
+
+def log_enabled(
+    logger: logging.Logger,
+    level: int,
+    msg: str,
+    *args: object,
+    extra: Mapping[str, object] | None = None,
+) -> None:
+    """``logger.log(level, msg, *args, extra=extra)``, once ``isEnabledFor`` said yes.
+
+    The record is the one ``Logger.log`` makes, field for field, so every
+    formatter writes the same line; it is made with less work. The caller
+    already asked whether the level is enabled, so it is not asked again,
+    and the caller's file, line and function are read from its frame, the
+    one ``Logger.findCaller`` would stop at, rather than found by walking
+    the stack past ``logging``'s own frames. A logger of a class of its own
+    (``logging.setLoggerClass``) logs through its own ``log``.
+    """
+    if type(logger) is not logging.Logger:
+        logger.log(level, msg, *args, extra=extra, stacklevel=2)
+        return
+    if logging._srcfile:
+        caller = sys._getframe(1)
+        code = caller.f_code
+        path, line, function = code.co_filename, caller.f_lineno, code.co_name
+    else:
+        path, line, function = "(unknown file)", 0, "(unknown function)"
+    logger.handle(
+        logger.makeRecord(
+            logger.name, level, path, line, msg, args, None, function, extra, None
+        )
+    )
 
 
 THROTTLE_INTERVAL: Final = 10.0
@@ -590,7 +641,7 @@ class BackgroundHandler(logging.handlers.QueueHandler):
         if not listener.running:
             listener.start()
         level = record.levelno
-        unreported = self._take_unreported()
+        unreported = self._take_unreported() if self._unreported else None
         if unreported is not None and not (
             self._room(level, 2) and self._offer(self._drop_notice(unreported))
         ):

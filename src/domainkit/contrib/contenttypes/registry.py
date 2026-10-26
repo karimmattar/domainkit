@@ -1,8 +1,19 @@
-"""Which classes are content types: those mapped onto installed domains' tables."""
+"""Which classes are content types: those mapped onto installed domains' tables.
 
+``content_type_key`` runs on every request a ``ModelPermissions`` rule
+guards, so it remembers every class's key, worked out once from
+``installed_models``. It works them out again after anything that could
+change them: ``registry.populate`` or ``clear``, a class mapped, a table
+added to or removed from the project's metadata. Event loops on several
+threads share what it remembers, which only changes with its lock held.
+"""
+
+import threading
 from dataclasses import dataclass
+from typing import Final
 
-from sqlalchemy import Table
+from sqlalchemy import Table, event
+from sqlalchemy.orm import Mapper
 
 from domainkit.apps import DomainConfig, registry
 from domainkit.db import mapper_registry, metadata
@@ -53,10 +64,66 @@ def content_type_key(cls: type) -> tuple[str, str]:
     Raises:
         LookupError: ``cls`` is not a class of an installed domain.
     """
-    for model in installed_models():
-        if model.cls is cls:
-            return model.key
-    raise LookupError(f"{cls.__qualname__} is not mapped in an installed domain.")
+    try:
+        return _keys()[cls]
+    except KeyError:
+        raise LookupError(
+            f"{cls.__qualname__} is not mapped in an installed domain."
+        ) from None
+
+
+type _State = tuple[int, int, int]
+"""What ``installed_models`` reads that may change, cheap to compare."""
+
+_lock: Final = threading.Lock()
+"""Held while the keys are worked out and replaced."""
+_counting: Final = threading.Lock()
+_mappings = 0
+"""Classes mapped and tables attached to a metadata since import, by any registry."""
+_known: tuple[_State | None, dict[type, tuple[str, str]]] = (None, {})
+"""Each class's key, and the state it was worked out in; replaced whole."""
+
+
+def _keys() -> dict[type, tuple[str, str]]:
+    """Every content type's key by class, worked out again if the state changed.
+
+    The state is read before the keys are worked out: a change made
+    meanwhile leaves a state that no longer matches, so the next call
+    works them out again.
+    """
+    global _known
+    state = _state()
+    known = _known
+    if known[0] == state:
+        return known[1]
+    with _lock:
+        state = _state()
+        if _known[0] != state:
+            _known = (state, {model.cls: model.key for model in installed_models()})
+        return _known[1]
+
+
+def _state() -> _State:
+    """What decides the keys: the domains, the mappings, and the project's tables.
+
+    ``registry.generation`` moves with ``populate`` and ``clear``; mappings
+    and tables attached anywhere are counted (``_mapped``); the count of the
+    project's tables changes when one is removed. Classes unmapped by
+    ``registry.dispose()`` or ``clear_mappers()`` are not seen until
+    ``registry.clear()``.
+    """
+    return (registry.generation, len(metadata.tables), _mappings)
+
+
+def _mapped(*args: object) -> None:
+    """Count a class mapped or a table attached: the keys may change."""
+    global _mappings
+    with _counting:
+        _mappings += 1
+
+
+event.listen(Mapper, "after_mapper_constructed", _mapped)
+event.listen(Table, "after_parent_attach", _mapped)
 
 
 def _owner(table: Table, cls: type) -> DomainConfig | None:

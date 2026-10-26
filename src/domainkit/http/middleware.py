@@ -40,8 +40,24 @@ from domainkit.http.errors import (
     error_response,
     refusal_reason,
 )
-from domainkit.log import ACCESS_LOGGER, SECURITY_LOGGER, AccessSampler, ThrottledLog
+from domainkit.log import (
+    ACCESS_LOGGER,
+    SECURITY_LOGGER,
+    AccessSampler,
+    ThrottledLog,
+    log_enabled,
+)
 from domainkit.reporting import report_error
+
+__all__ = [
+    "AllowedHostsMiddleware",
+    "CORSMiddleware",
+    "ProxyHeadersMiddleware",
+    "RequestBodyLimitMiddleware",
+    "RequestContextMiddleware",
+    "SecurityHeadersMiddleware",
+    "request_path",
+]
 
 REQUEST_ID_HEADER: Final = "X-Request-ID"
 _REQUEST_ID_NAME: Final = REQUEST_ID_HEADER.lower().encode("latin-1")
@@ -578,7 +594,8 @@ class RequestContextMiddleware:
         if not self.sampler.keep(response_status, seconds):
             return
         duration_ms = round(seconds * 1000, 1)
-        access_logger.log(
+        log_enabled(
+            access_logger,
             level,
             "%s %s %s %.1fms",
             context.method,

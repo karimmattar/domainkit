@@ -66,35 +66,35 @@ checkouts = 0
 pings = 0
 
 [rungs.me]
-calls = 1194
+calls = 1181
 statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
 
 [rungs.read]
-calls = 2440
+calls = 2261
 statements = 1
 transactions = 1
 checkouts = 1
 pings = 1
 
 [rungs.write]
-calls = 2813
+calls = 2595
 statements = 1
 transactions = 1
 checkouts = 1
 pings = 1
 
 [rungs.keyed-write]
-calls = 5810
+calls = 4044
 statements = 4
 transactions = 3
 checkouts = 3
 pings = 3
 
 [rungs.throttled]
-calls = 1036
+calls = 1013
 statements = 0
 transactions = 0
 checkouts = 0

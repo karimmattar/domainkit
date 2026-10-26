@@ -1,6 +1,7 @@
 """Management commands: discovery, dispatch, and the built-in commands."""
 
 import io
+import logging
 import os
 import subprocess
 import sys
@@ -396,6 +397,19 @@ def test_startdomain_generates_a_working_domain(
         "  4. python manage.py migrate\n"
         "  5. Grant shop.view_orderline (and add_, change_, delete_) to the users "
         "or groups that need them; superusers have them.\n"
+        "  6. python manage.py runserver; then, from another shell, log in as a "
+        "superuser, typing its password at the prompt, and list the order lines:\n"
+        '       read -rsp "Password: " PASSWORD && export PASSWORD\n'
+        '       TOKEN=$(python -c "import json, os; '
+        "print(json.dumps({'username': '<username>', "
+        """'password': os.environ['PASSWORD']}))" """
+        "| curl -s http://127.0.0.1:8000/auth/login "
+        '-H "Content-Type: application/json" -d @- '
+        '| python -c "import json, sys; '
+        """print(json.load(sys.stdin)['access_token'])")\n"""
+        "       unset PASSWORD\n"
+        "       curl http://127.0.0.1:8000/api/v1/shop/order_lines "
+        '-H "Authorization: Bearer $TOKEN"\n'
     )
     assert sorted(
         path.relative_to(package).as_posix() for path in package.rglob("*.py")
@@ -466,11 +480,40 @@ def test_startdomain_creates_test_packages_inside_the_project(
     assert (tests / "__init__.py").is_file()
 
 
-def test_format_python_needs_ruff(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Formatting is skipped when ruff is not installed."""
+def test_format_python_needs_ruff(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Formatting is skipped when ruff is not installed, with a warning saying so."""
     monkeypatch.setattr(formatting, "find_spec", lambda name: None)
 
-    assert formatting.format_python([Path("x.py")]) is False
+    with caplog.at_level(logging.WARNING, logger="domainkit.utils.formatting"):
+        assert formatting.format_python([Path("x.py")]) is False
+
+    assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
+        (logging.WARNING, formatting.UNFORMATTED)
+    ]
+    assert "ruff check --fix . && ruff format ." in formatting.UNFORMATTED
+
+
+def test_format_python_formats_nothing_without_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """No paths, no ruff: given none, ruff would format the whole directory.
+
+    ``makemigrations`` with no changes passes no paths; the user's own code
+    in the working directory stays as it is, and nothing is logged.
+    """
+    mine = tmp_path / "mine.py"
+    mine.write_text("import sys, os\nx = { 'a':1 }\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    with caplog.at_level(logging.DEBUG, logger="domainkit.utils.formatting"):
+        assert formatting.format_python([]) is False
+        monkeypatch.setattr(formatting, "find_spec", lambda name: None)
+        assert formatting.format_python(iter([])) is False
+
+    assert mine.read_text(encoding="utf-8") == "import sys, os\nx = { 'a':1 }\n"
+    assert not caplog.records
 
 
 def test_render_copies_plain_files_and_skips_caches(tmp_path: Path) -> None:
@@ -559,3 +602,34 @@ async def test_migrations_run_from_async_code(migration_project: Path) -> None:
     migrations_module.upgrade()
 
     assert [revision.applied for revision in migrations_module.status()] == [True]
+
+
+def test_startdomain_next_steps_leave_out_what_it_did(tmp_path: Path) -> None:
+    """Installed and mounted: the steps start at the migration, end at the curl."""
+    context = startdomain.template_context("invoices", "domains", "Invoice", None)
+    done = ["Added 'domains.invoices' to INSTALLED_DOMAINS in base.py."]
+
+    output = startdomain._next_steps(context, tmp_path / "p", tmp_path / "t", done)
+
+    assert output.splitlines() == [
+        f"Created {tmp_path / 'p'} and {tmp_path / 't'}.",
+        *done,
+        "Next steps:",
+        '  1. python manage.py makemigrations -m "create invoices"',
+        "  2. python manage.py migrate",
+        (
+            "  3. Grant invoices.view_invoice (and add_, change_, delete_) to the "
+            "users or groups that need them; superusers have them."
+        ),
+        (
+            "  4. python manage.py runserver; then, from another shell, log in as "
+            "a superuser, typing its password at the prompt, and list the invoices:"
+        ),
+        f"       {startdomain.PROMPT_LINE}",
+        f"       {startdomain.LOGIN_CURL}",
+        f"       {startdomain.UNSET_LINE}",
+        (
+            "       curl http://127.0.0.1:8000/api/v1/invoices/invoices "
+            '-H "Authorization: Bearer $TOKEN"'
+        ),
+    ]

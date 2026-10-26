@@ -38,13 +38,22 @@ from collections.abc import Coroutine, Iterable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from itertools import batched
 from typing import TYPE_CHECKING, Any, Final
 from weakref import WeakKeyDictionary
 
 from pydantic import ValidationError
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import (
+    DateTime,
+    Delete,
+    delete,
+    func,
+    literal,
+    or_,
+    select,
+    update,
+)
 from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -81,10 +90,10 @@ from .retry import Backoff, retryable
 from .settings import MessagingSettings
 from .tables import (
     BLANKED,
-    CANCELLED,
     DEAD,
     DEFAULT_QUEUE,
     DONE,
+    FINISHED,
     PENDING,
     SENSITIVE,
     messages,
@@ -329,6 +338,54 @@ class Outage:
             self.failures = 0
 
 
+class Wake(asyncio.Event):
+    """Ends an idle worker's wait: a commit, the stop, or the next poll.
+
+    ``listening`` is true while ``listen`` holds a connection that hears
+    commits to this outbox, and false before, after, and between them.
+    """
+
+    def __init__(self) -> None:
+        """Start unset, and not listening."""
+        super().__init__()
+        self.listening = False
+
+
+class IdlePolls:
+    """How long an idle worker waits before it polls again (PERF-08).
+
+    While a listener hears commits, each poll that finds nothing doubles
+    the next wait, from ``POLL_INTERVAL`` up to ``POLL_INTERVAL_IDLE``, and
+    a claim or a wake-up starts again from ``POLL_INTERVAL``. Without a
+    listener, or without ``POLL_INTERVAL_IDLE``, every wait is
+    ``POLL_INTERVAL``. A message that becomes due with nobody told, a
+    notification that never arrives included, waits ``POLL_INTERVAL_IDLE``
+    at most.
+    """
+
+    def __init__(self, config: MessagingSettings) -> None:
+        """Wait ``POLL_INTERVAL`` first."""
+        self.first = config.POLL_INTERVAL
+        self.most = config.POLL_INTERVAL_IDLE or config.POLL_INTERVAL
+        self._next = self.first
+
+    def wait(self, listening: bool) -> float:
+        """Seconds to wait after a poll that found nothing more to do.
+
+        ``listening``: whether a listener hears commits right now.
+        """
+        if not listening:
+            self._next = self.first
+            return self.first
+        wait = self._next
+        self._next = min(wait * 2.0, self.most)
+        return wait
+
+    def reset(self) -> None:
+        """Wait ``POLL_INTERVAL`` next: there was work, or a commit."""
+        self._next = self.first
+
+
 async def finish(tasks: set[asyncio.Task[None]], grace: float) -> None:
     """Give ``tasks`` ``grace`` seconds to end, then cancel and await the rest."""
     if tasks and grace > 0:
@@ -423,7 +480,8 @@ class Worker:
         messages are cleaned up meanwhile, and on PostgreSQL commits wake
         the worker between polls.
         """
-        wake = asyncio.Event()
+        wake = Wake()
+        polls = IdlePolls(self.config)
         running: set[asyncio.Task[None]] = set()
         outage = self.outage()
         async with asyncio.TaskGroup() as group:
@@ -457,9 +515,13 @@ class Worker:
                         task = group.create_task(self._process_holding(message))
                         running.add(task)
                         task.add_done_callback(running.discard)
+                    if claimed:
+                        polls.reset()
                     if len(claimed) < slots:
                         # Nothing more is due: wait for a poll, a commit, or stop.
-                        await pause(wake, self.config.POLL_INTERVAL)
+                        await pause(wake, polls.wait(wake.listening))
+                        if wake.is_set():
+                            polls.reset()
                 await finish(running, self.config.SHUTDOWN_TIMEOUT)
                 await wind_down(helpers, HELPER_GRACE)
             finally:
@@ -1060,17 +1122,7 @@ class Worker:
         deleted = 0
         while stop is None or not stop.is_set():
             size = self._cleanup_batch
-            old = (
-                select(messages.c.id)
-                .where(
-                    messages.c.status.in_((DONE, CANCELLED)),
-                    messages.c.finished_at
-                    < dbclock.at(dialect, -self.config.RETENTION_SECONDS),
-                )
-                .limit(size)
-                .with_for_update(skip_locked=True)
-            )
-            statement = delete(messages).where(messages.c.id.in_(old.scalar_subquery()))
+            statement = self.cleanup_statement(dialect, size)
             try:
                 async with self.engine.begin() as connection:
                     count = int((await connection.execute(statement)).rowcount)
@@ -1082,6 +1134,37 @@ class Worker:
                 break
             self._cleanup_batch = min(size * 2, self.config.CLEANUP_BATCH_SIZE)
         return deleted
+
+    def cleanup_statement(self, dialect: str, size: int) -> Delete:
+        """The ``DELETE`` of up to ``size`` messages past ``RETENTION_SECONDS``.
+
+        Done and cancelled ones only, found through their partial index
+        (``FINISHED_INDEX``), oldest first as the index holds them. The
+        statuses, the retention, and the size are written into the SQL, not
+        bound: a prepared statement's generic plan cannot match bound
+        statuses to the index's condition, nor estimate a bound cutoff or
+        limit, and scans the whole outbox instead (PERF-02).
+        """
+        retention = timedelta(seconds=-self.config.RETENTION_SECONDS)
+        cutoff: dbclock.Moment
+        if dbclock.uses_database(dialect):
+            cutoff = func.statement_timestamp(type_=DateTime(timezone=True)) + literal(
+                retention, literal_execute=True
+            )
+        else:
+            cutoff = dbclock.at(dialect, retention.total_seconds())
+        old = (
+            select(messages.c.id)
+            .where(
+                messages.c.status.in_(
+                    [literal(status, literal_execute=True) for status in FINISHED]
+                ),
+                messages.c.finished_at < cutoff,
+            )
+            .limit(literal(size, literal_execute=True))
+            .with_for_update(skip_locked=True)
+        )
+        return delete(messages).where(messages.c.id.in_(old.scalar_subquery()))
 
     async def run_cleanup_when_due(self) -> None:
         """Run ``cleanup`` every ``CLEANUP_INTERVAL`` seconds.
@@ -1188,13 +1271,21 @@ class Worker:
                 raw.add_termination_listener(lambda _: lost.set())
                 await raw.add_listener(CHANNEL, notified)
                 failures.recovered()
+                _hearing(wake, True)
                 wake.set()  # Commits made before this went unheard: look now.
                 await _first(stop, lost)
             finally:
+                _hearing(wake, False)  # Polls go back to POLL_INTERVAL.
                 # Never hand a listening connection back to the pool.
                 await connection.invalidate()
         if lost.is_set() and not stop.is_set():
             raise ConnectionError("The connection listening for messages was lost.")
+
+
+def _hearing(wake: asyncio.Event, listening: bool) -> None:
+    """Tell ``wake`` (a ``Wake``) whether a listener hears commits for it."""
+    if isinstance(wake, Wake):
+        wake.listening = listening
 
 
 async def set_when(event: asyncio.Event, then: asyncio.Event) -> None:
