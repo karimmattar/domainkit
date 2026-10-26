@@ -23,6 +23,7 @@ import ipaddress
 import logging
 import os
 import re
+import threading
 import time
 from collections.abc import Callable, Iterable, Sequence
 from typing import Final
@@ -882,6 +883,8 @@ class RequestBodyLimitMiddleware:
         """The largest body limit a route of the application sets; 0: none does.
 
         Worked out at the first request, from ``scope["app"]``'s routes."""
+        self._lock = threading.Lock()
+        """Guards working ``_largest`` out, once, whichever thread asks first."""
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Check ``Content-Length`` first, then count streamed bytes."""
@@ -892,10 +895,8 @@ class RequestBodyLimitMiddleware:
             await self.app(scope, receive, send)
             return
         largest = self._largest
-        if largest is None:  # Once: the application's routes are complete.
-            largest = self._largest = largest_body_limit(
-                getattr(scope.get("app"), "routes", ())
-            )
+        if largest is None:
+            largest = self._largest_of(scope)
         # No route sets a limit of its own: the global one, as it always was.
         limit = self.max_body_size if not largest else None
         declared = _header(scope, b"content-length")
@@ -992,6 +993,19 @@ class RequestBodyLimitMiddleware:
                 await send(message)
 
         await self.app(scope, limited_receive, open_send)
+
+    def _largest_of(self, scope: Scope) -> int:
+        """``_largest``, worked out once from the application's routes.
+
+        They are complete by the first request (ADR 0060). Loops on several
+        threads may ask at once: one works it out, under the lock.
+        """
+        with self._lock:
+            if self._largest is None:
+                self._largest = largest_body_limit(
+                    getattr(scope.get("app"), "routes", ())
+                )
+            return self._largest
 
     def _route_limit(self, scope: Scope) -> int:
         """The body limit of the route serving ``scope``: its own, or the global.
