@@ -104,7 +104,8 @@ from the scope when asked.
   that value would fail their `check --deploy` for having done so. The
   other opt-outs that keep an earlier default (`REQUIRE_ROUTE_RULES =
   False`, `SCOPED_CREDENTIALS = "warn"`) do not warn either. The flip
-  failed 58 of the suite's tests, each a keyed request that named no
-  caller: those about per-address keys now set `"per-address"`, and the
-  others, about what keys do, name a caller with a credential header, as
-  a project's own authentication would.
+  failed 59 of the suite's tests and errored 10 through one fixture, each
+  on a keyed request that named no caller (0.10 had counted 63 and 8):
+  those about per-address keys now set `"per-address"`, and the others,
+  about what keys do, name a caller with a credential header, as a
+  project's own authentication would.
