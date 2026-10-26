@@ -164,21 +164,26 @@ def test_check_lists_weak_deployment_choices() -> None:
         "ENVIRONMENT": "production",
         "SECURE_HSTS_SECONDS": 0,
         "CACHES": BOUNDED_CACHES,
+        "SILENCED_CHECKS": ["deploy.W005"],  # The tests' SQLite database.
     }
     with override_settings(**production):
         assert run("check") == (
-            "System check identified no issues and 3 warnings. Domains: alpha.\n"
-            "  Warning: API_DOCS publishes /docs, /redoc, and /openapi.json to "
-            "anyone; set it to False unless the API is public.\n"
-            "  Warning: SECURE_HSTS_SECONDS is 0, so browsers may still use plain "
-            "HTTP; set it (31536000 is a year) once HTTPS works everywhere.\n"
-            "  Warning: Requests are not rate limited; set RATE_LIMIT and list "
-            "domainkit.http.ratelimit.RateLimitMiddleware in MIDDLEWARE.\n"
+            "System check identified no issues and 3 warnings (1 silenced). "
+            "Domains: alpha.\n"
+            "  Warning: security.W001: API_DOCS publishes /docs, /redoc, and "
+            "/openapi.json to anyone; set it to False unless the API is public.\n"
+            "  Warning: security.W002: SECURE_HSTS_SECONDS is 0, so browsers may "
+            "still use plain HTTP; set it (31536000 is a year) once HTTPS works "
+            "everywhere.\n"
+            "  Warning: security.W003: Requests are not rate limited; set "
+            "RATE_LIMIT and list domainkit.http.ratelimit.RateLimitMiddleware in "
+            "MIDDLEWARE.\n"
         )
     with_hsts = {**production, "SECURE_HSTS_SECONDS": 1}
     with override_settings(**with_hsts):
         assert run("check").startswith(
-            "System check identified no issues and 2 warnings. Domains: alpha.\n"
+            "System check identified no issues and 2 warnings (1 silenced). "
+            "Domains: alpha.\n"
         )
     hardened = {
         **with_hsts,
@@ -188,13 +193,15 @@ def test_check_lists_weak_deployment_choices() -> None:
     }
     with override_settings(**hardened):
         assert run("check") == (
-            "System check identified no issues and 1 warning. Domains: alpha.\n"
-            "  Warning: API_DOCS publishes /docs, /redoc, and /openapi.json to "
-            "anyone; set it to False unless the API is public.\n"
+            "System check identified no issues and 1 warning (1 silenced). "
+            "Domains: alpha.\n"
+            "  Warning: security.W001: API_DOCS publishes /docs, /redoc, and "
+            "/openapi.json to anyone; set it to False unless the API is public.\n"
         )
     with override_settings(**{**hardened, "CACHES": {"default": {}}}):
         assert run("check").endswith(
-            "  Warning: CACHES['default'] has no COMPUTE_TIMEOUT, so one get_or_set "
+            "  Warning: caches.W001: CACHES['default'] has no COMPUTE_TIMEOUT, so "
+            "one get_or_set "
             "computation that hangs holds its key until the process restarts; set "
             "CACHES['default']['COMPUTE_TIMEOUT'] (REQUEST_TIMEOUT's value, for "
             "example).\n"
@@ -211,12 +218,16 @@ def test_check_lists_the_domains_warnings_too(
         AlphaConfig, "deployment_warnings", lambda self: ["ALPHA is weak here."]
     )
     with override_settings(
-        ENVIRONMENT="production", API_DOCS=False, CACHES=BOUNDED_CACHES
+        ENVIRONMENT="production",
+        API_DOCS=False,
+        CACHES=BOUNDED_CACHES,
+        SILENCED_CHECKS=["deploy.W005"],
     ):
         output = run("check")
 
     assert output.startswith(
-        "System check identified no issues and 3 warnings. Domains: alpha.\n"
+        "System check identified no issues and 3 warnings (1 silenced). "
+        "Domains: alpha.\n"
     )
     assert output.endswith("  Warning: ALPHA is weak here.\n")
 

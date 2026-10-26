@@ -12,6 +12,7 @@ from sqlalchemy import Table
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from domainkit.apps import DomainConfig, registry
+from domainkit.checks import CheckFailed, CheckMessage
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS, REDIS_SCHEMES
 from domainkit.contrib.contenttypes.sync import has_tables
@@ -159,12 +160,16 @@ class AuthConfig(DomainConfig):
         Routes that declare no rule are the core's to find
         (``REQUIRE_ROUTE_RULES``), with or without this app.
         """
-        problems = []
+        problems: list[str] = []
         if AUTHENTICATION_MIDDLEWARE not in settings.MIDDLEWARE and routes_need_users(
             app
         ):
             problems.append(
-                f"Routes check users, but MIDDLEWARE lacks {AUTHENTICATION_MIDDLEWARE}."
+                CheckMessage(
+                    "auth.E101",
+                    "Routes check users, but MIDDLEWARE lacks "
+                    f"{AUTHENTICATION_MIDDLEWARE}.",
+                )
             )
         problems.extend(self._mailing_problems(app))
         if (
@@ -172,8 +177,11 @@ class AuthConfig(DomainConfig):
             and COOKIE_AUTHENTICATION not in auth_settings().AUTHENTICATION_CLASSES
         ):
             problems.append(
-                f"Routes of {self.name}.cookies start browser sessions, but "
-                f"AUTH.AUTHENTICATION_CLASSES lacks {COOKIE_AUTHENTICATION}."
+                CheckMessage(
+                    "auth.E102",
+                    f"Routes of {self.name}.cookies start browser sessions, but "
+                    f"AUTH.AUTHENTICATION_CLASSES lacks {COOKIE_AUTHENTICATION}.",
+                )
             )
         return problems
 
@@ -187,7 +195,7 @@ class AuthConfig(DomainConfig):
 
     def _mailing_problems(self, app: FastAPI) -> list[str]:
         """What routes that send mail lack: the apps, or an address to send to."""
-        problems = []
+        problems: list[str] = []
         for name in MAILING_ROUTERS:
             if not self._mounted(app, name):
                 continue
@@ -195,15 +203,21 @@ class AuthConfig(DomainConfig):
             installed = registry.is_installed
             if missing := [name for name in (MESSAGING, MAIL) if not installed(name)]:
                 problems.append(
-                    f"Routes of {module} send mail: add {', '.join(missing)} "
-                    "to INSTALLED_DOMAINS."
+                    CheckMessage(
+                        "auth.E103",
+                        f"Routes of {module} send mail: add {', '.join(missing)} "
+                        "to INSTALLED_DOMAINS.",
+                    )
                 )
             if self.user_model.EMAIL_FIELD is None or not hasattr(
                 self.user_model, "verify_email"
             ):
                 problems.append(
-                    f"Routes of {module} need a user model with an "
-                    "EMAIL_FIELD and email_verified, as AbstractUser has."
+                    CheckMessage(
+                        "auth.E104",
+                        f"Routes of {module} need a user model with an "
+                        "EMAIL_FIELD and email_verified, as AbstractUser has.",
+                    )
                 )
         return problems
 
@@ -228,30 +242,43 @@ class AuthConfig(DomainConfig):
         ):
             seconds = principals.TTL.total_seconds()
             warnings.append(
-                f"AUTH.PRINCIPAL_CACHE.TTL is {seconds:g} seconds without STAMPS: "
-                "with several processes, a revoked token, a deactivated user, or "
-                f"a removed permission keeps working in the others for up to "
-                f"{seconds:g} seconds. Set STAMPS to a Redis cache, or the TTL to "
-                f"{PRINCIPAL_TTL.total_seconds():g} seconds or less."
+                CheckMessage(
+                    "auth.W001",
+                    f"AUTH.PRINCIPAL_CACHE.TTL is {seconds:g} seconds without "
+                    "STAMPS: with several processes, a revoked token, a "
+                    "deactivated user, or a removed permission keeps working in "
+                    f"the others for up to {seconds:g} seconds. Set STAMPS to a "
+                    "Redis cache, or the TTL to "
+                    f"{PRINCIPAL_TTL.total_seconds():g} seconds or less.",
+                )
             )
         if config.LOGIN_RATE is None:
             warnings.append(
-                "AUTH.LOGIN_RATE is None, so passwords can be guessed without "
-                'limit; set it, such as "10/minute".'
+                CheckMessage(
+                    "auth.W002",
+                    "AUTH.LOGIN_RATE is None, so passwords can be guessed without "
+                    'limit; set it, such as "10/minute".',
+                )
             )
         if config.MFA.RATE is None:
             warnings.append(
-                "AUTH.MFA.RATE is None, so one-time codes can be guessed without "
-                'limit; set it, such as "10/hour".'
+                CheckMessage(
+                    "auth.W003",
+                    "AUTH.MFA.RATE is None, so one-time codes can be guessed "
+                    'without limit; set it, such as "10/hour".',
+                )
             )
         if _counted_per_process(config):
             warnings.append(
-                f"RATE_LIMIT_BACKEND {settings.RATE_LIMIT_BACKEND} counts in each "
-                "process, so with several processes or replicas each allows "
-                "AUTH.LOGIN_RATE, AUTH.MFA.RATE, and the other attempt rates "
-                "on its own: passwords and codes can be guessed that many times "
-                "faster. Set RATE_LIMIT_BACKEND to "
-                f"{REDIS_BACKEND}, shared by every process."
+                CheckMessage(
+                    "auth.W004",
+                    f"RATE_LIMIT_BACKEND {settings.RATE_LIMIT_BACKEND} counts in "
+                    "each process, so with several processes or replicas each "
+                    "allows AUTH.LOGIN_RATE, AUTH.MFA.RATE, and the other attempt "
+                    "rates on its own: passwords and codes can be guessed that "
+                    f"many times faster. Set RATE_LIMIT_BACKEND to {REDIS_BACKEND}, "
+                    "shared by every process.",
+                )
             )
         if (
             COOKIE_AUTHENTICATION in config.AUTHENTICATION_CLASSES
@@ -259,9 +286,12 @@ class AuthConfig(DomainConfig):
             and cookie.PATH == "/"
         ):
             warnings.extend(
-                f"AUTH.COOKIE.{key} {name!r} lacks the __Host- prefix, so another "
-                f"host of the site (a subdomain) can set it in browsers; name it "
-                f"__Host-{name}, or leave {key} out."
+                CheckMessage(
+                    "auth.W005",
+                    f"AUTH.COOKIE.{key} {name!r} lacks the __Host- prefix, so "
+                    "another host of the site (a subdomain) can set it in "
+                    f"browsers; name it __Host-{name}, or leave {key} out.",
+                )
                 for key, name in (
                     ("NAME", cookie.NAME),
                     ("CSRF_NAME", cookie.CSRF_NAME),
@@ -306,44 +336,75 @@ class AuthConfig(DomainConfig):
 
         Staging and production refuse hashers made for tests, plain
         cookies, certificate proxies given as networks, and links sent by
-        mail over plain HTTP.
+        mail over plain HTTP. Every problem is reported at once, each with
+        its id (``domainkit.checks``).
+
+        Raises:
+            CheckFailed: Any of them.
         """
+        if errors := self._deployment_errors(config):
+            raise CheckFailed("AUTH settings cannot be used", errors)
+
+    def _deployment_errors(self, config: AuthSettings) -> list[CheckMessage]:
+        """What ``_check_deployment`` refuses, in the order it is checked."""
+        errors = []
         if config.CLIENT_CERT.HEADER is not None and not config.CLIENT_CERT.PROXIES:
-            raise ImproperlyConfigured(
-                "AUTH.CLIENT_CERT.HEADER is believed only from "
-                "AUTH.CLIENT_CERT.PROXIES; list the address of the proxy that "
-                "sets it."
+            errors.append(
+                CheckMessage(
+                    "auth.E001",
+                    "AUTH.CLIENT_CERT.HEADER is believed only from "
+                    "AUTH.CLIENT_CERT.PROXIES; list the address of the proxy that "
+                    "sets it.",
+                )
             )
         if (
             config.CLIENT_CERT.HEADER is not None
             and config.CLIENT_CERT.MATCH == "subject"
             and config.CLIENT_CERT.VERIFY_HEADER is None
         ):
-            raise ImproperlyConfigured(
-                'AUTH.CLIENT_CERT: MATCH = "subject" through HEADER needs '
-                "VERIFY_HEADER, or anyone could sign a certificate naming any user."
+            errors.append(
+                CheckMessage(
+                    "auth.E002",
+                    'AUTH.CLIENT_CERT: MATCH = "subject" through HEADER needs '
+                    "VERIFY_HEADER, or anyone could sign a certificate naming any "
+                    "user.",
+                )
             )
         stamps = config.PRINCIPAL_CACHE.STAMPS
         if stamps is not None and (
             stamps not in settings.CACHES
             or settings.CACHES[stamps].scheme not in REDIS_SCHEMES
         ):
-            raise ImproperlyConfigured(
-                f"AUTH.PRINCIPAL_CACHE.STAMPS must name a Redis cache of CACHES "
-                f"that every process shares, not {stamps!r}."
+            errors.append(
+                CheckMessage(
+                    "auth.E003",
+                    f"AUTH.PRINCIPAL_CACHE.STAMPS must name a Redis cache of CACHES "
+                    f"that every process shares, not {stamps!r}.",
+                )
             )
-        insecure = insecure_hashers(config.PASSWORD_HASHERS)
-        if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
-            return
-        if insecure:
-            raise ImproperlyConfigured(
-                f"AUTH.PASSWORD_HASHERS {insecure} are for tests; remove them in "
-                f"{settings.ENVIRONMENT}."
+        if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
+            errors.extend(self._deployed_errors(config))
+        return errors
+
+    def _deployed_errors(self, config: AuthSettings) -> list[CheckMessage]:
+        """What staging and production refuse besides."""
+        where = settings.ENVIRONMENT
+        errors = []
+        if insecure := insecure_hashers(config.PASSWORD_HASHERS):
+            errors.append(
+                CheckMessage(
+                    "auth.E004",
+                    f"AUTH.PASSWORD_HASHERS {insecure} are for tests; remove them "
+                    f"in {where}.",
+                )
             )
         if config.COOKIE.SECURE is False:
-            raise ImproperlyConfigured(
-                f"AUTH.COOKIE.SECURE = False sends session cookies over plain HTTP; "
-                f"remove it in {settings.ENVIRONMENT}."
+            errors.append(
+                CheckMessage(
+                    "auth.E005",
+                    f"AUTH.COOKIE.SECURE = False sends session cookies over plain "
+                    f"HTTP; remove it in {where}.",
+                )
             )
         links = {
             "PASSWORD_RESET_URL": config.PASSWORD_RESET_URL,
@@ -355,20 +416,27 @@ class AuthConfig(DomainConfig):
             for key, url in links.items()
             if url is not None and url.lower().startswith("http://")
         ]:
-            raise ImproperlyConfigured(
-                f"AUTH.{', AUTH.'.join(plain)} send links with their tokens over "
-                f"plain HTTP; use https:// in {settings.ENVIRONMENT}."
+            errors.append(
+                CheckMessage(
+                    "auth.E006",
+                    f"AUTH.{', AUTH.'.join(plain)} send links with their tokens "
+                    f"over plain HTTP; use https:// in {where}.",
+                )
             )
         if networks := [
             str(network)
             for network in config.CLIENT_CERT.PROXIES
             if network.num_addresses > 1
         ]:
-            raise ImproperlyConfigured(
-                f"AUTH.CLIENT_CERT.PROXIES must list single addresses (/32 or "
-                f"/128) in {settings.ENVIRONMENT}, not networks "
-                f"({', '.join(networks)}): any host there could name any user."
+            errors.append(
+                CheckMessage(
+                    "auth.E007",
+                    f"AUTH.CLIENT_CERT.PROXIES must list single addresses (/32 or "
+                    f"/128) in {where}, not networks "
+                    f"({', '.join(networks)}): any host there could name any user.",
+                )
             )
+        return errors
 
 
 def _check_middleware() -> None:

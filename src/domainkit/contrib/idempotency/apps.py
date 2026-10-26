@@ -12,6 +12,7 @@ from starlette.routing import BaseRoute, Host, Mount
 
 from domainkit import deadlines
 from domainkit.apps import DomainConfig, registry
+from domainkit.checks import CheckMessage
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEADLINE_MIDDLEWARE, DEPLOYED_ENVIRONMENTS
 from domainkit.db import SqlAlchemyUnitOfWork, connections
@@ -165,12 +166,15 @@ class IdempotencyConfig(DomainConfig):
         config = self.get_settings()
         lease = config.LEASE_SECONDS
         return [
-            f"{route} may run "
-            + ("without a deadline" if seconds is None else f"for {seconds:g}s")
-            + f" (RequestTimeout), but IDEMPOTENCY.LEASE_SECONDS is {lease:g}: a "
-            "retry with the same Idempotency-Key could take the key over while it "
-            "runs. Raise IDEMPOTENCY.LEASE_SECONDS above the route's timeout, or "
-            "shorten the timeout."
+            CheckMessage(
+                "idempotency.E001",
+                f"{route} may run "
+                + ("without a deadline" if seconds is None else f"for {seconds:g}s")
+                + f" (RequestTimeout), but IDEMPOTENCY.LEASE_SECONDS is {lease:g}: "
+                "a retry with the same Idempotency-Key could take the key over "
+                "while it runs. Raise IDEMPOTENCY.LEASE_SECONDS above the route's "
+                "timeout, or shorten the timeout.",
+            )
             for route, seconds in _route_timeouts(app.routes, config.METHODS)
             if seconds is None or seconds >= lease
         ]
@@ -194,12 +198,13 @@ class IdempotencyConfig(DomainConfig):
         else:
             return []
         lease = self.get_settings().LEASE_SECONDS
-        warning = (
+        warning = CheckMessage(
+            "idempotency.W001",
             f"Requests with an Idempotency-Key run without a deadline ({missing}): "
             f"one that runs past IDEMPOTENCY.LEASE_SECONDS ({lease:g}s) can lose "
             "its key to a retry, which runs it again. Set REQUEST_TIMEOUT below "
             f"IDEMPOTENCY.LEASE_SECONDS and list {DEADLINE_MIDDLEWARE} in "
-            "MIDDLEWARE; 0.10 refuses to start without a deadline."
+            "MIDDLEWARE; 0.10 refuses to start without a deadline.",
         )
         return [warning]
 

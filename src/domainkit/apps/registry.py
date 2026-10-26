@@ -9,6 +9,7 @@ from typing import Final, NamedTuple, cast
 from pydantic import BaseModel, ValidationError
 
 from domainkit.apps.config import DomainConfig
+from domainkit.checks import CheckFailed, CheckMessage
 from domainkit.conf import describe_errors, unwrap_settings
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.utils.closing import close_in_turn
@@ -193,16 +194,22 @@ class DomainRegistry:
     def _check_requirements(self) -> None:
         """Refuse a domain whose ``requires`` names a package not installed.
 
-        Every missing package is named, in ``INSTALLED_DOMAINS`` order.
+        Every missing package is named, in ``INSTALLED_DOMAINS`` order, as
+        check ``apps.E001``.
+
+        Raises:
+            CheckFailed: A package is missing.
         """
         installed = {config.name for config in self}
         if problems := [
-            requirement.problem(config.name)
+            CheckMessage("apps.E001", requirement.problem(config.name))
             for config in self
             for requirement in config.requirements()
             if requirement.name not in installed
         ]:
-            raise ImproperlyConfigured(" ".join(problems))
+            raise CheckFailed(
+                "Installed domains need what INSTALLED_DOMAINS lacks", problems
+            )
 
 
 class _ValidatedSettings(NamedTuple):

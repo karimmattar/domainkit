@@ -1640,8 +1640,9 @@ def test_stamps_need_a_shared_redis_cache(use_auth: UseAuth) -> None:
         with pytest.raises(ImproperlyConfigured) as refused:
             use_auth(PRINCIPAL_CACHE={"STAMPS": stamps})
         assert str(refused.value) == (
-            "AUTH.PRINCIPAL_CACHE.STAMPS must name a Redis cache of CACHES that "
-            f"every process shares, not {problem}."
+            "AUTH settings cannot be used:\n"
+            "  auth.E003: AUTH.PRINCIPAL_CACHE.STAMPS must name a Redis cache of "
+            f"CACHES that every process shares, not {problem}."
         )
     use_auth(
         settings={"CACHES": {"default": {"URL": "memory://"}, "shared": redis}},

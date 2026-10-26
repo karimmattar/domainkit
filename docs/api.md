@@ -93,6 +93,18 @@ Caches: in process memory, or in Redis or Valkey shared by every replica.
 - `caches`: The process-wide caches: `caches["default"]`.
 - `invalidate_on`: Delete the entries `keys(event)` names after each `event_type` event.
 
+## `domainkit.checks`
+
+System checks: what `check` and startup find, each with an id and a level.
+
+- `MAX_SILENCED_CHECKS`: The most ids `SILENCED_CHECKS` may list.
+- `CheckFailed`: Checks found errors; the message lists every one, with its id.
+- `CheckMessage`: One finding of a check: the message, with an `id` and a `hint`.
+- `Level`: How serious a check's finding is, read from its id's letter.
+- `describe`: One finding as `check` prints it: the id, the message, the hint.
+- `silence`: `messages` without those whose id `SILENCED_CHECKS` lists.
+- `validate_silenced`: Check `SILENCED_CHECKS`: ids of warnings, each once, and not too many.
+
 ## `domainkit.clock`
 
 The framework's clock: the one place domainkit reads the time.
