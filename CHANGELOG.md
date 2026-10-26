@@ -54,13 +54,14 @@ and a status.
   redelivery after a crash, RabbitMQ handing it out again) is skipped, or
   its commit refused with `AlreadyHandled`, and the message is recorded as
   done (outcome `handled`). Opt-in: handlers not marked stay at least once.
-  In a chain only the last step may use it. Workers delete rows older than
-  `MESSAGING.INBOX_RETENTION_SECONDS` (7 days; above `VISIBILITY_TIMEOUT`,
-  at most 365 days) with finished messages (`Worker.prune_inbox`), and
-  `check` refuses an `@inbox` handler or task whose retries could outlast it
-  (`messaging.E001`). The inbox holds no personal data. Projects with
-  messaging run `makemigrations` and `migrate` for the table (FIN-80;
-  ADR 0094).
+  In a chain only the last step may use it. A row lives as long as its
+  message may run: workers delete it with finished messages
+  (`Worker.prune_inbox`) once the message is done or cancelled, never while
+  it is pending or dead, however long a rate, a broker, a paused queue, or
+  an operator keeps it there; an earlier draft forgot rows after a fixed
+  retention, which a rate-limited task could outlast (SEC-11b-1). The inbox
+  holds no personal data. Projects with messaging run `makemigrations` and
+  `migrate` for the table (FIN-80, SEC-11b-1; ADR 0094).
 
 ### Changed
 

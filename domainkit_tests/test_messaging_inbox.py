@@ -16,7 +16,6 @@ from typing import Any, Final
 
 import pytest
 from prometheus_client import REGISTRY
-from pydantic import ValidationError
 from sqlalchemy import func, insert, select, update
 from sqlalchemy.exc import OperationalError
 
@@ -25,7 +24,6 @@ from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.contrib.messaging import (
     AlreadyHandled,
-    Backoff,
     LeaseLost,
     MessagingSettings,
     Worker,
@@ -34,16 +32,14 @@ from domainkit.contrib.messaging import (
     inbox,
     task,
 )
-from domainkit.contrib.messaging import registry as tasks
 from domainkit.contrib.messaging.outbox import message_row
 from domainkit.contrib.messaging.registry import CHAIN, dump_event, qualified_name
 from domainkit.contrib.messaging.runs import (
     Run,
     record,
-    redelivery_window,
     uses_inbox,
 )
-from domainkit.contrib.messaging.tables import DONE, PENDING, messages
+from domainkit.contrib.messaging.tables import CANCELLED, DEAD, DONE, PENDING, messages
 from domainkit.contrib.messaging.tables import inbox as inbox_table
 from domainkit.contrib.messaging.worker import Claimed
 from domainkit.db import connections
@@ -123,6 +119,13 @@ async def credit_task() -> None:
 @task(name="tests.inbox.last_step")
 async def last_step(**arguments: object) -> None:
     """A chain's last step under the inbox (marked after it is registered)."""
+    await write_credit()
+
+
+@task(name="tests.inbox.rated_credit", rate="1/day")
+@inbox
+async def rated_credit(number: int) -> None:
+    """A task under the inbox that runs once a day at most."""
     await write_credit()
 
 
@@ -270,7 +273,10 @@ async def test_a_commit_that_finds_the_inbox_row_is_refused(
     async with connections.engine().begin() as connection:
         await connection.execute(
             insert(inbox_table).values(
-                target=row["target"], message_id=row["id"], handled_at=clock.now()
+                target=row["target"],
+                message_id=row["id"],
+                outbox="default",
+                handled_at=clock.now(),
             )
         )
 
@@ -303,7 +309,10 @@ async def test_the_run_knows_it_was_handled_whatever_the_handler_raises(
     async with connections.engine().begin() as connection:
         await connection.execute(
             insert(inbox_table).values(
-                target=row["target"], message_id=row["id"], handled_at=clock.now()
+                target=row["target"],
+                message_id=row["id"],
+                outbox="default",
+                handled_at=clock.now(),
             )
         )
 
@@ -652,17 +661,19 @@ async def test_work_left_running_after_the_message_commits_on_its_own(
 async def two_databases(
     request: pytest.FixtureRequest, make_database: MakeDatabase
 ) -> AsyncIterator[None]:
-    """Messaging's tables in both databases; the notes in ``default``."""
+    """Messaging's tables in both, an outbox each; the notes in ``default``."""
     request.getfixturevalue("messaging")
     with override_settings(
         DATABASES={
             "default": {"URL": make_database("main")},
             "other": {"URL": make_database("other")},
         },
+        DATABASE_ROUTING={"alpha": "other"},  # So "other" holds an outbox.
     ):
         registry.clear()
         setup()
         async with connections.engine("default").begin() as connection:
+            await connection.run_sync(messages.create)
             await connection.run_sync(inbox_table.create)
             await connection.run_sync(notes.create)
         async with connections.engine("other").begin() as connection:
@@ -709,47 +720,126 @@ async def test_the_inbox_on_another_database_than_the_outbox(
     async with connections.engine("other").connect() as connection:
         (row,) = (await connection.execute(select(messages))).all()
     assert (row.status, row.attempts) == (DONE, 2)
+    assert await slow_worker().prune_inbox() == 1  # Its message is done there.
+    assert await inbox_rows() == []
 
 
 # Pruning -----------------------------------------------------------------------------
 
 
-async def handled(*ages: timedelta) -> None:
-    """Inbox rows handled ``ages`` ago."""
-    now = datetime.now(UTC)
-    async with connections.engine().begin() as connection:
+async def handled(
+    *statuses: str | None, database: str = "default", outbox: str = "default"
+) -> list[uuid.UUID]:
+    """A message in each of ``statuses`` (None: none) in ``outbox``, a row for each.
+
+    The rows go to the inbox of ``database``, handled a year ago: their age
+    never matters. Return the messages' ids, in order.
+    """
+    long_ago = datetime.now(UTC) - timedelta(days=365)
+    ids = [uuid.uuid4() for _ in statuses]
+    kept = [
+        {
+            **message_row(
+                kind="task", target="t", payload={}, headers={}, max_attempts=1
+            ),
+            "id": message_id,
+            "status": status,
+        }
+        for message_id, status in zip(ids, statuses, strict=True)
+        if status is not None
+    ]
+    if kept:
+        async with connections.engine(outbox).begin() as connection:
+            await connection.execute(insert(messages), kept)
+    async with connections.engine(database).begin() as connection:
         await connection.execute(
             insert(inbox_table),
             [
-                {"target": "t", "message_id": uuid.uuid4(), "handled_at": now - age}
-                for age in ages
+                {
+                    "target": "t",
+                    "message_id": message_id,
+                    "outbox": outbox,
+                    "handled_at": long_ago,
+                }
+                for message_id in ids
             ],
         )
-
-
-WEEK: Final = timedelta(days=7)
+    return ids
 
 
 @pytest.mark.usefixtures("tables")
-async def test_old_inbox_rows_are_pruned_in_batches() -> None:
-    """Rows past INBOX_RETENTION_SECONDS go, a batch at a time; recent ones stay."""
-    await handled(*[WEEK + timedelta(hours=1)] * 5, timedelta(hours=1))
+async def test_a_row_lives_as_long_as_its_message_may_run() -> None:
+    """Pending and dead messages keep their rows, whatever their age; others go.
+
+    So do rows of messages the outbox no longer holds (cleaned up), and
+    never rows of another outbox's messages, which that outbox decides on.
+    """
+    pending, dead, *_ = await handled(PENDING, DEAD, DONE, CANCELLED, None)
+    (elsewhere,) = await handled(None, outbox="gone")
+
+    assert await slow_worker().prune_inbox() == 3
+
+    assert sorted(message_id for _, message_id in await inbox_rows()) == sorted(
+        [pending, dead, elsewhere]
+    )
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_held_back_message_commits_once_whatever_its_wait() -> None:
+    """A message held back by its rate for days keeps its row until it is done.
+
+    Eight messages of a ``1/day`` task: the run of one commits and loses its
+    outcome (a crash), and it goes back behind the other seven, a day
+    apart. Pruning every day must not forget it (SEC-11b-1).
+    """
+    start = datetime.now(UTC).replace(microsecond=0)
+    with clock.freeze_time(start) as frozen:
+        for number in range(8):
+            await enqueue(rated_credit, number=number)
+        worker = slow_worker()
+        failing_once(worker)  # The run that commits loses its outcome.
+
+        # Day 0: one runs and commits, the other seven are held a day apart.
+        assert await worker.run_once() == 8
+        assert await credits() == 1
+        (handled_row,) = await inbox_rows()
+
+        # Its lease runs out; claimed again, it is held behind the seven.
+        frozen.tick(SLOW["VISIBILITY_TIMEOUT"] + 1)
+        assert await worker.run_once() == 1
+        assert await credits() == 1
+
+        # Days 1 to 7: the seven run, one a day; the inbox is pruned each day.
+        for day in range(1, 8):
+            frozen.move_to(start + timedelta(days=day, minutes=5))
+            await worker.run_once()
+            await worker.prune_inbox()
+        assert await credits() == 8
+        assert handled_row in await inbox_rows()  # Its message is pending.
+
+        # Day 8: the held-back message comes due: the inbox skips it.
+        frozen.move_to(start + timedelta(days=8, minutes=5))
+        await worker.run_once()
+        await worker.prune_inbox()
+
+    async with connections.engine().connect() as connection:
+        found = await connection.execute(select(messages.c.status, messages.c.attempts))
+        assert sorted(tuple(row) for row in found) == [(DONE, 1)] * 7 + [(DONE, 2)]
+    assert await credits() == 8, "the committed message committed its work again"
+    assert await inbox_rows() == []  # Every message is done: every row went.
+
+
+@pytest.mark.usefixtures("tables")
+async def test_rows_are_pruned_in_batches() -> None:
+    """Up to CLEANUP_BATCH_SIZE rows per statement, until none is left."""
+    await handled(*[DONE] * 5)
     worker = Worker(MessagingSettings(**{**FAST, "CLEANUP_BATCH_SIZE": 2}))
 
     assert await worker.prune_inbox() == 5
 
-    assert len(await inbox_rows()) == 1
+    assert await inbox_rows() == []
     assert (worker._prune_batch, worker._cleanup_batch) == (2, 2)
     assert await worker.prune_inbox() == 0
-
-
-@pytest.mark.usefixtures("tables")
-async def test_pruning_follows_the_frozen_clock() -> None:
-    """Under ``freeze_time`` the frozen time decides, on PostgreSQL too."""
-    await handled(timedelta(hours=1))
-    worker = slow_worker()
-    with clock.freeze_time(datetime.now(UTC) + WEEK):
-        assert await worker.prune_inbox() == 1
 
 
 @pytest.mark.usefixtures("tables")
@@ -757,7 +847,7 @@ async def test_a_failed_prune_halves_the_next_batch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The inbox's batches shrink and grow on their own, as the outbox's do."""
-    await handled(*[WEEK + timedelta(hours=1)] * 3)
+    await handled(DONE, DONE, DONE)
     worker = Worker(MessagingSettings(**{**FAST, "CLEANUP_BATCH_SIZE": 4}))
     statement = worker.inbox_statement
 
@@ -778,7 +868,7 @@ async def test_cleanup_prunes_the_inbox(
     caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``clean_until`` and ``run_cleanup_when_due`` prune the inbox too."""
-    await handled(WEEK + timedelta(hours=1), WEEK + timedelta(hours=2))
+    await handled(DONE, CANCELLED)
     worker = Worker(MessagingSettings(**{**FAST, "CLEANUP_INTERVAL": 0.01}))
     stop = asyncio.Event()
     prune = worker._prune
@@ -794,80 +884,24 @@ async def test_cleanup_prunes_the_inbox(
     assert caplog.messages == [
         "Deleted 2 handled message id(s) from the inbox of 'default'"
     ]
-    await handled(WEEK + timedelta(hours=1))
+    await handled(DONE)
     await worker.run_cleanup_when_due()
     assert await inbox_rows() == []
 
 
-# Settings and checks -----------------------------------------------------------------
+@pytest.mark.usefixtures("two_databases")
+async def test_rows_of_another_outbox_are_pruned_by_what_it_holds() -> None:
+    """That outbox says which messages finished; a batch at a time, in key order."""
+    statuses = [PENDING, DONE, DEAD, DONE, CANCELLED, None]
+    ids = await handled(*statuses, outbox="other")
+    await handled(DONE)  # This outbox's own, in the same pass.
+    worker = Worker(MessagingSettings(**{**FAST, **SLOW, "CLEANUP_BATCH_SIZE": 2}))
+    stopped = asyncio.Event()
+    stopped.set()
 
+    assert await worker._prune(stopped) == 0  # Stopped: nothing more starts.
+    assert await worker.prune_inbox() == 5
 
-def test_the_inbox_retention_outlasts_a_lease() -> None:
-    """Seven days by default; never at or under VISIBILITY_TIMEOUT."""
-    assert MessagingSettings().INBOX_RETENTION_SECONDS == 7 * 24 * 3600
-    with pytest.raises(ValidationError, match="must exceed VISIBILITY_TIMEOUT"):
-        MessagingSettings(INBOX_RETENTION_SECONDS=300)
-    assert MessagingSettings(INBOX_RETENTION_SECONDS=301).INBOX_RETENTION_SECONDS == 301
-
-
-def test_the_redelivery_window() -> None:
-    """Each attempt: its longest delay, its lease, and with a broker a republish."""
-    config = MessagingSettings()
-    assert redelivery_window(config, 10, 3600) == 10 * (300 + 3600)
-    brokered = MessagingSettings(BROKER="work")
-    assert redelivery_window(brokered, 2, 60) == 2 * (300 + 60 + 3600)
-
-
-@pytest.fixture
-def checked(request: pytest.FixtureRequest) -> Callable[..., list[str]]:
-    """``checked(**MESSAGING)``: messaging's check findings under those settings."""
-    request.getfixturevalue("messaging")
-
-    def check(**options: object) -> list[str]:
-        with override_settings(MESSAGING={**FAST, **options}):
-            registry.clear()
-            setup()
-            config = registry.get_domain_config("messaging")
-            return config.check_application(None)  # type: ignore[arg-type]
-
-    return check
-
-
-@task(name="tests.inbox.patient", max_attempts=3, backoff=Backoff(1, cap=7200))
-@inbox
-async def patient() -> None:
-    """An inbox task with its own attempts and retry delays."""
-
-
-def test_check_refuses_retries_that_outlast_the_inbox(
-    checked: Callable[..., list[str]],
-    subscribed: Callable[[Callable[..., Any]], None],
-) -> None:
-    """``messaging.E001`` names each inbox handler or task the retention cannot cover.
-
-    Under ``FAST`` a lease is 1s and retries wait 0.001s: 10 attempts of the
-    handler and of the plain tasks take 10.01s; ``patient``'s 3, 21,603s.
-    """
-    subscribed(credit)
-    subscribed(plain_credit)
-    assert checked() == []
-    (found,) = checked(INBOX_RETENTION_SECONDS=21_603)  # Not more: refused.
-    assert found.id == "messaging.E001"  # type: ignore[attr-defined]
-    assert found == (
-        "tests.inbox.patient uses the inbox, but its message may run again up to "
-        "21603s after a run that committed, and MESSAGING.INBOX_RETENTION_SECONDS "
-        "is 21603: a late run would find its inbox row deleted and commit again. "
-        "Raise INBOX_RETENTION_SECONDS above it, or give it fewer attempts or "
-        "shorter retry delays."
-    )
-    assert checked(INBOX_RETENTION_SECONDS=21_604) == []
-    keys = [message.split(" ", 1)[0] for message in checked(INBOX_RETENTION_SECONDS=10)]
-    assert sorted(keys) == sorted(
-        [
-            qualified_name(credit),
-            "tests.inbox.credit_task",
-            "tests.inbox.last_step",
-            "tests.inbox.patient",
-        ]
-    )
-    assert tasks.get_task("tests.inbox.patient") is not None
+    kept = {ids[0], ids[2]}  # Pending and dead, in "other".
+    assert {message_id for _, message_id in await inbox_rows()} == kept
+    assert await worker.prune_inbox() == 0  # A full batch kept, then none left.

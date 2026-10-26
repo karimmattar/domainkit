@@ -71,17 +71,20 @@ inbox = Table(
     metadata,
     Column("target", String(255), primary_key=True),
     Column("message_id", Uuid, primary_key=True),
+    Column("outbox", String(255), nullable=False),
     Column("handled_at", UTCDateTime, nullable=False),
-    Index("ix_domainkit_inbox_handled", "handled_at"),
+    Index("ix_domainkit_inbox_outbox", "outbox"),
     info={"domain": "messaging", "fixtures": False},
 )
 """The messages each ``inbox`` handler or task committed its work for.
 
 One row per ``(target, message_id)``, written in the transaction of the
 handler's own commit (``runs``), so the row and the work commit or roll back
-together; a run of a message whose row exists is skipped. Rows hold no
-arguments, only the target's name, the message's id, and when it was
-handled; workers delete them after ``INBOX_RETENTION_SECONDS``.
+together; a run of a message whose row exists is skipped. ``outbox`` is the
+alias of the database whose outbox holds the message. Rows hold no
+arguments, only the target's name, the message's id and outbox, and when it
+was handled. Workers delete a row once its message finished: while it is
+pending or dead it may run again, however long it waits.
 """
 
 FINISHED_INDEX: Final = Index(

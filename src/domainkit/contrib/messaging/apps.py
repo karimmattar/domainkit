@@ -3,7 +3,7 @@
 from collections.abc import Mapping, Sequence
 from importlib import import_module
 from importlib.util import find_spec
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from weakref import WeakKeyDictionary
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,15 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from domainkit import lifecycle
 from domainkit.apps import DomainConfig, registry
 from domainkit.broker import brokers
-from domainkit.checks import CheckMessage
 from domainkit.db import SqlAlchemyUnitOfWork
 from domainkit.db.hooks import on_committed, on_stage
 from domainkit.db.routing import DatabaseRouter, router
-from domainkit.ddd import DeferredTask, DomainEvent, event_bus
+from domainkit.ddd import DeferredTask, DomainEvent
 from domainkit.lifecycle import Phase
-
-if TYPE_CHECKING:
-    from fastapi import FastAPI
 
 from . import runs
 from .dispatch import close_publishers
@@ -115,49 +111,6 @@ class MessagingConfig(DomainConfig):
 
         found = await export_subject(subject)
         return {"messages": found} if found else {}
-
-    def check_application(self, app: "FastAPI") -> list[str]:
-        """``inbox`` handlers and tasks whose retries could outlast the inbox.
-
-        A message may run again until its last retry: each attempt waits
-        its backoff's longest delay, holds its lease, and, with a broker,
-        may wait ``REPUBLISH_AFTER`` for its publication. A run after
-        ``INBOX_RETENTION_SECONDS`` would find the inbox row deleted and
-        commit again.
-        """
-        from . import registry as tasks
-
-        config = self.get_settings()
-        retention = config.INBOX_RETENTION_SECONDS
-        targets = [
-            (key, config.MAX_ATTEMPTS, config.RETRY_MAX_SECONDS)
-            for key, (_, function) in tasks.durable_handlers(event_bus).items()
-            if runs.uses_inbox(function)
-        ] + [
-            (
-                spec.key,
-                spec.max_attempts or config.MAX_ATTEMPTS,
-                config.RETRY_MAX_SECONDS if spec.backoff is None else spec.backoff.cap,
-            )
-            for spec in tasks.all_tasks()
-            if runs.uses_inbox(spec.function)
-        ]
-        problems: list[str] = []
-        for key, attempts, longest in targets:
-            window = runs.redelivery_window(config, attempts, longest)
-            if window >= retention:
-                problems.append(
-                    CheckMessage(
-                        "messaging.E001",
-                        f"{key} uses the inbox, but its message may run again up "
-                        f"to {window:g}s after a run that committed, and "
-                        f"MESSAGING.INBOX_RETENTION_SECONDS is {retention:g}: a "
-                        "late run would find its inbox row deleted and commit "
-                        "again. Raise INBOX_RETENTION_SECONDS above it, or give "
-                        "it fewer attempts or shorter retry delays.",
-                    )
-                )
-        return problems
 
     def databases(self, router: DatabaseRouter) -> frozenset[str]:
         """Every hosting target: the outbox commits with each domain's data."""
