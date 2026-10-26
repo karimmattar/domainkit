@@ -58,4 +58,18 @@ class AuditSettings(BaseModel):
     """The Ed25519 private key, in PEM, that signs checkpoints of the chain
     (``checkpoints``): those ``auditprune`` prunes below, and those
     ``auditverify --export`` writes for a verifier holding the public key.
-    None: neither runs."""
+    Read by those two commands alone: set it in their environment, not the
+    application's, which verifies with ``CHECKPOINT_PUBLIC_KEY``. None:
+    neither runs."""
+    CHECKPOINT_PUBLIC_KEY: str | None = Field(default=None, max_length=1024)
+    """The public half of ``CHECKPOINT_KEY``, in PEM: what ``auditverify``
+    checks stored checkpoints with. Checked when the application starts.
+    None: no stored checkpoint verifies, so a pruned trail does not."""
+    MIN_RETENTION: timedelta = Field(
+        default=timedelta(days=30),
+        ge=timedelta(days=1),
+        le=timedelta(days=3650),
+    )
+    """How old a seal must be before ``auditprune`` may cut there; a
+    checkpoint of a younger one starts nothing in ``auditverify``. Raising
+    it reports the prunes made below it before."""

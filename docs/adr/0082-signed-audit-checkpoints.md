@@ -45,10 +45,13 @@ rows were pruned in batches of 1,000:
   JSON object written canonically: keys sorted, no spaces, ASCII:
 
   ```json
-  {"database":"default","format":"domainkit.audit.checkpoint/1","key_id":"<16 hex>","link":"<64 hex>","made_at":"<ISO 8601>","namespace":"acme-prod","previous":{"link":"<64 hex>","seq":1000},"sealed_at":"<ISO 8601>","seq":1234}
+  {"database":"default","format":"domainkit.audit.checkpoint/1","key_id":"<16 hex>","kind":"prune","link":"<64 hex>","made_at":"<ISO 8601>","namespace":"acme-prod","previous":{"link":"<64 hex>","seq":1000},"sealed_at":"<ISO 8601>","seq":1234}
   ```
 
-  `seq` and `link` are the seal's; `sealed_at` when it was sealed;
+  `kind` is what it was signed for: `"prune"` (stored by `auditprune`) or
+  `"export"` (an export's head, which leaves the system and so must vouch
+  for no deletion); `seq` and `link` are the seal's; `sealed_at` when it
+  was sealed;
   `previous` the checkpoint before it in the chain (`null` for the first);
   `key_id` the first 16 hex digits of the SHA-256 of the raw public key.
   The signature is Ed25519 over the document's exact UTF-8 bytes. A
@@ -61,15 +64,30 @@ rows were pruned in batches of 1,000:
   exact text>", "signature": "<base64>"}`, oldest first: the stored
   checkpoints, then one of the head. A verifier checks each signature
   under the key it pinned, that each names that key, its database and
-  namespace, and that each one's `previous` is the one before.
+  namespace, and that each one's `previous` is the one before; only a
+  `"prune"` checkpoint is followed by another.
 - **Pruning** (`auditprune`) cuts at the newest seal sealed before the
-  retention date (with a ledger, the newest anchored one; never the head),
-  verifies the chain up to it, and refuses if anything is wrong. It stores
-  the checkpoint (`domainkit_audit_checkpoints`), then deletes rows and
+  retention date, never one younger than `AUDIT.MIN_RETENTION` (with a
+  ledger, the newest one anchored that long ago; never the head),
+  verifies the chain up to it, and refuses if anything is wrong. It
+  records the checkpoint on the ledger (the SHA-256 of its document, under
+  `domainkit/audit-pruned/<namespace>/<database>`), stores it
+  (`domainkit_audit_checkpoints`), then deletes rows and
   seals at and below the cut, newest first, so a run cut short leaves a
   gap the checkpoint ends; the next run checks again and finishes.
-- **`verify`** accepts a gap in the chain only where a checkpoint that
-  verifies under `AUDIT.CHECKPOINT_KEY`, for this database and namespace,
+- **The keys.** The application verifies with the public key
+  (`AUDIT.CHECKPOINT_PUBLIC_KEY`), checked at startup. Only `auditprune`
+  and `auditverify --export` read the private key (`AUDIT.CHECKPOINT_KEY`),
+  and refuse one whose public half is not the configured public key, so
+  the private key can live where those commands run alone.
+- **`verify`** accepts a gap in the chain only where a checkpoint ends
+  it that verifies under `AUDIT.CHECKPOINT_PUBLIC_KEY`, for this database
+  and namespace, was signed for pruning, follows the one before it that
+  does (`previous`; none for the first), and was made `MIN_RETENTION`
+  after its seal and before `verify` runs less `MIN_RETENTION`; with a
+  ledger, the ledger records it, and first anchored its seal that long
+  before (an anchor's time is the latest any anchor before it in the
+  ledger names, so one appended later and dated back moves nothing). It
   ends it: the seal after it must link from its link. A checkpoint at a
   seal still present must name that seal's link. One that does not verify
   is reported and starts nothing. Anchors of pruned seals are not checked,
@@ -79,7 +97,21 @@ rows were pruned in batches of 1,000:
   where the other way needs a superuser for the application. Writers wait
   for one batch, a few milliseconds.
 
+Revised before release, after a security review (SEC-10b-2, SEC-10b-3):
+without `kind`, an export's head checkpoint, stored in the table by
+whoever can write it, covered deleting the whole trail; and with the
+private key in every process's settings, whoever held them could sign a
+checkpoint over anchored rows.
+
 ## Consequences
+
+- Whoever can write the tables cannot cover a deletion: they have no key,
+  and what they can copy (an export) is not for pruning. Whoever also
+  holds the private key and the ledger's credentials can prune, as
+  `auditprune` does, but not rows younger than `MIN_RETENTION`, by the
+  ledger's account; without a ledger, by the checkpoint's own dates,
+  which the key's holder chooses. Raising `MIN_RETENTION` reports the
+  prunes made below it before.
 
 - A trail can be kept for a period and verified as before; the
   checkpoints, and the exports, outlive the release, which is why the

@@ -1,13 +1,14 @@
 """Retention that keeps the chain: prune below a signed checkpoint; export checkpoints.
 
 ``prune`` cuts a database's trail at the newest seal sealed before a date
-(and, with a ledger, anchored): it checks the chain up to the cut, stores
-a checkpoint of it signed with ``AUDIT.CHECKPOINT_KEY``, then deletes the
-rows and seals at and below the cut, newest first, a batch per
-transaction. ``verify`` then starts from the checkpoint, so the pruned
-chain still verifies, and a chain tampered with still fails. A run cut
-short leaves a gap the checkpoint ends, which verifies too; running it
-again finishes.
+(and, with a ledger, anchored), never one younger than
+``AUDIT.MIN_RETENTION``: it checks the chain up to the cut, records a
+checkpoint of it signed with ``AUDIT.CHECKPOINT_KEY`` on the ledger and
+stores it, then deletes the rows and seals at and below the cut, newest
+first, a batch per transaction. ``verify`` then starts from the
+checkpoint, so the pruned chain still verifies, and a chain tampered with
+still fails. A run cut short leaves a gap the checkpoint ends, which
+verifies too; running it again finishes.
 
 On PostgreSQL the ``protect()`` triggers refuse every delete, so each
 batch disables them in its own transaction, as the tables' owner
@@ -48,7 +49,16 @@ from .checkpoints import (
 from .personal import audited_databases
 from .protection import trigger_names
 from .recorder import record
-from .seals import Report, _anchors, _head, verify
+from .seals import (
+    Report,
+    _head,
+    _history,
+    first_anchored,
+    pruned_key,
+    pruned_record,
+    starting_points,
+    verify,
+)
 from .settings import AuditSettings
 from .tables import audit_checkpoints, audit_log, audit_seals
 
@@ -92,18 +102,29 @@ async def prune(
 ) -> Pruned:
     """Prune ``database``'s trail below a checkpoint of its last seal before ``before``.
 
-    With ``ledger`` the cut is the newest anchored seal at or below that,
-    so the ledger vouches for the checkpoint's link too. What a run cut
-    short left below the last checkpoint is deleted first.
+    With ``ledger`` the cut is the newest seal at or below that anchored
+    ``AUDIT.MIN_RETENTION`` ago, so the ledger vouches for the checkpoint's
+    link too, and records the checkpoint before anything is deleted. What a
+    run cut short left below the last checkpoint is deleted first.
 
     Raises:
-        PruneRefused: The chain up to the cut does not verify, a stored
+        PruneRefused: ``before`` is within ``AUDIT.MIN_RETENTION`` of
+            ``now``, the chain up to the cut does not verify, a stored
             checkpoint does not, or the owner may not disable the triggers.
-        ImproperlyConfigured: ``AUDIT.CHECKPOINT_KEY`` is not set or invalid.
+        ImproperlyConfigured: ``AUDIT.CHECKPOINT_KEY`` is not set or
+            invalid, or ``CHECKPOINT_PUBLIC_KEY`` is not its public half.
     """
     key = signing_key()
     public = key.public_key()
     now = now or clock.now()
+    config = registry.settings(AuditSettings)
+    if before > now - config.MIN_RETENTION:
+        raise PruneRefused(
+            f"AUDIT.MIN_RETENTION keeps every row for {config.MIN_RETENTION}: "
+            f"prune before {(now - config.MIN_RETENTION).isoformat()} at the "
+            "latest. Nothing was pruned."
+        )
+    history = [] if ledger is None else await _history(database, ledger)
     async with connections.engine(database).connect() as connection:
         head = await _head(connection)
         cut = await connection.scalar(
@@ -113,16 +134,25 @@ async def prune(
             )
         )
         points = await stored(connection, database, public)
-    if forged := [point.seq for point in points if point.checkpoint is None]:
+    accepted, forged = await starting_points(database, points, ledger, history, now=now)
+    if forged:
         raise PruneRefused(
-            f"Checkpoints of {database!r} at seals {forged} do not verify under "
-            "AUDIT.CHECKPOINT_KEY; nothing was pruned."
+            f"Checkpoints of {database!r} at seals {forged} do not verify "
+            "(auditverify); nothing was pruned."
         )
-    last = points[-1].checkpoint if points else None
+    last = accepted[points[-1].seq] if points else None
     left = 0 if last is None else await _left_below(database, last, ledger)
     if cut is not None and ledger is not None:
-        anchored = await _anchors(database, ledger)
-        cut = max((seq for seq in anchored if seq <= cut), default=None)
+        oldest = now - config.MIN_RETENTION
+        cut = max(
+            (
+                written.seq
+                for written in history
+                if written.seq <= cut
+                and (first_anchored(history, written.seq) or now) <= oldest
+            ),
+            default=None,
+        )
     if cut is None or (last is not None and cut <= last.seq):
         if left:
             await _record(database, last, left, before)
@@ -138,14 +168,20 @@ async def prune(
         ).one()
         checkpoint = Checkpoint(
             database=database,
-            namespace=registry.settings(AuditSettings).NAMESPACE,
+            namespace=config.NAMESPACE,
             seq=cut,
             link=sealed.link,
             sealed_at=sealed.sealed_at,
             made_at=now,
             previous=None if last is None else (last.seq, last.link),
             key_id=key_id(public),
+            kind="prune",
         )
+        if ledger is not None:  # Recorded first: else it starts nothing.
+            await ledger.append(
+                pruned_key(database, config.NAMESPACE),
+                pruned_record(checkpoint.document()),
+            )
         await connection.execute(
             audit_checkpoints.insert().values(
                 seq=cut,
@@ -281,7 +317,8 @@ async def export(
     Raises:
         ExportRefused: A trail does not verify (``verify``): a checkpoint
             of it would vouch for what is wrong.
-        ImproperlyConfigured: ``AUDIT.CHECKPOINT_KEY`` is not set or invalid.
+        ImproperlyConfigured: ``AUDIT.CHECKPOINT_KEY`` is not set or
+            invalid, or ``CHECKPOINT_PUBLIC_KEY`` is not its public half.
     """
     key = signing_key()
     public = key.public_key()
@@ -321,6 +358,7 @@ async def export(
                 made_at=now,
                 previous=None if last is None else (last.seq, last.link),
                 key_id=key_id(public),
+                kind="export",
             )
             chain.append(signed(newest, sign(newest, key)))
         databases[database] = {"checkpoints": chain}

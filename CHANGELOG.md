@@ -218,12 +218,19 @@ and a status.
   behaviour of 0.9 (DATA-09).
 - Retention that keeps the audit chain: `auditprune --keep-days DAYS`
   deletes the rows sealed before then (with `AUDIT.LEDGER`, below the
-  newest anchored seal) below a checkpoint signed with the new
-  `AUDIT.CHECKPOINT_KEY` (an Ed25519 key in PEM; the new `audit` extra
-  installs cryptography), once the chain up to it verifies, and
-  `auditverify` starts the chain from the checkpoint: a pruned trail
-  still verifies, and one tampered with, or a checkpoint forged to cover
-  a deletion, still fails. On PostgreSQL it runs as the tables' owner
+  newest anchored seal), never within the new `AUDIT.MIN_RETENTION`
+  (default 30 days), below a checkpoint signed with the new
+  `AUDIT.CHECKPOINT_KEY` (an Ed25519 key in PEM, read by `auditprune` and
+  `auditverify --export` alone; the new `audit` extra installs
+  cryptography) and recorded on the ledger, once the chain up to it
+  verifies, and `auditverify` starts the chain from the checkpoint,
+  checked with the new `AUDIT.CHECKPOINT_PUBLIC_KEY`: a pruned trail
+  still verifies, and one tampered with, or a checkpoint stored to cover
+  a deletion, still fails. Only a checkpoint signed for pruning covers a
+  gap (an export's head checkpoint says `"kind": "export"`), one that
+  follows the checkpoint before it, made `MIN_RETENTION` after its seal
+  and, with a ledger, recorded there and its seal anchored that long
+  before (SEC-10b-2, SEC-10b-3). On PostgreSQL it runs as the tables' owner
   (`MIGRATION_URL`), the `protect()` triggers off for one batch of 1,000
   at a time. `auditverify --export FILE` writes signed checkpoints of
   every trail that verifies, and `--check-export FILE --public-key PEM`

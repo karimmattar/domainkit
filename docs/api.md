@@ -189,7 +189,7 @@ Signed checkpoints of the audit chain: where it may be pruned, what is exported.
 - `check_export`: Check an export offline, with the public key alone; its checkpoints by database.
 - `key_id`: A short name of `public_key`: the first 16 hex digits of its SHA-256.
 - `load_public_key`: The Ed25519 public key in `pem`, as a verifier pins it.
-- `signing_key`: The key `AUDIT.CHECKPOINT_KEY` holds.
+- `signing_key`: The key `AUDIT.CHECKPOINT_KEY` holds; only the commands that sign read it.
 
 ## `domainkit.contrib.audit.history`
 

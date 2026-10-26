@@ -22,7 +22,8 @@ class Command(BaseCommand):
 
     help = (
         "Delete audit rows sealed more than --keep-days ago, below a checkpoint "
-        "signed with AUDIT.CHECKPOINT_KEY that auditverify then starts from. "
+        "signed with AUDIT.CHECKPOINT_KEY that auditverify then starts from "
+        "(checked with AUDIT.CHECKPOINT_PUBLIC_KEY). "
         "On PostgreSQL it runs as the tables' owner (MIGRATION_URL)."
     )
     operator_actions = True
@@ -34,7 +35,10 @@ class Command(BaseCommand):
             type=int,
             required=True,
             metavar="DAYS",
-            help="keep the rows sealed in the last DAYS days (at least 1)",
+            help=(
+                "keep the rows sealed in the last DAYS days "
+                "(at least AUDIT.MIN_RETENTION)"
+            ),
         )
         parser.add_argument(
             "--database", help="the alias to prune (default: every audited one)"
