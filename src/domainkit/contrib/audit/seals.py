@@ -813,11 +813,6 @@ def _by_seq(history: list[Anchor]) -> dict[int, set[str]]:
     return anchors
 
 
-async def _anchors(database: str, ledger: Ledger) -> dict[int, set[str]]:
-    """Every anchored head of ``database``: the links anchored for each number."""
-    return _by_seq(await _history(database, ledger))
-
-
 def _plain(value: object) -> object:
     """A column value as JSON: ids and times as text, the rest as they are."""
     if isinstance(value, UUID):

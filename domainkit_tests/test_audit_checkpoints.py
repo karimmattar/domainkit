@@ -999,13 +999,13 @@ async def test_an_exported_head_checkpoint_covers_no_deletion(trail: Ledger) -> 
     write the tables stores it and deletes the trail up to it. It was
     signed for an export, not a prune, so the gap is a broken link.
     """
-    with freeze_time(T1 + timedelta(days=1)):
+    with freeze_time(T1 + timedelta(days=40)):  # Old enough to prune at.
         document = await export(trail)
     (head,) = document["databases"]["default"]["checkpoints"]
     assert Checkpoint.parse(head["document"]).kind == "export"
-    with freeze_time(T1 + timedelta(days=2)):
+    with freeze_time(T1 + timedelta(days=41)):
         for n in range(2):
-            await add(T1 + timedelta(days=2, minutes=n))
+            await add(T1 + timedelta(days=41, minutes=n))
         await seal("default")
         await anchor("default", trail, every=timedelta(0))
     async with connections.engine().begin() as connection:
@@ -1072,6 +1072,23 @@ async def test_the_application_cannot_sign_away_its_trail(trail: Ledger) -> None
     assert unrecorded.forged == too_young.forged == [7]
     assert not unrecorded.intact
     assert not too_young.intact
+
+
+async def test_without_a_ledger_a_checkpoint_dates_its_own_seal(
+    trail: Ledger,
+) -> None:
+    """Signed as sealed within ``MIN_RETENTION`` of its making: it starts nothing."""
+    five = (await seals())[4]
+    young = Checkpoint(
+        "default", None, 5, five["link"], T1 - timedelta(days=29), T1, None, KEY_ID
+    )
+    await store(young, KEY)
+    await delete_up_to(5)
+
+    report = await verify("default", now=T1 + timedelta(days=400))
+
+    assert report.forged == [5]
+    assert report.broken == [6]
 
 
 def test_a_seal_is_first_anchored_when_the_ledger_first_saw_it() -> None:
