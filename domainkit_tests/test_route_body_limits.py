@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import Final
 
 import pytest
-from fastapi import APIRouter, Request, UploadFile
+from fastapi import APIRouter, FastAPI, Request, UploadFile
 from fastapi.testclient import TestClient
 from starlette.routing import Mount
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -22,6 +22,7 @@ from domainkit.http.middleware import (
     body_limit,
     largest_body_limit,
     route_body_limit,
+    smallest_body_limit,
 )
 from domainkit.log import SECURITY_LOGGER
 
@@ -63,7 +64,13 @@ async def ignore() -> dict[str, bool]:
 nested = APIRouter(dependencies=[Public])
 nested.include_router(router, prefix="/inner")
 
+sub = FastAPI()
+sub.include_router(router)
+mounted = APIRouter(dependencies=[Public])
+mounted.mount("/v2", sub)
+
 ROUTES: Final = "domainkit_tests.test_route_body_limits.router"
+MOUNTED: Final = "domainkit_tests.test_route_body_limits.mounted"
 NESTED: Final = "domainkit_tests.test_route_body_limits.nested"
 LIMITS: Final = ("domainkit.http.middleware.RequestBodyLimitMiddleware",)
 
@@ -344,3 +351,96 @@ def test_a_largest_limit_worked_out_meanwhile_is_kept(
     monkeypatch.setattr(middleware_module, "largest_body_limit", walk)
 
     assert middleware._largest_of({"type": "http"}) == 64
+
+
+READS_FIRST: Final = (*LIMITS, "domainkit_tests.test_route_body_limits.ReadsFirst")
+
+
+@pytest.mark.parametrize("stack", [LIMITS, READS_FIRST])
+def test_routes_of_a_mounted_application_keep_their_limits(
+    make_client: MakeClient, stack: tuple[str, ...]
+) -> None:
+    """SEC-10c-4: below a mount, read before routing or not, the route's limit holds."""
+    client = make_client(ROOT_ROUTER=MOUNTED, MIDDLEWARE=stack)
+
+    small = client.post("/v2/login", content=b"x" * 500_000)
+    exact = client.post("/v2/login", content=b"x" * LOGIN_LIMIT)
+    other = client.post("/v2/echo", content=b"x" * 500_000)
+
+    assert (small.status_code, exact.json(), other.json()) == (
+        413,
+        {"size": LOGIN_LIMIT},
+        {"size": 500_000},
+    )
+
+
+def test_a_read_before_routing_meets_an_included_routers_route_limit(
+    make_client: MakeClient,
+) -> None:
+    """Not flattened (ADR 0060), FastAPI's included router names the route."""
+    client = make_client(
+        ROOT_ROUTER=NESTED,
+        FLATTEN_ROUTERS=False,
+        MAX_REQUEST_BODY_SIZE=1_000,
+        MIDDLEWARE=READS_FIRST,
+    )
+
+    small = client.post("/inner/login", content=b"x" * (LOGIN_LIMIT + 1))
+    large = client.post(
+        "/inner/avatars", files={"file": ("a.png", b"\0" * 50_000, "image/png")}
+    )
+
+    assert (small.status_code, large.json()) == (413, {"size": 50_000})
+
+
+def test_below_a_mount_no_route_matches_the_strictest_limit_holds(
+    make_client: MakeClient,
+) -> None:
+    """Read before routing, a path the mount takes but no route of it: fail closed."""
+    client = make_client(ROOT_ROUTER=MOUNTED, MIDDLEWARE=READS_FIRST)
+
+    refused = client.post("/v2/missing", content=b"x" * (LOGIN_LIMIT + 1))
+    missing = client.post("/v2/missing", content=b"x" * LOGIN_LIMIT)
+
+    assert (refused.status_code, missing.status_code) == (413, 404)
+
+
+@pytest.mark.anyio
+async def test_a_mount_above_the_application_is_matched_into() -> None:
+    """``scope["route"]`` a parent's mount: the application's route still counts."""
+    seen: list[int] = []
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        seen.append(len((await receive())["body"]))
+
+    async def receive() -> Message:
+        return {"type": "http.request", "body": b"x" * 10}
+
+    async def send(message: Message) -> None:
+        raise AssertionError("not refused")
+
+    login_route = next(r for r in router.routes if getattr(r, "path", "") == "/login")
+    parent = Mount("/v2", routes=[login_route])
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/login",
+        "root_path": "",
+        "headers": [],
+        "route": parent,
+        "app": SimpleNamespace(
+            routes=[login_route], router=SimpleNamespace(routes=[login_route])
+        ),
+    }
+    with override_settings(MAX_REQUEST_BODY_SIZE=5):
+        middleware = RequestBodyLimitMiddleware(app)
+    await middleware(scope, receive, send)
+
+    assert seen == [10]  # 10 bytes under the route's 64, over the global 5.
+
+
+def test_the_smallest_limit_below_counts_routes_without_one_at_the_default() -> None:
+    """Each leaf's own limit, or the default; none at all: the default."""
+    assert smallest_body_limit(router.routes, 1_000) == LOGIN_LIMIT
+    assert smallest_body_limit([Mount("/x", routes=list(router.routes))], 10) == 10
+    assert smallest_body_limit([], 1_000) == 1_000

@@ -143,15 +143,18 @@ async def upload_avatar(file: UploadFile) -> AvatarOut:
   before a byte is read, and a body sent in chunks as soon as it passes it,
   so a 20 MiB upload to a 100 kB route is read only to the limit and one
   chunk more. Middleware that reads bodies before routing
-  (`IdempotencyMiddleware`) is held to the route's limit too.
+  (`IdempotencyMiddleware`) is held to the route's limit too: the route is
+  matched as the router will match it, into mounted applications and
+  routers kept included. Where a mount or router takes the path but no
+  route of it can be told yet, the strictest limit below it holds.
 - Before routing, a declared length is checked against the largest limit
   of any route, or `MAX_REQUEST_BODY_SIZE` if larger; a route that never
   reads its body is not refused for a length its own limit would refuse.
 - Limits are 1 byte to 1 GiB (`MAX_ROUTE_BODY_SIZE`). The decorator marks
   the endpoint, so it may sit above or below the route's. A route of a
-  router nested without flattening (`FLATTEN_ROUTERS = False`) keeps its
-  limit; a body read before routing to such a route is held to the global
-  one.
+  mounted application, or of a router nested without flattening
+  (`FLATTEN_ROUTERS = False`), keeps its limit, read before routing or
+  after.
 - `ResourceRouter` takes `body_limits={"command": 16_384, "batch":
   2_000_000}` per kind of route that takes a body (`create`, `update`,
   `command`, `batch`), and `command_route` and `batch_route` take
