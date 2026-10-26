@@ -1980,6 +1980,33 @@ async def test_stopping_gives_back_deliveries_that_do_not_finish_in_time(
     await given_back("slow")
 
 
+async def test_a_stop_while_relaying_ends_the_relay_at_once(
+    broker_tables: MemoryBroker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stopped mid-relay: no wait for the next poll (an hour here)."""
+    config = MessagingSettings(**{**BROKERED, "POLL_INTERVAL": 3600})
+    worker = Worker(config)
+    stop, relaying = asyncio.Event(), asyncio.Event()
+
+    async def relay(broker: Any, limit: int) -> int:  # noqa: ANN401 - a broker.
+        relaying.set()
+        await stop.wait()
+        for _ in range(10):  # The stop's wake-up is set meanwhile.
+            await asyncio.sleep(0)
+        return 0  # Nothing was due.
+
+    monkeypatch.setattr(worker, "relay", relay)
+    running = asyncio.create_task(
+        BrokerWorkers([worker], ["default"], config).run(stop)
+    )
+    await asyncio.wait_for(relaying.wait(), 30)
+
+    stop.set()
+
+    await stopped(running, within=30)
+    assert running.result() is None
+
+
 async def test_a_cancelled_brokered_worker_gives_its_deliveries_back(
     broker_tables: MemoryBroker,
 ) -> None:

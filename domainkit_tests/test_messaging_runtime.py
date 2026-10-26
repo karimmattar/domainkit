@@ -322,6 +322,49 @@ async def test_a_budget_refuses_impossible_counts() -> None:
     assert (budget.used, list(budget._waiters)) == (0, [])
 
 
+class SlotAsStopComes(Budget):
+    """A budget whose caller gets a slot just as ``stop`` is set.
+
+    ``acquire`` waits until the test sets ``stop``, lets the worker's other
+    tasks see it, then hands the slot out anyway, as a slot freed at that
+    moment would be.
+    """
+
+    def __init__(self, stop: asyncio.Event) -> None:
+        """Four slots, handed out once ``stop`` is set."""
+        super().__init__(4)
+        self.stop = stop
+        self.waiting = asyncio.Event()
+
+    async def acquire(self, most: int = 1, *, stop: asyncio.Event | None = None) -> int:
+        """Wait for ``stop``, let it be seen, then take slots regardless."""
+        self.waiting.set()
+        await self.stop.wait()
+        for _ in range(10):  # The worker's helpers run: its wake-up is set.
+            await asyncio.sleep(0)
+        return await super().acquire(most)
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_stop_while_waiting_for_a_slot_ends_the_worker_at_once() -> None:
+    """Stopped while a slot comes: no wait for the next poll (an hour here).
+
+    The worker cleared its wake-up after taking the slot, wiping the one the
+    stop had set, then waited the whole ``POLL_INTERVAL`` before it saw the
+    stop: up to ``POLL_INTERVAL`` added to every shutdown that lands there.
+    """
+    stop = asyncio.Event()
+    budget = SlotAsStopComes(stop)
+    config = MessagingSettings(**{**FAST, "POLL_INTERVAL": 3600})
+    running = asyncio.create_task(Worker(config, budget=budget).run(stop))
+    await within(budget.waiting.wait())
+
+    stop.set()
+
+    await within(running)
+    assert budget.used == 0
+
+
 @pytest.mark.usefixtures("tables")
 async def test_workers_of_one_process_share_one_budget() -> None:
     """Two workers, one budget of two: never more than two messages at once."""
