@@ -100,7 +100,7 @@ def test_the_pages_send_users_only_to_public_names() -> None:
     attributes (logger names such as ``domainkit.security``) are not
     checked; nor is the changelog, which is history.
     """
-    pages = [*sorted(DOCS.glob("*.md")), ROOT / "README.md"]
+    pages = [*sorted(DOCS.rglob("*.md")), ROOT / "README.md"]
     private = []
     for page in pages:
         for dotted in sorted(documented(page.read_text(encoding="utf-8"))):
