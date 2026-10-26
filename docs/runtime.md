@@ -792,7 +792,13 @@ timers that cancel work run on the event loop's own clock.
   has no `SET LOCAL`: each of its statements is cut off at the deadline by
   the request's timer, or by a timer of its own in work that shares a
   deadline without enforcing it, and the driver then cancels it on the
-  server. A statement cut off costs its connection: the pool replaces it.
+  server. With asyncpg, outside PgBouncer, a statement cut off keeps its
+  connection once it has settled, within 2 seconds: asyncpg has finished
+  the cancelled exchange, and the transaction is rolled back, its locks
+  with it. Code that goes on after the cut gets `PendingRollbackError`
+  until it rolls back. A connection that does not settle in time, one cut
+  off under an anyio cancel scope (which cancels that wait too), and the
+  other drivers' are closed instead, and the pool replaces them.
   The framework's own short writes, such as an idempotency key's
   claim, run that way too, within `STATEMENT_TIMEOUT`.
 - **Outgoing HTTP calls** through `domainkit.http.client` are bounded by it
