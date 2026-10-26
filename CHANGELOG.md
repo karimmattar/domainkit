@@ -9,6 +9,12 @@ and a status.
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-10-26
+
+The release of 0.9.2 failed before publishing (below), so 0.9.2 reached no
+package index: 0.9.3 is the first published release with 0.9.2's changes.
+Upgrade from 0.9.1 to 0.9.3 as the 0.9.2 entries describe.
+
 ### Fixed
 
 - The weekly mutation run failed in every shard before testing a mutant:
@@ -2655,7 +2661,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.9.3...HEAD
+[0.9.3]: https://github.com/karimmattar/domainkit/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/karimmattar/domainkit/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/karimmattar/domainkit/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/karimmattar/domainkit/compare/v0.8.0...v0.9.0
