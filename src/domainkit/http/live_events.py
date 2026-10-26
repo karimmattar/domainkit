@@ -67,7 +67,7 @@ slow too, as events would be lost unchecked."""
 
 
 class EventRule(Protocol):
-    """An access rule (``domainkit.contrib.auth.access``) that sees each event."""
+    """An access rule (``domainkit.http.access``) that sees each event."""
 
     async def has_permission(
         self,

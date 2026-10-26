@@ -12,19 +12,11 @@ from pydantic import BaseModel, Field, JsonValue
 from starlette.requests import HTTPConnection
 
 from domainkit.apps import registry
-from domainkit.contrib.auth.access import (
-    AllOf,
-    HasPermissions,
-    IsAdminUser,
-    IsSuperuser,
-    IsUnscoped,
-    Require,
-    Rule,
-    current_user,
-)
+from domainkit.contrib.auth import IsAdminUser, IsSuperuser, current_user
 from domainkit.contrib.auth.models import AbstractBaseUser, Group, Permission
 from domainkit.ddd.messages import Command, Query
 from domainkit.http import CURSOR_PATTERN, MAX_CURSOR_LENGTH, error_responses
+from domainkit.http.access import AllOf, HasPermissions, IsUnscoped, Require, Rule
 from domainkit.http.filters import FilterSet
 from domainkit.http.pagination import Pagination
 from domainkit.resources import FieldPolicy, ModelActions, ResourceRouter

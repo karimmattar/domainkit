@@ -72,7 +72,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from domainkit import clock
 from domainkit.cache import CacheError, caches
-from domainkit.contrib.contenttypes.models import ContentType
+from domainkit.contrib.contenttypes import ContentType
 from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured

@@ -7,7 +7,8 @@ guard's lookup threads and its owners' shares, a throttled log's counts,
 the remembered client addresses, the handles of the request metrics, the
 principal cache, and the grants principals share between threads, an
 application's throttle backend and attempt counter, the idempotency
-middleware's sweep schedule, and the registries that keep each loop's
+middleware's sweep schedule, the body limit's largest route limit, and
+the registries that keep each loop's
 tasks, publishers, brokers, and caches. Each test
 drives them from several threads at once and checks what must always
 hold, and that the state is only touched with the lock held (where there
@@ -51,18 +52,18 @@ from domainkit.conf import (
     unwrap_settings,
 )
 from domainkit.contrib.audit import personal
-from domainkit.contrib.auth import AllowAny, principals, throttling
 from domainkit.contrib.auth import middleware as middleware_module
+from domainkit.contrib.auth import principals, throttling
 from domainkit.contrib.auth.hashers import HashingPool
 from domainkit.contrib.auth.middleware import AuthenticationMiddleware
 from domainkit.contrib.auth.models import Group, User
 from domainkit.contrib.auth.principals import ALL, Entry, PrincipalCache
 from domainkit.contrib.contenttypes import InstalledModel, content_type_key
-from domainkit.contrib.contenttypes import registry as content_registry
 from domainkit.contrib.idempotency import statements as idempotency_statements
 from domainkit.contrib.idempotency.middleware import PURGE_BATCH, Sweeps
 from domainkit.contrib.messaging import MessagingSettings, dispatch
 from domainkit.db import Reads, connections
+from domainkit.db import models as content_registry
 from domainkit.db.connections import (
     _begin_snapshot,
     _drop_detail,
@@ -77,6 +78,8 @@ from domainkit.db.connections import (
 from domainkit.ddd import DomainEvent, EventBus
 from domainkit.http import guard as guard_module
 from domainkit.http import live, metrics, ratelimit
+from domainkit.http import middleware as body_limits
+from domainkit.http.access import AllowAny
 from domainkit.http.client import BREAKER_HOSTS, CircuitBreaker
 from domainkit.http.guard import GuardResolver, lookups_for
 from domainkit.http.live import Slots
@@ -1504,3 +1507,34 @@ def test_idempotency_sweeps_are_due_once_per_interval_from_every_thread(
     full = on_threads(claims)
 
     assert (sum(first), sum(short), sum(full)) == (1, 0, 1)
+
+
+def test_an_applications_largest_body_limit_is_worked_out_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Loops on several threads asking first: one walk of the routes, one answer."""
+    walks: list[int] = []
+
+    def walk(routes: object) -> int:
+        assert limited._lock.locked()
+        walks.append(1)
+        return 64
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        await receive()
+
+    async def receive() -> Message:
+        return {"type": "http.request", "body": b"x" * 64}
+
+    async def send(message: Message) -> None:
+        raise AssertionError("nothing is answered")
+
+    monkeypatch.setattr(body_limits, "largest_body_limit", walk)
+    limited = body_limits.RequestBodyLimitMiddleware(app)
+
+    def serve(_: int) -> int | None:
+        asyncio.run(limited({"type": "http", "headers": []}, receive, send))
+        return limited._largest
+
+    assert on_threads(serve) == [64] * THREADS
+    assert walks == [1]

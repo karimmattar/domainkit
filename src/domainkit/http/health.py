@@ -27,7 +27,7 @@ from domainkit.apps import registry
 from domainkit.cache import caches
 from domainkit.conf import settings
 from domainkit.db.connections import connections
-from domainkit.http.responses import JSONResponse, _BuiltJSONResponse
+from domainkit.http.responses import BuiltJSONResponse, JSONResponse
 from domainkit.ledger import ledgers
 from domainkit.tasks import spawn
 
@@ -52,11 +52,11 @@ async def ready(request: Request) -> JSONResponse:
     """Report whether every domain and database can serve traffic."""
     failing = await _failing_checks(request)
     if not failing:
-        return _BuiltJSONResponse({"status": "ready"})
+        return BuiltJSONResponse({"status": "ready"})
     body: dict[str, object] = {"status": "unavailable"}
     if settings.READINESS_DETAILS:
         body["failing"] = failing
-    return _BuiltJSONResponse(body, status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+    return BuiltJSONResponse(body, status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
 
 
 async def _failing_checks(request: Request) -> list[str]:

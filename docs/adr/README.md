@@ -42,7 +42,7 @@ statuses, and the amendments they name.
 | [0022](0022-query-repositories-with-criteria.md) | Query repositories with criteria that fakes evaluate as SQL does | Accepted |
 | [0023](0023-keyset-pages-and-typed-cursors.md) | Keyset pages with versioned, typed cursors; filters declared per field | Accepted; amended in place 2026-10-20 |
 | [0024](0024-replicas-and-derived-tables.md) | Read from replicas in read-only work; derive tables from domain classes | Accepted |
-| [0025](0025-resources-commands-and-expected-versions.md) | Serve aggregates as resources; change them by commands, on the version the client read | Accepted |
+| [0025](0025-resources-commands-and-expected-versions.md) | Serve aggregates as resources; change them by commands, on the version the client read | Accepted; amended 2026-10-26 (at the end) |
 | [0026](0026-object-permission-grants.md) | Grant permissions on single objects, beside the objects, within the granter's own | Accepted |
 | [0027](0027-batches-and-exports.md) | Run batches as many use cases, atomic on request; stream exports, bounded | Accepted |
 | [0028](0028-one-secret-key-signs-and-derives.md) | Sign with one `SECRET_KEY`, and derive a key per purpose from it | Accepted |
@@ -94,6 +94,8 @@ statuses, and the amendments they name.
 | [0077](0077-declare-what-apps-require.md) | Declare what apps require, and reach other apps only through their public names | Accepted |
 | [0078](0078-deliver-events-in-process-after-commit-or-durably-through-the-outbox.md) | Deliver events in process after commit, or durably through the outbox | Accepted |
 | [0079](0079-validate-every-setting-in-one-model-and-each-app-in-its-own.md) | Validate every setting at startup: one model, and each app's own | Accepted |
+| [0080](0080-access-rules-are-core-auth-is-one-provider.md) | Access rules are core; auth is one provider | Accepted |
+| [0086](0086-secure-defaults-at-the-http-edge.md) | Make the HTTP edge's defaults the safe ones | Accepted |
 
 ### Decisions still without a record
 
@@ -102,8 +104,6 @@ Taken, and in the code, but not yet written down (DSGN-15); planned for
 
 - `DomainConfig`'s hooks, `stage` and `committed` among them, called on
   every installed domain (DSGN-03).
-- `domainkit.resources` depending on `contrib.auth` and
-  `contrib.contenttypes` for its access rules (DSGN-02).
 - Module-level singletons (the registry, the settings, the event bus, the
   caches) and test overrides that act on them (DSGN-07).
 - No common exception root, and HTTP errors raised from modules below

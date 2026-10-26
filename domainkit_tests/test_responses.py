@@ -26,13 +26,13 @@ from pydantic_core import to_json
 from starlette import responses as starlette
 
 import domainkit.http
-from domainkit.contrib.auth import Public
 from domainkit.http import errors, get_asgi_application
 from domainkit.http import responses as fast
+from domainkit.http.access import Public
 from domainkit.http.responses import (
     MAX_DEPTH,
+    BuiltJSONResponse,
     JSONResponse,
-    _BuiltJSONResponse,
     _encode_built,
     encode_json,
     json_native,
@@ -181,7 +181,7 @@ def test_content_built_json_native_encodes_alike(name: str) -> None:
 
     if json_native(content) or name in BUILT:
         assert outcome(lambda: _encode_built(content)) == expected
-        assert outcome(lambda: _BuiltJSONResponse(content).body) == expected
+        assert outcome(lambda: BuiltJSONResponse(content).body) == expected
 
 
 BUILT = {
@@ -239,7 +239,7 @@ def test_nan_and_infinity_are_refused(
     with pytest.raises(ValueError, match="Out of range float values"):
         JSONResponse(content)
     with pytest.raises(ValueError, match="Out of range float values"):
-        _BuiltJSONResponse(content)
+        BuiltJSONResponse(content)
 
 
 @pytest.mark.parametrize("encode", ENCODERS)
@@ -698,8 +698,8 @@ def test_nesting_past_the_depth_is_left_to_json_dumps() -> None:
 def test_domainkits_own_path_is_not_exported() -> None:
     """Only the checked class is the API; domainkit's own is a kind of it."""
     assert domainkit.http.JSONResponse is JSONResponse
-    assert "_BuiltJSONResponse" not in domainkit.http.__all__
-    assert issubclass(_BuiltJSONResponse, JSONResponse)
+    assert "BuiltJSONResponse" not in domainkit.http.__all__
+    assert issubclass(BuiltJSONResponse, JSONResponse)
 
 
 JSON_KEYS = (
@@ -888,7 +888,7 @@ def test_error_bodies_keep_their_bytes() -> None:
         errors=[errors.FieldError(loc=["body", "price", 0], msg="é", type="x")],
     )
 
-    assert type(response) is _BuiltJSONResponse
+    assert type(response) is BuiltJSONResponse
     assert bytes(response.body) == bytes(
         starlette.JSONResponse(
             {

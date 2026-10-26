@@ -56,6 +56,15 @@ DEADLINE_MIDDLEWARE: Final = "domainkit.http.deadlines.DeadlineMiddleware"
 """Gives each request its ``REQUEST_TIMEOUT`` deadline."""
 CONCURRENCY_MIDDLEWARE: Final = "domainkit.http.shedding.ConcurrencyLimitMiddleware"
 """Sheds requests past ``MAX_CONCURRENT_REQUESTS``."""
+HEADER_VALUE: Final = r"^[\x20-\x7e]{1,4096}$"
+"""A header value a setting gives: printable ASCII, no line breaks, bounded."""
+DEFAULT_CONTENT_SECURITY_POLICY: Final = "default-src 'none'; frame-ancestors 'none'"
+"""An API answers data: nothing in it may load, run, or be framed."""
+DEFAULT_PERMISSIONS_POLICY: Final = (
+    "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), "
+    "microphone=(), payment=(), usb=()"
+)
+"""No powerful browser feature for anything the API answers."""
 DEFAULT_MIDDLEWARE: Final = (
     "domainkit.http.middleware.ProxyHeadersMiddleware",
     "domainkit.http.middleware.SecurityHeadersMiddleware",
@@ -695,6 +704,9 @@ class Settings(BaseModel):
     """Dotted path to the ``APIRouter`` that mounts every route (``ROOT_URLCONF``)."""
     FLATTEN_ROUTERS: bool = True
     """Serve the routes of included routers from the top (ADR 0060); False nests."""
+    REQUIRE_ROUTE_RULES: bool = True
+    """Every route must say who may call it (``Require``, or ``Public``); staging
+    and production refuse to start otherwise (``domainkit.http.access``)."""
     ASGI_APPLICATION: str | None = None
     """``module:attribute`` that ``runserver`` serves."""
     EVENT_LOOP: Literal["auto", "asyncio", "uvloop"] = "auto"
@@ -732,8 +744,8 @@ class Settings(BaseModel):
 
     ALLOWED_HOSTS: tuple[str, ...] = ("localhost", "127.0.0.1", "[::1]")
     """Accepted ``Host`` header values; ``*.example.com`` matches subdomains."""
-    API_DOCS: bool = True
-    """Serve ``/docs``, ``/redoc``, and ``/openapi.json``."""
+    API_DOCS: bool | None = None
+    """Serve ``/docs``, ``/redoc``, and ``/openapi.json``; None: with ``DEBUG`` only."""
     OPENAPI_OPERATION_IDS: Literal["fastapi", "route_name"] = "fastapi"
     """Operation ids: FastAPI's (name, path, and method), or the route's name."""
     ERROR_FORMAT: Literal["domainkit", "problem+json"] = "domainkit"
@@ -774,6 +786,9 @@ class Settings(BaseModel):
     """Share of access lines written; from status 400 up, and slow ones: all of them."""
     ACCESS_LOG_SLOW_DURATION: float = Field(default=1.0, gt=0, le=MAX_REQUEST_SECONDS)
     """Seconds after which a request's access line is written whatever the rate."""
+    ACCESS_LOG_PATH: Literal["template", "raw"] = "template"
+    """The path logs, error reports, and the request context show: the route's
+    template (``/accounts/{account_id}``, ``unmatched``), or the path as sent."""
     TRUSTED_PROXIES: tuple[IPvAnyNetwork | Literal["unix"], ...] = ()
     """Load balancers whose ``X-Forwarded-For``/``-Proto`` headers are believed.
 
@@ -791,6 +806,9 @@ class Settings(BaseModel):
     """Dotted path to a ``Backend`` class; the default counts per process."""
     RATE_LIMIT_CACHE: str = DEFAULT_CACHE_ALIAS
     """The Redis cache ``RedisBackend`` keeps counts in, shared by every replica."""
+    RATE_LIMIT_FALLBACK_REPLICAS: int | None = Field(default=None, ge=1, le=1024)
+    """While Redis is down, ``RedisBackend`` counts each caller in its process at
+    ``RATE_LIMIT`` divided by this many replicas; None lets requests through."""
     RATE_LIMIT_IPV6_PREFIX: int = Field(default=64, ge=1, le=128)
     """IPv6 clients are counted per network of this prefix length (one customer's)."""
     METRICS_TOKEN: SecretStr | None = None
@@ -827,6 +845,18 @@ class Settings(BaseModel):
     SECURE_CONTENT_TYPE_NOSNIFF: bool = True
     SECURE_REFERRER_POLICY: str | None = "no-referrer"
     X_FRAME_OPTIONS: Literal["DENY", "SAMEORIGIN"] = "DENY"
+    SECURE_CONTENT_SECURITY_POLICY: str | None = Field(
+        default=DEFAULT_CONTENT_SECURITY_POLICY, pattern=HEADER_VALUE
+    )
+    """``Content-Security-Policy`` of responses that set none; None omits it."""
+    SECURE_PERMISSIONS_POLICY: str | None = Field(
+        default=DEFAULT_PERMISSIONS_POLICY, pattern=HEADER_VALUE
+    )
+    """``Permissions-Policy`` of responses that set none; None omits it."""
+    SECURE_CROSS_ORIGIN_OPENER_POLICY: (
+        Literal["same-origin", "same-origin-allow-popups", "unsafe-none"] | None
+    ) = "same-origin"
+    """``Cross-Origin-Opener-Policy`` of responses that set none; None omits it."""
 
     CORS_ALLOWED_ORIGINS: tuple[str, ...] = ()
     CORS_ALLOWED_METHODS: tuple[str, ...] = ("GET", "POST", "PUT", "PATCH", "DELETE")

@@ -87,6 +87,10 @@ async def rename_product(command: RenameProduct, uow: CatalogUnitOfWork) -> Prod
   `409`, a `BusinessRuleViolation` `422`.
 - `summary` defaults to the command's docstring; `name` (the route's name,
   hence its operation id) to the command's, in snake case.
+- `body_limit=` holds the route's bodies to that many bytes, above or
+  below `MAX_REQUEST_BODY_SIZE`, as they arrive; `ResourceRouter(body_limits=
+  {"command": 16_384, "batch": 2_000_000})` sets one per kind of route
+  (`create`, `update`, `command`, `batch`) ([uploads.md](uploads.md#body-limits-per-route)).
 
 For reference data, where generic edits are fine, `crud=True` adds
 `POST /products` (a `schema_for(..., write=True)` body), `PATCH
@@ -94,8 +98,22 @@ For reference data, where generic edits are fine, `crud=True` adds
 fields directly, without the aggregate's methods, and record
 `RecordCreated`, `RecordChanged` (with the fields that changed), and
 `RecordDeleted`, so the audit trail still shows who changed what.
-`create=` and `update=` replace the schemas; `new_id=` makes ids
-(`uuid4`). Both writes keep to the resource's field policy (a create, as
+`writable=` names the fields the writes take, as Django forms name theirs:
+
+```python
+products = ResourceRouter(
+    "/products", ..., crud=True, writable=["name", "price", "color"]
+)
+```
+
+`writable=ALL_FIELDS` (from `domainkit.resources`) takes every plain
+field, and `create=` and `update=` replace the schemas. One of them is
+needed: a `crud=True` resource without them takes every plain field, so a
+`balance`, an `owner_id`, or an `approved_at` added to the aggregate later
+would be settable by any caller allowed to write. In 0.10 that warns
+(`DomainkitDeprecationWarning`); 0.11 refuses it. `writable` may not name
+the id, the version, a relation, or the parent's field, which no write
+sets. `new_id=` makes ids (`uuid4`). Both writes keep to the resource's field policy (a create, as
 a partial change does) and to the caller's `scope`: a create or a change
 that would leave the aggregate where the caller could not reach it is
 `403 permission_denied`, and nothing is written.
@@ -330,6 +348,19 @@ orders = ResourceRouter("/orders", ..., scope=own_orders)
 What is out of scope is left out of pages, so counts and cursors never
 reveal it, and is `404` for reads and commands, as if it did not exist.
 
+A command or a query on one aggregate is checked before its service runs.
+When only the scope or the parent decide, the check and the service share
+one unit of work: the aggregate is read within reach, and the service runs
+in the same transaction, its own `async with uow:` and exit doing nothing
+and its `commit()` the unit of work's; the route closes it afterwards, so
+what the service did not commit is rolled back as before. When a rule
+looks at the aggregate, the check has a unit of work of its own, closed
+before the rule runs, and the service another.
+
+The rules are the core's (`domainkit.http.access`): a resource needs no
+`domainkit.contrib.auth`, only a middleware that puts who sent the request
+in `scope["user"]` ([Another authentication](auth.md#another-authentication)).
+
 ## Field policies
 
 A `FieldPolicy` says who sees and who changes each field, as the user
@@ -343,7 +374,9 @@ policy = FieldPolicy(
     visible={"cost": "billing.view_cost"},
     editable={"discount": "billing.change_discount"},
 )
-invoices = ResourceRouter("/invoices", ..., policy=policy, crud=True)
+invoices = ResourceRouter(
+    "/invoices", ..., policy=policy, crud=True, writable=["amount", "cost", "discount"]
+)
 ```
 
 - A field in `visible` is shown only to callers granted its permission;

@@ -2,12 +2,13 @@
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from typing import Any, Final
 
 from fastapi import APIRouter, FastAPI
 from fastapi.telemetry import TelemetryConfig
+from pydantic import TypeAdapter
 from starlette.types import Receive, Scope, Send
 
 from domainkit import setup
@@ -16,6 +17,8 @@ from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db.drivers import connect_args
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.http.access import route_rule_problems
+from domainkit.http.apidocs import OPENAPI_PATH, docs_routes
 from domainkit.http.blocking import watch_event_loop
 from domainkit.http.errors import ErrorResponse, install_exception_handlers
 from domainkit.http.openapi import (
@@ -60,6 +63,9 @@ REQUESTS: Final = frozenset({"http", "websocket"})
 """The scope types FastAPI measures."""
 BUILT_PROBLEMS: Final = "domainkit_problems"
 """``app.state`` key: the problems found when the application was built."""
+LEGACY_SETTINGS: Final = "AUTH"
+LEGACY_ROUTE_RULES: Final = "REQUIRE_ROUTE_RULES"
+"""``AUTH.REQUIRE_ROUTE_RULES``: deprecated for ``REQUIRE_ROUTE_RULES`` in 0.10."""
 
 
 class Application(FastAPI):
@@ -112,15 +118,16 @@ def get_asgi_application() -> FastAPI:
     # Refuse bad driver arguments (CONNECT_ARGS, TLS files) now, not at first use.
     for database in settings.DATABASES.values():
         connect_args(database)
-    docs = settings.API_DOCS
+    docs = api_docs()
     app = Application(
         title=settings.PROJECT_NAME,
         version=settings.VERSION,
         debug=settings.DEBUG,
         lifespan=lifespan,
-        docs_url="/docs" if docs else None,
-        redoc_url="/redoc" if docs else None,
-        openapi_url="/openapi.json" if docs else None,
+        # The pages are domainkit's own, with their assets (no CDN).
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=OPENAPI_PATH if docs else None,
         # Errors the framework itself can return, on every route, with the
         # real body instead of FastAPI's default validation schema.
         responses={
@@ -136,6 +143,8 @@ def get_asgi_application() -> FastAPI:
     )
     install_exception_handlers(app)
     install_openapi(app)
+    if docs:  # Where FastAPI puts its own: first, after /openapi.json.
+        app.router.routes.extend(docs_routes(settings.PROJECT_NAME))
     if settings.ROOT_ROUTER:
         app.include_router(_load(settings.ROOT_ROUTER, APIRouter, "ROOT_ROUTER"))
         if settings.FLATTEN_ROUTERS:
@@ -159,16 +168,44 @@ def get_asgi_application() -> FastAPI:
     return app
 
 
-def application_problems(app: FastAPI) -> list[str]:
-    """What is wrong with ``app``: clashing operation ids, and what domains find.
+def api_docs() -> bool:
+    """Whether the application serves its documentation: ``API_DOCS``.
 
-    Domains report through ``DomainConfig.check_application``.
+    Unset (None), it follows ``DEBUG``: on in development, off when
+    deployed. True serves it anywhere, False nowhere.
+    """
+    explicit = settings.API_DOCS
+    return settings.DEBUG if explicit is None else explicit
+
+
+def application_problems(app: FastAPI) -> list[str]:
+    """What is wrong with ``app``: clashing ids, open routes, what domains find.
+
+    Every route must declare who may call it (``REQUIRE_ROUTE_RULES``),
+    whatever authenticates requests. Domains report through
+    ``DomainConfig.check_application``.
     """
     problems = duplicate_operation_ids(app)
+    if route_rules_required():
+        problems.extend(route_rule_problems(app))
     problems.extend(
         problem for config in registry for problem in config.check_application(app)
     )
     return problems
+
+
+def route_rules_required() -> bool:
+    """``REQUIRE_ROUTE_RULES``, unless ``AUTH.REQUIRE_ROUTE_RULES`` turns it off.
+
+    The setting was ``domainkit.contrib.auth``'s until 0.10, which still
+    reads it there (and warns that it is deprecated, removed in 0.11).
+    """
+    if not settings.REQUIRE_ROUTE_RULES:
+        return False
+    legacy = getattr(settings, LEGACY_SETTINGS, None)
+    if isinstance(legacy, Mapping) and LEGACY_ROUTE_RULES in legacy:
+        return TypeAdapter(bool).validate_python(legacy[LEGACY_ROUTE_RULES])
+    return True
 
 
 def check_started(app: FastAPI) -> None:

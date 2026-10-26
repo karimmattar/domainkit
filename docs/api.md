@@ -184,7 +184,6 @@ Users, groups, and permissions for REST APIs (Django's `contrib.auth`).
 
 - `AbstractBaseUser`: Credentials, status, groups, and permissions of a user.
 - `AbstractUser`: A user with a username, an email, names, and a staff flag (Django's).
-- `AllowAny`: Anyone, logged in or not.
 - `AnonymousUser`: Whoever sends a request without credentials: no id, no permissions.
 - `AnyUser`: A user that logged in, or the anonymous one.
 - `AuthSettings`: Users, hashing, validation, and backends; every key is optional.
@@ -194,36 +193,25 @@ Users, groups, and permissions for REST APIs (Django's `contrib.auth`).
 - `AuthenticationFailed`: Credentials were presented and do not hold (401, unless a subclass says).
 - `BaseAuthentication`: Recognizes no credentials and issues no tokens; override what you need.
 - `BaseBackend`: A backend that knows no one and grants nothing; override what you need.
-- `BasePermission`: Allows everything; subclasses override one hook or both.
 - `Credentials`: Who sent a request, and with what (`request.auth`).
-- `CurrentUser`: The request's user, or `AnonymousUser`.
+- `CurrentUser`: The request's user, or `AnonymousUser`: the core's dependency, typed so.
 - `Group`: A named set of permissions; every member has them all.
 - `GroupId`: NewType creates simple unique types with almost zero runtime overhead.
 - `GroupNameTaken`: Another group has that name.
 - `GroupNotFound`: No group has that id.
-- `HasObjectPermissions`: Users granted every permission named on the object itself.
-- `HasPermissions`: Users granted every permission named (`<domain>.<codename>`).
-- `HasScope`: Users whose credentials allow every scope named; unscoped ones allow all.
 - `InvalidEmail`: The email address is not one plain address mail can go to.
 - `InvalidGroupName`: The group name is empty or too long.
 - `InvalidPassword`: The password breaks the configured rules (`PASSWORD_VALIDATORS`).
 - `InvalidUserField`: A value does not fit the type of the user field it is for.
 - `InvalidUsername`: The username is empty, too long, or uses characters it may not.
 - `IsAdminUser`: Staff users (`is_staff`), with credentials that are not limited to scopes.
-- `IsAuthenticated`: Users who logged in.
-- `IsAuthenticatedOrReadOnly`: Anyone may read (`GET`, `HEAD`, `OPTIONS`); users may write.
 - `IsSuperuser`: Active superusers, with credentials that are not limited to scopes.
-- `IsUnscoped`: Users whose credentials are not limited to scopes (a login, not a key).
 - `IssuedTokens`: What logging in or refreshing returns (OAuth 2's token response).
 - `JWTAuthentication`: Signed access tokens (JSON Web Tokens) and opaque refresh tokens.
 - `JWTSettings`: `AUTH["JWT"]`: signed access tokens (`JWTAuthentication`).
 - `ModelBackend`: Passwords from the user table; permissions of users and their groups.
-- `ModelPermissions`: Django's model permissions, by method, for one model.
-- `NotAuthenticated`: The route needs a user, and the request named none (401).
 - `PasswordHash`: A stored password: a hasher's `<algorithm>$...`, or unusable (`!...`).
 - `Permission`: Permission to do something to one content type: `<domain>.<codename>`.
-- `Public`: `dependencies=[Public]`: the route needs no rule (`REQUIRE_ROUTE_RULES`).
-- `Require`: A FastAPI dependency: the rules must allow the request; returns the user.
 - `TokenAuthentication`: Opaque tokens: `Authorization: Bearer <AUTH.TOKEN_PREFIX>...`.
 - `TokenKind`: What a token may be used for.
 - `UnknownGroup`: No group has that name.
@@ -234,12 +222,11 @@ Users, groups, and permissions for REST APIs (Django's `contrib.auth`).
 - `UserNotFound`: No user has that id.
 - `UsernameTaken`: Another user has that username.
 - `acheck_password`: `check_password` on a hashing thread; raises `PasswordChecksBusy`.
-- `acurrent_user`: `current_user` as a dependency FastAPI awaits, with no thread to hop to.
+- `acurrent_user`: The core's `acurrent_user`, typed as this app's users: the same function.
 - `amake_password`: `make_password` on a hashing thread; raises `PasswordChecksBusy`.
 - `authenticate`: The user the credentials prove, by the first backend that accepts them.
-- `check_object_permissions`: Refuse the request unless every rule allows it on `obj`.
 - `check_password`: Whether `password` matches `encoded`.
-- `current_user`: The user `AuthenticationMiddleware` found (`AnonymousUser` if none).
+- `current_user`: The core's `current_user`, typed as this app's users: the same function.
 - `get_all_permissions`: Keys of every permission any backend grants `user` (on `obj`).
 - `get_backends`: The configured backends, in order.
 - `get_user`: The user with `user_id`, from the first backend that has it.
@@ -247,8 +234,6 @@ Users, groups, and permissions for REST APIs (Django's `contrib.auth`).
 - `has_perm`: Whether `user` has `perm` (on `obj`).
 - `has_perms`: Whether `user` has every one of `perms` (on `obj`).
 - `make_password`: Hash `password` with `hasher` (default: the preferred one).
-- `mark_public`: Mark a mounted application or a Starlette endpoint public on purpose.
-- `open_routes`: `METHOD /path` of every route that declares no access rule.
 - `password_help_texts`: What each configured rule asks of a password, for API clients.
 - `validate_password`: Raise `InvalidPassword` listing every rule `password` breaks.
 
@@ -667,6 +652,17 @@ SQLAlchemy integration: connections, ORM metadata, repositories, migrations.
 - `register_column_type`: Store fields of `cls` (and its subclasses) in `column_type`.
 - `table_for`: The table that stores `cls`: one column per field (see the module).
 
+## `domainkit.db.models`
+
+Installed models: the mapped classes of installed domains, and their `Meta`.
+
+- `DEFAULT_PERMISSIONS`: Actions that get a permission for every model, unless `Meta` says.
+- `InstalledModel`: A mapped class of an installed domain, and what it declares.
+- `ModelOptions`: What a mapped class declares about itself (Django's `Meta`).
+- `installed_models`: Every class mapped onto a table that an installed domain holds now.
+- `model_key`: The `(domain, model)` of a mapped class.
+- `model_options`: Read `cls.Meta`: `verbose_name`, `default_permissions`, `permissions`.
+
 ## `domainkit.db.partitioning`
 
 Range partitioning of large PostgreSQL tables, managed by the framework.
@@ -727,6 +723,7 @@ Domain-driven design building blocks ("seedwork").
 - `RowLock`: Lock the rows a query returns until the transaction ends (`FOR UPDATE`).
 - `RowLocks`: Row locks for in-memory repositories, held until the unit of work ends.
 - `Selection`: Which aggregates to load, in which order, and how many.
+- `Sensitive`: A type whose values no schema shows or takes, such as a password hash.
 - `SoftDeletable`: Mixin for aggregates that are marked deleted rather than removed.
 - `Specification`: A named business rule about aggregates, for Python and for queries.
 - `UnitOfWork`: Transaction boundary; subclasses expose repositories as attributes.
@@ -780,6 +777,7 @@ Development aids: SQL per request, likely N+1 queries, and profiles.
 How domainkit retires an API (the policy is in `docs/versioning.md`).
 
 - `DomainkitDeprecationWarning`: A domainkit API that a later release removes; the message says what to use.
+- `moved`: A module `__getattr__` for `names` that moved: name to its new module.
 
 ## `domainkit.encryption`
 
@@ -811,6 +809,47 @@ FastAPI integration: application factory, middleware, and error mapping.
 - `error_response`: Build an error body that carries the request id for support cases.
 - `error_responses`: OpenAPI `responses` for the error statuses a route may answer with.
 - `get_asgi_application`: Set up the framework and return the configured application.
+
+## `domainkit.http.access`
+
+Who may call an endpoint: access rules, for any authentication (ADR 0080).
+
+- `MODEL_ACTIONS`: The permission each method needs from `ModelPermissions`.
+- `SAFE_METHODS`: Methods that only read: `IsAuthenticatedOrReadOnly` lets anyone use them.
+- `AllOf`: Every rule must allow.
+- `AllowAny`: Anyone, logged in or not.
+- `AnonymousPrincipal`: A caller who proved nothing: no id, no permissions, for any middleware.
+- `AnyOf`: One rule must allow, for the request and for the object alike.
+- `BasePermission`: Allows everything; subclasses override one hook or both.
+- `CurrentUser`: The request's principal, or an anonymous one.
+- `HasObjectPermissions`: Principals granted every permission named on the object itself.
+- `HasPermissions`: Principals granted every permission named (`<domain>.<codename>`).
+- `HasScope`: Users whose credentials allow every scope named; unscoped ones allow all.
+- `IsAuthenticated`: Principals who proved who they are (users who logged in).
+- `IsAuthenticatedOrReadOnly`: Anyone may read (`GET`, `HEAD`, `OPTIONS`); users may write.
+- `IsUnscoped`: Users whose credentials are not limited to scopes (a login, not a key).
+- `ModelPermissions`: Django's model permissions, by method, for one model.
+- `Not`: Allows what `rule` refuses.
+- `NotAuthenticated`: The route needs a principal who proved who they are, and none did (401).
+- `Principal`: Who sent a request, as the access rules read them (`scope["user"]`).
+- `Public`: `dependencies=[Public]`: the route needs no rule (`REQUIRE_ROUTE_RULES`).
+- `Require`: A FastAPI dependency: the rules must allow the request; returns the principal.
+- `Rule`: A rule, or a rule class that takes no arguments.
+- `acurrent_user`: `current_user` as a dependency FastAPI awaits, with no thread to hop to.
+- `check_object_permissions`: Refuse the request unless every rule allows it on `obj`.
+- `current_user`: The principal the authentication middleware found (anonymous if none).
+- `mark_public`: Mark a mounted application or a Starlette endpoint public on purpose.
+- `open_routes`: `METHOD /path` of every route that declares no access rule.
+- `reads_principal`: Mark `dependency` as one that reads the principal, as `CurrentUser` does.
+- `scopes_of`: The scopes the request's credentials are limited to; None: no limit.
+
+## `domainkit.http.apidocs`
+
+The API's documentation pages, from domainkit's own copies (`API_DOCS`).
+
+- `REDOC_POLICY`: `/redoc`'s Content-Security-Policy: `/docs`'s, with inline styles and a `blob:` worker.
+- `SWAGGER_POLICY`: `/docs`'s Content-Security-Policy: scripts and styles from the origin only.
+- `docs_routes`: `/docs`, `/redoc`, and their assets, for an API called `title`.
 
 ## `domainkit.http.application`
 
@@ -882,12 +921,14 @@ Pure-ASGI middleware enforcing the HTTP security baseline.
 - `RequestBodyLimitMiddleware`: Refuse bodies over the limit, or too slow to arrive.
 - `RequestContextMiddleware`: Bind request context, echo the request id, and write the access log.
 - `SecurityHeadersMiddleware`: Add security headers unless the endpoint already set them.
+- `body_limit`: Give a route a body limit of its own: `size` bytes, above or below the global.
 - `request_path`: The request's path within the application: without its `root_path`.
 
 ## `domainkit.http.ratelimit`
 
 Request rate limiting (`RATE_LIMIT = "300/minute"`).
 
+- `FALLBACK_KEYS`: Callers the local fallback of `RedisBackend` counts at most (`MemoryBackend`).
 - `Backend`: Where rate-limit state lives.
 - `Decision`: Whether a request may proceed, and the numbers for the headers.
 - `MemoryBackend`: GCRA state in this process, for at most `max_keys` callers.
@@ -900,6 +941,7 @@ Request rate limiting (`RATE_LIMIT = "300/minute"`).
 
 JSON responses encoded in Rust, byte for byte as Starlette encodes them.
 
+- `BuiltJSONResponse`: JSON bodies built of JSON's own values (`model_dump(mode="json")`): no check.
 - `JSONResponse`: Starlette's `JSONResponse`, rendered by `encode_json`: the same bytes.
 - `json_native`: Whether `to_json` writes `content` as `json.dumps` does (see above).
 
@@ -1091,6 +1133,7 @@ Send unexpected errors to error trackers (Sentry, Rollbar, ...).
 
 REST resources over aggregates: routes, schemas, conditional writes, policies.
 
+- `ALL_FIELDS`: `ResourceRouter(writable=ALL_FIELDS)`: `crud=True` writes every plain field.
 - `MERGE_PATCH`: RFC 7396's media type; `PATCH` routes take it as well as JSON.
 - `UNSET`: A field left out of a partial change (`PatchModel`, `UpdateX` commands).
 - `Actions`: Rules that depend on a route's action (`view`, `add`, ...).

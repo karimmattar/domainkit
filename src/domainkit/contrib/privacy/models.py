@@ -36,8 +36,8 @@ from sqlalchemy.orm import Mapper
 
 from domainkit.apps import DomainConfig, registry
 from domainkit.contrib.audit.tables import audit_log, audit_seals
-from domainkit.contrib.contenttypes.registry import installed_models
 from domainkit.db import UTCDateTime, metadata
+from domainkit.db.models import installed_models
 from domainkit.db.routing import router
 from domainkit.ddd.personal import personal_fields
 from domainkit.exceptions import ImproperlyConfigured

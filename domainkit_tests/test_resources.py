@@ -13,21 +13,13 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI, Header, Query, Request
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, Field
 from starlette.requests import HTTPConnection
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from domainkit.contrib.auth import (
-    AnonymousUser,
-    AnyUser,
-    BasePermission,
-    HasObjectPermissions,
-    IsAuthenticated,
-    Public,
-    open_routes,
-)
-from domainkit.contrib.auth.access import AllOf, AnyOf, Not
+from domainkit.contrib.auth import AnonymousUser, AnyUser
 from domainkit.ddd import (
     UNSET,
     AggregateRoot,
@@ -45,9 +37,22 @@ from domainkit.ddd import Query as QueryMessage
 from domainkit.ddd.fields import fields_of
 from domainkit.ddd.query import F
 from domainkit.ddd.query import Query as Listing
+from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.http import Filter, FilterSet, Pagination
+from domainkit.http.access import (
+    AllOf,
+    AnyOf,
+    BasePermission,
+    HasObjectPermissions,
+    IsAuthenticated,
+    Not,
+    Public,
+    open_routes,
+)
 from domainkit.http.errors import install_exception_handlers
+from domainkit.http.middleware import RequestBodyLimitMiddleware, route_body_limit
 from domainkit.resources import (
+    ALL_FIELDS,
     MERGE_PATCH,
     FieldPolicy,
     ModelActions,
@@ -60,7 +65,7 @@ from domainkit.resources import (
     to_domain,
 )
 from domainkit.resources.access import HasModelPermission, content_type_of, rules_for
-from domainkit.resources.routing import _checks_objects
+from domainkit.resources.routing.reach import checks_objects
 from domainkit_tests.conftest import UseAuth
 from domainkit_tests.gadgets import (
     FakeGadgetsUnitOfWork,
@@ -505,7 +510,7 @@ def test_resources_may_require_if_match(
 ) -> None:
     """Without ``If-Match``, a write is 428; OpenAPI says so."""
     use_auth()
-    resource = gadgets(store, require_if_match=True, crud=True)
+    resource = gadgets(store, require_if_match=True, crud=True, writable=ALL_FIELDS)
     resource.command_route(RenameGadget, service=rename, body=RenameIn, path="/rename")
     client = client_of(resource)
     gadget = next(iter(store.items.values()))
@@ -673,7 +678,7 @@ def test_model_actions_ask_for_each_routes_permission(
 ) -> None:
     """``view`` to read, ``add`` to create, ``change`` for commands, ``delete``."""
     use_auth()
-    resource = gadgets(store, crud=True)
+    resource = gadgets(store, crud=True, writable=ALL_FIELDS)
     resource.command_route(RenameGadget, service=rename, body=RenameIn, path="/rename")
     resource.command_route(
         RenameGadget,
@@ -776,12 +781,12 @@ def test_which_rules_look_at_objects() -> None:
     plain = IsAuthenticated()
     owner = HasObjectPermissions("shop.change_gadget")
 
-    assert not _checks_objects(plain)
-    assert not _checks_objects(IsAuthenticated)
-    assert _checks_objects(owner)
-    assert _checks_objects(AnyOf(plain, owner))
-    assert _checks_objects(Not(owner))
-    assert not _checks_objects(AllOf(plain, Not(plain)))
+    assert not checks_objects(plain)
+    assert not checks_objects(IsAuthenticated)
+    assert checks_objects(owner)
+    assert checks_objects(AnyOf(plain, owner))
+    assert checks_objects(Not(owner))
+    assert not checks_objects(AllOf(plain, Not(plain)))
     assert rules_for(None, "view") == ()
     assert rules_for(plain, "view") == (plain,)
     model_rules = rules_for(ModelActions(GADGETS, plain), "add")
@@ -914,7 +919,7 @@ def test_crud_creates_changes_and_deletes_reference_data(
     """``crud=True``: generic routes that record what they did."""
     use_auth()
     published: list[DomainEvent] = []
-    client = client_of(gadgets(store, published, crud=True))
+    client = client_of(gadgets(store, published, crud=True, writable=ALL_FIELDS))
     new = {
         "name": "new",
         "label": "NEW",
@@ -989,9 +994,9 @@ def test_crud_declarations_are_checked(store: InMemoryGadgets) -> None:
         name: str
 
     with pytest.raises(TypeError, match="not parts"):
-        gadgets(store, crud=True, create=PartsIn)
+        gadgets(store, crud=True, writable=ALL_FIELDS, create=PartsIn)
     with pytest.raises(TypeError, match="lacks Gadget's label, made_at, price"):
-        gadgets(store, crud=True, create=NameOnly)
+        gadgets(store, crud=True, writable=ALL_FIELDS, create=NameOnly)
 
 
 def test_values_become_domain_values() -> None:
@@ -1015,7 +1020,7 @@ def test_field_policies_hide_and_guard_fields(
         visible={"price": "shop.view_cost"},
         editable={"stock": "shop.change_stock"},
     )
-    resource = gadgets(store, crud=True, policy=policy)
+    resource = gadgets(store, crud=True, writable=ALL_FIELDS, policy=policy)
     resource.command_route(
         UpdateGadget, service=update, body=GadgetChanges, method="PATCH", path="/fields"
     )
@@ -1095,7 +1100,7 @@ def test_read_only_fields_cannot_be_patched_by_commands(
 
 def test_openapi_documents_each_route(store: InMemoryGadgets) -> None:
     """Names, errors, conditional headers, and merge patches."""
-    resource = gadgets(store, crud=True, filters=GadgetFilters)
+    resource = gadgets(store, crud=True, writable=ALL_FIELDS, filters=GadgetFilters)
     resource.command_route(RenameGadget, service=rename, body=RenameIn, path="/rename")
     resource.command_route(MakeGadget, service=make, body=MakeIn, path="/make")
     client = client_of(resource)
@@ -1358,9 +1363,9 @@ def test_generic_writes_never_set_ids_or_versions(store: InMemoryGadgets) -> Non
         name: str
 
     with pytest.raises(TypeError, match="not version"):
-        gadgets(store, crud=True, update=VersionPatch)
+        gadgets(store, crud=True, writable=ALL_FIELDS, update=VersionPatch)
     with pytest.raises(TypeError, match="not id"):
-        gadgets(store, crud=True, create=WithId)
+        gadgets(store, crud=True, writable=ALL_FIELDS, create=WithId)
 
 
 def test_policies_refuse_filters_on_hidden_fields(store: InMemoryGadgets) -> None:
@@ -1887,3 +1892,131 @@ def test_commands_on_nested_items_stay_under_their_parent(
     assert edited == [EditReview(review_id=mine.id, gadget=gadget.id, text="great")]
     assert foreign.status_code == 404
     assert theirs.text == "bad"
+
+
+def test_crud_writes_only_the_fields_writable_names(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """``writable`` shapes both derived schemas; other fields are refused."""
+    use_auth()
+    resource = gadgets(
+        store, crud=True, writable=["name", "label", "price", "made_at", "active"]
+    )
+    client = client_of(resource)
+    new = {"name": "n", "label": "N", "price": "1.00", "made_at": "2026-01-01T00:00Z"}
+
+    created = client.post("/gadgets", json=new, headers=as_("root"))
+    over_posted = client.post("/gadgets", json={**new, "stock": 9}, headers=as_("root"))
+    gadget_id = created.json()["id"]
+    changed = client.patch(
+        f"/gadgets/{gadget_id}", json={"active": False}, headers=as_("root")
+    )
+    refused = client.patch(
+        f"/gadgets/{gadget_id}", json={"stock": 9}, headers=as_("root")
+    )
+
+    assert created.status_code == 201
+    assert (over_posted.status_code, refused.status_code) == (422, 422)
+    assert changed.json()["active"] is False
+    assert store.items[GadgetId(UUID(gadget_id))].stock is None
+
+
+def test_crud_without_writable_fields_is_deprecated(store: InMemoryGadgets) -> None:
+    """Every plain field, implicitly, warns; both schemas, or ``writable``, do not."""
+    plain = ["name", "label", "price", "made_at"]
+    whole = schema_for(Gadget, write=True, include=plain)
+    patch = schema_for(Gadget, partial=True, include=["name"])
+    with pytest.warns(DomainkitDeprecationWarning, match="without writable=") as caught:
+        resource = gadgets(store, crud=True)
+    with pytest.warns(DomainkitDeprecationWarning, match="removed in 0.11"):
+        gadgets(store, crud=True, create=whole)
+
+    assert caught[0].filename == __file__  # It names the declaration.
+    create = next(r for r in resource.operations if r.name == "create_gadget")
+    assert create.body is not None
+    assert {"stock", "price"} <= set(create.body.model_fields)
+    gadgets(store, crud=True, create=whole, update=patch)
+    gadgets(store, crud=True, writable=ALL_FIELDS)
+
+
+def test_writable_declarations_are_checked(store: InMemoryGadgets) -> None:
+    """Fields no write sets, odd strings, unused or misplaced ``writable``."""
+    whole = schema_for(
+        Gadget, write=True, include=["name", "label", "price", "made_at"]
+    )
+    patch = schema_for(Gadget, partial=True, include=["name"])
+    with pytest.raises(TypeError, match="never writes Gadget's id, version"):
+        gadgets(store, crud=True, writable=["name", "id", "version"])
+    with pytest.raises(TypeError, match="or ALL_FIELDS, not 'all'"):
+        gadgets(store, crud=True, writable="all")
+    with pytest.raises(TypeError, match="create= and update= are given"):
+        gadgets(store, crud=True, writable=["name"], create=whole, update=patch)
+    with pytest.raises(TypeError, match="crud is off"):
+        gadgets(store, writable=["name"])
+    with pytest.raises(TypeError, match="has no field nope"):
+        gadgets(store, crud=True, writable=["nope"])
+
+
+def test_resource_routes_take_body_limits_by_kind_and_route(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """``body_limits`` per kind, ``body_limit=`` per route; others the global."""
+    use_auth()
+    resource = gadgets(
+        store,
+        crud=True,
+        writable=ALL_FIELDS,
+        body_limits={"create": 100, "update": 200, "command": 300, "batch": 400},
+    )
+    resource.command_route(RenameGadget, service=rename, body=RenameIn, path="/a")
+    resource.command_route(
+        RenameGadget, service=rename, body=RenameIn, path="/b", name="b", body_limit=50
+    )
+    resource.batch_route(RenameGadget, service=rename, body=RenameIn)
+    resource.batch_route(
+        RenameGadget, service=rename, body=RenameIn, path="/c", name="c", body_limit=60
+    )
+    limits = {
+        route.name: route_body_limit(route)
+        for route in resource.routes
+        if isinstance(route, APIRoute)
+    }
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.include_router(resource)
+    app.add_middleware(Users, users=everyone())
+    app.add_middleware(RequestBodyLimitMiddleware)
+    client = TestClient(app)
+
+    created = client.post("/gadgets", content=b"x" * 101, headers=as_("root"))
+    gadget = next(iter(store.items.values()))
+    renamed = client.post(
+        f"/gadgets/{gadget.id}/b", json={"name": "x" * 40}, headers=as_("root")
+    )
+
+    assert limits == {
+        "list_gadgets": None,
+        "read_gadget": None,
+        "create_gadget": 100,
+        "update_gadget": 200,
+        "delete_gadget": None,
+        "rename_gadget": 300,
+        "b": 50,
+        "rename_gadget_batch": 400,
+        "c": 60,
+    }
+    assert (created.status_code, renamed.status_code) == (413, 413)
+
+
+def test_resource_body_limits_are_checked(store: InMemoryGadgets) -> None:
+    """Kinds that take no body, and limits out of bounds, are refused."""
+    with pytest.raises(
+        TypeError, match=r"\(create, update, command, batch\), not read"
+    ):
+        gadgets(store, body_limits={"read": 10})
+    with pytest.raises(ValueError, match="not 0"):
+        gadgets(store, body_limits={"batch": 0})
+    with pytest.raises(ValueError, match="not 0"):
+        gadgets(store).command_route(
+            RenameGadget, service=rename, body=RenameIn, path="/a", body_limit=0
+        )

@@ -27,6 +27,7 @@ from domainkit.ddd.fields import (
     InvalidQuery,
     MaxLength,
     Reference,
+    Sensitive,
     UnknownField,
 )
 from domainkit.ddd.messages import UNSET, Command, Query, Unset
@@ -86,6 +87,7 @@ __all__ = [
     "RowLock",
     "RowLocks",
     "Selection",
+    "Sensitive",
     "SoftDeletable",
     "Specification",
     "UnitOfWork",

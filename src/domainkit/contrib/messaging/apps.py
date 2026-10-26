@@ -30,6 +30,21 @@ class MessagingConfig(DomainConfig):
     settings_class = MessagingSettings
     requires = ()
 
+    def broker_queues(self) -> tuple[str, Sequence[str]]:
+        """``MESSAGING.BROKER``, and every queue the worker's tasks use (``broker``).
+
+        Raises:
+            CommandError: ``MESSAGING.BROKER`` names no broker.
+        """
+        from domainkit.management.base import CommandError
+
+        from . import registry as tasks
+
+        alias = self.get_settings().BROKER
+        if alias is None:
+            raise CommandError("declare needs MESSAGING.BROKER.")
+        return alias, sorted(tasks.queues())
+
     def ready(self) -> None:
         """Check the home outbox and broker; expose gauges with Prometheus.
 

@@ -1,9 +1,11 @@
 """Install ``domainkit.contrib.auth`` (after ``domainkit.contrib.contenttypes``)."""
 
 import dataclasses
+import warnings
 from collections.abc import Sequence
 from importlib import import_module
 from typing import Any
+from uuid import uuid4
 
 from fastapi import FastAPI
 from sqlalchemy import Table
@@ -16,11 +18,12 @@ from domainkit.contrib.contenttypes.sync import has_tables
 from domainkit.db import metadata
 from domainkit.db.routing import router
 from domainkit.ddd import DomainEvent, UnitOfWork, event_bus
+from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.http.access import routes_need_users, served_routes
 from domainkit.http.ratelimit import MemoryBackend
 from domainkit.utils.module_loading import import_string
 
-from .access import _routes, routes_need_users, unguarded_routes
 from .authentication import get_authenticators
 from .backends import get_backends
 from .hashers import insecure_hashers
@@ -49,6 +52,8 @@ INSIDE_AUTHENTICATION = (
 """Middleware that must run after it, to count users rather than addresses."""
 REDIS_BACKEND = "domainkit.http.ratelimit.RedisBackend"
 """The rate-limit backend every process shares."""
+ROUTE_RULES = "REQUIRE_ROUTE_RULES"
+"""``AUTH.REQUIRE_ROUTE_RULES``, deprecated for the core's setting of that name."""
 RELATIONSHIPS = frozenset({"groups", "user_permissions"})
 """User fields stored in link tables, not in the user's own table."""
 
@@ -81,6 +86,14 @@ class AuthConfig(DomainConfig):
     def ready(self) -> None:
         """Load the user model, check the configuration, and map the tables."""
         config = auth_settings()
+        if ROUTE_RULES in config.model_fields_set:
+            warnings.warn(
+                f"AUTH.{ROUTE_RULES} moved to {ROUTE_RULES}, which holds whatever "
+                "authenticates requests; set it there. The old setting is removed "
+                "in 0.11.",
+                DomainkitDeprecationWarning,
+                stacklevel=2,
+            )
         self.user_model = _user_model(config.USER_MODEL)
         self.user_table = _user_table(config, self.user_model)
         self._check_routing()
@@ -118,24 +131,37 @@ class AuthConfig(DomainConfig):
         if isinstance(session, AsyncSession):
             await stamp_committed(session)
 
+    async def issue_test_token(
+        self, permissions: Sequence[str], fields: dict[str, Any]
+    ) -> str:
+        """Store a new user granted ``permissions``; its access token (``testing``).
+
+        ``fields`` set the user's fields; the username is unique unless
+        given. The token comes from the first ``AUTH.AUTHENTICATION_CLASSES``
+        class, as a login's would.
+        """
+        from .uow import AuthUnitOfWork
+
+        username = fields.pop(self.user_model.USERNAME_FIELD, f"user-{uuid4().hex}")
+        async with AuthUnitOfWork() as uow:
+            user = await uow.users.create_user(username, **fields)
+            user.grant(*await uow.permissions.get_many(permissions))
+            issued = await get_authenticators()[0].issue(uow, user)
+            await uow.commit()
+        return issued.access_token
+
     def check_application(self, app: FastAPI) -> list[str]:
-        """Routes that declare no rule, and rules no middleware can answer."""
+        """Rules no middleware can answer, and what auth's own routes lack.
+
+        Routes that declare no rule are the core's to find
+        (``REQUIRE_ROUTE_RULES``), with or without this app.
+        """
         problems = []
         if AUTHENTICATION_MIDDLEWARE not in settings.MIDDLEWARE and routes_need_users(
             app
         ):
             problems.append(
                 f"Routes check users, but MIDDLEWARE lacks {AUTHENTICATION_MIDDLEWARE}."
-            )
-        if auth_settings().REQUIRE_ROUTE_RULES:
-            problems.extend(
-                f"{route} declares no access rule: add Depends(Require(...)), or "
-                "dependencies=[Public] if anyone may call it."
-                if takes_rules
-                else f"{route} takes no access rule: serve it from a FastAPI route "
-                "with Require(...), or wrap it in mark_public(...) if anyone may "
-                "call it."
-                for route, takes_rules in unguarded_routes(app)
             )
         problems.extend(self._mailing_problems(app))
         if (
@@ -150,7 +176,9 @@ class AuthConfig(DomainConfig):
 
     def _mounted(self, app: FastAPI, name: str) -> bool:
         """Whether a route of the router in module ``name`` is served by ``app``."""
-        called = {dependant.call for _, dependant in _routes(app.routes) if dependant}
+        called = {
+            dependant.call for _, dependant in served_routes(app.routes) if dependant
+        }
         module = import_module(f"{self.name}.{name}")
         return bool(called & {route.endpoint for route in module.router.routes})
 

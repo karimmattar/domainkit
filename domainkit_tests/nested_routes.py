@@ -16,7 +16,7 @@ from fastapi.responses import PlainTextResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel
 
-from domainkit.contrib.auth import IsAuthenticated, Public, Require, mark_public
+from domainkit.http.access import IsAuthenticated, Public, Require, mark_public
 
 events: list[str] = []
 """What the routers' lifespan and startup hooks did, in order."""

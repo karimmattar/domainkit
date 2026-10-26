@@ -42,10 +42,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from domainkit import clock
 from domainkit.conf import settings
 from domainkit.encryption import SecretBox
+from domainkit.http.access import IsUnscoped, Public, Require
 from domainkit.http.errors import APIError
 
 from . import totp
-from .access import AuthenticatedUser, IsUnscoped, Public, Require
+from .access import AuthenticatedUser
 from .api import (
     PASSWORD_MAX_LENGTH,
     MfaChallengeOut,

@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 from domainkit.apps import registry
-from domainkit.contrib.contenttypes.registry import content_type_key
+from domainkit.db.models import model_key
 
 from .uow import AuthUnitOfWork
 from .users import get_user_model
@@ -33,7 +33,7 @@ async def forget_credentials(event: "PersonalDataErased") -> None:
     if not registry.is_installed(AUTH):
         return
     try:
-        domain, model = content_type_key(get_user_model())
+        domain, model = model_key(get_user_model())
     except LookupError:
         return  # A user table this project's domains do not hold.
     if event.model != f"{domain}.{model}":

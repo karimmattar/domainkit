@@ -51,11 +51,11 @@ from pydantic import BaseModel, Field
 from starlette.requests import HTTPConnection
 
 from domainkit.conf import settings
+from domainkit.http.access import SAFE_METHODS, Public
 from domainkit.http.errors import APIError
 from domainkit.http.middleware import host_allowed
 from domainkit.signing import BadSignature, Signer, constant_time_compare
 
-from .access import SAFE_METHODS, Public
 from .api import (
     LoginIn,
     MfaChallengeOut,

@@ -23,11 +23,9 @@ from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.auth import (
     AbstractBaseUser,
-    AllowAny,
     AuthenticationFailed,
     AuthUnitOfWork,
     BaseAuthentication,
-    BasePermission,
     Credentials,
 )
 from domainkit.contrib.auth.events import UserCreated, UserPermissionGranted
@@ -35,6 +33,7 @@ from domainkit.contrib.auth.middleware import AuthenticationMiddleware
 from domainkit.ddd import DomainEvent, EventBus, event_bus
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application, live
+from domainkit.http.access import AllowAny, BasePermission
 from domainkit.http.live import TOO_SLOW, Closed
 from domainkit.http.live_events import (
     INTAKE_FACTOR,

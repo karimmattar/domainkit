@@ -96,6 +96,20 @@ class Digits:
             )
 
 
+class Sensitive:
+    """A type whose values no schema shows or takes, such as a password hash.
+
+    Subclass it beside ``ValueObject``: ``schema_for`` refuses a field that
+    holds one, so a secret never leaves or enters through a derived schema
+    unless the field is excluded::
+
+        class PinHash(ValueObject, Sensitive):
+            value: str
+    """
+
+    __slots__ = ()
+
+
 @dataclass(frozen=True, slots=True)
 class AggregateReference:
     """``Annotated`` metadata: the field holds another aggregate's id."""

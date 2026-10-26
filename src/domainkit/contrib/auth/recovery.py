@@ -39,9 +39,10 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from domainkit.contrib.mail import deliver, render_mail
 from domainkit.contrib.messaging import enqueue, task
+from domainkit.http.access import IsUnscoped, Public, Require
 from domainkit.http.errors import APIError
 
-from .access import AuthenticatedUser, IsUnscoped, Public, Require
+from .access import AuthenticatedUser
 from .api import PASSWORD_MAX_LENGTH, _errors
 from .events import PasswordReset, PasswordResetRequested
 from .exceptions import InvalidEmail

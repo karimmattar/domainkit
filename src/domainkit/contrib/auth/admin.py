@@ -39,12 +39,13 @@ from domainkit.ddd import PermissionDenied
 from domainkit.ddd.query import F
 from domainkit.ddd.query import Query as Listing
 from domainkit.http import Pagination, error_responses
+from domainkit.http.access import IsUnscoped, Require
 from domainkit.resources import HasModelPermission as HasModelPermission
 from domainkit.resources import ModelActions, ResourceRouter
 from domainkit.resources.access import ModelLike
 from domainkit.utils.decimals import jsonable
 
-from .access import IsAdminUser, IsSuperuser, IsUnscoped, Require
+from .access import IsAdminUser, IsSuperuser
 from .backends import ModelBackend, get_all_permissions, get_backends
 from .events import UserLoggedOut
 from .exceptions import (

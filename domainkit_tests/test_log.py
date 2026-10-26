@@ -1431,7 +1431,7 @@ def test_a_sampled_access_log_keeps_errors_and_refusals(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """At rate 0, successful and redirected requests alone leave no line."""
-    with override_settings(ACCESS_LOG_SAMPLE_RATE=0.0):
+    with override_settings(ACCESS_LOG_SAMPLE_RATE=0.0, ACCESS_LOG_PATH="raw"):
         middleware = RequestContextMiddleware(answered)
     codes = [200, 204, 302, 400, 404, 401, 403, 409, 422, 429, 500]
 
@@ -1487,16 +1487,18 @@ def test_probing_a_sampled_application_leaves_a_line_per_probe(
 
     lines = [r.getMessage() for r in caplog.records if r.name == "domainkit.access"]
     assert answers == [200] + [404] * 39 + [405, 422]
+    # One line per probe, each by the route's template, never the id probed.
     assert [line.rsplit(" ", 1)[0] for line in lines] == [
-        *(f"GET /accounts/{n} 404" for n in range(2, 41)),
-        "DELETE /accounts/2 405",
-        "GET /accounts/two 422",
+        *["GET /accounts/{number} 404"] * 39,
+        "DELETE /accounts/{number} 405",
+        "GET /accounts/{number} 422",
     ]
 
 
 def test_the_full_access_log_is_the_default(caplog: pytest.LogCaptureFixture) -> None:
     """At the default rate every request has its line, as before."""
-    middleware = RequestContextMiddleware(answered)
+    with override_settings(ACCESS_LOG_PATH="raw"):
+        middleware = RequestContextMiddleware(answered)
 
     logged = statuses_logged(middleware, [200, 404, 500], caplog)
 

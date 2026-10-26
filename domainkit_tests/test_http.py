@@ -108,8 +108,9 @@ def test_database_errors_that_are_not_bugs_answer_as_such(
         return
     assert reported == []
     reason = "TimeoutError" if failure == "pool" else f"SQLSTATE {failure}"
+    # The route's template, never the path as sent (WEB-10).
     assert [(r.levelname, r.getMessage()) for r in refused] == [
-        ("WARNING", f"Database refused GET {failure_path}: {code} ({reason})")
+        ("WARNING", f"Database refused GET /database/{{failure}}: {code} ({reason})")
     ]
     assert refused[0].exc_info is None
     if status_code == 503:
@@ -520,7 +521,7 @@ def test_access_log_levels(
     assert levels == {
         "/health": logging.DEBUG,
         "/ok": logging.INFO,
-        "/missing": logging.WARNING,
+        "unmatched": logging.WARNING,  # No route: no path, which could be anything.
     }
     assert "secret" not in caplog.text
 
@@ -569,7 +570,12 @@ def test_exempt_and_quiet_paths_hold_behind_a_root_path(
         for record in caplog.records
         if record.name == "domainkit.access"
     }
-    assert levels == {"/api/health": logging.DEBUG, "/api/ok": logging.WARNING}
+    # Templates, without the root path; refused before routing: unmatched.
+    assert levels == {
+        "/health": logging.DEBUG,
+        "/ok": logging.INFO,
+        "unmatched": logging.WARNING,
+    }
 
 
 def test_refusals_are_logged_once_per_caller_a_while(
@@ -917,9 +923,13 @@ def test_the_application_describes_the_project() -> None:
     with override_settings(API_DOCS=False):
         hidden = get_asgi_application()
 
+    paths = {getattr(route, "path", "") for route in app.routes}
+    hidden_paths = {getattr(route, "path", "") for route in hidden.routes}
     assert (app.title, app.version, app.debug) == ("billing", "1.2.3", True)
-    assert (app.docs_url, app.redoc_url) == ("/docs", "/redoc")
-    assert (hidden.docs_url, hidden.redoc_url, hidden.openapi_url) == (None,) * 3
+    assert {"/openapi.json", "/docs", "/redoc"} <= paths  # domainkit's own pages.
+    assert (app.docs_url, app.redoc_url) == (None, None)  # Not FastAPI's.
+    assert hidden.openapi_url is None
+    assert not {"/openapi.json", "/docs", "/redoc"} & hidden_paths
     responses = app.openapi()["paths"]["/ok"]["get"]["responses"]
     assert responses["413"]["description"] == "Request body too large"
 
@@ -1011,8 +1021,10 @@ def test_access_log_lines_carry_their_level_fields_and_time(
         await send({"type": "http.response.body", "body": b""})
 
     scope = {"type": "http", "method": "GET", "path": "/logged", "headers": []}
+    with override_settings(ACCESS_LOG_PATH="raw"):
+        middleware = RequestContextMiddleware(app)
     with caplog.at_level(logging.DEBUG, logger="domainkit.access"):
-        asyncio.run(RequestContextMiddleware(app)(scope, receive_nothing, send_nowhere))
+        asyncio.run(middleware(scope, receive_nothing, send_nowhere))
 
     [record] = caplog.records
     assert (record.levelno, record.getMessage()) == (

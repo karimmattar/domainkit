@@ -1,8 +1,8 @@
 """Install ``domainkit.contrib.audit`` to keep an audit trail."""
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from importlib import import_module
-from typing import Final, cast
+from typing import Any, Final, cast
 
 from domainkit.apps import DomainConfig, registry
 from domainkit.db import SqlAlchemyUnitOfWork, map_imperatively
@@ -11,7 +11,7 @@ from domainkit.ddd import DeferredTask, DomainEvent, UnitOfWork
 
 from .baseline import check_at_startup, settings_problems
 from .models import AuditEntry
-from .recorder import event_rows, write
+from .recorder import Outcome, event_rows, record, write
 from .settings import AuditSettings
 from .tables import audit_log
 
@@ -36,6 +36,16 @@ class AuditConfig(DomainConfig):
         map_imperatively(AuditEntry, audit_log)
         if registry.is_installed(MESSAGING):
             import_module(f"{self.name}.tasks")
+
+    async def record_operator_action(
+        self, action: str, outcome: str, details: Mapping[str, object]
+    ) -> None:
+        """Record ``operator.<action>`` (``domainkit.management.operators``)."""
+        await record(
+            f"operator.{action}",
+            Outcome(outcome),
+            **cast(dict[str, Any], details),  # Never target, personal, subject.
+        )
 
     def deployment_warnings(self) -> list[str]:
         """The settings a tamper-evident trail needs, missing in staging and production.

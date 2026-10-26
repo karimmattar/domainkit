@@ -9,6 +9,156 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `domainkit.http.access`: the access rules, for any authentication. The
+  algebra (`BasePermission`, `Require`, `Public`, `AllOf`, `AnyOf`, `Not`,
+  `check_object_permissions`, `mark_public`, `open_routes`), the rules that
+  read only what any principal has (`IsAuthenticated`, `HasPermissions`,
+  `ModelPermissions`, `HasObjectPermissions`, `HasScope`, `IsUnscoped`, ...),
+  `current_user` and `CurrentUser`, and `Principal`: the protocol the rules
+  read (`id`, `is_authenticated`, `is_active`, `ahas_perms`), with
+  `AnonymousPrincipal` and `reads_principal` for a provider's own
+  dependencies. A project whose middleware puts its own principal in
+  `scope["user"]` (an OpenID Connect middleware, a gateway's header) serves
+  `ResourceRouter`s, field policies, and deny by default without
+  `domainkit.contrib.auth`, its tables, or content types; a principal's
+  `challenge()` names the `WWW-Authenticate` of its 401. Auth's users answer
+  `ahas_perms` through `AUTH.BACKENDS`, as `has_perms` did (DSGN-02; ADR 0080).
+- `REQUIRE_ROUTE_RULES` (default `True`): deny by default is the core's,
+  checked when the application is built and when it starts, with or
+  without `domainkit.contrib.auth` (DSGN-02; ADR 0080).
+- `domainkit.db.models`: which classes are installed models, their keys
+  (`model_key`, `billing.invoice`), and their `Meta` options; permissions
+  and generic writes name models without content types.
+  `domainkit.contrib.contenttypes` keeps its names, the same objects
+  (`content_type_key` is `model_key`) (DSGN-02).
+- `domainkit.ddd.Sensitive`: a type whose values no derived schema shows or
+  takes; `schema_for` refuses a field of such a type, as it refused auth's
+  `PasswordHash`, which is one (DSGN-02).
+- `domainkit.deprecation.moved`: a module `__getattr__` that keeps names
+  that moved importable from their old module, warning (DSGN-02).
+- `domainkit.http.responses.BuiltJSONResponse`, public: JSON bodies built of
+  JSON's own values (`model_dump(mode="json")`), rendered without the check
+  `JSONResponse` makes (DSGN-01).
+- The core asks installed apps through protocols, never imports them:
+  `OperatorRecorder` (`domainkit.contrib.audit` records operators' actions),
+  `QueueDeclarer` (messaging names the queues `broker declare` creates),
+  and `TokenIssuer` (auth issues `user_token`'s and the clients' tokens).
+  `test_framework_layers.py` fails on any core module that imports a
+  contrib app, at import, in a function, or by name: 12 did in 0.9.2
+  (DSGN-02; ADR 0080).
+- The `resource-read` and `resource-command` rungs of the benchmark ladder:
+  a `ResourceRouter` read and a scoped command, through the template stack
+  (DSGN-01).
+- Body limits per route: `domainkit.http.middleware.body_limit(size)` on an
+  endpoint, `body_limits=` per kind on a `ResourceRouter` (`create`,
+  `update`, `command`, `batch`), and `body_limit=` on `command_route` and
+  `batch_route`, from 1 byte to 1 GiB, above or below
+  `MAX_REQUEST_BODY_SIZE`. `RequestBodyLimitMiddleware` applies the route's
+  limit as the body arrives: a declared length over it is refused before a
+  byte is read, a 20 MiB upload to a 100 kB route is read only to the limit
+  and one chunk more (it was read and spooled whole, then refused), and
+  middleware that reads bodies before routing meets the route's limit too.
+  Without route limits, nothing changes (WEB-05).
+- `ResourceRouter(crud=True, writable=[...])` names the fields the generic
+  writes take; `writable=ALL_FIELDS` takes every plain one (WEB-09).
+- `RedisBackend(fallback=..., replicas=...)` and
+  `RATE_LIMIT_FALLBACK_REPLICAS` (default `None`, 1 to 1024): while Redis is
+  down or skipped, callers are counted in each process at `RATE_LIMIT`
+  divided by the replicas, by a `MemoryBackend` of at most 10,000 callers
+  (`FALLBACK_KEYS`), instead of let through. Its decisions are marked not
+  counted, so `AUTH.THROTTLE_FAIL_CLOSED` still refuses the attempts they
+  let through (WEB-14).
+- `SECURE_CONTENT_SECURITY_POLICY`, `SECURE_PERMISSIONS_POLICY`, and
+  `SECURE_CROSS_ORIGIN_OPENER_POLICY`: printable ASCII on one line, at most
+  4096 characters (COOP: its three values), `None` to leave a header out
+  (WEB-08).
+- `ACCESS_LOG_PATH` (`"template"`, or `"raw"` for the path as sent)
+  (WEB-10).
+
+### Changed
+
+- **Breaking:** projects without `domainkit.contrib.auth` now have deny by
+  default: a route that declares no rule (`Require`, `CurrentUser`, a
+  `reads_principal` dependency, or `Public`) is listed by `check`, and
+  staging and production refuse to start, as they did with auth. To keep
+  the old behaviour, set `REQUIRE_ROUTE_RULES = False` (DSGN-02).
+- `domainkit.resources.routing` is a package: the `ResourceRouter` facade,
+  its constructor and every `*_route` signature unchanged, over one class
+  per kind of route (`listing`, `reading`, `commands`, `batching`,
+  `queries`, `crud`) that answers from a frozen, typed `RouteContext`
+  instead of a dict of values; `reach` and `presenting` hold what they
+  share. Answers, headers, error bodies, and OpenAPI documents are the same
+  (DSGN-01; ADR 0025).
+- A command or a query on one aggregate whose resource has a scope or a
+  parent checks the aggregate and runs the service in one unit of work, the
+  service's own enter and exit doing nothing: one transaction and one
+  connection instead of two, and the service finds the aggregate the check
+  read (`resource-command`: 4,546 calls and 2/2/2/2 round trips, now 3,766
+  and 1/1/1/1). With a rule that looks at the aggregate, the check keeps a
+  transaction of its own, closed before the rule runs (DSGN-01).
+- A rule's `has_permission` and `has_object_permission` take the principal
+  typed `Any`, so rules written for auth's `AnyUser` keep their annotation;
+  the core's own rules read a `Principal` (DSGN-02).
+- **Breaking:** `API_DOCS` defaults to `None`, which follows `DEBUG`: a
+  deployment (`DEBUG = False`) no longer serves `/docs`, `/redoc`, or
+  `/openapi.json`. To keep them, set `API_DOCS = True` (the project
+  template's production settings read `API_DOCS` from the environment)
+  (WEB-08; ADR 0086).
+- **Breaking:** every response that sets none gets `Content-Security-Policy:
+  default-src 'none'; frame-ancestors 'none'`, a `Permissions-Policy` that
+  turns powerful browser features off, and `Cross-Origin-Opener-Policy:
+  same-origin`. A route that answers HTML a browser should run sets its own
+  policy, or the project sets `SECURE_CONTENT_SECURITY_POLICY = None` to
+  keep the old headers (WEB-08; ADR 0086).
+- `/docs` and `/redoc` load Swagger UI 5.33.1 and ReDoc 2.5.4 from copies
+  in the package (`/docs/assets/`, `domainkit.http.apidocs`), not from
+  jsdelivr, Google Fonts, and Redocly's CDN, under page policies that allow
+  scripts from the origin only and no inline script. In headless Chromium,
+  `/docs` renders and runs "Try it out" with no violation; ReDoc renders
+  and searches, and only its footer's Redocly logo is refused. The wheel
+  grows from 1.01 MB to 1.82 MB (2.9 MB of files installed) (WEB-08;
+  ADR 0086).
+- **Breaking:** the access log, the request middleware's error lines, error
+  reports, and the request context show the matched route's template
+  (`/accounts/{account_id}`), or `unmatched`, instead of the path as sent,
+  so ids, tokens, and emails in paths stay out of logs. Problem details'
+  `instance` still names the path as sent. To keep the old lines, set
+  `ACCESS_LOG_PATH = "raw"`. Binding the context costs fewer calls than
+  before: the default stack makes 591 calls a request instead of 598
+  (WEB-10; ADR 0086).
+- The guard's resolver stays on its threads, measured against the loop's
+  `getaddrinfo` and aiodns (c-ares) with a DNS server that never answers:
+  with 16 lookups hung by one owner, the guard held 4 threads (the owner's
+  share) and another owner's lookup succeeded in 0.5 ms; the loop's
+  resolver took all 8 threads of the default executor and the other
+  lookup failed after 5 s; aiodns held none, but answered in 164 to 293 µs
+  where the threads answered in 116 to 148 µs, and needs a compiled
+  dependency (WEB-04).
+
+### Deprecated
+
+- The rule names of `domainkit.contrib.auth` and
+  `domainkit.contrib.auth.access` that moved to `domainkit.http.access`:
+  `AllowAny`, `BasePermission`, `HasObjectPermissions`, `HasPermissions`,
+  `HasScope`, `IsAuthenticated`, `IsAuthenticatedOrReadOnly`, `IsUnscoped`,
+  `ModelPermissions`, `NotAuthenticated`, `Public`, `Require`,
+  `check_object_permissions`, `mark_public`, and `open_routes` (and, from
+  `.access` only, `AllOf`, `AnyOf`, `Not`, `Rule`, `SAFE_METHODS`,
+  `MODEL_ACTIONS`, `scopes_of`, ...). They still import, the same objects,
+  with a `DomainkitDeprecationWarning` naming the new place, and are removed
+  in 0.11. `IsAdminUser`, `IsSuperuser`, `AuthenticatedUser`, `CurrentUser`,
+  and `current_user` stay in auth (DSGN-02).
+- `AUTH.REQUIRE_ROUTE_RULES`: set `REQUIRE_ROUTE_RULES`. `False` still
+  turns the check off, with a warning, until 0.11 (DSGN-02).
+- `ResourceRouter(crud=True)` without `writable=`, or without both
+  `create=` and `update=`: every plain field of the aggregate is writable,
+  so a field added later is settable by any caller allowed to write. It
+  still works, with a `DomainkitDeprecationWarning`, and is refused in
+  0.11; name the fields with `writable=[...]`, or `writable=ALL_FIELDS` to
+  keep every one (WEB-09).
+
 ## [0.9.3] - 2026-10-26
 
 The release of 0.9.2 failed before publishing (below), so 0.9.2 reached no

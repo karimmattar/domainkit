@@ -7,21 +7,23 @@ from fastapi import APIRouter, Depends, Request, WebSocket
 from domainkit.contrib.auth import (
     AnyUser,
     CurrentUser,
-    HasPermissions,
-    HasScope,
     IsAdminUser,
     IsSuperuser,
-    ModelPermissions,
-    Public,
-    Require,
+    current_user,
 )
-from domainkit.contrib.auth.access import current_user
 from domainkit.contrib.auth.api import router as auth_router
 from domainkit.contrib.auth.cookies import router as session_router
 from domainkit.contrib.auth.mfa import router as mfa_router
 from domainkit.contrib.auth.personal_tokens import router as tokens_router
 from domainkit.contrib.auth.recovery import router as recovery_router
 from domainkit.contrib.auth.signup import router as signup_router
+from domainkit.http.access import (
+    HasPermissions,
+    HasScope,
+    ModelPermissions,
+    Public,
+    Require,
+)
 from domainkit.http.health import router as health_router
 
 VIEW_PRODUCT = "shop.view_product"

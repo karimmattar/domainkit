@@ -23,17 +23,26 @@ import ipaddress
 import logging
 import os
 import re
+import threading
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import Final
 
 from fastapi import status
 from starlette.middleware import cors
+from starlette.routing import Match
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from domainkit import clock
 from domainkit.conf import settings
-from domainkit.context import RequestContext, bind_request
+from domainkit.context import UNMATCHED_PATH as UNMATCHED_PATH
+from domainkit.context import (
+    RequestContext,
+    RoutedRequestContext,
+    enter_request,
+    leave_request,
+)
+from domainkit.context import route_template as route_template
 from domainkit.http.errors import (
     APIError,
     database_refusal,
@@ -56,6 +65,7 @@ __all__ = [
     "RequestBodyLimitMiddleware",
     "RequestContextMiddleware",
     "SecurityHeadersMiddleware",
+    "body_limit",
     "request_path",
 ]
 
@@ -384,6 +394,9 @@ def security_headers(
     content_type_nosniff: bool,
     referrer_policy: str | None,
     frame_options: str,
+    content_security_policy: str | None = None,
+    permissions_policy: str | None = None,
+    cross_origin_opener_policy: str | None = None,
 ) -> list[tuple[str, str]]:
     """Translate Django-style ``SECURE_*`` settings into response headers."""
     headers = [("Cache-Control", "no-store"), ("X-Frame-Options", frame_options)]
@@ -396,11 +409,26 @@ def security_headers(
         if hsts_include_subdomains:
             value += "; includeSubDomains"
         headers.append(("Strict-Transport-Security", value))
+    if content_security_policy:
+        headers.append(("Content-Security-Policy", content_security_policy))
+    if permissions_policy:
+        headers.append(("Permissions-Policy", permissions_policy))
+    if cross_origin_opener_policy:
+        headers.append(("Cross-Origin-Opener-Policy", cross_origin_opener_policy))
     return headers
 
 
 class SecurityHeadersMiddleware:
-    """Add security headers unless the endpoint already set them."""
+    """Add security headers unless the endpoint already set them.
+
+    The baseline: ``Cache-Control: no-store``, ``X-Frame-Options``,
+    ``X-Content-Type-Options``, ``Referrer-Policy``, HSTS once set, and a
+    ``Content-Security-Policy`` that lets nothing load, run, or frame what
+    the API answers, a ``Permissions-Policy`` that turns powerful browser
+    features off, and ``Cross-Origin-Opener-Policy: same-origin``. A route
+    that answers a page sets its own (``domainkit.http.apidocs``,
+    ``domainkit.http.uploads.serve``), which is kept.
+    """
 
     def __init__(self, app: ASGIApp) -> None:
         """Wrap ``app`` with the headers derived from ``SECURE_*`` settings."""
@@ -411,6 +439,9 @@ class SecurityHeadersMiddleware:
             content_type_nosniff=settings.SECURE_CONTENT_TYPE_NOSNIFF,
             referrer_policy=settings.SECURE_REFERRER_POLICY,
             frame_options=settings.X_FRAME_OPTIONS,
+            content_security_policy=settings.SECURE_CONTENT_SECURITY_POLICY,
+            permissions_policy=settings.SECURE_PERMISSIONS_POLICY,
+            cross_origin_opener_policy=settings.SECURE_CROSS_ORIGIN_OPENER_POLICY,
         )
         self.raw_headers: RawHeaders = [
             (name.lower().encode("latin-1"), value.encode("latin-1"))
@@ -459,6 +490,11 @@ class RequestContextMiddleware:
     accept, and the access log line, written when the connection ends, shows
     101 if it was accepted and 403 if it was closed first. An error before
     the accept closes it with 1011, the WebSocket equivalent of a 500.
+
+    The path the context, the access log, and error reports show is the
+    route's template (``/accounts/{account_id}``), or ``unmatched``
+    (``RoutedRequestContext``): ids, tokens, and emails in paths stay out
+    of logs. ``ACCESS_LOG_PATH = "raw"`` shows the path as sent instead.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -469,6 +505,8 @@ class RequestContextMiddleware:
         self.sampler = AccessSampler(
             settings.ACCESS_LOG_SAMPLE_RATE, settings.ACCESS_LOG_SLOW_DURATION
         )
+        self.raw_path = settings.ACCESS_LOG_PATH == "raw"
+        """Whether logs show the path as sent, not the route's template."""
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Serve one request, or one WebSocket connection, inside its context."""
@@ -484,11 +522,14 @@ class RequestContextMiddleware:
         )
         echoed = ((_REQUEST_ID_NAME, request_id.encode("latin-1")),)
         client = scope.get("client")
-        context = RequestContext(
-            request_id=request_id,
-            client_ip=client[0] if client else None,
-            method=WEBSOCKET_METHOD if websocket else scope["method"],
-            path=scope["path"],
+        client_ip = client[0] if client else None
+        method = WEBSOCKET_METHOD if websocket else scope["method"]
+        context = (
+            RequestContext(request_id, client_ip, method, scope["path"])
+            if self.raw_path
+            else RoutedRequestContext(
+                request_id, client_ip, method, UNMATCHED_PATH, scope=scope
+            )
         )
         response_status: int | None = None
         started = time.perf_counter()
@@ -507,29 +548,29 @@ class RequestContextMiddleware:
                 response_status = status.HTTP_403_FORBIDDEN  # Closed before accept.
             await send(message)
 
-        with bind_request(context):
+        token = enter_request(context)  # bind_request(), in two calls, not nine.
+        try:
             try:
                 await self.app(scope, receive, send_with_id)
             except Exception as exc:
                 refusal = database_refusal(exc)
+                path = context.path
                 if refusal is not None and response_status is None:
                     logger.warning(
                         "Database refused %s %s: %s (%s)",
                         context.method,
-                        context.path,
+                        path,
                         refusal.code,
                         refusal_reason(exc),
                     )
                     await self._refuse(refusal, scope, receive, send_with_id)
                     return
-                logger.exception(
-                    "Unhandled error in %s %s", context.method, context.path
-                )
+                logger.exception("Unhandled error in %s %s", context.method, path)
                 report_error(
                     exc,
                     request_id=context.request_id,
                     method=context.method,
-                    path=context.path,
+                    path=path,
                 )
                 if self.debug or response_status is not None:
                     raise
@@ -548,6 +589,8 @@ class RequestContextMiddleware:
                     quiet=response_status == status.HTTP_200_OK
                     and request_path(scope) in self.quiet_paths,
                 )
+        finally:
+            leave_request(token)
 
     async def _refuse(
         self, refusal: APIError, scope: Scope, receive: Receive, send: Send
@@ -594,18 +637,19 @@ class RequestContextMiddleware:
         if not self.sampler.keep(response_status, seconds):
             return
         duration_ms = round(seconds * 1000, 1)
+        path = context.path
         log_enabled(
             access_logger,
             level,
             "%s %s %s %.1fms",
             context.method,
-            context.path,
+            path,
             response_status if response_status is not None else "-",
             duration_ms,
             extra={
                 "access": {
                     "method": context.method,
-                    "path": context.path,
+                    "path": path,
                     "status": response_status,
                     "duration_ms": duration_ms,
                 }
@@ -731,6 +775,81 @@ def utf8_size(text: str) -> int:
     )
 
 
+MAX_ROUTE_BODY_SIZE: Final = 1 << 30
+"""The largest body limit a route may set: 1 GiB."""
+BODY_LIMIT: Final = "__domainkit_body_limit__"
+"""The endpoint attribute that holds its route's body limit (``body_limit``)."""
+
+
+def body_limit[F: Callable[..., object]](size: int) -> Callable[[F], F]:
+    """Give a route a body limit of its own: ``size`` bytes, above or below the global.
+
+    ``RequestBodyLimitMiddleware`` holds the route's requests to it instead
+    of ``MAX_REQUEST_BODY_SIZE``, as the body arrives: a larger body is
+    refused with 413 before it is read to the end, so an upload route can
+    take more than the JSON routes, and a login route less::
+
+        @router.post("/avatars", dependencies=[Depends(Require())])
+        @body_limit(2_000_000)
+        async def upload_avatar(file: UploadFile) -> AvatarOut: ...
+
+    It marks the endpoint, so the decorator may go above or below the
+    route's. ``ResourceRouter`` routes take ``body_limit=`` (and
+    ``body_limits=`` per kind) instead.
+
+    Raises:
+        ValueError: ``size`` is not between 1 and ``MAX_ROUTE_BODY_SIZE``.
+    """
+    if not 1 <= size <= MAX_ROUTE_BODY_SIZE:
+        raise ValueError(
+            f"A route's body limit is 1 to {MAX_ROUTE_BODY_SIZE} bytes, not {size}."
+        )
+
+    def mark(endpoint: F) -> F:
+        setattr(endpoint, BODY_LIMIT, size)
+        return endpoint
+
+    return mark
+
+
+def route_body_limit(route: object) -> int | None:
+    """The body limit ``route``'s endpoint was given (``body_limit``), if any."""
+    size: int | None = getattr(getattr(route, "endpoint", None), BODY_LIMIT, None)
+    return size
+
+
+def largest_body_limit(routes: Iterable[object]) -> int:
+    """The largest body limit of ``routes`` and the routes below them; 0 if none.
+
+    Mounts, routers, and routers FastAPI keeps included (ADR 0060) are
+    walked into.
+    """
+    largest = 0
+    pending = list(routes)
+    while pending:
+        route = pending.pop()
+        largest = max(largest, route_body_limit(route) or 0)
+        inner = getattr(getattr(route, "original_router", route), "routes", None)
+        if isinstance(inner, list):
+            pending.extend(inner)
+    return largest
+
+
+def _matched_route(scope: Scope) -> object:
+    """The route of the application's router that will serve ``scope``, if any.
+
+    Only asked when something reads the body before the router has matched
+    (``IdempotencyMiddleware``): the router then matches again, as it would.
+    A route nested in a router that is not flattened (ADR 0060) is not
+    found: its requests are held to ``MAX_REQUEST_BODY_SIZE``.
+    """
+    router = getattr(scope.get("app"), "router", None)
+    for route in getattr(router, "routes", ()):
+        if route.matches(scope)[0] is Match.FULL:
+            return route
+    return None
+
+
 class RequestBodyLimitMiddleware:
     """Refuse bodies over the limit, or too slow to arrive.
 
@@ -741,6 +860,12 @@ class RequestBodyLimitMiddleware:
     its body slowly or never, holds the request no longer. The time counts
     only while the application waits in ``receive()`` before the body is
     in and the response starts, never while it works.
+
+    A route with a limit of its own (``body_limit``) is held to it instead,
+    once the router has matched it: a declared length over it is refused
+    before a byte is read, and a streamed body as soon as it passes it.
+    Before routing, a declared length is checked against the largest
+    limit, the global one or a route's.
 
     A WebSocket message over the limit closes the connection with 1009
     (message too big); the application sees the client disconnect. The
@@ -754,6 +879,12 @@ class RequestBodyLimitMiddleware:
         self.max_body_size = settings.MAX_REQUEST_BODY_SIZE
         self.body_timeout = settings.REQUEST_BODY_TIMEOUT
         self.log = ThrottledLog(security_logger)
+        self._largest: int | None = None
+        """The largest body limit a route of the application sets; 0: none does.
+
+        Worked out at the first request, from ``scope["app"]``'s routes."""
+        self._lock = threading.Lock()
+        """Guards working ``_largest`` out, once, whichever thread asks first."""
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Check ``Content-Length`` first, then count streamed bytes."""
@@ -763,7 +894,13 @@ class RequestBodyLimitMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+        largest = self._largest
+        if largest is None:
+            largest = self._largest_of(scope)
+        # No route sets a limit of its own: the global one, as it always was.
+        limit = self.max_body_size if not largest else None
         declared = _header(scope, b"content-length")
+        size = None
         if declared is not None:
             # isdigit() alone accepts "²", which int() then rejects.
             if not (declared.isascii() and declared.isdigit()):
@@ -771,8 +908,9 @@ class RequestBodyLimitMiddleware:
                     400, "Invalid Content-Length header.", code="invalid_content_length"
                 )(scope, receive, send)
                 return
-            if int(declared) > self.max_body_size:
-                self._reject(scope, int(declared))
+            size = int(declared)
+            if size > self.max_body_size and size > largest:
+                self._reject(scope, size, self.max_body_size)
                 await error_response(
                     413, "Request body too large.", code="content_too_large"
                 )(scope, receive, send)
@@ -797,15 +935,20 @@ class RequestBodyLimitMiddleware:
                 waited += clock.monotonic() - began
 
         async def limited_receive() -> Message:
-            nonlocal received, body_read
+            nonlocal received, body_read, limit
+            if limit is None:  # The route's own, known once it is matched.
+                limit = self._route_limit(scope)
+                if size is not None and size > limit:
+                    self._reject(scope, size, limit)
+                    raise RequestBodyTooLarge
             message = await timed_receive()
             if message["type"] != "http.request":
                 body_read = True
                 return message
             body_read = not message.get("more_body", False)
             received += len(message.get("body", b""))
-            if received > self.max_body_size:
-                self._reject(scope, received)
+            if received > limit:
+                self._reject(scope, received, limit)
                 raise RequestBodyTooLarge
             return message
 
@@ -839,7 +982,7 @@ class RequestBodyLimitMiddleware:
                     message.get("text") or ""
                 )
                 if size > self.max_body_size:
-                    self._reject(scope, size)
+                    self._reject(scope, size, self.max_body_size)
                     closed = True
                     await send({"type": "websocket.close", "code": MESSAGE_TOO_BIG})
                     return {"type": "websocket.disconnect", "code": MESSAGE_TOO_BIG}
@@ -851,14 +994,37 @@ class RequestBodyLimitMiddleware:
 
         await self.app(scope, limited_receive, open_send)
 
-    def _reject(self, scope: Scope, size: int) -> None:
+    def _largest_of(self, scope: Scope) -> int:
+        """``_largest``, worked out once from the application's routes.
+
+        They are complete by the first request (ADR 0060). Loops on several
+        threads may ask at once: one works it out, under the lock.
+        """
+        with self._lock:
+            if self._largest is None:
+                self._largest = largest_body_limit(
+                    getattr(scope.get("app"), "routes", ())
+                )
+            return self._largest
+
+    def _route_limit(self, scope: Scope) -> int:
+        """The body limit of the route serving ``scope``: its own, or the global.
+
+        The route is the one the router matched, or, while nothing has
+        matched yet, the one it will match (``_matched_route``).
+        """
+        route = scope.get("route")
+        own = route_body_limit(_matched_route(scope) if route is None else route)
+        return self.max_body_size if own is None else own
+
+    def _reject(self, scope: Scope, size: int, limit: int) -> None:
         """Log an oversized request as a security event, throttled."""
         self.log.warning(
             "body_too_large",
             refused_caller(scope),
             "Rejected request body of %d bytes (limit %d)",
             size,
-            self.max_body_size,
+            limit,
         )
 
     def _too_slow(self, scope: Scope) -> None:

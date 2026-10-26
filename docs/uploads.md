@@ -77,7 +77,7 @@ FastAPI reads uploads with `python-multipart`: install the `uploads` extra
 ```python
 from fastapi import Depends, UploadFile
 
-from domainkit.contrib.auth import Require
+from domainkit.http.access import Require
 from domainkit.http.uploads import IMAGES, PDF, save_upload
 
 
@@ -108,9 +108,9 @@ async def upload_document(file: UploadFile) -> DocumentOut:
   file whose size is already known to be larger (FastAPI has read the form
   before the route runs) is refused before it is copied. An empty file
   gets 400 `empty_file`. The request as a whole is also held to
-  `MAX_REQUEST_BODY_SIZE` (1 MiB by default), before the route runs: raise
-  it to cover the largest upload you accept, and keep each route's
-  `max_size` as small as it can be.
+  `MAX_REQUEST_BODY_SIZE` (1 MiB by default), as it arrives, before the
+  route runs: give an upload route a limit of its own rather than raising
+  that one for every route ([Body limits per route](#body-limits-per-route)).
 - **The client's file name** is cleaned with `sanitize_filename`, to show
   people and to suggest when downloading: only its last path segment is
   kept; control and formatting characters (right-to-left overrides, which
@@ -119,6 +119,45 @@ async def upload_document(file: UploadFile) -> DocumentOut:
   it is cut to 255 bytes, keeping its extension. Never use it as a path.
 - The messages of these refusals are translated, as every error is
   ([i18n.md](i18n.md)).
+
+### Body limits per route
+
+FastAPI reads the whole form, spooling files to disk, before the route
+runs, so `max_size` alone acts after the bytes arrived. `body_limit` gives
+the route a limit that holds while they arrive, above or below
+`MAX_REQUEST_BODY_SIZE`, so the JSON routes keep the global one:
+
+```python
+from domainkit.http.middleware import body_limit
+
+
+@router.post("/avatars", dependencies=[Depends(Require())])
+@body_limit(2_100_000)  # the file's 2 MB, and the form around it
+async def upload_avatar(file: UploadFile) -> AvatarOut:
+    stored = await save_upload(file, types=IMAGES, max_size=2_000_000)
+    ...
+```
+
+- `RequestBodyLimitMiddleware` holds the route's requests to it once the
+  router has matched them: a `Content-Length` over it is refused with 413
+  before a byte is read, and a body sent in chunks as soon as it passes it,
+  so a 20 MiB upload to a 100 kB route is read only to the limit and one
+  chunk more. Middleware that reads bodies before routing
+  (`IdempotencyMiddleware`) is held to the route's limit too.
+- Before routing, a declared length is checked against the largest limit
+  of any route, or `MAX_REQUEST_BODY_SIZE` if larger; a route that never
+  reads its body is not refused for a length its own limit would refuse.
+- Limits are 1 byte to 1 GiB (`MAX_ROUTE_BODY_SIZE`). The decorator marks
+  the endpoint, so it may sit above or below the route's. A route of a
+  router nested without flattening (`FLATTEN_ROUTERS = False`) keeps its
+  limit; a body read before routing to such a route is held to the global
+  one.
+- `ResourceRouter` takes `body_limits={"command": 16_384, "batch":
+  2_000_000}` per kind of route that takes a body (`create`, `update`,
+  `command`, `batch`), and `command_route` and `batch_route` take
+  `body_limit=` per route ([resources.md](resources.md)).
+- A small limit suits the routes anonymous callers reach: a login or a
+  sign-up takes a few hundred bytes, and need not take the global one.
 
 ## Serving files
 

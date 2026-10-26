@@ -11,16 +11,17 @@ from typing import Any
 import pytest
 from starlette.requests import HTTPConnection
 
-from domainkit.contrib.auth import (
-    AnyUser,
-    BasePermission,
-    HasObjectPermissions,
-    IsAuthenticated,
-)
-from domainkit.contrib.auth.access import current_user
+from domainkit.contrib.auth import AnyUser, current_user
 from domainkit.ddd import Query as QueryMessage
 from domainkit.ddd.query import F
-from domainkit.resources import FieldPolicy, ModelActions, ResourceRouter, schema_for
+from domainkit.http.access import BasePermission, HasObjectPermissions, IsAuthenticated
+from domainkit.resources import (
+    ALL_FIELDS,
+    FieldPolicy,
+    ModelActions,
+    ResourceRouter,
+    schema_for,
+)
 from domainkit_tests.conftest import UseAuth
 from domainkit_tests.gadgets import (
     FakeGadgetsUnitOfWork,
@@ -182,7 +183,7 @@ def test_generic_creates_keep_to_the_field_policy(
         editable={"stock": "shop.change_stock"},
         visible={"size": "shop.view_cost"},
     )
-    client = client_of(gadgets(store, policy=policy, crud=True))
+    client = client_of(gadgets(store, policy=policy, crud=True, writable=ALL_FIELDS))
 
     read_only = client.post(
         "/gadgets", json={**NEW, "active": False}, headers=as_("adder")
@@ -205,7 +206,7 @@ def test_fields_hidden_from_the_caller_are_not_theirs_to_change(
     """A field the caller may not see cannot be overwritten blind."""
     use_auth()
     policy = FieldPolicy(visible={"stock": "shop.view_cost"})
-    client = client_of(gadgets(store, policy=policy, crud=True))
+    client = client_of(gadgets(store, policy=policy, crud=True, writable=ALL_FIELDS))
     gadget = next(iter(store.items.values()))
     gadget.stock = 42
     url = f"{LOCATION}{gadget.id}"
@@ -228,7 +229,7 @@ def test_generic_writes_stay_in_the_callers_scope(
 ) -> None:
     """A create or a change that would land outside the scope is refused."""
     use_auth()
-    client = client_of(gadgets(store, scope=red_only, crud=True))
+    client = client_of(gadgets(store, scope=red_only, crud=True, writable=ALL_FIELDS))
     gadget = next(iter(store.items.values()))
 
     outside = client.post(

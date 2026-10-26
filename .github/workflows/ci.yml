@@ -620,19 +620,21 @@ jobs:
               domainkit.http.metrics.* domainkit.http.openapi.*
               domainkit.http.ratelimit.* domainkit.http.routing.*
               domainkit.http.shedding.* domainkit.http.sse.* domainkit.http.versioning.*
+              domainkit.http.access.*
           - name: http-2
             mutants: >-
               domainkit.http.client.* domainkit.http.deadlines.* domainkit.http.health.*
               domainkit.http.live.* domainkit.http.middleware.*
               domainkit.http.pagination.* domainkit.http.responses.*
               domainkit.http.servers.* domainkit.http.uploads.*
-              domainkit.http.websockets.*
+              domainkit.http.websockets.* domainkit.http.apidocs.*
           - name: data-1
             mutants: >-
               domainkit.db.dbclock.* domainkit.db.derive.* domainkit.db.drivers.*
               domainkit.db.fixtures.* domainkit.db.migrations.* domainkit.db.orm.*
               domainkit.db.query.* domainkit.db.repository.* domainkit.db.uow.*
               domainkit.ledger.*
+              domainkit.db.models.*
           - name: data-2
             mutants: >-
               domainkit.cache.* domainkit.db.connections.* domainkit.db.errors.*

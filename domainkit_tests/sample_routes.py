@@ -24,6 +24,7 @@ from domainkit.ddd import (
     PermissionDenied,
 )
 from domainkit.http import APIError
+from domainkit.http.access import Public
 from domainkit.http.health import router as health_router
 from domainkit.http.metrics import router as metrics_router
 
@@ -53,7 +54,8 @@ class Typed(BaseModel):
     count: int
 
 
-router = APIRouter()
+router = APIRouter(dependencies=[Public])
+"""Anyone may call these routes: the project has no authentication."""
 router.include_router(health_router)
 router.include_router(metrics_router)
 NOT_A_ROUTER: Final = "not a router"

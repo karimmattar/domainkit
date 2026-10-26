@@ -330,7 +330,9 @@ def test_check_warns_about_sync_code_in_domains(make_package: MakePackage) -> No
             "routes.py": """
                 from fastapi import APIRouter
 
-                router = APIRouter()
+                from domainkit.http.access import Public
+
+                router = APIRouter(dependencies=[Public])
 
                 @router.get("/report")
                 def report() -> dict[str, str]:

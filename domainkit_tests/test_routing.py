@@ -29,11 +29,16 @@ from domainkit import setup
 from domainkit.apps import registry
 from domainkit.conf import override_settings, use_settings
 from domainkit.conf.env import PROJECT_ROOT_VARIABLE, project_prefix, project_root
-from domainkit.contrib.auth import IsAuthenticated, Public, Require
-from domainkit.contrib.auth.access import _routes, open_routes
 from domainkit.contrib.auth.authentication import BaseAuthentication, Credentials
 from domainkit.contrib.auth.models import PasswordHash, User
 from domainkit.http import get_asgi_application, routing
+from domainkit.http.access import (
+    IsAuthenticated,
+    Public,
+    Require,
+    open_routes,
+    served_routes,
+)
 from domainkit.http.application import application_problems
 from domainkit.http.metrics import route_template
 from domainkit.http.routing import (
@@ -118,7 +123,13 @@ def kinds(app: FastAPI) -> list[tuple[str, str]]:
     ]
 
 
-OWN = {"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
+OWN = {
+    "/openapi.json",
+    "/docs",
+    "/docs/assets/{name}",
+    "/docs/oauth2-redirect",
+    "/redoc",
+}
 OPEN = (
     "GET /open declares no access rule: add Depends(Require(...)), or "
     "dependencies=[Public] if anyone may call it."
@@ -200,7 +211,7 @@ def test_rules_and_dependencies_are_the_ones_nesting_gave(nested: Build) -> None
     def rules(app: FastAPI) -> list[tuple[str, list[object]]]:
         return [
             (name, [dependency.call for dependency in dependant.dependencies])
-            for name, dependant in _routes(app.routes)
+            for name, dependant in served_routes(app.routes)
             if dependant is not None
         ]
 
@@ -442,7 +453,8 @@ def test_the_template_projects_document_and_rules_stay(
             before, after = nested(), get_asgi_application()
             documents = [json.dumps(app.openapi()) for app in (before, after)]
             served = [
-                [name for name, _ in _routes(app.routes)] for app in (before, after)
+                [name for name, _ in served_routes(app.routes)]
+                for app in (before, after)
             ]
             problems = [application_problems(app) for app in (before, after)]
     finally:
@@ -530,9 +542,12 @@ def test_routes_added_to_a_router_after_the_build_are_not_served() -> None:
     router.add_api_route("/hello", nested_routes.open_route)
 
     assert TestClient(app).get("/late/hello").status_code == 404
-    assert [getattr(route, "path", "") for route in app.routes if route] == sorted(
-        OWN, key=["/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"].index
-    )
+    assert [getattr(route, "path", "") for route in app.routes if route] == [
+        "/openapi.json",  # A plain FastAPI's own routes.
+        "/docs",
+        "/docs/oauth2-redirect",
+        "/redoc",
+    ]
 
 
 # Routers that serve requests their own way stay included.
@@ -732,7 +747,7 @@ def test_routers_that_serve_themselves_are_documented_and_guarded_alike(
     def rules(app: FastAPI) -> list[tuple[str, list[object]]]:
         return [
             (name, [dependency.call for dependency in dependant.dependencies])
-            for name, dependant in _routes(app.routes)
+            for name, dependant in served_routes(app.routes)
             if dependant is not None
         ]
 

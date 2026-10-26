@@ -36,7 +36,7 @@ from starlette.exceptions import HTTPException
 from starlette.routing import Match
 
 from domainkit.conf import settings
-from domainkit.context import RequestContext, current_request
+from domainkit.context import RequestContext, RoutedRequestContext, current_request
 from domainkit.db.errors import (
     IntegrityViolation,
     duplicate_value,
@@ -52,7 +52,7 @@ from domainkit.ddd.exceptions import (
     PermissionDenied,
     PreconditionFailed,
 )
-from domainkit.http.responses import JSONResponse, _BuiltJSONResponse
+from domainkit.http.responses import BuiltJSONResponse, JSONResponse
 from domainkit.i18n import gettext, validation_message
 
 STATUS_CODES: Final[tuple[tuple[type[DomainError], int], ...]] = (
@@ -165,7 +165,7 @@ def error_response(
         problem = problem_details(
             status_code, detail, code=code, errors=errors, request=request
         )
-        return _BuiltJSONResponse(
+        return BuiltJSONResponse(
             problem.model_dump(exclude_none=True),
             status_code=status_code,
             media_type=PROBLEM_MEDIA_TYPE,
@@ -176,7 +176,7 @@ def error_response(
         request_id=request.request_id if request else None,
         errors=errors,
     )
-    return _BuiltJSONResponse(
+    return BuiltJSONResponse(
         body.model_dump(exclude_none=True), status_code=status_code
     )
 
@@ -205,11 +205,18 @@ def problem_details(
         title=title,
         status=status_code,
         detail=detail,
-        instance=quote(request.path, safe=_PATH_SAFE) if request else None,
+        instance=quote(_answered_path(request), safe=_PATH_SAFE) if request else None,
         code=code,
         request_id=request.request_id if request else None,
         errors=errors,
     )
+
+
+def _answered_path(request: RequestContext) -> str:
+    """The path the caller sent, which answers to it name (not logs' template)."""
+    if isinstance(request, RoutedRequestContext):
+        return request.request_path
+    return request.path
 
 
 def status_phrase(status_code: int) -> str:

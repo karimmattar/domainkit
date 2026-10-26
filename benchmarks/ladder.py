@@ -109,6 +109,23 @@ LADDER: Final = (
         database=True,
     ),
     Rung(
+        "resource-read",
+        "ResourceRouter read, scoped, model permission",
+        stack="template",
+        path="/resources/items/{item}",
+        token=True,
+        database=True,
+    ),
+    Rung(
+        "resource-command",
+        "ResourceRouter command on one item, scoped",
+        stack="template",
+        path="/resources/items/{item}/rename",
+        method="POST",
+        token=True,
+        database=True,
+    ),
+    Rung(
         "keyed-write",
         "Keyed write (Idempotency-Key)",
         stack="template+idempotency",

@@ -257,7 +257,8 @@ class AuthSettings(BaseModel):
     AUTHENTICATION_EXEMPT_PATHS: tuple[str, ...] = ("/health", "/ready", "/metrics")
     """Paths served without looking at credentials (probes, ``METRICS_TOKEN``)."""
     REQUIRE_ROUTE_RULES: bool = True
-    """Every route must say who may call it (``Require``, or ``Public``)."""
+    """Deprecated: the core's ``REQUIRE_ROUTE_RULES``; False here still turns
+    the check off until 0.11, with a warning."""
     TOKEN_TTL: timedelta | None = Field(default=timedelta(days=14), gt=timedelta(0))
     """How long a token from logging in works (``TokenAuthentication``)."""
     TOKEN_PREFIX: str = Field(default="dkt_", pattern=r"^[A-Za-z][A-Za-z0-9]{1,15}_$")

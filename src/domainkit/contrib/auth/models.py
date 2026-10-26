@@ -14,16 +14,16 @@ import re
 import secrets
 import string
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Annotated, Any, ClassVar, Final, NewType, Self
 from uuid import UUID, uuid4
 
 from domainkit import clock
-from domainkit.contrib.contenttypes.models import ContentType
+from domainkit.contrib.contenttypes import ContentType
 from domainkit.contrib.mail.message import address_of, check_address
-from domainkit.ddd import AggregateRoot, Entity, Personal, ValueObject
+from domainkit.ddd import AggregateRoot, Entity, Personal, Sensitive, ValueObject
 from domainkit.signing import derive_key
 
 from .events import (
@@ -91,11 +91,12 @@ def _now() -> datetime:
     return clock.now()
 
 
-class PasswordHash(ValueObject):
+class PasswordHash(ValueObject, Sensitive):
     """A stored password: a hasher's ``<algorithm>$...``, or unusable (``!...``).
 
     Its own type keeps raw passwords out of users: only ``hashers`` make one.
-    The value never appears in ``repr``, so hashes stay out of logs.
+    The value never appears in ``repr``, so hashes stay out of logs, nor in a
+    derived schema (``Sensitive``).
     """
 
     value: str
@@ -391,6 +392,20 @@ class AbstractBaseUser(AggregateRoot[UserId]):
         """Whether the user has every one of ``perms``."""
         return all(self.has_perm(perm) for perm in perms)
 
+    async def ahas_perms(self, perms: Collection[str], obj: object = None) -> bool:
+        """Whether the backends grant every one of ``perms`` (on ``obj``).
+
+        What the access rules ask a principal (``domainkit.http.access``):
+        ``backends.has_perms``, so object permissions and ``AUTH.BACKENDS``
+        count, where ``has_perms`` reads only the user's own grants.
+        """
+        from .backends import has_perm  # backends imports this module.
+
+        for perm in perms:
+            if not await has_perm(self, perm, obj):
+                return False
+        return True
+
     def has_domain_perms(self, domain: str) -> bool:
         """Whether the user has any permission in ``domain`` (``has_module_perms``)."""
         if not self.is_active:
@@ -591,6 +606,16 @@ class AnonymousUser:
     def has_perms(self, perms: Iterable[str]) -> bool:
         """Never."""
         return False
+
+    async def ahas_perms(self, perms: Collection[str], obj: object = None) -> bool:
+        """Only for no permissions at all, as ``backends.has_perms`` answers."""
+        return not perms
+
+    def challenge(self) -> str:
+        """The ``WWW-Authenticate`` of a 401: the first authentication class's."""
+        from .authentication import get_authenticators  # It imports this module.
+
+        return get_authenticators()[0].challenge()
 
     def has_domain_perms(self, domain: str) -> bool:
         """Never."""
