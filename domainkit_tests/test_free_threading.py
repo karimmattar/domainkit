@@ -42,6 +42,7 @@ from starlette.types import Message, Receive, Scope, Send
 from domainkit import clock as clock_module
 from domainkit import setup, tasks
 from domainkit.apps import registry
+from domainkit.apps.hooks import Hook, HookPoint
 from domainkit.broker import Broker, BrokerHandler, MemoryBroker
 from domainkit.cache import CacheHandler, Store
 from domainkit.conf import (
@@ -1505,3 +1506,27 @@ def test_idempotency_sweeps_are_due_once_per_interval_from_every_thread(
     full = on_threads(claims)
 
     assert (sum(first), sum(short), sum(full)) == (1, 0, 1)
+
+
+def test_hook_points_keep_every_registration_from_every_thread() -> None:
+    """Threads that register on one point and read it at once lose nothing.
+
+    Readers see whole tuples, worked out under the point's lock; once the
+    threads are done, every registration is there, each once.
+    """
+    setup()
+    point: HookPoint[Callable[[], int]] = HookPoint("threads")
+
+    def register(index: int) -> int:
+        seen = 0
+        for number in range(50):
+            point(partial(int, index * 50 + number), domain="alpha")
+            hooks = point.hooks()
+            assert all(isinstance(hook, Hook) for hook in hooks)
+            seen = max(seen, len(hooks))
+        return seen
+
+    seen = on_threads(register)
+
+    assert sorted(hook.call() for hook in point) == list(range(THREADS * 50))
+    assert max(seen) <= THREADS * 50

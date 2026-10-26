@@ -646,6 +646,7 @@ jobs:
           - name: management-1
             mutants: >-
               domainkit.apps.registry.* domainkit.management.commands.addevent.*
+              domainkit.apps.hooks.*
               domainkit.management.commands.broker.*
               domainkit.management.commands.dumpdata.*
               domainkit.management.commands.makemigrations.*

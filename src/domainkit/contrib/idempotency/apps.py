@@ -3,7 +3,6 @@
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 from contextlib import asynccontextmanager
 from importlib import import_module
-from typing import cast
 
 from fastapi import FastAPI
 from fastapi.dependencies.models import Dependant
@@ -16,8 +15,14 @@ from domainkit.apps import DomainConfig, registry
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEADLINE_MIDDLEWARE, DEPLOYED_ENVIRONMENTS
 from domainkit.db import SqlAlchemyUnitOfWork, connections
+from domainkit.db.hooks import (
+    on_committed,
+    on_stage,
+    on_stage_transaction,
+    on_transaction_committed,
+)
 from domainkit.db.routing import DatabaseRouter, router
-from domainkit.ddd import DeferredTask, DomainEvent, UnitOfWork
+from domainkit.ddd import DeferredTask, DomainEvent
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.deadlines import RequestTimeout
 
@@ -39,6 +44,10 @@ class IdempotencyConfig(DomainConfig):
     def ready(self) -> None:
         """Check the keys' database and lease; schedule the purge with messaging.
 
+        Every commit, in a unit of work or not, holds the keyed request's
+        key (``on_stage``, ``on_stage_transaction``) and notes it committed
+        (``on_committed``, ``on_transaction_committed``).
+
         Raises:
             ImproperlyConfigured: ``LEASE_SECONDS`` is not above
                 ``REQUEST_TIMEOUT``, or the keys' database is a shard.
@@ -57,10 +66,14 @@ class IdempotencyConfig(DomainConfig):
             )
         if registry.is_installed(MESSAGING):
             import_module(f"{self.name}.tasks")
+        on_stage(self.hold_key)
+        on_stage_transaction(self.hold_key_in_transaction)
+        on_committed(self.note_commit)
+        on_transaction_committed(self.note_transaction_commit)
 
-    async def stage(
+    async def hold_key(
         self,
-        uow: UnitOfWork,
+        uow: SqlAlchemyUnitOfWork,
         events: Sequence[DomainEvent],
         tasks: Sequence[DeferredTask],
     ) -> None:
@@ -72,13 +85,12 @@ class IdempotencyConfig(DomainConfig):
         back, no retry can take the key over and the request never releases
         it. The pin keeps to the deadline (``_within_deadline``).
         """
-        sql_uow = cast(SqlAlchemyUnitOfWork, uow)
-        await self._hold(sql_uow.alias, sql_uow.session.connection)
+        await self._hold(uow.alias, uow.session.connection)
 
-    async def stage_transaction(
+    async def hold_key_in_transaction(
         self, connection: AsyncConnection, database: str
     ) -> None:
-        """Hold the key for a commit made outside a unit of work, as ``stage`` does.
+        """Hold the key for a commit made outside a unit of work, as ``hold_key`` does.
 
         ``enqueue`` commits its task on its own: queued work is a change the
         keyed request made, and its retry must not queue it again.
@@ -116,16 +128,16 @@ class IdempotencyConfig(DomainConfig):
                 "took the key over; its changes were not saved."
             )
 
-    async def committed(self, uow: UnitOfWork) -> None:
+    async def note_commit(self, uow: SqlAlchemyUnitOfWork) -> None:
         """Note the commit; mark the key now if it went to another database.
 
         The mark keeps to the deadline (``_within_deadline``); cut off, the
         key stays pinned, so the changes still never run twice.
         """
-        await self._note_commit(cast(SqlAlchemyUnitOfWork, uow).alias)
+        await self._note_commit(uow.alias)
 
-    async def transaction_committed(self, database: str) -> None:
-        """Note a commit made outside a unit of work, as ``committed`` does."""
+    async def note_transaction_commit(self, database: str) -> None:
+        """Note a commit made outside a unit of work, as ``note_commit`` does."""
         await self._note_commit(database)
 
     async def _note_commit(self, alias: str) -> None:

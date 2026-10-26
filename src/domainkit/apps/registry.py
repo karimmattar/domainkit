@@ -32,6 +32,8 @@ class DomainRegistry:
         """Changes whenever ``populate`` or ``clear`` changes the domains, for
         caches of what the installed domains decide (``content_type_key``)."""
         self.ready = False
+        self.readying: DomainConfig | None = None
+        """The domain whose ``ready()`` is running, which hooks register for."""
 
     def populate(self, installed: Iterable[str]) -> None:
         """Load every domain, validate its settings, then call ``ready()``.
@@ -52,8 +54,12 @@ class DomainRegistry:
         self._changed(configs)
         self._check_settings()
         self._check_requirements()
-        for config in configs.values():
-            config.ready()
+        try:
+            for config in configs.values():
+                self.readying = config
+                config.ready()
+        finally:
+            self.readying = None
         self.ready = True
 
     def clear(self) -> None:

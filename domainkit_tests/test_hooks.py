@@ -1,0 +1,269 @@
+"""Typed hooks: a domain registers what it takes part in, and only it is called."""
+
+import asyncio
+import logging
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from domainkit import setup
+from domainkit.apps import registry
+from domainkit.apps.hooks import Hook, HookPoint
+from domainkit.conf import override_settings
+from domainkit.db import SqlAlchemyUnitOfWork, connections
+from domainkit.db import uow as uow_module
+from domainkit.db.hooks import (
+    on_committed,
+    on_migrated,
+    on_stage,
+    on_stage_transaction,
+    on_transaction_committed,
+)
+from domainkit.db.migrations import run_migrated_hooks
+from domainkit.exceptions import ImproperlyConfigured
+from domainkit_tests.conftest import ALPHA, MakePackage
+
+TYPED = """
+from domainkit.apps import DomainConfig
+from domainkit.db.hooks import on_committed, on_migrated, on_stage
+from hooklog import CALLS
+
+
+class TypedConfig(DomainConfig):
+    def ready(self):
+        on_stage(self.first)
+        on_stage(self.second)
+        on_committed(self.done)
+        on_migrated(self.filled)
+
+    async def first(self, uow, events, tasks):
+        CALLS.append((self.label, "stage", uow.alias))
+
+    async def second(self, uow, events, tasks):
+        CALLS.append((self.label, "stage again", uow.alias))
+
+    async def done(self, uow):
+        CALLS.append((self.label, "committed", uow.alias))
+
+    async def filled(self, connection, database):
+        CALLS.append((self.label, "migrated", database))
+"""
+LEGACY = """
+from domainkit.apps import DomainConfig
+from domainkit.db.hooks import on_committed
+from hooklog import CALLS
+
+
+class LegacyConfig(DomainConfig):
+    def ready(self):
+        on_committed(self.registered)
+
+    async def registered(self, uow):
+        CALLS.append((self.label, "registered"))
+
+    async def stage(self, uow, events, tasks):
+        CALLS.append((self.label, "stage", uow.alias))
+
+    async def committed(self, uow):
+        CALLS.append((self.label, "committed", uow.alias))
+"""
+FAILING = """
+from domainkit.apps import DomainConfig
+from domainkit.db.hooks import on_committed
+
+
+class FailingConfig(DomainConfig):
+    def ready(self):
+        on_committed(self.fail)
+
+    async def fail(self, uow):
+        raise RuntimeError("the follow-up failed")
+"""
+
+
+FULL_CONTRIB = [
+    f"domainkit.contrib.{app}"
+    for app in (
+        "contenttypes",
+        "auth",
+        "audit",
+        "messaging",
+        "idempotency",
+        "evidence",
+        "flags",
+        "mail",
+        "notifications",
+        "objectpermissions",
+        "privacy",
+        "webhooks",
+    )
+]
+"""Every contrib app, after those it requires."""
+
+
+class EmptyUnitOfWork(SqlAlchemyUnitOfWork):
+    """A unit of work with no repositories, on the default database."""
+
+    database = "default"
+
+    def create_repositories(self, session: AsyncSession) -> None:
+        """Nothing to bind."""
+
+
+@pytest.fixture
+def calls(make_package: MakePackage) -> list[tuple[str, ...]]:
+    """What the hooks of the throwaway domains did, in order."""
+    make_package("hooklog", {"__init__.py": "CALLS = []\n"})
+    make_package("typed", {"apps.py": TYPED})
+    make_package("legacy", {"apps.py": LEGACY})
+    make_package("quiet", {})
+    make_package("failing", {"apps.py": FAILING})
+    import hooklog  # type: ignore[import-not-found]
+
+    return hooklog.CALLS  # type: ignore[no-any-return]
+
+
+@pytest.fixture
+def installed(calls: list[tuple[str, ...]], tmp_path: Path) -> Iterator[None]:
+    """The throwaway domains installed, on a SQLite file."""
+    url = f"sqlite+aiosqlite:///{tmp_path / 'hooks.sqlite3'}"
+    with override_settings(
+        INSTALLED_DOMAINS=[ALPHA, "quiet", "legacy", "typed"],
+        DATABASES={"default": {"URL": url}},
+    ):
+        setup()
+        yield
+    asyncio.run(connections.close_all())
+
+
+def commit() -> None:
+    """Commit an empty unit of work."""
+
+    async def run() -> None:
+        async with EmptyUnitOfWork() as uow:
+            await uow.commit()
+        await connections.close_all()
+
+    asyncio.run(run())
+
+
+@pytest.mark.usefixtures("installed")
+def test_only_domains_that_registered_are_called(calls: list[tuple[str, ...]]) -> None:
+    """In domain order: registered hooks first, then an overriding method (DSGN-03)."""
+    assert [hook.domain for hook in on_stage] == ["legacy", "typed", "typed"]
+    assert [hook.domain for hook in on_committed] == ["legacy", "legacy", "typed"]
+    assert list(on_stage_transaction) == []
+    assert list(on_transaction_committed) == []
+
+    commit()
+
+    assert calls == [
+        ("legacy", "stage", "default"),
+        ("typed", "stage", "default"),
+        ("typed", "stage again", "default"),
+        ("legacy", "registered"),
+        ("legacy", "committed", "default"),
+        ("typed", "committed", "default"),
+    ]
+
+
+@pytest.mark.usefixtures("installed")
+def test_migrated_hooks_run_on_the_migrated_database(
+    calls: list[tuple[str, ...]],
+) -> None:
+    """``run_migrated_hooks`` calls ``on_migrated`` hooks with the alias."""
+    run_migrated_hooks("default")
+
+    assert calls == [("typed", "migrated", "default")]
+
+
+def test_hooks_are_the_installed_domains_and_forgotten_with_them(
+    calls: list[tuple[str, ...]], tmp_path: Path
+) -> None:
+    """A registry cleared and loaded again holds only what its domains register."""
+    url = f"sqlite+aiosqlite:///{tmp_path / 'hooks.sqlite3'}"
+    with override_settings(
+        INSTALLED_DOMAINS=[ALPHA, "typed"], DATABASES={"default": {"URL": url}}
+    ):
+        setup()
+        first = on_stage.hooks()
+        assert on_stage.hooks() is first  # Worked out once.
+        registry.clear()
+        assert list(on_stage) == []
+        setup()
+        assert [hook.domain for hook in on_stage] == ["typed", "typed"]
+        registry.clear()
+    with override_settings(
+        INSTALLED_DOMAINS=[ALPHA, "quiet"], DATABASES={"default": {"URL": url}}
+    ):
+        setup()
+        assert list(on_stage) == []
+        assert list(on_committed) == []
+
+
+def test_hooks_register_in_ready_or_for_a_named_domain(
+    calls: list[tuple[str, ...]],
+) -> None:
+    """Outside a domain's ``ready()``, the domain must be named."""
+    point: HookPoint[Any] = HookPoint("probe")
+
+    async def probe() -> None:
+        """Do nothing."""
+
+    with override_settings(INSTALLED_DOMAINS=[ALPHA, "quiet", "typed"]):
+        setup()
+        with pytest.raises(ImproperlyConfigured, match=r"Register probe hooks in"):
+            point(probe)
+        assert point(probe, domain="typed") is probe
+        point(probe, domain="elsewhere")  # Not installed: never called.
+
+        assert list(point) == [Hook("typed", probe)]
+        assert repr(point) == "<HookPoint probe>"
+
+
+@pytest.mark.usefixtures("calls")
+def test_a_failed_follow_up_is_reported_with_its_domain(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The data is committed: the failure is logged and reported, not raised."""
+    reports: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        uow_module, "report_error", lambda exc, **context: reports.append(context)
+    )
+    url = f"sqlite+aiosqlite:///{tmp_path / 'hooks.sqlite3'}"
+    with override_settings(
+        INSTALLED_DOMAINS=[ALPHA, "failing", "typed"],
+        DATABASES={"default": {"URL": url}},
+    ):
+        setup()
+        with caplog.at_level(logging.ERROR, "domainkit.db.uow"):
+            commit()
+
+    assert caplog.messages == ["After-commit work of 'failing' failed"]
+    assert reports == [{"domain": "failing"}]
+
+
+def test_contrib_apps_register_only_the_hooks_they_have() -> None:
+    """Of the contrib apps, four join commits; a commit calls no other domain."""
+    with override_settings(
+        INSTALLED_DOMAINS=[*FULL_CONTRIB, ALPHA],
+        LEDGERS={"evidence": {"URL": "memory://"}},
+    ):
+        setup()
+        stage = [hook.domain for hook in on_stage]
+        committed = [hook.domain for hook in on_committed]
+        staged = [hook.domain for hook in on_stage_transaction]
+        followed = [hook.domain for hook in on_transaction_committed]
+        migrated = [hook.domain for hook in on_migrated]
+        installed = len(registry)
+
+    assert installed == 13
+    assert stage == ["auth", "audit", "messaging", "idempotency"]
+    assert committed == ["auth", "messaging", "idempotency"]
+    assert staged == followed == ["idempotency"]
+    assert migrated == ["contenttypes", "auth"]

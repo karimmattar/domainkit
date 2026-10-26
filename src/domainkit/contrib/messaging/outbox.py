@@ -21,6 +21,7 @@ from domainkit import clock
 from domainkit.apps import registry
 from domainkit.context import current_request
 from domainkit.db import UTCDateTime, connections
+from domainkit.db.hooks import on_stage_transaction, on_transaction_committed
 from domainkit.ddd import DeferredTask, DomainEvent, EventBus
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.reporting import report_error
@@ -240,8 +241,8 @@ async def enqueue(
 
     Inside a use case prefer ``uow.defer``: the task is then stored only if
     the business change commits. Installed domains join the transaction as
-    they join a unit of work's (``DomainConfig.stage_transaction`` and
-    ``transaction_committed``): inside a request with an
+    they join a unit of work's (``on_stage_transaction`` and
+    ``on_transaction_committed``, ``domainkit.db.hooks``): inside a request with an
     ``Idempotency-Key``, the queued task holds the key as a commit does,
     so a retry does not queue it again.
     """
@@ -250,14 +251,14 @@ async def enqueue(
     rows = rows_for((), [task], EventBus(), config)
     async with connections.engine(config.DATABASE).begin() as connection:
         await write(connection, connection.dialect.name, rows)
-        for domain in registry:
-            await domain.stage_transaction(connection, config.DATABASE)
-    for domain in registry:
+        for staged in on_stage_transaction:
+            await staged.call(connection, config.DATABASE)
+    for hook in on_transaction_committed:
         try:
-            await domain.transaction_committed(config.DATABASE)
+            await hook.call(config.DATABASE)
         except Exception as exc:  # The task is queued: report, carry on.
-            logger.exception("After-commit work of %r failed", domain.label)
-            report_error(exc, domain=domain.label)
+            logger.exception("After-commit work of %r failed", hook.domain)
+            report_error(exc, domain=hook.domain)
     await notify_committed(config, config.DATABASE, rows)
 
 

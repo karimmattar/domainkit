@@ -35,6 +35,13 @@ Installed domains (`django.apps`): configuration classes and the registry.
 - `Requirement`: A domain package another needs in `INSTALLED_DOMAINS`, and why.
 - `registry`: The process-wide registry populated by `domainkit.setup()`.
 
+## `domainkit.apps.hooks`
+
+Typed hooks a domain registers for what it takes part in.
+
+- `Hook`: One registered function, and the domain that registered it.
+- `HookPoint`: Functions installed domains registered for one purpose, in domain order.
+
 ## `domainkit.architecture`
 
 Enforce the dependency rules of a domain-driven package layout.
@@ -651,6 +658,16 @@ SQLAlchemy integration: connections, ORM metadata, repositories, migrations.
 - `metadata`: Every table of every domain; the target of `makemigrations`.
 - `register_column_type`: Store fields of `cls` (and its subclasses) in `column_type`.
 - `table_for`: The table that stores `cls`: one column per field (see the module).
+
+## `domainkit.db.hooks`
+
+The SQL commit and migration hooks a domain registers (`domainkit.apps.hooks`).
+
+- `on_committed`: Follow up after a SQL unit of work committed: `(uow)`.
+- `on_migrated`: Fill a database `migrate` upgraded: `(owner_connection, alias)`.
+- `on_stage`: Add rows to a committing SQL unit of work: `(uow, events, tasks)`.
+- `on_stage_transaction`: Join a transaction committed outside a unit of work: `(connection, alias)`.
+- `on_transaction_committed`: Follow up after such a transaction committed: `(alias)`.
 
 ## `domainkit.db.models`
 

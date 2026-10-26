@@ -1,9 +1,11 @@
 """Unit of work backed by one SQLAlchemy session and transaction.
 
-Before each commit, every installed domain's ``DomainConfig.stage`` may add
-rows to the same transaction: ``domainkit.contrib.messaging`` writes the
-outbox (durable handlers, deferred tasks), ``domainkit.contrib.audit`` the
-audit trail. They commit, or roll back, together with the business change.
+Before each commit, the domains that registered ``on_stage`` hooks
+(``domainkit.db.hooks``) add rows to the same transaction:
+``domainkit.contrib.messaging`` writes the outbox (durable handlers,
+deferred tasks), ``domainkit.contrib.audit`` the audit trail. They commit,
+or roll back, together with the business change; ``on_committed`` hooks
+follow up after it.
 
 A unique constraint that refuses a value, at commit or at an earlier flush,
 raises ``DuplicateValue`` (a 409), or the subclass the constraint names.
@@ -30,6 +32,7 @@ from sqlalchemy.orm.exc import StaleDataError
 from domainkit.apps import registry
 from domainkit.db.connections import Reads, connections
 from domainkit.db.errors import duplicate_value
+from domainkit.db.hooks import on_committed, on_stage
 from domainkit.db.orm import metadata
 from domainkit.db.repository import reload_expired
 from domainkit.db.routing import ShardKey, router
@@ -158,24 +161,24 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
     async def _stage(
         self, events: Sequence[DomainEvent], tasks: Sequence[DeferredTask]
     ) -> None:
-        """Let installed domains add their rows; refuse durable work nobody runs."""
+        """Run the ``on_stage`` hooks; refuse durable work nobody runs."""
         durable = any(self.events.handlers_for(type(e), durable=True) for e in events)
         if (tasks or durable) and not registry.is_installed(MESSAGING):
             raise ImproperlyConfigured(
                 f"Durable handlers and deferred tasks need {MESSAGING!r} in "
                 "INSTALLED_DOMAINS."
             )
-        for config in registry:
-            await config.stage(self, events, tasks)
+        for hook in on_stage.hooks():
+            await hook.call(self, events, tasks)
 
     async def _committed(self) -> None:
-        """Let installed domains follow up; a failure is reported, never raised."""
-        for config in registry:
+        """Run the ``on_committed`` hooks; a failure is reported, never raised."""
+        for hook in on_committed.hooks():
             try:
-                await config.committed(self)
+                await hook.call(self)
             except Exception as exc:  # The data is committed: report, carry on.
-                logger.exception("After-commit work of %r failed", config.label)
-                report_error(exc, domain=config.label)
+                logger.exception("After-commit work of %r failed", hook.domain)
+                report_error(exc, domain=hook.domain)
 
     async def _commit(self) -> None:
         """Commit, translating what the database refused.

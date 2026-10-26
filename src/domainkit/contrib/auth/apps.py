@@ -9,15 +9,16 @@ from uuid import uuid4
 
 from fastapi import FastAPI
 from sqlalchemy import Table
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from domainkit.apps import DomainConfig, registry
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS, REDIS_SCHEMES
 from domainkit.contrib.contenttypes.sync import has_tables
-from domainkit.db import metadata
+from domainkit.db import SqlAlchemyUnitOfWork, metadata
+from domainkit.db.hooks import on_committed, on_migrated, on_stage
 from domainkit.db.routing import router
-from domainkit.ddd import DomainEvent, UnitOfWork, event_bus
+from domainkit.ddd import DomainEvent, event_bus
 from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import routes_need_users, served_routes
@@ -104,6 +105,9 @@ class AuthConfig(DomainConfig):
         get_password_validators()
         start_mappers(self.user_model, self.user_table)
         watch(self.user_model)
+        on_stage(self.stamp_changes)
+        on_committed(self.wait_for_stamps)
+        on_migrated(self.create_permissions)
         invalidate_all()  # Settings, models, or databases may have changed.
         declared_permissions()
         if registry.is_installed(MESSAGING):
@@ -117,19 +121,18 @@ class AuthConfig(DomainConfig):
 
             event_bus.subscribe(PersonalDataErased, forget_credentials)
 
-    async def stage(
-        self, uow: UnitOfWork, events: Sequence[DomainEvent], tasks: Sequence[Any]
+    async def stamp_changes(
+        self,
+        uow: SqlAlchemyUnitOfWork,
+        events: Sequence[DomainEvent],
+        tasks: Sequence[Any],
     ) -> None:
         """Stamp what the commit will change in principals, before it too."""
-        session = getattr(uow, "session", None)
-        if isinstance(session, AsyncSession):
-            await stamp_pending(session, auth_settings().PRINCIPAL_CACHE)
+        await stamp_pending(uow.session, auth_settings().PRINCIPAL_CACHE)
 
-    async def committed(self, uow: UnitOfWork) -> None:
+    async def wait_for_stamps(self, uow: SqlAlchemyUnitOfWork) -> None:
         """Wait for the stamps of what the commit changed, for other processes."""
-        session = getattr(uow, "session", None)
-        if isinstance(session, AsyncSession):
-            await stamp_committed(session)
+        await stamp_committed(uow.session)
 
     async def issue_test_token(
         self, permissions: Sequence[str], fields: dict[str, Any]
@@ -271,8 +274,10 @@ class AuthConfig(DomainConfig):
         """The default user's tables, unless a custom user replaces them."""
         return not (self.swapped and table in DEFAULT_USER_TABLES)
 
-    async def migrated(self, connection: AsyncConnection, database: str) -> None:
-        """Create the content types and permissions models declare."""
+    async def create_permissions(
+        self, connection: AsyncConnection, database: str
+    ) -> None:
+        """Create the permissions models declare, after ``migrate``."""
         # The permissions table's foreign key needs the content types one.
         if database == self.database and await has_tables(connection, permissions):
             await sync_permissions(connection)

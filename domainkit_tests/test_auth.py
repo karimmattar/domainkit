@@ -59,6 +59,7 @@ from domainkit.contrib.auth.users import get_user_table
 from domainkit.contrib.contenttypes import InstalledModel, ModelOptions
 from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.db import connections, metadata
+from domainkit.db.hooks import on_migrated
 from domainkit.db.migrations import include_object, run_migrated_hooks
 from domainkit.ddd import PermissionDenied
 from domainkit.exceptions import ImproperlyConfigured
@@ -792,8 +793,8 @@ def test_migrated_hooks_wait_for_their_tables(
 
     async def other_alias() -> int:
         async with connections.engine().begin() as connection:
-            for config in registry:
-                await config.migrated(connection, "elsewhere")
+            for hook in on_migrated:
+                await hook.call(connection, "elsewhere")
             return len(
                 await connection.run_sync(lambda sync: inspect(sync).get_table_names())
             )
