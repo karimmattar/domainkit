@@ -42,8 +42,8 @@ surprises a rollout.
 - [ ] The server run with its own limits and `--no-proxy-headers`
       ([reference.md](reference.md#server-limits)), behind a proxy that
       bounds headers and slow clients.
-- [ ] The proxy sets `X-Request-ID` itself, over a client's, or
-      `ACCEPT_REQUEST_ID = "never"`: request ids come from trusted proxies
+- [ ] The proxy sets `X-Request-ID` itself, over a client's or in a line
+      after it, or `ACCEPT_REQUEST_ID = "never"`: request ids come from trusted proxies
       only, so a caller's own never names log lines or audit rows
       ([operations.md](operations.md#request-ids)).
 - [ ] `RATE_LIMIT` set (warned when missing), counted in Redis

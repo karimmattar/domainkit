@@ -87,10 +87,12 @@ and a status.
   `--force`; the login name is refused. **Fix:** set
   `DOMAINKIT_OPERATOR` where they run (DATA-12; ADR 0070).
 - **Breaking:** a request's id is the `X-Request-ID` of a trusted proxy
-  (`TRUSTED_PROXIES`, `"unix"` for a unix socket's peer), else a new one;
-  a caller's own header is dropped. **Fix:** have the proxy set the
-  header (nginx: `proxy_set_header X-Request-ID $request_id;`). **To keep
-  the old behaviour:** `ACCEPT_REQUEST_ID = "anyone"` (WEB-13).
+  (`TRUSTED_PROXIES`, `"unix"` for a unix socket's peer), the last line
+  when there are several, else a new one; a caller's own header is
+  dropped. **Fix:** have the proxy set the header (nginx:
+  `proxy_set_header X-Request-ID $request_id;`; HAProxy:
+  `unique-id-header X-Request-ID`). **To keep the old behaviour:**
+  `ACCEPT_REQUEST_ID = "anyone"` (WEB-13, SEC-11c-1).
 - `operator.loaddata` names each table with its rows and replaced rows,
   the SHA-256 of the fixture as read, and whether `--replace` and
   `--include-guarded` were given; `operator.flush` each table it emptied,
@@ -238,8 +240,10 @@ and a status.
   carry. A client could take another request's id, or give one id to
   many requests. The header is now read only from trusted proxies, in
   the same bounded format (up to 128 letters, digits, `.`, `_`, `:`,
-  `-`); a caller's own is dropped and the request gets a new id, which
-  its answer returns (WEB-13).
+  `-`), and of several lines the last, the nearest proxy's: a proxy that
+  adds its own line (HAProxy, Apache, Caddy) leaves a client's in front
+  of it. A caller's own is dropped and the request gets a new id, which
+  its answer returns (WEB-13, SEC-11c-1).
 - JSON Web Tokens named no key, so `AUTH.JWT.SIGNING_KEY` could not be
   replaced without refusing every outstanding access token at once, and
   nothing could keep the old key to verify what it signed, for a while or

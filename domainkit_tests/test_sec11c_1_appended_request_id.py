@@ -24,6 +24,7 @@ from starlette.types import Message, Receive, Scope, Send
 
 from domainkit.conf import override_settings
 from domainkit.context import current_request
+from domainkit.http import middleware
 from domainkit.http.middleware import ProxyHeadersMiddleware, RequestContextMiddleware
 
 PROXY: Final = ("10.0.0.2", 51000)
@@ -109,3 +110,20 @@ def test_one_line_from_a_proxy_is_still_taken() -> None:
     )
 
     assert request_id == PROXYS
+
+
+def test_the_last_line_is_read_from_any_iterable_of_headers() -> None:
+    """ASGI allows any iterable: it is read once, kept as a list, last line wins."""
+    scope: Scope = {
+        "headers": iter(
+            [(b"x-request-id", b"first"), (b"host", b"h"), (b"x-request-id", b"last")]
+        )
+    }
+
+    assert middleware._last_header(scope, b"x-request-id") == "last"
+    assert scope["headers"] == [
+        (b"x-request-id", b"first"),
+        (b"host", b"h"),
+        (b"x-request-id", b"last"),
+    ]
+    assert middleware._last_header({"headers": []}, b"x-request-id") is None
