@@ -9,6 +9,13 @@ and a status.
 
 ## [Unreleased]
 
+### Deprecated
+
+- `domainkit.contrib.evidence.model`, the old name of the evidence models
+  module, warns with `DomainkitDeprecationWarning` for each name taken from
+  it; import them from `domainkit.contrib.evidence` (or its `models`).
+  Removed in 0.11 (DSGN-09).
+
 ## [0.9.2] - 2026-10-26
 
 ### Added

@@ -1,17 +1,46 @@
-"""The old name of ``domainkit.contrib.evidence.models``, which every app now uses.
+"""The old name of ``domainkit.contrib.evidence.models``; removed in 0.11.
 
-Kept so imports from 0.9.1 and earlier still work; import from the package
+Kept so imports from 0.9.1 and earlier still work, each with a
+``DomainkitDeprecationWarning``; import from the package
 (``domainkit.contrib.evidence``) instead.
 """
 
-from domainkit.contrib.evidence.models import DIGEST as DIGEST
-from domainkit.contrib.evidence.models import FORMAT as FORMAT
-from domainkit.contrib.evidence.models import KIND as KIND
-from domainkit.contrib.evidence.models import SUBJECT as SUBJECT
-from domainkit.contrib.evidence.models import Evidence as Evidence
-from domainkit.contrib.evidence.models import EvidenceConflict as EvidenceConflict
-from domainkit.contrib.evidence.models import EvidenceNotFound as EvidenceNotFound
-from domainkit.contrib.evidence.models import EvidenceReceipt as EvidenceReceipt
-from domainkit.contrib.evidence.models import EvidenceTampered as EvidenceTampered
-from domainkit.contrib.evidence.models import RecordedEvidence as RecordedEvidence
-from domainkit.contrib.evidence.models import sha256 as sha256
+import warnings
+from typing import Final
+
+from domainkit.contrib.evidence import models
+from domainkit.deprecation import DomainkitDeprecationWarning
+
+NAMES: Final = frozenset(
+    {
+        "DIGEST",
+        "FORMAT",
+        "KIND",
+        "SUBJECT",
+        "Evidence",
+        "EvidenceConflict",
+        "EvidenceNotFound",
+        "EvidenceReceipt",
+        "EvidenceTampered",
+        "RecordedEvidence",
+        "sha256",
+    }
+)
+"""The public names this module had in 0.9.1."""
+
+
+def __getattr__(name: str) -> object:
+    """``name`` from ``models``, with a warning naming where to import it from.
+
+    Raises:
+        AttributeError: ``name`` was never public here.
+    """
+    if name not in NAMES:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    warnings.warn(
+        f"domainkit.contrib.evidence.model is deprecated; import {name} from "
+        "domainkit.contrib.evidence (or its models). Removed in 0.11.",
+        DomainkitDeprecationWarning,
+        stacklevel=2,
+    )
+    return getattr(models, name)

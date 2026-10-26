@@ -67,7 +67,14 @@ it.
 | Old name | Use instead | Since |
 | --- | --- | --- |
 | `domainkit.ddd.query.Query` | `domainkit.ddd.Selection` | 0.9.2 |
-| `domainkit.contrib.evidence.model` | `domainkit.contrib.evidence` (or its `models`) | 0.9.2 |
+
+### Deprecations planned for 0.11
+
+These warn with `DomainkitDeprecationWarning` in 0.10, and 0.11 removes them.
+
+| Old name | Use instead | Warns since |
+| --- | --- | --- |
+| `domainkit.contrib.evidence.model` | `domainkit.contrib.evidence` (or its `models`) | 0.10 |
 
 To find deprecated uses before upgrading, make the warning an error in the
 project's pytest settings:

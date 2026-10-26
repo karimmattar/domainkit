@@ -7,11 +7,14 @@ removes them.
 
 import importlib
 
+import pytest
+
 import domainkit.ddd
 import domainkit.ddd.query
 from domainkit.contrib.evidence import Evidence
 from domainkit.ddd import F, Selection
 from domainkit.ddd.messages import Query as QueryMessage
+from domainkit.deprecation import DomainkitDeprecationWarning
 
 
 def test_selection_is_the_aggregate_query_under_its_new_name() -> None:
@@ -35,7 +38,7 @@ def test_a_selection_built_by_the_old_name_is_a_selection() -> None:
 
 
 def test_the_evidence_model_module_keeps_its_old_name() -> None:
-    """``evidence.model`` still has every public name it defined in 0.9.1."""
+    """``evidence.model`` still has every public name of 0.9.1, each with a warning."""
     old = importlib.import_module("domainkit.contrib.evidence.model")
     new = importlib.import_module("domainkit.contrib.evidence.models")
     names = [
@@ -52,5 +55,22 @@ def test_the_evidence_model_module_keeps_its_old_name() -> None:
         "sha256",
     ]
     for name in names:
-        assert getattr(old, name) is getattr(new, name), name
+        with pytest.warns(DomainkitDeprecationWarning) as caught:
+            found = getattr(old, name)
+        assert found is getattr(new, name), name
+        assert len(caught) == 1
+        assert str(caught[0].message) == (
+            f"domainkit.contrib.evidence.model is deprecated; import {name} from "
+            "domainkit.contrib.evidence (or its models). Removed in 0.11."
+        )
+        assert caught[0].filename == __file__
     assert Evidence.__module__ == "domainkit.contrib.evidence.models"
+
+
+def test_the_evidence_model_module_has_no_other_names() -> None:
+    """A name it never had is an ``AttributeError``, with no warning."""
+    old = importlib.import_module("domainkit.contrib.evidence.model")
+
+    with pytest.raises(AttributeError, match="has no attribute 'Ledger'"):
+        old.Ledger  # noqa: B018 - the access is the test.
+    assert "Evidence" not in dir(old)
