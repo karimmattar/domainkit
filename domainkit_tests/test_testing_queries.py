@@ -57,15 +57,15 @@ async def test_every_statement_in_the_block_counts(databases: None) -> None:
 
 
 async def test_blocks_never_change_sqlalchemys_listeners(databases: None) -> None:
-    """One listener, put on ``Engine`` once, serves every block, nested or not.
+    """One listener, put on ``Engine`` on import, serves every block, nested or not.
 
     Other threads read SQLAlchemy's listener lists as they run statements;
-    a block that added or removed a listener would fail theirs.
+    a block that added or removed a listener, the first one included,
+    would fail theirs.
     """
-    with CapturedQueries():
-        pass
     engine = connections.engine().sync_engine
     listeners = list(engine.dispatch.before_cursor_execute)
+    assert event.contains(Engine, EVENT, queries_module._dispatch)
 
     with assert_num_queries(2) as outer:
         await select(1)

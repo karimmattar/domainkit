@@ -1176,8 +1176,10 @@ def test_counting_statements_never_fails_another_threads_statement() -> None:
     runs. A block that listened on ``Engine`` and stopped again changed them
     under other threads, whose statements failed now and then ("deque
     mutated during iteration"): 3 runs of 3 failed this way, at the same
-    switch interval. The listener now stays, and blocks only come and go
-    from the tuple it reads.
+    switch interval. The listener now goes on when the module is imported,
+    and stays; blocks only come and go from the tuple it reads. (Put on
+    lazily by the first block, it raced the same way when that block was
+    this test's.)
     """
     errors: list[BaseException] = []
     stop = threading.Event()

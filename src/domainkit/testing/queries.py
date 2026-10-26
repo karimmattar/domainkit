@@ -18,12 +18,14 @@ a PostgreSQL transaction sets for itself (``connections.INTERNAL``). A
 failure lists the statements, as SQL with placeholders: bound values are
 never kept.
 
-The first block counted in a process puts one listener on SQLAlchemy's
-``Engine`` class, which stays: it hands each statement to the blocks
-entered at the time. SQLAlchemy's listener lists are read without a lock
-by every thread that runs a statement, and adding or removing a listener
-while another thread runs one fails that statement ("deque mutated during
-iteration"), so entering and leaving a block never changes them.
+Importing this module (the plugin does, as pytest starts) puts one
+listener on SQLAlchemy's ``Engine`` class, which stays: it hands each
+statement to the blocks entered at the time, and costs a call per
+statement in a process that imported it. SQLAlchemy's listener lists
+are read without a lock by every thread that runs a statement, and adding
+or removing a listener while another thread runs one fails that statement
+("deque mutated during iteration"), so entering and leaving a block never
+changes them.
 """
 
 import threading
@@ -38,7 +40,7 @@ from domainkit.db.connections import INTERNAL
 
 EVENT: Final = "before_cursor_execute"
 _lock: Final = threading.Lock()
-"""Guards installing the listener, and replacing ``_capturing``."""
+"""Guards replacing ``_capturing``."""
 _capturing: "tuple[CapturedQueries, ...]" = ()
 """The blocks entered, in any thread. Replaced whole, never changed in place,
 so the listener reads it without the lock."""
@@ -76,8 +78,6 @@ class CapturedQueries:
         if self.using is not None:
             self._url = make_url(connections.config(self.using).URL.get_secret_value())
         with _lock:
-            if not event.contains(Engine, EVENT, _dispatch):
-                event.listen(Engine, EVENT, _dispatch)
             _capturing = (*_capturing, self)
         return self
 
@@ -161,3 +161,7 @@ def assert_max_queries(limit: int, *, using: str | None = None) -> CapturedQueri
 def _queries(count: int | None) -> str:
     """``1 query``, ``2 queries``."""
     return f"{count} {'query' if count == 1 else 'queries'}"
+
+
+# On import, before any test starts a thread: never while one runs a statement.
+event.listen(Engine, EVENT, _dispatch)
