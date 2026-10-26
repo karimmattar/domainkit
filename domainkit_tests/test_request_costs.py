@@ -31,6 +31,7 @@ from domainkit.http.metrics import IN_PROGRESS, REQUESTS, MetricsMiddleware
 from domainkit.http.middleware import (
     ADDRESS_CACHE,
     MAX_CACHED_ADDRESS,
+    PEER,
     ProxyHeadersMiddleware,
     RawHeaders,
     RequestContextMiddleware,
@@ -500,7 +501,11 @@ def test_request_ids_are_32_hex_digits_and_new_each_time() -> None:
     ],
 )
 def test_incoming_request_ids_are_accepted_as_before(supplied: str, kept: bool) -> None:
-    """A valid ``X-Request-ID`` is echoed; anything else gets a new id."""
+    """A trusted proxy's valid ``X-Request-ID`` is echoed; anything else gets a new id.
+
+    The proxy is the peer ``ProxyHeadersMiddleware`` kept (``PEER``): since
+    0.11 a caller's own header is not read at all (WEB-13).
+    """
     starts: list[Message] = []
 
     async def app(scope: Scope, receive: Receive, send: Send) -> None:
@@ -515,6 +520,7 @@ def test_incoming_request_ids_are_accepted_as_before(supplied: str, kept: bool) 
         "method": "GET",
         "path": "/",
         "headers": [(b"x-request-id", supplied.encode("latin-1"))],
+        PEER: ("10.0.0.2", 51000),
     }
     asyncio.run(RequestContextMiddleware(app)(scope, _nothing, send))
 

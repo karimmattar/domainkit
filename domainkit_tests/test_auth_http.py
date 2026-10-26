@@ -284,7 +284,6 @@ def test_a_saturated_login_answers_the_same_503_in_both_error_formats(
         refused = api().post(
             "/auth/login",
             json={"username": "alice", "password": PASSWORD},
-            headers={"X-Request-ID": "busy-1"},
         )
 
     assert refused.status_code == 503
@@ -294,7 +293,7 @@ def test_a_saturated_login_answers_the_same_503_in_both_error_formats(
         assert refused.json() == {
             "detail": detail,
             "code": "password_checks_busy",
-            "request_id": "busy-1",
+            "request_id": refused.headers["X-Request-ID"],
         }
     else:
         assert refused.headers["Content-Type"] == "application/problem+json"
@@ -305,7 +304,7 @@ def test_a_saturated_login_answers_the_same_503_in_both_error_formats(
             "detail": detail,
             "instance": "/auth/login",
             "code": "password_checks_busy",
-            "request_id": "busy-1",
+            "request_id": refused.headers["X-Request-ID"],
         }
 
 

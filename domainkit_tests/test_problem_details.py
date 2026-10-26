@@ -77,7 +77,7 @@ def test_domain_errors_are_problems(make_client: MakeClient) -> None:
     """Type, title, status, detail, and instance; code and request id extend it."""
     client = make_client(**PROBLEMS)
 
-    response = client.get("/errors/not_found", headers={"X-Request-ID": "req-7"})
+    response = client.get("/errors/not_found")
 
     assert response.status_code == 404
     assert response.headers["content-type"] == PROBLEM_MEDIA_TYPE
@@ -88,7 +88,7 @@ def test_domain_errors_are_problems(make_client: MakeClient) -> None:
         "detail": response.json()["detail"],
         "instance": "/errors/not_found",
         "code": "not_found",
-        "request_id": "req-7",
+        "request_id": response.headers["X-Request-ID"],
     }
 
 

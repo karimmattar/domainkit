@@ -23,6 +23,29 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
    for the deployment checks this version adds.
 6. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 0.10 to 0.11
+
+### Breaking changes
+
+- **`loaddata` only adds rows** (DATA-12). A fixture with a row whose
+  primary key is stored is refused, and nothing is loaded. **To keep the
+  old behaviour:** `loaddata --replace`.
+- **Guarded tables** (DATA-12). `loaddata` refuses a fixture that writes
+  users, groups, permissions or their links, content types, object
+  grants, or dynamic settings, and `flush` keeps those tables, with
+  tokens, TOTP authenticators, and recovery codes. **To keep the old
+  behaviour:** `--include-guarded` on either command.
+- **A named operator for `loaddata` and `flush` where deployed**
+  (DATA-12). In staging and production the login name no longer names the
+  operator of these two commands. **Fix:** `--operator NAME`, or
+  `DOMAINKIT_OPERATOR` set where they run.
+- **Request ids from trusted proxies only** (WEB-13). A caller's own
+  `X-Request-ID` is dropped, and its request gets a new id. **Fix:** have
+  the proxy listed in `TRUSTED_PROXIES` set the header, overwriting a
+  client's (nginx: `proxy_set_header X-Request-ID $request_id;`), or set
+  `ACCEPT_REQUEST_ID = "never"` if it passes headers through as they
+  came. **To keep the old behaviour:** `ACCEPT_REQUEST_ID = "anyone"`.
+
 ## 0.9 to 0.10
 
 ### Breaking changes
