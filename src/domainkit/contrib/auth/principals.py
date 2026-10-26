@@ -621,9 +621,11 @@ class PrincipalCache:
         Once per ``last_used_every()`` per entry: the first request to find
         it due claims it, so concurrent requests do not all write.
         """
-        every = tokens.last_used_every()
         with self._lock:
-            if entry.last_used is not None and now - entry.last_used < every:
+            if entry.last_used is not None and (
+                now - entry.last_used < tokens.SOONEST_TOUCH
+                or now - entry.last_used < tokens.last_used_every()
+            ):
                 return False
             entry.last_used = now
             return True

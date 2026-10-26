@@ -140,9 +140,10 @@ class CookieAuthentication(BaseAuthentication):
         if token.expired():
             forget(entry)
             return None
-        entry = await unless_idle(entry, SCHEME, digest, config.PRINCIPAL_CACHE)
-        if entry is None:  # Ended after inactivity: as if it had expired.
-            return None
+        if config.IDLE_TIMEOUT is not None:
+            entry = await unless_idle(entry, SCHEME, digest, config.PRINCIPAL_CACHE)
+            if entry is None:  # Ended after inactivity: as if it had expired.
+                return None
         user = entry.user()
         if user is None:
             return None

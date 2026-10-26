@@ -116,6 +116,8 @@ class IssuedTokens:
 
 
 TOKEN_SCHEME: Final = "token"  # noqa: S105 - a scheme, not a secret.
+IDLE: Final = "Session ended after inactivity; log in again."
+"""Why a login unused for ``AUTH.IDLE_TIMEOUT`` is refused."""
 """``request.auth.scheme`` of requests an opaque token authenticates."""
 JWT_SCHEME: Final = "jwt"
 """``request.auth.scheme`` of requests a JSON Web Token authenticates."""
@@ -222,9 +224,12 @@ class TokenAuthentication(BaseAuthentication):
         if token.expired():
             forget(entry)
             raise AuthenticationFailed("Token expired.")
-        entry = await unless_idle(entry, TOKEN_SCHEME, digest, config.PRINCIPAL_CACHE)
-        if entry is None:
-            raise AuthenticationFailed("Session ended after inactivity; log in again.")
+        if config.IDLE_TIMEOUT is not None:
+            entry = await unless_idle(
+                entry, TOKEN_SCHEME, digest, config.PRINCIPAL_CACHE
+            )
+            if entry is None:
+                raise AuthenticationFailed(IDLE)
         user = entry.user()
         if user is None:
             raise AuthenticationFailed("User inactive or deleted.")
@@ -313,7 +318,7 @@ class JWTAuthentication(BaseAuthentication):
         ):
             raise AuthenticationFailed("Invalid refresh token.")
         if is_login(token.kind, token.name) and idle_since(token.created_at, utc_now()):
-            raise AuthenticationFailed("Session ended after inactivity; log in again.")
+            raise AuthenticationFailed(IDLE)
         if token.used_at is not None or not await uow.tokens.mark_used(token):
             await uow.tokens.revoke_family(token.family)
             security_logger.warning(

@@ -529,7 +529,8 @@ class Require:
         refusal = await _first_refusal(self.rules, request, user)
         if refusal is not None:
             raise await _denied(request, user, refusal)
-        await check_scopes_bounded(request)
+        if _scoped(request.scope):
+            await check_scopes_bounded(request)
         record_check(request, self.allows)
         return user
 
@@ -603,6 +604,20 @@ async def check_scopes_bounded(connection: HTTPConnection) -> None:
 
 scoped_log: Final = ThrottledLog(security_logger)
 """Calls of routes that check no scope with scoped credentials: a line per route."""
+
+
+def _scoped(scope: Mapping[str, Any]) -> bool:
+    """Whether the request's credentials carry scopes, read without a call.
+
+    ``Require`` asks it on every request; credentials without ``scopes``
+    (a provider's own) carry none.
+    """
+    if "auth" not in scope or scope["auth"] is None:
+        return False
+    try:
+        return scope["auth"].scopes is not None
+    except AttributeError:
+        return False
 
 
 def _scopes_refused(connection: HTTPConnection) -> bool:
