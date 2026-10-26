@@ -17,6 +17,7 @@ from domainkit.conf import UNSET, override_settings, use_settings
 from domainkit.conf.env import project_prefix
 from domainkit.conf.global_settings import DEFAULT_MIDDLEWARE, RATE_LIMIT_MIDDLEWARE
 from domainkit.db import migrations as migrations_module
+from domainkit.db.connections import pool_sizing_warnings
 from domainkit.management import (
     BaseCommand,
     CommandError,
@@ -164,21 +165,26 @@ def test_check_lists_weak_deployment_choices() -> None:
         "ENVIRONMENT": "production",
         "SECURE_HSTS_SECONDS": 0,
         "CACHES": BOUNDED_CACHES,
+        "SILENCED_CHECKS": ["deploy.W005"],  # The tests' SQLite database.
     }
     with override_settings(**production):
         assert run("check") == (
-            "System check identified no issues and 3 warnings. Domains: alpha.\n"
-            "  Warning: API_DOCS publishes /docs, /redoc, and /openapi.json to "
-            "anyone; set it to False unless the API is public.\n"
-            "  Warning: SECURE_HSTS_SECONDS is 0, so browsers may still use plain "
-            "HTTP; set it (31536000 is a year) once HTTPS works everywhere.\n"
-            "  Warning: Requests are not rate limited; set RATE_LIMIT and list "
-            "domainkit.http.ratelimit.RateLimitMiddleware in MIDDLEWARE.\n"
+            "System check identified no issues and 3 warnings (1 silenced). "
+            "Domains: alpha.\n"
+            "  Warning: security.W001: API_DOCS publishes /docs, /redoc, and "
+            "/openapi.json to anyone; set it to False unless the API is public.\n"
+            "  Warning: security.W002: SECURE_HSTS_SECONDS is 0, so browsers may "
+            "still use plain HTTP; set it (31536000 is a year) once HTTPS works "
+            "everywhere.\n"
+            "  Warning: security.W003: Requests are not rate limited; set "
+            "RATE_LIMIT and list domainkit.http.ratelimit.RateLimitMiddleware in "
+            "MIDDLEWARE.\n"
         )
     with_hsts = {**production, "SECURE_HSTS_SECONDS": 1}
     with override_settings(**with_hsts):
         assert run("check").startswith(
-            "System check identified no issues and 2 warnings. Domains: alpha.\n"
+            "System check identified no issues and 2 warnings (1 silenced). "
+            "Domains: alpha.\n"
         )
     hardened = {
         **with_hsts,
@@ -188,17 +194,90 @@ def test_check_lists_weak_deployment_choices() -> None:
     }
     with override_settings(**hardened):
         assert run("check") == (
-            "System check identified no issues and 1 warning. Domains: alpha.\n"
-            "  Warning: API_DOCS publishes /docs, /redoc, and /openapi.json to "
-            "anyone; set it to False unless the API is public.\n"
+            "System check identified no issues and 1 warning (1 silenced). "
+            "Domains: alpha.\n"
+            "  Warning: security.W001: API_DOCS publishes /docs, /redoc, and "
+            "/openapi.json to anyone; set it to False unless the API is public.\n"
         )
     with override_settings(**{**hardened, "CACHES": {"default": {}}}):
         assert run("check").endswith(
-            "  Warning: CACHES['default'] has no COMPUTE_TIMEOUT, so one get_or_set "
+            "  Warning: caches.W001: CACHES['default'] has no COMPUTE_TIMEOUT, so "
+            "one get_or_set "
             "computation that hangs holds its key until the process restarts; set "
             "CACHES['default']['COMPUTE_TIMEOUT'] (REQUEST_TIMEOUT's value, for "
             "example).\n"
         )
+
+
+NETWORK = "postgresql+asyncpg://app@db.invalid/app"  # Never connected to.
+VERIFIED = {"SSLMODE": "verify-full", "SSLROOTCERT": "/etc/ca.pem"}
+
+
+def test_check_lists_pools_too_small(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``check`` lists what ``pool_sizing_warnings`` finds."""
+    monkeypatch.setattr(
+        "domainkit.management.commands.check.pool_sizing_warnings",
+        lambda: ["The pool is small."],
+    )
+    assert run("check").endswith("  Warning: deploy.W006: The pool is small.\n")
+
+
+def test_check_warns_of_pools_smaller_than_the_requests_admitted() -> None:
+    """1,000 requests at once against 15 connections a loop: warned (PERF-14)."""
+    deployed = {
+        "ENVIRONMENT": "staging",
+        "API_DOCS": False,
+        "CACHES": BOUNDED_CACHES,
+        "DATABASES": {
+            "default": {"URL": NETWORK, **VERIFIED},
+            "big": {"URL": NETWORK, "POOL_SIZE": 50, "MAX_OVERFLOW": 0, **VERIFIED},
+            "local": {"URL": "sqlite+aiosqlite:///:memory:"},
+        },
+    }
+    with override_settings(**deployed):
+        assert pool_sizing_warnings() == [
+            (
+                "MAX_CONCURRENT_REQUESTS (1000) admits more requests than the pool of "
+                "DATABASES['default'] serves: it holds 15 connections per event loop "
+                "(POOL_SIZE + MAX_OVERFLOW), so past about 60 requests at once they "
+                "wait for a connection, unseen by the shedding queue, for up to 10s, "
+                "then fail with 503. Lower MAX_CONCURRENT_REQUESTS to about 60, or "
+                "raise the pool within what the database accepts: each process opens "
+                "up to 15 connections per pool (twice that when it reads through "
+                "Reads.STATEMENTS), times processes and replicas."
+            ),
+            (
+                "MAX_CONCURRENT_REQUESTS (1000) admits more requests than the pool of "
+                "DATABASES['big'] serves: it holds 50 connections per event loop "
+                "(POOL_SIZE + MAX_OVERFLOW), so past about 200 requests at once they "
+                "wait for a connection, unseen by the shedding queue, for up to 10s, "
+                "then fail with 503. Lower MAX_CONCURRENT_REQUESTS to about 200, or "
+                "raise the pool within what the database accepts: each process opens "
+                "up to 50 connections per pool (twice that when it reads through "
+                "Reads.STATEMENTS), times processes and replicas."
+            ),
+        ]
+    with override_settings(**deployed, MAX_CONCURRENT_REQUESTS=200):
+        warned = pool_sizing_warnings()
+        assert len(warned) == 1
+        assert "DATABASES['default']" in warned[0]
+    with override_settings(**deployed, MAX_CONCURRENT_REQUESTS=60):
+        assert pool_sizing_warnings() == []
+    timed = {
+        "URL": NETWORK,
+        "POOL_SIZE": 2,
+        "MAX_OVERFLOW": 1,
+        "POOL_TIMEOUT": 1.5,
+        **VERIFIED,
+    }
+    with override_settings(**{**deployed, "DATABASES": {"default": timed}}):
+        (warning,) = pool_sizing_warnings()
+        assert "it holds 3 connections" in warning
+        assert "for up to 1.5s" in warning
+    with override_settings(**deployed, MAX_CONCURRENT_REQUESTS=None):
+        assert pool_sizing_warnings() == []
+    with override_settings(**{**deployed, "ENVIRONMENT": "local"}):
+        assert pool_sizing_warnings() == []
 
 
 def test_check_lists_the_domains_warnings_too(
@@ -211,12 +290,16 @@ def test_check_lists_the_domains_warnings_too(
         AlphaConfig, "deployment_warnings", lambda self: ["ALPHA is weak here."]
     )
     with override_settings(
-        ENVIRONMENT="production", API_DOCS=False, CACHES=BOUNDED_CACHES
+        ENVIRONMENT="production",
+        API_DOCS=False,
+        CACHES=BOUNDED_CACHES,
+        SILENCED_CHECKS=["deploy.W005"],
     ):
         output = run("check")
 
     assert output.startswith(
-        "System check identified no issues and 3 warnings. Domains: alpha.\n"
+        "System check identified no issues and 3 warnings (1 silenced). "
+        "Domains: alpha.\n"
     )
     assert output.endswith("  Warning: ALPHA is weak here.\n")
 

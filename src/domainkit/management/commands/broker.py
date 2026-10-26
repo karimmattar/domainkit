@@ -1,10 +1,28 @@
 """``broker``: check that brokers answer, or declare the worker's queues."""
 
 from argparse import ArgumentParser
+from collections.abc import Sequence
+from typing import Protocol, runtime_checkable
 
 from domainkit.broker import BrokerError, brokers
 from domainkit.conf import settings
 from domainkit.management.base import BaseCommand, CommandError
+
+
+@runtime_checkable
+class QueueDeclarer(Protocol):
+    """An installed domain whose worker reads queues from a broker.
+
+    ``domainkit.contrib.messaging`` is one.
+    """
+
+    def broker_queues(self) -> tuple[str, Sequence[str]]:
+        """The alias of the broker, and the queues to declare on it, in order.
+
+        Raises:
+            CommandError: The domain names no broker.
+        """
+        ...
 
 
 class Command(BaseCommand):
@@ -48,22 +66,20 @@ class Command(BaseCommand):
             raise CommandError(f"Unavailable: {', '.join(failed)}.")
 
     async def _declare(self) -> None:
-        """Declare every queue the worker's tasks use on ``MESSAGING.BROKER``."""
+        """Declare every queue the worker's tasks use, on the broker they use.
+
+        The installed domains that run work from a broker say which
+        (``QueueDeclarer``: ``domainkit.contrib.messaging``).
+        """
         from domainkit.apps import registry
 
-        if not registry.is_installed("domainkit.contrib.messaging"):
+        declarers = [config for config in registry if isinstance(config, QueueDeclarer)]
+        if not declarers:
             raise CommandError("declare needs domainkit.contrib.messaging installed.")
-        from domainkit.contrib.messaging import registry as tasks
-        from domainkit.contrib.messaging.settings import (
-            MessagingSettings,
-        )
-
-        alias = registry.settings(MessagingSettings).BROKER
-        if alias is None:
-            raise CommandError("declare needs MESSAGING.BROKER.")
-        queues = sorted(tasks.queues())
-        try:
-            await brokers[alias].declare(queues)
-        except BrokerError as exc:
-            raise CommandError(f"{alias}: {exc}") from None
-        self.write(f"{alias}: declared {', '.join(queues)}")
+        for declarer in declarers:
+            alias, queues = declarer.broker_queues()
+            try:
+                await brokers[alias].declare(queues)
+            except BrokerError as exc:
+                raise CommandError(f"{alias}: {exc}") from None
+            self.write(f"{alias}: declared {', '.join(queues)}")

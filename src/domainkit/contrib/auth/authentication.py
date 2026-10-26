@@ -22,7 +22,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import timedelta
 from functools import cache
-from typing import Any, ClassVar, Final
+from typing import Any, ClassVar, Final, cast
 from uuid import UUID, uuid4
 
 from fastapi import status
@@ -39,8 +39,8 @@ from .principals import (
     Entry,
     family_target,
     forget,
+    kept_or_read,
     principal_cache,
-    recall,
     remember,
     stamps_ahead,
     stamps_before_reading,
@@ -54,7 +54,16 @@ from .settings import (
     PrincipalCacheSettings,
     auth_settings,
 )
-from .tokens import TokenKind, token_digest, utc_now, well_formed
+from .tokens import (
+    LAST_USED_EVERY,
+    TokenKind,
+    idle_since,
+    is_login,
+    last_used_every,
+    token_digest,
+    utc_now,
+    well_formed,
+)
 from .uow import AuthUnitOfWork
 
 __all__ = [
@@ -109,6 +118,8 @@ class IssuedTokens:
 
 
 TOKEN_SCHEME: Final = "token"  # noqa: S105 - a scheme, not a secret.
+IDLE: Final = "Session ended after inactivity; log in again."
+"""Why a login unused for ``AUTH.IDLE_TIMEOUT`` is refused."""
 """``request.auth.scheme`` of requests an opaque token authenticates."""
 JWT_SCHEME: Final = "jwt"
 """``request.auth.scheme`` of requests a JSON Web Token authenticates."""
@@ -207,19 +218,26 @@ class TokenAuthentication(BaseAuthentication):
             return None
         if not well_formed(raw, prefix):  # No database work for a guess.
             raise AuthenticationFailed("Invalid token.")
-        entry = await stored_credential(
-            TOKEN_SCHEME, token_digest(raw), config.PRINCIPAL_CACHE
-        )
+        digest = token_digest(raw)
+        entry = await stored_credential(TOKEN_SCHEME, digest, config.PRINCIPAL_CACHE)
         token = None if entry is None else entry.credential
         if entry is None or token is None or token.kind != TokenKind.ACCESS:
             raise AuthenticationFailed("Invalid token.")
         if token.expired():
             forget(entry)
             raise AuthenticationFailed("Token expired.")
+        every = LAST_USED_EVERY
+        if config.IDLE_TIMEOUT is not None:
+            every = last_used_every()
+            entry = await unless_idle(
+                entry, TOKEN_SCHEME, digest, config.PRINCIPAL_CACHE
+            )
+            if entry is None:
+                raise AuthenticationFailed(IDLE)
         user = entry.user()
         if user is None:
             raise AuthenticationFailed("User inactive or deleted.")
-        await accept(entry, config.PRINCIPAL_CACHE)
+        await accept(entry, config.PRINCIPAL_CACHE, every=every)
         return Credentials(
             user, scheme=TOKEN_SCHEME, token_id=token.id, scopes=token.scopes
         )
@@ -303,6 +321,8 @@ class JWTAuthentication(BaseAuthentication):
             or token.expired()
         ):
             raise AuthenticationFailed("Invalid refresh token.")
+        if is_login(token.kind, token.name) and idle_since(token.created_at, utc_now()):
+            raise AuthenticationFailed(IDLE)
         if token.used_at is not None or not await uow.tokens.mark_used(token):
             await uow.tokens.revoke_family(token.family)
             security_logger.warning(
@@ -442,49 +462,73 @@ async def stored_credential(
 
     None: no token has the digest. The entry of a token just read is not
     kept yet: ``accept`` keeps it once the class accepts the credential.
-    The stamps (``STAMPS``) of ``ALL`` and the token are read before the
-    unit of work opens; the others (and any absent one) after the token,
-    which names the user, and before the user, whose read checks that the
-    token is still stored.
+    Requests of one credential that miss at once read it once
+    (``kept_or_read``). The stamps (``STAMPS``) of ``ALL`` and the token
+    are read before the unit of work opens; the others (and any absent one)
+    after the token, which names the user, and before the user, whose read
+    checks that the token is still stored.
     """
     key = (scheme, digest)
-    entry = await recall(key, config)
-    if entry is not None:
+
+    async def read(started: int) -> Entry | None:
+        ahead = await stamps_ahead(config, [token_target(digest)])
+        async with AuthUnitOfWork() as uow:
+            credential = await uow.principals.credential(digest)
+            if credential is None:
+                return None
+            targets = [user_target(credential.user_id), token_target(digest)]
+            if credential.family is not None:
+                targets.append(family_target(credential.family))
+            entry = Entry(
+                key,
+                None,
+                credential=credential,
+                targets=tuple(targets),
+                started=started,
+                last_used=credential.last_used_at,
+            )
+            await stamps_before_reading(entry, config, ahead)
+            snapshot = await uow.principals.principal(credential.user_id, token=digest)
+        return entry.holding(snapshot)
+
+    return await kept_or_read(key, config, read)
+
+
+async def unless_idle(
+    entry: Entry, scheme: str, digest: str, config: PrincipalCacheSettings
+) -> Entry | None:
+    """``entry``, unless its login idled past ``AUTH.IDLE_TIMEOUT``; then None.
+
+    A kept entry that looks idle is read again first: another process may
+    have served the login since, and written its last use.
+    """
+    credential = entry.credential
+    if credential is None or not credential.idle(entry.last_used):
         return entry
-    started = principal_cache.begin()
-    ahead = await stamps_ahead(config, [token_target(digest)])
-    async with AuthUnitOfWork() as uow:
-        credential = await uow.principals.credential(digest)
-        if credential is None:
-            return None
-        targets = [user_target(credential.user_id), token_target(digest)]
-        if credential.family is not None:
-            targets.append(family_target(credential.family))
-        entry = Entry(
-            key,
-            None,
-            credential=credential,
-            targets=tuple(targets),
-            started=started,
-            last_used=credential.last_used_at,
-        )
-        await stamps_before_reading(entry, config, ahead)
-        snapshot = await uow.principals.principal(credential.user_id, token=digest)
-    return entry.holding(snapshot)
+    forget(entry)
+    fresh = await stored_credential(scheme, digest, config)
+    found = None if fresh is None else fresh.credential
+    if fresh is None or found is None or found.idle(fresh.last_used):
+        return None
+    return fresh
 
 
 async def accept(
-    entry: Entry, config: PrincipalCacheSettings, *, touch: bool = True
+    entry: Entry,
+    config: PrincipalCacheSettings,
+    *,
+    touch: bool = True,
+    every: timedelta = LAST_USED_EVERY,
 ) -> None:
     """Keep ``entry``, which its class accepted; record that its token was used.
 
-    ``last_used_at`` is written when due (``LAST_USED_EVERY``), by one of
-    the requests that find it due, in a transaction of its own; kept or
-    not, no other request opens one.
+    ``last_used_at`` is written when due (``every``: ``last_used_every()``),
+    by one of the requests that find it due, in a transaction of its own;
+    kept or not, no other request opens one.
     """
     if touch and entry.credential is not None:
         now = utc_now()
-        if principal_cache.claim_touch(entry, now):
+        if principal_cache.claim_touch(entry, now, every):
             async with AuthUnitOfWork() as uow:
                 if await uow.tokens.touch_digest(entry.credential.id, now):
                     await uow.commit()
@@ -500,24 +544,28 @@ async def login_principal(
     have given it a newer one.
     """
     key = (JWT_SCHEME, f"{session}:{user_id}")
-    entry = await recall(key, config)
-    if entry is not None:
-        if entry.login is not None and entry.login.active_at(utc_now()):
-            return entry
-        forget(entry)
-    entry = Entry(
-        key,
-        None,
-        targets=(user_target(user_id), family_target(session)),
-        started=principal_cache.begin(),
-    )
-    await stamps_before_reading(entry, config)
-    async with AuthUnitOfWork() as uow:
-        entry.login = await uow.principals.login(session)
-        if not entry.login.active_at(utc_now()):
-            return entry
-        snapshot = await uow.principals.principal(user_id)
-    return entry.holding(snapshot)
+
+    async def read(started: int) -> Entry:
+        entry = Entry(
+            key,
+            None,
+            targets=(user_target(user_id), family_target(session)),
+            started=started,
+        )
+        await stamps_before_reading(entry, config)
+        async with AuthUnitOfWork() as uow:
+            entry.login = await uow.principals.login(session)
+            if not entry.login.active_at(utc_now()):
+                return entry
+            snapshot = await uow.principals.principal(user_id)
+        return entry.holding(snapshot)
+
+    return cast(Entry, await kept_or_read(key, config, read, _login_active))
+
+
+def _login_active(entry: Entry) -> bool:
+    """Whether a kept login still has an unexpired token."""
+    return entry.login is not None and entry.login.active_at(utc_now())
 
 
 async def active_user(uow: AuthUnitOfWork, user_id: UUID) -> AbstractBaseUser:

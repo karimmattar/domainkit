@@ -17,8 +17,18 @@ driver counts once, an ``executemany`` included; the driver's own work
 a PostgreSQL transaction sets for itself (``connections.INTERNAL``). A
 failure lists the statements, as SQL with placeholders: bound values are
 never kept.
+
+Importing this module (the plugin does, as pytest starts) puts one
+listener on SQLAlchemy's ``Engine`` class, which stays: it hands each
+statement to the blocks entered at the time, and costs a call per
+statement in a process that imported it. SQLAlchemy's listener lists
+are read without a lock by every thread that runs a statement, and adding
+or removing a listener while another thread runs one fails that statement
+("deque mutated during iteration"), so entering and leaving a block never
+changes them.
 """
 
+import threading
 from types import TracebackType
 from typing import Any, Final, Self
 
@@ -29,6 +39,11 @@ from domainkit.db import connections
 from domainkit.db.connections import INTERNAL
 
 EVENT: Final = "before_cursor_execute"
+_lock: Final = threading.Lock()
+"""Guards replacing ``_capturing``."""
+_capturing: "tuple[CapturedQueries, ...]" = ()
+"""The blocks entered, in any thread. Replaced whole, never changed in place,
+so the listener reads it without the lock."""
 
 
 class CapturedQueries:
@@ -59,9 +74,11 @@ class CapturedQueries:
 
     def __enter__(self) -> Self:
         """Start capturing."""
+        global _capturing
         if self.using is not None:
             self._url = make_url(connections.config(self.using).URL.get_secret_value())
-        event.listen(Engine, EVENT, self._record)
+        with _lock:
+            _capturing = (*_capturing, self)
         return self
 
     def __exit__(
@@ -71,7 +88,9 @@ class CapturedQueries:
         traceback: TracebackType | None,
     ) -> None:
         """Stop capturing; unless the block raised, check the count."""
-        event.remove(Engine, EVENT, self._record)
+        global _capturing
+        with _lock:
+            _capturing = tuple(each for each in _capturing if each is not self)
         if exc_type is None and not self.holds():
             raise AssertionError(self.report())
 
@@ -98,19 +117,26 @@ class CapturedQueries:
         return "\n".join(lines)
 
     def _record(
-        self,
-        connection: Connection,
-        cursor: object,
-        statement: str,
-        parameters: Any,  # noqa: ANN401 - never read.
-        context: ExecutionContext | None,
-        executemany: bool,
+        self, connection: Connection, statement: str, context: ExecutionContext | None
     ) -> None:
         """Keep ``statement`` if it ran on the database counted, and is the work's."""
         if context is not None and context.execution_options.get(INTERNAL):
             return
         if self._url is None or connection.engine.url == self._url:
             self.statements.append(statement)
+
+
+def _dispatch(
+    connection: Connection,
+    cursor: object,
+    statement: str,
+    parameters: Any,  # noqa: ANN401 - never read.
+    context: ExecutionContext | None,
+    executemany: bool,
+) -> None:
+    """Hand ``statement`` to every block entered now."""
+    for capture in _capturing:
+        capture._record(connection, statement, context)
 
 
 def assert_num_queries(expected: int, *, using: str | None = None) -> CapturedQueries:
@@ -129,3 +155,7 @@ def assert_max_queries(limit: int, *, using: str | None = None) -> CapturedQueri
 def _queries(count: int | None) -> str:
     """``1 query``, ``2 queries``."""
     return f"{count} {'query' if count == 1 else 'queries'}"
+
+
+# On import, before any test starts a thread: never while one runs a statement.
+event.listen(Engine, EVENT, _dispatch)

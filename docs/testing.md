@@ -78,7 +78,7 @@ Fixtures for domain events and background work come with messaging's own
 plugin, `-p domainkit.contrib.messaging.testing`, which projects made by
 `domainkit init` enable too: `captured_events`, `outbox` (assert what was
 queued, and `run_queued()` or `await arun_queued()` to run it here), and
-`execute_deferred` ([contrib.md](contrib.md#testing)). They follow the
+`execute_deferred` ([contrib.md](contrib/messaging.md#testing)). They follow the
 frozen clock: `outbox.run_queued(delayed=True)` makes waiting work due at
 the clock's time.
 
@@ -316,6 +316,14 @@ request costs a few statements of its own (the token, the user, its groups
 and permissions), so prefer `assert_max_queries` for whole requests and
 `assert_num_queries` for code you call directly. Without the fixtures,
 import them from `domainkit.testing`.
+
+Importing `domainkit.testing` (the plugin does, as pytest starts) puts
+one listener on SQLAlchemy's `Engine` class, and it stays; blocks only
+come and go from the list it hands statements to. SQLAlchemy reads its listeners without a lock as each
+statement runs, so a listener added or removed while another thread runs
+a statement fails that statement ("deque mutated during iteration"). Until
+0.10 each block added and removed its own, which failed a request or a
+background task running at that moment now and then.
 
 ## Blocking the event loop
 

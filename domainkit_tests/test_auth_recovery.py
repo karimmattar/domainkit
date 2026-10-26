@@ -655,7 +655,7 @@ def test_mailing_routes_need_mail_and_an_address(
 
 def test_every_identity_route_says_who_may_call_it(identity: Api) -> None:
     """Deny by default holds: each route is guarded or ``Public`` on purpose."""
-    from domainkit.contrib.auth.access import open_routes
+    from domainkit.http.access import open_routes
 
     identity()
 

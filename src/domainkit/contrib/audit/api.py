@@ -21,12 +21,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, JsonValue
 
-from domainkit.contrib.auth.access import (
-    HasPermissions,
-    IsAdminUser,
-    IsSuperuser,
-    Require,
-)
+from domainkit.contrib.auth import IsAdminUser, IsSuperuser
 from domainkit.contrib.auth.models import AnyUser
 from domainkit.http import (
     CURSOR_PATTERN,
@@ -37,6 +32,7 @@ from domainkit.http import (
     encode_cursor,
     error_responses,
 )
+from domainkit.http.access import HasPermissions, Require
 
 from .history import FIELD, MAX_LIMIT, HistoryEntry, Position, history_page
 

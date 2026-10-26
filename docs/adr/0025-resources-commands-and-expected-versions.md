@@ -1,6 +1,6 @@
 # 0025. Serve aggregates as resources; change them by commands, on the version the client read
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-26, twice (at the end)
 - Date: 2026-10-20
 
 ## Context
@@ -101,3 +101,55 @@ each has a regression test.
 Because the generated code is small and regular, the generators add to
 it without a templating language of their own. Hand-edited files stay
 safe: an edit that cannot find its place is refused, never guessed.
+
+## Amendment (2026-10-26): route kinds, and one unit of work for a scoped command
+
+`ResourceRouter` had grown into one module of 1,793 lines whose routes
+read their values from a string-keyed dict (DSGN-01 of the 0.9.0 design
+audit). In 0.10 `domainkit.resources.routing` is a package: the router
+is a facade over one class per kind of route (`listing`, `reading`,
+`commands`, `batching`, `queries`, `crud`), each with `declare()`, which
+describes the route (`RouteSpec`) and adds it with
+`declaring.add_route`, and `handle(context)`, which answers a request from
+a frozen, typed `RouteContext`. What the kinds share is `reach` (scope,
+parent, object rules, `If-Match`) and `presenting` (schemas, tags,
+links). The constructor, every `*_route` signature, and every answer and
+OpenAPI document are unchanged.
+
+- **The route-kind extension point.** A new kind of route (a `PUT` that
+  replaces, a bulk read) is a module of that shape and a method on the
+  facade; nothing else changes. The kinds, `RouteSpec` and `RouteContext`
+  are internal for 0.10: a project adds routes of its own with `fetch()`,
+  as before, and the shape becomes public once a kind outside the
+  framework needs it.
+- **One unit of work for a scoped command.** A command or a query on one
+  aggregate whose resource has a scope or a parent, and no rule that looks
+  at objects, reads the aggregate within reach and runs the service's
+  first block in the same unit of work, lent open (`reach.Joined`): that
+  block's enter does nothing, its exit is the unit of work's (what it did
+  not commit is rolled back), and a later block enters the unit of work
+  again, in a transaction of its own, as without a scope (SEC-10a-2: a
+  first version made every enter and exit a no-op, so a change one block
+  gave up committed with the next). One transaction, one connection, and the service
+  finds the aggregate the check read: the `resource-command` rung went from
+  2 transactions and 4,546 calls to 1 and 3,766. Where a rule looks at the
+  aggregate, the check keeps a unit of work of its own, closed before the
+  rule runs: a rule may query (object permission grants), and a request
+  must not wait for a second connection while it holds one.
+
+## Amendment (2026-10-26, 0.10): admin APIs that are not resources
+
+"The generic admin is a registry of resources, not a second kit" holds for
+aggregates served as resources. The flags and webhooks admin APIs are
+routers of their own, guarded by `contrib.auth.admin.staff`, the same
+staff rules (`IsUnscoped`, staff or superuser, the model permission of
+each action) that the auth admin and the generic admin's model actions
+check. They stay so, and this record says so, rather than the code
+changing: of their 16 routes, 7 serve what the generic admin cannot
+(dynamic settings declared in code rather than stored as aggregates, 3;
+delivery records and attempts read as rows, 2; a secret shown once when it
+is rotated; a replay that queues work), and porting the other 9 (flags and
+subscriptions) would split each app's API between two kits for no rule
+gained. The rule stands for
+new apps: what is an aggregate with commands is registered with the
+generic admin; a router of its own needs a reason of that kind.

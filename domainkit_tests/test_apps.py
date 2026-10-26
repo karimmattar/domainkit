@@ -372,7 +372,9 @@ def test_a_missing_requirement_is_refused_before_any_domain_is_ready(
         domains.populate([ALPHA, "needy"])
 
     assert str(raised.value) == (
-        "needy needs 'domainkit_tests.sample_domains.beta' in INSTALLED_DOMAINS."
+        "Installed domains need what INSTALLED_DOMAINS lacks:\n"
+        "  apps.E001: needy needs 'domainkit_tests.sample_domains.beta' in "
+        "INSTALLED_DOMAINS."
     )
     assert AlphaConfig.calls == []
     assert not domains.ready
@@ -394,8 +396,10 @@ def test_every_missing_requirement_is_named_with_its_reason(
         DomainRegistry().populate(["needy", ALPHA])
 
     assert str(raised.value) == (
-        "needy needs 'gone.first' in INSTALLED_DOMAINS: it keeps the rows. "
-        "needy needs 'gone.second' in INSTALLED_DOMAINS."
+        "Installed domains need what INSTALLED_DOMAINS lacks:\n"
+        "  apps.E001: needy needs 'gone.first' in INSTALLED_DOMAINS: it keeps the "
+        "rows.\n"
+        "  apps.E001: needy needs 'gone.second' in INSTALLED_DOMAINS."
     )
 
 

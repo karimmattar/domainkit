@@ -32,11 +32,8 @@ from dataclasses import dataclass, field
 from functools import cache, partial
 from typing import ClassVar, Final
 
-from fastapi import status
-
 from domainkit import clock
-from domainkit.exceptions import ImproperlyConfigured
-from domainkit.http.errors import APIError
+from domainkit.exceptions import ImproperlyConfigured, ServiceBusy
 from domainkit.utils.module_loading import import_string
 
 from .models import UNUSABLE_PASSWORD_PREFIX
@@ -51,6 +48,8 @@ __all__ = [
 ]
 
 SALT_CHARS: Final = string.ascii_letters + string.digits
+HASH_LENGTH: Final = 32
+"""Bytes of an Argon2 hash."""
 
 
 class PasswordHasher(ABC):
@@ -220,7 +219,7 @@ class Argon2PasswordHasher(PasswordHasher):
             time_cost=self.time_cost,
             memory_cost=self.memory_cost,
             parallelism=self.parallelism,
-            hash_len=32,
+            hash_len=HASH_LENGTH,
             type=low_level.Type.ID,
         )
         return self.algorithm + hashed.decode()
@@ -239,15 +238,29 @@ class Argon2PasswordHasher(PasswordHasher):
             return False
 
     def must_update(self, encoded: str) -> bool:
-        """Different cost parameters than now."""
-        from argon2 import extract_parameters
+        """Another variant, version, length, or cost than now, or a short salt.
+
+        An ``argon2i`` or ``argon2d`` hash, or one with a salt of fewer than
+        ``salt_entropy`` bits, is made again as ``argon2id`` on the next login.
+        """
+        from argon2 import extract_parameters, low_level
 
         parameters = extract_parameters("$" + encoded.partition("$")[2])
         return (
+            parameters.type,
+            parameters.version,
+            parameters.hash_len,
             parameters.time_cost,
             parameters.memory_cost,
             parameters.parallelism,
-        ) != (self.time_cost, self.memory_cost, self.parallelism)
+        ) != (
+            low_level.Type.ID,
+            low_level.ARGON2_VERSION,
+            HASH_LENGTH,
+            self.time_cost,
+            self.memory_cost,
+            self.parallelism,
+        ) or parameters.salt_len * 8 < self.salt_entropy
 
 
 class FastPBKDF2PasswordHasher(PBKDF2PasswordHasher):
@@ -319,10 +332,14 @@ def make_password(password: str, hasher: PasswordHasher | None = None) -> str:
 def verify_password(password: str, encoded: str | None) -> PasswordCheck:
     """Check ``password`` against ``encoded``; re-hash it if settings changed.
 
-    A wrong password takes as long as a right one would with current
-    settings, so response times do not tell how old a hash is. A hash no
-    password matches (unusable, malformed, or of a hasher not configured)
-    costs one hash too, so they do not tell which accounts have one.
+    A wrong password takes at least as long as a current hash takes, so
+    response times do not tell how old a hash is: against an outdated hash
+    of the preferred hasher, ``harden_runtime`` runs what it lacks (or, for
+    a hasher without one, the preferred hasher hashes the password); against
+    another hasher's, the preferred hasher hashes it, as a right password
+    is hashed again. A hash no password matches (unusable, malformed, or of
+    a hasher not configured) costs one hash too, so they do not tell which
+    accounts have one.
     """
     preferred = get_hashers()[0]
     if encoded is None or encoded.startswith(UNUSABLE_PASSWORD_PREFIX):
@@ -336,12 +353,29 @@ def verify_password(password: str, encoded: str | None) -> PasswordCheck:
         preferred.hash(password)
         return PasswordCheck(correct=False)
     if not correct:
-        if hasher is preferred and outdated:
-            hasher.harden_runtime(password, encoded)
+        if outdated:
+            _harden(preferred, hasher, password, encoded)
         return PasswordCheck(correct=False)
     return PasswordCheck(
         correct=True, rehashed=preferred.hash(password) if outdated else None
     )
+
+
+def _harden(
+    preferred: PasswordHasher, hasher: PasswordHasher, password: str, encoded: str
+) -> None:
+    """Spend on a wrong password what a current hash would have taken.
+
+    ``hasher``'s own ``harden_runtime`` when it is the preferred one and has
+    one; otherwise a hash with the preferred hasher, which is what a right
+    password costs too (it is hashed again).
+    """
+    if hasher is preferred and type(hasher).harden_runtime is not (
+        PasswordHasher.harden_runtime
+    ):
+        hasher.harden_runtime(password, encoded)
+    else:
+        preferred.hash(password)
 
 
 def check_password(password: str, encoded: str | None) -> bool:
@@ -349,16 +383,19 @@ def check_password(password: str, encoded: str | None) -> bool:
     return verify_password(password, encoded).correct
 
 
-class PasswordChecksBusy(APIError):
-    """Every hashing thread is busy and the queue is full."""
+class PasswordChecksBusy(ServiceBusy):
+    """Every hashing thread is busy and the queue is full.
+
+    The HTTP layer answers it with 503 and ``Retry-After: retry_after``.
+    """
+
+    code = "password_checks_busy"
 
     def __init__(self, retry_after: int = 1) -> None:
-        """A 503 that asks the client to try again in ``retry_after`` seconds."""
+        """Ask the caller to try again in ``retry_after`` seconds."""
         super().__init__(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
             "Too many password checks at once; try again in a moment.",
-            code="password_checks_busy",
-            headers={"Retry-After": str(retry_after)},
+            retry_after=retry_after,
         )
 
 

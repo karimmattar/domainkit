@@ -112,6 +112,10 @@ class CookieSettings(BaseModel):
     PATH: str = Field(default="/", pattern=r"^/[A-Za-z0-9._~/-]*$")
     TTL: timedelta = Field(default=timedelta(days=14), gt=timedelta(0))
     """How long a browser session works."""
+    END_PREVIOUS_SESSION: bool = True
+    """A login from a browser ends the session its cookie held: the browser
+    replaces the cookie, so a copy of the old one would otherwise work on,
+    unseen, for ``TTL`` (AUTH-05). False keeps it, as before 0.10."""
 
     @model_validator(mode="after")
     def check_prefixes(self) -> Self:
@@ -257,11 +261,24 @@ class AuthSettings(BaseModel):
     AUTHENTICATION_EXEMPT_PATHS: tuple[str, ...] = ("/health", "/ready", "/metrics")
     """Paths served without looking at credentials (probes, ``METRICS_TOKEN``)."""
     REQUIRE_ROUTE_RULES: bool = True
-    """Every route must say who may call it (``Require``, or ``Public``)."""
+    """Deprecated: the core's ``REQUIRE_ROUTE_RULES``; False here still turns
+    the check off until 0.11, with a warning."""
     TOKEN_TTL: timedelta | None = Field(default=timedelta(days=14), gt=timedelta(0))
     """How long a token from logging in works (``TokenAuthentication``)."""
     TOKEN_PREFIX: str = Field(default="dkt_", pattern=r"^[A-Za-z][A-Za-z0-9]{1,15}_$")
     """Starts every opaque token, so secret scanners and people can spot one."""
+    MAX_LOGINS: int = Field(default=100, ge=1, le=10_000)
+    """Logins a user holds at once: login tokens, browser sessions, and JSON
+    Web Token logins. A new one past it ends the oldest, so a user is never
+    refused for their own history (AUTH-08); personal tokens do not count."""
+    IDLE_TIMEOUT: timedelta | None = Field(
+        default=None, ge=timedelta(minutes=5), le=timedelta(days=30)
+    )
+    """End a login unused for this long: a login token or a browser session
+    that authenticated nothing, or a JSON Web Token login not refreshed.
+    None: they last their whole lifetime, as before 0.10. Personal tokens
+    and certificates have none. Last uses are written a tenth as often, at
+    most every 5 minutes, so a login ends within a tenth of this after it."""
     MAX_LIVE_TOKENS: int = Field(default=100, ge=1, le=10_000)
     """Live access tokens (logins and personal tokens) a user may hold and
     still make a personal token (``POST /auth/tokens``): past it, ``409
@@ -272,6 +289,18 @@ class AuthSettings(BaseModel):
     Also counts reset, verification, signup, and second-factor links that
     do not hold, per client address (one-time codes count against
     ``MFA.RATE``). Checks that succeed are not counted.
+    """
+    DEVICE_TTL: timedelta | None = Field(
+        default=timedelta(days=30),
+        ge=timedelta(hours=1),
+        le=timedelta(days=400),
+    )
+    """How long a client that logged in keeps a count of its own (a cookie).
+
+    A login that works hands out a signed, HttpOnly device proof for its
+    account; logins that send it count against ``LOGIN_RATE`` per device,
+    not per account or address, so others' wrong passwords never keep the
+    user out on it. None: no proofs, as before 0.10 (``auth.devices``).
     """
     EMAIL_RATE: str | None = "5/hour"
     """Requests that send mail (resets, verifications, signups) per client

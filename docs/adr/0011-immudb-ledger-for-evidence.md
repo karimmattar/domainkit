@@ -1,6 +1,6 @@
 # 0011. Keep evidence in an immudb ledger, verified by the client
 
-- Status: Accepted; keys and subjects amended by [0018](0018-evidence-subjects-are-internal-ids.md)
+- Status: Accepted; keys and subjects amended by [0018](0018-evidence-subjects-are-internal-ids.md); amended 2026-10-26 (at the end)
 - Date: 2026-10-14
 
 ## Context
@@ -81,3 +81,51 @@ Integration options, tested against immudb 1.11.2 on Python 3.13:
   by integration tests against a TLS-enabled immudb in CI. If it stays
   unmaintained, the `Ledger` port lets us replace it with our own gRPC
   client without touching evidence code.
+
+## Amendment (2026-10-26, 0.10): trust that outlives a client
+
+The trusted state lived in each SDK client, and a client was replaced
+after any timeout, on every restart, and for the readiness probe: each
+new one trusted whatever state the server showed it, so a server rolled
+back to an older copy, or forked, went unnoticed by every client that
+started afresh (DATA-05). The signing key does not help: a rolled-back
+server signs its old states too.
+
+- One state per ledger (`TrustedRoot`, the SDK's `RootService`), shared by
+  the work and probe clients, kept across reconnects, and moved on only by
+  the SDK's verified calls. The probe reads the server's state with its
+  signature checked (`server_state`), never the SDK's `currentState`,
+  which would make an unproven state the trusted one.
+- Each advance is saved to a `domainkit.ledger.trust.StateStore`, and a
+  new ledger starts from it. With `domainkit.contrib.audit` installed the
+  store is a row per ledger (server and database) in `AUDIT.DATABASE`.
+  A save is a compare-and-set over the state the ledger last read or
+  saved there; when another replica saved one since, a dual proof
+  (`verifiedTxById`, trusting the older of the two for that call) shows
+  both lie on one chain before the later is kept, and the probe reads the
+  row again each time. Without this a replica that loaded the row once
+  trusted a rolled-back server on its own word and saved the fork over
+  the row (SEC-10b-5, found in review before 0.10). A PoC compared it with a file on the host and
+  with process memory, for a ledger at transaction 10 rolled back to 5:
+  memory caught only a reconnect, a file also a restart on the same disk,
+  and the database every case, a replaced container and another replica
+  included. It costs one conditional `UPDATE` per advance (1.7 ms median
+  on PostgreSQL, against 0.4 ms for a file with `fsync`), and none for a
+  read that does not move the ledger on. Without audit, the state is the
+  ledger's own, in memory: reconnects keep it, restarts do not.
+- A server behind the trusted state is refused (`LedgerRolledBack`), and
+  so is one with another digest at the same transaction
+  (`LedgerTampered`), by every call and by `/ready`. Refused rather than
+  logged: deny by default, since an alarm alone would let evidence be
+  written to, and anchors be checked against, a ledger that lost history.
+  An operator who restored the ledger from a backup on purpose deletes its
+  row from `domainkit_ledger_states`.
+- Evidence counts as intact from a verified read of the key's latest
+  revision (its number), not from the SDK's `history`, which nothing
+  verifies; a key written once is read once.
+
+The store holds what proves the ledger, next to the data the ledger
+witnesses: someone who controls both the database and the ledger can roll
+back both. Signed checkpoints exported to a third party
+([0082](0082-signed-audit-checkpoints.md)) are the witness for that case.
+

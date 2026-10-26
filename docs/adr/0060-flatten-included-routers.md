@@ -1,6 +1,6 @@
 # 0060. Flatten included routers when the application is built
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-26 (at the end)
 - Date: 2026-10-21
 
 ## Context
@@ -123,3 +123,37 @@ The options:
 - What would change this: FastAPI serving included routes flat itself, or
   giving a public way to read what it works out for them. Then
   `flatten_routes` does nothing, or reads that instead.
+
+## Amendment (2026-10-26, 0.10): try only the routes a request's first segment reaches
+
+Flattened, a route was still matched after every route ahead of it, about
+7 calls each: 125 calls of a light request behind the template's 23 routes,
+and about 1,000 on the last of 150 (PERF-05 of the 0.9.0 audit).
+
+- **`RouteIndex`** (`domainkit.http.routing`) serves the application's
+  router: it indexes the top-level routes by the literal first segment of
+  their templates, and a request tries, in order, the routes of its
+  segment and those that may match any path (a parameter or converter in
+  the first segment, a mount at the root, a host, a router left included,
+  a route class with its own `matches`). The routes left out could only
+  answer "no match", so the first full match, or else the first partial
+  one, is what `APIRouter.app` serves, with FastAPI's telemetry hook; when
+  none matches, the router's own `app` answers (redirects, frontend
+  routes, 404). Lifespan events go to the router. The router's routes
+  become a list that counts its changes (`Routes`), so a route added,
+  removed, or replaced in place later, or a new list given to the router,
+  is indexed on the next request, for one comparison a request (SEC-10a-6
+  of the 0.10 review: a route replaced in place, hardened with a rule
+  after the build, was still served as it was).
+- `get_asgi_application` installs it with flattening; `FLATTEN_ROUTERS =
+  False` keeps FastAPI's own matching, index included. A router with its
+  own `app`, or middleware of its own, is left as it is.
+- One GET behind N routes, calls per request (and CPU), every route tried
+  to the index: 10 routes, 409 to 329; 100, 1,129 to 329 (133 to 58 µs);
+  1,000, 8,329 to 329 (757 to 59 µs).
+- The tests compare the route each request selects, every route tried and
+  indexed, for every route of eight test projects' routers and for random
+  overlapping routes of every kind (10 to 400), over HTTP and WebSocket,
+  under a root path too, and serve both over HTTP byte for byte.
+- "Mount busy routers first" is no longer advice: order still decides
+  between routes of one segment, as it always did.

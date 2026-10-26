@@ -9,6 +9,7 @@ are pinned to commits and images to digests, and Renovate sees the images.
 
 import ast
 import json
+import os
 import re
 import subprocess
 import sys
@@ -27,12 +28,14 @@ RULESETS = ROOT / ".github" / "rulesets"
 SOURCE = ROOT / "src"
 SUMMARY = ROOT / ".github" / "scripts" / "mutation_summary.py"
 FLOORS = ROOT / ".github" / "scripts" / "floors.py"
+NOTES = ROOT / ".github" / "scripts" / "release_notes.py"
+CHANGED = ROOT / ".github" / "scripts" / "changed.py"
 EVENTS = ("push", "pull_request", "schedule", "workflow_dispatch")
 # GitHub Actions, the app whose checks the ruleset accepts.
 ACTIONS_APP = 15368
 # Jobs that run on pull requests but gate nothing: the newest and oldest
 # releases the ranges allow are not this change's doing.
-ADVISORY = {"newest", "oldest"}
+ADVISORY = {"newest", "oldest", "free-threaded-stress"}
 # GitHub stops a job after six hours.
 JOB_LIMIT_MINUTES = 360
 
@@ -49,55 +52,131 @@ def jobs(name: str = "ci.yml") -> dict[str, dict[str, Any]]:
     return found
 
 
-def evaluate(expression: str, github: dict[str, str]) -> bool | str:
+type Value = bool | str
+_TOKEN = re.compile(
+    r"\s*(?:(?P<string>'[^']*')|(?P<op>&&|\|\||==|!=|!|\(|\))"
+    r"|(?P<name>[A-Za-z_][\w.-]*(?:\(\))?))"
+)
+STATUS = {"cancelled()": False, "failure()": False, "always()": True, "success()": True}
+"""Status functions, as they read when every earlier job succeeded."""
+
+
+def evaluate(expression: str, values: dict[str, str]) -> Value:
     """The value of a GitHub expression of the kinds the workflows use.
 
-    ``||`` of ``&&`` of comparisons (``==``, ``!=``) between ``github.*``
-    values and quoted strings, inside ``${{ }}`` or bare, as ``if:`` allows;
-    other text is kept, so ``ci-${{ github.ref }}`` reads as a string.
+    ``||``, ``&&``, ``!``, parentheses, ``==`` and ``!=`` between context
+    values (``github.ref``, ``needs.changes.outputs.code``) and quoted
+    strings, and the status functions, inside ``${{ }}`` or bare, as
+    ``if:`` allows. ``||`` and ``&&`` give an operand, as GitHub's do
+    (``github.head_ref || github.sha``). Other text is kept, so
+    ``ci-${{ github.ref }}`` reads as a string. A context value not given
+    reads as GitHub's missing value, an empty string.
     """
     whole = re.fullmatch(r"\s*\$\{\{(.*)\}\}\s*", expression, re.DOTALL)
     if whole is None and "${{" in expression:
         return re.sub(
             r"\$\{\{(.*?)\}\}",
-            lambda match: str(evaluate(match.group(1), github)),
+            lambda match: str(evaluate(match.group(1), values)),
             expression,
         )
-    text = whole.group(1) if whole else expression
+    tokens = _tokens(whole.group(1) if whole else expression)
+    position = 0
 
-    def term(atom: str) -> str:
-        atom = atom.strip()
+    def peek() -> str | None:
+        return tokens[position] if position < len(tokens) else None
+
+    def take() -> str:
+        nonlocal position
+        position += 1
+        return tokens[position - 1]
+
+    def either() -> Value:
+        value = both()
+        while peek() == "||":
+            take()
+            other = both()
+            value = value or other
+        return value
+
+    def both() -> Value:
+        value = compared()
+        while peek() == "&&":
+            take()
+            other = compared()
+            value = value and other
+        return value
+
+    def compared() -> Value:
+        value = negated()
+        if peek() in {"==", "!="}:
+            equal = take() == "=="
+            return (value == negated()) is equal
+        return value
+
+    def negated() -> Value:
+        if peek() == "!":
+            take()
+            return not negated()
+        if peek() == "(":
+            take()
+            value = either()
+            assert take() == ")", expression
+            return value
+        atom = take()
         if atom.startswith("'"):
             return atom.strip("'")
-        return github[atom.removeprefix("github.")]
+        if atom in STATUS:
+            return STATUS[atom]
+        return values.get(atom.removeprefix("github."), "")
 
-    def comparison(part: str) -> bool | str:
-        if "!=" in part:
-            left, right = part.split("!=")
-            return term(left) != term(right)
-        if "==" in part:
-            left, right = part.split("==")
-            return term(left) == term(right)
-        return term(part)
-
-    alternatives = [
-        [comparison(part) for part in alternative.split("&&")]
-        for alternative in text.split("||")
-    ]
-    if len(alternatives) == 1 and len(alternatives[0]) == 1:
-        return alternatives[0][0]
-    return any(all(parts) for parts in alternatives)
+    value = either()
+    assert position == len(tokens), expression
+    return value
 
 
-def context(event: str) -> dict[str, str]:
-    """``github.*`` for a run of ``event`` on the main branch."""
-    return {"event_name": event, "ref": "refs/heads/main"}
+def _tokens(text: str) -> list[str]:
+    """Split an expression into strings, operators, and names."""
+    found: list[str] = []
+    position = 0
+    while text[position:].strip():
+        match = _TOKEN.match(text, position)
+        assert match, text[position:]
+        found.append(match.group(match.lastgroup or ""))
+        position = match.end()
+    return found
 
 
-def runs(job: dict[str, Any], event: str) -> bool:
-    """Whether ``job`` runs for ``event``, its ``needs`` having run."""
+def context(
+    event: str, *, code: str = "true", sha: str = "abc", number: int = 1
+) -> dict[str, str]:
+    """``github.*`` for a run of ``event`` on the main branch.
+
+    A pull request (``number``) comes from a branch (``head_ref``) and, by
+    its changes job, changes ``code`` (``"true"``) or docs alone
+    (``"false"``).
+    """
+    values = {"event_name": event, "ref": "refs/heads/main", "sha": sha}
+    if event == "pull_request":
+        values |= {
+            "ref": f"refs/pull/{number}/merge",
+            "head_ref": "feature",
+            "needs.changes.outputs.code": code,
+        }
+    return values
+
+
+def runs(job: dict[str, Any], values: dict[str, str], needed_ran: bool) -> bool:
+    """Whether ``job`` runs: its condition, and its ``needs`` unless it says.
+
+    A job whose needs did not all run is skipped, unless its condition
+    calls a status function (``!cancelled()``), as GitHub decides.
+    """
     condition = job.get("if")
-    return condition is None or evaluate(condition, context(event)) is True
+    if condition is None:
+        return needed_ran
+    if not any(function in condition for function in STATUS) and not needed_ran:
+        return False
+    return evaluate(str(condition), values) is True
 
 
 def needs(job: dict[str, Any]) -> set[str]:
@@ -106,19 +185,18 @@ def needs(job: dict[str, Any]) -> set[str]:
     return {wanted} if isinstance(wanted, str) else set(wanted)
 
 
-def running(event: str) -> set[str]:
-    """The jobs a run of ``event`` starts: those whose condition and needs hold."""
-    found: set[str] = set()
+def running(event: str, *, code: str = "true") -> set[str]:
+    """The jobs a run of ``event`` starts (for a pull request, by its changes)."""
+    values = context(event, code=code)
+    decided: dict[str, bool] = {}
     pending = jobs()
-    while True:
-        ready = {
-            name
-            for name, job in pending.items()
-            if name not in found and runs(job, event) and needs(job) <= found
-        }
-        if not ready:
-            return found
-        found |= ready
+    while len(decided) < len(pending):
+        for name, job in pending.items():
+            if name in decided or not needs(job) <= set(decided):
+                continue
+            ran = all(decided[need] for need in needs(job))
+            decided[name] = runs(job, values, ran)
+    return {name for name, ran in decided.items() if ran}
 
 
 def check_names(name: str, job: dict[str, Any]) -> Iterator[str]:
@@ -180,7 +258,11 @@ def test_every_pattern_names_a_module() -> None:
 
 
 def test_the_weekly_run_has_a_concurrency_group_no_push_shares() -> None:
-    """A merge to main cancels the push before it, never the mutation run."""
+    """Only a pull request's new push cancels a run; main's are each kept.
+
+    A release reuses the run of its commit's push to main, so none is ever
+    cancelled, nor left pending behind another commit's.
+    """
     concurrency = workflow()["concurrency"]
     group = {event: evaluate(concurrency["group"], context(event)) for event in EVENTS}
     assert len(set(group.values())) == len(EVENTS), group
@@ -189,15 +271,43 @@ def test_the_weekly_run_has_a_concurrency_group_no_push_shares() -> None:
         for event in EVENTS
     }
     assert cancels == {
-        "push": True,
+        "push": False,
         "pull_request": True,
         "schedule": False,
         "workflow_dispatch": False,
     }
+    pushes = {evaluate(concurrency["group"], context("push", sha=sha)) for sha in "ab"}
+    assert len(pushes) == 2
+    reviews = {
+        evaluate(concurrency["group"], context("pull_request", sha=sha)) for sha in "ab"
+    }
+    assert len(reviews) == 1
+    # Two pull requests from branches of the same name (forks' "main").
+    others = {
+        evaluate(concurrency["group"], context("pull_request", number=number))
+        for number in (1, 2)
+    }
+    assert len(others) == 2
+
+
+def test_the_expression_reader_reads_what_github_would() -> None:
+    """Operands, not booleans, from ``||`` and ``&&``; precedence; ``!``."""
+    values = {"event_name": "push", "sha": "abc", "head_ref": ""}
+    assert evaluate("github.head_ref || github.sha", values) == "abc"
+    assert evaluate("${{ github.event_name == 'push' && 'yes' }}", values) == "yes"
+    assert evaluate("!cancelled() && (github.sha == 'x' || 'y' != 'z')", values)
+    assert evaluate("${{ !failure() && github.sha != 'abc' }}", values) is False
+    assert evaluate("needs.changes.outputs.code != 'false'", values) is True
+    assert evaluate("a-${{ github.sha }}-b", values) == "a-abc-b"
 
 
 def test_each_event_starts_the_jobs_it_needs() -> None:
-    """The weekly run mutates and audits; the rest check changes."""
+    """The weekly run mutates and audits; the rest check changes.
+
+    A pull request that changes docs alone runs the cheap jobs, the docs
+    job, and the test matrix, which skips its steps. Every push to main
+    runs the whole suite: a release reuses that run.
+    """
     every = set(jobs())
     assert running("schedule") == {
         "audit",
@@ -206,9 +316,158 @@ def test_each_event_starts_the_jobs_it_needs() -> None:
         "oldest",
         "mutation",
     }
-    assert running("pull_request") == every - {"mutation"}
-    assert running("push") == every - {"mutation", "newest", "oldest"}
-    assert running("workflow_dispatch") == every
+    assert running("pull_request") == every - {"mutation", "docs", "attest"}
+    assert running("pull_request", code="false") == {
+        "changes",
+        "docs",
+        "docs-site",
+        "lint",
+        "test",
+        "audit",
+        "semgrep",
+    }
+    assert running("push") == every - {
+        "mutation",
+        "newest",
+        "oldest",
+        "changes",
+        "docs",
+    }
+    assert running("workflow_dispatch") == every - {"changes", "docs", "attest"}
+
+
+def test_a_docs_change_skips_the_test_matrix_steps_not_the_matrix() -> None:
+    """Each check the ruleset names reports, so none waits forever.
+
+    A job skipped by its condition reports success, but a matrix skipped
+    whole reports one check under its unexpanded name; so the matrix runs,
+    and every step of it is skipped for a docs-only change.
+    """
+    for name in running("pull_request", code="false"):
+        job = jobs()[name]
+        if "matrix" in job.get("strategy", {}):
+            for step in job["steps"]:
+                condition = step["if"]
+                for code in ("true", "false"):
+                    values = context("pull_request", code=code)
+                    assert evaluate(condition, values) is (code == "true"), step
+    for name in running("pull_request") - running("pull_request", code="false"):
+        job = jobs()[name]
+        assert "matrix" not in job.get("strategy", {}), name
+        assert "changes" in needs(job), name
+
+
+@pytest.mark.parametrize(
+    ("paths", "code"),
+    [
+        ("", "false"),
+        ("docs/tutorial.md\nREADME.md\nCHANGELOG.md\n", "false"),
+        ("docs/adr/0081-x.md\ndocs/img/a.svg\n", "false"),
+        ("docs/tutorial.md\nsrc/domainkit/clock.py\n", "true"),
+        ("src/domainkit/management/templates/project/README.md\n", "true"),
+        (".github/workflows/ci.yml\n", "true"),
+        ("pyproject.toml\n", "true"),
+        ("domainkit_tests/notes.md\n", "true"),
+        ("M\tdocs/tutorial.md\nA\tREADME.md\n", "false"),
+        ("D\tsrc/domainkit/http/guard.py\nA\tdocs/guard.py\n", "true"),
+        ("R100\tsrc/domainkit/http/guard.py\tdocs/guard.py\n", "true"),
+        ("R087\tdomainkit_tests/test_http.py\tdocs/test_http.py\n", "true"),
+        ("R100\tdocs/guide.md\tsrc/domainkit/guide.md\n", "true"),
+        ("R100\tdocs/old.md\tdocs/new.md\nC090\tREADME.md\tdocs/x.md\n", "false"),
+        ('M\t"docs/\\303\\274.md"\n', "true"),
+    ],
+)
+def test_only_docs_and_top_level_markdown_count_as_docs(paths: str, code: str) -> None:
+    """Markdown in a package or the tests is code: templates ship in the wheel.
+
+    Both sides of a rename or copy count: code moved into ``docs/`` left
+    the package (SEC-10c-3). A path git quoted counts as code.
+    """
+    done = subprocess.run(  # noqa: S603 - the test interpreter and the repository's script.
+        [sys.executable, str(CHANGED)],
+        input=paths,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert done.stdout == f"code={code}\n"
+    [step] = [
+        each
+        for each in jobs()["changes"]["steps"]
+        if "changed.py" in each.get("run", "")
+    ]
+    assert "git diff --no-renames --name-status HEAD^1 HEAD" in step["run"]
+
+
+def git(cwd: Path, *args: str) -> str:
+    """Run git in ``cwd``, as a throwaway committer; return what it prints."""
+    done = subprocess.run(  # noqa: S603 - git, fixed arguments.
+        ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", *args],  # noqa: S607 - git from PATH.
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return done.stdout
+
+
+@pytest.mark.parametrize(
+    ("moved", "edit"),
+    [
+        ("src/domainkit/http/guard.py", False),
+        ("src/domainkit/http/guard.py", True),
+        ("domainkit_tests/test_http.py", False),
+    ],
+)
+def test_moving_code_into_the_docs_is_not_a_docs_change(
+    tmp_path: Path, moved: str, edit: bool
+) -> None:
+    """The changes job's own command, on a pull request's merge commit.
+
+    ``git diff --name-only`` reported a moved file under its new path
+    alone, ``docs/...``: a pull request that moved a module (edited or
+    not) or a test file into ``docs/`` skipped every test job
+    (SEC-10c-3). Each such move must read as code.
+    """
+    [step] = [
+        each
+        for each in jobs()["changes"]["steps"]
+        if "changed.py" in each.get("run", "")
+    ]
+    command = (
+        step["run"]
+        .replace(
+            "python3 .github/scripts/changed.py", f'"{sys.executable}" "{CHANGED}"'
+        )
+        .replace('"$GITHUB_OUTPUT"', '"$OUTPUT"')
+    )
+    (tmp_path / Path(moved).parent).mkdir(parents=True)
+    (tmp_path / "docs").mkdir()
+    (tmp_path / moved).write_text((ROOT / moved).read_text(encoding="utf-8"))
+    (tmp_path / "docs" / "index.md").write_text("# Docs\n")
+    git(tmp_path, "init", "-q", "-b", "main")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-qm", "base")
+    git(tmp_path, "checkout", "-qb", "change")
+    target = f"docs/{Path(moved).name}"
+    git(tmp_path, "mv", moved, target)
+    if edit:
+        with (tmp_path / target).open("a") as file:
+            file.write("# edited\n")
+    git(tmp_path, "commit", "-qam", "move")
+    git(tmp_path, "checkout", "-q", "main")
+    git(tmp_path, "merge", "-q", "--no-ff", "-m", "merge", "change")
+    assert "R" in git(tmp_path, "diff", "--name-status", "-M", "HEAD^1", "HEAD")
+
+    output = tmp_path / "output"
+    subprocess.run(  # noqa: S603 - bash, and the workflow's own command.
+        ["bash", "-eo", "pipefail", "-c", command],  # noqa: S607 - bash from PATH.
+        cwd=tmp_path,
+        env={**os.environ, "OUTPUT": str(output)},
+        check=True,
+    )
+
+    assert output.read_text() == "code=true\n"
 
 
 def test_a_shard_reports_its_score_before_the_job_limit() -> None:
@@ -283,7 +542,7 @@ def test_a_hung_test_ends_the_suite_well_within_its_jobs_time() -> None:
         assert jobs()[name]["timeout-minutes"] == 30
     steps = jobs()["integration"]["steps"]
     assert any(
-        "pytest --cov -rs --junitxml=junit.xml" in step.get("run", "") for step in steps
+        "--cov -rs --junitxml=junit.xml" in step.get("run", "") for step in steps
     )
     kept = [
         step
@@ -304,9 +563,10 @@ def test_the_main_ruleset_requires_every_job_that_checks_a_pull_request() -> Non
     required = rule["parameters"]["required_status_checks"]
     assert {check["integration_id"] for check in required} == {ACTIONS_APP}
     contexts = [check["context"] for check in required]
+    reviewed = running("pull_request") | running("pull_request", code="false")
     checked = {
         check
-        for name in running("pull_request") - ADVISORY
+        for name in reviewed - ADVISORY
         for check in check_names(name, jobs()[name])
     }
     assert sorted(contexts) == sorted(checked)
@@ -336,7 +596,7 @@ def test_the_rulesets_hold_without_an_everyday_bypass() -> None:
     assert [rule["type"] for rule in creation["rules"]] == ["creation"]
 
 
-@pytest.mark.parametrize("name", ["ci.yml", "release.yml"])
+@pytest.mark.parametrize("name", ["ci.yml", "release.yml", "codeql.yml"])
 def test_actions_are_pinned_to_commits_and_tokens_only_read(name: str) -> None:
     """Every action by a full commit SHA; write access only where it is used."""
     assert workflow(name)["permissions"] == {"contents": "read"}
@@ -344,8 +604,11 @@ def test_actions_are_pinned_to_commits_and_tokens_only_read(name: str) -> None:
         for step in job.get("steps", []):
             uses = step.get("uses")
             if uses is not None:
-                assert re.fullmatch(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}", uses), uses
-        if name == "ci.yml":
+                # owner/repo, or an action in a folder of it, at a commit.
+                assert re.fullmatch(r"[\w.-]+/[\w.-]+(/[\w.-]+)*@[0-9a-f]{40}", uses), (
+                    uses
+                )
+        if name == "ci.yml" and job_name != "attest":
             assert "permissions" not in job, job_name
     granted = {
         job_name: job["permissions"]
@@ -354,30 +617,75 @@ def test_actions_are_pinned_to_commits_and_tokens_only_read(name: str) -> None:
     }
     if name == "release.yml":
         assert granted == {
-            "attest": {
-                "contents": "read",
+            "ci": {"contents": "read", "actions": "read"},
+            "publish": {
+                "actions": "read",
+                "attestations": "read",
                 "id-token": "write",
-                "attestations": "write",
             },
-            "publish": {"id-token": "write"},
+            "github-release": {"actions": "read", "contents": "write"},
         }
+    if name == "codeql.yml":
+        assert granted == {"analyze": {"contents": "read", "security-events": "write"}}
 
 
 def test_releases_publish_only_attested_files() -> None:
-    """Provenance for the wheel and sdist, the bill of materials for the wheel."""
-    release = jobs("release.yml")
-    assert set(release["publish"]["needs"]) == {"ci", "attest"}
-    attest = [
+    """Provenance for the wheel and sdist, the bill of materials for the wheel.
+
+    The run that built them attests them, so the provenance names it
+    (ci.yml, on a push to main), not the release that only downloads them.
+    Only that job, which checks out nothing, may mint an OIDC token or write
+    attestations, and never for a pull request. The release checks both
+    attestations of every file it publishes, signed by ci.yml on main at
+    the tagged commit, before publishing.
+    """
+    attest = jobs()["attest"]
+    assert attest["permissions"] == {
+        "contents": "read",
+        "id-token": "write",
+        "attestations": "write",
+    }
+    assert set(attest["needs"]) == {"build", "sbom"}
+    assert attest["if"] == "github.event_name == 'push'"
+    assert running("pull_request") & {"attest"} == set()
+    assert not any("checkout" in step.get("uses", "") for step in attest["steps"])
+    assert not any("run" in step for step in attest["steps"])
+    attested = [
         step["with"]
-        for step in release["attest"]["steps"]
+        for step in attest["steps"]
         if step.get("uses", "").startswith("actions/attest@")
     ]
-    assert attest == [
+    assert attested == [
         {"subject-path": "dist/*"},
         {"subject-path": "dist/*.whl", "sbom-path": "sbom/sbom.cdx.json"},
     ]
+    release = jobs("release.yml")
+    assert "attest" not in release
+    assert set(release["publish"]["needs"]) == {"ci", "audit"}
+    [check] = [
+        step
+        for step in release["publish"]["steps"]
+        if "gh attestation verify" in step.get("run", "")
+    ]
+    publishing = [step.get("uses", "") for step in release["publish"]["steps"]]
+    assert release["publish"]["steps"].index(check) < next(
+        index
+        for index, uses in enumerate(publishing)
+        if uses.startswith("pypa/gh-action-pypi-publish@")
+    )
+    script = check["run"]
+    assert script.count("gh attestation verify") == 2
+    for option in (
+        '--signer-workflow "$REPO/.github/workflows/ci.yml"',
+        "--source-ref refs/heads/main",
+        '--source-digest "$SHA"',
+        "--deny-self-hosted-runners",
+        "--predicate-type https://cyclonedx.org/bom",
+    ):
+        assert option in script, option
+    assert check["env"]["SHA"] == "${{ github.sha }}"
     sbom = jobs()["sbom"]
-    assert sbom["needs"] == "build"
+    assert "build" in needs(sbom)
     # actions/attest takes a CycloneDX document only with a bomFormat, a
     # specVersion and a serialNumber, which --output-reproducible leaves out:
     # v0.9.2's release failed there.
@@ -389,6 +697,87 @@ def test_releases_publish_only_attested_files() -> None:
     upload = sbom["steps"][-1]
     assert upload["with"]["name"] == "sbom"
     assert upload["with"]["path"] == "sbom.cdx.json"
+
+
+def test_releases_reuse_mains_green_run_of_the_tagged_commit() -> None:
+    """Nothing runs twice: the tag's push-to-main run must have succeeded.
+
+    Its dist and sbom artifacts, attested by that run, are what is
+    published; only the audit runs again, as CI's audit job does, since an
+    advisory can appear after main's run.
+    """
+    release = jobs("release.yml")
+    assert "workflow_call" not in (WORKFLOWS / "ci.yml").read_text()
+    assert all("uses" not in job for job in release.values())
+    [find] = release["ci"]["steps"]
+    script = find["run"]
+    for option in (
+        "--workflow ci.yml",
+        "--branch main",
+        "--event push",
+        '--commit "$SHA"',
+    ):
+        assert option in script, option
+    assert find["env"]["SHA"] == "${{ github.sha }}"
+    assert '[ "$conclusion" != "success" ]' in script
+    assert release["ci"]["outputs"] == {"run-id": "${{ steps.run.outputs.id }}"}
+    downloads = [
+        step["with"]
+        for name in ("publish", "github-release")
+        for step in release[name]["steps"]
+        if step.get("uses", "").startswith("actions/download-artifact@")
+    ]
+    assert sorted(each["name"] for each in downloads) == ["dist", "dist", "sbom"]
+    for each in downloads:
+        assert each["run-id"] == "${{ needs.ci.outputs.run-id }}"
+        assert each["github-token"] == "${{ github.token }}"
+    for name in ("dist", "sbom"):
+        [upload] = [
+            step["with"]
+            for step in jobs()["build" if name == "dist" else "sbom"]["steps"]
+            if step.get("uses", "").startswith("actions/upload-artifact@")
+            and step["with"]["name"] == name
+        ]
+        assert upload["retention-days"] == 90
+    assert release["audit"]["steps"] == jobs()["audit"]["steps"]
+
+
+def test_the_docs_job_runs_every_test_that_reads_the_docs() -> None:
+    """A docs-only change runs each test module that opens a docs file.
+
+    Those are the modules that join the repository's root to ``docs`` or a
+    top-level Markdown file; a run with an audit hook on ``open`` found the
+    same four (October 2026).
+    """
+    reading = re.compile(r'(?:ROOT|parents\[1\])\s*/\s*"(?:docs|[A-Za-z]+\.md)"')
+    readers = {
+        f"domainkit_tests/{path.name}"
+        for path in (ROOT / "domainkit_tests").glob("test_*.py")
+        if reading.search(path.read_text(encoding="utf-8"))
+    }
+    [command] = [
+        step["run"]
+        for step in jobs()["docs"]["steps"]
+        if "pytest" in step.get("run", "")
+    ]
+    assert set(re.findall(r"domainkit_tests/\S+\.py", command)) == readers
+    assert len(readers) == 4
+
+
+def test_the_suite_runs_on_every_core() -> None:
+    """pytest-xdist in the dev group; ``-n auto`` wherever the suite runs whole."""
+    dev = tomllib.loads((ROOT / "pyproject.toml").read_text())["dependency-groups"][
+        "dev"
+    ]
+    assert any(each.startswith("pytest-xdist ") for each in dev)
+    for name in ("test", "integration", "newest", "oldest", "docs"):
+        commands = [
+            step["run"]
+            for step in jobs()[name]["steps"]
+            if "pytest" in step.get("run", "")
+        ]
+        assert commands, name
+        assert all("pytest -n auto" in command for command in commands), name
 
 
 def test_renovate_sees_every_image_ci_starts() -> None:
@@ -572,3 +961,161 @@ def test_the_floors_script_reads_each_form_and_refuses_none(tmp_path: Path) -> N
     )
     assert done.returncode == 1
     assert "a has two floors: 1 and 2" in done.stderr
+
+
+def test_the_docs_site_builds_strictly_beside_the_tests() -> None:
+    """Links and public names checked; the docs group only; nothing waits for it."""
+    job = jobs()["docs-site"]
+    runs = [step.get("run", "") for step in job["steps"]]
+    assert "needs" not in job
+    assert "poetry sync --only docs --no-root" in runs
+    assert "poetry run mkdocs build --strict --site-dir site" in runs
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    docs = config["dependency-groups"]["docs"]
+    assert sorted(re.split(r"[\s(]", each, maxsplit=1)[0] for each in docs) == [
+        "mkdocs-material",
+        "mkdocstrings-python",
+    ]
+    site = yaml.safe_load((ROOT / "mkdocs.yml").read_text())
+    assert site["strict"] is True
+    assert site["hooks"] == ["docs/hooks/site.py"]
+    assert set(site["validation"].values()) == {"warn"}  # Failures, under --strict.
+
+
+def test_the_workflows_are_audited_and_scanned() -> None:
+    """Every workflow is audited by zizmor; CodeQL scans pull requests, weekly."""
+    steps = [step.get("run", "") for step in jobs()["semgrep"]["steps"]]
+    assert "zizmor --offline --format github .github/workflows" in steps
+    # YAML 1.1 reads the key "on" as True.
+    codeql: dict[object, Any] = yaml.safe_load((WORKFLOWS / "codeql.yml").read_text())
+    assert set(codeql[True]) == {
+        "push",
+        "pull_request",
+        "schedule",
+        "workflow_dispatch",
+    }
+    uses = [step.get("uses", "") for step in codeql["jobs"]["analyze"]["steps"]]
+    assert [each.split("@")[0] for each in uses] == [
+        "actions/checkout",
+        "github/codeql-action/init",
+        "github/codeql-action/analyze",
+    ]
+
+
+def test_a_release_on_github_carries_notes_files_and_checksums() -> None:
+    """After PyPI: the CHANGELOG's section, the files, the bill, their sums."""
+    job = jobs("release.yml")["github-release"]
+    run = "\n".join(step.get("run", "") for step in job["steps"])
+    assert job["needs"] == ["ci", "publish"]
+    # The files and the bill main's CI run built, as attest and publish use.
+    downloads = [
+        step["with"]
+        for step in job["steps"]
+        if step.get("uses", "").startswith("actions/download-artifact@")
+    ]
+    assert [each["name"] for each in downloads] == ["dist", "sbom"]
+    for each in downloads:
+        assert each["run-id"] == "${{ needs.ci.outputs.run-id }}"
+    assert '.github/scripts/release_notes.py "${TAG#v}" CHANGELOG.md' in run
+    assert "sha256sum" in run
+    assert "gh release create" in run
+    assert "--verify-tag" in run
+    newest = [step.get("run", "") for step in jobs()["newest"]["steps"]]
+    assert any(".newest/bin/python -m pip_audit" in each for each in newest)
+
+
+def test_the_release_notes_are_the_versions_section(tmp_path: Path) -> None:
+    """Its entries without the heading; a version without entries is an error."""
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_text(
+        "# Changelog\n\n## [Unreleased]\n\n## [1.2.0] - 2026-01-02\n\n"
+        "### Added\n\n- A thing (X-1).\n\n## [1.1.0] - 2025-12-01\n\n- Old.\n"
+        "\n## [1.0.0] - 2025-11-01\n\n",
+        encoding="utf-8",
+    )
+
+    def notes(version: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(  # noqa: S603 - the test interpreter and the repository's script.
+            [sys.executable, str(NOTES), version, str(changelog)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    assert notes("1.2.0").stdout == "### Added\n\n- A thing (X-1).\n"
+    assert notes("1.1.0").stdout == "- Old.\n"
+    for version, problem in [("1.0.0", "is empty"), ("1.3.0", "no section")]:
+        done = notes(version)
+        assert done.returncode == 1
+        assert problem in done.stderr
+    done = notes("1.2")  # A prefix of 1.2.0 is not 1.2.0.
+    assert done.returncode == 1
+
+
+def ci_images() -> set[str]:
+    """Every image CI starts: services, and ``docker run`` lines."""
+    text = (WORKFLOWS / "ci.yml").read_text()
+    return set(re.findall(r"[\w./-]+:[\w.-]+@sha256:[0-9a-f]{64}", text))
+
+
+def make_target(name: str) -> list[str]:
+    """The recipe lines of the Makefile's target ``name``, variables named."""
+    makefile = (ROOT / "Makefile").read_text()
+    match = re.search(rf"^{name}:[^\n]*\n((?:\t[^\n]*\n)*)", makefile, re.MULTILINE)
+    assert match, name
+    return [line.strip() for line in match[1].splitlines()]
+
+
+def test_compose_runs_the_servers_ci_runs() -> None:
+    """A laptop's servers are CI's, image for image, digest for digest."""
+    compose = yaml.safe_load((ROOT / "compose.yaml").read_text())
+    images = {service["image"] for service in compose["services"].values()}
+    gitleaks = {image for image in ci_images() if "gitleaks" in image}
+
+    assert images == ci_images() - gitleaks
+    rabbitmq = compose["services"]["rabbitmq"]
+    assert (
+        "./.ci/rabbitmq/20-tls.conf:/etc/rabbitmq/conf.d/20-tls.conf:ro"
+        in (rabbitmq["volumes"])
+    )
+    for service in ("immudb", "redis", "rabbitmq"):
+        assert compose["services"][service]["depends_on"] == {
+            "certs": {"condition": "service_completed_successfully"}
+        }
+    ports = [
+        port for each in compose["services"].values() for port in each.get("ports", [])
+    ]
+    assert all(port.startswith("127.0.0.1:") for port in ports), ports
+
+
+def test_the_contributor_commands_are_cis() -> None:
+    """``make lint`` is the lint job; ``make integration`` sets its variables."""
+    lint = [step["run"] for step in jobs()["lint"]["steps"] if "run" in step]
+    commands = [
+        line.replace("$(POETRY)", "poetry").replace("$(RUN)", "poetry run")
+        for line in make_target("lint")
+    ]
+    assert commands == [
+        each for each in lint if each.startswith("poetry ") and "sync" not in each
+    ]
+    makefile = (ROOT / "Makefile").read_text()
+    block = makefile.split("INTEGRATION_ENV := \\\n", 1)[1].split("\n\n", 1)[0]
+    variables = dict(
+        line.strip().rstrip("\\").strip().split("=", 1) for line in block.splitlines()
+    )
+    assert variables == {
+        name: str(value) for name, value in jobs()["integration"]["env"].items()
+    }
+    hooks = yaml.safe_load((ROOT / ".pre-commit-config.yaml").read_text())["repos"]
+    local = [
+        hook["entry"]
+        for repo in hooks
+        if repo["repo"] == "local"
+        for hook in repo["hooks"]
+    ]
+    # Each hook runs a lint command, given the changed files instead of ".".
+    assert [f"{entry} ." if f"{entry} ." in commands else entry for entry in local] == (
+        commands
+    )
+    remote = [repo["rev"] for repo in hooks if repo["repo"] != "local"]
+    assert all(re.fullmatch(r"[0-9a-f]{40}", rev) for rev in remote), remote

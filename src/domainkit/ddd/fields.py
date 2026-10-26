@@ -51,6 +51,7 @@ from typing import (
 from uuid import UUID
 
 from domainkit.ddd.model import Entity, ValueObject
+from domainkit.exceptions import DomainkitError
 
 COLLECTIONS: Final = frozenset({list, set, frozenset, tuple})
 """Containers that hold child entities: the "many" side of a relation."""
@@ -58,7 +59,7 @@ ORDERED: Final = (int, float, Decimal, str, datetime, date, time, UUID, Enum)
 """Types whose values sort (``bool`` with ``int``; enums by their values)."""
 
 
-class InvalidQuery(ValueError):
+class InvalidQuery(ValueError, DomainkitError):
     """A query names a field, lookup, or value its aggregate cannot take."""
 
 
@@ -94,6 +95,20 @@ class Digits:
                 f"Digits needs 1 <= precision and 0 <= scale <= precision, not "
                 f"precision={self.precision}, scale={self.scale}."
             )
+
+
+class Sensitive:
+    """A type whose values no schema shows or takes, such as a password hash.
+
+    Subclass it beside ``ValueObject``: ``schema_for`` refuses a field that
+    holds one, so a secret never leaves or enters through a derived schema
+    unless the field is excluded::
+
+        class PinHash(ValueObject, Sensitive):
+            value: str
+    """
+
+    __slots__ = ()
 
 
 @dataclass(frozen=True, slots=True)

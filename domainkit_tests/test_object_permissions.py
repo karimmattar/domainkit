@@ -633,7 +633,7 @@ def test_scoped_credentials_see_only_what_their_scopes_cover(project: str) -> No
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    from domainkit.contrib.auth import IsAuthenticated
+    from domainkit.http.access import AllowScoped
     from domainkit.http.errors import install_exception_handlers
     from domainkit.resources import ResourceRouter
     from domainkit_tests.test_resources import Users
@@ -651,7 +651,8 @@ def test_scoped_credentials_see_only_what_their_scopes_cover(project: str) -> No
             model=Product,
             unit_of_work=ShopUnitOfWork,
             repository=lambda uow: uow.products,
-            rule=IsAuthenticated(),
+            # Its scope reads the scopes, so it says scoped keys may come.
+            rule=AllowScoped(),
             scope=visible_scope("view", Product),
         )
     )

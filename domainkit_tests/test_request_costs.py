@@ -25,6 +25,7 @@ from starlette.datastructures import MutableHeaders
 from starlette.types import Message, Receive, Scope, Send
 
 from domainkit.conf import override_settings, settings
+from domainkit.conf.global_settings import DEFAULT_PERMISSIONS_POLICY
 from domainkit.http import get_asgi_application, metrics, middleware, ratelimit
 from domainkit.http.metrics import IN_PROGRESS, REQUESTS, MetricsMiddleware
 from domainkit.http.middleware import (
@@ -453,6 +454,9 @@ def test_security_headers_are_appended_once_and_never_overwritten() -> None:
             (b"x-content-type-options", b"nosniff"),
             (b"referrer-policy", b"origin"),
             (b"strict-transport-security", b"max-age=60"),
+            (b"content-security-policy", b"default-src 'none'; frame-ancestors 'none'"),
+            (b"permissions-policy", DEFAULT_PERMISSIONS_POLICY.encode()),
+            (b"cross-origin-opener-policy", b"same-origin"),
         ]
     ] * 2
     assert own == [(b"x-frame-options", b"SAMEORIGIN"), (b"content-length", b"0")]

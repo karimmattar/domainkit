@@ -9,17 +9,22 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import FastAPI
 from pydantic import BaseModel
+from starlette.requests import HTTPConnection
+from starlette.types import ASGIApp, Receive, Scope, Send
 
+from benchmarks.counting import SqlCounter
 from domainkit.conf import override_settings
-from domainkit.contrib.auth import Public
 from domainkit.db import connections
-from domainkit.ddd import Command
+from domainkit.ddd import Command, DuplicateValue
 from domainkit.ddd.query import F
+from domainkit.http.access import AnonymousPrincipal, BasePermission, Public
 from domainkit.http.errors import install_exception_handlers
-from domainkit.resources import ResourceRouter, routing
+from domainkit.resources import ALL_FIELDS, ResourceRouter
+from domainkit.resources.routing import listing
 from domainkit.testing import AsyncTestClient
 from domainkit_tests.conftest import Api
 from domainkit_tests.gadgets import (
+    Color,
     Gadget,
     GadgetId,
     GadgetsUnitOfWork,
@@ -79,6 +84,7 @@ async def client(database: str) -> AsyncIterator[AsyncTestClient]:
         repository=lambda uow: uow.gadgets,
         dependencies=[Public],
         crud=True,
+        writable=ALL_FIELDS,
     )
     resource.command_route(Rename, service=rename, body=NameIn, path="/rename")
     app = FastAPI()
@@ -252,7 +258,7 @@ async def test_exports_page_through_the_database(
 ) -> None:
     """Chunks continue after each other's last row, in the listing's order."""
     client, ids = stocked
-    monkeypatch.setattr(routing, "EXPORT_CHUNK", 2)
+    monkeypatch.setattr(listing, "EXPORT_CHUNK", 2)
 
     answer = await client.get("/gadgets", headers={"Accept": "text/csv"})
 
@@ -282,6 +288,7 @@ async def test_generic_writes_out_of_scope_roll_back(database: str) -> None:
         dependencies=[Public],
         scope=red_only,
         crud=True,
+        writable=ALL_FIELDS,
     )
     app = FastAPI()
     install_exception_handlers(app)
@@ -300,3 +307,220 @@ async def test_generic_writes_out_of_scope_roll_back(database: str) -> None:
         ("first", "red"),
         ("n", "red"),
     ]
+
+
+class Rename2(Command):
+    """Rename a gadget, nothing more."""
+
+    gadget_id: UUID
+    name: str
+
+
+async def rename_only(command: Rename2, uow: GadgetsUnitOfWork) -> Gadget:
+    """Load the gadget and rename it, in the unit of work given."""
+    async with uow:
+        gadget = await uow.gadgets.get(GadgetId(command.gadget_id))
+        gadget.name = command.name
+        await uow.commit()
+    return gadget
+
+
+class Anonymous:
+    """Every request is from an anonymous principal."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        """Wrap ``app``."""
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Serve the request as nobody."""
+        scope["user"] = AnonymousPrincipal()
+        await self.app(scope, receive, send)
+
+
+class LooksAtGadgets(BasePermission):
+    """Allows every gadget, but looks at each one (as an object rule does)."""
+
+    async def has_object_permission(
+        self, request: HTTPConnection, user: object, obj: object
+    ) -> bool:
+        """Any gadget."""
+        return isinstance(obj, Gadget)
+
+
+@pytest.mark.parametrize(
+    ("rule", "transactions", "statements"),
+    [
+        # The scope decides: the check and the service share one transaction,
+        # and the service finds the gadget the check read (its row, parts, and
+        # maker: no second three SELECTs). 0.9.2 took 2 transactions, 6 SELECTs.
+        (None, 1, {"SELECT": 3, "UPDATE": 1}),
+        # A rule looks at the gadget: checked in a transaction of its own,
+        # closed before the rule runs (it may query), then the service's.
+        (LooksAtGadgets(), 2, {"SELECT": 6, "UPDATE": 1}),
+    ],
+)
+async def test_commands_in_scope_run_where_the_scope_was_checked(
+    database: str,
+    rule: BasePermission | None,
+    transactions: int,
+    statements: dict[str, int],
+) -> None:
+    """One transaction for a scoped command, unless a rule must look at the object."""
+    async with connections.engine().begin() as connection:
+        await connection.run_sync(metadata.create_all)
+    red, blue = make_gadget("red"), make_gadget("blue", color=Color.BLUE)
+    async with GadgetsUnitOfWork() as uow:
+        await uow.gadgets.add(red)
+        await uow.gadgets.add(blue)
+        await uow.commit()
+    resource = ResourceRouter(
+        "/gadgets",
+        model=Gadget,
+        unit_of_work=GadgetsUnitOfWork,
+        repository=lambda uow: uow.gadgets,
+        dependencies=[Public],
+        scope=red_only,
+    )
+    resource.command_route(
+        Rename2, service=rename_only, body=NameIn, path="/rename", rule=rule
+    )
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.include_router(resource)
+    app.add_middleware(Anonymous)
+    async with AsyncTestClient(app) as client:
+        warm = await client.post(f"/gadgets/{red.id}/rename", json={"name": "warm"})
+        with SqlCounter() as sql:
+            renamed = await client.post(
+                f"/gadgets/{red.id}/rename", json={"name": "renamed"}
+            )
+        out_of_scope = await client.post(
+            f"/gadgets/{blue.id}/rename", json={"name": "x"}
+        )
+    async with GadgetsUnitOfWork() as uow:
+        stored = {each.id: each.name for each in await uow.gadgets.filter(None)}
+    await connections.close_all()
+
+    assert (warm.status_code, renamed.status_code) == (200, 200)
+    assert out_of_scope.status_code == 404
+    assert stored == {red.id: "renamed", blue.id: "blue"}
+    assert sql.counts.transactions == sql.counts.checkouts == transactions
+    assert sql.counts.pings == transactions
+    assert dict(sql.counts.verbs) == statements
+
+
+async def rename_then_fail(command: Rename2, uow: GadgetsUnitOfWork) -> Gadget:
+    """Rename, flush, and give up: nothing it did may stay."""
+    async with uow:
+        gadget = await uow.gadgets.get(GadgetId(command.gadget_id))
+        gadget.name = command.name
+        await uow.gadgets.first(F("id") == gadget.id)  # Flushes the change.
+        if command.name == "raise":
+            raise DuplicateValue("The name is taken.")
+    return gadget
+
+
+async def test_a_service_sharing_the_scopes_unit_of_work_still_rolls_back(
+    database: str,
+) -> None:
+    """Without its commit, or failing, the service's flushed change is undone."""
+    async with connections.engine().begin() as connection:
+        await connection.run_sync(metadata.create_all)
+    red = make_gadget("red")
+    async with GadgetsUnitOfWork() as uow:
+        await uow.gadgets.add(red)
+        await uow.commit()
+    resource = ResourceRouter(
+        "/gadgets",
+        model=Gadget,
+        unit_of_work=GadgetsUnitOfWork,
+        repository=lambda uow: uow.gadgets,
+        dependencies=[Public],
+        scope=red_only,
+    )
+    resource.command_route(
+        Rename2, service=rename_then_fail, body=NameIn, path="/rename"
+    )
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.include_router(resource)
+    async with AsyncTestClient(app) as client:
+        kept = await client.post(f"/gadgets/{red.id}/rename", json={"name": "kept"})
+        failed = await client.post(f"/gadgets/{red.id}/rename", json={"name": "raise"})
+    async with GadgetsUnitOfWork() as uow:
+        stored = await uow.gadgets.get(red.id)
+    await connections.close_all()
+
+    assert kept.status_code == 200
+    assert kept.json()["name"] == "kept"
+    assert failed.status_code == 409
+    assert stored.name == "red"
+
+
+class TooExpensive(Exception):
+    """A rule of the service's own refuses the change."""
+
+
+async def rename_or_flag(command: Rename2, uow: GadgetsUnitOfWork) -> Gadget:
+    """Try the rename; if refused, give it up and flag the gadget in a new block."""
+    try:
+        async with uow:
+            gadget = await uow.gadgets.get(GadgetId(command.gadget_id))
+            gadget.name = command.name
+            if command.name.startswith("forbidden"):
+                raise TooExpensive  # Leaving the block discards the rename.
+            await uow.commit()
+    except TooExpensive:
+        async with uow:
+            gadget = await uow.gadgets.get(GadgetId(command.gadget_id))
+            gadget.active = False
+            await uow.commit()
+    return gadget
+
+
+@pytest.mark.parametrize(
+    ("scoped", "transactions"),
+    [
+        # Each block is a transaction of its own (0.9.2's count with a scope
+        # was 3: the check's, then one per block).
+        (False, 2),
+        # The check and the first block share one; the second has its own.
+        (True, 2),
+    ],
+)
+async def test_a_block_a_service_gave_up_never_commits_with_the_next(
+    database: str, scoped: bool, transactions: int
+) -> None:
+    """SEC-10a-2: with a scope, a later block still starts from a clean slate."""
+    async with connections.engine().begin() as connection:
+        await connection.run_sync(metadata.create_all)
+    red = make_gadget("red")
+    async with GadgetsUnitOfWork() as uow:
+        await uow.gadgets.add(red)
+        await uow.commit()
+    resource = ResourceRouter(
+        "/gadgets",
+        model=Gadget,
+        unit_of_work=GadgetsUnitOfWork,
+        repository=lambda uow: uow.gadgets,
+        dependencies=[Public],
+        scope=red_only if scoped else None,
+    )
+    resource.command_route(Rename2, service=rename_or_flag, body=NameIn, path="/rename")
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.include_router(resource)
+    async with AsyncTestClient(app) as client:
+        await client.post(f"/gadgets/{red.id}/rename", json={"name": "warm"})
+        with SqlCounter() as sql:
+            answer = await client.post(
+                f"/gadgets/{red.id}/rename", json={"name": "forbidden-name"}
+            )
+    async with GadgetsUnitOfWork() as uow:
+        stored = await uow.gadgets.get(red.id)
+    await connections.close_all()
+
+    assert answer.status_code == 200, answer.text
+    assert (stored.name, stored.active) == ("warm", False)
+    assert sql.counts.transactions == sql.counts.checkouts == transactions

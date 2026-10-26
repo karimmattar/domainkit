@@ -16,16 +16,17 @@ from starlette.routing import Host, Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 
 from domainkit.conf import override_settings
-from domainkit.contrib.auth import (
+from domainkit.deprecation import DomainkitDeprecationWarning
+from domainkit.exceptions import ImproperlyConfigured
+from domainkit.http import get_asgi_application
+from domainkit.http.access import (
     IsAuthenticated,
     Public,
     Require,
     mark_public,
     open_routes,
+    routes_need_users,
 )
-from domainkit.contrib.auth.access import routes_need_users
-from domainkit.exceptions import ImproperlyConfigured
-from domainkit.http import get_asgi_application
 from domainkit.http.application import application_problems, check_started
 from domainkit.management import call_command
 from domainkit.management.base import CommandError
@@ -237,7 +238,7 @@ def test_open_routes_are_logged_where_people_develop(
         app = get_asgi_application()
 
     assert application_problems(app) == OPEN
-    listed = "\n".join(f"  {problem}" for problem in OPEN)
+    listed = "\n".join(f"  security.E101: {problem}" for problem in OPEN)
     assert caplog.messages == [f"The application has problems:\n{listed}"]
 
 
@@ -245,7 +246,7 @@ def test_open_routes_are_logged_where_people_develop(
 @pytest.mark.parametrize("environment", ["staging", "production"])
 def test_deployments_refuse_open_routes(environment: str) -> None:
     """Staging and production do not start with a problem."""
-    listed = "\n".join(f"  {problem}" for problem in OPEN)
+    listed = "\n".join(f"  security.E101: {problem}" for problem in OPEN)
     with (
         override_settings(ENVIRONMENT=environment),
         pytest.raises(ImproperlyConfigured) as raised,
@@ -287,7 +288,7 @@ def test_routes_added_after_the_build_are_checked_as_it_starts(
         pass
 
     assert caplog.messages == [
-        f"The application has problems since it was built:\n  {LATE}"
+        f"The application has problems since it was built:\n  security.E101: {LATE}"
     ]
 
 
@@ -300,7 +301,7 @@ def test_applications_built_elsewhere_are_checked_whole_as_they_start(
         check_started(app_of(late_router()))
 
     assert caplog.messages == [
-        f"The application has problems since it was built:\n  {LATE}"
+        f"The application has problems since it was built:\n  security.E101: {LATE}"
     ]
 
 
@@ -317,7 +318,7 @@ def test_deployments_refuse_to_start_with_routes_added_late(
             pass  # pragma: no cover - the start is refused.
 
     assert str(raised.value) == (
-        f"The application has problems since it was built:\n  {LATE}"
+        f"The application has problems since it was built:\n  security.E101: {LATE}"
     )
 
 
@@ -345,15 +346,18 @@ def test_check_reports_open_routes() -> None:
         call_command("check", stdout=io.StringIO())
 
     assert str(raised.value) == "System check found problems:\n" + "\n".join(
-        f"  Application: {problem}" for problem in OPEN
+        f"  security.E101: {problem}" for problem in OPEN
     )
 
 
 def test_projects_can_allow_open_routes(use_auth: UseAuth) -> None:
-    """``AUTH.REQUIRE_ROUTE_RULES = False``: routes may stay open."""
+    """``REQUIRE_ROUTE_RULES = False``: routes may stay open."""
     use_auth(
-        REQUIRE_ROUTE_RULES=False,
-        settings={"ROOT_ROUTER": f"{ROUTES}.router", "MIDDLEWARE": MIDDLEWARE[:3]},
+        settings={
+            "ROOT_ROUTER": f"{ROUTES}.router",
+            "MIDDLEWARE": MIDDLEWARE[:3],
+            "REQUIRE_ROUTE_RULES": False,
+        },
     )
     with override_settings(ENVIRONMENT="production"):
         assert application_problems(get_asgi_application()) == []
@@ -364,11 +368,35 @@ def test_projects_can_allow_open_routes(use_auth: UseAuth) -> None:
     )
 
 
+def test_the_auth_setting_still_allows_open_routes_with_a_warning(
+    use_auth: UseAuth,
+) -> None:
+    """``AUTH.REQUIRE_ROUTE_RULES = False`` works until 0.11, and warns."""
+    with pytest.warns(
+        DomainkitDeprecationWarning,
+        match=r"^AUTH\.REQUIRE_ROUTE_RULES moved to REQUIRE_ROUTE_RULES, .* "
+        r"removed in 0\.11\.$",
+    ):
+        use_auth(
+            REQUIRE_ROUTE_RULES=False,
+            settings={"ROOT_ROUTER": f"{ROUTES}.router", "MIDDLEWARE": MIDDLEWARE[:3]},
+        )
+    with override_settings(ENVIRONMENT="production"):
+        assert application_problems(get_asgi_application()) == []
+    with override_settings(AUTH={"REQUIRE_ROUTE_RULES": True}):
+        assert application_problems(get_asgi_application()) != []
+    with override_settings(REQUIRE_ROUTE_RULES=False, AUTH={}):
+        assert application_problems(get_asgi_application()) == []
+
+
 def test_rules_need_the_middleware(use_auth: UseAuth) -> None:
     """Routes that read the user need ``AuthenticationMiddleware``."""
     use_auth(
-        REQUIRE_ROUTE_RULES=False,
-        settings={"ROOT_ROUTER": f"{ROUTES}.router", "MIDDLEWARE": MIDDLEWARE[:2]},
+        settings={
+            "ROOT_ROUTER": f"{ROUTES}.router",
+            "MIDDLEWARE": MIDDLEWARE[:2],
+            "REQUIRE_ROUTE_RULES": False,
+        },
     )
     assert application_problems(get_asgi_application()) == [LACKS]
     with override_settings(ROOT_ROUTER=f"{ROUTES}.public"):

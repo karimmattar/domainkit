@@ -48,22 +48,41 @@ METRICS_MIDDLEWARE = [
 ]
 
 
+TRACES = TracerProvider()
+TRACES.add_span_processor(SimpleSpanProcessor(EXPORTER))
+METERS = MeterProvider(metric_readers=[METRICS])
+LOGGERS = LoggerProvider()
+LOGGERS.add_log_record_processor(SimpleLogRecordProcessor(LOGS))
+
+
 @pytest.fixture(scope="module", autouse=True)
 def tracer_provider() -> None:
     """Install SDK providers that keep spans, metrics, and logs in memory.
 
-    Once per process: OpenTelemetry's global providers are set only once.
+    OpenTelemetry's global providers are the process's, and are set only
+    once: the first module that needs them in a process (each pytest-xdist
+    worker is one) installs these, and they stay. A provider some other code
+    installed first would leave these exporters empty, and every assertion
+    on them failing for no visible reason, so it is refused by name.
     """
-    if not isinstance(trace.get_tracer_provider(), TracerProvider):
-        provider = TracerProvider()
-        provider.add_span_processor(SimpleSpanProcessor(EXPORTER))
-        trace.set_tracer_provider(provider)
-    if not isinstance(metrics.get_meter_provider(), MeterProvider):
-        metrics.set_meter_provider(MeterProvider(metric_readers=[METRICS]))
-    if not isinstance(_logs.get_logger_provider(), LoggerProvider):
-        loggers = LoggerProvider()
-        loggers.add_log_record_processor(SimpleLogRecordProcessor(LOGS))
-        _logs.set_logger_provider(loggers)
+    if trace.get_tracer_provider() is not TRACES:
+        trace.set_tracer_provider(TRACES)
+    if metrics.get_meter_provider() is not METERS:
+        metrics.set_meter_provider(METERS)
+    if _logs.get_logger_provider() is not LOGGERS:
+        _logs.set_logger_provider(LOGGERS)
+    installed = {
+        "tracer": (trace.get_tracer_provider(), TRACES),
+        "meter": (metrics.get_meter_provider(), METERS),
+        "logger": (_logs.get_logger_provider(), LOGGERS),
+    }
+    foreign = {
+        kind: found for kind, (found, ours) in installed.items() if found is not ours
+    }
+    assert not foreign, (
+        f"OpenTelemetry's providers were already set in this process: {foreign!r}; "
+        f"these tests need their in-memory ones."
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -459,14 +478,15 @@ def test_route_templates_and_failing_refreshers(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Nested routers keep their prefixes; a failing gauge does not fail scrapes."""
+    from domainkit.context import route_template
     from domainkit.http import metrics
 
     class Route:
         path = "/plain/{id}"
 
-    assert metrics.route_template({"route": Route()}) == "/plain/{id}"
-    assert metrics.route_template({"fastapi": "unexpected"}) == "unmatched"
-    assert metrics.route_template({}) == "unmatched"
+    assert route_template({"route": Route()}) == "/plain/{id}"
+    assert route_template({"fastapi": "unexpected"}) == "unmatched"
+    assert route_template({}) == "unmatched"
 
     async def broken() -> None:
         raise RuntimeError("gauge source down")

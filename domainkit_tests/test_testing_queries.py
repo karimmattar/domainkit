@@ -9,6 +9,7 @@ from sqlalchemy.engine import Engine
 from domainkit.conf import override_settings
 from domainkit.db import connections
 from domainkit.testing import CapturedQueries, assert_max_queries, assert_num_queries
+from domainkit.testing import queries as queries_module
 from domainkit.testing.queries import EVENT
 from domainkit_tests.conftest import MakeDatabase
 
@@ -52,7 +53,34 @@ async def test_every_statement_in_the_block_counts(databases: None) -> None:
     assert queries.statements[:2] == ["SELECT 1", "SELECT 2"]
     assert queries.statements[2].startswith("INSERT INTO framework_test_numbers")
     assert len(queries) == 3
-    assert not event.contains(Engine, EVENT, queries._record)
+    assert queries not in queries_module._capturing
+
+
+async def test_blocks_never_change_sqlalchemys_listeners(databases: None) -> None:
+    """One listener, put on ``Engine`` on import, serves every block, nested or not.
+
+    Other threads read SQLAlchemy's listener lists as they run statements;
+    a block that added or removed a listener, the first one included,
+    would fail theirs.
+    """
+    engine = connections.engine().sync_engine
+    listeners = list(engine.dispatch.before_cursor_execute)
+    assert event.contains(Engine, EVENT, queries_module._dispatch)
+
+    with assert_num_queries(2) as outer:
+        await select(1)
+        with assert_num_queries(1) as inner:
+            await select(2)
+            assert list(engine.dispatch.before_cursor_execute) == listeners
+        assert queries_module._capturing == (outer,)
+
+    assert list(engine.dispatch.before_cursor_execute) == listeners
+    assert event.contains(Engine, EVENT, queries_module._dispatch)
+    assert (outer.statements, inner.statements) == (
+        ["SELECT 1", "SELECT 2"],
+        ["SELECT 2"],
+    )
+    assert not queries_module._capturing
 
 
 async def test_a_wrong_count_fails_and_lists_the_statements(databases: None) -> None:

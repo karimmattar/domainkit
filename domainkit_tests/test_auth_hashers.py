@@ -8,6 +8,7 @@ from collections.abc import Callable
 from typing import ClassVar
 
 import pytest
+from argon2 import low_level
 
 from domainkit.clock import freeze_time
 from domainkit.contrib.auth import hashers
@@ -177,6 +178,46 @@ def test_must_update_follows_the_cost_settings() -> None:
     assert Argon2PasswordHasher().must_update(argon2.hash(PASSWORD))
 
 
+@pytest.mark.parametrize(
+    ("variant", "salt", "length"),
+    [
+        (low_level.Type.I, b"s" * 16, 32),
+        (low_level.Type.D, b"s" * 16, 32),
+        (low_level.Type.ID, b"s" * 8, 32),
+        (low_level.Type.ID, b"s" * 15, 32),  # 120 bits: one byte short.
+        (low_level.Type.ID, b"s" * 16, 16),
+    ],
+)
+def test_argon2_upgrades_other_variants_short_salts_and_lengths(
+    variant: low_level.Type, salt: bytes, length: int
+) -> None:
+    """Costs alone used to decide: ``argon2i`` at today's costs was kept (AUTH-07)."""
+    argon2 = SmallArgon2Hasher()
+    hashed = low_level.hash_secret(
+        PASSWORD.encode(),
+        salt,
+        time_cost=argon2.time_cost,
+        memory_cost=argon2.memory_cost,
+        parallelism=argon2.parallelism,
+        hash_len=length,
+        type=variant,
+    )
+    encoded = argon2.algorithm + hashed.decode()
+
+    assert argon2.verify(PASSWORD, encoded)
+    assert argon2.must_update(encoded)
+    current = low_level.hash_secret(
+        PASSWORD.encode(),
+        b"s" * 16,  # 128 bits: as many as a salt of ours holds.
+        time_cost=argon2.time_cost,
+        memory_cost=argon2.memory_cost,
+        parallelism=argon2.parallelism,
+        hash_len=32,
+        type=low_level.Type.ID,
+    )
+    assert not argon2.must_update(argon2.algorithm + current.decode())
+
+
 def test_scrypt_and_argon2_round_trip() -> None:
     """Each hasher checks what it made."""
     for hasher in (SmallScryptHasher(), SmallArgon2Hasher()):
@@ -220,26 +261,88 @@ def test_verify_password_upgrades_outdated_hashes(use_auth: UseAuth) -> None:
     assert verify_password("wrong", older) == PasswordCheck(correct=False)
 
 
+class SpyHashers:
+    """What a check spends: ``harden_runtime`` calls, and hashes by hasher."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Count every hardening and every new hash."""
+        self.hardened: list[str] = []
+        self.hashed: list[str] = []
+        harden_once = PBKDF2PasswordHasher.harden_runtime
+        hash_once = hashers.PasswordHasher.hash
+
+        def harden(self_: PBKDF2PasswordHasher, password: str, encoded: str) -> None:
+            self.hardened.append(encoded)
+            harden_once(self_, password, encoded)
+
+        def hashing(self_: hashers.PasswordHasher, password: str) -> str:
+            self.hashed.append(type(self_).__name__)
+            return hash_once(self_, password)
+
+        monkeypatch.setattr(PBKDF2PasswordHasher, "harden_runtime", harden)
+        monkeypatch.setattr(hashers.PasswordHasher, "hash", hashing)
+
+    def spent(self) -> tuple[list[str], list[str]]:
+        """What was spent since the last call."""
+        spent = (self.hardened, self.hashed)
+        self.hardened, self.hashed = [], []
+        return spent
+
+
 def test_wrong_passwords_on_outdated_hashes_cost_full_time(
     use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The preferred hasher hardens a miss on its own older hash."""
-    use_auth(PASSWORD_HASHERS=[f"{HERE}.TwoRoundsHasher", SHA1])
-    hardened: list[tuple[str, str]] = []
+    """A miss on any outdated hash costs what a current hash would (AUTH-07).
 
-    def harden(self: hashers.PasswordHasher, password: str, encoded: str) -> None:
-        hardened.append((password, encoded))
-
-    monkeypatch.setattr(hashers.PasswordHasher, "harden_runtime", harden)
-    monkeypatch.setattr(PBKDF2PasswordHasher, "harden_runtime", harden)
+    The preferred hasher hardens a miss on its own older hash; a miss on
+    another hasher's hash costs a preferred hash, as a right password does
+    (it is hashed again). A legacy hash used to answer at once.
+    """
+    use_auth(PASSWORD_HASHERS=[f"{HERE}.TwoRoundsHasher", SHA1, SCRYPT])
+    spy = SpyHashers(monkeypatch)
     older = FastPBKDF2PasswordHasher().hash(PASSWORD)
     current = TwoRoundsHasher().hash(PASSWORD)
-    # Another algorithm's hash: no time to match (and no secret to protect).
-    other = PBKDF2SHA1PasswordHasher().encode(PASSWORD, "seasalt", 1)
+    legacy = PBKDF2SHA1PasswordHasher().encode(PASSWORD, "seasalt", 1)
+    other = SmallScryptHasher().hash(PASSWORD)
+    spy.spent()
 
-    for encoded in (older, current, other):
+    assert not check_password("wrong", older)
+    assert spy.spent() == ([older], [])
+    assert not check_password("wrong", current)
+    assert spy.spent() == ([], [])
+    for encoded in (legacy, other):
         assert not check_password("wrong", encoded)
-    assert hardened == [("wrong", older)]
+        assert spy.spent() == ([], ["TwoRoundsHasher"])
+        assert check_password(PASSWORD, encoded)  # The same work for a right one.
+        assert spy.spent() == ([], ["TwoRoundsHasher"])
+
+
+def test_a_preferred_hasher_without_hardening_hashes_a_miss(
+    use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An outdated Argon2 hash under Argon2 costs one current hash on a miss."""
+    use_auth(PASSWORD_HASHERS=[f"{HERE}.SmallArgon2Hasher"])
+    spy = SpyHashers(monkeypatch)
+    hashed = low_level.hash_secret(
+        PASSWORD.encode(),
+        b"s" * 16,
+        time_cost=1,
+        memory_cost=64,
+        parallelism=1,
+        hash_len=32,
+        type=low_level.Type.I,
+    )
+    variant = "argon2" + hashed.decode()
+    current = SmallArgon2Hasher().hash(PASSWORD)
+    spy.spent()
+
+    assert not check_password("wrong", variant)
+    assert spy.spent() == ([], ["SmallArgon2Hasher"])
+    assert not check_password("wrong", current)
+    assert spy.spent() == ([], [])
+    upgraded = verify_password(PASSWORD, variant)
+    assert upgraded.rehashed is not None
+    assert "$argon2id$" in upgraded.rehashed
 
 
 def test_unusable_unknown_and_malformed_hashes_never_match(
@@ -324,12 +427,11 @@ def test_hashing_pools_refuse_calls_beyond_their_queue() -> None:
         with pytest.raises(PasswordChecksBusy) as busy:
             await pool.run(slow, "third")
         assert pool.pending == 2
-        assert busy.value.status_code == 503
         assert busy.value.code == "password_checks_busy"
-        assert busy.value.detail == (
+        assert busy.value.message == (
             "Too many password checks at once; try again in a moment."
         )
-        assert busy.value.headers == {"Retry-After": "1"}
+        assert busy.value.retry_after == 1
         release.set()
         return list(await asyncio.gather(running, waiting)), pool.pending
 
@@ -447,8 +549,8 @@ def test_each_hash_moves_the_average_a_fifth_of_the_way() -> None:
 
 def test_a_refusal_says_retry_after_a_second_by_default() -> None:
     """``PasswordChecksBusy()`` without a wait asks for one second."""
-    assert PasswordChecksBusy().headers == {"Retry-After": "1"}
-    assert PasswordChecksBusy(7).headers == {"Retry-After": "7"}
+    assert PasswordChecksBusy().retry_after == 1
+    assert PasswordChecksBusy(7).retry_after == 7
 
 
 def test_the_a_functions_hash_as_priority_only_when_asked(

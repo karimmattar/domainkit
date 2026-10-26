@@ -532,12 +532,17 @@ class BackgroundListener(logging.handlers.QueueListener):
             self.handle(record)
 
 
+_EXCEPTIONS: Final = logging.Formatter()
+"""Formats exceptions before they are queued, as every formatter here would."""
+
+
 class BackgroundHandler(logging.handlers.QueueHandler):
     """Put records on a bounded queue for ``BackgroundListener`` to write.
 
     The caller never waits for a stream, a file, or a socket. Records are
     formatted on the logging thread, from a copy with the message merged, so
-    later changes to the arguments do not show. Filters run on the caller,
+    later changes to the arguments do not show; an exception is formatted
+    on the caller, so no traceback waits in the queue. Filters run on the caller,
     where the request context is. In a ``LOGGING`` mapping::
 
         "background": {
@@ -613,11 +618,19 @@ class BackgroundHandler(logging.handlers.QueueHandler):
         return handler
 
     def prepare(self, record: logging.LogRecord) -> logging.LogRecord:
-        """A copy with the message merged; the exception stays to format later.
+        """A copy with the message merged, and the exception as text.
 
         A plain ``LogRecord`` is copied field by field, as ``copy.copy``
         copies it, without its generic machinery; other kinds of record by
         ``copy.copy``, which honours their own ``__copy__``.
+
+        An exception is formatted here, as the standard library's
+        ``QueueHandler`` does, into ``exc_text``, which formatters write as
+        they would have written it; the copy keeps no ``exc_info``. A
+        traceback refers to the frames of the code that raised, and their
+        locals (a request, its session, its body): queued, it would keep
+        them alive until the thread wrote it, up to a full queue of them
+        when the output is slow (CONC-04).
         """
         if type(record) is logging.LogRecord:
             prepared = object.__new__(logging.LogRecord)
@@ -626,6 +639,10 @@ class BackgroundHandler(logging.handlers.QueueHandler):
             prepared = copy.copy(record)
         prepared.message = record.getMessage()
         prepared.msg, prepared.args = prepared.message, None
+        if prepared.exc_info:
+            if not prepared.exc_text:
+                prepared.exc_text = _EXCEPTIONS.formatException(prepared.exc_info)
+            prepared.exc_info = None
         return prepared
 
     def enqueue(self, record: logging.LogRecord) -> None:

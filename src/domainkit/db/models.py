@@ -1,11 +1,26 @@
-"""Which classes are content types: those mapped onto installed domains' tables.
+"""Installed models: the mapped classes of installed domains, and their ``Meta``.
 
-``content_type_key`` runs on every request a ``ModelPermissions`` rule
-guards, so it remembers every class's key, worked out once from
-``installed_models``. It works them out again after anything that could
-change them: ``registry.populate`` or ``clear``, a class mapped, a table
-added to or removed from the project's metadata. Event loops on several
-threads share what it remembers, which only changes with its lock held.
+Every class mapped onto a table of an installed domain (an aggregate, or any
+other mapped entity) is a model, named by its key ``(domain label, model)``,
+where the model is the class name in lower case: ``("billing", "invoice")``
+(Django's ``_meta.app_label`` and ``model_name``). A class describes itself
+in a nested ``Meta``::
+
+    class Invoice(AggregateRoot[InvoiceId]):
+        class Meta:
+            verbose_name = "invoice"
+            permissions = (("approve_invoice", "Can approve invoice"),)
+
+The keys name permissions (``billing.change_invoice``) and the records of
+generic writes, with or without ``domainkit.contrib.contenttypes``, which
+stores one row per model and re-exports these names.
+
+``model_key`` runs on every request a model permission guards, so it
+remembers every class's key, worked out once from ``installed_models``. It
+works them out again after anything that could change them:
+``registry.populate`` or ``clear``, a class mapped, a table added to or
+removed from the project's metadata. Event loops on several threads share
+what it remembers, which only changes with its lock held.
 """
 
 import threading
@@ -16,9 +31,54 @@ from sqlalchemy import Table, event
 from sqlalchemy.orm import Mapper
 
 from domainkit.apps import DomainConfig, registry
-from domainkit.db import mapper_registry, metadata
+from domainkit.db.orm import mapper_registry, metadata
+from domainkit.utils.text import snake_case
 
-from .models import ModelOptions, model_options
+__all__ = [
+    "DEFAULT_PERMISSIONS",
+    "InstalledModel",
+    "ModelOptions",
+    "installed_models",
+    "model_key",
+    "model_options",
+]
+
+DEFAULT_PERMISSIONS: Final = ("add", "change", "delete", "view")
+"""Actions that get a permission for every model, unless ``Meta`` says."""
+
+
+@dataclass(frozen=True, slots=True)
+class ModelOptions:
+    """What a mapped class declares about itself (Django's ``Meta``)."""
+
+    model: str
+    """The class name in lower case: ``invoiceline``."""
+    verbose_name: str
+    """Human name, used in permission names: ``invoice line``."""
+    default_permissions: tuple[str, ...]
+    """Actions that get a ``<action>_<model>`` permission."""
+    permissions: tuple[tuple[str, str], ...]
+    """Extra ``(codename, name)`` permissions, such as ``approve_invoice``."""
+
+
+def model_options(cls: type) -> ModelOptions:
+    """Read ``cls.Meta``: ``verbose_name``, ``default_permissions``, ``permissions``.
+
+    Every option is optional; ``Meta`` itself is too.
+    """
+    meta = getattr(cls, "Meta", None)
+    verbose_name = getattr(meta, "verbose_name", None)
+    return ModelOptions(
+        model=cls.__name__.lower(),
+        verbose_name=verbose_name or snake_case(cls.__name__).replace("_", " "),
+        default_permissions=tuple(
+            getattr(meta, "default_permissions", DEFAULT_PERMISSIONS)
+        ),
+        permissions=tuple(
+            (str(codename), str(name))
+            for codename, name in getattr(meta, "permissions", ())
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,7 +91,7 @@ class InstalledModel:
 
     @property
     def key(self) -> tuple[str, str]:
-        """``(domain, model)``, the content type's natural key."""
+        """``(domain, model)``, the model's natural key."""
         return self.domain, self.options.model
 
 
@@ -41,7 +101,7 @@ def installed_models() -> list[InstalledModel]:
     A table belongs to the domain in its ``info["domain"]``; an untagged
     table, to the installed domain whose package defines the class. Tables
     outside the project's metadata, and tables a domain does not hold (a
-    swapped-out user table), have no content type.
+    swapped-out user table), have no model.
     """
     found: dict[tuple[str, str], InstalledModel] = {}
     for mapper in sorted(mapper_registry.mappers, key=lambda m: m.class_.__qualname__):
@@ -58,7 +118,7 @@ def installed_models() -> list[InstalledModel]:
     return [found[key] for key in sorted(found)]
 
 
-def content_type_key(cls: type) -> tuple[str, str]:
+def model_key(cls: type) -> tuple[str, str]:
     """The ``(domain, model)`` of a mapped class.
 
     Raises:
@@ -85,7 +145,7 @@ _known: tuple[_State | None, dict[type, tuple[str, str]]] = (None, {})
 
 
 def _keys() -> dict[type, tuple[str, str]]:
-    """Every content type's key by class, worked out again if the state changed.
+    """Every model's key by class, worked out again if the state changed.
 
     The state is read before the keys are worked out: a change made
     meanwhile leaves a state that no longer matches, so the next call

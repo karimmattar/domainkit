@@ -1,6 +1,7 @@
 """Structured logging and the request context."""
 
 import asyncio
+import gc
 import json
 import logging
 import logging.handlers
@@ -11,7 +12,7 @@ import sys
 import threading
 import time
 import weakref
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from typing import Any
 
@@ -732,7 +733,7 @@ def test_handler_levels_are_respected(
 
 
 def test_records_carry_what_the_caller_saw(collect: Collect) -> None:
-    """Context and message are taken on the caller; exceptions format later."""
+    """Context, message, and exception are taken on the caller."""
     handler = BackgroundHandler.writing_to(collect)
     handler.addFilter(ContextFilter())
     logger = logging.getLogger("domainkit.test.background")
@@ -756,9 +757,47 @@ def test_records_carry_what_the_caller_saw(collect: Collect) -> None:
     assert written.getMessage() == "items: ['a']"
     assert written.args is None
     assert written.__dict__["request_id"] == "req-1"
-    assert failed.exc_info is not None
+    assert failed.exc_info is None  # No traceback waits in the queue.
+    assert (failed.exc_text or "").startswith("Traceback (most recent call last):")
     entry = json.loads(JsonFormatter().format(failed))
-    assert "ValueError: bad" in entry["exception"]
+    assert entry["exception"] == failed.exc_text
+    assert entry["exception"].endswith("ValueError: bad")
+    assert "ValueError: bad" in TextFormatter().format(failed)
+
+
+class Request:
+    """Stands for what a request's frames hold: a session, a body, a user."""
+
+
+def failed_record() -> tuple[logging.LogRecord, "weakref.ref[Request]"]:
+    """A record of an exception raised where a request was a local."""
+    request = Request()
+    try:
+        raise ValueError(f"bad {id(request)}")
+    except ValueError:
+        record = logging.LogRecord(
+            "app", logging.ERROR, __file__, 1, "failed", None, sys.exc_info()
+        )
+    return record, weakref.ref(request)
+
+
+def test_queued_exceptions_keep_no_frames_alive() -> None:
+    """The record queued holds the traceback as text: the request can go (CONC-04)."""
+    handler = BackgroundHandler(queue.Queue(10))
+    record, request = failed_record()
+    expected = logging.Formatter().formatException(record.exc_info)  # type: ignore[arg-type]
+
+    queued = handler.prepare(record)
+    del record
+    gc.collect()
+
+    assert request() is None
+    assert queued.exc_info is None
+    assert queued.exc_text == expected
+    cached = logging.LogRecord("app", logging.ERROR, __file__, 1, "x", None, None)
+    cached.exc_info, cached.exc_text = (ValueError, ValueError(), None), "given"
+    assert handler.prepare(cached).exc_text == "given"  # Formatted already: kept.
+    assert cached.exc_info is not None  # The caller's record is left whole.
 
 
 def test_dictconfig_listeners_become_background_listeners(collect: Collect) -> None:
@@ -1431,7 +1470,7 @@ def test_a_sampled_access_log_keeps_errors_and_refusals(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """At rate 0, successful and redirected requests alone leave no line."""
-    with override_settings(ACCESS_LOG_SAMPLE_RATE=0.0):
+    with override_settings(ACCESS_LOG_SAMPLE_RATE=0.0, ACCESS_LOG_PATH="raw"):
         middleware = RequestContextMiddleware(answered)
     codes = [200, 204, 302, 400, 404, 401, 403, 409, 422, 429, 500]
 
@@ -1487,16 +1526,18 @@ def test_probing_a_sampled_application_leaves_a_line_per_probe(
 
     lines = [r.getMessage() for r in caplog.records if r.name == "domainkit.access"]
     assert answers == [200] + [404] * 39 + [405, 422]
+    # One line per probe, each by the route's template, never the id probed.
     assert [line.rsplit(" ", 1)[0] for line in lines] == [
-        *(f"GET /accounts/{n} 404" for n in range(2, 41)),
-        "DELETE /accounts/2 405",
-        "GET /accounts/two 422",
+        *["GET /accounts/{number} 404"] * 39,
+        "DELETE /accounts/{number} 405",
+        "GET /accounts/{number} 422",
     ]
 
 
 def test_the_full_access_log_is_the_default(caplog: pytest.LogCaptureFixture) -> None:
     """At the default rate every request has its line, as before."""
-    middleware = RequestContextMiddleware(answered)
+    with override_settings(ACCESS_LOG_PATH="raw"):
+        middleware = RequestContextMiddleware(answered)
 
     logged = statuses_logged(middleware, [200, 404, 500], caplog)
 
@@ -1567,16 +1608,14 @@ def test_json_formatter_takes_logging_formatters_arguments() -> None:
     assert positional.format(line) == reference_line(positional, line)
 
 
-def test_dates_are_utc_whatever_the_local_zone(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dates_are_utc_whatever_the_local_zone(
+    local_zone: Callable[[str], None],
+) -> None:
     """The cached date and time are UTC's, not the machine's."""
-    monkeypatch.setenv("TZ", "Asia/Tokyo")
-    time.tzset()
-    try:
-        stamp = JsonFormatter().timestamp(0.5)
-        local = datetime.fromtimestamp(0).isoformat()  # noqa: DTZ006 - the zone's.
-    finally:
-        monkeypatch.undo()
-        time.tzset()
+    local_zone("Asia/Tokyo")
+
+    stamp = JsonFormatter().timestamp(0.5)
+    local = datetime.fromtimestamp(0).isoformat()  # noqa: DTZ006 - the zone's.
 
     assert local == "1970-01-01T09:00:00"  # The zone took effect.
     assert stamp == "1970-01-01T00:00:00.500+00:00"

@@ -21,7 +21,7 @@ from sqlalchemy.orm.attributes import instance_state
 from domainkit.db.query import column_of, compile_criteria, compile_ordering, mapper_of
 from domainkit.ddd import AggregateRoot, Repository
 from domainkit.ddd.fields import InvalidQuery, fields_of
-from domainkit.ddd.query import ID, Criteria, CriteriaLike, Query
+from domainkit.ddd.query import ID, Criteria, CriteriaLike, Selection
 from domainkit.ddd.repository import LockNotAvailable
 
 LOCK_NOT_AVAILABLE: Final = "55P03"
@@ -52,7 +52,7 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
         """Mark ``aggregate`` for deletion."""
         await self.session.delete(aggregate)
 
-    async def _filter(self, query: Query) -> list[AggregateT]:
+    async def _filter(self, query: Selection) -> list[AggregateT]:
         """Select, order, skip, limit, and lock in one statement.
 
         A locking query reloads rows it had loaded already, so the aggregate

@@ -160,7 +160,7 @@ names are lower-case words separated by `/`.
 `MAIL.TEMPLATE_DIRS` are searched first, then the installed domains in
 `INSTALLED_DOMAINS` order; the first that has the text body wins. List a
 directory there to replace a template a contrib app ships, such as
-`auth/password_reset` ([auth.md](auth.md#password-reset)).
+`auth/password_reset` ([auth.md](auth/logging-in.md#password-reset)).
 
 ### Settings
 

@@ -13,6 +13,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from domainkit import clock
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
+from domainkit.context import logged_path
 from domainkit.debug.queries import QueryLog, record_queries
 from domainkit.exceptions import ImproperlyConfigured
 
@@ -117,7 +118,7 @@ class DebugToolbarMiddleware:
             logger.warning(
                 "Possible N+1 in %s %s: %d runs of %s",
                 scope["method"],
-                scope["path"],
+                logged_path(scope),
                 runs,
                 shape,
             )

@@ -64,7 +64,7 @@ from domainkit.conf import settings
 from domainkit.context import SYSTEM_ACTOR, RequestContext, bind_request
 from domainkit.db import connections
 from domainkit.ddd import DomainEvent, EventBus, event_bus
-from domainkit.exceptions import ImproperlyConfigured
+from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 from domainkit.reporting import report_error
 from domainkit.tasks import spawn
 from domainkit.tracing import remote_parent, span, trace_headers
@@ -145,15 +145,15 @@ THROTTLED: Final = "throttled"
 """The outcome of a task held back by its rate; it runs later."""
 
 
-class UnknownTarget(LookupError):
+class UnknownTarget(LookupError, DomainkitError):
     """The message names a handler or task this process does not have."""
 
 
-class AttemptsExhausted(RuntimeError):
+class AttemptsExhausted(RuntimeError, DomainkitError):
     """The worker stopped (crashed, killed) during the message's last attempt."""
 
 
-class InvalidData(ValueError):
+class InvalidData(ValueError, DomainkitError):
     """Data failed validation; the message names fields and rules, not values."""
 
 
@@ -517,8 +517,10 @@ class Worker:
                         task.add_done_callback(running.discard)
                     if claimed:
                         polls.reset()
-                    if len(claimed) < slots:
+                    if len(claimed) < slots and not stop.is_set():
                         # Nothing more is due: wait for a poll, a commit, or stop.
+                        # Not once stopped: the clear above may have wiped the
+                        # wake-up a stop set while a slot was taken.
                         await pause(wake, polls.wait(wake.listening))
                         if wake.is_set():
                             polls.reset()

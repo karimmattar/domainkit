@@ -1,8 +1,8 @@
 """The principal cache: what it keeps, what it checks, and what drops it."""
 
+import dataclasses
 import io
 import logging
-import warnings
 from collections.abc import Callable, Iterator
 from datetime import timedelta
 from pathlib import Path
@@ -10,11 +10,10 @@ from typing import Any, Final
 from uuid import UUID, uuid4
 
 import pytest
-import sqlalchemy
 from fakeredis import FakeServer
 from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
-from sqlalchemy import delete, event, select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import class_mapper
 from sqlalchemy.orm.attributes import instance_state
@@ -65,7 +64,7 @@ from domainkit.contrib.auth.tokens import (
 )
 from domainkit.contrib.auth.users import get_user_table
 from domainkit.db import connections
-from domainkit.deprecation import DomainkitDeprecationWarning
+from domainkit.db.hooks import on_committed, on_stage
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import call_command
 from domainkit.management.base import run_async
@@ -79,7 +78,9 @@ from domainkit_tests.conftest import (
     Api,
     UseAuth,
 )
+from domainkit_tests.engine_events import watching
 from domainkit_tests.fake_smtp import certificate
+from domainkit_tests.gadgets import FakeGadgetsUnitOfWork, InMemoryGadgets
 from domainkit_tests.test_auth import accounts as accounts
 from domainkit_tests.test_auth_http import (
     JWT,
@@ -98,7 +99,6 @@ CERTIFICATES = [
     f"{AUTHENTICATION}.certificates.ClientCertificateAuthentication",
 ]
 SITE = "https://testserver"
-HIDDEN: Final = PasswordHash("pbkdf2_sha256$1$salt$a-hash-no-repr-shows")
 NEW_PASSWORD = "Fresh-pa55-word"
 
 
@@ -110,9 +110,8 @@ def statements() -> Iterator[list[str]]:
     def count(*args: Any) -> None:  # noqa: ANN401 - SQLAlchemy's arguments.
         seen.append(args[2].lstrip().split(None, 1)[0].upper())
 
-    event.listen(Engine, "before_cursor_execute", count)
-    yield seen
-    event.remove(Engine, "before_cursor_execute", count)
+    with watching(Engine, "before_cursor_execute", count):
+        yield seen
 
 
 def scope(
@@ -214,15 +213,13 @@ def one_object_each(user: AbstractBaseUser) -> bool:
     )
 
 
-def lent_password(user: AbstractBaseUser) -> PasswordHash:
-    """The password hash of a request's ``user``, read with the warning it gives."""
-    with pytest.warns(DomainkitDeprecationWarning, match="password_holds") as warned:
-        hashed = user.password
-    assert len(warned) == 1
-    # Whoever read it, not the code that lends it, nor SQLAlchemy's.
-    assert warned[0].filename != principals.__file__
-    assert not warned[0].filename.startswith(str(Path(sqlalchemy.__file__).parent))
-    return hashed
+def withheld(user: AbstractBaseUser) -> bool:
+    """Whether a request's ``user`` holds no password hash, and says what to use."""
+    with pytest.raises(AttributeError, match=r"removed in domainkit 0\.10") as raised:
+        _ = user.password
+    assert "password_holds(user, password)" in str(raised.value)
+    assert "uow.users.password_hash(user.id)" in str(raised.value)
+    return getattr(user, "password", None) is None and "password" not in vars(user)
 
 
 async def stored_hash(user_id: UUID) -> PasswordHash | None:
@@ -436,59 +433,57 @@ def test_tokens_kept_and_read_build_the_same_user(
     assert (missed.scheme, missed.token_id) == (hit.scheme, hit.token_id)
     assert missed.token_id == token_digest(token)
     assert missed.scopes is hit.scopes is None
-    assert lent_password(missed.user) == lent_password(hit.user) == stored.password
-    assert missed.user.password is missed.user.password  # Warned once, then kept.
+    assert withheld(missed.user)
+    assert withheld(hit.user)
     assert hit.user.has_perm("shop.change_product")
     assert not hit.user.has_perm("shop.delete_product")
 
 
-def test_request_users_lend_their_password_hash_deprecated(api: Api) -> None:
-    """``request.user.password`` works for one more release, and warns.
+def test_request_users_hold_no_password_hash(api: Api) -> None:
+    """``request.user.password`` was removed in 0.10: no hash is read or kept.
 
-    Kept or read, it is the stored hash; projects that make the warning an
-    error (``filterwarnings``) find each use.
+    Reading it raises ``AttributeError``, naming what replaces it; the
+    principal holds only whether a password is usable.
     """
     alice = create_user("alice")
     api(PRINCIPAL_CACHE={"TTL": timedelta(minutes=5)})
     raw = run_async(issue("alice"))
     stored = run_async(stored_hash(alice))
+    assert stored is not None
 
     with freeze_time("2026-05-01T10:00:00Z"):
         missed = run_async(user_of(headers=bearer(raw)))
         hit = run_async(user_of(headers=bearer(raw)))
-        strict = run_async(user_of(headers=bearer(raw)))
-    with pytest.warns(DomainkitDeprecationWarning) as warned:
-        assert missed.password == stored
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", DomainkitDeprecationWarning)
-        with pytest.raises(DomainkitDeprecationWarning):
-            _ = strict.password
+    kept = principal_cache.get(("token", token_digest(raw)), 0)
 
-    (message,) = [str(each.message) for each in warned]
-    assert "password_holds(user, password)" in message
-    assert "uow.users.password_hash(user.id)" in message
-    assert "removed in domainkit 0.10" in message
-    assert lent_password(hit) == stored
+    assert withheld(missed)
+    assert withheld(hit)
+    assert kept is not None
+    assert kept.principal is not None
+    fields = {field.name for field in dataclasses.fields(principals.Principal)}
+    assert "password" not in fields
+    assert stored.value not in {str(value) for _, value in kept.principal.columns}
+    assert repr(principals.WITHHELD_PASSWORD) == (
+        "<password withheld from a request's user>"
+    )
 
 
-def test_a_user_lent_a_hash_again_reads_the_last_and_keeps_its_loaders(
-    use_auth: UseAuth,
-) -> None:
-    """``lend_password`` on a user lent one already (an ORM-read user read twice)."""
+def test_a_user_withheld_its_hash_again_keeps_its_loaders(use_auth: UseAuth) -> None:
+    """``withhold_password`` on a user withheld already (an ORM user read twice)."""
     use_auth()
-    first, last = PasswordHash.unusable(), PasswordHash.unusable()
-    user = User.create(password=first, username="alice")
+    user = User.create(password=PasswordHash.unusable(), username="alice")
     state = instance_state(user)
-    principals.lend_password(user, first, usable=False)
+    principals.withhold_password(user, usable=True)
 
     def own_loader(state: object, passive: object) -> str:
         return "its own"
 
     state.callables["nickname"] = own_loader
-    principals.lend_password(user, last, usable=False)
+    principals.withhold_password(user, usable=False)
 
     assert state.callables["nickname"] is own_loader
-    assert lent_password(user) == last
+    assert withheld(user)
+    assert not user.has_usable_password()
 
 
 @pytest.mark.parametrize("password", [PASSWORD, None])
@@ -507,8 +502,7 @@ def test_request_users_know_whether_their_password_is_usable(
     usable = password is not None
     assert missed.has_usable_password() is usable  # Warnings are errors here.
     assert hit.has_usable_password() is usable
-    assert lent_password(hit).usable is usable
-    assert hit.has_usable_password() is usable  # The hash read, now.
+    assert withheld(hit)
     hit.set_unusable_password()
     assert not hit.has_usable_password()
 
@@ -791,10 +785,10 @@ def test_principals_are_read_again_after_the_ttl(
     with freeze_time("2026-05-01T10:00:00Z") as clock:
         run_async(credentials_of(headers=bearer(raw)))
         statements.clear()
-        clock.tick(29)
+        clock.tick(23.9)  # Before the last fifth of the TTL: kept.
         run_async(credentials_of(headers=bearer(raw)))
         assert "SELECT" not in statements
-        clock.tick(1)
+        clock.tick(6.1)  # Past it, though nothing else read it meanwhile.
         run_async(credentials_of(headers=bearer(raw)))
         assert statements.count("SELECT") == 2
 
@@ -1638,8 +1632,9 @@ def test_stamps_need_a_shared_redis_cache(use_auth: UseAuth) -> None:
         with pytest.raises(ImproperlyConfigured) as refused:
             use_auth(PRINCIPAL_CACHE={"STAMPS": stamps})
         assert str(refused.value) == (
-            "AUTH.PRINCIPAL_CACHE.STAMPS must name a Redis cache of CACHES that "
-            f"every process shares, not {problem}."
+            "AUTH settings cannot be used:\n"
+            "  auth.E003: AUTH.PRINCIPAL_CACHE.STAMPS must name a Redis cache of "
+            f"CACHES that every process shares, not {problem}."
         )
     use_auth(
         settings={"CACHES": {"default": {"URL": "memory://"}, "shared": redis}},
@@ -1736,7 +1731,7 @@ def test_users_with_relationships_of_their_own_are_read_as_before(
     assert isinstance(second.user, Profile)
     assert [address.city for address in second.user.addresses] == ["Cairo"]  # type: ignore[attr-defined]
     assert second.user.has_usable_password()
-    assert lent_password(second.user) == run_async(stored_hash(alice))
+    assert withheld(second.user)
     assert "SELECT" in reads
     assert len(principal_cache) == 0
     gone = Entry(("token", "x"), None, loaded=second.user)
@@ -1909,26 +1904,46 @@ def test_tokens_the_orm_deletes_drop_their_principals(api: Api) -> None:
     assert client.get("/private", headers=access).status_code == 401
 
 
-def test_only_instances_in_a_session_wait_for_its_commit(use_auth: UseAuth) -> None:
+def test_only_instances_in_a_session_wait_for_its_commit(
+    use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A user no session holds has no commit to wait for."""
     use_auth()
     user = User.create(password=PasswordHash.unusable(), username="alice")
+    waits: list[object] = []
+    monkeypatch.setattr(
+        principals,
+        "invalidate_after_commit",
+        lambda session, targets: waits.append((session, targets)),
+    )
 
-    principals._after_commit_of(user, [user_target(user.id)])  # Nothing happens.
+    principals._after_commit_of(user, [user_target(user.id)])
+
+    assert waits == []
 
 
 def test_units_of_work_without_a_session_stamp_nothing(
     use_auth: UseAuth, shared: FakeServer
 ) -> None:
-    """Only SQL units of work commit what principals rest on."""
+    """Only SQL units of work commit what principals rest on.
+
+    Auth's stamps are ``on_stage`` and ``on_committed`` hooks, which only a
+    ``SqlAlchemyUnitOfWork`` runs: a unit of work kept in memory commits
+    without them, and nothing reaches the shared cache.
+    """
     use_auth(PRINCIPAL_CACHE=STAMPED)
-    config = registry.get_domain_config("auth")
+    assert "auth" in {hook.domain for hook in on_stage}
+    assert "auth" in {hook.domain for hook in on_committed}
 
-    class Memory:
-        """A unit of work kept in memory."""
+    async def commit() -> tuple[int, list[bytes | str]]:
+        async with FakeGadgetsUnitOfWork(InMemoryGadgets()) as uow:
+            await uow.commit()
+        client = FakeRedis(server=shared)
+        stamped = await client.keys("*")
+        await client.aclose()
+        return uow.commits, stamped
 
-    run_async(config.stage(Memory(), [], []))  # type: ignore[arg-type]
-    run_async(config.committed(Memory()))  # type: ignore[arg-type]
+    assert run_async(commit()) == (1, [])
 
 
 def test_stamps_seen_changed_twice_drop_the_entry_once(
@@ -1973,7 +1988,6 @@ def test_mutable_column_values_are_each_requests_own(use_auth: UseAuth) -> None:
         groups=(),
         permissions=(),
         usable_password=True,
-        password=HIDDEN,
     )
 
     first, second = principal.user(), principal.user()

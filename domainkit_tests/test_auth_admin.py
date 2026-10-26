@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import event, select
+from sqlalchemy import select
 from sqlalchemy.engine import Engine
 
 from domainkit import setup
@@ -42,6 +42,7 @@ from domainkit_tests.conftest import (
     Api,
     UseAuth,
 )
+from domainkit_tests.engine_events import watching
 from domainkit_tests.test_auth_access import request, user
 from domainkit_tests.test_auth_http import (
     PASSWORD,
@@ -1261,11 +1262,8 @@ def test_pages_read_one_row_more_and_track_what_they_load(auth_project: str) -> 
             bea = await uow.groups.get_by_name("bea")
         return [*users.items[0].pull_events(), amy and amy.is_active, bea is None]
 
-    event.listen(Engine, "before_cursor_execute", record)
-    try:
+    with watching(Engine, "before_cursor_execute", record):
         assert run_async(scenario()) == [False, False]
-    finally:
-        event.remove(Engine, "before_cursor_execute", record)
     assert len(limits) == 2
     assert all(3 in each and 4 not in each for each in limits)
 

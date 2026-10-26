@@ -20,13 +20,16 @@ raised (a lost reply, a cancellation while it ran).
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Final
 
-from sqlalchemy import ColumnElement, Update, and_, update
+from sqlalchemy import ColumnElement, Update, and_, select, update
 
 from domainkit import clock
+from domainkit.db import connections
+from domainkit.db.query import contains_text
 from domainkit.ddd import ConcurrentUpdate
+from domainkit.ddd.personal import SEPARATOR, tagged_with
 
 from .statements import holder
 from .tables import idempotency_keys
@@ -52,6 +55,12 @@ class Operation:
 
     Set before that commit, so it holds whatever the commit reports.
     """
+    actor: str | None = None
+    """Who sent it; whom its response is about, if anyone."""
+    subjects: set[str] = field(default_factory=set)
+    """Whom else its response may be about: the subjects of the ``Personal``
+    fields of the events it committed. Kept with the response, with the
+    actor."""
 
     def holds_key(self) -> ColumnElement[bool]:
         """Match the key's row while this request holds it."""
@@ -106,3 +115,60 @@ def mark_committed(operation: Operation) -> Update:
         .where(operation.holds_key())
         .values(committed_at=clock.now())
     )
+
+
+async def erase_subject(database: str, subject: str) -> int:
+    """Drop the kept responses about ``subject``; return how many.
+
+    The keys stay, with their status: a retry gets 409
+    ``idempotency_response_unavailable`` rather than running again.
+    """
+    async with connections.engine(database).begin() as connection:
+        named = contains_text(
+            idempotency_keys.c.subjects, tagged_with(subject), connection.dialect.name
+        )
+        dropped = await connection.execute(
+            update(idempotency_keys)
+            .where(named)
+            .values(body=None, headers=None, subjects=None)
+        )
+    return int(dropped.rowcount)
+
+
+async def export_subject(database: str, subject: str) -> list[dict[str, Any]]:
+    """The kept responses about ``subject``, oldest first.
+
+    A response is what its caller saw, which may hold others' personal
+    data: its body is given only when ``subject`` was the caller (the
+    actor, first in the tag), and withheld otherwise (``"body": None``,
+    ``"withheld": True``; SEC-10b-4).
+    """
+    actor = tagged_with(subject) + SEPARATOR
+    async with connections.engine(database).connect() as connection:
+        named = contains_text(
+            idempotency_keys.c.subjects, tagged_with(subject), connection.dialect.name
+        )
+        rows = (
+            await connection.execute(
+                select(
+                    idempotency_keys.c.created_at,
+                    idempotency_keys.c.status_code,
+                    idempotency_keys.c.body,
+                    idempotency_keys.c.subjects,
+                )
+                .where(named, idempotency_keys.c.body.is_not(None))
+                .order_by(idempotency_keys.c.created_at)
+            )
+        ).all()
+    return [
+        {
+            "created_at": row.created_at.isoformat(),
+            "status_code": row.status_code,
+            **(
+                {"body": bytes(row.body).decode("utf-8", "replace"), "withheld": False}
+                if row.subjects.startswith(actor)
+                else {"body": None, "withheld": True}
+            ),
+        }
+        for row in rows
+    ]

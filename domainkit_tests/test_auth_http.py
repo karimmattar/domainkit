@@ -16,7 +16,7 @@ from starlette.testclient import WebSocketDenialResponse
 from starlette.websockets import WebSocketDisconnect
 
 from domainkit.clock import freeze_time
-from domainkit.conf import override_settings
+from domainkit.conf import override_settings, settings
 from domainkit.contrib.audit.tables import audit_log
 from domainkit.contrib.auth import (
     AnyUser,
@@ -137,14 +137,15 @@ def audited(action: str) -> list[dict[str, Any]]:
     return run_async(read())
 
 
-def stored_tokens(user_id: UUID) -> list[dict[str, Any]]:
-    """The user's stored tokens."""
+def stored_tokens(user_id: UUID, *, devices: bool = False) -> list[dict[str, Any]]:
+    """The user's stored tokens; with ``devices``, the devices that logged in too."""
 
     async def read() -> list[dict[str, Any]]:
         async with connections.engine().connect() as connection:
-            rows = await connection.execute(
-                select(tokens).where(tokens.c.user_id == user_id)
-            )
+            statement = select(tokens).where(tokens.c.user_id == user_id)
+            if not devices:
+                statement = statement.where(tokens.c.kind != "device")
+            rows = await connection.execute(statement)
             return [dict(row._mapping) for row in rows]
 
     return run_async(read())
@@ -262,6 +263,50 @@ def test_logins_answer_503_when_hashing_is_saturated(
         assert refused.status_code == 503
         assert refused.json()["code"] == "password_checks_busy"
         assert refused.headers["Retry-After"] == "1"
+
+
+@pytest.mark.parametrize("error_format", ["domainkit", "problem+json"])
+def test_a_saturated_login_answers_the_same_503_in_both_error_formats(
+    api: Api, monkeypatch: pytest.MonkeyPatch, error_format: str
+) -> None:
+    """The hashers raise no HTTP error; the HTTP layer maps theirs to this answer.
+
+    The status, headers, and body are what they were while the hashers
+    raised a 503 ``APIError`` themselves (0.9; DSGN-06).
+    """
+    create_user("alice")
+    full = HashingPool(threads=1, queue=0)
+    full.pending = full.capacity
+    monkeypatch.setattr(hashers, "_pool", lambda: full)
+    detail = "Too many password checks at once; try again in a moment."
+
+    with override_settings(ERROR_FORMAT=error_format):
+        refused = api().post(
+            "/auth/login",
+            json={"username": "alice", "password": PASSWORD},
+            headers={"X-Request-ID": "busy-1"},
+        )
+
+    assert refused.status_code == 503
+    assert refused.headers["Retry-After"] == "1"
+    if error_format == "domainkit":
+        assert refused.headers["Content-Type"] == "application/json"
+        assert refused.json() == {
+            "detail": detail,
+            "code": "password_checks_busy",
+            "request_id": "busy-1",
+        }
+    else:
+        assert refused.headers["Content-Type"] == "application/problem+json"
+        assert refused.json() == {
+            "type": "about:blank",
+            "title": "Service Unavailable",
+            "status": 503,
+            "detail": detail,
+            "instance": "/auth/login",
+            "code": "password_checks_busy",
+            "request_id": "busy-1",
+        }
 
 
 def test_signed_in_users_change_passwords_while_logins_fill_the_pool(
@@ -463,9 +508,10 @@ def test_attempts_the_counter_cannot_count_may_fail_closed(
     assert checked == ["alice"] * 4  # The refused one was never checked.
 
 
-def test_a_nul_in_a_login_is_a_refused_value(api: Api, database_url: str) -> None:
+def test_a_nul_in_a_login_is_a_refused_value(api: Api) -> None:
     """PostgreSQL refuses a NUL in text: a 422, not a 500; SQLite takes it."""
     client = api()
+    database_url = settings.DATABASES["default"].URL.get_secret_value()
 
     response = client.post(
         "/auth/login", json={"username": "ad\u0000min", "password": "x"}

@@ -26,6 +26,7 @@ from sqlalchemy import (
 
 from domainkit import setup
 from domainkit.apps import registry
+from domainkit.checks import CheckFailed
 from domainkit.conf import override_settings
 from domainkit.contrib.auth import (
     AbstractBaseUser,
@@ -59,6 +60,7 @@ from domainkit.contrib.auth.users import get_user_table
 from domainkit.contrib.contenttypes import InstalledModel, ModelOptions
 from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.db import connections, metadata
+from domainkit.db.hooks import on_migrated
 from domainkit.db.migrations import include_object, run_migrated_hooks
 from domainkit.ddd import PermissionDenied
 from domainkit.exceptions import ImproperlyConfigured
@@ -673,9 +675,30 @@ def test_deployments_refuse_links_over_plain_http(
     use_auth(settings={"ENVIRONMENT": "test"}, PASSWORD_RESET_URL=plain)
 
     assert str(refused.value) == (
-        "AUTH.PASSWORD_RESET_URL, AUTH.SIGNUP_URL send links with their tokens "
-        f"over plain HTTP; use https:// in {environment}."
+        "AUTH settings cannot be used:\n"
+        "  auth.E006: AUTH.PASSWORD_RESET_URL, AUTH.SIGNUP_URL send links with "
+        f"their tokens over plain HTTP; use https:// in {environment}."
     )
+
+
+def test_deployments_report_every_auth_refusal_at_once(use_auth: UseAuth) -> None:
+    """Each refused AUTH setting is named, with its id, in one error (DSGN-08)."""
+    deployed = {"ENVIRONMENT": "production", "ALLOWED_HOSTS": ["api.example.com"]}
+
+    with pytest.raises(CheckFailed) as refused:
+        use_auth(
+            settings=deployed,
+            COOKIE={"SECURE": False},
+            SIGNUP_URL="http://app.example.com/link?token={token}",
+            PRINCIPAL_CACHE={"STAMPS": "default"},
+        )
+
+    assert [getattr(problem, "id", None) for problem in refused.value.messages] == [
+        "auth.E003",
+        "auth.E004",
+        "auth.E005",
+        "auth.E006",
+    ]
 
 
 def test_deployments_warn_of_guesses_without_limit(use_auth: UseAuth) -> None:
@@ -792,8 +815,8 @@ def test_migrated_hooks_wait_for_their_tables(
 
     async def other_alias() -> int:
         async with connections.engine().begin() as connection:
-            for config in registry:
-                await config.migrated(connection, "elsewhere")
+            for hook in on_migrated:
+                await hook.call(connection, "elsewhere")
             return len(
                 await connection.run_sync(lambda sync: inspect(sync).get_table_names())
             )

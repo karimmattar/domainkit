@@ -84,11 +84,11 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC
 from email.utils import parsedate_to_datetime
-from functools import cache
+from functools import cache, partial
 from pathlib import Path
 from typing import Any, Final, cast
 from urllib.parse import unquote_to_bytes
-from weakref import WeakKeyDictionary, WeakSet
+from weakref import WeakSet
 
 import httpcore2
 import httpx2
@@ -97,10 +97,12 @@ from domainkit import clock, deadlines
 from domainkit.conf import settings
 from domainkit.conf.global_settings import HttpClientConfig
 from domainkit.context import current_request
+from domainkit.exceptions import DomainkitError
 from domainkit.http import guard as guards
 from domainkit.http.guard import Network, UnsafeURL, checked_host, checked_url
 from domainkit.tracing import trace_headers
 from domainkit.utils.closing import close_each
+from domainkit.utils.loops import PerLoop
 
 __all__ = [
     "CallTimeout",
@@ -147,15 +149,15 @@ type Handler = (
 logger = logging.getLogger(__name__)
 
 
-class CircuitOpen(httpx2.TransportError):
+class CircuitOpen(httpx2.TransportError, DomainkitError):
     """Calls to a host fail at once while its circuit is open."""
 
 
-class CallTimeout(httpx2.TimeoutException):
+class CallTimeout(httpx2.TimeoutException, DomainkitError):
     """A call took longer than its ``timeout``, retries included."""
 
 
-class ResponseTooLarge(httpx2.RequestError):
+class ResponseTooLarge(httpx2.RequestError, DomainkitError):
     """An answer was longer than ``MAX_RESPONSE_BYTES``, as sent or decompressed."""
 
 
@@ -301,9 +303,8 @@ class HttpClient:
         self.transport = transport
         self.breaker = CircuitBreaker() if breaker else None
         """The client's circuits per host; None with ``breaker=False``."""
-        self._pools: WeakKeyDictionary[
-            asyncio.AbstractEventLoop, httpx2.AsyncClient
-        ] = WeakKeyDictionary()
+        self._pools: PerLoop[httpx2.AsyncClient] = PerLoop()
+        """Each event loop's connections (loops on several threads share a client)."""
         _clients.add(self)
 
     async def get(self, url: str, **options: Any) -> httpx2.Response:  # noqa: ANN401
@@ -378,7 +379,7 @@ class HttpClient:
             retry=retry,
         )
         budget = deadlines.timeout(seconds)
-        pool = self._pool(config)
+        pool = await self._pool(config)
         try:
             async with budget:
                 request = pool.build_request(
@@ -404,7 +405,7 @@ class HttpClient:
 
     async def aclose(self) -> None:
         """Close this client's connections on the running event loop."""
-        pool = self._pools.pop(asyncio.get_running_loop(), None)
+        pool = self._pools.pop()
         if pool is not None:
             await pool.aclose()
 
@@ -558,23 +559,37 @@ class HttpClient:
         headers.update(extra or {})
         return headers
 
-    def _pool(self, config: HttpClientConfig) -> httpx2.AsyncClient:
-        """The running loop's pool (a stub's, inside ``stub``), opened on first use."""
+    async def _pool(self, config: HttpClientConfig) -> httpx2.AsyncClient:
+        """The running loop's pool (a stub's, inside ``stub``), opened on first use.
+
+        The first use on each loop builds the TLS context on a thread: loading
+        a bundle of CAs takes tens of milliseconds, which would hold the loop
+        (CONC-06). It is built once per bundle; later loops find it built.
+        """
         stubbed = _stub.get()
         if stubbed is not None:
             return httpx2.AsyncClient(transport=stubbed, follow_redirects=False)
-        loop = asyncio.get_running_loop()
-        pool = self._pools.get(loop)
-        if pool is None:
-            pool = self._pools[loop] = self._open(config)
-        return pool
+        pool = self._pools.find()
+        if pool is not None:
+            return pool
+        verify = await asyncio.to_thread(self._tls_context, config.CA_BUNDLE)
+        return self._pools.get(partial(self._open, config, verify))
 
-    def _open(self, config: HttpClientConfig) -> httpx2.AsyncClient:
-        """A pool of connections, with the guard's transport and TLS if guarded."""
+    def _tls_context(self, ca_bundle: Path | None) -> ssl.SSLContext:
+        """The TLS context of the client's calls: the guard's if guarded."""
         if self.guard:
-            verify = guards.tls_context(config.CA_BUNDLE)
-        else:
-            verify = tls_context(config.CA_BUNDLE)
+            return guards.tls_context(ca_bundle)
+        return tls_context(ca_bundle)
+
+    def _open(
+        self, config: HttpClientConfig, verify: ssl.SSLContext | None = None
+    ) -> httpx2.AsyncClient:
+        """A pool of connections, with the guard's transport and TLS if guarded.
+
+        ``verify`` is the TLS context, when already built (``_tls_context``).
+        """
+        if verify is None:
+            verify = self._tls_context(config.CA_BUNDLE)
         limits = httpx2.Limits(
             max_connections=config.MAX_CONNECTIONS,
             max_keepalive_connections=config.MAX_KEEPALIVE_CONNECTIONS,

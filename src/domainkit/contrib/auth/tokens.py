@@ -26,6 +26,10 @@ _BODY: Final = re.compile(r"[A-Za-z0-9_-]{43}")  # token_urlsafe(TOKEN_BYTES)
 """Random bytes in a token: 256 bits, beyond guessing."""
 LAST_USED_EVERY: Final = timedelta(minutes=5)
 """How often a token's ``last_used_at`` is written, at most."""
+LOGIN_NAME: Final = "login"
+"""The name of the tokens logging in issues."""
+IDLE_PRECISION: Final = 10
+"""Last uses are written this many times per ``AUTH.IDLE_TIMEOUT``."""
 
 
 class TokenKind(StrEnum):
@@ -39,6 +43,9 @@ class TokenKind(StrEnum):
     """A browser's session cookie (``CookieAuthentication``), never a header."""
     CERTIFICATE = "certificate"
     """A client certificate, by its SHA-256 (``ClientCertificateAuthentication``)."""
+    DEVICE = "device"
+    """A client that logged in, by the SHA-256 of its device proof's id
+    (``auth.devices``): it never authenticates a request."""
 
 
 class AuthToken(Entity[str]):
@@ -68,6 +75,41 @@ class AuthToken(Entity[str]):
     def expired(self, now: datetime | None = None) -> bool:
         """Whether the token's lifetime is over."""
         return self.expires_at is not None and (now or utc_now()) >= self.expires_at
+
+
+def last_used_every() -> timedelta:
+    """How often a token's ``last_used_at`` is written, at most.
+
+    ``LAST_USED_EVERY``, or a tenth of ``AUTH.IDLE_TIMEOUT`` if shorter.
+    """
+    from .settings import auth_settings  # Imports nothing of this module.
+
+    idle = auth_settings().IDLE_TIMEOUT
+    return (
+        LAST_USED_EVERY if idle is None else min(LAST_USED_EVERY, idle / IDLE_PRECISION)
+    )
+
+
+def is_login(kind: str, name: str) -> bool:
+    """Whether a token of ``kind`` named ``name`` is a login's (not a script's).
+
+    Browser sessions, and the access and refresh tokens logging in issues.
+    """
+    return kind == TokenKind.SESSION or (
+        kind in {TokenKind.ACCESS, TokenKind.REFRESH} and name == LOGIN_NAME
+    )
+
+
+def idle_since(last: datetime, now: datetime) -> bool:
+    """Whether a login last used at ``last`` has idled past ``AUTH.IDLE_TIMEOUT``.
+
+    Its last use may be written up to ``last_used_every()`` late, so the
+    login ends that much after the timeout at most, never before.
+    """
+    from .settings import auth_settings
+
+    idle = auth_settings().IDLE_TIMEOUT
+    return idle is not None and now - last >= idle + last_used_every()
 
 
 def utc_now() -> datetime:

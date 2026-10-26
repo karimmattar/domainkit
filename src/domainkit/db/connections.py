@@ -58,7 +58,7 @@ from sqlalchemy.util import await_only
 
 from domainkit import deadlines
 from domainkit.conf import DEFAULT_DB_ALIAS, DatabaseConfig, settings
-from domainkit.conf.global_settings import is_network_database
+from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS, is_network_database
 from domainkit.db.drivers import connect_args, read_only_args, transaction_settings
 from domainkit.ddd.uow import ReadOnlyError
 from domainkit.exceptions import ImproperlyConfigured
@@ -70,6 +70,13 @@ type _Execute = Callable[[Any], None]
 
 DEFAULT_POOL_TIMEOUT: Final = 10.0
 """Seconds a request waits for a connection to a network database."""
+DEFAULT_POOL_SIZE: Final = 5
+"""SQLAlchemy's ``pool_size`` when ``POOL_SIZE`` is None."""
+DEFAULT_MAX_OVERFLOW: Final = 10
+"""SQLAlchemy's ``max_overflow`` when ``MAX_OVERFLOW`` is None."""
+REQUESTS_PER_CONNECTION: Final = 4
+"""Requests a pooled connection serves at once, roughly, past which ``check``
+warns: a request holds a connection for part of its time, not all of it."""
 INTERNAL: Final = "domainkit_internal"
 """Execution option of the framework's own statements, such as the timeouts
 a transaction sets; ``assert_num_queries`` does not count them."""
@@ -209,6 +216,51 @@ def _pool_options(config: DatabaseConfig, url: str) -> dict[str, Any]:
         "pool_recycle": config.POOL_RECYCLE,
     }
     return {k: v for k, v in pool.items() if v is not None}
+
+
+def pool_capacity(config: DatabaseConfig) -> int:
+    """Connections one event loop's pool of ``config`` holds at most."""
+    size = DEFAULT_POOL_SIZE if config.POOL_SIZE is None else config.POOL_SIZE
+    overflow = (
+        DEFAULT_MAX_OVERFLOW if config.MAX_OVERFLOW is None else config.MAX_OVERFLOW
+    )
+    return size + overflow
+
+
+def pool_sizing_warnings() -> list[str]:
+    """Pools too small for the requests each event loop admits (PERF-14).
+
+    In staging and production, for each network database: past
+    ``REQUESTS_PER_CONNECTION`` requests per pooled connection, requests
+    admitted under ``MAX_CONCURRENT_REQUESTS`` wait for a connection,
+    unseen by the shedding queue, up to the pool's timeout, then fail with
+    503, where a request past the cap is refused within
+    ``REQUEST_QUEUE_TIMEOUT``. ``check`` lists them, with the connections
+    the database must accept.
+    """
+    cap = settings.MAX_CONCURRENT_REQUESTS
+    if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS or cap is None:
+        return []
+    warnings = []
+    for alias, config in settings.DATABASES.items():
+        url = config.URL.get_secret_value()
+        capacity = pool_capacity(config)
+        if not is_network_database(url) or cap <= capacity * REQUESTS_PER_CONNECTION:
+            continue
+        timeout = config.POOL_TIMEOUT or DEFAULT_POOL_TIMEOUT
+        warnings.append(
+            f"MAX_CONCURRENT_REQUESTS ({cap}) admits more requests than the "
+            f"pool of DATABASES[{alias!r}] serves: it holds {capacity} "
+            f"connections per event loop (POOL_SIZE + MAX_OVERFLOW), so past "
+            f"about {capacity * REQUESTS_PER_CONNECTION} requests at once they "
+            f"wait for a connection, unseen by the shedding queue, for up to "
+            f"{timeout:g}s, then fail with 503. Lower MAX_CONCURRENT_REQUESTS "
+            f"to about {capacity * REQUESTS_PER_CONNECTION}, or raise the pool "
+            f"within what the database accepts: each process opens up to "
+            f"{capacity} connections per pool (twice that when it reads "
+            f"through Reads.STATEMENTS), times processes and replicas."
+        )
+    return warnings
 
 
 def create_engine(config: DatabaseConfig) -> AsyncEngine:

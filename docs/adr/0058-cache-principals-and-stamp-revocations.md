@@ -1,6 +1,6 @@
 # 0058. Keep principals in each process, and stamp revocations in a shared cache
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-26 (at the end)
 - Date: 2026-10-21
 - Amends: [0016](0016-authenticating-requests.md), [0056](0056-reauthorize-open-connections.md)
 
@@ -157,3 +157,54 @@ Options considered:
   between the two queries, while the read holds its connection: a slow
   cache lengthens that by its `SOCKET_TIMEOUT` at most, and a failing one
   not at all once its `FAILURE_COOLDOWN` starts.
+
+## Amendment (2026-10-26, 0.10): one read per credential, and kept ones read again ahead
+
+Every request of a credential in flight when its entry expired read it,
+each in two queries: ten credentials with twenty requests each at once
+made 400 `SELECT`s, and a change to any group (`ALL`) made every
+process's busy credentials do so at once (PERF-04 of the 0.9.0 audit).
+
+- **One read per key at a time.** Requests of one key that miss at once on
+  one event loop wait for the read under way (`principals.read_once`),
+  instead of each reading. A request joins a read only if nothing was
+  invalidated since it began, and uses what it read only if nothing the
+  entry rests on was invalidated by the time it ended; otherwise it reads
+  for itself, from a new mark. With `STAMPS`, a joining request also
+  checks the entry's shared stamps (one round trip) and reads for itself
+  if they changed or cannot be read (SEC-10a-1 of the 0.10 review: a
+  revocation stamped by another process during the read was otherwise
+  hidden). So a revocation committed before a request arrived is never
+  hidden from it by an older read. A read that fails, or
+  whose request is cancelled, leaves each waiting request to read for
+  itself; a waiting request that is cancelled leaves the read to the
+  others. The 400 `SELECT`s above are 20. Reads are shared per loop, since
+  a future belongs to one; loops on other threads read for themselves.
+- **Read again ahead of the deadline.** In the last fifth of its `TTL`
+  (`REFRESH_SHARE`), the first request to use a kept entry reads it again,
+  inline, while the others are served the entry, never past its deadline.
+  What the new read finds replaces the entry; if it differs (a change made
+  elsewhere, without `STAMPS`), the kept entry is dropped at once. If the
+  database fails, that request is served the entry, and no other request
+  reads it again before it ends; a cancelled one lets the next try. Bounds
+  do not move: nothing is served past `TTL`, and with `STAMPS` every
+  request still compares the stamps.
+- **Rejected: serving entries past `TTL` while one request reads them
+  (stale-while-revalidate proper).** It would turn the `TTL`, the bound on
+  how long a revocation made elsewhere takes without `STAMPS`, into twice
+  that. Reading ahead keeps the bound.
+- **Rejected: reading again in a task of its own.** Measured with a fake
+  read of 5 ms, one credential at a request a millisecond over 3 s and a
+  `TTL` of 0.5 s: before, 34 reads and 34 requests that waited on one (up
+  to 5 at once); one read per key, 8 reads and 22 waits; reading ahead in
+  the request, 11 reads and 11 waits; in a task, 10 reads and 2 waits, p99
+  0.04 ms against 0.05. The task saves nine waits in 3,000 requests, but
+  its reads escape `MAX_CONCURRENT_REQUESTS` and every deadline: entries
+  read together after an `ALL` come due together, and their reads would
+  take the pool's connections from the requests.
+- **Rejected: treating `ALL` as "read again soon", spread over the `TTL`
+  (as the audit proposed).** With `STAMPS`, a permission taken from a group
+  must end at once in every process; spreading it would keep it up to the
+  `TTL`. One read per key per loop removes most of that herd instead.
+- `auth_principal_cache_total` counts three more events: `coalesced` (a
+  request served by another's read), `refresh`, and `refresh_failed`.

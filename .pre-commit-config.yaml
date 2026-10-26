@@ -1,9 +1,13 @@
-# Fast checks before each commit; CI runs the full gate (README "Developing").
-# Install once: pipx install pre-commit && pre-commit install
-# The Python hooks run the locked tool versions from the Poetry environment.
+# Before each commit, the checks of CI's lint job, run the same way: they
+# report, and change no file (`make fix` lets ruff fix and format); the
+# generic hooks fix trailing whitespace and final newlines.
+# domainkit_tests/test_ci.py checks that the local hooks are the lint job's
+# commands. Install once: pipx install pre-commit && pre-commit install
+# The Python hooks run the locked tool versions from the Poetry environment;
+# the remote hooks are pinned to commits, as the workflows' actions are.
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v6.0.0
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c # frozen: v6.0.0
     hooks:
       - id: check-added-large-files
       - id: check-merge-conflict
@@ -14,22 +18,28 @@ repos:
       - id: trailing-whitespace
 
   - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.30.1
+    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e # frozen: v8.30.1
     hooks:
       - id: gitleaks
 
   - repo: local
     hooks:
+      - id: poetry-check
+        name: poetry check --lock
+        entry: poetry check --lock
+        language: system
+        files: ^(pyproject\.toml|poetry\.lock)$
+        pass_filenames: false
       - id: ruff-check
         name: ruff check
-        entry: poetry run ruff check --fix
+        entry: poetry run ruff check
         language: system
         types_or: [python, pyi]
       - id: ruff-format
-        name: ruff format
-        entry: poetry run ruff format
+        name: ruff format --check
+        entry: poetry run ruff format --check
         language: system
-        types_or: [python, pyi]
+        types_or: [python, pyi, markdown]
       - id: mypy
         name: mypy
         entry: poetry run mypy

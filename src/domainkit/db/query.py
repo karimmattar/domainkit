@@ -224,6 +224,11 @@ def _text(
     return text.like(func.lower(pattern) if folded else pattern, escape=ESCAPE)
 
 
+def contains_text(column: Column[Any], piece: str, dialect: str) -> ColumnElement[bool]:
+    """Whether ``column`` holds ``piece``, as characters, in ``dialect``'s SQL."""
+    return _text(column, Lookup.CONTAINS, piece, dialect)
+
+
 def _sqlite_text(
     text: ColumnElement[str], piece: ColumnElement[str], lookup: Lookup
 ) -> ColumnElement[bool]:

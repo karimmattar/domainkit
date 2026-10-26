@@ -11,7 +11,7 @@ from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 from domainkit.ddd import AggregateRoot, Digits, MaxLength, ValueObject
-from domainkit.ddd.query import F, Ordering, Query
+from domainkit.ddd.query import F, Ordering, Selection
 from domainkit.http.errors import install_exception_handlers
 from domainkit.http.filters import Filter, FilterSet, InvalidFilter
 from domainkit.http.pagination import (
@@ -363,7 +363,7 @@ def test_filter_sets_build_queries_in_code(declared: type[FilterSet]) -> None:
         & (F("name").icontains("al") | F("label").icontains("al"))
     )
     query = filters.query(limit=2)
-    assert query == Query(filters.criteria, ordering=filters.ordering, limit=2)
+    assert query == Selection(filters.criteria, ordering=filters.ordering, limit=2)
     assert GadgetFilters().criteria is None
     assert GadgetFilters(ordering=["name"]).ordering == (Ordering("name"),)
     with pytest.raises(InvalidFilter) as caught:

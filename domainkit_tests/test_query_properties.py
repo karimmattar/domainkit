@@ -19,7 +19,7 @@ from sqlalchemy import delete
 
 from domainkit.conf import override_settings
 from domainkit.db import connections
-from domainkit.ddd.query import TEXT_LOOKUPS, Criteria, F, Ordering, Query
+from domainkit.ddd.query import TEXT_LOOKUPS, Criteria, F, Ordering, Selection
 from domainkit_tests.gadgets import (
     MADE,
     Color,
@@ -180,14 +180,14 @@ def test_queries_select_alike(
     include_deleted: bool,
 ) -> None:
     """Same rows, same order, same count; and each row meets the criteria in Python."""
-    query = Query(criteria, ordering=ordering, include_deleted=include_deleted)
+    query = Selection(criteria, ordering=ordering, include_deleted=include_deleted)
     found = loop.run(select_alike(items, query))
     live = [each for each in items if include_deleted or not each.is_deleted]
     matched = {each.id for each in live if criteria is None or criteria.matches(each)}
     assert matched == set(found)
 
 
-async def select_alike(items: list[Gadget], query: Query) -> list[object]:
+async def select_alike(items: list[Gadget], query: Selection) -> list[object]:
     """The ids the database selects, checked against the fake's."""
     await replace_rows(items)
     fake = InMemoryGadgets(items)
@@ -217,10 +217,10 @@ def test_pages_follow_alike(
     limit: int,
 ) -> None:
     """Keyset pages from either repository match, and cover everything once."""
-    loop.run(page_alike(items, Query(criteria, ordering=ordering), limit))
+    loop.run(page_alike(items, Selection(criteria, ordering=ordering), limit))
 
 
-async def page_alike(items: list[Gadget], query: Query, limit: int) -> None:
+async def page_alike(items: list[Gadget], query: Selection, limit: int) -> None:
     """Page through both repositories at once."""
     await replace_rows(items)
     fake = InMemoryGadgets(items)

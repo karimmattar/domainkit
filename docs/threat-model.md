@@ -14,10 +14,10 @@ To report a vulnerability, follow [SECURITY.md](../SECURITY.md).
 
 | Asset | What can go wrong | Where domainkit holds it |
 | --- | --- | --- |
-| Money | An amount changes in transit or rounding; two concurrent changes overwrite each other; a retried request pays twice; a payment's follow-up work is lost or done twice. | Exact decimals end to end, written as fixed-point text ([databases.md](databases.md#exact-amounts)); optimistic versions on every aggregate ([databases.md](databases.md#versions)); row locks ([queries.md](queries.md)); idempotency keys ([contrib.md](contrib.md#idempotency-safe-retries-of-unsafe-requests)); the outbox, committed with the change ([contrib.md](contrib.md#messaging-outbox-durable-handlers-background-tasks)). |
+| Money | An amount changes in transit or rounding; two concurrent changes overwrite each other; a retried request pays twice; a payment's follow-up work is lost or done twice. | Exact decimals end to end, written as fixed-point text ([databases.md](databases.md#exact-amounts)); optimistic versions on every aggregate ([databases.md](databases.md#versions)); row locks ([queries.md](queries.md)); idempotency keys ([contrib.md](contrib/idempotency.md#idempotency-safe-retries-of-unsafe-requests)); the outbox, committed with the change ([contrib.md](contrib/messaging.md#messaging-outbox-durable-handlers-background-tasks)). |
 | Credentials | Passwords, tokens, second factors, signing keys, and database and broker passwords are guessed, stolen, or logged. | Password hashing and throttles, opaque tokens kept as digests, second factors encrypted at rest ([auth.md](auth.md)); one `SECRET_KEY`, with fallbacks for rotation, from which each purpose's key is derived ([reference.md](reference.md#signing)); secrets left out of reprs and logs. |
-| The audit trail | Who did what is changed, deleted, or never written; an operator acts anonymously. | An append-only trail with a hash chain, sealed and anchored in a ledger ([contrib.md](contrib.md#audit-who-did-what-when-from-where)); operators named and audited ([reference.md](reference.md#operators)); evidence in an immudb ledger, verified by the client ([contrib.md](contrib.md#evidence-records-that-provably-never-change)). |
-| Personal data | A person's data is shown to someone else, kept longer than allowed, or cannot be exported or erased. | Deny-by-default route rules and object permissions ([auth.md](auth.md#protecting-routes)); personal markers, pseudonyms in the trail, export, erasure, and retention ([privacy.md](privacy.md)); outbox messages blanked once sent ([mail.md](mail.md)). |
+| The audit trail | Who did what is changed, deleted, or never written; an operator acts anonymously. | An append-only trail with a hash chain, sealed and anchored in a ledger ([contrib.md](contrib/audit.md#audit-who-did-what-when-from-where)); operators named and audited ([reference.md](reference.md#operators)); evidence in an immudb ledger, verified by the client ([contrib.md](contrib/evidence.md#evidence-records-that-provably-never-change)). |
+| Personal data | A person's data is shown to someone else, kept longer than allowed, or cannot be exported or erased. | Deny-by-default route rules and object permissions ([auth.md](auth/routes.md#protecting-routes)); personal markers, pseudonyms in the trail, export, erasure, and retention ([privacy.md](privacy.md)); outbox messages blanked once sent ([mail.md](mail.md)). |
 
 The service's availability matters to all four: a service that is down
 cannot pay, and one that is overloaded may fail half-way.
@@ -70,20 +70,20 @@ project" is the team that builds and runs the service.
 
 | Threat | What domainkit does | What remains |
 | --- | --- | --- |
-| **Spoofing** a user | Opaque tokens, JWTs, cookie sessions with CSRF, client certificates ([auth.md](auth.md#authenticating-requests)); password and code throttles that count only failures ([auth.md](auth.md#logging-in-and-out)); second factors ([auth.md](auth.md#two-factor-logins)). | Throttles count per process unless `RATE_LIMIT_BACKEND` is Redis (`check` warns). A stored per-account lockout is planned for 0.10. |
+| **Spoofing** a user | Opaque tokens, JWTs, cookie sessions with CSRF, client certificates ([auth.md](auth/authentication.md#authenticating-requests)); password and code throttles that count only failures ([auth.md](auth/logging-in.md#logging-in-and-out)); second factors ([auth.md](auth/logging-in.md#two-factor-logins)). | Throttles count per process unless `RATE_LIMIT_BACKEND` is Redis (`check` warns). A stored per-account lockout is planned for 0.10. |
 | **Spoofing** an address or scheme | Proxy headers believed from `TRUSTED_PROXIES` only, walked from the right ([ADR 0072](adr/0072-walk-proxy-headers-from-the-right-and-trust-unix-sockets.md)); `ALLOWED_HOSTS` checked first. | The project must list its proxies, and make the server read no proxy header itself ([reference.md](reference.md#http)). |
 | **Tampering** with requests | Bodies validated by pydantic; `If-Match` on changes ([resources.md](resources.md)); signed values ([reference.md](reference.md#signing)). | Route schemas are the project's: a write schema should name the fields a client may set. |
-| **Repudiation** | Request ids, the access log, and audit rows with the actor and address ([contrib.md](contrib.md#audit-who-did-what-when-from-where)); refused logins audited. | The project keeps logs and the trail as long as its regulator asks. |
-| **Information disclosure** | Deny by default: a route says who may call it, or the service does not start ([auth.md](auth.md#deny-by-default)); errors never echo input ([reference.md](reference.md#errors)); security headers and HSTS; API docs off in the production template; `/metrics` behind a token. | Object-level rules for multi-tenant data are the project's ([auth.md](auth.md#grants-on-single-objects)). |
+| **Repudiation** | Request ids, the access log, and audit rows with the actor and address ([contrib.md](contrib/audit.md#audit-who-did-what-when-from-where)); refused logins audited. | The project keeps logs and the trail as long as its regulator asks. |
+| **Information disclosure** | Deny by default: a route says who may call it, or the service does not start ([auth.md](auth/routes.md#deny-by-default)); errors never echo input ([reference.md](reference.md#errors)); security headers, a Content-Security-Policy, and HSTS; API docs off when deployed, and loaded from the API's own origin; route templates, not paths, in logs; `/metrics` behind a token. | Object-level rules for multi-tenant data are the project's ([auth.md](auth/users.md#grants-on-single-objects)). |
 | **Denial of service** | Request deadlines and load shedding ([runtime.md](runtime.md#request-deadlines), [runtime.md](runtime.md#load-shedding)); body size and time limits; rate limits ([cache.md](cache.md#shared-rate-limits)); bounded live connections ([live.md](live.md)); bounded hashing. | Volumetric attacks need the project's edge (CDN, WAF, provider limits). |
-| **Elevation of privilege** | Model and object permissions; staff grant only what they hold; protected user fields ([auth.md](auth.md#the-admin-api)); routes added late are checked at startup. | Permission design is the project's. |
+| **Elevation of privilege** | Model and object permissions; staff grant only what they hold; protected user fields ([auth.md](auth/routes.md#the-admin-api)); routes added late are checked at startup. | Permission design is the project's. |
 
 ### 3. The SQL database
 
 | Threat | What domainkit does | What remains |
 | --- | --- | --- |
 | **Spoofing** the server | `SSLMODE = "verify-full"` required for network databases where deployed ([reference.md](reference.md#deployment-checks)). | Certificates and their rotation. |
-| **Tampering** with rows | Bound parameters only; optimistic versions refuse a lost update, and a table without `version` is refused ([databases.md](databases.md#versions)); `protect()` triggers keep the trail append-only ([contrib.md](contrib.md#tamper-evidence)). | Who can connect as the schema owner; `protect()` must be migrated in (`check` warns without it). |
+| **Tampering** with rows | Bound parameters only; optimistic versions refuse a lost update, and a table without `version` is refused ([databases.md](databases.md#versions)); `protect()` triggers keep the trail append-only ([contrib.md](contrib/audit.md#tamper-evidence)). | Who can connect as the schema owner; `protect()` must be migrated in (`check` warns without it). |
 | **Repudiation** | The trail is written in the transaction of the change. | Changes made outside the application (a `psql` session) are not audited. |
 | **Information disclosure** | Bound values never logged where deployed (`LOG_PARAMETERS` refused); TOTP secrets encrypted; tokens stored as digests; audit pseudonyms. | Encryption at rest, backups and their access, row-level security. |
 | **Denial of service** | Statement, lock, idle, connect, and pool timeouts ([runtime.md](runtime.md#database-timeouts-and-pgbouncer)). | Pool sizing for the load ([performance.md](performance.md)). |
@@ -104,7 +104,7 @@ project" is the team that builds and runs the service.
 | **Spoofing** / **Tampering** | `amqps://` and a user of its own required where deployed; the outbox row is the record, the broker only dispatches ([ADR 0014](adr/0014-outbox-as-record-broker-for-dispatch.md)). | Broker access control. |
 | **Repudiation** | Operators who retry or cancel messages are named and audited. | |
 | **Information disclosure** | Arguments blanked once a message is done, cancelled, or a sensitive task dies ([mail.md](mail.md)). | Arguments of tasks not marked `sensitive` stay in dead letters until retried. |
-| **Denial of service** | Leases, retries with backoff, timeouts per task, a circuit breaker for the broker, bounded cleanup ([contrib.md](contrib.md#messaging-outbox-durable-handlers-background-tasks)). | Alerting on a growing outbox. |
+| **Denial of service** | Leases, retries with backoff, timeouts per task, a circuit breaker for the broker, bounded cleanup ([contrib.md](contrib/messaging.md#messaging-outbox-durable-handlers-background-tasks)). | Alerting on a growing outbox. |
 | **Tampering** by running twice | Messages are delivered at least once. | Handlers must be idempotent: there is no inbox of processed ids yet (planned work, see below). |
 
 ### 6. The ledger
@@ -119,7 +119,7 @@ project" is the team that builds and runs the service.
 
 | Threat | What domainkit does | What remains |
 | --- | --- | --- |
-| **Spoofing** | Outgoing webhooks are signed; inbound ones are verified against a timestamp ([contrib.md](contrib.md#webhooks-signed-events-for-other-services)). | Sharing secrets with receivers. |
+| **Spoofing** | Outgoing webhooks are signed; inbound ones are verified against a timestamp ([contrib.md](contrib/webhooks.md#webhooks-signed-events-for-other-services)). | Sharing secrets with receivers. |
 | **Information disclosure** / **Elevation** (server-side request forgery) | Webhooks and guarded HTTP calls go only to checked public addresses, after DNS ([ADR 0036](adr/0036-webhooks-through-the-outbox.md), [runtime.md](runtime.md#outgoing-http-calls)). | Calls made with another client are not guarded. |
 | **Denial of service** | Answers bounded in size as they arrive; deadlines, retries, and a circuit breaker per host; DNS lookups shared fairly between owners. | One owner's share of lookups is per subscription until 0.10 gives subscriptions an owner. |
 
@@ -156,15 +156,14 @@ left to the project on purpose.
 - **Lookup threads per webhook subscription, not per tenant.** Whoever may
   create several subscriptions can hold the guard's lookup threads for one
   round of slow DNS answers, until 0.10 gives subscriptions an owner.
-- **A missing request deadline with idempotency installed is a warning,
-  not a refusal.** A keyed request without a deadline can outlive its
-  lease; 0.10 refuses to start.
 - **Cache computations are unbounded by default** (`COMPUTE_TIMEOUT =
   None`, as in 0.9.0); `check` warns where deployed, and 0.10 plans a
   bounded default.
-- **Tamper evidence is opt-in.** `check` warns without a ledger, a
-  namespace, sealing, or the `protect()` triggers; `AUDIT.REQUIRE_BASELINE`
-  refuses instead, and becomes the default in 0.10.
+- **Tamper evidence can be turned off.** Since 0.10 staging and production
+  refuse to start without a ledger, a namespace, sealing, or the
+  `protect()` triggers; `AUDIT.REQUIRE_BASELINE = False` turns that back
+  into warnings, and so does `IDEMPOTENCY.REQUIRE_DEADLINE = False` for
+  keyed requests without a deadline.
 - **Concurrency under contention.** The default write path keeps its
   invariants with optimistic versions, but refuses most concurrent writers
   of one aggregate with 409, and there is no retry of a unit of work, no

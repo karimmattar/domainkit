@@ -24,7 +24,7 @@ caller to encrypt them again. Needs ``cryptography``:
 import secrets
 from typing import Final
 
-from domainkit.exceptions import ImproperlyConfigured
+from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 from domainkit.signing import derive_keys
 
 __all__ = [
@@ -37,7 +37,7 @@ VERSION: Final = b"\x01"
 NONCE_BYTES: Final = 12
 
 
-class DecryptionFailed(Exception):
+class DecryptionFailed(DomainkitError):
     """No key decrypts the value: wrong key, other associated data, or tampering."""
 
 

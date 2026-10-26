@@ -819,14 +819,24 @@ async def test_smtp_logs_partly_refused_messages_without_addresses(
 
 
 async def test_smtp_failures_to_connect_are_delivery_failures(tables: Install) -> None:
-    """Nothing listening: the worker will try again."""
-    server = SmtpServer()
-    with smtp_server(server):
-        port = server.port
-    with override_settings(DEBUG=True):
-        backend = SmtpBackend(SmtpSettings(PORT=port, SECURITY="none", TIMEOUT=2))
-    with pytest.raises(MailDeliveryFailed, match="ConnectionRefusedError"):
-        await backend.send_messages([PREPARED])
+    """Nothing listening: the worker will try again.
+
+    The port is bound and never listened on, so it refuses connections and
+    no other process (another pytest-xdist worker) can take it meanwhile.
+    """
+    with socket.socket() as bound:
+        bound.bind(("127.0.0.1", 0))
+        with override_settings(DEBUG=True):
+            backend = SmtpBackend(
+                SmtpSettings(
+                    HOST="127.0.0.1",
+                    PORT=bound.getsockname()[1],
+                    SECURITY="none",
+                    TIMEOUT=2,
+                )
+            )
+        with pytest.raises(MailDeliveryFailed, match="ConnectionRefusedError"):
+            await backend.send_messages([PREPARED])
 
 
 @pytest.mark.parametrize("security", ["starttls", "tls"])

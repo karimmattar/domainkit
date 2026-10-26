@@ -60,6 +60,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from domainkit.clock import monotonic
 from domainkit.conf import settings
 from domainkit.context import bind_request, current_request
+from domainkit.exceptions import DomainkitError
 from domainkit.http.errors import error_response
 from domainkit.http.live import REAUTHENTICATE
 from domainkit.http.middleware import request_path
@@ -280,7 +281,7 @@ class AuthenticationMiddleware:
         return self.rate[0], refusal
 
 
-class _Refused(Exception):
+class _Refused(DomainkitError):
     """An authentication class refused the request's credentials."""
 
     def __init__(

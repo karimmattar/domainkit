@@ -27,6 +27,7 @@ from domainkit.ledger import (
     LedgerUnavailable,
 )
 from domainkit.ledger.immudb import ImmudbLedger
+from domainkit.ledger.trust import LedgerRolledBack, MemoryStateStore, TrustedState
 
 URL: Final = os.environ.get("DOMAINKIT_TEST_IMMUDB_URL", "")
 CA: Final = os.environ.get("DOMAINKIT_TEST_IMMUDB_CA")
@@ -241,3 +242,78 @@ async def test_evidence_on_immudb(ledger: ImmudbLedger) -> None:
     assert [recorded.receipt for recorded in listed] == [receipt]
     with pytest.raises(EvidenceTampered, match="written again"):
         await store.verify(receipt)
+
+
+async def test_a_rolled_back_or_forked_server_is_refused(prefix: bytes) -> None:
+    """A client that trusted a later state, or another digest, refuses the server.
+
+    immudb cannot be rolled back here, so the store holds what a client
+    would have saved before a rollback (a transaction the server has not
+    reached) or a fork (the server's latest transaction with another
+    digest). The test's own writes come first, and nothing writes between
+    the state read and the checks.
+    """
+    store = MemoryStateStore()
+    first = ImmudbLedger(config(), states=store)
+    try:
+        await first.append(prefix + b"k", b"v")
+        await first.check()
+    finally:
+        await first.close()
+    seen = await store.load(first.name)
+    assert seen is not None
+    assert seen.transaction > 0
+    other = bytes(byte ^ 0xFF for byte in seen.digest)
+    ahead, forked = MemoryStateStore(), MemoryStateStore()
+    await ahead.save(
+        first.name,
+        TrustedState(seen.database, seen.transaction + 10**6, seen.digest),
+        expected=None,
+    )
+    await forked.save(
+        first.name,
+        TrustedState(seen.database, seen.transaction, other),
+        expected=None,
+    )
+
+    for kept, refused, message in (
+        (ahead, LedgerRolledBack, "rolled back or replaced"),
+        (forked, LedgerTampered, "forked"),
+    ):
+        ledger = ImmudbLedger(config(), states=kept)
+        try:
+            with pytest.raises(refused, match=message):
+                await ledger.check()
+            with pytest.raises(refused):
+                await ledger.read(prefix + b"k")
+        finally:
+            await ledger.close()
+
+
+async def test_replicas_sharing_a_store_prove_each_others_states(
+    prefix: bytes,
+) -> None:
+    """A save another replica overtook is proven with the SDK, then made (SEC-10b-5).
+
+    Each replica's state is proven against the other's (``verifiedTxById``,
+    a dual proof either way) before it replaces it; a digest the server
+    does not have there is a fork.
+    """
+    store = MemoryStateStore()
+    a = ImmudbLedger(config(), states=store)
+    b = ImmudbLedger(config(), states=store)
+    try:
+        for n in range(2):
+            await a.append(prefix + b"a", str(n).encode())
+            written = await b.append(prefix + b"b", str(n).encode())
+        last = await a.append(prefix + b"a", b"last")
+        kept = await store.load(a.name)
+        assert kept is not None
+        assert kept.transaction >= last.transaction > written.transaction
+        forged = TrustedState(kept.database, kept.transaction, b"\0" * 32)
+        assert await store.save(a.name, forged, expected=kept)
+        with pytest.raises(LedgerTampered):
+            await a.append(prefix + b"a", b"after")
+    finally:
+        await a.close()
+        await b.close()

@@ -116,7 +116,8 @@ def test_names_a_project_sets_are_kept(identity: Api) -> None:
 
     csrf = start(client)
 
-    assert set(client.cookies.keys()) == {"sid", "__Host-csrf"}
+    # And the login's device proof (``auth.devices``), named as always.
+    assert set(client.cookies.keys()) == {"sid", "__Host-csrf", "__Host-dk_device"}
     assert client.post("/notes", headers={**TRUSTED, "X-CSRF-Token": csrf}).json() == {
         "user": "alice",
         "scheme": "cookie",
@@ -189,8 +190,10 @@ def test_both_cookies_take_the_cookie_settings(identity: Api) -> None:
         headers=TRUSTED,
     )
 
-    assert set(set_cookies(response)) == {"dk_session", "dk_csrf"}  # No __Host-.
-    for cookie in set_cookies(response).values():
+    session_cookies = set_cookies(response)
+    assert session_cookies.pop("__Host-dk_device")  # The proof: its own scope.
+    assert set(session_cookies) == {"dk_session", "dk_csrf"}  # No __Host-.
+    for cookie in session_cookies.values():
         attributes = {part.strip() for part in cookie.split(";")[1:]}
         assert {
             "Domain=example.test",
@@ -437,7 +440,7 @@ def test_plain_http_in_development_needs_only_the_token(identity: Api) -> None:
         )
         csrf = response.json()["csrf_token"]
         # Browsers refuse __Host- cookies that are not Secure.
-        assert set(set_cookies(response)) == {"dk_session", "dk_csrf"}
+        assert set(set_cookies(response)) == {"dk_session", "dk_csrf", "dk_device"}
         assert "Secure" not in set_cookies(response)["dk_session"]
 
         assert client.post("/notes", headers={"X-CSRF-Token": csrf}).status_code == 200

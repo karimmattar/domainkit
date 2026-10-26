@@ -5,10 +5,12 @@ one rate limiter, one middleware, one hashing pool, one application's live
 connection slots, the event bus, an HTTP client's circuit breaker, the
 guard's lookup threads and its owners' shares, a throttled log's counts,
 the remembered client addresses, the handles of the request metrics, the
-principal cache, and the grants principals share between threads, an
+principal cache, the shedding middleware's slots and an HTTP client's
+pools per loop (``PerLoop``), and the grants principals share between threads, an
 application's throttle backend and attempt counter, the idempotency
-middleware's sweep schedule, and the registries that keep each loop's
-tasks, publishers, brokers, and caches. Each test
+middleware's sweep schedule, the body limit's largest route limit, a
+ledger's trusted state and the store it is kept in, and the registries
+that keep each loop's tasks, publishers, brokers, and caches. Each test
 drives them from several threads at once and checks what must always
 hold, and that the state is only touched with the lock held (where there
 is one).
@@ -33,7 +35,10 @@ from types import SimpleNamespace
 from typing import Any, ClassVar
 from weakref import WeakKeyDictionary
 
+import httpx2
 import pytest
+from sqlalchemy import create_engine as create_sync_engine
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from starlette.datastructures import State
 from starlette.requests import HTTPConnection, Request
@@ -42,6 +47,7 @@ from starlette.types import Message, Receive, Scope, Send
 from domainkit import clock as clock_module
 from domainkit import setup, tasks
 from domainkit.apps import registry
+from domainkit.apps.hooks import Hook, HookPoint
 from domainkit.broker import Broker, BrokerHandler, MemoryBroker
 from domainkit.cache import CacheHandler, Store
 from domainkit.conf import (
@@ -51,18 +57,18 @@ from domainkit.conf import (
     unwrap_settings,
 )
 from domainkit.contrib.audit import personal
-from domainkit.contrib.auth import AllowAny, principals, throttling
 from domainkit.contrib.auth import middleware as middleware_module
+from domainkit.contrib.auth import principals, throttling
 from domainkit.contrib.auth.hashers import HashingPool
 from domainkit.contrib.auth.middleware import AuthenticationMiddleware
 from domainkit.contrib.auth.models import Group, User
 from domainkit.contrib.auth.principals import ALL, Entry, PrincipalCache
 from domainkit.contrib.contenttypes import InstalledModel, content_type_key
-from domainkit.contrib.contenttypes import registry as content_registry
 from domainkit.contrib.idempotency import statements as idempotency_statements
 from domainkit.contrib.idempotency.middleware import PURGE_BATCH, Sweeps
 from domainkit.contrib.messaging import MessagingSettings, dispatch
 from domainkit.db import Reads, connections
+from domainkit.db import models as content_registry
 from domainkit.db.connections import (
     _begin_snapshot,
     _drop_detail,
@@ -70,23 +76,29 @@ from domainkit.db.connections import (
     _read_alone_no_params,
     _require_read_only,
     _reset_session,
+    _set_local,
     _take_open,
     create_engine,
     create_read_engine,
 )
 from domainkit.ddd import DomainEvent, EventBus
+from domainkit.http import access, live, metrics, ratelimit
+from domainkit.http import client as http_client
 from domainkit.http import guard as guard_module
-from domainkit.http import live, metrics, ratelimit
-from domainkit.http.client import BREAKER_HOSTS, CircuitBreaker
+from domainkit.http import middleware as body_limits
+from domainkit.http.access import AllowAny
+from domainkit.http.client import BREAKER_HOSTS, CircuitBreaker, HttpClient
 from domainkit.http.guard import GuardResolver, lookups_for
 from domainkit.http.live import Slots
 from domainkit.http.live_events import LiveEvents
 from domainkit.http.metrics import REQUESTS, MetricsMiddleware
 from domainkit.http.middleware import ProxyHeadersMiddleware, _address
 from domainkit.http.ratelimit import MemoryBackend, client_group
-from domainkit.http.shedding import QUEUE_FULL, ShedReport
+from domainkit.http.shedding import QUEUE_FULL, ConcurrencyLimitMiddleware, ShedReport
 from domainkit.http.websockets import WebSocketLimitsMiddleware
 from domainkit.log import JsonFormatter, ThrottledLog, flush_throttled
+from domainkit.testing import CapturedQueries
+from domainkit.utils.loops import PerLoop
 from domainkit_tests.conftest import UseAuth
 from domainkit_tests.sample_domains.alpha.apps import AlphaSettings
 
@@ -1155,6 +1167,7 @@ def test_engines_never_share_a_listener() -> None:
     ]
     for build, config, functions in [
         (create_read_engine, network, read),
+        (create_engine, network, [_drop_detail, _set_local]),
         (create_engine, local, [_drop_detail, _begin_snapshot]),
     ]:
         first, second = own_listeners(build(config)), own_listeners(build(config))
@@ -1164,6 +1177,50 @@ def test_engines_never_share_a_listener() -> None:
         assert not {id(listener) for listener in first} & {
             id(listener) for listener in second
         }
+
+
+def test_counting_statements_never_fails_another_threads_statement() -> None:
+    """Blocks of ``CapturedQueries`` come and go while threads run statements.
+
+    SQLAlchemy reads its listener lists without a lock as each statement
+    runs. A block that listened on ``Engine`` and stopped again changed them
+    under other threads, whose statements failed now and then ("deque
+    mutated during iteration"): 3 runs of 3 failed this way, at the same
+    switch interval. The listener now goes on when the module is imported,
+    and stays; blocks only come and go from the tuple it reads. (Put on
+    lazily by the first block, it raced the same way when that block was
+    this test's.)
+    """
+    errors: list[BaseException] = []
+    stop = threading.Event()
+
+    def run_statements() -> None:
+        try:
+            while not stop.is_set():
+                engine = create_sync_engine("sqlite://")
+                with engine.connect() as connection:
+                    for _ in range(20):
+                        connection.execute(text("SELECT 1"))
+                engine.dispose()
+        except Exception as error:  # noqa: BLE001 - any failure is the finding.
+            errors.append(error)
+
+    interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)  # Switch threads as often as the GIL allows.
+    threads = [threading.Thread(target=run_statements) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    try:
+        for _ in range(3000):
+            with CapturedQueries():
+                pass
+    finally:
+        stop.set()
+        for thread in threads:
+            thread.join()
+        sys.setswitchinterval(interval)
+
+    assert errors == []
 
 
 def test_subject_keys_kept_by_transactions_on_every_thread(
@@ -1504,3 +1561,220 @@ def test_idempotency_sweeps_are_due_once_per_interval_from_every_thread(
     full = on_threads(claims)
 
     assert (sum(first), sum(short), sum(full)) == (1, 0, 1)
+
+
+def test_an_applications_largest_body_limit_is_worked_out_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Loops on several threads asking first: one walk of the routes, one answer."""
+    walks: list[int] = []
+
+    def walk(routes: object) -> int:
+        assert limited._lock.locked()
+        walks.append(1)
+        return 64
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        await receive()
+
+    async def receive() -> Message:
+        return {"type": "http.request", "body": b"x" * 64}
+
+    async def send(message: Message) -> None:
+        raise AssertionError("nothing is answered")
+
+    monkeypatch.setattr(body_limits, "largest_body_limit", walk)
+    limited = body_limits.RequestBodyLimitMiddleware(app)
+
+    def serve(_: int) -> int | None:
+        asyncio.run(limited({"type": "http", "headers": []}, receive, send))
+        return limited._largest
+
+    assert on_threads(serve) == [64] * THREADS
+    assert walks == [1]
+
+
+def checked_per_loop[V](per_loop: PerLoop[V]) -> PerLoop[V]:
+    """``per_loop``, whose registry is walked and changed only under its lock."""
+    per_loop._values = CheckedRegistry(per_loop._lock)
+    return per_loop
+
+
+def test_loops_on_threads_keep_their_own_values_and_let_closed_ones_go() -> None:
+    """``PerLoop``: one value per loop, made once; closed loops are dropped."""
+    registry = checked_per_loop(PerLoop[object]())
+    made: list[object] = []
+
+    def make() -> object:
+        made.append(value := object())
+        return value
+
+    async def use() -> bool:
+        mine = registry.get(make)
+        same = registry.get(make) is mine and registry.find() is mine
+        return same and registry.pop() is mine and registry.pop() is None
+
+    async def keep() -> bool:
+        return registry.get(make) is registry.get(make)
+
+    results = on_threads(
+        lambda index: [asyncio.run(use() if n % 2 else keep()) for n in range(LOOPS)]
+    )
+
+    assert results == [[True] * LOOPS] * THREADS
+    assert len(made) == THREADS * LOOPS
+    assert len(set(map(id, made))) == len(made)
+    asyncio.run(keep())  # Drops every loop closed so far but its own.
+    assert len(registry) <= 1
+
+
+def test_shedding_slots_are_each_loops_own_from_every_thread() -> None:
+    """One middleware, loops on threads: each its own slots, made under the lock."""
+    with override_settings(MAX_CONCURRENT_REQUESTS=4):
+        middleware = ConcurrencyLimitMiddleware(lambda *args: None)  # type: ignore[arg-type]
+    checked_per_loop(middleware._slots)
+
+    async def slots() -> bool:
+        mine = middleware.slots(4)
+        return mine is middleware.slots(4) and mine.limit == 4
+
+    results = on_threads(lambda _: [asyncio.run(slots()) for _ in range(LOOPS)])
+
+    assert results == [[True] * LOOPS] * THREADS
+    assert len(middleware._slots) <= THREADS
+
+
+def test_http_client_pools_are_each_loops_own_from_every_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each loop opens its own pool, off the loop's thread for TLS; closed go."""
+    transport = httpx2.MockTransport(lambda request: httpx2.Response(204))
+    api = HttpClient(transport=transport)
+    checked_per_loop(api._pools)
+    built_on: list[threading.Thread] = []
+    built = http_client.tls_context
+
+    def context(bundle: Any) -> Any:  # noqa: ANN401 - a path, an SSL context.
+        built_on.append(threading.current_thread())
+        return built(bundle)
+
+    monkeypatch.setattr(http_client, "tls_context", context)
+
+    async def calls() -> tuple[bool, threading.Thread]:
+        loop_thread = threading.current_thread()
+        first = await api.get("https://api.example.test/a")
+        pool = api._pools.find()
+        await api.get("https://api.example.test/b")
+        return first.status_code == 204 and api._pools.find() is pool, loop_thread
+
+    results = on_threads(lambda _: [asyncio.run(calls()) for _ in range(5)])
+
+    assert all(ok for each in results for ok, _ in each)
+    loop_threads = {thread for each in results for _, thread in each}
+    assert len(built_on) == THREADS * 5  # Once per loop, each on a worker thread.
+    assert loop_threads.isdisjoint(built_on)
+    assert len(api._pools) <= THREADS
+
+
+def test_one_request_reads_a_kept_principal_again_from_every_thread() -> None:
+    """Loops on threads ask at once: one claim; released, one more."""
+    cache = PrincipalCache()
+    kept = Entry(("token", "a"), None, targets=("user:1",), keep=True, deadline=10)
+    cache.put(kept, limit=10)
+
+    def claims(index: int) -> int:
+        return sum(cache.claim_refresh(kept) for _ in range(200))
+
+    first = on_threads(claims)
+    cache.release_refresh(kept)
+    again = on_threads(claims)
+
+    assert (sum(first), sum(again)) == (1, 1)
+
+
+def test_hook_points_keep_every_registration_from_every_thread() -> None:
+    """Threads that register on one point and read it at once lose nothing.
+
+    Readers see whole tuples, worked out under the point's lock; once the
+    threads are done, every registration is there, each once.
+    """
+    setup()
+    point: HookPoint[Callable[[], int]] = HookPoint("threads")
+
+    def register(index: int) -> int:
+        seen = 0
+        for number in range(50):
+            point(partial(int, index * 50 + number), domain="alpha")
+            hooks = point.hooks()
+            assert all(isinstance(hook, Hook) for hook in hooks)
+            seen = max(seen, len(hooks))
+        return seen
+
+    seen = on_threads(register)
+
+    assert sorted(hook.call() for hook in point) == list(range(THREADS * 50))
+    assert max(seen) <= THREADS * 50
+
+
+def test_audited_refusals_are_sampled_once_per_key_from_every_thread() -> None:
+    """One refusal per actor and route is let through, however many threads ask.
+
+    The sampler stays within its bound while keys come and go.
+    """
+    sampler = access._Sampler(interval=3600.0, keys=64)
+
+    def hammer(index: int) -> list[tuple[str, str]]:
+        chosen = random.Random(index)  # noqa: S311 - the order of the calls only.
+        let = []
+        for _ in range(2_000):
+            key = (f"user:{chosen.randrange(8)}", f"GET /r/{chosen.randrange(4)}")
+            if sampler.first(key):
+                let.append(key)
+        return let
+
+    let = [key for keys in on_threads(hammer) for key in keys]
+
+    assert len(let) == len(set(let)) == 32  # Every key once, by one thread.
+    assert len(sampler._seen) <= 64
+
+
+def test_a_ledgers_trusted_state_moves_only_forward_from_every_thread() -> None:
+    """Verified calls finishing out of order on threads leave the latest state."""
+    from domainkit.ledger.immudb import SdkState, TrustedRoot
+
+    root = TrustedRoot()
+
+    def verify(index: int) -> None:
+        for tx in random.sample(range(1, 501), 500):
+            root.set(SdkState("db", tx * THREADS + index, b"h" * 32))
+            assert root.get().txId >= tx * THREADS + index
+
+    on_threads(verify)
+    saved = root.unsaved()
+
+    assert root.get().txId == 500 * THREADS + THREADS - 1
+    assert saved is not None
+    assert saved.transaction == root.get().txId
+    assert root.unsaved() is None
+
+
+def test_ledger_state_stores_are_registered_whole_from_every_thread() -> None:
+    """Threads registering and reading at once see one store, never a mix."""
+    from domainkit.ledger import trust
+
+    stores: list[trust.StateStore] = [trust.MemoryStateStore() for _ in range(THREADS)]
+
+    def register(index: int) -> set[int]:
+        seen = set()
+        for _ in range(200):
+            trust.use_states(stores[index])
+            found = trust.registered_states()
+            assert found is not None
+            seen.add(stores.index(found))
+        return seen
+
+    results = on_threads(register)
+    registry.clear()
+
+    assert set().union(*results) <= set(range(THREADS))
+    assert trust.registered_states() is None

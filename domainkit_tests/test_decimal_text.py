@@ -20,7 +20,7 @@ from domainkit.contrib.audit import Outcome
 from domainkit.contrib.audit.personal import pseudonym
 from domainkit.contrib.audit.recorder import audit_row, event_rows
 from domainkit.contrib.audit.settings import AuditSettings
-from domainkit.contrib.evidence.model import Evidence
+from domainkit.contrib.evidence import Evidence
 from domainkit.contrib.flags.store import DynamicSettingDefinition
 from domainkit.contrib.messaging.registry import (
     dump_arguments,

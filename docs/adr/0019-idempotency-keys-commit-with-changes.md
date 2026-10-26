@@ -1,6 +1,6 @@
 # 0019. Mark idempotency keys committed in the transaction of the changes
 
-- Status: Accepted; leases added by [0020](0020-lease-idempotency-keys.md)
+- Status: Accepted; leases added by [0020](0020-lease-idempotency-keys.md); amended by [0085](0085-register-hooks-by-type-for-the-domains-that-have-them.md)
 - Date: 2026-10-18
 
 ## Context

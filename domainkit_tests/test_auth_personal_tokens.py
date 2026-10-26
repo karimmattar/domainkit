@@ -465,7 +465,9 @@ def test_scopes_are_stored_as_sorted_keys(identity: Api) -> None:
     async def read() -> dict[str, Any]:
         async with connections.engine().connect() as connection:
             rows = await connection.execute(
-                select(tokens.c.name, tokens.c.scopes).where(tokens.c.user_id == alice)
+                select(tokens.c.name, tokens.c.scopes).where(
+                    tokens.c.user_id == alice, tokens.c.kind != "device"
+                )
             )
             return {row.name: row.scopes for row in rows}
 
@@ -480,8 +482,8 @@ def test_scopes_are_stored_as_sorted_keys(identity: Api) -> None:
 
 def test_rules_need_something_to_check() -> None:
     """``HasScope()`` without a scope is a mistake, caught at import."""
-    from domainkit.contrib.auth import HasScope
     from domainkit.exceptions import ImproperlyConfigured
+    from domainkit.http.access import HasScope
 
     with pytest.raises(ImproperlyConfigured, match="at least one scope"):
         HasScope()

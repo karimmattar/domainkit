@@ -41,12 +41,11 @@ from uuid import UUID
 from fastapi import APIRouter, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from domainkit.contrib.mail import deliver, render_mail
 from domainkit.contrib.messaging import task
+from domainkit.http.access import Public
 from domainkit.http.errors import APIError
 from domainkit.signing import BadSignature, TimestampSigner
 
-from .access import Public
 from .api import PASSWORD_MAX_LENGTH, _errors
 from .events import UserSignedUp
 from .hashers import amake_password
@@ -206,6 +205,9 @@ async def send_signup_link(signup_id: UUID) -> None:
     a retry after a failed delivery tells it still; one gone or expired is
     left alone.
     """
+    # Imported here: a process that only serves requests never loads mail (PERF-15).
+    from domainkit.contrib.mail import deliver, render_mail
+
     config = auth_settings()
     async with AuthUnitOfWork() as uow:
         pending = await uow.signups.get(signup_id)

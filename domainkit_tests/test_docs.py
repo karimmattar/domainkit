@@ -74,12 +74,12 @@ def documented(page: str) -> set[str]:
         (DebugToolbarConfig, "reference.md"),
         (HttpClientConfig, "reference.md"),
         (ArchitectureConfig, "reference.md"),
-        (MessagingSettings, "contrib.md"),
-        (AuditSettings, "contrib.md"),
-        (IdempotencySettings, "contrib.md"),
-        (EvidenceSettings, "contrib.md"),
-        (FlagsSettings, "contrib.md"),
-        (WebhookSettings, "contrib.md"),
+        (MessagingSettings, "contrib/messaging.md"),
+        (AuditSettings, "contrib/audit.md"),
+        (IdempotencySettings, "contrib/idempotency.md"),
+        (EvidenceSettings, "contrib/evidence.md"),
+        (FlagsSettings, "contrib/flags.md"),
+        (WebhookSettings, "contrib/webhooks.md"),
         (AuthSettings, "auth.md"),
         (JWTSettings, "auth.md"),
         (CookieSettings, "auth.md"),
@@ -98,7 +98,7 @@ def test_every_setting_is_documented(model: type[BaseModel], page: str) -> None:
 
 def test_every_password_validator_key_is_documented() -> None:
     """``PASSWORD_VALIDATORS`` entries are shown as dicts, not as a table."""
-    page = (DOCS / "auth.md").read_text(encoding="utf-8")
+    page = (DOCS / "auth/users.md").read_text(encoding="utf-8")
 
     assert [
         name for name in PasswordValidatorConfig.model_fields if f'"{name}"' not in page
@@ -129,6 +129,8 @@ def pages() -> list[Path]:
         ROOT / "README.md",
         ROOT / "SECURITY.md",
         ROOT / "CHANGELOG.md",
+        ROOT / "CONTRIBUTING.md",
+        ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
         # The ADR template's links are placeholders.
         *sorted(set(DOCS.rglob("*.md")) - {DOCS / "adr" / "template.md"}),
     ]
@@ -281,12 +283,12 @@ SETTINGS_TABLES: tuple[tuple[type[BaseModel], str, str], ...] = (
     (BrokerConfig, "reference.md", "BROKERS"),
     (HttpClientConfig, "reference.md", "HTTP_CLIENT"),
     (DebugToolbarConfig, "reference.md", "DEBUG_TOOLBAR"),
-    (MessagingSettings, "contrib.md", "MESSAGING"),
-    (WebhookSettings, "contrib.md", "WEBHOOKS"),
-    (AuditSettings, "contrib.md", "AUDIT"),
-    (IdempotencySettings, "contrib.md", "IDEMPOTENCY"),
-    (EvidenceSettings, "contrib.md", "EVIDENCE"),
-    (FlagsSettings, "contrib.md", "FLAGS"),
+    (MessagingSettings, "contrib/messaging.md", "MESSAGING"),
+    (WebhookSettings, "contrib/webhooks.md", "WEBHOOKS"),
+    (AuditSettings, "contrib/audit.md", "AUDIT"),
+    (IdempotencySettings, "contrib/idempotency.md", "IDEMPOTENCY"),
+    (EvidenceSettings, "contrib/evidence.md", "EVIDENCE"),
+    (FlagsSettings, "contrib/flags.md", "FLAGS"),
     (AuthSettings, "auth.md", "AUTH"),
     (CookieSettings, "auth.md", 'AUTH["COOKIE"]'),
     (MfaSettings, "auth.md", 'AUTH["MFA"]'),
@@ -453,7 +455,7 @@ def test_every_setting_row_states_its_default_and_bounds(
 
 AUDIT_PAGE = DOCS / "audit" / "0.9.0.md"
 _AUDIT_ID = re.compile(
-    r"\b(?:DJ-\d+|N-?\d+|ASYNC-R?\d+|R\d{2}|FX-\d+|SEC-r\d-\d+|"
+    r"\b(?:DJ-\d+|N-?\d+|ASYNC-R?\d+|R\d{2}|FX-\d+|SEC-(?:r\d|a|10[abc])-\d+|"
     r"(?:PERF|FIN|AUTH|CONC|WEB|DATA|TEST|INFRA|DOCS|DSGN)-\d+)\b"
 )
 
@@ -485,3 +487,68 @@ def test_open_security_findings_are_listed_without_their_detail() -> None:
     assert rows
     shown = [row[0] for row in rows if not row[1].startswith("Withheld while open")]
     assert shown == []
+
+
+def upgrade_entries(changelog: str) -> list[str]:
+    """The entries a project must act on to reach the newest minor release.
+
+    Breaking and Deprecated ones: those of ``[Unreleased]`` when it has
+    some, as a patch release has none (``docs/versioning.md``); else those
+    of the releases down to the newest ``X.Y.0``.
+    """
+    unreleased = changelog.split("\n## [Unreleased]\n", 1)[1]
+    first, *released = re.split(r"\n## \[([^\]]+)\][^\n]*\n", unreleased)
+    entries = _upgrade_entries(first)
+    if entries:
+        return entries
+    for version, text in zip(released[::2], released[1::2], strict=True):
+        entries += _upgrade_entries(text)
+        if version.endswith(".0"):
+            break
+    return entries
+
+
+def _upgrade_entries(section: str) -> list[str]:
+    """The Breaking entries of Changed and every Deprecated one, of a release."""
+    entries = []
+    for part in re.split(r"^### ", section, flags=re.MULTILINE)[1:]:
+        title, _, body = part.partition("\n")
+        items = re.split(r"^- ", body, flags=re.MULTILINE)[1:]
+        if title == "Deprecated":
+            entries += items
+        elif title == "Changed":
+            entries += [item for item in items if item.startswith("**Breaking:**")]
+    return entries
+
+
+def test_the_upgrade_guide_covers_every_breaking_change_and_deprecation() -> None:
+    """Each audit id of a Breaking or Deprecated entry is on upgrading.md."""
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    guide = (DOCS / "upgrading.md").read_text(encoding="utf-8")
+    entries = upgrade_entries(changelog)
+
+    assert entries, "no Breaking or Deprecated entry in the newest minor release"
+    cited = {ident for entry in entries for ident in _AUDIT_ID.findall(entry)}
+    assert sorted(i for i in cited if not re.search(rf"\b{i}\b", guide)) == []
+
+
+def test_the_upgrade_entries_are_read_from_their_sections() -> None:
+    """Breaking entries of Changed and every Deprecated one; nothing else.
+
+    Those of ``[Unreleased]``, or, when it has none, of every release down
+    to the newest minor one.
+    """
+    changelog = (
+        "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- New (A-1).\n\n"
+        "### Changed\n\n- **Breaking:** b (B-1).\n- Quiet (C-1).\n\n"
+        "### Deprecated\n\n- Old (D-1).\n\n## [0.9.2] - 2026-10-26\n\n"
+        "### Changed\n\n- **Breaking:** before (E-1).\n"
+    )
+
+    assert upgrade_entries(changelog) == ["**Breaking:** b (B-1).\n", "Old (D-1).\n"]
+    assert upgrade_entries(
+        "# Changelog\n\n## [Unreleased]\n\n## [0.10.1] - 2026-11-02\n\n"
+        "### Changed\n\n- **Breaking:** a security fix (S-1).\n\n"
+        "## [0.10.0] - 2026-10-26\n\n### Deprecated\n\n- Old (D-2).\n\n"
+        "## [0.9.0] - 2026-10-01\n\n### Deprecated\n\n- Older (D-3).\n"
+    ) == ["**Breaking:** a security fix (S-1).\n", "Old (D-2).\n"]

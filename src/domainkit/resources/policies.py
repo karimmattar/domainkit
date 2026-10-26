@@ -33,8 +33,8 @@ from pydantic import BaseModel, create_model
 from pydantic.fields import FieldInfo
 from starlette.requests import HTTPConnection
 
-from domainkit.contrib.auth.access import HasPermissions, current_user
 from domainkit.ddd import PermissionDenied
+from domainkit.http.access import HasPermissions, current_user
 
 
 class FieldNotEditable(PermissionDenied):

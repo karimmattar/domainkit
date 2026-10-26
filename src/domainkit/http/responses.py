@@ -28,11 +28,12 @@ refuses), a lone surrogate (which it refuses).
 
 The check is Python, and costs about what ``to_json`` costs again: a page
 of 50 resources encodes in about as much as ``json.dumps`` takes, a small
-body in a quarter of it. domainkit's own bodies, built JSON-native
-(``model_dump(mode="json")``, error and readiness bodies), skip it:
-``_BuiltJSONResponse`` writes them with ``to_json`` and looks in the bytes
-for the forms ``json.dumps`` writes otherwise (``may_differ``). It is not
-part of the API: content from elsewhere goes through ``JSONResponse``.
+body in a quarter of it. Bodies built JSON-native
+(``model_dump(mode="json")``: resources, error and readiness bodies) skip
+it: ``BuiltJSONResponse`` writes them with ``to_json`` and looks in the
+bytes for the forms ``json.dumps`` writes otherwise (``may_differ``). Use
+it only for such content; content from elsewhere goes through
+``JSONResponse``.
 
 Not a default for the application: FastAPI serializes routes that declare a
 response model with pydantic already, and any response class set for them
@@ -51,6 +52,7 @@ from pydantic_core import PydanticSerializationError, to_json
 from starlette import responses
 
 __all__ = [
+    "BuiltJSONResponse",
     "JSONResponse",
     "json_native",
 ]
@@ -276,7 +278,7 @@ class JSONResponse(responses.JSONResponse):
 def _encode_built(content: Any) -> bytes:  # noqa: ANN401 - JSON content.
     """``content``, built JSON-native, as Starlette renders it, without the check.
 
-    For domainkit's own bodies only (``_BuiltJSONResponse``): ``to_json``
+    For domainkit's own bodies only (``BuiltJSONResponse``): ``to_json``
     writes values JSON has no type for instead of refusing them, so the
     content must be JSON's values already, as ``model_dump(mode="json")``
     gives them. Where ``json.dumps`` writes such content otherwise (a small
@@ -291,13 +293,15 @@ def _encode_built(content: Any) -> bytes:  # noqa: ANN401 - JSON content.
     return encoded
 
 
-class _BuiltJSONResponse(JSONResponse):
-    """domainkit's own JSON bodies, which it builds JSON-native: no check.
+class BuiltJSONResponse(JSONResponse):
+    """JSON bodies built of JSON's own values (``model_dump(mode="json")``): no check.
 
-    Resource items and pages (``model_dump(mode="json")``), batch answers,
-    error bodies, and readiness answers. They are rendered by
-    ``_encode_built``, in about half of ``JSONResponse``'s time on a page
-    of resources; anything built otherwise goes through ``JSONResponse``.
+    Resource items and pages, batch answers, error bodies, and readiness
+    answers. They are rendered by ``_encode_built``, in about half of
+    ``JSONResponse``'s time on a page of resources. Content built otherwise
+    (a model, a ``Decimal``, a ``datetime``) must go through
+    ``JSONResponse``: here ``to_json`` would write what ``json.dumps``
+    refuses.
     """
 
     def render(self, content: Any) -> bytes:  # noqa: ANN401 - JSON content.

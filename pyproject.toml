@@ -1,6 +1,6 @@
 [project]
 name = "domainkit"
-version = "0.9.3"
+version = "0.10.0"
 description = "A Django-style framework for domain-driven FastAPI services."
 readme = "README.md"
 license = "MIT"
@@ -52,14 +52,21 @@ jwt = ["pyjwt[crypto] (>=2.15.0,<3.0.0)"]
 # Second factors for domainkit.contrib.auth: AES-GCM for the TOTP secrets
 # it stores (auth.mfa).
 mfa = ["cryptography (>=50.0.2,<51.0.0)"]
+# Signed checkpoints of the audit trail (AUDIT.CHECKPOINT_KEY, Ed25519):
+# auditprune and auditverify --export.
+audit = ["cryptography (>=50.0.2,<51.0.0)"]
 # Ledgers for evidence (WORM): immudb's SDK, with its verified operations.
-# grpcio for TLS channels and ecdsa's signature error, both installed by
-# immudb-py, are imported directly; ecdsa from 0.19.2, past PYSEC-2026-2467.
+# grpcio for TLS channels, ecdsa's signature error, and protobuf's Empty
+# message (the server's state), all installed by immudb-py, are imported
+# directly; ecdsa from 0.19.2, past PYSEC-2026-2467.
 immudb = [
     "immudb-py (>=1.5.0,<2.0.0)",
     # 1.66.2 is the first grpcio with wheels for Python 3.13.
     "grpcio (>=1.66.2,<2.0.0)",
     "ecdsa (>=0.19.2,<1.0.0)",
+    # 5.27.0 is the first protobuf whose C extension imports on Python 3.13
+    # without a DeprecationWarning (a metaclass with a custom tp_new).
+    "protobuf (>=5.27.0,<8.0.0)",
 ]
 # A message broker for the worker: RabbitMQ, through aio-pika.
 # aiormq, which aio-pika installs, for the one error it does not re-export.
@@ -115,6 +122,8 @@ dev = [
     "pytest-cov (>=7.1.0,<8.0.0)",
     # A test that hangs ends the run within its time limit, naming itself.
     "pytest-timeout (>=2.4.0,<3.0.0)",
+    # The suite on every core: pytest -n auto (README, CI).
+    "pytest-xdist (>=3.8.0,<4.0.0)",
     "ruff (>=0.16.8,<0.17.0)",
     "mypy (>=2.3.1,<3.0.0)",
     "pip-audit (>=2.9.0,<3.0.0)",
@@ -136,6 +145,13 @@ dev = [
     # used. Only the lint job (3.13) runs it, and it has no wheel for
     # free-threaded 3.14t, which would have to build it with Rust.
     "deptry (>=0.25.1,<0.26.0); python_version < \"3.14\"",
+]
+# The documentation site (mkdocs.yml), which CI's docs-site job builds; the
+# API reference reads the source with griffe and imports nothing, so this
+# group needs neither the package nor its dependencies.
+docs = [
+    "mkdocs-material (>=9.8.0,<10.0.0)",
+    "mkdocstrings-python (>=2.0.10,<3.0.0)",
 ]
 
 [tool.ruff]
@@ -181,7 +197,8 @@ ignore_missing_imports = true
 # extra of the feature that imports it (deptry counts extras as declared).
 [tool.deptry]
 known_first_party = ["domainkit"]
-extend_exclude = ["domainkit_tests", "benchmarks", "mutants"]
+# docs/hooks: the site's build, with the docs group, never the package.
+extend_exclude = ["domainkit_tests", "benchmarks", "mutants", "docs"]
 
 # Distributions whose modules have other names, so that deptry needs no
 # installed metadata to match them.
@@ -192,6 +209,7 @@ grpcio = "grpc"
 immudb-py = "immudb"
 opentelemetry-api = "opentelemetry"
 prometheus-client = "prometheus_client"
+protobuf = "google"
 pydantic-core = "pydantic_core"
 pyjwt = "jwt"
 python-dotenv = "dotenv"
@@ -245,6 +263,11 @@ also_copy = [
     "SECURITY.md",
     "renovate.json",
     "LICENSE",
+    "CONTRIBUTING.md",
+    ".pre-commit-config.yaml",
+    "Makefile",
+    "compose.yaml",
+    "mkdocs.yml",
 ]
 pytest_add_cli_args_test_selection = ["domainkit_tests/", "-p", "no:randomly"]
 # Fork from a clean server: children forked after the suite ran hang on

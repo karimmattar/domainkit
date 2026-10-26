@@ -34,6 +34,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from domainkit import deadlines
 from domainkit.conf import settings
+from domainkit.context import logged_path
 from domainkit.http.errors import error_response
 
 try:
@@ -94,7 +95,7 @@ class DeadlineMiddleware:
             logger.warning(
                 "%s %s ran past its deadline%s",
                 scope["method"],
-                scope["path"],
+                logged_path(scope),
                 _given(bound),
             )
             await _answer(scope, receive, send)

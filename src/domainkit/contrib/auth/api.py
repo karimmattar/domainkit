@@ -27,16 +27,26 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from domainkit.context import bind_request, current_request
 from domainkit.ddd import PermissionDenied
+from domainkit.http.access import AllowScoped, IsUnscoped, Public, Require
 from domainkit.http.errors import APIError, error_responses
 
-from .access import AuthenticatedUser, IsUnscoped, Public, Require
+from .access import AuthenticatedUser
 from .authentication import Credentials, IssuedTokens, get_authenticators
 from .backends import authenticate, get_all_permissions
+from .devices import hand_out, proven_device, proven_limits
 from .events import UserLoggedOut
 from .hashers import acheck_password
 from .models import AbstractBaseUser, UserId
 from .settings import auth_settings
-from .throttling import Attempt, account_key, address_key, audit_refusal, throttle
+from .throttling import (
+    Attempt,
+    Limit,
+    account_key,
+    address_key,
+    attempt,
+    audit_refusal,
+    throttle,
+)
 from .uow import AuthUnitOfWork
 from .validators import validate_password
 
@@ -45,6 +55,8 @@ __all__ = [
     "router",
 ]
 
+LOGIN_THROTTLED = "Too many login attempts; try again later."
+"""The detail of a throttled login."""
 PASSWORD_MAX_LENGTH = 4096
 """Longer passwords are refused before hashing, which they would slow down."""
 
@@ -144,19 +156,31 @@ async def login(
 
     if (pending := await challenge(user)) is not None:
         response.status_code = status.HTTP_202_ACCEPTED
-        return pending
-    return _token_out(await issue_login(user))
+        return pending  # The device proof waits for the second factor.
+    issued = await issue_login(user)
+    await hand_out(request, response, user)
+    return _token_out(issued)
 
 
 async def check_password(request: Request, body: LoginIn) -> AbstractBaseUser:
     """The user a login's username and password prove, counted and audited.
 
-    Only wrong credentials count against ``AUTH.LOGIN_RATE``.
+    Only wrong credentials count against ``AUTH.LOGIN_RATE``: per address
+    and per account, or, for a client with a device proof for the account,
+    per device and against the account's ceiling of proven attempts
+    (``devices``).
 
     Raises:
         APIError: 401 for wrong credentials; 429 past ``AUTH.LOGIN_RATE``.
     """
-    counted = await _throttle(request, *_login_keys(request, body.username))
+    device = await proven_device(request, body.username)
+    counted = await attempt(
+        request,
+        _login_limits(request, body.username, device),
+        action="auth.login",
+        detail=LOGIN_THROTTLED,
+        code="login_throttled",
+    )
     user = await authenticate(username=body.username, password=body.password)
     if user is None:
         await _audit_refusal("invalid_credentials")
@@ -170,10 +194,16 @@ async def check_password(request: Request, body: LoginIn) -> AbstractBaseUser:
 
 
 async def issue_login(user: AbstractBaseUser) -> IssuedTokens:
-    """Record the user's login, and issue them tokens (the first class's)."""
+    """Record the user's login, and issue them tokens (the first class's).
+
+    Past ``AUTH.MAX_LOGINS``, the user's oldest logins end.
+    """
     with _acting_as(user):
         async with AuthUnitOfWork() as uow:
             stored = await uow.users.get(UserId(user.id))
+            await uow.tokens.end_oldest_logins(
+                stored.id, keep=auth_settings().MAX_LOGINS - 1
+            )
             tokens = await get_authenticators()[0].issue(uow, stored)
             await uow.users.record_login(stored)
             await uow.commit()
@@ -198,6 +228,7 @@ async def refresh(body: RefreshIn, response: Response) -> TokenOut:
 @router.post(
     "/logout",
     status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(Require(AllowScoped()))],
     responses=_errors(status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN),
 )
 async def logout(
@@ -225,7 +256,11 @@ async def logout(
         await uow.commit()
 
 
-@router.get("/me", responses=_errors(status.HTTP_401_UNAUTHORIZED))
+@router.get(
+    "/me",
+    dependencies=[Depends(Require(AllowScoped()))],
+    responses=_errors(status.HTTP_401_UNAUTHORIZED),
+)
 async def me(request: Request, user: AuthenticatedUser) -> UserOut:
     """The user who sent the request, and what these credentials may do.
 
@@ -311,7 +346,7 @@ async def _throttle(request: Request, *keys: str) -> Attempt:
         auth_settings().LOGIN_RATE,
         keys,
         action="auth.login",
-        detail="Too many login attempts; try again later.",
+        detail=LOGIN_THROTTLED,
         code="login_throttled",
     )
 
@@ -325,9 +360,19 @@ def _no_store(response: Response) -> None:
     response.headers["Pragma"] = "no-cache"
 
 
-def _login_keys(request: Request, username: str) -> tuple[str, str]:
-    """The counts a login is checked against: its address's and its account's."""
-    return address_key(request, "login"), account_key("login", username)
+def _login_limits(request: Request, username: str, device: str | None) -> list[Limit]:
+    """The counts a login is checked against: its address's and its account's.
+
+    A client with a device proof for the account: its device's, and the
+    account's ceiling of proven attempts (``devices.proven_limits``).
+    """
+    rate = auth_settings().LOGIN_RATE
+    if device is not None:
+        return proven_limits(device, username, rate)
+    return [
+        (address_key(request, "login"), rate),
+        (account_key("login", username), rate),
+    ]
 
 
 async def _audit_refusal(reason: str) -> None:

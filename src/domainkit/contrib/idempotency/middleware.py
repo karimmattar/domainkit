@@ -38,6 +38,8 @@ Keys are scoped to the authenticated actor (set by
 they are scoped to the client address and the request's credentials (the
 ``CREDENTIAL_HEADERS``, hashed), so callers behind one address never share
 keys where the project authenticates on its own with one of those headers.
+A key sent with neither is shared by every caller behind the address;
+``ANONYMOUS = "refuse"`` answers it 400 instead.
 List the middleware after ``RequestContextMiddleware`` and
 ``RequestBodyLimitMiddleware`` (it reads the whole body).
 """
@@ -57,12 +59,13 @@ from domainkit import clock
 from domainkit.apps import registry
 from domainkit.context import current_request
 from domainkit.db import connections
+from domainkit.ddd.personal import SEPARATOR, subject_tag
 from domainkit.http.errors import error_response
 from domainkit.tasks import spawn
 
 from . import statements
 from .operations import Operation, run_operation
-from .settings import IdempotencySettings
+from .settings import REFUSE, IdempotencySettings
 from .statements import RELEASE, STORE, clock_statements, holder
 
 __all__ = [
@@ -160,15 +163,25 @@ class IdempotencyMiddleware:
                 code="invalid_idempotency_key",
             )(scope, receive, send)
             return
+        if config.ANONYMOUS == REFUSE and _unnamed(scope, config):
+            await error_response(
+                status.HTTP_400_BAD_REQUEST,
+                "An Idempotency-Key needs a caller this service knows: "
+                "authenticate, or send the request without the key.",
+                code="idempotency_key_needs_caller",
+            )(scope, receive, send)
+            return
         read = await _read_body(receive)
         if read is None:
             return  # The client left before sending its whole body: run nothing.
         body, replay_receive = read
-        key_hash = _hash(_caller(scope, config.CREDENTIAL_HEADERS), key)
+        request = current_request()
+        actor = request.actor if request is not None else None
+        key_hash = _hash(_caller_of(actor, scope, config.CREDENTIAL_HEADERS), key)
         fingerprint = _hash(
             scope["method"], scope["path"], scope.get("query_string", b""), body
         )
-        operation = Operation(key_hash, secrets.token_hex(16))
+        operation = Operation(key_hash, secrets.token_hex(16), actor=actor or None)
         existing = await self._claim(config, operation, fingerprint)
         if existing is not None and not (
             _abandoned(existing, fingerprint)
@@ -444,6 +457,19 @@ async def _finish(
     taken the key over.
     """
     held = holder(operation.key_hash, operation.token)
+    # Whom a kept response may be about (``subjects``): the actor, first,
+    # then the subjects of the events it committed (``subject_tag``):
+    # ``<US>actor<US><US>ann<US>``, the actor empty when there is none (or
+    # it holds the separator). ``tagged_with`` finds either; an export
+    # gives the body only to the actor (``export_subject``). The actor
+    # alone, the common case, takes no call on the request's path.
+    actor = operation.actor
+    if body is None or (actor is None and not operation.subjects):
+        tag = None
+    else:
+        caller = actor if actor is not None and SEPARATOR not in actor else ""
+        others = subject_tag(operation.subjects) if operation.subjects else None
+        tag = f"{SEPARATOR}{caller}{SEPARATOR}{others or SEPARATOR}"
     async with connections.autocommit(config.DATABASE) as connection:
         if body is None and not (operation.committed or operation.pinned):
             released = await connection.execute(RELEASE, held)
@@ -462,6 +488,7 @@ async def _finish(
                 ),
                 "headers": headers,
                 "body": body,
+                "subjects": tag,
                 **held,
             },
         )
@@ -485,8 +512,16 @@ def _died_after_commit(existing: dict[str, Any]) -> bool:
 def _caller(scope: Scope, credential_headers: tuple[str, ...]) -> str:
     """Scope keys to the actor, or else to the address and the credentials."""
     request = current_request()
-    if request is not None and request.actor:
-        return f"actor:{request.actor}"
+    actor = request.actor if request is not None else None
+    return _caller_of(actor, scope, credential_headers)
+
+
+def _caller_of(
+    actor: str | None, scope: Scope, credential_headers: tuple[str, ...]
+) -> str:
+    """``_caller``, for a request whose ``actor`` was read already."""
+    if actor:
+        return f"actor:{actor}"
     client = scope.get("client")
     headers = Headers(scope=scope)
     credentials = _hash(
@@ -498,6 +533,35 @@ def _caller(scope: Scope, credential_headers: tuple[str, ...]) -> str:
         )
     )
     return f"anonymous:{client[0] if client else 'unknown'}:{credentials}"
+
+
+def _unnamed(scope: Scope, config: IdempotencySettings) -> bool:
+    """Whether nothing in the request names its caller: its key would be shared.
+
+    Named: an actor, one of ``CREDENTIAL_HEADERS``, or, for ``cookie``, a
+    cookie of ``SESSION_COOKIES``. Any other cookie (consent, locale) many
+    callers send alike, so it scopes a key to them all (SEC-10b-7).
+    """
+    request = current_request()
+    if request is not None and request.actor:
+        return False
+    headers = Headers(scope=scope)
+    for name in config.CREDENTIAL_HEADERS:
+        if name.lower() != "cookie":
+            if name in headers:
+                return False
+        elif _session_cookie(headers.getlist("cookie"), config.SESSION_COOKIES):
+            return False
+    return True
+
+
+def _session_cookie(values: list[str], names: tuple[str, ...]) -> bool:
+    """Whether the ``Cookie`` headers carry a cookie named in ``names``."""
+    return any(
+        part.split("=", 1)[0].strip() in names
+        for value in values
+        for part in value.split(";")
+    )
 
 
 def _no_store(started: dict[str, Any]) -> bool:

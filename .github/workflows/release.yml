@@ -1,11 +1,15 @@
 # Push a tag "vX.Y.Z" on a commit of main, matching pyproject.toml's
-# version, to publish it to PyPI. The tagged commit must pass the whole CI
-# workflow here (lint, types, tests, integration, coverage, benchmarks,
-# build, bill of materials, Semgrep, audit), and the package published is
-# the one CI built and smoke-tested.
-# Before publishing, GitHub attests the wheel and sdist: SLSA build
-# provenance for both, and CI's CycloneDX bill of materials for the wheel
-# ("gh attestation verify <file> --repo karimmattar/domainkit").
+# version, to publish it to PyPI. The tagged commit's own CI run, the one
+# its push to main started, must have passed the whole CI workflow (lint,
+# types, tests, integration, coverage, benchmarks, build, bill of
+# materials, Semgrep, audit): this workflow finds it, waits for it if it is
+# still running, and refuses the tag unless it succeeded. Nothing is run
+# again, and the package published is the one that run built and
+# smoke-tested, downloaded from it.
+# That run attested what it built: SLSA build provenance for the wheel and
+# sdist, naming ci.yml and that run, and its CycloneDX bill of materials for
+# the wheel ("gh attestation verify <file> --repo karimmattar/domainkit").
+# Before publishing, this workflow checks both, for each file it publishes.
 # Publishing uses trusted publishing (OIDC): no API token is stored anywhere.
 # One-time setup is in docs/versioning.md.
 name: Release
@@ -60,48 +64,81 @@ jobs:
             exit 1
           fi
 
+  # The CI run of the push to main that made the tagged commit, by a
+  # maintainer (pushes to main come only from merged pull requests): its
+  # id, once it has succeeded. Its dist and sbom artifacts, and the
+  # attestations it made of them, are what the jobs below check and publish.
   ci:
     needs: tag
-    uses: ./.github/workflows/ci.yml
-
-  # Signed statements, kept by GitHub, that these files came from this
-  # workflow at this commit, and what the wheel is made of. Its own job, so
-  # only it may write attestations.
-  attest:
-    needs: ci
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # A run that started with the merge may still be going.
+    timeout-minutes: 45
     permissions:
       contents: read
-      id-token: write # A Sigstore certificate naming this workflow run.
-      attestations: write # Keeps the attestations with the repository.
+      actions: read # Main's CI runs.
+    outputs:
+      run-id: ${{ steps.run.outputs.id }}
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - name: Find main's CI run for the tagged commit, and require it green
+        id: run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          id="$(gh run list --repo "$REPO" --workflow ci.yml --branch main \
+            --event push --commit "$SHA" --limit 1 --json databaseId \
+            --jq '.[0].databaseId // empty')"
+          if [ -z "$id" ]; then
+            echo "::error::No CI run of a push to main for $SHA; tag a commit main's CI ran on." >&2
+            exit 1
+          fi
+          gh run watch "$id" --repo "$REPO" --interval 30 > /dev/null || true
+          conclusion="$(gh run view "$id" --repo "$REPO" --json conclusion --jq .conclusion)"
+          if [ "$conclusion" != "success" ]; then
+            echo "::error::CI run $id for $SHA ended with '$conclusion'; re-run it or fix main." >&2
+            exit 1
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "Publishing what CI run $id built: $GITHUB_SERVER_URL/$REPO/actions/runs/$id" >> "$GITHUB_STEP_SUMMARY"
+
+  # The audit again, on the tagged commit: an advisory or a leaked secret
+  # can come to light after main's run. The same steps as CI's audit job
+  # (domainkit_tests/test_ci.py checks that).
+  audit:
+    needs: tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          name: dist
-          path: dist/
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          name: sbom
-          path: sbom/
-      - name: Attest build provenance
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
-        with:
-          subject-path: dist/*
-      - name: Attest the bill of materials
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
-        with:
-          subject-path: dist/*.whl
-          sbom-path: sbom/sbom.cdx.json
+          python-version: "3.13"
+      - run: pipx install "poetry==${POETRY_VERSION}"
+      - run: poetry sync --all-extras --with dev
+      # PYSEC-2026-1325 (CVE-2024-23342): a timing attack on ecdsa signing.
+      # immudb's SDK only verifies signatures with ecdsa, which the advisory
+      # says is unaffected, and no fix is planned. See SECURITY.md.
+      - run: poetry run pip-audit --progress-spinner off --ignore-vuln PYSEC-2026-1325
+      - name: Scan the whole history for secrets
+        run: >-
+          docker run --rm -v "$PWD:/repo"
+          zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+          git /repo --redact --no-banner --verbose
 
   publish:
-    needs: [ci, attest]
+    needs: [ci, audit]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment:
       name: pypi
       url: https://pypi.org/project/domainkit/
     permissions:
+      actions: read # The CI run's artifacts.
+      attestations: read # Checks them before publishing.
       id-token: write
     steps:
       # The wheel and sdist from CI's build job, which installed the wheel
@@ -110,5 +147,71 @@ jobs:
         with:
           name: dist
           path: dist/
+          run-id: ${{ needs.ci.outputs.run-id }}
+          github-token: ${{ github.token }}
+      # Each file must carry provenance signed by ci.yml on main at the
+      # tagged commit, from GitHub's own runners; the wheel its bill of
+      # materials too. A file that run did not build is refused.
+      - name: Check that main's CI run attested every file
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          for file in dist/*; do
+            gh attestation verify "$file" --repo "$REPO" \
+              --signer-workflow "$REPO/.github/workflows/ci.yml" \
+              --source-ref refs/heads/main --source-digest "$SHA" \
+              --deny-self-hosted-runners
+          done
+          for wheel in dist/*.whl; do
+            gh attestation verify "$wheel" --repo "$REPO" \
+              --signer-workflow "$REPO/.github/workflows/ci.yml" \
+              --source-ref refs/heads/main --source-digest "$SHA" \
+              --deny-self-hosted-runners --predicate-type https://cyclonedx.org/bom
+          done
       # Uploads with PEP 740 attestations by default.
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+
+  # A GitHub Release for the tag, made after PyPI has the files: the
+  # CHANGELOG's section for the version as its notes
+  # (.github/scripts/release_notes.py), and the wheel, the sdist, the
+  # wheel's bill of materials, and their SHA-256 sums as its assets. Its own
+  # job, so only it may write to the repository.
+  github-release:
+    needs: [ci, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # Creates the release and uploads its assets.
+      actions: read # Main's CI run's artifacts.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist/
+          run-id: ${{ needs.ci.outputs.run-id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sbom
+          path: sbom/
+          run-id: ${{ needs.ci.outputs.run-id }}
+          github-token: ${{ github.token }}
+      - name: Write the notes and the checksums
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python3 .github/scripts/release_notes.py "${TAG#v}" CHANGELOG.md > notes.md
+          cp sbom/sbom.cdx.json "dist/domainkit-${TAG#v}.cdx.json"
+          (cd dist && sha256sum -- *) > SHA256SUMS
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: >-
+          gh release create "$TAG" dist/* SHA256SUMS --verify-tag
+          --title "$TAG" --notes-file notes.md

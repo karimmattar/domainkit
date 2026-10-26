@@ -40,6 +40,7 @@ URLs; an unreadable port is refused without quoting the URL.
 | `SETTINGS_MODULE` | set by the loader | The module these settings came from. |
 | `BASE_DIR` | the project root | The directory holding `pyproject.toml`. |
 | `ENVIRONMENT` | `"local"` | `local`, `test`, `staging`, or `production`. Staging and production get the [deployment checks](#deployment-checks). |
+| `SILENCED_CHECKS` | `()` | Ids of warnings `check` stops reporting, as `security.W001` ([deployment checks](#deployment-checks)); at most 64, each once. Errors cannot be silenced. |
 | `DEBUG` | `False` | Development conveniences; refused in staging and production. |
 | `DEBUG_TOOLBAR` | see [Debug toolbar](#debug-toolbar) | The options of `DebugToolbarMiddleware`, which development settings list in `MIDDLEWARE`. |
 | `SLOW_CALLBACK_DURATION` | `0.1` | With `DEBUG`, the application's loop runs in asyncio's debug mode and logs each step that holds it this many seconds or more ([runtime.md](runtime.md#finding-blocking-code)); `None` turns it off. |
@@ -52,6 +53,8 @@ URLs; an unreadable port is refused without quoting the URL.
 | `MIDDLEWARE` | see [Middleware](#middleware) | ASGI middleware by dotted path, outermost first. |
 | `ROOT_ROUTER` | `None` | Dotted path to the `APIRouter` that mounts every route (Django's `ROOT_URLCONF`). |
 | `FLATTEN_ROUTERS` | `True` | Serve the routes of the routers `ROOT_ROUTER` includes from the top of the application, each matched once ([Included routers](#included-routers)); `False` keeps FastAPI's nesting, which matches a request again at each level. |
+| `REQUIRE_ROUTE_RULES` | `True` | Every route must say who may call it (`Require`, a dependency that reads the principal, or `Public`), whatever authenticates requests; `check` lists those that do not, and staging and production refuse to start ([Deny by default](auth/routes.md#deny-by-default)). `AUTH.REQUIRE_ROUTE_RULES = False` still turns it off until 0.11, with a warning. |
+| `SCOPED_CREDENTIALS` | `"warn"` | Credentials limited to scopes on a route that declares no rule that checks scopes (`HasScope`, a permission rule, `IsUnscoped`, or `AllowScoped`): `"warn"` lets them through, as before 0.10, with a `DomainkitDeprecationWarning` and a security log line once per route a while; `"refuse"` answers 403, as 0.11 will by default ([Scopes on every route](auth/authentication.md#scopes-on-every-route)). |
 | `ASGI_APPLICATION` | `None` | `module:attribute` that `runserver` serves. |
 | `EVENT_LOOP` | `"auto"` | The event loop of `runserver` and of commands with an `async` handle (`runworker` among them): uvloop when the `uvloop` extra is installed (`auto`), always asyncio's own (`asyncio`), or uvloop or a configuration error (`uvloop`). |
 | `LOGGING` | minimal | A `logging.config.dictConfig` mapping, applied by `setup()`. `domainkit.log.build_logging_config(log_format="json", level="INFO")` makes one that writes from a thread, through a bounded queue ([runtime.md](runtime.md#logging-and-error-reports)); the settings `init` writes use it. |
@@ -116,12 +119,36 @@ Each `DATABASES` entry:
 | `CONNECT_TIMEOUT` | `10.0` | Seconds to open a connection (asyncpg's `timeout`; libpq's `connect_timeout`, in whole seconds; at most 2147483.647), migrations included. A request that needs a new connection waits this long at most, after its `POOL_TIMEOUT`. |
 | `COMMAND_TIMEOUT` | `STATEMENT_TIMEOUT` plus 5 | Seconds asyncpg waits for one statement before giving up on it (a network or server that stopped answering; at most 2147483.647). Longer than `STATEMENT_TIMEOUT`, so the server ends a slow statement first, with an error that keeps the connection. None without `STATEMENT_TIMEOUT`; migrations are exempt. |
 | `PGBOUNCER` | `False` | The database is reached through PgBouncer's transaction pooling: no statement cache, a unique name for every prepared statement, and the timeouts above set in each transaction (`SET LOCAL`) rather than for the session. PostgreSQL URLs only ([runtime.md](runtime.md#database-timeouts-and-pgbouncer)). |
-| `POOL_SIZE`, `MAX_OVERFLOW`, `POOL_RECYCLE` | SQLAlchemy's | Connection pool sizing. |
+| `POOL_SIZE`, `MAX_OVERFLOW`, `POOL_RECYCLE` | SQLAlchemy's | Connection pool sizing ([sizing pools](#sizing-pools)). |
 | `POOL_TIMEOUT` | `10.0` for network databases, else SQLAlchemy's | Seconds a request waits for a connection; past it the request gets 503 `database_busy`. |
 | `POOL_PRE_PING` | `True` | Test connections before use, so database restarts are survived. On asyncpg outside PgBouncer the test is one round trip, outside a transaction ([databases.md](databases.md#connection-pools)). |
 | `TEST_NAME` | `None` | The PostgreSQL database `domainkit.testing` creates for the tests, and drops after them; `test_<name>` when unset. It must start with `test_` ([docs/testing.md](testing.md)). |
 | `CONNECT_ARGS` | `{}` | Extra driver arguments, added to those derived from the options above. asyncpg's `server_settings` and libpq's `options` are merged with the timeouts. Setting what the options above already set (TLS, a timeout, PgBouncer's statement cache) is refused when the application is built, however the server setting is spelled (`STATEMENT_TIMEOUT`, `--statement-timeout=`); change that option instead. `timeout`, `command_timeout`, and `connect_timeout` are refused the same way (deprecated in 0.8, refused from 0.9): set `CONNECT_TIMEOUT` and `COMMAND_TIMEOUT`. |
 | `REPLICAS` | `()` | Aliases of read replicas of this database; read-only units of work take turns on them ([databases.md](databases.md#read-replicas)). Each is an alias of its own, other than `default`, of one primary, outside every shard group, with no replicas of its own, and never a routing target. |
+
+#### Sizing pools
+
+Each event loop of each process has its own pool per alias, of up to
+`POOL_SIZE` + `MAX_OVERFLOW` connections (SQLAlchemy's 5 + 10 when unset),
+and a second one of the same size when it reads with `Reads.STATEMENTS`.
+The connections a database must accept are then:
+
+```text
+replicas × processes per replica × loops per process × (POOL_SIZE + MAX_OVERFLOW) × pools
+```
+
+50 replicas of 4 single-loop workers with the defaults and both pools:
+50 × 4 × 1 × 15 × 2 = 6,000, past PostgreSQL's default of 100 and most
+managed plans' limits; put PgBouncer in front (`PGBOUNCER`), or size the
+pools down. Each loop also admits `MAX_CONCURRENT_REQUESTS` (1,000)
+requests: past about four per connection, a request waits for one, unseen
+by the shedding queue, for up to `POOL_TIMEOUT`, then fails with 503
+`database_busy`. `check` warns, in staging and production, when a network
+database's pool holds fewer than a quarter of `MAX_CONCURRENT_REQUESTS`.
+The defaults stay: measured with requests that each hold a connection for
+20 ms against a pool of 15, a burst of 200 is all served under a cap of
+1,000 (in 463 ms at most), where a cap of 60 refuses 40 of them
+([performance.md](performance.md#010-foundations)).
 
 Each `LEDGERS` entry:
 
@@ -188,7 +215,7 @@ Each `STORAGES` entry:
 ### Brokers
 
 Message brokers carry the worker's work when `MESSAGING.BROKER` names one;
-see [contrib.md](contrib.md#workers-on-rabbitmq).
+see [contrib.md](contrib/messaging.md#workers-on-rabbitmq).
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
@@ -210,11 +237,11 @@ Each `BROKERS` entry:
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `ALLOWED_HOSTS` | `localhost`, `127.0.0.1`, `[::1]` | Accepted `Host` values; `*.example.com` matches subdomains. A `Host` that is not a name, an IPv4 address, or a bracketed IPv6 address (with an optional port) is refused before matching. A wildcard `*` is refused in staging and production. |
-| `API_DOCS` | `True` | Serve `/docs`, `/redoc`, and `/openapi.json`. `check` warns when it is on in staging and production. |
+| `API_DOCS` | `None` | Serve `/docs`, `/redoc`, and `/openapi.json`; `None` follows `DEBUG`, so a deployment serves them only with `API_DOCS = True`. The pages load Swagger UI and ReDoc from domainkit's own copies under `/docs/assets/`, never a CDN, with a Content-Security-Policy of their own ([Security headers](#security-headers)). `check` warns when it is on in staging and production. |
 | `OPENAPI_OPERATION_IDS` | `"fastapi"` | `"route_name"`: each operation id is the route's name, stable when routers move (see [The API surface](#the-api-surface)). `init` sets it for new projects. |
 | `ERROR_FORMAT` | `"domainkit"` | `"problem+json"`: errors are RFC 9457 problem details (see [Errors](#errors)). |
 | `ERROR_TYPE_BASE_URL` | `None` | With problem details, each code's `type` is this absolute URL plus the code (`https://errors.example.com/` gives `https://errors.example.com/not_found`); unset, it is `about:blank`. |
-| `MAX_REQUEST_BODY_SIZE` | `1048576` | Bytes; larger bodies get 413, whether declared or streamed. A larger WebSocket message, text counted in UTF-8 bytes, closes the connection with 1009. |
+| `MAX_REQUEST_BODY_SIZE` | `1048576` | Bytes; larger bodies get 413, whether declared or streamed. A larger WebSocket message, text counted in UTF-8 bytes, closes the connection with 1009. A route with `body_limit(size)` (1 byte to 1 GiB) is held to its own limit instead, above or below this one ([uploads.md](uploads.md#body-limits-per-route)). |
 | `REQUEST_BODY_TIMEOUT` | `10.0` | Seconds (at most 3600) the application may wait for a request's body, all its chunks together (`RequestBodyLimitMiddleware`); past it the request is answered 408 `request_timeout` and the connection closed. Time spent working between chunks, or after the response starts, does not count. |
 | `REQUEST_TIMEOUT` | `30.0` | Seconds (at most 3600) an HTTP request may take until its response starts (`DeadlineMiddleware`); past it the work is cancelled and answered 503 `deadline_exceeded`. A route sets its own with `RequestTimeout`. `None`: no deadline ([runtime.md](runtime.md#request-deadlines)). Below `IDEMPOTENCY.LEASE_SECONDS` where idempotency is installed. |
 | `MAX_CONCURRENT_REQUESTS` | `1000` | HTTP requests each event loop works on at once (`ConcurrencyLimitMiddleware`), at most 100,000; a request waiting for its body is not counted meanwhile. `None`: no cap ([runtime.md](runtime.md#load-shedding)). |
@@ -229,22 +256,27 @@ Each `BROKERS` entry:
 | `ACCESS_LOG_QUIET_PATHS` | `/health`, `/ready` | Successful requests to these paths are logged at DEBUG; compared without the root path (`--root-path`). |
 | `ACCESS_LOG_SAMPLE_RATE` | `1.0` | Share of access lines written, from 0 to 1: `0.1` writes about one request in ten, each drawn on its own. Responses from 400 up (client errors, refusals, and server errors), requests without a response, and requests that take `ACCESS_LOG_SLOW_DURATION` or longer are always written, so only successes and redirects are sampled; `domainkit.security` and the audit trail are never sampled ([runtime.md](runtime.md#sampling-the-access-log)). |
 | `ACCESS_LOG_SLOW_DURATION` | `1.0` | Seconds (at most 3600): a request this slow or slower has its access line written whatever `ACCESS_LOG_SAMPLE_RATE` says. |
+| `ACCESS_LOG_PATH` | `"template"` | The path access lines, the request middleware's error lines, error reports, and the request context show: the matched route's template (`/accounts/{account_id}`), or `unmatched`; `"raw"` shows the path as sent, ids and tokens included ([runtime.md](runtime.md#paths-in-logs)). |
 | `TRUSTED_PROXIES` | `()` | Networks (`10.0.0.0/8`) whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed, and `"unix"` for the proxy on the other end of a unix socket (`uvicorn --uds`), which has no address. The client is found by walking `X-Forwarded-For` from the right, across every line of the header, through trusted proxies: it is the first hop that is not one, and nothing left of it is read. Hops may carry a port. A hop there that is no address (a proxy's `unknown`) counts the client as the last proxy passed, logged on `domainkit.security`. The scheme is the `PROXY_SCHEME_HEADER` value at the client's place from the right, or the right-most one when there are fewer. Empty: the socket peer is the client. |
 | `PROXY_SCHEME_HEADER` | `"X-Forwarded-Proto"` | The header in which the trusted proxies say the client's scheme (a header name). `None`: the scheme is never taken from a header. Set it to `None` when they do not set it (HAProxy's `option forwardfor` alone, an NLB), or a client's own `X-Forwarded-Proto` would be read, and choose whether cookies are `Secure`. `None` holds only where the server reads no proxy header itself: uvicorn, unless run with `--no-proxy-headers`, sets the scheme from `X-Forwarded-Proto` before domainkit sees the request, for every request from `FORWARDED_ALLOW_IPS` (`127.0.0.1` by default: a proxy on the same host). Granian reads none. |
 | `RATE_LIMIT` | `None` | Requests per caller, such as `"300/minute"` (`second`, `minute`, `hour`, `day`). `None` disables it. |
 | `RATE_LIMIT_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths never counted; compared without the root path (`--root-path`). |
-| `RATE_LIMIT_BACKEND` | `domainkit.http.ratelimit.MemoryBackend` | Where counts live. The default is per process, and keeps the 100,000 most recently seen callers; one seen longer ago starts afresh. Behind several replicas, use `domainkit.http.ratelimit.RedisBackend`: one count per caller in Redis, on the server's clock. If Redis fails, or refuses the count (out of memory, a read-only replica after a failover), requests are let through, and Redis is skipped for the cache's `FAILURE_COOLDOWN`; `AUTH.THROTTLE_FAIL_CLOSED` refuses password and code checks meanwhile instead ([auth.md](auth.md#logging-in-and-out)). |
+| `RATE_LIMIT_BACKEND` | `domainkit.http.ratelimit.MemoryBackend` | Where counts live. The default is per process, and keeps the 100,000 most recently seen callers; one seen longer ago starts afresh. Behind several replicas, use `domainkit.http.ratelimit.RedisBackend`: one count per caller in Redis, on the server's clock. If Redis fails, or refuses the count (out of memory, a read-only replica after a failover), requests are let through, and Redis is skipped for the cache's `FAILURE_COOLDOWN`; `AUTH.THROTTLE_FAIL_CLOSED` refuses password and code checks meanwhile instead ([auth.md](auth/logging-in.md#logging-in-and-out)). |
 | `RATE_LIMIT_CACHE` | `"default"` | The Redis cache `RedisBackend` counts in; keys are `<KEY_PREFIX>:ratelimit:<caller>`. |
+| `RATE_LIMIT_FALLBACK_REPLICAS` | `None` | 1 to 1024: while Redis is down, `RedisBackend` counts each caller in its own process at `RATE_LIMIT` divided by this many replicas (at most `FALLBACK_KEYS`, 10,000, callers; a caller who still owes requests is never forgotten, and while all of them do, new callers are refused); `None` lets requests through, as before. |
 | `RATE_LIMIT_IPV6_PREFIX` | `64` | IPv6 clients are counted per network of this prefix length (1 to 128), since one customer usually holds a whole /64; login throttling counts the same way. IPv4 clients are counted per address. |
 | `METRICS_TOKEN` | `None` | Bearer token for `/metrics`. Without it, `/metrics` answers 403 in staging and production. |
 | `SECURE_HSTS_SECONDS` | `0` | `Strict-Transport-Security` max-age; 0 omits the header. |
 | `SECURE_HSTS_INCLUDE_SUBDOMAINS` | `False` | Adds `includeSubDomains`. |
 | `SECURE_CONTENT_TYPE_NOSNIFF` | `True` | `X-Content-Type-Options: nosniff`. |
-| `SECURE_REFERRER_POLICY` | `"no-referrer"` | `Referrer-Policy`; `None` omits it. |
+| `SECURE_REFERRER_POLICY` | `"no-referrer"` | `Referrer-Policy`: one of its eight policies (`no-referrer`, `same-origin`, `strict-origin-when-cross-origin`, ...), or several, comma-separated; anything else, a line break included, is refused at startup. `None` omits it. |
 | `X_FRAME_OPTIONS` | `"DENY"` | Or `"SAMEORIGIN"`. |
-| `CORS_ALLOWED_ORIGINS` | `()` | Origins allowed to call the API from a browser. |
-| `CORS_ALLOWED_METHODS` | `GET POST PUT PATCH DELETE` | |
-| `CORS_ALLOWED_HEADERS` | `Authorization Content-Type X-Request-ID` | |
+| `SECURE_CONTENT_SECURITY_POLICY` | `"default-src 'none'; frame-ancestors 'none'"` | `Content-Security-Policy` of every response that sets none: nothing an answer holds may load, run, or be framed. Printable ASCII on one line, at most 4096 characters; `None` omits it. |
+| `SECURE_PERMISSIONS_POLICY` | `"accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"` | `Permissions-Policy` of every response that sets none: those powerful browser features off. Bounded as above; `None` omits it. |
+| `SECURE_CROSS_ORIGIN_OPENER_POLICY` | `"same-origin"` | `Cross-Origin-Opener-Policy`; or `"same-origin-allow-popups"`, `"unsafe-none"`; `None` omits it. |
+| `CORS_ALLOWED_ORIGINS` | `()` | Origins allowed to call the API from a browser: `*`, or a scheme and host (and port), without a path, a space, or a comma. |
+| `CORS_ALLOWED_METHODS` | `GET POST PUT PATCH DELETE` | Methods, or `*`: HTTP tokens of at most 64 characters, no space or line break. |
+| `CORS_ALLOWED_HEADERS` | `Authorization Content-Type X-Request-ID` | Header names, or `*`: HTTP tokens of at most 64 characters, no space or line break. |
 | `CORS_ALLOW_CREDENTIALS` | `False` | Cannot be combined with origin `*`. |
 
 ### Outgoing HTTP calls
@@ -447,89 +479,96 @@ toolbar, then keep them in check with `assert_max_queries` in a test.
 
 ### Deployment checks
 
-With `ENVIRONMENT` set to `staging` or `production`, startup fails on:
+Every problem `check` and startup report is a check with an id
+(`domainkit.checks`): a namespace, then `E` for an error, `W` for a
+warning, or `I` for a note, and a number, as `security.E001`. Each run
+reports every problem it finds, not the first: one error lists every
+breach of the baseline below, and `check` lists the application's
+problems, layer rules, and migration heads together. Where a message does
+not say how to fix it, a `Hint:` line does.
 
-- `DEBUG = True`
-- `domainkit.debug.DebugToolbarMiddleware` in `MIDDLEWARE`
-- `*` in `ALLOWED_HOSTS`
-- no `SECRET_KEY`, or a key (or fallback) with fewer than 50 characters,
-  fewer than 5 different ones, or a development prefix
-  (`domainkit-insecure-`, `django-insecure-`)
-- a `TRUSTED_PROXIES` network that holds every address (`0.0.0.0/0`, `::/0`)
-- `ECHO` or `LOG_PARAMETERS` on any database
-- a network database without `SSLMODE = "verify-full"`
-- a `memory://` ledger, or an immudb ledger without `TLS_CA` or
-  `SERVER_SIGNING_KEY`
-- a `memory://` broker, a broker on another host without `amqps://`, a
-  broker URL that turns certificate checks off (`no_verify_ssl`), and a
-  broker without a user of its own (none, or `guest`)
-- a `MemoryStorage` in `STORAGES`: its files live in one process, until
-  it ends
-- a Redis cache on another host without `rediss://` (`rediss+sentinel://`,
-  `rediss+cluster://`), or without a password or a client certificate, and
-  any cache URL that weakens certificate checks (`ssl_cert_reqs=none` or
-  `optional`, `ssl_check_hostname=false`)
+With `ENVIRONMENT` set to `staging` or `production`, settings that break
+the baseline do not load, so startup and every command fail on:
+
+| Id | Refused |
+| --- | --- |
+| `security.E001` | `DEBUG = True` |
+| `security.E002` | `domainkit.debug.DebugToolbarMiddleware` in `MIDDLEWARE` |
+| `security.E003` | `*` in `ALLOWED_HOSTS` |
+| `security.E004` | a `TRUSTED_PROXIES` network that holds every address (`0.0.0.0/0`, `::/0`) |
+| `security.E005`, `security.E006` | `ECHO` or `LOG_PARAMETERS` on any database |
+| `security.E007` | a network database without `SSLMODE = "verify-full"` |
+| `deploy.E001` | a `memory://` ledger |
+| `security.E008`, `security.E009` | an immudb ledger without `TLS_CA` or `SERVER_SIGNING_KEY` |
+| `security.E010`, `security.E011`, `security.E012` | a Redis cache on another host without `rediss://` (`rediss+sentinel://`, `rediss+cluster://`); any cache URL that weakens certificate checks (`ssl_cert_reqs=none` or `optional`, `ssl_check_hostname=false`); a network cache without a password or a client certificate |
+| `deploy.E002` | a `memory://` broker |
+| `security.E013`, `security.E014`, `security.E015` | a broker on another host without `amqps://`; a broker URL that turns certificate checks off (`no_verify_ssl`); a broker without a user of its own (none, or `guest`) |
+| `deploy.E003` | a `MemoryStorage` in `STORAGES`: its files live in one process, until it ends |
+| `security.E016`, `security.E017`, `security.E018` | no `SECRET_KEY`; a key (or fallback) with a development prefix (`domainkit-insecure-`, `django-insecure-`); one with fewer than 50 characters, or fewer than 5 different ones |
 
 Installed contrib apps add their own:
 
-- auth: a password hasher made for tests in `AUTH.PASSWORD_HASHERS`, a
-  network rather than one address in `AUTH.CLIENT_CERT.PROXIES`, and
-  `http://` in `AUTH.PASSWORD_RESET_URL`, `EMAIL_VERIFICATION_URL`, or
-  `SIGNUP_URL` ([auth.md](auth.md))
+- auth (`auth.E001` to `auth.E007`, every one reported at once): a
+  password hasher made for tests in `AUTH.PASSWORD_HASHERS`, a cookie
+  sent over plain HTTP, a network rather than one address in
+  `AUTH.CLIENT_CERT.PROXIES`, and `http://` in `AUTH.PASSWORD_RESET_URL`,
+  `EMAIL_VERIFICATION_URL`, or `SIGNUP_URL` ([auth.md](auth.md))
 - evidence: no `EVIDENCE.SUBJECT_KEY`
-  ([contrib.md](contrib.md#evidence-records-that-provably-never-change))
+  ([contrib.md](contrib/evidence.md#evidence-records-that-provably-never-change))
 - mail: the console or memory backend; and in any environment without
   `DEBUG`, SMTP without TLS ([mail.md](mail.md))
 - notifications: the console or memory backends ([mail.md](mail.md))
 - webhooks: a loopback or link-local network in
   `WEBHOOKS.ALLOWED_PRIVATE_NETWORKS`
-  ([contrib.md](contrib.md#webhooks-signed-events-for-other-services))
+  ([contrib.md](contrib/webhooks.md#webhooks-signed-events-for-other-services))
 
+The application refuses to start there with a route no rule guards
+(`security.E101`), operation ids that clash (`openapi.E001`), and the
+problems installed domains find (`auth.E101` to `auth.E104`;
+`idempotency.E001`; `idempotency.E002`, keyed requests without a deadline,
+unless `IDEMPOTENCY.REQUIRE_DEADLINE = False`; `audit.E001` to `audit.E003`,
+no `AUDIT.LEDGER`, no `AUDIT.NAMESPACE` on it, or nothing that seals on a
+schedule, and at startup `audit.E004` and `audit.E005`, an audited
+PostgreSQL database whose `protect()` triggers could not be checked or are
+missing, unless `AUDIT.REQUIRE_BASELINE = False`;
+[contrib.md](contrib/audit.md#in-staging-and-production)); `setup()` refuses a domain whose `requires` is not
+installed (`apps.E001`), anywhere. `check` adds layer rules
+(`architecture.E001`) and migration heads (`migrations.E001`).
 `migrate --downgrade` also needs `--allow-data-loss` there.
 
 `check` also warns about choices that are valid but weak there. It still
-passes, so an API that is public on purpose can keep them:
+passes, so an API that is public on purpose can keep them; `check
+--deploy` fails on them (exit status 1), for a deployment pipeline to gate
+on. A project that has judged one lists its id in `SILENCED_CHECKS`, and
+`check` counts it as silenced. Errors cannot be silenced: each stands for
+an unsafe or broken configuration, refused until it changes.
 
-- `API_DOCS = True`: anyone can read `/docs`, `/redoc`, and `/openapi.json`
-- `SECURE_HSTS_SECONDS = 0`: browsers are not told to keep to HTTPS
-- no `RATE_LIMIT`, or `RateLimitMiddleware` missing from `MIDDLEWARE`
-- a rate limit with no `TRUSTED_PROXIES`: behind a load balancer, every
-  caller would share its address and its count
-- a server on a unix socket without `"unix"` in `TRUSTED_PROXIES`: no
-  caller has an address ([Server limits](#server-limits); a deployed
-  application also logs it at start)
-- no `REQUEST_TIMEOUT`, or `DeadlineMiddleware` missing from `MIDDLEWARE`;
-  no `MAX_CONCURRENT_REQUESTS`, or `ConcurrencyLimitMiddleware` missing
-- a cache without `COMPUTE_TIMEOUT` (`CACHES[alias]["COMPUTE_TIMEOUT"]`):
-  one `get_or_set` computation that hangs holds its key until the process
-  restarts ([cache.md](cache.md#what-a-factory-may-use)); the `init`
-  template sets it
-- a database that seems to go through PgBouncer (port 6432, or a statement
-  cache turned off in `CONNECT_ARGS`) without `PGBOUNCER = True`
-- auth: `AUTH.LOGIN_RATE` or `AUTH.MFA.RATE` set to `None` (guesses
-  without limit), and a session or CSRF cookie name without the `__Host-`
-  prefix where the prefix could hold
-  ([auth.md](auth.md#browser-sessions-in-cookies))
-- auth: attempt throttles counted in a `RATE_LIMIT_BACKEND` each process
-  keeps alone (`MemoryBackend`): with several processes, each allows the
-  rates on its own ([auth.md](auth.md#logging-in-and-out))
-- auth: `AUTH.PRINCIPAL_CACHE.TTL` above 5 seconds without `STAMPS`: a
-  revoked token works that long in the other processes
-  ([auth.md](auth.md#the-principal-cache))
-- `LIVE_REAUTH_INTERVAL = None`: open WebSockets and event streams keep a
-  revoked token
-- an application that serves WebSockets under a server that reads larger
-  messages than `MAX_REQUEST_BODY_SIZE` (from `UVICORN_WS_MAX_SIZE` or
-  `GUNICORN_CMD_ARGS`; a deployed application also logs it at start), or
-  without
-  `WebSocketLimitsMiddleware`
-  ([live.md](live.md#message-size))
-- audit: no `AUDIT.LEDGER`, no `AUDIT.NAMESPACE` on it, or nothing that
-  seals on a schedule (no messaging, and no `AUDIT.SEALED_EXTERNALLY`); at
-  startup the application also logs audited PostgreSQL databases without
-  the `protect()` triggers. `AUDIT.REQUIRE_BASELINE` refuses to start
-  instead, and 0.10 makes that the default
-  ([contrib.md](contrib.md#in-staging-and-production))
+| Id | Warned |
+| --- | --- |
+| `security.W001` | `API_DOCS = True`: anyone can read `/docs`, `/redoc`, and `/openapi.json` |
+| `security.W002` | `SECURE_HSTS_SECONDS = 0`: browsers are not told to keep to HTTPS |
+| `security.W003` | no `RATE_LIMIT`, or `RateLimitMiddleware` missing from `MIDDLEWARE` |
+| `security.W004` | a rate limit with no `TRUSTED_PROXIES`: behind a load balancer, every caller would share its address and its count |
+| `security.W005` | `LIVE_REAUTH_INTERVAL = None`: open WebSockets and event streams keep a revoked token |
+| `security.W006` | `*` in `CORS_ALLOWED_ORIGINS`: any web site may call the API from its visitors' browsers |
+| `deploy.W001` | no `REQUEST_TIMEOUT`, or `DeadlineMiddleware` missing from `MIDDLEWARE` |
+| `deploy.W002` | no `MAX_CONCURRENT_REQUESTS`, or `ConcurrencyLimitMiddleware` missing |
+| `deploy.W003` | a database that seems to go through PgBouncer (port 6432, or a statement cache turned off in `CONNECT_ARGS`) without `PGBOUNCER = True` |
+| `deploy.W004` | a network database without `POOL_SIZE`: each process opens up to 15 connections (SQLAlchemy's 5 and 10 overflow), whatever the server's `max_connections`; size it so that processes x replicas x (`POOL_SIZE` + `MAX_OVERFLOW`) stays below it |
+| `deploy.W005` | a SQLite database: each process and host sees its own file |
+| `deploy.W006` | a network database whose pool holds fewer than a quarter of `MAX_CONCURRENT_REQUESTS` connections (`POOL_SIZE` + `MAX_OVERFLOW`, 5 + 10 by default): past about four requests per connection, requests wait for one, unseen by the shedding queue, up to `POOL_TIMEOUT` (10 seconds), then fail with 503 ([sizing pools](#sizing-pools)) |
+| `caches.W001` | a cache without `COMPUTE_TIMEOUT` (`CACHES[alias]["COMPUTE_TIMEOUT"]`): one `get_or_set` computation that hangs holds its key until the process restarts ([cache.md](cache.md#what-a-factory-may-use)); the `init` template sets it |
+| `servers.W001` | an application that serves WebSockets under a server that reads larger messages than `MAX_REQUEST_BODY_SIZE` (from `UVICORN_WS_MAX_SIZE` or `GUNICORN_CMD_ARGS`; a deployed application also logs it at start) ([live.md](live.md#message-size)) |
+| `servers.W002` | a server on a unix socket without `"unix"` in `TRUSTED_PROXIES`: no caller has an address ([Server limits](#server-limits); a deployed application also logs it at start) |
+| `live.W001` | WebSockets served without `WebSocketLimitsMiddleware` ([live.md](live.md#message-size)) |
+| `blocking.W001` | a route handler or dependency of the project's domains written as `def`, run on FastAPI's thread pool ([runtime.md](runtime.md#finding-blocking-code)); in every environment |
+| `auth.W001` | `AUTH.PRINCIPAL_CACHE.TTL` above 5 seconds without `STAMPS`: a revoked token works that long in the other processes ([auth.md](auth/authentication.md#the-principal-cache)) |
+| `auth.W002`, `auth.W003` | `AUTH.LOGIN_RATE` or `AUTH.MFA.RATE` set to `None`: guesses without limit |
+| `auth.W004` | attempt throttles counted in a `RATE_LIMIT_BACKEND` each process keeps alone (`MemoryBackend`): with several processes, each allows the rates on its own ([auth.md](auth/logging-in.md#logging-in-and-out)) |
+| `auth.W005` | a session or CSRF cookie name without the `__Host-` prefix where the prefix could hold ([auth.md](auth/authentication.md#browser-sessions-in-cookies)) |
+| `audit.W001` to `audit.W005` | with `AUDIT.REQUIRE_BASELINE = False` only: what `audit.E001` to `audit.E005` refuse |
+| `idempotency.W001` | with `IDEMPOTENCY.REQUIRE_DEADLINE = False` only: what `idempotency.E002` refuses |
+| `idempotency.W002` | `IDEMPOTENCY.ANONYMOUS` not set: anonymous callers behind one address share keys; 0.11 defaults to `"refuse"`, so set `"per-address"` to keep today's behaviour, or `"refuse"` now (DATA-09) |
 
 The production settings that `init` create avoid the first three, and ask
 for `TRUSTED_PROXIES`: leave it empty only when callers connect directly.
@@ -546,7 +585,7 @@ idempotency, or debug toolbar middleware), and `DEFAULT_MIDDLEWARE` eight
 | `domainkit.http.middleware.ProxyHeadersMiddleware` | First, so everything after it sees the real client address and scheme. Remembers the latest 4,096 addresses it parsed, and whether each is a trusted proxy's. |
 | `domainkit.http.metrics.MetricsMiddleware` | Counts every response, including ones refused below. |
 | `domainkit.http.locale.LocaleMiddleware` | Picks the request's language from `Accept-Language`, before anything below answers, so their errors are translated; adds `Content-Language` and `Vary: Accept-Language` ([i18n.md](i18n.md)). |
-| `domainkit.http.middleware.SecurityHeadersMiddleware` | Adds the `SECURE_*` headers to every response. |
+| `domainkit.http.middleware.SecurityHeadersMiddleware` | Adds the `SECURE_*` headers (and `X-Frame-Options`, a Content-Security-Policy, a Permissions-Policy, and COOP) to every response that does not set them. |
 | `domainkit.http.middleware.CORSMiddleware` | Answers preflights before any work. |
 | `domainkit.http.middleware.RequestContextMiddleware` | Request id (`X-Request-ID`: a caller's valid one, else 32 lowercase hex digits), access log, the context that logs and audit rows read. WebSocket connections get one too: method `WS`, the request id sent with the accept, one access log line when the connection ends (101 if accepted, 403 if closed first). |
 | `domainkit.http.deadlines.DeadlineMiddleware` | Starts the request's deadline (`REQUEST_TIMEOUT`) before any work, and answers 503 `deadline_exceeded` when it passes; lifted once the response starts ([runtime.md](runtime.md#request-deadlines)). |
@@ -555,7 +594,7 @@ idempotency, or debug toolbar middleware), and `DEFAULT_MIDDLEWARE` eight
 | `domainkit.contrib.auth.middleware.AuthenticationMiddleware` | Finds the user from the request's token and makes it the actor, so what follows counts users (auth; see [auth.md](auth.md)). |
 | `domainkit.http.ratelimit.RateLimitMiddleware` | Counts per actor, or per client address (IPv6: per /64), worked out once per request and remembered for the latest 4,096 addresses. A WebSocket handshake counts once; over the limit it gets the 429, or a 1013 close where the server cannot send one. |
 | `domainkit.http.websockets.WebSocketLimitsMiddleware` | Caps open WebSockets per process and per caller, queues what they send, limits their messages, closes idle and old ones, and re-checks their credentials and rules ([live.md](live.md)). After the two above, so it counts users and only handshakes the rate limit let through. |
-| `domainkit.http.middleware.RequestBodyLimitMiddleware` | Refuses bodies over `MAX_REQUEST_BODY_SIZE` with 413, and bodies slower than `REQUEST_BODY_TIMEOUT` with 408; closes WebSockets with 1009 on a larger message. |
+| `domainkit.http.middleware.RequestBodyLimitMiddleware` | Refuses bodies over `MAX_REQUEST_BODY_SIZE`, or a route's own `body_limit`, with 413 as they arrive, and bodies slower than `REQUEST_BODY_TIMEOUT` with 408; closes WebSockets with 1009 on a larger message. |
 | `domainkit.contrib.idempotency.middleware.IdempotencyMiddleware` | Last: reads whole bodies, which the limit above has already bounded. |
 | `domainkit.debug.DebugToolbarMiddleware` | Development only: times each request's SQL, from where it is listed inwards (see [Debug toolbar](#debug-toolbar)). |
 
@@ -566,6 +605,39 @@ routes](#versions-and-deprecations).
 `DEFAULT_MIDDLEWARE` (proxy headers, security headers, request context,
 deadlines, the concurrency cap, allowed hosts, WebSocket limits, body
 limit) applies when a settings module sets no `MIDDLEWARE`.
+
+### Security headers
+
+`SecurityHeadersMiddleware` adds these to every response that does not
+set them itself:
+
+```
+Cache-Control: no-store
+X-Frame-Options: DENY
+X-Content-Type-Options: nosniff
+Referrer-Policy: no-referrer
+Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+Permissions-Policy: accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()
+Cross-Origin-Opener-Policy: same-origin
+```
+
+and `Strict-Transport-Security` once `SECURE_HSTS_SECONDS` is set. An API
+answers data, so its policy lets nothing in an answer load, run, or be
+framed: should a browser ever render one (a content type mistaken, a route
+that answers HTML), no script runs. A route that answers a page sets its
+own policy, which is kept: `domainkit.http.uploads.serve` sandboxes the
+files it serves, and the documentation pages have theirs.
+
+`/docs` and `/redoc` (`API_DOCS`) load Swagger UI 5.33.1 and ReDoc 2.5.4
+from copies in the package, under `/docs/assets/`, never from a CDN: a
+page that runs a CDN's script in the API's origin would hand that CDN
+whatever the origin holds. `/docs` allows scripts and styles from the
+origin only, and no inline script; `/redoc` adds the inline styles ReDoc
+sets and the `blob:` worker its search runs in
+(`domainkit.http.apidocs.SWAGGER_POLICY`, `REDOC_POLICY`). The Redocly logo
+in ReDoc's footer, which it fetches from Redocly's CDN, is refused. The
+pages are on with `DEBUG`, and off in a deployment unless `API_DOCS =
+True` (ADR 0086).
 
 ## Signing
 
@@ -663,6 +735,7 @@ See ADR 0032.
 | `PermissionDenied` | 403 | from the class |
 | other `DomainError` | 400 | from the class |
 | `domainkit.http.APIError(status, detail, code=…)` | as given | as given |
+| `domainkit.exceptions.ServiceBusy(message, retry_after=…)`: something the operation needs is busy, raised below the HTTP layer (a full hashing queue is `PasswordChecksBusy`) | 503 | from the class (`password_checks_busy`), with `Retry-After` |
 | request validation | 422 | `validation_error` |
 | a cursor this API did not issue for the request's ordering, or one that was altered | 422 | `invalid_cursor` ([queries.md](queries.md#pages)) |
 | a filter a `FilterSet` does not offer, given twice, or over its bounds | 422 | `invalid_filter` ([queries.md](queries.md#filters-over-http)) |
@@ -683,6 +756,13 @@ See ADR 0032.
 
 WebSockets the database refuses are closed with 1013 (busy) or 1007 (a
 value it refuses).
+
+Every exception domainkit defines is a `domainkit.exceptions.DomainkitError`,
+beside the base it had (`ValueError`, `TimeoutError`, starlette's
+`HTTPException`, ...), so `except DomainkitError` catches the framework
+once and the narrower handlers still catch what they did. Code below the
+HTTP layer never raises an HTTP exception: it raises its own error, and this
+table maps it ([ADR 0084](adr/0084-one-exception-root-mapped-to-http-at-the-boundary.md)).
 
 Fields are named as the API knows them: a column's `info={"field": ...}`,
 else the attribute of the class mapped onto its table, else the column's
@@ -829,17 +909,27 @@ byte for byte. What a project can see:
 - a route added to an included router after the application is built is
   not served: finish routers before `get_asgi_application` runs.
 
-`FLATTEN_ROUTERS = False` keeps FastAPI's nesting. `flatten_routes(app.router)`
-(`domainkit.http.routing`) flattens an application built by hand:
+The application's router then tries only the routes a request's path can
+reach (`domainkit.http.routing.RouteIndex`, 0.10): those whose template
+starts with the path's first segment, and those that may match any path (a
+parameter in the first segment, a mount at the root, a host, a router left
+included), in order. It serves the route trying every route would serve,
+whatever the number of routes ahead of it; order still decides between
+routes of one segment.
+
+`FLATTEN_ROUTERS = False` keeps FastAPI's nesting, and its matching.
+`flatten_routes(app.router)` (`domainkit.http.routing`) flattens an
+application built by hand, and `index_routes(app.router)` indexes it:
 
 ```python
 from fastapi import FastAPI
 
-from domainkit.http.routing import flatten_routes
+from domainkit.http.routing import flatten_routes, index_routes
 
 app = FastAPI()
 app.include_router(router)
 flatten_routes(app.router)  # How many included routers it replaced.
+index_routes(app.router)  # Whether its routes are now indexed.
 ```
 
 ## Observability
@@ -870,7 +960,7 @@ queue's 10,000 records is dropped and counted, never waited for
 | `messaging_deliveries_skipped_total` | |
 | `cache_lookups_total` | `cache`, `result` (`hit`, `miss`, `invalid`, `early`) |
 | `cache_errors_total` | `cache` |
-| `auth_principal_cache_total` | `authentication` (`token`, `cookie`, `jwt`, `certificate`), `event` (`hit`, `miss`, `invalidation`, `eviction`) |
+| `auth_principal_cache_total` | `authentication` (`token`, `cookie`, `jwt`, `certificate`), `event` (`hit`, `miss`, `invalidation`, `eviction`, `coalesced`, `refresh`, `refresh_failed`) |
 
 `MetricsMiddleware` keeps the handle of each series it counts in, for at
 most 4,096 series per application, so a request looks no labels up; clear
@@ -883,7 +973,7 @@ get spans. domainkit only uses the OpenTelemetry API; configure the SDK and
 exporter in the deployment, or run under `opentelemetry-instrument`. Outbox
 messages carry the W3C trace context of their commit, so a worker's span
 continues the trace of the request that queued its work
-([contrib.md](contrib.md#traces)). FastAPI (0.142 and later) has telemetry
+([contrib.md](contrib/messaging.md#traces)). FastAPI (0.142 and later) has telemetry
 of its own, which `get_asgi_application` turns off: its spans record query
 strings, and its log records exception messages, which domainkit keeps out
 of logs and error reports. To trace requests, run under
@@ -924,7 +1014,7 @@ all.
 
 Fixtures for published events and queued work (`captured_events`,
 `outbox`, `execute_deferred`) come with messaging's own plugin
-([contrib.md](contrib.md#testing)).
+([contrib.md](contrib/messaging.md#testing)).
 
 ## Commands
 
@@ -936,7 +1026,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | Command | Options | Purpose |
 | --- | --- | --- |
 | `init` | `name`, `[directory]` | Create a project: base, local, test, and production settings, routes, `manage.py`, `.env`, and a first test. The name sets the environment prefix; the directory (default `./<name>`) must be empty or missing. What it writes passes the project's own `ruff check` and `ruff format --check`; its dev group installs ruff, which formats what the generators write. |
-| `check` | | Settings, domains, routes and their access rules, middleware, layer rules, and a single migration head. It warns about route handlers and dependencies of the installed domains written as `def`, which run on FastAPI's thread pool ([runtime.md](runtime.md#finding-blocking-code)); in staging and production it also lists [weak choices](#deployment-checks) as warnings. |
+| `check` | `--deploy` | Settings, domains, routes and their access rules, middleware, layer rules, and a single migration head. It warns about route handlers and dependencies of the installed domains written as `def`, which run on FastAPI's thread pool ([runtime.md](runtime.md#finding-blocking-code)); in staging and production it also lists [weak choices](#deployment-checks) as warnings. Every finding has an id; `--deploy` fails on warnings not in `SILENCED_CHECKS` too, and runs only in staging and production. |
 | `broker` | `check\|declare`, `[ALIAS ...]` | Connect to brokers (all by default), or declare the exchange and every queue the worker's tasks use on `MESSAGING.BROKER`. |
 | `compilemessages` | `[DIRECTORY ...]`, `-l/--locale`, `--check` | Compile translation catalogs (`.po`) to `.mo` files: in the directories named, or in `LOCALE_PATHS` and each installed domain's `locale` directory. `--check` writes nothing and fails if one is missing or out of date ([i18n.md](i18n.md)). |
 | `cache` | `check\|clear`, `[ALIAS ...]`, `--all` | Ping caches (all by default), or delete every key of the named caches, all versions, in their namespace only. Clearing needs aliases or `--all`. |
@@ -962,9 +1052,10 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `runworker` | `--once`, `--metrics-port`, `--metrics-address`, `--database`, `--queue`, `--no-relay` | Run outbox messages (messaging): one worker per outbox, every hosting database by default; `--queue` (repeatable) limits them to some queues. With `MESSAGING.BROKER`, relay to the broker and run what it delivers; `--no-relay` only consumes. `--once` always works from the outbox. Whatever it serves, the process runs at most `MESSAGING.CONCURRENCY` messages at once. |
 | `messages` | `--pending\|--locked\|--dead`, `--queue`, `--limit`, `--retry ID\|all`, `--cancel ID`, `--database`, `--operator` | Count an outbox's messages and show each queue's lag, list them, requeue dead letters (not those of `sensitive` tasks, whose arguments were blanked), or cancel a message no worker runs; retries and cancels are audited (messaging; [operators](#operators)). |
 | `webhooks` | `subscriptions\|deliveries\|replay`, `[ID ...]`, `--failed`, `--status`, `--subscription`, `--limit` | List webhook subscriptions or deliveries, or send finished deliveries again (webhooks). |
-| `auditlog` | `--actor`, `--action`, `--limit`, `--database`, `--target`, `--aggregate FIELD=ID` | Read the audit trail, or one record's history with what each entry changed (audit; see [contrib.md](contrib.md#history)). |
+| `auditlog` | `--actor`, `--action`, `--limit`, `--database`, `--target`, `--aggregate FIELD=ID` | Read the audit trail, or one record's history with what each entry changed (audit; see [contrib.md](contrib/audit.md#history)). |
 | `auditseal` | `--late` | Seal new audit rows into each database's hash chain and anchor its head on `AUDIT.LEDGER`; `--late` also seals rows that committed later than `AUDIT.SEAL_LATE_WINDOW`, flagged as sealed late (audit). |
-| `auditverify` | `--database` | Check the audit trail against its seals and anchors; fails if anything changed (audit). |
+| `auditverify` | `--database`, `--export FILE`, `--check-export FILE --public-key PEM` | Check the audit trail against its seals, checkpoints, and anchors; fails if anything changed. `--export` then writes signed checkpoints of every trail for a third party (`AUDIT.CHECKPOINT_KEY`, read by this and `auditprune` alone); `--check-export` checks such a file offline, with the public key alone (audit). |
+| `auditprune` | `--keep-days`, `--database`, `--operator` | Delete audit rows sealed more than `--keep-days` (at least `AUDIT.MIN_RETENTION`) ago below a signed checkpoint recorded on the ledger, which `auditverify` then starts the chain from; refused if the chain up to it does not verify. Each run is audited (audit; [operators](#operators)). |
 | `auditforget` | `subject ...`, `--anonymous-days`, `--operator` | Make people's pseudonyms in the audit trail unlinkable, in every audited database; each run is audited (audit; [operators](#operators)). |
 | `privacy` | `[--operator NAME]`, then `export --subject ID [--output FILE]`, `erase --subject ID [--reason] [--noinput]`, `purge [--dry-run]` | Export or erase what every installed domain holds about a person, from `Personal` markers on aggregates, or apply the domains' retention policies; each is audited, as the operator (privacy; see [privacy.md](privacy.md), [operators](#operators)). |
 | `evidence` | `--subject`, `--verify KEY`, `--limit` | List a subject's evidence, or verify one record (evidence). |
@@ -974,14 +1065,14 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `cleartokens` | `--user` | Delete expired tokens, or every token of one user (auth). |
 | `resetmfa` | `username` | Turn a user's second factor off, and end their sessions (auth). |
 | `addcertificate` | `username`, `certificate`, `--name` | Let a client certificate log in as a user, by its SHA-256 (auth). |
-| `flags` | `list`, `set NAME [--everyone {on,off,rules}] [--percentage N] [--users USER_ID ...] [--groups GROUP ...] [--note TEXT]`, `delete NAME`, `settings`, `setting KEY [VALUE] [--reset]` | List and change feature flags and dynamic settings (flags; see [contrib.md](contrib.md#flags-feature-flags-and-dynamic-settings)). |
+| `flags` | `list`, `set NAME [--everyone {on,off,rules}] [--percentage N] [--users USER_ID ...] [--groups GROUP ...] [--note TEXT]`, `delete NAME`, `settings`, `setting KEY [VALUE] [--reset]` | List and change feature flags and dynamic settings (flags; see [contrib.md](contrib/flags.md#flags-feature-flags-and-dynamic-settings)). |
 
 ### Operators
 
 Commands that change or erase stored data as a person, not as the
 application, say who runs them and leave a row in the audit trail (with
 `domainkit.contrib.audit` installed): `messages --retry` and `--cancel`,
-`auditforget`, `loaddata`, `flush`, `partitions --prune`, and `privacy`;
+`auditforget`, `auditprune`, `loaddata`, `flush`, `partitions --prune`, and `privacy`;
 and so do those that change credentials, flags, settings, and deliveries:
 `resetmfa`, `createtoken`, `changepassword`, `createsuperuser`,
 `addcertificate`, `cleartokens`, `flags`, and `webhooks`. Their listings
@@ -1023,7 +1114,7 @@ The command runs as the actor `operator:<name>`, so what it records itself
 names the operator instead of `system`. An action that records nothing
 itself is recorded once it ends as `operator.<command>`
 (`operator.messages.retry`, `operator.messages.cancel`,
-`operator.auditforget`, `operator.loaddata`, `operator.flush`,
+`operator.auditforget`, `operator.auditprune`, `operator.loaddata`, `operator.flush`,
 `operator.partitions.prune`, `operator.webhooks.replay`), `success` or `failure` (with the error's
 class), with what it acted on and counts, and `operator_source`: `option`,
 `environment`, or `system`. Dry runs, listings, and refusals before the
@@ -1110,15 +1201,19 @@ revision: the test database migrates up, down, and up again.
 | Startup wiring | `DomainConfig.ready()` | (called by `setup()`) |
 | Process resources (clients, pools) | `async DomainConfig.startup()` / `shutdown()` | (called by the app lifespan; after the domains stop, the framework closes its caches, databases, ledgers, and brokers, in that order, each within 5 seconds, and a failure is logged without keeping the rest open; management commands close them too) |
 | A readiness check | `async DomainConfig.check()` | (called by `/ready`) |
-| A check of the built application (routes, middleware) | `DomainConfig.check_application(app)`, returning problems | (called when the app is built and by `check`; staging and production refuse to start with any) |
-| Warnings about a domain's weak settings where deployed | `DomainConfig.deployment_warnings()`, returning warnings (none outside staging and production) | (listed by `check` after the framework's own) |
-| Work staged with each commit | `async DomainConfig.stage(uow, events, tasks)` | (called by the unit of work) |
-| Work after each commit | `async DomainConfig.committed(uow)` | (called by the unit of work; failures are reported, never raised) |
-| The same, for a commit outside a unit of work | `async DomainConfig.stage_transaction(connection, database)` / `transaction_committed(database)` | (called by `messaging.enqueue` around its own transaction; idempotency uses them to hold the key) |
-| Rows after each `migrate` (`post_migrate`) | `async DomainConfig.migrated(connection, database)` | (called by `migrate` for each database it upgraded, in one transaction as the schema owner, and by `flush`) |
+| A check of the built application (routes, middleware) | `DomainConfig.check_application(app)`, returning problems, best as `domainkit.checks.CheckMessage("<label>.E001", ...)` | (called when the app is built and by `check`; staging and production refuse to start with any) |
+| Warnings about a domain's weak settings where deployed | `DomainConfig.deployment_warnings()`, returning warnings (none outside staging and production), best as `CheckMessage("<label>.W001", ...)`, which `SILENCED_CHECKS` can name | (listed by `check` after the framework's own) |
+| Work staged with each commit | `async def hook(uow, events, tasks)`, typed on `SqlAlchemyUnitOfWork` | `domainkit.db.hooks.on_stage(hook)` in `ready()` (called by the unit of work; only domains that registered are called) |
+| Work after each commit | `async def hook(uow)` | `on_committed(hook)` in `ready()` (called by the unit of work; failures are reported, never raised) |
+| The same, for a commit outside a unit of work | `async def hook(connection, database)` / `async def hook(database)` | `on_stage_transaction(hook)` / `on_transaction_committed(hook)` in `ready()` (called by `messaging.enqueue` around its own transaction; idempotency uses them to hold the key) |
+| Rows after each `migrate` (`post_migrate`) | `async def hook(connection, database)` | `on_migrated(hook)` in `ready()` (called by `migrate` for each database it upgraded, in one transaction as the schema owner, and by `flush`) |
+| The same hooks, as methods (0.9) | `DomainConfig.stage`, `committed`, `stage_transaction`, `transaction_committed`, `migrated` | (an overriding method is still called, after the domain's registered hooks; [ADR 0085](adr/0085-register-hooks-by-type-for-the-domains-that-have-them.md)) |
+| Another hook point an app offers others | `domainkit.apps.hooks.HookPoint(name, method=...)` | (domains call it with a function in `ready()`; the app iterates it) |
+| A scaffolding command | `management.generators.Generator` (`plan`, then `apply`), or `AggregateGenerator` for one that adds to an aggregate | a domain's `management/commands/` |
 | Sample or default data | `async DomainConfig.seed()` | (called by `seed`, in `INSTALLED_DOMAINS` order) |
 | How long a domain keeps rows | `DomainConfig.RETENTION`, a sequence of `privacy.Retention` | (checked when the app is built; applied by `privacy purge`; see [privacy.md](privacy.md)) |
 | Erasing a personal field no default fits | `erase_personal_data(fields)` on the aggregate | (called by `privacy erase` and retention erasure) |
+| Erasing, and exporting, a person's data a domain keeps outside its aggregates (copies in deliveries, kept responses, queues) | `async DomainConfig.erase_subject(subject, reason)`, returning counts by kind; `async DomainConfig.export_subject(subject)`, returning JSON-ready data | (called on every installed domain by `privacy erase` and `privacy export`; the counts are audited; see [privacy.md](privacy.md#what-erasure-reaches-and-when)) |
 | How errors name a column | `info={"field": "<API name>"}` on the `Column` | (read by unique, foreign key, NOT NULL, and CHECK errors) |
 | A table fixtures or `flush` leave alone | `info={"fixtures": False}`, `{"flush": False}`, or `{"append_only": True}` on the `Table` | (read by `dumpdata`, `loaddata`, and `flush`) |
 | A deprecated route or version | `Depends(Deprecation(...))`, `versioned_router(...)` | `domainkit.http.versioning` |
@@ -1127,7 +1222,8 @@ revision: the test database migrates up, down, and up again.
 | A user model | a subclass of `AbstractUser` or `AbstractBaseUser`, and its table | `AUTH.USER_MODEL`, `AUTH.USER_TABLE` |
 | An authentication or permission backend | `auth.backends.BaseBackend` | `AUTH.BACKENDS` |
 | A way requests prove who sent them | `auth.authentication.BaseAuthentication` | `AUTH.AUTHENTICATION_CLASSES` |
-| A rule for who may call a route | `auth.access.BasePermission` | `Depends(Require(rule))` on the route, or `Public` for anyone |
+| A rule for who may call a route | `domainkit.http.access.BasePermission` | `Depends(Require(rule))` on the route, or `Public` for anyone |
+| Another way to authenticate requests (OpenID Connect, a gateway's header) | an ASGI middleware that puts a `domainkit.http.access.Principal` in `scope["user"]` | `MIDDLEWARE` ([Another authentication](auth/routes.md#another-authentication)) |
 | A password hasher | `auth.hashers.PasswordHasher` | `AUTH.PASSWORD_HASHERS` |
 | A password rule | a class with `validate(password, user)` and `help_text()` | `AUTH.PASSWORD_VALIDATORS` |
 | An email backend (a provider's API) | `mail.BaseEmailBackend` | `MAIL.BACKEND` |

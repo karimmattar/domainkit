@@ -41,7 +41,7 @@ from sqlalchemy import or_, update
 from domainkit import clock
 from domainkit.db.routing import router
 from domainkit.ddd import DomainEvent, event_bus
-from domainkit.exceptions import ImproperlyConfigured
+from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 from domainkit.management.base import run_async
 
 from .outbox import watchers
@@ -63,7 +63,7 @@ MAX_ROUNDS: Final = 100
 """Rounds ``run_queued`` makes before it decides the work never ends."""
 
 
-class QueuedWorkFailed(AssertionError):
+class QueuedWorkFailed(AssertionError, DomainkitError):
     """Queued work failed, or kept queueing more, while a test ran it."""
 
 

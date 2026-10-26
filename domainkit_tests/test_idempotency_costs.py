@@ -9,14 +9,14 @@ import asyncio
 import os
 import secrets
 from collections.abc import AsyncIterator, Callable, Iterator
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
 from typing import Any, Self
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import event, func, insert, select
+from sqlalchemy import func, insert, select
 from sqlalchemy.engine import Connection, Engine, ExecutionContext
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -36,6 +36,7 @@ from domainkit.db import connections
 from domainkit.db.connections import INTERNAL
 from domainkit_tests import sample_routes
 from domainkit_tests.conftest import POSTGRES_VARIABLE
+from domainkit_tests.engine_events import watching
 from domainkit_tests.test_ratelimit_and_idempotency import (
     KEYED_POST,
     discard,
@@ -67,9 +68,12 @@ class Costs:
 
     def __enter__(self) -> Self:
         """Start counting."""
-        event.listen(Engine, "before_cursor_execute", self._statement)
-        event.listen(Engine, "begin", self._begin)
-        event.listen(Pool, "checkout", self._checkout)
+        self._watching = ExitStack()
+        self._watching.enter_context(
+            watching(Engine, "before_cursor_execute", self._statement)
+        )
+        self._watching.enter_context(watching(Engine, "begin", self._begin))
+        self._watching.enter_context(watching(Pool, "checkout", self._checkout))
         return self
 
     def __exit__(
@@ -79,9 +83,7 @@ class Costs:
         traceback: TracebackType | None,
     ) -> None:
         """Stop counting."""
-        event.remove(Engine, "before_cursor_execute", self._statement)
-        event.remove(Engine, "begin", self._begin)
-        event.remove(Pool, "checkout", self._checkout)
+        self._watching.close()
 
     def _statement(
         self,
@@ -423,11 +425,8 @@ def test_pins_and_late_marks_keep_to_a_deadline_no_timer_enforces(
         await connections.close_all()
 
     with idempotent_app(databases):
-        event.listen(Engine, "before_cursor_execute", record)
-        try:
+        with watching(Engine, "before_cursor_execute", record):
             asyncio.run(scenario())
-        finally:
-            event.remove(Engine, "before_cursor_execute", record)
         assert payments_on("other") == 1
 
     assert seen == [("pin", True), ("mark", True)]

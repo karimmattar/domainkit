@@ -10,11 +10,11 @@ them here, in memory, without a query (``AUTH.PRINCIPAL_CACHE``):
   its permissions (``Principal``); and what the token table says of the
   credential: its kind, expiry, scopes, and login (``Credential``). Never a
   second factor's secret, recovery codes, or the raw token: entries are
-  keyed by the class's scheme and the credential's digest. The password
-  hash is kept only for ``request.user.password``, deprecated and removed
-  in 0.10, which warns (``DomainkitDeprecationWarning``); it is never in a
-  ``repr``, a log, a key, or a stamp. Each request gets a user built afresh
-  from the snapshot, the same as a query builds.
+  keyed by the class's scheme and the credential's digest. Nor the
+  password hash: only whether a password can log the user in, so
+  ``request.user.password`` raises ``AttributeError`` (it was removed in
+  0.10; ``api.password_holds`` checks a password). Each request gets a
+  user built afresh from the snapshot, the same as a query builds.
 - **What is checked on every request.** A token's expiry, on
   ``domainkit.clock``; a cookie's CSRF checks; a JSON Web Token's signature
   and times.
@@ -37,9 +37,9 @@ import copy
 import logging
 import secrets
 import threading
-import warnings
 from collections import OrderedDict
 from collections.abc import (
+    Awaitable,
     Callable,
     Collection,
     Hashable,
@@ -50,13 +50,11 @@ from collections.abc import (
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
-from functools import cache
-from pathlib import Path
+from functools import cache, partial
 from types import MappingProxyType
 from typing import Any, Final, Self, cast
 from uuid import UUID
 
-import sqlalchemy
 from sqlalchemy import Table, event
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import (
@@ -72,15 +70,22 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from domainkit import clock
 from domainkit.cache import CacheError, caches
-from domainkit.contrib.contenttypes.models import ContentType
+from domainkit.contrib.contenttypes import ContentType
 from domainkit.contrib.contenttypes.tables import content_types
-from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.log import SECURITY_LOGGER
 from domainkit.tasks import spawn
+from domainkit.utils.loops import PerLoop
 
 from . import tokens
-from .models import USABLE_PASSWORD, AbstractBaseUser, Group, PasswordHash, Permission
+from .models import (
+    EVERY,
+    GRANTED,
+    USABLE_PASSWORD,
+    AbstractBaseUser,
+    Group,
+    Permission,
+)
 from .settings import MAX_PRINCIPAL_TTL, PrincipalCacheSettings, auth_settings
 from .tables import (
     group_permissions,
@@ -89,7 +94,7 @@ from .tables import (
     user_link_tables,
 )
 from .tables import tokens as token_rows
-from .tokens import LAST_USED_EVERY, AuthToken
+from .tokens import AuthToken
 
 try:
     from .metrics import observe_principals
@@ -121,15 +126,13 @@ RECENT_INVALIDATIONS: Final = 4096
 """Targets whose last invalidation is remembered, to refuse principals read
 during it; an older one refuses every principal read before it."""
 PASSWORD: Final = "password"  # noqa: S105 - a field name, not a secret.
-"""The user field a request's user reads with a warning (``lend_password``)."""
-PASSWORD_DEPRECATED: Final = (
-    "request.user.password is deprecated and removed in domainkit 0.10: check "  # noqa: S105 - a message, not a password.
-    "a password with domainkit.contrib.auth.api.password_holds(user, password), "
-    "or read the hash with await uow.users.password_hash(user.id)."
+"""The user field a request's user does not hold (``withhold_password``)."""
+PASSWORD_REMOVED: Final = (
+    "request.user.password was removed in domainkit 0.10: check a password "  # noqa: S105 - a message, not a password.
+    "with domainkit.contrib.auth.api.password_holds(user, password), or read "
+    "the hash with await uow.users.password_hash(user.id)."
 )
-"""What reading ``password`` of a request's user warns."""
-_INTERNAL: Final = (str(Path(sqlalchemy.__file__).parent), __file__)
-"""Where the warning is not pinned: it names the code that read the password."""
+"""Why reading ``password`` of a request's user raises ``AttributeError``."""
 SNAPSHOT_RELATIONSHIPS: Final = frozenset({"groups", "user_permissions"})
 """The user's relationships a snapshot holds."""
 UNLOADED: Final = frozenset({"raise", "raise_on_sql", "noload"})
@@ -149,6 +152,9 @@ IMMUTABLE: Final = (
 """Column value types each user may share; others are copied for each request.
 
 Subclasses count (asyncpg's ``UUID``, ``datetime``, ``bool``)."""
+REFRESH_SHARE: Final = 0.2
+"""The last share of an entry's ``TTL`` in which the first request to use it
+reads it again, while the others are served it (``kept_or_read``)."""
 PENDING: Final = "domainkit.auth.principals.pending"
 """``Session.info`` key: what to drop when the session commits."""
 STAMPING: Final = "domainkit.auth.principals.stamping"
@@ -192,6 +198,12 @@ class GrantedPermission:
     content_type_id: int
     domain: str
     model: str
+    key: str = field(init=False, repr=False, compare=False)
+    """``<domain>.<codename>``, as ``Permission.key`` and ``has_perm`` name it."""
+
+    def __post_init__(self) -> None:
+        """Work out the key once, for every user built with the permission."""
+        object.__setattr__(self, "key", f"{self.domain}.{self.codename}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +214,34 @@ class Membership:
     name: str
     version: int
     permissions: tuple[GrantedPermission, ...]
+    keys: frozenset[str] = field(init=False, repr=False, compare=False)
+    """The keys of ``permissions`` (``Group.permission_keys``)."""
+
+    def __post_init__(self) -> None:
+        """Work out the keys once, for every user built with the group."""
+        object.__setattr__(self, "keys", _keys(self.permissions))
+
+
+NO_KEYS: Final[frozenset[str]] = frozenset()
+
+
+def _keys(permissions: Iterable[GrantedPermission]) -> frozenset[str]:
+    """The keys of ``permissions``, as one shared set (``shared``)."""
+    return _union([frozenset(permission.key for permission in permissions)])
+
+
+def _union(sets: Iterable[frozenset[str]]) -> frozenset[str]:
+    """The union of ``sets``, as one shared set (``shared``).
+
+    Users with the same grants share one set, as they share the grants; the
+    union of one set and empty ones is that set.
+    """
+    found = [each for each in sets if each]
+    if not found:
+        return NO_KEYS
+    if len(found) == 1:
+        return shared(found[0])
+    return shared(frozenset().union(*found))
 
 
 INTERNED_MAX: Final = 65_536
@@ -233,7 +273,7 @@ class Principal:
     ``user()`` builds a user from it, detached from any session, as a query
     would: every column, the groups with their permissions, and the
     permissions given directly. The ``repr`` names no field: some are
-    personal data, and one is the password hash.
+    personal data. It holds no password hash, only whether one is usable.
     """
 
     model: type[AbstractBaseUser]
@@ -243,8 +283,26 @@ class Principal:
     permissions: tuple[GrantedPermission, ...]
     usable_password: bool
     """Whether some password can log the user in (``has_usable_password``)."""
-    password: PasswordHash
-    """Only for ``request.user.password``, deprecated: removed in 0.10."""
+    granted: Mapping[str, frozenset[str]] = field(init=False, compare=False)
+    """The keys of what the user holds, by relationship, and ``EVERY`` key
+    (``models.GRANTED``): what ``has_perm`` reads of a request's user."""
+
+    def __post_init__(self) -> None:
+        """Work out the keys of the grants once, for every user built."""
+        direct = _keys(self.permissions)
+        by_group = _union(group.keys for group in self.groups)
+        every = _union((direct, by_group))
+        object.__setattr__(
+            self,
+            "granted",
+            MappingProxyType(
+                {
+                    "user_permissions": direct,
+                    "groups": by_group,
+                    EVERY: every,
+                }
+            ),
+        )
 
     def __repr__(self) -> str:
         """Name the user model only."""
@@ -253,56 +311,114 @@ class Principal:
     def user(self) -> AbstractBaseUser:
         """A new user of ``model``, detached from any session.
 
-        Reading its ``password`` warns (``lend_password``): check a password
-        with ``password_holds``, or read the hash in a unit of work.
+        Its groups and permissions are built the first time they are read,
+        as new objects of its own, the same a query loads; until then
+        ``has_perm`` answers from the keys worked out with the principal
+        (ADR 0059's amendment). Reading its ``password`` raises
+        ``AttributeError`` (``withhold_password``): check a password with
+        ``password_holds``, or read the hash in a unit of work.
         """
-        content_types: dict[int, ContentType] = {}
-        permissions: dict[int, Permission] = {}
-
-        def permission(granted: GrantedPermission) -> Permission:
-            found = permissions.get(granted.id)
-            if found is None:
-                kind = content_types.get(granted.content_type_id)
-                if kind is None:
-                    kind = content_types[granted.content_type_id] = _detached(
-                        ContentType,
-                        {
-                            "id": granted.content_type_id,
-                            "domain": granted.domain,
-                            "model": granted.model,
-                        },
-                    )
-                found = permissions[granted.id] = _detached(
-                    Permission,
-                    {
-                        "id": granted.id,
-                        "codename": granted.codename,
-                        "name": granted.name,
-                        "content_type_id": granted.content_type_id,
-                    },
-                    content_type=kind,
-                )
-            return found
-
-        groups = {
-            _detached(
-                Group,
-                {"id": group.id, "name": group.name, "version": group.version},
-                permissions={permission(each) for each in group.permissions},
-            )
-            for group in self.groups
-        }
+        built = _Grants()
         user: AbstractBaseUser = _detached(
             self.model,
             {
                 name: value if isinstance(value, IMMUTABLE) else copy.deepcopy(value)
                 for name, value in self.columns
             },
-            groups=groups,
-            user_permissions={permission(each) for each in self.permissions},
         )
-        lend_password(user, self.password, usable=self.usable_password)
+        _built_later(
+            user,
+            self.granted,
+            groups=partial(built.groups, self.groups),
+            user_permissions=partial(built.permissions, self.permissions),
+        )
+        withhold_password(user, usable=self.usable_password)
         return user
+
+
+class _Grants:
+    """Builds one request's groups and permissions, each object once.
+
+    As the ORM loads them: a permission given directly and by a group, or a
+    content type of several permissions, is one object however reached.
+    """
+
+    __slots__ = ("_content_types", "_permissions")
+
+    def __init__(self) -> None:
+        """Start with nothing built."""
+        self._content_types: dict[int, ContentType] = {}
+        self._permissions: dict[int, Permission] = {}
+
+    def permission(self, granted: GrantedPermission) -> Permission:
+        """The request's ``Permission`` of ``granted``, with its content type."""
+        found = self._permissions.get(granted.id)
+        if found is None:
+            kind = self._content_types.get(granted.content_type_id)
+            if kind is None:
+                kind = self._content_types[granted.content_type_id] = _detached(
+                    ContentType,
+                    {
+                        "id": granted.content_type_id,
+                        "domain": granted.domain,
+                        "model": granted.model,
+                    },
+                )
+            found = self._permissions[granted.id] = _detached(
+                Permission,
+                {
+                    "id": granted.id,
+                    "codename": granted.codename,
+                    "name": granted.name,
+                    "content_type_id": granted.content_type_id,
+                },
+                content_type=kind,
+            )
+        return found
+
+    def permissions(
+        self, granted: Sequence[GrantedPermission], *_: object
+    ) -> list[Permission]:
+        """The request's ``Permission`` of each of ``granted`` (a loader)."""
+        return [self.permission(each) for each in granted]
+
+    def groups(self, memberships: Sequence[Membership], *_: object) -> list[Group]:
+        """A new ``Group`` of each membership, its permissions built later.
+
+        A loader, as ``permissions``.
+        """
+        found = []
+        for membership in memberships:
+            group = _detached(
+                Group,
+                {
+                    "id": membership.id,
+                    "name": membership.name,
+                    "version": membership.version,
+                },
+            )
+            _built_later(
+                group,
+                {"permissions": membership.keys},
+                permissions=partial(self.permissions, membership.permissions),
+            )
+            found.append(group)
+        return found
+
+
+def _built_later(
+    instance: object,
+    granted: Mapping[str, frozenset[str]],
+    **loaders: Callable[[object, object], object],
+) -> None:
+    """Build ``instance``'s relationships when first read, by their ``loaders``.
+
+    As SQLAlchemy loads a deferred attribute (``state.callables``); until
+    then ``granted`` answers what they hold (``models.GRANTED``).
+    """
+    state = instance_state(instance)
+    state.callables = {**state.callables, **loaders}
+    state.dict[GRANTED] = granted
 
 
 _FACTORIES: Final[dict[type[Any], Callable[[], Any]]] = {}
@@ -331,37 +447,33 @@ def _detached[T](cls: type[T], columns: dict[str, object], **relations: object) 
     return instance
 
 
-class _LentPassword:
-    """Loads ``password`` of a request's user: the hash read with it, and a warning."""
+class _WithheldPassword:
+    """Loads ``password`` of a request's user: refuses, naming what replaces it."""
 
-    __slots__ = ("_hashed",)
-
-    def __init__(self, hashed: PasswordHash) -> None:
-        """Lend ``hashed``."""
-        self._hashed = hashed
+    __slots__ = ()
 
     def __repr__(self) -> str:
-        """Hide the hash."""
-        return "<password lent to a request's user>"
+        """Name what it is."""
+        return "<password withheld from a request's user>"
 
-    def __call__(self, state: object, passive: object) -> PasswordHash:
-        """Warn (``PASSWORD_DEPRECATED``); SQLAlchemy keeps what this returns."""
-        warnings.warn(
-            PASSWORD_DEPRECATED,
-            DomainkitDeprecationWarning,
-            skip_file_prefixes=_INTERNAL,
-        )
-        return self._hashed
+    def __call__(self, state: object, passive: object) -> object:
+        """Raise ``AttributeError``, as for an attribute the user lacks.
+
+        Raises:
+            AttributeError: Always (``PASSWORD_REMOVED``).
+        """
+        raise AttributeError(PASSWORD_REMOVED)
 
 
-def lend_password(
-    user: AbstractBaseUser, hashed: PasswordHash, *, usable: bool
-) -> None:
-    """Let ``user`` read ``hashed`` as its ``password``, warning the first time.
+WITHHELD_PASSWORD: Final = _WithheldPassword()
 
-    ``request.user.password`` is deprecated (removed in 0.10). Until then it
-    reads the hash the user was built with, as SQLAlchemy loads a deferred
-    column; ``has_usable_password`` answers ``usable`` without it.
+
+def withhold_password(user: AbstractBaseUser, *, usable: bool) -> None:
+    """Leave the hash out of ``user``; ``has_usable_password`` answers ``usable``.
+
+    ``request.user.password`` was removed in 0.10: reading it raises
+    ``AttributeError``, so ``getattr(user, "password", None)`` is None, and
+    the hash is never in process memory with a request's user.
     """
     state = instance_state(user)
     state.dict.pop(PASSWORD, None)
@@ -369,7 +481,7 @@ def lend_password(
     state.expired_attributes.discard(PASSWORD)
     if "callables" not in state.__dict__:
         state.callables = {}
-    state.callables[PASSWORD] = _LentPassword(hashed)
+    state.callables[PASSWORD] = WITHHELD_PASSWORD
 
 
 @dataclass(frozen=True, slots=True)
@@ -379,7 +491,7 @@ class UserShape:
     columns: tuple[tuple[str, ColumnElement[Any]], ...]
     """``(attribute, column)`` of each column a query loads, but the password."""
     password: ColumnElement[Any]
-    """The password's column, read apart (``lend_password``)."""
+    """The password's column: only whether it is usable is read."""
 
 
 @cache
@@ -417,11 +529,30 @@ class Credential:
     expires_at: datetime | None
     scopes: frozenset[str] | None
     last_used_at: datetime | None
+    name: str = ""
+    created_at: datetime | None = None
 
     def expired(self, now: datetime | None = None) -> bool:
         """Whether the token's lifetime is over, as ``AuthToken.expired``."""
         return self.expires_at is not None and (
             (now or tokens.utc_now()) >= self.expires_at
+        )
+
+    def idle(self, written: datetime | None, now: datetime | None = None) -> bool:
+        """Whether a login's token idled past ``AUTH.IDLE_TIMEOUT``.
+
+        Its last use is the latest of the stored one, ``written`` (what this
+        process last wrote), and when it was issued. Not a login's: never.
+        """
+        uses = [
+            each
+            for each in (self.last_used_at, written, self.created_at)
+            if each is not None
+        ]
+        return (
+            bool(uses)
+            and tokens.is_login(self.kind, self.name)
+            and tokens.idle_since(max(uses), now or tokens.utc_now())
         )
 
 
@@ -479,6 +610,11 @@ class Entry:
     """When ``last_used_at`` was last written, as far as this process knows."""
     deadline: float = 0.0
     """``clock.monotonic()`` past which it is read again."""
+    refresh_at: float = 0.0
+    """``clock.monotonic()`` from which one request reads it again, ahead of
+    its ``deadline``, while the others are served it."""
+    refreshing: bool = False
+    """Whether a request claimed reading it again (``claim_refresh``)."""
     fresh: bool = True
     """Read from the database by this request, not kept yet."""
 
@@ -496,6 +632,14 @@ class Entry:
         self.loaded = snapshot.loaded
         self.keep = self.keep and snapshot.current and snapshot.loaded is None
         return self
+
+    def same_as(self, other: "Entry") -> bool:
+        """Whether ``other`` says what this entry says: the same rows, read again."""
+        return (
+            self.principal == other.principal
+            and self.credential == other.credential
+            and self.login == other.login
+        )
 
     def user(self) -> AbstractBaseUser | None:
         """A new user built from the principal, if they exist and are active."""
@@ -559,10 +703,7 @@ class PrincipalCache:
         after ``entry.started``.
         """
         with self._lock:
-            if entry.started < self._floor or any(
-                self._invalidated.get(target, -1) > entry.started
-                for target in (ALL, *entry.targets)
-            ):
+            if self._changed_since(entry.started, entry.targets):
                 return None
             self._remove(entry.key)
             self._entries[entry.key] = entry
@@ -607,17 +748,53 @@ class PrincipalCache:
             }
             return [entry for key in keys if (entry := self._remove(key)) is not None]
 
-    def claim_touch(self, entry: Entry, now: datetime) -> bool:
-        """Whether this request writes the credential's ``last_used_at``.
+    def changed_since(self, started: int, targets: Iterable[str]) -> bool:
+        """Whether ``ALL`` or one of ``targets`` was invalidated after ``started``.
 
-        Once per ``LAST_USED_EVERY`` per entry: the first request to find it
-        due claims it, so concurrent requests do not all write.
+        What ``put`` refuses: an entry read from ``started`` on may predate
+        the change.
         """
         with self._lock:
-            if entry.last_used is not None and now - entry.last_used < LAST_USED_EVERY:
+            return self._changed_since(started, targets)
+
+    def claim_refresh(self, entry: Entry) -> bool:
+        """Whether this request reads the kept ``entry`` again, ahead of its deadline.
+
+        The first to ask once ``refresh_at`` passed, and only that one; the
+        others are served the entry meanwhile. Only the entry still kept
+        under its key is read again.
+        """
+        with self._lock:
+            if entry.refreshing or self._entries.get(entry.key) is not entry:
+                return False
+            entry.refreshing = True
+            return True
+
+    def release_refresh(self, entry: Entry) -> None:
+        """Let another request read ``entry`` again: this one did not finish."""
+        with self._lock:
+            entry.refreshing = False
+
+    def claim_touch(
+        self, entry: Entry, now: datetime, every: timedelta = tokens.LAST_USED_EVERY
+    ) -> bool:
+        """Whether this request writes the credential's ``last_used_at``.
+
+        Once per ``every`` (``last_used_every()``) per entry: the first
+        request to find it due claims it, so concurrent requests do not all
+        write.
+        """
+        with self._lock:
+            if entry.last_used is not None and now - entry.last_used < every:
                 return False
             entry.last_used = now
             return True
+
+    def _changed_since(self, started: int, targets: Iterable[str]) -> bool:
+        """``changed_since``; the lock is held."""
+        return started < self._floor or any(
+            self._invalidated.get(target, -1) > started for target in (ALL, *targets)
+        )
 
     def _remove(self, key: Key) -> Entry | None:
         """Forget the entry of ``key`` and its targets; the lock is held."""
@@ -805,15 +982,18 @@ async def write_stamps(alias: str, targets: Collection[str]) -> None:
     )
 
 
-async def recall(key: Key, config: PrincipalCacheSettings) -> Entry | None:
+async def recall(
+    key: Key, config: PrincipalCacheSettings, now: float | None = None
+) -> Entry | None:
     """The kept entry of ``key``, if it still holds here, and everywhere.
 
     With ``STAMPS``, its stamps must be unchanged; a cache that fails
-    confirms nothing, so the entry is not used.
+    confirms nothing, so the entry is not used. ``now`` is
+    ``clock.monotonic()``, read by the caller.
     """
     if not config.ENABLED:
         return None
-    entry = principal_cache.get(key, clock.monotonic())
+    entry = principal_cache.get(key, clock.monotonic() if now is None else now)
     if entry is not None and config.STAMPS is not None:
         try:
             current = await read_stamps(config.STAMPS, entry.targets)
@@ -908,11 +1088,150 @@ async def stamps_before_reading(
     entry.keep = True
 
 
+type Read = Callable[[int], Awaitable[Entry | None]]
+"""Reads an entry from the database, given ``PrincipalCache.begin()``'s mark."""
+
+
+def _holds(entry: Entry) -> bool:
+    """Every kept entry may be served (``kept_or_read``'s default)."""
+    return True
+
+
+async def kept_or_read(
+    key: Key,
+    config: PrincipalCacheSettings,
+    read: Read,
+    holds: Callable[[Entry], bool] = _holds,
+) -> Entry | None:
+    """The kept entry of ``key``, or one ``read`` from the database (PERF-04).
+
+    - **One read per key at a time** (``read_once``): requests that miss
+      while another request of their event loop reads the same key wait for
+      that read, unless something was invalidated since it began.
+    - **Read again ahead of time.** In the last ``REFRESH_SHARE`` of its
+      ``TTL``, the first request to use an entry reads it again, and the
+      others are served it until its deadline, never past it. What the new
+      read finds replaces it; if it differs (a change made elsewhere), the
+      kept entry is dropped at once. If the database fails, the request is
+      served the entry, which no other request reads again before it ends.
+
+    ``holds`` says whether a kept entry may still be served (a login's
+    tokens may have expired); one that may not is dropped and read again.
+    """
+    now = clock.monotonic()
+    entry = await recall(key, config, now)
+    if entry is None:
+        return await read_once(key, read, config.STAMPS)
+    if not holds(entry):
+        forget(entry)
+        return await read_once(key, read, config.STAMPS)
+    if now < entry.refresh_at or not principal_cache.claim_refresh(entry):
+        return entry
+    return await _refresh(entry, read, config.STAMPS)
+
+
+async def _refresh(entry: Entry, read: Read, stamps: str | None) -> Entry | None:
+    """Read the kept ``entry`` again, for the request that claimed it."""
+    try:
+        fresh = await read_once(entry.key, read, stamps)
+    except Exception:
+        # The database failed: what is kept still holds, until its deadline.
+        observe_principals(entry.scheme, "refresh_failed")
+        if entry.deadline > clock.monotonic():
+            return entry
+        raise
+    except BaseException:  # Cancelled: another request may read it again.
+        principal_cache.release_refresh(entry)
+        raise
+    observe_principals(entry.scheme, "refresh")
+    if (fresh is None or not fresh.same_as(entry)) and principal_cache.discard(entry):
+        observe_principals(entry.scheme, "invalidation")
+    return fresh
+
+
+@dataclass(slots=True, eq=False)
+class _Flight:
+    """A read of one key under way on an event loop, which others may wait for."""
+
+    started: int
+    """``PrincipalCache.begin()`` before it began."""
+    done: "asyncio.Future[tuple[bool, Entry | None]]"
+    """Whether the read succeeded, and what it read."""
+
+
+_flights: Final[PerLoop[dict[Key, _Flight]]] = PerLoop()
+"""Each event loop's reads under way, by key: futures belong to one loop."""
+
+
+async def read_once(key: Key, read: Read, stamps: str | None = None) -> Entry | None:
+    """``read(started)``, or what a read of ``key`` already under way finds.
+
+    A request joins a read only if nothing was invalidated since it began,
+    and uses what it read only if nothing it rests on was invalidated by
+    the time it ended (``changed_since``), in this process or, with
+    ``stamps`` (``STAMPS``' alias), in any other: the entry's shared
+    stamps must still be the ones it was read with (``_still_stamped``).
+    So a revocation committed before a request arrived is never hidden from
+    it by an older read. A read that
+    fails, or whose request is cancelled, leaves each waiting request to
+    read for itself. A waiting request that is cancelled leaves the read
+    running for the others.
+    """
+    flights = _flights.get(dict)
+    started = principal_cache.begin()
+    flight = flights.get(key)
+    if flight is not None and flight.started == started:
+        succeeded, entry = await asyncio.shield(flight.done)
+        if succeeded and (
+            entry is None
+            or (
+                await _still_stamped(entry, stamps)
+                and not principal_cache.changed_since(started, entry.targets)
+            )
+        ):
+            observe_principals(key[0], "coalesced")
+            return entry
+        started = principal_cache.begin()  # Read anew: from now on.
+    flight = flights[key] = _Flight(started, asyncio.get_running_loop().create_future())
+    try:
+        entry = await read(started)
+    except BaseException:
+        flight.done.set_result((False, None))
+        raise
+    finally:
+        if flights.get(key) is flight:
+            del flights[key]
+    flight.done.set_result((True, entry))
+    return entry
+
+
+async def _still_stamped(entry: Entry, stamps: str | None) -> bool:
+    """Whether another request's read may serve this one, by the shared stamps.
+
+    Without ``STAMPS``, yes. With it, only if the stamps of ``ALL`` and the
+    entry's targets are still those it was read with (SEC-10a-1): another
+    process may have revoked it, and stamped that, while it was read. A read
+    with no stamps (the cache failed then), or a cache that fails now,
+    confirms nothing: the request reads for itself. One round trip, where
+    reading for itself takes the same and two queries.
+    """
+    if stamps is None:
+        return True
+    if entry.stamps is None:
+        return False
+    try:
+        return await read_stamps(stamps, entry.targets) == entry.stamps
+    except CacheError:
+        return False
+
+
 def remember(entry: Entry, config: PrincipalCacheSettings) -> None:
     """Keep a loaded ``entry`` its class accepted, for ``TTL``."""
     if not (entry.fresh and entry.keep and config.ENABLED):
         return
-    entry.deadline = clock.monotonic() + config.TTL.total_seconds()
+    ttl = config.TTL.total_seconds()
+    entry.deadline = clock.monotonic() + ttl
+    entry.refresh_at = entry.deadline - ttl * REFRESH_SHARE
     evicted = principal_cache.put(entry, limit=config.MAX_ENTRIES)
     if evicted is not None:
         _count_dropped(evicted, "eviction")

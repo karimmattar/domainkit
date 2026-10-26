@@ -9,6 +9,622 @@ and a status.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-26
+
+A minor release: some changes break, and some names are deprecated, to be
+removed in 0.11. `docs/upgrading.md` lists each with its fix; run `check
+--deploy` after upgrading.
+
+### Added
+
+- `domainkit.http.access`: the access rules, for any authentication. The
+  algebra (`BasePermission`, `Require`, `Public`, `AllOf`, `AnyOf`, `Not`,
+  `check_object_permissions`, `mark_public`, `open_routes`), the rules that
+  read only what any principal has (`IsAuthenticated`, `HasPermissions`,
+  `ModelPermissions`, `HasObjectPermissions`, `HasScope`, `IsUnscoped`, ...),
+  `current_user` and `CurrentUser`, and `Principal`: the protocol the rules
+  read (`id`, `is_authenticated`, `is_active`, `ahas_perms`), with
+  `AnonymousPrincipal` and `reads_principal` for a provider's own
+  dependencies. A project whose middleware puts its own principal in
+  `scope["user"]` (an OpenID Connect middleware, a gateway's header) serves
+  `ResourceRouter`s, field policies, and deny by default without
+  `domainkit.contrib.auth`, its tables, or content types; a principal's
+  `challenge()` names the `WWW-Authenticate` of its 401. Auth's users answer
+  `ahas_perms` through `AUTH.BACKENDS`, as `has_perms` did (DSGN-02; ADR 0080).
+- `REQUIRE_ROUTE_RULES` (default `True`): deny by default is the core's,
+  checked when the application is built and when it starts, with or
+  without `domainkit.contrib.auth` (DSGN-02; ADR 0080).
+- `domainkit.db.models`: which classes are installed models, their keys
+  (`model_key`, `billing.invoice`), and their `Meta` options; permissions
+  and generic writes name models without content types.
+  `domainkit.contrib.contenttypes` keeps its names, the same objects
+  (`content_type_key` is `model_key`) (DSGN-02).
+- `domainkit.ddd.Sensitive`: a type whose values no derived schema shows or
+  takes; `schema_for` refuses a field of such a type, as it refused auth's
+  `PasswordHash`, which is one (DSGN-02).
+- `domainkit.deprecation.moved`: a module `__getattr__` that keeps names
+  that moved importable from their old module, warning (DSGN-02).
+- `domainkit.http.responses.BuiltJSONResponse`, public: JSON bodies built of
+  JSON's own values (`model_dump(mode="json")`), rendered without the check
+  `JSONResponse` makes (DSGN-01).
+- The core asks installed apps through protocols, never imports them:
+  `OperatorRecorder` (`domainkit.contrib.audit` records operators' actions),
+  `QueueDeclarer` (messaging names the queues `broker declare` creates),
+  and `TokenIssuer` (auth issues `user_token`'s and the clients' tokens).
+  `test_framework_layers.py` fails on any core module that imports a
+  contrib app, at import, in a function, or by name: 12 did in 0.9.2
+  (DSGN-02; ADR 0080).
+- The `resource-read` and `resource-command` rungs of the benchmark ladder:
+  a `ResourceRouter` read and a scoped command, through the template stack
+  (DSGN-01).
+- Body limits per route: `domainkit.http.middleware.body_limit(size)` on an
+  endpoint, `body_limits=` per kind on a `ResourceRouter` (`create`,
+  `update`, `command`, `batch`), and `body_limit=` on `command_route` and
+  `batch_route`, from 1 byte to 1 GiB, above or below
+  `MAX_REQUEST_BODY_SIZE`. `RequestBodyLimitMiddleware` applies the route's
+  limit as the body arrives: a declared length over it is refused before a
+  byte is read, a 20 MiB upload to a 100 kB route is read only to the limit
+  and one chunk more (it was read and spooled whole, then refused), and
+  middleware that reads bodies before routing meets the route's limit too.
+  Without route limits, nothing changes (WEB-05).
+- `ResourceRouter(crud=True, writable=[...])` names the fields the generic
+  writes take; `writable=ALL_FIELDS` takes every plain one (WEB-09).
+- `RedisBackend(fallback=..., replicas=...)` and
+  `RATE_LIMIT_FALLBACK_REPLICAS` (default `None`, 1 to 1024): while Redis is
+  down or skipped, callers are counted in each process at `RATE_LIMIT`
+  divided by the replicas, by a `MemoryBackend` of at most 10,000 callers
+  (`FALLBACK_KEYS`), instead of let through. Its decisions are marked not
+  counted, so `AUTH.THROTTLE_FAIL_CLOSED` still refuses the attempts they
+  let through (WEB-14).
+- `SECURE_CONTENT_SECURITY_POLICY`, `SECURE_PERMISSIONS_POLICY`, and
+  `SECURE_CROSS_ORIGIN_OPENER_POLICY`: printable ASCII on one line, at most
+  4096 characters (COOP: its three values), `None` to leave a header out
+  (WEB-08).
+- `ACCESS_LOG_PATH` (`"template"`, or `"raw"` for the path as sent)
+  (WEB-10).
+- A getting-started path in five parts (`docs/tutorial.md`): a first
+  resource; an aggregate with rules written by hand and the migration they
+  need; users and permissions; a durable event run by the worker; and tests
+  and the checks production runs. Every command and code change on the
+  pages is run as written by `test_walkthroughs.py`, which now applies the
+  pages' edits as a reader would (DOCS-05).
+- `docs/operations.md` (processes, configuration, sizing, migrations in a
+  rollout, the worker, sealing, backups and restores, what to alert on),
+  `docs/runbook.md` (symptom, check, and action for each alarm the
+  framework raises), `docs/security.md` (the hardening checklist, each item
+  marked refused or warned by the deployment checks), and
+  `docs/upgrading.md` (every breaking change and deprecation of a minor,
+  with its fix; a test keeps it complete) (DOCS-04).
+- A documentation site (`mkdocs.yml`, Material for MkDocs) with search, and
+  an API reference generated at build time from the docstrings of exactly
+  the names `docs/api.md` lists. CI's `docs-site` job builds it with every
+  link and anchor checked, from a new `docs` dependency group, beside the
+  tests (DOCS-03; ADR 0089).
+- `compose.yaml` runs the servers of CI's integration job on a laptop, at
+  the same images and ports, with throwaway certificates; a `Makefile`
+  holds the commands contributors run (`make lint` is CI's lint job,
+  `make integration` its integration job); `CONTRIBUTING.md`, issue forms,
+  and a pull request template. `test_ci.py` keeps them equal to CI
+  (INFRA-10).
+- CI audits the workflows with zizmor, and scans the package with CodeQL's
+  security queries (`codeql.yml`); a release makes its GitHub Release, with
+  the CHANGELOG's section as notes and the files, the bill of materials,
+  and their SHA-256 sums as assets; and the `newest` job runs pip-audit
+  over what `pip install domainkit[...]` resolves (INFRA-11).
+- `domainkit.http.routing.RouteIndex` and `index_routes`: the
+  application's router tries only the routes a request's first path segment
+  can reach, and those that may match any path, in order, and serves what
+  trying every route serves, however the routes change after the build
+  (SEC-10a-6). `get_asgi_application` installs it with
+  `FLATTEN_ROUTERS`. One GET behind 10, 100, and 1,000 routes now costs 329
+  calls each, where it cost 409, 1,129, and 8,329 (PERF-05; ADR 0060).
+- `domainkit.utils.loops.PerLoop`: one value per event loop, kept under a
+  lock and dropping closed loops, for code that serves loops on several
+  threads. The shedding middleware's slots and `HttpClient`'s pools use it
+  (CONC-10).
+- `check` warns, in staging and production, when a network database's
+  pool holds fewer than a quarter of `MAX_CONCURRENT_REQUESTS` connections:
+  past about four requests per connection, requests wait for one, unseen
+  by the shedding queue, up to `POOL_TIMEOUT`, then fail with 503.
+  `docs/reference.md` has the sizing formula. The defaults stay: lower ones
+  would refuse requests they serve (PERF-14).
+- `auth_principal_cache_total` counts `coalesced` (a request served by
+  another's read), `refresh`, and `refresh_failed` events (PERF-04).
+- A `stress (3.14t)` CI job runs the free-threading tests 30 times on
+  3.14t, each in a new random order, on every push and pull request. It is
+  not required yet: on 3.14.6t some runs crash inside SQLAlchemy's compiled
+  extensions when loops on threads make engines at once, at 0.9.2 too
+  (CONC-12, ASYNC-R11).
+- `domainkit.exceptions.DomainkitError`, the root of every exception the
+  framework defines, beside the base each had: `except DomainkitError`
+  catches domainkit once, and `except ValueError`, `TimeoutError`, or
+  `HTTPException` still catch what they did. `domainkit.exceptions` is
+  public, with `ServiceBusy`, an error below the HTTP layer that it answers
+  with 503 and `Retry-After` (DSGN-06; ADR 0084).
+- Typed hooks: a domain registers `on_stage`, `on_committed`,
+  `on_stage_transaction`, `on_transaction_committed`, or `on_migrated`
+  (`domainkit.db.hooks`) in `ready()`, typed on `SqlAlchemyUnitOfWork`, and
+  only the domains that registered are called. `domainkit.apps.hooks.HookPoint`
+  lets an app offer points of its own. An empty commit with every contrib
+  app installed takes 226 Python calls instead of 248, and a project domain
+  without hooks costs a commit nothing (268 with ten of them on 0.9.2)
+  (DSGN-03; ADR 0085).
+- `domainkit.checks`: every finding of `check` and startup has an id, such
+  as `security.E001` (the letter is the level), and a hint where its
+  message does not say how to fix it. `check --deploy`, in staging and
+  production, fails on warnings too, for a deployment pipeline to gate on.
+  `SILENCED_CHECKS` (at most 64 ids) silences warnings a project has
+  judged; it refuses an error's id (DSGN-08, INFRA-08; ADR 0079).
+- Warnings where deployed: `*` in `CORS_ALLOWED_ORIGINS`
+  (`security.W006`), a network database without `POOL_SIZE`, so each
+  process may open 15 connections whatever the server allows
+  (`deploy.W004`), and SQLite (`deploy.W005`) (INFRA-08).
+- `management.generators.Generator` and `AggregateGenerator`: the base of
+  `startdomain`, `startaggregate`, `addcommand`, `addquery`, and `addevent`,
+  which plan every change, then write it; a project's own generators can
+  use them. What the commands write is unchanged, byte for byte (DSGN-10).
+- ADRs 0084 (the exception root), 0085 (typed hooks), and 0090 (module-level
+  singletons, overridden per test); 0046 records how closers are
+  registered, 0079 the checks, and 0025 why the flags and webhooks admin
+  APIs keep routers of their own. No decision is left without a record
+  (DSGN-07, DSGN-13, DSGN-15).
+- `SCOPED_CREDENTIALS`, `AllowScoped`, and `check_scopes_bounded`
+  (`domainkit.http.access`): a route reached with credentials limited to
+  scopes must declare a rule that checks scopes (`HasScope`, a permission
+  rule, `IsUnscoped`, `AllowScoped`, or a rule with `bounds_scopes`), on
+  itself or a router. It is decided once a request wherever the
+  principal is first read: `Require`, `CurrentUser`, `AuthenticatedUser`,
+  and `current_user`, so `Public` routes and readers of a project's own
+  are held too. In 0.10 a route that declares none still serves them,
+  with a `DomainkitDeprecationWarning` and a security log line;
+  `SCOPED_CREDENTIALS = "refuse"` answers 403, as 0.11 will by default.
+  `HasObjectPermissions` checks the scopes on the request, not only on
+  each object, and `ModelPermissions` asks scoped credentials for `view`
+  on `OPTIONS`. Auth's `/logout` and `/me` say `AllowScoped` (AUTH-01;
+  ADR 0087).
+- Refusals of known principals are audited: `auth.access`, outcome
+  `denied`, with the actor, the route's method and template, and the
+  rule's class, once per actor and route a minute, through
+  `DenialRecorder`, which `domainkit.contrib.audit` implements. A recorder
+  that fails is logged; the 403 stands (AUTH-11).
+- Device proofs (`domainkit.contrib.auth.devices`): a login that works,
+  second factor included, hands its client an HttpOnly cookie,
+  `__Host-dk_device`, naming a device stored with the user's tokens for
+  `AUTH.DEVICE_TTL` (30 days, an hour to 400), 20 at most per user.
+  Logins that send it count against `LOGIN_RATE` per device and against
+  the account's ceiling of proven attempts (twice `LOGIN_RATE`), not the
+  account's own count or the address's, so wrong passwords from
+  strangers, or from others behind the same address, no longer keep the
+  user out on a client they logged in from before. Guessing an account
+  stays bounded: `LOGIN_RATE` without proofs plus twice that with them,
+  however many proofs one holds; a password change or reset, or logging
+  out everywhere, ends every device. A client without one is counted as
+  before (SEC-r1-2; ADR 0087).
+- `AUTH.IDLE_TIMEOUT` (off by default; 5 minutes to 30 days): a login token
+  or a browser session unused that long is refused, and a JSON Web Token
+  login not refreshed that long cannot refresh; never before the timeout,
+  and within a tenth of it after, since last uses are then written a tenth
+  as often; planned with AUTH-08 (AUTH-08).
+- `DomainConfig.erase_subject(subject, reason)` and
+  `DomainConfig.export_subject(subject)`: what a domain keeps about a
+  person outside its aggregates (copies in deliveries, kept responses,
+  queues, a search index of your own), erased and exported by `privacy
+  erase` and `privacy export` on every installed domain. The erasure hook
+  answers counts by kind, recorded as `privacy.copies_erased` (anything
+  but lower-case kinds and whole numbers is refused, since it would go
+  into the trail); the export's answer goes under `copies` (DATA-02).
+  A copy may hold others' personal data, so the export gives what it holds
+  about the subject alone: a webhook body's and an outbox message's fields
+  whose `Personal(of=...)` names them (a body `expose(payload=...)`
+  picked is withheld), and a kept response's body only if they were its
+  caller (else withheld); `domainkit.ddd.fields_about` picks
+  them (SEC-10b-4).
+- Webhook subscriptions can have an owner, and a self-service API lets a
+  user manage its own: `domainkit.contrib.webhooks.owned.router` (mount
+  it next to your users' routes) lists, creates, reads, changes, rotates,
+  and deletes the authenticated user's subscriptions, and lists their
+  deliveries; another owner's, or staff's, are 404. Their `owner` is the
+  user's id, or what `owned_router(owner=...)` names (a tenant). An owned
+  subscription receives only the events `expose(..., owner=...)` gives
+  its owner, never one exposed without an owner; staff's subscriptions,
+  which have none, still receive every event they want. An owner may have
+  `WEBHOOKS.MAX_SUBSCRIPTIONS_PER_OWNER` (10; 1 to 1000; counted after
+  the insert under a lock of the owner, so concurrent creates cannot
+  pass it together: SEC-10b-6), erasing an
+  owner deletes theirs, and the admin API shows each one's `owner`. The
+  subscriptions table has a new `owner` column: run `makemigrations` and
+  `migrate` (DATA-11).
+- `IDEMPOTENCY.ANONYMOUS` (`"per-address"`, or `"refuse"`): what happens
+  to an `Idempotency-Key` sent with no actor and none of the
+  `CREDENTIAL_HEADERS`. Such a key can only be scoped to the client's
+  address, so two callers behind one NAT or proxy share it: the second to
+  send the same key and body is replayed the first's response, and a
+  different body learns the key is taken. `"refuse"` answers it 400
+  `idempotency_key_needs_caller` and runs nothing; the default keeps the
+  behaviour of 0.9 (DATA-09). For `"refuse"`, a `Cookie` names a caller
+  only if it carries one of the new `IDEMPOTENCY.SESSION_COOKIES` (none by
+  default: auth's sessions set the actor), so a consent or locale cookie
+  many callers send alike is refused too (SEC-10b-7).
+- Retention that keeps the audit chain: `auditprune --keep-days DAYS`
+  deletes the rows sealed before then (with `AUDIT.LEDGER`, below the
+  newest anchored seal), never within the new `AUDIT.MIN_RETENTION`
+  (default 30 days), below a checkpoint signed with the new
+  `AUDIT.CHECKPOINT_KEY` (an Ed25519 key in PEM, read by `auditprune` and
+  `auditverify --export` alone; the new `audit` extra installs
+  cryptography) and recorded on the ledger, once the chain up to it
+  verifies, and `auditverify` starts the chain from the checkpoint,
+  checked with the new `AUDIT.CHECKPOINT_PUBLIC_KEY`: a pruned trail
+  still verifies, and one tampered with, or a checkpoint stored to cover
+  a deletion, still fails. Only a checkpoint signed for pruning covers a
+  gap (an export's head checkpoint says `"kind": "export"`), one that
+  follows the checkpoint before it, made `MIN_RETENTION` after its seal
+  and, with a ledger, recorded there and its seal anchored that long
+  before (SEC-10b-2, SEC-10b-3). On PostgreSQL it runs as the tables' owner
+  (`MIGRATION_URL`), the `protect()` triggers off for one batch of 1,000
+  at a time. `auditverify --export FILE` writes signed checkpoints of
+  every trail that verifies, and `--check-export FILE --public-key PEM`
+  checks such a file offline, with the public key alone. The checkpoint
+  and export formats are fixed by ADR 0082. The new
+  `domainkit_audit_checkpoints` table needs `makemigrations` and
+  `migrate` (N6, N4, DATA-05; ADR 0082).
+- `domainkit.ledger.trust`: the state an immudb ledger last proved to a
+  client (`TrustedState`), kept in a `StateStore` (`use_states` registers
+  one; `MemoryStateStore`), and `LedgerRolledBack`, also exported by
+  `domainkit.ledger`. With `domainkit.contrib.audit` installed, ledgers
+  keep it in `AUDIT.DATABASE` (`domainkit_ledger_states`: run
+  `makemigrations` and `migrate`); staging and production warn when
+  evidence is installed without audit (DATA-05). Replicas share it: the
+  readiness probe reads it again, and a save is a compare-and-set
+  (`StateStore.save(..., expected=...)`) over the state the ledger last
+  read or saved there; a later one another replica saved is proven to lie
+  on one chain with its own first, so a replica writing on a rolled-back
+  or forked server is refused instead of saving the fork (SEC-10b-5).
+  The `immudb` extra now declares `protobuf` (from 5.27.0, the first
+  that imports on Python 3.13 without a warning), which reading the
+  server's state imports.
+
+### Changed
+
+- **Breaking:** the audit trail's baseline refuses by default, as 0.9
+  announced: `AUDIT.REQUIRE_BASELINE` is `True`, so with
+  `domainkit.contrib.audit` installed staging and production refuse to
+  start without a ledger, a namespace, a sealing schedule, and the
+  `protect()` triggers, and `check` fails. Each missing part is an error
+  (`audit.E001` to `audit.E005`) that `SILENCED_CHECKS` cannot name; in
+  0.10's first merge they were warnings it could silence. To keep the old
+  behaviour, set `AUDIT = {"REQUIRE_BASELINE": False}` (DATA-04,
+  SEC-10b-8).
+- **Breaking:** with `domainkit.contrib.idempotency` installed, staging and
+  production refuse to start when requests have no deadline (no
+  `REQUEST_TIMEOUT`, or no `DeadlineMiddleware`), as 0.9.1 announced;
+  `check` fails with `idempotency.E002`, which `SILENCED_CHECKS` cannot
+  name. Workers and commands still start. To keep the old behaviour, set
+  `IDEMPOTENCY = {"REQUIRE_DEADLINE": False}`, which warns
+  (`idempotency.W001`) (SEC-r2-4, SEC-10b-8).
+- **Breaking:** projects without `domainkit.contrib.auth` now have deny by
+  default: a route that declares no rule (`Require`, `CurrentUser`, a
+  `reads_principal` dependency, or `Public`) is listed by `check`, and
+  staging and production refuse to start, as they did with auth. To keep
+  the old behaviour, set `REQUIRE_ROUTE_RULES = False` (DSGN-02).
+- `domainkit.resources.routing` is a package: the `ResourceRouter` facade,
+  its constructor and every `*_route` signature unchanged, over one class
+  per kind of route (`listing`, `reading`, `commands`, `batching`,
+  `queries`, `crud`) that answers from a frozen, typed `RouteContext`
+  instead of a dict of values; `reach` and `presenting` hold what they
+  share. Answers, headers, error bodies, and OpenAPI documents are the same
+  (DSGN-01; ADR 0025).
+- A command or a query on one aggregate whose resource has a scope or a
+  parent checks the aggregate and runs the service's first `async with uow:`
+  block in the same transaction (a later block gets one of its own, and
+  every exit rolls back what its block did not commit, SEC-10a-2): one
+  transaction and one
+  connection instead of two, and the service finds the aggregate the check
+  read (`resource-command`: 4,546 calls and 2/2/2/2 round trips, now 3,766
+  and 1/1/1/1). With a rule that looks at the aggregate, the check keeps a
+  transaction of its own, closed before the rule runs (DSGN-01).
+- A rule's `has_permission` and `has_object_permission` take the principal
+  typed `Any`, so rules written for auth's `AnyUser` keep their annotation;
+  the core's own rules read a `Principal` (DSGN-02).
+- **Breaking:** `API_DOCS` defaults to `None`, which follows `DEBUG`: a
+  deployment (`DEBUG = False`) no longer serves `/docs`, `/redoc`, or
+  `/openapi.json`. To keep them, set `API_DOCS = True` (the project
+  template's production settings read `API_DOCS` from the environment)
+  (WEB-08; ADR 0086).
+- **Breaking:** every response that sets none gets `Content-Security-Policy:
+  default-src 'none'; frame-ancestors 'none'`, a `Permissions-Policy` that
+  turns powerful browser features off, and `Cross-Origin-Opener-Policy:
+  same-origin`. A route that answers HTML a browser should run sets its own
+  policy, or the project sets `SECURE_CONTENT_SECURITY_POLICY = None` to
+  keep the old headers (WEB-08; ADR 0086).
+- `/docs` and `/redoc` load Swagger UI 5.33.1 and ReDoc 2.5.4 from copies
+  in the package (`/docs/assets/`, `domainkit.http.apidocs`), not from
+  jsdelivr, Google Fonts, and Redocly's CDN, under page policies that allow
+  scripts from the origin only and no inline script. In headless Chromium,
+  `/docs` renders and runs "Try it out" with no violation; ReDoc renders
+  and searches, and only its footer's Redocly logo is refused. The wheel
+  grows from 1.01 MB to 1.82 MB (2.9 MB of files installed) (WEB-08;
+  ADR 0086).
+- **Breaking:** the access log, the request middleware's error lines, error
+  reports, and the request context show the matched route's template
+  (`/accounts/{account_id}`), or `unmatched`, instead of the path as sent,
+  so ids, tokens, and emails in paths stay out of logs. Problem details'
+  `instance` still names the path as sent. To keep the old lines, set
+  `ACCESS_LOG_PATH = "raw"`. Binding the context costs fewer calls than
+  before: the default stack makes 591 calls a request instead of 598
+  (WEB-10; ADR 0086).
+- The guard's resolver stays on its threads, measured against the loop's
+  `getaddrinfo` and aiodns (c-ares) with a DNS server that never answers:
+  with 16 lookups hung by one owner, the guard held 4 threads (the owner's
+  share) and another owner's lookup succeeded in 0.5 ms; the loop's
+  resolver took all 8 threads of the default executor and the other
+  lookup failed after 5 s; aiodns held none, but answered in 164 to 293 µs
+  where the threads answered in 116 to 148 µs, and needs a compiled
+  dependency (WEB-04).
+- The pre-commit hooks run CI's lint commands as CI does: `ruff check`
+  without `--fix`, `ruff format --check`, and `poetry check --lock`; they
+  report, and `make fix` fixes. The remote hooks are pinned to commits
+  (INFRA-10).
+- Tests that passed as long as nothing raised now assert what they
+  promise, and property tests in CI print the blob that replays a failing
+  example (TEST-06).
+- **Breaking:** `BackgroundHandler` formats a record's exception on the
+  caller, into `exc_text`, as the standard library's `QueueHandler` does,
+  and the queued copy keeps no `exc_info`: a traceback in the queue kept
+  the frames that raised, and their requests, alive until the thread wrote
+  it (2,000 queued errors kept 103 MB, now 1.7 MB). Every formatter writes
+  the same text. A handler that needs the exception object rather than its
+  text: attach it to the logger itself, not behind the queue; error
+  trackers take exceptions from `ERROR_REPORTERS`, as before (CONC-04; ADR
+  0051).
+- A kept principal builds the request's groups and permissions when the
+  request first reads them, as new objects of its own, and `has_perm`,
+  `get_all_permissions`, and the rules answer from permission keys worked
+  out once per principal until then: a user with 220 permissions costs a
+  `ModelPermissions` request 12 µs, where building them all cost 2,580.
+  `inspect(request.user).unloaded` lists `groups` and `user_permissions`
+  until they are read (PERF-03; ADR 0059).
+- Requests of one credential that miss the principal cache at once read it
+  once (ten credentials with twenty requests each: 400 `SELECT`s, now 20),
+  and in the last fifth of the `TTL` one request reads a kept principal
+  again while the others are served it, never past the `TTL`; a
+  revocation committed before a request arrived is never hidden from it by
+  an older read; with `STAMPS`, a request joining another's read first
+  checks the shared stamps, so one stamped by another process is not
+  either (PERF-04, SEC-10a-1; ADR 0058).
+- `HttpClient` builds its TLS context on a thread the first time a loop
+  calls, instead of on the loop: the first call held it 20 to 39 ms, now 6
+  to 8 (CONC-06).
+- auth imports `domainkit.contrib.mail` where it checks an address or sends
+  mail, not when it is imported: a process that serves the template loads
+  11 modules and 1 MB fewer (PERF-15).
+- The suite runs on every core with pytest-xdist (`pytest -n auto --dist
+  worksteal`), now in the dev group, locally and in CI's test,
+  integration, newest and oldest jobs; a plain `pytest` still works. On
+  four cores the whole suite takes 2 to 2.5 minutes on SQLite and 4.5 to
+  5.5 against PostgreSQL, from 8 and 14.5 in one process (without
+  coverage); coverage still combines across workers. Four places assumed one process: Granian's test
+  took a port found free and closed again, which another worker could
+  take first, and now serves on a unix socket of its own; the SMTP refusal
+  test reused a closed port, and now holds a bound one that never listens;
+  the nested pytest sessions of the plugin's tests named their databases
+  after the outer worker (`test_x_gw1`), and no longer inherit it; and the
+  OpenTelemetry tests now name a provider installed before theirs instead
+  of failing on an empty exporter. Tests that change `TZ` share one
+  fixture that always puts it back (TEST-04).
+- `auth_project`, `api` and `identity`, the suite's project fixtures, no
+  longer generate and apply their revisions in every test: each settings
+  shape is migrated once per run (and worker) into a template, and every
+  test gets a copy of it, `CREATE DATABASE ... TEMPLATE` on PostgreSQL and
+  a copy of the file on SQLite, still a database of its own that starts
+  from what `migrate` left. The 621 tests of the `test_auth*` files take
+  75 seconds instead of 158 on SQLite, and 165 instead of 294 on
+  PostgreSQL. Generating the revisions once and migrating per test took
+  111 and 208; restoring the plugin's snapshot into one shared database
+  per shape took 83 on SQLite and failed on PostgreSQL after 350 tests,
+  out of connections: dropping each test's database `WITH (FORCE)` is
+  what ends the connections a test leaves open. `test_conftest.py` checks
+  that a test's rows and ids are gone in the next (TEST-03).
+- A release no longer runs the CI workflow again on the tagged commit: it
+  finds the CI run of that commit's push to `main`, waits for it, requires
+  it green, and publishes the `dist` and `sbom` it built (kept 90 days);
+  only pip-audit and gitleaks run again. That run attests the files it
+  built (its new `attest` job, on pushes only), so their provenance still
+  names the run that built them, and the release checks both
+  attestations of each file before publishing. Pushes to `main`
+  are never cancelled, so each commit keeps its run (INFRA-06; ADR 0007,
+  amended).
+- A pull request that changes only `docs/**` and the Markdown files at the
+  top of the repository skips the suite, the integration, benchmark,
+  build and dependency-range jobs: the new `changes` job decides, and the
+  new `docs` job runs the four test modules that read the docs. A file
+  moved or copied into `docs/` counts by both its paths, with git's
+  rename detection off, so moving code there still runs the suite. Both
+  are required checks; the skipped jobs still report, and the test matrix
+  skips its steps, since a matrix skipped whole would report under its
+  unexpanded name and leave `test (3.13)` pending (INFRA-06).
+- Staging and production report every breach of the deployment baseline
+  at once, each with its id, instead of the first: settings with five
+  breaches are refused once, naming all five. AUTH's refusals are reported
+  together the same way, and `check` lists the application's problems,
+  the layer rules, and the migration heads in one report, where the
+  build's refusal used to end it. What is refused is unchanged; messages
+  start with the check's id (DSGN-08, INFRA-08).
+- `check` prints each warning with its id (`Warning: security.W001: ...`)
+  and counts the silenced ones; `setup()` names each missing requirement
+  as `apps.E001` under one heading (DSGN-08).
+- `PasswordChecksBusy` is a `ServiceBusy`, no longer an `HTTPException`:
+  the hashers no longer raise HTTP errors, and the HTTP layer answers it
+  with the same 503, body, and `Retry-After`. Code that caught it as an
+  `HTTPException` catches it by name (DSGN-06).
+- The contrib apps join commits and migrations through the typed hooks
+  instead of overriding `DomainConfig.stage`, `committed`,
+  `stage_transaction`, `transaction_committed`, and `migrated`; those
+  methods still work in a project's own configurations (DSGN-03).
+- **Breaking:** a login from a browser ends the session its cookie held,
+  whoever logs in: the browser replaces the cookie, so a copy of the old
+  one used to work on, unseen, for 14 days. To keep it, set
+  `AUTH.COOKIE.END_PREVIOUS_SESSION = False` (AUTH-05).
+- **Breaking:** a user holds at most `AUTH.MAX_LOGINS` (100) logins at once:
+  login tokens, browser sessions, and JSON Web Token logins. A new one past
+  it ends the oldest, where logins used to pile up, a row each for 14 days.
+  Personal tokens neither count nor end. To keep the old behaviour, set
+  `MAX_LOGINS` to 10,000 (AUTH-08).
+- **Breaking:** login responses (`/login`, `/session`) set the device-proof
+  cookie, and a client that sends it is no longer held back by its
+  address's count. To keep the old behaviour, set `AUTH.DEVICE_TTL = None`
+  (SEC-r1-2).
+- A wrong password against an outdated hash takes as long as a right one:
+  a hash of another hasher costs a hash with the preferred one, as a right
+  password is hashed again, and a preferred hasher without
+  `harden_runtime` (Argon2, scrypt) does the same for its own older hashes.
+  With PBKDF2 preferred, a wrong password used to answer in 0.006 s against
+  a migrated `pbkdf2_sha1` hash and in 0.56 s against a current one, so
+  login times told which accounts carry weak hashes (AUTH-07).
+- Argon2 hashes of another variant (`argon2i`, `argon2d`), version, or
+  length, or with a salt of fewer than 128 bits, are hashed again as
+  `argon2id` at the next login; costs alone used to decide (AUTH-07).
+- Last uses of tokens are written a tenth of `AUTH.IDLE_TIMEOUT` apart when
+  that is shorter than 5 minutes; principals carry a token's name and
+  creation time, two more columns of the read that finds a credential
+  (AUTH-08).
+- **Breaking:** an immudb ledger whose state is behind the one a client
+  last verified (rolled back to an older copy) is refused with
+  `LedgerRolledBack`, and one with another digest at the same transaction
+  (forked) with `LedgerTampered`, by every call and by `/ready`, after
+  reconnects and restarts too. Until now each client kept the trusted
+  state itself and lost it on every reconnect, restart, and in the
+  readiness probe, whose `currentState` call made the server's
+  unverified state the trusted one: each new client trusted whatever the
+  server showed it. Both clients of a ledger now verify against one state,
+  saved at each advance; the probe checks the server's signed state
+  without trusting it. To use a ledger restored from a backup on purpose,
+  delete its row from `domainkit_ledger_states` (DATA-05; ADR 0011
+  amended).
+- Evidence is `intact` by a verified read of its key's latest revision,
+  and `ImmudbLedger.revision_count` is that revision's number, instead of
+  the SDK's `history`, which nothing verifies: a server could answer one
+  revision for a key written twice. A key written once is read once
+  (DATA-05).
+- The audit rows of `privacy export` carry `copies`, the domains whose
+  copies the export holds (DATA-02).
+
+### Deprecated
+
+- The rule names of `domainkit.contrib.auth` and
+  `domainkit.contrib.auth.access` that moved to `domainkit.http.access`:
+  `AllowAny`, `BasePermission`, `HasObjectPermissions`, `HasPermissions`,
+  `HasScope`, `IsAuthenticated`, `IsAuthenticatedOrReadOnly`, `IsUnscoped`,
+  `ModelPermissions`, `NotAuthenticated`, `Public`, `Require`,
+  `check_object_permissions`, `mark_public`, and `open_routes` (and, from
+  `.access` only, `AllOf`, `AnyOf`, `Not`, `Rule`, `SAFE_METHODS`,
+  `MODEL_ACTIONS`, `scopes_of`, ...). They still import, the same objects,
+  with a `DomainkitDeprecationWarning` naming the new place, and are removed
+  in 0.11. `IsAdminUser`, `IsSuperuser`, `AuthenticatedUser`, `CurrentUser`,
+  and `current_user` stay in auth (DSGN-02).
+- `AUTH.REQUIRE_ROUTE_RULES`: set `REQUIRE_ROUTE_RULES`. `False` still
+  turns the check off, with a warning, until 0.11 (DSGN-02).
+- `ResourceRouter(crud=True)` without `writable=`, or without both
+  `create=` and `update=`: every plain field of the aggregate is writable,
+  so a field added later is settable by any caller allowed to write. It
+  still works, with a `DomainkitDeprecationWarning`, and is refused in
+  0.11; name the fields with `writable=[...]`, or `writable=ALL_FIELDS` to
+  keep every one (WEB-09).
+- `Query` from `domainkit.ddd.query`, `Selection`'s name before 0.9.2: use
+  `domainkit.ddd.Selection`. It still works, the same class, with a
+  `DomainkitDeprecationWarning`, and is removed in 0.11. The domain
+  template's tests use `Selection` (DSGN-09).
+- Credentials limited to scopes on a route that declares no rule that
+  checks scopes: served in 0.10 with a `DomainkitDeprecationWarning`
+  naming the route, refused in 0.11. Add `HasScope(...)`, a permission
+  rule, or `AllowScoped()` to the route, or set
+  `SCOPED_CREDENTIALS = "refuse"` now (AUTH-01).
+- `IDEMPOTENCY.ANONYMOUS` left unset, so `"per-address"`: 0.11 defaults
+  to `"refuse"`. Staging and production warn (`idempotency.W002`, which
+  names the leak: anonymous callers behind one address share keys) until
+  it is set: `"per-address"` keeps today's behaviour, `"refuse"` takes
+  0.11's now. Flipping the default in 0.10 made every anonymous keyed
+  flow a 400 (63 failures and 8 errors in the 1,306 idempotency tests),
+  service-to-service calls behind a gateway or mTLS among them (DATA-09).
+- `domainkit.contrib.evidence.model`, the old name of the evidence models
+  module, warns with `DomainkitDeprecationWarning` for each name taken from
+  it; import them from `domainkit.contrib.evidence` (or its `models`).
+  Removed in 0.11 (DSGN-09).
+
+### Removed
+
+- `request.user.password`, deprecated in 0.9.0 and due in 0.10: a request's
+  user holds no password hash, and the statement that reads it no longer
+  selects one, only whether it is usable (`has_usable_password()` works).
+  Reading it raises `AttributeError`, naming `password_holds` and
+  `uow.users.password_hash` (ADR 0059).
+
+### Fixed
+
+- `assert_num_queries` and `assert_max_queries` no longer fail a statement
+  that another thread runs as a block starts or ends ("deque mutated
+  during iteration"): each block added and removed its own listener on
+  SQLAlchemy's `Engine` class, whose lists SQLAlchemy reads without a
+  lock. One listener now stays, put on when `domainkit.testing` is
+  imported, before any test starts a thread, and blocks only come and go
+  from the list it reads. Threads running
+  statements while blocks came and went failed 3 runs of 3 before, and
+  none after. The suite's own counters do the same
+  (`domainkit_tests/engine_events.py`) (TEST-04).
+- A messaging worker stopped just as it took a slot of its budget stops at
+  once, instead of after waiting `POLL_INTERVAL`: it cleared its wake-up
+  after taking the slot, wiping the one the stop had set, and waited a
+  whole poll before seeing the stop. Every shutdown that landed there took
+  up to `POLL_INTERVAL` longer (the 0.9.3 release's CI timed out on it).
+  Neither the worker's poll loop nor the brokered relay's waits for a poll
+  once stopped.
+
+### Security
+
+- `privacy erase` reaches the copies three apps keep. Until now each kept
+  the person's data after an erasure: up to 30 days in webhook delivery
+  bodies, readable by staff and resent by `replay`; 24 hours in responses
+  kept for `Idempotency-Key` retries; for good in dead outbox messages.
+  Webhooks now blank the body of every delivery about the subject (by
+  the `Personal` markers of its event), cancel the pending ones, and
+  `replay` skips them; idempotency drops the responses kept for the
+  subject's own requests and for requests that committed an event about
+  them, keeping the key, so a retry gets 409
+  `idempotency_response_unavailable` and never runs again; messaging
+  blanks dead messages about the subject (by the markers of their event,
+  or of their task's parameters), so `messages --retry` refuses them, and
+  counts the pending ones, which run as planned: the erasure logs them,
+  to be erased again once they have run. `docs/privacy.md` lists what
+  erasure reaches at once and what only expires. The webhook deliveries
+  and idempotency keys tables have a new `subjects` column: run
+  `makemigrations` and `migrate` (DATA-02).
+- An owned webhook subscription's deliveries look host names up as its
+  owner's (`webhook-owner:<owner>`), so all of one owner's subscriptions
+  share one quarter of the guard's lookup threads. Until now the share was
+  per subscription, and whoever could make eight subscriptions to hosts
+  whose DNS never answers held all 16 threads for a first round of
+  lookups; now eight of one owner's hold 4 (WEB-04, DATA-11).
+- A request that ran past its deadline was logged with the path it was
+  sent to, and so were the debug toolbar's likely N+1 queries: a token in
+  a path reached the logs that 0.10 keeps paths out of. Both now show the
+  route's template, as the access log does, or the path as sent with
+  `ACCESS_LOG_PATH = "raw"` (WEB-10).
+- While Redis was down, the rate limit's fallback forgot its
+  longest-unseen caller once 10,000 others had come, so a flood of other
+  keys gave a throttled one its full quota back. It now never forgets a
+  caller who still owes requests, and refuses new callers while every
+  place holds one (`MemoryBackend(full="refuse")`; the default backend
+  keeps forgetting the oldest) (WEB-14).
+- A body read before routing (`IdempotencyMiddleware`) to a route of a
+  mounted application, or of a router kept included, was held to
+  `MAX_REQUEST_BODY_SIZE` instead of the route's own limit. The route is
+  now matched into mounts and routers; where none of a mount's routes can
+  be told yet, its strictest limit holds (WEB-05).
+- `SECURE_REFERRER_POLICY` took any text, line breaks included, and sent
+  it as a header; it now takes `Referrer-Policy`'s own policies. The
+  origins, methods, and header names of `CORS_*` are checked too: an
+  origin is a scheme and host, a method or header name an HTTP token
+  (WEB-08).
+
 ## [0.9.3] - 2026-10-26
 
 The release of 0.9.2 failed before publishing (below), so 0.9.2 reached no
@@ -2661,7 +3277,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.9.3...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/karimmattar/domainkit/compare/v0.9.3...v0.10.0
 [0.9.3]: https://github.com/karimmattar/domainkit/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/karimmattar/domainkit/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/karimmattar/domainkit/compare/v0.9.0...v0.9.1

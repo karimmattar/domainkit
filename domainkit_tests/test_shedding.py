@@ -902,7 +902,7 @@ async def test_a_response_started_while_a_chunk_waits_needs_no_slot(
         entered.clear()
         slots = Refusing() if refuse else Slots(limit=1, queue=1)
         async with capped(app, MAX_QUEUED_REQUESTS=1) as middleware:
-            middleware._slots[asyncio.get_running_loop()] = slots
+            assert middleware._slots.get(lambda: slots) is slots  # noqa: B023 - called at once.
             body = Body()
             task = posting(middleware, body)
             await entered.wait()

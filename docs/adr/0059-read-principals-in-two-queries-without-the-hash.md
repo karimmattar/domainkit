@@ -1,6 +1,6 @@
 # 0059. Read a principal in two queries, build each request's user, and deprecate its password hash
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-26 (at the end)
 - Date: 2026-10-21
 - Amends: [0016](0016-authenticating-requests.md)
 
@@ -89,3 +89,48 @@ Options considered:
   less than the queries it replaces.
 - A miss that finds `last_used_at` due opens a second transaction, once
   per token per five minutes.
+
+## Amendment (2026-10-26, 0.10): build the grants a request reads, when it reads them
+
+Each request's user was built with all its groups, permissions, and
+content types, each through SQLAlchemy's instance factory and detached:
+about 16 µs for a user and 16 µs more per permission, 15 to 20% of a kept
+`GET /me`, and more than the two queries it saved for users with hundreds
+of permissions (PERF-03 of the 0.9.0 audit).
+
+- **The user is built with its columns; its groups and permissions when
+  first read.** They are loaded as SQLAlchemy loads a deferred attribute
+  (`state.callables`), and a group's permissions when first read too, each
+  a new object of the request's own, the same a query builds: a
+  permission given directly and through a group is one object, as before.
+- **`has_perm` answers from keys worked out once with the principal**
+  (`Principal.granted`, shared by principals with the same grants, as the
+  grants are): `get_user_permissions`, `get_group_permissions`,
+  `get_all_permissions`, `has_perms`, `has_domain_perms`, and the
+  backends' `has_perm` read them while the relationship they stand for is
+  not loaded. Once it is loaded, it may have changed (a handler's `grant`
+  or `join`), and they read it, as before.
+- **Rejected: sharing immutable `Group`, `Permission`, and `ContentType`
+  objects between requests.** They are mutable ORM instances: a handler
+  that changes one, or a session that adopts a request's user and its
+  groups, would change or claim every request's. And `has_perm` would
+  still walk every permission on each call.
+- Measured with `timeit`, building a request's user and one `has_perm`
+  (a `ModelPermissions` route), and `/me` (the keys and the groups'
+  names), best of five, µs per request:
+
+  | Grants | Built at once (0.9) | Shared objects | Built when read |
+  | --- | ---: | ---: | ---: |
+  | 1 group of 2 permissions: `has_perm` | 70 | 21 | 9 |
+  | ... `/me` | 62 | 25 | 27 |
+  | 1 group of 50: `has_perm` | 545 | 47 | 11 |
+  | ... `/me` | 592 | 52 | 24 |
+  | 5 groups of 40, 20 direct: `has_perm` | 2,580 | 208 | 12 |
+  | ... `/me` | 2,414 | 218 | 71 |
+
+- A user built for a request reports `groups` and `user_permissions` as
+  unloaded (`inspect(user).unloaded`) until they are read, and a session
+  that merges or adopts such a user does not take them with it; reading
+  them through it builds them as above. A differential test builds both
+  ways from 300 random grant sets, each changed three times, and requires
+  the same answers.

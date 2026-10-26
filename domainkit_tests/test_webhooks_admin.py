@@ -16,7 +16,6 @@ from sqlalchemy import select, update
 from domainkit import setup
 from domainkit.apps import registry
 from domainkit.conf import override_settings
-from domainkit.contrib.auth import open_routes
 from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.contrib.webhooks import queue_deliveries
 from domainkit.contrib.webhooks.admin import (
@@ -37,6 +36,7 @@ from domainkit.contrib.webhooks.tables import FAILED, deliveries, subscriptions
 from domainkit.db import connections
 from domainkit.ddd import DomainEvent, event_bus
 from domainkit.http import get_asgi_application
+from domainkit.http.access import open_routes
 from domainkit.management import CommandError, call_command, operators
 from domainkit.management.base import run_async
 from domainkit.management.operators import Operator
@@ -169,6 +169,7 @@ def test_staff_create_subscriptions_and_see_the_secret_once(
         "description": "billing",
         "created_at": created["created_at"],
         "rotating": False,
+        "owner": None,
     }
     assert listed.json() == [created]
     assert read.json() == created

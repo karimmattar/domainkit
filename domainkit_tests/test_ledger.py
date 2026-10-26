@@ -78,7 +78,10 @@ class FakeClient:
         self.closed = False
         self.fail_with: Exception | None = None
         self.scans: list[tuple[bytes, bytes, bool, int]] = []
-        self.histories: list[tuple[int, int, bool]] = []
+        self.state = SimpleNamespace(
+            db="evidence", txId=0, txHash=b"\0" * 32, publicKey=b"", signature=b""
+        )
+        """The server's state; the verified calls here never move it."""
         self.shutdown_threads: list[str] = []
         self._active = 0
         self.peak = 0
@@ -136,17 +139,6 @@ class FakeClient:
             id=10 + number, value=revisions[number - 1], revision=number
         )
 
-    def history(
-        self, key: bytes, offset: int, limit: int, sortorder: bool
-    ) -> list[Any]:
-        """Revisions from ``offset``, at most ``limit``."""
-        self._call("history")
-        self.histories.append((offset, limit, sortorder))
-        if key not in self.values:
-            raise RpcError("key not found")
-        window = self.values[key][offset : offset + limit]
-        return [SimpleNamespace(value=value) for value in window]
-
     def scan(
         self, key: bytes, prefix: bytes, desc: bool, limit: int
     ) -> dict[bytes, bytes]:
@@ -157,10 +149,14 @@ class FakeClient:
             k: v[-1] for k, v in sorted(self.values.items()) if k.startswith(prefix)
         }
 
-    def currentState(self) -> Any:  # noqa: ANN401 - SDK API.
+    def serverState(self) -> Any:  # noqa: ANN401 - SDK API.
         """The server's state."""
         self._call("state")
-        return SimpleNamespace(txId=len(self.values))
+        return self.state
+
+    def verifiedTxById(self, tx: int) -> Any:  # noqa: ANN401 - SDK API.
+        """Not called: these ledgers keep no state to prove (test_ledger_trust)."""
+        raise AssertionError("unused")  # pragma: no cover
 
     def shutdown(self) -> None:
         """Close the channel."""
@@ -261,12 +257,14 @@ async def test_immudb_ledgers_call_the_sdk_on_their_own_thread() -> None:
     assert entry == LedgerEntry(b"k/1", b"v", 11, 1)
     assert (count, missing, keys) == (1, 0, [b"k/1"])
     assert client.calls == [
+        "state",  # The work's client joins: the server's state is checked.
         "set",
         "set",
         "get",
-        "history",
-        "history",
+        "get",  # Counts are verified reads of the latest revision.
+        "get",
         f"scan:{SCAN_LIMIT}",
+        "state",  # The probe's client joins.
         "state",
     ]
     assert client.scans == [(b"", b"k/", False, SCAN_LIMIT)]
@@ -288,7 +286,7 @@ async def test_immudb_creates_are_conditional_sets() -> None:
     await ledger.close()
 
     assert created == LedgerWrite(b"k", 1)
-    assert client.calls == ["create", "create"]
+    assert client.calls == ["state", "create", "create"]
     assert client.values == {b"k": [b"one"]}
 
 
@@ -484,7 +482,7 @@ async def test_calls_never_overlap() -> None:
 
 
 async def test_counts_stop_at_the_limit() -> None:
-    """revision_count reads at most ``limit`` revisions from the start."""
+    """revision_count is the latest revision's number, at most ``limit``."""
     client = FakeClient()
     ledger, _ = ledger_on(client)
     for value in (b"a", b"b", b"c"):
@@ -494,8 +492,8 @@ async def test_counts_stop_at_the_limit() -> None:
     await ledger.close()
 
     assert counts == [1, 2, 3]
-    # Oldest first, from the first revision.
-    assert client.histories == [(0, 1, False), (0, 2, False), (0, 5, False)]
+    # The latest revision, read verified: never the SDK's unverified history.
+    assert client.calls[-3:] == ["get", "get", "get"]
 
 
 class SilentRpcError(Exception):
@@ -547,7 +545,11 @@ def test_sdk_errors_become_ledger_errors(
 
 
 async def test_failed_calls_reconnect_and_keep_ledger_errors() -> None:
-    """Unavailable drops the client; later calls connect again."""
+    """Unavailable drops the client; later calls connect again.
+
+    A client that cannot join (the server's state fails its check) is
+    closed and not kept: the next call connects again.
+    """
     client = FakeClient()
     ledger, connects = ledger_on(client)
     await ledger.check()
@@ -564,7 +566,7 @@ async def test_failed_calls_reconnect_and_keep_ledger_errors() -> None:
     await ledger.close()
 
     assert closed_after_failure
-    assert len(connects) == 2
+    assert len(connects) == 3
 
 
 async def test_slow_ledgers_time_out() -> None:

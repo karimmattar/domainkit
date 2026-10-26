@@ -13,7 +13,7 @@ import logging
 import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 import pytest
 from fakeredis import FakeAsyncRedis, FakeServer
@@ -32,8 +32,14 @@ from domainkit.contrib.auth.principals import (
     stamp_key,
     write_stamps,
 )
+from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
-from domainkit.http.ratelimit import RedisBackend
+from domainkit.http.ratelimit import (
+    FALLBACK_KEYS,
+    Decision,
+    MemoryBackend,
+    RedisBackend,
+)
 
 FAKE: Final = "redis://fakeredis:6379/0"
 SERVERS: Final = {
@@ -499,3 +505,181 @@ def test_readiness_with_a_live_cache(server: dict[str, object]) -> None:
         response = client.get("/ready")
 
     assert response.status_code == 200
+
+
+async def test_a_redis_outage_falls_back_to_a_local_count(
+    server: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Redis refuses: each replica counts its share; nothing is let through blind."""
+
+    async def refuse(self: RedisStore, key: str, *args: float) -> tuple[int, float]:
+        raise CacheError("READONLY You can't write against a read only replica.")
+
+    monkeypatch.setattr(RedisStore, "gcra", refuse)
+    with (
+        override_settings(
+            CACHES={"default": {}, "shared": server}, RATE_LIMIT_CACHE="shared"
+        ),
+        caplog.at_level(logging.WARNING, logger="domainkit.http.ratelimit"),
+    ):
+        backend = RedisBackend(fallback=MemoryBackend(clock=lambda: 100.0), replicas=2)
+        try:
+            # 5 a minute across 2 replicas: 2 here (5 // 2), the third refused.
+            decisions = [await backend.hit("ip:203.0.113.7", 5, 60) for _ in range(3)]
+            other = await backend.hit("ip:203.0.113.8", 5, 60)
+        finally:
+            await caches.close_all()
+
+    assert [(d.allowed, d.counted) for d in decisions] == [
+        (True, False),
+        (True, False),
+        (False, False),
+    ]
+    assert decisions[2].retry_after == 30.0  # Its share: 2 a minute.
+    assert (other.allowed, other.remaining) == (True, 1)
+    assert caplog.messages == [
+        (
+            "Redis refused the rate limit; counting in this process for 5.0s: "
+            "READONLY You can't write against a read only replica."
+        )
+    ]
+
+
+async def test_a_skipped_cache_falls_back_and_takes_refunds(
+    server: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """While the cache cools down, the fallback counts, and gives back."""
+
+    async def unavailable(*args: object, **kwargs: object) -> object:
+        raise CacheUnavailable("Cache 'shared' is skipped after a failure.")
+
+    with override_settings(
+        CACHES={"default": {}, "shared": server}, RATE_LIMIT_CACHE="shared"
+    ):
+        backend = RedisBackend(fallback=MemoryBackend())
+        monkeypatch.setattr(caches["shared"], "call", unavailable)
+        try:
+            first = await backend.hit("user:1", 1, 60)
+            refused = await backend.hit("user:1", 1, 60)
+            backend._skip_until = float("inf")  # Skipped after a failed hit.
+            skipped = await backend.hit("user:1", 1, 60)
+            await backend.refund("user:1", 1, 60)
+            again = await backend.hit("user:1", 1, 60)
+        finally:
+            await caches.close_all()
+
+    assert [d.allowed for d in (first, refused, skipped, again)] == [
+        True,
+        False,
+        False,
+        True,
+    ]
+
+
+async def test_the_fallback_is_a_setting_and_its_memory_is_bounded(
+    server: dict[str, object],
+) -> None:
+    """``RATE_LIMIT_FALLBACK_REPLICAS``: a bounded local count; unset: none."""
+    with override_settings(CACHES={"default": {}, "shared": server}):
+        unset = RedisBackend("shared")
+    with override_settings(
+        CACHES={"default": {}, "shared": server},
+        RATE_LIMIT_CACHE="shared",
+        RATE_LIMIT_FALLBACK_REPLICAS=3,
+    ):
+        configured = RedisBackend()
+        given = RedisBackend(fallback=None, replicas=None)
+        refunding = RedisBackend(fallback=_NoRefunds())
+        refunding._skip_until = float("inf")
+        try:
+            await refunding.refund("ip:1", 1, 60)  # A fallback that cannot refund.
+        finally:
+            await caches.close_all()
+
+    fallback = configured.fallback
+    assert isinstance(fallback, MemoryBackend)
+    assert (fallback.max_keys, fallback.full) == (FALLBACK_KEYS, "refuse")
+    assert (configured.replicas, given.replicas) == (3, 3)
+    for caller in range(FALLBACK_KEYS + 10):
+        await fallback.hit(f"ip:{caller}", 1, 3600)
+    assert len(fallback._callers) == FALLBACK_KEYS
+    assert (unset.fallback, unset.replicas) == (None, 1)
+
+
+class _NoRefunds:
+    """A backend that cannot give requests back."""
+
+    async def hit(self, key: str, limit: int, period: float) -> Decision:
+        """Let everything through."""
+        return Decision(allowed=True, remaining=0, reset_after=0.0, retry_after=0.0)
+
+
+def test_fallback_replicas_are_bounded(server: dict[str, object]) -> None:
+    """At least one replica, in the setting and the argument; at most 1024."""
+    with (
+        override_settings(CACHES={"default": {}, "shared": server}),
+        pytest.raises(ValueError, match="replicas is 1 or more, not 0"),
+    ):
+        RedisBackend("shared", fallback=MemoryBackend(), replicas=0)
+    for replicas in (0, 1025):
+        with (
+            pytest.raises(ImproperlyConfigured, match="RATE_LIMIT_FALLBACK_REPLICAS"),
+            override_settings(RATE_LIMIT_FALLBACK_REPLICAS=replicas),
+        ):
+            pass
+
+
+async def test_a_flood_of_keys_buys_a_throttled_one_no_fresh_quota(
+    server: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-10c-2: Redis down, 10,000 other keys later the victim is still refused."""
+
+    async def refuse(self: RedisStore, key: str, *args: float) -> tuple[int, float]:
+        raise CacheError("OOM command not allowed when used memory > 'maxmemory'.")
+
+    monkeypatch.setattr(RedisStore, "gcra", refuse)
+    with override_settings(
+        CACHES={"default": {}, "shared": server},
+        RATE_LIMIT_CACHE="shared",
+        RATE_LIMIT_FALLBACK_REPLICAS=1,
+    ):
+        backend = RedisBackend()
+        try:
+            victim = "login:account:victim"
+            first = [await backend.hit(victim, 5, 900) for _ in range(6)]
+            for n in range(FALLBACK_KEYS):
+                await backend.hit(f"login:account:junk{n}", 5, 900)
+            after = await backend.hit(victim, 5, 900)
+        finally:
+            await caches.close_all()
+
+    assert [d.allowed for d in first] == [True] * 5 + [False]
+    assert not after.allowed
+
+
+@pytest.mark.parametrize(
+    ("full", "victim", "newcomer"), [("forget", True, True), ("refuse", False, False)]
+)
+async def test_a_full_memory_backend_forgets_or_refuses(
+    full: Literal["forget", "refuse"], victim: bool, newcomer: bool
+) -> None:
+    """``forget`` lets the oldest go; ``refuse`` keeps callers who still owe."""
+    now = [1000.0]
+    backend = MemoryBackend(max_keys=3, clock=lambda: now[0], full=full)
+    for _ in range(2):
+        await backend.hit("victim", 1, 60)
+    await backend.hit("a", 1, 60)
+    await backend.hit("b", 1, 60)
+
+    first = await backend.hit("c", 1, 60)  # A fourth caller: the store is full.
+    again = await backend.hit("victim", 1, 60)
+    now[0] += 60.0  # Every quota is full again: places free up.
+    later = await backend.hit("d", 1, 60)
+
+    assert (first.allowed, again.allowed is victim) == (newcomer, True)
+    if not newcomer:
+        assert first.retry_after == first.reset_after == 60.0
+    assert later.allowed
+    assert len(backend._callers) <= 3

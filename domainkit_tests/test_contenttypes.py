@@ -25,12 +25,12 @@ from domainkit.contrib.contenttypes import (
     installed_models,
     model_options,
 )
-from domainkit.contrib.contenttypes import registry as content_registry
-from domainkit.contrib.contenttypes.registry import _owner
 from domainkit.contrib.contenttypes.sync import has_tables
 from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.db import connections, mapper_registry, metadata
+from domainkit.db import models as content_registry
 from domainkit.db.migrations import include_object
+from domainkit.db.models import _owner
 from domainkit.db.routing import router
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import call_command

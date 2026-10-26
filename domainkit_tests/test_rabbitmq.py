@@ -286,7 +286,7 @@ def management(method: str, path: str, body: object | None = None) -> None:
     reason="set DOMAINKIT_TEST_RABBITMQ_URL and _MANAGEMENT_URL",
 )
 async def test_a_least_privilege_user_is_enough() -> None:
-    """The permissions in docs/contrib.md cover the worker; other names are refused."""
+    """The permissions messaging.md lists cover the worker; other names are refused."""
     server = Server("rabbitmq")
     prefix = str(server.options["PREFIX"])
     user, password = f"u{uuid.uuid4().hex[:12]}", uuid.uuid4().hex

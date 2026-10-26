@@ -11,8 +11,8 @@ from fastapi.testclient import TestClient
 from starlette.datastructures import UploadFile
 
 from domainkit.conf import override_settings
-from domainkit.contrib.auth.access import Require, open_routes
 from domainkit.http import get_asgi_application
+from domainkit.http.access import Require, open_routes
 from domainkit.http.uploads import (
     GIF,
     IMAGES,

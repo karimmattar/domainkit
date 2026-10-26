@@ -27,7 +27,7 @@ from domainkit.ddd import (
     UnknownField,
     ValueObject,
 )
-from domainkit.ddd.query import F, Ordering, Query, total_ordering
+from domainkit.ddd.query import F, Ordering, Selection, total_ordering
 from domainkit.http import InvalidCursor, decode_cursor, encode_cursor
 from domainkit.http.errors import install_exception_handlers
 from domainkit.http.filters import FilterSet
@@ -359,7 +359,7 @@ def application(pages: Pagination) -> TestClient:
     async def gadgets(
         page: Annotated[PageRequest, Depends(pages)], ordering: str = "name"
     ) -> PageOut[str]:
-        query = Query(F("stock") > 0, ordering=[ordering])
+        query = Selection(F("stock") > 0, ordering=[ordering])
         found = await page.fetch(repository, query)
         return page.respond(found, [each.name for each in found.items], query)
 

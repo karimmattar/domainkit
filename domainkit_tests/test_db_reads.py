@@ -17,8 +17,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import anyio
 import pytest
-from sqlalchemy import delete, event, func, insert, make_url, select, text, update
+from sqlalchemy import delete, func, insert, make_url, select, text, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import (
@@ -27,7 +28,7 @@ from sqlalchemy.ext.asyncio import (
     AsyncSession,
     create_async_engine,
 )
-from sqlalchemy.pool import PoolResetState
+from sqlalchemy.pool import Pool, PoolResetState
 from sqlalchemy.schema import CreateTable
 from sqlalchemy.sql import Executable
 from sqlalchemy.util import greenlet_spawn
@@ -59,6 +60,7 @@ from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.testing import AsyncTestClient, assert_num_queries
 from domainkit_tests.conftest import POSTGRES_VARIABLE
+from domainkit_tests.engine_events import watching
 from domainkit_tests.gadgets import (
     GadgetsUnitOfWork,
     gadgets,
@@ -202,16 +204,13 @@ class Connects:
 
     def __enter__(self) -> "Connects":
         """Start counting."""
-        from sqlalchemy.pool import Pool
-
-        event.listen(Pool, "connect", self._connected)
+        self._watching = watching(Pool, "connect", self._connected)
+        self._watching.__enter__()
         return self
 
     def __exit__(self, *exc: object) -> None:
         """Stop counting."""
-        from sqlalchemy.pool import Pool
-
-        event.remove(Pool, "connect", self._connected)
+        self._watching.__exit__(None, None, None)
 
 
 # Choosing how to read -------------------------------------------------------------
@@ -556,6 +555,129 @@ async def test_a_failing_read_under_a_deadline_raises_its_own_error(
             assert await read() == 1
             assert await asyncio.create_task(read()) == 1
     assert connects.count == 0  # The same connection, kept: no retry.
+
+
+async def slow_proxy(port: int, delay: dict[str, float]) -> asyncio.Server:
+    """A TCP proxy to PostgreSQL that holds the server's answers ``delay["s"]``."""
+
+    async def pipe(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter, slow: bool
+    ) -> None:
+        try:
+            while data := await reader.read(65536):
+                if slow and delay["s"]:
+                    await asyncio.sleep(delay["s"])
+                writer.write(data)
+                await writer.drain()
+        except ConnectionError:
+            pass
+        finally:
+            writer.close()
+
+    tasks: set[asyncio.Task[None]] = set()
+
+    async def handle(
+        client_r: asyncio.StreamReader, client_w: asyncio.StreamWriter
+    ) -> None:
+        server_r, server_w = await asyncio.open_connection("127.0.0.1", port)
+        for task in (
+            asyncio.create_task(pipe(client_r, server_w, False)),
+            asyncio.create_task(pipe(server_r, client_w, True)),
+        ):
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
+
+    return await asyncio.start_server(handle, "127.0.0.1", 0)
+
+
+async def idle_in_transaction(database_url: str) -> int:
+    """Other connections to the test's database left inside a transaction."""
+    admin = create_async_engine(database_url, isolation_level="AUTOCOMMIT")
+    try:
+        async with admin.connect() as connection:
+            return int(
+                await connection.scalar(
+                    text(
+                        "SELECT count(*) FROM pg_stat_activity WHERE datname = "
+                        "current_database() AND pid <> pg_backend_pid() "
+                        "AND state LIKE 'idle in transaction%'"
+                    )
+                )
+                or 0
+            )
+    finally:
+        await admin.dispose()
+
+
+@asyncpg_only
+async def test_a_deadline_during_begin_leaves_no_transaction_behind(
+    tables: None, database: str
+) -> None:
+    """The deadline fires while BEGIN's answer travels: nothing stale is reused.
+
+    SEC-10b-1 of the 0.10 review: a connection kept after such a cut stayed
+    inside a server transaction nobody tracked, and the next request's
+    COMMIT only released a savepoint in it: its write was lost.
+    """
+    url = make_url(database)
+    delay = {"s": 0.0}
+    proxy = await slow_proxy(url.port or 5432, delay)
+    port = proxy.sockets[0].getsockname()[1]
+    engine = create_engine(
+        DatabaseConfig.model_validate(
+            {
+                "URL": url.set(host="127.0.0.1", port=port).render_as_string(
+                    hide_password=False
+                ),
+                "POOL_SIZE": 1,
+                "MAX_OVERFLOW": 0,
+                "POOL_PRE_PING": False,  # The deadline lands on BEGIN, not a ping.
+            }
+        )
+    )
+    try:
+        async with engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+        delay["s"] = 0.5
+        with pytest.raises(TimeoutError):
+            async with deadlines.timeout(0.2), engine.begin() as connection:
+                await connection.execute(text("SELECT 1"))
+        await asyncio.sleep(1.0)  # The delayed answers arrive meanwhile.
+        delay["s"] = 0.0
+        async with AsyncSession(engine) as session:
+            session.add(make_gadget("kept"))
+            await session.commit()  # Acknowledged: it must have committed.
+        assert await idle_in_transaction(database) == 0
+        await engine.dispose()
+        assert sorted(await names()) == ["first", "kept"]
+    finally:
+        await engine.dispose()
+        proxy.close()
+
+
+@asyncpg_only
+async def test_a_statement_an_anyio_scope_cuts_off_leaves_the_next_request_working(
+    tables: None, database: str
+) -> None:
+    """Cancelled again during its rollback: the connection is not reused as it is.
+
+    SEC-10b-1, under an anyio cancel scope (Starlette's task groups).
+    """
+    engine = create_engine(
+        DatabaseConfig.model_validate(
+            {"URL": database, "POOL_SIZE": 1, "MAX_OVERFLOW": 0}
+        )
+    )
+    try:
+        with anyio.move_on_after(0.3):
+            async with engine.begin() as connection:
+                await connection.execute(text("SELECT pg_sleep(5)"))
+        for _ in range(2):
+            async with engine.begin() as connection:
+                assert await connection.scalar(text("SELECT 1")) == 1
+        assert await idle_in_transaction(database) == 0
+    finally:
+        await engine.dispose()
 
 
 # Connections the server closed --------------------------------------------------------
@@ -1247,17 +1369,13 @@ async def test_statements_on_their_own_set_no_local_timeouts(tables: None) -> No
     def record(*args: Any) -> None:  # noqa: ANN401 - before_cursor_execute's.
         sent.append(args[2])
 
-    event.listen(Engine, "before_cursor_execute", record)
-    try:
-        with freeze_time("2026-01-01"):
-            async with deadlines.timeout(5.0):
-                async with connections.autocommit() as connection:
-                    shown = await connection.scalar(text("SHOW statement_timeout"))
-                alone = list(sent)
-                async with connections.engine().begin() as connection:
-                    lowered = await connection.scalar(text("SHOW statement_timeout"))
-    finally:
-        event.remove(Engine, "before_cursor_execute", record)
+    with watching(Engine, "before_cursor_execute", record), freeze_time("2026-01-01"):
+        async with deadlines.timeout(5.0):
+            async with connections.autocommit() as connection:
+                shown = await connection.scalar(text("SHOW statement_timeout"))
+            alone = list(sent)
+            async with connections.engine().begin() as connection:
+                lowered = await connection.scalar(text("SHOW statement_timeout"))
     assert (shown, lowered) == ("30s", "5s")
     assert alone == ["SHOW statement_timeout"]
     assert "set_config('statement_timeout'" in sent[1]  # The transaction's own.

@@ -1,9 +1,15 @@
 """Install ``domainkit.contrib.idempotency`` and add its middleware."""
 
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from contextlib import asynccontextmanager
 from importlib import import_module
-from typing import cast
 
 from fastapi import FastAPI
 from fastapi.dependencies.models import Dependant
@@ -13,15 +19,29 @@ from starlette.routing import BaseRoute, Host, Mount
 
 from domainkit import deadlines
 from domainkit.apps import DomainConfig, registry
+from domainkit.checks import CheckMessage
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEADLINE_MIDDLEWARE, DEPLOYED_ENVIRONMENTS
 from domainkit.db import SqlAlchemyUnitOfWork, connections
+from domainkit.db.hooks import (
+    on_committed,
+    on_stage,
+    on_stage_transaction,
+    on_transaction_committed,
+)
 from domainkit.db.routing import DatabaseRouter, router
-from domainkit.ddd import DeferredTask, DomainEvent, UnitOfWork
+from domainkit.ddd import DeferredTask, DomainEvent
+from domainkit.ddd.personal import event_subjects
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.deadlines import RequestTimeout
 
-from .operations import KeyTakenOver, committed_values, running_operation
+from . import operations
+from .operations import (
+    KeyTakenOver,
+    Operation,
+    committed_values,
+    running_operation,
+)
 from .settings import IdempotencySettings
 from .statements import MARK_COMMITTED, PIN_LEASE, holder
 
@@ -38,6 +58,10 @@ class IdempotencyConfig(DomainConfig):
 
     def ready(self) -> None:
         """Check the keys' database and lease; schedule the purge with messaging.
+
+        Every commit, in a unit of work or not, holds the keyed request's
+        key (``on_stage``, ``on_stage_transaction``) and notes it committed
+        (``on_committed``, ``on_transaction_committed``).
 
         Raises:
             ImproperlyConfigured: ``LEASE_SECONDS`` is not above
@@ -57,10 +81,14 @@ class IdempotencyConfig(DomainConfig):
             )
         if registry.is_installed(MESSAGING):
             import_module(f"{self.name}.tasks")
+        on_stage(self.hold_key)
+        on_stage_transaction(self.hold_key_in_transaction)
+        on_committed(self.note_commit)
+        on_transaction_committed(self.note_transaction_commit)
 
-    async def stage(
+    async def hold_key(
         self,
-        uow: UnitOfWork,
+        uow: SqlAlchemyUnitOfWork,
         events: Sequence[DomainEvent],
         tasks: Sequence[DeferredTask],
     ) -> None:
@@ -70,32 +98,40 @@ class IdempotencyConfig(DomainConfig):
         the key is pinned first, by a statement that commits on its own, and
         the operation notes it: whether or not the commit lands, or reports
         back, no retry can take the key over and the request never releases
-        it. The pin keeps to the deadline (``_within_deadline``).
+        it. The pin keeps to the deadline (``_within_deadline``). The
+        people the events are about are noted, to be kept with the response.
         """
-        sql_uow = cast(SqlAlchemyUnitOfWork, uow)
-        await self._hold(sql_uow.alias, sql_uow.session.connection)
+        operation = running_operation()
+        if operation is None:
+            return
+        for event in events:
+            operation.subjects |= event_subjects(event)
+        await self._hold(operation, uow.alias, uow.session.connection)
 
-    async def stage_transaction(
+    async def hold_key_in_transaction(
         self, connection: AsyncConnection, database: str
     ) -> None:
-        """Hold the key for a commit made outside a unit of work, as ``stage`` does.
+        """Hold the key for a commit made outside a unit of work, as ``hold_key`` does.
 
         ``enqueue`` commits its task on its own: queued work is a change the
         keyed request made, and its retry must not queue it again.
         """
+        operation = running_operation()
+        if operation is None:
+            return
 
         async def joined() -> AsyncConnection:
             return connection
 
-        await self._hold(database, joined)
+        await self._hold(operation, database, joined)
 
     async def _hold(
-        self, alias: str, connect: Callable[[], Awaitable[AsyncConnection]]
+        self,
+        operation: Operation,
+        alias: str,
+        connect: Callable[[], Awaitable[AsyncConnection]],
     ) -> None:
         """Mark the key in the commit on ``alias``, or pin it first elsewhere."""
-        operation = running_operation()
-        if operation is None:
-            return
         database = self.get_settings().DATABASE
         if alias == database:
             connection = await connect()
@@ -116,16 +152,16 @@ class IdempotencyConfig(DomainConfig):
                 "took the key over; its changes were not saved."
             )
 
-    async def committed(self, uow: UnitOfWork) -> None:
+    async def note_commit(self, uow: SqlAlchemyUnitOfWork) -> None:
         """Note the commit; mark the key now if it went to another database.
 
         The mark keeps to the deadline (``_within_deadline``); cut off, the
         key stays pinned, so the changes still never run twice.
         """
-        await self._note_commit(cast(SqlAlchemyUnitOfWork, uow).alias)
+        await self._note_commit(uow.alias)
 
-    async def transaction_committed(self, database: str) -> None:
-        """Note a commit made outside a unit of work, as ``committed`` does."""
+    async def note_transaction_commit(self, database: str) -> None:
+        """Note a commit made outside a unit of work, as ``note_commit`` does."""
         await self._note_commit(database)
 
     async def _note_commit(self, alias: str) -> None:
@@ -152,26 +188,60 @@ class IdempotencyConfig(DomainConfig):
         """
         config = self.get_settings()
         lease = config.LEASE_SECONDS
-        return [
-            f"{route} may run "
-            + ("without a deadline" if seconds is None else f"for {seconds:g}s")
-            + f" (RequestTimeout), but IDEMPOTENCY.LEASE_SECONDS is {lease:g}: a "
-            "retry with the same Idempotency-Key could take the key over while it "
-            "runs. Raise IDEMPOTENCY.LEASE_SECONDS above the route's timeout, or "
-            "shorten the timeout."
+        missing = self._missing_deadline() if config.REQUIRE_DEADLINE else []
+        return missing + [
+            CheckMessage(
+                "idempotency.E001",
+                f"{route} may run "
+                + ("without a deadline" if seconds is None else f"for {seconds:g}s")
+                + f" (RequestTimeout), but IDEMPOTENCY.LEASE_SECONDS is {lease:g}: "
+                "a retry with the same Idempotency-Key could take the key over "
+                "while it runs. Raise IDEMPOTENCY.LEASE_SECONDS above the route's "
+                "timeout, or shorten the timeout.",
+            )
             for route, seconds in _route_timeouts(app.routes, config.METHODS)
             if seconds is None or seconds >= lease
         ]
 
     def deployment_warnings(self) -> list[str]:
+        """Keyed requests without a deadline, if allowed; anonymous ones by default.
+
+        Without a deadline: only with ``REQUIRE_DEADLINE = False``, as by
+        default ``check_application`` refuses them instead.
+
+        ``ANONYMOUS`` left to its default, ``"per-address"``, which 0.11
+        changes to ``"refuse"``: anonymous callers behind one address share
+        keys. Set either value to choose (DATA-09).
+        """
+        if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
+            return []
+        config = self.get_settings()
+        warnings = [] if config.REQUIRE_DEADLINE else self._missing_deadline()
+        if "ANONYMOUS" not in config.model_fields_set:
+            warnings.append(
+                CheckMessage(
+                    "idempotency.W002",
+                    "IDEMPOTENCY.ANONYMOUS is not set: an Idempotency-Key sent with "
+                    "no actor and no credential is scoped to the caller's address, "
+                    "so anonymous callers behind one address (a NAT, a proxy) share "
+                    "keys, and one can be replayed another's response. 0.11 "
+                    'defaults to "refuse" (DATA-09).',
+                    'Set IDEMPOTENCY.ANONYMOUS = "per-address" to keep this '
+                    'behaviour, or "refuse" now.',
+                )
+            )
+        return warnings
+
+    def _missing_deadline(self) -> list[str]:
         """Keyed requests without a deadline, in staging and production.
 
         ``ready`` and ``check_application`` hold each keyed request's
         deadline below the lease; with no deadline at all (no
         ``REQUEST_TIMEOUT``, or no ``DeadlineMiddleware``) nothing does,
         and a request that runs past the lease can lose its key to a
-        retry. A warning in 0.9.1, so deployments that run this way keep
-        starting; 0.10 refuses to start.
+        retry, which runs it again. A warning in 0.9.1 (``idempotency.W001``);
+        since 0.10 an error (``idempotency.E002``) unless
+        ``IDEMPOTENCY.REQUIRE_DEADLINE`` is False.
         """
         if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
             return []
@@ -181,15 +251,30 @@ class IdempotencyConfig(DomainConfig):
             missing = f"{DEADLINE_MIDDLEWARE} is not in MIDDLEWARE"
         else:
             return []
-        lease = self.get_settings().LEASE_SECONDS
-        warning = (
-            f"Requests with an Idempotency-Key run without a deadline ({missing}): "
-            f"one that runs past IDEMPOTENCY.LEASE_SECONDS ({lease:g}s) can lose "
-            "its key to a retry, which runs it again. Set REQUEST_TIMEOUT below "
-            f"IDEMPOTENCY.LEASE_SECONDS and list {DEADLINE_MIDDLEWARE} in "
-            "MIDDLEWARE; 0.10 refuses to start without a deadline."
-        )
-        return [warning]
+        config = self.get_settings()
+        level = "E002" if config.REQUIRE_DEADLINE else "W001"
+        return [
+            CheckMessage(
+                f"idempotency.{level}",
+                f"Requests with an Idempotency-Key run without a deadline "
+                f"({missing}): one that runs past IDEMPOTENCY.LEASE_SECONDS "
+                f"({config.LEASE_SECONDS:g}s) can lose its key to a retry, which "
+                "runs it again.",
+                f"Set REQUEST_TIMEOUT below IDEMPOTENCY.LEASE_SECONDS and list "
+                f"{DEADLINE_MIDDLEWARE} in MIDDLEWARE; or set "
+                "IDEMPOTENCY.REQUIRE_DEADLINE = False to only warn, as 0.9 did.",
+            )
+        ]
+
+    async def erase_subject(self, subject: str, reason: str) -> Mapping[str, int]:
+        """Drop the kept responses about ``subject``; their keys stay, answered 409."""
+        dropped = await operations.erase_subject(self.get_settings().DATABASE, subject)
+        return {"responses": dropped}
+
+    async def export_subject(self, subject: str) -> Mapping[str, object]:
+        """The kept responses about ``subject``."""
+        found = await operations.export_subject(self.get_settings().DATABASE, subject)
+        return {"responses": found} if found else {}
 
     def databases(self, router: DatabaseRouter) -> frozenset[str]:
         """Only ``IDEMPOTENCY.DATABASE``: keys are stored apart from business data."""

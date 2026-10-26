@@ -19,10 +19,11 @@ from domainkit.contrib import admin
 from domainkit.contrib.admin import AdminSite
 from domainkit.contrib.audit import api as audit_api
 from domainkit.contrib.audit.api import HistoryPageOut
-from domainkit.contrib.auth import AnyUser, BasePermission, Group, Permission, User
+from domainkit.contrib.auth import AnyUser, Group, Permission, User
 from domainkit.ddd import AggregateRoot
 from domainkit.ddd.query import F
 from domainkit.http import FilterSet, Pagination, get_asgi_application
+from domainkit.http.access import BasePermission
 from domainkit.http.errors import install_exception_handlers
 from domainkit.resources import FieldPolicy, schema_for
 from domainkit_tests.conftest import ALPHA, AUTH, CONTENTTYPES, SHOP, UseAuth

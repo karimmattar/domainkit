@@ -342,6 +342,7 @@ def test_headers_need_certificate_proxies(use_auth: UseAuth) -> None:
     with pytest.raises(ImproperlyConfigured) as refused:
         use_auth(settings={"TRUSTED_PROXIES": ["10.0.0.0/8"]}, CLIENT_CERT=header)
     assert str(refused.value) == (
+        "AUTH settings cannot be used:\n  auth.E001: "
         "AUTH.CLIENT_CERT.HEADER is believed only from AUTH.CLIENT_CERT.PROXIES; "
         "list the address of the proxy that sets it."
     )
@@ -356,6 +357,7 @@ def test_subjects_through_headers_need_the_proxys_check(use_auth: UseAuth) -> No
     with pytest.raises(ImproperlyConfigured) as refused:
         use_auth(CLIENT_CERT=subject)
     assert str(refused.value) == (
+        "AUTH settings cannot be used:\n  auth.E002: "
         'AUTH.CLIENT_CERT: MATCH = "subject" through HEADER needs VERIFY_HEADER, '
         "or anyone could sign a certificate naming any user."
     )
@@ -392,6 +394,7 @@ def test_deployments_take_single_certificate_proxies(
     )
 
     assert str(refused.value) == (
+        "AUTH settings cannot be used:\n  auth.E007: "
         f"AUTH.CLIENT_CERT.PROXIES must list single addresses (/32 or /128) in "
         f"{environment}, not networks (10.0.0.0/8, fd00::/64, 10.0.1.0/31): any "
         "host there could name any user."

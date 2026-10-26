@@ -218,12 +218,14 @@ def test_production_settings_come_from_the_environment(tmp_path: Path) -> None:
     assert "Set the BILLING_API_TRUSTED_PROXIES" in without_proxies.stderr
     # Empty: callers connect directly, and check says what that means.
     assert directly.returncode == 0
-    assert directly.stdout.splitlines()[1].split()[1] == "TRUSTED_PROXIES"
-    # Docs are off, HSTS is on, and callers are rate limited; only the
-    # per-process count of password and code guesses is left to warn about.
-    summary, warning = ready.stdout.splitlines()
-    assert summary == CHECKED.replace("issues.", "issues and 1 warning.").strip()
-    assert warning.split()[1] == "RATE_LIMIT_BACKEND"
+    assert "security.W004" in warned(directly.stdout)
+    # Docs are off, HSTS is on, and callers are rate limited; only the pool,
+    # left to SQLAlchemy's default size and smaller than the requests a
+    # process admits, and the per-process count of password and code
+    # guesses are left to warn about.
+    summary = ready.stdout.splitlines()[0]
+    assert summary == CHECKED.replace("issues.", "issues and 3 warnings.").strip()
+    assert warned(ready.stdout) == ["deploy.W004", "deploy.W006", "auth.W004"]
     assert without_key.returncode == 1
     assert "Set the BILLING_API_SECRET_KEY environment variable." in (
         without_key.stderr
@@ -253,15 +255,25 @@ def test_production_hardening_can_be_relaxed_from_the_environment(
 
     checked = run(project, "manage.py", "check", env=relaxed)
 
-    summary, *warnings = checked.stdout.splitlines()
-    assert summary == (
-        "System check identified no issues and 3 warnings. "
+    assert checked.stdout.splitlines()[0] == (
+        "System check identified no issues and 5 warnings. "
         "Domains: messaging, contenttypes, auth."
     )
-    assert [warning.split()[1] for warning in warnings] == [
-        "API_DOCS",
-        "SECURE_HSTS_SECONDS",
-        "RATE_LIMIT_BACKEND",
+    assert warned(checked.stdout) == [
+        "security.W001",
+        "security.W002",
+        "deploy.W004",
+        "deploy.W006",
+        "auth.W004",
+    ]
+
+
+def warned(output: str) -> list[str]:
+    """The ids of the warnings ``check`` printed."""
+    return [
+        line.split()[1].rstrip(":")
+        for line in output.splitlines()
+        if line.startswith("  Warning: ")
     ]
 
 

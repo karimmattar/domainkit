@@ -25,6 +25,8 @@ FAILED: Final = "failed"
 CANCELLED: Final = "cancelled"
 """The subscription was gone or inactive when the delivery's turn came."""
 DELIVERY_STATUSES: Final = (PENDING, SUCCEEDED, FAILED, CANCELLED)
+ERASED: Final = ""
+"""The body of a delivery whose subjects were erased."""
 INFO: Final = {"domain": "webhooks"}
 
 subscriptions = Table(
@@ -41,8 +43,13 @@ subscriptions = Table(
     Column("description", String(255), nullable=False),
     Column("created_at", UTCDateTime, nullable=False),
     Column("version", Integer, nullable=False),
+    Column("owner", String(255), index=True),
     info=INFO,
 )
+"""Where events go. ``owner`` is NULL for a subscription staff made, which
+receives every event it wants; else the subject that made it through the
+self-service API (``webhooks.owned``), which receives only events
+``expose(..., owner=...)`` gives that owner."""
 
 deliveries = Table(
     "domainkit_webhook_deliveries",
@@ -58,6 +65,7 @@ deliveries = Table(
     Column("finished_at", UTCDateTime),
     Column("last_status_code", Integer),
     Column("last_error", String(500)),
+    Column("subjects", Text),
     Index(
         "ix_domainkit_webhook_deliveries_subscription", "subscription_id", "created_at"
     ),
@@ -66,7 +74,10 @@ deliveries = Table(
 )
 """One event for one subscription; its id is the ``webhook-id`` header.
 
-``body`` is the exact JSON sent on every attempt.
+``body`` is the exact JSON sent on every attempt; ``""`` once the people
+it was about were erased (``ERASED``), and it is never sent again.
+``subjects`` names them (``domainkit.ddd.personal.subject_tag``): the
+subjects of the event's ``Personal`` fields.
 """
 
 attempts = Table(

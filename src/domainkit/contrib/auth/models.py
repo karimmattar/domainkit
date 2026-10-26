@@ -14,16 +14,15 @@ import re
 import secrets
 import string
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Annotated, Any, ClassVar, Final, NewType, Self
 from uuid import UUID, uuid4
 
 from domainkit import clock
-from domainkit.contrib.contenttypes.models import ContentType
-from domainkit.contrib.mail.message import address_of, check_address
-from domainkit.ddd import AggregateRoot, Entity, Personal, ValueObject
+from domainkit.contrib.contenttypes import ContentType
+from domainkit.ddd import AggregateRoot, Entity, Personal, Sensitive, ValueObject
 from domainkit.signing import derive_key
 
 from .events import (
@@ -71,6 +70,12 @@ UNUSABLE_PASSWORD_PREFIX: Final = "!"  # noqa: S105 - a marker, not a password.
 USABLE_PASSWORD: Final = "_usable_password"  # noqa: S105 - a key, not a secret.
 """Where a user built for a request (``request.user``) keeps whether its
 password is usable, so ``has_usable_password`` needs no hash."""
+GRANTED: Final = "_domainkit_granted"
+"""Where a user (or group) built for a request keeps the permission keys it
+was built with, by relationship (``EVERY``: all of them), so ``has_perm``
+answers without building the relationships (``principals``)."""
+EVERY: Final = "*"
+"""``GRANTED``'s key for every permission a user holds, directly or by group."""
 USERNAME_MAX_LENGTH: Final = 150
 GROUP_NAME_MAX_LENGTH: Final = 150
 EMAIL_MAX_LENGTH: Final = 254
@@ -86,16 +91,32 @@ _HASH: Final = re.compile(r"[a-z][a-z0-9_]*\$.+")
 _ASCII_LOWER: Final = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
 
 
+def _granted(instance: object, key: str, *relationships: str) -> frozenset[str] | None:
+    """The keys ``instance`` was built with, under ``key``; None: read them.
+
+    Only while none of ``relationships`` is loaded. A request's user builds
+    its groups and permissions on first access (``principals``); until
+    then, the keys of what they hold are known. Once one is loaded, it may
+    have changed, so it is read instead.
+    """
+    attributes = instance.__dict__
+    granted: dict[str, frozenset[str]] | None = attributes.get(GRANTED)
+    if granted is None or any(name in attributes for name in relationships):
+        return None
+    return granted[key]
+
+
 def _now() -> datetime:
     """Return the current time in UTC."""
     return clock.now()
 
 
-class PasswordHash(ValueObject):
+class PasswordHash(ValueObject, Sensitive):
     """A stored password: a hasher's ``<algorithm>$...``, or unusable (``!...``).
 
     Its own type keeps raw passwords out of users: only ``hashers`` make one.
-    The value never appears in ``repr``, so hashes stay out of logs.
+    The value never appears in ``repr``, so hashes stay out of logs, nor in a
+    derived schema (``Sensitive``).
     """
 
     value: str
@@ -187,6 +208,9 @@ class Group(AggregateRoot[GroupId]):
 
     def permission_keys(self) -> frozenset[str]:
         """The keys of the group's permissions."""
+        granted = _granted(self, "permissions", "permissions")
+        if granted is not None:
+            return granted
         return frozenset(permission.key for permission in self.permissions)
 
     def delete(self) -> None:
@@ -362,12 +386,18 @@ class AbstractBaseUser(AggregateRoot[UserId]):
         """Keys of permissions given directly; none while inactive."""
         if not self.is_active:
             return frozenset()
+        granted = _granted(self, "user_permissions", "user_permissions")
+        if granted is not None:
+            return granted
         return frozenset(permission.key for permission in self.user_permissions)
 
     def get_group_permissions(self) -> frozenset[str]:
         """Keys of permissions the user's groups give; none while inactive."""
         if not self.is_active:
             return frozenset()
+        granted = _granted(self, "groups", "groups")
+        if granted is not None:
+            return granted
         return frozenset().union(*(group.permission_keys() for group in self.groups))
 
     def get_all_permissions(self) -> frozenset[str]:
@@ -376,6 +406,11 @@ class AbstractBaseUser(AggregateRoot[UserId]):
         A superuser has every permission without grants; ``has_perm`` knows,
         and ``backends.get_all_permissions`` lists them from the database.
         """
+        if not self.is_active:
+            return frozenset()
+        granted = _granted(self, EVERY, "groups", "user_permissions")
+        if granted is not None:
+            return granted
         return self.get_user_permissions() | self.get_group_permissions()
 
     def has_perm(self, perm: str) -> bool:
@@ -390,6 +425,20 @@ class AbstractBaseUser(AggregateRoot[UserId]):
     def has_perms(self, perms: Iterable[str]) -> bool:
         """Whether the user has every one of ``perms``."""
         return all(self.has_perm(perm) for perm in perms)
+
+    async def ahas_perms(self, perms: Collection[str], obj: object = None) -> bool:
+        """Whether the backends grant every one of ``perms`` (on ``obj``).
+
+        What the access rules ask a principal (``domainkit.http.access``):
+        ``backends.has_perms``, so object permissions and ``AUTH.BACKENDS``
+        count, where ``has_perms`` reads only the user's own grants.
+        """
+        from .backends import has_perm  # backends imports this module.
+
+        for perm in perms:
+            if not await has_perm(self, perm, obj):
+                return False
+        return True
 
     def has_domain_perms(self, domain: str) -> bool:
         """Whether the user has any permission in ``domain`` (``has_module_perms``)."""
@@ -592,6 +641,16 @@ class AnonymousUser:
         """Never."""
         return False
 
+    async def ahas_perms(self, perms: Collection[str], obj: object = None) -> bool:
+        """Only for no permissions at all, as ``backends.has_perms`` answers."""
+        return not perms
+
+    def challenge(self) -> str:
+        """The ``WWW-Authenticate`` of a 401: the first authentication class's."""
+        from .authentication import get_authenticators  # It imports this module.
+
+        return get_authenticators()[0].challenge()
+
     def has_domain_perms(self, domain: str) -> bool:
         """Never."""
         return False
@@ -676,6 +735,10 @@ def validate_email(email: str) -> str:
     Raises:
         InvalidEmail: It is not such an address.
     """
+    # Imported here: auth needs mail's rules only when it checks an address,
+    # and a process that serves no such request never loads mail (PERF-15).
+    from domainkit.contrib.mail.message import address_of, check_address
+
     try:
         checked = check_address(email)
     except ValueError:

@@ -1435,40 +1435,96 @@ def test_keyed_routes_that_outlast_the_lease_are_problems() -> None:
     ],
     ids=["no-timeout", "no-deadline-middleware"],
 )
-def test_keyed_requests_without_any_deadline_are_a_warning_where_deployed(
+def test_keyed_requests_without_any_deadline_are_refused_where_deployed(
     unbounded: dict[str, object], missing: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Nothing bounds them by the lease: ``check`` says so (SEC-r2-4).
+    """Nothing bounds them by the lease: the application refuses (SEC-r2-4).
 
-    A warning, not a refusal: deployments that run this way keep
-    starting until 0.10. Outside staging and production, nothing.
+    A warning in 0.9.1, as 0.9 promised a refusal for 0.10: now an error,
+    which ``SILENCED_CHECKS`` cannot name (SEC-10b-8).
+    ``IDEMPOTENCY.REQUIRE_DEADLINE = False`` keeps 0.9's warning. Outside
+    staging and production, nothing.
     """
 
-    def warnings(**options: object) -> list[str]:
+    def found(
+        options: dict[str, object] | None = None, *, relaxed: bool = False
+    ) -> tuple[list[str], list[str]]:
+        # ANONYMOUS chosen, so its own warning (idempotency.W002) stays out.
+        chosen: dict[str, object] = {"ANONYMOUS": "per-address"}
+        if relaxed:
+            chosen["REQUIRE_DEADLINE"] = False
         registry.clear()
         try:
             with override_settings(
-                INSTALLED_DOMAINS=["domainkit.contrib.idempotency", ALPHA], **options
+                INSTALLED_DOMAINS=["domainkit.contrib.idempotency", ALPHA],
+                IDEMPOTENCY=chosen,
+                **(options or {}),
             ):
-                setup()  # Starts: no refusal.
+                setup()  # Workers and commands start: only the application refuses.
+                config = registry.get_domain_config("idempotency")
+                return config.check_application(FastAPI()), config.deployment_warnings()
+        finally:
+            registry.clear()
+
+    elsewhere = found(unbounded)
+    monkeypatch.setattr(idempotency_apps, "DEPLOYED_ENVIRONMENTS", {"test"})
+    message = (
+        f"Requests with an Idempotency-Key run without a deadline ({missing}): one "
+        "that runs past IDEMPOTENCY.LEASE_SECONDS (60s) can lose its key to a "
+        "retry, which runs it again."
+    )
+
+    (refused,), warned = found(unbounded)
+    relaxed, (only_warned,) = found(unbounded, relaxed=True)
+
+    assert (refused, warned) == (message, [])
+    assert getattr(refused, "id", None) == "idempotency.E002"
+    assert "IDEMPOTENCY.REQUIRE_DEADLINE = False" in getattr(refused, "hint", "")
+    assert (relaxed, only_warned) == ([], message)
+    assert getattr(only_warned, "id", None) == "idempotency.W001"
+    assert found() == ([], [])
+    assert elsewhere == ([], [])
+
+
+@pytest.mark.parametrize("anonymous", [None, "per-address", "refuse"])
+def test_the_anonymous_default_is_a_warning_where_deployed(
+    anonymous: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``ANONYMOUS`` left unset warns in staging and production (DATA-09).
+
+    0.11 defaults to ``"refuse"``; setting either value, even today's
+    default, is a choice, and silences it. Outside staging and
+    production, nothing.
+    """
+    chosen = {} if anonymous is None else {"ANONYMOUS": anonymous}
+
+    def warnings() -> list[str]:
+        registry.clear()
+        try:
+            with override_settings(
+                INSTALLED_DOMAINS=["domainkit.contrib.idempotency", ALPHA],
+                IDEMPOTENCY=chosen,
+            ):
+                setup()
                 return registry.get_domain_config("idempotency").deployment_warnings()
         finally:
             registry.clear()
 
-    elsewhere = warnings(**unbounded)
+    elsewhere = warnings()
     monkeypatch.setattr(idempotency_apps, "DEPLOYED_ENVIRONMENTS", {"test"})
+    deployed = warnings()
 
-    assert warnings(**unbounded) == [
-        (
-            f"Requests with an Idempotency-Key run without a deadline ({missing}): one "
-            "that runs past IDEMPOTENCY.LEASE_SECONDS (60s) can lose its key to a "
-            "retry, which runs it again. Set REQUEST_TIMEOUT below "
-            f"IDEMPOTENCY.LEASE_SECONDS and list {DEADLINE_MIDDLEWARE} in MIDDLEWARE; "
-            "0.10 refuses to start without a deadline."
-        )
-    ]
-    assert warnings() == []
     assert elsewhere == []
+    if anonymous is not None:
+        assert deployed == []
+        return
+    (warning,) = deployed
+    assert warning.id == "idempotency.W002"  # type: ignore[attr-defined]
+    assert "anonymous callers behind one address" in warning
+    assert '0.11 defaults to "refuse"' in warning
+    assert 'ANONYMOUS = "per-address" to keep this behaviour, or "refuse" now' in (
+        warning.hint  # type: ignore[attr-defined]
+    )
 
 
 def test_a_key_released_while_claimed_is_in_progress(
@@ -2200,13 +2256,14 @@ def test_work_queued_on_another_database_pins_the_key_then_marks_it() -> None:
     plant("order-42", token="first")
     operation = Operation(keyed("order-42"), "first")
     config = registry.get_domain_config("idempotency")
+    assert isinstance(config, idempotency_apps.IdempotencyConfig)
 
     async def scenario() -> list[dict[str, object]]:
         with idempotency_operations.run_operation(operation):
             async with connections.engine().connect() as connection:
-                await config.stage_transaction(connection, "other")
+                await config.hold_key_in_transaction(connection, "other")
             pinned = await asyncio.to_thread(stored_keys)
-            await config.transaction_committed("other")
+            await config.note_transaction_commit("other")
         await connections.close_all()
         return pinned
 
@@ -2224,10 +2281,11 @@ def test_a_commit_on_the_keys_database_is_marked_in_it_not_after() -> None:
     plant("order-42", token="first")
     operation = Operation(keyed("order-42"), "first")
     config = registry.get_domain_config("idempotency")
+    assert isinstance(config, idempotency_apps.IdempotencyConfig)
 
     async def scenario() -> None:
         with idempotency_operations.run_operation(operation):
-            await config.transaction_committed("default")
+            await config.note_transaction_commit("default")
         await connections.close_all()
 
     asyncio.run(scenario())
@@ -2252,9 +2310,7 @@ def test_a_failed_follow_up_after_enqueue_is_reported_not_raised(
     def report(exc: BaseException, **context: object) -> None:
         reports.append((exc, context))
 
-    monkeypatch.setattr(
-        idempotency_apps.IdempotencyConfig, "transaction_committed", unreachable
-    )
+    monkeypatch.setattr(idempotency_apps.IdempotencyConfig, "_note_commit", unreachable)
     monkeypatch.setattr(messaging_outbox, "report_error", report)
 
     async def scenario() -> int:

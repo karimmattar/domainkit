@@ -18,7 +18,7 @@ from functools import cache
 from pathlib import Path
 from typing import Final, Protocol
 
-from domainkit.exceptions import ImproperlyConfigured
+from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 from domainkit.utils.module_loading import import_string
 
 from .exceptions import InvalidPassword
@@ -35,7 +35,7 @@ COMMON_PASSWORDS: Final = Path(__file__).with_name("common-passwords.txt.gz")
 """Django's list of 20,000 common passwords (see ``common-passwords.NOTICE``)."""
 
 
-class PasswordValidationError(ValueError):
+class PasswordValidationError(ValueError, DomainkitError):
     """A password breaks one rule; the message says which."""
 
 

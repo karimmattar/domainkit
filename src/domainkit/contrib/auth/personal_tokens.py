@@ -30,6 +30,7 @@ from typing import Annotated, Final
 from fastapi import APIRouter, Depends, Path, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
+from domainkit.http.access import IsAuthenticated, IsUnscoped, Require
 from domainkit.http.errors import APIError
 from domainkit.http.pagination import (
     CURSOR_PATTERN,
@@ -39,7 +40,6 @@ from domainkit.http.pagination import (
     encode_cursor,
 )
 
-from .access import IsAuthenticated, IsUnscoped, Require
 from .api import _credentials, _errors, _no_store
 from .backends import get_all_permissions
 from .events import TokenCreated, TokenRevoked

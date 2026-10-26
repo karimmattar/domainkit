@@ -212,14 +212,14 @@ Background work in the stores is bounded too:
   `AUDIT.SEAL_BATCHES` batches and counts what it leaves in
   `audit_unsealed_rows` ([ADR 0047](adr/0047-seal-from-a-high-water-mark.md)).
   A second sealer never queues behind the first: finding the lock taken,
-  it leaves the work to it ([contrib.md](contrib.md#tamper-evidence)).
+  it leaves the work to it ([contrib.md](contrib/audit.md#tamper-evidence)).
 - **Outbox cleanup** reads the oldest done and cancelled messages from an
   index of their own, so a run costs what it deletes, not the size of the
   outbox ([contrib.md](contrib.md), "Upgrading to 0.9.2").
 - **Password hashing.** A call keeps its place in the pool until its hash is
   done, refusals ask clients to come back when the queue will have drained,
   and `AUTH.HASHING_RESERVED` places are kept for password changes
-  ([auth.md](auth.md#passwords)).
+  ([auth.md](auth/users.md#passwords)).
 - **The in-memory rate limiter** forgets idle callers at most 64 per
   request, so no one request pays for a crowd that left.
 
@@ -270,7 +270,10 @@ LOGGING = build_logging_config(log_format="json", level="INFO")
 - The caller, the event loop included, merges the message, adds the
   request id and trace ids (they live in its context), and puts the record
   on a queue of 10,000 (`queue_size`). One thread, `domainkit-logging`,
-  formats and writes it; exceptions are formatted there too.
+  formats and writes it. An exception is formatted on the caller, into
+  `exc_text`, as the standard library's `QueueHandler` does, so no queued
+  record keeps a traceback, and with it the frames and requests that
+  raised (0.10): the record behind the queue has no `exc_info`.
 - A full queue never makes the caller wait. The record is dropped and
   counted (`handler.dropped`), and the next record that fits with it is
   preceded by a warning from `domainkit.log` that counts them by level:
@@ -332,6 +335,27 @@ they have asked `logger.isEnabledFor(level)`: it makes the record
 function included), without asking the level again or walking the stack
 to find the caller, 15 Python calls fewer a line. A logger of a class of
 its own (`logging.setLoggerClass`) logs through its own `log`.
+
+### Paths in logs
+
+An access line, the request middleware's error lines, an error report,
+and the request context (`domainkit.context.current_request().path`)
+show the matched route's template, never the path the caller sent:
+
+```
+GET /accounts/{account_id}/confirm/{token} 200 3.1ms
+```
+
+An id, a token, or an email in a path stays out of the logs, as metrics
+already left it out of their labels. A request no route matched shows
+`unmatched`, as do requests refused before the router ran (a 429, a body
+refused by its declared length, an untrusted host): the status says which.
+The template is read from the scope once the router has matched, so code
+that runs before (middleware) sees `unmatched` too. Problem details'
+`instance` still names the path the caller sent: it answers that caller.
+Behind `--root-path /api`, the template leaves the root path out.
+`ACCESS_LOG_PATH = "raw"` shows the path as sent everywhere, as before
+0.10.
 
 ### Sampling the access log
 
@@ -450,6 +474,7 @@ while it serves:
 | RabbitMQ (`TLS_CA`, `TLS_CERT`, `TLS_KEY`) | at the first connection, on a worker thread |
 | Redis and Valkey (`rediss://`, `TLS_CA`, `TLS_CERT`, `TLS_KEY`) | at the first connection, on a worker thread, then shared by every connection of every pool with those settings (servers, Sentinel primaries, and Cluster nodes) |
 | immudb (`TLS_CA`) | on the ledger's own thread |
+| Outgoing calls (`HTTP_CLIENT.CA_BUNDLE`, `domainkit.http.client`) | at a client's first call on each loop, on a worker thread, then shared by every client with that bundle |
 
 A process keeps its contexts until it ends: restart it to use renewed
 certificate files.
@@ -460,7 +485,12 @@ domainkit runs on free-threaded CPython 3.14 (`python3.14t`, without the
 GIL). Importing domainkit and its runtime dependencies keeps the GIL off;
 the `immudb` extra is the exception, since grpcio publishes no
 free-threaded build yet. CI runs the tests of the state below, and of the
-framework's own threads, on 3.14t with the GIL off throughout. The whole
+framework's own threads, on 3.14t with the GIL off throughout, and the
+free-threading tests 30 times more, each in a new random order (`stress
+(3.14t)`, not a required check), so a race that shows in some runs only
+fails the job. On 3.14.6t some of those runs crash inside SQLAlchemy's
+compiled extensions while loops on threads make engines at once (seen at
+0.9.2 too), which waits for a fix there. The whole
 suite does not run there yet: on 3.14.6t it crashes the interpreter now
 and then (a segmentation fault inside the allocator, at a different test
 each time), as it did before any of this was added, so that waits for a
@@ -484,7 +514,11 @@ never across an `await`:
   threads at once (live events, as clients connect) is subscribed once;
 - the caches of each loop and the memory stores they share
   (`caches[...]`), so every loop of the process sees one memory store per
-  alias, and an application's throttle backend, made once for all loops.
+  alias, and an application's throttle backend, made once for all loops;
+- each loop's slots of `ConcurrencyLimitMiddleware`, each loop's pool of an
+  `HttpClient`, and each loop's principal reads under way
+  (`domainkit.utils.loops.PerLoop`, which drops closed loops as a new one
+  comes), and the principal cache's claim of who reads an entry again.
 
 A project's own module-level state needs the same care: a dict two threads
 change at once needs a `threading.Lock` on free-threaded Python, as it would
@@ -695,11 +729,12 @@ deadline is at the lease or past it, or removed, as the export above is
 with the default lease of 60 seconds, and staging and production refuse
 to start with one. Raise the lease above the longest such deadline, or
 shorten the route's. With no deadline at all (`REQUEST_TIMEOUT = None`,
-or no `DeadlineMiddleware`), `check` warns where deployed that keyed
-requests can outlive the lease; 0.10 refuses to start. A keyed
+or no `DeadlineMiddleware`), keyed requests can outlive the lease, so
+staging and production refuse to start (`idempotency.E002`;
+`IDEMPOTENCY.REQUIRE_DEADLINE = False` only warns). A keyed
 response's background tasks run after its response is stored, so they
 run once however long they take
-([contrib.md](contrib.md#idempotency-safe-retries-of-unsafe-requests)).
+([contrib.md](contrib/idempotency.md#idempotency-safe-retries-of-unsafe-requests)).
 
 **What has no deadline.** The deadline is lifted as soon as the response
 starts: a streamed response (an export, Server-Sent Events) runs as long
@@ -757,7 +792,8 @@ timers that cancel work run on the event loop's own clock.
   has no `SET LOCAL`: each of its statements is cut off at the deadline by
   the request's timer, or by a timer of its own in work that shares a
   deadline without enforcing it, and the driver then cancels it on the
-  server. The framework's own short writes, such as an idempotency key's
+  server. A statement cut off costs its connection: the pool replaces it.
+  The framework's own short writes, such as an idempotency key's
   claim, run that way too, within `STATEMENT_TIMEOUT`.
 - **Outgoing HTTP calls** through `domainkit.http.client` are bounded by it
   (below).
@@ -1001,9 +1037,12 @@ Callers check its addresses every time, as they check a fresh answer's.
 At most 1,024 such answers are kept, the least recently used let go
 first; a kept answer can be up to a minute older than the host's DNS
 says. A host whose DNS fails in under 5 seconds takes a thread on each
-new lookup, at most 2 at once. The share is per owner, not per tenant:
-whoever controls many owners (many webhook subscriptions, many users) can
-still hold many threads, for the first round of slow lookups at least. (A lookup cannot be interrupted,
+new lookup, at most 2 at once. The share is per owner: a webhook
+subscription's owner, so one customer's many subscriptions share one
+quarter ([contrib.md](contrib/webhooks.md#webhooks-signed-events-for-other-services)),
+or a user. Whoever controls many owners (many users, many staff
+subscriptions) can still hold many threads, for the first round of slow
+lookups at least. (A lookup cannot be interrupted,
 which an asynchronous resolver will change.) A guarded client takes no `transport=`, which would skip
 its address checks; tests use `stub`.
 

@@ -493,7 +493,15 @@ POOLED = "postgresql+asyncpg://app@pool.internal:6432/app"
             [DEADLINE_WARNING, SHEDDING_WARNING],
         ),
         (
-            {"DATABASES": {"default": {"URL": POOLED, "SSLMODE": "verify-full"}}},
+            {
+                "DATABASES": {
+                    "default": {
+                        "URL": POOLED,
+                        "SSLMODE": "verify-full",
+                        "POOL_SIZE": 5,
+                    }
+                }
+            },
             [POOLED_WARNING],
         ),
         (
@@ -503,6 +511,7 @@ POOLED = "postgresql+asyncpg://app@pool.internal:6432/app"
                         "URL": POOLED,
                         "SSLMODE": "verify-full",
                         "PGBOUNCER": True,
+                        "POOL_SIZE": 5,
                     }
                 }
             },

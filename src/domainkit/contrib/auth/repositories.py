@@ -15,6 +15,7 @@ from uuid import UUID
 
 from sqlalchemy import (
     Executable,
+    String,
     Subquery,
     Table,
     Uuid,
@@ -28,17 +29,20 @@ from sqlalchemy import (
     null,
     select,
     true,
+    type_coerce,
     union_all,
     update,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 from sqlalchemy.orm.attributes import set_committed_value
+from sqlalchemy.sql.elements import ColumnElement
 
 from domainkit.conf import settings
 from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.db import SqlAlchemyRepository
 from domainkit.ddd import F, Page, RowLock, SoftDeletable
-from domainkit.ddd.query import Query
+from domainkit.ddd.query import Selection
 from domainkit.signing import derive_keys
 
 from .events import UserLoggedIn
@@ -46,6 +50,7 @@ from .exceptions import GroupNameTaken, UnknownGroup, UnknownPermission, Usernam
 from .hashers import amake_password
 from .models import (
     ERASED_USERNAME_PURPOSE,
+    UNUSABLE_PASSWORD_PREFIX,
     AbstractBaseUser,
     Group,
     GroupId,
@@ -67,11 +72,11 @@ from .principals import (
     Snapshot,
     family_target,
     invalidate_after_commit,
-    lend_password,
     shared,
     token_target,
     user_shape,
     user_target,
+    withhold_password,
 )
 from .settings import auth_settings
 from .tables import (
@@ -85,9 +90,10 @@ from .tables import (
     user_link_tables,
 )
 from .tokens import (
-    LAST_USED_EVERY,
+    LOGIN_NAME,
     AuthToken,
     TokenKind,
+    last_used_every,
     new_token,
     token_digest,
     utc_now,
@@ -269,10 +275,10 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
             hashed = await amake_password(password, priority=priority)
             user.set_password(PasswordHash(hashed))
 
-    def listing(self, search: str | None = None) -> Query:
+    def listing(self, search: str | None = None) -> Selection:
         """Users by username; ``search`` keeps those whose name contains it."""
         name = F(self.model.USERNAME_FIELD)
-        return Query(name.icontains(search) if search else None, ordering=[name])
+        return Selection(name.icontains(search) if search else None, ordering=[name])
 
     async def page(
         self, *, limit: int, after: str | None = None, search: str | None = None
@@ -311,7 +317,7 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         for the first transaction and sees what it left.
         """
         active = (F("is_superuser") == True) & (F("is_active") == True)  # noqa: E712
-        return len(await self.filter(Query(active, lock=RowLock())))
+        return len(await self.filter(Selection(active, lock=RowLock())))
 
     async def record_login(self, user: AbstractBaseUser) -> None:
         """Store the login time and record ``UserLoggedIn``.
@@ -357,7 +363,7 @@ class GroupRepository(SqlAlchemyRepository[Group, GroupId]):
             self._track(group)
         return group
 
-    LISTING: Final = Query(ordering=["name"])
+    LISTING: Final = Selection(ordering=["name"])
     """Groups by name (unique)."""
 
     async def page(self, *, limit: int, after: str | None = None) -> Page[Group]:
@@ -533,13 +539,13 @@ class TokenStore:
         return await self.session.get(AuthToken, digest)
 
     async def touch(self, token: AuthToken, now: datetime | None = None) -> bool:
-        """Record that ``token`` was used, at most once per ``LAST_USED_EVERY``.
+        """Record that ``token`` was used, at most once per ``last_used_every()``.
 
         Concurrent requests write once: the update checks the stored time.
         """
         moment = now or utc_now()
         last = token.last_used_at
-        if last is not None and moment - last < LAST_USED_EVERY:
+        if last is not None and moment - last < last_used_every():
             return False
         written = await self.touch_digest(token.id, moment)
         set_committed_value(token, "last_used_at", moment)
@@ -548,7 +554,7 @@ class TokenStore:
     async def touch_digest(self, digest: str, now: datetime) -> bool:
         """Write ``now`` as the ``last_used_at`` of token ``digest``, if it is due.
 
-        Due when none is stored, or the stored one is ``LAST_USED_EVERY``
+        Due when none is stored, or the stored one is ``last_used_every()``
         old: of concurrent writers, from any process, one wins.
         """
         result = await self.session.execute(
@@ -556,7 +562,7 @@ class TokenStore:
             .where(
                 tokens.c.id == digest,
                 tokens.c.last_used_at.is_(None)
-                | (tokens.c.last_used_at <= now - LAST_USED_EVERY),
+                | (tokens.c.last_used_at <= now - last_used_every()),
             )
             .values(last_used_at=now)
             .execution_options(**HANDLED)  # A last use changes no principal.
@@ -578,13 +584,63 @@ class TokenStore:
         )
         return int(await self.session.scalar(statement) or 0)
 
+    async def end_oldest_logins(self, user_id: UUID, *, keep: int) -> int:
+        """End the user's live logins but the ``keep`` newest; how many tokens.
+
+        Logins are browser sessions, login tokens, and JSON Web Token logins
+        (by their unused refresh token, which ends the whole login); not
+        personal tokens or certificates. Newest by when they were issued.
+        """
+        moment = utc_now()
+        statement = (
+            select(tokens.c.id, tokens.c.family)
+            .where(
+                tokens.c.user_id == user_id,
+                (tokens.c.kind == TokenKind.SESSION)
+                | (
+                    tokens.c.kind.in_([TokenKind.ACCESS, TokenKind.REFRESH])
+                    & (tokens.c.name == LOGIN_NAME)
+                    & tokens.c.used_at.is_(None)
+                ),
+                tokens.c.expires_at.is_(None) | (tokens.c.expires_at > moment),
+            )
+            .order_by(tokens.c.created_at.desc(), tokens.c.id.desc())
+            .offset(keep)
+        )
+        oldest = (await self.session.execute(statement)).all()
+        if not oldest:
+            return 0
+        digests = [digest for digest, family in oldest if family is None]
+        families = [family for _, family in oldest if family is not None]
+        return await self._revoke(
+            tokens.c.id.in_(digests) | tokens.c.family.in_(families),
+            *(family_target(family) for family in families),
+        )
+
+    async def end_oldest(self, user_id: UUID, kind: TokenKind, *, keep: int) -> int:
+        """End the user's tokens of ``kind`` but the ``keep`` newest; how many."""
+        newest = (
+            select(tokens.c.id)
+            .where(tokens.c.user_id == user_id, tokens.c.kind == kind)
+            .order_by(tokens.c.created_at.desc(), tokens.c.id.desc())
+            .offset(keep)
+        )
+        oldest = list(await self.session.scalars(newest))
+        if not oldest:
+            return 0
+        return await self._revoke(tokens.c.id.in_(oldest))
+
     async def of_user(
         self, user_id: UUID, *, limit: int, before: tuple[datetime, str] | None = None
     ) -> Page[AuthToken]:
-        """The user's tokens, newest first, after the position ``before``."""
+        """The user's tokens, newest first, after the position ``before``.
+
+        Not the devices that logged in (``auth.devices``): they authenticate
+        nothing, and end with every token of the user.
+        """
         statement = (
             select(AuthToken)
-            .where(tokens.c.user_id == user_id)
+            .where(tokens.c.user_id == user_id, tokens.c.kind != TokenKind.DEVICE)
             .order_by(tokens.c.created_at.desc(), tokens.c.id.desc())
             .limit(limit + 1)
         )
@@ -684,6 +740,8 @@ CREDENTIAL: Final = select(
     tokens.c.expires_at,
     tokens.c.scopes,
     tokens.c.last_used_at,
+    tokens.c.name,
+    tokens.c.created_at,
 ).where(tokens.c.id == bindparam("digest"))
 """What the token table says of one token (built once: no cache key to make)."""
 LOGIN: Final = select(
@@ -732,9 +790,9 @@ class PrincipalStore:
 
         The same statement checks that ``token`` is still stored and that
         ``username`` (normalized) is still the user's: ``current`` says.
-        The password hash is read for ``request.user.password`` only,
-        deprecated (``lend_password``). A model a snapshot cannot hold
-        (``user_shape``) is loaded by the ORM.
+        Not the password hash: only whether it is usable
+        (``withhold_password``). A model a snapshot cannot hold
+        (``user_shape``) is loaded by the ORM, the hash deferred.
         """
         model = get_user_model()
         shape = user_shape(model)
@@ -751,9 +809,8 @@ class PrincipalStore:
             if row is None:
                 return Snapshot()
             loaded: AbstractBaseUser = row[0]
-            hashed = loaded.password
-            lend_password(loaded, hashed, usable=hashed.usable)
-            return Snapshot(loaded=loaded, current=row[1])
+            withhold_password(loaded, usable=bool(row[1]))
+            return Snapshot(loaded=loaded, current=row[2])
         rows = (await self.session.execute(statement, values)).all()
         if not rows:
             return Snapshot()
@@ -761,7 +818,7 @@ class PrincipalStore:
         columns = tuple(
             (key, rows[0][index]) for index, (key, _) in enumerate(shape.columns)
         )
-        hashed = rows[0][width]
+        usable = bool(rows[0][width])
         found: dict[UUID, tuple[str, int, dict[int, GrantedPermission]]] = {}
         direct: dict[int, GrantedPermission] = {}
         for row in rows:
@@ -782,8 +839,7 @@ class PrincipalStore:
                 for group, (name, version, held) in found.items()
             ),
             permissions=_sorted(direct),
-            usable_password=hashed.usable,
-            password=hashed,
+            usable_password=usable,
         )
         return Snapshot(principal=principal, current=bool(rows[0][-1]))
 
@@ -816,17 +872,28 @@ def _principal_statement(
     ).label("current")
     shape = user_shape(model)
     if shape is None:
-        return select(model, live).where(*conditions)
+        return (
+            select(model, _usable(user_table.c[PASSWORD]), live)
+            .options(defer(getattr(model, PASSWORD)))
+            .where(*conditions)
+        )
     granted = _grants(user_table)
     return (
         select(
             *(column.label(f"u{i}") for i, (_, column) in enumerate(shape.columns)),
-            shape.password.label("password"),
+            _usable(shape.password),
             *granted.c,
             live,
         )
         .select_from(user_table.outerjoin(granted, true()))
         .where(*conditions)
+    )
+
+
+def _usable(password: ColumnElement[Any]) -> ColumnElement[bool]:
+    """Whether a stored password is usable, read without the hash itself."""
+    return (~type_coerce(password, String).startswith(UNUSABLE_PASSWORD_PREFIX)).label(
+        "usable"
     )
 
 

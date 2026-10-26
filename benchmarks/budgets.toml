@@ -24,77 +24,91 @@ checkouts = 0
 pings = 0
 
 [rungs.bare]
-calls = 481
+calls = 305
 statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
 
 [rungs.nested]
-calls = 489
+calls = 305
 statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
 
 [rungs.default]
-calls = 601
+calls = 423
 statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
 
 [rungs.default-json]
-calls = 746
+calls = 568
 statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
 
 [rungs.template]
-calls = 714
+calls = 538
 statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
 
 [rungs.template-json]
-calls = 859
+calls = 682
 statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
 
 [rungs.me]
-calls = 1181
+calls = 780
 statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
 
 [rungs.read]
-calls = 2261
+calls = 1839
 statements = 1
 transactions = 1
 checkouts = 1
 pings = 1
 
 [rungs.write]
-calls = 2595
+calls = 2173
+statements = 1
+transactions = 1
+checkouts = 1
+pings = 1
+
+[rungs.resource-read]
+calls = 2606
+statements = 1
+transactions = 1
+checkouts = 1
+pings = 1
+
+[rungs.resource-command]
+calls = 3329
 statements = 1
 transactions = 1
 checkouts = 1
 pings = 1
 
 [rungs.keyed-write]
-calls = 4044
+calls = 3636
 statements = 4
 transactions = 3
 checkouts = 3
 pings = 3
 
 [rungs.throttled]
-calls = 1013
+calls = 803
 statements = 0
 transactions = 0
 checkouts = 0

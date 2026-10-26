@@ -1,7 +1,10 @@
 """What the code generators share: names, field types, and careful edits.
 
 ``startdomain`` makes a domain package; ``startaggregate``, ``addcommand``,
-``addquery``, and ``addevent`` add to one. Generated names are checked
+``addquery``, and ``addevent`` add to one. Each is a ``Generator``: it plans
+every change first, then writes them all (``plan``, then ``apply``); the
+four that add to a domain are ``AggregateGenerator``, which takes the
+domain and the aggregate and reports what it wrote. Generated names are checked
 before anything is written: packages and fields are snake_case
 identifiers, classes CamelCase, none a Python keyword, so no name can
 reach outside the directory it is written in.
@@ -16,20 +19,23 @@ written: every file is edited in memory first.
 import ast
 import keyword
 import re
+from abc import abstractmethod
 from argparse import ArgumentParser
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from importlib.util import find_spec
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 from domainkit.conf.env import project_root
-from domainkit.management.base import CommandError
+from domainkit.management.base import BaseCommand, CommandError
 from domainkit.utils.formatting import format_python
 from domainkit.utils.text import pluralize, snake_case
 
 __all__ = [
+    "AggregateGenerator",
     "FieldType",
+    "Generator",
     "register_field_type",
 ]
 
@@ -835,3 +841,101 @@ def _source_root(directory: Path) -> Path:
     while (root / "__init__.py").is_file():
         root = root.parent
     return root
+
+
+class Generator[P](BaseCommand):
+    """A scaffolding command: plan every change, then write them all.
+
+    ``plan`` checks the names and reads what it edits, and raises
+    ``CommandError`` before anything is written; ``apply`` writes the plan
+    and returns what to print.
+    """
+
+    requires_setup = False
+
+    @abstractmethod
+    def plan(
+        self,
+        *args: Any,  # noqa: ANN401 - each command declares its own.
+        **options: Any,  # noqa: ANN401 - each command's options.
+    ) -> P:
+        """Every change the command makes, checked, none written yet.
+
+        Raises:
+            CommandError: A name is invalid or taken, or a file is not as the
+                generators made it.
+        """
+
+    @abstractmethod
+    def apply(self, plan: P) -> str:
+        """Write ``plan``; return the lines to print."""
+
+    def handle(self, **options: Any) -> None:  # noqa: ANN401 - each command's options.
+        """Plan, then apply, then print what was done."""
+        self.write(self.apply(self.plan(**options)))
+
+
+@dataclass(frozen=True, slots=True)
+class Planned:
+    """What an ``AggregateGenerator`` planned for one domain."""
+
+    domain: Domain
+    added: str
+    """What the report names, as ``Product`` or ``PublishProduct``."""
+    next_steps: str = ""
+
+
+class AggregateGenerator(Generator[Planned]):
+    """A generator that adds to an aggregate of a domain ``startdomain`` made.
+
+    It takes the domain, the aggregate, ``--plural``, ``--parent``, and
+    ``--tests-dir`` (``Domain.add_arguments``), and options of its own
+    (``add_options``); ``plan_for`` plans the edits on the ``Domain``.
+    """
+
+    def add_arguments(self, parser: ArgumentParser) -> None:
+        """The domain and the aggregate, then the command's own options."""
+        Domain.add_arguments(parser)
+        self.add_options(parser)
+
+    def add_options(self, parser: ArgumentParser) -> None:
+        """Add the options this generator takes besides the domain's."""
+
+    @abstractmethod
+    def plan_for(
+        self,
+        *args: Any,  # noqa: ANN401 - each command declares (domain, names, ...).
+        **options: Any,  # noqa: ANN401 - each command's own options.
+    ) -> Planned:
+        """Plan the edits on a ``Domain`` for the aggregate's ``Names``.
+
+        It is called with the domain, the names, and the command's own
+        options as keywords.
+
+        Raises:
+            CommandError: A name is invalid or taken, or a file is not as the
+                generators made it.
+        """
+
+    def plan(
+        self,
+        *,
+        domain: str,
+        aggregate: str,
+        plural: str | None,
+        parent: str,
+        tests_dir: Path | None,
+        **options: Any,  # noqa: ANN401 - the command's own options.
+    ) -> Planned:
+        """Find the domain, name the aggregate, and plan the edits."""
+        target = Domain.named(domain, parent, tests_dir)
+        return self.plan_for(target, Names.of(aggregate, plural), **options)
+
+    def apply(self, plan: Planned) -> str:
+        """Write every planned edit; name the files written, and what is next."""
+        written = plan.domain.apply()
+        lines = [f"Added {plan.added} to {plan.domain.package}:"]
+        lines += [f"  {path}" for path in written]
+        if plan.next_steps:
+            lines.append(plan.next_steps)
+        return "\n".join(lines)

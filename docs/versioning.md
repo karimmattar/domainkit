@@ -62,12 +62,18 @@ that make deprecations errors, as below. When a patch adds a better name,
 the old one stays without a warning, and the next minor release deprecates
 it.
 
-### Deprecations planned for 0.10
+### Deprecations planned for 0.11
 
 | Old name | Use instead | Since |
 | --- | --- | --- |
-| `domainkit.ddd.query.Query` | `domainkit.ddd.Selection` | 0.9.2 |
-| `domainkit.contrib.evidence.model` | `domainkit.contrib.evidence` (or its `models`) | 0.9.2 |
+| `AllowAny`, `BasePermission`, `HasObjectPermissions`, `HasPermissions`, `HasScope`, `IsAuthenticated`, `IsAuthenticatedOrReadOnly`, `IsUnscoped`, `ModelPermissions`, `NotAuthenticated`, `Public`, `Require`, `check_object_permissions`, `mark_public`, `open_routes` from `domainkit.contrib.auth` | the same names from `domainkit.http.access` | 0.10 |
+| The same, and `AllOf`, `AnyOf`, `Not`, `Rule`, `SAFE_METHODS`, `MODEL_ACTIONS`, `bearer`, `public`, `scopes_of`, `routes_need_users`, `unguarded_routes`, from `domainkit.contrib.auth.access` | the same names from `domainkit.http.access` | 0.10 |
+| The setting `AUTH.REQUIRE_ROUTE_RULES` | `REQUIRE_ROUTE_RULES` | 0.10 |
+| `ResourceRouter(crud=True)` without `writable=`, or without both `create=` and `update=` (every plain field writable) | `writable=[...]` naming the fields, `writable=ALL_FIELDS`, or both schemas | 0.10 |
+| `Query` from `domainkit.ddd.query` (named `Selection` since 0.9.2) | `domainkit.ddd.Selection` | 0.10 |
+| `domainkit.contrib.evidence.model` | `domainkit.contrib.evidence` (or its `models`) | 0.10 |
+| Credentials limited to scopes passing a route that declares no rule that checks scopes (`SCOPED_CREDENTIALS = "warn"`, the default) | `HasScope(...)`, a permission rule, or `AllowScoped()` on the route; 0.11 refuses them (`"refuse"`) | 0.10 |
+| `IDEMPOTENCY.ANONYMOUS` left unset (`"per-address"`; `idempotency.W002` in staging and production) | `"per-address"` set explicitly to keep it, or `"refuse"`, 0.11's default | 0.10 |
 
 To find deprecated uses before upgrading, make the warning an error in the
 project's pytest settings:
@@ -123,28 +129,41 @@ Every package the code imports is declared, even one that another
 dependency already installs (anyio through Starlette, pydantic-core through
 pydantic): in the dependencies when the core imports it, otherwise in the
 extra of the feature that does (`aiormq` in `rabbitmq`, `httpcore2` in
-`httpclient`, `grpcio` and `ecdsa` in `immudb`). CI's lint job checks it
-with deptry (`[tool.deptry]` in `pyproject.toml`).
+`httpclient`, `grpcio`, `ecdsa` and `protobuf` in `immudb`). CI's lint job
+checks it with deptry (`[tool.deptry]` in `pyproject.toml`).
 
 ## Making a release
 
 1. Move the changelog's **Unreleased** entries under the new version and date.
 2. Update `version` in `pyproject.toml`.
-3. Merge to `main` once CI passes.
+3. Merge to `main` once CI passes. The push to `main` runs the whole CI
+   workflow on the merged commit: lint, types, tests on every Python,
+   integration against real servers, coverage, the benchmark ladder, the
+   wheel's smoke test and bill of materials, Semgrep, pip-audit, and
+   gitleaks. That run then attests the wheel and sdist it built with SLSA
+   build provenance naming it, and the wheel's CycloneDX bill of
+   materials, signed through GitHub (check one with `gh attestation
+   verify domainkit-X.Y.Z-py3-none-any.whl --repo karimmattar/domainkit
+   --signer-workflow karimmattar/domainkit/.github/workflows/ci.yml`).
 4. Tag that commit `vX.Y.Z` and push the tag. `.github/workflows/release.yml`
    then:
    - checks that the tag matches the version and is on a commit of `main`,
      so only changes that passed CI in a pull request are released;
-   - runs the whole CI workflow on that commit: lint, types, tests on every
-     Python, integration against real servers, coverage, the benchmark
-     ladder, the wheel's smoke test and bill of materials, Semgrep,
-     pip-audit, and gitleaks;
-   - attests the wheel and sdist with SLSA build provenance, and the wheel's
-     CycloneDX bill of materials, signed through GitHub (check one with
-     `gh attestation verify domainkit-X.Y.Z-py3-none-any.whl --repo
-     karimmattar/domainkit`);
+   - finds the CI run of that commit's push to `main`, waits for it if it
+     is still running, and stops unless it succeeded; nothing is run twice
+     (ADR [0007](adr/0007-own-repository-released-to-pypi.md#amendment-2026-10-26-010-a-release-reuses-mains-ci-run));
+   - runs pip-audit and gitleaks again, as an advisory can appear after
+     that run;
+   - checks that run's attestations of every file it publishes: signed by
+     `ci.yml` on `main` at the tagged commit, on GitHub's runners;
    - waits for a reviewer to approve the `pypi` environment;
    - publishes the wheel and sdist that CI built to PyPI, with attestations.
+   - creates the GitHub Release for the tag: the CHANGELOG's section for
+     the version as its notes, and the wheel, the sdist, the bill of
+     materials, and their SHA-256 sums (`SHA256SUMS`) as its assets.
+
+   CI keeps a run's `dist` and `sbom` for 90 days. To release an older
+   commit, re-run its CI run (`gh run rerun <id>`) first.
 
 One-time setup, before the first release:
 
@@ -161,12 +180,20 @@ One-time setup, before the first release:
   one, and `--method PUT repos/OWNER/REPO/rulesets/ID` replaces one.
   - `main.json`: changes reach `main` only as squash-merged pull requests,
     up to date with it, with these checks from GitHub Actions passing:
-    `lint`, `test (3.13)`, `test (3.14)`, `test (3.14t)`, `integration`,
-    `bench`, `coverage`, `build`, `sbom`, `semgrep`, and `audit`. Nobody
+    `changes`, `docs`, `lint`, `test (3.13)`, `test (3.14)`, `test (3.14t)`,
+    `integration`, `bench`, `coverage`, `build`, `sbom`, `semgrep`, `docs-site`,
+    and `audit`. A pull request that changes only `docs/**` and the Markdown at
+    the top of the repository runs `docs` (the tests that read the docs),
+    `docs-site`, `lint`, `semgrep` and `audit`; the others are skipped, which reports
+    success, and the test matrix skips its steps. Any other pull request
+    runs them all and skips `docs`. Nobody
     pushes to `main` or rewrites it; an admin may bypass the rules only
     when merging a pull request, a choice GitHub records. The `newest` and
     `oldest` jobs run on pull requests too but are not required: what
-    upstream releases is not the change's doing. `domainkit_tests/test_ci.py` checks that the
+    upstream releases is not the change's doing. Neither is `stress
+    (3.14t)`, which runs the free-threading tests 30 times on 3.14t: on
+    3.14.6t they crash the interpreter in some runs, inside SQLAlchemy's
+    compiled extensions, at 0.9.2 too. `domainkit_tests/test_ci.py` checks that the
     list is every other job a pull request runs, and is this one.
   - `release-tags.json`: nobody, admins included, moves or deletes a `v*`
     tag.

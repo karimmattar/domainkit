@@ -24,6 +24,7 @@ from domainkit.ledger.base import (
 )
 from domainkit.ledger.handler import LedgerHandler, ledgers
 from domainkit.ledger.memory import MemoryLedger
+from domainkit.ledger.trust import LedgerRolledBack
 
 __all__ = [
     "Ledger",
@@ -33,6 +34,7 @@ __all__ = [
     "LedgerHandler",
     "LedgerKeyExists",
     "LedgerKeyNotFound",
+    "LedgerRolledBack",
     "LedgerTampered",
     "LedgerUnavailable",
     "LedgerWrite",

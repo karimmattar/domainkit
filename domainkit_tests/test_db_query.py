@@ -37,7 +37,7 @@ from domainkit.ddd import (
     ReadOnlyError,
     UnknownField,
 )
-from domainkit.ddd.query import Criteria, F, Ordering, Query, RowLock
+from domainkit.ddd.query import Criteria, F, Ordering, RowLock, Selection
 from domainkit.http.errors import install_exception_handlers
 from domainkit.http.filters import Filter, FilterSet
 from domainkit.testing import AsyncTestClient, assert_num_queries
@@ -180,7 +180,7 @@ async def test_sql_answers_as_the_fake_does(tables: None) -> None:
     fake = InMemoryGadgets(items)
     async with GadgetsUnitOfWork() as uow:
         for criteria, ordering in CASES:
-            query = Query(criteria, ordering=ordering)
+            query = Selection(criteria, ordering=ordering)
             expected = [each.id for each in await fake.filter(query)]
             found = [each.id for each in await uow.gadgets.filter(query)]
             assert found == expected, (criteria, ordering)
@@ -253,7 +253,7 @@ async def test_offsets_skip_in_sql(tables: None) -> None:
     items = dataset()
     await store(*items)
     fake = InMemoryGadgets(items)
-    query = Query(ordering=["-price"])
+    query = Selection(ordering=["-price"])
     async with GadgetsUnitOfWork() as uow:
         for offset in range(6):
             page = await uow.gadgets.paginate(query, limit=2, offset=offset)
@@ -372,7 +372,7 @@ async def test_unknown_fields_fail_before_any_sql(tables: None) -> None:
         with pytest.raises(UnknownField):
             await uow.gadgets.count(F("nope") == 1)
         with pytest.raises(InvalidQuery):
-            await uow.gadgets.filter(Query(ordering=["parts"]))
+            await uow.gadgets.filter(Selection(ordering=["parts"]))
 
 
 async def test_soft_deleted_rows_stay_but_are_left_out(tables: None) -> None:
@@ -386,7 +386,9 @@ async def test_soft_deleted_rows_stay_but_are_left_out(tables: None) -> None:
         assert await uow.gadgets.find(gone.id) is None
         assert await uow.gadgets.count() == 1
         assert await uow.gadgets.count(include_deleted=True) == 2
-        found = await uow.gadgets.filter(Query(include_deleted=True, ordering=["name"]))
+        found = await uow.gadgets.filter(
+            Selection(include_deleted=True, ordering=["name"])
+        )
         assert [each.name for each in found] == ["gone", "kept"]
         restored = await uow.gadgets.restore(gone.id)
         assert restored.deleted_at is None
@@ -421,7 +423,7 @@ async def test_bulk_updates_bypass_aggregates_but_bump_versions(tables: None) ->
         await uow.commit()
     assert published == []
     async with GadgetsUnitOfWork() as uow:
-        found = await uow.gadgets.filter(Query(ordering=["name"]))
+        found = await uow.gadgets.filter(Selection(ordering=["name"]))
         assert [(each.name, each.active, each.version) for each in found] == [
             ("blue", False, 2),
             ("red", False, 3),
@@ -607,7 +609,7 @@ async def test_rows_lock_until_the_transaction_ends(tables: None) -> None:
         assert await two.gadgets.count() == 2  # The transaction lives on.
         assert await two.gadgets.get_for_update(gadget.id, skip_locked=True) is None
         skipped = await two.gadgets.filter(
-            Query(ordering=["name"], limit=1, lock=RowLock(skip_locked=True))
+            Selection(ordering=["name"], limit=1, lock=RowLock(skip_locked=True))
         )
         assert [each.name for each in skipped] == ["b"]
         waiting = asyncio.create_task(two.gadgets.get_for_update(gadget.id))

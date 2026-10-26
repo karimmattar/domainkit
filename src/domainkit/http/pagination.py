@@ -10,7 +10,7 @@ the page from a repository and answers with a ``PageOut``::
     async def list_orders(
         page: Annotated[PageRequest, Depends(pages)], uow: UnitOfWorkDep
     ) -> PageOut[OrderOut]:
-        query = Query(ordering=["-placed_at"])
+        query = Selection(ordering=["-placed_at"])
         async with uow:
             found = await page.fetch(uow.orders, query)
         return page.respond(found, [OrderOut.of(o) for o in found.items], query)
@@ -67,7 +67,7 @@ from domainkit.ddd.query import (
     ID,
     CriteriaLike,
     Ordering,
-    Query,
+    Selection,
     as_query,
     total_ordering,
 )
@@ -444,7 +444,7 @@ class PageRequest:
     async def fetch[AggregateT: AggregateRoot[Any]](
         self,
         repository: Repository[AggregateT, Any],
-        query: Query | CriteriaLike | None = None,
+        query: Selection | CriteriaLike | None = None,
     ) -> Page[AggregateT]:
         """Fetch the page of ``query`` (its ordering, then the id) from ``repository``.
 
@@ -468,7 +468,7 @@ class PageRequest:
         self,
         page: Page[Any],
         items: list[ItemT],
-        query: Query | CriteriaLike | None = None,
+        query: Selection | CriteriaLike | None = None,
     ) -> PageOut[ItemT]:
         """The response for ``page``, whose items are shown as ``items``."""
         if self.offset is not None:

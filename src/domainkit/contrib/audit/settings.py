@@ -3,7 +3,7 @@
 from datetime import timedelta
 from typing import Final
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from domainkit.conf import DEFAULT_DB_ALIAS
 
@@ -40,10 +40,10 @@ class AuditSettings(BaseModel):
     SEALED_EXTERNALLY: bool = False
     """``auditseal`` runs on a schedule of the project's own (cron), not in
     the worker: staging and production then do not warn that nothing seals."""
-    REQUIRE_BASELINE: bool = False
+    REQUIRE_BASELINE: bool = True
     """Refuse to start in staging and production without a ledger, a
-    namespace, a sealing schedule, and the ``protect()`` triggers, instead
-    of warning (0.10 refuses by default)."""
+    namespace, a sealing schedule, and the ``protect()`` triggers (the
+    default since 0.10); False only warns, as 0.9 did."""
     SEAL_LATE_WINDOW: timedelta = Field(
         default=timedelta(minutes=15), gt=timedelta(0), le=timedelta(days=1)
     )
@@ -54,3 +54,22 @@ class AuditSettings(BaseModel):
     """Batches of 1,000 rows one run seals at most; the rest wait for the next."""
     SEAL_BACKLOG_WARNING: int = Field(default=100_000, ge=1)
     """Rows left unsealed after a run past which it logs a warning."""
+    CHECKPOINT_KEY: SecretStr | None = Field(default=None, max_length=1024)
+    """The Ed25519 private key, in PEM, that signs checkpoints of the chain
+    (``checkpoints``): those ``auditprune`` prunes below, and those
+    ``auditverify --export`` writes for a verifier holding the public key.
+    Read by those two commands alone: set it in their environment, not the
+    application's, which verifies with ``CHECKPOINT_PUBLIC_KEY``. None:
+    neither runs."""
+    CHECKPOINT_PUBLIC_KEY: str | None = Field(default=None, max_length=1024)
+    """The public half of ``CHECKPOINT_KEY``, in PEM: what ``auditverify``
+    checks stored checkpoints with. Checked when the application starts.
+    None: no stored checkpoint verifies, so a pruned trail does not."""
+    MIN_RETENTION: timedelta = Field(
+        default=timedelta(days=30),
+        ge=timedelta(days=1),
+        le=timedelta(days=3650),
+    )
+    """How old a seal must be before ``auditprune`` may cut there; a
+    checkpoint of a younger one starts nothing in ``auditverify``. Raising
+    it reports the prunes made below it before."""

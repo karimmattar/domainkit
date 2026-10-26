@@ -15,6 +15,8 @@ INSTALLED_DOMAINS = [
     "domainkit.contrib.auth",
 ]
 ROOT_ROUTER = "config.urls.router"
+# /docs, /redoc, and /openapi.json follow DEBUG: on locally, off when
+# deployed; API_DOCS = True serves them anywhere (docs/reference.md).
 # Every request is authenticated; routes say who may call them (docs/auth.md).
 MIDDLEWARE = [
     "domainkit.http.middleware.ProxyHeadersMiddleware",

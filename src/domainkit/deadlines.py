@@ -40,6 +40,7 @@ from types import TracebackType
 from typing import Any, Self, overload
 
 from domainkit import clock
+from domainkit.exceptions import DomainkitError
 
 __all__ = [
     "Deadline",
@@ -53,7 +54,7 @@ __all__ = [
 ]
 
 
-class DeadlineExceeded(TimeoutError):
+class DeadlineExceeded(TimeoutError, DomainkitError):
     """The deadline ran out: the request's, or that of a ``timeout`` block."""
 
 

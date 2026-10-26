@@ -25,6 +25,7 @@ the global limit, with the same backends::
 """
 
 import contextlib
+import dataclasses
 import functools
 import hashlib
 import inspect
@@ -61,6 +62,7 @@ from domainkit.utils.module_loading import import_string
 from domainkit.utils.rates import parse_rate
 
 __all__ = [
+    "FALLBACK_KEYS",
     "Backend",
     "Decision",
     "MemoryBackend",
@@ -133,16 +135,34 @@ class MemoryBackend:
     up to ``EVICTIONS_PER_HIT`` of the longest-unseen callers whose quota is
     full again, which changes no decision; after a lull, the idle ones go a
     few at a time, over the next requests. Past ``max_keys``, the
-    longest-unseen caller is forgotten anyway and starts afresh. Memory and
-    the cost of a request stay bounded however many callers there are.
+    longest-unseen caller is forgotten anyway and starts afresh
+    (``full="forget"``). Memory and the cost of a request stay bounded
+    however many callers there are.
+
+    With ``full="refuse"``, a caller who still owes requests is never
+    forgotten: while every place holds one, a caller not counted yet is
+    refused until the longest-unseen one's quota is full again. It fails
+    closed: a flood of new keys cannot buy a throttled one a fresh quota,
+    but it can keep new callers out for as long as it keeps the places
+    owing. ``RedisBackend``'s fallback counts so, for the minutes Redis is
+    down.
     """
 
     def __init__(
-        self, max_keys: int = 100_000, clock: Callable[[], float] = monotonic
+        self,
+        max_keys: int = 100_000,
+        clock: Callable[[], float] = monotonic,
+        *,
+        full: Literal["forget", "refuse"] = "forget",
     ) -> None:
-        """Keep at most ``max_keys`` callers; ``clock`` reads seconds."""
+        """Keep at most ``max_keys`` callers; ``clock`` reads seconds.
+
+        ``full`` says what a new caller does to a full backend: forget the
+        longest-unseen caller, or be refused while that one still owes.
+        """
         self.max_keys = max_keys
         self.clock = clock
+        self.full = full
         self._callers: OrderedDict[str, _Caller] = OrderedDict()
         self._lock = threading.Lock()
 
@@ -180,6 +200,17 @@ class MemoryBackend:
                 remaining=0,
                 reset_after=owed * interval,
                 retry_after=(owed - burst) * interval,
+            )
+        if (
+            caller is None
+            and self.full == "refuse"
+            and len(self._callers) >= self.max_keys
+        ):
+            # Still full: _forget_idle let go of no one, so the oldest owes.
+            oldest = next(iter(self._callers.values()))
+            wait = oldest.seen + oldest.owed * oldest.interval - now
+            return Decision(
+                allowed=False, remaining=0, reset_after=wait, retry_after=wait
             )
         self._callers[key] = _Caller(now, owed + 1, interval)
         self._callers.move_to_end(key)
@@ -226,6 +257,10 @@ class MemoryBackend:
             del self._callers[key]
 
 
+FALLBACK_KEYS: Final = 10_000
+"""Callers the local fallback of ``RedisBackend`` counts at most (``MemoryBackend``)."""
+
+
 class RedisBackend:
     """GCRA in Redis or Valkey, shared by every replica (``RATE_LIMIT_CACHE``).
 
@@ -233,13 +268,36 @@ class RedisBackend:
     clock, so replicas never race and their clocks do not matter. Keys live
     in the cache's namespace (``<KEY_PREFIX>:ratelimit:<caller>``) only until
     the caller's quota is full again. If Redis fails, or refuses the script
-    (out of memory, a read-only replica after a failover), requests are let
-    through: the limit protects the service, and its outage must not stop
-    it. Redis is then skipped for ``FAILURE_COOLDOWN`` seconds.
+    (out of memory, a read-only replica after a failover), it is skipped for
+    ``FAILURE_COOLDOWN`` seconds, and requests are let through: the limit
+    protects the service, and its outage must not stop it.
+
+    With a ``fallback`` (``RATE_LIMIT_FALLBACK_REPLICAS``), they are counted
+    by it instead while Redis is down: a backend of this process, at the
+    limit divided by ``replicas``, so all the replicas together let about
+    the limit through. Its decisions say they were not counted in Redis
+    (``Decision.counted`` is False), so ``AUTH.THROTTLE_FAIL_CLOSED`` still
+    refuses the attempts it lets through.
     """
 
-    def __init__(self, cache: str | None = None) -> None:
-        """Count in ``cache`` (default: ``RATE_LIMIT_CACHE``), a Redis cache."""
+    def __init__(
+        self,
+        cache: str | None = None,
+        *,
+        fallback: Backend | None = None,
+        replicas: int | None = None,
+    ) -> None:
+        """Count in ``cache`` (default: ``RATE_LIMIT_CACHE``), a Redis cache.
+
+        ``fallback`` counts while Redis is down, at the limit divided by
+        ``replicas``. Without one, ``RATE_LIMIT_FALLBACK_REPLICAS`` (unless
+        None) makes it a ``MemoryBackend`` of ``FALLBACK_KEYS`` callers that
+        refuses new ones while every place owes (``full="refuse"``).
+
+        Raises:
+            ImproperlyConfigured: The cache is not Redis.
+            ValueError: ``replicas`` is under 1.
+        """
         self.cache = cache or settings.RATE_LIMIT_CACHE
         self._skip_until = 0.0
         if caches.config(self.cache).scheme not in REDIS_SCHEMES:
@@ -247,6 +305,25 @@ class RedisBackend:
                 f"RedisBackend needs a redis:// or rediss:// cache; "
                 f"CACHES[{self.cache!r}] is not one."
             )
+        configured = settings.RATE_LIMIT_FALLBACK_REPLICAS
+        if fallback is None and replicas is None and configured is not None:
+            fallback = MemoryBackend(max_keys=FALLBACK_KEYS, full="refuse")
+            replicas = configured
+        if replicas is not None and replicas < 1:
+            raise ValueError(f"replicas is 1 or more, not {replicas}.")
+        self.fallback = fallback
+        """What counts while Redis is down; None lets requests through."""
+        self.replicas = replicas or 1
+        """How many replicas share the limit while each counts on its own."""
+
+    async def _fall_back(
+        self, key: str, limit: int, period: float, let_through: Decision
+    ) -> Decision:
+        """The fallback's decision at its share of ``limit``; else ``let_through``."""
+        if self.fallback is None:
+            return let_through
+        decision = await self.fallback.hit(key, max(1, limit // self.replicas), period)
+        return dataclasses.replace(decision, counted=False)
 
     async def hit(self, key: str, limit: int, period: float) -> Decision:
         """Apply GCRA in Redis; let the request through if Redis fails."""
@@ -266,22 +343,25 @@ class RedisBackend:
             counted=False,
         )
         if time.monotonic() < self._skip_until:
-            return let_through
+            return await self._fall_back(key, limit, period, let_through)
         try:
             allowed, debt = await cache.call(
                 store.gcra, f"{cache.namespace}ratelimit:{key}", interval, tolerance
             )
         except CacheUnavailable:  # The cache cools down and says so itself.
-            return let_through
+            return await self._fall_back(key, limit, period, let_through)
         except CacheError as exc:
             cooldown = cache.config.FAILURE_COOLDOWN
             self._skip_until = time.monotonic() + cooldown
             logger.warning(
-                "Redis refused the rate limit; letting requests through for %.1fs: %s",
+                "Redis refused the rate limit; %s for %.1fs: %s",
+                "letting requests through"
+                if self.fallback is None
+                else "counting in this process",
                 cooldown,
                 exc,
             )
-            return let_through
+            return await self._fall_back(key, limit, period, let_through)
         if not allowed:
             return Decision(
                 allowed=False,
@@ -300,7 +380,8 @@ class RedisBackend:
         """Give back one request counted for ``key``; nothing if Redis fails.
 
         A refund missed counts a request that should not count, which only
-        errs toward the limit.
+        errs toward the limit. While Redis is skipped, the fallback gives
+        it back, if it can.
         """
         from domainkit.cache.redis import RedisStore
 
@@ -309,6 +390,9 @@ class RedisBackend:
         if not isinstance(store, RedisStore):  # Settings changed since __init__.
             raise ImproperlyConfigured(f"CACHES[{self.cache!r}] is not Redis.")
         if time.monotonic() < self._skip_until:
+            refund = getattr(self.fallback, "refund", None)
+            if refund is not None:
+                await refund(key, max(1, limit // self.replicas), period)
             return
         interval = period * 1_000_000 / limit
         with contextlib.suppress(CacheError):

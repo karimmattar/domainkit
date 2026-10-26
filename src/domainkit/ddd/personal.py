@@ -1,14 +1,26 @@
 """Mark the event fields that hold personal data, and whose data it is.
 
 ``Counted`` marks fields the audit trail keeps only the size of.
+
+Stores that keep copies of events or arguments (webhook deliveries, kept
+responses) tag each copy with the subjects it is about (``subject_tag``),
+so erasure finds it: the subjects between ``SEPARATOR``s, a control code
+no subject holds.
 """
 
+import re
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, is_dataclass
 from functools import cache
 from types import UnionType
-from typing import Annotated, Union, get_args, get_origin, get_type_hints
+from typing import Annotated, Final, Union, cast, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
+
+SEPARATOR: Final = "\x1f"
+"""Between the subjects of a tag, and around them: no subject holds it."""
+SUBJECT: Final = re.compile(r"[^\x00-\x1f\x7f]{1,255}")
+"""What can name a subject: 1 to 255 characters, without control codes."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,3 +133,66 @@ def _holds_marker(hint: object, seen: set[type]) -> bool:
     except NameError:  # Names only imported for type checkers.
         return False
     return any(_holds_marker(field, seen) for field in fields.values())
+
+
+def event_subjects(event: object) -> frozenset[str]:
+    """Whom ``event``'s ``Personal`` fields are about: their ``of`` values, as text."""
+    fields = personal_fields(cast(type, type(event)))
+    return _subjects(fields, lambda name: getattr(event, name))
+
+
+def subjects_in(
+    holder: type | Callable[..., object], values: Mapping[str, object]
+) -> frozenset[str]:
+    """Whom ``values`` are about, by the ``Personal`` markers of ``holder``.
+
+    ``holder`` is an event class (``values``, its JSON payload) or a task
+    function (``values``, its arguments).
+    """
+    return _subjects(personal_fields(cast(type, holder)), values.get)
+
+
+def fields_about(
+    holder: type | Callable[..., object], values: Mapping[str, object], subject: str
+) -> dict[str, object]:
+    """What ``values`` hold about ``subject``, and about nobody else.
+
+    Each ``Personal`` field of ``holder`` (as for ``subjects_in``) whose
+    ``of`` value names ``subject``, with that ``of`` field. A copy exported
+    to a person (``privacy export``) gives this, not the whole copy, which
+    may hold others' personal data, or anything else (SEC-10b-4).
+    """
+    about: dict[str, object] = {}
+    for name, marker in personal_fields(cast(type, holder)).items():
+        of = values.get(marker.of)
+        if name in values and of is not None and str(of) == subject:
+            about[marker.of] = of
+            about[name] = values[name]
+    return about
+
+
+def _subjects(
+    fields: Mapping[str, Personal], value: Callable[[str], object]
+) -> frozenset[str]:
+    """The text of each marker's ``of`` value that can name a subject."""
+    found = (value(marker.of) for marker in fields.values())
+    return frozenset(
+        str(each) for each in found if each is not None and SUBJECT.fullmatch(str(each))
+    )
+
+
+def subject_tag(subjects: Iterable[str]) -> str | None:
+    """``subjects`` as one text a store keeps; None for none.
+
+    ``<US>ann<US>bob<US>`` (``US`` is ``SEPARATOR``): each subject between
+    separators, sorted,
+    so ``tagged_with`` finds one by its separators and never by a part of
+    another.
+    """
+    found = sorted({subject for subject in subjects if SUBJECT.fullmatch(subject)})
+    return SEPARATOR + SEPARATOR.join(found) + SEPARATOR if found else None
+
+
+def tagged_with(subject: str) -> str:
+    """What a tag holds when it names ``subject`` (see ``subject_tag``)."""
+    return f"{SEPARATOR}{subject}{SEPARATOR}"

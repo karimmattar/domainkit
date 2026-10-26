@@ -301,7 +301,7 @@ def test_a_subjects_data_is_exported_from_every_domain(clinic: str) -> None:
     assert "room" not in patients
     rows = run_async(audited("privacy.export"))
     assert [(row["target"], row["details"]) for row in rows] == [
-        (str(ANN), {"records": 8})
+        (str(ANN), {"records": 8, "copies": []})
     ]
     assert rows[0]["actor"] == "system"
 

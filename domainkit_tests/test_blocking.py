@@ -330,7 +330,9 @@ def test_check_warns_about_sync_code_in_domains(make_package: MakePackage) -> No
             "routes.py": """
                 from fastapi import APIRouter
 
-                router = APIRouter()
+                from domainkit.http.access import Public
+
+                router = APIRouter(dependencies=[Public])
 
                 @router.get("/report")
                 def report() -> dict[str, str]:
@@ -349,7 +351,8 @@ def test_check_warns_about_sync_code_in_domains(make_package: MakePackage) -> No
     assert output.getvalue() == (
         "System check identified no issues and 1 warning. "
         "Domains: slowshop, contenttypes.\n"
-        "  Warning: slowshop.routes.report is a def, so FastAPI calls it on its "
+        "  Warning: blocking.W001: slowshop.routes.report is a def, so FastAPI "
+        "calls it on its "
         "thread pool for GET /report; make it async def, or mark it with "
         "domainkit.http.blocking.allow_sync.\n"
     )

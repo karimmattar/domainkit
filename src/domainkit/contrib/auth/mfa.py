@@ -42,10 +42,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from domainkit import clock
 from domainkit.conf import settings
 from domainkit.encryption import SecretBox
+from domainkit.http.access import IsUnscoped, Public, Require
 from domainkit.http.errors import APIError
 
 from . import totp
-from .access import AuthenticatedUser, IsUnscoped, Public, Require
+from .access import AuthenticatedUser
 from .api import (
     PASSWORD_MAX_LENGTH,
     MfaChallengeOut,
@@ -57,6 +58,7 @@ from .api import (
     issue_login,
     password_holds,
 )
+from .devices import hand_out
 from .events import MfaDisabled, MfaEnabled, RecoveryCodesRegenerated, RecoveryCodeUsed
 from .models import AbstractBaseUser, UserId
 from .onetime import TOKEN_MAX_LENGTH, UserTokenGenerator
@@ -445,7 +447,9 @@ async def mfa_login(body: MfaLoginIn, request: Request, response: Response) -> T
     """Finish a login with the challenge and a code; return tokens."""
     _no_store(response)
     user = await verify_challenge(request, body.mfa_token, body.code)
-    return _token_out(await issue_login(user))
+    issued = await issue_login(user)
+    await hand_out(request, response, user)
+    return _token_out(issued)
 
 
 async def _reauthenticate(

@@ -21,6 +21,7 @@ from collections.abc import Iterable, Mapping
 from typing import Final
 
 from domainkit import clock
+from domainkit.exceptions import DomainkitError
 
 __all__ = [
     "InvalidSignature",
@@ -40,7 +41,7 @@ MAX_SIGNATURES: Final = 10
 """Most signatures a header may carry for ``verify`` to look at."""
 
 
-class InvalidSignature(ValueError):
+class InvalidSignature(ValueError, DomainkitError):
     """A delivery that is not signed with the secret, or is stale."""
 
 

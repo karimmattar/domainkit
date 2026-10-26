@@ -34,6 +34,8 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Final
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from domainkit.exceptions import DomainkitError
+
 MACROS: Final = {
     "@yearly": "0 0 1 1 *",
     "@annually": "0 0 1 1 *",
@@ -68,7 +70,7 @@ _ITEM: Final = re.compile(
 )
 
 
-class CronError(ValueError):
+class CronError(ValueError, DomainkitError):
     """An expression or time zone that cannot be used."""
 
 
