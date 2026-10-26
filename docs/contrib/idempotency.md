@@ -23,8 +23,8 @@ the same request gets the stored response, with `Idempotent-Replayed: true`.
 | Same key after `TTL_SECONDS`, the first request committed nothing | A new request: it runs again |
 | Same key after `TTL_SECONDS` and then `TOMBSTONE_SECONDS` | A new request: it runs again, even if the first committed (below) |
 
-Within its TTL, a key's request runs twice only if nothing it did was
-saved. When a SQL unit of work commits during a keyed request, the key is
+Within its TTL, and its tombstone's after it, a key's request runs twice
+only if nothing it did was saved. When a SQL unit of work commits during a keyed request, the key is
 marked committed in the same transaction, and a committed key is never released, even if the reply
 to the commit was lost. A retry then gets the stored response or, when the
 response could not be kept, a 409 telling the client to look up the result
