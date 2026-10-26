@@ -28,13 +28,11 @@ Python, the SQL one in the database:
   value. Single-field value objects compare by what they wrap.
 
 ``Selection`` says which aggregates to load. It was called ``Query`` before
-0.9.2; that name still works here until 0.11, and warns
-(``DomainkitDeprecationWarning``). ``domainkit.ddd.Query`` is the base of
-CQRS query messages, a different thing.
+0.9.2, a name 0.11 removed: ``domainkit.ddd.Query`` is the base of CQRS
+query messages, a different thing.
 """
 
 import dataclasses
-import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
@@ -48,7 +46,6 @@ from domainkit.ddd.fields import (
     fields_of,
     primitive,
 )
-from domainkit.deprecation import DomainkitDeprecationWarning
 
 __all__ = [
     "Criteria",
@@ -499,23 +496,6 @@ class Selection:
             "include_deleted": self.include_deleted,
         }
         return Selection(**{**fields, **changes})
-
-
-def __getattr__(name: str) -> type[Selection]:
-    """``Query``: ``Selection``'s name before 0.9.2, deprecated in 0.10.
-
-    Raises:
-        AttributeError: Any other name, as a module without the hook would.
-    """
-    if name != "Query":
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    warnings.warn(
-        "domainkit.ddd.query.Query is deprecated: use domainkit.ddd.Selection. "
-        "The old name is removed in 0.11.",
-        DomainkitDeprecationWarning,
-        stacklevel=2,
-    )
-    return Selection
 
 
 class Specification[T](ABC):

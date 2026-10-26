@@ -15,57 +15,22 @@ users (``AnyUser``)::
 ``IsAdminUser`` and ``IsSuperuser`` refuse credentials limited to scopes:
 scopes name permissions, and staff and superusers hold more.
 
-The names that moved still import from here, and from
-``domainkit.contrib.auth``, until 0.11; each use warns
-(``DomainkitDeprecationWarning``).
+The rule names that moved to the core in 0.10 were removed from here, and
+from ``domainkit.contrib.auth``, in 0.11: import them from
+``domainkit.http.access``.
 """
 
 from collections.abc import Awaitable, Callable
-from typing import Annotated, ClassVar, Final, cast
+from typing import Annotated, ClassVar, cast
 
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials
 from starlette.requests import HTTPConnection
 
-from domainkit.deprecation import moved
 from domainkit.http import access
 
 from .authentication import get_authenticators
 from .models import AbstractBaseUser, AnyUser
-
-MOVED: Final = frozenset(
-    {
-        "MODEL_ACTIONS",
-        "SAFE_METHODS",
-        "AllOf",
-        "AllowAny",
-        "AnyOf",
-        "BasePermission",
-        "HasObjectPermissions",
-        "HasPermissions",
-        "HasScope",
-        "IsAuthenticated",
-        "IsAuthenticatedOrReadOnly",
-        "IsUnscoped",
-        "ModelPermissions",
-        "Not",
-        "NotAuthenticated",
-        "Public",
-        "Require",
-        "Rule",
-        "bearer",
-        "check_object_permissions",
-        "mark_public",
-        "open_routes",
-        "public",
-        "routes_need_users",
-        "scopes_of",
-        "unguarded_routes",
-    }
-)
-"""Names that moved to ``domainkit.http.access`` in 0.10; removed here in 0.11."""
-CORE_ACCESS: Final = "domainkit.http.access"
-
 
 current_user = cast("Callable[[HTTPConnection], AnyUser]", access.current_user)
 """The core's ``current_user``, typed as this app's users: the same function."""
@@ -127,5 +92,3 @@ async def authenticated_user(
 
 AuthenticatedUser = Annotated[AbstractBaseUser, Depends(authenticated_user)]
 """The request's user; anonymous callers get 401."""
-
-__getattr__ = moved(__name__, dict.fromkeys(MOVED, CORE_ACCESS), "0.11")

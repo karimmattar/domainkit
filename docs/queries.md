@@ -51,10 +51,9 @@ refuse to be true or false, so the mistake fails loudly). An ordering is
 `Selection(criteria, ordering=..., limit=..., offset=..., after=...,
 lock=..., include_deleted=...)` is a frozen value; `where(...)` adds
 criteria and `replace(...)` changes any part. Before 0.9.2 it was
-`Query` from `domainkit.ddd.query`, a name that still works until 0.11 and warns
-(`DomainkitDeprecationWarning`) since 0.10: `domainkit.ddd.Query` is a
-different thing, the base class of CQRS query messages, and the two met in
-the same files.
+`Query` from `domainkit.ddd.query`, a name 0.11 removed:
+`domainkit.ddd.Query` is a different thing, the base class of CQRS query
+messages, and the two met in the same files.
 
 ### What a query means everywhere
 
