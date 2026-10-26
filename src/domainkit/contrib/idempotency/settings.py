@@ -20,6 +20,17 @@ class IdempotencySettings(BaseModel):
     TTL_SECONDS: float = Field(default=24 * 3600.0, gt=0, le=30 * 24 * 3600)
     """How long a stored response is replayed for the same key; at least
     ``LEASE_SECONDS``."""
+    TOMBSTONE_SECONDS: float = Field(default=7 * 24 * 3600.0, ge=0, le=90 * 24 * 3600)
+    """How long a key whose request may have committed is kept once
+    ``TTL_SECONDS`` has passed, without its response (a tombstone): a retry
+    gets 409 ``idempotency_response_unavailable`` instead of running again.
+
+    A week covers the retry windows clients plausibly have past a day: a
+    queue replayed after an outage over a long weekend, a broker's default
+    retention (Kafka keeps 7 days, SQS 4 by default), messaging's own 7
+    days of finished messages. 0 forgets such a key with its response, and
+    a retry after ``TTL_SECONDS`` runs again, as 0.10 did (FIN-84).
+    """
     LEASE_SECONDS: float = Field(default=60.0, gt=0, le=24 * 3600)
     """How long a request holds its key before a retry may take it over.
 

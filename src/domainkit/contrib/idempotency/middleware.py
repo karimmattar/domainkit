@@ -29,7 +29,10 @@ error after the commit, an exception, a body over ``MAX_RESPONSE_BYTES``,
 or one marked ``Cache-Control: no-store``, such as new tokens), a retry
 gets a 409 ``idempotency_response_unavailable`` instead of running the
 changes again. The same holds once the key is pinned for a commit on
-another database, even if that commit raised: it may have landed.
+another database, even if that commit raised: it may have landed. Past
+``TTL_SECONDS`` such a key's response is dropped, but the key is kept for
+``TOMBSTONE_SECONDS`` more, as a tombstone: its retries get the 409 too,
+and never run again (FIN-84).
 Only commits through a unit of work are seen: call payment providers and
 other services from deferred tasks, not from the handler.
 
@@ -64,7 +67,7 @@ from domainkit.http.errors import error_response
 from domainkit.tasks import spawn
 
 from . import statements
-from .operations import Operation, run_operation
+from .operations import Operation, purge, run_operation
 from .settings import REFUSE, IdempotencySettings
 from .statements import RELEASE, STORE, clock_statements, holder
 
@@ -101,6 +104,8 @@ UNSEEN_BODIES: Final = frozenset(
 """ASGI messages that send a body the middleware never sees, so cannot keep."""
 LAPSED: Final = statements.LAPSED
 """Read with a held key's row: whether its lease ran out, on the database's clock."""
+EXPIRED: Final = statements.EXPIRED
+"""Read with a held key's row: whether it expired, on the database's clock."""
 
 
 def _hash(*parts: str | bytes) -> str:
@@ -215,7 +220,7 @@ class IdempotencyMiddleware:
             built = clock_statements(connection.dialect.name)
             now = built.now()
             claimed = await connection.scalar(
-                built.claim,
+                built.claim if config.TOMBSTONE_SECONDS else built.claim_forgetting,
                 built.claim_values(
                     now,
                     operation.key_hash,
@@ -235,10 +240,11 @@ class IdempotencyMiddleware:
                 ).first()
             if not registry.is_installed(MESSAGING) and self.sweeps.due():
                 # No hourly purge: sweep a few now and then.
-                swept = await connection.execute(
-                    built.sweep(PURGE_BATCH), built.sweep_values(now)
+                self.sweeps.swept(
+                    await purge(
+                        connection, built, now, config.TOMBSTONE_SECONDS, PURGE_BATCH
+                    )
                 )
-                self.sweeps.swept(swept.rowcount)
         if claimed is not None:
             return None
         return dict(row._mapping) if row is not None else {}
@@ -275,13 +281,25 @@ class IdempotencyMiddleware:
         receive: Receive,
         send: Send,
     ) -> None:
-        """Replay a finished response, or refuse a mismatch or a request in flight."""
+        """Replay a finished response, or refuse a mismatch or a request in flight.
+
+        A key past its TTL whose request may have committed is not replayed,
+        nor run again (FIN-84): its response is gone, or about to go.
+        """
         status_code = existing.get("status_code")
         if existing.get("fingerprint") not in {None, fingerprint}:
             response = error_response(
                 status.HTTP_422_UNPROCESSABLE_CONTENT,
                 "This Idempotency-Key was used for a different request.",
                 code="idempotency_key_reused",
+            )
+        elif _buried(existing):
+            response = error_response(
+                status.HTTP_409_CONFLICT,
+                "The request with this Idempotency-Key already ran, and its "
+                "response is no longer kept; look up the result instead of "
+                "retrying.",
+                code="idempotency_response_unavailable",
             )
         elif status_code is None and not _died_after_commit(existing):
             response = error_response(
@@ -502,6 +520,20 @@ def _abandoned(existing: dict[str, Any], fingerprint: str) -> bool:
         and existing["committed_at"] is None
         and bool(existing[LAPSED])
     )
+
+
+def _buried(existing: dict[str, Any]) -> bool:
+    """Whether the key is a tombstone, or expired after it may have committed.
+
+    The purge makes such a key a tombstone; until it runs, the claim leaves
+    it alone, and the response it still holds is past its TTL.
+    """
+    if existing.get("tombstone"):
+        return True
+    may_have_committed = existing.get("committed_at") is not None or bool(
+        existing.get("pinned")
+    )
+    return may_have_committed and bool(existing.get(EXPIRED))
 
 
 def _died_after_commit(existing: dict[str, Any]) -> bool:
