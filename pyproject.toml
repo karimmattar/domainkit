@@ -56,13 +56,16 @@ mfa = ["cryptography (>=50.0.2,<51.0.0)"]
 # auditprune and auditverify --export.
 audit = ["cryptography (>=50.0.2,<51.0.0)"]
 # Ledgers for evidence (WORM): immudb's SDK, with its verified operations.
-# grpcio for TLS channels and ecdsa's signature error, both installed by
-# immudb-py, are imported directly; ecdsa from 0.19.2, past PYSEC-2026-2467.
+# grpcio for TLS channels, ecdsa's signature error, and protobuf's Empty
+# message (the server's state), all installed by immudb-py, are imported
+# directly; ecdsa from 0.19.2, past PYSEC-2026-2467.
 immudb = [
     "immudb-py (>=1.5.0,<2.0.0)",
     # 1.66.2 is the first grpcio with wheels for Python 3.13.
     "grpcio (>=1.66.2,<2.0.0)",
     "ecdsa (>=0.19.2,<1.0.0)",
+    # immudb-py's own floor.
+    "protobuf (>=4.25.3,<8.0.0)",
 ]
 # A message broker for the worker: RabbitMQ, through aio-pika.
 # aiormq, which aio-pika installs, for the one error it does not re-export.
@@ -205,6 +208,7 @@ grpcio = "grpc"
 immudb-py = "immudb"
 opentelemetry-api = "opentelemetry"
 prometheus-client = "prometheus_client"
+protobuf = "google"
 pydantic-core = "pydantic_core"
 pyjwt = "jwt"
 python-dotenv = "dotenv"

@@ -5271,7 +5271,7 @@ argon2 = ["argon2-cffi"]
 audit = ["cryptography"]
 granian = ["granian"]
 httpclient = ["httpcore2", "httpx2"]
-immudb = ["ecdsa", "grpcio", "immudb-py"]
+immudb = ["ecdsa", "grpcio", "immudb-py", "protobuf"]
 jwt = ["pyjwt"]
 metrics = ["prometheus-client"]
 mfa = ["cryptography"]
@@ -5289,4 +5289,4 @@ webhooks = ["cryptography", "httpx2"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13,<4"
-content-hash = "002a615eb7f6f1f657ce5340ee10475888cefccbb420afaaf6718a545d5eef4a"
+content-hash = "28ef3807ec2770bdda7517547e3b72912cb1e5681b1cec92e1f9341692e0b05c"

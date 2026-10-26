@@ -129,8 +129,8 @@ Every package the code imports is declared, even one that another
 dependency already installs (anyio through Starlette, pydantic-core through
 pydantic): in the dependencies when the core imports it, otherwise in the
 extra of the feature that does (`aiormq` in `rabbitmq`, `httpcore2` in
-`httpclient`, `grpcio` and `ecdsa` in `immudb`). CI's lint job checks it
-with deptry (`[tool.deptry]` in `pyproject.toml`).
+`httpclient`, `grpcio`, `ecdsa` and `protobuf` in `immudb`). CI's lint job
+checks it with deptry (`[tool.deptry]` in `pyproject.toml`).
 
 ## Making a release
 
