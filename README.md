@@ -105,18 +105,22 @@ cd billing
 python manage.py check
 python manage.py startdomain invoices --aggregate Invoice   # installs and mounts it
 python manage.py makemigrations -m "create invoices" && python manage.py migrate
-BILLING_API_SUPERUSER_PASSWORD="correct-horse-battery" \
+read -rsp "Password: " PASSWORD && export PASSWORD    # admin's, typed, not echoed
+BILLING_API_SUPERUSER_PASSWORD="$PASSWORD" \
   python manage.py createsuperuser --noinput --username admin --email admin@example.com
 pytest
 python manage.py runserver            # http://127.0.0.1:8000/docs
 ```
 
 Then, from a second shell in `billing` with the same environment active, log
-in and list the invoices:
+in, typing the same password, and list the invoices. The password is read
+at a prompt and sent on standard input, so it is in no command line and no
+shell history:
 
 ```bash
-TOKEN=$(curl -s http://127.0.0.1:8000/auth/login -H "Content-Type: application/json" \
-  -d '{"username": "admin", "password": "correct-horse-battery"}' \
+read -rsp "Password: " PASSWORD && export PASSWORD
+TOKEN=$(python -c "import json, os; print(json.dumps({'username': 'admin', 'password': os.environ['PASSWORD']}))" \
+  | curl -s http://127.0.0.1:8000/auth/login -H "Content-Type: application/json" -d @- \
   | python -c "import json, sys; print(json.load(sys.stdin)['access_token'])")
 curl http://127.0.0.1:8000/api/v1/invoices/invoices -H "Authorization: Bearer $TOKEN"
 ```

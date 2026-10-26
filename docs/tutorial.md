@@ -66,7 +66,8 @@ they pass.
 ## 5. Create a user
 
 ```bash
-BANK_API_SUPERUSER_PASSWORD="correct-horse-battery" \
+read -rsp "Password: " PASSWORD && export PASSWORD    # typed, not echoed
+BANK_API_SUPERUSER_PASSWORD="$PASSWORD" \
   python manage.py createsuperuser --noinput --username admin --email admin@example.com
 ```
 
@@ -93,11 +94,14 @@ answer is `401`:
 curl http://127.0.0.1:8000/api/v1/accounts/accounts   # 401
 ```
 
-Log in, and keep the token in `$TOKEN`:
+Log in, typing the password again, and keep the token in `$TOKEN`. The
+password goes to `curl` on its standard input (`-d @-`), so it is in no
+command line, and no shell history:
 
 ```bash
-TOKEN=$(curl -s http://127.0.0.1:8000/auth/login -H "Content-Type: application/json" \
-  -d '{"username": "admin", "password": "correct-horse-battery"}' \
+read -rsp "Password: " PASSWORD && export PASSWORD
+TOKEN=$(python -c "import json, os; print(json.dumps({'username': 'admin', 'password': os.environ['PASSWORD']}))" \
+  | curl -s http://127.0.0.1:8000/auth/login -H "Content-Type: application/json" -d @- \
   | python -c "import json, sys; print(json.load(sys.stdin)['access_token'])")
 ```
 

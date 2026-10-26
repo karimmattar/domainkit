@@ -26,13 +26,18 @@ _SNAKE_NAME: Final = re.compile(r"[a-z][a-z0-9_]*")
 _CLASS_NAME: Final = re.compile(r"[A-Z][A-Za-z0-9]*")
 SERVER: Final = "http://127.0.0.1:8000"
 """Where ``runserver`` listens unless told otherwise."""
+PROMPT_LINE: Final = 'read -rsp "Password: " PASSWORD && export PASSWORD'
+"""Ask for the password, so it is in no command line and no shell history."""
 LOGIN_CURL: Final = (
-    f"TOKEN=$(curl -s {SERVER}/auth/login "
-    '-H "Content-Type: application/json" '
-    """-d '{"username": "<username>", "password": "<password>"}' """
+    "TOKEN=$(python -c \"import json, os; print(json.dumps({'username': "
+    "'<username>', 'password': os.environ['PASSWORD']}))\" "
+    f"| curl -s {SERVER}/auth/login "
+    '-H "Content-Type: application/json" -d @- '
     "| python -c \"import json, sys; print(json.load(sys.stdin)['access_token'])\")"
 )
-"""Log in at the project template's ``/auth/login``; keep the token in ``$TOKEN``."""
+"""Log in at the project template's ``/auth/login`` with the password typed at
+``PROMPT_LINE`` (sent on stdin, never in an argument); keep the token in
+``$TOKEN``."""
 
 
 def template_context(
@@ -180,7 +185,9 @@ def _next_steps(
         ),
         (
             "python manage.py runserver; then, from another shell, log in as a "
-            f"superuser and list the {context['aggregates_title']}:\n"
+            "superuser, typing its password at the prompt, and list the "
+            f"{context['aggregates_title']}:\n"
+            f"       {PROMPT_LINE}\n"
             f"       {LOGIN_CURL}\n"
             f"       curl {SERVER}/api/v1/{domain}/{context['aggregates']} "
             '-H "Authorization: Bearer $TOKEN"'

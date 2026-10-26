@@ -398,10 +398,13 @@ def test_startdomain_generates_a_working_domain(
         "  5. Grant shop.view_orderline (and add_, change_, delete_) to the users "
         "or groups that need them; superusers have them.\n"
         "  6. python manage.py runserver; then, from another shell, log in as a "
-        "superuser and list the order lines:\n"
-        "       TOKEN=$(curl -s http://127.0.0.1:8000/auth/login "
-        '-H "Content-Type: application/json" '
-        """-d '{"username": "<username>", "password": "<password>"}' """
+        "superuser, typing its password at the prompt, and list the order lines:\n"
+        '       read -rsp "Password: " PASSWORD && export PASSWORD\n'
+        '       TOKEN=$(python -c "import json, os; '
+        "print(json.dumps({'username': '<username>', "
+        """'password': os.environ['PASSWORD']}))" """
+        "| curl -s http://127.0.0.1:8000/auth/login "
+        '-H "Content-Type: application/json" -d @- '
         '| python -c "import json, sys; '
         """print(json.load(sys.stdin)['access_token'])")\n"""
         "       curl http://127.0.0.1:8000/api/v1/shop/order_lines "
@@ -619,8 +622,9 @@ def test_startdomain_next_steps_leave_out_what_it_did(tmp_path: Path) -> None:
         ),
         (
             "  4. python manage.py runserver; then, from another shell, log in as "
-            "a superuser and list the invoices:"
+            "a superuser, typing its password at the prompt, and list the invoices:"
         ),
+        f"       {startdomain.PROMPT_LINE}",
         f"       {startdomain.LOGIN_CURL}",
         (
             "       curl http://127.0.0.1:8000/api/v1/invoices/invoices "
