@@ -18,6 +18,7 @@ from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db.drivers import connect_args
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import route_rule_problems
+from domainkit.http.apidocs import OPENAPI_PATH, docs_router
 from domainkit.http.blocking import watch_event_loop
 from domainkit.http.errors import ErrorResponse, install_exception_handlers
 from domainkit.http.openapi import (
@@ -117,15 +118,16 @@ def get_asgi_application() -> FastAPI:
     # Refuse bad driver arguments (CONNECT_ARGS, TLS files) now, not at first use.
     for database in settings.DATABASES.values():
         connect_args(database)
-    docs = settings.API_DOCS
+    docs = api_docs()
     app = Application(
         title=settings.PROJECT_NAME,
         version=settings.VERSION,
         debug=settings.DEBUG,
         lifespan=lifespan,
-        docs_url="/docs" if docs else None,
-        redoc_url="/redoc" if docs else None,
-        openapi_url="/openapi.json" if docs else None,
+        # The pages are domainkit's own, with their assets (no CDN).
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=OPENAPI_PATH if docs else None,
         # Errors the framework itself can return, on every route, with the
         # real body instead of FastAPI's default validation schema.
         responses={
@@ -141,6 +143,8 @@ def get_asgi_application() -> FastAPI:
     )
     install_exception_handlers(app)
     install_openapi(app)
+    if docs:
+        app.include_router(docs_router(settings.PROJECT_NAME))
     if settings.ROOT_ROUTER:
         app.include_router(_load(settings.ROOT_ROUTER, APIRouter, "ROOT_ROUTER"))
         if settings.FLATTEN_ROUTERS:
@@ -162,6 +166,16 @@ def get_asgi_application() -> FastAPI:
         for warning in unix_socket_warnings(settings.TRUSTED_PROXIES):
             logger.warning(warning)
     return app
+
+
+def api_docs() -> bool:
+    """Whether the application serves its documentation: ``API_DOCS``.
+
+    Unset (None), it follows ``DEBUG``: on in development, off when
+    deployed. True serves it anywhere, False nowhere.
+    """
+    explicit = settings.API_DOCS
+    return settings.DEBUG if explicit is None else explicit
 
 
 def application_problems(app: FastAPI) -> list[str]:

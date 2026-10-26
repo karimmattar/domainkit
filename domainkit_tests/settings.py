@@ -10,3 +10,6 @@ ALPHA = {"GREETING": "hi"}
 READINESS_CACHE_SECONDS = 0
 # Random enough for the deployment checks, which some tests switch on.
 SECRET_KEY = "tests-only-6Zq3b1Jw8RkV0yXc5MnHf2LpT9sDg4AeU7oKiWx3N"
+# The framework's tests read /docs and /openapi.json; deployments leave them
+# off (API_DOCS follows DEBUG unless set), which test_api_docs covers.
+API_DOCS = True

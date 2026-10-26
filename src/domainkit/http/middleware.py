@@ -393,6 +393,9 @@ def security_headers(
     content_type_nosniff: bool,
     referrer_policy: str | None,
     frame_options: str,
+    content_security_policy: str | None = None,
+    permissions_policy: str | None = None,
+    cross_origin_opener_policy: str | None = None,
 ) -> list[tuple[str, str]]:
     """Translate Django-style ``SECURE_*`` settings into response headers."""
     headers = [("Cache-Control", "no-store"), ("X-Frame-Options", frame_options)]
@@ -405,11 +408,26 @@ def security_headers(
         if hsts_include_subdomains:
             value += "; includeSubDomains"
         headers.append(("Strict-Transport-Security", value))
+    if content_security_policy:
+        headers.append(("Content-Security-Policy", content_security_policy))
+    if permissions_policy:
+        headers.append(("Permissions-Policy", permissions_policy))
+    if cross_origin_opener_policy:
+        headers.append(("Cross-Origin-Opener-Policy", cross_origin_opener_policy))
     return headers
 
 
 class SecurityHeadersMiddleware:
-    """Add security headers unless the endpoint already set them."""
+    """Add security headers unless the endpoint already set them.
+
+    The baseline: ``Cache-Control: no-store``, ``X-Frame-Options``,
+    ``X-Content-Type-Options``, ``Referrer-Policy``, HSTS once set, and a
+    ``Content-Security-Policy`` that lets nothing load, run, or frame what
+    the API answers, a ``Permissions-Policy`` that turns powerful browser
+    features off, and ``Cross-Origin-Opener-Policy: same-origin``. A route
+    that answers a page sets its own (``domainkit.http.apidocs``,
+    ``domainkit.http.uploads.serve``), which is kept.
+    """
 
     def __init__(self, app: ASGIApp) -> None:
         """Wrap ``app`` with the headers derived from ``SECURE_*`` settings."""
@@ -420,6 +438,9 @@ class SecurityHeadersMiddleware:
             content_type_nosniff=settings.SECURE_CONTENT_TYPE_NOSNIFF,
             referrer_policy=settings.SECURE_REFERRER_POLICY,
             frame_options=settings.X_FRAME_OPTIONS,
+            content_security_policy=settings.SECURE_CONTENT_SECURITY_POLICY,
+            permissions_policy=settings.SECURE_PERMISSIONS_POLICY,
+            cross_origin_opener_policy=settings.SECURE_CROSS_ORIGIN_OPENER_POLICY,
         )
         self.raw_headers: RawHeaders = [
             (name.lower().encode("latin-1"), value.encode("latin-1"))
