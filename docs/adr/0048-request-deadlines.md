@@ -204,7 +204,11 @@ Decision:
   connection is kept: none opened, none discarded, in a transaction and
   with `Reads.STATEMENTS` alike, and the 503 comes as soon after the
   deadline as before (a median of 1,018 to 1,029 ms against 1,025 to
-  1,029 ms).
+  1,029 ms). Settling a statement cut in a transaction took a median of
+  13 ms, nearly all of it the cancelled exchange, which asyncpg waits for
+  before any next statement and SQLAlchemy's close waited for too:
+  `ROLLBACK` alone takes 0.1 ms, the ping 0.24 ms. Opening the connection
+  that replaced a discarded one took 20 ms, and a server process.
 - Anything else discards it, as before: an error, the time running out, a
   transaction begun in SQL text, which nothing tracks, or a second
   cancellation. An anyio cancel scope cancels every wait until it exits,
@@ -228,7 +232,8 @@ Rejected:
   Settled where it was cut, the locks go before the 503 is sent.
 - `Connection.reset()` for asyncpg's tracker: it resets the session too
   (`RESET ALL`, `UNLISTEN *`, advisory locks), which a pooled connection
-  of SQLAlchemy's never had, and logged an error for every cut `BEGIN`.
+  of SQLAlchemy's never had, takes two round trips (0.5 ms), and called
+  the event loop's exception handler for 30 cut transactions in 30.
 - asyncpg's private wait for the cancelled exchange in place of the ping:
   it saves one round trip, only for statements outside a transaction, and
   ties the proof to asyncpg's protocol rather than to what the server
