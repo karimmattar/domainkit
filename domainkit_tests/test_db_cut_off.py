@@ -417,8 +417,9 @@ async def test_a_connection_that_does_not_settle_in_time_is_discarded(
 ) -> None:
     """The server's answers come later than ``SETTLE_TIMEOUT``: closed, not waited on.
 
-    The cut-off work ends within that bound, and the next caller gets a new
-    connection that works.
+    The cut-off work ends within that bound, the connection is discarded
+    then (the pool hands it to no one), and the next caller gets a new one
+    that works.
     """
     monkeypatch.setattr(connections_module, "SETTLE_TIMEOUT", 0.3)
     delay = {"s": 0.0}
@@ -428,6 +429,7 @@ async def test_a_connection_that_does_not_settle_in_time_is_discarded(
             started = asyncio.get_running_loop().time()
             await cut_off(0.2, store("cut"))
             assert asyncio.get_running_loop().time() - started < 2.5
+            assert events.counts == (0, 1)
             delay["s"] = 0.0
             await store("kept")
         assert await committed(database) == ["first", "kept", "made"]
@@ -451,6 +453,7 @@ async def test_a_transaction_begun_in_sql_text_is_not_kept(
                 await connection.execute(text("BEGIN"))
                 delay["s"] = 0.5  # SELECT 1 is done before the deadline is.
                 await cut_off(0.2, connection.execute(text("SELECT 1")))
+            assert events.counts == (0, 1)  # At once: the pool hands it to no one.
             delay["s"] = 0.0
             await store("kept")
         assert await committed(database) == ["first", "kept", "made"]
@@ -462,16 +465,23 @@ async def test_a_transaction_begun_in_sql_text_is_not_kept(
 async def test_a_settling_cancelled_by_shutdown_discards_the_connection(
     tables: None, database: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The settling task is cancelled (as a shutdown does): closed, as before."""
+    """The settling task is cancelled (as a shutdown does): closed, as before.
+
+    The task is named, for the shutdown's log of tasks that would not stop.
+    """
+    names: list[str] = []
 
     async def cancelled(adapter: object, driver: object) -> bool:
+        names.append(asyncio.current_task().get_name())  # type: ignore[union-attr]
         raise asyncio.CancelledError
 
     monkeypatch.setattr(connections_module, "_settle", cancelled)
     await store("made")
     with PoolEvents() as events:
         await cut_off(None, write_then_sleep("cut", deadline=0.3))
+        assert events.counts == (0, 1)
         await store("kept")
+    assert names == ["domainkit.db.settle"]
     assert await committed(database) == ["first", "kept", "made"]
     await eventually_clean(database)
     assert events.counts == (1, 1)
