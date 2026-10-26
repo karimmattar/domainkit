@@ -791,10 +791,10 @@ def test_principals_are_read_again_after_the_ttl(
     with freeze_time("2026-05-01T10:00:00Z") as clock:
         run_async(credentials_of(headers=bearer(raw)))
         statements.clear()
-        clock.tick(29)
+        clock.tick(23.9)  # Before the last fifth of the TTL: kept.
         run_async(credentials_of(headers=bearer(raw)))
         assert "SELECT" not in statements
-        clock.tick(1)
+        clock.tick(6.1)  # Past it, though nothing else read it meanwhile.
         run_async(credentials_of(headers=bearer(raw)))
         assert statements.count("SELECT") == 2
 

@@ -767,7 +767,18 @@ how principals are read.
   by the token's digest. The password hash is kept, in process memory, only
   while `request.user.password` is deprecated (below), and never shows in a
   `repr`, a log, a key, or a stamp. Each request gets its own user, built
-  from what is kept, the same as a query builds.
+  from what is kept, the same as a query builds; its groups and
+  permissions are built the first time the request reads them, and
+  `has_perm` (and the rules that ask it) answers from the keys of what the
+  user holds, worked out once per principal, until then (0.10, ADR 0059's
+  amendment): a user with hundreds of permissions costs a request what a
+  user with two does.
+- **One read at a time, and read again ahead** (0.10, ADR 0058's
+  amendment): requests of one credential that miss at once wait for one
+  read, unless a change was invalidated since it began. In the last fifth
+  of the `TTL`, the first request to use a kept principal reads it again
+  while the others are served it, never past the `TTL`; if what it reads
+  differs, the kept one is dropped at once.
 - **What every request checks**: a token's expiry, on `domainkit.clock`
   (an expired token is refused from memory as from the table); a cookie's
   CSRF checks; a JSON Web Token's signature and times. `last_used_at` is
@@ -848,8 +859,10 @@ how principals are read.
 without `STAMPS`: a revocation would keep working that long in the other
 processes. `STAMPS` naming anything but a Redis cache of `CACHES` stops
 startup. With `domainkit[metrics]`, `auth_principal_cache_total` counts
-hits, misses, invalidations, and evictions, by authentication class
-(`token`, `cookie`, `jwt`, `certificate`), never by user.
+hits, misses, invalidations, and evictions, requests served by another's
+read (`coalesced`), and reads ahead (`refresh`, `refresh_failed`), by
+authentication class (`token`, `cookie`, `jwt`, `certificate`), never by
+user.
 `ENABLED = False` reads the principal on every request, in the same two
 queries.
 

@@ -26,7 +26,7 @@ from domainkit.http.openapi import (
     install_openapi,
     operation_id,
 )
-from domainkit.http.routing import flatten_routes
+from domainkit.http.routing import flatten_routes, index_routes
 from domainkit.http.servers import unix_socket_warnings
 from domainkit.http.versioning import DeprecationHeadersMiddleware
 from domainkit.http.websockets import server_warnings
@@ -150,6 +150,9 @@ def get_asgi_application() -> FastAPI:
         if settings.FLATTEN_ROUTERS:
             # Each route matched once, at the top, not once per router (ADR 0060).
             flatten_routes(app.router)
+    if settings.FLATTEN_ROUTERS:
+        # A request tries the routes its first segment can reach (PERF-05).
+        index_routes(app.router)
     # Innermost: it sees the responses routes answer, error handlers' too.
     app.add_middleware(DeprecationHeadersMiddleware)
     # add_middleware() wraps the stack, so add the outermost entry last.

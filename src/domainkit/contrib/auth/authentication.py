@@ -22,7 +22,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import timedelta
 from functools import cache
-from typing import Any, ClassVar, Final
+from typing import Any, ClassVar, Final, cast
 from uuid import UUID, uuid4
 
 from fastapi import status
@@ -39,8 +39,8 @@ from .principals import (
     Entry,
     family_target,
     forget,
+    kept_or_read,
     principal_cache,
-    recall,
     remember,
     stamps_ahead,
     stamps_before_reading,
@@ -442,35 +442,36 @@ async def stored_credential(
 
     None: no token has the digest. The entry of a token just read is not
     kept yet: ``accept`` keeps it once the class accepts the credential.
-    The stamps (``STAMPS``) of ``ALL`` and the token are read before the
-    unit of work opens; the others (and any absent one) after the token,
-    which names the user, and before the user, whose read checks that the
-    token is still stored.
+    Requests of one credential that miss at once read it once
+    (``kept_or_read``). The stamps (``STAMPS``) of ``ALL`` and the token
+    are read before the unit of work opens; the others (and any absent one)
+    after the token, which names the user, and before the user, whose read
+    checks that the token is still stored.
     """
     key = (scheme, digest)
-    entry = await recall(key, config)
-    if entry is not None:
-        return entry
-    started = principal_cache.begin()
-    ahead = await stamps_ahead(config, [token_target(digest)])
-    async with AuthUnitOfWork() as uow:
-        credential = await uow.principals.credential(digest)
-        if credential is None:
-            return None
-        targets = [user_target(credential.user_id), token_target(digest)]
-        if credential.family is not None:
-            targets.append(family_target(credential.family))
-        entry = Entry(
-            key,
-            None,
-            credential=credential,
-            targets=tuple(targets),
-            started=started,
-            last_used=credential.last_used_at,
-        )
-        await stamps_before_reading(entry, config, ahead)
-        snapshot = await uow.principals.principal(credential.user_id, token=digest)
-    return entry.holding(snapshot)
+
+    async def read(started: int) -> Entry | None:
+        ahead = await stamps_ahead(config, [token_target(digest)])
+        async with AuthUnitOfWork() as uow:
+            credential = await uow.principals.credential(digest)
+            if credential is None:
+                return None
+            targets = [user_target(credential.user_id), token_target(digest)]
+            if credential.family is not None:
+                targets.append(family_target(credential.family))
+            entry = Entry(
+                key,
+                None,
+                credential=credential,
+                targets=tuple(targets),
+                started=started,
+                last_used=credential.last_used_at,
+            )
+            await stamps_before_reading(entry, config, ahead)
+            snapshot = await uow.principals.principal(credential.user_id, token=digest)
+        return entry.holding(snapshot)
+
+    return await kept_or_read(key, config, read)
 
 
 async def accept(
@@ -500,24 +501,28 @@ async def login_principal(
     have given it a newer one.
     """
     key = (JWT_SCHEME, f"{session}:{user_id}")
-    entry = await recall(key, config)
-    if entry is not None:
-        if entry.login is not None and entry.login.active_at(utc_now()):
-            return entry
-        forget(entry)
-    entry = Entry(
-        key,
-        None,
-        targets=(user_target(user_id), family_target(session)),
-        started=principal_cache.begin(),
-    )
-    await stamps_before_reading(entry, config)
-    async with AuthUnitOfWork() as uow:
-        entry.login = await uow.principals.login(session)
-        if not entry.login.active_at(utc_now()):
-            return entry
-        snapshot = await uow.principals.principal(user_id)
-    return entry.holding(snapshot)
+
+    async def read(started: int) -> Entry:
+        entry = Entry(
+            key,
+            None,
+            targets=(user_target(user_id), family_target(session)),
+            started=started,
+        )
+        await stamps_before_reading(entry, config)
+        async with AuthUnitOfWork() as uow:
+            entry.login = await uow.principals.login(session)
+            if not entry.login.active_at(utc_now()):
+                return entry
+            snapshot = await uow.principals.principal(user_id)
+        return entry.holding(snapshot)
+
+    return cast(Entry, await kept_or_read(key, config, read, _login_active))
+
+
+def _login_active(entry: Entry) -> bool:
+    """Whether a kept login still has an unexpired token."""
+    return entry.login is not None and entry.login.active_at(utc_now())
 
 
 async def active_user(uow: AuthUnitOfWork, user_id: UUID) -> AbstractBaseUser:

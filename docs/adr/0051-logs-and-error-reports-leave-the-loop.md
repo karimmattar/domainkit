@@ -1,6 +1,6 @@
 # 0051. Write logs and error reports from threads, dropping what does not fit
 
-- Status: Accepted; amended 2026-10-21 (at the end)
+- Status: Accepted; amended 2026-10-21 and 2026-10-26 (at the end)
 - Date: 2026-10-20
 
 ## Context
@@ -91,3 +91,19 @@ Options considered:
   `flush()` gets only what is left of the flush's, and none at all once the
   flush gave up: exit waits `FLUSH_TIMEOUT` at most, as this record says.
   The thread, a daemon, still writes what it can while the process lives.
+
+## Amendment (2026-10-26, 0.10): exceptions are formatted before they are queued
+
+A queued record kept its `exc_info`, to be formatted on the thread, as
+this record decided. A traceback refers to the frames that raised and
+their locals (a request, its session, its body), so with a slow output up
+to a full queue of them kept requests alive (CONC-04 of the 0.9.0 audit).
+`BackgroundHandler.prepare` now formats the exception on the caller, as
+the standard library's `QueueHandler` does, into `exc_text`, which every
+formatter writes as it wrote the traceback, and the queued copy keeps no
+`exc_info`. Measured with a stuck output and 2,000 queued errors from
+frames holding 50 kB each: 103.1 MB kept before, 1.7 MB after. The caller
+pays the formatting, on errors only: 59 µs before, 176 µs after, per
+record. A handler behind the queue that needs the exception object, not
+its text, no longer gets it; error trackers take exceptions from
+`ERROR_REPORTERS`, which this does not change.

@@ -117,12 +117,36 @@ Each `DATABASES` entry:
 | `CONNECT_TIMEOUT` | `10.0` | Seconds to open a connection (asyncpg's `timeout`; libpq's `connect_timeout`, in whole seconds; at most 2147483.647), migrations included. A request that needs a new connection waits this long at most, after its `POOL_TIMEOUT`. |
 | `COMMAND_TIMEOUT` | `STATEMENT_TIMEOUT` plus 5 | Seconds asyncpg waits for one statement before giving up on it (a network or server that stopped answering; at most 2147483.647). Longer than `STATEMENT_TIMEOUT`, so the server ends a slow statement first, with an error that keeps the connection. None without `STATEMENT_TIMEOUT`; migrations are exempt. |
 | `PGBOUNCER` | `False` | The database is reached through PgBouncer's transaction pooling: no statement cache, a unique name for every prepared statement, and the timeouts above set in each transaction (`SET LOCAL`) rather than for the session. PostgreSQL URLs only ([runtime.md](runtime.md#database-timeouts-and-pgbouncer)). |
-| `POOL_SIZE`, `MAX_OVERFLOW`, `POOL_RECYCLE` | SQLAlchemy's | Connection pool sizing. |
+| `POOL_SIZE`, `MAX_OVERFLOW`, `POOL_RECYCLE` | SQLAlchemy's | Connection pool sizing ([sizing pools](#sizing-pools)). |
 | `POOL_TIMEOUT` | `10.0` for network databases, else SQLAlchemy's | Seconds a request waits for a connection; past it the request gets 503 `database_busy`. |
 | `POOL_PRE_PING` | `True` | Test connections before use, so database restarts are survived. On asyncpg outside PgBouncer the test is one round trip, outside a transaction ([databases.md](databases.md#connection-pools)). |
 | `TEST_NAME` | `None` | The PostgreSQL database `domainkit.testing` creates for the tests, and drops after them; `test_<name>` when unset. It must start with `test_` ([docs/testing.md](testing.md)). |
 | `CONNECT_ARGS` | `{}` | Extra driver arguments, added to those derived from the options above. asyncpg's `server_settings` and libpq's `options` are merged with the timeouts. Setting what the options above already set (TLS, a timeout, PgBouncer's statement cache) is refused when the application is built, however the server setting is spelled (`STATEMENT_TIMEOUT`, `--statement-timeout=`); change that option instead. `timeout`, `command_timeout`, and `connect_timeout` are refused the same way (deprecated in 0.8, refused from 0.9): set `CONNECT_TIMEOUT` and `COMMAND_TIMEOUT`. |
 | `REPLICAS` | `()` | Aliases of read replicas of this database; read-only units of work take turns on them ([databases.md](databases.md#read-replicas)). Each is an alias of its own, other than `default`, of one primary, outside every shard group, with no replicas of its own, and never a routing target. |
+
+#### Sizing pools
+
+Each event loop of each process has its own pool per alias, of up to
+`POOL_SIZE` + `MAX_OVERFLOW` connections (SQLAlchemy's 5 + 10 when unset),
+and a second one of the same size when it reads with `Reads.STATEMENTS`.
+The connections a database must accept are then:
+
+```text
+replicas × processes per replica × loops per process × (POOL_SIZE + MAX_OVERFLOW) × pools
+```
+
+50 replicas of 4 single-loop workers with the defaults and both pools:
+50 × 4 × 1 × 15 × 2 = 6,000, past PostgreSQL's default of 100 and most
+managed plans' limits; put PgBouncer in front (`PGBOUNCER`), or size the
+pools down. Each loop also admits `MAX_CONCURRENT_REQUESTS` (1,000)
+requests: past about four per connection, a request waits for one, unseen
+by the shedding queue, for up to `POOL_TIMEOUT`, then fails with 503
+`database_busy`. `check` warns, in staging and production, when a network
+database's pool holds fewer than a quarter of `MAX_CONCURRENT_REQUESTS`.
+The defaults stay: measured with requests that each hold a connection for
+20 ms against a pool of 15, a burst of 200 is all served under a cap of
+1,000 (in 463 ms at most), where a cap of 60 refuses 40 of them
+([performance.md](performance.md#010-foundations)).
 
 Each `LEDGERS` entry:
 
@@ -512,6 +536,11 @@ passes, so an API that is public on purpose can keep them:
   template sets it
 - a database that seems to go through PgBouncer (port 6432, or a statement
   cache turned off in `CONNECT_ARGS`) without `PGBOUNCER = True`
+- a network database whose pool holds fewer than a quarter of
+  `MAX_CONCURRENT_REQUESTS` connections (`POOL_SIZE` + `MAX_OVERFLOW`, 5 +
+  10 by default): past about four requests per connection, requests wait
+  for one, unseen by the shedding queue, up to `POOL_TIMEOUT` (10 seconds),
+  then fail with 503 ([sizing pools](#sizing-pools))
 - auth: `AUTH.LOGIN_RATE` or `AUTH.MFA.RATE` set to `None` (guesses
   without limit), and a session or CSRF cookie name without the `__Host-`
   prefix where the prefix could hold
@@ -868,17 +897,27 @@ byte for byte. What a project can see:
 - a route added to an included router after the application is built is
   not served: finish routers before `get_asgi_application` runs.
 
-`FLATTEN_ROUTERS = False` keeps FastAPI's nesting. `flatten_routes(app.router)`
-(`domainkit.http.routing`) flattens an application built by hand:
+The application's router then tries only the routes a request's path can
+reach (`domainkit.http.routing.RouteIndex`, 0.10): those whose template
+starts with the path's first segment, and those that may match any path (a
+parameter in the first segment, a mount at the root, a host, a router left
+included), in order. It serves the route trying every route would serve,
+whatever the number of routes ahead of it; order still decides between
+routes of one segment.
+
+`FLATTEN_ROUTERS = False` keeps FastAPI's nesting, and its matching.
+`flatten_routes(app.router)` (`domainkit.http.routing`) flattens an
+application built by hand, and `index_routes(app.router)` indexes it:
 
 ```python
 from fastapi import FastAPI
 
-from domainkit.http.routing import flatten_routes
+from domainkit.http.routing import flatten_routes, index_routes
 
 app = FastAPI()
 app.include_router(router)
 flatten_routes(app.router)  # How many included routers it replaced.
+index_routes(app.router)  # Whether its routes are now indexed.
 ```
 
 ## Observability
@@ -909,7 +948,7 @@ queue's 10,000 records is dropped and counted, never waited for
 | `messaging_deliveries_skipped_total` | |
 | `cache_lookups_total` | `cache`, `result` (`hit`, `miss`, `invalid`, `early`) |
 | `cache_errors_total` | `cache` |
-| `auth_principal_cache_total` | `authentication` (`token`, `cookie`, `jwt`, `certificate`), `event` (`hit`, `miss`, `invalidation`, `eviction`) |
+| `auth_principal_cache_total` | `authentication` (`token`, `cookie`, `jwt`, `certificate`), `event` (`hit`, `miss`, `invalidation`, `eviction`, `coalesced`, `refresh`, `refresh_failed`) |
 
 `MetricsMiddleware` keeps the handle of each series it counts in, for at
 most 4,096 series per application, so a request looks no labels up; clear

@@ -51,8 +51,7 @@ from .authentication import (
 )
 from .principals import (
     Entry,
-    principal_cache,
-    recall,
+    kept_or_read,
     remember,
     stamps_ahead,
     stamps_before_reading,
@@ -212,19 +211,19 @@ async def subject_principal(
     still theirs, so a rename meanwhile is never kept.
     """
     key = (SCHEME, f"subject:{fingerprint}")
-    entry = await recall(key, config)
-    if entry is not None:
-        return entry
-    name = common_name(der)
-    if name is None:
-        return None
-    started = principal_cache.begin()
-    ahead = await stamps_ahead(config, [])
-    async with AuthUnitOfWork() as uow:
-        user_id = await uow.principals.user_id(name)
-        if user_id is None:
+
+    async def read(started: int) -> Entry | None:
+        name = common_name(der)
+        if name is None:
             return None
-        entry = Entry(key, None, targets=(user_target(user_id),), started=started)
-        await stamps_before_reading(entry, config, ahead)
-        snapshot = await uow.principals.principal(user_id, username=name)
-    return entry.holding(snapshot)
+        ahead = await stamps_ahead(config, [])
+        async with AuthUnitOfWork() as uow:
+            user_id = await uow.principals.user_id(name)
+            if user_id is None:
+                return None
+            entry = Entry(key, None, targets=(user_target(user_id),), started=started)
+            await stamps_before_reading(entry, config, ahead)
+            snapshot = await uow.principals.principal(user_id, username=name)
+        return entry.holding(snapshot)
+
+    return await kept_or_read(key, config, read)

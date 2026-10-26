@@ -179,7 +179,10 @@ One-time setup, before the first release:
     pushes to `main` or rewrites it; an admin may bypass the rules only
     when merging a pull request, a choice GitHub records. The `newest` and
     `oldest` jobs run on pull requests too but are not required: what
-    upstream releases is not the change's doing. `domainkit_tests/test_ci.py` checks that the
+    upstream releases is not the change's doing. Neither is `stress
+    (3.14t)`, which runs the free-threading tests 30 times on 3.14t: on
+    3.14.6t they crash the interpreter in some runs, inside SQLAlchemy's
+    compiled extensions, at 0.9.2 too. `domainkit_tests/test_ci.py` checks that the
     list is every other job a pull request runs, and is this one.
   - `release-tags.json`: nobody, admins included, moves or deletes a `v*`
     tag.

@@ -38,19 +38,29 @@ where it listed the included routers; ``request.scope["route"]`` is the
 flattened route, whose ``path`` is the full path. Routes added to an
 included router after the application is built are not served: finish
 a router before it is included.
+
+``RouteIndex`` then serves the top-level routes by their first path
+segment (PERF-05): a request tries only the routes that can match a path
+starting with its segment, in their order, instead of every route ahead
+of its own. It answers what trying them all answers.
 """
 
 import copy
 import dataclasses
+from collections.abc import Callable, Sequence
 from typing import Any, Final
 
 from fastapi import APIRouter
 from fastapi import routing as fastapi_routing
-from fastapi.routing import APIRoute
-from starlette.routing import BaseRoute, Router
+from fastapi.routing import APIRoute, APIWebSocketRoute
+from starlette._utils import get_route_path
+from starlette.routing import BaseRoute, Match, Mount, Route, Router, WebSocketRoute
+from starlette.types import Receive, Scope, Send
 
 __all__ = [
+    "RouteIndex",
     "flatten_routes",
+    "index_routes",
     "serves_itself",
 ]
 
@@ -210,3 +220,157 @@ def _route(context: Any) -> BaseRoute | None:  # noqa: ANN401 - FastAPI's privat
         return route
     served = getattr(context, "starlette_route", None)
     return served if isinstance(served, BaseRoute) else None
+
+
+_SELECTED: Final[Callable[..., None] | None] = getattr(
+    fastapi_routing, "_route_selected", None
+)
+"""FastAPI's telemetry hook for the route a request matched (``APIRouter.app``)."""
+INDEXED_MATCHING: Final = frozenset(
+    {
+        Route.matches,
+        WebSocketRoute.matches,
+        Mount.matches,
+        APIRoute.matches,
+        APIWebSocketRoute.matches,
+    }
+)
+"""The ``matches`` methods that match a path by its template's regular expression.
+
+A route with one of them, and a template whose first segment is literal,
+matches no path that starts with another segment: the index leaves it out
+of such a request's candidates. Any other route (a host, a router left
+included, a class with its own ``matches``) is a candidate of every
+request.
+"""
+
+
+def first_segment(route: BaseRoute) -> str | None:
+    """The literal first segment of every path ``route`` matches; None: any.
+
+    ``/items/{id}`` gives ``items``, ``/`` gives ``""``; ``/{name}``,
+    ``/items{suffix}``, a mount at the root, a host, or a route whose class
+    matches in its own way give None.
+    """
+    if "matches" in vars(route) or type(route).matches not in INDEXED_MATCHING:
+        return None
+    path = getattr(route, "path", None)
+    if not isinstance(path, str) or not path.startswith("/"):
+        return None
+    segment = path[1:].partition("/")[0]
+    return None if "{" in segment else segment
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _Index:
+    """The candidates of each first segment, worked out for one list of routes."""
+
+    routes: list[BaseRoute]
+    """The router's list, as it was indexed: a change to it is noticed."""
+    count: int
+    by_segment: dict[str, tuple[BaseRoute, ...]]
+    anywhere: tuple[BaseRoute, ...]
+    """The candidates of a segment no route names."""
+
+
+def _index(routes: list[BaseRoute]) -> _Index:
+    """Index ``routes``: each segment's candidates, in the routes' order."""
+    keys = [first_segment(route) for route in routes]
+    by_segment = {
+        segment: tuple(
+            route
+            for route, key in zip(routes, keys, strict=True)
+            if key in (None, segment)
+        )
+        for segment in {key for key in keys if key is not None}
+    }
+    anywhere = tuple(
+        route for route, key in zip(routes, keys, strict=True) if key is None
+    )
+    return _Index(routes, len(routes), by_segment, anywhere)
+
+
+class RouteIndex:
+    """Serves a router's requests trying only the routes their path can reach.
+
+    The ASGI application in front of a router's own (``index_routes``). A
+    request tries, in order, the routes whose template starts with its
+    path's first segment and those that may match any path: the routes
+    left out could only answer "no match". The first full match is served,
+    or else the first partial one (a known path, another method), as
+    ``APIRouter.app`` does; when none matches, the router's own ``app``
+    answers (redirects, frontend routes, 404). Lifespan events go to the
+    router. Routes added to the router later are indexed on the next
+    request.
+    """
+
+    __slots__ = ("_index", "router")
+
+    def __init__(self, router: APIRouter) -> None:
+        """Index ``router``'s routes as they are."""
+        self.router = router
+        self._index = _index(router.routes)
+
+    def candidates(self, scope: Scope) -> Sequence[BaseRoute]:
+        """The routes a request with ``scope`` may match, in order."""
+        index = self._index
+        routes = self.router.routes
+        if routes is not index.routes or len(routes) != index.count:
+            index = self._index = _index(routes)
+        path = get_route_path(scope)
+        if not path.startswith("/"):
+            return index.anywhere
+        return index.by_segment.get(path[1:].partition("/")[0], index.anywhere)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Serve the first route that matches, or let the router answer."""
+        router = self.router
+        if scope["type"] == "lifespan":
+            await router.app(scope, receive, send)
+            return
+        if "router" not in scope:
+            scope["router"] = router
+        partial: tuple[BaseRoute, Scope] | None = None
+        for route in self.candidates(scope):
+            match, child_scope = route.matches(scope)
+            if match == Match.FULL:
+                await _serve(route, child_scope, scope, receive, send)
+                return
+            if match == Match.PARTIAL and partial is None:
+                partial = (route, child_scope)
+        if partial is not None:
+            await _serve(*partial, scope, receive, send)
+            return
+        await router.app(scope, receive, send)
+
+
+async def _serve(
+    route: BaseRoute, child_scope: Scope, scope: Scope, receive: Receive, send: Send
+) -> None:
+    """Serve ``route``, as ``APIRouter.app`` serves the route it matched."""
+    scope.update(child_scope)
+    if _SELECTED is not None:
+        _SELECTED(
+            scope=scope,
+            path=getattr(route, "path_format", None),
+            mount=isinstance(route, Mount),
+        )
+    await route.handle(scope, receive, send)
+
+
+def index_routes(router: APIRouter) -> bool:
+    """Serve ``router``'s requests through a ``RouteIndex``; whether it does.
+
+    Only a router that serves requests with ``APIRouter.app`` itself, with
+    no middleware of its own and FastAPI's telemetry hook to call: any
+    other is left as it is.
+    """
+    if (
+        type(router).app is not APIRouter.app
+        or "app" in vars(router)
+        or router.middleware_stack != router.app
+        or _SELECTED is None
+    ):
+        return False
+    router.middleware_stack = RouteIndex(router)
+    return True

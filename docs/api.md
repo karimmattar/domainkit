@@ -949,7 +949,9 @@ JSON responses encoded in Rust, byte for byte as Starlette encodes them.
 
 Serve the routes of included routers from the top of the application.
 
+- `RouteIndex`: Serves a router's requests trying only the routes their path can reach.
 - `flatten_routes`: Put the routes of each router included in `router` in its place.
+- `index_routes`: Serve `router`'s requests through a `RouteIndex`; whether it does.
 - `serves_itself`: Whether `router` has its own version of a method that serves requests.
 
 ## `domainkit.http.shedding`
@@ -1243,4 +1245,5 @@ One text form for a `Decimal`: fixed point, never an exponent.
 
 Event loops for the framework's own entry points: uvloop when it is there.
 
+- `PerLoop`: One value per event loop, made on the loop's first use.
 - `loop_factory`: The factory of `kind`'s loops; None stands for asyncio's own.

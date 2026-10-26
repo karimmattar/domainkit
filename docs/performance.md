@@ -204,9 +204,12 @@ reads whose principal is kept: about three times the reads of 0.8.0
 - **Serve one worker per core**, on uvloop: `uvicorn config.asgi:application
   --workers N --loop uvloop`, or Granian (reference.md has the whole
   command and its limits).
-- **Mount busy routers first.** Routes are still tried in order: with
-  routers flattened, each route ahead of a match costs about 4 or 5 calls,
-  so a domain's routes mounted after the template's 23 pay about 100.
+- **Keep a route's first path segment literal** where you can
+  (`/invoices/{id}`, not `/{tenant}/invoices/{id}`): the application tries
+  only the routes of a request's first segment, and those that may match
+  any path, so a route behind 1,000 others costs what the first does
+  ([0.10](#010-foundations)). Routes whose first segment is a parameter are
+  tried for every request, in order.
 - **Keep handlers and dependencies `async def`.** A plain `def` goes to the
   thread pool; `manage.py check` lists them (runtime.md).
 - **Count round trips in tests**: `assert_num_queries` and
@@ -779,3 +782,82 @@ for `default-json`), so their budgets stay as they were.
   off `logging.logThreads`, `logProcesses` and `logMultiprocessing`, as the
   audit proposed, would save 7 more calls, but it empties fields a
   project's own formatter may print, so it is not done.
+
+### 0.10: foundations
+
+0.10 stopped paying per request for what a request does not use, and
+stopped a herd of reads where many requests need the same principal.
+Measured with the ladder against 0.9.2 (`--baseline` at `d7f93a4`, the two
+interleaved; 0.10's routing package and its rungs are in these numbers
+too), per request:
+
+| Rung | Calls, 0.9.2 | Calls, 0.10 | Round trips |
+| --- | ---: | ---: | --- |
+| `bare` | 481 | 305 | none, as before |
+| `nested` | 489 | 305 | none, as before |
+| `default` | 598 | 423 | none, as before |
+| `default-json` | 742 | 567 | none, as before |
+| `template` | 713 | 538 | none, as before |
+| `template-json` | 858 | 681 | none, as before |
+| `me` | 1,181 | 780 | none, as before |
+| `read` | 2,261 | 1,839 | 1/1/1/1, as before |
+| `write` | 2,595 | 2,173 | 1/1/1/1, as before |
+| `resource-read` | 3,063 | 2,606 | 1/1/1/1, as before |
+| `resource-command` | 4,546 | 3,329 | 2/2/2/2 to 1/1/1/1 |
+| `keyed-write` | 4,054 | 3,635 | 4/3/3/3, as before |
+| `throttled` | 1,013 | 803 | none, as before |
+
+Run on a shared 4-CPU machine at load average 8 to 17, so the CPU times
+are only indicative: `bare` 82 to 63 µs, `me` 425 to 335 µs, `read` 1,950
+to 1,497 µs, `throttled` 418 to 305 µs, each the best of its timed runs.
+
+- **Routes by first segment** (PERF-05, ADR 0060's amendment). A request
+  tries only the routes whose template starts with its path's first
+  segment, and those that may match any path, in order: 176 fewer calls
+  on every light rung, which reach `/hello` behind the template's 23
+  routes. One GET behind N routes:
+
+  | Routes ahead | Calls, every route tried | Calls, indexed | CPU µs, tried / indexed |
+  | ---: | ---: | ---: | --- |
+  | 9 | 409 | 329 | 62 / 56 |
+  | 99 | 1,129 | 329 | 133 / 58 |
+  | 999 | 8,329 | 329 | 757 / 59 |
+
+- **A request's grants, built when it reads them** (PERF-03, ADR 0059's
+  amendment). A kept principal no longer builds the user's groups,
+  permissions, and content types for each request: `has_perm` answers from
+  keys worked out once per principal. Building the user and one
+  `has_perm`: 70 to 9 µs with two permissions, 545 to 11 µs with fifty,
+  2,580 to 12 µs with 220. `me` and the guarded rungs count about 225
+  calls fewer for it (401 in all on `me`, with the route index's 176).
+- **One principal read at a time** (PERF-04, ADR 0058's amendment). Ten
+  credentials with twenty requests each, all missing at once: 400
+  `SELECT`s before, 20 now. Near the end of its `TTL`, one request reads a
+  kept principal again while the others are served it: with a request a
+  millisecond on one credential, 34 requests in 3,000 waited for a read
+  (up to 5 reads at once), and 11 do now (one at a time).
+- **Exceptions in the log queue** (CONC-04, ADR 0051's amendment): 2,000
+  queued errors from frames holding 50 kB each kept 103.1 MB, now 1.7 MB;
+  the caller formats the traceback, 59 to 176 µs per error record.
+- **The first outgoing call** (CONC-06): `HttpClient` builds its TLS context
+  on a thread, and the first call on a loop holds it 6 to 8 ms instead of
+  20 to 39 (1 to 2 ms with the context already built).
+- **Deadlines and connections** (CONC-08, ADR 0048's amendment): ten
+  requests cut off at their deadline mid-statement opened and discarded
+  ten connections; now one is opened, and kept.
+- **Pools** (PERF-14): `check` warns when a pool cannot serve the
+  requests a loop admits ([reference.md](reference.md#sizing-pools)).
+  The defaults stay: requests that each hold a connection for 20 ms
+  against a pool of 15, a burst of 200, are all served under a cap of
+  1,000 (p50 277 ms, at most 463 ms), where a cap of 60 refuses 40; a
+  burst of 1,000 is all served within 3.3 s, where a cap of 60 refuses 840.
+- **Startup** (PERF-15): auth loads `domainkit.contrib.mail` only when it
+  checks an address or sends mail. Importing the `init` project's
+  `config.asgi` with production settings (which builds the application),
+  best of five fresh processes: 817 modules, 84.3 MB, and 973 ms of CPU
+  at 0.9.2; 829 modules (the routing package's), 84.5 MB, 969 ms before
+  this change; 818 modules, 83.5 MB, 930 ms now. The rest of startup is
+  what serving the template's routes needs: FastAPI builds each route's
+  models as it is added (about 190 ms of the admin routers' 230), Python's
+  dataclasses compile each event class (auth's 27: about 60 ms), and
+  FastAPI imports its OpenAPI models (about 150 ms).

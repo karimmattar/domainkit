@@ -1,6 +1,6 @@
 # 0048. Give every request a deadline, answer 503 when it passes, and pass it on
 
-- Status: Accepted; amended 2026-10-25 (at the end)
+- Status: Accepted; amended 2026-10-25 and 2026-10-26 (at the end)
 - Date: 2026-10-20
 
 ## Context
@@ -124,3 +124,24 @@ a deadline of its own, the cache's `COMPUTE_TIMEOUT`, so no caller's
 deadline fails the others; one that borrows its caller's resources works
 under that caller's deadline, whose failures reach only that caller
 (ADR 0071).
+
+## Amendment (2026-10-26, 0.10): a statement the deadline cuts off keeps its connection
+
+The consequence above, measured: ten requests with a 1 s deadline whose
+second statement would take 2 s opened ten connections and discarded ten,
+in a transaction and with `Reads.STATEMENTS` alike (CONC-08 of the 0.9.0
+audit). SQLAlchemy discards a connection when an exception that ends a
+program reaches it, as a cancellation does. asyncpg cancels the statement
+on the server when its caller is cancelled, and makes the connection's
+next use (the rollback that follows) wait until the server confirms; a
+server that does not confirm in time fails that use, and the connection
+is discarded then. A `handle_error` listener on asyncpg engines now keeps
+a connection asyncpg still holds open: the same ten requests open one
+connection and discard none, and the server runs nothing after them.
+
+- Rejected: lowering `statement_timeout` before each statement to the time
+  left, so the server ends it first. The server's timeout counts from
+  each statement's start; bounding the second statement of a transaction
+  by the deadline takes a `SET LOCAL` round trip before it, and before
+  nearly every statement of a request.
+- psycopg's connections are judged as before.

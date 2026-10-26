@@ -139,6 +139,42 @@ jobs:
           domainkit_tests/test_blocking.py domainkit_tests/test_servers.py
           domainkit_tests/test_orm_loading.py
 
+  # The free-threading tests again, many times, on 3.14t: a race between
+  # threads shows in some runs only. Each run takes a new random order
+  # (pytest-randomly), so loops on threads meet the shared state in another
+  # interleaving each time; any failing run fails the job. Not a required
+  # check (test_ci.py's ADVISORY): on 3.14.6t some runs crash inside
+  # SQLAlchemy's compiled extensions (engines made on threads at once), at
+  # 0.9.2 too, which waits for a fix upstream (docs/runtime.md).
+  free-threaded-stress:
+    name: stress (3.14t)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    # As free-threaded: Poetry 2.4.3 installs the cp314t wheels.
+    env:
+      POETRY_VERSION: "2.4.3"
+      RUNS: "30"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14t"
+      - run: pipx install "poetry==${POETRY_VERSION}"
+      - run: poetry env use python3.14t
+      - run: >-
+          poetry sync --with dev --extras "postgres sqlite metrics tracing argon2
+          jwt mfa rabbitmq redis uploads testing webhooks tzdata uvloop granian"
+      - run: poetry run python -c "import sys; assert not sys._is_gil_enabled()"
+      - name: Run the free-threading tests many times
+        run: |
+          for run in $(seq "$RUNS"); do
+            echo "Run $run of $RUNS"
+            poetry run pytest -p no:cov -q domainkit_tests/test_free_threading.py || exit 1
+          done
+
   # The suite again against real servers: PostgreSQL (row locks, the audit
   # triggers, timeouts, partitions, migrations), immudb with TLS and a
   # signing key (verified ledgers, evidence), Redis (plain and TLS) and

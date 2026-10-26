@@ -37,7 +37,6 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Request, status
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
-from domainkit.contrib.mail import deliver, render_mail
 from domainkit.contrib.messaging import enqueue, task
 from domainkit.http.access import IsUnscoped, Public, Require
 from domainkit.http.errors import APIError
@@ -234,6 +233,9 @@ async def send_password_reset(email: str) -> None:
     (from before addresses were checked) is skipped, and logged by id, so
     the others still get their links.
     """
+    # Imported here: a process that only serves requests never loads mail (PERF-15).
+    from domainkit.contrib.mail import deliver, render_mail
+
     config = auth_settings()
     async with AuthUnitOfWork() as uow:
         messages = []
@@ -259,6 +261,9 @@ async def send_email_verification(user_id: UUID) -> None:
 
     The ``domainkit.auth.send_email_verification`` task.
     """
+    # Imported here: a process that only serves requests never loads mail (PERF-15).
+    from domainkit.contrib.mail import deliver, render_mail
+
     config = auth_settings()
     async with AuthUnitOfWork() as uow:
         user = await uow.users.find(UserId(user_id))

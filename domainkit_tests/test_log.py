@@ -1,6 +1,7 @@
 """Structured logging and the request context."""
 
 import asyncio
+import gc
 import json
 import logging
 import logging.handlers
@@ -732,7 +733,7 @@ def test_handler_levels_are_respected(
 
 
 def test_records_carry_what_the_caller_saw(collect: Collect) -> None:
-    """Context and message are taken on the caller; exceptions format later."""
+    """Context, message, and exception are taken on the caller."""
     handler = BackgroundHandler.writing_to(collect)
     handler.addFilter(ContextFilter())
     logger = logging.getLogger("domainkit.test.background")
@@ -756,9 +757,47 @@ def test_records_carry_what_the_caller_saw(collect: Collect) -> None:
     assert written.getMessage() == "items: ['a']"
     assert written.args is None
     assert written.__dict__["request_id"] == "req-1"
-    assert failed.exc_info is not None
+    assert failed.exc_info is None  # No traceback waits in the queue.
+    assert (failed.exc_text or "").startswith("Traceback (most recent call last):")
     entry = json.loads(JsonFormatter().format(failed))
-    assert "ValueError: bad" in entry["exception"]
+    assert entry["exception"] == failed.exc_text
+    assert entry["exception"].endswith("ValueError: bad")
+    assert "ValueError: bad" in TextFormatter().format(failed)
+
+
+class Request:
+    """Stands for what a request's frames hold: a session, a body, a user."""
+
+
+def failed_record() -> tuple[logging.LogRecord, "weakref.ref[Request]"]:
+    """A record of an exception raised where a request was a local."""
+    request = Request()
+    try:
+        raise ValueError(f"bad {id(request)}")
+    except ValueError:
+        record = logging.LogRecord(
+            "app", logging.ERROR, __file__, 1, "failed", None, sys.exc_info()
+        )
+    return record, weakref.ref(request)
+
+
+def test_queued_exceptions_keep_no_frames_alive() -> None:
+    """The record queued holds the traceback as text: the request can go (CONC-04)."""
+    handler = BackgroundHandler(queue.Queue(10))
+    record, request = failed_record()
+    expected = logging.Formatter().formatException(record.exc_info)  # type: ignore[arg-type]
+
+    queued = handler.prepare(record)
+    del record
+    gc.collect()
+
+    assert request() is None
+    assert queued.exc_info is None
+    assert queued.exc_text == expected
+    cached = logging.LogRecord("app", logging.ERROR, __file__, 1, "x", None, None)
+    cached.exc_info, cached.exc_text = (ValueError, ValueError(), None), "given"
+    assert handler.prepare(cached).exc_text == "given"  # Formatted already: kept.
+    assert cached.exc_info is not None  # The caller's record is left whole.
 
 
 def test_dictconfig_listeners_become_background_listeners(collect: Collect) -> None:
