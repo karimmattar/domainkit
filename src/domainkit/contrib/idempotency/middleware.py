@@ -457,17 +457,19 @@ async def _finish(
     taken the key over.
     """
     held = holder(operation.key_hash, operation.token)
-    # Whom a kept response may be about (``subjects``): the actor, and the
-    # subjects of the events it committed. The actor alone, the common
-    # case, is tagged as it is, with no call on the request's path: an
-    # actor holding the separator could only make an erasure drop more.
+    # Whom a kept response may be about (``subjects``): the actor, first,
+    # then the subjects of the events it committed (``subject_tag``):
+    # ``<US>actor<US><US>ann<US>``, the actor empty when there is none (or
+    # it holds the separator). ``tagged_with`` finds either; an export
+    # gives the body only to the actor (``export_subject``). The actor
+    # alone, the common case, takes no call on the request's path.
     actor = operation.actor
-    if body is None:
+    if body is None or (actor is None and not operation.subjects):
         tag = None
-    elif operation.subjects:
-        tag = subject_tag(operation.subjects | {actor} if actor else operation.subjects)
     else:
-        tag = None if actor is None else f"{SEPARATOR}{actor}{SEPARATOR}"
+        caller = actor if actor is not None and SEPARATOR not in actor else ""
+        others = subject_tag(operation.subjects) if operation.subjects else None
+        tag = f"{SEPARATOR}{caller}{SEPARATOR}{others or SEPARATOR}"
     async with connections.autocommit(config.DATABASE) as connection:
         if body is None and not (operation.committed or operation.pinned):
             released = await connection.execute(RELEASE, held)

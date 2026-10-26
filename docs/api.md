@@ -807,6 +807,7 @@ Domain-driven design building blocks ("seedwork").
 - `Unset`: The type of `UNSET`: a field the request left out, as opposed to None.
 - `ValueObject`: Immutable value defined only by its attributes; equal values are equal.
 - `event_bus`: Process-wide bus used by units of work unless they are given another.
+- `fields_about`: What `values` hold about `subject`, and about nobody else.
 
 ## `domainkit.ddd.preconditions`
 

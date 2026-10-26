@@ -80,9 +80,9 @@ database a domain uses (each shard too), as JSON:
     }
   },
   "copies": {
-    "webhooks": {"deliveries": [{"id": "...", "event_type": "customer.registered", "status": "succeeded", "created_at": "...", "body": {"type": "...", "data": {"email": "ann@example.com"}}}]},
-    "idempotency": {"responses": [{"created_at": "...", "status_code": 201, "body": "{\"email\": \"ann@example.com\"}"}]},
-    "messaging": {"messages": [{"id": "...", "kind": "task", "target": "shop.send_receipt", "status": "dead", "arguments": {"email": "ann@example.com"}}]}
+    "webhooks": {"deliveries": [{"id": "...", "event_type": "customer.registered", "status": "succeeded", "created_at": "...", "body": {"type": "...", "data": {"customer_id": "3f2a...", "email": "ann@example.com"}}, "withheld": false}]},
+    "idempotency": {"responses": [{"created_at": "...", "status_code": 201, "body": "{\"email\": \"ann@example.com\"}", "withheld": false}]},
+    "messaging": {"messages": [{"id": "...", "kind": "task", "target": "shop.send_receipt", "status": "dead", "arguments": {"customer_id": "3f2a...", "email": "ann@example.com"}}]}
   }
 }
 ```
@@ -90,7 +90,16 @@ database a domain uses (each shard too), as JSON:
 `copies` holds what installed domains keep about the subject outside
 their aggregates, by label: the webhook deliveries about them, the
 responses kept for their `Idempotency-Key` retries, and the outbox
-messages still holding their data (see below).
+messages still holding their data (see below). A copy may hold other
+people's data too (an appointment names the patient and the doctor), so
+each gives only what is about the subject: of a webhook body's `data`
+and of a message's arguments, the fields whose `Personal(of=...)` names
+them, with that `of` field; of a kept response, the body only if they
+were its caller (`"withheld": true` otherwise: it is what the caller
+saw). A webhook body whose data `expose(payload=...)` picked is withheld
+too, since which of its fields are whose is not known. Your own hooks
+should do the same: `domainkit.ddd.fields_about(cls, values,
+subject)` picks a subject's fields by the markers of `cls`.
 
 `--output` writes a new file only its owner can read (mode `0600`), and
 refuses an existing one; without it the export goes to standard output.

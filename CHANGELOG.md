@@ -195,6 +195,12 @@ and a status.
   answers counts by kind, recorded as `privacy.copies_erased` (anything
   but lower-case kinds and whole numbers is refused, since it would go
   into the trail); the export's answer goes under `copies` (DATA-02).
+  A copy may hold others' personal data, so the export gives what it holds
+  about the subject alone: a webhook body's and an outbox message's fields
+  whose `Personal(of=...)` names them (a body `expose(payload=...)`
+  picked is withheld), and a kept response's body only if they were its
+  caller (else withheld); `domainkit.ddd.fields_about` picks
+  them (SEC-10b-4).
 - Webhook subscriptions can have an owner, and a self-service API lets a
   user manage its own: `domainkit.contrib.webhooks.owned.router` (mount
   it next to your users' routes) lists, creates, reads, changes, rotates,

@@ -67,7 +67,12 @@ from domainkit.db import connections
 from domainkit.db.query import contains_text
 from domainkit.db.routing import router
 from domainkit.ddd import DomainEvent, EventBus, event_bus
-from domainkit.ddd.personal import event_subjects, subject_tag, tagged_with
+from domainkit.ddd.personal import (
+    event_subjects,
+    fields_about,
+    subject_tag,
+    tagged_with,
+)
 from domainkit.encryption import DecryptionFailed
 from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 from domainkit.http.guard import lookups_for
@@ -574,7 +579,14 @@ async def erase_subject(subject: str) -> dict[str, int]:
 
 
 async def export_subject(subject: str) -> list[dict[str, Any]]:
-    """The deliveries about ``subject``, oldest first, with what each sends."""
+    """The deliveries about ``subject``, oldest first, with what each sends about them.
+
+    A body may hold others' personal data, so only its ``data`` fields
+    about ``subject`` are given (``fields_about``, by the exposed event's
+    markers). A body whose data ``expose(payload=...)`` picked is withheld
+    (``"data": None``, ``"withheld": True``): which of its fields are
+    whose is not known (SEC-10b-4).
+    """
     alias = webhooks_alias()
     async with connections.engine(alias).connect() as connection:
         named = contains_text(
@@ -594,10 +606,25 @@ async def export_subject(subject: str) -> list[dict[str, Any]]:
             "event_type": row.event_type,
             "status": row.status,
             "created_at": row.created_at.isoformat(),
-            "body": json.loads(row.body),
+            **_about(json.loads(row.body), subject),
         }
         for row in rows
     ]
+
+
+def _about(body: dict[str, Any], subject: str) -> dict[str, Any]:
+    """``body`` with only its data about ``subject``, or withheld."""
+    exposed = [
+        (cls, exposure)
+        for cls, exposure in _exposed.items()
+        if exposure.name == body["type"]
+    ]
+    if not exposed or any(exposure.payload for _, exposure in exposed):
+        return {"body": {**body, "data": None}, "withheld": True}
+    data: dict[str, object] = {}
+    for cls, _ in exposed:
+        data |= fields_about(cls, body["data"], subject)
+    return {"body": {**body, "data": data}, "withheld": False}
 
 
 async def failed_deliveries(

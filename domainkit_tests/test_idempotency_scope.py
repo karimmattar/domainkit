@@ -104,6 +104,44 @@ def post(client: TestClient, body: object, **headers: str) -> Any:  # noqa: ANN4
     )
 
 
+def test_an_export_gives_a_kept_response_to_its_caller_alone(
+    database_url: str,
+) -> None:
+    """SEC-10b-4: a response is what its caller saw, so only they get its body.
+
+    It is also about the subjects of the events it committed, so their
+    exports list it, withheld: it may hold the caller's data, or a third's.
+    """
+    from domainkit.contrib.idempotency.operations import export_subject
+
+    async def export(subject: str) -> list[dict[str, Any]]:
+        try:
+            return await export_subject("default", subject)
+        finally:
+            await connections.close_all()
+
+    with keyed_app(database_url) as client:
+        sent = post(client, {"n": 1}, **{ACTOR_HEADER: "alice"})
+        (row,) = stored()
+
+        async def tag() -> None:
+            async with connections.engine().begin() as connection:
+                await connection.execute(
+                    idempotency_keys.update().values(
+                        subjects="\x1falice\x1f\x1fann\x1f"
+                    )
+                )
+            await connections.close_all()
+
+        asyncio.run(tag())
+        alice, ann, bob = (asyncio.run(export(who)) for who in ("alice", "ann", "bob"))
+
+    assert [(each["body"], each["withheld"]) for each in alice] == [(sent.text, False)]
+    assert [(each["body"], each["withheld"]) for each in ann] == [(None, True)]
+    assert bob == []
+    assert row["subjects"] == "\x1falice\x1f\x1f"
+
+
 def test_anonymous_callers_behind_one_address_share_keys(database_url: str) -> None:
     """The PoC of DATA-09: by default, one caller gets another's response.
 
@@ -218,7 +256,11 @@ def test_kept_responses_name_whom_they_are_about(database_url: str) -> None:
             finish(Operation("a" * 64, "t" * 32, actor="alice", subjects={"ann"}))
         )
         events = asyncio.run(finish(Operation("b" * 64, "t" * 32, subjects={"bob"})))
+        odd = asyncio.run(
+            finish(Operation("c" * 64, "t" * 32, actor="x\x1fann", subjects={"bob"}))
+        )
 
-    assert tags == ["\x1falice\x1f", "None"]
-    assert both == "\x1falice\x1fann\x1f"
-    assert events == "\x1fbob\x1f"
+    assert tags == ["\x1falice\x1f\x1f", "None"]  # The actor first, then the rest.
+    assert both == "\x1falice\x1f\x1fann\x1f"
+    assert events == "\x1f\x1f\x1fbob\x1f"
+    assert odd == "\x1f\x1f\x1fbob\x1f"  # An actor holding the separator: none.
