@@ -95,12 +95,21 @@ This page has moved, a part a page:
 | --- | --- | --- |
 | `SIGNING_KEY` | `None` (required) | The HMAC secret, or the private key in PEM. |
 | `VERIFYING_KEY` | `None` | The public key in PEM, for asymmetric algorithms. |
-| `ALGORITHM` | `"HS256"` | The one algorithm accepted: `HS*`, `RS*`, `PS*`, `ES*`, or `EdDSA`. |
+| `ALGORITHM` | `"HS256"` | The algorithm `SIGNING_KEY` signs with, and the only one its tokens are checked with: `HS*`, `RS*`, `PS*`, `ES*`, or `EdDSA`. A token's own header never chooses one. |
+| `PREVIOUS_KEYS` | `()` | Keys that signed before `SIGNING_KEY`, at most 3, each kept to verify what it signed until it retired plus `ACCESS_TOKEN_TTL` and `LEEWAY` (below; [Replacing a key](auth/authentication.md#replacing-a-key)). |
 | `ACCESS_TOKEN_TTL` | 5 minutes | How long an access token works. |
 | `REFRESH_TOKEN_TTL` | 14 days | How long a login can be refreshed. |
 | `ISSUER` | `None` | `iss`, set and then required. |
 | `AUDIENCE` | `None` | `aud`, set and then required. |
 | `LEEWAY` | 0 | Clock difference tolerated on `exp` and `iat`. |
+
+Each `PREVIOUS_KEYS` entry:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `KEY` | required | The old HMAC secret, or the old public key in PEM. A private key is refused: a retired key only verifies. Kept secret in reprs. |
+| `ALGORITHM` | `None` | The algorithm it signed with; `None`: `ALGORITHM`. Its tokens are checked with this one only. |
+| `RETIRED_AT` | required | When the last process stopped signing with it, with a time zone: the end of the rollout of the new key, at most a day after startup (`auth.E009`). Its tokens are refused from `RETIRED_AT` plus `ACCESS_TOKEN_TTL` and `LEEWAY` on. |
 
 ## Commands
 

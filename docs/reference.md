@@ -512,7 +512,11 @@ Installed contrib apps add their own:
   password hasher made for tests in `AUTH.PASSWORD_HASHERS`, a cookie
   sent over plain HTTP, a network rather than one address in
   `AUTH.CLIENT_CERT.PROXIES`, and `http://` in `AUTH.PASSWORD_RESET_URL`,
-  `EMAIL_VERIFICATION_URL`, or `SIGNUP_URL` ([auth.md](auth.md))
+  `EMAIL_VERIFICATION_URL`, or `SIGNUP_URL` ([auth.md](auth.md)); and,
+  in any environment, with `JWTAuthentication`, a key of
+  `AUTH.JWT.PREVIOUS_KEYS` that is the signing key or is listed twice
+  (`auth.E008`), or that retires more than a day ahead (`auth.E009`)
+  ([auth.md](auth/authentication.md#replacing-a-key))
 - evidence: no `EVIDENCE.SUBJECT_KEY`
   ([contrib.md](contrib/evidence.md#evidence-records-that-provably-never-change))
 - mail: the console or memory backend; and in any environment without

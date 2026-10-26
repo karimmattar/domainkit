@@ -32,6 +32,7 @@ from domainkit.contrib.auth.settings import (
     JWTSettings,
     MfaSettings,
     PasswordValidatorConfig,
+    PreviousJWTKey,
     PrincipalCacheSettings,
 )
 from domainkit.contrib.evidence.settings import EvidenceSettings
@@ -82,6 +83,7 @@ def documented(page: str) -> set[str]:
         (WebhookSettings, "contrib/webhooks.md"),
         (AuthSettings, "auth.md"),
         (JWTSettings, "auth.md"),
+        (PreviousJWTKey, "auth.md"),
         (CookieSettings, "auth.md"),
         (MfaSettings, "auth.md"),
         (ClientCertSettings, "auth.md"),
@@ -295,6 +297,7 @@ SETTINGS_TABLES: tuple[tuple[type[BaseModel], str, str], ...] = (
     (ClientCertSettings, "auth.md", 'AUTH["CLIENT_CERT"]'),
     (PrincipalCacheSettings, "auth.md", 'AUTH["PRINCIPAL_CACHE"]'),
     (JWTSettings, "auth.md", 'AUTH["JWT"]'),
+    (PreviousJWTKey, "auth.md", "PREVIOUS_KEYS"),
     (MailSettings, "mail.md", "MAIL"),
     (SmtpSettings, "mail.md", "MAIL.SMTP"),
     (NotificationsSettings, "mail.md", "NOTIFICATIONS"),
@@ -313,6 +316,7 @@ PROSE_DEFAULTS = {
     | {"JWT", "COOKIE", "MFA", "CLIENT_CERT", "PRINCIPAL_CACHE"},
     "CookieSettings": {"NAME", "CSRF_NAME"},
     "JWTSettings": {"SIGNING_KEY"},
+    "PreviousJWTKey": {"KEY", "RETIRED_AT"},
     "MailSettings": {"SMTP"},
 }
 """Defaults the tables state in words (computed, required, or "see below")."""

@@ -33,7 +33,7 @@ statuses, and the amendments they name.
 | [0013](0013-shared-rate-limits-in-redis.md) | Share rate limits through Redis, with GCRA on the server's clock | Accepted; amended 2026-10-25 (at the end) |
 | [0014](0014-outbox-as-record-broker-for-dispatch.md) | Keep the outbox as the record; use the broker to dispatch | Accepted |
 | [0015](0015-auth-and-content-types.md) | Users, groups, and permissions modelled on Django's | Accepted |
-| [0016](0016-authenticating-requests.md) | Authenticate requests with tokens; rules decide who may call routes | Accepted; amended by [0056](0056-reauthorize-open-connections.md), [0058](0058-cache-principals-and-stamp-revocations.md), and [0059](0059-read-principals-in-two-queries-without-the-hash.md) |
+| [0016](0016-authenticating-requests.md) | Authenticate requests with tokens; rules decide who may call routes | Accepted; amended by [0056](0056-reauthorize-open-connections.md), [0058](0058-cache-principals-and-stamp-revocations.md), [0059](0059-read-principals-in-two-queries-without-the-hash.md), and [0097](0097-name-the-key-of-every-json-web-token-and-retire-keys-within-a-token-lifetime.md) |
 | [0017](0017-deny-by-default-and-admin-api.md) | Routes deny by default; staff manage users through an admin API | Accepted; amended by [0056](0056-reauthorize-open-connections.md) and [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md); its consequence that mounts are not checked is superseded by [0021](0021-check-mounted-applications.md); amended 2026-10-26 (at the end) |
 | [0018](0018-evidence-subjects-are-internal-ids.md) | Evidence subjects are internal ids, keyed by a secret digest | Accepted |
 | [0019](0019-idempotency-keys-commit-with-changes.md) | Mark idempotency keys committed in the transaction of the changes | Accepted; leases added by [0020](0020-lease-idempotency-keys.md); amended by [0085](0085-register-hooks-by-type-for-the-domains-that-have-them.md) |
@@ -102,6 +102,7 @@ statuses, and the amendments they name.
 | [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md) | Count proven devices apart, and bound scoped credentials by route | Accepted |
 | [0089](0089-build-the-docs-site-with-mkdocs-and-generate-the-api-reference-from-api-md.md) | Build the docs site with MkDocs, and generate the API reference from api.md | Accepted |
 | [0090](0090-module-singletons-overridden-per-test.md) | Keep framework state in module-level singletons, overridden per test | Accepted |
+| [0097](0097-name-the-key-of-every-json-web-token-and-retire-keys-within-a-token-lifetime.md) | Name the key of every JSON Web Token, and retire keys within a token's lifetime | Accepted |
 
 ### Decisions still without a record
 

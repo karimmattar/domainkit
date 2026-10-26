@@ -18,9 +18,13 @@ other credentials (a gateway's header, API keys elsewhere)::
             ...  # return Credentials(user, scheme="gateway"), or None
 """
 
+import base64
+import hashlib
+import hmac
+import json
 import logging
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from functools import cache
 from typing import Any, ClassVar, Final, cast
 from uuid import UUID, uuid4
@@ -28,6 +32,7 @@ from uuid import UUID, uuid4
 from fastapi import status
 from starlette.requests import HTTPConnection
 
+from domainkit.checks import CheckFailed, CheckMessage
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import APIError
 from domainkit.log import SECURITY_LOGGER
@@ -49,6 +54,7 @@ from .principals import (
 )
 from .settings import (
     HMAC_ALGORITHMS,
+    MAX_RETIREMENT_AHEAD,
     AuthSettings,
     JWTSettings,
     PrincipalCacheSettings,
@@ -123,6 +129,16 @@ IDLE: Final = "Session ended after inactivity; log in again."
 """``request.auth.scheme`` of requests an opaque token authenticates."""
 JWT_SCHEME: Final = "jwt"
 """``request.auth.scheme`` of requests a JSON Web Token authenticates."""
+KEY_ID_LABEL: Final = b"domainkit:jwt-key-id"
+"""What an HMAC key's id hashes, keyed with the key itself (ADR 0097)."""
+KEY_ID_BYTES: Final = 16
+"""How much of that hash an HMAC key's id keeps: 128 bits."""
+THUMBPRINT_MEMBERS: Final = {
+    "RSA": ("e", "kty", "n"),
+    "EC": ("crv", "kty", "x", "y"),
+    "OKP": ("crv", "kty", "x"),
+}
+"""The public members RFC 7638 hashes, per key type, in its order."""
 
 
 class AuthenticationFailed(APIError):
@@ -257,12 +273,24 @@ class JWTAuthentication(BaseAuthentication):
     a refresh token used twice, ends it at once. A refresh token buys a new
     pair, once. Other services can check access tokens with the public key
     alone. Needs PyJWT: ``pip install "domainkit[jwt]"``.
+
+    Each token names its key in its header (``kid``): the signing key, or
+    one of ``AUTH.JWT.PREVIOUS_KEYS`` for a token lifetime after it
+    retired, so a key is replaced without refusing the tokens it signed
+    (ADR 0097).
     """
 
     def __init__(self) -> None:
-        """Load PyJWT and check the keys; the settings come from ``AUTH.JWT``."""
+        """Load PyJWT and check the keys; the settings come from ``AUTH.JWT``.
+
+        Raises:
+            ImproperlyConfigured: A key is missing, short, or not a key.
+            CheckFailed: The previous keys are unsafe (``auth.E008``,
+                ``auth.E009``), every problem listed.
+        """
         try:
             import jwt
+            from jwt.algorithms import get_default_algorithms
         except ImportError as exc:
             raise ImproperlyConfigured(
                 'JWTAuthentication needs PyJWT: pip install "domainkit[jwt]".'
@@ -271,6 +299,10 @@ class JWTAuthentication(BaseAuthentication):
         self.config = auth_settings().JWT
         self.signing_key, self.verifying_key = _keys(self.config)
         self._check_keys()
+        self.key_id, self.keys = _key_set(
+            self.config, self.verifying_key, get_default_algorithms()
+        )
+        """The signing key's id; every key that verifies, by id."""
 
     async def authenticate(self, connection: HTTPConnection) -> Credentials | None:
         """The user of a valid access token whose login has not ended.
@@ -360,16 +392,24 @@ class JWTAuthentication(BaseAuthentication):
         if self.config.AUDIENCE is not None:
             claims["aud"] = self.config.AUDIENCE
         token: str = self.jwt.encode(
-            claims, self.signing_key, algorithm=self.config.ALGORITHM
+            claims,
+            self.signing_key,
+            algorithm=self.config.ALGORITHM,
+            headers={"kid": self.key_id},
         )
         return token
 
     def decode(self, raw: str) -> dict[str, Any]:
-        """The claims of a token signed with our key, current, and for us.
+        """The claims of a token signed with one of our keys, current, and for us.
+
+        The header's ``kid`` picks the key, and with it the one algorithm
+        checked; a token without one (issued before 0.11) is checked with
+        the signing key alone.
 
         Raises:
             AuthenticationFailed: Anything else.
         """
+        key = self._key_of(raw)
         required = ["exp", "iat", "sub", "sid"]
         required += [
             claim
@@ -382,8 +422,8 @@ class JWTAuthentication(BaseAuthentication):
         try:
             claims: dict[str, Any] = self.jwt.decode(
                 raw,
-                self.verifying_key,
-                algorithms=[self.config.ALGORITHM],
+                key.key,
+                algorithms=[key.algorithm],
                 audience=self.config.AUDIENCE,
                 issuer=self.config.ISSUER,
                 # The times are checked below, on domainkit's clock.
@@ -398,6 +438,21 @@ class JWTAuthentication(BaseAuthentication):
             raise AuthenticationFailed("Invalid token.") from None
         _check_times(claims, self.config.LEEWAY)
         return claims
+
+    def _key_of(self, raw: str) -> "_VerifyingKey":
+        """The key the token's ``kid`` names, while it verifies.
+
+        Never every key in turn: an id the set lacks is refused.
+
+        Raises:
+            AuthenticationFailed: The header does not parse, names no key
+                held, or a key past its retirement.
+        """
+        named = _named_key(raw, self.key_id)
+        key = self.keys.get(named) if isinstance(named, str) else None
+        if key is None or (key.until is not None and utc_now() >= key.until):
+            raise AuthenticationFailed("Invalid token.")
+        return key
 
     def _pair(
         self, user: AbstractBaseUser, session: UUID, refresh: str
@@ -600,6 +655,145 @@ def _keys(config: JWTSettings) -> tuple[bytes | str, bytes | str]:
             f"{config.ALGORITHM}."
         )
     return secret, config.VERIFYING_KEY
+
+
+@dataclass(frozen=True, slots=True)
+class _VerifyingKey:
+    """A key that verifies the tokens naming its id, with its algorithm only."""
+
+    algorithm: str
+    key: Any = field(repr=False)
+    """The HMAC secret's bytes, or the public key, loaded once."""
+    until: datetime | None = None
+    """When the tokens it signed stop being accepted; None: the signing key's."""
+
+
+def _named_key(raw: str, default: str) -> object:
+    """The ``kid`` of a token's header, unverified, or ``default`` without one.
+
+    Read here rather than by PyJWT, which decodes the whole token to read
+    its header: it only picks a key, and PyJWT then checks that key signed
+    this very header. None: the header does not parse.
+    """
+    head = raw.partition(".")[0]
+    try:
+        header = json.loads(base64.urlsafe_b64decode(head + "=" * (-len(head) % 4)))
+    except (ValueError, RecursionError):  # binascii and Unicode errors are too.
+        return None
+    return header.get("kid", default) if isinstance(header, dict) else None
+
+
+def _key_set(
+    config: JWTSettings, verifying_key: bytes | str, algorithms: dict[str, Any]
+) -> tuple[str, dict[str, _VerifyingKey]]:
+    """The signing key's id, and every key that verifies, by id.
+
+    A previous key verifies until it retired plus ``ACCESS_TOKEN_TTL`` and
+    ``LEEWAY``: nothing it signed before retiring outlives that.
+
+    Raises:
+        ImproperlyConfigured: A previous key is short, or not a key.
+        CheckFailed: A previous key is the signing key or listed twice
+            (``auth.E008``), or retires more than a day ahead (``auth.E009``).
+    """
+    current = algorithms[config.ALGORITHM].prepare_key(verifying_key)
+    key_id = _key_id(config.ALGORITHM, current, algorithms)
+    keys = {key_id: _VerifyingKey(config.ALGORITHM, current)}
+    named = {key_id: "the signing key"}
+    grace = config.ACCESS_TOKEN_TTL + config.LEEWAY
+    latest = utc_now() + MAX_RETIREMENT_AHEAD
+    problems = []
+    for index, previous in enumerate(config.PREVIOUS_KEYS):
+        where = f"AUTH.JWT.PREVIOUS_KEYS[{index}]"
+        algorithm = previous.ALGORITHM or config.ALGORITHM
+        key = _previous_key(
+            where, algorithm, previous.KEY.get_secret_value(), algorithms
+        )
+        found = _key_id(algorithm, key, algorithms)
+        if found == key_id:
+            problems.append(
+                CheckMessage(
+                    "auth.E008",
+                    f"{where} is the signing key: a key that signs is not "
+                    "retired; give the old key, or none.",
+                )
+            )
+        elif found in named:
+            problems.append(
+                CheckMessage(
+                    "auth.E008",
+                    f"{where} is the key of {named[found]}; list each key once.",
+                )
+            )
+        if latest < previous.RETIRED_AT:
+            problems.append(
+                CheckMessage(
+                    "auth.E009",
+                    f"{where}.RETIRED_AT is {previous.RETIRED_AT}, more than a day "
+                    "ahead: a previous key verifies only what it signed until it "
+                    "retired, plus ACCESS_TOKEN_TTL and LEEWAY. Set the time its "
+                    "rollout ends.",
+                )
+            )
+        named.setdefault(found, where)
+        keys.setdefault(
+            found, _VerifyingKey(algorithm, key, previous.RETIRED_AT + grace)
+        )
+    if problems:
+        raise CheckFailed("AUTH.JWT keys cannot be used", problems)
+    return key_id, keys
+
+
+def _previous_key(
+    where: str, algorithm: str, raw: str, algorithms: dict[str, Any]
+) -> Any:  # noqa: ANN401 - a key PyJWT loaded.
+    """A previous key, loaded for ``algorithm``: a long enough secret, or a public key.
+
+    Raises:
+        ImproperlyConfigured: It is short, not a key, or a private key.
+    """
+    from jwt import PyJWTError
+
+    hashed = algorithm in HMAC_ALGORITHMS
+    if hashed and len(raw.encode()) < (needed := int(algorithm[2:]) // 8):
+        raise ImproperlyConfigured(
+            f"{where}.KEY must have at least {needed} bytes for {algorithm}."
+        )
+    try:
+        key = algorithms[algorithm].prepare_key(raw.encode() if hashed else raw)
+    except (PyJWTError, ValueError, TypeError) as exc:
+        kind = "secret" if hashed else "public key"
+        raise ImproperlyConfigured(
+            f"{where}.KEY is not a {kind} for {algorithm} ({type(exc).__name__})."
+        ) from None
+    if not hashed and "d" in algorithms[algorithm].to_jwk(key, as_dict=True):
+        raise ImproperlyConfigured(
+            f"{where}.KEY is a private key: give its public key in PEM; a retired "
+            "key only verifies."
+        )
+    return key
+
+
+def _key_id(algorithm: str, key: Any, algorithms: dict[str, Any]) -> str:  # noqa: ANN401
+    """The id a token names ``key`` by: it never shows the key.
+
+    An HMAC secret's is a keyed hash: HMAC-SHA256 of ``KEY_ID_LABEL`` under
+    the secret, its first 16 bytes. A public key's is its JWK thumbprint
+    (RFC 7638, SHA-256), which any service holding it can compute. Both in
+    base64url, without padding.
+    """
+    if algorithm in HMAC_ALGORITHMS:
+        digest = hmac.new(key, KEY_ID_LABEL, hashlib.sha256).digest()[:KEY_ID_BYTES]
+        return _base64url(digest)
+    jwk = algorithms[algorithm].to_jwk(key, as_dict=True)
+    members = {name: jwk[name] for name in THUMBPRINT_MEMBERS[jwk["kty"]]}
+    canonical = json.dumps(members, separators=(",", ":"), sort_keys=True)
+    return _base64url(hashlib.sha256(canonical.encode()).digest())
+
+
+def _base64url(data: bytes) -> str:
+    """``data`` in base64url, without padding."""
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
 
 def _check_times(claims: dict[str, Any], leeway: timedelta) -> None:
