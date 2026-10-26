@@ -302,7 +302,8 @@ async def test_cancellation_leaves_no_transaction_key_or_connection(
     The payment rolls back, the key is released (a retry runs, not 409),
     and the connection goes back to the pool, outside any transaction.
     """
-    key = {"Idempotency-Key": "pay-once"}
+    # The caller is named (X-API-Key): since 0.11 an anonymous key is refused.
+    key = {"Idempotency-Key": "pay-once", "X-API-Key": "payer"}
     deadline_routes.paying.clear()
     deadline_routes.arrivals.value = 0
     async with paying(database_url, REQUEST_TIMEOUT=30.0) as client:

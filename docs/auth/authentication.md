@@ -95,12 +95,12 @@ router it is included through:
   only if both do, and `~A` never.
 
 `SCOPED_CREDENTIALS` decides what happens on a route that declares none.
-In 0.10 it is `"warn"`: the request is served as before, with a
-`DomainkitDeprecationWarning` (your tests fail on it when they make
-deprecations errors) and a line on the `domainkit.security` logger, once
-per route a while (what deployments find). `"refuse"` answers
-`403 permission_denied` ("Credentials limited to scopes cannot call this
-route"), which 0.11 makes the default. It is decided once a request,
+By default (`"refuse"`, since 0.11) it answers `403 permission_denied`
+("Credentials limited to scopes cannot call this route"). `"warn"`, 0.10's
+default, serves the request as before, with a line on the
+`domainkit.security` logger once per route a while: a project that still
+has such routes keeps them working while it adds their rules. It is
+decided once a request,
 wherever the principal is first read: `Require`, `CurrentUser`,
 `AuthenticatedUser`, and `current_user` itself, so a dependency of your
 own that reads the principal through it, and a `Public` route that reads
@@ -136,10 +136,10 @@ AUTH = {
 ```
 
 - An access token carries `sub` (the user id), `sid` (the login), `iat`,
-  `exp`, `jti`, and `iss` and `aud` when set. It is checked with
-  `ALGORITHM` only, whatever its own header says, and works for
-  `ACCESS_TOKEN_TTL` (5 minutes), while its login lasts: logging out ends
-  it at once.
+  `exp`, `jti`, and `iss` and `aud` when set, and names its key in its
+  header (`kid`). It is checked with that key's algorithm only, whatever
+  its own header says, and works for `ACCESS_TOKEN_TTL` (5 minutes), while
+  its login lasts: logging out ends it at once.
 - A refresh token works once, at `/auth/refresh`, for a new pair; the new
   refresh token expires with the login (`REFRESH_TOKEN_TTL`, 14 days), so a
   user logs in again at least that often. A used refresh token that comes
@@ -149,6 +149,61 @@ AUTH = {
   `SIGNING_KEY` to the private key and `VERIFYING_KEY` to the public key,
   in PEM; other services can then check access tokens with the public key
   alone. Startup signs and verifies a token, so wrong keys fail early.
+
+### Replacing a key
+
+Each token names the key that signed it, so a new key can sign while the
+old one still verifies what it signed, for one token lifetime, and no
+client is logged out
+([ADR 0097](../adr/0097-name-the-key-of-every-json-web-token-and-retire-keys-within-a-token-lifetime.md)):
+
+```python
+AUTH = {
+    "JWT": {
+        "SIGNING_KEY": env.str("JWT_SIGNING_KEY"),  # The new key.
+        "PREVIOUS_KEYS": [
+            {
+                "KEY": env.str("JWT_OLD_KEY"),  # The old secret, or public key.
+                "RETIRED_AT": "2026-11-02T09:30:00Z",  # When the rollout ends.
+            },
+        ],
+    },
+}
+```
+
+1. Make the new key, and deploy it as `SIGNING_KEY` with the old one in
+   `PREVIOUS_KEYS`. `RETIRED_AT` is when the last process stops signing
+   with the old key: the end of the rollout, at most a day ahead
+   (`auth.E009` refuses later). For `RS*`, `PS*`, `ES*`, and `EdDSA`, the
+   old key is its public key; give `ALGORITHM` too when it signed with
+   another algorithm than the new one, as from `HS256` to `ES256`.
+2. Tokens the old key signed work until `RETIRED_AT` plus
+   `ACCESS_TOKEN_TTL` and `LEEWAY`, then are refused, unexpired or not.
+   Refresh tokens are not signed, and keep working: a client refused
+   after that refreshes, and gets a token of the new key.
+3. After that time, remove the entry, and destroy the old key.
+
+A key that leaked is not listed: replaced alone, it verifies nothing from
+the next request on, and every client refreshes once.
+
+A token's `kid` is derived from its key and shows nothing of it: for an
+HMAC secret, the first 16 bytes of HMAC-SHA256 of `domainkit:jwt-key-id`
+under the secret; for a public key, its JWK thumbprint (RFC 7638,
+SHA-256), which another service holding the public key computes alike.
+Both are in base64url without padding. A token whose `kid` names no key
+held is refused, without trying another; at most 3 previous keys are
+kept. `check` refuses a previous key that is the signing key, or one
+listed twice (`auth.E008`).
+
+Tokens without `kid`, issued by 0.10, are checked with the signing key
+alone, so upgrading logs nobody out; they expire within
+`ACCESS_TOKEN_TTL`. Replace the key no sooner than that after upgrading:
+a previous key never checks them.
+
+The JSON Web Token keys are apart from `SECRET_KEY`
+([ADR 0028](../adr/0028-one-secret-key-signs-and-derives.md)): replacing
+`SECRET_KEY`, with `SECRET_KEY_FALLBACKS`, never touches tokens, and
+`PREVIOUS_KEYS` never touches what `SECRET_KEY` signs.
 
 ## Browser sessions in cookies
 

@@ -579,7 +579,9 @@ jobs:
   # an OIDC token or write attestations, never for a pull request.
   attest:
     needs: [build, sbom]
-    if: github.event_name == 'push'
+    # A status function: without one, a skipped job above (changes, on a
+    # push) skips this one too, and 0.10.0 was released unattested.
+    if: ${{ !cancelled() && !failure() && github.event_name == 'push' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

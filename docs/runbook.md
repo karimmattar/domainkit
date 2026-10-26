@@ -183,9 +183,10 @@ refuses to write to it or check against it rather than trust it.
 The cache fails open: while it is down, reads miss and compute their value,
 and writes are skipped, so the service answers, more slowly. Shared rate
 limits in Redis let requests through meanwhile, except password and code
-checks when `AUTH.THROTTLE_FAIL_CLOSED` is set. Redis is skipped for the
-cache's `FAILURE_COOLDOWN` after a failure, so a dead Redis costs no
-timeout per request.
+checks, and requests that send mail, which staging and production refuse
+([Logins are refused](#logins-are-refused-while-redis-is-down)). Redis is
+skipped for the cache's `FAILURE_COOLDOWN` after a failure, so a dead
+Redis costs no timeout per request.
 
 **Check** Redis: memory (a full Redis refuses writes), its replica role
 after a failover (a read-only replica refuses them), and the TLS
@@ -194,6 +195,35 @@ certificate's expiry.
 **Do** restore Redis; nothing in the cache needs repair, since entries
 are recomputed. Mark a cache `READINESS: True` only if the service must
 not run without it.
+
+## Logins are refused while Redis is down
+
+**You see** `503` answers with the code `throttle_unavailable` and a
+`Retry-After` from the routes that check passwords and codes, or send
+mail: `/auth/login`, `/auth/session`, `/auth/mfa/login`,
+`/auth/password`, and password reset, verification, and signup requests.
+Other requests are served. `cache_errors_total{cache}` grows for
+`RATE_LIMIT_CACHE`, with the warning "Cache '...' is unavailable;
+skipping it for N s", or "Redis refused the rate limit; ... for N s"
+(out of memory, a read-only replica after a failover). With
+`RATE_LIMIT_FALLBACK_REPLICAS` set, some answers are `429` instead, once
+the local count of a caller fills.
+
+Staging and production fail closed (`AUTH.THROTTLE_FAIL_CLOSED` unset,
+since 0.11): an attempt Redis cannot count could be one guess of many, so
+it is refused rather than checked. Users cannot log in until Redis counts
+again; those already logged in are served.
+
+**Check** Redis as for [a cache that fails](#a-cache-fails): that it is
+up and reachable, its memory, its replica role, and its TLS certificate's
+expiry.
+
+**Do** restore Redis. Logins work again within the cache's
+`FAILURE_COOLDOWN` (5 seconds by default), without a restart. To let users
+log in during a long outage, set `AUTH.THROTTLE_FAIL_CLOSED = False` and
+deploy, knowing that passwords and codes can then be guessed without a
+limit until it is set back; a gateway's own limit on the login routes
+bounds that meanwhile.
 
 ## A background task restarts
 

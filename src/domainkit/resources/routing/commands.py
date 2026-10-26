@@ -9,6 +9,7 @@ dependencies, and answered as ``returns`` says.
 
 import dataclasses
 from collections.abc import Callable, Mapping
+from functools import partial
 from typing import TYPE_CHECKING, Literal
 
 from fastapi import Response, status
@@ -25,7 +26,7 @@ from .declaring import add_route
 from .values import changes, check_given, summary_of
 
 if TYPE_CHECKING:
-    from domainkit.ddd.uow import UnitOfWork
+    from domainkit.ddd.uow import Retry, UnitOfWork
     from domainkit.http.access import Rule
 
     from . import ResourceRouter
@@ -52,6 +53,7 @@ class CommandRoute:
         summary: str | None,
         provide: Mapping[str, Callable[..., object]] | None,
         body_limit: int | None = None,
+        retry: "Retry | None" = None,
     ) -> None:
         """Check the command against what gives its fields.
 
@@ -63,6 +65,8 @@ class CommandRoute:
         self.router = router
         self.command = command
         self.service = service
+        self.retry = retry
+        """Run the service again when its transaction loses a race (``run``)."""
         self.detail = router.lookup in names
         self.from_path = {router.lookup} if self.detail else set()
         if router.parent_field is not None and router.parent_field in names:
@@ -117,7 +121,10 @@ class CommandRoute:
                 },
             }
         )
-        if not self.detail:
+        if self.retry is not None:
+            work = partial(self._run, built, context)
+            result = await context.uow.run(work, retry=self.retry)
+        elif not self.detail:
             result = await self.service(built, context.uow)
         else:
 
@@ -130,6 +137,22 @@ class CommandRoute:
         return await presenting.answer(
             router, context, result, self.returns, self.status_code
         )
+
+    async def _run(self, built: Command, context: RouteContext) -> object:
+        """One run of a route that retries: the reach check and the service.
+
+        As ``handle`` runs them without ``retry``; the check is made again
+        in each run's transaction.
+        """
+        if not self.detail:
+            return await self.service(built, context.uow)
+
+        async def run(uow: "UnitOfWork | Joined") -> object:
+            return await reach.conditionally(
+                self.router, context, lambda: self.service(built, uow)
+            )
+
+        return await reach.on_one(self.router, context, self.rules, self.objects, run)
 
 
 def _answers(

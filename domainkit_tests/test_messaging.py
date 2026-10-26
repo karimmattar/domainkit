@@ -25,6 +25,7 @@ import pytest
 from prometheus_client import REGISTRY
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from sqlalchemy import insert, select, update
+from sqlalchemy.exc import DBAPIError
 
 from domainkit import setup
 from domainkit.apps import registry
@@ -81,11 +82,12 @@ from domainkit.contrib.messaging.tables import (
 )
 from domainkit.contrib.messaging.worker import Claimed, backoff
 from domainkit.db import connections
-from domainkit.ddd import DomainEvent, event_bus
+from domainkit.ddd import DomainEvent, EventBus, Retry, event_bus
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import CommandError, call_command
 from domainkit.reporting import flush_reports
 from domainkit_tests.sample_domains.alpha.events import GreetingSent
+from domainkit_tests.sample_routes import DriverError
 from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork, NoteWritten, notes
 
 pytestmark = pytest.mark.anyio
@@ -249,6 +251,76 @@ async def test_deferred_tasks_commit_with_the_change(tables: None) -> None:
         "TASK",
     )
     assert (await outbox())[0]["status"] == DONE
+
+
+async def test_work_run_again_writes_its_rows_once(
+    database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FIN-78: a run that lost its commit took its outbox and audit rows with it.
+
+    Only the run that committed hands messages to the publisher and the
+    watchers, and its events are published once: at 0.10, the messages of
+    the lost run were handed on with the next commit of the same unit of
+    work, though they never existed.
+    """
+    registry.clear()
+    published: list[NoteWritten] = []
+    seen: list[object] = []
+
+    async def watch(database: str, rows: Sequence[Mapping[str, Any]]) -> None:
+        seen.extend(row["id"] for row in rows)
+
+    async def keep(event: NoteWritten) -> None:
+        published.append(event)
+
+    with override_settings(
+        INSTALLED_DOMAINS=[MESSAGING, "domainkit.contrib.audit", ALPHA],
+        DATABASES={"default": {"URL": database_url}},
+        MESSAGING=FAST,
+    ):
+        setup()
+        async with connections.engine().begin() as connection:
+            for table in (messages, notes, audit_log, audit_keys):
+                await connection.run_sync(table.create)
+        bus = EventBus()
+        bus.subscribe(NoteWritten, keep)
+        uow = NotesUnitOfWork(events=bus)
+        commit = uow._commit
+        lost: list[bool] = []
+
+        async def lose_the_first() -> None:
+            if not lost:
+                lost.append(True)
+                raise DBAPIError("COMMIT", None, DriverError("40001"))
+            await commit()
+
+        monkeypatch.setattr(uow, "_commit", lose_the_first)
+
+        async def work() -> None:
+            async with uow:
+                note = Note(id=NoteId(uuid.uuid4()), text=f"run {len(lost) + 1}")
+                note.record(NoteWritten(note_id=note.id))
+                await uow.notes.add(note)
+                uow.defer(remember, value=note.id)
+                await uow.commit()
+
+        outbox_module.watchers.append(watch)
+        try:
+            await uow.run(work, retry=Retry(backoff=0))
+        finally:
+            outbox_module.watchers.remove(watch)
+        rows = await outbox()
+        async with connections.engine().connect() as connection:
+            audited = (await connection.execute(select(audit_log))).all()
+            stored = (await connection.execute(select(notes))).all()
+        await connections.close_all()
+    registry.clear()
+
+    assert [row["id"] for row in rows] == seen
+    assert len(seen) == 1
+    assert [row.text for row in stored] == ["run 2"]
+    assert [row.action for row in audited] == ["domainkit_tests.note_written"]
+    assert [event.note_id for event in published] == [stored[0].id]
 
 
 async def test_rolled_back_work_queues_nothing(tables: None) -> None:

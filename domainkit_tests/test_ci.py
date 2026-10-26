@@ -28,7 +28,6 @@ RULESETS = ROOT / ".github" / "rulesets"
 SOURCE = ROOT / "src"
 SUMMARY = ROOT / ".github" / "scripts" / "mutation_summary.py"
 FLOORS = ROOT / ".github" / "scripts" / "floors.py"
-NOTES = ROOT / ".github" / "scripts" / "release_notes.py"
 CHANGED = ROOT / ".github" / "scripts" / "changed.py"
 EVENTS = ("push", "pull_request", "schedule", "workflow_dispatch")
 # GitHub Actions, the app whose checks the ruleset accepts.
@@ -168,8 +167,10 @@ def context(
 def runs(job: dict[str, Any], values: dict[str, str], needed_ran: bool) -> bool:
     """Whether ``job`` runs: its condition, and its ``needs`` unless it says.
 
-    A job whose needs did not all run is skipped, unless its condition
-    calls a status function (``!cancelled()``), as GitHub decides.
+    A job is skipped when a job it needs, or one those need in turn, did
+    not run, unless its condition calls a status function
+    (``!cancelled()``), as GitHub decides: a condition without one is read
+    as ``success() && ...``, and ``success()`` looks up the whole chain.
     """
     condition = job.get("if")
     if condition is None:
@@ -189,13 +190,15 @@ def running(event: str, *, code: str = "true") -> set[str]:
     """The jobs a run of ``event`` starts (for a pull request, by its changes)."""
     values = context(event, code=code)
     decided: dict[str, bool] = {}
+    chain: dict[str, bool] = {}  # The job, and every job above it, ran.
     pending = jobs()
     while len(decided) < len(pending):
         for name, job in pending.items():
             if name in decided or not needs(job) <= set(decided):
                 continue
-            ran = all(decided[need] for need in needs(job))
-            decided[name] = runs(job, values, ran)
+            above = all(chain[need] for need in needs(job))
+            decided[name] = runs(job, values, above)
+            chain[name] = decided[name] and above
     return {name for name, ran in decided.items() if ran}
 
 
@@ -623,7 +626,6 @@ def test_actions_are_pinned_to_commits_and_tokens_only_read(name: str) -> None:
                 "attestations": "read",
                 "id-token": "write",
             },
-            "github-release": {"actions": "read", "contents": "write"},
         }
     if name == "codeql.yml":
         assert granted == {"analyze": {"contents": "read", "security-events": "write"}}
@@ -646,7 +648,9 @@ def test_releases_publish_only_attested_files() -> None:
         "attestations": "write",
     }
     assert set(attest["needs"]) == {"build", "sbom"}
-    assert attest["if"] == "github.event_name == 'push'"
+    assert attest["if"] == (
+        "${{ !cancelled() && !failure() && github.event_name == 'push' }}"
+    )
     assert running("pull_request") & {"attest"} == set()
     assert not any("checkout" in step.get("uses", "") for step in attest["steps"])
     assert not any("run" in step for step in attest["steps"])
@@ -723,11 +727,10 @@ def test_releases_reuse_mains_green_run_of_the_tagged_commit() -> None:
     assert release["ci"]["outputs"] == {"run-id": "${{ steps.run.outputs.id }}"}
     downloads = [
         step["with"]
-        for name in ("publish", "github-release")
-        for step in release[name]["steps"]
+        for step in release["publish"]["steps"]
         if step.get("uses", "").startswith("actions/download-artifact@")
     ]
-    assert sorted(each["name"] for each in downloads) == ["dist", "dist", "sbom"]
+    assert [each["name"] for each in downloads] == ["dist"]
     for each in downloads:
         assert each["run-id"] == "${{ needs.ci.outputs.run-id }}"
         assert each["github-token"] == "${{ github.token }}"
@@ -1002,54 +1005,10 @@ def test_the_workflows_are_audited_and_scanned() -> None:
     ]
 
 
-def test_a_release_on_github_carries_notes_files_and_checksums() -> None:
-    """After PyPI: the CHANGELOG's section, the files, the bill, their sums."""
-    job = jobs("release.yml")["github-release"]
-    run = "\n".join(step.get("run", "") for step in job["steps"])
-    assert job["needs"] == ["ci", "publish"]
-    # The files and the bill main's CI run built, as attest and publish use.
-    downloads = [
-        step["with"]
-        for step in job["steps"]
-        if step.get("uses", "").startswith("actions/download-artifact@")
-    ]
-    assert [each["name"] for each in downloads] == ["dist", "sbom"]
-    for each in downloads:
-        assert each["run-id"] == "${{ needs.ci.outputs.run-id }}"
-    assert '.github/scripts/release_notes.py "${TAG#v}" CHANGELOG.md' in run
-    assert "sha256sum" in run
-    assert "gh release create" in run
-    assert "--verify-tag" in run
+def test_the_newest_job_audits_what_pip_resolves() -> None:
+    """pip-audit over what ``pip install domainkit[...]`` resolves, weekly too."""
     newest = [step.get("run", "") for step in jobs()["newest"]["steps"]]
     assert any(".newest/bin/python -m pip_audit" in each for each in newest)
-
-
-def test_the_release_notes_are_the_versions_section(tmp_path: Path) -> None:
-    """Its entries without the heading; a version without entries is an error."""
-    changelog = tmp_path / "CHANGELOG.md"
-    changelog.write_text(
-        "# Changelog\n\n## [Unreleased]\n\n## [1.2.0] - 2026-01-02\n\n"
-        "### Added\n\n- A thing (X-1).\n\n## [1.1.0] - 2025-12-01\n\n- Old.\n"
-        "\n## [1.0.0] - 2025-11-01\n\n",
-        encoding="utf-8",
-    )
-
-    def notes(version: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(  # noqa: S603 - the test interpreter and the repository's script.
-            [sys.executable, str(NOTES), version, str(changelog)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-    assert notes("1.2.0").stdout == "### Added\n\n- A thing (X-1).\n"
-    assert notes("1.1.0").stdout == "- Old.\n"
-    for version, problem in [("1.0.0", "is empty"), ("1.3.0", "no section")]:
-        done = notes(version)
-        assert done.returncode == 1
-        assert problem in done.stderr
-    done = notes("1.2")  # A prefix of 1.2.0 is not 1.2.0.
-    assert done.returncode == 1
 
 
 def ci_images() -> set[str]:

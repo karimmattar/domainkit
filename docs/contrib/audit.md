@@ -4,6 +4,8 @@ Every committed domain event becomes a row in `domainkit_audit_log`, written
 in the same transaction as the change. A row holds:
 
 - `occurred_at`, `actor`, `request_id`, and `client_ip`, from the request.
+  The request id is a trusted proxy's `X-Request-ID`, or a new one; never
+  a caller's own ([operations.md](../operations.md#request-ids)).
   The actor is `anonymous` for callers who did not authenticate, and
   `system` outside requests, as in periodic tasks and other work no request
   queued; work a request queued keeps its actor.
@@ -20,7 +22,12 @@ await record("auth.login", Outcome.DENIED, reason="mfa")
 ```
 
 `python manage.py auditlog --actor alice --action catalog.product_created` reads the
-trail. Events are audited in the database where they commit, so with several
+trail. Operators' commands add their own rows ([operators](../reference.md#operators)):
+`operator.loaddata` names the fixture file, its SHA-256, and each table
+with how many rows it got and replaced; `operator.flush` each table it
+emptied, with its rows, and the tables it kept; both say whether
+`--replace` or `--include-guarded` was given. Neither loads nor empties
+the trail's own tables. Events are audited in the database where they commit, so with several
 databases, `auditlog --database <alias>` reads another one.
 
 ## Personal data

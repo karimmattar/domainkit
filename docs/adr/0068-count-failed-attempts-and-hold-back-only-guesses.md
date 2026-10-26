@@ -1,6 +1,6 @@
 # 0068. Count failed attempts, and hold back only what can be guessed
 
-- Status: Accepted; amended 2026-10-25 (at the end); amended by [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md)
+- Status: Accepted; amended 2026-10-25 (at the end); amended by [0087](0087-count-proven-devices-apart-and-bound-scopes-by-route.md) and [0098](0098-share-login-throttles-and-fail-closed-where-deployed.md)
 - Date: 2026-10-25
 
 ## Context

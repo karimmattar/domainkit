@@ -842,10 +842,14 @@ to 1,497 µs, `throttled` 418 to 305 µs, each the best of its timed runs.
 - **The first outgoing call** (CONC-06): `HttpClient` builds its TLS context
   on a thread, and the first call on a loop holds it 6 to 8 ms instead of
   20 to 39 (1 to 2 ms with the context already built).
-- **Deadlines and connections** (CONC-08, ADR 0048's amendment): ten
-  requests cut off at their deadline mid-statement open and discard ten
-  connections. Keeping them saved all ten, but could keep a connection
-  inside a transaction nobody tracked, and was reverted; it waits for 0.11.
+- **Deadlines and connections** (CONC-08, ADR 0048's amendments): ten
+  requests cut off at a 1 s deadline mid-statement opened and discarded
+  ten connections in 0.10, in a transaction and with `Reads.STATEMENTS`
+  alike. With asyncpg, a cut-off connection is now kept once it has
+  settled (the cancelled exchange finished, the transaction rolled back):
+  the ten open none and discard none, on the one connection their pool
+  opened first, and still answer 503 about 25 ms after the deadline. Under
+  an anyio cancel scope, and on other drivers, it is closed, as before.
 - **Pools** (PERF-14): `check` warns when a pool cannot serve the
   requests a loop admits ([reference.md](reference.md#sizing-pools)).
   The defaults stay: requests that each hold a connection for 20 ms

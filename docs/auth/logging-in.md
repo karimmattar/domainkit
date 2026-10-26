@@ -23,9 +23,12 @@ Tokens come as OAuth 2's token response:
 
 Wrong passwords are limited to `AUTH.LOGIN_RATE` (10 a minute) per client
 address (IPv6 per network, `RATE_LIMIT_IPV6_PREFIX`) and per account, with
-the `RATE_LIMIT_BACKEND` (use `RedisBackend` behind several replicas:
-`check` warns in staging and production when the backend counts in each
-process). Each attempt is counted before the password is checked, and
+the `RATE_LIMIT_BACKEND`: `RedisBackend` counts once for every process.
+In staging and production the application refuses to start, and `check`
+fails, when the backend counts in each process (`auth.E105`, since 0.11),
+since each process would allow the whole rate; a deployment of one process
+sets `AUTH.REQUIRE_SHARED_THROTTLES = False`, which only warns
+(`auth.W004`). Each attempt is counted before the password is checked, and
 given back if it holds, so logins that work never use the count up: a
 service account that logs in often, or an office behind one address, is
 not throttled by its own logins. Wrong passwords do use it up, whoever
@@ -63,11 +66,17 @@ that do not hold (401) count: a cookie request refused by the CSRF checks
 would let that site lock out everyone behind the browser's address.
 
 When `RATE_LIMIT_BACKEND` cannot count (`RedisBackend` while Redis fails),
-password and code checks, and requests for mail, are let through
-uncounted, as other requests are. Set `AUTH.THROTTLE_FAIL_CLOSED
-= True` to refuse them instead, with `503 throttle_unavailable` and
-`Retry-After`, until the backend counts again: a brute force timed with a
-cache outage then gets no attempts, and neither do your users.
+staging and production refuse password and code checks, and requests for
+mail, with `503 throttle_unavailable` and `Retry-After`, until the backend
+counts again: a brute force timed with a cache outage gets no attempts,
+and neither do your users ([runbook.md](../runbook.md#logins-are-refused-while-redis-is-down)).
+Other requests are served. Elsewhere they are let through uncounted, as
+other requests are. `AUTH.THROTTLE_FAIL_CLOSED` decides either way:
+`False` lets them through where deployed too, as before 0.11, and `True`
+refuses them anywhere. The local fallback of
+`RATE_LIMIT_FALLBACK_REPLICAS` counts in one process only, so what it
+lets through counts as not counted and is refused too; once a caller's
+share there is spent, it answers 429 itself.
 
 The count per account is what stops guessing one user's password from many
 addresses, and it also lets anyone hold that user's logins back. What

@@ -202,7 +202,11 @@ Erasing again changes nothing.
 Fixtures (`dumpdata`, `loaddata`) never hold tokens, sessions,
 certificates, TOTP secrets, or recovery codes: their tables are state
 (`info={"fixtures": False}`). A fixture of users still holds password
-hashes: keep it as safe as the database.
+hashes: keep it as safe as the database. Auth's tables are guarded:
+`loaddata` writes users, groups, permissions, or their links only with
+`--include-guarded`, and `flush` keeps them, tokens and second factors
+included, unless it is given
+([reference.md](../reference.md#data-fixtures-flush-and-seeds)).
 
 ## Backends
 
