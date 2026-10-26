@@ -26,6 +26,7 @@ from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.idempotency import middleware as idempotency
 from domainkit.contrib.idempotency import operations
+from domainkit.contrib.idempotency.operations import Operation
 from domainkit.contrib.idempotency.settings import IdempotencySettings
 from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.contrib.idempotency.tasks import purge_expired
@@ -443,6 +444,45 @@ def test_a_whole_batch_buried_sweeps_again_at_once(
     client.post("/counter", json={}, headers={"Idempotency-Key": "b"})
 
     assert [row_of(key)["tombstone"] for key in ("paid-1", "paid-2")] == [True, True]
+
+
+def test_claims_racing_the_purge_never_take_a_committed_key(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two replicas claim an expired paid key, each sweeping, beside the purge.
+
+    One row per key: whichever buries it, no claim replaces it, and every
+    claim reads it as its first request left it.
+    """
+    monkeypatch.setattr(idempotency, "SWEEP_EVERY", 0.0)  # Every claim sweeps.
+    monkeypatch.setattr(idempotency, "MESSAGING", "not.installed")
+    plant("paid", committed_at=datetime.now(UTC), status_code=201, body=b"paid")
+    fingerprint = row_of("paid")["fingerprint"]
+
+    async def race() -> list[dict[str, Any] | None]:
+        replicas = [
+            idempotency.IdempotencyMiddleware(app=None),  # type: ignore[arg-type]
+            idempotency.IdempotencyMiddleware(app=None),  # type: ignore[arg-type]
+        ]
+
+        async def claim(number: int) -> dict[str, Any] | None:
+            operation = Operation(keyed("paid"), f"{number:032d}")
+            return await replicas[number % 2]._claim(
+                IdempotencySettings(), operation, fingerprint
+            )
+
+        async with asyncio.timeout(30):
+            *claims, _ = await asyncio.gather(
+                *(claim(number) for number in range(5)), purge_expired()
+            )
+        return claims
+
+    claims = run(race())
+
+    assert [claimed and claimed["token"] for claimed in claims] == ["first"] * 5
+    row = row_of("paid")
+    assert (row["token"], row["tombstone"], row["body"]) == ("first", True, None)
+    assert_buried(client.post("/pay", headers={"Idempotency-Key": "paid"}))
 
 
 @pytest.mark.parametrize(
