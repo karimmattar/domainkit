@@ -314,10 +314,16 @@ def test_unknown_or_malformed_key_ids_are_refused(use_auth: UseAuth) -> None:
             "%%%.x.y",
         ]
         details = [refusal(authenticator, token) for token in tokens]
-        accepted = authenticator.decode(signed(NEW, {"kid": authenticator.key_id}))
+        # Headers of every length: each needs its own base64 padding.
+        accepted = [
+            authenticator.decode(
+                signed(NEW, {"kid": authenticator.key_id, "x": "a" * length})
+            )
+            for length in range(12)
+        ]
 
     assert details == ["Invalid token."] * len(tokens)
-    assert accepted == claims  # The signer above makes tokens that hold.
+    assert accepted == [claims] * 12  # The signer above makes tokens that hold.
 
 
 def test_a_tampered_key_id_breaks_the_signature(use_auth: UseAuth) -> None:
