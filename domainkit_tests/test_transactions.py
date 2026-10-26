@@ -602,6 +602,7 @@ async def test_serializable_work_run_again_keeps_the_rule(
     one, two = make_gadget("one", stock=1), make_gadget("two", stock=1)
     await store(one, two)
     both_read = asyncio.Barrier(2)
+    settled = asyncio.Event()
     runs: list[str] = []
 
     async def take(gadget_id: GadgetId) -> str:
@@ -609,9 +610,12 @@ async def test_serializable_work_run_again_keeps_the_rule(
 
         async def work() -> str:
             runs.append(str(gadget_id))
-            if len(runs) > 2:  # A run again: the other has committed.
+            if len(runs) > 2:  # Run again: once the winner is done, as a wait would.
+                await settled.wait()
                 return await take_if_two_left(gadget_id, uow, asyncio.Barrier(1))
-            return await take_if_two_left(gadget_id, uow, both_read)
+            outcome = await take_if_two_left(gadget_id, uow, both_read)
+            settled.set()
+            return outcome
 
         return await uow.run(work, retry=NOW)
 
@@ -880,18 +884,23 @@ async def test_a_serialization_failure_is_run_again_by_a_route_that_retries(
     one, two = make_gadget("one", stock=5), make_gadget("two", stock=5)
     await store(one, two)
     both_read = asyncio.Barrier(2)
+    settled = asyncio.Event()
     runs: list[UUID] = []
 
     async def take(command: Take, uow: GadgetsUnitOfWork) -> Gadget:
         runs.append(command.gadget_id)
+        first = len(runs) <= 2
+        if not first:  # Run again: once the winner is done, as a wait would.
+            await settled.wait()
         async with uow:
             await uow.session.scalar(select(func.sum(gadgets.c.stock)))
-            if len(runs) <= 2:
+            if first:
                 await both_read.wait()
             found = await uow.gadgets.get(GadgetId(command.gadget_id))
             found.stock = (found.stock or 0) - 1
             await uow.commit()
-            return found
+        settled.set()
+        return found
 
     app = gadget_app(take, retry=retry, unit_of_work=SerializableGadgets)
     async with AsyncTestClient(app) as client:
