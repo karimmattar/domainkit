@@ -86,7 +86,10 @@ to keep the old behaviour, for as long as the project needs it.
 - **Anonymous idempotency keys are refused** (DATA-09).
   `IDEMPOTENCY.ANONYMOUS` defaults to `"refuse"`: an `Idempotency-Key`
   sent with no actor and none of `CREDENTIAL_HEADERS` gets 400
-  `idempotency_key_needs_caller`, and the request does not run. **Fix:**
+  `idempotency_key_needs_caller`, and the request does not run. A
+  credential header in which authentication found no one
+  (`Authorization: Bearer null`, a gateway's fixed `X-API-Key`) names no
+  caller either (SEC-11a-1). **Fix:**
   the client authenticates, or sends the request without the key (a
   login or a sign-up, which has no caller yet, sends none).
   **To keep the old behaviour:** `IDEMPOTENCY = {"ANONYMOUS":

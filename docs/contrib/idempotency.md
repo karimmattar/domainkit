@@ -146,14 +146,29 @@ until it expires.
 
 **Upgrading.** The keys table has a new `pinned` column (0.9.1), and a
 new `tombstone` column (0.11): run `makemigrations` and `migrate` in each
-project that installs idempotency.
+project that installs idempotency. Since 0.11 a token limited to scopes
+has keys of its own: a retry, after the upgrade, of a keyed request it
+sent before it is a new request, and runs.
 
 Keys are scoped to the actor, which `AuthenticationMiddleware` sets (list
-it first), so one user cannot replay another's response. Without an
-actor, keys are scoped to the client address and a hash of the request's
-`CREDENTIAL_HEADERS` (`Authorization`, `Proxy-Authorization`, `Cookie`,
-`X-API-Key`): list the header your project authenticates with if it is
-another. A caller with neither has only its address, which every caller
+it first), so one user cannot replay another's response. Credentials
+limited to scopes (a personal token made for an integration) are a caller
+apart from their user's other credentials, one for each set of scopes: a
+retry is answered before the route's rules run, so such a token is never
+replayed what its user's login was answered on a route that refuses the
+token. A login and a refreshed token, which carry no limit, share the
+user's keys (SEC-11a-2). Without an actor, keys are scoped to the client
+address and a hash of the request's `CREDENTIAL_HEADERS`
+(`Authorization`, `Proxy-Authorization`, `Cookie`, `X-API-Key`): list the
+header your project authenticates with if it is another. Such a header
+names a caller only where no authentication middleware judged the request,
+or one accepted it. Once one found no one (its principal in
+`scope["user"]` is not authenticated), the header authenticated nobody,
+like `Authorization: Bearer null`, which logged-out browser applications
+send, or a gateway's fixed `X-API-Key`, and it names nobody (SEC-11a-1). A
+layer of your own that authenticates by a header names its caller by
+binding the actor, or by putting an authenticated principal in
+`scope["user"]`. A caller with neither has only its address, which every caller
 behind one NAT or proxy shares: keyed by it, one that sends the same key
 and body as another would be replayed the other's response (its status,
 `Location`, and body), and a different body would learn that the key is
@@ -201,7 +216,7 @@ each request sent, for about 1,850 fewer Python calls a keyed write.
 | `REQUIRE_DEADLINE` | `True` | Staging and production refuse to start while keyed requests have no deadline (no `REQUEST_TIMEOUT`, or no `DeadlineMiddleware`). `False` only warns, as 0.9 did. |
 | `METHODS` | `POST`, `PATCH` | Methods that honour the header; others ignore it. |
 | `MAX_RESPONSE_BYTES` | `1048576` | Larger responses are passed through but not stored. |
-| `CREDENTIAL_HEADERS` | `authorization`, `proxy-authorization`, `cookie`, `x-api-key` | Headers that tell callers without an actor apart. |
+| `CREDENTIAL_HEADERS` | `authorization`, `proxy-authorization`, `cookie`, `x-api-key` | Headers that tell callers without an actor apart; not once an authentication middleware found no one in the request (SEC-11a-1). |
 | `ANONYMOUS` | `"refuse"` | Keys from callers with no actor and no credential header: `"refuse"` answers them 400 `idempotency_key_needs_caller`, and nothing runs; `"per-address"` scopes them to the client address, which callers behind one NAT share, as 0.10 did by default (DATA-09). |
 | `SESSION_COOKIES` | `()` | For `ANONYMOUS = "refuse"`: the cookies that name a caller the actor does not (a session another layer reads), at most 16 names. Any other cookie names nobody (SEC-10b-7). |
 
