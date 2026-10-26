@@ -9,6 +9,7 @@ are pinned to commits and images to digests, and Renovate sees the images.
 
 import ast
 import json
+import os
 import re
 import subprocess
 import sys
@@ -367,10 +368,21 @@ def test_a_docs_change_skips_the_test_matrix_steps_not_the_matrix() -> None:
         (".github/workflows/ci.yml\n", "true"),
         ("pyproject.toml\n", "true"),
         ("domainkit_tests/notes.md\n", "true"),
+        ("M\tdocs/tutorial.md\nA\tREADME.md\n", "false"),
+        ("D\tsrc/domainkit/http/guard.py\nA\tdocs/guard.py\n", "true"),
+        ("R100\tsrc/domainkit/http/guard.py\tdocs/guard.py\n", "true"),
+        ("R087\tdomainkit_tests/test_http.py\tdocs/test_http.py\n", "true"),
+        ("R100\tdocs/guide.md\tsrc/domainkit/guide.md\n", "true"),
+        ("R100\tdocs/old.md\tdocs/new.md\nC090\tREADME.md\tdocs/x.md\n", "false"),
+        ('M\t"docs/\\303\\274.md"\n', "true"),
     ],
 )
 def test_only_docs_and_top_level_markdown_count_as_docs(paths: str, code: str) -> None:
-    """Markdown in a package or the tests is code: templates ship in the wheel."""
+    """Markdown in a package or the tests is code: templates ship in the wheel.
+
+    Both sides of a rename or copy count: code moved into ``docs/`` left
+    the package (SEC-10c-3). A path git quoted counts as code.
+    """
     done = subprocess.run(  # noqa: S603 - the test interpreter and the repository's script.
         [sys.executable, str(CHANGED)],
         input=paths,
@@ -384,7 +396,78 @@ def test_only_docs_and_top_level_markdown_count_as_docs(paths: str, code: str) -
         for each in jobs()["changes"]["steps"]
         if "changed.py" in each.get("run", "")
     ]
-    assert "git diff --name-only HEAD^1 HEAD" in step["run"]
+    assert "git diff --no-renames --name-status HEAD^1 HEAD" in step["run"]
+
+
+def git(cwd: Path, *args: str) -> str:
+    """Run git in ``cwd``, as a throwaway committer; return what it prints."""
+    done = subprocess.run(  # noqa: S603 - git, fixed arguments.
+        ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", *args],  # noqa: S607 - git from PATH.
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return done.stdout
+
+
+@pytest.mark.parametrize(
+    ("moved", "edit"),
+    [
+        ("src/domainkit/http/guard.py", False),
+        ("src/domainkit/http/guard.py", True),
+        ("domainkit_tests/test_http.py", False),
+    ],
+)
+def test_moving_code_into_the_docs_is_not_a_docs_change(
+    tmp_path: Path, moved: str, edit: bool
+) -> None:
+    """The changes job's own command, on a pull request's merge commit.
+
+    ``git diff --name-only`` reported a moved file under its new path
+    alone, ``docs/...``: a pull request that moved a module (edited or
+    not) or a test file into ``docs/`` skipped every test job
+    (SEC-10c-3). Each such move must read as code.
+    """
+    [step] = [
+        each
+        for each in jobs()["changes"]["steps"]
+        if "changed.py" in each.get("run", "")
+    ]
+    command = (
+        step["run"]
+        .replace(
+            "python3 .github/scripts/changed.py", f'"{sys.executable}" "{CHANGED}"'
+        )
+        .replace('"$GITHUB_OUTPUT"', '"$OUTPUT"')
+    )
+    (tmp_path / Path(moved).parent).mkdir(parents=True)
+    (tmp_path / "docs").mkdir()
+    (tmp_path / moved).write_text((ROOT / moved).read_text(encoding="utf-8"))
+    (tmp_path / "docs" / "index.md").write_text("# Docs\n")
+    git(tmp_path, "init", "-q", "-b", "main")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-qm", "base")
+    git(tmp_path, "checkout", "-qb", "change")
+    target = f"docs/{Path(moved).name}"
+    git(tmp_path, "mv", moved, target)
+    if edit:
+        with (tmp_path / target).open("a") as file:
+            file.write("# edited\n")
+    git(tmp_path, "commit", "-qam", "move")
+    git(tmp_path, "checkout", "-q", "main")
+    git(tmp_path, "merge", "-q", "--no-ff", "-m", "merge", "change")
+    assert "R" in git(tmp_path, "diff", "--name-status", "-M", "HEAD^1", "HEAD")
+
+    output = tmp_path / "output"
+    subprocess.run(  # noqa: S603 - bash, and the workflow's own command.
+        ["bash", "-eo", "pipefail", "-c", command],  # noqa: S607 - bash from PATH.
+        cwd=tmp_path,
+        env={**os.environ, "OUTPUT": str(output)},
+        check=True,
+    )
+
+    assert output.read_text() == "code=true\n"
 
 
 def test_a_shard_reports_its_score_before_the_job_limit() -> None:

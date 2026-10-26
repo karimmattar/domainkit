@@ -59,11 +59,13 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 2
+      # No rename detection, and both paths of every line: a file moved
+      # from src/ or domainkit_tests/ into docs/ must count as code.
       - id: paths
         name: Find whether anything but docs changed
         run: >-
-          git diff --name-only HEAD^1 HEAD | python3 .github/scripts/changed.py
-          >> "$GITHUB_OUTPUT"
+          git diff --no-renames --name-status HEAD^1 HEAD
+          | python3 .github/scripts/changed.py >> "$GITHUB_OUTPUT"
 
   # Only for a pull request that changes docs alone: the tests that read
   # them (the API reference against every __all__, links, anchors and the
