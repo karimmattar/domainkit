@@ -44,7 +44,7 @@ cannot pay, and one that is overloaded may fail half-way.
    trusted: body, headers, path, tokens, `Idempotency-Key`, `X-Request-ID`.
 2. **Edge to application.** The proxy is trusted only as far as
    `TRUSTED_PROXIES` says: its `X-Forwarded-For` and scheme header name
-   the client.
+   the client, and its `X-Request-ID` the request.
 3. **Application to the SQL database.** The database holds the aggregates,
    the outbox, the audit trail, users and tokens. The application's role
    should read and write rows; the schema owner migrates.
@@ -73,7 +73,7 @@ project" is the team that builds and runs the service.
 | **Spoofing** a user | Opaque tokens, JWTs, cookie sessions with CSRF, client certificates ([auth.md](auth/authentication.md#authenticating-requests)); password and code throttles that count only failures ([auth.md](auth/logging-in.md#logging-in-and-out)); second factors ([auth.md](auth/logging-in.md#two-factor-logins)). | Throttles count per process unless `RATE_LIMIT_BACKEND` is Redis (`check` warns). A stored per-account lockout is planned for 0.10. |
 | **Spoofing** an address or scheme | Proxy headers believed from `TRUSTED_PROXIES` only, walked from the right ([ADR 0072](adr/0072-walk-proxy-headers-from-the-right-and-trust-unix-sockets.md)); `ALLOWED_HOSTS` checked first. | The project must list its proxies, and make the server read no proxy header itself ([reference.md](reference.md#http)). |
 | **Tampering** with requests | Bodies validated by pydantic; `If-Match` on changes ([resources.md](resources.md)); signed values ([reference.md](reference.md#signing)). | Route schemas are the project's: a write schema should name the fields a client may set. |
-| **Repudiation** | Request ids, the access log, and audit rows with the actor and address ([contrib.md](contrib/audit.md#audit-who-did-what-when-from-where)); refused logins audited. | The project keeps logs and the trail as long as its regulator asks. |
+| **Repudiation** | Request ids, from trusted proxies only ([ADR 0099](adr/0099-take-request-ids-from-trusted-proxies-only.md)), the access log, and audit rows with the actor and address ([contrib.md](contrib/audit.md#audit-who-did-what-when-from-where)); refused logins audited. | The proxy must set `X-Request-ID` over a client's, or `ACCEPT_REQUEST_ID = "never"` ([operations.md](operations.md#request-ids)). The project keeps logs and the trail as long as its regulator asks. |
 | **Information disclosure** | Deny by default: a route says who may call it, or the service does not start ([auth.md](auth/routes.md#deny-by-default)); errors never echo input ([reference.md](reference.md#errors)); security headers, a Content-Security-Policy, and HSTS; API docs off when deployed, and loaded from the API's own origin; route templates, not paths, in logs; `/metrics` behind a token. | Object-level rules for multi-tenant data are the project's ([auth.md](auth/users.md#grants-on-single-objects)). |
 | **Denial of service** | Request deadlines and load shedding ([runtime.md](runtime.md#request-deadlines), [runtime.md](runtime.md#load-shedding)); body size and time limits; rate limits ([cache.md](cache.md#shared-rate-limits)); bounded live connections ([live.md](live.md)); bounded hashing. | Volumetric attacks need the project's edge (CDN, WAF, provider limits). |
 | **Elevation of privilege** | Model and object permissions; staff grant only what they hold; protected user fields ([auth.md](auth/routes.md#the-admin-api)); routes added late are checked at startup. | Permission design is the project's. |
@@ -127,8 +127,8 @@ project" is the team that builds and runs the service.
 
 | Threat | What domainkit does | What remains |
 | --- | --- | --- |
-| **Repudiation** | Data-changing commands run as `operator:<name>` and are audited ([ADR 0070](adr/0070-name-the-operator-of-data-changing-commands.md)); staff changes through the admin API are audited. | A name comes from the login or `--operator`; 0.10 may require one where deployed. Direct database access is not audited by domainkit. |
-| **Tampering** | `migrate --downgrade` needs `--allow-data-loss` where deployed; the trail's seals show rewritten rows (`auditverify`). | Who holds production access. |
+| **Repudiation** | Data-changing commands run as `operator:<name>` and are audited ([ADR 0070](adr/0070-name-the-operator-of-data-changing-commands.md)); `loaddata` and `flush` record the tables they touched and the fixture's SHA-256, and need a name given on purpose where deployed; staff changes through the admin API are audited. | Other commands take the login name when none is given. Direct database access is not audited by domainkit. |
+| **Tampering** | `migrate --downgrade` needs `--allow-data-loss` where deployed; `loaddata` only adds rows unless `--replace`, and neither it nor `flush` touches users, grants, tokens, or second factors without `--include-guarded` ([ADR 0100](adr/0100-guard-credentials-and-grants-from-loaddata-and-flush.md)); the trail's seals show rewritten rows (`auditverify`). | Who holds production access. |
 | **Information disclosure** | Secrets hidden in `diffsettings`, reprs, and dumps. | Shell access sees the environment. |
 
 ### 9. The supply chain

@@ -1,6 +1,6 @@
 # 0070. Name the operator of data-changing commands, and audit what they do
 
-- Status: Accepted; amended 2026-10-25 (at the end)
+- Status: Accepted; amended 2026-10-25 and 2026-10-26 (at the end)
 - Date: 2026-10-25
 
 ## Context
@@ -113,3 +113,19 @@ them. Instead:
   typed it, and can type it again.
 - 0.10 may require a name, from the option or the variable, in staging
   and production.
+
+## Amendment (2026-10-26, 0.11): `loaddata` and `flush` need a name where deployed
+
+The 0.9.0 audit's DATA-12 found that the rows `loaddata` and `flush`
+wrote named whatever login name the process had, with `--force` the only
+step between an operator and every user's row in staging and production.
+In those two environments, these two commands now refuse an operator whose
+source is `system`: the name comes from `--operator` or
+`DOMAINKIT_OPERATOR`, or the command stops with "Name the operator who
+runs ..." before it writes. Dry runs need none. Their rows also name the
+tables they touched, and a load the fixture's SHA-256
+([0100](0100-guard-credentials-and-grants-from-loaddata-and-flush.md)).
+
+The other commands keep the rule above: they run unattended from cron
+and entrypoints, as the amendment of 2026-10-25 requires. Requiring a
+name for them is a decision of its own, not taken here.

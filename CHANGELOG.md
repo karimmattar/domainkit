@@ -9,6 +9,62 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `ACCEPT_REQUEST_ID` (`"proxies"`, `"anyone"`, or `"never"`; default
+  `"proxies"`): whose `X-Request-ID` names a request (WEB-13; ADR 0099).
+- `loaddata --replace` and `--include-guarded`, and `flush
+  --include-guarded`; `info={"guarded": True}` marks a project's own table
+  of credentials or grants as guarded (DATA-12; ADR 0100).
+
+### Changed
+
+- **Breaking:** `loaddata` only adds rows: a row whose primary key is
+  stored refuses the fixture, before anything is written, and the dry run
+  says `N already stored`. **To keep the old behaviour:** `loaddata
+  --replace` (DATA-12).
+- **Breaking:** `loaddata` refuses a fixture that writes a guarded table
+  (users, the `AUTH.USER_TABLE`, groups, permissions and their links,
+  content types, object grants, dynamic settings), and `flush` keeps the
+  guarded tables, tokens, TOTP authenticators, and recovery codes
+  included, with the tables they reference, listed as `kept (guarded)`.
+  **To keep the old behaviour:** `--include-guarded` on either command
+  (DATA-12).
+- **Breaking:** in staging and production, `loaddata` and `flush` need
+  an operator named by `--operator` or `DOMAINKIT_OPERATOR`, beside
+  `--force`; the login name is refused. **Fix:** set
+  `DOMAINKIT_OPERATOR` where they run (DATA-12; ADR 0070).
+- **Breaking:** a request's id is the `X-Request-ID` of a trusted proxy
+  (`TRUSTED_PROXIES`, `"unix"` for a unix socket's peer), else a new one;
+  a caller's own header is dropped. **Fix:** have the proxy set the
+  header (nginx: `proxy_set_header X-Request-ID $request_id;`). **To keep
+  the old behaviour:** `ACCEPT_REQUEST_ID = "anyone"` (WEB-13).
+- `operator.loaddata` names each table with its rows and replaced rows,
+  the SHA-256 of the fixture as read, and whether `--replace` and
+  `--include-guarded` were given; `operator.flush` each table it emptied,
+  with its rows, and the tables it kept (DATA-12).
+
+### Security
+
+- `loaddata` and `flush` wrote the tables behind the aggregates, the auth
+  tables included. A fixture of link rows gave a user every permission,
+  or a new group with them, and any row whose primary key was stored was
+  replaced, with no event, version check, or audit row naming the tables;
+  `flush` emptied users, tokens, authenticators, and recovery codes with
+  the data, turning every second factor off. Loads now only add rows
+  unless `--replace`; guarded tables (credentials, grants, second
+  factors, content types, dynamic settings) are written or emptied only
+  with `--include-guarded`; staging and production need a named
+  operator; and the audit row names the tables, their counts, and the
+  fixture's SHA-256 (DATA-12).
+- Any caller chose its request's id with `X-Request-ID`: the id its log
+  lines, error reports, audit rows, queued work, and outgoing calls
+  carry. A client could take another request's id, or give one id to
+  many requests. The header is now read only from trusted proxies, in
+  the same bounded format (up to 128 letters, digits, `.`, `_`, `:`,
+  `-`); a caller's own is dropped and the request gets a new id, which
+  its answer returns (WEB-13).
+
 ## [0.10.0] - 2026-10-26
 
 A minor release: some changes break, and some names are deprecated, to be
