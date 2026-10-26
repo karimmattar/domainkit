@@ -18,9 +18,18 @@ from starlette.requests import Request
 
 from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
-from domainkit.contrib.auth import devices
+from domainkit.contrib.auth import AuthUnitOfWork, UserId, devices
+from domainkit.management.base import run_async
 from domainkit_tests.conftest import Api
-from domainkit_tests.test_auth_http import PASSWORD, audited, create_user
+from domainkit_tests.test_auth_http import (
+    PASSWORD,
+    audited,
+    bearer,
+    create_user,
+    stored_tokens,
+)
+from domainkit_tests.test_auth_mfa import clock as clock
+from domainkit_tests.test_auth_mfa import code_at, enrol
 
 SITE: Final = "https://testserver"
 RIGHT: Final = {"username": "alice", "password": PASSWORD}
@@ -167,9 +176,9 @@ def test_proofs_are_read_only_when_they_could_be_one(api: Api) -> None:
         "type": "http",
         "headers": [(b"cookie", b"__Host-dk_device=" + b"a" * 300)],
     }
-    assert devices.proven_device(Request(scope), "alice") is None
+    assert run_async(devices.proven_device(Request(scope), "alice")) is None
     with override_settings(AUTH={"DEVICE_TTL": None}):
-        assert devices.proven_device(Request(scope), "alice") is None
+        assert run_async(devices.proven_device(Request(scope), "alice")) is None
     assert audited("auth.login") == []
 
 
@@ -178,3 +187,130 @@ def test_the_device_lifetime_is_bounded(api: Api, ttl: timedelta) -> None:
     """From an hour to 400 days, the longest browsers keep a cookie."""
     with pytest.raises(Exception, match="DEVICE_TTL"):
         api(DEVICE_TTL=ttl)
+
+
+def mint(app: Any, count: int) -> list[str]:  # noqa: ANN401 - an application.
+    """Proofs of ``count`` fresh clients that logged in as alice."""
+    proofs = []
+    for _ in range(count):
+        fresh = browser(app, "198.51.100.7")
+        assert fresh.post("/auth/login", json=RIGHT).status_code == 200
+        proofs.append(fresh.cookies[devices.cookie_name()])
+    return proofs
+
+
+def guesses_with(app: Any, proofs: list[str], each: int = 2) -> list[int]:  # noqa: ANN401 - an application.
+    """``each`` wrong passwords sent with every proof, from one address."""
+    answers = []
+    for n, proof in enumerate(proofs):
+        holder = browser(app, "198.51.100.7")
+        holder.cookies.set(devices.cookie_name(), proof)
+        for guess in range(each):
+            wrong = {"username": "alice", "password": f"guess-{n}-{guess}"}
+            answers.append(holder.post("/auth/login", json=wrong).status_code)
+    return answers
+
+
+def test_a_password_change_ends_every_proof(api: Api) -> None:
+    """SEC-10a-3: proofs minted while the password was known used to outlive it.
+
+    Six of them checked 12 wrong guesses after the change, at a
+    ``LOGIN_RATE`` of 2; now they count as none, on the account's count.
+    """
+    alice = create_user("alice")
+    client = api(LOGIN_RATE="2/minute")
+    proofs = mint(client.app, 6)
+    assert len(set(proofs)) == 6
+    assert len(stored_tokens(alice, devices=True)) - len(stored_tokens(alice)) == 6
+
+    async def change() -> None:
+        async with AuthUnitOfWork() as uow:
+            user = await uow.users.get(UserId(alice))
+            await uow.users.set_password(user, "a-brand-new-Passw0rd!")
+            await uow.tokens.revoke_user(user.id)
+            await uow.commit()
+
+    run_async(change())
+
+    answers = guesses_with(client.app, proofs)
+    assert answers.count(401) == 2
+    assert stored_tokens(alice, devices=True) == []
+
+
+def test_logging_out_everywhere_ends_every_proof(api: Api) -> None:
+    """A device belongs to the user's tokens: ending them all ends it."""
+    alice = create_user("alice")
+    client = api(LOGIN_RATE="2/minute")
+    alice_browser = browser(client.app, "203.0.113.50")
+    token = alice_browser.post("/auth/login", json=RIGHT).json()["access_token"]
+    assert (
+        alice_browser.post(
+            "/auth/logout", json={"everywhere": True}, headers=bearer(token)
+        ).status_code
+        == 204
+    )
+
+    assert stored_tokens(alice, devices=True) == []
+    assert [guess(client.app, f"198.51.100.{n}") for n in (1, 2)] == [401, 401]
+    assert alice_browser.post("/auth/login", json=RIGHT).status_code == 429
+
+
+def test_proven_attempts_of_an_account_have_a_ceiling(api: Api) -> None:
+    """However many proofs one holds, they check two ``LOGIN_RATE`` s in all.
+
+    The account's own count stays apart, so strangers still cannot fill
+    the ceiling, and one copied proof cannot fill it alone either.
+    """
+    create_user("alice")
+    client = api(LOGIN_RATE="2/minute")
+    proofs = mint(client.app, 4)
+
+    answers = guesses_with(client.app, proofs)
+
+    assert answers.count(401) == 2 * devices.PROVEN_CEILING
+    assert set(answers) == {401, 429}
+    assert guess(client.app, "198.51.100.9") == 401  # The account's count.
+
+
+def test_a_copied_proof_alone_cannot_keep_the_user_out(api: Api) -> None:
+    """The ceiling is twice a device's count: one proof fills only its own."""
+    create_user("alice")
+    client = api(LOGIN_RATE="2/minute")
+    stolen, own = mint(client.app, 2)
+    assert guesses_with(client.app, [stolen], each=3) == [401, 401, 429]
+
+    alice = browser(client.app, "203.0.113.50")
+    alice.cookies.set(devices.cookie_name(), own)
+    assert alice.post("/auth/login", json=RIGHT).status_code == 200
+
+
+def test_proofs_wait_for_the_second_factor(identity: Api, clock: list[float]) -> None:
+    """SEC-10a-3: a password without its second factor used to mint a proof."""
+    alice = create_user("alice")
+    client = identity()
+    secret, _ = enrol(client, bearer(login_token(client)), clock)
+    before = len(stored_tokens(alice, devices=True)) - len(stored_tokens(alice))
+    caller = browser(client.app, "198.51.100.7")
+
+    pending = caller.post("/auth/login", json=RIGHT)
+    assert pending.status_code == 202
+    assert devices.cookie_name() not in caller.cookies
+    clock[0] += 30  # The enrolment used this step's code.
+    finished = caller.post(
+        "/auth/mfa/login",
+        json={
+            "mfa_token": pending.json()["mfa_token"],
+            "code": code_at(secret, clock[0]),
+        },
+    )
+
+    assert finished.status_code == 200
+    assert devices.cookie_name() in caller.cookies
+    after = len(stored_tokens(alice, devices=True)) - len(stored_tokens(alice))
+    assert after == before + 1
+
+
+def login_token(client: TestClient) -> str:
+    """Alice's access token, before she has a second factor."""
+    token: str = client.post("/auth/login", json=RIGHT).json()["access_token"]
+    return token

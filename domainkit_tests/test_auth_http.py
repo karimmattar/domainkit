@@ -137,14 +137,15 @@ def audited(action: str) -> list[dict[str, Any]]:
     return run_async(read())
 
 
-def stored_tokens(user_id: UUID) -> list[dict[str, Any]]:
-    """The user's stored tokens."""
+def stored_tokens(user_id: UUID, *, devices: bool = False) -> list[dict[str, Any]]:
+    """The user's stored tokens; with ``devices``, the devices that logged in too."""
 
     async def read() -> list[dict[str, Any]]:
         async with connections.engine().connect() as connection:
-            rows = await connection.execute(
-                select(tokens).where(tokens.c.user_id == user_id)
-            )
+            statement = select(tokens).where(tokens.c.user_id == user_id)
+            if not devices:
+                statement = statement.where(tokens.c.kind != "device")
+            rows = await connection.execute(statement)
             return [dict(row._mapping) for row in rows]
 
     return run_async(read())

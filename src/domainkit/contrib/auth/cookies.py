@@ -73,7 +73,7 @@ from .authentication import (
     stored_credential,
     unless_idle,
 )
-from .devices import hand_out, proven_device
+from .devices import hand_out
 from .events import UserLoggedOut
 from .mfa import MfaLoginIn, challenge, verify_challenge
 from .models import AbstractBaseUser, UserId
@@ -273,11 +273,12 @@ async def log_in(
     _no_store(response)
     check_origin(request)
     user = await check_password(request, body)
-    hand_out(response, body.username, proven_device(request, body.username))
     if (pending := await challenge(user)) is not None:
         response.status_code = status.HTTP_202_ACCEPTED
-        return pending
-    return await start_session(user, response, previous=_session_of(request))
+        return pending  # The device proof waits for the second factor.
+    started = await start_session(user, response, previous=_session_of(request))
+    await hand_out(request, response, user)
+    return started
 
 
 @router.post(
@@ -297,7 +298,9 @@ async def log_in_with_code(
     _no_store(response)
     check_origin(request)
     user = await verify_challenge(request, body.mfa_token, body.code)
-    return await start_session(user, response, previous=_session_of(request))
+    started = await start_session(user, response, previous=_session_of(request))
+    await hand_out(request, response, user)
+    return started
 
 
 @router.get(
