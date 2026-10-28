@@ -9,8 +9,13 @@ to ``mutmut-results.txt``, and exits 1 when a mutant of the shard was never
 checked, or its check was interrupted: the run stopped before the end, so
 its score is no baseline.
 
-Usage: ``python .github/scripts/mutation_summary.py SHARD PATTERN...``, from
-the directory that holds ``mutants/``.
+With ``--lived-fails`` after the shard's name, as CI's ``mutation
+(changed)`` job gives it, it also exits 1 when a mutant lived: the shard is
+a pull request's changed functions, whose authors kill each one or say why
+it stays.
+
+Usage: ``python .github/scripts/mutation_summary.py SHARD [--lived-fails]
+PATTERN...``, from the directory that holds ``mutants/``.
 """
 
 import json
@@ -106,10 +111,12 @@ def markdown(summary: Summary, lived: list[str]) -> str:
 
 def main(argv: list[str]) -> int:
     """Summarise shard ``argv[0]`` over the mutant name patterns after it."""
-    if len(argv) < 2:  # A shard name and at least one pattern.
+    shard, *patterns = argv or [""]
+    lived_fails = patterns[:1] == ["--lived-fails"]
+    patterns = patterns[lived_fails:]
+    if not shard or not patterns:  # A shard name and at least one pattern.
         print(__doc__, file=sys.stderr)  # noqa: T201 - a command-line script.
         return 2
-    shard, patterns = argv[0], argv[1:]
     statuses = results(Path("mutants"), patterns)
     summary = summarise(shard, statuses)
     lived = sorted(
@@ -122,7 +129,7 @@ def main(argv: list[str]) -> int:
     )
     Path("mutmut-results.txt").write_text("".join(f"{line}\n" for line in lived))
     print(markdown(summary, lived))  # noqa: T201 - the job summary.
-    return 0 if summary.complete else 1
+    return 0 if summary.complete and not (lived_fails and lived) else 1
 
 
 if __name__ == "__main__":

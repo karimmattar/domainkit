@@ -110,6 +110,7 @@ statuses, and the amendments they name.
 | [0098](0098-share-login-throttles-and-fail-closed-where-deployed.md) | Share the attempt throttles, and fail closed, where deployed | Accepted |
 | [0099](0099-take-request-ids-from-trusted-proxies-only.md) | Take request ids from trusted proxies only, and drop a caller's own | Accepted |
 | [0100](0100-guard-credentials-and-grants-from-loaddata-and-flush.md) | Guard credentials and grants from `loaddata` and `flush`, and load new rows only | Accepted; amended 2026-10-28 (at the end) |
+| [0106](0106-mutate-what-a-pull-request-changes.md) | Mutate what a pull request changes, before it merges | Accepted |
 | [0107](0107-make-test-users-through-the-domain-and-sign-in-through-a-protocol.md) | Make test users through the domain, and sign in as them through a protocol | Accepted |
 
 ### Decisions still without a record

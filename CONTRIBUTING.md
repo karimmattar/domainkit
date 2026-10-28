@@ -50,7 +50,12 @@ to `.ci/`. `make services-down` stops them and drops their data.
   `make mutants MUTANTS="domainkit.http.middleware*"`. Kill the survivors
   that point at a missing test, and say why each one left stays. A new
   module goes in one of the weekly shards in `.github/workflows/ci.yml`
-  (`test_ci.py` checks it).
+  (`test_ci.py` checks it). A pull request's `mutation (changed)` check
+  runs the mutants of the functions it changed and lists those that lived
+  ([ADR 0106](docs/adr/0106-mutate-what-a-pull-request-changes.md)). A
+  test that reads domainkit's source text, or the frames of its calls,
+  carries `@pytest.mark.reads_own_source`: mutmut rewrites both, and
+  mutation runs leave such tests out.
 - **The public API** is what `docs/api.md` lists ([ADR 0076](docs/adr/0076-public-api-is-docs-api-md.md)).
   A new public name goes in its module's `__all__` and on that page, with a
   docstring (Google style, the repository's plain voice); the site renders
