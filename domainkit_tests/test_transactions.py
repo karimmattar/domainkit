@@ -509,6 +509,44 @@ async def total_stock() -> int:
         return int(await uow.session.scalar(select(func.sum(gadgets.c.stock))) or 0)
 
 
+async def test_a_failed_sql_savepoint_drops_events_of_what_it_first_loaded(
+    tables: None,
+) -> None:
+    """The session keeps the aggregate a failed savepoint loaded, not its events.
+
+    While the caller holds it, loading it again gives back the same object:
+    the events it recorded inside, for changes the savepoint undid, were
+    published by the commit.
+    """
+    gadget = make_gadget("a")
+    await store(gadget)
+    published: list[GadgetMade] = []
+    bus = EventBus()
+
+    async def keep(event: GadgetMade) -> None:
+        published.append(event)
+
+    bus.subscribe(GadgetMade, keep)
+    held: list[Gadget] = []
+
+    async def rename(uow: GadgetsUnitOfWork) -> None:
+        async with uow.savepoint():
+            held.append(await uow.gadgets.get(gadget.id))
+            held[0].rename("b")
+            raise Lost
+
+    async with GadgetsUnitOfWork(events=bus) as uow:
+        with pytest.raises(Lost):
+            await rename(uow)
+        again = await uow.gadgets.get(gadget.id)
+        assert again is held[0]
+        assert (again.name, again.pending_events) == ("a", ())
+        again.rename("c")
+        await uow.commit()
+
+    assert len(published) == 1
+
+
 @postgres_only
 async def test_the_level_is_set_as_the_transaction_begins(tables: None) -> None:
     """In ``BEGIN`` itself: no statement more; the pool's connection is reset."""
