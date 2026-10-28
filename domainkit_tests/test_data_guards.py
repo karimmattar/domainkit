@@ -505,6 +505,7 @@ def test_guarded_dumps_are_audited(
         "database": "default",
         "output": "stdout",
         "include_guarded": True,
+        "personal_tables": [],  # Recorded only where deployed (SEC-12a-7).
         "rows": 1,
         "tables": {users.name: 1},
         "sha256": hashlib.sha256(printed.encode()).hexdigest(),

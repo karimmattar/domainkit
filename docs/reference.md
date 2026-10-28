@@ -1194,7 +1194,10 @@ named that holds one, unless `--include-guarded` is given: a dump of
 users holds their password hashes. A dump with guarded tables is recorded
 (`operator.dumpdata`: the tables, their row counts, and the SHA-256 of
 what was written), and in staging and production needs an operator named
-by `--operator` or `DOMAINKIT_OPERATOR`. The audit trail is never loaded or
+by `--operator` or `DOMAINKIT_OPERATOR`. So does, in staging and
+production, a dump of a table whose model has fields marked `Personal`,
+recorded with those tables (`personal_tables`), as `privacy export` of one
+person is recorded: it copies everyone out. The audit trail is never loaded or
 flushed, guarded or not. A kept table whose rows are about other tables'
 objects names the column of their model key (`info={"about_model":
 "content_type"}`, as object grants do): `flush` deletes its rows about

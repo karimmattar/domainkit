@@ -60,6 +60,11 @@ to keep the old behaviour, for as long as the project needs it.
   **Fix:** dump and load users between environments with the same
   hashers, or write unusable passwords (`!...`) in the fixture and reset
   them after loading. There is no setting to keep the old behaviour.
+- **Dumps of personal data name their operator where deployed**
+  (SEC-12a-7). In staging and production, `dumpdata` of a table whose
+  model has fields marked `Personal` needs `--operator` or
+  `DOMAINKIT_OPERATOR`, and is recorded. **Fix:** set `DOMAINKIT_OPERATOR`
+  where `dumpdata` runs. There is no setting to keep the old behaviour.
 
 ### Deprecated, removed in 0.13
 

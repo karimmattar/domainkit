@@ -8,7 +8,8 @@ from pathlib import Path
 
 from sqlalchemy import Table
 
-from domainkit.conf import DEFAULT_DB_ALIAS
+from domainkit.conf import DEFAULT_DB_ALIAS, settings
+from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db import fixtures
 from domainkit.management.base import BaseCommand, CommandError
 from domainkit.management.operators import require_named
@@ -23,9 +24,11 @@ class Command(BaseCommand):
     settings), unless ``--include-guarded``: named, one is refused; with no
     names, they are left out and the command says so. A dump with guarded
     tables is audited (``operator.dumpdata``), and needs a named operator
-    in staging and production. A fixture can hold personal data; keep it as
-    safe as the database. ``--output`` writes a new file only its owner can
-    read, and refuses a path that exists, a symbolic link too.
+    in staging and production; so does one, there, of a table whose model
+    has fields marked ``Personal`` (SEC-12a-7). A fixture can hold personal
+    data; keep it as safe as the database. ``--output`` writes a new file
+    only its owner can read, and refuses a path that exists, a symbolic
+    link too.
     """
 
     help = "Write rows as a JSON fixture: every table, or the tables or domains named."
@@ -71,15 +74,23 @@ class Command(BaseCommand):
         """Read the tables and write their rows."""
         try:
             tables = self._tables(database, names, include_guarded=include_guarded)
-            if not include_guarded or not any(map(fixtures.guarded, tables)):
+            guarded = include_guarded and any(map(fixtures.guarded, tables))
+            people = (
+                sorted(table.name for table in tables if fixtures.personal(table))
+                if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS
+                else []
+            )
+            if not (guarded or people):
                 await self._write(database, tables, output, indent)
                 return
-            require_named(self.operator, "dumpdata --include-guarded")
+            what = "--include-guarded" if guarded else "of personal data"
+            require_named(self.operator, f"dumpdata {what}")
             async with self.recorded(
                 "dumpdata",
                 database=database,
                 output="stdout" if output is None else output.name,
-                include_guarded=True,
+                include_guarded=include_guarded,
+                personal_tables=people,
             ) as details:
                 details.update(await self._write(database, tables, output, indent))
         except (fixtures.FixtureError, ValueError) as exc:

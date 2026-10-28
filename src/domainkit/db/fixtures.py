@@ -70,6 +70,7 @@ from domainkit.db.derive import ValueObjectType
 from domainkit.db.models import installed_models
 from domainkit.db.orm import metadata
 from domainkit.db.routing import router
+from domainkit.ddd.personal import personal_fields
 from domainkit.exceptions import DomainkitError
 from domainkit.utils.decimals import jsonable
 
@@ -144,6 +145,24 @@ def tables_of(database: str) -> list[Table]:
 def guarded(table: Table) -> bool:
     """Whether ``table`` holds credentials, grants, or secrets (``info["guarded"]``)."""
     return table.info.get("guarded") is True
+
+
+def personal(table: Table) -> bool:
+    """Whether ``table`` holds a model with fields marked ``Personal``.
+
+    Such a dump is people's data: where deployed, ``dumpdata`` records it
+    and wants a named operator, as ``privacy export`` of one person is
+    recorded. A marker in the wrong place still marks personal data.
+    """
+    for model in installed_models():
+        if inspect(model.cls).local_table is not table:
+            continue
+        try:
+            if personal_fields(model.cls):
+                return True
+        except TypeError:  # A marker below the field: still personal.
+            return True
+    return False
 
 
 def fixture_table(table: Table) -> bool:

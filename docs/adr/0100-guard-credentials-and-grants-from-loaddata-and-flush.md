@@ -1,6 +1,6 @@
 # 0100. Guard credentials and grants from `loaddata` and `flush`, and load new rows only
 
-- Status: Accepted; amended 2026-10-28 (at the end)
+- Status: Accepted; amended twice on 2026-10-28 (at the end)
 - Date: 2026-10-26
 
 ## Context
@@ -177,3 +177,34 @@ Three gaps 0.11 left, each proved by a test that failed on 0.11.1
   that name it are unchanged. Fixtures 0.11 wrote, with `{"value": ...}`,
   load too. The guard is not opened: loading a user still needs
   `--include-guarded`.
+
+## Amendment (2026-10-28, 0.12): password hashes no hasher makes, and dumps of personal data
+
+The security review of 0.12 found two gaps in the first amendment, each
+with a proof that failed on the merged branch (`test_sec12a_3_*`,
+`test_sec12a_7_*`):
+
+- **A fixture's password hash was checked for its shape only**
+  (SEC-12a-3). `PasswordHash` takes any `<algorithm>$...`, so under
+  production's hashers `loaddata --include-guarded` stored
+  `plaintext$hunter2`, a password in clear, and the test hasher's
+  one-iteration hash, a login a copy of the table gives up at once (it is
+  made again only at that user's next login). `ValueObjectType` gains
+  `loaded()`, the object a fixture's field makes, which a column type may
+  make stricter; `PasswordHashType`'s refuses a hash no hasher of
+  `AUTH.PASSWORD_HASHERS` identifies, or one it would make again more
+  strongly (`must_update`), saying why but never the hash. Unusable
+  passwords load as before. Re-hashing on load was the other option: it
+  needs the password, which a fixture does not hold.
+- **A dump of personal data was a read, and reads were not recorded**
+  (SEC-12a-7). The first amendment recorded only dumps of guarded tables,
+  "as reads are not"; but `privacy export` of one person, a read, is
+  recorded, and `dumpdata patients_patients` copied every patient out
+  with no one named. Where deployed, a dump of a table whose model has
+  fields marked `Personal` (`domainkit.ddd.personal`, as `privacy` reads
+  them) now needs a named operator and is recorded as `operator.dumpdata`,
+  with those tables (`personal_tables`). It is not refused, and needs no
+  `--include-guarded`: personal data is what an operator dumps to move or
+  inspect it, and the record is what was missing. In development and
+  tests nothing changes, as with the other operator commands.
+

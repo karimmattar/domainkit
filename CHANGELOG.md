@@ -247,6 +247,14 @@ and a status.
   table gives up at once. Unusable passwords load as before. **Fix:** load
   users where the hashers that made their hashes are configured, or give
   them unusable passwords in the fixture and reset them (SEC-12a-3).
+- **Breaking:** in staging and production, `dumpdata` of a table whose
+  model has fields marked `Personal` needs an operator named by
+  `--operator` or `DOMAINKIT_OPERATOR`, and is recorded as
+  `operator.dumpdata` with those tables (`personal_tables`), as a dump of
+  guarded tables is; no `--include-guarded` is needed. It copied every
+  person's data out with no one named and nothing recorded, where
+  `privacy export` of one person is recorded. **Fix:** set
+  `DOMAINKIT_OPERATOR` where it runs (SEC-12a-7).
 
 ## [0.11.2] - 2026-10-28
 
