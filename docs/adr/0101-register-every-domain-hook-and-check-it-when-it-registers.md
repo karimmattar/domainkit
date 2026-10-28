@@ -1,6 +1,6 @@
 # 0101. Register every domain hook, and check it when it registers
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-28 (at the end)
 - Date: 2026-10-28
 - Amends: [0085](0085-register-hooks-by-type-for-the-domains-that-have-them.md)
 
@@ -111,3 +111,31 @@ registered. A readiness round started a task and a timer for each of the
   `OperatorRecorder`, `DenialRecorder`, `TokenIssuer`) are looked up on
   configurations with `isinstance`, not inherited or broadcast; they are
   left as they are.
+
+## Amendment (2026-10-28, 0.12): what the security review of 0.12 found
+
+Three ways a hook was dropped, doubled, or cut short (SEC-12a-1, -4, -5):
+
+- **A named registration whose domain is not loaded is refused.** Outside
+  `ready()`, a point took `domain='label'` and kept the function for the
+  registry's generation of that moment. A domain that registered so at the
+  top of its `apps` module did it while `populate` imported the module,
+  before the domains changed: the next generation forgot it, silently,
+  and `privacy erase` never called its erasure hook. A label not installed
+  was kept the same way, and never called. Both now raise
+  `ImproperlyConfigured`; `domain=` serves code that runs once the domains
+  are loaded (a test, a command), and the refusal outside `ready()` says
+  so. Keeping such registrations across the change was the alternative:
+  it would need a rule for which registry and generation they belong to,
+  and still could not know that the label will be installed.
+- **A method a domain also registers is called once.** Following the
+  deprecation warning by registering the method itself
+  (`on_startup(self.startup)`) left the override in place, and the point
+  called both: two starts, two erasures audited as one record of twice
+  the copies, two outbox rows per commit. A point now leaves out an
+  override that the domain registered (an equal bound method), and the
+  warning says to register the function under a name of its own.
+- **A domain's exports keep every hook's copies.** Two hooks naming the
+  same kind were merged with `dict.update`, and the first one's copies
+  left the export while erasure summed both. Values of a kind named twice
+  are now listed together: a list's items, or the value itself.

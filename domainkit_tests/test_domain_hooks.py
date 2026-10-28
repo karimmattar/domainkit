@@ -316,7 +316,8 @@ def test_old_hook_methods_still_work_and_warn_once_at_their_line(
     ]
     assert [message for message, _ in found] == [
         f"Domain 'oldstyle': OldStyleConfig.{method} is a deprecated hook method; "
-        f"register the function with {REPLACED_HOOKS[method]}(...) in ready(). "
+        f"register the function with {REPLACED_HOOKS[method]}(...) in ready(), "
+        "under a name of its own. "
         "Hook methods are removed in domainkit 0.13."
         for method in methods
     ]

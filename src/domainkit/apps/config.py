@@ -394,7 +394,8 @@ def warn_replaced_hooks(config: DomainConfig) -> None:
         message = (
             f"Domain {config.label!r}: {owner.__qualname__}.{method} is a "
             f"deprecated hook method; register the function with {point}(...) "
-            f"in ready(). Hook methods are removed in domainkit {HOOKS_REMOVED_IN}."
+            f"in ready(), under a name of its own. Hook methods are removed in "
+            f"domainkit {HOOKS_REMOVED_IN}."
         )
         module_globals = vars(sys.modules[owner.__module__])
         # A method's own line; for another callable, the top of its module.

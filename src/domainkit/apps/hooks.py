@@ -224,16 +224,23 @@ class HookPoint[F: Callable[..., object]]:
     def _collect(
         self, registry: "DomainRegistry", registered: "_Registered[F]"
     ) -> Iterator[Hook[F]]:
-        """Each domain's registered hooks, then its overriding method, if any."""
+        """Each domain's registered hooks, then its overriding method, if any.
+
+        A method the domain registered too is called once, as registered.
+        """
         from domainkit.apps.config import DomainConfig
 
         for config in registry:
-            for function in registered.functions.get(config.label, ()):
+            functions = registered.functions.get(config.label, ())
+            for function in functions:
                 yield Hook(config.label, function)
-            if self.method is not None and getattr(
-                type(config), self.method
-            ) is not getattr(DomainConfig, self.method):
-                yield Hook(config.label, cast(F, getattr(config, self.method)))
+            if self.method is None or getattr(type(config), self.method) is getattr(
+                DomainConfig, self.method
+            ):
+                continue
+            override = getattr(config, self.method)
+            if override not in functions:  # Registered already: called once.
+                yield Hook(config.label, cast(F, override))
 
     def _current(self, registry: "DomainRegistry") -> "_Registered[F]":
         """What ``registry``'s domains registered since it last changed.
