@@ -925,6 +925,62 @@ async def test_what_a_read_sets_in_its_session_never_reaches_the_next() -> None:
     assert getattr(refused.value.orig, "sqlstate", None) == WRITE_REFUSED
 
 
+async def backend_state(backend: int) -> str | None:
+    """What PostgreSQL says ``backend`` is doing, read on another connection."""
+    async with connections.engine().connect() as connection:
+        state: str | None = await connection.scalar(
+            text("SELECT state FROM pg_stat_activity WHERE pid = :pid"),
+            {"pid": backend},
+        )
+    return state
+
+
+@postgres_only
+@pytest.mark.usefixtures("one_connection")
+@pytest.mark.parametrize(
+    "begin", ["BEGIN", "BEGIN ISOLATION LEVEL REPEATABLE READ", "START TRANSACTION"]
+)
+async def test_a_transaction_a_read_begins_never_reaches_the_next(begin: str) -> None:
+    """A transaction begun in SQL text ends with its read, unfinished.
+
+    The connection runs each statement on its own (``AUTOCOMMIT``), so
+    nothing else ends it: it would wait in the pool idle in its
+    transaction, holding its locks, and the next caller would run inside
+    it, under ``REPEATABLE READ`` on its snapshot, missing what was written
+    since.
+    """
+    async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
+        backend = await uow.session.scalar(text("SELECT pg_backend_pid()"))
+        await uow.session.execute(text(begin))
+        assert [gadget.name for gadget in await uow.gadgets.filter()] == ["first"]
+    assert await backend_state(backend) == "idle"
+    await store("second")
+
+    async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
+        assert await uow.session.scalar(text("SELECT pg_backend_pid()")) == backend
+        names = [gadget.name for gadget in await uow.gadgets.filter()]
+    assert sorted(names) == ["first", "second"]
+
+
+@postgres_only
+@pytest.mark.usefixtures("one_connection")
+async def test_a_failed_transaction_a_read_begins_keeps_its_connection() -> None:
+    """A statement that fails in it aborts it; the reset still ends it.
+
+    Without the rollback, the reset itself fails in the aborted transaction
+    and the pool closes the connection.
+    """
+    async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
+        backend = await uow.session.scalar(text("SELECT pg_backend_pid()"))
+        await uow.session.execute(text("BEGIN"))
+        with pytest.raises(DBAPIError):
+            await uow.session.execute(text("SELECT 1 / 0"))
+    assert await backend_state(backend) == "idle"
+
+    async with GadgetsUnitOfWork(reads=Reads.STATEMENTS) as uow:
+        assert await uow.session.scalar(text("SELECT pg_backend_pid()")) == backend
+
+
 @asyncpg_only
 @pytest.mark.usefixtures("one_connection")
 async def test_what_the_driver_sends_unseen_is_reset_too() -> None:
@@ -1041,7 +1097,8 @@ async def test_a_connection_whose_reset_fails_is_closed(
 async def test_drivers_that_cannot_count_queries_are_always_reset() -> None:
     """psycopg: the reset is never prepared, so it is one simple query.
 
-    A connection on its way out is left alone.
+    A connection on its way out is left alone; one in a transaction is
+    rolled back first.
     """
 
     class Psycopg:
@@ -1049,6 +1106,7 @@ async def test_drivers_that_cannot_count_queries_are_always_reset() -> None:
 
         def __init__(self) -> None:
             self.sent: list[tuple[str, object]] = []
+            self.info = SimpleNamespace(transaction_status=SimpleNamespace(name="IDLE"))
 
         async def execute(self, query: str, *, prepare: bool | None = None) -> None:
             self.sent.append((query, prepare))
@@ -1067,8 +1125,13 @@ async def test_drivers_that_cannot_count_queries_are_always_reset() -> None:
     )
     for state in (leaving, unsafe, staying):
         await greenlet_spawn(_reset_session, dbapi, record, state)
+    driver.info.transaction_status.name = "INTRANS"
+    await greenlet_spawn(_reset_session, dbapi, record, staying)
 
-    assert driver.sent == [(RESET_SESSION, False)]
+    assert driver.sent == [
+        (RESET_SESSION, False),
+        (f"ROLLBACK; {RESET_SESSION}", False),
+    ]
     assert record.info == {"domainkit_reads_dirty": False}
     assert (_sent(driver), _closed(driver)) == (None, False)
     driver.closed = True
