@@ -23,6 +23,24 @@ Upgrade one minor at a time, from its newest patch release (0.9.2, then
    for the deployment checks this version adds.
 6. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 0.11 to 0.12
+
+### Breaking changes
+
+Each changes what a project gets without changing its code. Each says how
+to keep the old behaviour, for as long as the project needs it.
+
+- **`dumpdata` leaves guarded tables out** (DATA-12). A dump of every
+  table leaves out users and their password hashes, groups, permissions,
+  content types, object grants, and dynamic settings, and says so on
+  standard error; naming one, or a domain that holds one, is refused.
+  **Fix:** dump them on purpose: `dumpdata --include-guarded`, which is
+  recorded in the audit trail and, in staging and production, needs
+  `--operator` or `DOMAINKIT_OPERATOR`. **To keep the old behaviour:**
+  `--include-guarded` on every dump that should hold them.
+
+### Deprecated, removed in 0.13
+
 ## 0.10 to 0.11
 
 ### Breaking changes
