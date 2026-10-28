@@ -793,7 +793,7 @@ def _content_length(scope: Scope) -> int | None:
 
     ASGI header names are lower case; the first such header counts.
     """
-    for name, value in scope.get("headers", ()):
+    for name, value in scope["headers"]:
         if name == b"content-length":
             return int(value) if value.isdigit() else None
     return None
@@ -814,7 +814,7 @@ def _replay(body: _Spool, receive: Receive) -> Receive:
         nonlocal done
         if done:
             return await receive()
-        part = ahead.pop() if ahead else await anext(parts, b"")
+        part = ahead.pop() if ahead else await anext(parts)  # Never empty.
         following = await anext(parts, None)
         if following is None:
             done = True

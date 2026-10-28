@@ -1113,6 +1113,45 @@ async def test_refresh_never_joins_a_computation_already_running() -> None:
     assert calls == ["stale", "fresh"]
 
 
+async def test_a_refresh_goes_on_when_its_caller_stops_waiting() -> None:
+    """It belongs to no caller, as get_or_set's computations: the value is stored."""
+    cache = make_cache()
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def slow() -> int:
+        started.set()
+        await release.wait()
+        return 2
+
+    refreshing = asyncio.create_task(cache.refresh("k", slow))
+    await started.wait()
+    refreshing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await refreshing
+    release.set()
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+    assert await cache.get("k") == 2
+
+
+async def test_a_refresh_works_under_compute_timeout_not_its_callers() -> None:
+    """Detached, as ``get_or_set``'s: ``COMPUTE_TIMEOUT`` bounds it, not the caller."""
+    seen: list[object] = []
+
+    async def factory() -> int:
+        seen.extend([deadlines.remaining(), deadlines.enforced()])
+        return 1
+
+    async with deadlines.timeout(5):
+        await make_cache(COMPUTE_TIMEOUT=60).refresh("k", factory)
+
+    left, enforced = seen
+    assert isinstance(left, float)
+    assert 5 < left <= 60
+    assert enforced is True
+
+
 async def test_a_refresh_that_fails_raises_and_leaves_the_value() -> None:
     """The factory's error reaches the caller; a store that fails is skipped."""
     store = FlakyStore()

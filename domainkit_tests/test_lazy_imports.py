@@ -173,6 +173,8 @@ def test_a_lazy_name_is_imported_once_then_kept(
 
     assert found is PurePath
     assert vars(module)["PurePath"] is PurePath
+    with pytest.raises(AttributeError, match="no attribute 'Path'"):
+        hook("Path")  # Not one of its names.
 
 
 @pytest.mark.anyio

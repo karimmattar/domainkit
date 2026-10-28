@@ -22,7 +22,7 @@ from sqlalchemy import insert, update
 from domainkit.cache import Cache, CacheUnavailable, MemoryStore
 from domainkit.conf import CacheConfig
 from domainkit.contrib.flags import store as store_module
-from domainkit.contrib.flags.store import CACHE_KEY, current, invalidate
+from domainkit.contrib.flags.store import CACHE_KEY, VERSION_KEY, current, invalidate
 from domainkit.contrib.flags.tables import flags
 from domainkit.db import connections
 from domainkit_tests.test_flags import (  # noqa: F401 - fixtures.
@@ -42,7 +42,9 @@ class Replicas:
 
     def __init__(self, store: MemoryStore) -> None:
         """One cache per replica, all over ``store``."""
-        self.caches = [Cache("default", CacheConfig(), store) for _ in range(REPLICAS)]
+        self.caches = [
+            Cache("default", CacheConfig(TTL=300), store) for _ in range(REPLICAS)
+        ]
 
     def __getitem__(self, alias: str) -> Cache:
         """The cache of the replica the caller runs in."""
@@ -152,6 +154,9 @@ def test_a_change_is_loaded_once_for_every_replica(
     during, served, after = asyncio.run(scenario())
 
     assert during == 1  # The writer's: no replica missed.
+    cache = replicas[0].caches[0]
+    counter = cache.store._entries[cache.make_key(VERSION_KEY)]  # type: ignore[attr-defined]
+    assert counter[1] is None  # The change counter never expires.
     assert set(served) == {False}  # The old rules, until the new ones landed.
     assert set(after) == {True}
 

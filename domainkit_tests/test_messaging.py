@@ -1605,6 +1605,32 @@ async def test_the_publishers_closer_closes_the_dispatchers_once_it_is_loaded(
     assert closed == [None]
 
 
+async def test_a_commits_follow_up_publishes_only_what_it_is_asked_to(
+    brokered: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``publish=False`` hands nothing on, broker or not; watchers see every commit."""
+    from domainkit.contrib.messaging import dispatch
+
+    submitted: list[tuple[str, list[uuid.UUID]]] = []
+    seen: list[tuple[str, list[dict[str, Any]]]] = []
+
+    def submit(config: object, database: str, ids: list[uuid.UUID]) -> None:
+        submitted.append((database, ids))
+
+    async def watcher(database: str, rows: list[dict[str, Any]]) -> None:
+        seen.append((database, rows))
+
+    monkeypatch.setattr(dispatch, "publish_committed", submit)
+    monkeypatch.setattr(outbox_module, "watchers", [watcher])
+    config = registry.settings(MessagingSettings)
+    row: dict[str, Any] = {"id": uuid.uuid4()}
+    await outbox_module.notify_committed(config, "other", [row], publish=False)
+    await outbox_module.notify_committed(config, "other", [row])
+
+    assert submitted == [("other", [row["id"]])]
+    assert seen == [("other", [row]), ("other", [row])]
+
+
 async def test_after_commit_failures_are_reported(
     broker_tables: MemoryBroker, monkeypatch: pytest.MonkeyPatch
 ) -> None:

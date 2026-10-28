@@ -348,4 +348,37 @@ async def test_without_a_writable_temporary_directory_the_body_stays_in_memory(
     assert await spool.read() == b"abcdef"
     assert [part async for part in spool.drain()] == [b"abcdef"]
     assert attempts == [True]  # Tried once for the body, not for every part.
-    assert "Could not spool a keyed body" in caplog.text
+    [record] = caplog.records
+    assert record.getMessage() == (
+        "Could not spool a keyed body to a temporary file; keeping it in memory"
+    )
+    assert record.exc_info is not None
+    assert isinstance(record.exc_info[1], PermissionError)
+
+
+@pytest.mark.anyio
+async def test_with_content_length_the_body_is_hashed_as_it_arrives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Not read back from the spool: the header gave the length first."""
+
+    async def never(self: idempotency._Spool) -> Any:  # noqa: ANN401 - unused.
+        raise AssertionError("read back")
+        yield b""  # pragma: no cover - makes it an async generator.
+
+    incoming: list[Message] = [
+        {"type": "http.request", "body": b"ab", "more_body": True},
+        {"type": "http.request"},  # No "body": an empty last part.
+    ]
+
+    async def receive() -> Message:
+        return incoming.pop(0)
+
+    monkeypatch.setattr(idempotency._Spool, "parts", never)
+    headers = [(b"host", b"api"), (b"content-length", b"2")]
+    scope = {"method": "POST", "path": "/raw", "headers": headers}
+    spool = idempotency._Spool(1024)
+
+    fingerprint = await idempotency._read_body(receive, scope, spool)
+
+    assert fingerprint == idempotency._hash("POST", "/raw", b"", b"ab")
