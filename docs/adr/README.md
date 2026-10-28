@@ -109,7 +109,7 @@ statuses, and the amendments they name.
 | [0097](0097-name-the-key-of-every-json-web-token-and-retire-keys-within-a-token-lifetime.md) | Name the key of every JSON Web Token, and retire keys within a token's lifetime | Accepted |
 | [0098](0098-share-login-throttles-and-fail-closed-where-deployed.md) | Share the attempt throttles, and fail closed, where deployed | Accepted |
 | [0099](0099-take-request-ids-from-trusted-proxies-only.md) | Take request ids from trusted proxies only, and drop a caller's own | Accepted |
-| [0100](0100-guard-credentials-and-grants-from-loaddata-and-flush.md) | Guard credentials and grants from `loaddata` and `flush`, and load new rows only | Accepted; amended 2026-10-28 (at the end) |
+| [0100](0100-guard-credentials-and-grants-from-loaddata-and-flush.md) | Guard credentials and grants from `loaddata` and `flush`, and load new rows only | Accepted; amended twice on 2026-10-28 (at the end) |
 | [0101](0101-register-every-domain-hook-and-check-it-when-it-registers.md) | Register every domain hook, and check it when it registers | Accepted |
 | [0102](0102-hold-if-match-on-the-unit-of-work-that-changes-the-aggregate.md) | Hold `If-Match` on the unit of work that changes the aggregate | Accepted |
 | [0104](0104-import-what-a-process-uses-on-first-use-and-gate-its-modules.md) | Import what a process uses on first use, and gate the modules each rung loads | Accepted |
