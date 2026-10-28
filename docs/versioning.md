@@ -78,6 +78,7 @@ lists each with its replacement.
 | Deprecated in 0.12 | Use instead | Removed in |
 | --- | --- | --- |
 | The hook methods of `DomainConfig` (`startup`, `shutdown`, `check`, `seed`, `erase_subject`, `export_subject`, `check_application`, `deployment_warnings`, `stage`, `committed`, `stage_transaction`, `transaction_committed`, `migrated`), overridden | The points `on_<method>` of `domainkit.apps.hooks` and `domainkit.db.hooks`, registered in `ready()`; 0.13 refuses a configuration that still defines one | 0.13 |
+| `domainkit.ddd.preconditions.expect_version` | `UnitOfWork.expect(model, id, versions)` | 0.13 |
 
 To find deprecated uses before upgrading, make the warning an error in the
 project's pytest settings:

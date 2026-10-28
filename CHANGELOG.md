@@ -30,8 +30,24 @@ and a status.
   `point.of(label, registry)` read a `DomainRegistry` of one's own
   (DSGN-03; ADR 0101).
 
+- `UnitOfWork.expect(model, id, versions)`: hold an aggregate to the
+  versions a client read, on the unit of work that changes it. Its
+  repositories check the aggregate when they first load it, and its
+  `commit` refuses before they did; it yields the `Expectation`
+  (`domainkit.ddd.preconditions`), whose `checked` says whether the block
+  loaded it. The resource routes use it: another unit of work a service
+  opens in a checked request (an audit record written first) commits as
+  it would, where 0.11 refused it until the aggregate was loaded
+  (DSGN-14; ADR 0102).
+
 ### Changed
 
+- A service that changes the aggregate an `If-Match` request names
+  through another unit of work than the one the route gave it is no
+  longer held to `If-Match`: the request still fails with the
+  `RuntimeError` it did, but that write stands, where 0.11 refused it.
+  Change aggregates through the unit of work the route passes (DSGN-14;
+  ADR 0102).
 - **Breaking:** a function registered on a point of `domainkit.db.hooks`
   with the wrong arguments, or not `async`, fails `setup()`. **Fix:**
   give it the point's arguments; `docs/upgrading.md` lists them (DSGN-03).
@@ -47,6 +63,10 @@ and a status.
   method's line, naming the domain and the point to register on
   (`on_startup`, ...). 0.13 removes them. `databases` and `holds_table`
   stay (DSGN-03; ADR 0101).
+- `domainkit.ddd.preconditions.expect_version`, which held every unit of
+  work and repository of the context to the expected versions. Use
+  `uow.expect(model, id, versions)`; it still works, warning
+  `DomainkitDeprecationWarning`, and 0.13 removes it (DSGN-14; ADR 0102).
 
 ## [0.11.1] - 2026-10-28
 
