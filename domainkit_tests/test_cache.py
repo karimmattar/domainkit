@@ -1046,6 +1046,93 @@ async def test_early_recomputation_can_be_turned_off() -> None:
     assert (await cache.store.get_many([cache.make_key("forever")])) == [b"2"]
 
 
+async def test_refresh_replaces_an_entry_without_a_miss() -> None:
+    """Callers are served the old value until the new one is stored (PERF-17).
+
+    Stored as ``get_or_set`` stores it, with its expiry and cost, so it is
+    still recomputed early; callers that come next share its computation.
+    """
+    clock = Clock()
+    cache = make_cache(clock=clock, TTL=300)
+    release = asyncio.Event()
+    calls: list[str] = []
+
+    async def old() -> int:
+        calls.append("old")
+        return 1
+
+    async def new() -> int:
+        calls.append("new")
+        await release.wait()
+        return 2
+
+    assert await cache.get_or_set("k", old) == 1
+    refreshing = asyncio.create_task(cache.refresh("k", new))
+    await asyncio.sleep(0)
+    assert await cache.get_or_set("k", old) == 1  # Served the old value.
+    release.set()
+    await within(refreshing)
+
+    assert await cache.get_or_set("k", old) == 2
+    assert calls == ["old", "new"]
+    payload, expires, delta = split(
+        (await cache.store.get_many([cache.make_key("k")]))[0] or b""
+    )
+    assert (payload, expires) == (b"2", clock.now + 300)
+    assert delta >= 0
+
+
+async def test_refresh_never_joins_a_computation_already_running() -> None:
+    """One that started first may have read what came before the change."""
+    cache = make_cache()
+    before, after = asyncio.Event(), asyncio.Event()
+    calls: list[str] = []
+
+    async def stale() -> str:
+        calls.append("stale")
+        await before.wait()
+        return "stale"
+
+    async def fresh() -> str:
+        calls.append("fresh")
+        await after.wait()
+        return "fresh"
+
+    reading = asyncio.create_task(cache.get_or_set("k", stale))
+    await asyncio.sleep(0)
+    refreshing = asyncio.create_task(cache.refresh("k", fresh))
+    await asyncio.sleep(0)
+    joining = asyncio.create_task(cache.get_or_set("k", stale))
+    await asyncio.sleep(0)
+    after.set()
+    before.set()
+
+    assert await within(reading) == "stale"
+    await within(refreshing)
+    assert await within(joining) == "fresh"  # Came after: shares the refresh.
+    assert calls == ["stale", "fresh"]
+
+
+async def test_a_refresh_that_fails_raises_and_leaves_the_value() -> None:
+    """The factory's error reaches the caller; a store that fails is skipped."""
+    store = FlakyStore()
+    cache = make_cache(store)
+
+    async def one() -> int:
+        return 1
+
+    async def broken() -> int:
+        raise RuntimeError("no value")
+
+    await cache.set("k", 0)
+    with pytest.raises(RuntimeError, match="no value"):
+        await cache.refresh("k", broken)
+    assert await cache.get("k") == 0
+    store.write_error = CacheError("read only")
+    await cache.refresh("k", one)  # Logged, as get_or_set does.
+    assert await cache.get("k") == 0
+
+
 async def test_unfit_entries_are_recomputed() -> None:
     """An entry that no longer validates is replaced, not returned."""
     cache = make_cache()

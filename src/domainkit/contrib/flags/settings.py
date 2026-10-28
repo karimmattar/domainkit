@@ -15,4 +15,4 @@ class FlagsSettings(BaseModel):
     CACHE_TTL: float = Field(default=30.0, gt=0)
     """Seconds a change can take to reach other processes (their own cache
     entry expiring); this process, and every process sharing a Redis
-    cache, see it at once."""
+    cache, see it at once, the entry replaced rather than deleted."""

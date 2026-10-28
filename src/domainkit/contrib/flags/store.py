@@ -2,8 +2,10 @@
 
 Every flag and stored setting is read in one query and cached as one entry
 (``FLAGS.CACHE``, for ``FLAGS.CACHE_TTL``). Changes made through
-``FlagsUnitOfWork`` delete the entry once they commit; processes with
-their own memory cache see them when their entry expires.
+``FlagsUnitOfWork`` replace the entry once they commit, loaded again by the
+process that made them: every process sharing the cache (Redis) is served
+the new one at once, and none of them misses and loads it too (PERF-17).
+Processes with their own memory cache see them when their entry expires.
 """
 
 import logging
@@ -29,6 +31,11 @@ from .tables import NAME_LENGTH, dynamic_settings, flags
 
 LABEL: Final = "flags"
 CACHE_KEY: Final = "domainkit.flags"
+VERSION_KEY: Final = "domainkit.flags.version"
+"""Counts the changes made through the store, in ``FLAGS.CACHE``: a change
+whose reload raced another's loads again, so the later one is not lost."""
+REFRESHES: Final = 3
+"""Reloads a change makes while others race it; then the entry is deleted."""
 NAME: Final = re.compile(rf"[a-z0-9][a-z0-9_.-]{{0,{NAME_LENGTH - 1}}}")
 """Flag names and setting keys: lower case, digits, ``_``, ``.``, ``-``."""
 logger = logging.getLogger(__name__)
@@ -51,8 +58,30 @@ async def current() -> Snapshot:
 
 
 async def invalidate(*_: object) -> None:
-    """Drop the cached flags; the next read loads them again."""
-    await caches[registry.settings(FlagsSettings).CACHE].delete(CACHE_KEY)
+    """Load the flags again and cache them in place of the old copy.
+
+    Replaced, not deleted: deleting it made every process sharing the cache
+    miss at once and load the flags together. The change is counted first
+    (``VERSION_KEY``); if another was counted while this one loaded and
+    stored, this load may have missed it and overwritten its entry, so it
+    loads again, up to ``REFRESHES`` times, then deletes the entry, as
+    before, and the next read loads. If loading fails, the entry is deleted
+    too, and the error raised.
+    """
+    config = registry.settings(FlagsSettings)
+    cache = caches[config.CACHE]
+    version = await cache.incr(VERSION_KEY, ttl=None)
+    try:
+        for _attempt in range(REFRESHES):
+            await cache.refresh(CACHE_KEY, _load, ttl=config.CACHE_TTL)
+            latest = await cache.get(VERSION_KEY)
+            if latest == version:
+                return
+            version = latest
+    except Exception:
+        await cache.delete(CACHE_KEY)
+        raise
+    await cache.delete(CACHE_KEY)
 
 
 async def _load() -> dict[str, Any]:

@@ -145,6 +145,7 @@ All the operations, on any cache:
 | `await cache.get(key, Type)` | The value as `Type`, or `None` on a miss. Without `Type`, plain JSON. |
 | `await cache.set(key, value, ttl=...)` | Store a value. |
 | `await cache.get_or_set(key, factory, Type, ttl=...)` | Return the cached value, or call `factory`, store its result, and return it. |
+| `await cache.refresh(key, factory, ttl=...)` | Call `factory` now and store its result in place of the cached value, as `get_or_set` stores it, for a value that changed: callers are served the old one until it lands, so none of them misses and calls `factory` too, in any process sharing the cache. A computation already running for `key` is not joined. Raises what `factory` raised, leaving the old value. |
 | `await cache.add(key, value)` | Store only if missing; `True` if it was. |
 | `await cache.get_many(keys, Type)`, `set_many(mapping)`, `delete_many(keys)` | Several keys in one round trip. |
 | `await cache.delete(key)` | Delete; `True` if it existed. |
