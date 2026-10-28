@@ -23,6 +23,7 @@ from hypothesis import settings as hypothesis_settings
 from sqlalchemy import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from domainkit import log as domainkit_log
 from domainkit import setup
 from domainkit.apps import registry
 from domainkit.apps.hooks import (
@@ -70,10 +71,14 @@ def isolated_registries() -> Iterator[None]:
 
     Apps register tasks and handlers when they are installed; a test that
     installs one must not leak them into the next test. Memory caches and
-    the principal cache start empty, too.
+    the principal cache start empty, too, and so do the throttled logs: an
+    app's shutdown writes what every one of them held back, so a line held
+    by an earlier test's app, still alive, would land in this test's log.
     """
     caches.reset()
     invalidate_all()
+    for throttled in list(domainkit_log._throttled_logs):
+        throttled._seen.clear()
     with registries_kept():
         yield
 
