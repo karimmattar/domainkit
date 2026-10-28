@@ -1,0 +1,47 @@
+# The image of {{ project }}: it serves config.asgi:application with uvicorn,
+# as a user without privileges who can write nothing in /app.
+#
+#   docker build -t {{ project }} .
+#   docker run --rm --env-file production.env {{ project }} python manage.py migrate
+#   docker run --rm -p 8000:8000 --env-file production.env {{ project }}
+#
+# Every setting comes from the environment ({{ prefix }}*), as
+# src/config/settings/production.py lists them; nothing secret is built in,
+# and .dockerignore keeps .env, databases, and caches out. WEB_CONCURRENCY
+# sets uvicorn's worker processes (one per core; one unless set).
+
+FROM scratch AS wheels
+# Empty. `docker build --build-context wheels=<directory> .` offers the wheels
+# in <directory> (a fork, a release candidate) ahead of the package index.
+
+FROM python:3.13-slim AS build
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1
+WORKDIR /app
+COPY pyproject.toml ./
+# The project's dependencies, from pyproject.toml, in a virtual environment.
+RUN --mount=type=bind,from=wheels,target=/wheels \
+    python -m venv /opt/venv \
+    && python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml', 'rb'))['project']['dependencies']))" > requirements.txt \
+    && /opt/venv/bin/pip install --find-links /wheels -r requirements.txt
+
+FROM python:3.13-slim
+ENV PATH=/opt/venv/bin:$PATH \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    DOMAINKIT_PROJECT_ROOT=/app \
+    {{ prefix }}SETTINGS_MODULE=config.settings.production
+RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin app
+WORKDIR /app
+COPY --from=build /opt/venv /opt/venv
+# Owned by root: the application reads its code and cannot change it.
+COPY . .
+USER 10001
+EXPOSE 8000
+# The limits docs/reference.md gives ("Server limits"); proxy headers are
+# the application's (TRUSTED_PROXIES), not uvicorn's.
+CMD ["uvicorn", "config.asgi:application", "--app-dir", "src", \
+     "--host", "0.0.0.0", "--port", "8000", "--loop", "uvloop", \
+     "--limit-concurrency", "1200", "--backlog", "2048", \
+     "--timeout-keep-alive", "5", "--timeout-graceful-shutdown", "10", \
+     "--h11-max-incomplete-event-size", "16384", "--ws-max-size", "1048576", \
+     "--no-proxy-headers", "--no-server-header"]

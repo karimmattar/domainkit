@@ -103,6 +103,7 @@ nav:
       - runtime.md
       - performance.md
   - Operations:
+      - deploying.md
       - operations.md
       - runbook.md
       - security.md

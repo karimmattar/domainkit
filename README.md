@@ -163,6 +163,9 @@ billing/
   manage.py
   .env                    selects config.settings.local on this machine
   .gitignore
+  Dockerfile              the image: uvicorn, as a user without privileges
+  .dockerignore
+  .github/workflows/ci.yml   ruff, check, migrations, tests, and the image
   src/config/settings/    base, local, test, and production settings
   src/config/urls.py      the root router: mount each domain's router here
   src/config/asgi.py      the application, for uvicorn

@@ -1,0 +1,17 @@
+# Kept out of the image: this machine's settings and data, and what tools
+# leave behind. Deployments set {{ prefix }}* themselves.
+.env
+*.sqlite3
+.git/
+.github/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+dist/
+Dockerfile
+.dockerignore

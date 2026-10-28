@@ -17,7 +17,8 @@ permissions, and a pytest plugin, around aggregates, commands, and events.
   [uploads](uploads.md), [mail](mail.md), [languages](i18n.md),
   [personal data](privacy.md), [testing](testing.md),
   [how it runs](runtime.md), and [performance](performance.md).
-- **Running one?** [Operations](operations.md), the [runbook](runbook.md),
+- **Running one?** The [deployment checklist](deploying.md),
+  [operations](operations.md), the [runbook](runbook.md),
   the [hardening checklist](security.md), the
   [threat model](threat-model.md), and [upgrading](upgrading.md).
 - **Looking something up?** [Settings, commands, and errors](reference.md),

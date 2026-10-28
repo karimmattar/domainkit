@@ -7,7 +7,9 @@ package installs::
     domainkit init billingAPI billing    # or names the directory
 
 The project gets settings for local work, tests, and production; its routes
-and ASGI application; ``manage.py``; and a first test. Its name sets the
+and ASGI application; ``manage.py``; a first test; a ``Dockerfile`` for its
+image; and a CI workflow (``.github/workflows/ci.yml``) that runs its
+checks and tests and builds the image. Its name sets the
 environment variable prefix (``billingAPI``: ``BILLING_API_``).
 """
 
@@ -23,7 +25,8 @@ from domainkit.management.commands.startdomain import render
 
 TEMPLATE_DIR: Final = Path(__file__).resolve().parents[1] / "templates" / "project"
 DOTFILE: Final = "dot-"
-"""Template files named ``dot-<name>`` become ``.<name>`` (``.env``, ``.gitignore``)."""
+"""Template files and top directories named ``dot-<name>`` become ``.<name>``
+(``.env``, ``.gitignore``, ``.github``)."""
 _PROJECT_NAME: Final = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
 _RELEASE: Final = re.compile(r"(\d+)\.(\d+)\.\d+")
 
@@ -47,7 +50,10 @@ def requirement(version: str) -> str:
 class Command(BaseCommand):
     """Generate a project directory that passes ``check`` and its tests."""
 
-    help = "Create a project: settings, routes, manage.py, and a first test."
+    help = (
+        "Create a project: settings, routes, manage.py, a first test, a "
+        "Dockerfile, and a CI workflow."
+    )
     requires_setup = False
 
     def add_arguments(self, parser: ArgumentParser) -> None:
@@ -88,6 +94,8 @@ class Command(BaseCommand):
         for path in render(TEMPLATE_DIR, target, context):
             if path.name.startswith(DOTFILE):
                 path.rename(path.with_name(f".{path.name.removeprefix(DOTFILE)}"))
+        for directory in target.glob(f"{DOTFILE}*/"):
+            directory.rename(directory.with_name(f".{directory.name[len(DOTFILE) :]}"))
         # Not formatted: init runs before the project's environment (and its
         # ruff) exists, so the templates are written as its ruff would.
         self.write(_next_steps(name, target))
