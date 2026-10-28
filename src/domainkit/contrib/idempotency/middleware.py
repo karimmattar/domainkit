@@ -60,6 +60,7 @@ import asyncio
 import hashlib
 import logging
 import secrets
+import sys
 import tempfile
 import threading
 from collections import deque
@@ -164,7 +165,19 @@ class _Spool:
             self._parts.append(data)
             return
         if self._file is None:
-            self._file = await asyncio.to_thread(_spill, self._parts)
+            try:
+                self._file = await asyncio.to_thread(_spill, self._parts)
+            except OSError:
+                # No writable temporary directory (a read-only root): keep
+                # it in memory, as 0.11 did, rather than fail the request.
+                logger.warning(
+                    "Could not spool a keyed body to a temporary file; keeping "
+                    "it in memory",
+                    exc_info=True,
+                )
+                self.limit = sys.maxsize  # Never try again for this body.
+                self._parts.append(data)
+                return
             self._parts = deque()
         await asyncio.to_thread(self._file.write, data)
 

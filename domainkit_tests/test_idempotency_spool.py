@@ -327,3 +327,25 @@ def test_an_application_that_raises_leaves_no_file(
     assert stored_keys() == []
     assert len(spooling) == 2
     assert all(file.closed for file in spooling)
+
+
+@pytest.mark.anyio
+async def test_without_a_writable_temporary_directory_the_body_stays_in_memory(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A read-only root keeps keyed bodies in memory, as 0.11 did, with a warning."""
+    attempts: list[bool] = []
+
+    def unwritable() -> IO[bytes]:
+        attempts.append(True)
+        raise PermissionError("read-only file system")
+
+    monkeypatch.setattr(tempfile, "TemporaryFile", unwritable)
+    spool = idempotency._Spool(2)
+    for part in (b"ab", b"cd", b"ef"):
+        await spool.write(part)
+
+    assert await spool.read() == b"abcdef"
+    assert [part async for part in spool.drain()] == [b"abcdef"]
+    assert attempts == [True]  # Tried once for the body, not for every part.
+    assert "Could not spool a keyed body" in caplog.text
