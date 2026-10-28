@@ -228,7 +228,7 @@ pythonpath = ["."]
 addopts = "-ra --strict-markers --strict-config -p pytester"
 filterwarnings = ["error"]
 markers = [
-    "reads_own_source: reads domainkit's source text or the frames of its calls, which mutmut rewrites; mutation runs leave it out",
+    "reads_own_source: reads domainkit's source text, the frames of its calls, or the modules importing it loads, which mutmut rewrites; mutation runs leave it out",
 ]
 # The slowest test takes seconds; one that runs two minutes hangs. The thread
 # method stops even a hang inside C code or another thread: it prints every

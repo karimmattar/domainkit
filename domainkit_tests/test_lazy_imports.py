@@ -109,6 +109,7 @@ def run(script: str, path: Path | None = None) -> list[str]:
     return done.stdout.splitlines()
 
 
+@pytest.mark.reads_own_source
 def test_importing_domainkit_http_loads_neither_fastapi_nor_sqlalchemy() -> None:
     """The package's names are imported when first read, and are the same objects."""
     script = textwrap.dedent(
