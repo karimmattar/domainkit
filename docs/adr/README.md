@@ -114,6 +114,7 @@ statuses, and the amendments they name.
 | [0102](0102-hold-if-match-on-the-unit-of-work-that-changes-the-aggregate.md) | Hold `If-Match` on the unit of work that changes the aggregate | Accepted |
 | [0104](0104-import-what-a-process-uses-on-first-use-and-gate-its-modules.md) | Import what a process uses on first use, and gate the modules each rung loads | Accepted |
 | [0105](0105-fingerprint-keyed-bodies-as-they-arrive-and-spool-them-past-a-threshold.md) | Fingerprint keyed bodies as they arrive, and spool them past a threshold | Accepted |
+| [0108](0108-keep-the-full-domain-as-the-default-and-give-new-projects-an-image-and-ci.md) | Keep the full domain as `startdomain`'s default; give new projects an image and CI | Accepted |
 
 ### Decisions still without a record
 

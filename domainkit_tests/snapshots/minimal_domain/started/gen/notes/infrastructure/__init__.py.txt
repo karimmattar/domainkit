@@ -1,0 +1,1 @@
+"""Adapters of the notes domain: persistence and other I/O."""

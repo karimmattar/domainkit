@@ -1,0 +1,19 @@
+"""Tables of the notes domain, derived from the model and mapped onto it.
+
+``table_for`` reads each class's fields, so a field is declared once and the
+model stays free of SQLAlchemy.
+"""
+
+from domainkit.db import map_imperatively, table_for
+from gen.notes.domain.model import Label, Note
+
+notes = table_for(Note, "notes_notes", domain="notes")
+
+
+def start_mappers() -> None:
+    """Map the aggregates onto their tables (idempotent)."""
+    map_imperatively(Note, notes)
+    map_imperatively(Label, labels)
+
+
+labels = table_for(Label, "notes_labels", domain="notes")

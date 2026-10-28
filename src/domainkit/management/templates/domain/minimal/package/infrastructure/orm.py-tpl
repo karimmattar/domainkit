@@ -1,0 +1,16 @@
+"""Tables of the {{ domain }} domain, derived from the model and mapped onto it.
+
+``table_for`` reads each class's fields, so a field is declared once and the
+model stays free of SQLAlchemy.
+"""
+
+from domainkit.db import map_imperatively, table_for
+
+from {{ package }}.domain.model import {{ Aggregate }}
+
+{{ aggregates }} = table_for({{ Aggregate }}, "{{ table }}", domain="{{ domain }}")
+
+
+def start_mappers() -> None:
+    """Map the aggregates onto their tables (idempotent)."""
+    map_imperatively({{ Aggregate }}, {{ aggregates }})

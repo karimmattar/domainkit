@@ -56,6 +56,37 @@ and a status.
   served the old value until it lands, so none of them misses, in any
   process sharing the cache. A computation already running for the key is
   not joined (PERF-17).
+- `startdomain <name> --minimal` writes a smaller domain, in the same four
+  layers: an aggregate with a name that must not be blank, commands to
+  create and rename it, its table, its resource, fakes, and two tests. A
+  newcomer meets 18 files and 18 names from domainkit, where the full
+  domain has 21 and 36. `startaggregate`, `addcommand`, `addquery`, and
+  `addevent` grow it, starting `domain/events.py` and
+  `application/handlers.py` when the domain has none. The default stays
+  the full domain, which the tutorial builds on; the README's quick start
+  uses `--minimal` (DSGN-11; ADR 0108).
+- `init` writes a `Dockerfile` (dependencies in a build stage, the code
+  owned by root, run as uid 10001 with uvicorn and the limits of "Server
+  limits"), a `.dockerignore` that keeps `.env` and SQLite files out, and
+  `.github/workflows/ci.yml` (ruff, `check`, migrations checked, the
+  tests, and the image built), its actions pinned as domainkit's CI pins
+  them. CI's build job builds and runs a new project's image with the
+  wheel. `docs/deploying.md` is the checklist from a project that passes
+  to one in production; it says that probes must send a `Host` of
+  `ALLOWED_HOSTS`, or are answered 400 (INFRA-09; ADR 0108).
+- In staging and production `check` says what it cannot check: HTTPS
+  ends in front of the application, and a request's scheme comes from the
+  `PROXY_SCHEME_HEADER` of `TRUSTED_PROXIES`, or from the connection
+  alone, where every request counts as plain HTTP (`security.I001`,
+  information: it never fails `check --deploy`) (INFRA-08).
+- How-to recipes (`docs/recipes.md`), each run as written by the tests: a
+  payment that runs again when it loses a race (`uow.run`, `Retry`,
+  `SERIALIZABLE`, `get_many_for_update`), work that commits once per
+  message (`@inbox`), replacing the JSON Web Token key (`PREVIOUS_KEYS`),
+  running behind a proxy (`TRUSTED_PROXIES`, request ids), and reading
+  from a replica (DOCS-05).
+- `docs/from-django.md` maps what a Django or Django REST framework user
+  reaches for to its name here, and its page (DOCS-12, DOCS-10).
 
 ### Changed
 
@@ -129,6 +160,12 @@ and a status.
   1.6 million draws on 8 threads, but nothing documents that, and two
   connections with one key would share one count; the key is taken under
   a lock (CONC-09).
+- `migrate`, `makemigrations`, and `showmigrations` printed the driver's
+  traceback when a database could not be reached (174 lines for a refused
+  connection), naming no database. They say it on one line, and exit
+  with status 1: `Database 'default' cannot be reached at
+  postgresql+asyncpg://app:***@db/app (ConnectionRefusedError: ...)`,
+  the URL without its password, and the driver's own reason (INFRA-08).
 
 ## [0.11.2] - 2026-10-28
 

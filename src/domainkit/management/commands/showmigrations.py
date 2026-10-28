@@ -6,6 +6,7 @@ from domainkit.conf import DEFAULT_DB_ALIAS
 from domainkit.db import migrations
 from domainkit.db.routing import router
 from domainkit.management.base import BaseCommand
+from domainkit.management.commands.migrate import unreachable
 
 
 class Command(BaseCommand):
@@ -27,7 +28,10 @@ class Command(BaseCommand):
         for alias in aliases:
             if len(aliases) > 1 or alias != database:
                 self.write(f"{alias}:")
-            revisions = migrations.status(alias)
+            try:
+                revisions = migrations.status(alias)
+            except migrations.DatabaseUnreachable as exc:
+                raise unreachable(alias, exc) from None
             if not revisions:
                 self.write("No migrations.")
             for revision in revisions:

@@ -49,6 +49,11 @@ each layer to its own imports:
 | `infrastructure/` | The table, derived from the aggregate's fields, and the SQLAlchemy unit of work. |
 | `api/` | `routes.py`: the resource, its filters, and who may call it. |
 
+This is the fuller domain the next parts build on: notes, an owner, an
+event. `startdomain <name> --minimal` writes a smaller one, for a domain of
+your own: an aggregate with a name, two commands, a table, a resource, and
+two tests ([resources.md](../resources.md#generators)).
+
 `startdomain` added the domain to `INSTALLED_DOMAINS` and mounted its
 router at `/api/v1/accounts` in `src/config/urls.py`. The resource is
 `/accounts` within it, so its URL is `/api/v1/accounts/accounts`.

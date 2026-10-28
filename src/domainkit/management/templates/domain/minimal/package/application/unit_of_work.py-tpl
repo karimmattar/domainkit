@@ -1,0 +1,13 @@
+"""Transaction boundary of the {{ domain }} use cases (a port)."""
+
+from abc import ABC
+
+from domainkit.ddd import UnitOfWork
+
+from {{ package }}.domain.model import {{ Aggregate }}Repository
+
+
+class {{ Domain }}UnitOfWork(UnitOfWork, ABC):
+    """Repositories the {{ domain }} use cases may touch in one transaction."""
+
+    {{ aggregates }}: {{ Aggregate }}Repository

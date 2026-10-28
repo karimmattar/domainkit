@@ -74,6 +74,14 @@ nav:
       - tutorial/3-permissions.md
       - tutorial/4-events.md
       - tutorial/5-testing-and-deploying.md
+  - How-to:
+      - recipes.md
+      - from-django.md
+      - recipes/payments.md
+      - recipes/exactly-once.md
+      - recipes/jwt-keys.md
+      - recipes/behind-a-proxy.md
+      - recipes/read-replica.md
   - Guides:
       - resources.md
       - queries.md
@@ -103,6 +111,7 @@ nav:
       - runtime.md
       - performance.md
   - Operations:
+      - deploying.md
       - operations.md
       - runbook.md
       - security.md

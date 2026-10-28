@@ -1,0 +1,52 @@
+"""The Label aggregate: its model, its use cases, and its resource."""
+
+import pytest
+from gen.notes.application import services
+from gen.notes.application.commands import CreateLabel, DeleteLabel
+from gen.notes.domain.events import LabelCreated, LabelDeleted
+from gen.notes.domain.model import Label, LabelNotFound
+
+from domainkit.testing import TestClient
+
+from .fakes import FakeNotesUnitOfWork, new_label_request
+
+URL = "/api/v1/notes/labels"
+
+
+def test_create_and_delete_record_events() -> None:
+    """A new label records LabelCreated; deleting it, LabelDeleted."""
+    label = Label.create(title="text")
+    label.delete()
+
+    created, deleted = label.pull_events()
+    assert isinstance(created, LabelCreated)
+    assert isinstance(deleted, LabelDeleted)
+    assert created.label_id == deleted.label_id == label.id
+
+
+@pytest.mark.anyio
+async def test_use_cases_store_and_remove() -> None:
+    """Creating stores and commits; deleting removes; a missing one is not found."""
+    uow = FakeNotesUnitOfWork()
+
+    label = await services.create_label(CreateLabel(title="text"), uow)
+    assert uow.labels.items == {label.id: label}
+    await services.delete_label(DeleteLabel(label_id=label.id), uow)
+
+    assert uow.labels.items == {}
+    with pytest.raises(LabelNotFound):
+        await services.delete_label(DeleteLabel(label_id=label.id), uow)
+
+
+def test_resource(admin_client: TestClient) -> None:
+    """Create, read, list, and delete over HTTP."""
+    created = admin_client.post(URL, json=new_label_request())
+    assert created.status_code == 201, created.json()
+    item = created.headers["location"]
+
+    assert admin_client.get(item).json() == created.json()
+    assert [each["id"] for each in admin_client.get(URL).json()["items"]] == [
+        created.json()["id"]
+    ]
+    assert admin_client.delete(item).status_code == 204
+    assert admin_client.get(item).status_code == 404

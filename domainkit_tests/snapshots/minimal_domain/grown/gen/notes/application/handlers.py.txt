@@ -1,0 +1,12 @@
+"""Reactions to the notes events."""
+
+import logging
+
+from gen.notes.domain.events import NoteRead
+
+logger = logging.getLogger(__name__)
+
+
+async def on_note_read(event: NoteRead) -> None:
+    """React to note read: idempotently, as it may run more than once."""
+    logger.info("NoteRead %s", event.note_id)

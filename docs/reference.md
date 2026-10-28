@@ -584,6 +584,14 @@ The production settings that `init` create avoid the first three, and ask
 for `TRUSTED_PROXIES`: leave it empty only when callers connect directly.
 They count requests, passwords, and codes in Redis, from `REDIS_URL`.
 
+There `check` also says, as `security.I001` (information: never a
+failure, nothing to silence), what it cannot check: HTTPS. The
+application serves plain HTTP, and TLS ends in front of it, where no
+setting reaches. The line names where a request's scheme comes from: the
+`PROXY_SCHEME_HEADER` of `TRUSTED_PROXIES`, which the proxy must set over
+a caller's, or the connection alone, where every request counts as plain
+HTTP ([security.md](security.md), "The edge").
+
 ## Middleware
 
 The order matters; this is the order to keep, outermost first. The project
@@ -1041,7 +1049,7 @@ with a `Command(BaseCommand)` class; `handle` may be `async`.
 | `broker` | `check\|declare`, `[ALIAS ...]` | Connect to brokers (all by default), or declare the exchange and every queue the worker's tasks use on `MESSAGING.BROKER`. |
 | `compilemessages` | `[DIRECTORY ...]`, `-l/--locale`, `--check` | Compile translation catalogs (`.po`) to `.mo` files: in the directories named, or in `LOCALE_PATHS` and each installed domain's `locale` directory. `--check` writes nothing and fails if one is missing or out of date ([i18n.md](i18n.md)). |
 | `cache` | `check\|clear`, `[ALIAS ...]`, `--all` | Ping caches (all by default), or delete every key of the named caches, all versions, in their namespace only. Clearing needs aliases or `--all`. |
-| `startdomain` | `name`, `--aggregate`, `--plural`, `--parent`, `--tests-dir`, `--manual` | Generate a bounded context and its tests ([resources.md](resources.md#generators)). In a project laid out as `init` makes it, it also adds the domain to `INSTALLED_DOMAINS` and mounts its router; `--manual`, or a layout it does not recognise, prints those steps instead. Its next steps end with a login and a first `curl` of the resource, at `/api/v1/<name>/<plural>`. |
+| `startdomain` | `name`, `--aggregate`, `--plural`, `--parent`, `--tests-dir`, `--manual`, `--minimal` | Generate a bounded context and its tests ([resources.md](resources.md#generators)); `--minimal`, a smaller one: an aggregate with a name, create and rename, a table, a resource, and two tests. In a project laid out as `init` makes it, it also adds the domain to `INSTALLED_DOMAINS` and mounts its router; `--manual`, or a layout it does not recognise, prints those steps instead. Its next steps end with a login and a first `curl` of the resource, at `/api/v1/<name>/<plural>`. |
 | `startaggregate` | `domain`, `aggregate`, `--field name:kind[:options][?]`, `--plural`, `--parent`, `--tests-dir` | Add an aggregate to a domain: model, events, commands, use cases, table, repository, resource, fakes, and tests. `--help` lists the field kinds. |
 | `addcommand` | `domain`, `aggregate`, `command`, `--field`, `--event`, `--plural`, `--parent`, `--tests-dir` | Add a task command: the aggregate's method and event, the command, its use case, its route, and tests. |
 | `addquery` | `domain`, `aggregate`, `query`, `--by`, `--path`, `--plural`, `--parent`, `--tests-dir` | Add a query that finds aggregates by fields: the message and handler (`application/queries.py`), its route, and tests. |

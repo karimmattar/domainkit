@@ -1,0 +1,18 @@
+"""Requests to change {{ aggregates_title }}, built by the API from validated input."""
+
+from uuid import UUID
+
+from domainkit.ddd import Command
+
+
+class Create{{ Aggregate }}(Command):
+    """Create a {{ aggregate }} called ``name``."""
+
+    name: str
+
+
+class Rename{{ Aggregate }}(Command):
+    """Give a {{ aggregate }} another name."""
+
+    {{ aggregate }}_id: UUID
+    name: str

@@ -1,0 +1,23 @@
+"""The {{ domain }} unit of work on the database, and its repositories."""
+
+from domainkit.db import SqlAlchemyRepository, SqlAlchemyUnitOfWork
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from {{ package }}.application.unit_of_work import {{ Domain }}UnitOfWork
+from {{ package }}.domain.model import {{ Aggregate }}, {{ Aggregate }}Id, {{ Aggregate }}Repository
+
+
+class SqlAlchemy{{ Aggregate }}Repository(
+    SqlAlchemyRepository[{{ Aggregate }}, {{ Aggregate }}Id], {{ Aggregate }}Repository
+):
+    """{{ Aggregate }} storage in the ``{{ table }}`` table."""
+
+    model = {{ Aggregate }}
+
+
+class SqlAlchemy{{ Domain }}UnitOfWork(SqlAlchemyUnitOfWork, {{ Domain }}UnitOfWork):
+    """One database transaction over the {{ domain }} repositories."""
+
+    def create_repositories(self, session: AsyncSession) -> None:
+        """Bind the repositories to ``session``."""
+        self.{{ aggregates }} = SqlAlchemy{{ Aggregate }}Repository(session)

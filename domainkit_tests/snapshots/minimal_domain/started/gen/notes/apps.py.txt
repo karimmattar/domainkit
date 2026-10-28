@@ -1,0 +1,12 @@
+"""Installation hooks for the notes domain (Django's ``AppConfig``)."""
+
+from domainkit.apps import DomainConfig
+from gen.notes.infrastructure.orm import start_mappers
+
+
+class NotesConfig(DomainConfig):
+    """Map the notes tables once settings are loaded."""
+
+    def ready(self) -> None:
+        """Connect the layers."""
+        start_mappers()
