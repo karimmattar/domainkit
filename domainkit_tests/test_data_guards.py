@@ -14,15 +14,16 @@ import json
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
-from sqlalchemy import Column, MetaData, Table, Uuid, insert, select
+from sqlalchemy import Column, MetaData, String, Table, Uuid, insert, select
 
 from domainkit.conf import override_settings
 from domainkit.contrib.auth.models import PasswordHash
 from domainkit.contrib.auth.tables import (
     DEFAULT_USER_TABLES,
+    PasswordHashType,
     group_permissions,
     groups,
     mfa_devices,
@@ -36,6 +37,7 @@ from domainkit.contrib.contenttypes.tables import content_types
 from domainkit.db import connections
 from domainkit.db import fixtures as fixtures_module
 from domainkit.management import CommandError, call_command
+from domainkit.management.commands.dumpdata import Command as DumpCommand
 from domainkit.management.commands.flush import Command as FlushCommand
 from domainkit.management.commands.loaddata import Command as LoadCommand
 from domainkit.management.operators import Operator, require_named
@@ -376,6 +378,9 @@ def test_the_commands_say_what_each_option_does() -> None:
     flushing = " ".join(
         FlushCommand().create_parser("manage.py", "flush").format_help().split()
     )
+    dumping = " ".join(
+        DumpCommand().create_parser("manage.py", "dumpdata").format_help().split()
+    )
 
     for said in (
         "FIXTURE [FIXTURE ...]",
@@ -389,6 +394,25 @@ def test_the_commands_say_what_each_option_does() -> None:
         ),
     ):
         assert said in loading
+    for said in (
+        "[TABLE_OR_DOMAIN ...]",
+        (
+            "TABLE_OR_DOMAIN tables or domain labels (default: every table of "
+            "the database) "
+        ),
+        "--database DATABASE the alias to read",
+        (
+            "-o, --output OUTPUT a new file to write it to (mode 0600); default: "
+            "standard output"
+        ),
+        "--indent INDENT spaces per level (default: 2)",
+        (
+            "--include-guarded dump guarded tables too: users and their password "
+            "hashes, permissions, grants, dynamic settings, ..."
+        ),
+        "--operator",
+    ):
+        assert said in dumping
     for said in (
         "--database DATABASE the alias to empty",
         "--dry-run only say what would be deleted",
@@ -427,6 +451,11 @@ def test_dumps_leave_guarded_tables_out(stored_user: str, tmp_path: Path) -> Non
             "hold logins, password hashes, permissions, and secrets. Nothing was "
             "written; repeat with --include-guarded if that is what you mean."
         )
+    with pytest.raises(CommandError) as both:
+        run("dumpdata", users.name, user_permissions.name)
+    assert str(both.value).startswith(
+        f"Guarded tables ({users.name}, {user_permissions.name}) hold logins, "
+    )
     assert not (tmp_path / "out.json").exists()
     assert operator_rows() == []
 
@@ -446,13 +475,21 @@ def test_guarded_dumps_are_audited(
     printed = run("dumpdata", users.name, "--include-guarded", "--operator", "alice")
     run("dumpdata", users.name, "--include-guarded", "-o", str(path))
     sqlite = {"default": {"URL": f"sqlite+aiosqlite:///{tmp_path / 'other.db'}"}}
-    with (
-        override_settings(ENVIRONMENT="staging", DATABASES=sqlite),
-        pytest.raises(CommandError, match=r"^Name the operator who runs dumpdata"),
-    ):
-        run("dumpdata", users.name, "--include-guarded")
+    with override_settings(DATABASES=sqlite):
+        run("migrate")
+        with (
+            override_settings(ENVIRONMENT="staging"),
+            pytest.raises(CommandError, match=r"^Name the operator who runs dumpdata"),
+        ):
+            run("dumpdata", users.name, "--include-guarded")
+        with override_settings(ENVIRONMENT="staging"):
+            named = run(
+                "dumpdata", users.name, "--include-guarded", "--operator", "ops"
+            )
 
     printing, writing = operator_rows()
+    assert printed.startswith('{\n  "format": "domainkit.fixture",\n')  # --indent 2.
+    assert json.loads(named)["tables"] == [{"table": users.name, "rows": []}]
     assert (printing["action"], printing["actor"]) == (
         "operator.dumpdata",
         "operator:alice",
@@ -529,3 +566,56 @@ def test_the_trail_counts_what_a_load_replaced_not_what_it_planned(
     (loaded,) = operator_rows()
     assert loaded["details"]["replaced"] == 1
     assert loaded["details"]["tables"] == {kinds.name: {"rows": 1, "replaced": 1}}
+
+
+def test_a_load_returns_what_it_wrote_and_holds_its_tables(
+    stored_user: str,
+) -> None:
+    """Each table's rows, those it replaced, and whether it is guarded.
+
+    On PostgreSQL the load holds each table in ``SHARE ROW EXCLUSIVE``
+    mode until it commits, so no other writer changes what it counted.
+    """
+    row = {**stored_user_row(), "first_name": "Mal"}
+    tables = [(users, [row]), (kinds, [{"id": 1, "label": "again"}])]
+    seen: list[set[str]] = []
+    lock = fixtures_module._lock
+
+    async def held(connection: Any, locked: Any) -> None:  # noqa: ANN401
+        await lock(connection, locked)
+        if connection.dialect.name == "postgresql":
+            modes = await connection.exec_driver_sql(
+                "SELECT c.relname FROM pg_locks l JOIN pg_class c "
+                "ON c.oid = l.relation WHERE l.pid = pg_backend_pid() "
+                "AND l.mode = 'ShareRowExclusiveLock'"
+            )
+            seen.append({name for (name,) in modes})
+
+    async def load() -> list[Any]:
+        fixtures_module._lock = held  # type: ignore[assignment]
+        try:
+            return await fixtures_module.load("default", tables, replace=True)
+        finally:
+            fixtures_module._lock = lock
+
+    loaded = asyncio.run(load())
+
+    assert loaded == [
+        fixtures_module.TableLoad(users.name, 1, 1, guarded=True),
+        fixtures_module.TableLoad(kinds.name, 1, 1, guarded=False),
+    ]
+    assert stored_user_row()["first_name"] == "Mal"
+    if seen:  # PostgreSQL.
+        assert seen == [{users.name, kinds.name}]
+
+
+def test_password_hash_columns_keep_their_length_and_their_nulls() -> None:
+    """``PasswordHashType(length=...)`` sizes the column; a null stays null."""
+    hashes = PasswordHashType(length=128)
+    column: Column[PasswordHash] = Column("hash", hashes)
+
+    assert cast("String", PasswordHashType().impl_instance).length == 255
+    assert cast("String", hashes.impl_instance).length == 128
+    assert repr(hashes) == "PasswordHashType(length=128)"
+    assert fixtures_module._encoded(column, None) is None
+    assert fixtures_module._encoded(column, PasswordHash(STORED_HASH)) == STORED_HASH
