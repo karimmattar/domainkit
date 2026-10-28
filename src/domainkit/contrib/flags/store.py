@@ -1,11 +1,15 @@
 """Reading flags and dynamic settings, through the cache.
 
 Every flag and stored setting is read in one query and cached as one entry
-(``FLAGS.CACHE``, for ``FLAGS.CACHE_TTL``). Changes made through
-``FlagsUnitOfWork`` replace the entry once they commit, loaded again by the
-process that made them: every process sharing the cache (Redis) is served
-the new one at once, and none of them misses and loads it too (PERF-17).
-Processes with their own memory cache see them when their entry expires.
+(``FLAGS.CACHE``, for ``FLAGS.CACHE_TTL``), under the count of changes made
+so far (``VERSION_KEY``): readers read the count, then its entry. A change
+made through ``FlagsUnitOfWork`` loads the flags into the next count's entry
+once it commits, then counts itself: every process sharing the cache
+(Redis) moves to the new entry at once, and none of them misses and loads
+it too (PERF-17). A load that read the tables before a change can only
+store under an earlier count, which no one reads once the change is
+counted (SEC-12b-1). Processes with their own memory cache see a change
+when their entry expires.
 """
 
 import logging
@@ -18,7 +22,7 @@ from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import select
 
 from domainkit.apps import registry
-from domainkit.cache import caches
+from domainkit.cache import Cache, CacheError, caches
 from domainkit.db import connections
 from domainkit.db.routing import router
 from domainkit.exceptions import ImproperlyConfigured
@@ -32,10 +36,8 @@ from .tables import NAME_LENGTH, dynamic_settings, flags
 LABEL: Final = "flags"
 CACHE_KEY: Final = "domainkit.flags"
 VERSION_KEY: Final = "domainkit.flags.version"
-"""Counts the changes made through the store, in ``FLAGS.CACHE``: a change
-whose reload raced another's loads again, so the later one is not lost."""
-REFRESHES: Final = 3
-"""Reloads a change makes while others race it; then the entry is deleted."""
+"""Counts the changes made through the store, in ``FLAGS.CACHE``; the
+flags' entry is kept under the count (``entry_key``)."""
 NAME: Final = re.compile(rf"[a-z0-9][a-z0-9_.-]{{0,{NAME_LENGTH - 1}}}")
 """Flag names and setting keys: lower case, digits, ``_``, ``.``, ``-``."""
 logger = logging.getLogger(__name__)
@@ -51,37 +53,55 @@ class Snapshot:
 
 
 async def current() -> Snapshot:
-    """The flags and settings, from the cache or, on a miss, the database."""
-    config = registry.settings(FlagsSettings)
-    data = await caches[config.CACHE].get_or_set(CACHE_KEY, _load, ttl=config.CACHE_TTL)
-    return Snapshot(flags=data["flags"], settings=data["settings"])
+    """The flags and settings, from the cache or, on a miss, the database.
 
-
-async def invalidate(*_: object) -> None:
-    """Load the flags again and cache them in place of the old copy.
-
-    Replaced, not deleted: deleting it made every process sharing the cache
-    miss at once and load the flags together. The change is counted first
-    (``VERSION_KEY``); if another was counted while this one loaded and
-    stored, this load may have missed it and overwritten its entry, so it
-    loads again, up to ``REFRESHES`` times, then deletes the entry, as
-    before, and the next read loads. If loading fails, the entry is deleted
-    too, and the error raised.
+    Read under the count of changes made so far: two cache reads where a
+    Redis cache is used, the count, then its entry.
     """
     config = registry.settings(FlagsSettings)
     cache = caches[config.CACHE]
-    version = await cache.incr(VERSION_KEY, ttl=None)
+    key = entry_key(await _count(cache))
+    data = await cache.get_or_set(key, _load, ttl=config.CACHE_TTL)
+    return Snapshot(flags=data["flags"], settings=data["settings"])
+
+
+def entry_key(count: int) -> str:
+    """The key of the flags' entry after ``count`` changes."""
+    return f"{CACHE_KEY}:{count}"
+
+
+async def _count(cache: Cache) -> int:
+    """The changes counted so far; 0 while the cache cannot say.
+
+    Without the cache, ``get_or_set`` reads the database anyway.
+    """
     try:
-        for _attempt in range(REFRESHES):
-            await cache.refresh(CACHE_KEY, _load, ttl=config.CACHE_TTL)
-            latest = await cache.get(VERSION_KEY)
-            if latest == version:
-                return
-            version = latest
-    except Exception:
-        await cache.delete(CACHE_KEY)
-        raise
-    await cache.delete(CACHE_KEY)
+        count = await cache.get(VERSION_KEY)
+    except CacheError:
+        return 0
+    return int(count or 0)
+
+
+async def invalidate(*_: object) -> None:
+    """Load the changed flags into the next count's entry, then count the change.
+
+    Readers move to the new entry only once it is there, so none of them
+    misses (PERF-17); a load that read the tables before the change stores
+    under an earlier count, which no one reads any more (SEC-12b-1). If
+    another change was counted meanwhile, its count is the one readers
+    use: it is loaded again, after this change was counted. A load that
+    fails still counts the change, so readers load the new entry
+    themselves, and the error is raised.
+    """
+    config = registry.settings(FlagsSettings)
+    cache = caches[config.CACHE]
+    expected = await _count(cache) + 1
+    try:
+        await cache.refresh(entry_key(expected), _load, ttl=config.CACHE_TTL)
+    finally:
+        count = await cache.incr(VERSION_KEY, ttl=None)
+    if count != expected:
+        await cache.refresh(entry_key(count), _load, ttl=config.CACHE_TTL)
 
 
 async def _load() -> dict[str, Any]:
