@@ -147,10 +147,10 @@ the schema. In staging and production, `migrate --downgrade` also needs
 
 When a database cannot be reached (the server is down, the host unknown,
 the login refused), `migrate`, `makemigrations`, and `showmigrations` say
-so on one line and exit with status 1: which alias, its URL without the
-password, and the driver's reason, such as `Database 'default' cannot be
-reached at postgresql+asyncpg://app:***@db:5432/app
-(ConnectionRefusedError: ...)`. A job that retries can wait for the
+so on one line and exit with status 1: which alias, its driver, host,
+port, and database (never a user, a password, or the URL's query), and
+the driver's reason, such as `Database 'default' cannot be reached at
+postgresql+asyncpg://db:5432/app (ConnectionRefusedError: ...)`. A job that retries can wait for the
 database on that status.
 
 ## The worker

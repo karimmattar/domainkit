@@ -203,8 +203,9 @@ and a status.
   traceback when a database could not be reached (174 lines for a refused
   connection), naming no database. They say it on one line, and exit
   with status 1: `Database 'default' cannot be reached at
-  postgresql+asyncpg://app:***@db/app (ConnectionRefusedError: ...)`,
-  the URL without its password, and the driver's own reason (INFRA-08).
+  postgresql+asyncpg://db/app (ConnectionRefusedError: ...)`: the
+  database's driver, host, port, and name, never its credentials, and the
+  driver's own reason (INFRA-08).
 - A user dumped by `dumpdata` could not be loaded again, even with
   `--include-guarded`: the password hash was refused. It loads back as it
   was (DATA-12).

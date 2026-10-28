@@ -648,10 +648,10 @@ def test_empty_revisions_make_their_directories(project: Path, tmp_path: Path) -
 
 UNREACHABLE = {
     "postgresql+asyncpg://app:s3cret@127.0.0.1:1/app": (
-        "postgresql+asyncpg://app:***@127.0.0.1:1/app (ConnectionRefusedError: "
+        "postgresql+asyncpg://127.0.0.1:1/app (ConnectionRefusedError: "
     ),
     "postgresql+asyncpg://app:s3cret@no-such-host.invalid/app": (
-        "postgresql+asyncpg://app:***@no-such-host.invalid/app (gaierror: "
+        "postgresql+asyncpg://no-such-host.invalid/app (gaierror: "
     ),
 }
 """Databases nothing answers at, and what the error says of each."""
@@ -754,7 +754,7 @@ async def test_the_reason_is_the_drivers_own(
             pass
 
     assert str(refused.value) == (
-        f"cannot be reached at postgresql+asyncpg://app:***@db.internal/app {reason}"
+        f"cannot be reached at postgresql+asyncpg://db.internal/app {reason}"
     )
     assert refused.value.__cause__ is failure
 
@@ -773,3 +773,26 @@ async def test_errors_once_connected_are_not_called_unreachable(begin: bool) -> 
             assert (await connection.execute(text("SELECT 1"))).scalar() == 1
     finally:
         await engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("url", "shown"),
+    [
+        (
+            "postgresql+asyncpg://app:pw@db:5432/app?password=pw2&ssl=require",
+            "postgresql+asyncpg://db:5432/app",
+        ),
+        (
+            "postgresql+asyncpg://app:Hunter2@Tail@db/app",
+            "postgresql+asyncpg://***/app (encode an @ in the password as %40)",
+        ),
+        (
+            "postgresql+asyncpg://app:Hunter2%40Tail@db/app",
+            "postgresql+asyncpg://db/app",
+        ),
+        ("sqlite+aiosqlite:////var/lib/app.db", "sqlite+aiosqlite:////var/lib/app.db"),
+    ],
+)
+def test_where_a_database_is_names_nothing_that_logs_in(url: str, shown: str) -> None:
+    """No user, password, or query; an unencoded @ hides the host (SEC-12c-1)."""
+    assert migrations_module.where(make_url(url)) == shown
