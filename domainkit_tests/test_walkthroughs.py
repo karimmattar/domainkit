@@ -168,6 +168,7 @@ class Walk:
                 "domainkit": [sys.executable, "-m", "domainkit"],
                 "python": [sys.executable],
                 "pytest": [sys.executable, "-m", "pytest", "-q", *QUIET],
+                "ruff": [sys.executable, "-m", "ruff"],
             }[program] + args
             done = subprocess.run(  # noqa: S603 - this interpreter, the page's line.
                 argv, cwd=self.cwd, env=env, capture_output=True, text=True, check=False
@@ -571,6 +572,19 @@ def test_an_edit_that_cannot_be_placed_is_refused(
 
     with pytest.raises(walkthrough_edits.Refused, match=re.escape(message)):
         walkthrough_edits.apply_edit(tmp_path / target, edit)
+
+
+def test_a_new_file_is_written_as_the_block_holds_it(tmp_path: Path) -> None:
+    """`` (new file)`` after the name: created, with its directories; never twice."""
+    target = tmp_path / "tests" / "test_new.py (new file)"
+
+    walkthrough_edits.apply_edit(target, ORIGINAL)
+
+    assert (tmp_path / "tests" / "test_new.py").read_text(encoding="utf-8") == (
+        ORIGINAL
+    )
+    with pytest.raises(walkthrough_edits.Refused, match="exists already"):
+        walkthrough_edits.apply_edit(target, "x = 1\n")
 
 
 def test_an_edit_of_a_name_defined_twice_is_refused(tmp_path: Path) -> None:

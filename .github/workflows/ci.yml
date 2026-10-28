@@ -69,8 +69,9 @@ jobs:
 
   # Only for a pull request that changes docs alone: the tests that read
   # them (the API reference against every __all__, links, anchors and the
-  # settings tables, the README and tutorial as written, the workflows'
-  # names in versioning.md). Any other change runs them in the test jobs.
+  # settings tables, the README, tutorial, and recipes as written, the
+  # workflows' names in versioning.md). Any other change runs them in the
+  # test jobs.
   docs:
     needs: changes
     if: needs.changes.outputs.code == 'false'
@@ -88,7 +89,8 @@ jobs:
       - run: >-
           poetry run pytest -n auto --junitxml=junit.xml
           domainkit_tests/test_api.py domainkit_tests/test_ci.py
-          domainkit_tests/test_docs.py domainkit_tests/test_walkthroughs.py
+          domainkit_tests/test_docs.py domainkit_tests/test_recipes.py
+          domainkit_tests/test_walkthroughs.py
 
   lint:
     if: github.event_name != 'schedule'

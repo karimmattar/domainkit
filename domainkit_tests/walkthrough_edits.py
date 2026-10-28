@@ -16,14 +16,20 @@ these:
 - a ``def`` or ``class`` the file does not define, or any other statement:
   added at the end of the file.
 
+A block titled with a file and `` (new file)`` is a file to create, with
+the block's text: it must not exist yet.
+
 What cannot be placed (no such file, a name defined twice, an addition to
-a class the file lacks) is refused, so a page cannot show an edit this
-harness would apply differently from a reader.
+a class the file lacks, a new file that exists) is refused, so a page
+cannot show an edit this harness would apply differently from a reader.
 """
 
 import ast
 import textwrap
 from pathlib import Path
+
+NEW_FILE = " (new file)"
+"""How a block's title says the file is the reader's to create."""
 
 
 class Refused(Exception):
@@ -40,6 +46,13 @@ def apply_edit(path: Path, code: str) -> None:
         Refused: No file or several match, or a definition is ambiguous, or
             the block adds to a class the file lacks.
     """
+    if path.name.endswith(NEW_FILE):
+        path = path.with_name(path.name.removesuffix(NEW_FILE))
+        if path.exists():
+            raise Refused(f"{path} exists already: edit it instead")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(code, encoding="utf-8")
+        return
     if "*" in path.name:
         matches = sorted(path.parent.glob(path.name))
         if len(matches) != 1:
