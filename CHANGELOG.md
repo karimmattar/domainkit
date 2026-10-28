@@ -9,6 +9,31 @@ and a status.
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-28
+
+A patch release: one fix of reads on their own, and the contributors'
+coverage command. Nothing a project relies on changes.
+
+### Fixed
+
+- A transaction begun in SQL text (`BEGIN`, `START TRANSACTION`) on a
+  connection of `Reads.STATEMENTS`, which runs each statement on its own,
+  outlived the read: the connection went back to the pool idle in it,
+  holding its locks, and the next caller ran inside it, under `REPEATABLE
+  READ` on its snapshot, missing what was written since. In an aborted
+  one, the reset itself failed and the pool closed the connection. The
+  reset a connection gets on its way back to the pool now rolls such a
+  transaction back first, in the same round trip.
+- `make cov` reported the integration run alone: `coverage combine` skips
+  its own output file, `.coverage`, which `make test` wrote. `make test`
+  writes `.coverage.test` now. CI's coverage job names its files apart and
+  was right.
+- `docs/threat-model.md` promised for 0.10 a stored lockout (ADR 0087
+  decided against one), an owner's share of webhook lookups (0.10 gave
+  it), and a bounded cache default (still `None`, warned of by `check`),
+  and said handlers have no inbox (`@inbox`, 0.11). It says what is so, as
+  of 0.11; so do the cache pages.
+
 ## [0.11.0] - 2026-10-28
 
 A minor release: what 0.10 deprecated is removed or refused, two defaults
@@ -3627,7 +3652,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/karimmattar/domainkit/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/karimmattar/domainkit/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/karimmattar/domainkit/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/karimmattar/domainkit/compare/v0.9.3...v0.10.0
