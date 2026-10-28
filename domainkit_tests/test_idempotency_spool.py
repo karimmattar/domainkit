@@ -382,3 +382,30 @@ async def test_with_content_length_the_body_is_hashed_as_it_arrives(
     fingerprint = await idempotency._read_body(receive, scope, spool)
 
     assert fingerprint == idempotency._hash("POST", "/raw", b"", b"ab")
+
+
+def test_a_response_past_its_limit_is_let_go_before_it_ends(
+    spooling: list[IO[bytes]],
+) -> None:
+    """Past ``MAX_RESPONSE_BYTES`` it cannot be kept: its file goes (SEC-12b-2)."""
+    closed_before_the_end: list[bool] = []
+
+    async def export(scope: Scope, receive: Receive, send: Send) -> None:
+        while (await receive()).get("more_body"):
+            pass
+        start = {"type": "http.response.start", "status": 200, "headers": []}
+        await send(start)
+        for _ in range(3 * MIB // PART):
+            part = b"z" * PART
+            await send({"type": "http.response.body", "body": part, "more_body": True})
+        closed_before_the_end.append(all(file.closed for file in spooling))
+        await send({"type": "http.response.body", "body": b""})
+
+    limits = {**SPOOLED, "MAX_RESPONSE_BYTES": 2 * MIB}
+    with override_settings(IDEMPOTENCY=limits):
+        status, _, _ = keyed(export, PART)
+
+    assert status == 200
+    assert len(spooling) == 1  # Spooled past 1 MiB, then let go past 2 MiB.
+    assert closed_before_the_end == [True]
+    assert stored_keys() == []  # Too large to keep, nothing committed: released.

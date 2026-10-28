@@ -1,6 +1,6 @@
 # 0105. Fingerprint keyed bodies as they arrive, and spool them past a threshold
 
-- Status: Accepted
+- Status: Accepted; amended 2026-10-28 (at the end)
 - Date: 2026-10-28
 
 ## Context
@@ -98,3 +98,19 @@ rung, a small body held in memory, costs 16 calls more per request
   memory; small ones cost what they did, give or take the 16 calls.
 - The fingerprint's format stays fixed: changing it needs a release that
   accepts both for a key's lifetime.
+
+## Amendment (2026-10-28, 0.12, SEC-12b-2): a response that can never be kept is never held
+
+The 0.12 security review found that every part of a keyed response went
+into the spool before the middleware asked whether it could be kept. A
+response marked `Cache-Control: no-store` (new tokens, an export of
+someone's data) is never kept, yet past `SPOOL_BYTES` it was written to
+the temporary directory, which `no-store` asks it never reach.
+
+Decision: whether a response can be kept is decided as soon as it can be.
+At its start, a `no-store` response is never held. A response that grows
+past `MAX_RESPONSE_BYTES`, or sends part of its body by path or file
+descriptor, is let go then, its file, if any, closed, rather than held
+until it ends. A response that may still be kept is spooled as before;
+its status decides at the end, as before.
+

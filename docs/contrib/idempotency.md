@@ -129,7 +129,10 @@ held once, as the value stored. Files go to the temporary directory
 (`TMPDIR`), so a body past the threshold reaches the disk unless that is
 a `tmpfs`: set `SPOOL_BYTES` at or above your limits to keep them in
 memory. Where no temporary file can be made, the body stays in memory,
-with a warning ([ADR 0105](../adr/0105-fingerprint-keyed-bodies-as-they-arrive-and-spool-them-past-a-threshold.md)).
+with a warning. A response that can never be kept is not held at all: one
+marked `Cache-Control: no-store` is decided as it starts, and one that
+grows past `MAX_RESPONSE_BYTES`, or sends its body by path, is let go
+then (SEC-12b-2) ([ADR 0105](../adr/0105-fingerprint-keyed-bodies-as-they-arrive-and-spool-them-past-a-threshold.md)).
 
 The keys' database decides when a lease or a key runs out. On PostgreSQL,
 the claim, the take-over and the purge compare and write
