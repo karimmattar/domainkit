@@ -492,6 +492,7 @@ class IdempotencyMiddleware:
         settled = False  # A settle began: never begin another while it may run.
         stored = False  # The early settle finished.
         unseen = False  # Part of the body went by path or file descriptor.
+        keepable = True  # Until something shows the response cannot be kept.
 
         async def kept_body() -> bytes | None:
             """The body to store, if the response is kept; None if not."""
@@ -505,15 +506,21 @@ class IdempotencyMiddleware:
             return await kept.read() if keep else None
 
         async def capture(message: Message) -> None:
-            nonlocal size, settled, stored, unseen
+            nonlocal size, settled, stored, unseen, keepable
             if message["type"] == "http.response.start":
                 started.update(message)
+                # Never kept: a no-store response is not held, nor spooled to
+                # the disk, at all (SEC-12b-2).
+                keepable = not _no_store(started)
                 await send(message)
                 return
             unseen = unseen or message["type"] in UNSEEN_BODIES
             part = message.get("body", b"")
             size += len(part)
-            if size <= config.MAX_RESPONSE_BYTES:
+            if keepable and (unseen or size > config.MAX_RESPONSE_BYTES):
+                keepable = False  # It cannot be kept now: let go of what is held.
+                kept.close()
+            if keepable:
                 await kept.write(part)
             if not (settled or message.get("more_body", False)):
                 body = await kept_body()

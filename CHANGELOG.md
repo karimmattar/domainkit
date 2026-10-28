@@ -175,6 +175,13 @@ and a status.
   Fixtures written by 0.11 load as before. `PasswordHashType` is a
   `ValueObjectType`, with the same constructor and repr, so migrations
   naming it are unchanged (DATA-12).
+- A change of a flag or dynamic setting replaces the flags' cache entry,
+  loaded again by the process that made it, instead of deleting it: with a
+  Redis cache, 20 replicas reading as a change lands read the database
+  once, not 20 times, and every process still sees the change at once.
+  The entry is kept under the count of changes (`domainkit.flags.version`),
+  which a change moves only once the new entry is there, so changes that
+  race each other are both kept (PERF-17; ADR 0033's amendments).
 
 ### Deprecated
 
@@ -295,6 +302,23 @@ and a status.
   checks the aggregate again the first time it loads it, and accepts only
   the client's versions and those the unit of work's own commits produced;
   a stale one is `412 precondition_failed` (SEC-12a-6).
+- A flag or dynamic setting changed through the store could be served as
+  it was before the change, by every process sharing a Redis cache, for a
+  whole `FLAGS.CACHE_TTL` (30 seconds by default): a process that missed
+  the entry and read the tables just before the change stored what it
+  read after the change's reload, over it. A kill switch turned off stayed
+  on. The entry is now kept under the count of changes, which readers
+  read first and a change moves once its entry is loaded: a load that
+  read before a change stores under an earlier count, which no one reads.
+  A flag read costs two cache reads where it cost one (SEC-12b-1; ADR
+  0033's amendment).
+- A keyed response marked `Cache-Control: no-store` (new tokens, an export
+  of someone's data), which is never kept, was still held, and past
+  `IDEMPOTENCY.SPOOL_BYTES` written to a temporary file. Whether a
+  response can be kept is now decided as it starts: one marked `no-store`
+  is neither held nor written, and one that grows past
+  `MAX_RESPONSE_BYTES`, or is sent by path, is let go at once
+  (SEC-12b-2; ADR 0105's amendment).
 
 ## [0.11.2] - 2026-10-28
 

@@ -83,3 +83,42 @@ change within `CACHE_TTL`, as do changes made behind the store's back,
 and a reader's load that began before a change committed and stored after
 its reload (a race the deletion had too).
 
+## Amendment (2026-10-28, 0.12, SEC-12b-1): the entry is kept under the count of changes
+
+The 0.12 security review found what the amendment above left to
+`CACHE_TTL`: a process that missed the entry and read the tables just
+before a change stored what it read after the change's reload, over it.
+The counter caught only two changes racing. Every process sharing the
+cache was served the flags as they were before the change for up to
+`CACHE_TTL` (30 seconds): a kill switch turned off stayed on.
+
+The options:
+
+- Tag each loaded entry with the count read before its load, and treat
+  an entry older than the count as a miss. The count must be read with
+  every flag read, and once a change is counted, every reader in every
+  process finds the entry older than it and loads at once: the stampede
+  this record set out to end, on every change.
+- Make the store conditional on the count being unchanged: no such write
+  in `Cache`, nor in a memory store.
+- Keep the entry under the count (`domainkit.flags:<count>`). Readers read
+  the count, then its entry. A change reads the count, loads the next
+  count's entry, then counts itself, so readers move to an entry that is
+  already there.
+
+Decision: the last. A load that read before a change was started by a
+reader that read an earlier count, so it stores under that count, which
+no one reads once the change is counted. If another change was counted
+between this change's read of the count and its own count, the count it
+gets is not the one it loaded: it loads that count's entry again, after
+both changes committed. If its load fails, the change is still counted,
+and readers load the new entry themselves. While the cache cannot say the
+count, reads use 0, and `get_or_set` reads the database, as on any outage.
+
+A flag read costs two cache reads where it cost one: the count, then its
+entry. Entries under earlier counts are never read again, and expire
+after `CACHE_TTL`. With the 20 replicas of the amendment above, a change
+still loads the flags once; the review's case, a miss that reads before a
+kill switch is turned off and stores after, now leaves the switch off
+(`test_sec12b_1_flag_stale_load_outlives_refresh.py`).
+
