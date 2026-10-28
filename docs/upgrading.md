@@ -46,6 +46,25 @@ to keep the old behaviour, for as long as the project needs it.
   recorded in the audit trail and, in staging and production, needs
   `--operator` or `DOMAINKIT_OPERATOR`. **To keep the old behaviour:**
   `--include-guarded` on every dump that should hold them.
+- **Test tokens need the test settings** (SEC-12a-2). `user_token`,
+  `token_for`, and the clients' `authenticated` and `authenticated_as`
+  (`client_for`, `admin_client`) raise `ImproperlyConfigured` unless
+  `ENVIRONMENT = "test"`: they sign users in without credentials.
+  **Fix:** run the code that uses them with the test settings, as the
+  database fixtures already require. There is no setting to keep the old
+  behaviour.
+- **Fixtures load only password hashes the configured hashers would
+  make** (SEC-12a-3). A user's hash that no hasher of
+  `AUTH.PASSWORD_HASHERS` identifies, or that it would make again more
+  strongly (fewer iterations, a shorter salt), refuses the fixture.
+  **Fix:** dump and load users between environments with the same
+  hashers, or write unusable passwords (`!...`) in the fixture and reset
+  them after loading. There is no setting to keep the old behaviour.
+- **Dumps of personal data name their operator where deployed**
+  (SEC-12a-7). In staging and production, `dumpdata` of a table whose
+  model has fields marked `Personal` needs `--operator` or
+  `DOMAINKIT_OPERATOR`, and is recorded. **Fix:** set `DOMAINKIT_OPERATOR`
+  where `dumpdata` runs. There is no setting to keep the old behaviour.
 
 ### Deprecated, removed in 0.13
 

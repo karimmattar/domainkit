@@ -223,7 +223,9 @@ def test_owners_edit(client: TestClient) -> None:
   access token for `user`, from the first `AUTH.AUTHENTICATION_CLASSES`
   class, as a login's would. `user` is a stored user, or its id: one these
   functions made, or a [factory](#factories) stored. `await
-  token_for(user)` returns the token itself.
+  token_for(user)` returns the token itself. These tokens, as
+  `client_for`'s, skip the password and the second factor, so they are
+  refused unless `ENVIRONMENT = "test"`.
 - `client.run(function, *args, **kwargs)` awaits an async function in the
   sync client's event loop, on the application's own connections, with the
   caller's context (a frozen clock): async setup in a sync test.

@@ -250,6 +250,30 @@ and a status.
   was not encoded. It names the driver, host, port, and database alone,
   and hides a host that holds an `@`, saying to encode it as `%40`
   (SEC-12c-1).
+- **Breaking:** the test tokens (`user_token`, `token_for`, the clients'
+  `authenticated` and `authenticated_as`, and so `client_for` and
+  `admin_client`) are refused with `ImproperlyConfigured` unless
+  `ENVIRONMENT = "test"`, as the database fixtures are. They sign a user
+  in without a password, a second factor, or a login record, and in a
+  deployed process `token_for` gave a full access token for any user id,
+  a superuser's included, to any code that called it. **Fix:** run tests
+  with test settings (`ENVIRONMENT = "test"`, which `domainkit init`'s
+  `config.settings.test` has) (SEC-12a-2).
+- **Breaking:** `loaddata` refuses a user whose password hash no hasher of
+  `AUTH.PASSWORD_HASHERS` made, or one it would make again more strongly:
+  a password kept in clear (`plaintext$...`) or a test database's
+  single-iteration hash loaded into production was a login a copy of the
+  table gives up at once. Unusable passwords load as before. **Fix:** load
+  users where the hashers that made their hashes are configured, or give
+  them unusable passwords in the fixture and reset them (SEC-12a-3).
+- **Breaking:** in staging and production, `dumpdata` of a table whose
+  model has fields marked `Personal` needs an operator named by
+  `--operator` or `DOMAINKIT_OPERATOR`, and is recorded as
+  `operator.dumpdata` with those tables (`personal_tables`), as a dump of
+  guarded tables is; no `--include-guarded` is needed. It copied every
+  person's data out with no one named and nothing recorded, where
+  `privacy export` of one person is recorded. **Fix:** set
+  `DOMAINKIT_OPERATOR` where it runs (SEC-12a-7).
 
 ## [0.11.2] - 2026-10-28
 

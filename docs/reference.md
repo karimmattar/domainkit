@@ -1161,7 +1161,10 @@ Numbers and text are written as they are; decimals, times, durations, ids,
 and enums as text; bytes as base64; JSON columns as JSON; a single-field
 value object (a password hash, a project's `ProductName`) as its field,
 which loading makes into the object again, so the object's own checks
-refuse what it would not hold. Fixtures from 0.11, which wrote such an
+refuse what it would not hold. A password hash loads only if a hasher of
+`AUTH.PASSWORD_HASHERS` made it and would not make it again more strongly:
+a password in clear, or the test hasher's single iteration under
+production's hashers, is refused. Fixtures from 0.11, which wrote such an
 object as `{"value": ...}`, load the same. `loaddata`
 converts each value back by its column's type, and refuses one that does
 not fit without quoting it. A number with a fraction reaches a decimal
@@ -1191,7 +1194,10 @@ named that holds one, unless `--include-guarded` is given: a dump of
 users holds their password hashes. A dump with guarded tables is recorded
 (`operator.dumpdata`: the tables, their row counts, and the SHA-256 of
 what was written), and in staging and production needs an operator named
-by `--operator` or `DOMAINKIT_OPERATOR`. The audit trail is never loaded or
+by `--operator` or `DOMAINKIT_OPERATOR`. So does, in staging and
+production, a dump of a table whose model has fields marked `Personal`,
+recorded with those tables (`personal_tables`), as `privacy export` of one
+person is recorded: it copies everyone out. The audit trail is never loaded or
 flushed, guarded or not. A kept table whose rows are about other tables'
 objects names the column of their model key (`info={"about_model":
 "content_type"}`, as object grants do): `flush` deletes its rows about

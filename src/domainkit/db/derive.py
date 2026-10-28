@@ -169,6 +169,16 @@ class ValueObjectType[ValueT](TypeDecorator[ValueT]):
         """The stored value, wrapped again."""
         return None if value is None else self.cls(value)  # type: ignore[call-arg]
 
+    def loaded(self, value: object) -> ValueT:
+        """The value object a fixture's field makes (``loaddata``).
+
+        The class, as the database's value makes it; a column type may
+        refuse more, as the password hash's does. ``ValueError`` or
+        ``TypeError`` refuses the value without saying why;
+        ``domainkit.db.fixtures.FixtureError`` says why, without the value.
+        """
+        return self.cls(value)  # type: ignore[call-arg]
+
     def __repr__(self) -> str:
         """``ValueObjectType(ProductName, String(length=200))``."""
         return f"ValueObjectType({self.cls.__name__}, {self.impl_instance!r})"
