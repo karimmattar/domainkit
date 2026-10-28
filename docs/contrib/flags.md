@@ -103,10 +103,18 @@ who changed what, and `auditlog --aggregate name=beta` shows a flag's
 history.
 
 Every flag and stored setting is read in one query and cached as one entry
-in `FLAGS.CACHE`. A change drops the entry once it commits, so this process,
-and every process sharing a Redis cache, see it at once. Processes with
-their own memory cache see it when their entry expires, within
-`FLAGS.CACHE_TTL`.
+in `FLAGS.CACHE`. Once a change commits, the process that made it reads
+them again and replaces the entry (`Cache.refresh`), so this process, and
+every process sharing a Redis cache, see it at once, and none of them
+misses: with 20 replicas reading as a change lands, the flags are read
+once, where deleting the entry, as 0.11 did, had all 20 read them at
+once. Each change is counted in the cache (`domainkit.flags.version`): one
+whose read raced another change's reads again, so neither is lost; after
+three such races, or a read that fails, the entry is deleted and the next
+read loads it, as before (PERF-17). Processes with their own memory cache
+see a change when their entry expires, within `FLAGS.CACHE_TTL`; so does a
+change made behind the store's back (SQL, `loaddata`), or one a read that
+began before it overwrote.
 
 | `FLAGS` key | Default | Meaning |
 | --- | --- | --- |

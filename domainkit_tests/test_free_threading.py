@@ -1603,6 +1603,33 @@ def test_idempotency_sweeps_are_due_once_per_interval_from_every_thread(
     assert (sum(first), sum(short), sum(full)) == (1, 0, 1)
 
 
+def test_websocket_counter_keys_are_each_connections_own_from_every_thread() -> None:
+    """Connections accepted on all threads at once get keys of their own (CONC-09).
+
+    ``itertools.count`` hands out each number once on CPython 3.14t, but
+    nothing documents that for an iterator shared by threads: the number is
+    taken under the middleware's lock.
+    """
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        """Never called: only keys are taken."""
+
+    middleware = WebSocketLimitsMiddleware(app)
+    numbers = itertools.count()
+
+    class Numbers:
+        def __next__(self) -> int:
+            assert middleware._ids_lock.locked()
+            return next(numbers)
+
+    middleware._ids = Numbers()  # type: ignore[assignment]
+
+    keys = on_threads(lambda index: [middleware.key() for _ in range(2000)])
+
+    every = [key for some in keys for key in some]
+    assert len(set(every)) == len(every) == THREADS * 2000
+
+
 def test_an_applications_largest_body_limit_is_worked_out_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

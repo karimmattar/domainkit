@@ -606,7 +606,7 @@ idempotency, or debug toolbar middleware), and `DEFAULT_MIDDLEWARE` eight
 | `domainkit.http.ratelimit.RateLimitMiddleware` | Counts per actor, or per client address (IPv6: per /64), worked out once per request and remembered for the latest 4,096 addresses. A WebSocket handshake counts once; over the limit it gets the 429, or a 1013 close where the server cannot send one. |
 | `domainkit.http.websockets.WebSocketLimitsMiddleware` | Caps open WebSockets per process and per caller, queues what they send, limits their messages, closes idle and old ones, and re-checks their credentials and rules ([live.md](live.md)). After the two above, so it counts users and only handshakes the rate limit let through. |
 | `domainkit.http.middleware.RequestBodyLimitMiddleware` | Refuses bodies over `MAX_REQUEST_BODY_SIZE`, or a route's own `body_limit`, with 413 as they arrive, and bodies slower than `REQUEST_BODY_TIMEOUT` with 408; closes WebSockets with 1009 on a larger message. |
-| `domainkit.contrib.idempotency.middleware.IdempotencyMiddleware` | Last: reads whole bodies, which the limit above has already bounded. |
+| `domainkit.contrib.idempotency.middleware.IdempotencyMiddleware` | Last: reads whole bodies, which the limit above has already bounded. Holds a keyed request's body, and a response it keeps, in memory up to `IDEMPOTENCY.SPOOL_BYTES` (1 MiB), past them in a temporary file ([idempotency.md](contrib/idempotency.md)). |
 | `domainkit.debug.DebugToolbarMiddleware` | Development only: times each request's SQL, from where it is listed inwards (see [Debug toolbar](#debug-toolbar)). |
 
 The application also wraps its routes in a middleware of its own,

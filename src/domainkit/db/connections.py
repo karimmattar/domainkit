@@ -198,8 +198,10 @@ _PROVEN: Final = {"asyncpg": ((0, 32), (0, 33)), "sqlalchemy": ((2, 1), (2, 2))}
 """The releases ``_settle`` was proven on: from the first major and minor
 release to the first past them. It reads and clears transaction state that
 asyncpg and SQLAlchemy keep privately; with other releases a cut-off
-connection is closed, as before, and ``test_db_cut_off`` fails until its
-tests pass on them and they are added here."""
+connection is closed, as before. CI's ``newest`` job runs the proof
+(``test_db_cut_off``, ``test_sec11b_2_cut_off_session_lock``) against
+PostgreSQL on each new release, with settling on, and fails until it is
+added here (ADR 0048's 0.12 amendment)."""
 
 
 class Reads(StrEnum):

@@ -28,11 +28,12 @@ from domainkit_tests.test_db_cut_off import (  # noqa: F401 - fixtures.
     cut_off,
     database,
     patient,
+    settling,
     tables,
     through_proxy,
 )
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("settling")]
 KEY = 4242
 LOCK = text("SELECT pg_advisory_lock(:key)")
 UNLOCK = text("SELECT pg_advisory_unlock(:key)")

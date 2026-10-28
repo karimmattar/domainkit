@@ -44,6 +44,12 @@ class IdempotencySettings(BaseModel):
     METHODS: tuple[str, ...] = ("POST", "PATCH")
     MAX_RESPONSE_BYTES: int = Field(default=1_048_576, ge=1)
     """Larger responses are not stored: a retry runs again if nothing committed."""
+    SPOOL_BYTES: int = Field(default=1_048_576, ge=0, le=1_073_741_824)
+    """Bytes of a keyed request's body, and of a response being kept, held in
+    memory; past them, the rest goes to a temporary file, unlinked from the
+    start and closed when the request ends (PERF-11). The default is that of
+    ``MAX_REQUEST_BODY_SIZE`` and ``MAX_RESPONSE_BYTES``: with both left
+    alone, nothing reaches the disk."""
     CREDENTIAL_HEADERS: tuple[str, ...] = (
         "authorization",
         "proxy-authorization",

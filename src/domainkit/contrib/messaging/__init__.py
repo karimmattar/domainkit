@@ -26,13 +26,19 @@ Install it, then run ``python manage.py runworker`` next to the web process::
     async def nightly_report() -> None: ...
 """
 
-from .budget import Budget
+from typing import TYPE_CHECKING
+
+from domainkit.utils.module_loading import lazy_names
+
 from .outbox import enqueue
 from .registry import Chain, chain, periodic, task
 from .retry import Backoff
 from .runs import AlreadyHandled, LeaseLost, inbox
 from .settings import MessagingSettings
-from .worker import Attempt, Worker, current_attempt
+
+if TYPE_CHECKING:
+    from .budget import Budget
+    from .worker import Attempt, Worker, current_attempt
 
 __all__ = [
     "AlreadyHandled",
@@ -50,3 +56,15 @@ __all__ = [
     "periodic",
     "task",
 ]
+
+# The worker's names are imported on first use: a web process writes
+# messages and never loads the worker (PERF-15).
+__getattr__ = lazy_names(
+    __name__,
+    {
+        "Attempt": f"{__name__}.worker",
+        "Budget": f"{__name__}.budget",
+        "Worker": f"{__name__}.worker",
+        "current_attempt": f"{__name__}.worker",
+    },
+)
