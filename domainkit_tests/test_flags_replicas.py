@@ -227,6 +227,9 @@ def test_a_change_counted_after_another_loads_the_count_readers_use(
     stored, count_of_loads, count = asyncio.run(scenario())
 
     assert (stored, count_of_loads, count) == ([True, True], 2, 2)
+    cache = shared.caches[0]
+    entry = cache.store._entries[cache.make_key(entry_key(2))]  # type: ignore[attr-defined]
+    assert 0 < entry[1] - cache.store.clock() <= 30  # type: ignore[attr-defined] # CACHE_TTL.
 
 
 def test_a_load_that_fails_still_counts_the_change_and_raises(
@@ -290,3 +293,20 @@ def test_flags_are_read_while_the_cache_cannot_count(
 
     assert asyncio.run(scenario()) is True
     assert loads.count == 1
+
+
+def test_an_entry_a_miss_loaded_expires_after_the_ttl(
+    replicas: tuple[Replicas, Loads],
+) -> None:
+    """Loaded on a miss, not by a change: it goes after ``CACHE_TTL`` too."""
+    shared, loads = replicas
+    loads.release()
+
+    async def scenario() -> list[bool]:
+        await set_everyone("kill", on=True)
+        await shared.run(0, current())  # A miss: loaded and stored.
+        cache = shared.caches[0]
+        entry = cache.store._entries[cache.make_key(entry_key(0))]  # type: ignore[attr-defined]
+        return [0 < entry[1] - cache.store.clock() <= 30]  # type: ignore[attr-defined]
+
+    assert asyncio.run(scenario()) == [True]  # FLAGS.CACHE_TTL, not the cache's.
