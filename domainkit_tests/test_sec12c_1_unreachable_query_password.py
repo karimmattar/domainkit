@@ -2,9 +2,9 @@
 
 ``DatabaseUnreachable`` masks the URL with ``render_as_string(hide_password=True)``,
 which hides only the userinfo password. libpq-style URLs carry credentials in
-the query just as well (``?password=``), and asyncpg uses it
-(the second case: the query's password wins over the userinfo's); the command's one line then prints them as they are,
-into the deploy log the one-line message was written for.
+the query just as well (``?password=``), and asyncpg uses it (in the second
+case the query's password wins over the userinfo's); the command's one line
+then prints it as it is, into the deploy log the line was written for.
 """
 
 import io
