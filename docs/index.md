@@ -9,6 +9,8 @@ permissions, and a pytest plugin, around aggregates, commands, and events.
 - **New to domainkit?** [Getting started](tutorial.md): five short parts,
   from `pip install` to a tested service with rules, permissions, and a
   worker.
+  [Coming from Django](from-django.md) maps what you know to its name
+  here.
 - **Doing one thing?** The [how-to recipes](recipes.md): a payment that
   runs again, work that commits once per message, replacing a JWT key,
   running behind a proxy, reading from a replica.
